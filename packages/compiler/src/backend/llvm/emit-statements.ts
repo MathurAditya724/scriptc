@@ -51,7 +51,7 @@ import {
   emitCountedLoopSafety,
   emitPairedLoopSafety,
 } from "./counted-loops.js";
-import { emitBytesLoopVersionGuard } from "./bytes-loop-versions.js";
+import { emitBytesLoopVersionGuard, type BytesLoopVersion } from "./bytes-loop-versions.js";
 import { mangleLocal } from "../mangle.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlValue } from "./expr-context.js";
@@ -473,7 +473,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.startBlock(pop);
         const elem = s.arr.type.elem;
         const acc = elemAccess(elem);
-        const raw = emitDenseArrayPop(emitter, arr.name, acc, call, call);
+        const raw = emitDenseArrayPop(emitter, arr.name, acc, elem, call, call);
         if (acc === "ref" && isRefCounted(elem)) {
           const old = B.tmp();
           B.line(`${old} = inttoptr i64 ${raw} to ptr`);
@@ -804,6 +804,16 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         emitCallbackVersionedLoop(emitter, s, callbacks);
         break;
       }
+      const version =
+        emitter.bytesLoopVersionsEnabled &&
+        emitter.bytesLoopVersioning.size < MAX_BYTES_LOOP_VERSION_DEPTH &&
+        !emitter.bytesLoopVersioning.has(s)
+          ? emitter.matchBytesLoopVersion(s, null)
+          : null;
+      if (version) {
+        emitVersionedLoop(emitter, s, version);
+        break;
+      }
       const workerBudget = emitter.workerLoopBudget(s);
       const le = B.newLabel("loop.e");
       emitter.emitLoopCopies(s, true, le, (exit) => {
@@ -1001,35 +1011,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           : countedLoop;
       const version = versionable ? emitter.matchBytesLoopVersion(s, versionCounted) : null;
       if (version) {
-        const fast = B.newLabel("bytes.version.fast"),
-          slow = B.newLabel("bytes.version.slow"),
-          done = B.newLabel("bytes.version.done");
-        emitBytesLoopVersionGuard(emitter, version, fast, slow);
-        const originalBounds = emitter.bytesBounds,
-          originalOwned = emitter.bytesOwned,
-          originalRanges = emitter.integerRanges;
-        emitter.bytesLoopVersioning.add(s);
-        try {
-          B.startBlock(slow);
-          emitter.emitStmt(s);
-          B.br(done);
-          B.startBlock(fast);
-          emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
-          if (version.owned.size > 0)
-            emitter.bytesOwned = new Set([...originalOwned, ...version.owned]);
-          if (version.ranges.size > 0)
-            emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
-          if (version.counted?.guarded) emitter.provenCountedGuards.add(s);
-          emitter.emitStmt(s);
-          B.br(done);
-        } finally {
-          emitter.bytesBounds = originalBounds;
-          emitter.bytesOwned = originalOwned;
-          emitter.integerRanges = originalRanges;
-          emitter.provenCountedGuards.delete(s);
-          emitter.bytesLoopVersioning.delete(s);
-        }
-        B.startBlock(done);
+        emitVersionedLoop(emitter, s, version);
         break;
       }
       let countedJoin: string | null = null;
@@ -2040,6 +2022,45 @@ const SPECULATION_BAILS = 8;
  * when speculative-integers.ts plans a fast integer copy. Both copies
  * share the loop's setup and exit; the ordinary copy comes first so the
  * fast copy is only emitted when every resume point exists. */
+/** A typed-array loop version: the guard, then the checked copy, which
+ * runs whenever the guard fails, and the copy whose accesses the guard
+ * proves in bounds (or thread-owned). */
+function emitVersionedLoop(
+  emitter: LlEmitter,
+  s: IrStmt & { kind: "for" | "while" },
+  version: BytesLoopVersion,
+): void {
+  const B = emitter.B;
+  const fast = B.newLabel("bytes.version.fast"),
+    slow = B.newLabel("bytes.version.slow"),
+    done = B.newLabel("bytes.version.done");
+  emitBytesLoopVersionGuard(emitter, version, fast, slow);
+  const originalBounds = emitter.bytesBounds,
+    originalOwned = emitter.bytesOwned,
+    originalRanges = emitter.integerRanges;
+  emitter.bytesLoopVersioning.add(s);
+  try {
+    B.startBlock(slow);
+    emitter.emitStmt(s);
+    B.br(done);
+    B.startBlock(fast);
+    emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
+    if (version.owned.size > 0) emitter.bytesOwned = new Set([...originalOwned, ...version.owned]);
+    if (version.ranges.size > 0)
+      emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
+    if (version.counted?.guarded) emitter.provenCountedGuards.add(s);
+    emitter.emitStmt(s);
+    B.br(done);
+  } finally {
+    emitter.bytesBounds = originalBounds;
+    emitter.bytesOwned = originalOwned;
+    emitter.integerRanges = originalRanges;
+    emitter.provenCountedGuards.delete(s);
+    emitter.bytesLoopVersioning.delete(s);
+  }
+  B.startBlock(done);
+}
+
 export function emitLoopCopies(
   emitter: LlEmitter,
   loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" }>,

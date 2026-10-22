@@ -6624,7 +6624,10 @@ export class Lowerer {
             node.expression.name.text,
             node.arguments.nodes.length >= 2,
           );
-          const callback = node.arguments.nodes[0];
+          // `xs.map(((x) => x))`: the parenthesized callback is the arrow.
+          let callback = node.arguments.nodes[0];
+          while (callback !== undefined && ts.isParenthesizedExpression(callback))
+            callback = callback.expression;
           if (callbackIndices !== null && callback !== undefined && !ts.isSpreadElement(callback)) {
             const receiverNode = node.expression.expression;
             const receiverTs = this.typeOf(receiverNode);
@@ -6683,13 +6686,26 @@ export class Lowerer {
               presentSites.set(node, elementsPresent && !reduce);
               if (elementsPresent && reduce && retypeInlineCallback(callback, callbackIndices))
                 changed = true;
-              if (
-                (method === "reduce" || method === "reduceRight") &&
-                ((!elementsPresent && node.arguments.nodes.length < 2) ||
-                  callbackReturnsOptional(callback))
-              ) {
-                if (promoteHofCallback(callback, [0, 1])) changed = true;
-                const result = this.runtimeOptionalType(this.irTypeOf(node));
+              // The accumulator holds undefined when the callback can return
+              // it, when an initial value can be missing, or when elements can
+              // be absent and there is no initial value. It holds another
+              // primitive when the callback's result can be one at run time
+              // (`missing[0] ?? "fallback"`).
+              const initial = node.arguments.nodes[1];
+              const optional =
+                (!elementsPresent && initial === undefined) ||
+                (initial !== undefined && !ts.isSpreadElement(initial) && mayBeOptional(initial)) ||
+                callbackReturnsOptional(callback);
+              const arithmetic =
+                reduce && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+                  ? lambdaArithmeticReturn(callback)
+                  : null;
+              if (reduce && (optional || arithmetic !== null)) {
+                if (optional && promoteHofCallback(callback, [0, 1])) changed = true;
+                let result = this.irTypeOf(node);
+                if (arithmetic !== null)
+                  result = joinPrimitiveTypes([result, arithmetic]) ?? result;
+                if (optional) result = this.runtimeOptionalType(result);
                 siteDependencies?.read(node);
                 const previous = this.runtimeOptionalReduceTypes.get(node);
                 if (!previous || !typeEquals(previous, result)) {
@@ -8512,8 +8528,11 @@ export class Lowerer {
     node: ts.Node,
     featureOverride?: string,
     hintOverride?: string,
+    reason?: string,
   ): never {
-    this.pushDiag(unsupportedDiag(code, locOf(node), featureOverride, hintOverride));
+    const diag = unsupportedDiag(code, locOf(node), featureOverride, hintOverride);
+    if (reason !== undefined) diag.reason = reason;
+    this.pushDiag(diag);
     throw new PoisonError();
   }
 
@@ -8739,8 +8758,16 @@ export class Lowerer {
    * nothing lowers. Poisons the statement like every other rejection.
    * `sym`, when given, picks the wording: surface declared only by the
    * adopted @types/node is blamed at @types/node. */
-  noLowering(surface: string, node: ts.Node, hint?: string, sym?: ts.Symbol | null): never {
-    this.pushDiag(noLoweringDiag(surface, locOf(node), hint, this.nodeTypesOnlySymbol(sym)));
+  noLowering(
+    surface: string,
+    node: ts.Node,
+    hint?: string,
+    sym?: ts.Symbol | null,
+    reason?: string,
+  ): never {
+    const diag = noLoweringDiag(surface, locOf(node), hint, this.nodeTypesOnlySymbol(sym));
+    if (reason !== undefined) diag.reason = reason;
+    this.pushDiag(diag);
     throw new PoisonError();
   }
 

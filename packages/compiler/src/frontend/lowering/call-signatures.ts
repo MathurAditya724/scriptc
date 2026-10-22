@@ -947,6 +947,8 @@ function appendArgumentsParameter(
         "SC1090",
         node,
         "parameterized 'arguments' outside an ES module (sloppy-mode parameter aliases)",
+        undefined,
+        "sloppy-arguments",
       );
     }
   }
