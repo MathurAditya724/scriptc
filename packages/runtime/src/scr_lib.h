@@ -238,7 +238,8 @@ double scr_process_memory_usage_field(double k);
 double scr_process_rss(void);
 /* The runtime heap's footprint (scr_alloc.c): bytes held from the system
  * and bytes in live allocations, for the calling thread's allocator plus
- * the system allocator where it reports them. */
+ * the system allocator where it reports them, plus the program-lifetime
+ * region's chunks (compact class instances). */
 void scr_heap_stats(double *total, double *used);
 /* process.ppid: the parent's pid at the time of the read. */
 double scr_process_ppid(void);

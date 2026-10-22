@@ -2072,6 +2072,8 @@ static __attribute__((noinline)) void scr_plr_reserve(void) {
     }
   }
   __atomic_clear(&lock, __ATOMIC_RELEASE);
+  /* scr_trap is the runtime's failure path (scr_exception.c); the
+   * allocator's standalone test defines its own (scr_alloc.test.c). */
   if (!scr_plr_base) {
     static const char message[] =
         "scriptc: cannot reserve address space below 32 GiB for program-lifetime objects\n";
@@ -2188,6 +2190,8 @@ static __attribute__((noinline)) void *scr_plr_refill(size_t n) {
     scr_plr_mine_waste += left;
 #endif
   }
+  /* process.memoryUsage() counts the chunk in heapTotal and heapUsed
+   * (scr_heap_stats, scr_plr_heap_stats). */
   __atomic_fetch_add(&scr_plr_held, chunk, __ATOMIC_RELAXED);
   scr_plr_chunk.next = p + SCR_PLR_LINK + n;
   scr_plr_chunk.limit = p + chunk;
