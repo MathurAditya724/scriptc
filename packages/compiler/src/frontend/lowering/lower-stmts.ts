@@ -3889,6 +3889,9 @@ function stdlibGlobalTokenDestructure(
   if (decl.initializer === undefined || !isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
   const globalName = stdlibGlobalNameOf(lowerer, decl.initializer);
   if (globalName === null) return null;
+  // `workerData` is a value (the data the worker was started with), not an
+  // API surface: its members destructure as any untyped value's do.
+  if (globalName === "workerData") return null;
   if (!ts.isObjectBindingPattern(decl.name)) {
     lowerer.unsupported(
       "SC1031",
