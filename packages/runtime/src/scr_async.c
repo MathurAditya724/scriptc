@@ -715,11 +715,13 @@ static void scr_als_prefix_end(ScrFiber *f) {
   }
 }
 
-/* A synchronous generator has no context of its own: each step runs in its
- * resumer's execution, as Node runs it. A fiber-backed one switches to its
- * own slot, so its step starts from the resumer's store and a store it
- * enters is the resumer's after the step (scr_als_prefix_end on the way
- * back); a stackless one runs in the resumer's slot (scr_gen_coro_hop). */
+/* A generator step runs in its resumer's execution, as Node runs it. A
+ * fiber-backed generator switches to its own slot, so its step starts from
+ * the resumer's store and a store it enters is the resumer's after the
+ * step (scr_als_prefix_end on the way back); a stackless synchronous one
+ * runs in the resumer's slot (scr_gen_coro_hop). An async generator's step
+ * starts the same way, and after an await it continues in its own copy of
+ * the context, as an async function's body does after its prefix. */
 static void scr_als_step_begin(ScrFiber *f) {
   ScrAlsCtx **slot = SCR_ALS_SLOT();
   if (f->als != *slot) {
@@ -5303,6 +5305,10 @@ struct ScrGen {
    * since that return takes its own turn to await x. */
   bool return_queued;
   bool return_awaited;
+  /* The AsyncLocalStorage context of a return() request deferred at a
+   * yield (+1): the body's unwind runs in it, as Node resumes it from the
+   * return value's await. */
+  ScrAlsCtx *return_ctx;
 #ifdef SCR_WORKERS
   bool context_abandoned;
 #endif
@@ -5406,6 +5412,7 @@ void scr_gen_release(ScrGen *g) {
   scr_gen_slot_reset(&g->in);
   scr_gen_slot_reset(&g->ret);
   scr_gen_exc_reset(&g->async_error);
+  scr_als_ctx_release(g->return_ctx);
   if (g->fiber != NULL) {
     if (g->state == SCR_GEN_UNSTARTED) {
       /* Never ran: nothing on the stack owns anything — clean teardown.
@@ -5760,6 +5767,12 @@ __attribute__((always_inline)) static inline void scr_gen_switched_back(ScrGen *
   if (release) scr_gen_release(g);
 }
 
+/* Out of line, so the hop that synchronous generators share stays as it
+ * was: an async generator's step begins from its resumer's context and
+ * hands the prefix's context back at its first suspension. */
+static __attribute__((noinline)) void scr_async_gen_step_begin(ScrFiber *f) { scr_als_step_begin(f); }
+static __attribute__((noinline)) void scr_async_gen_step_end(ScrFiber *f) { scr_als_prefix_end(f); }
+
 #ifndef __wasi__
 /* The stackless form of the hop: the coroutine frame runs on this stack
  * until its next yield or its final suspension returns here. `retain`
@@ -5768,14 +5781,17 @@ __attribute__((always_inline)) static inline void scr_gen_switched_back(ScrGen *
 __attribute__((always_inline)) static inline void scr_gen_coro_hop(ScrGen *g, bool retain) {
   ScrFiber *f = g->fiber;
   if (retain) scr_gen_retain(g);
+  /* A synchronous generator has no AsyncLocalStorage context of its own:
+   * its step runs in the resumer's slot, as Node runs it in the execution
+   * that called next(). An async generator's step runs in its own slot,
+   * which a new step (not the continuation after an await) starts from the
+   * resumer's context (scr_als_step_begin). */
+  if (g->is_async && g->state != SCR_GEN_AWAITING) scr_async_gen_step_begin(f);
   g->state = SCR_GEN_RUNNING;
   f->resumer = scr_current;
   ScrAlsCtx **resumer_slot = scr_als_active;
   scr_current = f;
   scr_exc_swap_cell(&f->exc);
-  /* A synchronous generator has no AsyncLocalStorage context of its own:
-   * its step runs in the resumer's slot, as Node runs it in the execution
-   * that called next(). An async generator's step runs in its own. */
   if (g->is_async) scr_als_active = &f->als;
   if (f->coro == NULL) f->entry(f, f->argpack);
   else scr_coro_resume(f->coro);
@@ -5786,6 +5802,7 @@ __attribute__((always_inline)) static inline void scr_gen_coro_hop(ScrGen *g, bo
   scr_current = me;
   scr_exc_swap_cell(me != NULL ? &me->exc : NULL);
   scr_als_active = resumer_slot;
+  if (g->is_async) scr_async_gen_step_end(f);
   scr_gen_switched_back(g, f, retain, true);
 }
 
@@ -5806,8 +5823,10 @@ static void scr_gen_switch_in(ScrGen *g) {
   }
 #endif
   scr_gen_retain(g);
+  /* Each step starts from the resumer's context; an async generator's
+   * continuation after an await keeps its own. */
+  if (!g->is_async || g->state != SCR_GEN_AWAITING) scr_als_step_begin(f);
   g->state = SCR_GEN_RUNNING;
-  if (!g->is_async) scr_als_step_begin(f);
 #ifdef _WIN32
   ScrCtx here = scr_win_self();
 #elif defined(__wasi__)
@@ -5979,6 +5998,25 @@ void scr_gen_resume_throw(ScrGen *g) {
 
 static void scr_async_gen_start_queued(ScrGen *g);
 
+/* Runs fn(g) with `ctx` (borrowed) as the active AsyncLocalStorage
+ * context. A settlement job runs from the loop: a request queued behind
+ * another starts in the context of the step before it (Node drains the
+ * queue in the generator's own execution), and a deferred return() in its
+ * call's. */
+static __attribute__((noinline)) void scr_async_gen_in_context(ScrGen *g, ScrAlsCtx *ctx,
+                                                               void (*fn)(ScrGen *)) {
+  ScrAlsCtx **slot = SCR_ALS_SLOT();
+  ScrAlsCtx *prev = *slot;
+  *slot = scr_als_ctx_retain(ctx);
+  fn(g);
+  scr_als_restore(prev);
+}
+
+/* Starts the queued requests in the context of the step before them. */
+static __attribute__((noinline)) void scr_async_gen_start_queued_in_own(ScrGen *g) {
+  scr_async_gen_in_context(g, g->fiber != NULL ? g->fiber->als : NULL, scr_async_gen_start_queued);
+}
+
 static void scr_async_gen_schedule_settle(ScrGen *g) {
   if (g->settle_queued) return;
   ScrFiber *job = scr_mem_calloc(sizeof *job);
@@ -6026,6 +6064,11 @@ static bool scr_async_gen_settles_now(ScrGen *g) {
   return false;
 }
 
+static __attribute__((noinline)) void scr_async_gen_capture_return_ctx(ScrGen *g) {
+  scr_als_ctx_release(g->return_ctx);
+  g->return_ctx = scr_als_ctx_retain(*SCR_ALS_SLOT());
+}
+
 static void scr_async_gen_run_active(ScrGen *g, ScrAsyncGenRequest *req) {
   const bool was_done = g->state == SCR_GEN_DONE;
   if (req->mode == SCR_AG_NEXT) {
@@ -6041,6 +6084,7 @@ static void scr_async_gen_run_active(ScrGen *g, ScrAsyncGenRequest *req) {
       /* At a yield, AsyncGeneratorYield awaits the return value before
        * the body resumes, so finally blocks run one turn later. */
       g->return_queued = true;
+      scr_async_gen_capture_return_ctx(g);
       scr_async_gen_schedule_settle(g);
       return;
     }
@@ -6069,6 +6113,16 @@ static void scr_async_gen_run_active(ScrGen *g, ScrAsyncGenRequest *req) {
   } else {
     scr_async_gen_schedule_settle(g);
   }
+}
+
+static void scr_async_gen_resume_returning(ScrGen *g);
+
+/* The deferred return() resumes in its call's context. */
+static __attribute__((noinline)) void scr_async_gen_resume_returning_in_context(ScrGen *g) {
+  ScrAlsCtx *ctx = g->return_ctx;
+  g->return_ctx = NULL;
+  scr_async_gen_in_context(g, ctx, scr_async_gen_resume_returning);
+  scr_als_ctx_release(ctx);
 }
 
 /* The return() request's await has taken its turn: resume the body with
@@ -6203,12 +6257,12 @@ static void scr_async_gen_job(ScrGen *g) {
   }
   if (g->return_queued) {
     scr_gen_retain(g);
-    scr_async_gen_resume_returning(g);
+    scr_async_gen_resume_returning_in_context(g);
     scr_gen_release(g);
     return;
   }
   scr_async_gen_finish_active(g, false);
-  scr_async_gen_start_queued(g);
+  scr_async_gen_start_queued_in_own(g);
 }
 
 static void scr_async_gen_resume_ready(ScrGen *g) {
@@ -6222,11 +6276,11 @@ static void scr_async_gen_resume_ready(ScrGen *g) {
   scr_gen_switch_in(g);
   if (g->async_error.kind != SCR_EXC_NONE) {
     scr_async_gen_finish_active(g, true);
-    scr_async_gen_start_queued(g);
+    scr_async_gen_start_queued_in_own(g);
   } else if (g->state != SCR_GEN_AWAITING) {
     if (scr_async_gen_settles_now(g)) {
       scr_async_gen_finish_active(g, false);
-      scr_async_gen_start_queued(g);
+      scr_async_gen_start_queued_in_own(g);
     } else {
       scr_async_gen_schedule_settle(g);
     }
