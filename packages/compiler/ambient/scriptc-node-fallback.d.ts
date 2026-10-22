@@ -3554,20 +3554,20 @@ declare module "child_process" {
 
   export interface ChildProcess extends Disposable {
     ref(): void;
-    on(event: "spawn", listener: () => void): void;
-    once(event: "spawn", listener: () => void): void;
+    on(event: "spawn", listener: () => void): this;
+    once(event: "spawn", listener: () => void): this;
     /* The exit listener may also take Node's second parameter — the
      * terminating signal's name, null for a normal exit. */
-    on(event: "exit", listener: (code: number | null, signal: string | null) => void): void;
-    on(event: "close", listener: (code: number | null, signal: string | null) => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
-    once(event: "exit", listener: (code: number | null, signal: string | null) => void): void;
-    once(event: "close", listener: (code: number | null, signal: string | null) => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
-    on(event: "message", listener: (message: any) => void): void;
-    on(event: "disconnect", listener: () => void): void;
-    once(event: "message", listener: (message: any) => void): void;
-    once(event: "disconnect", listener: () => void): void;
+    on(event: "exit", listener: (code: number | null, signal: string | null) => void): this;
+    on(event: "close", listener: (code: number | null, signal: string | null) => void): this;
+    on(event: "error", listener: (err: Error) => void): this;
+    once(event: "exit", listener: (code: number | null, signal: string | null) => void): this;
+    once(event: "close", listener: (code: number | null, signal: string | null) => void): this;
+    once(event: "error", listener: (err: Error) => void): this;
+    on(event: "message", listener: (message: any) => void): this;
+    on(event: "disconnect", listener: () => void): this;
+    once(event: "message", listener: (message: any) => void): this;
+    once(event: "disconnect", listener: () => void): this;
     /* The lifecycle members, Node's exact shapes: pid is undefined exactly
      * when the spawn failed; exitCode is null while running, the code
      * after a normal exit, null for a signal death, and -errno once a
