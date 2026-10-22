@@ -183,10 +183,16 @@ test("bodies that suspend only at their own awaits compile to stackless coroutin
   const middle = definition(llvm, "sc_f_middle");
   expect(middle).toMatch(/^define internal double @sc_f_middle\(double [^)]*\) #1 /);
   // Each await prepares its continuation and suspends the coroutine, then
-  // extracts the settled result; nothing parks the stack it runs on.
-  expect(middle).toContain("call zeroext i1 @scr_coro_await_prepare(ptr");
-  expect(middle).toContain("call double @scr_coro_await_f64(ptr");
-  expect(middle).toContain("call ptr @sc_as_slow(double");
+  // extracts the settled result; nothing parks the stack it runs on. A
+  // stackless callee is awaited through its fiber record, without its
+  // promise (emitCoroDirectAwait).
+  expect(middle).toContain("call ptr @sc_dw_slow(double");
+  expect(middle).toContain("call zeroext i1 @scr_coro_direct_prepare(ptr");
+  expect(middle).toContain("call double @scr_coro_direct_f64(ptr");
+  expect(middle).not.toContain("@sc_as_slow(");
+  expect(definition(llvm, "sc_dw_slow")).toContain(
+    "call ptr @scr_async_spawn_direct(ptr @sc_tr_slow",
+  );
   // A callee that never suspends runs in place; the coroutine takes the
   // await's turn itself and awaits a rejected promise only on a throw.
   expect(middle).toContain("call double @sc_ai_leaf(double");
@@ -216,7 +222,8 @@ test("bodies that suspend only at their own awaits compile to stackless coroutin
 });
 
 const framedSources = {
-  // Entering a store makes the frame isolate the AsyncLocalStorage context.
+  // Entering a store needs no frame: the body runs in its caller's context,
+  // as Node runs an async body's synchronous prefix.
   context: `
 import { AsyncLocalStorage } from "node:async_hooks";
 const store = new AsyncLocalStorage<string>();
@@ -232,7 +239,7 @@ async function leaf(x: number): Promise<number> {
 }`,
 };
 
-test("fiberless bodies keep their frame where it isolates a context or a stack", async () => {
+test("fiberless bodies keep their frame only where it isolates a stack", async () => {
   for (const [name, prefix] of Object.entries(framedSources)) {
     const llvm = await emit(`${prefix}
 async function slow(x: number): Promise<number> {
@@ -256,9 +263,95 @@ async function main(): Promise<void> {
 void main();
 `);
     for (const symbol of ["sc_ai_leaf", "sc_aw_leaf", "sc_as_leaf"]) {
-      expect(definition(llvm, symbol), `${name} ${symbol}`).toContain(
-        "call void @scr_async_inline_enter(ptr %frame)",
-      );
+      const body = definition(llvm, symbol);
+      if (name === "stack")
+        expect(body, `${name} ${symbol}`).toContain(
+          "call void @scr_async_inline_enter(ptr %frame)",
+        );
+      else expect(body, `${name} ${symbol}`).not.toContain("@scr_async_inline_enter");
     }
+  }
+});
+
+const promiseAllSource = `
+async function leaf(x: number): Promise<number> {
+  return x + 1;
+}
+async function literal(x: number): Promise<number> {
+  const all: number[] = await Promise.all([leaf(x), leaf(x + 1)]);
+  return all[0]! + all[1]!;
+}
+async function local(x: number): Promise<number> {
+  const ps = [leaf(x), leaf(x + 1), leaf(x + 2)];
+  const all = await Promise.all(ps);
+  return all.length;
+}
+async function reused(x: number): Promise<number> {
+  const ps = [leaf(x)];
+  const all = await Promise.all(ps);
+  return all.length + ps.length;
+}
+async function main(): Promise<void> {
+  console.log((await literal(1)) + (await local(2)) + (await reused(3)));
+}
+void main();
+`;
+
+test("a stackless body runs Promise.all of never-suspending calls in place", async () => {
+  const llvm = await emit(promiseAllSource);
+  for (const [symbol, calls] of [
+    ["sc_f_literal", 2],
+    ["sc_f_local", 3],
+  ] as const) {
+    const body = definition(llvm, symbol);
+    // The entries run in place and fill the result array; one turn stands
+    // for Promise.all's reaction jobs and one for the await.
+    expect(body.match(/call double @sc_ai_leaf\(double/g)?.length, symbol).toBe(calls);
+    expect(body.match(/call zeroext i1 @scr_coro_hop_prepare\(ptr/g)?.length, symbol).toBe(2);
+    expect(body, symbol).toContain("call void @scr_promise_mark_handled(ptr");
+    expect(body, symbol).not.toContain("@scr_promise_all(");
+    expect(body, symbol).not.toContain("@sc_as_leaf(");
+  }
+  // A local the body reads again keeps its promises.
+  const reused = definition(llvm, "sc_f_reused");
+  expect(reused).toContain("call ptr @sc_as_leaf(double");
+  expect(reused).toContain("@scr_promise_all(");
+});
+
+const directSource = `
+async function slow(x: number): Promise<number> {
+  await null;
+  return x + 1;
+}
+async function direct(x: number): Promise<number> {
+  return (await slow(x)) * 2;
+}
+async function adopting(x: number): Promise<number> {
+  return slow(x);
+}
+async function kept(x: number): Promise<number> {
+  const pending = slow(x);
+  await null;
+  return await pending;
+}
+async function main(): Promise<void> {
+  console.log((await direct(1)) + (await adopting(2)) + (await kept(3)));
+}
+void main();
+`;
+
+test("a stackless body awaits a stackless callee's fiber record instead of its promise", async () => {
+  const llvm = await emit(directSource);
+  const direct = definition(llvm, "sc_f_direct");
+  expect(direct).toContain("call ptr @sc_dw_slow(double");
+  expect(direct).toContain("call zeroext i1 @scr_coro_direct_prepare(ptr");
+  expect(direct).toContain("call double @scr_coro_direct_f64(ptr");
+  expect(direct).not.toContain("@scr_coro_await_prepare(");
+  // A returned call adopts the callee's promise, and a promise held in a
+  // local is a value: both keep the promise.
+  for (const symbol of ["sc_f_adopting", "sc_f_kept"]) {
+    const body = definition(llvm, symbol);
+    expect(body, symbol).toContain("call ptr @sc_as_slow(double");
+    expect(body, symbol).not.toContain("@sc_dw_slow(");
   }
 });

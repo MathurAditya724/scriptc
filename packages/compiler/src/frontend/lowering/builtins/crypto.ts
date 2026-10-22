@@ -1,12 +1,14 @@
 import { lowerBuiltinByteInput, errorFirstBytesCallback, errorFirstCallback } from "./arguments.js";
 import { isKeyObjectValue } from "./key-object.js";
 import { lowerCreateEcdh } from "./ecdh.js";
+import { lowerCreateDiffieHellman, lowerGetDiffieHellman } from "./dh.js";
 import { boolLit, dynUndefinedExpr, nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { CIPHER_TYPE_NAMES } from "../../type-mapper.js";
 import { CRYPTO_CIPHERS, CRYPTO_CURVES, CRYPTO_HASHES } from "../crypto-tables.js";
+import { stdlibGlobalNameOf } from "../surfaces.js";
 import {
   BOOL,
   BYTES_U8,
@@ -410,6 +412,9 @@ export function lowerCryptoModuleCall(
     };
   }
   if (bi.member === "createECDH") return lowerCreateEcdh(lowerer, expr);
+  if (bi.member === "createDiffieHellman") return lowerCreateDiffieHellman(lowerer, expr);
+  if (bi.member === "getDiffieHellman" || bi.member === "createDiffieHellmanGroup")
+    return lowerGetDiffieHellman(lowerer, expr);
   if (bi.member === "createHmac") {
     if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
@@ -695,6 +700,8 @@ export function lowerCryptoModuleCall(
       loc,
     };
   }
+  const pki = lowerPkiCall(lowerer, expr, bi.member, args, loc);
+  if (pki) return pki;
   if (bi.member === "createSecretKey") {
     if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement))
       lowerer.noLowering(
@@ -907,7 +914,8 @@ export function v8CalleeText(node: ts.Expression): string {
 
 /** Calls on native Cipheriv/Decipheriv handles dispatch through the
  * handle's methods with checked-dynamic arguments. The stream.Transform
- * members the classes inherit are refused. */
+ * members the classes inherit lower over the cipher's Transform
+ * (lowerHashStreamCall, which runs first); other members are refused. */
 export function lowerCipherMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -920,7 +928,7 @@ export function lowerCipherMethodCall(
     lowerer.noLowering(
       `Cipheriv/Decipheriv.${name}`,
       call,
-      "update(), final(), setAAD(), setAutoPadding(), getAuthTag(), and setAuthTag() are supported; cipher streams are not",
+      "update(), final(), setAAD(), setAutoPadding(), getAuthTag(), setAuthTag(), and the stream members are supported",
     );
   }
   if (call.arguments.nodes.some(ts.isSpreadElement))
@@ -1316,8 +1324,10 @@ export function lowerCryptoGetRandomValues(
 }
 
 /** Whether `receiver` names a WebCrypto Crypto object: the `crypto`
- * global (also through globalThis) or node:crypto's `webcrypto`. */
+ * global (also through globalThis or an alias of it) or node:crypto's
+ * `webcrypto`. */
 export function isWebCryptoReceiver(lowerer: Lowerer, receiver: ts.Expression): boolean {
+  if (stdlibGlobalNameOf(lowerer, receiver) === "crypto") return true;
   if (ts.isIdentifier(receiver)) {
     if (receiver.text === "crypto" && lowerer.isStdlibGlobal(receiver, "crypto")) return true;
     const imported = lowerer.builtinImportOf(receiver);
@@ -1334,4 +1344,56 @@ export function isWebCryptoReceiver(lowerer: Lowerer, receiver: ts.Expression): 
     return member?.module === "crypto" && member.member === "webcrypto";
   }
   return false;
+}
+
+/** The asymmetric-key and signature members (scr_pki.c): checked-dynamic
+ * arguments, and the result converted to the call site's type
+ * (KeyObject, Sign and Verify are checked-dynamic handles; key pairs,
+ * signatures and verdicts convert to their records, Buffers and
+ * booleans). Null for other members. */
+function lowerPkiCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr | null {
+  const forms: Readonly<Record<string, readonly [IrLibFn, number, number, string]>> = {
+    createPrivateKey: ["crypto.createPrivateKey", 1, 1, "createPrivateKey(key)"],
+    createPublicKey: ["crypto.createPublicKey", 1, 1, "createPublicKey(key)"],
+    generateKeyPairSync: ["crypto.generateKeyPairSync", 1, 2, "generateKeyPairSync(type, options)"],
+    generateKeyPair: [
+      "crypto.generateKeyPairCb",
+      2,
+      3,
+      "generateKeyPair(type, [options,] callback)",
+    ],
+    sign: ["crypto.signOneshot", 3, 3, "sign(algorithm, data, key)"],
+    verify: ["crypto.verifyOneshot", 4, 4, "verify(algorithm, data, key, signature)"],
+    createSign: ["crypto.createSign", 1, 1, "createSign(algorithm)"],
+    createVerify: ["crypto.createVerify", 1, 1, "createVerify(algorithm)"],
+  };
+  const form = forms[member];
+  if (!form) return null;
+  const [fn, min, max, supported] = form;
+  if (args.length < min || args.length > max)
+    lowerer.noLowering(
+      `crypto.${member} with ${args.length} arguments`,
+      expr,
+      `${supported} is supported`,
+    );
+  // generateKeyPair(type, callback): Node reads a function in the options
+  // position as the callback.
+  const shifted = fn === "crypto.generateKeyPairCb" && args.length === 2;
+  const values: IrExpr[] = [];
+  for (let i = 0; i < max; i++) {
+    const node = shifted ? (i === 1 ? undefined : i === 2 ? args[1] : args[i]) : args[i];
+    values.push(dynArg(lowerer, node, loc));
+  }
+  if (fn === "crypto.generateKeyPairCb")
+    return { kind: "libCall", fn, args: values, type: VOID, loc };
+  const call: IrExpr = { kind: "libCall", fn, args: values, type: DYN, loc };
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (result === null || result.kind === "dyn") return call;
+  return lowerer.coerceInto(expr, call, result);
 }
