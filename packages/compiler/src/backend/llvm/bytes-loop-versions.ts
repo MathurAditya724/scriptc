@@ -6,7 +6,8 @@ import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import { emitCountedLoopLimit, emitCountedLoopSafety } from "./counted-loops.js";
-import { emitBytesHeaderLength } from "./expr-bytes.js";
+import { emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
+import { f64Lit } from "./common.js";
 
 type Node = IrExpr | IrStmt;
 type VarRef = IrExpr & { kind: "varRef" };
@@ -41,10 +42,18 @@ interface AffineCheck {
 export interface BytesLoopVersion {
   /** Typed-array accesses that are in bounds whenever the guard holds. */
   bounds: ReadonlySet<Node>;
+  /** Worker programs: typed-array accesses whose views the guard proves
+   * thread-owned (no shared storage). */
+  owned: ReadonlySet<Node>;
   /** Root receiver bindings, read once before the loop. */
   receivers: { ref: VarRef; global: boolean }[];
+  /** Receivers the guard requires to have no shared storage. */
+  ownedReceivers: number[];
   fixed: FixedCheck[];
   affine: AffineCheck[];
+  /** Keys of affine terms the guard tests at run time: exact integers
+   * within GUARDED_TERM. */
+  guarded: ReadonlySet<string>;
   /** The counted loop whose iteration space the affine checks cover. */
   counted: IntegerCountedForLoop | null;
   /** The guard also requires every counter value within [-bound, bound]. */
@@ -66,6 +75,11 @@ export interface BytesLoopFacts {
   initialized: ReadonlySet<string>;
   /** Accesses already proved in bounds without a guard. */
   proven: ReadonlySet<Node>;
+  /** Worker programs: an access of a view that may be shared tests the
+   * view's shared storage first. */
+  workers: boolean;
+  /** Accesses already proved thread-owned by an enclosing version. */
+  owned: ReadonlySet<Node>;
 }
 
 const MAX_COST = 400;
@@ -73,6 +87,9 @@ const MAX_FIXED_END = 2 ** 32;
 const MAX_CHECKS = 8;
 const MAX_OFFSET = 2 ** 31;
 const SAFE = Number.MAX_SAFE_INTEGER;
+/** The range the guard requires of an invariant index term without a
+ * proven one: every index of a typed array of at most 2^32 elements. */
+const GUARDED_TERM: IntegerRange = { min: -(2 ** 32), max: 2 ** 32 };
 const INVARIANT_OPS = new Set(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>"]);
 
 /** Loop versioning for typed-array bounds. A typed array's length and data
@@ -85,7 +102,14 @@ const INVARIANT_OPS = new Set(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>"])
  *   `hi < length`, such as `table[x & 0xff]` or a constant-trip counter;
  * - an index `k * counter + invariant + c` of a counted loop needs its first
  *   and last values in bounds, such as `out[base + i]` for `i < n` or
- *   `view.getUint32(i * 4)`.
+ *   `view.getUint32(i * 4)`. An invariant without a proven integer range,
+ *   such as `base` for `const base = r * cols`, must also be an exact
+ *   integer between -2^32 and 2^32, which the guard tests.
+ *
+ * In worker programs, every access of a view that may be shared tests its
+ * shared storage. A view's storage is also fixed at construction, so the
+ * same guard tests each invariant receiver once, and the fast copy reads
+ * and writes thread-owned views directly.
  *
  * Only small synchronous loops are versioned (nested loops included), and
  * the emitter bounds how deeply versions nest. The checked loop runs
@@ -183,9 +207,8 @@ export function matchBytesLoopVersion(
     }
     return invariant(e.localId) ? e : null;
   };
-  // A pure integer operand evaluated again before the loop.
-  const invariantKey = (e: IrExpr): string | null => {
-    if (!facts.ranges.get(e)) return null;
+  // A pure loop-invariant number, evaluated again before the loop.
+  const pureKey = (e: IrExpr): string | null => {
     if (e.kind === "numLit") return Number.isSafeInteger(e.value) ? `n${e.value}` : null;
     if (e.kind === "varRef")
       return invariant(e.localId) ? `v${e.localId.length}:${e.localId}` : null;
@@ -195,12 +218,27 @@ export function matchBytesLoopVersion(
       e.left.type.kind === "f64" &&
       e.right.type.kind === "f64"
     ) {
-      const left = invariantKey(e.left),
-        right = invariantKey(e.right);
+      const left = pureKey(e.left),
+        right = pureKey(e.right);
       return left !== null && right !== null ? `(${e.op} ${left} ${right})` : null;
     }
     return null;
   };
+  // Invariant terms without a proven range, such as `base` in
+  // `w[base + j]` with `const base = r * cols` for a parameter `cols`. The
+  // guard tests each one: an exact integer (not -0) within GUARDED_TERM.
+  const guardedRanges = new Map<IrExpr, IntegerRange>();
+  const guardedNodes = new Map<IrExpr, string>();
+  // The key of a loop-invariant index term, with a proven range or guarded.
+  const invariantKey = (e: IrExpr): string | null => {
+    const key = pureKey(e);
+    if (key === null || facts.ranges.get(e)) return key;
+    if (e.kind === "numLit") return null;
+    guardedRanges.set(e, GUARDED_TERM);
+    guardedNodes.set(e, key);
+    return key;
+  };
+  const termRange = (e: IrExpr): IntegerRange => facts.ranges.get(e) ?? guardedRanges.get(e)!;
   interface Affine {
     /** The counter's coefficient; 0 when the value is loop-invariant. */
     counter: number;
@@ -208,9 +246,10 @@ export function matchBytesLoopVersion(
     offset: number;
   }
   // Every operand of an affine index is `counter * k + Σ terms + offset`.
-  // Invariant terms need proven ranges. Operands that involve the counter
-  // need none: the guard bounds the counter so that each of them is a safe
-  // integer, which makes the index's double arithmetic exact.
+  // Invariant terms need proven ranges or the guard's test (guarded terms).
+  // Operands that involve the counter need none: the guard bounds the
+  // counter so that each of them is a safe integer, which makes the index's
+  // double arithmetic exact.
   const shapes = new Map<IrExpr, Affine | null>();
   const affine = (e: IrExpr): Affine | null => {
     if (shapes.has(e)) return shapes.get(e)!;
@@ -294,7 +333,7 @@ export function matchBytesLoopVersion(
   };
   const termMagnitude = (terms: Term[]): number =>
     terms.reduce((sum, t) => {
-      const r = facts.ranges.get(t.expr)!;
+      const r = termRange(t.expr);
       return sum + Math.max(Math.abs(r.min), Math.abs(r.max));
     }, 0);
 
@@ -314,10 +353,19 @@ export function matchBytesLoopVersion(
     }
     return index;
   };
+  // Worker programs: accesses through invariant receivers, proven or not,
+  // become thread-owned when the guard finds no shared storage.
+  const owned = new Map<number, Node[]>();
   const access = (node: Node, array: IrExpr, index: IrExpr, width: number): void => {
-    if (facts.proven.has(node)) return;
     const ref = root(array);
     if (!ref) return;
+    if (facts.workers && !facts.owned.has(node)) {
+      const receiver = receiverOf(ref);
+      const nodes = owned.get(receiver);
+      if (nodes) nodes.push(node);
+      else owned.set(receiver, [node]);
+    }
+    if (facts.proven.has(node)) return;
     const shape = counter !== null ? affine(index) : null;
     if (shape && shape.counter !== 0) {
       const operands = new Set<IrExpr>();
@@ -383,9 +431,15 @@ export function matchBytesLoopVersion(
   });
   const fixedKept = [...fixed.values()].slice(0, MAX_CHECKS);
   const affineKept = affineGroups.slice(0, MAX_CHECKS - fixedKept.length);
-  if (fixedKept.length === 0 && affineKept.length === 0) return null;
+  const ownedKept = [...owned.entries()].slice(0, MAX_CHECKS);
+  if (fixedKept.length === 0 && affineKept.length === 0 && ownedKept.length === 0) return null;
   const bounds = new Set<Node>();
+  const ownedNodes = new Set<Node>();
   const used = new Set<number>();
+  for (const [receiver, nodes] of ownedKept) {
+    used.add(receiver);
+    for (const node of nodes) ownedNodes.add(node);
+  }
   const ranges = new Map<IrExpr, IntegerRange>();
   const counterLow = Math.max(counted?.range.min ?? 0, -bound),
     counterHigh = Math.min(counted?.range.max ?? 0, bound);
@@ -397,20 +451,32 @@ export function matchBytesLoopVersion(
     used.add(group.check.receiver);
     for (const node of group.nodes) bounds.add(node);
     for (const operand of group.operands) {
-      if (facts.ranges.get(operand)) continue;
       const shape = shapes.get(operand)!;
       const a = shape.counter * counterLow,
         b = shape.counter * counterHigh;
       let min = Math.min(a, b) + shape.offset,
         max = Math.max(a, b) + shape.offset;
       for (const term of shape.terms) {
-        const r = facts.ranges.get(term.expr)!;
+        const r = termRange(term.expr);
         min += term.sign > 0 ? r.min : -r.max;
         max += term.sign > 0 ? r.max : -r.min;
       }
-      if (counterLow <= counterHigh) ranges.set(operand, { min, max });
+      if (counterLow > counterHigh) continue;
+      // The guard's bound on the counter can narrow a range the operand
+      // already has (a loop to a length proves only `i < 2^53`), so that
+      // `i * 4` in the fast copy is exact integer arithmetic.
+      const known = facts.ranges.get(operand);
+      if (!known) ranges.set(operand, { min, max });
+      else if (min > known.min || max < known.max)
+        ranges.set(operand, { min: Math.max(min, known.min), max: Math.min(max, known.max) });
     }
   }
+  // Guarded terms of the kept checks, and the range the guard proves for
+  // every node of each in the fast copy.
+  const guarded = new Set<string>();
+  for (const group of affineKept)
+    for (const term of group.check.terms) if (guardedRanges.has(term.expr)) guarded.add(term.key);
+  for (const [node, key] of guardedNodes) if (guarded.has(key)) ranges.set(node, GUARDED_TERM);
   // Renumber the receivers the kept checks use.
   const order = [...used].sort((a, b) => a - b);
   const renumber = new Map(order.map((old, index) => [old, index]));
@@ -420,7 +486,9 @@ export function matchBytesLoopVersion(
     (counted.range.min < -bound || counted.range.max > bound);
   return {
     bounds,
+    owned: ownedNodes,
     receivers: order.map((index) => receivers[index]!),
+    ownedReceivers: ownedKept.map(([receiver]) => renumber.get(receiver)!),
     fixed: fixedKept.map((g) => ({
       receiver: renumber.get(g.check.receiver)!,
       end: g.check.end,
@@ -432,6 +500,7 @@ export function matchBytesLoopVersion(
       minOffset: g.check.minOffset,
       maxEnd: g.check.maxEnd,
     })),
+    guarded,
     counted: affineKept.length > 0 ? counted : null,
     counterBound: needsBound ? bound : null,
     ranges,
@@ -439,7 +508,8 @@ export function matchBytesLoopVersion(
 }
 
 /** Branches to `fast` when every access the version proves is in bounds for
- * every iteration, and to `slow` otherwise (including a counted loop whose
+ * every iteration and every view it proves thread-owned has no shared
+ * storage, and to `slow` otherwise (including a counted loop whose
  * integer form is not established, or a module receiver not yet set). */
 export function emitBytesLoopVersionGuard(
   host: LlvmEmitterContext,
@@ -473,6 +543,11 @@ export function emitBytesLoopVersionGuard(
     return wide;
   });
   const conditions: string[] = [];
+  for (const index of version.ownedReceivers) {
+    const owned = B.tmp();
+    B.line(`${owned} = icmp eq ptr ${emitBytesSharedStorage(host, receivers[index]!)}, null`);
+    conditions.push(owned);
+  }
   for (const check of version.fixed) {
     const ok = B.tmp();
     B.line(`${ok} = icmp ugt i64 ${lengths[check.receiver]}, ${check.end}`);
@@ -523,6 +598,14 @@ export function emitBytesLoopVersionGuard(
       let base = "0";
       for (const term of check.terms) {
         const value = host.emitExpr(term.expr);
+        if (version.guarded.has(term.key)) {
+          const tested = emitGuardedTerm(host, value.name);
+          conditions.push(tested.ok);
+          const sum = B.tmp();
+          B.line(`${sum} = ${term.sign > 0 ? "add" : "sub"} i64 ${base}, ${tested.integer}`);
+          base = sum;
+          continue;
+        }
         const integer = exactInteger(host, value, term.expr);
         if (!integer) {
           // Unreachable: every term has a proven range. Stay checked.
@@ -568,6 +651,34 @@ export function emitBytesLoopVersionGuard(
   }
   if (valid === "true") B.br(fast);
   else B.condBr(valid, fast, slow);
+}
+
+/** Tests that a guarded term is an exact integer within GUARDED_TERM (not
+ * -0; NaN fails the ordered comparisons) and gives its i64. The integer is
+ * frozen, so it is a fixed value even when the test fails. */
+function emitGuardedTerm(host: LlvmEmitterContext, value: string): { ok: string; integer: string } {
+  const B = host.B;
+  const low = B.tmp(),
+    high = B.tmp(),
+    inRange = B.tmp(),
+    raw = B.tmp(),
+    integer = B.tmp(),
+    back = B.tmp(),
+    bits = B.tmp(),
+    backBits = B.tmp(),
+    exact = B.tmp(),
+    ok = B.tmp();
+  B.line(`${low} = fcmp oge double ${value}, ${f64Lit(GUARDED_TERM.min)}`);
+  B.line(`${high} = fcmp ole double ${value}, ${f64Lit(GUARDED_TERM.max)}`);
+  B.line(`${inRange} = and i1 ${low}, ${high}`);
+  B.line(`${raw} = fptosi double ${value} to i64`);
+  B.line(`${integer} = freeze i64 ${raw}`);
+  B.line(`${back} = sitofp i64 ${integer} to double`);
+  B.line(`${bits} = bitcast double ${value} to i64`);
+  B.line(`${backBits} = bitcast double ${back} to i64`);
+  B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
+  B.line(`${ok} = and i1 ${inRange}, ${exact}`);
+  return { ok, integer };
 }
 
 function scaleCounter(host: LlvmEmitterContext, value: string, scale: number): string {

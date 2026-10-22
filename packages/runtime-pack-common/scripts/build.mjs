@@ -223,7 +223,10 @@ async function build() {
               ...(unit.source === "scr_regex.c" ? ["-I", quickjs] : []),
               ...(unit.source === "scr_tls.c" ||
               unit.source === "scr_cipher.c" ||
-              unit.source === "scr_ecdh.c"
+              unit.source === "scr_ecdh.c" ||
+              unit.source === "scr_dh.c" ||
+              unit.source === "scr_pki.c" ||
+              unit.source === "scr_webcrypto_aes.c"
                 ? ["-I", join(mbedtls, "include")]
                 : []),
               ...(unit.source === "scr_zlib.c" || unit.source === "scr_fetch.c"
@@ -434,7 +437,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 23, marker: "scr_runtime_abi_v23" },
+      runtime_abi: { version: 27, marker: "scr_runtime_abi_v27" },
       compiler: {
         command: compiler,
         identity: compilerVersion,

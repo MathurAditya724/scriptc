@@ -29,8 +29,8 @@ import {
   mangleClassStruct,
   mangleFnClosure,
   mangleFunction,
-  mangleWrapper,
   mangleVtStruct,
+  mangleAsyncDirectSpawn,
 } from "../mangle.js";
 import {
   classEnvironmentIndex,
@@ -74,7 +74,7 @@ export function emitCallExpr(
     | "instanceOf"
     | "virtualCall"
   >,
-  awaitEntry: false | "await" | "adopt" | "inline" = false,
+  awaitEntry: false | "await" | "adopt" | "inline" | "direct" = false,
   /** A projection consumes a scalar union result (Int32Abi.union): answer
    * a private stack box instead of a heap box. */
   stackResult = false,
@@ -184,6 +184,14 @@ export function emitCallExpr(
             : `${host.llType(callee.params[i]!.type)} ${a.name}`,
         )
         .join(", ");
+      if (awaitEntry === "direct") {
+        // A stackless coroutine's await of a stackless callee: the spawn
+        // returns the callee's fiber record (emitCoroDirectAwait).
+        host.directAwaitCallees.add(e.callee);
+        const record = B.tmp();
+        B.line(`${record} = call ptr @${mangleAsyncDirectSpawn(e.callee)}(${argList})`);
+        return { name: record, type: callee.returnType };
+      }
       if (awaitEntry === "inline") {
         // A stackless coroutine's await of a fiberless callee: the entry
         // runs the body in place and leaves a throw pending; the enclosing
@@ -830,21 +838,9 @@ export function emitCallExpr(
         host.declare("declare void @scr_dyn_this_push_dyn(ptr)");
         B.line(`call void @scr_dyn_this_push_dyn(ptr ${receiver?.name ?? "null"})`);
       };
-      const knownName =
-        e.callee.kind === "closure"
-          ? e.callee.fnName
-          : e.callee.kind === "varRef"
-            ? host.currentConstantCallbacks.get(e.callee.localId)
-            : undefined;
-      const candidate = knownName ? host.fnByName.get(knownName) : undefined;
-      const known = candidate && !candidate.async && !candidate.generator ? candidate : undefined;
-      let direct: string | undefined;
-      if (known) {
-        if (known.captures === undefined) {
-          host.fnValues.add(known.name);
-          direct = `@${mangleWrapper(known.name)}`;
-        } else direct = `@${host.callTarget(known.name)}`;
-      }
+      const target = host.knownCallbackTarget(e.callee);
+      const known = target?.known;
+      const direct = target?.direct;
       // A known closure body that borrows reference parameters is entered
       // directly with lent arguments, as a direct call to a borrowing body
       // is: an argument is read without a reference when neither a later
@@ -930,7 +926,13 @@ export function emitCallExpr(
       let pending = host.indirectMayThrow;
       let pendingGuard: string | undefined;
       let t: string;
-      if (direct && e.callee.kind === "closure") {
+      // A literal closure, or a binding an enclosing callback loop version
+      // proved to hold its known function, enters it directly.
+      if (
+        direct &&
+        (e.callee.kind === "closure" ||
+          (e.callee.kind === "varRef" && host.knownCallbacks.has(e.callee.localId)))
+      ) {
         t = invoke(lending ?? direct, !host.receiverReaders.ignores(known!));
         if (quiet) pending = false;
       } else {

@@ -52,7 +52,7 @@ async function fixture(target: NativeTargetSpec, workers = false) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 23, marker: "scr_runtime_abi_v23" },
+    runtime_abi: { version: 27, marker: "scr_runtime_abi_v27" },
     compiler: { command: "fixture", identity: "fixture", target: target.llvmTriple },
     macros: { executable: [], excluded: ["SCR_LIB"], sanitizer: "external-toolchain-required" },
     flavors: {
@@ -125,6 +125,9 @@ const features = {
   tlsCa: false,
   cipher: false,
   ecdh: false,
+  dh: false,
+  pki: false,
+  ed25519: false,
   webcrypto: false,
   perfLoop: false,
 };
