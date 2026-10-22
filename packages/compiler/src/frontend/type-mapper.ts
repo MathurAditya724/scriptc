@@ -1655,7 +1655,10 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const topLevel = mapTypeDepth === 0;
   const typeId = (type as { id?: number }).id;
   const memoizable = typeId !== undefined && (ctx.canMemoizeType?.() ?? true);
-  const memoKey = memoizable ? `${0}:${typeId}` : null;
+  // An empty literal's type maps to the empty record as an unreduced union's
+  // arm (emptyLiteralArm) and to the checked-dynamic value elsewhere: the two
+  // answers keep separate memo entries.
+  const memoKey = memoizable ? `${ctx.emptyLiteralArm ? 1 : 0}:${typeId}` : null;
   if (memoKey !== null) {
     const memo = ctx.typeMemo?.get(memoKey);
     if (memo !== undefined) return memo;

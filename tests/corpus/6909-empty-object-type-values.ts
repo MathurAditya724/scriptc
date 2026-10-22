@@ -30,3 +30,11 @@ console.log(typeof choose(1), typeof choose(-1));
 
 const empty = {};
 console.log(JSON.stringify(empty), Object.keys(empty).length, empty === empty, String(empty));
+
+// An empty literal's type beside a typed arm of an unreduced union, after
+// the type was already used on its own.
+const viewed = {};
+console.log(JSON.stringify(viewed));
+const views: (typeof viewed | DataView)[] = [viewed, new DataView(new ArrayBuffer(2))];
+for (const view of views)
+  console.log(view instanceof DataView ? `view ${view.byteLength}` : JSON.stringify(view));
