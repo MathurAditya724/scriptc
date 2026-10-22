@@ -72,6 +72,7 @@ import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { addRecordResultEntries } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
+import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { INT32_RANGE, type IntegerRange, type IntegerRanges } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
@@ -442,6 +443,14 @@ export function lowRegionTarget(platform: string, sanitize: boolean): boolean {
   return platform === "linux" && !sanitize;
 }
 
+/** Function versions on loop-bounding number parameters
+ * (ir/parameter-versions.ts). Library builds have no int32 entries, and a
+ * module that observes call stacks could see the version's frame. */
+function versionParameters(mod: IrModule): IrModule {
+  if (mod.lib !== undefined || observesStacks(mod)) return mod;
+  return versionLoopBoundParameters(mod, mangleFunction);
+}
+
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
@@ -449,20 +458,22 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
   // Keep source storage intact for debugger inspection in dev builds.
   return new LlEmitter(
     options.debugSources === undefined
-      ? addRecordResultEntries(
-          scalarizeNumericRecords(
-            specializeCallbackCalls(
-              specializeNumericCalls(
-                foldConstantGlobals(
-                  copyStableCaptures(
-                    resolveSelfCaptures(
-                      hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+      ? versionParameters(
+          addRecordResultEntries(
+            scalarizeNumericRecords(
+              specializeCallbackCalls(
+                specializeNumericCalls(
+                  foldConstantGlobals(
+                    copyStableCaptures(
+                      resolveSelfCaptures(
+                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                      ),
                     ),
                   ),
+                  mangleFunction,
                 ),
                 mangleFunction,
               ),
-              mangleFunction,
             ),
           ),
         )
@@ -481,20 +492,22 @@ export function emitLlvmModuleSource(
   const mod = unshareNodes(input);
   const parts = new LlEmitter(
     options.debugSources === undefined
-      ? addRecordResultEntries(
-          scalarizeNumericRecords(
-            specializeCallbackCalls(
-              specializeNumericCalls(
-                foldConstantGlobals(
-                  copyStableCaptures(
-                    resolveSelfCaptures(
-                      hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+      ? versionParameters(
+          addRecordResultEntries(
+            scalarizeNumericRecords(
+              specializeCallbackCalls(
+                specializeNumericCalls(
+                  foldConstantGlobals(
+                    copyStableCaptures(
+                      resolveSelfCaptures(
+                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                      ),
                     ),
                   ),
+                  mangleFunction,
                 ),
                 mangleFunction,
               ),
-              mangleFunction,
             ),
           ),
         )
@@ -641,9 +654,11 @@ export class LlEmitter {
    * 32-bit references to compact class instances (LlClassMeta.compressed):
    * loadField/loadRef decode them and storeField/storeRef encode them. */
   readonly compressedFieldPtrs = new Set<string>();
-  /** Whether a class has compressed fields: main reserves the region before
-   * compiled code runs (scr_plr_init). */
-  usesCompactRefs = false;
+  /** Compact class instances live in the program-lifetime region below
+   * 32 GiB (LlvmTargetOptions.lowRegion, and the program has compact
+   * classes): main reserves it before compiled code runs (scr_plr_init), and
+   * fields and arrays of compactRefType hold 32-bit references. */
+  compactRegion = false;
 
   /** Native class fields with different property names cannot occupy the
    * same slot of one object. Inherited views of the same property share a
@@ -831,6 +846,15 @@ export class LlEmitter {
   readonly callLifetimes: CallLifetimes;
   readonly constantCallbacks: Map<string, Map<string, string>>;
   currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
+  /** The current function's running maximum and minimum updates, whose
+   * branches are weighted as rarely taken (running-extrema.ts). */
+  runningExtrema: ReadonlySet<IrStmt> = new Set();
+  /** Callback bindings whose closures an enclosing callback loop version
+   * proved to hold their known function: calls take the direct entry with
+   * no fallback (emitCallbackVersionedLoop). */
+  knownCallbacks = new Set<string>();
+  readonly callbackVersioning = new Set<IrStmt>();
+  callbackVersionsEnabled = false;
   readonly stackCallbacks: StackCallbacks;
   readonly receiverReaders: AmbientReceiverReaders;
   readonly stackCaptures: StackCaptures;
@@ -1102,9 +1126,20 @@ export class LlEmitter {
     resume: Map<IrStmt, string>;
     /** Globals whose double is written back only when the copy is left. */
     deferred: Set<string>;
+    /** The loop site's count of bailing entries in a row (a global), and
+     * whether this entry completed a speculated write (a slot). A proven
+     * integer loop has neither. */
+    bails?: string;
+    ran?: string;
   } | null = null;
+  /** Speculative loop sites numbered so far in the module. */
+  speculativeLoopSites = 0;
   /** The ordinary copy being emitted: resume labels still to place. */
   speculationResume: Map<IrStmt, { label: string; placed: boolean }> | null = null;
+  /** Run once at the top of the next loop copy's header
+   * (`enterLoopHeader`): records the ordinary copy's header, or sends the
+   * third copy's header there. */
+  speculationHeader: ((header: string) => void) | null = null;
   /** The function being emitted, for speculative globals. */
   speculativeFunction = "";
   /** Every function that writes each number global (computed on demand). */
@@ -1459,6 +1494,8 @@ export class LlEmitter {
       }
     }
     this.shapeHost = {
+      compactArrayElem: (elem) => this.compactArrayElem(elem),
+      compactRegion: () => this.compactRegion,
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
       tracedShapes: this.tracedShapes,
@@ -1588,22 +1625,19 @@ export class LlEmitter {
           ? (cls, i, isCompact) => {
               const f = cls.fields[i]!;
               if (this.inlineUnions.classField(cls.name, f.name)) return false;
-              const t = f.type;
-              if (t.kind === "object") return isCompact(t.className);
-              if (t.kind !== "union") return false;
-              const single = this.nullableUnions.single(t.unionId);
-              if (single !== null)
-                return (
-                  single.nullTag < 0 &&
-                  single.arm.kind === "object" &&
-                  isCompact(single.arm.className)
-                );
-              const nullable = this.nullableFields.get(cls.name, f.name);
+              if (this.compactRefType(f.type, isCompact)) return true;
+              const nullable =
+                f.type.kind === "union" && this.nullableUnions.single(f.type.unionId) === null
+                  ? this.nullableFields.get(cls.name, f.name)
+                  : null;
               return nullable !== null && isCompact(nullable.arm.className);
             }
           : undefined,
       );
-    this.usesCompactRefs = [...this.classMeta.values()].some((m) => m.compressed.some(Boolean));
+    this.compactRegion =
+      mod.lib === undefined &&
+      options.lowRegion === true &&
+      [...this.classMeta.values()].some((m) => m.compact);
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -1896,14 +1930,14 @@ export class LlEmitter {
 
   /** Whether a fiberless body running on its caller's stack needs the
    * frame scr_async_inline_enter/exit keep: it isolates the Error.stack
-   * frame chain, which only stack-observing programs push, and the
-   * AsyncLocalStorage context, which only programs that enter stores
-   * change (RuntimeFeatures asyncContext), as a fresh fiber would. Other
-   * programs run the body with a plain call. The frame also counts the
-   * bodies running on a fiber's stack for the runtime's trap on a fiberless
-   * body that suspends. */
+   * frame chain, which only stack-observing programs push, as a fresh fiber
+   * would. Other programs run the body with a plain call. The body runs in
+   * its caller's AsyncLocalStorage context either way, as Node runs an async
+   * body up to its first await. The frame also counts the bodies running on
+   * a fiber's stack for the runtime's trap on a fiberless body that
+   * suspends. */
   get fiberlessFrames(): boolean {
-    return this.stackTraces || this.schedulesInContext;
+    return this.stackTraces;
   }
 
   /** The spawn wrapper of a fiberless async function: runs the body on the
@@ -2215,7 +2249,7 @@ export class LlEmitter {
       B.condBr(thrown, rejected, clean);
       B.startBlock(clean);
       if (acc === "ref") this.toHeap(value);
-      this.arrPush(values, acc, value.name);
+      this.arrPush(values, acc, value.name, elem);
       B.br(next);
       B.startBlock(rejected);
       const promise = B.tmp();
@@ -3568,6 +3602,30 @@ export class LlEmitter {
     return { ptr: p, type, inline: this.inlineUnions.classField(className, field), compressed };
   }
 
+  /** Whether values of `t` are NULL or a compact class instance: `C`,
+   * `C | undefined` or `C | null` for a compact class `C`. `C | null |
+   * undefined` is not: its null is a sentinel outside the region. */
+  compactRefType(
+    t: IrType,
+    isCompact: (className: string) => boolean = (name) =>
+      this.classMeta.get(name)?.compact === true,
+  ): boolean {
+    if (t.kind === "object") return isCompact(t.className);
+    if (t.kind !== "union") return false;
+    const single = this.nullableUnions.single(t.unionId);
+    return (
+      single !== null &&
+      single.nullTag < 0 &&
+      single.arm.kind === "object" &&
+      isCompact(single.arm.className)
+    );
+  }
+
+  /** Whether arrays of `elem` hold 32-bit references (SCR_ELEM_CREF). */
+  compactArrayElem(elem: IrType): boolean {
+    return this.compactRegion && this.compactRefType(elem);
+  }
+
   /** Loads the reference a field pointer addresses: a pointer, or the
    * decoded 32-bit reference of a compressed field (compressedFieldPtrs).
    * `tagged`: the load carries the field's alias tags. */
@@ -3832,7 +3890,7 @@ export class LlEmitter {
   /** A binding's storage: a module global, a plain local slot, or a boxed
    * local (the slot holds the capture BOX; access goes through it). */
   matchBytesLoopVersion(
-    s: IrStmt & { kind: "for" },
+    s: IrStmt & { kind: "for" | "while" },
     counted: IntegerCountedForLoop | null,
   ): ReturnType<typeof matchBytesLoopVersion> {
     const fn = this.bytesLoopFunction;
@@ -3901,6 +3959,25 @@ export class LlEmitter {
     return b;
   }
 
+  /** The function a call through `callee` is known to reach (a literal
+   * closure, or a binding the constant-callback census resolves) and the
+   * entry it calls directly. Async and generator functions stay indirect. */
+  knownCallbackTarget(callee: IrExpr): { known: IrFunction; direct: string } | undefined {
+    const knownName =
+      callee.kind === "closure"
+        ? callee.fnName
+        : callee.kind === "varRef"
+          ? this.currentConstantCallbacks.get(callee.localId)
+          : undefined;
+    const known = knownName ? this.fnByName.get(knownName) : undefined;
+    if (!known || known.async || known.generator) return undefined;
+    if (known.captures === undefined) {
+      this.fnValues.add(known.name);
+      return { known, direct: `@${mangleWrapper(known.name)}` };
+    }
+    return { known, direct: `@${this.callTarget(known.name)}` };
+  }
+
   /** The payload slot of a capture box (ScrBox.slot, field 5). */
   boxSlot(box: string): string {
     const slot = this.B.tmp();
@@ -3914,12 +3991,18 @@ export class LlEmitter {
     const r = B.tmp();
     // Scalar payloads are read in place (scr_box_get_f64/bool are a
     // memcpy and a nonzero test of the same slot), so LLVM can keep a
-    // captured number in a register across a loop of calls.
+    // captured number in a register across a loop of calls. They have an
+    // alias category of their own: every other access to a box's payload
+    // is untagged or a runtime call.
     if (acc === "f64") {
-      B.line(`${r} = load double, ptr ${this.boxSlot(box)}`);
+      B.line(
+        `${r} = load double, ptr ${this.boxSlot(box)}${this.memoryAliasAttachment("box:scalar")}`,
+      );
     } else if (acc === "bool") {
       const raw = B.tmp();
-      B.line(`${raw} = load i64, ptr ${this.boxSlot(box)}`);
+      B.line(
+        `${raw} = load i64, ptr ${this.boxSlot(box)}${this.memoryAliasAttachment("box:scalar")}`,
+      );
       B.line(`${r} = icmp ne i64 ${raw}, 0`);
     } else {
       this.declare(`declare ptr @scr_box_get_ref(ptr)`);
@@ -3933,11 +4016,15 @@ export class LlEmitter {
     const B = this.B;
     const acc = boxAccess(t);
     if (acc === "f64") {
-      B.line(`store double ${value}, ptr ${this.boxSlot(box)}`);
+      B.line(
+        `store double ${value}, ptr ${this.boxSlot(box)}${this.memoryAliasAttachment("box:scalar")}`,
+      );
     } else if (acc === "bool") {
       const raw = B.tmp();
       B.line(`${raw} = zext i1 ${value} to i64`);
-      B.line(`store i64 ${raw}, ptr ${this.boxSlot(box)}`);
+      B.line(
+        `store i64 ${raw}, ptr ${this.boxSlot(box)}${this.memoryAliasAttachment("box:scalar")}`,
+      );
     } else {
       this.declare(`declare void @scr_box_set_ref(ptr, ptr)`);
       B.line(`call void @scr_box_set_ref(ptr ${box}, ptr ${value})`);
@@ -3986,7 +4073,7 @@ export class LlEmitter {
     const acc = boxAccess(t);
     const cell = B.tmp();
     B.line(`${cell} = ${arrNewCall(this.shapeHost, t, "1")} ; TDZ cell`);
-    this.arrPush(cell, acc === "bool" ? "bool" : "f64", value);
+    this.arrPush(cell, acc === "bool" ? "bool" : "f64", value, null);
     this.declare(`declare void @scr_box_set_ref(ptr, ptr)`);
     B.line(`call void @scr_box_set_ref(ptr ${box}, ptr ${cell})`);
   }
@@ -6136,8 +6223,8 @@ export class LlEmitter {
     return tagInSet(this, uName, unionId, tags);
   }
 
-  arrPush(arr: string, acc: "f64" | "bool" | "ref", value: string): string {
-    return arrPush(this, arr, acc, value);
+  arrPush(arr: string, acc: "f64" | "bool" | "ref", value: string, element: IrType | null): string {
+    return arrPush(this, arr, acc, value, element);
   }
 
   emitArrayCopyLoop(dst: string, src: string, acc: "f64" | "bool" | "ref"): void {

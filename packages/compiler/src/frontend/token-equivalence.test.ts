@@ -37,8 +37,10 @@ test("comment-like text inside regular expressions is code", () => {
   ).toBe(false);
 });
 
-test("a regular expression can start after a statement that ends at its keyword or label", () => {
+test("a / after a line break is never equivalent", () => {
   const loop = (body: string) => `a: for (;;) {\n${body}\n}\n`;
+  // Automatic semicolon insertion decides whether these start a regular
+  // expression.
   expect(
     equivalent(loop("break\n/[//]/.test(x); c = 1;"), loop("break\n/[//]/.test(x); c = 2;")),
   ).toBe(false);
@@ -46,10 +48,32 @@ test("a regular expression can start after a statement that ends at its keyword 
     equivalent(loop("break a\n/[//]/.test(x); c = 1;"), loop("break a\n/[//]/.test(x); c = 2;")),
   ).toBe(false);
   expect(
-    equivalent("debugger\n/[//]/.test(x); c = 1;\n", "debugger\n/[//]/.test(x); c = 2;\n"),
+    equivalent("type A = B\n/[//]/.test(x); c = 1;\n", "type A = B\n/[//]/.test(x); c = 2;\n"),
   ).toBe(false);
-  // The next line's `x` is no label: it starts a new statement, and `/` divides.
+  // A comment spanning lines separates them too; JavaScript keeps its comments as tokens.
+  expect(
+    equivalent(
+      "x\n/* a\n */ /[//]/.test(y); c = 1;\n",
+      "x\n/* a\n */ /[//]/.test(y); c = 2;\n",
+      "/src/a.js",
+    ),
+  ).toBe(false);
+  // A / on the line of the token before it still divides.
   expect(equivalent(loop("continue\nx / 2; // one"), loop("continue\nx / 2; // two"))).toBe(true);
+});
+
+test("code units outside ASCII are equivalent only inside strings, templates and comments", () => {
+  expect(equivalent('const s = "é"; // one\n', 'const s = "é"; // two\n')).toBe(true);
+  expect(equivalent("const s = `é${a}`; // one\n", "const s = `é${a}`; // two\n")).toBe(true);
+  expect(equivalent("const a = 1; // é\n", "const a = 1; // è\n")).toBe(true);
+  expect(equivalent("const café = 1; // one\n", "const café = 1; // two\n")).toBe(false);
+  expect(
+    equivalent(
+      "ä: for (;;) { break ä\n/[//]/.test(x); c = 1; }\n",
+      "ä: for (;;) { break ä\n/[//]/.test(x); c = 2; }\n",
+    ),
+  ).toBe(false);
+  expect(equivalent("const r = /é/; // one\n", "const r = /é/; // two\n")).toBe(false);
 });
 
 test("whitespace outside ASCII is never equivalent", () => {

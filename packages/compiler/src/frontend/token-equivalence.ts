@@ -15,22 +15,21 @@
  *   annotations lowering reads).
  * - A `/` starts a regular expression or divides according to the token
  *   before it. After `)` it divides unless the parenthesis closes an `if`,
- *   `while`, `for`, `for await`, or `with` header. After `}`, `++` or `--` the scanner
- *   cannot tell which, so it gives up, as it does for escaped identifiers,
- *   which can spell keywords.
+ *   `while`, `for`, `for await`, or `with` header. After `}`, `++` or
+ *   `--` the scanner cannot tell which, so it gives up, as it does for
+ *   escaped identifiers, which can spell keywords.
+ * - A `/` with a line break (or a comment that spans lines) since the
+ *   previous token gives up: whether automatic semicolon insertion ends the
+ *   statement before it decides how it reads.
  * - Template literals track their `${` substitutions on a brace stack.
- * - After `break`, `continue` and `debugger`, and after the label of a
- *   `break` or `continue`, a `/` starts a regular expression: it can only
- *   follow there once automatic semicolon insertion ends the statement.
- * - JSX files, files that contain whitespace or a line terminator outside
- *   ASCII anywhere (the identifier scan would take it as part of a word, and
- *   U+2028 and U+2029 end a line comment), and unterminated strings,
- *   comments, templates and regular expressions give up.
+ * - Any code unit outside ASCII gives up, except inside strings, templates
+ *   and comments. So do files that contain whitespace or a line terminator
+ *   outside ASCII anywhere (U+2028 and U+2029 end a line comment), JSX
+ *   files, and unterminated strings, comments, templates and regular
+ *   expressions.
  *
- * Plain character scans keep the scanner free of Unicode property escapes:
- * any non-ASCII code unit outside strings, templates, regular expressions
- * and comments belongs to the token around it, so an edit there compares
- * literally. */
+ * The scanner models only what these rules name; anything else makes the
+ * versions not equivalent, which rebuilds. */
 
 interface Token {
   text: string;
@@ -57,9 +56,6 @@ const EXPRESSION_KEYWORDS = new Set([
   "default",
   "extends",
 ]);
-
-/** Statements that end at their keyword, or at the label after it. */
-const JUMP_KEYWORDS = new Set(["break", "continue", "debugger"]);
 
 /** Whitespace and line terminators outside ASCII. */
 const NON_ASCII_SPACE = /[\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/;
@@ -113,8 +109,7 @@ function isIdentifierCode(code: number): boolean {
     (code >= 48 && code <= 57) ||
     code === 36 ||
     code === 95 ||
-    code === 92 ||
-    code > 127
+    code === 92
   );
 }
 
@@ -137,23 +132,18 @@ function scan(path: string, source: string): Token[] | null {
   // Paren kinds: true for a statement header.
   const parens: boolean[] = [];
   let lineBreakBefore = false;
-  // The previous token and the one before it, whether the previous token is
-  // the label of a `break` or `continue` on its line, and whether a `)`
-  // closed a statement header.
-  const last: { token: string | null; before: string | null; label: boolean } = {
-    token: null,
-    before: null,
-    label: false,
-  };
+  // A line break, or a comment spanning lines, since the last token other
+  // than a comment.
+  let breakSinceCode = false;
+  // The previous token and the one before it, and whether a `)` closed a
+  // statement header.
+  const last: { token: string | null; before: string | null } = { token: null, before: null };
   let closedHeader = false;
   const push = (text: string, comment = false): void => {
     tokens.push({ text, comment, lineBreakBefore });
     lineBreakBefore = false;
     if (!comment) {
-      last.label =
-        (last.token === "break" || last.token === "continue") &&
-        !tokens[tokens.length - 1]!.lineBreakBefore &&
-        /^[A-Za-z_$]/.test(text);
+      breakSinceCode = false;
       last.before = last.token;
       last.token = text;
     }
@@ -198,10 +188,12 @@ function scan(path: string, source: string): Token[] | null {
   while (index < length) {
     const code = source.charCodeAt(index);
     if (isSpace(code)) {
-      if (isLineBreak(code)) lineBreakBefore = true;
+      if (isLineBreak(code)) lineBreakBefore = breakSinceCode = true;
       index++;
       continue;
     }
+    // Outside strings, templates and comments, the scanner models ASCII only.
+    if (code > 127) return null;
     const next = source.charCodeAt(index + 1);
     // Comments.
     if (code === 47 && (next === 47 || next === 42)) {
@@ -216,8 +208,10 @@ function scan(path: string, source: string): Token[] | null {
       const text = source.slice(start, index);
       const semantic =
         !typeScript || text.startsWith("///") || text.includes("@") || text.includes("#");
+      const multiline = /[\r\n]/.test(text);
+      if (multiline) breakSinceCode = true;
       if (semantic) push(text, true);
-      else if (/[\r\n]/.test(text)) lineBreakBefore = true;
+      else if (multiline) lineBreakBefore = true;
       continue;
     }
     // Strings.
@@ -284,6 +278,7 @@ function scan(path: string, source: string): Token[] | null {
     }
     // Division or a regular expression.
     if (code === 47) {
+      if (breakSinceCode) return null;
       const before = last.token;
       let regex: boolean;
       if (before === null) regex = true;
@@ -292,8 +287,7 @@ function scan(path: string, source: string): Token[] | null {
       // `++/re/.lastIndex` is valid, `x++ / 2` too.
       else if (before === "++" || before === "--") return null;
       else if (before === "]") regex = false;
-      else if (/^[A-Za-z0-9_$\\]/.test(before) || before.charCodeAt(0) > 127)
-        regex = EXPRESSION_KEYWORDS.has(before) || JUMP_KEYWORDS.has(before) || last.label;
+      else if (/^[A-Za-z0-9_$\\]/.test(before)) regex = EXPRESSION_KEYWORDS.has(before);
       else if (before.startsWith("'") || before.startsWith('"') || before.endsWith("`"))
         regex = false;
       else if (before.startsWith("/") && before.length > 1 && before !== "/=") regex = false;
@@ -304,7 +298,7 @@ function scan(path: string, source: string): Token[] | null {
         let inClass = false;
         while (index < length) {
           const inner = source.charCodeAt(index);
-          if (isLineBreak(inner)) return null;
+          if (isLineBreak(inner) || inner > 127) return null;
           if (inner === 92) {
             index += 2;
             continue;

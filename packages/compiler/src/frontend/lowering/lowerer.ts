@@ -61,6 +61,7 @@ import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { isEcdhType, lowerEcdhCall } from "./builtins/ecdh.js";
+import { isDiffieHellmanType, lowerDiffieHellmanCall } from "./builtins/dh.js";
 import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
 import { valueStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
@@ -180,7 +181,7 @@ export { newFnCtx, type FnCtx } from "./function-context.js";
  * - Lexical scoping is resolved here: locals get function-unique ids
  *   ("x.0", "x.1" for shadowing); the IR is scope-flat.
  */
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { bindingSource } from "../binding-source.js";
 import { tsgoPath } from "../dts-paths.js";
 import * as ts from "../ts7/adapter.js";
@@ -444,6 +445,7 @@ import {
   lowerNestedFunctionDecl,
   lowerLambda,
   lowerFunction,
+  blockedBodyDiagnostics,
 } from "./lower-functions.js";
 import { lowerArrayMethodCall } from "./containers/array-methods.js";
 import { type ArrayHofInfo, fuseArrayPipelines } from "./containers/array-pipelines.js";
@@ -1346,6 +1348,7 @@ export function lowerToIr(
   // travel with them: a failed statement is never left unexplained.
   const covered: LowerResult = {
     ...result,
+    diagnostics: [...result.diagnostics, ...remainder.reachedBlockedBodyDiagnostics],
     stats: { ...result.stats, statementsDynamic },
     unreached: {
       diagnostics: rem.diagnostics,
@@ -1914,6 +1917,9 @@ export class Lowerer {
    * pinned values resolve through genericFnOf exactly like top-level
    * generic function declarations (bindingGenericFnInfoOf). */
   readonly bindingGenericFns = new Map<ts.Node, GenericFnInfo>();
+  /** Identifiers by spelling, per file, for the generic bindings' use
+   * ordering (runsAfterDeclaration). */
+  readonly bindingIdentifiers = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   /** Per-symbol result of the never-reassigned file scan
    * (bindingNeverReassigned — object-literal generic-method receivers). */
   readonly neverReassignedCache = new Map<ts.Symbol, boolean>();
@@ -3188,12 +3194,14 @@ export class Lowerer {
   errorPropertyDispatchRevision: string | null = null;
   /** Structural source positions (structural-positions.ts) for names that
    * stay the same when unrelated code moves. */
-  /** Default library files are named by their base name: two checkers
-   * install them in different directories. */
+  /** Files are named by their path relative to the entry's directory, so
+   * names do not depend on where the program sits, and default library
+   * files by their base name: two checkers install them in different
+   * directories. */
   readonly positions = new StructuralPositions((sf) =>
     this.program.isSourceFileDefaultLibrary(sf)
       ? `lib:${sf.fileName.slice(sf.fileName.lastIndexOf("/") + 1)}`
-      : sf.fileName,
+      : relative(dirname(this.entry.fileName), sf.fileName),
   );
 
   /** The outermost node whose token span is exactly `loc`, or null. */
@@ -3740,9 +3748,9 @@ export class Lowerer {
    * is `unknown` or `object` (also with `null` or `undefined`, or an array
    * of those), names checked protocol identity, is an owned runtime
    * handle (a Worker or MessagePort, a fetch Headers/Request/Response, or
-   * a node:crypto ECDH), or is a WeakMap/WeakSet (native weak collections
-   * live in checked-dynamic storage, as locals of those types do); `any`
-   * fields stay refused. */
+   * a node:crypto ECDH, DiffieHellman or DiffieHellmanGroup), or is a
+   * WeakMap/WeakSet (native weak collections live in checked-dynamic
+   * storage, as locals of those types do); `any` fields stay refused. */
   classFieldStoresDyn(type: ts.Type): boolean {
     return (
       this.opaqueValueType(type) ||
@@ -3750,7 +3758,10 @@ export class Lowerer {
       isWorkerHandleType(type, this.typeCtx) ||
       isFetchHandleType(type, this.typeCtx) ||
       this.weakCollectionType(type) ||
-      this.stdlibHandleType(type, (part) => isEcdhType(this, part))
+      this.stdlibHandleType(
+        type,
+        (part) => isEcdhType(this, part) || isDiffieHellmanType(this, part),
+      )
     );
   }
 
@@ -6612,7 +6623,10 @@ export class Lowerer {
             node.expression.name.text,
             node.arguments.nodes.length >= 2,
           );
-          const callback = node.arguments.nodes[0];
+          // `xs.map(((x) => x))`: the parenthesized callback is the arrow.
+          let callback = node.arguments.nodes[0];
+          while (callback !== undefined && ts.isParenthesizedExpression(callback))
+            callback = callback.expression;
           if (callbackIndices !== null && callback !== undefined && !ts.isSpreadElement(callback)) {
             const receiverNode = node.expression.expression;
             const receiverTs = this.typeOf(receiverNode);
@@ -6671,13 +6685,26 @@ export class Lowerer {
               presentSites.set(node, elementsPresent && !reduce);
               if (elementsPresent && reduce && retypeInlineCallback(callback, callbackIndices))
                 changed = true;
-              if (
-                (method === "reduce" || method === "reduceRight") &&
-                ((!elementsPresent && node.arguments.nodes.length < 2) ||
-                  callbackReturnsOptional(callback))
-              ) {
-                if (promoteHofCallback(callback, [0, 1])) changed = true;
-                const result = this.runtimeOptionalType(this.irTypeOf(node));
+              // The accumulator holds undefined when the callback can return
+              // it, when an initial value can be missing, or when elements can
+              // be absent and there is no initial value. It holds another
+              // primitive when the callback's result can be one at run time
+              // (`missing[0] ?? "fallback"`).
+              const initial = node.arguments.nodes[1];
+              const optional =
+                (!elementsPresent && initial === undefined) ||
+                (initial !== undefined && !ts.isSpreadElement(initial) && mayBeOptional(initial)) ||
+                callbackReturnsOptional(callback);
+              const arithmetic =
+                reduce && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+                  ? lambdaArithmeticReturn(callback)
+                  : null;
+              if (reduce && (optional || arithmetic !== null)) {
+                if (optional && promoteHofCallback(callback, [0, 1])) changed = true;
+                let result = this.irTypeOf(node);
+                if (arithmetic !== null)
+                  result = joinPrimitiveTypes([result, arithmetic]) ?? result;
+                if (optional) result = this.runtimeOptionalType(result);
                 siteDependencies?.read(node);
                 const previous = this.runtimeOptionalReduceTypes.get(node);
                 if (!previous || !typeEquals(previous, result)) {
@@ -7437,7 +7464,10 @@ export class Lowerer {
         if (sig && !this.wantBody(sig.name)) continue;
         const fn = this.lowerFunction(decl);
         if (fn) functions.push(fn);
-        else if (this.countsSkips()) this.countSkippedBody(decl);
+        else if (this.countsSkips()) {
+          this.countSkippedBody(decl);
+          if (this.remainder) this.reportBlockedBody(decl);
+        }
       }
       for (const decl of fp.classDecls) {
         const info = this.classes.get(this.classNamer(decl));
@@ -7766,6 +7796,19 @@ export class Lowerer {
       this.bumpFileStat(file, "total");
       this.bumpFileStat(file, "failed");
     }
+  }
+
+  /** Coverage remainder: the body diagnostics of a function whose
+   * signature blocked (blockedBodyDiagnostics). A function reachable emit
+   * reached (its signature's diagnostics flushed there) reports them with
+   * the reached diagnostics; any other reports them as unreached. */
+  readonly reachedBlockedBodyDiagnostics: ScrDiagnostic[] = [];
+  private reportBlockedBody(decl: ts.FunctionDeclaration): void {
+    const diags = blockedBodyDiagnostics(this, decl);
+    const symbol = declSymbolOf(this, decl);
+    if (symbol && this.alreadyFlushed.has(symbol))
+      this.reachedBlockedBodyDiagnostics.push(...diags);
+    else for (const d of diags) this.pushDiag(d);
   }
 
   /** Whether run() counts a signature-blocked declaration in
@@ -8224,13 +8267,17 @@ export class Lowerer {
     for (;;) {
       drainInstances();
       const declared = unitsInOrder();
-      const initializerChanged = this.deferredModuleInitializers.process(this, [
-        ...declared,
-        ...initFunctions,
-        ...instanceFunctions,
-        ...byName(this.liftedFns),
-        ...byName(this.implicitFns),
-      ]);
+      const initializerChanged = this.deferredModuleInitializers.process(
+        this,
+        [
+          ...declared,
+          ...initFunctions,
+          ...instanceFunctions,
+          ...byName(this.liftedFns),
+          ...byName(this.implicitFns),
+        ],
+        (fn) => classDispatch.sites.forget(fn),
+      );
       const dispatchChanged = classDispatch.process(this, [
         ...declared,
         ...initFunctions,
@@ -12905,6 +12952,7 @@ export class Lowerer {
       lowerWebCryptoCall(this, expr) ??
       lowerKeyObjectCall(this, expr) ??
       lowerEcdhCall(this, expr) ??
+      lowerDiffieHellmanCall(this, expr) ??
       lowerNetAddressCall(this, expr) ??
       lowerFetchElementMethodCall(this, expr) ??
       lowerDynamicImportCall(this, expr) ??

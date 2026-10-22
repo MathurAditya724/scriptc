@@ -666,14 +666,20 @@ export function lowerPropertyAccessExpr(
       );
       if (fixedArity) {
         // A `this` parameter is type-only: callers never pass it.
-        return {
-          kind: "numLit",
-          value: (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
-            (p) => !isThisParameter(p),
-          ).length,
-          type: F64,
-          loc,
-        };
+        const declared = (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
+          (p) => !isThisParameter(p),
+        ).length;
+        const count = Math.max(declared, contextualArgumentCount(lowerer, fn) ?? 0);
+        // Calls through the expression's own name pass the declared count,
+        // calls through the wider slot pass more: no constant answers both.
+        if (count > declared && referencesOwnName(lowerer, fn)) {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            "'arguments.length' in a function expression that is called both through its own name and through a function type with more parameters (the count varies per call)",
+          );
+        }
+        return { kind: "numLit", value: count, type: F64, loc };
       }
       lowerer.unsupported(
         "SC1090",
@@ -4090,10 +4096,26 @@ function lowerStreamObjectProperty(
   return lowerStreamProperty(lowerer, expr, info);
 }
 
+/** The error constructors among GLOBAL_CONSTRUCTOR_VALUES. Their statics
+ * (`Error.stackTraceLimit`, `Error.captureStackTrace`) keep their own
+ * lowerings, so fenceBuiltinConstructorStaticRead leaves them alone. */
+const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+]);
+
 /** The builtin constructors JavaScript sources read as real function
  * values rather than identity tokens: the runtime interns one function per
  * constructor, and dynamic values answer `.constructor` with the same one,
- * so `o.constructor === Object` is an exact identity test. */
+ * so `o.constructor === Object` and `err.constructor === TypeError` are
+ * exact identity tests, and `err.constructor.name` is the constructor's
+ * name. */
 const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Object",
   "Function",
@@ -4104,6 +4126,7 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Promise",
   "WeakMap",
   "WeakSet",
+  ...ERROR_CONSTRUCTOR_VALUES,
 ]);
 
 /** The builtin global functions JavaScript sources read as interned
@@ -4154,8 +4177,18 @@ export function builtinGlobalValue(canonical: string, loc: SrcLoc, js = false): 
 const BUILTIN_VALUE_MEMBERS: ReadonlySet<string> = new Set(["name", "length", "constructor"]);
 
 /** The Object statics whose answers for an interned builtin function value
- * match Node's (identity, and the empty enumerable own-key lists). */
-const BUILTIN_VALUE_REFLECTION: ReadonlySet<string> = new Set(["is", "keys", "values", "entries"]);
+ * match Node's (identity, the empty enumerable own-key lists, and
+ * extensibility: freezing, sealing and preventExtensions are fenced, so the
+ * values stay extensible). */
+const BUILTIN_VALUE_REFLECTION: ReadonlySet<string> = new Set([
+  "is",
+  "keys",
+  "values",
+  "entries",
+  "isExtensible",
+  "isFrozen",
+  "isSealed",
+]);
 
 /** The value `builtinGlobalValue` gives the stdlib global `expr` read at its
  * use site: null when the use reads the global's members (they keep their
@@ -4246,6 +4279,7 @@ function fenceBuiltinConstructorStaticRead(
     symbol !== undefined &&
     ts.symbolName(symbol).endsWith("Constructor") &&
     GLOBAL_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
+    !ERROR_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
     lowerer.isStdlibSymbol(symbol)
   )
     lowerer.stdlibMemberFence(access);
@@ -4411,4 +4445,48 @@ function lowerPromiseConstructorRead(
         };
   }
   return null;
+}
+
+/** Whether a named function expression refers to itself by name in its
+ * body (a recursive call, or the function escaping under its own name). */
+function referencesOwnName(lowerer: Lowerer, fn: ts.Node): boolean {
+  if (!ts.isFunctionExpression(fn) || fn.name === undefined || fn.body === undefined) return false;
+  const self = lowerer.checker.getSymbolAtLocation(fn.name);
+  if (self === undefined) return false;
+  const name = fn.name.text;
+  let found = false;
+  ts.walkPreorder(fn.body, (node) => {
+    if (found) return "stop";
+    if (
+      ts.isIdentifier(node) &&
+      node.text === name &&
+      lowerer.checker.getSymbolAtLocation(node) === self
+    )
+      found = true;
+    return undefined;
+  });
+  return found;
+}
+
+/** The argument count every caller passes a function expression whose
+ * value flows into one fixed-arity function type, an array method's
+ * callback or an annotated slot: that type's parameter count. Null when
+ * there is no such type or its arity varies. */
+function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | null {
+  if (!ts.isFunctionExpression(fn)) return null;
+  const contextual = lowerer.checker.getContextualType(fn);
+  if (contextual === undefined) return null;
+  const signatures = lowerer.checker.getCallSignatures(
+    lowerer.checker.getNonNullableType(contextual),
+  );
+  if (signatures.length !== 1) return null;
+  const declaration = signatures[0]!.declaration;
+  if (declaration === undefined) return null;
+  let count = 0;
+  for (const parameter of (declaration.parameters?.nodes ?? []) as ts.ParameterDeclaration[]) {
+    if (isThisParameter(parameter)) continue;
+    if (parameter.questionToken || parameter.initializer || parameter.dotDotDotToken) return null;
+    count++;
+  }
+  return count;
 }
