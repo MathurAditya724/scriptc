@@ -615,7 +615,8 @@ async function readExecutableCache(
       )
         await installBytes(ir, paths.irPath);
     } else {
-      llvmSourcePath = privateSiblingPath(paths.llvmPath, "llvm");
+      // The extension keeps clang reading the copy as LLVM IR rather than as a linker input.
+      llvmSourcePath = `${privateSiblingPath(paths.llvmPath, "llvm")}.ll`;
       await installBytes(translationUnit, llvmSourcePath);
       llvmPathCurrent = await fileMatches(paths.llvmPath, stamp.files.translationUnit.digest);
       if (ir !== null && stamp.files.ir !== null) {

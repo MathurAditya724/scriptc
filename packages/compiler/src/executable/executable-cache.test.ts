@@ -137,7 +137,7 @@ test("early executable cache restores the emitted TU, IR, and native feature gat
   // them there when it is done.
   expect(hit?.llvmPath).toBe(f.llvmPath);
   expect(hit?.irPath).toBe(f.irPath);
-  expect(hit?.llvmSourcePath).toMatch(/[/\\]\.scriptc-llvm-/);
+  expect(hit?.llvmSourcePath).toMatch(/[/\\]\.scriptc-llvm-[^/\\]*\.ll$/);
   expect(hit?.irSourcePath).toMatch(/[/\\]\.scriptc-ir-/);
   expect(await readFile(hit!.llvmSourcePath!, "utf8")).toBe("; generated llvm\n");
   expect(await readFile(hit!.irSourcePath!, "utf8")).toContain("irVersion");
