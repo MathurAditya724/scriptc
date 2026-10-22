@@ -8231,13 +8231,17 @@ export class Lowerer {
     for (;;) {
       drainInstances();
       const declared = unitsInOrder();
-      const initializerChanged = this.deferredModuleInitializers.process(this, [
-        ...declared,
-        ...initFunctions,
-        ...instanceFunctions,
-        ...byName(this.liftedFns),
-        ...byName(this.implicitFns),
-      ]);
+      const initializerChanged = this.deferredModuleInitializers.process(
+        this,
+        [
+          ...declared,
+          ...initFunctions,
+          ...instanceFunctions,
+          ...byName(this.liftedFns),
+          ...byName(this.implicitFns),
+        ],
+        (fn) => classDispatch.sites.forget(fn),
+      );
       const dispatchChanged = classDispatch.process(this, [
         ...declared,
         ...initFunctions,

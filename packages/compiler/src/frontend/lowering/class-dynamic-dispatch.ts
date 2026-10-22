@@ -77,6 +77,7 @@ import { isClassCallback } from "./class-callbacks.js";
 import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
+import { DispatchSites } from "./dispatch-sites.js";
 import {
   emitterRooted,
   lowerDynamicEmitterEmit,
@@ -226,7 +227,7 @@ const KEY_CALLS = new Map<string, "object" | "any" | "value">([
   ["dyn.keySetComputed", "value"],
 ]);
 
-function toPrimitiveHint(expr: IrExpr): ToPrimitiveHint | null {
+export function toPrimitiveHint(expr: IrExpr): ToPrimitiveHint | null {
   if (expr.kind === "toString") return expr.operand.type.kind === "dyn" ? "string" : null;
   if (expr.kind === "dynKeyGet") return expr.key.type.kind === "dyn" ? "string" : null;
   if (expr.kind !== "libCall") return null;
@@ -780,6 +781,8 @@ export class ClassDynamicDispatch {
   private readonly generatorDispatch = new GeneratorDynamicDispatch();
   private readonly caughtDispatch = new CaughtValueDispatch();
   private readonly constructionDispatch = new ClassConstructionDispatch();
+  /** What each function's body holds for this pass and its sub-passes. */
+  readonly sites = new DispatchSites();
   /** Property names a delete can remove (null: any name), for the field
    * creation tracking decision. */
   private deletedNames: Set<string> | null | undefined;
@@ -862,12 +865,13 @@ export class ClassDynamicDispatch {
       )
         fn.body.shift();
     }
-    let changed = this.caughtDispatch.process(lowerer, functions);
+    let changed = this.caughtDispatch.process(lowerer, functions, this.sites);
     changed = refreshErrorMethodDispatch(lowerer, functions) || changed;
     changed = refreshClassMethodValueSelections(lowerer) || changed;
     changed = refreshErrorPropertyDispatch(lowerer, functions) || changed;
-    changed = this.generatorDispatch.process(lowerer, functions, this.generated) || changed;
-    changed = this.constructionDispatch.process(lowerer, functions) || changed;
+    changed =
+      this.generatorDispatch.process(lowerer, functions, this.generated, this.sites) || changed;
+    changed = this.constructionDispatch.process(lowerer, functions, this.sites) || changed;
     const seenTypes = new Set<string>();
     const rewrite = new Set<IrFunction>();
     const toPrimitiveSites = new Set<IrFunction>();
@@ -891,100 +895,18 @@ export class ClassDynamicDispatch {
     };
     const boxedBefore = this.boxed.size;
     const boxedConstructorsBefore = this.boxedConstructors.size;
-    for (const fn of functions)
-      everyStmtList(fn.body, {
-        stmt: (statement) => {
-          // Field-creation instrumentation can box a base-constructor receiver
-          // even when only its derived instances otherwise cross the boundary.
-          if (
-            statement.kind === "fieldSet" &&
-            lowerer.classes.get(statement.className)?.def.tracksOwnFields &&
-            isClassOwnEnumerableFieldName(statement.field)
-          )
-            discover(statement.obj.type);
-          return true;
-        },
-        expr: (expr) => {
-          if (
-            expr.kind === "jsonStringify" ||
-            (expr.kind === "libCall" &&
-              (expr.fn === "json.stringifyValue" || expr.fn === "json.stringifyReplacer"))
-          ) {
-            this.serializesClasses = true;
-          }
-          if (
-            toPrimitiveHint(expr) !== null ||
-            (expr.kind === "libCall" && (expr.fn === "dyn.valueOf" || expr.fn === "dyn.toString"))
-          )
-            toPrimitiveSites.add(fn);
-          switch (expr.kind) {
-            case "dynFrom":
-              discover(expr.value.type);
-              break;
-            case "fieldIncDec":
-              if (
-                lowerer.classes.get(expr.className)?.def.tracksOwnFields &&
-                isClassOwnEnumerableFieldName(expr.field)
-              )
-                discover(expr.obj.type);
-              break;
-            case "call":
-              if (
-                (expr.callee === "%dyn.class.properties" ||
-                  expr.callee === "%dyn.class.readProperties") &&
-                expr.args[0]?.kind === "dynFrom" &&
-                isDynTypedRefType(expr.args[0].value.type)
-              )
-                rewrite.add(fn);
-              break;
-            case "dynHasKey":
-              hasKeySites.add(fn);
-              break;
-            case "caughtTest":
-              if (expr.test === "instanceof") caughtSites.add(fn);
-              break;
-            case "caughtNarrow":
-            case "caughtCheck":
-              if (expr.type.kind === "object") caughtSites.add(fn);
-              break;
-            case "dynKeyGet":
-            case "dynInvoke":
-              rewrite.add(fn);
-              break;
-            case "dynCheck":
-              if (isDynTypedRefType(expr.type)) rewrite.add(fn);
-              // A dynamic function checked into a native function type
-              // receives its arguments as dynamic values: class instances
-              // passed to it cross the boundary when it is called (a JS
-              // `list.map((rec) => rec.match(x))` callback with an untyped
-              // parameter).
-              if (expr.type.kind === "func") expr.type.params.forEach(discover);
-              break;
-            case "libCall":
-              if (
-                expr.fn === "bytes.construct" ||
-                expr.fn === "dyn.keySet" ||
-                expr.fn === "dyn.keySetComputed" ||
-                expr.fn === "dyn.iterator" ||
-                expr.fn === "dyn.arrayFromIterator" ||
-                expr.fn === "dyn.toString" ||
-                expr.fn === "dyn.stringConstructor" ||
-                expr.fn === "dyn.forInKeys" ||
-                expr.fn === "dyn.forInKeyStrings" ||
-                expr.fn === "dyn.hasKeyComputed" ||
-                expr.fn === "dyn.hasOwnComputed" ||
-                expr.fn === "dyn.propertyIsEnumerableComputed" ||
-                expr.fn === "dyn.defineProperty" ||
-                expr.fn === "dyn.getPrototype" ||
-                expr.fn === "dyn.reflectGet" ||
-                expr.fn === "dyn.reflectSet"
-              )
-                rewrite.add(fn);
-              break;
-          }
-          return true;
-        },
-      });
+    for (const fn of functions) {
+      const found = this.sites.of(fn);
+      // A class starts tracking its own fields during this pass.
+      for (const { type, fieldClass } of found.boxing)
+        if (fieldClass === undefined || lowerer.classes.get(fieldClass)?.def.tracksOwnFields)
+          discover(type);
+      if (found.serializes) this.serializesClasses = true;
+      if (found.conversions) toPrimitiveSites.add(fn);
+      if (found.dispatches) rewrite.add(fn);
+      if (found.keyTests) hasKeySites.add(fn);
+      if (found.caughtClassTests) caughtSites.add(fn);
+    }
     // The classes this pass found join the tables in a fixed order, not in
     // the order the scan met them.
     sortAdded(lowerer, this.boxed, boxedBefore);
