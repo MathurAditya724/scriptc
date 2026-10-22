@@ -2029,6 +2029,238 @@ ScrStream *scr_stream_from_async_iter(ScrDyn *iter, double flags, double hwm) {
   return scr_stream_from_dyn_iter(scr_dyn_retain(iter), true, flags, hwm);
 }
 
+/* ── Duplex.from (duplexify.js) ─────────────────────────────────────
+ * Duplex.from(asyncGeneratorFunction): fromAsyncGen hands the function a
+ * source generator that the writes and the final feed through a deferred
+ * promise, and from(Duplexify, value, { objectMode: true, write, final,
+ * destroy }) reads what the function yields. The source generator is
+ * compiled (the frontend's Duplex.from source helper):
+ *
+ *   while (true) { const v = await next(); ack(); if (v is done) return; yield v; }
+ *
+ * next() answers the current deferred, a write or the final settles it
+ * (the chunk, or the done marker), and ack() is fromAsyncGen's
+ * `process.nextTick(cb)` followed by a fresh deferred. */
+
+enum { CHAN_NONE, CHAN_WRITE, CHAN_FINAL, CHAN_ABORT };
+
+typedef struct OpChan OpChan;
+struct OpChan {
+  OpObj base;
+  ScrStream *d;         /* +1, dropped at destroy (or exit) */
+  ScrPromise *promise;  /* +1: the deferred next() answers, NULL once taken */
+  ScrPromise *resolve;  /* +1: the deferred a write or the final settles, NULL once settled */
+  int settled;          /* CHAN_*: what settled the deferred, for ack() */
+  bool aborted;         /* destroy ran (fromAsyncGen's ac.abort()) */
+  OpChan *live_prev, *live_next;
+};
+
+static SCR_TL OpChan *op_chan_live = NULL;
+
+static void op_chan_drop(OpObj *o) {
+  OpChan *c = (OpChan *)o;
+  if (c->d) scr_stream_release(c->d);
+  if (c->promise) scr_promise_release(c->promise);
+  if (c->resolve) scr_promise_release(c->resolve);
+  free(c);
+}
+
+/* createDeferredPromise() */
+static void op_chan_defer(OpChan *c) {
+  ScrPromise *p = scr_promise_new();
+  if (c->promise) scr_promise_release(c->promise);
+  if (c->resolve) scr_promise_release(c->resolve);
+  c->promise = p;
+  c->resolve = scr_promise_retain(p);
+}
+
+/* Unlinks the channel from the live list and drops its stream and its
+ * deferred (a source still awaiting it stays pending, as in Node). */
+static void op_chan_retire(OpChan *c) {
+  if (c->live_prev) c->live_prev->live_next = c->live_next;
+  else if (op_chan_live == c) op_chan_live = c->live_next;
+  else return; /* already retired */
+  if (c->live_next) c->live_next->live_prev = c->live_prev;
+  c->live_prev = c->live_next = NULL;
+  ScrStream *d = c->d;
+  c->d = NULL;
+  if (c->promise) scr_promise_release(c->promise);
+  if (c->resolve) scr_promise_release(c->resolve);
+  c->promise = c->resolve = NULL;
+  if (d) scr_stream_release(d);
+  op_unref(c); /* the live list's reference */
+}
+
+static void op_chan_atexit(void) {
+  while (op_chan_live) op_chan_retire(op_chan_live);
+}
+
+static ScrClosure *op_chan_closure(void *fn, OpChan *c) {
+  ScrClosure *cl = scr_closure_new(fn, 1);
+  cl->caps[0] = scr_box_new_obj(&op_ref, &op_unref, NULL);
+  scr_box_set_ref(cl->caps[0], op_ref(c));
+  return cl;
+}
+
+static OpChan *op_chan_of(ScrClosure *cb) { return scr_box_get_ref(cb->caps[0]); /* +1 */ }
+
+/* process.nextTick(cb): the write's or the final's completion. */
+static void op_chan_done_tick(ScrClosure *job) {
+  ScrStream *d = scr_box_get_ref(job->caps[0]);
+  bool final = scr_box_get_bool(job->caps[1]);
+  if (final) scr_stream_final_done(d, NULL);
+  else scr_stream_write_done(d, NULL);
+  scr_stream_release(d);
+}
+
+/* The source's `await _promise`: the current deferred (+1). */
+static ScrPromise *op_chan_next_inv(ScrClosure *cb) {
+  OpChan *c = op_chan_of(cb);
+  ScrPromise *p = c->promise;
+  c->promise = NULL;
+  op_unref(c);
+  return p ? p : scr_promise_new();
+}
+
+static ScrError *op_chan_abort_error(void) {
+  ScrStr *message = scr_str_new("The operation was aborted", 25);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_str_release(e->name);
+  e->name = scr_str_new("AbortError", 10);
+  scr_error_set_code(e, "ABORT_ERR");
+  e->name_present = true;
+  e->name_enumerable = true;
+  return e;
+}
+
+/* After the source's await: process.nextTick(cb), then (unless done) the
+ * aborted check and a fresh deferred. */
+static void op_chan_ack_inv(ScrClosure *cb) {
+  OpChan *c = op_chan_of(cb);
+  int settled = c->settled;
+  c->settled = CHAN_NONE;
+  if (c->d && (settled == CHAN_WRITE || settled == CHAN_FINAL)) {
+    ScrClosure *tick = scr_closure_new((void *)&op_chan_done_tick, 2);
+    tick->caps[0] = scr_box_new_obj(&scr_stream_retain_v, &scr_stream_release_v, &scr_stream_trace);
+    scr_box_set_ref(tick->caps[0], scr_stream_retain(c->d));
+    tick->caps[1] = scr_box_new(SCR_BOX_BOOL);
+    scr_box_set_bool(tick->caps[1], settled == CHAN_FINAL);
+    scr_next_tick(tick);
+  }
+  if (settled != CHAN_FINAL && settled != CHAN_ABORT) {
+    if (c->aborted) {
+      ScrError *e = op_chan_abort_error();
+      scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+    } else if (c->d) {
+      op_chan_defer(c);
+    }
+  }
+  op_unref(c);
+}
+
+/* `_resolve(value)`: the write's chunk or the final's done marker. */
+static void op_chan_settle(OpChan *c, ScrDyn *v /*moves*/, int kind) {
+  ScrPromise *p = c->resolve;
+  c->resolve = NULL;
+  if (!p) {
+    scr_dyn_release(v);
+    return;
+  }
+  c->settled = kind;
+  scr_promise_fulfill_ref(p, v, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  scr_promise_release(p);
+}
+
+/* Duplexify's write(chunk, encoding, cb) */
+static void op_chan_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
+  OpChan *c = op_chan_of(cb);
+  op_chan_settle(c, scr_stream_chunk_value(s, chunk), CHAN_WRITE);
+  op_unref(c);
+}
+
+/* Duplexify's final(cb) */
+static void op_chan_final_inv(ScrClosure *cb, ScrStream *s) {
+  (void)s;
+  OpChan *c = op_chan_of(cb);
+  op_chan_settle(c, scr_stream_from_done(), CHAN_FINAL);
+  op_unref(c);
+}
+
+/* destroy: fromAsyncGen's (ac.abort(); a source waiting for a write or
+ * the final is unblocked with the done marker and a no-op callback;
+ * cb(err)), then from()'s close of the function's iterator. caps: the
+ * channel and the from() destroy closure. */
+static void op_dup_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  OpChan *c = scr_box_get_ref(cb->caps[0]);
+  ScrClosure *from = scr_box_get_ref(cb->caps[1]);
+  c->aborted = true;
+  if (c->resolve) op_chan_settle(c, scr_stream_from_done(), CHAN_ABORT);
+  op_chan_retire(c);
+  op_unref(c);
+  op_from_destroy_inv(from, s, err);
+  scr_closure_release(from);
+}
+
+typedef ScrGen *(*OpSourceFn)(ScrClosure *, ScrClosure *, ScrClosure *);
+typedef ScrGen *(*OpStageFn)(ScrClosure *, ScrGen *);
+
+/* Duplex.from(fn) for an async generator function: the compiled stage
+ * (borrowed) takes the source generator and answers its own; source
+ * (borrowed) makes the source generator from next() and ack(); the
+ * compiler's helpers over the stage's generator are borrowed. +1, or
+ * NULL with the function's throw pending. */
+ScrStream *scr_stream_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
+                                      ScrClosure *read, ScrClosure *ret, ScrClosure *thr) {
+  op_sentinels_init();
+  static SCR_TL bool registered = false;
+  if (!registered) {
+    registered = true;
+    scr_atexit(op_chan_atexit);
+  }
+  OpChan *c = op_alloc(sizeof *c);
+  c->base.rc = 1;
+  c->base.drop = &op_chan_drop;
+  op_chan_defer(c);
+  ScrGen *src = ((OpSourceFn)source->fn)(source, op_chan_closure((void *)&op_chan_next_inv, c),
+                                         op_chan_closure((void *)&op_chan_ack_inv, c));
+  ScrGen *g = scr_exc_pending() ? NULL : ((OpStageFn)stage->fn)(stage, src); /* src moves in */
+  if (scr_exc_pending()) {
+    if (g) scr_gen_release(g);
+    op_unref(c);
+    return NULL;
+  }
+  OpFrom *f = op_alloc(sizeof *f);
+  f->base.rc = 1;
+  f->base.drop = &op_from_drop;
+  f->kind = FROM_ASYNC;
+  f->gen = g;
+  f->next = scr_closure_retain(next);
+  f->read = scr_closure_retain(read);
+  f->ret = scr_closure_retain(ret);
+  f->thr = scr_closure_retain(thr);
+  ScrClosure *destroy = scr_closure_new((void *)&op_dup_destroy_inv, 2);
+  destroy->caps[0] = scr_box_new_obj(&op_ref, &op_unref, NULL);
+  scr_box_set_ref(destroy->caps[0], op_ref(c));
+  destroy->caps[1] = scr_box_new_obj(&scr_closure_retain_v, &scr_closure_release_v, &scr_closure_trace_v);
+  scr_box_set_ref(destroy->caps[1], op_from_closure((void *)&op_from_destroy_inv, f));
+  /* Duplexify({ objectMode: true, highWaterMark: 1, write, final, destroy }) */
+  ScrStream *d = scr_stream_new_duplex(1, 1, true, true, true, true, true,
+                                       op_from_closure((void *)&op_from_read_inv, f), &op_from_read_inv,
+                                       op_chan_closure((void *)&op_chan_write_inv, c), &op_chan_write_inv,
+                                       op_chan_closure((void *)&op_chan_final_inv, c), &op_chan_final_inv,
+                                       destroy, &op_dup_destroy_inv);
+  scr_stream_set_object_mode(d, true, true);
+  d->cls = "Duplexify";
+  f->out = d;
+  op_unref(f);
+  c->d = scr_stream_retain(d);
+  c->live_next = op_chan_live;
+  if (op_chan_live) op_chan_live->live_prev = c;
+  op_chan_live = c; /* the reference c was created with */
+  return d;
+}
+
 /* ── the promise operators ─────────────────────────────────────────── */
 
 enum { PK_DYN, PK_F64, PK_BOOL, PK_STR, PK_VOID };

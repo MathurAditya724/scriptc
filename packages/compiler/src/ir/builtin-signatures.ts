@@ -3959,6 +3959,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.pipeline": { argTypes: [F64], result: VOID },
   "stream.pipelineDyn": { argTypes: [F64], result: VOID },
   "stream.pipelineStages": { argTypes: [F64, F64, F64, F64, F64], result: VOID },
+  "stream.composeStages": { argTypes: [F64, F64, F64, F64, F64], result: VOID },
   "stream.pipelineStagesDyn": { argTypes: [F64, F64, F64, F64, F64], result: VOID },
   /** stream.compose(count, s1..sn): the Duplex over a pipeline of the
    * streams (+1). MAY THROW (ERR_INVALID_ARG_VALUE for a stream that is
@@ -4000,6 +4001,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * signal group (scr_stream_pipeline_stages). A promise destination's
    * promise type is sp.pipelineStages' result. */
   "sp.pipelineStages": {
+    argTypes: [F64, F64, F64, F64, F64],
+    result: { kind: "promise", inner: VOID },
+  },
+  /** sp.pipelineStages with the options argument: the same head, then
+   * end (a bool) and, with flags bit 6, the options' signal (dyn). */
+  "sp.pipelineStagesOpts": {
     argTypes: [F64, F64, F64, F64, F64],
     result: { kind: "promise", inner: VOID },
   },
@@ -4060,6 +4067,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * after construction; answers the receiver (+1, the chaining shape). */
   "stream.objectMode": { argTypes: [null, BOOL, BOOL], result: VOID },
   "stream.decodeStrings": { argTypes: [null, BOOL], result: VOID },
+  "stream.duplexFromGen": { argTypes: [null, null, null, null, null, null], result: VOID },
+  "stream.duplexFromDyn": { argTypes: [DYN], result: VOID },
   "writable.writeEncoding": { argTypes: [null, STRING], result: VOID },
   "writable.setDefaultEncoding": { argTypes: [null, DYN], result: VOID },
   /** Whether a readable.nextChunkDyn step answered the end (the done
@@ -4815,10 +4824,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
 export type IrLibFn = keyof typeof LIB_FN_SIGS;
 
 /** The function-stage runs of a pipeline of `total` stages that a stream
- * follows (positions bit j: stage j is a function): each pumps its last
- * generator into that stream through one (next, read, return) triple. */
-export function pipelinePumpedRuns(total: number, positions: number): number {
-  let runs = 0;
+ * follows (positions bit j: stage j is a function), and an async
+ * generator destination's run (flags bits 1-2 = 1, pumped into the
+ * PassThrough pipeline() answers): each pumps its last generator through
+ * one (next, read, return) triple. */
+export function pipelinePumpedRuns(total: number, positions: number, flags: number): number {
+  let runs = ((flags >> 1) & 3) === 1 ? 1 : 0;
   for (let j = 0; j + 1 < total; j++) {
     if (Math.floor(positions / 2 ** j) % 2 === 1 && Math.floor(positions / 2 ** (j + 1)) % 2 === 0)
       runs++;

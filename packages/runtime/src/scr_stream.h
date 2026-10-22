@@ -225,6 +225,9 @@ ScrStream *scr_stream_pipeline_stages(double n, ScrStream **streams, double coun
                                       double mask, ScrClosure **helpers, ScrClosure *box,
                                       struct ScrDyn *signal, ScrClosure *abort, ScrClosure *cb,
                                       ScrStreamErrInv inv);
+ScrStream *scr_stream_compose_stages(double n, ScrStream **streams, double count, ScrClosure **stages,
+                                     double positions, double flags, double mask, ScrClosure **helpers,
+                                     ScrClosure *box, ScrDyn *signal, ScrClosure *abort);
 ScrStream *scr_stream_pipeline_stages_dyn(double n, ScrStream **streams, double count,
                                           ScrClosure **stages, double positions, double flags,
                                           double mask, ScrClosure **helpers, ScrClosure *box,
@@ -331,6 +334,7 @@ enum {
   SCR_FROM_BYTE_MODE = 4,
   SCR_FROM_HAS_HWM = 8,
   SCR_FROM_DEFAULT_HWM = 16, /* a nullish highWaterMark: the mode's default */
+  SCR_FROM_DUPLEX = 32,      /* Duplex.from: a Duplexify with its writable side off */
 };
 ScrStream *scr_stream_from_arr(ScrArr *arr, double flags, double hwm);
 /* Readable.from(iterable, options) over a checked-dynamic source: a
@@ -447,6 +451,12 @@ ScrPromise *scr_sp_finished_opts(ScrStream *s, double readable, double writable,
  * ERR_INVALID_ARG_TYPE. Streams borrowed. */
 ScrPromise *scr_sp_pipeline_opts(double n, ScrStream **streams, bool end, ScrDyn *signal,
                                  ScrAbortAddFn add);
+/* scr_sp_pipeline_stages with the options' end and signal (outer). */
+ScrPromise *scr_sp_pipeline_stages_opts(double n, ScrStream **streams, double count,
+                                        ScrClosure **stages, double positions, double flags,
+                                        double mask, ScrClosure **helpers, ScrClosure *box,
+                                        ScrDyn *signal, ScrClosure *abort, bool end,
+                                        ScrDyn *outer, ScrAbortAddFn add);
 double scr_stream_prop(ScrStream *s, const char *name);
 ScrError *scr_stream_errored(ScrStream *s); /* +1 or NULL */
 
@@ -519,6 +529,14 @@ void scr_stream_set_writev_concat(ScrStream *s);
 void scr_stream_set_construct(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
 void scr_stream_set_writev(ScrStream *s, ScrClosure *cb, ScrStreamWritevInv inv);
 void scr_stream_set_writev_default(ScrStream *s, ScrClosure *cb, ScrStreamWritevInv inv);
+/* Duplex.from (duplexify.js): over an async generator function (the
+ * compiled stage takes the source generator that the compiled source
+ * makes from next() and ack(); all borrowed, helpers too), and over a
+ * checked-dynamic body (borrowed). +1 each. The typed iterable bodies take
+ * the Readable.from builders with SCR_FROM_DUPLEX. */
+ScrStream *scr_stream_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
+                                      ScrClosure *read, ScrClosure *ret, ScrClosure *thr);
+ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
 /* decodeStrings (false keeps string writes as strings), the writable
  * defaultEncoding option (a known encoding, borrowed), and
  * setDefaultEncoding (validated; answers the stream +1). The chaining

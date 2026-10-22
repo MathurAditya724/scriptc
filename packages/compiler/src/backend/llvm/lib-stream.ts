@@ -701,12 +701,15 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
   }
   if (
     e.fn === "sp.pipelineStages" ||
+    e.fn === "sp.pipelineStagesOpts" ||
     e.fn === "stream.pipelineStages" ||
-    e.fn === "stream.pipelineStagesDyn"
+    e.fn === "stream.pipelineStagesDyn" ||
+    e.fn === "stream.composeStages"
   ) {
     // (n, k, positions, flags, mask, s1..sn, stage1..stagek, helpers...,
-    // box?, (signal, abort)?[, cb]): the streams, the stage closures and
-    // the helpers ride stack arrays; absent groups pass null.
+    // box?, (signal, abort)?[, cb | end, signal?]): the streams, the
+    // stage closures and the helpers ride stack arrays; absent groups
+    // pass null.
     const [nArg, kArg, positionsArg, flagsArg, maskArg] = e.args;
     if (
       nArg?.kind !== "numLit" ||
@@ -719,7 +722,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const n = nArg.value;
     const k = kArg.value;
     const flags = flagsArg.value;
-    const helperCount = 3 * pipelinePumpedRuns(n + k, positionsArg.value);
+    const helperCount = 3 * pipelinePumpedRuns(n + k, positionsArg.value, flags);
     const args = e.args.map((a) => host.emitExpr(a));
     const packed = (from: number, count: number): string => {
       if (count === 0) return "null";
@@ -749,6 +752,21 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     if (e.fn === "sp.pipelineStages") {
       host.declare(`declare ptr @scr_sp_pipeline_stages(${params})`);
       B.line(`${t} = call ptr @scr_sp_pipeline_stages(${head})`);
+    } else if (e.fn === "sp.pipelineStagesOpts") {
+      const end = args[at++]!.name;
+      const outer = take((flags & 64) !== 0);
+      let add = "null";
+      if (outer !== "null") {
+        host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+        add = "@scr_events_add_abort_listener";
+      }
+      host.declare(`declare ptr @scr_sp_pipeline_stages_opts(${params}, i1, ptr, ptr)`);
+      B.line(
+        `${t} = call ptr @scr_sp_pipeline_stages_opts(${head}, i1 ${end}, ptr ${outer}, ptr ${add})`,
+      );
+    } else if (e.fn === "stream.composeStages") {
+      host.declare(`declare ptr @scr_stream_compose_stages(${params})`);
+      B.line(`${t} = call ptr @scr_stream_compose_stages(${head})`);
     } else if (e.fn === "stream.pipelineStagesDyn") {
       host.declare(`declare ptr @scr_stream_pipeline_stages_dyn(${params}, ptr)`);
       B.line(

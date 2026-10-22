@@ -1534,8 +1534,21 @@ static bool scr_from_check_hwm(double hwm) {
  * highWaterMark 1 for iterables, the mode's default for the string /
  * Buffer case or a nullish option, or the option's value. +1, or NULL with the error
  * pending. Moves f. */
+/* from.js's `new Readable(...)`: a Readable, or for Duplex.from (duplexify.js's
+ * from(Duplexify, body, { objectMode: true, writable: false })) a Duplexify
+ * whose writable side is off. */
+static ScrStream *scr_from_new(bool duplex, double hwm, ScrClosure *read, ScrStreamReadInv read_inv,
+                               ScrClosure *destroy, ScrStreamErrInv destroy_inv) {
+  if (!duplex) return scr_stream_new_readable(hwm, true, true, read, read_inv, destroy, destroy_inv);
+  ScrStream *d = scr_stream_new_duplex(hwm, hwm, true, true, true, true, false, read, read_inv, NULL,
+                                       NULL, NULL, NULL, destroy, destroy_inv);
+  scr_stream_set_object_mode(d, false, true);
+  d->cls = "Duplexify";
+  return d;
+}
+
 static ScrStream *scr_from_stream(ScrFromSrc *f, ScrStreamReadInv read_inv, bool object_mode,
-                                  int hwm_kind, double hwm, bool strings) {
+                                  int hwm_kind, double hwm, bool strings, bool duplex) {
   if (hwm_kind == SCR_FROM_HWM_SET && !scr_from_check_hwm(hwm)) {
     scr_from_src_release(f);
     return NULL;
@@ -1547,8 +1560,8 @@ static ScrStream *scr_from_stream(ScrFromSrc *f, ScrStreamReadInv read_inv, bool
   scr_box_set_ref(read->caps[0], f); /* moves */
   ScrClosure *destroy = NULL;
   if (!f->single) destroy = scr_closure_new((void *)&scr_from_destroy_inv, 0);
-  ScrStream *s = scr_stream_new_readable(hwm, true, true, read, read_inv, destroy,
-                                         destroy ? &scr_from_destroy_inv : NULL);
+  ScrStream *s = scr_from_new(duplex, hwm, read, read_inv, destroy,
+                              destroy ? &scr_from_destroy_inv : NULL);
   ScrStreamState *st = s->st;
   if (object_mode) {
     st->r.object_entries = true;
@@ -1575,7 +1588,7 @@ ScrStream *scr_stream_new_from_readable(ScrClosure *read, ScrStreamReadInv read_
   bool object_mode = (bits & SCR_FROM_BYTE_MODE) == 0;
   if (bits & SCR_FROM_DEFAULT_HWM) hwm = object_mode ? 16 : -1;
   else if (!(bits & SCR_FROM_HAS_HWM)) hwm = 1;
-  ScrStream *s = scr_stream_new_readable(hwm, true, true, read, read_inv, destroy, destroy_inv);
+  ScrStream *s = scr_from_new((bits & SCR_FROM_DUPLEX) != 0, hwm, read, read_inv, destroy, destroy_inv);
   if (object_mode) s->st->r.object_entries = true;
   return s;
 }
@@ -1590,7 +1603,7 @@ ScrStream *scr_stream_from_arr(ScrArr *arr, double flags, double hwm) {
   f->single = (bits & SCR_FROM_SINGLE) != 0;
   return scr_from_stream(f, &scr_from_read_inv, (bits & SCR_FROM_BYTE_MODE) == 0,
                          (bits & SCR_FROM_HAS_HWM) ? SCR_FROM_HWM_SET : SCR_FROM_HWM_FROM, hwm,
-                         f->strings);
+                         f->strings, (bits & SCR_FROM_DUPLEX) != 0);
 }
 
 /* The JS lane: one checked-dynamic value into the stream. null is
@@ -1654,7 +1667,7 @@ static void scr_from_read_dyn_inv(ScrClosure *cb, ScrStream *s, double size) {
   scr_from_src_release(f);
 }
 
-ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
+static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
   bool single = src->kind == SCR_DYN_STR || src->kind == SCR_DYN_BYTES;
   ScrDyn *iter = NULL; /* from.js's iterator, for sources other than arrays */
   int kind = 0;
@@ -1666,7 +1679,14 @@ ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
     if (kind < 0) return NULL;
   }
   if (!single && kind == 0) {
-    scr_dyn_arg_type_fail("iterable", "an instance of Iterable", src);
+    if (duplex) {
+      scr_dyn_arg_type_fail("body",
+                            "of type function or an instance of Blob, ReadableStream, WritableStream, "
+                            "Stream, Iterable, AsyncIterable, or Promise or { readable, writable } pair",
+                            src);
+    } else {
+      scr_dyn_arg_type_fail("iterable", "an instance of Iterable", src);
+    }
     return NULL;
   }
   bool object_mode = true;
@@ -1713,7 +1733,7 @@ ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
     }
   }
   if (iter) {
-    double flags = (object_mode ? 0 : SCR_FROM_BYTE_MODE) |
+    double flags = (object_mode ? 0 : SCR_FROM_BYTE_MODE) | (duplex ? SCR_FROM_DUPLEX : 0) |
                    (hwm_kind == SCR_FROM_HWM_SET       ? SCR_FROM_HAS_HWM
                     : hwm_kind == SCR_FROM_HWM_DEFAULT ? SCR_FROM_DEFAULT_HWM
                                                        : 0);
@@ -1724,7 +1744,39 @@ ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
   f->rc = 1;
   f->dyn = scr_dyn_retain(src);
   f->single = single;
-  return scr_from_stream(f, &scr_from_read_dyn_inv, object_mode, hwm_kind, hwm, false);
+  return scr_from_stream(f, &scr_from_read_dyn_inv, object_mode, hwm_kind, hwm, false, duplex);
+}
+
+ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
+  return scr_from_dyn_ex(src, opts, false);
+}
+
+/* Duplex.from(body) over a checked-dynamic body (duplexify.js): a native
+ * Duplex answers itself, an iterable reads as Duplex.from does, and the
+ * other bodies Node accepts (a lone Readable or Writable, a function, a
+ * promise, a { readable, writable } pair) are not supported yet. */
+static ScrStream *scr_stream_boxed(const ScrDyn *value);
+
+ScrStream *scr_stream_duplex_from_dyn(ScrDyn *body) {
+  ScrStream *native = scr_stream_of_handle(body); /* +1 */
+  if (!native) native = scr_stream_boxed(body);   /* +1 */
+  if (native && native->st->has_r && native->st->has_w) return native;
+  bool unsupported = native != NULL;
+  if (native) scr_stream_release(native);
+  if (!unsupported && (body->kind == SCR_DYN_FUNC || body->kind == SCR_DYN_PROMISE)) unsupported = true;
+  if (!unsupported && body->kind == SCR_DYN_OBJ) {
+    static const char *const keys[] = {"then", "readable", "writable"};
+    for (size_t i = 0; i < 3 && !unsupported; i++) {
+      ScrDyn *v = scr_dyn_obj_get(body, keys[i], strlen(keys[i]));
+      unsupported = v != NULL && v->kind != SCR_DYN_UNDEF;
+    }
+  }
+  if (unsupported) {
+    static const char msg[] = "Duplex.from over this body is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    return NULL;
+  }
+  return scr_from_dyn_ex(body, NULL, true);
 }
 
 /* ── object-mode streams for the stream operators (scr_stream_ops.c) ──── */
@@ -3695,7 +3747,9 @@ typedef ScrPromise *(*ScrPipeNextFn)(ScrClosure *, ScrGen *);
 typedef ScrDyn *(*ScrPipeReadFn)(ScrClosure *, void *);
 typedef ScrDyn *(*ScrPipeBoxFn)(ScrClosure *, ScrPromise *);
 
-enum { SCR_PIPE_DEST_STREAM, SCR_PIPE_DEST_PROMISE = 2 };
+enum { SCR_PIPE_DEST_STREAM, SCR_PIPE_DEST_GEN, SCR_PIPE_DEST_PROMISE };
+/* flags bit 7: the callback is typed code's (stream.pipelineStagesDyn) */
+enum { SCR_PIPE_TYPED_CB = 128 };
 
 typedef struct {
   size_t count;              /* the function stages */
@@ -3707,8 +3761,9 @@ typedef struct {
   int dest;                  /* the last stage: SCR_PIPE_DEST_* */
   unsigned opts_mask;        /* bit i: stages[i] takes the { signal } argument */
   ScrDyn *signal;            /* the pipeline's AbortSignal when opts_mask != 0 */
-  /* (next, read, return) for each generator pumped into a stream, in
-   * pipeline order, or NULL */
+  /* (next, read, return) for each generator pumped into a stream (an
+   * async generator destination's PassThrough included), in pipeline
+   * order, or NULL */
   ScrClosure **helpers;
   ScrClosure *box;           /* SCR_PIPE_DEST_PROMISE: boxes its promise as a dyn promise */
 } ScrPipeStages;
@@ -4043,7 +4098,7 @@ static void scr_pipe_dest_entry(ScrFiber *fiber, void *arg) {
     ctx->value = v;
     if (ctx->value_p) scr_promise_release(ctx->value_p);
     ctx->value_p = scr_promise_retain(d.typed);
-    if (pt && v && (v->kind == SCR_DYN_STR || v->kind == SCR_DYN_BYTES)) {
+    if (pt && v && v->kind != SCR_DYN_NULL && v->kind != SCR_DYN_UNDEF) {
       scr_stream_write_dyn(pt, v, NULL);
       if (scr_exc_pending()) scr_exc_clear();
     }
@@ -4147,17 +4202,22 @@ static ScrStream *scr_stream_pipeline_ex(size_t n, ScrStream **streams, ScrClosu
         ret_gen = out;
         continue;
       }
-      /* The destination function: pipeline() answers a PassThrough proxy
-       * that the promise's value feeds. Node's is in object mode; the
-       * frontend refuses programs that read it, so a byte-mode
-       * PassThrough plays its part in the pipeline's bookkeeping. */
+      /* The destination function: pipeline() answers an object-mode
+       * PassThrough proxy that the promise's value or the generator's
+       * values feed. */
       ScrDyn *pt_opts = scr_dyn_new_obj();
+      scr_dyn_obj_set(pt_opts, "objectMode", 10, scr_dyn_new_bool(true));
       ScrStream *pt = scr_stream_new_passthrough_dyn(pt_opts);
       scr_dyn_release(pt_opts);
       size_t pi = ctx->n++;
       ctx->streams[pi] = pt;
       ctx->finish_count++;
-      scr_pipe_dest_promise(ctx, out, fs->box, pi, end);
+      if (fs->dest == SCR_PIPE_DEST_GEN) {
+        /* pumpToNode(ret, pt, finish, { end }) */
+        scr_pump_start(ctx, out, fs->helpers + 3 * h++, pt, end);
+      } else {
+        scr_pipe_dest_promise(ctx, out, fs->box, pi, end);
+      }
       /* destroyer(pt, false, true), with its cleanup as the last stream's */
       ctx->destroyer[pi] = true;
       scr_pipe_on(pt, "close", scr_pipe_closure((void *)&scr_pipe_destroyer_close_l, ctx, pi),
@@ -4245,17 +4305,30 @@ static ScrPipeStages scr_pipe_stages_of(double count, ScrClosure **stages, doubl
 }
 
 /* callback(error, value) through a checked-dynamic callback: Node passes
- * both arguments. */
-static void scr_pipe_dyn_value_inv(ScrClosure *cb, ScrError *err, ScrDyn *value, ScrPromise *value_p) {
-  (void)value_p;
+ * both arguments. A typed callback (SCR_PIPE_TYPED_CB) takes null for no
+ * error, as the typed callback forms do. */
+static void scr_pipe_dyn_value_call(ScrClosure *cb, ScrError *err, ScrDyn *value, bool typed) {
   ScrDyn *fn = scr_stream_dynopt_target(cb);
-  ScrDyn *args[2] = {err ? scr_dyn_from_error(err) : scr_dyn_retain(scr_dyn_undefined()),
+  ScrDyn *none = typed ? scr_dyn_new_null() : scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *args[2] = {err ? scr_dyn_from_error(err) : none,
                      value && !err ? scr_dyn_retain(value) : scr_dyn_retain(scr_dyn_undefined())};
+  if (err) scr_dyn_release(none);
   ScrDyn *r = scr_dyn_call(fn, args, 2, "callback");
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_dyn_release(fn);
   if (r != NULL) scr_dyn_release(r);
+}
+
+static void scr_pipe_dyn_value_inv(ScrClosure *cb, ScrError *err, ScrDyn *value, ScrPromise *value_p) {
+  (void)value_p;
+  scr_pipe_dyn_value_call(cb, err, value, false);
+}
+
+static void scr_pipe_dyn_value_typed_inv(ScrClosure *cb, ScrError *err, ScrDyn *value,
+                                         ScrPromise *value_p) {
+  (void)value_p;
+  scr_pipe_dyn_value_call(cb, err, value, true);
 }
 
 /* pipeline(...) with function stages (see ScrPipeStages): positions
@@ -4279,7 +4352,9 @@ ScrStream *scr_stream_pipeline_stages_dyn(double n, ScrStream **streams, double 
   ScrPipeStages fs = scr_pipe_stages_of(count, stages, positions, flags, mask, helpers, box, signal);
   ScrClosure *c = scr_stream_dynopt_clo(cb, (void *)&scr_stream_finished_dyn_inv);
   /* a function destination's value reaches the callback */
-  ScrPipeValInv vi = fs.dest != SCR_PIPE_DEST_STREAM ? &scr_pipe_dyn_value_inv : NULL;
+  ScrPipeValInv vi = fs.dest == SCR_PIPE_DEST_STREAM ? NULL
+                     : ((int)flags & SCR_PIPE_TYPED_CB) ? &scr_pipe_dyn_value_typed_inv
+                                                        : &scr_pipe_dyn_value_inv;
   return scr_stream_pipeline_ex((size_t)n, streams, c, &scr_stream_finished_dyn_inv, true, NULL,
                                 NULL, &fs, abort, vi);
 }
@@ -4333,7 +4408,7 @@ static void *scr_compose_retain_v(void *p) {
 static void scr_compose_release_v(void *p) {
   ScrCompose *c = p;
   if (--c->rc > 0) return;
-  scr_stream_release(c->head);
+  if (c->head) scr_stream_release(c->head);
   scr_stream_release(c->tail);
   free(c);
 }
@@ -4393,7 +4468,9 @@ static void scr_compose_destroyed(ScrCompose *c, ScrError *err) {
 /* d._write: head.write(chunk) ? callback() : (ondrain = callback) */
 static void scr_compose_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
   ScrCompose *c = scr_box_get_ref(cb->caps[0]);
-  if (scr_stream_write(c->head, chunk, NULL)) {
+  bool ok = scr_stream_writes_values(s) ? scr_stream_write_dyn(c->head, (ScrDyn *)chunk, NULL)
+                                        : scr_stream_write(c->head, chunk, NULL);
+  if (ok) {
     if (!scr_exc_pending()) scr_stream_write_done(s, NULL);
   } else {
     c->ondrain = true;
@@ -4524,43 +4601,54 @@ static void scr_compose_arg_value(size_t i, const char *what, ScrStream *s) {
   scr_throw_error_msg_code(SCR_ERR_TYPE, m, (size_t)n, "ERR_INVALID_ARG_VALUE");
 }
 
-ScrStream *scr_stream_compose(double n_d, ScrStream **streams) {
-  size_t n = (size_t)n_d;
-  if (n == 0) {
+/* compose(...streams) over n streams and fs's function stages: the stream
+ * at pipeline position j must be readable unless it is last and writable
+ * unless it is first. A first stage that is not a stream (an iterable or
+ * source function) leaves the Duplex without a writable side. */
+static ScrStream *scr_stream_compose_impl(size_t n, ScrStream **streams, const ScrPipeStages *fs,
+                                          ScrClosure *abort) {
+  size_t total = n + (fs ? fs->count : 0);
+  if (total == 0) {
     static const char msg[] = "The \"streams\" argument must be specified";
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_MISSING_ARGS");
     return NULL;
   }
-  if (n == 1) return scr_stream_retain(streams[0]); /* Duplex.from(duplex) */
-  for (size_t i = 0; i < n; i++) {
-    if (i + 1 < n && !scr_stream_prop(streams[i], "readable")) {
-      scr_compose_arg_value(i, "readable", streams[i]);
+  if (total == 1 && n == 1) return scr_stream_retain(streams[0]); /* Duplex.from(duplex) */
+  for (size_t j = 0, i = 0; j < total; j++) {
+    if (fs && j < 64 && ((fs->positions >> j) & 1u)) continue;
+    if (j + 1 < total && !scr_stream_prop(streams[i], "readable")) {
+      scr_compose_arg_value(j, "readable", streams[i]);
       return NULL;
     }
-    if (i > 0 && !scr_stream_prop(streams[i], "writable")) {
-      scr_compose_arg_value(i, "writable", streams[i]);
+    if (j > 0 && !scr_stream_prop(streams[i], "writable")) {
+      scr_compose_arg_value(j, "writable", streams[i]);
       return NULL;
     }
+    i++;
   }
+  bool stage_head = fs && (fs->positions & 1u);
   ScrCompose *c = calloc(1, sizeof *c);
   if (!c) scr_stream_oom();
   c->rc = 1;
-  c->head = scr_stream_retain(streams[0]);
+  c->head = stage_head ? NULL : scr_stream_retain(streams[0]);
   c->tail = scr_stream_retain(streams[n - 1]);
   c->onclose = SCR_COMPOSE_RUNNING;
   ScrStream *tail = scr_stream_pipeline_ex(n, streams, scr_compose_closure((void *)&scr_compose_finished, c),
-                                           &scr_compose_finished, true, NULL, NULL, NULL, NULL,
+                                           &scr_compose_finished, true, NULL, NULL, fs, abort,
                                            NULL);
   if (!tail) {
     scr_compose_release_v(c);
     return NULL;
   }
   scr_stream_release(tail);
-  c->writable = scr_stream_prop(c->head, "writable") != 0;
+  c->writable = c->head && scr_stream_prop(c->head, "writable") != 0;
   c->readable = scr_stream_prop(c->tail, "readable") != 0;
+  /* readableObjectMode: !!tail?.readableObjectMode, writableObjectMode:
+   * !!head?.writableObjectMode */
   bool object_mode = c->tail->st->has_r && c->tail->st->r.object_entries;
+  bool w_object = c->head && c->head->st->has_w && c->head->st->w.object_mode;
   ScrStream *d = scr_stream_new_duplex(
-      object_mode ? 16 : -1, -1, true, true, true, c->readable, c->writable,
+      object_mode ? 16 : -1, w_object ? 16 : -1, true, true, true, c->readable, c->writable,
       c->readable ? scr_compose_closure((void *)&scr_compose_read_inv, c) : NULL,
       c->readable ? &scr_compose_read_inv : NULL,
       c->writable ? scr_compose_closure((void *)&scr_compose_write_inv, c) : NULL,
@@ -4569,6 +4657,7 @@ ScrStream *scr_stream_compose(double n_d, ScrStream **streams) {
       c->writable ? &scr_compose_final_inv : NULL,
       scr_compose_closure((void *)&scr_compose_destroy_inv, c), &scr_compose_destroy_inv);
   if (object_mode) d->st->r.object_entries = true;
+  if (w_object) scr_stream_set_object_mode(d, false, true);
   c->d = scr_stream_retain(d);
   if (c->writable) {
     scr_compose_on(c->head, "drain", &c->drain_l, (void *)&scr_compose_drain_l, c, scr_ee_inv_fixed0);
@@ -4588,6 +4677,19 @@ ScrStream *scr_stream_compose(double n_d, ScrStream **streams) {
   if (scr_compose_live) scr_compose_live->live_prev = c;
   scr_compose_live = c; /* the reference c was created with */
   return d;
+}
+
+ScrStream *scr_stream_compose(double n_d, ScrStream **streams) {
+  return scr_stream_compose_impl((size_t)n_d, streams, NULL, NULL);
+}
+
+/* compose(...stages) with function stages among the streams (the
+ * pipeline stage layout: scr_stream_pipeline_stages). */
+ScrStream *scr_stream_compose_stages(double n, ScrStream **streams, double count, ScrClosure **stages,
+                                     double positions, double flags, double mask, ScrClosure **helpers,
+                                     ScrClosure *box, ScrDyn *signal, ScrClosure *abort) {
+  ScrPipeStages fs = scr_pipe_stages_of(count, stages, positions, flags, mask, helpers, box, signal);
+  return scr_stream_compose_impl((size_t)n, streams, &fs, abort);
 }
 
 /* ── node:stream/promises ─────────────────────────────────────────────
@@ -4666,6 +4768,24 @@ ScrPromise *scr_sp_pipeline_stages(double n, ScrStream **streams, double count,
   return p;
 }
 
+/* The options' signal: NULL for a nullish one; false (p rejected with
+ * ERR_INVALID_ARG_TYPE) for a value that is not an AbortSignal. */
+static bool scr_sp_opts_signal(ScrPromise *p, ScrDyn **signal) {
+  if (*signal && scr_dyn_is_nullish(*signal)) *signal = NULL;
+  if (!*signal) return true;
+  ScrDyn *aborted = NULL;
+  if ((*signal)->kind == SCR_DYN_OBJ || (*signal)->kind == SCR_DYN_HANDLE) {
+    aborted = scr_stream_signal_prop(*signal, "aborted");
+  }
+  if (!aborted) {
+    scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", *signal);
+    scr_promise_reject_pending(p);
+    return false;
+  }
+  scr_dyn_release(aborted);
+  return true;
+}
+
 /* pipeline(...streams, { signal, end }): end false leaves the destination
  * open (the promise settles once the stages before it finish); signal is
  * NULL or borrowed — a value that is not an AbortSignal rejects with
@@ -4673,21 +4793,28 @@ ScrPromise *scr_sp_pipeline_stages(double n, ScrStream **streams, double count,
 ScrPromise *scr_sp_pipeline_opts(double n, ScrStream **streams, bool end, ScrDyn *signal,
                                  ScrAbortAddFn add) {
   ScrPromise *p = scr_promise_new();
-  if (signal && scr_dyn_is_nullish(signal)) signal = NULL;
-  if (signal) {
-    ScrDyn *aborted = NULL;
-    if (signal->kind == SCR_DYN_OBJ || signal->kind == SCR_DYN_HANDLE) {
-      aborted = scr_stream_signal_prop(signal, "aborted");
-    }
-    if (!aborted) {
-      scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
-      scr_promise_reject_pending(p);
-      return p;
-    }
-    scr_dyn_release(aborted);
-  }
+  if (!scr_sp_opts_signal(p, &signal)) return p;
   ScrStream *dst = scr_stream_pipeline_ex((size_t)n, streams, scr_sp_watcher(p),
                                           &scr_sp_settle_inv, end, signal, add, NULL, NULL, NULL);
+  if (dst) scr_stream_release(dst);
+  else scr_promise_reject_pending(p);
+  return p;
+}
+
+/* scr_sp_pipeline_stages with the options argument: end and the
+ * options' signal (outer, NULL or borrowed) as scr_sp_pipeline_opts
+ * takes them. The stages' signal is the pipeline's own. */
+ScrPromise *scr_sp_pipeline_stages_opts(double n, ScrStream **streams, double count,
+                                        ScrClosure **stages, double positions, double flags,
+                                        double mask, ScrClosure **helpers, ScrClosure *box,
+                                        ScrDyn *signal, ScrClosure *abort, bool end,
+                                        ScrDyn *outer, ScrAbortAddFn add) {
+  ScrPromise *p = scr_promise_new();
+  if (!scr_sp_opts_signal(p, &outer)) return p;
+  ScrPipeStages fs = scr_pipe_stages_of(count, stages, positions, flags, mask, helpers, box, signal);
+  ScrPipeValInv vi = fs.dest != SCR_PIPE_DEST_STREAM ? &scr_sp_value_inv : NULL;
+  ScrStream *dst = scr_stream_pipeline_ex((size_t)n, streams, scr_sp_watcher(p), &scr_sp_settle_inv,
+                                          end, outer, add, &fs, abort, vi);
   if (dst) scr_stream_release(dst);
   else scr_promise_reject_pending(p);
   return p;

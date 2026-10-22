@@ -12,16 +12,21 @@
   An object-mode write passes its encoding argument to `write` and `transform` as Node does (`undefined` when absent, `null` when a callback took its place); a parameter declared `string` receives `""` for `undefined` and `null`, and one declared `string | null | undefined` receives Node's value.
   `readable.read()` on an object-mode stream answers its Buffers; another value throws a not-supported error (read such values with `'data'` listeners, `for await`, or `pipe`).
   `node:stream/consumers` and readline interfaces read object-mode streams of strings and Buffers; other values throw a not-supported error.
-  `pipeline` accepts function stages anywhere among its streams: async generator functions (`async function* (source)`, iterating `source` with `for await`), an async generator source function (`async function* ({ signal })`), and an async function destination whose value resolves the promise form and reaches the callback's second argument.
+  `pipeline` accepts function stages anywhere among its streams: async generator functions (`async function* (source)`, iterating `source` with `for await`), an async generator source function (`async function* ({ signal })`), an async generator function as the destination, and an async function destination whose value resolves the promise form and reaches the callback's second argument.
   A stage is written inline, or named by a function declaration or a `const` bound to a function expression that nothing reassigns.
   The source may also be an array, a string, a synchronous generator object, or a synchronous generator function without parameters; their elements reach the next stage on the same ticks as in Node.
   Stages may take the `{ signal }` argument.
-  An async generator function as the destination, using the PassThrough that `pipeline()` returns for a function destination, and function stages or iterable sources together with pipeline options are unsupported.
+  With a function destination, `pipeline()` returns an object-mode PassThrough that receives an async generator destination's values, or an async function destination's value unless it is `null` or `undefined`.
+  `@types/node` types that result as `NodeJS.WritableStream`, so `for await` over it needs the `PassThrough` type (`pipeline(...) as PassThrough`, or a JSDoc `@type`).
+  In typed code, the callback of a pipeline with an async function destination receives `null` instead of `undefined` when there is no error.
   `Readable.from` accepts `objectMode` and `highWaterMark` options.
   The `Readable` operators (`map`, `filter`, `forEach`, `toArray`, `some`, `find`, `every`, `flatMap`, `drop`, `take`, and `reduce`) accept `concurrency`, `highWaterMark`, and `signal` options; their callbacks take only the chunk, `map` returns strings or Buffers, and `flatMap` returns strings or arrays of them.
-  `readable.compose` is unsupported.
-  `stream.compose` accepts two or more streams, or one `Duplex`; functions, iterables, and web streams as stages are unsupported, and the `ERR_INVALID_ARG_VALUE` message for a stream that is no longer readable or writable names the stream's class instead of printing the stream.
-  `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.
+  `Duplex.from` accepts an async generator function, which reads what is written to the Duplex, a `Duplex`, `Transform` or `PassThrough`, which it returns, and the values `Readable.from` accepts, which give a Duplex that is not writable.
+  A lone `Readable` or `Writable`, a promise, a `{ readable, writable }` pair, a web stream, and a body function that declares the options argument are unsupported in `Duplex.from`.
+  `stream.compose` accepts streams and async generator functions in any position, and an array, a string, or a generator as the first stage; one stage is `Duplex.from` of it.
+  Web streams as compose stages are unsupported, and the `ERR_INVALID_ARG_VALUE` message for a stream that is no longer readable or writable names the stream's class instead of printing the stream.
+  `readable.compose(stage, { signal })` is `stream.compose(readable, stage)` with the signal added; the options are an object literal whose `signal` is a variable or a property read.
+  `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.
   Stream constructors accept a `signal` option in an options object literal, and `stream.addAbortSignal` accepts any stream.
   The `construct` option and `_construct` method, `decodeStrings`, and `defaultEncoding` work on every stream class, and the `writev` option and `_writev` method on Writable and Duplex; `writev` on a Transform or PassThrough, assigning `_construct` after construction, and a non-literal `decodeStrings` or `defaultEncoding` in an options object literal are unsupported.
   `setDefaultEncoding()` takes any encoding Node knows.

@@ -3780,9 +3780,8 @@ declare module "util" {
   export type TextDecoder = globalThis.TextDecoder;
   export var TextEncoder: typeof globalThis.TextEncoder;
   export var TextDecoder: typeof globalThis.TextDecoder;
-  /* stream.pipeline's (...streams: unknown[]) => unknown is assignable to
-   * every other target's parameter type, so its overload comes first; no
-   * other target is assignable to it. */
+  /* stream.pipeline's overload comes first: its __promisify__ member keeps
+   * every other target out of it. */
   export function promisify(
     fn: typeof import("node:stream").pipeline,
   ): typeof import("node:stream/promises").pipeline;
@@ -7266,6 +7265,8 @@ declare module "stream" {
     _destroy(error: Error | null, callback: (error?: Error | null) => void): void;
     [Symbol.asyncIterator](): AsyncIterableIterator<any>;
     iterator(options?: { destroyOnReturn?: boolean }): AsyncIterableIterator<any>;
+    /* compose(this, stage), destroyed when options.signal aborts. */
+    compose(stage: ComposeStage, options?: { signal: AbortSignal }): Duplex;
     push(chunk: Buffer | string | null, encoding?: string): boolean;
     /* An object-mode stream's values. */
     push(chunk: any, encoding?: string): boolean;
@@ -7456,6 +7457,9 @@ declare module "stream" {
    * mirrors @types/node: extends Readable, the writable half declared
    * again. The lowering treats both halves as first-class. */
   class Duplex extends Readable {
+    /* Duplex.from: an async generator function, an iterable, a string or
+     * a stream (duplexify.js). */
+    static from(body: unknown): Duplex;
     constructor(opts: ObjectDuplexOptions);
     constructor(opts: StringDuplexOptions);
     constructor(opts?: DuplexOptions);
@@ -7576,11 +7580,36 @@ declare module "stream" {
   /* addAbortSignal(signal, stream): the stream, destroyed with an
    * AbortError (cause: signal.reason) when the signal aborts. */
   function addAbortSignal<T extends Readable | Writable>(signal: AbortSignal, stream: T): T;
-  /* Declared so requires typecheck; each fences at its use site. */
-  function pipeline(...streams: unknown[]): unknown;
-  /* compose(...streams): a Duplex that writes to the first stream and
-   * reads from the last, with the streams running as a pipeline. */
-  function compose(...streams: Array<Readable | Writable>): Duplex;
+  /* pipeline(...stages, callback): the last stream, or the object-mode
+   * PassThrough that a function destination feeds. */
+  type PipelineResult<T extends unknown[]> = T extends [
+    ...unknown[],
+    infer D,
+    (...args: any[]) => unknown,
+  ]
+    ? D extends (...args: any[]) => unknown
+      ? PassThrough
+      : D
+    : unknown;
+  function pipeline<T extends unknown[]>(...streams: T): PipelineResult<T>;
+  /* util.promisify's pipeline overload matches only pipeline itself: a
+   * generic signature alone admits every function. */
+  namespace pipeline {
+    const __promisify__: typeof promises.pipeline;
+  }
+  /* A compose stage: a stream, an async generator function over the
+   * previous stage, or (first) an iterable, async iterable or web
+   * ReadableStream. */
+  type ComposeStage =
+    | Readable
+    | Writable
+    | Iterable<unknown>
+    | AsyncIterable<unknown>
+    | globalThis.ReadableStream
+    | ((source: any, options?: { signal: AbortSignal }) => unknown);
+  /* compose(...streams): a Duplex that writes to the first stage and
+   * reads from the last, with the stages running as a pipeline. */
+  function compose(...streams: ComposeStage[]): Duplex;
   /* finished's options: readable/writable choose which ends count,
    * error: false ignores 'error' events, signal aborts the wait. */
   interface FinishedOptions {
@@ -7599,13 +7628,20 @@ declare module "stream" {
    * else 65536 — Node's own state.js split); literal argument only. */
   function getDefaultHighWaterMark(objectMode: boolean): number;
   /* The promise pipeline's result: a last stage that is an async
-   * function resolves the promise with its value. */
+   * function resolves the promise with its value (before the options
+   * argument, when one follows). */
   type PipelinePromise<T extends unknown[]> = T extends [
     ...unknown[],
     (...args: any[]) => Promise<infer P>,
   ]
     ? Promise<P>
-    : Promise<void>;
+    : T extends [
+          ...unknown[],
+          (...args: any[]) => Promise<infer P>,
+          { signal?: AbortSignal; end?: boolean },
+        ]
+      ? Promise<P>
+      : Promise<void>;
   namespace promises {
     function pipeline<T extends unknown[]>(...streams: T): PipelinePromise<T>;
     function finished(
@@ -7635,6 +7671,7 @@ declare module "stream" {
     DuplexOptions,
     TransformOptions,
     FinishedOptions,
+    PipelinePromise,
   };
 }
 declare module "node:stream" {
@@ -7649,9 +7686,7 @@ declare module "stream/promises" {
    * pipeline's trailing { signal, end } object and finished's options
    * (readable, writable, error, cleanup, signal) are supported. A last
    * stage that is an async function resolves the promise with its value. */
-  function pipeline<T extends unknown[]>(
-    ...streams: T
-  ): T extends [...unknown[], (...args: any[]) => Promise<infer P>] ? Promise<P> : Promise<void>;
+  function pipeline<T extends unknown[]>(...streams: T): import("stream").PipelinePromise<T>;
   function finished(
     stream: unknown,
     options?: {

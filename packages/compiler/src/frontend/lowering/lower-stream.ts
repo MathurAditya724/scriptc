@@ -56,6 +56,7 @@ import { bindingNeverReassigned } from "./binding-analysis.js";
 import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import { LiftedFrame, driveGenerator } from "./containers/iterator-helpers.js";
 import { lowerArrayIteratorValue, lowerStringIteratorValue } from "./iterator-adapters.js";
+import { staticReadableStreamElementType } from "./lower-stdlib.js";
 import {
   BOOL,
   DYN,
@@ -1816,8 +1817,23 @@ export function lowerStreamStaticCall(
   if (member !== "from") {
     lowerer.noLowering(`${cls.slice(1)}.${member}`, call);
   }
+  if (cls === "%Duplex") {
+    const fromArgs = call.arguments.nodes;
+    if (fromArgs.length !== 1) {
+      lowerer.noLowering(
+        `Duplex.from with ${fromArgs.length} arguments`,
+        call,
+        "Duplex.from takes one body",
+      );
+    }
+    return duplexFromBody(lowerer, fromArgs[0]!, locOf(call));
+  }
   if (cls !== "%Readable") {
-    lowerer.noLowering(`${cls.slice(1)}.from`, call, "Readable.from is the lowered form");
+    lowerer.noLowering(
+      `${cls.slice(1)}.from`,
+      call,
+      "Readable.from and Duplex.from are the lowered forms",
+    );
   }
   const args = call.arguments.nodes;
   if (args.length > 2) {
@@ -1827,16 +1843,34 @@ export function lowerStreamStaticCall(
       "Readable.from(iterable, options) is the supported form",
     );
   }
-  const type: IrType = { kind: "object", className: "%Readable" };
+  return lowerFromSource(lowerer, call, args[0], args[1], false);
+}
+
+/** Readable.from(source, options), and for Duplex.from over an iterable
+ * (duplex) duplexify.js's from(Duplexify, body, { objectMode: true,
+ * writable: false }): the same builders with SCR_FROM_DUPLEX, answering a
+ * Duplexify without a writable side. */
+function lowerFromSource(
+  lowerer: Lowerer,
+  at: ts.Node,
+  srcNode: ts.Expression | undefined,
+  optsNode: ts.Expression | undefined,
+  duplex: boolean,
+): IrExpr {
+  const loc = locOf(at);
+  const call = at;
+  const type: IrType = { kind: "object", className: duplex ? "%Duplex" : "%Readable" };
+  const what = duplex ? "Duplex.from" : "Readable.from";
+  // SCR_FROM_DUPLEX
+  const duplexFlag = duplex ? 32 : 0;
   const js = isJsSourceFile(ts.getSourceFileOfNode(call));
-  const srcNode = args[0];
-  const optsNode = args[1];
   const srcT = srcNode ? lowerer.mapTypeOf(lowerer.typeOf(srcNode)) : null;
   const typedElem = (t: IrType | null | undefined): "string" | "bytes" | null =>
     t?.kind === "string" ? "string" : t?.kind === "bytes" && t.elem === "u8" ? "bytes" : null;
   const single = typedElem(srcT);
   const elem = srcT?.kind === "array" ? typedElem(srcT.elem) : null;
-  const opts = optsNode ? fromOptions(lowerer, optsNode) : { flags: 0, hwm: null };
+  const opts0 = optsNode ? fromOptions(lowerer, optsNode) : { flags: 0, hwm: null };
+  const opts = opts0 ? { ...opts0, flags: opts0.flags | duplexFlag } : opts0;
   // A class whose [Symbol.iterator]() or [Symbol.asyncIterator]() is a
   // generator method: from.js calls the method when the stream is built,
   // then reads the generator like any other.
@@ -1934,6 +1968,7 @@ export function lowerStreamStaticCall(
     // The checked-dynamic form: the runtime takes from.js's ladder
     // (ERR_INVALID_ARG_TYPE for a non-iterable, the options, null values).
     const src = srcNode ? lowerer.lowerExprExpecting(srcNode, DYN) : dynUndefinedExpr(loc);
+    if (duplex) return { kind: "libCall", fn: "stream.duplexFromDyn", args: [src], type, loc };
     const o = lowerOperatorValue(lowerer, optsNode, "Readable.from options", loc, true);
     return { kind: "libCall", fn: "readable.fromDyn", args: [src, o], type, loc };
   }
@@ -1945,7 +1980,7 @@ export function lowerStreamStaticCall(
     );
   }
   lowerer.noLowering(
-    `Readable.from over a '${srcT ? lowerer.fmt(srcT) : "?"}' source`,
+    `${what} over a '${srcT ? lowerer.fmt(srcT) : "?"}' source`,
     srcNode ?? call,
     "the supported sources are a string or Buffer, and arrays, Sets, Maps, generators and class iterables of values that convert to checked-dynamic values",
   );
@@ -2762,22 +2797,28 @@ export function lowerStreamModuleCall(
           : null;
       const stageArgs = opts ? args.slice(0, -1) : args;
       if (hasPipelineFunctionStage(lowerer, stageArgs)) {
-        if (opts) {
-          lowerer.noLowering(
-            "pipeline with function stages or iterable sources and options",
-            lastArg,
-            "pipeline(source, async function* (source) { ... }, destination) without options is supported",
-          );
-        }
         const staged = lowerPipelineStages(lowerer, stageArgs, loc);
+        const type = staged.destPromise ?? { kind: "promise", inner: VOID };
         // A promise destination's value settles the result (same type).
-        return staged.wrap({
-          kind: "libCall",
-          fn: "sp.pipelineStages",
-          args: staged.args,
-          type: staged.destPromise ?? { kind: "promise", inner: VOID },
-          loc,
-        });
+        if (!opts) {
+          return staged.wrap({
+            kind: "libCall",
+            fn: "sp.pipelineStages",
+            args: staged.args,
+            type,
+            loc,
+          });
+        }
+        // the options: end, and the signal (flags bit 6)
+        const flagsArg = staged.args[3]!;
+        if (flagsArg.kind !== "numLit")
+          throw new InternalCompilerError("pipeline flags not a literal");
+        const args = [...staged.args, boolLit(opts.end, loc)];
+        if (opts.signal) {
+          args[3] = numLit(flagsArg.value | 64, loc);
+          args.push(opts.signal);
+        }
+        return staged.wrap({ kind: "libCall", fn: "sp.pipelineStagesOpts", args, type, loc });
       }
       let streams: IrExpr[];
       try {
@@ -2958,22 +2999,27 @@ export function lowerStreamModuleCall(
     }
     if (hasPipelineFunctionStage(lowerer, args.slice(0, -1))) {
       const staged = lowerPipelineStages(lowerer, args.slice(0, -1), loc);
-      if (staged.dest !== 0) {
-        // callback(err, value): the destination's value reaches the
-        // callback through the checked-dynamic path. Node answers an
-        // object-mode PassThrough here; reading it has no lowering.
-        if (!ts.isExpressionStatement(call.parent)) {
-          lowerer.noLowering(
-            "using the PassThrough that pipeline() answers for a function destination",
-            call,
-            "read the destination's value in the callback",
-          );
-        }
+      const cbNode = args[args.length - 1]!;
+      const cbParams =
+        ts.isArrowFunction(cbNode) || ts.isFunctionExpression(cbNode)
+          ? cbNode.parameters.nodes.length
+          : 0;
+      if (staged.dest === 2 || (staged.dest === 1 && cbParams > 1)) {
+        // callback(err, value): the destination's value (undefined for
+        // an async generator) reaches the callback through the
+        // checked-dynamic path.
         const cb = lowerer.lowerExprExpecting(args[args.length - 1]!, DYN);
+        // SCR_PIPE_TYPED_CB: typed code's callback takes null for no error
+        const stagedArgs = [...staged.args];
+        const flagsArg = stagedArgs[3]!;
+        if (flagsArg.kind !== "numLit")
+          throw new InternalCompilerError("pipeline flags not a literal");
+        if (!isJsSourceFile(ts.getSourceFileOfNode(call)))
+          stagedArgs[3] = numLit(flagsArg.value | 128, loc);
         return staged.wrap({
           kind: "libCall",
           fn: "stream.pipelineStagesDyn",
-          args: [...staged.args, cb],
+          args: [...stagedArgs, cb],
           type: staged.last,
           loc,
         });
@@ -3010,7 +3056,12 @@ export function lowerStreamModuleCall(
     };
   }
 
-  if (bi.member === "compose") return lowerStreamCompose(lowerer, call, loc);
+  if (bi.member === "compose") {
+    if (call.arguments.nodes.some((a) => ts.isSpreadElement(a))) {
+      lowerer.noLowering("compose with spread arguments", call, "pass the streams directly");
+    }
+    return lowerStreamCompose(lowerer, call.arguments.nodes, loc);
+  }
 
   return null;
 }
@@ -3227,7 +3278,7 @@ function lowerIterableSource(
 interface PipelineStagesLowering {
   args: IrExpr[];
   last: IrType;
-  dest: 0 | 2;
+  dest: 0 | 1 | 2;
   destPromise: (IrType & { kind: "promise" }) | null;
   wrap: (call: IrExpr) => IrExpr;
 }
@@ -3235,9 +3286,10 @@ interface PipelineStagesLowering {
 /** pipeline(...) with function stages (pipeline.js). A function may
  * start the pipeline (a source function, called with `{ signal }`), may
  * end it (an async function whose promise's value reaches the callback or
- * the promise), and runs of async generator functions may sit between
- * streams; the last generator of a run that a stream follows is pumped
- * into that stream. Each stage's `source` parameter is typed as what the
+ * the promise, or an async generator function), and runs of async
+ * generator functions may sit between streams; the last generator of a
+ * run that a stream follows is pumped into that stream. A function
+ * destination feeds the object-mode PassThrough that pipeline() answers. Each stage's `source` parameter is typed as what the
  * pipeline passes it: makeAsyncIterable answers the previous stream
  * itself (a Readable is async iterable) or the previous stage's
  * generator. */
@@ -3245,6 +3297,7 @@ function lowerPipelineStages(
   lowerer: Lowerer,
   stageArgs: readonly ts.Expression[],
   loc: SrcLoc,
+  preLowered?: ReadonlyMap<number, IrExpr>,
 ): PipelineStagesLowering {
   if (stageArgs.length > 52) {
     lowerer.noLowering(
@@ -3258,7 +3311,7 @@ function lowerPipelineStages(
   const helperArgs: IrExpr[] = [];
   let positions = 0;
   let mask = 0;
-  let dest: 0 | 2 = 0;
+  let dest: 0 | 1 | 2 = 0;
   let destPromise: (IrType & { kind: "promise" }) | null = null;
   // What the next function stage receives: null before the first stage,
   // else the previous stream's type or the previous stage's generator.
@@ -3269,14 +3322,19 @@ function lowerPipelineStages(
   const argOrder: { list: IrExpr[]; index: number }[] = [];
   for (let j = 0; j < stageArgs.length; j++) {
     const arg = stageArgs[j]!;
-    const fn = pipelineStageFunction(lowerer, arg);
+    // compose's head and tail functions arrive as Duplex.from streams
+    const fn = preLowered?.has(j) ? null : pipelineStageFunction(lowerer, arg);
     const syncSourceFn =
       j === 0 &&
       fn !== null &&
       !ts.isArrowFunction(fn) &&
       fn.asteriskToken !== undefined &&
       !(fn.modifiers?.nodes ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
-    if (j === 0 && (syncSourceFn || (fn === null && iterableSourceType(lowerer, arg) !== null))) {
+    if (
+      j === 0 &&
+      !preLowered?.has(j) &&
+      (syncSourceFn || (fn === null && iterableSourceType(lowerer, arg) !== null))
+    ) {
       const source = lowerIterableSource(lowerer, arg, syncSourceFn ? fn : null, loc);
       if (source === null) lowerer.noLowering("pipeline over this source", arg);
       positions += 1;
@@ -3302,7 +3360,7 @@ function lowerPipelineStages(
       }
       let stream: IrExpr;
       try {
-        stream = lowerStreamArg(lowerer, arg, "pipeline");
+        stream = preLowered?.get(j) ?? lowerStreamArg(lowerer, arg, "pipeline");
       } catch (e) {
         if (e instanceof StreamArgTypeThrow) lowerer.noLowering("pipeline over this value", arg);
         throw e;
@@ -3315,15 +3373,6 @@ function lowerPipelineStages(
     const isLast = j === stageArgs.length - 1;
     const isAsync = (fn.modifiers?.nodes ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
     const isGen = !ts.isArrowFunction(fn) && fn.asteriskToken !== undefined;
-    if (isLast && isGen) {
-      // pipeline() pumps it into an object-mode PassThrough, whose
-      // buffering decides when the pipeline finishes
-      lowerer.noLowering(
-        "a pipeline destination that is an async generator function",
-        arg,
-        "end the pipeline with a stream or an async function (source) { for await (const chunk of source) ... }",
-      );
-    }
     if (!isAsync || (!isGen && !isLast)) {
       lowerer.noLowering(
         isLast
@@ -3362,6 +3411,14 @@ function lowerPipelineStages(
       dest = 2;
       destPromise = lowered.out;
       srcT = null;
+    } else if (isLast) {
+      // an async generator destination: pumped into the object-mode
+      // PassThrough that pipeline() answers
+      const helpers = fromGenHelpers(lowerer, lowered.out, loc);
+      if (!helpers) lowerer.noLowering("a pipeline destination with this generator type", arg);
+      helperArgs.push(helpers![0]!, helpers![1]!, helpers![2]!);
+      dest = 1;
+      srcT = null;
     } else {
       srcT = lowered.out;
     }
@@ -3397,7 +3454,8 @@ function lowerPipelineStages(
     argDecls.length === 0
       ? call
       : { kind: "seqExpr", stmts: argDecls, result: call, type: call.type, loc };
-  // SCR_PIPE_* flags: bits 1-2 the destination, bit 5 the signal and abort.
+  // SCR_PIPE_* flags: bits 1-2 the destination, bit 5 the signal and
+  // abort (bit 6, the promise form's options signal, is set by its caller).
   const flags = (dest << 1) | (mask !== 0 ? 32 : 0);
   const head: IrExpr[] = [
     numLit(streams.length, loc),
@@ -3410,7 +3468,7 @@ function lowerPipelineStages(
     ...helperArgs,
   ];
   const last: IrType =
-    dest === 2 ? { kind: "object", className: "%PassThrough" } : streams[streams.length - 1]!.type;
+    dest !== 0 ? { kind: "object", className: "%PassThrough" } : streams[streams.length - 1]!.type;
   if (mask === 0) return { args: head, last, dest, destPromise, wrap: bindArgs };
   // const ac = new AbortController(): its signal goes to the stages, and
   // finishImpl's ac.abort() runs through the abort closure.
@@ -3622,6 +3680,166 @@ function lowerStageFunction(
   }
 }
 
+/** The async generator a Duplex.from body iterates (duplexify.js's
+ * fromAsyncGen source), as a closure the runtime calls with next() and
+ * ack(): each pass awaits next() (the deferred a write or the final
+ * settles), calls ack() (process.nextTick(cb) and a fresh deferred),
+ * returns at the done marker, and yields the chunk. */
+function duplexSourceHelper(lowerer: Lowerer, genT: SyncGenType, loc: SrcLoc): IrExpr | null {
+  const nextT = funcOf([], { kind: "promise", inner: DYN });
+  const ackT = funcOf([], VOID);
+  const type = funcOf([nextT, ackT], genT);
+  const key = "duplexSource";
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    const resultType = genResultRecord(DYN, VOID, lowerer.shapes, lowerer.unions);
+    if (!resultType) return null;
+    name = `%stream.duplexSource.${lowerer.valueHelpers.size}`;
+    const frame = new LiftedFrame(loc);
+    const nextId = frame.param("next", nextT);
+    const ackId = frame.param("ack", ackT);
+    const valueId = frame.local("value", DYN, false);
+    const value = varRef(valueId, DYN, loc);
+    const body: IrStmt[] = [
+      {
+        kind: "while",
+        cond: { kind: "boolLit", value: true, type: BOOL, loc },
+        body: [
+          {
+            kind: "varDecl",
+            localId: valueId,
+            init: {
+              kind: "awaitExpr",
+              value: {
+                kind: "callValue",
+                callee: varRef(nextId, nextT, loc),
+                args: [],
+                type: { kind: "promise", inner: DYN },
+                loc,
+              },
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "callValue",
+              callee: varRef(ackId, ackT, loc),
+              args: [],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "if",
+            cond: { kind: "libCall", fn: "stream.chunkDone", args: [value], type: BOOL, loc },
+            then: [{ kind: "return", value: null, loc }],
+            else_: null,
+            loc,
+          },
+          { kind: "exprStmt", expr: { kind: "yieldExpr", value, type: VOID, loc }, loc },
+        ],
+        loc,
+      },
+      { kind: "return", value: null, loc },
+    ];
+    lowerer.valueHelpers.set(key, name);
+    lowerer.liftedFns.push({
+      name,
+      params: frame.params,
+      returnType: VOID,
+      async: true,
+      locals: frame.locals,
+      body,
+      generator: { yieldT: DYN, nextT: UNDEFINED_T, resultType },
+      loc,
+    });
+  }
+  return { kind: "closure", fnName: name, captures: [], type, loc };
+}
+
+/** Duplex.from(body) (duplexify.js) for the bodies with a lowering: an
+ * async generator function, whose source generator the Duplex's writes
+ * feed (stream.duplexFromGen); a duplex stream, which answers itself; and
+ * the bodies Readable.from reads (iterables, strings, generators), as a
+ * Duplexify that is not writable. */
+function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
+  const duplex: IrType = { kind: "object", className: "%Duplex" };
+  const fn = pipelineStageFunction(lowerer, node);
+  if (fn !== null) {
+    const isAsync = (fn.modifiers?.nodes ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+    const isGen = !ts.isArrowFunction(fn) && fn.asteriskToken !== undefined;
+    if (!isAsync || !isGen) {
+      lowerer.noLowering(
+        "Duplex.from over a function that is not an async generator function",
+        node,
+        "write the body as async function* (source) { for await (const chunk of source) ... }",
+      );
+    }
+    if (fn.parameters.nodes.length > 1) {
+      lowerer.noLowering(
+        "a Duplex.from body that declares the options argument",
+        fn.parameters.nodes[1]!,
+        "the body takes only its source",
+      );
+    }
+    const sourceT: SyncGenType = {
+      kind: "generator",
+      async: true,
+      yieldT: DYN,
+      retT: VOID,
+      nextT: UNDEFINED_T,
+    };
+    const lowered = lowerStageFunction(lowerer, fn, sourceT);
+    const helpers =
+      lowered.out.kind === "generator" ? fromGenHelpers(lowerer, lowered.out, loc) : null;
+    const source = duplexSourceHelper(lowerer, sourceT, loc);
+    if (!helpers || !source)
+      lowerer.noLowering("Duplex.from over a function with this generator type", node);
+    return {
+      kind: "libCall",
+      fn: "stream.duplexFromGen",
+      args: [lowered.closure, source!, ...helpers!],
+      type: duplex,
+      loc,
+    };
+  }
+  // duplexify.js: a stream answers itself (a Duplex) or is wrapped; any
+  // other body reads as from(Duplexify, body, { objectMode: true,
+  // writable: false })
+  let bodyT: IrType | null;
+  try {
+    bodyT = lowerer.mapTypeOf(lowerer.typeOf(node));
+  } catch {
+    bodyT = null;
+  }
+  const bodySides =
+    bodyT?.kind === "object" ? streamSidesOf(lowerer, lowerer.classes.get(bodyT.className)) : null;
+  if (bodySides === null) return lowerFromSource(lowerer, node, node, undefined, true);
+  let stream: IrExpr;
+  try {
+    stream = lowerStreamArg(lowerer, node, "compose");
+  } catch (e) {
+    if (e instanceof StreamArgTypeThrow) return e.expr;
+    throw e;
+  }
+  const sides =
+    stream.type.kind === "object"
+      ? streamSidesOf(lowerer, lowerer.classes.get(stream.type.className))
+      : null;
+  if (sides !== "rw") {
+    lowerer.noLowering(
+      `Duplex.from over a ${sides === "r" ? "Readable" : sides === "w" ? "Writable" : "value of this type"}`,
+      node,
+      "an async generator function, an array, a string, a generator, an async generator, or a Duplex, Transform or PassThrough is the lowered body",
+    );
+  }
+  return stream;
+}
+
 /** The checker type of a stage's string or Buffer chunks, or null for
  * other chunk types. */
 function stageChunkCheckerType(lowerer: Lowerer, chunk: IrType, at: ts.Node): ts.Type | null {
@@ -3636,12 +3854,8 @@ function stageChunkCheckerType(lowerer: Lowerer, chunk: IrType, at: ts.Node): ts
  * classes fix which positions can be readable and writable; a stream in
  * the wrong position, a single Readable or Writable (Duplex.from wraps
  * those), and functions, iterables or web streams have no lowering. */
-function lowerStreamCompose(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
-  const args = call.arguments.nodes;
+function lowerStreamCompose(lowerer: Lowerer, args: readonly ts.Expression[], loc: SrcLoc): IrExpr {
   const duplex: IrType = { kind: "object", className: "%Duplex" };
-  if (args.some((a) => ts.isSpreadElement(a))) {
-    lowerer.noLowering("compose with spread arguments", call, "pass the streams directly");
-  }
   if (args.length === 0) {
     return nodeThrowExpr(
       1,
@@ -3651,9 +3865,43 @@ function lowerStreamCompose(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
       loc,
     );
   }
+  for (const a of args) {
+    // (typeOf on a stage function's name would report what collecting its
+    // declared signature deferred)
+    if (pipelineStageFunction(lowerer, a) !== null) continue;
+    if (staticReadableStreamElementType(lowerer, a) !== null) {
+      lowerer.noLowering(
+        "compose with a web ReadableStream",
+        a,
+        "web streams do not convert to Node streams yet; compose Node streams, iterables or async generator functions",
+      );
+    }
+  }
+  // Duplex.from(stage) for one stage (duplexify.js), and for a function at
+  // either end; functions between, an iterable first stage or a source
+  // function run as the pipeline's function stages (compose.js)
+  if (args.length === 1) return duplexFromBody(lowerer, args[0]!, loc);
+  const last = args.length - 1;
+  const isFn = (i: number): boolean => pipelineStageFunction(lowerer, args[i]!) !== null;
+  const pre = new Map<number, IrExpr>();
+  if (isFn(0)) pre.set(0, duplexFromBody(lowerer, args[0]!, loc));
+  if (isFn(last)) pre.set(last, duplexFromBody(lowerer, args[last]!, loc));
+  const staged =
+    args.some((_, i) => !pre.has(i) && isFn(i)) ||
+    (!pre.has(0) && iterableSourceType(lowerer, args[0]!) !== null);
+  if (staged) {
+    const lowered = lowerPipelineStages(lowerer, args, loc, pre);
+    return lowered.wrap({
+      kind: "libCall",
+      fn: "stream.composeStages",
+      args: lowered.args,
+      type: duplex,
+      loc,
+    });
+  }
   let streams: IrExpr[];
   try {
-    streams = args.map((a) => lowerStreamArg(lowerer, a, "compose"));
+    streams = args.map((a, i) => pre.get(i) ?? lowerStreamArg(lowerer, a, "compose"));
   } catch (e) {
     if (e instanceof StreamArgTypeThrow) return e.expr;
     throw e;
@@ -4179,6 +4427,80 @@ function pipeIntoDyn(
   };
 }
 
+/** readable.compose(stage, options): compose(this, stage), with
+ * addAbortSignal(options.signal, composed) when the signal is set
+ * (operators.js). */
+function lowerReadableCompose(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr {
+  const loc = locOf(call);
+  const args = call.arguments.nodes;
+  if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
+    lowerer.noLowering(
+      `readable.compose with ${args.length === 0 ? "no stage" : "these arguments"}`,
+      call,
+      "the supported form is readable.compose(stage) or readable.compose(stage, { signal })",
+    );
+  }
+  let signalNode: ts.Expression | null = null;
+  const options = args[1];
+  if (
+    options !== undefined &&
+    options.kind !== ts.SyntaxKind.NullKeyword &&
+    !(ts.isIdentifier(options) && options.text === "undefined")
+  ) {
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "readable.compose options that are not an object literal",
+        options,
+        "pass { signal } as an object literal",
+      );
+    }
+    for (const p of options.properties.nodes) {
+      const key =
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+        ts.isIdentifier(p.name)
+          ? p.name.text
+          : null;
+      if (key !== "signal") {
+        lowerer.noLowering(
+          key === null
+            ? "readable.compose options with this member"
+            : `the readable.compose option '${key}'`,
+          p,
+          "signal is the readable.compose option",
+        );
+      }
+      const value = ts.isShorthandPropertyAssignment(p)
+        ? (p.name as ts.Identifier)
+        : (p as ts.PropertyAssignment).initializer;
+      if (value.kind === ts.SyntaxKind.NullKeyword) continue;
+      if (ts.isIdentifier(value) && value.text === "undefined") continue;
+      // The signal is read after compose runs, so only values whose
+      // evaluation has no effects.
+      if (!sideEffectFreeOptionValue(value) && !pureRead(value)) {
+        lowerer.noLowering(
+          "the readable.compose option 'signal' with this value",
+          p,
+          "pass a variable or property read (const signal = controller.signal)",
+        );
+      }
+      signalNode = value;
+    }
+  }
+  const composed = lowerStreamCompose(lowerer, [access.expression, args[0]!], loc);
+  if (signalNode === null) return composed;
+  return {
+    kind: "libCall",
+    fn: "stream.addAbortSignal",
+    args: [composed, lowerer.lowerExprExpecting(signalNode, DYN)],
+    type: composed.type,
+    loc,
+  };
+}
+
 export function lowerStreamMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -4190,6 +4512,12 @@ export function lowerStreamMethodCall(
     const opSides = streamSidesOf(lowerer, info);
     if (opSides === "r" || opSides === "rw")
       return lowerStreamOperator(lowerer, call, access, member);
+  }
+  if (member === "compose") {
+    const composeSides = streamSidesOf(lowerer, info);
+    return composeSides === "r" || composeSides === "rw"
+      ? lowerReadableCompose(lowerer, call, access)
+      : null;
   }
   if (!STREAM_API_MEMBERS.has(member)) return null;
   const sides = streamSidesOf(lowerer, info);
