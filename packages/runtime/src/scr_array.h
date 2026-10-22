@@ -68,13 +68,26 @@ typedef struct ScrArrOps {
   /* Registry id (scr_arr_ops_table), 0 until scr_arr_ops_register assigns
    * it on the first array of the type. Descriptors are writable for it. */
   uint32_t id;
-  /* SCR_ARR_OPS_* */
+  /* SCR_ARR_OPS_*. On 64-bit targets the field takes the struct's former
+   * tail padding, so descriptors emitted without it read 0 here; on 32-bit
+   * targets it lies past their end and is never read (scr_arr_ops_compact). */
   uint32_t flags;
 } ScrArrOps;
 
 /* The elements are compact class instances in the program-lifetime region:
  * arrays of the type are SCR_ELEM_CREF (llvm/shapes.ts arrOps). */
 #define SCR_ARR_OPS_COMPACT 1u
+
+/* Whether `ops` describes compact class elements. Compact instances exist
+ * only on 64-bit targets. */
+static inline bool scr_arr_ops_compact(const ScrArrOps *ops) {
+#if UINTPTR_MAX > 0xffffffffu
+  return (ops->flags & SCR_ARR_OPS_COMPACT) != 0;
+#else
+  (void)ops;
+  return false;
+#endif
+}
 
 typedef struct ScrArr {
   size_t rc; /* SIZE_MAX = immortal (unused for arrays; kept per convention) */

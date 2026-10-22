@@ -1417,7 +1417,7 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops_kind(const
 static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops(const ScrArrOps *ops,
                                                                       size_t initial_cap,
                                                                       bool small) {
-  if (__builtin_expect((ops->flags & SCR_ARR_OPS_COMPACT) != 0, 0))
+  if (__builtin_expect(scr_arr_ops_compact(ops), 0))
     return scr_arr_make_ops_kind(ops, initial_cap, small, SCR_ELEM_CREF);
   return scr_arr_make_ops_kind(ops, initial_cap, small, SCR_ELEM_REF);
 }

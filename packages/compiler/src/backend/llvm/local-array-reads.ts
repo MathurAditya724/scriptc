@@ -619,6 +619,18 @@ export function emitBorrowedArrayRead(
     );
     host.markMemoryPointer(dataPtr, "array:header");
     B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
+    if (referenceLoad(host, read.arr.type) === "cref") {
+      // Compact references: 4-byte slots holding the address over 8.
+      const ref = B.tmp();
+      B.line(
+        `${valuePtr} = getelementptr inbounds i32, ptr ${data}, ${host.sizeType} ${loopIndex}`,
+      );
+      host.markMemoryPointer(valuePtr, "array:elements");
+      B.line(`${ref} = load i32, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+      for (const line of compactRefLoadLines(ref, value, `${value}.r`)) B.line(line.trimStart());
+      B.line(`store ptr ${value}, ptr ${slot}`);
+      return;
+    }
     B.line(`${valuePtr} = getelementptr inbounds i64, ptr ${data}, ${host.sizeType} ${loopIndex}`);
     host.markMemoryPointer(valuePtr, "array:elements");
     B.line(`${value} = load ptr, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
