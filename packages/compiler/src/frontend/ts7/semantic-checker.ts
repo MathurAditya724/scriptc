@@ -226,10 +226,9 @@ export class SemanticChecker {
   }
   /** getResolvedSignature for each node. */
   getResolvedSignatures(nodes: readonly AstNode[]): (SemanticSignature | undefined)[] {
-    const data = this.project.request<(SignatureResponse | null)[]>("getResolvedSignatures", {
+    return this.project.requestSignatures("getResolvedSignatures", {
       locations: nodes.map((node) => node.id),
     });
-    return data.map((item) => (item === null ? undefined : this.project.signature(item)));
   }
   getSignatureFromDeclaration(node: AstNode): SemanticSignature | undefined {
     return this.signature("getSignatureFromDeclaration", { location: node.id });
