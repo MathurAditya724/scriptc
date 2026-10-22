@@ -13,8 +13,11 @@
  * A program whose head says `// @order: race` races a timer against I/O
  * whose duration differs between the sides (scriptc's own fs callbacks
  * complete in one turn where Node's readFile takes several; module loading
- * on the first call into Node takes longer than in a Node process), so
- * Node permits orders it rarely produces in M runs. Its native runs must
+ * on the first call into Node takes longer than in a Node process), or two
+ * equal timers armed on either side of an island call, which a millisecond
+ * boundary between them (likely in a sanitized build) puts in different
+ * loop turns, so Node permits orders it rarely produces in M runs. Its
+ * native runs must
  * produce the lines of one of Node's outputs, in any order; the report
  * still records whether the order itself was among Node's.
  *

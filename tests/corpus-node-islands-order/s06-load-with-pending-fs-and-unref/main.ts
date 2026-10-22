@@ -1,4 +1,5 @@
 // @requires-libnode
+// @order: race
 // Switch: fs callbacks and an unref'd timer are pending when Node loads; the
 // unref'd timer must not keep the program alive, the refreshed one must.
 import { callSync } from "@scriptc/node";

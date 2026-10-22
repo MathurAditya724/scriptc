@@ -1,4 +1,5 @@
 // @requires-libnode
+// @order: race
 // X { T 0 { L i-a K { L i-tick } M { L i-micro } I { L i-imm } } } T 0 { L h-t0 M { L h-micro } }
 import { callSync } from "@scriptc/node";
 import { readFile, writeSync } from "node:fs";
