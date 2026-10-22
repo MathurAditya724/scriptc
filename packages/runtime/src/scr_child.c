@@ -2907,6 +2907,7 @@ void scr_children_poll(void) {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -3111,8 +3112,55 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
 static char **scr_exec_envp(ScrArr *pairs);
 static void scr_exec_envp_free(char **envp);
 
+/* The executable `file` names when `envp` replaces the child's
+ * environment, found as libuv finds it: a name with a '/' is used as
+ * given; otherwise each entry of the replacement's PATH (an empty entry
+ * is the current directory), or of the default path when the replacement
+ * has no PATH, is tried in order. Returns a malloc'd path, or NULL with
+ * *err set: EACCES when a candidate exists but cannot run, else ENOENT. */
+static char *scr_spawn_path_lookup(const char *file, char *const *envp, int *err) {
+  if (strchr(file, '/')) {
+    char *copy = strdup(file);
+    if (!copy) scr_child_oom();
+    return copy;
+  }
+  const char *path = "/usr/bin:/bin";
+  for (char *const *e = envp; *e; e++) {
+    if (strncmp(*e, "PATH=", 5) == 0) {
+      path = *e + 5;
+      break;
+    }
+  }
+  size_t file_len = strlen(file);
+  bool denied = false;
+  for (const char *dir = path;;) {
+    const char *end = strchr(dir, ':');
+    size_t dir_len = end ? (size_t)(end - dir) : strlen(dir);
+    const char *prefix = dir_len ? dir : ".";
+    size_t prefix_len = dir_len ? dir_len : 1;
+    char *candidate = malloc(prefix_len + 1 + file_len + 1);
+    if (!candidate) scr_child_oom();
+    memcpy(candidate, prefix, prefix_len);
+    candidate[prefix_len] = '/';
+    memcpy(candidate + prefix_len + 1, file, file_len + 1);
+    struct stat st;
+    if (stat(candidate, &st) == 0) {
+      if (S_ISREG(st.st_mode) && access(candidate, X_OK) == 0) return candidate;
+      denied = true;
+    } else if (errno == EACCES) {
+      denied = true;
+    }
+    free(candidate);
+    if (!end) break;
+    dir = end + 1;
+  }
+  *err = denied ? EACCES : ENOENT;
+  return NULL;
+}
+
 /* env_pairs: NULL inherits the parent's environment; else [k,v,...]
- * replaces it, as Node's `env` option does. */
+ * replaces it, as Node's `env` option does, and the command is looked up
+ * on the replacement's PATH (scr_spawn_path_lookup). */
 static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                          int killsig, int in_mode, int out_mode,
                                          int err_mode, ScrArr *env_pairs) {
@@ -3152,8 +3200,16 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   char **argv = scr_child_argv(cmd, args);
   char **envp = env_pairs != NULL ? scr_exec_envp(env_pairs) : NULL;
   pid_t pid = -1;
-  int spawn_err = posix_spawnp(&pid, cmd->data, &fa, NULL, argv,
-                               envp != NULL ? envp : environ);
+  int spawn_err;
+  if (envp != NULL) {
+    char *resolved = scr_spawn_path_lookup(cmd->data, envp, &spawn_err);
+    if (resolved) {
+      spawn_err = posix_spawn(&pid, resolved, &fa, NULL, argv, envp);
+      free(resolved);
+    }
+  } else {
+    spawn_err = posix_spawnp(&pid, cmd->data, &fa, NULL, argv, environ);
+  }
   posix_spawn_file_actions_destroy(&fa);
   free(argv);
   scr_exec_envp_free(envp);
