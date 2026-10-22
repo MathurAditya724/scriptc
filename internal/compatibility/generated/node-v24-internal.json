@@ -19313,6 +19313,9 @@
           "tests/corpus/6703-ecdh-private-keys.ts",
           "tests/corpus/6704-ecdh-set-public-key.cjs",
           "tests/corpus/6705-ecdh-handles.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -19700,6 +19703,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -19736,6 +19742,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -21734,6 +21743,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -21770,6 +21782,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -21806,6 +21821,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -21842,6 +21860,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -21878,6 +21899,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -21914,6 +21938,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -21950,6 +21977,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -21986,6 +22016,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22022,6 +22055,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22058,6 +22094,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22094,6 +22133,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
@@ -22130,6 +22172,9 @@
           "tests/corpus/5257-cipher-vectors.ts",
           "tests/corpus/5258-cipher-handles.js",
           "tests/corpus/5259-cipher-chunked.ts",
+          "tests/corpus/7055-cipher-streams.ts",
+          "tests/corpus/7056-cipher-stream-errors.ts",
+          "tests/corpus/7057-cipher-streams.mjs",
           "tests/fixtures/node-types/cipher.ts"
         ]
       },
