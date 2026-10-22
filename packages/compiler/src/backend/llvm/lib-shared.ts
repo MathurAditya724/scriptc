@@ -615,8 +615,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.generateKeySync": "scr_crypto_generate_key_sync",
   "crypto.keyObjectInput": "scr_crypto_key_object_input",
   "crypto.isKeyObject": "scr_crypto_is_key_object",
-  "webcrypto.importKey": "scr_webcrypto_import_key",
   "webcrypto.generateKey": "scr_webcrypto_generate_key",
+  "webcrypto.importKey": "scr_webcrypto_import_key",
   "webcrypto.exportKey": "scr_webcrypto_export_key",
   "webcrypto.encrypt": "scr_webcrypto_encrypt",
   "webcrypto.decrypt": "scr_webcrypto_decrypt",
@@ -1039,6 +1039,14 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.x509ValidFromStr": "scr_crypto_x509_valid_from_str",
   "crypto.x509ValidTo": "scr_crypto_x509_valid_to",
   "crypto.x509ValidToStr": "scr_crypto_x509_valid_to_str",
+  "crypto.createPrivateKey": "scr_crypto_create_private_key",
+  "crypto.createPublicKey": "scr_crypto_create_public_key",
+  "crypto.generateKeyPairSync": "scr_crypto_generate_key_pair_sync",
+  "crypto.generateKeyPairCb": "scr_crypto_generate_key_pair_async",
+  "crypto.signOneshot": "scr_crypto_sign_oneshot",
+  "crypto.verifyOneshot": "scr_crypto_verify_oneshot",
+  "crypto.createSign": "scr_crypto_create_sign",
+  "crypto.createVerify": "scr_crypto_create_verify",
   "fs.writeFileModeSync": "scr_fs_write_file_mode",
   "fs.chownSync": "scr_fs_chown",
   "fs.lchownSync": "scr_fs_lchown",
@@ -1584,6 +1592,7 @@ export function mockTimerSym(
 }
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
+  "crypto.generateKeyPairCb",
   "process.emitWarning",
   // Constructor-function streams defer their events on the stream ticks.
   "dyn.builtinStreamClass",
