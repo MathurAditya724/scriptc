@@ -65,9 +65,14 @@ interface ImplementationShim {
   /** The package's declaration entry relative to its directory, when it
    * is not `index.d.ts`. */
   typesFile?: string;
+  /** An alternative entry for this installation (relative to the shim
+   * root), or undefined for the version's own entry. */
+  variant?: (pkgDir: string) => string | undefined;
+  /** Every variant entry, for the guard test that compiles each one. */
+  variants?: readonly string[];
 }
 
-const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
+const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map<string, ImplementationShim>([
   [
     "fs-extra",
     {
@@ -100,6 +105,13 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map([
       mainFile: "index.js",
       typesFile: "types.d.ts",
       versions: new Map([[8, "hot-shots/v8.ts"]]),
+      // hot-shots' uds protocol loads the optional unix-dgram addon: where
+      // it is installed, the entry with the native Unix datagram transport.
+      variant: (pkgDir: string) =>
+        installedPackageDir(join(pkgDir, "index.js"), "unix-dgram") === null
+          ? undefined
+          : "hot-shots/v8-unix-dgram.ts",
+      variants: ["hot-shots/v8-unix-dgram.ts"],
     },
   ],
   [
@@ -164,8 +176,10 @@ export function throughBundledShimForwarder(resolved: string): string {
  * the guard test that compiles each one. */
 export function packageShimEntries(): string[] {
   const entries = new Set<string>();
-  for (const shim of IMPLEMENTATION_SHIMS.values())
+  for (const shim of IMPLEMENTATION_SHIMS.values()) {
     for (const entry of shim.versions.values()) entries.add(join(packageShimRoot(), entry));
+    for (const entry of shim.variants ?? []) entries.add(join(packageShimRoot(), entry));
+  }
   return [...entries].sort();
 }
 
@@ -263,7 +277,8 @@ function shimEntryForPackageDir(pkgDir: string, expectedName: string | null): st
   if (shim === undefined) return null;
   const major = Number(/^(\d+)\./.exec(pkg.version)?.[1] ?? NaN);
   const entry = shim.versions.get(major);
-  return entry === undefined ? null : join(packageShimRoot(), entry);
+  if (entry === undefined) return null;
+  return join(packageShimRoot(), shim.variant?.(pkgDir) ?? entry);
 }
 
 /** The shim module `specifier` resolves to from `fromFile`, or null. Only
@@ -353,6 +368,12 @@ export function packageShimDeclarationText(path: string): string | undefined {
 export function isPackageShimFile(fileName: string): boolean {
   const root = tsgoPath(packageShimRoot());
   return fileName.startsWith(root.endsWith("/") ? root : `${root}/`);
+}
+
+/** True for a name a shipped shim may declare as a bodiless runtime
+ * intrinsic (lower-calls.ts lowers its calls to runtime calls). */
+export function isShimIntrinsicName(name: string): boolean {
+  return name.startsWith("scriptcUnixDgram");
 }
 
 /** Resets per-compile caches. */

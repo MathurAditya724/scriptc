@@ -45,6 +45,7 @@ import { errorToStringCall } from "./error-methods.js";
 import { lowerClassPrototypeAssign, lowerClassPrototypeDescriptors } from "./class-prototypes.js";
 import {
   BYTES_ELEMENT_NAME,
+  BYTES_U8,
   BIGINT_T,
   BOOL,
   CAUGHT,
@@ -53,6 +54,7 @@ import {
   F64,
   type IrExpr,
   type IrFunction,
+  type IrLibFn,
   type IrLocal,
   type IrParam,
   type IrStmt,
@@ -76,6 +78,7 @@ import {
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
+import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import {
@@ -291,6 +294,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   {
     const codeGeneration = codeGenerationCalleeOf(lowerer, expr.expression);
     if (codeGeneration !== null) return lowerCodeGenerationCall(lowerer, expr, codeGeneration);
+  }
+  // A package shim's runtime intrinsic (a bodiless `declare function`
+  // named scriptcUnixDgram* in a shipped shim): a direct runtime call.
+  if (ts.isIdentifier(expr.expression) && isShimIntrinsicName(expr.expression.text)) {
+    const intrinsic = lowerShimIntrinsicCall(lowerer, expr, expr.expression, loc);
+    if (intrinsic) return intrinsic;
   }
   // Inline require() of a program module (cjs-inline-require.ts): a
   // member call over its export table resolves like a binding's member
@@ -10957,4 +10966,38 @@ function fenceClassCopyIntoFreshObject(
     srcNode,
     `Object.assign copying a '${lowerer.fmt(rawSource.type)}' instance into a fresh object typed as the class (the copy is a plain object holding the instance's own fields, not an instance — build the object literal from the fields you need)`,
   );
+}
+
+/** The runtime calls package shims declare as bodiless functions. */
+const SHIM_INTRINSICS: ReadonlyMap<string, { fn: IrLibFn; args: IrType[]; ret: IrType }> = new Map<
+  string,
+  { fn: IrLibFn; args: IrType[]; ret: IrType }
+>([
+  ["scriptcUnixDgramSocket", { fn: "dgram.unixSocket", args: [], ret: F64 }],
+  ["scriptcUnixDgramConnect", { fn: "dgram.unixConnect", args: [F64, STRING], ret: F64 }],
+  ["scriptcUnixDgramSend", { fn: "dgram.unixSend", args: [F64, BYTES_U8], ret: F64 }],
+  ["scriptcUnixDgramClose", { fn: "dgram.unixClose", args: [F64], ret: F64 }],
+]);
+
+function lowerShimIntrinsicCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  callee: ts.Identifier,
+  loc: SrcLoc,
+): IrExpr | null {
+  const intrinsic = SHIM_INTRINSICS.get(callee.text);
+  if (intrinsic === undefined) return null;
+  const decl = lowerer.checker.getSymbolAtLocation(callee)?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isFunctionDeclaration(decl) ||
+    decl.body ||
+    !isPackageShimFile(ts.getSourceFileOfNode(decl).fileName) ||
+    expr.arguments.nodes.length !== intrinsic.args.length
+  )
+    return null;
+  const args = expr.arguments.nodes.map((arg, i) =>
+    lowerer.lowerExprExpecting(arg, intrinsic.args[i]!),
+  );
+  return { kind: "libCall", fn: intrinsic.fn, args, type: intrinsic.ret, loc };
 }
