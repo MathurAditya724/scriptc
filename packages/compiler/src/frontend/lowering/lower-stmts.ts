@@ -3653,11 +3653,7 @@ function lowerUnionObjectPattern(
   for (const el of pattern.elements.nodes) {
     if (el.name === undefined) continue;
     if (el.dotDotDotToken) {
-      lowerer.unsupported(
-        "SC1031",
-        el,
-        `rest bindings over '${lowerer.fmt(srcType)}' sources (${NARROW_FIRST})`,
-      );
+      lowerer.unsupported("SC1031", el, `rest bindings over union sources (${NARROW_FIRST})`);
     }
     const prop = el.propertyName ?? el.name;
     const propName =
@@ -3692,7 +3688,7 @@ function lowerUnionObjectPattern(
       lowerer.unsupported(
         "SC1031",
         el,
-        `destructuring '${propName}' from a '${lowerer.fmt(srcType)}' source (every arm must be a record or class with a same-typed field '${propName}' — ${NARROW_FIRST})`,
+        `destructuring '${propName}' from a union whose arms type it differently (every arm must be a record or class with a same-typed field '${propName}' — ${NARROW_FIRST})`,
       );
     }
     let value: IrExpr = {

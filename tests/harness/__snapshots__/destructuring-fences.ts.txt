@@ -19,7 +19,7 @@ destructuring-fences.ts:31:9 - error SC1090: reading a property that has only a 
      |         ^~~~~~
   32 | console.log(onlyIn);
 
-destructuring-fences.ts:45:11 - error SC1031: destructuring 'b' from a '{ b: string; count: number; kind: string } | { b: number; kind: string; label: string }' source (every arm must be a record or class with a same-typed field 'b' — narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) is not supported yet
+destructuring-fences.ts:45:11 - error SC1031: destructuring 'b' from a union whose arms type it differently (every arm must be a record or class with a same-typed field 'b' — narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) is not supported yet
 
   44 | function fromUnion(u: E1 | E2): string {
   45 |   const { b } = u; // union source whose arms type the field differently: narrow first
