@@ -564,14 +564,16 @@ export function inlineRcFamily(host: ShapeHost, stem: string, op: RcOp): InlineR
 }
 
 /** Which RC fast paths an emission inlines. `speed` mirrors every family
- * with a fast path. `release` mirrors only the string retain and the dyn
- * retain and release: the operations that dominate dynamic-value and string
- * code, at almost no size cost. String releases stay calls in `release`
- * because string-heavy programs have many release sites. */
+ * with a fast path. `release` mirrors only the string and Map retains and
+ * the dyn retain and release: the operations that dominate dynamic-value,
+ * string and Map code (a Map read from an array or another Map), at almost
+ * no size cost. String releases stay calls in `release` because
+ * string-heavy programs have many release sites. */
 export type InlineRcMode = "release" | "speed";
 
 const RELEASE_RC_OPS = new Set([
   "str:retain",
+  "map:retain",
   "dyn:retain",
   "dyn:release",
   "js:retain",
