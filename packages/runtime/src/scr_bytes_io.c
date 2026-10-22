@@ -1300,9 +1300,10 @@ ScrBytes *scr_buffer_concat_len_dyn(const ScrDyn *list, double total) {
 }
 
 /* Buffer.from(arrayBuffer) over a checked value: a Buffer over all of the
- * ArrayBuffer or SharedArrayBuffer that shares its memory, as in Node. A
- * second argument would be the byte offset, and an encoding name converts
- * to NaN, which is offset 0. */
+ * ArrayBuffer or SharedArrayBuffer that shares its memory, as in Node. The
+ * calls that reach it have no second argument or a literal encoding name,
+ * which as a byte offset converts to NaN, offset 0; other second arguments
+ * take scr_buffer_from_dyn_offset_pooled, which applies the offset. */
 static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage) {
   ScrBytes *out = scr_bytes_buffer_view(storage->v.handle.ptr, SCR_BYTES_U8, 0, false, 0);
   if (out) out->is_buffer = true;
@@ -1379,6 +1380,42 @@ ScrBytes *scr_buffer_from_dyn_ref_pooled(const ScrDyn *value, const ScrStr *enco
     return out;
   }
   return scr_buffer_from_dyn_pooled(value, encoding);
+}
+
+/* Buffer.from(value, second) over checked values whose second argument is
+ * not a literal encoding name: an ArrayBuffer or SharedArrayBuffer takes it
+ * as the byte offset, as Node's fromArrayBuffer does (undefined and NaN are
+ * 0, the rest of the buffer is the length, ERR_BUFFER_OUT_OF_BOUNDS past the
+ * end); other values convert as scr_buffer_from_dyn_ref_pooled with utf8. */
+ScrBytes *scr_buffer_from_dyn_offset_pooled(const ScrDyn *value, const ScrDyn *second) {
+  if (!scr_buffer_storage_is(value)) {
+    ScrStr *utf8 = scr_str_new("utf8", 4);
+    ScrBytes *out = scr_buffer_from_dyn_ref_pooled(value, utf8);
+    scr_str_release(utf8);
+    return out;
+  }
+  double offset = 0;
+  if (second->kind != SCR_DYN_UNDEF) {
+    if (!scr_dyn_number_coerce_js(second, &offset)) return NULL;
+    if (isnan(offset)) offset = 0;
+  }
+  ScrBytes *storage = value->v.handle.ptr;
+  ScrBytes *owner = storage->backing ? storage->backing : storage;
+  if ((double)scr_bytes_byte_len(owner) - offset < 0) {
+    static const char msg[] = "\"offset\" is outside of buffer bounds";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_BUFFER_OUT_OF_BOUNDS");
+    return NULL;
+  }
+  double start = trunc(offset);
+  if (start < 0) {
+    char msg[96];
+    int n = snprintf(msg, sizeof msg, "Start offset %.0f is outside the bounds of the buffer", start);
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)n);
+    return NULL;
+  }
+  ScrBytes *out = scr_bytes_buffer_view(storage, SCR_BYTES_U8, start, false, 0);
+  if (out) out->is_buffer = true;
+  return out;
 }
 
 /* new Buffer(number, encoding) — the deprecated ctor's string arm with a

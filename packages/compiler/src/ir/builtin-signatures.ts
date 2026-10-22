@@ -2921,6 +2921,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "buffer.poolFromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
   /** poolFromDyn that also copies an array crossing by reference. */
   "buffer.poolFromDynRef": { argTypes: [DYN, STRING], result: BYTES_U8 },
+  "buffer.poolFromDynOffset": { argTypes: [DYN, DYN], result: BYTES_U8 },
   "buffer.poolSize": { argTypes: [], result: F64 },
   "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
