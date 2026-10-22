@@ -36,6 +36,7 @@ import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context
 import type { NullableRefField } from "./nullable-fields.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
+import { recordMayKeepSource } from "./record-sources.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
  * (the unit arm's immortal instance, or a fresh box around a retained
@@ -539,6 +540,12 @@ export function streamTypedRefCommitAdapter(
       `  store ${member.type} %old${index}, ptr %np${index}`,
     );
   });
+  // The conversion kept the view's undeclared properties for %next. Shapes
+  // with accessor slots keep their accessors in the view instead.
+  if (recordMayKeepSource(shape) && !shapeHasAccessorSlots(shape)) {
+    host.declare(`declare void @scr_record_source_move(ptr, ptr)`);
+    lines.push(`  call void @scr_record_source_move(ptr %next, ptr %target)`);
+  }
   lines.push(
     `  call void ${releaseSym(host.shapeHost, t)}(ptr %next)`,
     `  br label %done`,

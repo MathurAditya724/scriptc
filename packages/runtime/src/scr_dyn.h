@@ -892,6 +892,11 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
+/* The commit of a live record view converts the view into a new record
+ * `from`, whose conversion keeps the view's undeclared properties, then
+ * moves its fields into `to`: this moves the kept properties to `to` too,
+ * replacing any `to` had. */
+void scr_record_source_move(void *from, void *to);
 ScrDyn *scr_record_source_view(const void *rec);
 ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec);
 /* Attach the prototype member names of a class instance capsule
