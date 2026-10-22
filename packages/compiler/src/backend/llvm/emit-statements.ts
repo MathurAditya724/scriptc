@@ -803,6 +803,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         const lp = workerBudget !== null ? B.newLabel("loop.p") : lc;
         B.br(lc);
         B.startBlock(lc);
+        enterLoopHeader(emitter, lc);
         B.condBr(emitter.emitCondition(s.cond), lb, exit);
         B.startBlock(lb);
         emitter.jumpTargets.push({
@@ -835,6 +836,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         const lc = B.newLabel("loop.c");
         B.br(lb);
         B.startBlock(lb);
+        enterLoopHeader(emitter, lb);
         emitter.jumpTargets.push({
           kind: "loop",
           brkLabel: exit,
@@ -1135,6 +1137,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           s.update || capturedLets.length > 0 || workerBudget !== null ? B.newLabel("loop.u") : lc;
         B.br(lc);
         B.startBlock(lc);
+        enterLoopHeader(emitter, lc);
         if (integerLoop && integerSlot) {
           const receiver = emitter.emitStableReceiver(integerLoop.limitReceiver, []);
           const lenPtr = B.tmp();
@@ -1885,6 +1888,10 @@ export function emitSwitch(emitter: LlEmitter, s: IrStmt & { kind: "switch" }): 
   B.startBlock(end);
 }
 
+/** Entries in a row whose fast copy bailed before a speculative loop site
+ * stops trying it. */
+const SPECULATION_BAILS = 8;
+
 /** Emit a loop's condition, body and update through `emitCopy`, twice
  * when speculative-integers.ts plans a fast integer copy. Both copies
  * share the loop's setup and exit; the ordinary copy comes first so the
@@ -1939,23 +1946,66 @@ export function emitLoopCopies(
       ok = both;
     }
   }
+  // Each entry whose fast copy bails counts at the loop site, and a fast
+  // copy that completes a speculated write and leaves the loop clears the
+  // count. After SPECULATION_BAILS bailing entries in a row, the site runs
+  // the ordinary copy only. The count is a hint: both copies give the same
+  // results, and a race between workers loses at most an update.
+  const bails = `@scr.spec.bails.${emitter.speculativeLoopSites++}`;
+  emitter.declare(`${bails} = internal global i8 0`);
+  const count = B.tmp(),
+    trying = B.tmp();
+  B.line(`${count} = load atomic i8, ptr ${bails} unordered, align 1`);
+  B.line(`${trying} = icmp ult i8 ${count}, ${SPECULATION_BAILS}`);
+  if (ok === "true") ok = trying;
+  else {
+    const both = B.tmp();
+    B.line(`${both} = and i1 ${ok}, ${trying}`);
+    ok = both;
+  }
   const fast = B.newLabel("spec.fast"),
     slow = B.newLabel("spec.slow");
   B.condBr(ok, fast, slow);
   const resume = new Map<IrStmt, { label: string; placed: boolean }>();
   for (const s of plan.writes) resume.set(s, { label: B.newLabel("spec.resume"), placed: false });
+  // A failed check finishes its iteration in a third copy, entered only
+  // there: it re-executes the statement and the rest of the body and the
+  // update, then enters the ordinary copy through its header. Jumping
+  // into the middle of the ordinary copy instead would give that loop a
+  // second entry, and LLVM does not optimize an irreducible loop.
+  const points = [...resume.values()];
+  let header: string | null = null;
   B.startBlock(slow);
+  emitter.speculationHeader = (label) => {
+    header = label;
+  };
+  try {
+    emitCopy(exit);
+  } finally {
+    emitter.speculationHeader = null;
+  }
+  if (header === null)
+    throw new InternalCompilerError("llvm emitter bug: speculative loop copy without a header");
+  B.startBlock(B.newLabel("spec.tail"));
   emitter.speculationResume = resume;
+  emitter.speculationHeader = () => {
+    B.br(header!);
+    B.startBlock(B.newLabel("spec.unused"));
+  };
   try {
     emitCopy(exit);
   } finally {
     emitter.speculationResume = null;
+    emitter.speculationHeader = null;
   }
   B.startBlock(fast);
-  if (![...resume.values()].every((r) => r.placed)) {
+  if (!points.every((r) => r.placed)) {
     B.br(slow);
     return;
   }
+  const ran = B.slot();
+  B.entryAllocas.push(`${ran} = alloca i1 ; speculated write completed`);
+  B.line(`store i1 false, ptr ${ran}`);
   for (const id of plan.locals.keys()) {
     const shadow = B.slot();
     B.entryAllocas.push(
@@ -1992,20 +2042,41 @@ export function emitLoopCopies(
     writes: plan.writes,
     resume: new Map([...resume].map(([s, r]) => [s, r.label])),
     deferred,
+    bails,
+    ran,
   };
   try {
-    if (deferred.size === 0) emitCopy(exit);
-    else {
-      const leave = B.newLabel("spec.leave");
-      emitCopy(leave);
-      B.startBlock(leave);
-      emitter.writeBackDeferred(deferred);
-      B.br(exit);
-    }
+    const leave = B.newLabel("spec.leave");
+    emitCopy(leave);
+    B.startBlock(leave);
+    emitter.writeBackDeferred(deferred);
+    // An entry that never ran a speculated write (a loop of no iterations)
+    // says nothing about the site.
+    const wrote = B.tmp(),
+      left = B.tmp(),
+      counted = B.tmp(),
+      both = B.tmp(),
+      clear = B.newLabel("spec.clear");
+    B.line(`${wrote} = load i1, ptr ${ran}`);
+    B.line(`${left} = load atomic i8, ptr ${bails} unordered, align 1`);
+    B.line(`${counted} = icmp ne i8 ${left}, 0`);
+    B.line(`${both} = and i1 ${wrote}, ${counted}`);
+    B.condBr(both, clear, exit);
+    B.startBlock(clear);
+    B.line(`store atomic i8 0, ptr ${bails} unordered, align 1`);
+    B.br(exit);
   } finally {
     emitter.speculation = null;
     for (const id of plan.locals.keys()) emitter.integerLoopBindings.delete(id);
   }
+}
+
+/** At the top of a loop copy's header: lets a speculative loop find its
+ * ordinary copy's header, and keeps its third copy out of the loop. */
+function enterLoopHeader(emitter: LlEmitter, header: string): void {
+  const dispatch = emitter.speculationHeader;
+  emitter.speculationHeader = null;
+  dispatch?.(header);
 }
 
 /** A proven integer loop (speculative-integers.ts) for this loop, or null.
@@ -2134,7 +2205,8 @@ export function emitSpeculativeWrite(
   if (emitter.frames.pop()!.length > 0)
     throw new InternalCompilerError("llvm emitter bug: speculative write owns a temporary");
   B.line(`store i64 ${result}, ptr ${binding.slot}`);
-  const deferred = emitter.speculation!.deferred;
+  const { deferred, bails: site, ran } = emitter.speculation!;
+  if (ran !== undefined) B.line(`store i1 true, ptr ${ran}`);
   if (!deferred.has(target.localId)) {
     const number = B.tmp();
     B.line(`${number} = sitofp i64 ${result} to double`);
@@ -2145,6 +2217,14 @@ export function emitSpeculativeWrite(
   B.br(done);
   B.startBlock(failed);
   emitter.writeBackDeferred(deferred);
+  if (site !== undefined) {
+    const count = B.tmp(),
+      next = B.tmp();
+    emitter.declare("declare i8 @llvm.uadd.sat.i8(i8, i8)");
+    B.line(`${count} = load atomic i8, ptr ${site} unordered, align 1`);
+    B.line(`${next} = call i8 @llvm.uadd.sat.i8(i8 ${count}, i8 1)`);
+    B.line(`store atomic i8 ${next}, ptr ${site} unordered, align 1`);
+  }
   B.br(resume!);
   B.startBlock(done);
 }
