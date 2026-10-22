@@ -308,7 +308,7 @@ void scr_cyc_free(void *obj); /* frees the block, header included */
 
 void *scr_mem_realloc(void *p, size_t n);
 void *scr_rt_calloc(size_t n); /* emitted-code entry points */
-#if defined(__linux__) && SIZE_MAX > UINT32_MAX
+#if defined(__linux__) && SCR_SMALL_ALLOC
 /* The program-lifetime region (scr_alloc.c): compact class instances of
  * programs built for Linux without sanitizers (llvm/emitter.ts
  * lowRegionTarget), which are never freed, at 8-byte aligned addresses below

@@ -1930,6 +1930,10 @@ void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset) {
  * mallinfo2, the Darwin malloc zones, the Windows CRT heap, or the
  * sanitizer's allocator in sanitized builds). Walks the free lists, so
  * the cost grows with the number of free blocks. */
+#if defined(__linux__) && SCR_SMALL_ALLOC
+static void scr_plr_heap_stats(size_t *held, size_t *used);
+#endif
+
 void scr_heap_stats(double *total, double *used) {
   size_t held = 0, idle = 0;
 #if SCR_SMALL_ALLOC
@@ -1980,13 +1984,21 @@ void scr_heap_stats(double *total, double *used) {
     sys_used = s.allocated;
   }
 #endif
+#if defined(__linux__) && SCR_SMALL_ALLOC
+  /* Compact class instances (the program-lifetime region below). */
+  size_t region_held, region_used;
+  scr_plr_heap_stats(&region_held, &region_used);
+  sys_held += region_held;
+  sys_used += region_used;
+#endif
   *total = (double)(held + sys_held);
   *used = (double)(held - (idle < held ? idle : held) + sys_used);
 }
 
 /* ── program-lifetime region ────────────────────────────────────────────
  * Instances of compact classes (llvm/classes.ts LlClassMeta.compact) in
- * programs built for Linux without sanitizers live in one address range
+ * programs built for Linux without sanitizers (runtimes with the size-class
+ * allocator, SCR_SMALL_ALLOC) live in one address range
  * reserved for the whole process below 32 GiB, so a field that holds one
  * can store its address over 8 in 32 bits (0 stays NULL). The instances
  * are never freed. Each thread carves them from its own chunks of
@@ -1994,7 +2006,7 @@ void scr_heap_stats(double *total, double *used) {
  * Pages are committed by first touch and start zeroed. Its strings are
  * arrays rather than literals: programs without compact classes then link
  * none of this, where literals would stay in the unit's merged strings. */
-#if defined(__linux__) && SIZE_MAX > UINT32_MAX
+#if defined(__linux__) && SCR_SMALL_ALLOC
 #include <sys/mman.h>
 
 #define SCR_PLR_CHUNK ((size_t)1 << 20)
@@ -2012,10 +2024,13 @@ void scr_heap_stats(double *total, double *used) {
 static char *scr_plr_base; /* the range's start, once reserved */
 static size_t scr_plr_size;
 static size_t scr_plr_top; /* atomic */
+/* Bytes of the chunks threads hold, and of the tails they left unused when
+ * they moved to a new chunk (scr_heap_stats); atomic. */
+static size_t scr_plr_held, scr_plr_waste;
 #if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
-_Thread_local ScrPlrChunk scr_plr_chunk;
+_Thread_local ScrPlrChunk scr_plr_chunk = {NULL, NULL};
 #else
-ScrPlrChunk scr_plr_chunk;
+ScrPlrChunk scr_plr_chunk = {NULL, NULL};
 #endif
 
 /* Reserves `size` bytes at `at` exactly; NULL if refused. */
@@ -2072,6 +2087,7 @@ static __attribute__((noinline)) void scr_plr_reserve(void) {
  * chunk a thread takes registers scr_plr_thread_end. */
 #define SCR_PLR_LINK 16
 static _Thread_local char *scr_plr_mine;
+static _Thread_local size_t scr_plr_mine_waste; /* this thread's part of scr_plr_waste */
 static pthread_key_t scr_plr_end_key;
 static pthread_once_t scr_plr_end_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t scr_plr_free_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -2112,6 +2128,9 @@ static void scr_plr_thread_end(void *unused) {
     c = next;
   }
   static const char stats_line[] = "scr_sa: thread returned %zu MB of program-lifetime objects\n";
+  __atomic_fetch_sub(&scr_plr_held, returned, __ATOMIC_RELAXED);
+  __atomic_fetch_sub(&scr_plr_waste, scr_plr_mine_waste, __ATOMIC_RELAXED);
+  scr_plr_mine_waste = 0;
   const char *stats = getenv("SCR_SA_STATS");
   if (stats && stats[0] == '1') fprintf(stderr, stats_line, returned >> 20);
 }
@@ -2162,6 +2181,14 @@ static __attribute__((noinline)) void *scr_plr_refill(size_t n) {
 #ifdef SCR_SA_TRIM
   scr_plr_own(p, chunk);
 #endif
+  if (scr_plr_chunk.next) {
+    size_t left = (size_t)(scr_plr_chunk.limit - scr_plr_chunk.next);
+    __atomic_fetch_add(&scr_plr_waste, left, __ATOMIC_RELAXED);
+#ifdef SCR_SA_TRIM
+    scr_plr_mine_waste += left;
+#endif
+  }
+  __atomic_fetch_add(&scr_plr_held, chunk, __ATOMIC_RELAXED);
   scr_plr_chunk.next = p + SCR_PLR_LINK + n;
   scr_plr_chunk.limit = p + chunk;
   return p + SCR_PLR_LINK;
@@ -2171,6 +2198,13 @@ static __attribute__((noinline)) void *scr_plr_refill(size_t n) {
  * before any reference into it does. */
 void scr_plr_init(void) {
   if (!__atomic_load_n(&scr_plr_base, __ATOMIC_ACQUIRE)) scr_plr_reserve();
+}
+
+static void scr_plr_heap_stats(size_t *held, size_t *used) {
+  size_t h = __atomic_load_n(&scr_plr_held, __ATOMIC_RELAXED);
+  size_t w = __atomic_load_n(&scr_plr_waste, __ATOMIC_RELAXED);
+  *held = h;
+  *used = w < h ? h - w : 0;
 }
 
 void *scr_plr_alloc(size_t n) {
