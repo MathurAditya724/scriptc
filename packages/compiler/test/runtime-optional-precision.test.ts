@@ -102,6 +102,31 @@ console.log(copy.map((item) => weigh(item)).join(","));
   expect(signature(spread, "weigh")).toBe("weigh(Item|undefined): f64");
 });
 
+test("holes stored through a dynamic view widen callbacks over the arrays it views", async () => {
+  const viewed = await lower(`${ITEM}
+const items: Item[] = [new Item(1)];
+const view: unknown[] = items;
+view[3] = new Item(2);
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(viewed, "weigh")).toBe("weigh(Item|undefined): f64");
+  // A dynamic store cannot reach an element type no dynamic value views.
+  const other = await lower(`${ITEM}
+const items: Item[] = [new Item(1)];
+const values: unknown[] = [1];
+values[3] = 2;
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(other, "weigh")).toBe("weigh(Item): f64");
+  // A view without stores that leave holes keeps the parameters.
+  const read = await lower(`${ITEM}
+const items: Item[] = [new Item(1)];
+const view: unknown[] = items;
+console.log(view.length, items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(read, "weigh")).toBe("weigh(Item): f64");
+});
+
 test("holes that only their owning slot can observe stay out of callbacks", async () => {
   const module = await lower(`${ITEM}
 class Cache {
