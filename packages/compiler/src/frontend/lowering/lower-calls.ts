@@ -3776,7 +3776,14 @@ function lowerDynReceiverMethodCall(
   }
   // The argument is a radix for bigint and an encoding for Buffer.
   // Preserve its runtime value so receiver dispatch can choose correctly.
-  if (access.name.text === "toString" && call.arguments.nodes.length <= 1) {
+  // An authored own `toString` member (zod's `errorUtil.toString`, which
+  // answers string | undefined) is an ordinary method call instead.
+  if (
+    access.name.text === "toString" &&
+    call.arguments.nodes.length <= 1 &&
+    !ownCallable &&
+    !(checkerUntyped && jsAssignsOwnToString(lowerer, access.expression))
+  ) {
     const argument = call.arguments.nodes[0];
     return {
       kind: "libCall",
@@ -3886,12 +3893,22 @@ function lowerDynReceiverMethodCall(
   // The same holds when only the MEMBER is checker-untyped: TypeScript
   // importing chalk's JavaScript source types the default export as a
   // plain function, so `chalk.bold` reads as `any` on a typed receiver.
+  const ownToString =
+    access.name.text === "toString" &&
+    checkerUntyped &&
+    jsAssignsOwnToString(lowerer, access.expression);
   const stringOnlyName =
     (checkerUntyped ||
       (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) &&
     !ownCallable &&
     DYN_STRING_PROTO_ONLY_NAMES.has(access.name.text);
-  if (DYN_PROTO_METHOD_NAMES.has(access.name.text) && !ownCallable && !stringOnlyName) return null;
+  if (
+    DYN_PROTO_METHOD_NAMES.has(access.name.text) &&
+    !ownCallable &&
+    !ownToString &&
+    !stringOnlyName
+  )
+    return null;
   // Optional forms (`obj.cb?.()`, `obj?.cb()`) belong to the chain
   // machinery's short-circuit semantics — not modeled here yet.
   if (call.questionDotToken || access.questionDotToken) return null;
@@ -6175,7 +6192,21 @@ export function lowerPromiseMethodCall(
         `then handlers whose parameter is not the settled value's type (expected '${lowerer.fmt(inner)}', got '${lowerer.fmt(param)}')`,
       );
     }
-    const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+    let resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+    // JavaScript whose declared result type has no mapping (zod's
+    // `Promise.all(items).then((r) => ParseStatus.mergeArray(status, r))`,
+    // typed by a .d.ts union): the handler's value settles the promise as
+    // a checked-dynamic value, checked where it is used.
+    if (
+      resultT?.kind !== "promise" &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      cb.type.kind === "func" &&
+      cb.type.ret.kind !== "promise" &&
+      cb.type.ret.kind !== "void" &&
+      (cb.type.ret.kind === "dyn" || lowerer.dynConvertible(cb.type.ret))
+    ) {
+      resultT = { kind: "promise", inner: DYN };
+    }
     if (resultT?.kind !== "promise") {
       lowerer.noLowering(
         "then with this handler's result type",
@@ -10938,4 +10969,21 @@ function fenceClassCopyIntoFreshObject(
     srcNode,
     `Object.assign copying a '${lowerer.fmt(rawSource.type)}' instance into a fresh object typed as the class (the copy is a plain object holding the instance's own fields, not an instance — build the object literal from the fields you need)`,
   );
+}
+
+/** True when an untyped JavaScript receiver names a binding whose declaring
+ * file assigns it an own `toString` (the TypeScript namespace downlevel
+ * `errorUtil.toString = (message) => ...` in zod): its calls answer what
+ * that function returns, not Object.prototype.toString's string. */
+function jsAssignsOwnToString(lowerer: Lowerer, receiver: ts.Expression): boolean {
+  if (!ts.isIdentifier(receiver)) return false;
+  let sym = lowerer.checker.getSymbolAtLocation(receiver);
+  if (sym !== undefined && (sym.flags & ts.SymbolFlags.Alias) !== 0)
+    sym = lowerer.checker.getAliasedSymbol(sym);
+  const decl = sym?.valueDeclaration ?? sym?.declarations[0];
+  if (decl === undefined) return false;
+  const sf = ts.getSourceFileOfNode(decl);
+  if (!isJsSourceFile(sf)) return false;
+  const name = ts.symbolName(sym!);
+  return new RegExp(`\\b${name.replace(/[$]/g, "\\$")}\\.toString\\s*=[^=]`).test(sf.text);
 }
