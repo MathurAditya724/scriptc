@@ -69,6 +69,7 @@ import {
   builtinModuleConstOf,
   builtinModuleFnOf,
   builtinModulesArrayLit,
+  identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
 import { builtinConstantsObject } from "../lower-builtin-values.js";
@@ -753,7 +754,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return lowerGlobalValue(lowerer, expr);
   }
   {
-    const sym = lowerer.checker.getSymbolAtLocation(expr);
+    const sym = identifierReadSymbol(lowerer, expr);
     // The temporal global is typed (TS 7's lib slice) but Node 24 does
     // not define it: the read throws Node's ReferenceError.
     if (isTemporalGlobalRoot(lowerer, expr, sym)) {

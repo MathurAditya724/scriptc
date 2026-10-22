@@ -659,6 +659,9 @@ ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed);
 ScrDyn *scr_dyn_native_set(ScrMap *value); /* borrowed backing, +1 box */
 bool scr_dyn_native_set_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_map(ScrMap *value); /* borrowed backing, +1 box */
+/* `new Map(entries)` over a checked-dynamic seed: +1, or NULL with the
+ * exception pending. */
+ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed);
 bool scr_dyn_native_map_is(const ScrDyn *value);
 void scr_regex_reset_last_index(ScrRegex *re, double index);
 ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags);
@@ -879,6 +882,12 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee);
 bool scr_dyn_data_view_is(const ScrDyn *value);
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
+/* Installed by scr_dyn_invoke.c when it interns a builtin constructor value
+ * (scr_dyn_global_constructor): false when `callee` is not one of them;
+ * otherwise true with `new callee(...args)` in *result (+1, or NULL with
+ * the exception pending). */
+extern SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args,
+                                                  ScrDyn **result);
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key);
 /* The Buffer-flavored twin (stream chunks): string coercion/toString
  * decode utf8 instead of joining elements. */

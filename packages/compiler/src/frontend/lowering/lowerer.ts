@@ -3303,6 +3303,9 @@ export class Lowerer {
    * the class and constructed-class counts, it tells caches over the class
    * graph when the graph changed. */
   subclassLinks = 0;
+  /** Function-local classes by the class node they extend, built on first
+   * use (localSubclassesOf in lower-classes.ts). */
+  localSubclassIndex: Map<ts.Node, ts.ClassLikeDeclaration[]> | null = null;
   /** Set while a subclass constructor's super() call notes its base
    * constructor edge: that edge does not instantiate the base exactly. */
   private superConstructorEdge = false;
@@ -11377,8 +11380,8 @@ export class Lowerer {
     }
   }
 
-  lowerClassExpression(expr: ts.ClassLikeDeclaration): IrExpr {
-    return lowerClassExpression(this, expr);
+  lowerClassExpression(expr: ts.ClassLikeDeclaration, binding?: IrLocal): IrExpr {
+    return lowerClassExpression(this, expr, binding);
   }
 
   /* ── the class graph (single inheritance) ─────────────────────────── */

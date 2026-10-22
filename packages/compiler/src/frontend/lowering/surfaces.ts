@@ -3366,6 +3366,17 @@ export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined):
  *     tamper-guard prologue) registered in stdlibGlobalAliases;
  *   - a const binding of the Map or Set constructor (`const M = Map`,
  *     builtinClassAliasOf). */
+/** The symbol an identifier reads. A shorthand property's name (`{ Date }`)
+ * reads the binding of the same name, not the property it declares. */
+export function identifierReadSymbol(lowerer: Lowerer, expr: ts.Identifier): ts.Symbol | undefined {
+  if (expr.parent && ts.isShorthandPropertyAssignment(expr.parent) && expr.parent.name === expr)
+    return (
+      lowerer.checker.getShorthandAssignmentValueSymbol(expr.parent) ??
+      lowerer.checker.getSymbolAtLocation(expr)
+    );
+  return lowerer.checker.getSymbolAtLocation(expr);
+}
+
 export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
   if (ts.isParenthesizedExpression(expr)) return stdlibGlobalNameOf(lowerer, expr.expression);
   // The global-object detection chain (`typeof global < "u" ? global :
@@ -3377,7 +3388,7 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     return stdlibGlobalNameOf(lowerer, taken ? expr.whenTrue : expr.whenFalse);
   }
   if (ts.isIdentifier(expr)) {
-    const symbol = lowerer.checker.getSymbolAtLocation(expr);
+    const symbol = identifierReadSymbol(lowerer, expr);
     // `globalThis` itself: a reserved intrinsic — tsc rejects user
     // global bindings, but local parameters can shadow it. Its special
     // symbol has no ordinary declarations for the provenance check.

@@ -1527,7 +1527,7 @@ ScrMap *scr_map_clone(const ScrMap *source, bool keys_only, const ScrMapOps *ops
 const ScrMapOps scr_map_dyn_set_ops = {
   scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v, NULL, NULL, NULL, NULL
 };
-static const ScrMapOps scr_map_dyn_map_ops = {
+const ScrMapOps scr_map_dyn_map_ops = {
   scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v,
   scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v, NULL
 };

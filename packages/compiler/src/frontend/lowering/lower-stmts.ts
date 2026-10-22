@@ -1523,6 +1523,14 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     const info = lowerer.lowerClassExpressionInfo(stmt);
     const type: IrType = { kind: "classval", className: info.def.name };
     const local = lowerer.declareLocal(stmt.name, stmt.name.text, type, true);
+    // Static members of a function-local class run while the class value is
+    // built and may read the class by name: the class value assigns the
+    // binding before them.
+    if (info.localClass && (info.runtimeStatics || info.runtimePrototypeMembers))
+      return [
+        { kind: "varDecl", localId: local.id, init: null, loc: locOf(stmt) },
+        { kind: "exprStmt", expr: lowerer.lowerClassExpression(stmt, local), loc: locOf(stmt) },
+      ];
     const init = lowerer.lowerClassExpression(stmt);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(stmt) };
   }
