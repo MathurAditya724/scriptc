@@ -1,4 +1,4 @@
-import { onlyForwarded } from "./typed-arguments.js";
+import { onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
 import {
   needsGeneralNodeStreams,
   noteUntypedStreamFlow,
@@ -12046,11 +12046,11 @@ export class Lowerer {
     return this.stagedArgument(expr) ?? lowerExpr(this, expr);
   }
 
-  /** The saved value of a staged fs argument (stagedArguments), or null for
-   * every other expression. */
+  /** The saved value of a staged fs argument (stagedArguments, keyed
+   * without type-only wrappers), or null for every other expression. */
   private stagedArgument(node: ts.Expression): IrExpr | null {
     if (this.stagedArguments.size === 0) return null;
-    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    node = stripTypeWrappers(node);
     if (!this.stagedArguments.has(node)) return null;
     const slot = this.stagedArguments.get(node);
     if (!slot)

@@ -103,6 +103,16 @@ console.log("uid", uid);
 uid = -1;
 attempt("chown order scheme", () => fs.chownSync(new URL("http://a/"), uid, bumpUid()));
 console.log("uid", uid);
+// A later argument with effects inside a type-only wrapper runs once.
+let modeCalls = 0;
+function countedMode(): number {
+  modeCalls++;
+  return 0o600;
+}
+attempt("satisfies", () => fs.chmodSync(file, countedMode() satisfies number));
+attempt("as", () => fs.chmodSync(file, countedMode() as number));
+attempt("non-null", () => fs.chmodSync(file, countedMode()!));
+console.log("mode calls", modeCalls);
 
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("done", fs.existsSync(dir));

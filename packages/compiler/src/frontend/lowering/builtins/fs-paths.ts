@@ -15,6 +15,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { sideEffectFreeOptionValue } from "../surfaces.js";
+import { stripTypeWrappers } from "../typed-arguments.js";
 import { type IrExpr, type IrStmt, STRING, URL_T } from "../../../ir/ir.js";
 
 /** The fs functions whose path parameters accept a URL: the path
@@ -142,8 +143,9 @@ function checkUrlPaths(
   for (let i = first + 1; i < args.length; i++) if (!sideEffectFreeOptionValue(args[i]!)) last = i;
   const staged: ts.Expression[] = [];
   for (let i = first + 1; i <= last; i++) {
-    let e = args[i]!;
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    // Keyed without type-only wrappers (`satisfies`, `as`, `!`), so a
+    // lowering that reads through them finds the saved value.
+    const e = stripTypeWrappers(args[i]!);
     // Literals are read by their members, so a whole-value slot cannot
     // hold them.
     if (ts.isObjectLiteralExpression(e) || ts.isArrayLiteralExpression(e)) {
