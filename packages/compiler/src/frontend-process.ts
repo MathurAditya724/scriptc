@@ -8,11 +8,14 @@ try {
 } catch {
   // Bytecode caching only speeds up loading.
 }
-const { runFrontendProcess } = await import("./index.js");
+const { collectGarbageUnderHeapPressure, runFrontendProcess } = await import("./index.js");
 let input = "";
 for await (const chunk of process.stdin) input += String(chunk);
 const [requestPath, resultPath] = input.split("\n");
-if (requestPath !== undefined && requestPath !== "" && resultPath !== undefined)
+if (requestPath !== undefined && requestPath !== "" && resultPath !== undefined) {
+  // As in the CLI process, lowering and LLVM emission collect the heap as they grow it.
+  collectGarbageUnderHeapPressure();
   await runFrontendProcess(requestPath, resultPath);
+}
 // The frontend's own helpers (the checker process, timers) must not keep this process alive.
 process.exit(0);

@@ -19,7 +19,7 @@
 #include <string.h>
 
 /* Sparse entries live in the array's out-of-line storage. */
-static size_t arr_sparse_len(const ScrArr *a) { return a->ext ? a->ext->sparse_len : 0; }
+static size_t arr_sparse_len(const ScrArr *a) { return scr_arr_ext_of(a) ? scr_arr_ext_of(a)->sparse_len : 0; }
 
 #ifdef SCR_RC_AUDIT
 long scr_str_live_count(void); /* provided by scr_string.c */
@@ -396,8 +396,8 @@ static MockRec *mock_cyc_new(int value) {
   return r;
 }
 
-static const ScrArrOps mock_ops = { &mock_retain, &mock_release, NULL };
-static const ScrArrOps mock_cyc_ops = { &mock_cyc_retain, &mock_cyc_release, &mock_trace };
+static ScrArrOps mock_ops = { &mock_retain, &mock_release, NULL };
+static ScrArrOps mock_cyc_ops = { &mock_cyc_retain, &mock_cyc_release, &mock_trace };
 
 static void test_ref_elements(void) {
 #ifdef SCR_RC_AUDIT
@@ -442,6 +442,58 @@ static void test_ref_elements(void) {
 #ifdef SCR_RC_AUDIT
   check(scr_arr_live_count() == arrays0, "ref: no arrays leaked");
 #endif
+}
+
+/* Element ops past the registry's capacity: every descriptor still finds its
+ * own retain and release, and the first ones keep their registry ids. */
+static void test_ops_overflow(void) {
+  enum { N = SCR_ARR_OPS_OVERFLOW + 8 };
+  static ScrArrOps many[N];
+  static ScrArr *arrays[N];
+  for (int i = 0; i < N; i++) many[i] = (ScrArrOps){ &mock_retain, &mock_release, NULL, 0 };
+  for (int i = 0; i < N; i++) {
+    arrays[i] = scr_arr_new_ops(&many[i], 0);
+    scr_arr_push_ref(arrays[i], mock_new(i));
+  }
+  check(scr_arr_ops(arrays[0]) == &many[0], "a registered descriptor answers by id");
+  check(scr_arr_ops(arrays[N - 1]) == &many[N - 1], "an overflow descriptor answers through the array");
+  check(many[N - 1].id == SCR_ARR_OPS_OVERFLOW, "descriptors past the table get the overflow id");
+  MockRec *r = (MockRec *)scr_arr_get_ref(arrays[N - 1], 0);
+  check(r->rc == 2 && r->value == N - 1, "an overflow array retains through its own ops");
+  mock_release(r);
+  for (int i = 0; i < N; i++) scr_arr_release(arrays[i]);
+  check(mock_live == 0, "overflow arrays release their elements");
+}
+
+/* An array with out-of-line storage keeps it through every change of its
+ * dense allocation: growth, head room, unshift into new room, sorting
+ * (which rebuilds the storage) and a sparse tail. */
+static void test_ext_through_storage_changes(void) {
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_f64(a, -1, 7); /* a noncanonical property: out-of-line storage */
+  check(scr_arr_ext_of(a) != NULL, "a numeric property creates out-of-line storage");
+  for (int i = 0; i < 100; i++) scr_arr_push_f64(a, 100 - i);
+  check_f64(scr_arr_get_f64(a, -1), 7, "the property survives growth");
+  for (int i = 0; i < 40; i++) scr_arr_shift_f64(a);
+  check_f64(scr_arr_get_f64(a, -1), 7, "the property survives head room");
+  for (int i = 0; i < 60; i++) scr_arr_unshift_f64(a, 1000 + i);
+  check_f64(scr_arr_len(a), 120, "unshift after shifts keeps the length");
+  check_f64(scr_arr_get_f64(a, -1), 7, "the property survives new head room");
+  ScrArr *same = scr_arr_sort_primitive(a, false);
+  check(same == a, "an in-place sort returns the array");
+  check_f64(scr_arr_get_f64(a, 0), 1, "sorting reorders the values");
+  check_f64(scr_arr_get_f64(a, -1), 7, "the property survives a sort");
+  scr_arr_set_f64(a, 5000000, 9); /* a sparse tail entry */
+  check(arr_sparse_len(a) == 1 && scr_arr_get_f64(a, 5000000) == 9, "a sparse entry joins the out-of-line storage");
+  scr_arr_release(same); /* the sort's result reference */
+  scr_arr_release(a);
+
+  ScrArr *empty = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_f64(empty, 0.5, 3);
+  check_f64(scr_arr_get_f64(empty, 0.5), 3, "an array without elements keeps a property");
+  scr_arr_push_f64(empty, 1);
+  check_f64(scr_arr_get_f64(empty, 0.5), 3, "the property survives the first element");
+  scr_arr_release(empty);
 }
 
 static void test_ref_cycle(void) {
@@ -1522,7 +1574,11 @@ static void test_inline_slots(void) {
   scr_arr_push_ref(words, scr_str_new("a", 1));
   scr_arr_push_ref(words, scr_str_new("b", 1));
   scr_arr_set_ref(words, 3000000, scr_str_new("far", 3));
-  check(inline_slots(words) && arr_sparse_len(words) == 1, "a far index leaves inline slots in place");
+  /* A sparse entry needs out-of-line storage, whose pointer lives before the
+   * dense allocation: the inline slots move out of line with their values. */
+  check(!inline_slots(words) && arr_sparse_len(words) == 1 &&
+            strcmp(((ScrStr *)scr_arr_peek_ref(words, 1))->data, "b") == 0,
+        "a far index moves the inline slots out of line");
   scr_arr_unshift_ref(words, scr_str_new("z", 1));
   check(!inline_slots(words) && scr_arr_len(words) == 3000002 &&
             strcmp(((ScrStr *)scr_arr_peek_ref(words, 0))->data, "z") == 0 &&
@@ -2149,6 +2205,8 @@ int main(int argc, char **argv) {
   test_nested_rc();
   test_index_of_includes();
   test_ref_elements();
+  test_ops_overflow();
+  test_ext_through_storage_changes();
   test_ref_cycle();
   test_ref_truncate_cycle();
   test_ref_trace_storage_boundaries();

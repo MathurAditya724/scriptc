@@ -511,6 +511,40 @@ test("preorder traversal preserves depth, skipped subtrees and early termination
   expect(prefix).toEqual(expected.slice(0, 7));
 });
 
+test("preorder walks from every node match a recursive visit of every file", () => {
+  const kinds = new Set<AstNode["kind"]>([AstKind.Identifier, AstKind.JSDocTypeLiteral]);
+  for (const [name, { file, oracle }] of decoded) {
+    expect(file.wire.preorder(), name).not.toBeNull();
+    for (let index = 1; index < file.wire.nodeCount; index++) {
+      if (file.wire.kind(index) === KIND_NODE_LIST) continue;
+      const expected: [number, number][] = [];
+      const selected: [number, number][] = [];
+      const visit = (node: OracleNode, depth: number): void => {
+        expected.push([node.index, depth]);
+        if (kinds.has(node.kind)) selected.push([node.index, depth]);
+        node.forEachChild((child) => {
+          visit(child as OracleNode, depth + 1);
+        });
+      };
+      visit(oracle.getOrCreateNodeAtIndex(index), 0);
+      const actual: [number, number][] = [];
+      walkPreorder(file.node(index), (node, depth) => {
+        actual.push([node.index, depth]);
+      });
+      expect(actual, `${name}:${index}`).toEqual(expected);
+      const actualSelected: [number, number][] = [];
+      walkPreorder(
+        file.node(index),
+        (node, depth) => {
+          actualSelected.push([node.index, depth]);
+        },
+        kinds,
+      );
+      expect(actualSelected, `${name}:${index}`).toEqual(selected);
+    }
+  }
+});
+
 test("child traversal still rejects a sibling belonging to another parent", () => {
   const { file, bytes } = decoded.get("main.ts")!;
   let parent = 0;
