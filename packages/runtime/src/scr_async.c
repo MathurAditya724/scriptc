@@ -774,6 +774,17 @@ void scr_als_restore(ScrAlsCtx *prev) {
   *SCR_ALS_SLOT() = prev; /* ownership moves back in */
 }
 
+ScrAlsCtx *scr_als_dispatch_enter(ScrAlsCtx *ctx) {
+  ScrAlsCtx **slot = SCR_ALS_SLOT();
+  ScrAlsCtx *prev = *slot;
+  *slot = scr_als_ctx_retain(ctx);
+  return prev;
+}
+
+void scr_als_dispatch_leave(ScrAlsCtx *prev) { scr_als_restore(prev); }
+
+ScrAlsCtx *scr_als_capture(void) { return scr_als_ctx_retain(*SCR_ALS_SLOT()); }
+
 /* The value of `id` in the active snapshot (borrowed), or NULL. */
 ScrDyn *scr_als_peek(double id) {
   const ScrAlsCtx *c = *SCR_ALS_SLOT();

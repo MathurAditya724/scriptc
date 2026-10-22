@@ -1390,7 +1390,9 @@
           "tests/corpus/5815-als-callback-context.ts",
           "tests/corpus/7110-als-completion-callbacks.ts",
           "tests/corpus/7111-als-bind-snapshot-options.ts",
-          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -1443,7 +1445,9 @@
           "tests/corpus/5815-als-callback-context.ts",
           "tests/corpus/7110-als-completion-callbacks.ts",
           "tests/corpus/7111-als-bind-snapshot-options.ts",
-          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1519,7 +1523,9 @@
           "tests/corpus/5815-als-callback-context.ts",
           "tests/corpus/7110-als-completion-callbacks.ts",
           "tests/corpus/7111-als-bind-snapshot-options.ts",
-          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1549,7 +1555,9 @@
           "tests/corpus/5815-als-callback-context.ts",
           "tests/corpus/7110-als-completion-callbacks.ts",
           "tests/corpus/7111-als-bind-snapshot-options.ts",
-          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1579,7 +1587,9 @@
           "tests/corpus/5815-als-callback-context.ts",
           "tests/corpus/7110-als-completion-callbacks.ts",
           "tests/corpus/7111-als-bind-snapshot-options.ts",
-          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1609,7 +1619,9 @@
           "tests/corpus/5815-als-callback-context.ts",
           "tests/corpus/7110-als-completion-callbacks.ts",
           "tests/corpus/7111-als-bind-snapshot-options.ts",
-          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1639,7 +1651,9 @@
           "tests/corpus/5815-als-callback-context.ts",
           "tests/corpus/7110-als-completion-callbacks.ts",
           "tests/corpus/7111-als-bind-snapshot-options.ts",
-          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1946,6 +1960,8 @@
           "tests/corpus/7110-als-completion-callbacks.ts",
           "tests/corpus/7111-als-bind-snapshot-options.ts",
           "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -2511,7 +2527,9 @@
           "tests/corpus/5815-als-callback-context.ts",
           "tests/corpus/7110-als-completion-callbacks.ts",
           "tests/corpus/7111-als-bind-snapshot-options.ts",
-          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs"
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs"
         ]
       },
       "anchorSource": "exact"

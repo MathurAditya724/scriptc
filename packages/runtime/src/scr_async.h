@@ -192,6 +192,15 @@ ScrDyn *scr_als_get(double id); /* +1; the undefined value when unset */
 ScrAlsCtx *scr_als_enter(double id, ScrDyn *value); /* borrows value; prev out (owned) */
 ScrAlsCtx *scr_als_enter_absent(double id);         /* exit()'s cleared arm */
 void scr_als_restore(ScrAlsCtx *prev);              /* moves prev back in */
+/* A runtime dispatch (an I/O event the loop delivers, a deferred emit)
+ * runs its listeners in the AsyncLocalStorage context of the object or
+ * request Node would run them in: enter installs `ctx` (borrowed, NULL
+ * for no store) and answers the previous context, which leave puts back.
+ * A store a listener enters (enterWith) ends with the dispatch. */
+ScrAlsCtx *scr_als_dispatch_enter(ScrAlsCtx *ctx);
+void scr_als_dispatch_leave(ScrAlsCtx *prev);
+/* The active context, +1 (NULL outside a store): what a handle keeps. */
+ScrAlsCtx *scr_als_capture(void);
 void scr_als_enter_with(double id, ScrDyn *value);  /* no restore point (enterWith) */
 void scr_als_disable(double id);
 /* run/exit: enter (or clear), call the dyn function with the forwarded

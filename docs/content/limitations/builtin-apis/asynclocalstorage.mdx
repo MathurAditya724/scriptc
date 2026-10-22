@@ -1,4 +1,7 @@
 - **AsyncLocalStorage:** timer, interval, `setImmediate`, `process.nextTick` and `queueMicrotask` callbacks run with the stores that were active when they were scheduled, as in Node.
   The completion callbacks of `fs`, `crypto` and `zlib` callback APIs, `dns.lookup`, `child_process.execFile`, `server.listen`, `net.connect`, `http.request`, `http.get` and `dgram` run with the stores that were active at the call, as in Node.
-  Event listeners on sockets, requests, responses and streams, stream callbacks such as `write(chunk, callback)`, `server.close(callback)`, and the callbacks of `https` and `tls` calls run with no store, where Node runs them in the context of the resource or of the code that triggers them.
+  Events of `net`, `tls`, `http` and `https` sockets, servers, requests and responses run with the stores Node runs them with.
+  A socket's or client request's events see the context of the call that created it, and a server's events and its requests' and responses' events see the context of its `listen()` call.
+  Socket `write` and `end` callbacks, `'finish'` and `server.close(callback)` see the context of their call.
+  Events and callbacks of other streams run with no store, where Node runs them in the context of the code that triggers them.
   `AsyncResource` has no lowering yet.
