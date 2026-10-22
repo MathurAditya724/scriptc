@@ -1,4 +1,3 @@
-import { keyedHelperName } from "./stable-names.js";
 import { nodeThrowExpr, varRef } from "../../ir/build.js";
 import {
   BOOL,
@@ -123,7 +122,7 @@ export function checkedClassAssertion(
   const key = `classassert:${typeKey(source.type)}:${typeKey(target)}`;
   let name = lowerer.coercions.retags.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%class.assert", key);
+    name = `%class.assert.${lowerer.coercions.retags.size}`;
     lowerer.coercions.retags.set(key, name);
     const input = varRef("value.0", source.type, loc);
     const body: IrStmt[] = [];
@@ -229,7 +228,7 @@ export function checkedClassUnionAssertion(
   const key = `classunionassert:${typeKey(value.type)}:${typeKey(target)}`;
   let name = lowerer.coercions.retags.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%class.assert", key);
+    name = `%class.assert.${lowerer.coercions.retags.size}`;
     lowerer.coercions.retags.set(key, name);
     const input = varRef("value.0", value.type, loc);
     const locals = [{ id: "value.0", name: "value", type: value.type, mutable: false }];

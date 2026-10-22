@@ -1,4 +1,3 @@
-import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, boolLit } from "../../ir/build.js";
 /* The dgram/dns-surface lowering (node:dgram + node:dns — a spoke module
  * like lower-server.ts): module-function calls (dgram createSocket, dns
@@ -358,7 +357,7 @@ function checkedDynPromise(
   const key = `dns.promise:${typeKey(declared)}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%dns.promise", key);
+    helper = `%dns.promise.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, helper);
     const promiseT: IrType = { kind: "promise", inner: DYN };
     lowerer.liftedFns.push({
@@ -892,7 +891,7 @@ export function lowerPromisifiedDnsCall(
   const key = `dnsPromise:${JSON.stringify(value)}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%dnsPromise", key);
+    name = `%dnsPromise.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,

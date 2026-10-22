@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { stdinKeypressListener } from "./readline.js";
 import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
 import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -1562,7 +1561,7 @@ export function lowerProcessMethodCall(
     const key = `${prefix}usage.diff:${prevT.shapeId}:${t.shapeId}`;
     let helper = lowerer.valueHelpers.get(key);
     if (!helper) {
-      helper = keyedHelperName(lowerer, `%${prefix}usage.diff`, key);
+      helper = `%${prefix}usage.diff.${lowerer.valueHelpers.size}`;
       lowerer.valueHelpers.set(key, helper);
       const pRef: IrExpr = { kind: "varRef", localId: "p.0", type: prevT, loc };
       const fieldOf = (name: string): IrExpr => ({
@@ -1637,7 +1636,7 @@ export function lowerProcessMethodCall(
     const key = `process.memoryUsage:${t.shapeId}`;
     let helper = lowerer.valueHelpers.get(key);
     if (!helper) {
-      helper = keyedHelperName(lowerer, "%process.memoryUsage", key);
+      helper = `%process.memoryUsage.${lowerer.valueHelpers.size}`;
       lowerer.valueHelpers.set(key, helper);
       lowerer.liftedFns.push({
         name: helper,

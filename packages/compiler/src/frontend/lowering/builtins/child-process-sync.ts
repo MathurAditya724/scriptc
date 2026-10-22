@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
 import { lowerChildArgsArg } from "./child-process.js";
 import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -542,7 +541,7 @@ function execStdioModeHelper(
   const key = `cp.stdiomode:${shapeId}:${fd}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, `%cp.stdioMode.${fd}`, key);
+  const name = `%cp.stdioMode.${fd}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   const optsT: IrType = { kind: "record", shapeId };
 

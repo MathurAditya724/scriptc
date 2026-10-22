@@ -1252,6 +1252,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },
   "atomics.notify": { argTypes: [bytesOf("i32"), F64, F64], result: F64 },
   "atomics.op": { argTypes: [null, F64, F64, F64, F64], result: F64 },
+  "atomics.opDyn": { argTypes: [DYN, F64, F64, F64, F64], result: F64 },
+  "atomics.waitDyn": { argTypes: [DYN, F64, F64, F64], result: STRING },
+  "atomics.notifyDyn": { argTypes: [DYN, F64, F64], result: F64 },
   "worker.new": { argTypes: [F64, STRING, DYN], result: DYN },
   "worker.isMainThread": { argTypes: [], result: BOOL },
   "worker.threadId": { argTypes: [], result: F64 },
@@ -2852,10 +2855,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * one dyn array and answers a promise that argument and validation
    * failures reject. CryptoKey values are native handles. */
   "webcrypto.importKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.generateKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.exportKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.encrypt": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.decrypt": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.deriveBits": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.deriveKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.verify": { argTypes: [DYN], result: { kind: "promise", inner: BOOL } },
   "webcrypto.digest": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.isCryptoKey": { argTypes: [DYN], result: BOOL },
+  "webcrypto.object": { argTypes: [], result: DYN },
   "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
   "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
   "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
@@ -2924,6 +2934,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "buffer.poolFromDyn": { argTypes: [DYN, STRING], result: BYTES_U8 },
   /** poolFromDyn that also copies an array crossing by reference. */
   "buffer.poolFromDynRef": { argTypes: [DYN, STRING], result: BYTES_U8 },
+  "buffer.poolFromDynOffset": { argTypes: [DYN, DYN], result: BYTES_U8 },
   "buffer.poolSize": { argTypes: [], result: F64 },
   "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like

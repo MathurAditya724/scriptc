@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { dynUndefinedExpr, boolLit, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, ladderFenceExpr } from "../lowerer.js";
@@ -443,7 +442,7 @@ export function lowerStringOrBytesWrite(
   const key = `fs.${append ? "append" : "write"}:${dataType.unionId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%fs.writeData", key);
+    helper = `%fs.writeData.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, helper);
     const body: IrStmt[] = [];
     for (let tag = 0; tag < arms.length; tag++) {

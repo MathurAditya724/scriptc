@@ -23,7 +23,6 @@
  * The entry handles that itable.find and itable.insert answer stay inside
  * these lowerings: f64 locals that only reach toBool and itable.value.
  * Any other use of the class or its members as values is refused. */
-import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { BOOL, F64, STRING, funcOf, typeKey } from "../../ir/ir.js";
 import type { IrExpr, IrFunction, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
@@ -448,11 +447,7 @@ function helperName(lowerer: Lowerer, member: InternTableMember, signature: stri
 }
 
 function registerHelper(lowerer: Lowerer, member: InternTableMember, signature: string): string {
-  const name = keyedHelperName(
-    lowerer,
-    `%${INTERN_TABLE_CLASS}.${member}`,
-    `${member}|${signature}`,
-  );
+  const name = `%${INTERN_TABLE_CLASS}.${member}.${lowerer.internTableHelpers.size}`;
   lowerer.internTableHelpers.set(`${member}|${signature}`, name);
   return name;
 }

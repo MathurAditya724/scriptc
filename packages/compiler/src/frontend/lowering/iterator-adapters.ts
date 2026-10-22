@@ -1,4 +1,3 @@
-import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import {
   BOOL,
@@ -87,7 +86,7 @@ function dynIteratorAdapter(
   const key = `iterAdapt:${typeKey(expected)}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%iter.adapt", key);
+    name = `%iter.adapt.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     const locals: IrLocal[] = [];
     const local = (id: string, type: IrType, mutable = false): IrExpr => {
@@ -314,7 +313,7 @@ export function lowerCollectionIteratorValue(
         loc,
       };
     if (!typeEquals(yielded.type, type.yieldT)) return null;
-    name = keyedHelperName(lowerer, "%coll.iter", key);
+    name = `%coll.iter.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,
@@ -412,7 +411,7 @@ export function lowerBytesIteratorValue(
   const key = `bytesIter:${method}:${typeKey(bytesT)}:${typeKey(type)}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%bytes.iter", key);
+    name = `%bytes.iter.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     const list = varRef("list.0", bytesT, loc);
     const index = varRef("index.0", F64, loc);
@@ -518,7 +517,7 @@ export function lowerStringIteratorValue(
   const key = `strIter:${typeKey(type)}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
-    name = keyedHelperName(lowerer, "%str.iter", key);
+    name = `%str.iter.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     const text = varRef("text.0", STRING, loc);
     const index = varRef("index.0", F64, loc);
@@ -678,7 +677,7 @@ function generatorRetypeAdapter(
       type: resumeType(expected.nextT),
       loc,
     };
-    name = keyedHelperName(lowerer, "%gen.retype", key);
+    name = `%gen.retype.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,
@@ -795,7 +794,7 @@ export function generatorDrain(
     const outRef = varRef("out.0", arrT, loc);
     const value = lowerer.coerceToExpected(genValue(genRef, loc), elem);
     if (!typeEquals(value.type, elem)) return null;
-    name = keyedHelperName(lowerer, "%gen.drain", key);
+    name = `%gen.drain.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,
@@ -857,7 +856,7 @@ export function generatorDrain(
     if (!raw) return null;
     const value = lowerer.coerceToExpected(raw, elem);
     if (!typeEquals(value.type, elem)) return null;
-    name = keyedHelperName(lowerer, "%gen.drain", key);
+    name = `%gen.drain.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,
@@ -979,7 +978,7 @@ export function lowerArrayIteratorValue(
             };
     }
     if (!yielded || !typeEquals(yielded.type, type.yieldT)) return null;
-    name = keyedHelperName(lowerer, "%arr.iter", key);
+    name = `%arr.iter.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,

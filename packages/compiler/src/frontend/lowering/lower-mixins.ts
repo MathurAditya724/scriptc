@@ -34,7 +34,6 @@
  * statics-bearing mixin classes outside a plain top-level statement
  * (their declaration-time code must run exactly where the call
  * evaluates). */
-import { positionTag } from "./structural-positions.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError } from "./lowerer.js";
@@ -453,7 +452,7 @@ function instantiateMixinCall(
   const base = mixinBaseClassOf(lowerer, call.arguments.nodes[0]!);
   const instName = lowerer.qualify(
     ts.getSourceFileOfNode(call),
-    `%mx${positionTag(lowerer, call)}.${shape.classNode.name?.text ?? ""}`,
+    `%mx${ts.tokenStartOfNode(call)}.${shape.classNode.name?.text ?? ""}`,
   );
   const ordinal = lowerer.mixinOrdinals.get(shape.classNode) ?? 0;
   lowerer.mixinOrdinals.set(shape.classNode, ordinal + 1);

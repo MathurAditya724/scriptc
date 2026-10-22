@@ -10,7 +10,6 @@ import {
 } from "../../ir/ir.js";
 import type { Node, Program, SourceFile, Symbol, Type } from "../ts7/adapter.js";
 import { Lowerer } from "./lowerer.js";
-import { UnionRegistry } from "../type-mapper.js";
 import { classMethodValue } from "./class-method-values.js";
 
 const loc = { file: "island.ts", start: 0, end: 1 };
@@ -33,7 +32,7 @@ test("reuses complete copy routes without repeating discriminator planning", () 
   expect(plan).not.toHaveBeenCalled();
   expect(lowerer.liftedFns.filter((fn) => fn.name === helper)).toHaveLength(1);
   const recursive = {} as Type;
-  lowerer.shapes.recursiveRef(recursive, () => "Recursive");
+  lowerer.shapes.recursiveRef(recursive);
   lowerer.shapes.finalizeRecursive(recursive, [{ name: "kind", type: STRING }]);
   expect(lowerer.unionRetagHelper(from, to, loc)).toBe(helper);
   expect(plan).toHaveBeenCalled();
@@ -55,7 +54,7 @@ test("replans after a recursive union gains its final arms", () => {
   const lowerer = context();
   const recursive = {} as Type;
   const from = lowerer.unions.intern([UNDEFINED_T, NULL_T]);
-  const to = lowerer.unions.recursiveRef(recursive, () => "Recursive");
+  const to = lowerer.unions.recursiveRef(recursive);
   const trapped = lowerer.unionRetagHelper(from, to, loc);
   expect(trapped).not.toBeNull();
   lowerer.unions.finalizeRecursive(recursive, [UNDEFINED_T]);
@@ -76,7 +75,7 @@ test("rechecks width conversions after recursive record definitions settle", () 
   const lowerer = context();
   const recursive = {} as Type;
   const source = record(lowerer.shapes.intern([{ name: "value", type: F64 }]));
-  const target = record(lowerer.shapes.recursiveRef(recursive, () => "Recursive"));
+  const target = record(lowerer.shapes.recursiveRef(recursive));
   const from = lowerer.unions.intern([source, UNDEFINED_T]);
   const to = lowerer.unions.intern([target, NULL_T]);
   expect(lowerer.unionRetagHelper(from, to, loc)).not.toBeNull();
@@ -130,7 +129,7 @@ test("literal ownership is reused across values and rechecked when recursive rec
   expect(inspect).not.toHaveBeenCalled();
 
   const recursive = {} as Type;
-  const pendingShape = record(lowerer.shapes.recursiveRef(recursive, () => "Recursive"));
+  const pendingShape = record(lowerer.shapes.recursiveRef(recursive));
   const pending = lowerer.unions.intern([pendingShape], {
     field: "kind",
     cases: [{ tag: 0, values: ["a"] }],
@@ -144,7 +143,7 @@ test("literal ownership is reused across values and rechecked when recursive rec
 test("literal ownership sees a recursive union's finalized discriminator", () => {
   const lowerer = context();
   const recursive = {} as Type;
-  const union = lowerer.unions.recursiveRef(recursive, () => "Recursive");
+  const union = lowerer.unions.recursiveRef(recursive);
   const shape = record(lowerer.shapes.intern([{ name: "kind", type: STRING }]));
   expect(lowerer.literalUnionArm(union, ["ready"])).toBeNull();
   lowerer.unions.finalizeRecursive(recursive, [shape], {
@@ -183,10 +182,7 @@ test("removing undefined reuses the discriminator transformation without hiding 
   );
 
   const recursive = {} as Type;
-  const pending: IrType = {
-    kind: "union",
-    unionId: lowerer.unions.recursiveRef(recursive, () => "Recursive"),
-  };
+  const pending: IrType = { kind: "union", unionId: lowerer.unions.recursiveRef(recursive) };
   expect(lowerer.stripUndefinedArm(pending)).toEqual(pending);
   lowerer.unions.finalizeRecursive(recursive, [STRING, UNDEFINED_T]);
   expect(lowerer.stripUndefinedArm(pending)).toEqual(STRING);
@@ -219,10 +215,7 @@ test("adding undefined reuses semantic union transformations and sees recursive 
   expect(lowerer.unions.get(added.unionId)?.discriminant).toEqual(discriminant);
 
   const recursive = {} as Type;
-  const pending: IrType = {
-    kind: "union",
-    unionId: lowerer.unions.recursiveRef(recursive, () => "Recursive"),
-  };
+  const pending: IrType = { kind: "union", unionId: lowerer.unions.recursiveRef(recursive) };
   const before = lowerer.withUndefinedArmOf(pending);
   lowerer.unions.finalizeRecursive(recursive, [a, b], discriminant);
   expect(lowerer.withUndefinedArmOf(pending)).toEqual(added);
@@ -234,18 +227,13 @@ test("adding undefined reuses semantic union transformations and sees recursive 
 test("optional union widening keeps refused and missing contracts current", () => {
   const lowerer = context();
   const recursive = {} as Type;
-  const pending: IrType = {
-    kind: "union",
-    unionId: lowerer.unions.recursiveRef(recursive, () => "Recursive"),
-  };
+  const pending: IrType = { kind: "union", unionId: lowerer.unions.recursiveRef(recursive) };
   expect(lowerer.withUndefinedArmOf(pending)).not.toBeNull();
   lowerer.unions.finalizeRecursive(recursive, [{ kind: "date" }, STRING]);
   expect(lowerer.withUndefinedArmOf(pending)).toBeNull();
   expect(lowerer.withUndefinedArmOf(pending)).toBeNull();
 
-  // Union ids come from their arms, so a fresh registry names the union
-  // this one has not interned yet.
-  const missing: IrType = { kind: "union", unionId: new UnionRegistry().intern([F64, STRING]) };
+  const missing: IrType = { kind: "union", unionId: `u${lowerer.unions.unions.length}` };
   expect(lowerer.withUndefinedArmOf(missing)).toBeNull();
   expect(lowerer.unions.intern([F64, STRING])).toBe(missing.unionId);
   expect(lowerer.withUndefinedArmOf(missing)?.kind).toBe("union");

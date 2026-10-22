@@ -1,5 +1,4 @@
 import { InternalCompilerError } from "../errors.js";
-import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -147,6 +146,16 @@ export const WEBCRYPTO_DYN_TYPES: ReadonlySet<string> = new Set([
   "KeyAlgorithm",
   "HmacImportParams",
   "HmacKeyAlgorithm",
+  "HmacKeyGenParams",
+  "AesKeyGenParams",
+  "AesKeyAlgorithm",
+  "JsonWebKey",
+  "AesGcmParams",
+  "AesCbcParams",
+  "AesCtrParams",
+  "Pbkdf2Params",
+  "HkdfParams",
+  "AesDerivedKeyParams",
 ]);
 
 export const FETCH_AMBIENT_TYPES = [
@@ -253,8 +262,6 @@ function comparePriority(left: DeclaredOrderPriority, right: DeclaredOrderPriori
 export class ShapeRegistry {
   /** Existing layouts change only when a recursive placeholder closes. */
   revision = 0;
-  /** Each shape id with a second hash of its key (keyedHelperName). */
-  readonly keyedNameKeys = new Map<string, number>();
   private readonly byKey = new Map<string, string>();
   private readonly byId = new Map<string, IrRecordShape>();
   /** Historical emit-order rank of the declaration-order metadata each
@@ -273,7 +280,7 @@ export class ShapeRegistry {
    * writer after all priority candidates have closed. */
   private readonly derivedDeclaredOrderFinalizers: (() => void)[] = [];
   private currentDeclaredOrderPriority: DeclaredOrderPriority = [0, 0];
-  /** All interned shapes in first-seen order. */
+  /** All interned shapes in first-seen (`r0`, `r1`, ...) order. */
   readonly shapes: IrRecordShape[] = [];
   /** ts.Types currently being mapped — a BACK-REFERENCE to one of these is
    * the recursive knot (`interface TreeNode { children: TreeNode[] }`):
@@ -393,12 +400,11 @@ export class ShapeRegistry {
 
   /** The shape id a back-reference to an in-progress type resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
-   * entry (empty fields) the outer frame finalizes. `describe` names a new
-   * placeholder (recursiveTypeName). */
-  recursiveRef(t: ts.Type, describe: () => string): string {
+   * entry (empty fields) the outer frame finalizes. */
+  recursiveRef(t: ts.Type): string {
     let id = this.recIds.get(t);
     if (id === undefined) {
-      id = recursivePlaceholderName(this, "r", describe(), (name) => this.byId.has(name));
+      id = `r${this.shapes.length}`;
       const shape: IrRecordShape = { id, fields: [] };
       this.byId.set(id, shape);
       this.shapes.push(shape);
@@ -467,7 +473,7 @@ export class ShapeRegistry {
     const key = this.keyOf(fields, tuple, indexValue);
     let id = this.byKey.get(key);
     if (id === undefined) {
-      id = keyedHelperName(this, "r", key, "");
+      id = `r${this.shapes.length}`;
       const shape: IrRecordShape = {
         id,
         fields,
@@ -545,57 +551,6 @@ export class ShapeRegistry {
   }
 }
 
-/** The id of a recursive placeholder described by `description`. Two
- * different types can still share a description (recursiveTypeName stops
- * after a few levels of type arguments); the later one takes the first free
- * name with a numbered suffix. */
-function recursivePlaceholderName(
-  owner: KeyedNameOwner,
-  prefix: string,
-  description: string,
-  taken: (name: string) => boolean,
-): string {
-  let name = keyedHelperName(owner, prefix, `recursive:${description}`, "");
-  for (let n = 1; taken(name); n++)
-    name = keyedHelperName(owner, prefix, `recursive:${description}#${n}`, "");
-  return name;
-}
-
-/** How many levels of type arguments recursiveTypeName describes. */
-const RECURSIVE_NAME_DEPTH = 3;
-
-/** A recursive checker type's description, which names its placeholder
- * whichever frame first reaches it: its printed form, the structural
- * position of its first declaration, and the same for its type arguments
- * (two instantiations print the same when their type arguments are type
- * parameters or classes of the same name from different declarations). */
-function recursiveTypeName(
-  t: ts.Type,
-  ctx: Pick<TypeMapperCtx, "checker" | "positionOf">,
-  depth = 0,
-): string {
-  const symbol = t.getAliasSymbol() ?? t.getSymbol();
-  const declaration = symbol?.declarations[0];
-  const where = declaration
-    ? (ctx.positionOf?.(declaration) ??
-      `${ts.getSourceFileOfNode(declaration).fileName}:${declaration.pos}`)
-    : "";
-  let description = `${ctx.checker.typeToString(t)}@${where}`;
-  if (depth < RECURSIVE_NAME_DEPTH) {
-    const aliasArguments =
-      t.getAliasSymbol() !== undefined ? (t.getAliasTypeArguments() ?? []) : [];
-    const typeArguments =
-      aliasArguments.length > 0
-        ? aliasArguments
-        : t.isTypeReference()
-          ? ctx.checker.getTypeArguments(t)
-          : [];
-    if (typeArguments.length > 0)
-      description += `<${typeArguments.map((arg) => recursiveTypeName(arg, ctx, depth + 1)).join(",")}>`;
-  }
-  return description;
-}
-
 /** The frontend's union interner — mirrors ShapeRegistry. A union's
  * canonical identity includes its typeKey-sorted arms and literal
  * discriminator contract. An arm's index in that list IS its runtime tag.
@@ -603,12 +558,10 @@ function recursiveTypeName(
 export class UnionRegistry {
   /** Existing arm/discriminator contracts change when a placeholder closes. */
   revision = 0;
-  /** Each union id with a second hash of its key (keyedHelperName). */
-  readonly keyedNameKeys = new Map<string, number>();
   private readonly byKey = new Map<string, string>();
   private readonly byId = new Map<string, IrUnionDef>();
   private readonly armTags = new Map<string, Map<string, number[]>>();
-  /** All interned unions in first-seen order. */
+  /** All interned unions in first-seen (`u0`, `u1`, ...) order. */
   readonly unions: IrUnionDef[] = [];
   /** ts.Types currently being mapped — a back-reference to one is the
    * recursive knot passing through a union (`type Tree = Leaf | Branch`
@@ -624,12 +577,11 @@ export class UnionRegistry {
 
   /** The union id a back-reference to an in-progress union resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
-   * entry (empty arms) the outer frame finalizes. `describe` names a new
-   * placeholder (recursiveTypeName). */
-  recursiveRef(t: ts.Type, describe: () => string): string {
+   * entry (empty arms) the outer frame finalizes. */
+  recursiveRef(t: ts.Type): string {
     let id = this.recIds.get(t);
     if (id === undefined) {
-      id = recursivePlaceholderName(this, "u", describe(), (name) => this.byId.has(name));
+      id = `u${this.unions.length}`;
       const def: IrUnionDef = { id, arms: [] };
       this.byId.set(id, def);
       this.unions.push(def);
@@ -679,7 +631,7 @@ export class UnionRegistry {
     const key = JSON.stringify([arms.map(typeKey), discriminant]);
     let id = this.byKey.get(key);
     if (id === undefined) {
-      id = keyedHelperName(this, "u", key, "");
+      id = `u${this.unions.length}`;
       const def: IrUnionDef = { id, arms, ...(discriminant ? { discriminant } : {}) };
       this.byKey.set(key, id);
       this.byId.set(id, def);
@@ -1172,11 +1124,13 @@ export interface TypeMapperCtx {
    * only the literal's objects, so it maps to the empty record (see the
    * empty object type rule in the object mapping). */
   emptyLiteralArm?: boolean;
+  /** The class value a generic factory's result type names when the factory
+   * returns one of its own local classes through a constructor type
+   * (`function struct<S>(v: S): Struct<S> { class Base {}; return Base as
+   * Struct<S>; }`), by the checker type: the declared result inside the
+   * instance being lowered, the instantiated result at its calls. */
+  localClassValue?: (type: ts.Type) => IrType | null;
   checker: ts.TypeChecker;
-  /** The structural position of a declaration (structural-positions.ts),
-   * which names recursive placeholders independently of where unrelated
-   * code sits. The Lowerer supplies it. */
-  positionOf?: (node: ts.Node) => string;
   /** JavaScript declarations whose instance or object-literal types only
    * the checked-dynamic representation holds (js-dynamic-objects.ts).
    * Absent when the program has none: every mapping is unchanged. */
@@ -1714,6 +1668,11 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral | ts.TypeFlags.TemplateLiteral))
       return STRING;
     if (flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) return BOOL;
+  }
+  const localValue = ctx.localClassValue?.(type);
+  if (localValue) {
+    contextResolutions++;
+    return localValue;
   }
   const topLevel = mapTypeDepth === 0;
   const typeId = (type as { id?: number }).id;
@@ -4713,10 +4672,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const knownRecursive = unions.recursiveUnionFor(widened);
     if (knownRecursive !== undefined) return { kind: "union", unionId: knownRecursive };
     if (unions.inProgress.has(widened)) {
-      return {
-        kind: "union",
-        unionId: unions.recursiveRef(widened, () => recursiveTypeName(widened, ctx)),
-      };
+      return { kind: "union", unionId: unions.recursiveRef(widened) };
     }
     unions.inProgress.add(widened);
     const sensitivityAtEntry = contextResolutions;
@@ -7060,10 +7016,7 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // frame completes (finalizeRecursive below). Backends represent records
   // as heap references, so the self-reference is an ordinary pointer.
   if (shapes.inProgress.has(widened)) {
-    return {
-      kind: "record",
-      shapeId: shapes.recursiveRef(widened, () => recursiveTypeName(widened, ctx)),
-    };
+    return { kind: "record", shapeId: shapes.recursiveRef(widened) };
   }
   shapes.inProgress.add(widened);
   const sensitivityAtEntry = contextResolutions;

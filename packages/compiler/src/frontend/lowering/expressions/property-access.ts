@@ -1,5 +1,4 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
-import { keyedHelperName } from "../stable-names.js";
 import { staticallySelected } from "../static-typeof.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
@@ -164,6 +163,7 @@ import { lowerUnionFieldRead } from "./union-fields.js";
 import { errorPropertyRead } from "../error-methods.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/compression.js";
+import { isWebCryptoReceiver } from "../builtins/crypto.js";
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
 import { keyedFieldRead } from "./keyed-field-targets.js";
 import { promisePrototypeValue } from "../thenables.js";
@@ -844,8 +844,16 @@ export function lowerPropertyAccessExpr(
     if (runtimeOptionalClassField(lowerer, handled, expr)) return handled;
     return iteratorResultValueRead(lowerer, handled, expr) ?? lowerer.maybeNarrow(handled, expr);
   }
+  // `globalThis.crypto` is the WebCrypto object the bare `crypto` answers.
+  if (
+    !expr.questionDotToken &&
+    stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis" &&
+    stdlibGlobalNameOf(lowerer, expr) === "crypto"
+  ) {
+    return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+  }
   // `globalThis.<name>` that no lowering above claimed
-  // (globalThis.crypto, globalThis.SubtleCrypto, globalThis.localStorage
+  // (globalThis.SubtleCrypto, globalThis.localStorage
   // — the harness's capability-conditional knownGlobals adds): the
   // PROPERTY spelling of the identifier chokepoint's JS rule — a stdlib
   // global taken as a VALUE in a JavaScript source is the same opaque
@@ -2785,7 +2793,7 @@ export function lowerGroupsProjection(
   const key = `regexgroups:${shapeId}:${groups.map((g) => `${g.name}=${g.index}`).join(",")}:${recvKey}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%regex.groups", key);
+    helper = `%regex.groups.${lowerer.valueHelpers.size}`;
     lowerer.valueHelpers.set(key, helper);
     const body: IrStmt[] = [];
     const locals: IrLocal[] = [{ id: "m.0", name: "m", type: recv.type, mutable: true }];
@@ -2961,6 +2969,9 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
     if (
       receiverIr?.kind !== "object" &&
       propSym &&
+      // The WebCrypto object's generic getRandomValues reads off its
+      // dynamic object.
+      !isWebCryptoReceiver(lowerer, expr.expression) &&
       isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(propSym), lowerer.checker) &&
       // CLASS members keep the class-path fences (a poisoned class's own
       // diagnostics, the bound-method fence above).

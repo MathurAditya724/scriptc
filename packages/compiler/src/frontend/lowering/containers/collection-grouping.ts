@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
@@ -105,7 +104,7 @@ export function lowerGroupByStaticCall(
     const key = `map.groupBy:${typeKey(items.type)}:${typeKey(f.type)}`;
     let helper = lowerer.mapHofHelpers.get(key);
     if (!helper) {
-      helper = keyedHelperName(lowerer, "%map.groupBy", key);
+      helper = `%map.groupBy.${lowerer.mapHofHelpers.size}`;
       lowerer.mapHofHelpers.set(key, helper);
       lowerer.liftedFns.push(buildGroupByFn(lowerer, helper, items.type, f.type, resultT, loc));
     }
@@ -142,7 +141,7 @@ export function lowerGroupByStaticCall(
   const key = `object.groupBy:${typeKey(items.type)}:${typeKey(f.type)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%object.groupBy", key);
+    helper = `%object.groupBy.${lowerer.mapHofHelpers.size}`;
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildGroupByFn(lowerer, helper, items.type, f.type, resultT, loc));
   }
