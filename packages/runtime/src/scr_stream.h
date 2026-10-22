@@ -431,18 +431,41 @@ int scr_stream_push_object(ScrStream *s, const ScrDyn *v);
  * dyn array, find and reduce a dyn value — reduce's `kind` picks the
  * payload instead: 0 dyn, 1 number, 2 boolean, 3 string — some and every
  * a boolean, forEach nothing. */
-ScrStream *scr_stream_op_map(ScrStream *s, ScrDyn *fn, ScrDyn *options);
-ScrStream *scr_stream_op_filter(ScrStream *s, ScrDyn *fn, ScrDyn *options);
-ScrStream *scr_stream_op_flat_map(ScrStream *s, ScrDyn *fn, ScrDyn *options);
+ScrStream *scr_stream_op_map(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts);
+ScrStream *scr_stream_op_filter(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts);
+ScrStream *scr_stream_op_flat_map(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts);
+/* flatMap whose callback returns a compiled generator: the helpers over its
+ * type (async: next, read, return, throw; sync: next, return, throw;
+ * borrowed). */
+ScrStream *scr_stream_op_flat_map_async_gen(ScrStream *s, ScrDyn *fn, ScrDyn *options,
+                                            ScrDyn *cb_opts, ScrClosure *next, ScrClosure *read,
+                                            ScrClosure *ret, ScrClosure *thr);
+ScrStream *scr_stream_op_flat_map_sync_gen(ScrStream *s, ScrDyn *fn, ScrDyn *options,
+                                           ScrDyn *cb_opts, ScrClosure *next, ScrClosure *ret,
+                                           ScrClosure *thr);
 ScrStream *scr_stream_op_drop(ScrStream *s, ScrDyn *number, ScrDyn *options);
 ScrStream *scr_stream_op_take(ScrStream *s, ScrDyn *number, ScrDyn *options);
 ScrPromise *scr_stream_op_to_array(ScrStream *s, ScrDyn *options);
-ScrPromise *scr_stream_op_for_each(ScrStream *s, ScrDyn *fn, ScrDyn *options);
-ScrPromise *scr_stream_op_some(ScrStream *s, ScrDyn *fn, ScrDyn *options);
-ScrPromise *scr_stream_op_every(ScrStream *s, ScrDyn *fn, ScrDyn *options);
-ScrPromise *scr_stream_op_find(ScrStream *s, ScrDyn *fn, ScrDyn *options);
+ScrPromise *scr_stream_op_for_each(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts);
+ScrPromise *scr_stream_op_some(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts);
+ScrPromise *scr_stream_op_every(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts);
+ScrPromise *scr_stream_op_find(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts);
 ScrPromise *scr_stream_op_reduce(ScrStream *s, ScrDyn *fn, ScrDyn *init, bool has_init,
                                  ScrDyn *options, double kind);
+/* reduce whose reducer reads its { signal } (cb_opts): abort is ac.abort()
+ * (borrowed), run when the reduction ends. */
+ScrPromise *scr_stream_op_reduce_signal(ScrStream *s, ScrDyn *fn, ScrDyn *init, bool has_init,
+                                        ScrDyn *options, double kind, ScrClosure *abort,
+                                        ScrDyn *cb_opts);
+/* `options?.signal` (+1, undefined when absent) and `{ once: true }` (+1),
+ * for the listener that makes options.signal abort reduce's controller. */
+ScrDyn *scr_stream_op_signal_of(ScrDyn *options);
+ScrDyn *scr_stream_op_once_options(void);
+/* The operator callbacks' { signal } (the options argument): the signals
+ * AbortSignal.any combines (`[options?.signal].filter(Boolean)`) and the
+ * object around the combined signal. +1 each. */
+ScrDyn *scr_stream_op_signal_list(ScrDyn *options);
+ScrDyn *scr_stream_op_signal_opts(ScrDyn *signal);
 /* finished(s, options[, cb]) — Node's eos with its listeners and state
  * predicates: readable/writable are -1 (the default), 0 or 1; on_error is
  * options.error !== false; signal is NULL or borrowed (ERR_INVALID_ARG_TYPE
@@ -556,6 +579,16 @@ ScrStream *scr_stream_readable_from_web(struct ScrDyn *web, bool object_mode, do
  * generator and answers its promise; source and the promise's box helper
  * borrowed): a writable Duplexify whose final waits for the promise. +1. */
 ScrStream *scr_stream_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source, ScrClosure *box);
+/* The same for a body that declares the options argument: it takes
+ * { signal } (signal borrowed), and destroy calls abort(err) (borrowed),
+ * the AbortController's abort, before it settles (fromAsyncGen's
+ * ac.abort(err)). */
+ScrStream *scr_stream_duplex_from_gen_signal(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
+                                             ScrClosure *read, ScrClosure *ret, ScrClosure *thr,
+                                             ScrClosure *abort, struct ScrDyn *signal);
+ScrStream *scr_stream_duplex_from_async_fn_signal(ScrClosure *stage, ScrClosure *source,
+                                                  ScrClosure *box, ScrClosure *abort,
+                                                  struct ScrDyn *signal);
 /* Duplex.from over a Readable, a Writable, or a { readable, writable }
  * pair (duplexify.js's _duplexify): a Duplexify that reads r and writes w
  * (either NULL in scr_stream_duplexify; streams borrowed). +1. */

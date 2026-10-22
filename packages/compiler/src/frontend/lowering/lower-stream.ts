@@ -3923,21 +3923,27 @@ function pipelineBoxHelper(
 
 /** `() => ac.abort()` over the pipeline's AbortController: an interned
  * lifted function takes the controller and answers the closure. */
-function pipelineAbortHelper(lowerer: Lowerer, ac: IrExpr, loc: SrcLoc): IrExpr {
-  const key = "pipelineAbort";
+function pipelineAbortHelper(
+  lowerer: Lowerer,
+  ac: IrExpr,
+  loc: SrcLoc,
+  withReason = false,
+): IrExpr {
+  const key = withReason ? "pipelineAbortReason" : "pipelineAbort";
   let name = lowerer.valueHelpers.get(key);
-  const abortT = funcOf([], VOID);
+  const abortT = funcOf(withReason ? [DYN] : [], VOID);
   if (!name) {
     name = keyedHelperName(lowerer, "%stream.pipelineAbort", key);
     lowerer.valueHelpers.set(key, name);
     const acLocal: IrLocal = { id: "ac.0", name: "ac", type: DYN, mutable: false, boxed: true };
     const acRef = varRef(acLocal.id, DYN, loc);
+    const reasonLocal: IrLocal = { id: "reason.0", name: "reason", type: DYN, mutable: false };
     lowerer.liftedFns.push({
       name: `${name}.abort`,
-      params: [],
+      params: withReason ? [{ localId: reasonLocal.id, name: reasonLocal.name, type: DYN }] : [],
       returnType: VOID,
       captures: [{ localId: acLocal.id, name: acLocal.name, type: DYN }],
-      locals: [acLocal],
+      locals: withReason ? [acLocal, reasonLocal] : [acLocal],
       body: [
         {
           kind: "exprStmt",
@@ -3946,7 +3952,7 @@ function pipelineAbortHelper(lowerer: Lowerer, ac: IrExpr, loc: SrcLoc): IrExpr 
             recv: acRef,
             method: "abort",
             calleeName: "ac.abort",
-            args: [],
+            args: withReason ? [varRef(reasonLocal.id, DYN, loc)] : [],
             type: DYN,
             loc,
           },
@@ -4165,11 +4171,11 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
         "write the body as async function* (source) { ... } or async function (source) { ... }",
       );
     }
-    if (fn.parameters.nodes.length > 1) {
+    if (fn.parameters.nodes.length > 2) {
       lowerer.noLowering(
-        "a Duplex.from body that declares the options argument",
-        fn.parameters.nodes[1]!,
-        "the body takes only its source",
+        "a Duplex.from body with parameters after the options argument",
+        fn.parameters.nodes[2]!,
+        "the body takes the source and { signal }",
       );
     }
     const sourceT: SyncGenType = {
@@ -4180,6 +4186,46 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
       nextT: UNDEFINED_T,
     };
     const lowered = lowerStageFunction(lowerer, fn, sourceT);
+    const params = lowered.closure.type.kind === "func" ? lowered.closure.type.params : [];
+    // fromAsyncGen calls the body with { signal } of an AbortController
+    // that destroy aborts with its error.
+    let signalArgs: IrExpr[] = [];
+    let signalDecls: IrStmt[] = [];
+    if (params.length > 1) {
+      if (params[1]!.kind !== "dyn") {
+        lowerer.noLowering(
+          "a Duplex.from body's options argument with this type",
+          fn.parameters.nodes[1]!,
+          "type it as { signal: AbortSignal }",
+        );
+      }
+      const acLocal = lowerer.declareHiddenLocal("%duplexAbort", DYN);
+      const ac = varRef(acLocal.id, DYN, loc);
+      signalDecls = [
+        {
+          kind: "varDecl",
+          localId: acLocal.id,
+          init: { kind: "libCall", fn: "fetch.abortControllerNew", args: [], type: DYN, loc },
+          loc,
+        },
+      ];
+      signalArgs = [
+        pipelineAbortHelper(lowerer, ac, loc, true),
+        { kind: "dynKeyGet", value: ac, key: strLit("signal", loc), type: DYN, loc },
+      ];
+    }
+    const withSignal = (fnName: IrLibFn, args: IrExpr[]): IrExpr => {
+      const call: IrExpr = {
+        kind: "libCall",
+        fn: signalArgs.length > 0 ? (`${fnName}Signal` as IrLibFn) : fnName,
+        args: [...args, ...signalArgs],
+        type: duplex,
+        loc,
+      };
+      return signalDecls.length > 0
+        ? { kind: "seqExpr", stmts: signalDecls, result: call, type: duplex, loc }
+        : call;
+    };
     if (!isGen) {
       // an async function: a writable Duplexify whose final waits for
       // the function's promise
@@ -4200,26 +4246,18 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
           node,
         );
       }
-      return {
-        kind: "libCall",
-        fn: "stream.duplexFromAsyncFn",
-        args: [lowered.closure, asyncSource, pipelineBoxHelper(lowerer, out, loc)],
-        type: duplex,
-        loc,
-      };
+      return withSignal("stream.duplexFromAsyncFn", [
+        lowered.closure,
+        asyncSource,
+        pipelineBoxHelper(lowerer, out, loc),
+      ]);
     }
     const helpers =
       lowered.out.kind === "generator" ? fromGenHelpers(lowerer, lowered.out, loc) : null;
     const source = duplexSourceHelper(lowerer, sourceT, loc);
     if (!helpers || !source)
       lowerer.noLowering("Duplex.from over a function with this generator type", node);
-    return {
-      kind: "libCall",
-      fn: "stream.duplexFromGen",
-      args: [lowered.closure, source!, ...helpers!],
-      type: duplex,
-      loc,
-    };
+    return withSignal("stream.duplexFromGen", [lowered.closure, source!, ...helpers!]);
   }
   // duplexify.js: a stream answers itself (a Duplex) or is wrapped; any
   // other body reads as from(Duplexify, body, { objectMode: true,
@@ -4510,39 +4548,38 @@ export const STREAM_OPERATORS: ReadonlySet<string> = new Set([
   "reduce",
 ]);
 
-/** An operator callback as a checked-dynamic function value. Callbacks
- * that declare the options argument ({ signal }) are refused: the
- * AbortSignal Node passes there has no representation. map and flatMap
- * callbacks must produce strings or Buffers (flatMap: arrays of them, or
- * strings) — or checked-dynamic values, which the runtime checks. */
+/** An operator callback as a checked-dynamic function value, and whether
+ * it declares the options argument ({ signal }), which the runtime then
+ * passes. Its results convert to checked-dynamic values (flatMap's are
+ * iterated with yield*). */
 function lowerOperatorCallback(
   lowerer: Lowerer,
   node: ts.Expression,
   member: string,
   maxParams: number,
-): IrExpr {
+): { fn: IrExpr; takesOptions: boolean; gen?: IrType & { kind: "generator" } } {
   const loc = locOf(node);
   const optionsParam = (at: ts.Node): never =>
     lowerer.noLowering(
-      `${member} callbacks that declare the options argument`,
+      `${member} callbacks with parameters after the options argument`,
       at,
-      "the { signal } argument has no lowering — take only the chunk",
+      "the callback takes the chunk and { signal }",
     );
-  if (
-    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-    node.parameters.nodes.length > maxParams
-  ) {
-    optionsParam(node.parameters.nodes[maxParams]!);
+  let takesOptions = false;
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+    if (node.parameters.nodes.length > maxParams + 1)
+      optionsParam(node.parameters.nodes[maxParams + 1]!);
+    takesOptions = node.parameters.nodes.length > maxParams;
   }
   const v = lowerer.lowerExpr(node);
-  if (v.type.kind === "dyn") return v;
+  if (v.type.kind === "dyn") return { fn: v, takesOptions };
   if (
     v.type.kind !== "func" &&
     isJsSourceFile(ts.getSourceFileOfNode(node)) &&
     lowerer.dynConvertible(v.type)
   ) {
     // JavaScript passes any value; Node's validateFunction throws.
-    return { kind: "dynFrom", value: v, type: DYN, loc };
+    return { fn: { kind: "dynFrom", value: v, type: DYN, loc }, takesOptions: false };
   }
   if (v.type.kind !== "func") {
     lowerer.noLowering(
@@ -4551,25 +4588,8 @@ function lowerOperatorCallback(
       "pass a function",
     );
   }
-  if (v.type.params.length > maxParams) optionsParam(node);
-  if (member === "map" || member === "flatMap") {
-    const ret = v.type.ret.kind === "promise" ? v.type.ret.inner : v.type.ret;
-    const chunk = (t: IrType): boolean =>
-      t.kind === "string" || t.kind === "dyn" || (t.kind === "bytes" && t.elem === "u8");
-    const ok =
-      member === "map"
-        ? chunk(ret)
-        : ret.kind === "dyn" || ret.kind === "string" || (ret.kind === "array" && chunk(ret.elem));
-    if (!ok) {
-      lowerer.noLowering(
-        `${member} callbacks that return '${lowerer.fmt(ret)}'`,
-        node,
-        member === "map"
-          ? "map results are stream chunks: strings or Buffers (object-mode streams of other values are not lowered)"
-          : "flatMap results are arrays of strings or Buffers, or strings",
-      );
-    }
-  }
+  if (v.type.params.length > maxParams + 1) optionsParam(node);
+  if (v.type.params.length > maxParams) takesOptions = true;
   const getRecord = (id: string) => lowerer.shapes.get(id);
   const getUnion = (id: string) => lowerer.unions.get(id);
   if (!canBoxFuncIntoDyn(v.type, getRecord, getUnion)) {
@@ -4579,7 +4599,95 @@ function lowerOperatorCallback(
       "the callback's parameter and result types must cross the checked-dynamic boundary",
     );
   }
-  return { kind: "dynFrom", value: v, type: DYN, loc };
+  // flatMap over a compiled generator: the runtime steps it through the
+  // helpers over its type
+  const gen = member === "flatMap" && v.type.ret.kind === "generator" ? v.type.ret : undefined;
+  return { fn: { kind: "dynFrom", value: v, type: DYN, loc }, takesOptions, ...(gen && { gen }) };
+}
+
+/** The operator callbacks' `{ signal }` (operators.js): map and the
+ * operators over it pass `{ signal: AbortSignal.any([options?.signal]
+ * .filter(Boolean)) }`. options is the operator's options value. */
+export function operatorSignalOptions(lowerer: Lowerer, options: IrExpr, loc: SrcLoc): IrExpr {
+  void lowerer;
+  const list: IrExpr = {
+    kind: "libCall",
+    fn: "readable.opSignalList",
+    args: [options],
+    type: DYN,
+    loc,
+  };
+  const signal: IrExpr = { kind: "libCall", fn: "fetch.abortAny", args: [list], type: DYN, loc };
+  return { kind: "libCall", fn: "readable.opSignalOpts", args: [signal], type: DYN, loc };
+}
+
+/** reduce's signal for a reducer that reads it (operators.js): `const ac
+ * = new AbortController()`, `options.signal.addEventListener('abort', ()
+ * => ac.abort(), { once: true })`, then reduceSignal's ac.abort() closure
+ * and `{ signal: ac.signal }`. options is the bound options value. */
+export function reduceSignalSetup(
+  lowerer: Lowerer,
+  options: IrExpr,
+  loc: SrcLoc,
+  declare: (name: string, type: IrType) => IrLocal = (name, type) =>
+    lowerer.declareHiddenLocal(name, type),
+): { stmts: IrStmt[]; abort: IrExpr; cbOpts: IrExpr } {
+  const acLocal = declare("%opAbort", DYN);
+  const ac = varRef(acLocal.id, DYN, loc);
+  const sigLocal = declare("%opUserSignal", DYN);
+  const sig = varRef(sigLocal.id, DYN, loc);
+  const abort = pipelineAbortHelper(lowerer, ac, loc);
+  const stmts: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: acLocal.id,
+      init: { kind: "libCall", fn: "fetch.abortControllerNew", args: [], type: DYN, loc },
+      loc,
+    },
+    {
+      kind: "varDecl",
+      localId: sigLocal.id,
+      init: { kind: "libCall", fn: "readable.opSignalOf", args: [options], type: DYN, loc },
+      loc,
+    },
+    {
+      kind: "if",
+      cond: { kind: "dynTest", test: "truthy", value: sig, type: BOOL, loc },
+      then: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "dynInvoke",
+            recv: sig,
+            method: "addEventListener",
+            calleeName: "options.signal.addEventListener",
+            args: [
+              { kind: "dynFrom", value: strLit("abort", loc), type: DYN, loc },
+              { kind: "dynFrom", value: pipelineAbortHelper(lowerer, ac, loc), type: DYN, loc },
+              { kind: "libCall", fn: "readable.opOnceOptions", args: [], type: DYN, loc },
+            ],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      else_: null,
+      loc,
+    },
+  ];
+  const signal: IrExpr = {
+    kind: "dynKeyGet",
+    value: ac,
+    key: strLit("signal", loc),
+    type: DYN,
+    loc,
+  };
+  return {
+    stmts,
+    abort,
+    cbOpts: { kind: "libCall", fn: "readable.opSignalOpts", args: [signal], type: DYN, loc },
+  };
 }
 
 /** An operator's options (or reduce's initial value): an object literal
@@ -4618,21 +4726,37 @@ function lowerStreamOperator(
 ): IrExpr {
   const loc = locOf(call);
   const args = call.arguments.nodes;
-  const recv = streamReceiverExpr(lowerer, access.expression);
+  // JS order: the receiver, the callback, then the options; the
+  // callback's { signal } is built over the options value afterwards.
+  const decls: IrStmt[] = [];
+  const bind = (value: IrExpr, name: string): IrExpr => {
+    const local = lowerer.declareHiddenLocal(name, value.type);
+    decls.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, value.type, loc);
+  };
+  const recv = bind(streamReceiverExpr(lowerer, access.expression), "%opRecv");
   const readable: IrType = { kind: "object", className: "%Readable" };
   const opts = (i: number): IrExpr =>
     lowerOperatorValue(lowerer, args[i], `${member} options`, loc, true);
+  let takesOptions = false;
+  let callbackGen: (IrType & { kind: "generator" }) | undefined;
   const fnArg = (maxParams: number): IrExpr => {
     if (args[0] === undefined) return dynUndefinedExpr(loc);
-    return lowerOperatorCallback(lowerer, args[0], member, maxParams);
+    const lowered = lowerOperatorCallback(lowerer, args[0], member, maxParams);
+    takesOptions = lowered.takesOptions;
+    callbackGen = lowered.gen;
+    return bind(lowered.fn, "%opFn");
   };
-  const lib = (fn: string, a: IrExpr[], type: IrType): IrExpr => ({
-    kind: "libCall",
-    fn: fn as IrLibFn,
-    args: a,
-    type,
-    loc,
-  });
+  const lib = (fn: string, a: IrExpr[], type: IrType): IrExpr => {
+    const call: IrExpr = { kind: "libCall", fn: fn as IrLibFn, args: a, type, loc };
+    return { kind: "seqExpr", stmts: decls, result: call, type, loc };
+  };
+  // the options argument (bound), and the callback's { signal } when it
+  // declares one
+  const withSignal = (optsValue: IrExpr): IrExpr[] => {
+    const o = bind(optsValue, "%opOptions");
+    return [o, takesOptions ? operatorSignalOptions(lowerer, o, loc) : dynUndefinedExpr(loc)];
+  };
   switch (member) {
     case "map":
     case "filter":
@@ -4644,7 +4768,16 @@ function lowerStreamOperator(
           : member === "filter"
             ? "readable.opFilter"
             : "readable.opFlatMap";
-      return lib(fnName, [recv, fn, opts(1)], readable);
+      const rest = withSignal(opts(1));
+      const genHelpers = callbackGen ? fromGenHelpers(lowerer, callbackGen, loc) : null;
+      if (callbackGen && genHelpers) {
+        return lib(
+          callbackGen.async ? "readable.opFlatMapAsyncGen" : "readable.opFlatMapSyncGen",
+          [recv, fn, ...rest, ...genHelpers],
+          readable,
+        );
+      }
+      return lib(fnName, [recv, fn, ...rest], readable);
     }
     case "drop":
     case "take": {
@@ -4657,15 +4790,24 @@ function lowerStreamOperator(
     }
     case "toArray":
       return lib("readable.opToArray", [recv, opts(0)], { kind: "promise", inner: DYN });
-    case "forEach":
-      return lib("readable.opForEach", [recv, fnArg(1), opts(1)], { kind: "promise", inner: VOID });
+    case "forEach": {
+      const fn = fnArg(1);
+      return lib("readable.opForEach", [recv, fn, ...withSignal(opts(1))], {
+        kind: "promise",
+        inner: VOID,
+      });
+    }
     case "some":
     case "every": {
       const fn = fnArg(1);
-      return lib(member === "some" ? "readable.opSome" : "readable.opEvery", [recv, fn, opts(1)], {
-        kind: "promise",
-        inner: BOOL,
-      });
+      return lib(
+        member === "some" ? "readable.opSome" : "readable.opEvery",
+        [recv, fn, ...withSignal(opts(1))],
+        {
+          kind: "promise",
+          inner: BOOL,
+        },
+      );
     }
     case "find": {
       const t = lowerer.typeOf(call);
@@ -4677,7 +4819,11 @@ function lowerStreamOperator(
           "the result is a checked-dynamic value — use a boolean predicate and narrow the result",
         );
       }
-      return lib("readable.opFind", [recv, fnArg(1), opts(1)], { kind: "promise", inner: DYN });
+      const fn = fnArg(1);
+      return lib("readable.opFind", [recv, fn, ...withSignal(opts(1))], {
+        kind: "promise",
+        inner: DYN,
+      });
     }
     case "reduce": {
       const t = lowerer.typeOf(call);
@@ -4704,12 +4850,19 @@ function lowerStreamOperator(
         }
       }
       const fn = fnArg(2);
-      const init = lowerOperatorValue(lowerer, args[1], "reduce's initial value", loc, false);
-      return lib(
-        "readable.opReduce",
-        [recv, fn, init, boolLit(args.length >= 2, loc), opts(2), numLit(kind, loc)],
-        { kind: "promise", inner },
+      const init = bind(
+        lowerOperatorValue(lowerer, args[1], "reduce's initial value", loc, false),
+        "%opInit",
       );
+      const o = bind(opts(2), "%opOptions");
+      const head = [recv, fn, init, boolLit(args.length >= 2, loc), o, numLit(kind, loc)];
+      if (!takesOptions) return lib("readable.opReduce", head, { kind: "promise", inner });
+      const setup = reduceSignalSetup(lowerer, o, loc);
+      decls.push(...setup.stmts);
+      return lib("readable.opReduceSignal", [...head, setup.abort, setup.cbOpts], {
+        kind: "promise",
+        inner,
+      });
     }
   }
   throw new InternalCompilerError(`unknown stream operator ${member}`);
@@ -5253,6 +5406,22 @@ export function lowerStreamMethodCall(
     requireSide(readableSide, "read");
     if (args.length > 1) lowerer.noLowering(`read with ${args.length} arguments`, call);
     const receiver = streamReceiverExpr(lowerer, access.expression);
+    // JavaScript (and a result the declarations type as any) reads any
+    // chunk: a Buffer, a string once encoded, or an object-mode value.
+    const resultTs = lowerer.typeOf(call);
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(call)) ||
+      (resultTs.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+    ) {
+      const sizeDyn = args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc);
+      return {
+        kind: "libCall",
+        fn: "readable.readDyn",
+        args: [receiver, sizeDyn],
+        type: DYN,
+        loc,
+      };
+    }
     const size = args[0] ? lowerer.lowerExprExpecting(args[0], F64) : numLit(-1, loc);
     const type: IrType = unionOf(lowerer, [BYTES, { kind: "nullT" }]);
     const read: IrExpr = {

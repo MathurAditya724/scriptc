@@ -7272,7 +7272,9 @@ declare module "stream" {
     push(chunk: any, encoding?: string): boolean;
     unshift(chunk: Buffer | string, encoding?: string): void;
     unshift(chunk: any, encoding?: string): void;
-    read(size?: number): Buffer | null;
+    /* A Buffer, a string once encoded, an object-mode value, or null (as
+     * @types/node types it). */
+    read(size?: number): any;
     pause(): this;
     resume(): this;
     isPaused(): boolean;

@@ -5520,6 +5520,8 @@ function validateFunction(
       e.fn === "stream.duplexifyPair" ||
       e.fn === "stream.duplexFromPromise" ||
       e.fn === "stream.duplexFromAsyncFn" ||
+      e.fn === "stream.duplexFromGenSignal" ||
+      e.fn === "stream.duplexFromAsyncFnSignal" ||
       e.fn === "stream.setConstruct" ||
       e.fn === "stream.setWritev" ||
       e.fn === "stream.setWritevDefault" ||
@@ -5597,7 +5599,9 @@ function validateFunction(
       if (
         e.fn === "stream.duplexFromGen" ||
         e.fn === "stream.duplexFromDyn" ||
-        e.fn === "stream.duplexFromAsyncFn"
+        e.fn === "stream.duplexFromAsyncFn" ||
+        e.fn === "stream.duplexFromGenSignal" ||
+        e.fn === "stream.duplexFromAsyncFnSignal"
       ) {
         // Duplex.from: (stage, source, helpers...) or (body) → a Duplex.
         if (!isStreamObject(e.type)) {
@@ -5786,6 +5790,8 @@ function validateFunction(
         e.fn === "readable.opMap" ||
         e.fn === "readable.opFilter" ||
         e.fn === "readable.opFlatMap" ||
+        e.fn === "readable.opFlatMapAsyncGen" ||
+        e.fn === "readable.opFlatMapSyncGen" ||
         e.fn === "readable.opDrop" ||
         e.fn === "readable.opTake"
       ) {
@@ -5794,13 +5800,30 @@ function validateFunction(
         }
         return true;
       }
-      if (e.fn === "readable.opReduce") {
+      if (e.fn === "readable.opReduce" || e.fn === "readable.opReduceSignal") {
         const inner = e.type.kind === "promise" ? e.type.inner : null;
         const kind = e.args[5]?.kind === "numLit" ? e.args[5].value : -1;
         const want = [DYN, F64, BOOL, STRING][kind];
         if (!isStreamObject(e.args[0]?.type) || !inner || !want || !typeEquals(inner, want)) {
           err(`libCall readable.opReduce must return the promise its kind names`, e.loc);
         }
+        if (e.fn === "readable.opReduceSignal" && e.args[6]?.type.kind !== "func")
+          err(`libCall ${e.fn} takes ac.abort() as a closure`, e.loc);
+        return true;
+      }
+      if (e.fn === "readable.opOnceOptions") {
+        if (e.args.length !== 0 || e.type.kind !== "dyn")
+          err(`libCall ${e.fn} takes no arguments`, e.loc);
+        return true;
+      }
+      if (
+        e.fn === "readable.opSignalList" ||
+        e.fn === "readable.opSignalOpts" ||
+        e.fn === "readable.opSignalOf"
+      ) {
+        // The operator callbacks' { signal }: (dyn) → dyn.
+        if (e.args.length !== 1 || e.args[0]?.type.kind !== "dyn" || e.type.kind !== "dyn")
+          err(`libCall ${e.fn} takes and returns a checked-dynamic value`, e.loc);
         return true;
       }
       if (e.fn === "readable.fromDone") {

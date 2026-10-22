@@ -4082,6 +4082,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Duplex.from(asyncFunction): the stage, its source helper and the
    * promise's box helper. */
   "stream.duplexFromAsyncFn": { argTypes: [null, null, null], result: VOID },
+  /** The same for a body that declares the options argument: then the
+   * AbortController's abort() and its signal. */
+  "stream.duplexFromGenSignal": {
+    argTypes: [null, null, null, null, null, null, null, DYN],
+    result: VOID,
+  },
+  "stream.duplexFromAsyncFnSignal": { argTypes: [null, null, null, null, DYN], result: VOID },
   "writable.writeEncoding": { argTypes: [null, STRING], result: VOID },
   "writable.setDefaultEncoding": { argTypes: [null, DYN], result: VOID },
   /** Whether a readable.nextChunkDyn step answered the end (the done
@@ -4119,17 +4126,39 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * forEach nothing; reduce: [stream, fn, init, hasInit, options, kind]
    * with the payload kind (0 dyn, 1 number, 2 boolean, 3 string). The
    * promise-returning ones reject instead of throwing. */
-  "readable.opMap": { argTypes: [null, DYN, DYN], result: VOID },
-  "readable.opFilter": { argTypes: [null, DYN, DYN], result: VOID },
-  "readable.opFlatMap": { argTypes: [null, DYN, DYN], result: VOID },
+  "readable.opMap": { argTypes: [null, DYN, DYN, DYN], result: VOID },
+  "readable.opFilter": { argTypes: [null, DYN, DYN, DYN], result: VOID },
+  "readable.opFlatMap": { argTypes: [null, DYN, DYN, DYN], result: VOID },
+  /** flatMap whose callback returns a compiled generator: the helpers
+   * over its type follow (async: next, read, return, throw; sync: next,
+   * return, throw). */
+  "readable.opFlatMapAsyncGen": {
+    argTypes: [null, DYN, DYN, DYN, null, null, null, null],
+    result: VOID,
+  },
+  "readable.opFlatMapSyncGen": { argTypes: [null, DYN, DYN, DYN, null, null, null], result: VOID },
   "readable.opDrop": { argTypes: [null, DYN, DYN], result: VOID },
   "readable.opTake": { argTypes: [null, DYN, DYN], result: VOID },
   "readable.opToArray": { argTypes: [null, DYN], result: { kind: "promise", inner: DYN } },
-  "readable.opForEach": { argTypes: [null, DYN, DYN], result: { kind: "promise", inner: VOID } },
-  "readable.opSome": { argTypes: [null, DYN, DYN], result: { kind: "promise", inner: BOOL } },
-  "readable.opEvery": { argTypes: [null, DYN, DYN], result: { kind: "promise", inner: BOOL } },
-  "readable.opFind": { argTypes: [null, DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "readable.opForEach": {
+    argTypes: [null, DYN, DYN, DYN],
+    result: { kind: "promise", inner: VOID },
+  },
+  "readable.opSome": { argTypes: [null, DYN, DYN, DYN], result: { kind: "promise", inner: BOOL } },
+  "readable.opEvery": { argTypes: [null, DYN, DYN, DYN], result: { kind: "promise", inner: BOOL } },
+  "readable.opFind": { argTypes: [null, DYN, DYN, DYN], result: { kind: "promise", inner: DYN } },
+  /** The map family's last argument is the callback's { signal } (or
+   * undefined). reduceSignal adds ac.abort() (a closure) and
+   * { signal: ac.signal } for a reducer that reads them. */
   "readable.opReduce": { argTypes: [null, DYN, DYN, BOOL, DYN, F64], result: VOID },
+  "readable.opReduceSignal": {
+    argTypes: [null, DYN, DYN, BOOL, DYN, F64, null, DYN],
+    result: VOID,
+  },
+  "readable.opSignalList": { argTypes: [DYN], result: DYN },
+  "readable.opSignalOpts": { argTypes: [DYN], result: DYN },
+  "readable.opSignalOf": { argTypes: [DYN], result: DYN },
+  "readable.opOnceOptions": { argTypes: [], result: DYN },
   "readable.resume": { argTypes: [null], result: VOID },
   "readable.isPaused": { argTypes: [null], result: BOOL },
   "readable.pipe": { argTypes: [null, null, BOOL], result: VOID },
