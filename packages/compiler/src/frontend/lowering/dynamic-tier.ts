@@ -172,10 +172,20 @@ function isJsonParse(node: ts.Node | undefined): boolean {
   );
 }
 
+/** Bindings that hold a value: variables, parameters and properties (not
+ * types, classes or functions, whose names an operand may also mention). */
+const VALUE_BINDING =
+  ts.SymbolFlags.FunctionScopedVariable |
+  ts.SymbolFlags.BlockScopedVariable |
+  ts.SymbolFlags.Property;
+
 /** Why an identifier holds a value without a static type, or null. */
 function identifierCause(lowerer: Lowerer, id: ts.Identifier, depth = 0): UntypedCause | null {
-  const symbol = lowerer.checker.getSymbolAtLocation(id);
-  const decl = symbol?.declarations?.[0];
+  let symbol = lowerer.checker.getSymbolAtLocation(id);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  if (symbol === undefined || (symbol.flags & VALUE_BINDING) === 0) return null;
+  const decl = symbol.declarations?.[0];
   // An unannotated `for (const item of items)` variable: name `items`.
   if (
     depth < 4 &&
@@ -241,6 +251,9 @@ function causeOf(lowerer: Lowerer, sites: readonly { loc: SrcLoc }[]): UntypedCa
   return null;
 }
 
+/** Generated functions (see scanDynamicTier), after any module prefix. */
+const GENERATED = /^%*(?:m\d+\.)?%*(?:dyn|caught|init)\./;
+
 /** The likely-hot dynamic-tier functions of `module` (see the header). */
 export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTierReport {
   const facts = new Map<string, FunctionFacts>();
@@ -255,9 +268,9 @@ export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTier
   const packages = new Map<string, number>();
   for (const fn of module.functions) {
     // Generated `%dyn.*` helpers are dynamic operations lowered out of line,
-    // and `%init.*` is a module's top level: neither is a function to name.
-    if (fn.tier !== "dynamic" || fn.name.startsWith("%dyn.") || fn.name.startsWith("%init."))
-      continue;
+    // `%caught.*` helpers test caught values, and `%init.*` is a module's top
+    // level: none is a function to name.
+    if (fn.tier !== "dynamic" || GENERATED.test(fn.name)) continue;
     if (isNodeModulesPath(fn.loc.file)) {
       const name = packageOf(fn.loc.file);
       packages.set(name, (packages.get(name) ?? 0) + 1);
@@ -300,9 +313,35 @@ export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTier
   };
 }
 
-/** `%%m144.Session.finish` → `Session.finish`, `m163.find` → `find`. */
-function displayName(name: string): string {
-  return name.replace(/^%+/, "").replace(/^m\d+\./, "");
+/** The name the source binds a function expression to (`totals` in
+ * `const totals = (rows) => ...`), or null. */
+function boundName(lowerer: Lowerer, loc: SrcLoc): string | null {
+  const sf = lowerer.program.getSourceFile(loc.file);
+  if (sf === undefined) return null;
+  const parent = nodeAt(sf, loc.start, loc.end).parent;
+  if (
+    parent !== undefined &&
+    (ts.isVariableDeclaration(parent) ||
+      ts.isPropertyAssignment(parent) ||
+      ts.isPropertyDeclaration(parent)) &&
+    ts.isIdentifier(parent.name)
+  )
+    return parent.name.text;
+  return null;
+}
+
+/** A function's name as the source spells it, without a module prefix
+ * (`%%m144.Session.finish` → `Session.finish`, `m163.find` → `find`). A
+ * function expression (`%fn<n>`) takes its own name, else the name it is
+ * bound to, else `anonymous function`. */
+function displayName(lowerer: Lowerer, f: HotDynamicFunction): string {
+  const plain = f.name
+    .replace(/^%+/, "")
+    .replace(/^m\d+\./, "")
+    .replace(/^%+/, "");
+  const lambda = /^fn\d+(?:_(.+))?$/.exec(plain);
+  if (lambda === null) return plain;
+  return lambda[1] ?? boundName(lowerer, f.loc) ?? "anonymous function";
 }
 
 /** SC6101 for the program lowering produced, or null (see the header).
@@ -322,7 +361,7 @@ export function dynamicTierWarning(
   };
   return dynamicTierDiag(
     report.hot.map((f) => ({
-      name: displayName(f.name),
+      name: displayName(lowerer, f),
       where: where(f.loc),
       cause: f.cause,
       hot: f.hot,
