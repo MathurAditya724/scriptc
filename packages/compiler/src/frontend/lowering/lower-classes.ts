@@ -6142,13 +6142,55 @@ export function lowerClassExpression(lowerer: Lowerer, expr: ts.ClassLikeDeclara
       loc,
     });
   }
-  return info.localClass
-    ? initializeRuntimeStatics(
-        lowerer,
-        info,
-        value.kind === "classRef" ? { ...value, captures: info.localClass.captureSources } : value,
-      )
-    : value;
+  if (!info.localClass) return value;
+  const classValue = initializeRuntimeStatics(
+    lowerer,
+    info,
+    value.kind === "classRef" ? { ...value, captures: info.localClass.captureSources } : value,
+  );
+  // The base resolves statically here, but Node still evaluates the
+  // heritage expression each time the class definition runs, first.
+  const heritage = heritageWithEffects(expr);
+  if (heritage === undefined) return classValue;
+  return {
+    kind: "seqExpr",
+    stmts: [lowerer.lowerExprStatement(heritage)],
+    result: classValue,
+    type: classValue.type,
+    loc: classValue.loc,
+  };
+}
+
+/** The `extends` expression of `decl` when evaluating it can have effects
+ * (a call, construction, assignment, update, delete, await or yield
+ * outside nested functions). */
+function heritageWithEffects(decl: ts.ClassLikeDeclaration): ts.Expression | undefined {
+  const heritage = decl.heritageClauses?.nodes.find(
+    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+  )?.types?.nodes[0]?.expression;
+  if (heritage === undefined) return undefined;
+  const effects = (node: ts.Node): boolean => {
+    if (ts.isFunctionLike(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node))
+      return false;
+    if (
+      ts.isCallExpression(node) ||
+      ts.isNewExpression(node) ||
+      ts.isTaggedTemplateExpression(node) ||
+      ts.isDeleteExpression(node) ||
+      ts.isAwaitExpression(node) ||
+      ts.isYieldExpression(node) ||
+      (ts.isPrefixUnaryExpression(node) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken)) ||
+      ts.isPostfixUnaryExpression(node) ||
+      (ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
+    )
+      return true;
+    return ts.forEachChild(node, (child) => effects(child) || undefined) ?? false;
+  };
+  return effects(heritage) ? heritage : undefined;
 }
 
 /** The EXACT class a receiver expression is statically known to BE (not
