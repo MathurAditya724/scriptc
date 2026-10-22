@@ -499,7 +499,8 @@ import {
   lowerTracingChannelProperty,
 } from "./builtins/async-context.js";
 import { lowerDisposableStackNew } from "./builtins/disposable-stack.js";
-import { lowerErrorCodeProperty } from "./builtins/errors.js";
+import { lowerErrorCodeProperty, lowerErrorFunctionCall } from "./builtins/errors.js";
+import { noteDateClassMethods } from "./builtins/date-classes.js";
 import {
   lowerProcessProperty,
   lowerProcessMethodCall,
@@ -2958,6 +2959,10 @@ export class Lowerer {
   /** Named method slots observed before class collection need a callable
    * ABI and shared prototype descriptors instead of call-site specialization. */
   readonly prototypeMethodAccesses = new Map<string, ts.Node>();
+  /** Whether the program reads `Error.prototype`, the checked-dynamic
+   * object an ES5 constructor function can inherit from: only then can a
+   * value that is not an Error instance be `instanceof Error`. */
+  errorPrototypeValues = false;
   /** Well-known symbol methods (`sym:iterator`) the program may replace
    * through a symbol-keyed write: an instance or prototype property, or a
    * reflection call. */
@@ -8208,6 +8213,7 @@ export class Lowerer {
     // turn queue more instances. Continue to the joint fixpoint; the initial
     // queue above is the only portion whose discovery order differed from
     // historical emit order.
+    noteDateClassMethods(this);
     const classDispatch = new ClassDynamicDispatch(extraRoots !== undefined);
     // Units in declaration order, so the passes below meet functions, and the
     // classes they collect, in an order that does not depend on lowering order.
@@ -12844,6 +12850,25 @@ export class Lowerer {
     );
   }
 
+  /** withExpressionOverride for several nodes at once. */
+  withExpressionOverrides<T>(
+    overrides: readonly { node: ts.Expression; value: IrExpr }[],
+    lower: () => T,
+  ): T {
+    const previous = overrides.map((override) => this.chainRecvByNode.get(override.node));
+    for (const override of overrides) this.chainRecvByNode.set(override.node, override.value);
+    try {
+      return lower();
+    } finally {
+      for (let i = overrides.length - 1; i >= 0; i--) {
+        const node = overrides[i]!.node;
+        const value = previous[i];
+        if (value) this.chainRecvByNode.set(node, value);
+        else this.chainRecvByNode.delete(node);
+      }
+    }
+  }
+
   withExpressionOverride<T>(node: ts.Expression, value: IrExpr, lower: () => T): T {
     const previous = this.chainRecvByNode.get(node);
     this.chainRecvByNode.set(node, value);
@@ -12863,6 +12888,7 @@ export class Lowerer {
     if (webAssembly !== null) return webAssembly;
     refuseWebAssemblyUse(this, expr.expression);
     return (
+      lowerErrorFunctionCall(this, expr) ??
       lowerLifetimeRegionCall(this, expr) ??
       lowerInternTableCall(this, expr) ??
       lowerThreadSlotsCall(this, expr) ??
