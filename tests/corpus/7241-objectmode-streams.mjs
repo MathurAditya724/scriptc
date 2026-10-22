@@ -100,6 +100,13 @@ function unshiftFront() {
   r.unshift({ id: 0 });
   r.on("data", (v) => console.log("after unshift:", show(v)));
   r.on("end", () => console.log("read end"));
+  // strings stay strings on an object-mode side, whatever the encoding
+  const strings = new Readable({ objectMode: true, read() {} });
+  strings.push("b");
+  strings.unshift("a");
+  strings.push("6869", "hex");
+  strings.push(null);
+  strings.on("data", (v) => console.log("string entry:", show(v)));
 }
 
 function piped() {

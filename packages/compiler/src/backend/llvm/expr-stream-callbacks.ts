@@ -126,6 +126,9 @@ export function streamDataAdapter(
     host.declare(`declare void @scr_bytes_release_v(ptr)`);
     host.declare(`declare ptr @scr_str_retain_v(ptr)`);
     host.declare(`declare void @scr_str_release_v(ptr)`);
+    host.declare(`declare void @scr_throw_error_msg(i32, ptr, ${host.sizeType})`);
+    const unionMsg =
+      "a 'data' listener declaring a Buffer | string chunk received an object-mode value that is neither (declare the chunk's type)";
     d.push(
       `  %uslot = alloca ptr`,
       `  %isb = icmp ne ptr %a0, null`,
@@ -136,6 +139,15 @@ export function streamDataAdapter(
       `  store ptr %ub, ptr %uslot`,
       `  br label %go`,
       `str:`,
+      // an object-mode value that is neither: the catchable error the
+      // one-type adapters throw
+      `  %nos = icmp eq ptr %a1, null`,
+      `  br i1 %nos, label %bad, label %strok`,
+      `bad:`,
+      `  call void @scr_throw_error_msg(i32 1, ptr ${host.cstr(unionMsg)}, ${host.sizeType} ${Buffer.byteLength(unionMsg, "utf8")})`,
+      `  call void @scr_closure_release(ptr %orig)`,
+      `  ret void`,
+      `strok:`,
       `  %rs = call ptr @scr_str_retain_v(ptr %a1)`,
       `  %us = call ptr @scr_union_new_ref(i32 ${strTag}, ptr %rs, ptr @scr_str_retain_v, ptr @scr_str_release_v, ptr null)`,
       `  store ptr %us, ptr %uslot`,

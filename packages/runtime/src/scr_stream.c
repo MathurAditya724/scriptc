@@ -5637,6 +5637,8 @@ bool scr_stream_push_str(ScrStream *s, ScrStr *str) {
 /* push(chunk, encoding) with an explicit non-utf8 literal: the per-call
  * encoding overrides the stream's default. Borrows both strings. */
 bool scr_stream_push_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc) {
+  /* object mode: the string is the chunk and the encoding is not used */
+  if (s->st->has_r && s->st->r.object_entries) return scr_stream_push_str(s, str);
   ScrBytes *b = scr_stream_buffer(scr_bytes_from_str(str, enc));
   bool ret = scr_stream_add_chunk(s, b, false);
   scr_bytes_release(b);
@@ -5702,6 +5704,13 @@ void scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
 }
 
 void scr_stream_unshift_str(ScrStream *s, ScrStr *str) {
+  if (s->st->has_r && s->st->r.object_entries) {
+    /* object mode: the string itself goes to the front */
+    ScrDyn *v = scr_dyn_new_str(str);
+    scr_stream_unshift_dyn(s, v);
+    scr_dyn_release(v);
+    return;
+  }
   ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
   memcpy(b->data, str->data, str->len);
   if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
