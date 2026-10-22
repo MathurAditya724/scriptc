@@ -287,6 +287,7 @@ import {
 import {
   arrNewCall,
   boxAccess,
+  elemAccess,
   boxNewCall,
   boxReleaseSym,
   computeTraced,
@@ -569,6 +570,33 @@ function mentionsLocal(e: IrExpr, localId: string): boolean {
   };
   expr(e);
   return found;
+}
+
+/** The IR nodes in `body` that name local `id`: its declaration, reads,
+ * writes and closure captures. */
+function countLocalMentions(body: readonly IrStmt[], id: string): number {
+  let count = 0;
+  const visit = (node: unknown): void => {
+    if (node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    const record = node as Record<string, unknown>;
+    if (record["localId"] === id) count++;
+    const captures = record["captures"];
+    if (Array.isArray(captures))
+      for (const c of captures)
+        if (
+          c === id ||
+          (typeof c === "object" && c !== null && (c as { localId?: unknown }).localId === id)
+        )
+          count++;
+    for (const [key, value] of Object.entries(record))
+      if (key !== "type" && key !== "loc" && key !== "captures") visit(value);
+  };
+  visit(body);
+  return count;
 }
 
 export class LlEmitter {
@@ -864,6 +892,9 @@ export class LlEmitter {
   /** The async functions whose bodies never suspend and that a direct
    * await may enter in place (selectStacklessAsync). */
   private inlineAwaitable = new Set<string>();
+  /** Locals whose array literal emitStmts left for the `await Promise.all`
+   * that reads them (deferredPromiseAllLocal). */
+  private readonly deferredPromiseAllEntries = new Map<string, ExprOf<"arrayLit">>();
   /** The promise a `return` emitted past its finally regions already
    * produced for its adopting await (borrowed from the return's parked
    * slot); that await takes it instead of evaluating its operand. */
@@ -1944,6 +1975,185 @@ export class LlEmitter {
     B.startBlock(join);
     this.emitPendingCheck();
     return value;
+  }
+  /** The entries of `Promise.all(arg)` that a stackless coroutine body's
+   * await may run in place (emitCoroInlinePromiseAll): `arg` is a non-empty
+   * array literal, or the local whose declaration emitStmts deferred to this
+   * await (deferredPromiseAllEntries), whose every entry is a call to a
+   * never-suspending async function, and the result is an array. Null
+   * otherwise. Consumes a deferred local's entries. */
+  inlinePromiseAllEntries(all: ExprOf<"intrinsic">): ExprOf<"arrayLit"> | null {
+    if (all.name !== "promise.all" || all.type.kind !== "promise") return null;
+    if (all.type.inner.kind !== "array") return null;
+    const arg = all.args[0];
+    if (arg?.kind === "varRef") {
+      const deferred = this.deferredPromiseAllEntries.get(arg.localId);
+      if (deferred === undefined) return null;
+      this.deferredPromiseAllEntries.delete(arg.localId);
+      return deferred;
+    }
+    return arg?.kind === "arrayLit" && this.promiseAllInlineable(arg) ? arg : null;
+  }
+
+  /** Whether every entry of `entries` is a call an await could run in place
+   * (inlineAwaitEligible) that yields its promise's inner type. */
+  private promiseAllInlineable(entries: ExprOf<"arrayLit">): boolean {
+    if (entries.elems.length === 0 || (entries.spreads?.length ?? 0) > 0) return false;
+    if (entries.type.kind !== "array" || entries.type.elem.kind !== "promise") return false;
+    const inner = entries.type.elem.inner;
+    return entries.elems.every((el) => {
+      if (el.kind !== "call" || !this.inlineAwaitEligible(el.callee)) return false;
+      const callee = this.fnByName.get(el.callee)!;
+      return typeEquals(callee.returnType, inner) && !this.callLifetimes.borrowed.has(el.callee);
+    });
+  }
+
+  /** Whether `stmts[i]` declares a local holding an array literal that only
+   * `stmts[i + 1]` reads, as the operand of `await Promise.all(local)` that
+   * runs first in that statement and may run its entries in place. Nothing
+   * runs between the literal and the await, so the await evaluates the
+   * literal itself (inlinePromiseAllEntries). Debug builds keep the local. */
+  deferredPromiseAllLocal(stmts: readonly IrStmt[], i: number): ExprOf<"arrayLit"> | null {
+    const decl = stmts[i];
+    const next = stmts[i + 1];
+    if (this.debug !== null || decl?.kind !== "varDecl" || decl.init?.kind !== "arrayLit")
+      return null;
+    if (this.currentCoro?.kind !== "async" || next === undefined) return null;
+    const operand =
+      next.kind === "varDecl"
+        ? next.init
+        : next.kind === "exprStmt"
+          ? next.expr
+          : next.kind === "assign"
+            ? next.value
+            : null;
+    if (operand?.kind !== "awaitExpr" || operand.adopt === true) return null;
+    const all = operand.value;
+    if (all.kind !== "intrinsic" || all.name !== "promise.all" || all.type.kind !== "promise")
+      return null;
+    if (all.type.inner.kind !== "array") return null;
+    const arg = all.args[0];
+    if (arg?.kind !== "varRef" || arg.localId !== decl.localId) return null;
+    if (!this.promiseAllInlineable(decl.init)) return null;
+    if (this.currentLocals.get(decl.localId)?.boxed) return null;
+    // The declaration and this read are the local's only mentions.
+    return countLocalMentions(this.currentFunctionBody, decl.localId) === 2 ? decl.init : null;
+  }
+
+  /** A stackless coroutine body's `await Promise.all([f(...), ...])` of
+   * never-suspending calls, with Promise.all's turns and without its
+   * promises: the entries run in place in order and their values fill the
+   * result array. Promise.all queues one reaction job per entry, back to
+   * back, and the last of them settles the result, whose await then takes a
+   * turn: here one turn stands for the entries' jobs and a second for the
+   * await. A throwing entry becomes the rejection the await re-throws from
+   * its turn; the remaining entries still run, and later throws are handled
+   * rejections, as Promise.all's subscriptions make them. */
+  emitCoroInlinePromiseAll(entries: ExprOf<"arrayLit">, type: IrType): LlValue {
+    if (type.kind !== "array")
+      throw new InternalCompilerError("llvm emitter bug: inline Promise.all result");
+    const B = this.B;
+    const elem = type.elem;
+    const acc = elemAccess(elem);
+    const values = B.tmp();
+    // Up to three values fit in the array's own block (scr_arr_new_*_small).
+    const small = entries.elems.length <= 3;
+    B.line(
+      `${values} = ${arrNewCall(this.shapeHost, elem, small ? "0" : String(entries.elems.length), small)}`,
+    );
+    const out = this.own({ name: values, type });
+    this.declare(`declare ptr @scr_promise_new()`);
+    this.declare(`declare void @scr_promise_reject_pending(ptr)`);
+    this.declare(`declare void @scr_promise_mark_handled(ptr)`);
+    const promiseType = entries.type.kind === "array" ? entries.type.elem : type;
+    // Each entry's rejection, owned by the frame: unobserved until the
+    // entries have all run, as Promise.all subscribes only then, so an
+    // entry argument's synchronous throw leaves them unhandled.
+    const rejections: string[] = [];
+    for (const entry of entries.elems) {
+      if (entry.kind !== "call")
+        throw new InternalCompilerError("llvm emitter bug: inline Promise.all entry");
+      const slot = B.tmp();
+      B.entryAllocas.push(`${slot} = alloca ptr`);
+      B.line(`store ptr null, ptr ${slot}`);
+      this.ownSlot(slot, promiseType);
+      rejections.push(slot);
+      const value = emitCallExpr(this, entry, "inline");
+      const thrown = B.tmp();
+      for (const line of this.pendingTestLines(thrown)) B.line(line.trim());
+      const clean = B.newLabel("pa.clean");
+      const rejected = B.newLabel("pa.rejected");
+      const next = B.newLabel("pa.next");
+      B.condBr(thrown, rejected, clean);
+      B.startBlock(clean);
+      if (acc === "ref") this.toHeap(value);
+      this.arrPush(values, acc, value.name);
+      B.br(next);
+      B.startBlock(rejected);
+      const promise = B.tmp();
+      B.line(`${promise} = call ptr @scr_promise_new()`);
+      B.line(`call void @scr_promise_reject_pending(ptr ${promise})`);
+      B.line(`store ptr ${promise}, ptr ${slot}`);
+      B.br(next);
+      B.startBlock(next);
+    }
+    // Promise.all's subscriptions handle every rejection, and the first
+    // (in entry order) rejects the result.
+    let first = "null";
+    for (let k = rejections.length - 1; k >= 0; k--) {
+      const slot = rejections[k]!;
+      const rejection = B.tmp();
+      const present = B.tmp();
+      B.line(`${rejection} = load ptr, ptr ${slot}`);
+      B.line(`${present} = icmp ne ptr ${rejection}, null`);
+      const mark = B.newLabel("pa.handled");
+      const after = B.newLabel("pa.unrejected");
+      B.condBr(present, mark, after);
+      B.startBlock(mark);
+      B.line(`call void @scr_promise_mark_handled(ptr ${rejection})`);
+      B.br(after);
+      B.startBlock(after);
+      const chosen = B.tmp();
+      B.line(`${chosen} = select i1 ${present}, ptr ${rejection}, ptr ${first}`);
+      first = chosen;
+    }
+    // The entries' reaction jobs.
+    this.emitCoroAwait(null);
+    const failed = B.tmp();
+    B.line(`${failed} = icmp ne ptr ${first}, null`);
+    const fulfilled = B.newLabel("pa.fulfilled");
+    const rejected = B.newLabel("pa.reject");
+    const join = B.newLabel("pa.join");
+    B.condBr(failed, rejected, fulfilled);
+    B.startBlock(fulfilled);
+    this.emitCoroAwait(null);
+    B.br(join);
+    B.startBlock(rejected);
+    this.declare(`declare void @scr_coro_await_void(ptr)`);
+    this.emitCoroAwait(first);
+    B.line(`call void @scr_coro_await_void(ptr ${first})`);
+    B.br(join);
+    B.startBlock(join);
+    // The rejections are released here, only where an entry threw, rather
+    // than by the frame, which releases each slot whether or not it holds a
+    // promise.
+    this.declare(`declare void @scr_promise_release(ptr)`);
+    for (const slot of rejections) {
+      const rejection = B.tmp();
+      const present = B.tmp();
+      B.line(`${rejection} = load ptr, ptr ${slot}`);
+      B.line(`${present} = icmp ne ptr ${rejection}, null`);
+      const release = B.newLabel("pa.release");
+      const after = B.newLabel("pa.released");
+      B.condBr(present, release, after);
+      B.startBlock(release);
+      B.line(`call void @scr_promise_release(ptr ${rejection})`);
+      B.br(after);
+      B.startBlock(after);
+    }
+    this.disownSlots(rejections.map((ptr) => ({ ptr })));
+    this.emitPendingCheck();
+    return out;
   }
   emitAsyncAwaitCall(fn: IrFunction, argPackLines: string[] | null, adopt = false): string[] {
     return emitAsyncAwaitCall(this, fn, argPackLines, adopt);
@@ -4499,6 +4709,11 @@ export class LlEmitter {
         if (this.B.isTerminated()) return;
         if (cursor) cursor.index = i;
         this.stmtCursor = cursor;
+        const deferred = this.deferredPromiseAllLocal(stmts, i);
+        if (deferred !== null) {
+          this.deferredPromiseAllEntries.set((stmts[i] as { localId: string }).localId, deferred);
+          continue;
+        }
         this.emitStmt(stmts[i]!);
       }
     } finally {
