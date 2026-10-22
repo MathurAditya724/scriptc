@@ -312,11 +312,13 @@ function lowerStreamCallback(
     // A write or transform chunk of another type converts from the
     // chunk's value when the callback runs (an object-mode side's value),
     // or throws a TypeError there — on a side known to be byte mode the
-    // chunk is a Buffer, so the declared type is the fence's; an encoding
-    // of another type (`string | null | undefined`) converts from the
-    // encoding argument's value.
+    // chunk is a Buffer, so the declared type must be Node's or a
+    // supertype of it (`Buffer | string`); an encoding of another type
+    // (`string | null | undefined`) converts from the encoding argument's
+    // value.
     if (
-      ((i === 0 && chunkValues) || i === 1) &&
+      ((i === 0 && (chunkValues || widensInto(lowerer, fullTuple[0]!, funcType.params[0]!, loc))) ||
+        i === 1) &&
       (which === "write" || which === "transform") &&
       funcType.params[i]!.kind !== "func" &&
       canConvertToDyn(
@@ -1369,11 +1371,13 @@ export function lowerStreamSuperCall(
   // set objectMode, and a literal says so with objectMode (or a Duplex's
   // writableObjectMode) true; otherwise _write and _transform receive
   // Buffers.
+  // super(undefined) and super(null) pass no options (followOptionsArg
+  // answers null), so their sides are byte mode too.
   const optsNode = argNodes[0] !== undefined ? followOptionsArg(lowerer, argNodes[0]) : null;
   const chunkValues =
-    argNodes[0] !== undefined &&
-    (optsNode === null ||
-      !ts.isObjectLiteralExpression(optsNode) ||
+    optsNode !== null &&
+    optsNode !== undefined &&
+    (!ts.isObjectLiteralExpression(optsNode) ||
       literalWritesValues(optsNode, cls !== "%Readable" && cls !== "%Writable"));
   const fallback = (name: string): IrExpr | null => {
     const methodName = UNDERSCORE_METHODS.get(name);
