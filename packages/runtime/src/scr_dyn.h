@@ -850,6 +850,7 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *value, const ScrStr *spell);
 /* for await over a checked-dynamic value (scr_dyn_for_await.c). */
 ScrDyn *scr_dyn_async_iterator_open(ScrDyn *value, ScrStr *spell);
 bool scr_dyn_async_iterator_was_sync(void);
+void scr_dyn_async_iterator_set_sync(bool sync);
 ScrDyn *scr_dyn_iterator_optional(const ScrDyn *value);
 /* from.js's probe: 2 when value[Symbol.asyncIterator] is set, 1 when
  * value[Symbol.iterator] is, 0 for neither, -1 with an error pending. */

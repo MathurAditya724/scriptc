@@ -4406,6 +4406,21 @@ export function lowerDynDispatchMethodCall(
     lowerer.chainBlocked(call, access)
   )
     return null;
+  // readable.compose lowers its stages from their syntax, so it needs the
+  // stream's class: a stream a JavaScript function returns untyped has none.
+  if (method === "compose") {
+    const recvT = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+    if (
+      recvT?.kind === "object" &&
+      streamSidesOf(lowerer, lowerer.classes.get(recvT.className)) !== null
+    ) {
+      lowerer.noLowering(
+        "readable.compose on a stream held as a checked-dynamic value",
+        call,
+        "type the stream where it comes from, such as a JSDoc @returns {Readable} on the function that returns it",
+      );
+    }
+  }
   if (call.arguments.nodes.some((arg) => ts.isSpreadElement(arg))) {
     const loc = locOf(call);
     const local = lowerer.declareHiddenLocal("%spreadReceiver", DYN);
@@ -9925,7 +9940,9 @@ export function lowerObjectMethodCall(
   if (
     info &&
     !found &&
-    (STREAM_API_MEMBERS.has(access.name.text) || STREAM_OPERATORS.has(access.name.text)) &&
+    (STREAM_API_MEMBERS.has(access.name.text) ||
+      STREAM_OPERATORS.has(access.name.text) ||
+      access.name.text === "compose") &&
     streamSidesOf(lowerer, info) !== null
   ) {
     const stream = lowerStreamMethodCall(lowerer, call, access, info);

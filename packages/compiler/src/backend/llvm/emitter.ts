@@ -1025,6 +1025,11 @@ export class LlEmitter {
   get usesDynBuiltinStream(): boolean {
     return this.runtimeFeatures.dynBuiltinStream;
   }
+  /** A checked-dynamic for-await may hold a native stream: the program
+   * links the stream unit (and the dyn-async one the loop needs). */
+  get dynForAwaitStreams(): boolean {
+    return this.runtimeFeatures.stream && this.runtimeFeatures.dynAsync;
+  }
   /** Runtime-arm dispatchers for live union values. */
   readonly liveDynUnionRefAdapters = new Map<string, string>();
   readonly dynPromiseAdapters = new Map<string, string>();
@@ -6460,7 +6465,10 @@ export class LlEmitter {
     return streamDataAdapter(this, cbT);
   }
 
-  streamDoneFnFor(kind: "w" | "f" | "d" | "t" | "l", doneT: IrType & { kind: "func" }): string {
+  streamDoneFnFor(
+    kind: "w" | "f" | "d" | "t" | "l" | "c",
+    doneT: IrType & { kind: "func" },
+  ): string {
     return streamDoneFnFor(this, kind, doneT);
   }
 
@@ -6484,7 +6492,7 @@ export class LlEmitter {
     return zlibBytesThunkFor(this, cbT);
   }
 
-  streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e", cbT: IrType): string {
+  streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e" | "c" | "v", cbT: IrType): string {
     return streamCbThunkFor(this, kind, cbT);
   }
 
