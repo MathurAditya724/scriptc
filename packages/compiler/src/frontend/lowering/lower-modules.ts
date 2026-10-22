@@ -1,5 +1,4 @@
 import { THREADS_MODULE } from "../threads-import.js";
-import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { everyStmtList, everyTypeChild } from "../../ir/traverse.js";
@@ -1075,14 +1074,8 @@ export function moduleArtifacts(
         else delete rest.abstractMethods;
         return rest;
       }),
-    // Ids come from what each shape and union is (keyedHelperName), so
-    // ordering by id gives every lowering order the same module.
-    records: lowerer.shapes.shapes
-      .filter((r) => shapeIds.has(r.id))
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
-    unions: lowerer.unions.unions
-      .filter((u) => unionIds.has(u.id))
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+    records: lowerer.shapes.shapes.filter((r) => shapeIds.has(r.id)),
+    unions: lowerer.unions.unions.filter((u) => unionIds.has(u.id)),
   };
 }
 
@@ -1684,7 +1677,7 @@ export function collectGlobals(
         }
         if (type.kind === "void") lowerer.badType(stmt.name, lowerer.typeOf(stmt.name));
         const g: IrGlobal = {
-          id: `%g.${tag}${nsPathPrefix(lowerer, stmt)}%alias.${stmt.name.text}%${positionTag(lowerer, stmt)}`,
+          id: `%g.${tag}${nsPathPrefix(stmt)}%alias.${stmt.name.text}%${ts.tokenStartOfNode(stmt)}`,
           name: stmt.name.text,
           type,
           mutable: false,
@@ -1761,7 +1754,7 @@ export function collectGlobals(
     // (`%g.e.A%B.x`), so `namespace A { export const x }` and a
     // top-level `const x` never collide; non-exported members add the
     // declaring block's position (block-local bindings).
-    const nsPrefix = nsPathPrefix(lowerer, stmt, list.declarations.nodes[0]);
+    const nsPrefix = nsPathPrefix(stmt, list.declarations.nodes[0]);
     for (const decl of list.declarations.nodes) {
       // --provenance-sources: an elided pure-annotated dead const in a
       // fetched source module registers no global (the statement

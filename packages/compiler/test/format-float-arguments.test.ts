@@ -27,7 +27,7 @@ test("util.format %f lowers a boolean argument once", async () => {
     const helpers = mod.functions
       .map((f) => f.name)
       .filter((name) => name.startsWith("%arr."))
-      .map((name) => name.replace(/\.[0-9a-f]+$/, ""))
+      .map((name) => name.replace(/\.\d+$/, ""))
       .sort();
     expect(helpers).toEqual(["%arr.every", "%arr.some"]);
   } finally {

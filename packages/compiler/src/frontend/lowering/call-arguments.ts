@@ -1,4 +1,3 @@
-import { keyedHelperName } from "./stable-names.js";
 import { forwardedTupleType, pureForwardedValues, stripTypeWrappers } from "./typed-arguments.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -754,7 +753,7 @@ function holeReadingLift(lowerer: Lowerer, from: IrType, to: IrType, loc: SrcLoc
   const key = `arr.holes:${typeKey(elem)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, "%arr.holes", key);
+  const name = `%arr.holes.${lowerer.valueHelpers.size}`;
   lowerer.valueHelpers.set(key, name);
   lowerer.liftedFns.push(
     buildArrayConversion(

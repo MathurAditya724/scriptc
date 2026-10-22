@@ -1,4 +1,3 @@
-import { keyedHelperName } from "../stable-names.js";
 import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -233,7 +232,7 @@ function lowerMapIterDrainCall(
   const key = `${method}:${typeKey(mapT.key)}:${typeKey(mapT.value)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, `%map.${method}`, key);
+    helper = `%map.${method}.${lowerer.mapHofHelpers.size}`;
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildMapIterDrainFn(helper, mapT, method, elemT, tupleT, loc));
   }
@@ -349,7 +348,7 @@ export function mapEntriesArray(lowerer: Lowerer, receiver: IrExpr): IrExpr {
   const key = `entries:${typeKey(mapT.key)}:${typeKey(mapT.value)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%map.entries", key);
+    helper = `%map.entries.${lowerer.mapHofHelpers.size}`;
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(
       buildMapIterDrainFn(helper, mapT, "entries", tupleT, tupleT, receiver.loc),
@@ -520,7 +519,7 @@ export function lowerMapForEachCall(
   const key = `${typeKey(mapT.key)}:${typeKey(mapT.value)}:${arity}:${typeKey(fnRet)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%map.forEach", key);
+    helper = `%map.forEach.${lowerer.mapHofHelpers.size}`;
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildCollectionForEachFn(helper, mapT, arity, fnRet, loc));
   }
@@ -694,7 +693,7 @@ export function lowerSetForEachCall(
   const key = `${typeKey(setT.elem)}:${arity}:${typeKey(fnRet)}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%set.forEach", key);
+    helper = `%set.forEach.${lowerer.setHofHelpers.size}`;
     lowerer.setHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildCollectionForEachFn(helper, setT, arity, fnRet, loc));
   }
@@ -746,7 +745,7 @@ function lowerSetCombineCall(
   const key = `${name}:${typeKey(setT.elem)}:${typeKey(otherT)}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, `%set.${name}`, key);
+    helper = `%set.${name}.${lowerer.setHofHelpers.size}`;
     lowerer.setHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildSetCombineFn(helper, name, setT, otherT, loc));
   }
@@ -1358,7 +1357,7 @@ export function mapFromSeedValue(
     const key = `checked-seed:${typeKey(mapT)}`;
     let name = lowerer.mapHofHelpers.get(key);
     if (!name) {
-      name = keyedHelperName(lowerer, "%map.checkedSeed", key);
+      name = `%map.checkedSeed.${lowerer.mapHofHelpers.size}`;
       lowerer.mapHofHelpers.set(key, name);
       const source = varRef("source.0", DYN, loc);
       const entries = varRef("entries.0", DYN, loc);
@@ -1458,7 +1457,7 @@ export function mapFromSeedValue(
   const key = `seed:${typeKey(mapT.key)}:${typeKey(mapT.value)}:${elem.shapeId}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = keyedHelperName(lowerer, "%map.seed", key);
+    helper = `%map.seed.${lowerer.mapHofHelpers.size}`;
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildMapSeedFn(mapT, helper, seed.type, elem, kT, vT, loc));
   }

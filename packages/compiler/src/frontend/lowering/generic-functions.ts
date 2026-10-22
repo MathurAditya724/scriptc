@@ -1,6 +1,4 @@
 import { staticNameBindings } from "./static-function-names.js";
-import { positionTag } from "./structural-positions.js";
-import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
@@ -231,10 +229,7 @@ export function collectGenericSignature(lowerer: Lowerer, decl: ts.FunctionDecla
   lowerer.genericFnsBySymbol.set(symbol, {
     decl,
     baseName: nameText,
-    qualifiedName: lowerer.qualify(
-      ts.getSourceFileOfNode(decl),
-      nsPathPrefix(lowerer, decl) + nameText,
-    ),
+    qualifiedName: lowerer.qualify(ts.getSourceFileOfNode(decl), nsPathPrefix(decl) + nameText),
     typeParams,
     instances: new Map(),
   });
@@ -656,7 +651,7 @@ function internGenericInstance(
     const typeArgsText = `<${rendered.length > 80 ? rendered.slice(0, 77) + "..." : rendered}>`;
     inst = {
       path,
-      name: keyedHelperName(lowerer, `${info.qualifiedName}%`, key, ""),
+      name: `${info.qualifiedName}%${info.instances.size}`,
       ordinal: info.instances.size,
       params,
       returnType,
@@ -2134,7 +2129,7 @@ function internImplicitInstance(
   const declared = dynamicBroadPromise ? null : implicitDeclaredReturn(lowerer, info);
   inst = {
     path,
-    name: keyedHelperName(lowerer, `${info.qualifiedName}%`, key, ""),
+    name: `${info.qualifiedName}%${info.instances.size}`,
     ordinal: info.instances.size,
     params: shapes,
     // The promise callers rely on before the body settles it: the
@@ -2322,7 +2317,7 @@ export function implicitLocalFnInfoOf(
     baseName: name,
     qualifiedName: lowerer.qualify(
       ts.getSourceFileOfNode(decl),
-      nsPathPrefix(lowerer, stmt ?? decl, decl) + `${name}%l${positionTag(lowerer, decl)}`,
+      nsPathPrefix(stmt ?? decl, decl) + `${name}%l${ts.tokenStartOfNode(decl)}`,
     ),
     typeParams: [],
     instances: new Map(),
@@ -2418,7 +2413,7 @@ export function objLitGenericFnInfoOf(
     baseName: name,
     qualifiedName: lowerer.qualify(
       ts.getSourceFileOfNode(fnNode),
-      `%ol${positionTag(lowerer, fnNode)}.${name}`,
+      `%ol${ts.tokenStartOfNode(fnNode)}.${name}`,
     ),
     typeParams,
     instances: new Map(),
@@ -2564,7 +2559,7 @@ export function bindingGenericFnInfoOf(
     baseName: name,
     qualifiedName: lowerer.qualify(
       ts.getSourceFileOfNode(decl),
-      nsPathPrefix(lowerer, stmt ?? decl, decl) +
+      nsPathPrefix(stmt ?? decl, decl) +
         (topLevel ? name : `${name}%l${ts.tokenStartOfNode(decl)}`),
     ),
     typeParams,

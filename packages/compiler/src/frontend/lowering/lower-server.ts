@@ -1,4 +1,3 @@
-import { keyedHelperName } from "./stable-names.js";
 import {
   dynUndefinedExpr,
   nodeThrowExpr,
@@ -184,7 +183,7 @@ export function voidizedCallback(lowerer: Lowerer, cb: IrExpr, loc: SrcLoc): IrE
   const toT = funcOf([...fromT.params], VOID);
   const key = `server.voidcb:${typeKey(fromT)}`;
   const existing = lowerer.arrHofHelpers.get(key);
-  const name = existing ?? keyedHelperName(lowerer, "%server.voidcb", key);
+  const name = existing ?? `%server.voidcb.${lowerer.arrHofHelpers.size}`;
   if (!existing) {
     lowerer.arrHofHelpers.set(key, name);
     const impl = `${name}.impl`;
@@ -280,7 +279,7 @@ function receiverReturningCall(
 ): IrExpr {
   const key = `server.recvret:${fn}:${opts?.prefix?.fn ?? ""}:${(opts?.mainArgIndices ?? []).join(".")}:${callArgs.map((a) => typeKey(a.type)).join(",")}`;
   const existing = lowerer.arrHofHelpers.get(key);
-  const name = existing ?? keyedHelperName(lowerer, "%server.recvret", key);
+  const name = existing ?? `%server.recvret.${lowerer.arrHofHelpers.size}`;
   if (!existing) {
     lowerer.arrHofHelpers.set(key, name);
     const params = callArgs.map((a, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: a.type }));
@@ -591,7 +590,7 @@ function h2HeadersCallbackAdapter(
   );
   const key = `h2.hdrcb:${handleKind}:${withStatus}:${typeKey(fromT)}:${shapeId ?? ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
-  const name = existing ?? keyedHelperName(lowerer, "%h2.hdrcb", key);
+  const name = existing ?? `%h2.hdrcb.${lowerer.arrHofHelpers.size}`;
   if (!existing) {
     lowerer.arrHofHelpers.set(key, name);
     const impl = `${name}.impl`;
@@ -3584,7 +3583,7 @@ export function lowerCompatReqStreamOptionalCall(
     type: unionT,
     loc,
   };
-  const id = lowerer.closureName(loc, "", "chain");
+  const id = `chain.${lowerer.chainCounter++}`;
   const body = lowerH2StreamMethodCall(lowerer, call, call.expression, {
     kind: "chainRecv",
     id,
@@ -4425,7 +4424,7 @@ function lowerHttpCreateServerForms(
   const hasMax = opts.maxHeaderSize !== null;
   const key = `server.opts:${opts.joinDup ? 1 : 0}:${opts.allowMissingHost ? 1 : 0}:${hasBuffer ? 1 : 0}:${hasMax ? 1 : 0}`;
   const existing = lowerer.arrHofHelpers.get(key);
-  const name = existing ?? keyedHelperName(lowerer, "%server.opts", key);
+  const name = existing ?? `%server.opts.${lowerer.arrHofHelpers.size}`;
   if (!existing) {
     lowerer.arrHofHelpers.set(key, name);
     const params = [
@@ -8010,7 +8009,7 @@ function lowerHttpResMethodCall(
       const all = [...callArgs, cb];
       const key = `server.endcb:${fn}:${all.map((a) => typeKey(a.type)).join(",")}`;
       const existing = lowerer.arrHofHelpers.get(key);
-      const helper = existing ?? keyedHelperName(lowerer, "%server.endcb", key);
+      const helper = existing ?? `%server.endcb.${lowerer.arrHofHelpers.size}`;
       if (!existing) {
         lowerer.arrHofHelpers.set(key, helper);
         const params = all.map((a, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: a.type }));
