@@ -863,6 +863,15 @@ test("a nested while loop may advance a counter its own condition bounds", () =>
     ),
   );
   expect(run(writing).after).toBeNull();
+  // The same scan inside a labeled block or an expression is not walked
+  // pass by pass; its increments could repeat, so the counter stays unbounded.
+  expect(run({ loc, kind: "block", labels: ["scan"], body: [bounded] }).after).toBeNull();
+  const inExpression: IrStmt = {
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "seqExpr", stmts: [bounded], result: num(0), type: F64 },
+  };
+  expect(run(inExpression).after).toBeNull();
 });
 
 test("an array length bounds while and for counters even when the body resizes the array", () => {

@@ -395,11 +395,15 @@ export function guardedLoopCounterFacts(
 
 /** The largest value counter `id` takes in one pass of `body`, which starts
  * at most at `entry`. The caller has checked that the body changes the
- * counter only by positive literal increments outside nested loops, switch,
- * exception and labeled regions, so those regions leave it unchanged, and
- * every exit from a straight-line path leaves the body. An `if` whose
- * condition does not write the counter caps it in the then branch by the
- * condition's bounds; any other statement adds the increments it holds. */
+ * counter only by positive literal increments outside switch, exception and
+ * labeled loop regions and loops other than nested while loops whose
+ * conditions bound it, and every exit from a straight-line path leaves the
+ * body. An `if` whose condition does not write the counter caps it in the
+ * then branch by the condition's bounds. A nested while loop that is a
+ * statement of the body, or of its blocks and branches, is walked from its
+ * bound; any other statement adds the increments it holds, and one that
+ * holds a loop writing the counter (in an expression or a labeled block)
+ * leaves it unbounded. */
 function highestCount(
   body: readonly IrStmt[],
   id: string,
@@ -416,6 +420,13 @@ function highestCount(
     };
     const stmt = (x: IrStmt): boolean => {
       if (x.kind === "assign" && x.localId === id) total += increment(id, x.value) ?? 0;
+      // A loop reached here, inside an expression or a labeled region rather
+      // than through `walk`, can repeat its increments: no bound.
+      if (
+        (x.kind === "while" || x.kind === "doWhile" || x.kind === "for" || x.kind === "forOf") &&
+        writtenLocals([x]).has(id)
+      )
+        total = Infinity;
       return everyStmtChild(x, expr, stmt);
     };
     if (expression) expr(e as IrExpr);
