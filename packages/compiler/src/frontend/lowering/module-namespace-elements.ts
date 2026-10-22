@@ -1,6 +1,13 @@
 import { dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
-import { DYN, STRING, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
+import {
+  DYN,
+  STRING,
+  type IrExpr,
+  type IrFunction,
+  type IrStmt,
+  type IrType,
+} from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import { newFnCtx, type Lowerer } from "./lowerer.js";
 
@@ -87,4 +94,77 @@ export function lowerModuleNamespaceElement(
           loc,
         };
   return { kind: "call", callee: name, args: [receiver, text], type: DYN, loc };
+}
+
+/** A module namespace taken as an untyped value (`{ ...ns }`, `{ iso: ns }`
+ * in JavaScript): an object holding each value export, keyed in the
+ * namespace's sorted key order. The copy is exact while every export is a
+ * binding that never changes after initialization (const, function or
+ * class); null for other namespaces, which keep their fence. */
+export function moduleNamespaceObject(
+  lowerer: Lowerer,
+  ns: IrExpr & { type: IrType & { kind: "moduleNs" } },
+): IrExpr | null {
+  const source = lowerer.sourceFileOfModuleNamespace(ns.type);
+  if (!source) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(source);
+  if (!symbol) return null;
+  const exports: { key: string; identifier: ts.Identifier }[] = [];
+  let exact = true;
+  symbol.getExports().forEach((exported, key) => {
+    const target =
+      exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
+    if (!(target.flags & ts.SymbolFlags.Value)) return;
+    const declaration = target.valueDeclaration;
+    const identifier = declaration?.name as ts.Node | undefined;
+    const immutable =
+      declaration !== undefined &&
+      (ts.isFunctionDeclaration(declaration) ||
+        ts.isClassDeclaration(declaration) ||
+        (ts.isVariableDeclaration(declaration) &&
+          (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0));
+    if (!identifier || !ts.isIdentifier(identifier) || !immutable) {
+      exact = false;
+      return;
+    }
+    exports.push({ key: String(key), identifier });
+  });
+  if (!exact) return null;
+  exports.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const name = `%module.object:${ns.type.moduleId}`;
+  const loc = ns.loc;
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    const context = newFnCtx(false, null, null, DYN);
+    const previousClass = lowerer.currentClass;
+    lowerer.currentClass = null;
+    lowerer.fnStack.push(context);
+    try {
+      const fields = exports.map(({ key, identifier }) => ({
+        key: strLit(key, loc),
+        value: lowerer.lowerExprExpecting(identifier, DYN),
+      }));
+      if (fields.some((field) => field.value.type.kind !== "dyn")) return null;
+      const fn: IrFunction = {
+        name,
+        params: [],
+        returnType: DYN,
+        locals: [...context.locals],
+        body: [{ kind: "return", value: { kind: "dynObjLit", fields, type: DYN, loc }, loc }],
+        loc,
+      };
+      lowerer.liftedFns.push(fn);
+    } finally {
+      lowerer.fnStack.pop();
+      lowerer.currentClass = previousClass;
+    }
+  }
+  const call: IrExpr = { kind: "call", callee: name, args: [], type: DYN, loc };
+  if (ns.kind === "moduleNsRef") return call;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: ns, loc }],
+    result: call,
+    type: DYN,
+    loc,
+  };
 }

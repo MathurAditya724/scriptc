@@ -51,6 +51,7 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { checkedClassInstanceOf } from "../class-construction.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
 import { globalSymbolKey } from "./global-symbols.js";
+import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
 import { NARROW_FIRST, sideEffectFreeOptionValue } from "../surfaces.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
@@ -1425,6 +1426,16 @@ export function lowerInExpression(
       expr.left,
       "'in' with computed (non-literal) keys (a const whose type is one string literal folds; a string-typed key answers over index-signature record receivers)",
     );
+  }
+  // A feature probe on a builtin constructor global (`"captureStackTrace"
+  // in Error`): the global is a fixed object, so the answer is static.
+  {
+    let recvNode = expr.right;
+    while (ts.isParenthesizedExpression(recvNode)) recvNode = recvNode.expression;
+    if (ts.isIdentifier(recvNode) && lowerer.isStdlibGlobal(recvNode, recvNode.text)) {
+      const has = builtinGlobalHasKey(recvNode.text, key);
+      if (has !== null) return { kind: "boolLit", value: has, type: BOOL, loc };
+    }
   }
   // A receiver re-read (the static folds below) is safe for plain reads
   // AND for side-effect-free expressions (an object literal of literals

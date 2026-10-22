@@ -189,6 +189,19 @@ void scr_dyn_install_async_iterator_symbol(ScrDyn *key) {
   scr_atexit(scr_async_iterator_symbol_cleanup);
 }
 
+/* Symbol.hasInstance, installed when the program first evaluates it: a
+ * function can only define a hook after reading the symbol. */
+static SCR_TL ScrDyn *scr_has_instance_symbol;
+static void scr_has_instance_symbol_cleanup(void) {
+  scr_dyn_release(scr_has_instance_symbol);
+  scr_has_instance_symbol = NULL;
+}
+void scr_dyn_install_has_instance_symbol(ScrDyn *key) {
+  if (scr_has_instance_symbol) return;
+  scr_has_instance_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_has_instance_symbol_cleanup);
+}
+
 void scr_dyn_install_iterator_symbol(ScrDyn *key) {
   if (scr_iterator_symbol) return;
   scr_iterator_symbol = scr_dyn_retain(key);
@@ -3983,11 +3996,48 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
 /* `value instanceof callee` for an untyped constructor value. `refusal`, when
  * given, is the site's SC1090 message for a runtime constructor with no
  * instance test. */
+/* A function whose own-property table defines Symbol.hasInstance
+ * (`Object.defineProperty(F, Symbol.hasInstance, { value })`): 1 or 0 by the
+ * truthiness of the method's answer with `this` bound to F, -1 when F
+ * defines none, or 0 with the exception pending. Functions without a table
+ * use the ordinary prototype test. */
+int scr_dyn_has_instance_hook(const ScrDyn *value, const ScrDyn *callee) {
+  if (!scr_has_instance_symbol || callee->kind != SCR_DYN_FUNC || !scr_closure_identity(callee->v.fn.clo)->props)
+    return -1;
+  ScrDyn *hook = scr_dyn_symbol_key_get(callee, scr_has_instance_symbol, true);
+  if (scr_exc_pending()) {
+    scr_dyn_release(hook);
+    return 0;
+  }
+  if (!hook || hook->kind != SCR_DYN_FUNC) {
+    scr_dyn_release(hook);
+    return -1;
+  }
+  scr_dyn_this_push_dyn((ScrDyn *)callee);
+  ScrDyn *argument = (ScrDyn *)value;
+  ScrDyn *result = scr_dyn_call(hook, &argument, 1, "Symbol.hasInstance");
+  scr_dyn_this_pop();
+  scr_dyn_release(hook);
+  if (!result) return 0;
+  bool truthy = scr_dyn_truthy(result);
+  scr_dyn_release(result);
+  return truthy ? 1 : 0;
+}
+
 bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal) {
   if (!callee || callee->kind != SCR_DYN_FUNC) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return false;
+  }
+  int hooked = scr_dyn_has_instance_hook(value, callee);
+  if (hooked >= 0) return hooked == 1;
+  /* An error constructor held as a value (`inst instanceof params.Parent`
+   * with Parent === Error): the error kind's interval, and for Error itself
+   * objects inheriting Error.prototype. */
+  for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
+    if (!scr_error_ctor_values[i] || callee->v.fn.clo != scr_error_ctor_values[i]->v.fn.clo) continue;
+    return scr_dyn_err_instanceof(value, (double)i) || (i == 0 && scr_dyn_inherits_error_prototype(value));
   }
   if (scr_array_buffer_ctor && callee->v.fn.clo == scr_array_buffer_ctor->v.fn.clo) return scr_array_buffer_is(value);
   if (scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo) return value->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(value);
@@ -5021,7 +5071,43 @@ ScrDyn *scr_dyn_class_inherit(ScrDyn *constructor, ScrDyn *base) {
   return scr_exc_pending() ? NULL : scr_dyn_retain(constructor);
 }
 
+/* Defines `key` on target as a writable, configurable, non-enumerable data
+ * property holding value (borrowed), as Error's constructor installs its
+ * message and cause. */
+static void scr_dyn_define_hidden(ScrDyn *target, const ScrStr *key, ScrDyn *value) {
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
+  scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+  ScrDyn *name = scr_dyn_new_str((ScrStr *)key);
+  ScrDyn *defined = scr_dyn_define_property(target, name, descriptor);
+  scr_dyn_release(name);
+  scr_dyn_release(descriptor);
+  scr_dyn_release(defined);
+}
+
+/* A builtin constructor a class expression's runtime heritage can name:
+ * 1 for Object, 2 for Error, 0 otherwise. */
+static int scr_dyn_builtin_base_kind(const ScrDyn *constructor) {
+  if (constructor->kind != SCR_DYN_FUNC || constructor->v.fn.class_obj || !constructor->v.fn.sig ||
+      !constructor->v.fn.name || strcmp(constructor->v.fn.sig, "native:constructor") != 0)
+    return 0;
+  if (strcmp(constructor->v.fn.name, "Object") == 0) return 1;
+  if (strcmp(constructor->v.fn.name, "Error") == 0 && constructor->v.fn.clo->fn == (void *)scr_error_ctor_names[0])
+    return 2;
+  return 0;
+}
+
 ScrDyn *scr_dyn_class_base_prototype(ScrDyn *constructor) {
+  /* `class extends (Base ?? Object)`: Object's instances are ordinary
+   * objects, laid out like a class without heritage (undefined); Error's
+   * inherit Error.prototype. */
+  switch (scr_dyn_builtin_base_kind(constructor)) {
+  case 1: return scr_dyn_retain(scr_dyn_undefined());
+  case 2: return scr_dyn_error_prototype();
+  default: break;
+  }
   if (constructor->kind != SCR_DYN_FUNC || constructor->v.fn.class_obj ||
       scr_closure_identity(constructor->v.fn.clo)->function_kind != 4) {
     static const char message[] = "Class extends value is not a native ordinary constructor";
@@ -5038,6 +5124,48 @@ ScrDyn *scr_dyn_class_base_prototype(ScrDyn *constructor) {
 }
 
 void scr_dyn_class_super(ScrDyn *constructor, ScrDyn *receiver, ScrDyn *arguments) {
+  switch (scr_dyn_builtin_base_kind(constructor)) {
+  case 1:
+    /* super() through Object keeps the receiver the derived constructor
+     * created (OrdinaryCreateFromConstructor). */
+    return;
+  case 2: {
+    /* super(message, options) through Error: the message and cause become
+     * non-enumerable own properties, then the stack (its text alone, as for
+     * scriptc's other errors). */
+    size_t argc = arguments->v.arr.len;
+    ScrDyn *const *argv = arguments->v.arr.items;
+    if (argc > 0 && argv[0]->kind != SCR_DYN_UNDEF) {
+      ScrStr *text = scr_dyn_string_coerce_js(argv[0]);
+      if (!text) return;
+      ScrDyn *value = scr_dyn_new_str(text);
+      scr_str_release(text);
+      ScrStr *key = scr_str_new("message", 7);
+      scr_dyn_define_hidden(receiver, key, value);
+      scr_str_release(key);
+      scr_dyn_release(value);
+      if (scr_exc_pending()) return;
+    }
+    if (argc > 1 && argv[1]->kind == SCR_DYN_OBJ && scr_dyn_find_entry(argv[1], "cause", 5)) {
+      ScrDyn *cause = scr_dyn_obj_get(argv[1], "cause", 5);
+      ScrStr *key = scr_str_new("cause", 5);
+      scr_dyn_define_hidden(receiver, key, cause ? cause : scr_dyn_undefined());
+      scr_str_release(key);
+      if (scr_exc_pending()) return;
+    }
+    ScrStr *text = scr_dyn_error_string(receiver);
+    if (!text) return;
+    ScrDyn *stack = scr_dyn_new_str(text);
+    scr_str_release(text);
+    ScrStr *key = scr_str_new("stack", 5);
+    scr_dyn_define_hidden(receiver, key, stack);
+    scr_str_release(key);
+    scr_dyn_release(stack);
+    return;
+  }
+  default:
+    break;
+  }
   scr_dyn_this_push_dyn(receiver);
   ScrDyn *result = scr_dyn_call(constructor, arguments->v.arr.items, arguments->v.arr.len, "super");
   scr_dyn_this_pop();

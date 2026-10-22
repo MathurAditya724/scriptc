@@ -3804,11 +3804,12 @@ function lowerDynReceiverMethodCall(
   if (DYN_STRING_ONLY_METHODS.has(access.name.text) && !ownCallable) {
     // An object-typed receiver the member is missing from (a JavaScript
     // module object whose members are assigned in a function body,
-    // `common.repeat(" ", n)`) holds a string or an object with that
+    // `common.repeat(" ", n)`), or an untyped receiver (an object whose
+    // prototype defines `trim`), holds a string or an object with that
     // member: dispatch on the receiver's runtime kind.
     if (
-      !checkerUntyped &&
-      (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 &&
+      (checkerUntyped ||
+        (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) &&
       !call.questionDotToken &&
       !access.questionDotToken &&
       !call.arguments.nodes.some(ts.isSpreadElement)
@@ -8232,6 +8233,12 @@ function lowerObjectStaticCall(
         loc: locOf(call.arguments.nodes[0]!),
         ...(fnName !== null ? { fnName } : {}),
       };
+    }
+    // A class value (`Object.defineProperty(Definition, "name", { value })`)
+    // boxes to its constructor function, whose own-property table holds the
+    // definition for every alias of the class.
+    if (target?.type.kind === "classval" && lowerer.dynConvertible(target.type)) {
+      target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(call.arguments.nodes[0]!) };
     }
     const descriptorPrimitive =
       member === "getOwnPropertyDescriptor" &&

@@ -1010,6 +1010,44 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
   return false;
 }
 
+/** The CLASS-DECLARATION twin of predeclareForwardCapture: a function
+ * hoisted above a local `class D` (`function make() { return new D(); }`
+ * reached through an earlier function) captures the class binding, which
+ * is in its temporal dead zone until the class statement runs. The class
+ * cannot be collected yet (its heritage may name bindings declared between
+ * here and the statement), so the binding is pre-declared as a TDZ box
+ * holding the class as a checked-dynamic constructor; the class statement
+ * later initializes it, and every reference reads it from there. */
+export function predeclareForwardClass(lowerer: Lowerer, symbol: ts.Symbol): boolean {
+  const decl = symbol.valueDeclaration;
+  if (!decl || !ts.isClassDeclaration(decl) || decl.name === undefined) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return false;
+  for (let i = lowerer.activeStmtLists.length - 1; i >= 0; i--) {
+    const entry = lowerer.activeStmtLists[i]!;
+    const idx = entry.stmts.indexOf(decl);
+    if (idx < 0) continue;
+    if (idx < entry.index || entry.ctx === lowerer.ctx || entry.ctx.tdzPredeclared.has(symbol))
+      return false;
+    const name = decl.name.text;
+    const count = entry.ctx.localCounters.get(name) ?? 0;
+    entry.ctx.localCounters.set(name, count + 1);
+    const local: IrLocal = {
+      id: `${name}.${count}`,
+      name,
+      type: DYN,
+      mutable: false,
+      boxed: true,
+      tdz: true,
+    };
+    entry.ctx.locals.push(local);
+    entry.frame.set(symbol, local);
+    entry.out.push({ kind: "varDecl", localId: local.id, init: null, loc: locOf(decl) });
+    entry.ctx.tdzPredeclared.set(symbol, local);
+    return true;
+  }
+  return false;
+}
+
 /** The FUNCTION-DECLARATION twin of predeclareForwardCapture: JS hoists a
  * nested `function f() {}` to scope entry — the binding is LIVE from the
  * first statement, so a reference lexically above the declaration in the
@@ -1529,6 +1567,14 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
   if (ts.isClassDeclaration(stmt)) {
     if (!stmt.name) lowerer.unsupported("SC1090", stmt, "anonymous local class declarations");
     const info = lowerer.lowerClassExpressionInfo(stmt);
+    // An earlier hoisted function captured the class: its TDZ box exists.
+    const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
+    const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
+    if (pre) {
+      lowerer.ctx.tdzPredeclared.delete(symbol!);
+      const value = lowerer.coerceToExpected(lowerer.lowerClassExpression(stmt), DYN);
+      return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(stmt) };
+    }
     const type: IrType = { kind: "classval", className: info.def.name };
     const local = lowerer.declareLocal(stmt.name, stmt.name.text, type, true);
     // Static members of a function-local class run while the class value is
