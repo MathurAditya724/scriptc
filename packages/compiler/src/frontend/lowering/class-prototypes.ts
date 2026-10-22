@@ -122,6 +122,7 @@ export function classPrototypeData(
     const globalId = `%g.${name}`;
     const readyId = `${globalId}.ready`;
     info.def.prototypeDataHelper = name;
+    lowerer.shareHelper(name);
     const className = info.def.jsName ?? info.def.name;
     lowerer.globalsList.push({
       id: globalId,

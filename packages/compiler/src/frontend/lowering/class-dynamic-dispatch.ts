@@ -281,6 +281,7 @@ export function classInstanceOf(
   classValue?: IrExpr,
 ): IrExpr {
   const name = `%dyn.class.${classValue ? "valueInstanceof" : "instanceof"}:${info.def.name}`;
+  lowerer.shareHelper(name);
   const params = [
     { localId: "value", name: "value", type: DYN },
     ...(classValue ? [{ localId: "class", name: "class", type: classValue.type }] : []),
@@ -406,8 +407,16 @@ function withTypedReceiver(value: IrExpr, receiver: IrExpr): IrExpr {
   });
 }
 
+/** Re-adds the entries of `set` after the first `from` sorted. */
+function sortAdded(set: Set<string>, from: number): void {
+  const added = [...set].slice(from).sort();
+  for (const name of added) set.delete(name);
+  for (const name of added) set.add(name);
+}
+
 export function classPropertiesHelper(lowerer: Lowerer, loc: SrcLoc, readOnly = false): IrFunction {
   const name = readOnly ? READ_PROPERTIES : "%dyn.class.properties";
+  lowerer.shareHelper(name);
   const existing = lowerer.liftedFnNamed(name);
   if (existing) return existing;
   const helper: IrFunction = {
@@ -447,6 +456,8 @@ export function classForInHasKey(
   loc: SrcLoc,
 ): IrExpr {
   const name = "%dyn.class.forInHasKey";
+  lowerer.shareHelper(name);
+  lowerer.shareHelper("%dyn.class.forInBagHas");
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     // The read-only table: a recheck never creates an instance's table, which
     // is undefined while the instance has no own dynamic properties.
@@ -825,6 +836,8 @@ export class ClassDynamicDispatch {
       else if (type.kind === "func") discover(type.ret);
       else if (type.kind === "promise") discover(type.inner);
     };
+    const boxedBefore = this.boxed.size;
+    const boxedConstructorsBefore = this.boxedConstructors.size;
     for (const fn of functions)
       everyStmtList(fn.body, {
         stmt: (statement) => {
@@ -919,6 +932,10 @@ export class ClassDynamicDispatch {
           return true;
         },
       });
+    // The classes this pass found join the tables by name, not in the order
+    // the scan met them.
+    sortAdded(this.boxed, boxedBefore);
+    sortAdded(this.boxedConstructors, boxedConstructorsBefore);
     changed = this.caughtDispatch.dynamicPayloads(lowerer, caughtSites, this.boxed) || changed;
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);
@@ -4264,6 +4281,8 @@ export class ClassDynamicDispatch {
    * prototype-backed bag is produced for this read only. A published object
    * cannot take the store, and Node's reads never write. */
   finalize(lowerer?: Lowerer): void {
+    // Each table serves every site that reaches it.
+    if (lowerer) for (const fn of this.generated) lowerer.shareHelper(fn);
     for (const { helper, initialize, orEmpty } of this.readPropertyBags) {
       const absent = helper.body[0];
       if (isEmptyBag(initialize.value) && !orEmpty) helper.body.shift();

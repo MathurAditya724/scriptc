@@ -33,6 +33,7 @@ function context() {
     classes: new Map(),
     liftedFns,
     liftedFnNamed: (name: string | undefined) => liftedFns.find((fn) => fn.name === name),
+    shareHelper: () => {},
     subclassLinks: 0,
     constructedClassCount: () => -1,
     diags: [],
