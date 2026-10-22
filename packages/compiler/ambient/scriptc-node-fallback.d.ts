@@ -547,7 +547,8 @@ declare var DOMException: {
 /* WebCrypto's secret-key slice (scr_webcrypto.c): crypto.subtle's
  * importKey, generateKey and exportKey for HMAC and AES keys (importKey
  * also for PBKDF2 and HKDF keys), AES-GCM/CBC/CTR encrypt and decrypt,
- * PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign/verify and the SHA-1/SHA-2 digests, typed as
+ * wrapKey and unwrapKey (AES-KW or those ciphers), PBKDF2 and HKDF
+ * deriveBits and deriveKey, HMAC sign/verify and the SHA-1/SHA-2 digests, typed as
  * exactly that surface (the declarations mirror @types/node's webcrypto
  * shapes), plus the global's randomUUID and getRandomValues. Every other
  * SubtleCrypto method and crypto member is absent, so a use is an honest
@@ -707,12 +708,27 @@ interface SubtleCrypto {
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   sign(algorithm: AlgorithmIdentifier, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer>;
+  unwrapKey(
+    format: KeyFormat,
+    wrappedKey: BufferSource,
+    unwrappingKey: CryptoKey,
+    unwrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams,
+    unwrappedKeyAlgorithm: AlgorithmIdentifier | HmacImportParams,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKey>;
   verify(
     algorithm: AlgorithmIdentifier,
     key: CryptoKey,
     signature: BufferSource,
     data: BufferSource,
   ): Promise<boolean>;
+  wrapKey(
+    format: KeyFormat,
+    key: CryptoKey,
+    wrappingKey: CryptoKey,
+    wrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams,
+  ): Promise<ArrayBuffer>;
 }
 interface Crypto {
   readonly subtle: SubtleCrypto;

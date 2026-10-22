@@ -650,9 +650,17 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
-   * inspect unit. WebCrypto's encrypt and decrypt (scr_webcrypto_aes.c)
-   * link the same archive. */
-  cipher: rule({ fns: ["crypto.cipherNew", "webcrypto.encrypt", "webcrypto.decrypt"] }),
+   * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
+   * (scr_webcrypto_aes.c) link the same archive. */
+  cipher: rule({
+    fns: [
+      "crypto.cipherNew",
+      "webcrypto.encrypt",
+      "webcrypto.decrypt",
+      "webcrypto.wrapKey",
+      "webcrypto.unwrapKey",
+    ],
+  }),
   copying: rule({
     expr: (node, _tables) =>
       (node.kind === "arrIntrinsic" && COPYING_ARR_METHODS.has(node.method)) ||
@@ -688,6 +696,8 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.cipherNew",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
+      "webcrypto.wrapKey",
+      "webcrypto.unwrapKey",
       "crypto.ecdhNew",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
@@ -796,6 +806,8 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.cipherNew",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
+      "webcrypto.wrapKey",
+      "webcrypto.unwrapKey",
       "crypto.ecdhNew",
       "crypto.ecdhConvertKey",
       ...BUILTIN_CLASS_LIB_FNS,

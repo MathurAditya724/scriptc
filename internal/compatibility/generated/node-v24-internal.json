@@ -106677,6 +106677,9 @@
           "tests/corpus/7127-webcrypto-aes-errors.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -110549,6 +110552,9 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.decrypt",
         "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
           "tests/corpus/7126-webcrypto-aes.ts",
@@ -110587,6 +110593,9 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.deriveBits",
         "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
           "tests/corpus/7126-webcrypto-aes.ts",
@@ -110625,6 +110634,9 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.deriveKey",
         "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
           "tests/corpus/7126-webcrypto-aes.ts",
@@ -110663,6 +110675,9 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.digest",
         "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
           "tests/corpus/7126-webcrypto-aes.ts",
@@ -110747,6 +110762,9 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.encrypt",
         "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
           "tests/corpus/7126-webcrypto-aes.ts",
@@ -110785,6 +110803,9 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.exportKey",
         "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
           "tests/corpus/7126-webcrypto-aes.ts",
@@ -110846,6 +110867,9 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.generateKey",
         "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
           "tests/corpus/7126-webcrypto-aes.ts",
@@ -110884,6 +110908,9 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.importKey",
         "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
           "tests/corpus/7126-webcrypto-aes.ts",
@@ -110922,6 +110949,9 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.sign",
         "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
           "tests/corpus/7126-webcrypto-aes.ts",
@@ -110957,8 +110987,26 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.unwrapKey",
+        "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
+          "tests/corpus/7128-webcrypto-derive.ts",
+          "tests/corpus/7129-webcrypto-derive-errors.mjs",
+          "tests/corpus/7126-webcrypto-aes.ts",
+          "tests/corpus/7127-webcrypto-aes-errors.mjs",
+          "tests/corpus/7124-webcrypto-secret-keys.ts",
+          "tests/corpus/7125-webcrypto-key-errors.mjs",
+          "tests/fixtures/node-types/webcrypto-keys.ts",
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110983,6 +111031,9 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.verify",
         "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
           "tests/corpus/7126-webcrypto-aes.ts",
@@ -111018,8 +111069,26 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.subtle.wrapKey",
+        "tests": [
+          "tests/corpus/7130-webcrypto-wrap-key.ts",
+          "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/7132-jose-pbes2/main.mjs",
+          "tests/corpus/7128-webcrypto-derive.ts",
+          "tests/corpus/7129-webcrypto-derive-errors.mjs",
+          "tests/corpus/7126-webcrypto-aes.ts",
+          "tests/corpus/7127-webcrypto-aes-errors.mjs",
+          "tests/corpus/7124-webcrypto-secret-keys.ts",
+          "tests/corpus/7125-webcrypto-key-errors.mjs",
+          "tests/fixtures/node-types/webcrypto-keys.ts",
+          "tests/corpus/6291-webcrypto-hmac-sign-verify.ts",
+          "tests/corpus/6292-webcrypto-hmac-errors.ts",
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/6294-webcrypto-js-values.mjs",
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/fixtures/node-types/webcrypto-hmac.ts"
+        ]
       },
       "anchorSource": "exact"
     },

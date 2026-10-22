@@ -2862,6 +2862,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "webcrypto.exportKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.encrypt": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.decrypt": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.wrapKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  "webcrypto.unwrapKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.deriveBits": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.deriveKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },

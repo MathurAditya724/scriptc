@@ -101,11 +101,11 @@ createECDH("sect163k1");
 createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
 /* WebCrypto beyond the secret-key slice: @types/node declares the whole
  * SubtleCrypto surface, and the methods outside the slice, such as
- * wrapKey, fence by name. */
-async function wrapWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
-  await crypto.subtle.wrapKey("raw", key, key, "AES-KW");
+ * getPublicKey, fence by name. */
+async function publicKeyWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
+  await crypto.subtle.getPublicKey(key, ["verify"]);
 }
-void wrapWithWebCrypto;
+void publicKeyWithWebCrypto;
 /* Node's navigator global: typeof navigator and navigator.userAgent
  * compile; the other members fence by name. */
 const cores = navigator.hardwareConcurrency;
