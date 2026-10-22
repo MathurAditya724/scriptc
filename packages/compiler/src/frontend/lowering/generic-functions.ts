@@ -16,7 +16,7 @@ import {
   isUnitType,
   typeEquals,
 } from "../../ir/ir.js";
-import { nodeThrowExpr } from "../../ir/build.js";
+import { helperLoc, nodeThrowExpr } from "../../ir/build.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { typeKey } from "../type-mapper.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
@@ -102,6 +102,8 @@ export interface GenericFnInfo {
    * runs: the BOOL global its declaration sets, and whether it is a
    * `let`/`const` (a temporal dead zone) or a `var` (undefined). */
   presence?: { flagId: string; lexical: boolean };
+  /** genericValueForwarder's lifted functions, by instance name. */
+  valueForwarders?: Map<string, string>;
   /** runsAfterDeclaration's answers for the function declarations whose
    * calls it placed. */
   ordering?: Map<ts.Node, boolean>;
@@ -1266,7 +1268,10 @@ export function lowerGenericFnValue(
  * nested function read it before the declaration lowered (`const read =
  * () => id; const id: (x: number) => number = <T>(x: T): T => x`): such
  * a read resolves to an ordinary TDZ local, so the declaration assigns it
- * the instance its concrete declared signature pins. */
+ * the instance its concrete declared signature pins. Each evaluation of
+ * the declaration makes a new function object, as in JavaScript: the
+ * value is a closure over a forwarder to the instance, not the instance's
+ * interned closure. */
 export function genericBindingStoredValue(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -1281,7 +1286,67 @@ export function genericBindingStoredValue(
     );
   const sigs = lowerer.checker.getCallSignatures(lowerer.typeOf(name));
   if (sigs.length !== 1) fenceUnpinned();
-  return pinnedGenericClosure(lowerer, name, info, sigs[0]!, fenceUnpinned);
+  const pinned = pinnedGenericClosure(lowerer, name, info, sigs[0]!, fenceUnpinned);
+  const async = ts.getModifiers(info.decl)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+  if (pinned.kind !== "closure" || pinned.type.kind !== "func" || pinned.type.rest || async)
+    return lowerer.unsupported(
+      "SC1090",
+      name,
+      `async or rest-parameter generic function bindings read before their declaration (each evaluation of '${info.baseName}' makes a new function object)`,
+    );
+  return {
+    ...pinned,
+    fnName: genericValueForwarder(lowerer, info, pinned.fnName, pinned.type, pinned.loc),
+  };
+}
+
+/** A lifted function that calls the instance `instance` (of type `type`)
+ * with its own arguments. Lifted functions get a new closure object per
+ * evaluation; module functions, which instances are, get one interned
+ * closure. */
+function genericValueForwarder(
+  lowerer: Lowerer,
+  info: GenericFnInfo,
+  instance: string,
+  type: IrType & { kind: "func" },
+  at: SrcLoc,
+): string {
+  info.valueForwarders ??= new Map();
+  const existing = info.valueForwarders.get(instance);
+  if (existing !== undefined) return existing;
+  const name = `${instance}%value`;
+  const loc = helperLoc(at);
+  const params: IrParam[] = type.params.map((paramType, i) => ({
+    localId: `%arg${i}.0`,
+    name: `%arg${i}`,
+    type: paramType,
+  }));
+  const call: IrExpr = {
+    kind: "call",
+    callee: instance,
+    args: params.map((p): IrExpr => ({ kind: "varRef", localId: p.localId, type: p.type, loc })),
+    type: type.ret,
+    loc,
+  };
+  lowerer.liftedFns.push({
+    name,
+    params,
+    returnType: type.ret,
+    locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+    captures: [],
+    ...(ts.isFunctionExpression(info.decl) ? { ownsPrototype: true } : {}),
+    body:
+      type.ret.kind === "void"
+        ? [
+            { kind: "exprStmt", expr: call, loc },
+            { kind: "return", value: null, loc },
+          ]
+        : [{ kind: "return", value: call, loc }],
+    loc,
+  });
+  lowerer.noteEdge(name);
+  info.valueForwarders.set(instance, name);
+  return name;
 }
 
 /** The closure of the instance of `info` that `target` pins, for a value

@@ -51,3 +51,19 @@ function counter(): () => number {
   return step;
 }
 console.log(counter()());
+
+// Each evaluation of the declaration makes a new function object.
+const first = make();
+console.log(first === make(), first === first, first(8));
+function looped(): string {
+  const seen: ((x: string) => string)[] = [];
+  for (let i = 0; i < 2; i++) {
+    const read = (): ((x: string) => string) => tag;
+    const tag: (x: string) => string = function <T>(x: T): T {
+      return x;
+    };
+    seen.push(read());
+  }
+  return `${seen[0] === seen[1]} ${seen[1]!("p")}`;
+}
+console.log(looped());
