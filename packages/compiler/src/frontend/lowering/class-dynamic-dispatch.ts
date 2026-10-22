@@ -477,7 +477,7 @@ interface ReceiverIndex {
   /** By a method or generic method its base chain declares. */
   methods: Map<string, number[]>;
   /** By a method, generic method or accessor its base chain declares (an
-   * accessor under its property name), or a field it has. */
+   * accessor under its key and under its property name), or a field it has. */
   members: Map<string, number[]>;
   rooted: number[];
 }
@@ -504,11 +504,12 @@ function receiverIndex(lowerer: Lowerer, plans: readonly PropertyReceiver[]): Re
     for (let c: ClassInfo | null = info; c; c = c.base) {
       for (const name of c.methods.keys()) {
         add(methods, name, position);
-        add(
-          members,
-          name.startsWith("get:") || name.startsWith("set:") ? name.slice(4) : name,
-          position,
-        );
+        // A `get:`/`set:` key is an accessor of the property after the
+        // prefix, or a method whose quoted name has that prefix; the test
+        // looks up both.
+        add(members, name, position);
+        if (name.startsWith("get:") || name.startsWith("set:"))
+          add(members, name.slice(4), position);
       }
       if (c.genericMethods)
         for (const name of c.genericMethods.keys()) {
