@@ -833,6 +833,12 @@ export class LlEmitter {
   readonly callLifetimes: CallLifetimes;
   readonly constantCallbacks: Map<string, Map<string, string>>;
   currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
+  /** Callback bindings whose closures an enclosing callback loop version
+   * proved to hold their known function: calls take the direct entry with
+   * no fallback (emitCallbackVersionedLoop). */
+  knownCallbacks = new Set<string>();
+  readonly callbackVersioning = new Set<IrStmt>();
+  callbackVersionsEnabled = false;
   readonly stackCallbacks: StackCallbacks;
   readonly receiverReaders: AmbientReceiverReaders;
   readonly stackCaptures: StackCaptures;
@@ -1095,9 +1101,20 @@ export class LlEmitter {
     resume: Map<IrStmt, string>;
     /** Globals whose double is written back only when the copy is left. */
     deferred: Set<string>;
+    /** The loop site's count of bailing entries in a row (a global), and
+     * whether this entry completed a speculated write (a slot). A proven
+     * integer loop has neither. */
+    bails?: string;
+    ran?: string;
   } | null = null;
+  /** Speculative loop sites numbered so far in the module. */
+  speculativeLoopSites = 0;
   /** The ordinary copy being emitted: resume labels still to place. */
   speculationResume: Map<IrStmt, { label: string; placed: boolean }> | null = null;
+  /** Run once at the top of the next loop copy's header
+   * (`enterLoopHeader`): records the ordinary copy's header, or sends the
+   * third copy's header there. */
+  speculationHeader: ((header: string) => void) | null = null;
   /** The function being emitted, for speculative globals. */
   speculativeFunction = "";
   /** Every function that writes each number global (computed on demand). */
@@ -1876,14 +1893,14 @@ export class LlEmitter {
 
   /** Whether a fiberless body running on its caller's stack needs the
    * frame scr_async_inline_enter/exit keep: it isolates the Error.stack
-   * frame chain, which only stack-observing programs push, and the
-   * AsyncLocalStorage context, which only programs that enter stores
-   * change (RuntimeFeatures asyncContext), as a fresh fiber would. Other
-   * programs run the body with a plain call. The frame also counts the
-   * bodies running on a fiber's stack for the runtime's trap on a fiberless
-   * body that suspends. */
+   * frame chain, which only stack-observing programs push, as a fresh fiber
+   * would. Other programs run the body with a plain call. The body runs in
+   * its caller's AsyncLocalStorage context either way, as Node runs an async
+   * body up to its first await. The frame also counts the bodies running on
+   * a fiber's stack for the runtime's trap on a fiberless body that
+   * suspends. */
   get fiberlessFrames(): boolean {
-    return this.stackTraces || this.schedulesInContext;
+    return this.stackTraces;
   }
 
   /** The spawn wrapper of a fiberless async function: runs the body on the
@@ -3881,6 +3898,25 @@ export class LlEmitter {
     return b;
   }
 
+  /** The function a call through `callee` is known to reach (a literal
+   * closure, or a binding the constant-callback census resolves) and the
+   * entry it calls directly. Async and generator functions stay indirect. */
+  knownCallbackTarget(callee: IrExpr): { known: IrFunction; direct: string } | undefined {
+    const knownName =
+      callee.kind === "closure"
+        ? callee.fnName
+        : callee.kind === "varRef"
+          ? this.currentConstantCallbacks.get(callee.localId)
+          : undefined;
+    const known = knownName ? this.fnByName.get(knownName) : undefined;
+    if (!known || known.async || known.generator) return undefined;
+    if (known.captures === undefined) {
+      this.fnValues.add(known.name);
+      return { known, direct: `@${mangleWrapper(known.name)}` };
+    }
+    return { known, direct: `@${this.callTarget(known.name)}` };
+  }
+
   /** The payload slot of a capture box (ScrBox.slot, field 5). */
   boxSlot(box: string): string {
     const slot = this.B.tmp();
@@ -3894,12 +3930,18 @@ export class LlEmitter {
     const r = B.tmp();
     // Scalar payloads are read in place (scr_box_get_f64/bool are a
     // memcpy and a nonzero test of the same slot), so LLVM can keep a
-    // captured number in a register across a loop of calls.
+    // captured number in a register across a loop of calls. They have an
+    // alias category of their own: every other access to a box's payload
+    // is untagged or a runtime call.
     if (acc === "f64") {
-      B.line(`${r} = load double, ptr ${this.boxSlot(box)}`);
+      B.line(
+        `${r} = load double, ptr ${this.boxSlot(box)}${this.memoryAliasAttachment("box:scalar")}`,
+      );
     } else if (acc === "bool") {
       const raw = B.tmp();
-      B.line(`${raw} = load i64, ptr ${this.boxSlot(box)}`);
+      B.line(
+        `${raw} = load i64, ptr ${this.boxSlot(box)}${this.memoryAliasAttachment("box:scalar")}`,
+      );
       B.line(`${r} = icmp ne i64 ${raw}, 0`);
     } else {
       this.declare(`declare ptr @scr_box_get_ref(ptr)`);
@@ -3913,11 +3955,15 @@ export class LlEmitter {
     const B = this.B;
     const acc = boxAccess(t);
     if (acc === "f64") {
-      B.line(`store double ${value}, ptr ${this.boxSlot(box)}`);
+      B.line(
+        `store double ${value}, ptr ${this.boxSlot(box)}${this.memoryAliasAttachment("box:scalar")}`,
+      );
     } else if (acc === "bool") {
       const raw = B.tmp();
       B.line(`${raw} = zext i1 ${value} to i64`);
-      B.line(`store i64 ${raw}, ptr ${this.boxSlot(box)}`);
+      B.line(
+        `store i64 ${raw}, ptr ${this.boxSlot(box)}${this.memoryAliasAttachment("box:scalar")}`,
+      );
     } else {
       this.declare(`declare void @scr_box_set_ref(ptr, ptr)`);
       B.line(`call void @scr_box_set_ref(ptr ${box}, ptr ${value})`);

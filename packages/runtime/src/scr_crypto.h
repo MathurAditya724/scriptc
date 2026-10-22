@@ -85,6 +85,10 @@ ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding);
 ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options);
 ScrBytes *scr_crypto_key_object_input(ScrDyn *key);
 bool scr_crypto_is_key_object(const ScrDyn *value);
+/* Throws Node's ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE for a private or public
+ * KeyObject used as a secret key. scr_pki.c, which makes those keys,
+ * installs it with them, so its messages stay out of other programs. */
+extern void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key);
 const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len);
 /* crypto.createCipheriv (decrypt false) and crypto.createDecipheriv
  * (decrypt true) over checked-dynamic arguments (scr_cipher.c, linked
@@ -97,6 +101,13 @@ ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn 
  * or result, or NULL with Node's error pending. */
 ScrDyn *scr_crypto_ecdh_new(ScrDyn *curve);
 ScrDyn *scr_crypto_ecdh_convert_key(ScrDyn *key, ScrDyn *curve, ScrDyn *in_enc, ScrDyn *out_enc, ScrDyn *format);
+/* crypto.createDiffieHellman(sizeOrKey, keyEncoding, generator,
+ * generatorEncoding) and crypto.getDiffieHellman(groupName) over
+ * checked-dynamic arguments (scr_dh.c, linked with the vendored mbedTLS
+ * archive). +1 DiffieHellman or DiffieHellmanGroup handle, or NULL with
+ * Node's error pending. */
+ScrDyn *scr_crypto_dh_new(ScrDyn *size_or_key, ScrDyn *key_encoding, ScrDyn *generator, ScrDyn *generator_encoding);
+ScrDyn *scr_crypto_dh_group_new(ScrDyn *name);
 ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
                             double iterations, double keylen, ScrStr *digest);
 ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double iterations,
@@ -241,6 +252,13 @@ typedef ScrBytes *(*ScrWebCryptoAesFn)(const char *name, bool decrypt, const uns
 ScrPromise *scr_webcrypto_cipher(ScrDyn *args, bool decrypt, ScrWebCryptoAesFn aes);
 ScrPromise *scr_webcrypto_encrypt(ScrDyn *args);
 ScrPromise *scr_webcrypto_decrypt(ScrDyn *args);
+/* wrapKey and unwrapKey run the same way (AES-KW wrapping, or the AES
+ * ciphers): wrapKey fulfills with an ArrayBuffer and unwrapKey with a
+ * CryptoKey on a later loop turn. */
+ScrPromise *scr_webcrypto_wrap(ScrDyn *args, ScrWebCryptoAesFn aes);
+ScrPromise *scr_webcrypto_unwrap(ScrDyn *args, ScrWebCryptoAesFn aes);
+ScrPromise *scr_webcrypto_wrap_key(ScrDyn *args);
+ScrPromise *scr_webcrypto_unwrap_key(ScrDyn *args);
 /* deriveBits and deriveKey (PBKDF2 and HKDF) over node:crypto's KDF core:
  * deriveBits fulfills with an ArrayBuffer (at once for a zero length) and
  * deriveKey with a CryptoKey of the derived key type, on a later loop
@@ -261,5 +279,17 @@ ScrStr *scr_crypto_x509_valid_from(ScrBytes *data);
 ScrStr *scr_crypto_x509_valid_from_str(ScrStr *pem);
 ScrStr *scr_crypto_x509_valid_to(ScrBytes *data);
 ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem);
+/* Asymmetric keys and signatures (scr_pki.c, the pki unit). Arguments
+ * borrowed; results +1, or NULL with the error pending. */
+ScrDyn *scr_crypto_create_private_key(ScrDyn *key);
+ScrDyn *scr_crypto_create_public_key(ScrDyn *key);
+ScrDyn *scr_crypto_generate_key_pair_sync(ScrDyn *type, ScrDyn *options);
+void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *callback);
+ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key);
+ScrDyn *scr_crypto_verify_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature);
+ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm);
+ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm);
+bool scr_crypto_is_asymmetric_key(const ScrDyn *value);
+const char *scr_crypto_asymmetric_key_type(const ScrDyn *value);
 
 #endif /* SCR_CRYPTO_H */
