@@ -53,20 +53,26 @@ const programs = existsSync(programsDir)
       .sort()
   : [];
 
+/** Linux ASan's once-per-process warning at the first context switch (the
+ * runtime's fibers and Node's stack): not program output. */
+const ASAN_SWAP = /^==\d+==WARNING: ASan doesn't fully support makecontext\/swapcontext.*\n/gm;
+
 /** One run's observable outcome: stdout, stderr and the exit status. */
 async function outcome(cmd: string, args: string[]): Promise<string> {
   try {
-    const { stdout, stderr } = await execFileAsync(cmd, args, {
+    const { stdout, stderr: raw } = await execFileAsync(cmd, args, {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 20_000,
       env: { ...process.env, NODE_NO_WARNINGS: "1" },
     });
+    const stderr = raw.replace(ASAN_SWAP, "");
     return `${stdout}${stderr === "" ? "" : `[stderr]\n${stderr}`}[exit 0]`;
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; code?: unknown; signal?: unknown };
     if (typeof e.code !== "number") return `[failed ${String(e.signal ?? e.code)}]`;
-    return `${e.stdout ?? ""}${e.stderr ? `[stderr]\n${e.stderr}` : ""}[exit ${e.code}]`;
+    const stderr = (e.stderr ?? "").replace(ASAN_SWAP, "");
+    return `${e.stdout ?? ""}${stderr ? `[stderr]\n${stderr}` : ""}[exit ${e.code}]`;
   }
 }
 

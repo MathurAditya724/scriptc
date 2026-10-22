@@ -336,8 +336,9 @@ static void ni_call_job(void *p) {
  * runtime's guard for it: its mapping's start plus the reserve compiled
  * code keeps). */
 static uintptr_t ni_stack_limit(void) {
-  char here;
-  uintptr_t sp = (uintptr_t)&here;
+  /* The frame address, not a local's: under ASan's use-after-return
+   * detection locals live on a fake stack elsewhere in memory. */
+  uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
   if (ni_stack != NULL && sp > (uintptr_t)ni_stack && sp <= (uintptr_t)ni_stack + NI_STACK)
     return (uintptr_t)(ni_stack + NI_GUARD) + NI_STACK / 8;
   if (sp > ni_main_lo && sp <= ni_main_hi) {

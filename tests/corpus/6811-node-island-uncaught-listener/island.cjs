@@ -1,4 +1,4 @@
 exports.timers = () => {
-  setTimeout(() => console.log("island timer 1"), 1);
-  setTimeout(() => console.log("island timer 2"), 20);
+  setTimeout(() => console.log("island timer 1"), 15);
+  setTimeout(() => console.log("island timer 2"), 40);
 };
