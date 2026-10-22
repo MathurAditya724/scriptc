@@ -31,6 +31,7 @@ import {
   mangleFunction,
   mangleWrapper,
   mangleVtStruct,
+  mangleAsyncDirectSpawn,
 } from "../mangle.js";
 import {
   classEnvironmentIndex,
@@ -74,7 +75,7 @@ export function emitCallExpr(
     | "instanceOf"
     | "virtualCall"
   >,
-  awaitEntry: false | "await" | "adopt" | "inline" = false,
+  awaitEntry: false | "await" | "adopt" | "inline" | "direct" = false,
   /** A projection consumes a scalar union result (Int32Abi.union): answer
    * a private stack box instead of a heap box. */
   stackResult = false,
@@ -184,6 +185,14 @@ export function emitCallExpr(
             : `${host.llType(callee.params[i]!.type)} ${a.name}`,
         )
         .join(", ");
+      if (awaitEntry === "direct") {
+        // A stackless coroutine's await of a stackless callee: the spawn
+        // returns the callee's fiber record (emitCoroDirectAwait).
+        host.directAwaitCallees.add(e.callee);
+        const record = B.tmp();
+        B.line(`${record} = call ptr @${mangleAsyncDirectSpawn(e.callee)}(${argList})`);
+        return { name: record, type: callee.returnType };
+      }
       if (awaitEntry === "inline") {
         // A stackless coroutine's await of a fiberless callee: the entry
         // runs the body in place and leaves a throw pending; the enclosing

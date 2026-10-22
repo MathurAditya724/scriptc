@@ -889,6 +889,9 @@ export class LlEmitter {
   /** Fiberless async functions a stackless coroutine body awaits directly;
    * each gets an inline await entry (emitCoroInlineAwait). */
   readonly inlineAwaitCallees = new Set<string>();
+  /** Stackless async functions some coroutine body awaits directly: each
+   * gets a direct spawn entry (emitCoroDirectAwait). */
+  readonly directAwaitCallees = new Set<string>();
   /** The async functions whose bodies never suspend and that a direct
    * await may enter in place (selectStacklessAsync). */
   private inlineAwaitable = new Set<string>();
@@ -1911,6 +1914,69 @@ export class LlEmitter {
     const fn = this.fnByName.get(fnName);
     if (fn === undefined || !this.inlineAwaitable.has(fnName)) return false;
     return fn.captures === undefined;
+  }
+
+  /** Whether a stackless coroutine body's `await f(...)` may await f's
+   * fiber record instead of its promise (emitCoroDirectAwait): f is a
+   * stackless async function whose direct call an await-call entry could
+   * take. The await consumes the promise, so nothing else can observe it.
+   * Worker programs keep the promise for their stop checkpoint. */
+  directAwaitEligible(fnName: string): boolean {
+    if (this.wasi || this.mod.workers === true || this.currentCoro?.kind !== "async") return false;
+    const fn = this.fnByName.get(fnName);
+    if (fn === undefined || fn.async !== true || fn.generator !== undefined) return false;
+    if (!this.stacklessAsync.has(fnName) || fn.captures !== undefined) return false;
+    if (fn.returnType.kind === "dyn") return false;
+    return fn.asyncCacheGlobal === undefined && fn.asyncCycleCacheGlobal === undefined;
+  }
+
+  /** A stackless coroutine body's `await f(...)` of a stackless f, without
+   * f's promise object: f's prefix runs as the spawn of a fiber record that
+   * keeps the promise inside. A body still running wakes this coroutine
+   * when it finishes, where its promise's settlement would wake its one
+   * waiter; a finished one takes the settled await's turn. The result (or
+   * the rejection, re-thrown) comes out of the record, which goes. */
+  emitCoroDirectAwait(call: ExprOf<"call">, type: IrType): LlValue {
+    const coro = this.currentCoro;
+    if (coro === null)
+      throw new InternalCompilerError("llvm emitter bug: direct await outside a coroutine");
+    const B = this.B;
+    const record = emitCallExpr(this, call, "direct").name;
+    this.declare(`declare zeroext i1 @scr_coro_direct_prepare(ptr, ptr)`);
+    const suspend = B.tmp();
+    B.line(
+      `${suspend} = call zeroext i1 @scr_coro_direct_prepare(ptr ${coro.self}, ptr ${record})`,
+    );
+    const park = B.newLabel("await.suspend");
+    const ready = B.newLabel("await.ready");
+    B.condBr(suspend, park, ready);
+    B.startBlock(park);
+    this.emitCoroSuspendPrepared();
+    B.br(ready);
+    B.startBlock(ready);
+    if (type.kind === "void") {
+      this.declare(`declare void @scr_coro_direct_void(ptr)`);
+      B.line(`call void @scr_coro_direct_void(ptr ${record})`);
+      this.emitPendingCheck();
+      return { name: "", type };
+    }
+    const t = B.tmp();
+    if (type.kind === "f64" || type.kind === "date") {
+      this.declare(`declare double @scr_coro_direct_f64(ptr)`);
+      B.line(`${t} = call double @scr_coro_direct_f64(ptr ${record})`);
+    } else if (type.kind === "bool") {
+      this.declare(`declare zeroext i1 @scr_coro_direct_bool(ptr)`);
+      B.line(`${t} = call zeroext i1 @scr_coro_direct_bool(ptr ${record})`);
+    } else if (type.kind === "string") {
+      this.declare(`declare ptr @scr_coro_direct_str(ptr)`);
+      B.line(`${t} = call ptr @scr_coro_direct_str(ptr ${record})`);
+    } else {
+      this.declare(`declare ptr @scr_coro_direct_ref(ptr)`);
+      B.line(`${t} = call ptr @scr_coro_direct_ref(ptr ${record})`);
+    }
+    const out = this.own({ name: this.adoptHeap(t, type), type });
+    this.emitPendingCheck();
+    return out;
   }
 
   /** The inline await entry of a fiberless async function (`sc_ai_*`): its
