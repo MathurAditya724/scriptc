@@ -1,3 +1,4 @@
+import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
@@ -84,6 +85,7 @@ import {
 } from "./call-signatures.js";
 import { omittedArgFor } from "./call-arguments.js";
 import {
+  checkerTypeDescription,
   isGenericCallableMemberType,
   jsOpenObjectType,
   typeKey,
@@ -2404,7 +2406,8 @@ export function collectClassShapeInner(
     for (const member of decl.members.nodes) {
       if (
         (functionLocalClass(decl) || checkedStatics) &&
-        isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+        (isJsSourceFile(ts.getSourceFileOfNode(decl)) ||
+          (functionLocalClass(decl) && ts.isMethodDeclaration(member))) &&
         (ts.isClassStaticBlockDeclaration(member) ||
           ts
             .getModifiers(member)
@@ -4663,7 +4666,25 @@ export function genericClassInstanceType(
     );
   }
   const ordinal = gci.instances.size;
-  const name = `${gci.family.def.name}%${ordinal}`;
+  // The name does not take the checker type ids of the key: a literal
+  // argument is named by its text, another checker type by its
+  // description. Two keys that still describe alike number the later one.
+  const nameKey =
+    mapped.map(typeKey).join(",") +
+    (gci.literalSensitive.size > 0
+      ? `@${gci.typeParams
+          .map((_, i) =>
+            sensitive(i)
+              ? (literalText(i) ?? checkerTypeDescription(tsArgs[i]!, lowerer.typeCtx))
+              : "*",
+          )
+          .join(",")}`
+      : "");
+  const prefix = `${gci.family.def.name}%`;
+  const taken = new Set([...gci.instances.values()].map((instance) => instance.name));
+  let name = keyedHelperName(lowerer, prefix, nameKey, "");
+  for (let n = 1; taken.has(name); n++)
+    name = keyedHelperName(lowerer, prefix, `${nameKey}#${n}`, "");
   const entry: { name: string; info: ClassInfo | null; poisoned?: boolean } = { name, info: null };
   gci.instances.set(key, entry);
   const bindings = new Map<ts.Symbol, IrType>();
@@ -5872,9 +5893,10 @@ export function lowerClassExpressionInfo(
           decoratorNodesOf(member).length ||
           (!isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
             (ts.isClassStaticBlockDeclaration(member) ||
-              ts
-                .getModifiers(member)
-                ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword))) ||
+              (!ts.isMethodDeclaration(member) &&
+                ts
+                  .getModifiers(member)
+                  ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword)))) ||
           (ts.isMethodDeclaration(member) && member.typeParameters?.nodes.length),
       ))
   ) {
@@ -6140,13 +6162,55 @@ export function lowerClassExpression(lowerer: Lowerer, expr: ts.ClassLikeDeclara
       loc,
     });
   }
-  return info.localClass
-    ? initializeRuntimeStatics(
-        lowerer,
-        info,
-        value.kind === "classRef" ? { ...value, captures: info.localClass.captureSources } : value,
-      )
-    : value;
+  if (!info.localClass) return value;
+  const classValue = initializeRuntimeStatics(
+    lowerer,
+    info,
+    value.kind === "classRef" ? { ...value, captures: info.localClass.captureSources } : value,
+  );
+  // The base resolves statically here, but Node still evaluates the
+  // heritage expression each time the class definition runs, first.
+  const heritage = heritageWithEffects(expr);
+  if (heritage === undefined) return classValue;
+  return {
+    kind: "seqExpr",
+    stmts: [lowerer.lowerExprStatement(heritage)],
+    result: classValue,
+    type: classValue.type,
+    loc: classValue.loc,
+  };
+}
+
+/** The `extends` expression of `decl` when evaluating it can have effects
+ * (a call, construction, assignment, update, delete, await or yield
+ * outside nested functions). */
+function heritageWithEffects(decl: ts.ClassLikeDeclaration): ts.Expression | undefined {
+  const heritage = decl.heritageClauses?.nodes.find(
+    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+  )?.types?.nodes[0]?.expression;
+  if (heritage === undefined) return undefined;
+  const effects = (node: ts.Node): boolean => {
+    if (ts.isFunctionLike(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node))
+      return false;
+    if (
+      ts.isCallExpression(node) ||
+      ts.isNewExpression(node) ||
+      ts.isTaggedTemplateExpression(node) ||
+      ts.isDeleteExpression(node) ||
+      ts.isAwaitExpression(node) ||
+      ts.isYieldExpression(node) ||
+      (ts.isPrefixUnaryExpression(node) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken)) ||
+      ts.isPostfixUnaryExpression(node) ||
+      (ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
+    )
+      return true;
+    return ts.forEachChild(node, (child) => effects(child) || undefined) ?? false;
+  };
+  return effects(heritage) ? heritage : undefined;
 }
 
 /** The EXACT class a receiver expression is statically known to BE (not
@@ -7910,7 +7974,7 @@ export function classIteratorDrainCall(
   const key = `${cit.className}:${typeKey(outElem)}`;
   let name = lowerer.iterDrainHelpers.get(key);
   if (!name) {
-    name = `%iter.drain.${lowerer.iterDrainHelpers.size}`;
+    name = keyedHelperName(lowerer, "%iter.drain", key);
     lowerer.iterDrainHelpers.set(key, name);
     const recvT: IrType = { kind: "object", className: cit.className };
     const recvRef: IrExpr = { kind: "varRef", localId: "r.0", type: recvT, loc };
@@ -8024,7 +8088,7 @@ export function classIteratorRestDrainCall(
   const key = `it:${cit.iterT.className}`;
   let name = lowerer.iterDrainHelpers.get(key);
   if (!name) {
-    name = `%iter.drain.${lowerer.iterDrainHelpers.size}`;
+    name = keyedHelperName(lowerer, "%iter.drain", key);
     lowerer.iterDrainHelpers.set(key, name);
     const itRef: IrExpr = { kind: "varRef", localId: "it.0", type: cit.iterT, loc };
     const outRef: IrExpr = { kind: "varRef", localId: "out.0", type: outT, loc };
@@ -10532,7 +10596,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       const key = `x509.record:${isBytes ? "bytes" : "str"}`;
       let helper = lowerer.valueHelpers.get(key);
       if (!helper) {
-        helper = `%x509.record.${lowerer.valueHelpers.size}`;
+        helper = keyedHelperName(lowerer, "%x509.record", key);
         lowerer.valueHelpers.set(key, helper);
         const dataT = data.type;
         const dRef: IrExpr = { kind: "varRef", localId: "d.0", type: dataT, loc };
