@@ -831,6 +831,9 @@ export class LlEmitter {
   readonly callLifetimes: CallLifetimes;
   readonly constantCallbacks: Map<string, Map<string, string>>;
   currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
+  /** The current function's running maximum and minimum updates, whose
+   * branches are weighted as rarely taken (running-extrema.ts). */
+  runningExtrema: ReadonlySet<IrStmt> = new Set();
   readonly stackCallbacks: StackCallbacks;
   readonly receiverReaders: AmbientReceiverReaders;
   readonly stackCaptures: StackCaptures;

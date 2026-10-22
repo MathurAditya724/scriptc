@@ -782,7 +782,12 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       const trueLabel = B.newLabel("if.t");
       const joinLabel = B.newLabel("if.j");
       const falseLabel = s.else_ ? B.newLabel("if.f") : joinLabel;
-      B.condBr(cond, trueLabel, falseLabel);
+      // A running maximum or minimum is rarely updated; the weights keep
+      // the branch, where a select would make each element wait on the last.
+      const weights = emitter.runningExtrema.has(s)
+        ? `, !prof !{!"branch_weights", i32 1, i32 1000}`
+        : "";
+      B.condBr(cond, trueLabel, falseLabel, weights);
       B.startBlock(trueLabel);
       emitter.emitBlock(s.then);
       B.br(joinLabel);
