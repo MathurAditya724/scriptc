@@ -1108,9 +1108,20 @@ export class LlEmitter {
     resume: Map<IrStmt, string>;
     /** Globals whose double is written back only when the copy is left. */
     deferred: Set<string>;
+    /** The loop site's count of bailing entries in a row (a global), and
+     * whether this entry completed a speculated write (a slot). A proven
+     * integer loop has neither. */
+    bails?: string;
+    ran?: string;
   } | null = null;
+  /** Speculative loop sites numbered so far in the module. */
+  speculativeLoopSites = 0;
   /** The ordinary copy being emitted: resume labels still to place. */
   speculationResume: Map<IrStmt, { label: string; placed: boolean }> | null = null;
+  /** Run once at the top of the next loop copy's header
+   * (`enterLoopHeader`): records the ordinary copy's header, or sends the
+   * third copy's header there. */
+  speculationHeader: ((header: string) => void) | null = null;
   /** The function being emitted, for speculative globals. */
   speculativeFunction = "";
   /** Every function that writes each number global (computed on demand). */
