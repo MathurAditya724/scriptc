@@ -91,6 +91,26 @@ test("finds replaced blocks and references appended to an existing body in a lat
   expect(functions[0]!.body).toEqual([{ kind: "block", body: [value(7)], loc }]);
 });
 
+test("reuses the scan of an unchanged body while only bindings are pending", () => {
+  const { initializers, pending, lowerer } = fixture();
+  const placeholder = block(loc);
+  const functions = [fn("init", [placeholder]), fn("use", [value(1)])];
+  pending.set("registry", [{ loc, lower: () => [value(7)] }]);
+  expect(initializers.process(lowerer, functions)).toBe(false);
+  const walk = vi.spyOn(traversal, "everyStmtList");
+  try {
+    expect(initializers.process(lowerer, functions)).toBe(false);
+    expect(walk).not.toHaveBeenCalled();
+    // A statement added to the same list is found.
+    functions[1]!.body.push(read("registry"));
+    expect(initializers.process(lowerer, functions)).toBe(true);
+    expect(walk.mock.calls.filter(([body]) => body === functions[0]!.body)).toHaveLength(0);
+  } finally {
+    walk.mockRestore();
+  }
+  expect(placeholder.body).toEqual([value(7)]);
+});
+
 test("indexes new subtrees for other demanded initializers in the same pass", () => {
   const { initializers, pending, lowerer } = fixture();
   const nestedLoc = { ...loc, start: 10, end: 11 };
@@ -137,6 +157,15 @@ test("fills every empty copy with the exact file and span while preserving popul
   expect(b.body).toEqual([value(8)]);
   expect(populated.body).toEqual([value(1)]);
   for (const untouched of [otherFile, otherStart, otherEnd]) expect(untouched.body).toEqual([]);
+});
+
+test("reports the functions whose placeholders it fills", () => {
+  const { initializers, pending, lowerer } = fixture();
+  const functions = [fn("init", [block(loc)]), fn("use", [read("registry")])];
+  pending.set("registry", [{ loc, lower: () => [value(4)] }]);
+  const filled: IrFunction[] = [];
+  expect(initializers.process(lowerer, functions, (f) => filled.push(f))).toBe(true);
+  expect(filled).toEqual([functions[0]]);
 });
 
 test("an update of the binding demands its initializer", () => {

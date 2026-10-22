@@ -2,6 +2,7 @@
 import { InternalCompilerError } from "../../errors.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import { pipelinePumpedRuns } from "../../ir/builtin-signatures.js";
 
 const STREAM_CANONICAL_CBS: Record<string, ("r" | "w" | "f" | "d" | "t" | "l")[]> = {
   readable: ["r", "d"],
@@ -418,10 +419,34 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     host.emitPendingCheck();
     return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
   }
+  if (e.fn === "writable.writeEnc") {
+    // (recv, flags, chunk[, encoding][, cb]) — flags: 1 encoding, 2
+    // callback (MOVES). Without an encoding the argument is undefined, or
+    // null when the callback took its place.
+    const flagsArg = e.args[1]!;
+    if (flagsArg.kind !== "numLit")
+      throw new InternalCompilerError("llvm emitter bug: writable.writeEnc flags not a literal");
+    const flags = flagsArg.value;
+    const args = e.args.map((a) => host.emitExpr(a));
+    let at = 3;
+    const enc = flags & 1 ? args[at++]!.name : writeEncNull(host, flags & 2 ? "null" : "undef");
+    let cb = "null";
+    if (flags & 2) {
+      host.toHeap(args[at]!);
+      cb = args[at]!.name;
+    }
+    host.declare(`declare zeroext i1 @scr_stream_write_enc(ptr, ptr, ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call zeroext i1 @scr_stream_write_enc(ptr ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${enc}, ptr ${cb})`,
+    );
+    host.emitPendingCheck();
+    return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
+  }
   if (e.fn === "writable.end") {
-    // (recv, flags[, chunk][, cb]) — flags: 1 bytes chunk, 2 string
-    // chunk, 8 dyn chunk (write first, Node's end(chunk) decomposition),
-    // 4 callback.
+    // (recv, flags[, chunk][, encoding][, cb]) — flags: 1 bytes chunk, 2
+    // string chunk, 8 dyn chunk (write first, Node's end(chunk)
+    // decomposition), 16 an encoding after the dyn chunk, 4 callback.
     const flagsArg = e.args[1]!;
     if (flagsArg.kind !== "numLit")
       throw new InternalCompilerError("llvm emitter bug: writable.end flags not a literal");
@@ -431,19 +456,27 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     let chunkB = "null";
     let chunkS = "null";
     let chunkD: string | null = null;
+    let encD = "null";
     if (flags & 1) chunkB = args[at++]!.name;
     else if (flags & 2) chunkS = args[at++]!.name;
     else if (flags & 8) chunkD = args[at++]!.name;
+    if (flags & 16) encD = args[at++]!.name;
+    else if (chunkD !== null && flags & 4) encD = writeEncNull(host, "null");
     let cbName = "null";
     if (flags & 4) {
       host.toHeap(args[at]!);
       cbName = args[at]!.name;
     }
     if (chunkD !== null) {
-      host.declare(`declare zeroext i1 @scr_stream_write_dyn(ptr, ptr, ptr)`);
+      // end(chunk, cb) writes with a null encoding argument (Node's end
+      // shifts the callback out of it)
+      host.declare(`declare zeroext i1 @scr_stream_write_enc(ptr, ptr, ptr, ptr)`);
       B.line(
-        `${B.tmp()} = call zeroext i1 @scr_stream_write_dyn(ptr ${args[0]!.name}, ptr ${chunkD}, ptr null)`,
+        `${B.tmp()} = call zeroext i1 @scr_stream_write_enc(ptr ${args[0]!.name}, ptr ${chunkD}, ptr ${encD}, ptr null)`,
       );
+      // a write that throws (an unknown encoding) leaves the stream as it
+      // was: Node's end() throws before it ends the stream
+      host.emitPendingCheck();
     }
     host.declare(`declare ptr @scr_stream_end(ptr, ptr, ptr, ptr)`);
     const t = B.tmp();
@@ -662,14 +695,14 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     e.fn === "stream.pipelineStages" ||
     e.fn === "stream.pipelineStagesDyn"
   ) {
-    // (n, at, k, flags, mask, s1..sn, stage1..stagek, (next, read,
-    // return)?, box?, (signal, abort)?[, cb]): the streams and the stage
-    // closures ride stack arrays; absent groups pass null.
-    const [nArg, atArg, kArg, flagsArg, maskArg] = e.args;
+    // (n, k, positions, flags, mask, s1..sn, stage1..stagek, helpers...,
+    // box?, (signal, abort)?[, cb]): the streams, the stage closures and
+    // the helpers ride stack arrays; absent groups pass null.
+    const [nArg, kArg, positionsArg, flagsArg, maskArg] = e.args;
     if (
       nArg?.kind !== "numLit" ||
-      atArg?.kind !== "numLit" ||
       kArg?.kind !== "numLit" ||
+      positionsArg?.kind !== "numLit" ||
       flagsArg?.kind !== "numLit" ||
       maskArg?.kind !== "numLit"
     )
@@ -677,6 +710,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const n = nArg.value;
     const k = kArg.value;
     const flags = flagsArg.value;
+    const helperCount = 3 * pipelinePumpedRuns(n + k, positionsArg.value);
     const args = e.args.map((a) => host.emitExpr(a));
     const packed = (from: number, count: number): string => {
       if (count === 0) return "null";
@@ -691,20 +725,17 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     };
     const streams = packed(5, n);
     const stages = packed(5 + n, k);
-    let at = 5 + n + k;
+    const helpers = packed(5 + n + k, helperCount);
+    let at = 5 + n + k + helperCount;
     const take = (present: boolean): string => (present ? args[at++]!.name : "null");
-    const hasHelpers = (flags & 8) !== 0;
-    const next = take(hasHelpers);
-    const read = take(hasHelpers);
-    const ret = take(hasHelpers);
-    const box = take((flags & 16) !== 0);
+    const box = take(((flags >> 1) & 3) === 2);
     const signal = take((flags & 32) !== 0);
     const abort = take((flags & 32) !== 0);
     const head =
-      `double ${f64Lit(n)}, ptr ${streams}, double ${f64Lit(atArg.value)}, double ${f64Lit(k)}, ` +
-      `ptr ${stages}, double ${f64Lit(flags)}, double ${f64Lit(maskArg.value)}, ` +
-      `ptr ${next}, ptr ${read}, ptr ${ret}, ptr ${box}, ptr ${signal}, ptr ${abort}`;
-    const params = "double, ptr, double, double, ptr, double, double, ptr, ptr, ptr, ptr, ptr, ptr";
+      `double ${f64Lit(n)}, ptr ${streams}, double ${f64Lit(k)}, ptr ${stages}, ` +
+      `double ${f64Lit(positionsArg.value)}, double ${f64Lit(flags)}, double ${f64Lit(maskArg.value)}, ` +
+      `ptr ${helpers}, ptr ${box}, ptr ${signal}, ptr ${abort}`;
+    const params = "double, ptr, double, ptr, double, double, double, ptr, ptr, ptr, ptr";
     const t = B.tmp();
     if (e.fn === "sp.pipelineStages") {
       host.declare(`declare ptr @scr_sp_pipeline_stages(${params})`);
@@ -771,4 +802,14 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
   // their callbacks into the handle's registry with runtime-provided
   // adapters; the handful of union-wrapped reads use the envGet shapes.
   return host.emitGenericLibCall(e);
+}
+
+/** The encoding argument a write passes when the call has none: undefined
+ * (a null pointer), or the null value when a callback took its place. */
+function writeEncNull(host: LlvmEmitterContext, which: "null" | "undef"): string {
+  if (which === "undef") return "null";
+  host.declare(`declare ptr @scr_dyn_new_null()`);
+  const t = host.B.tmp();
+  host.B.line(`${t} = call ptr @scr_dyn_new_null()`);
+  return t;
 }

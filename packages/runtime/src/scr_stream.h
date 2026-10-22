@@ -143,6 +143,13 @@ ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end);
 /* A boxed native stream out of a checked-dynamic pipeline stage (+1), or
  * NULL with `message` thrown as the not-supported Error. */
 ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *message);
+/* Handles that are Transforms (ScrDynHandleOps.transform: Cipheriv and
+ * Decipheriv). scr_stream_of_handle: the handle's Transform (+1), built on
+ * first use, or NULL when the value is not such a handle.
+ * stream.handleStream: the same, throwing the coded SC2020 error for any
+ * other value. */
+ScrStream *scr_stream_of_handle(const struct ScrDyn *value);
+ScrStream *scr_stream_handle(const struct ScrDyn *value);
 /* Checked-dynamic stream slots (scr_stream_dyn.c): the native stream a
  * value boxes with the requested side (1 readable, 2 writable; +1, or
  * NULL), and readable.pipe()/unpipe() for a destination that is not a
@@ -197,35 +204,34 @@ ScrStream *scr_stream_pipeline(double n, ScrStream **streams, ScrClosure *cb, Sc
  * mustCall wrappers; borrowed). */
 ScrClosure *scr_stream_finished_dyn(ScrStream *s, struct ScrDyn *cb);
 ScrStream *scr_stream_pipeline_dyn(double n, ScrStream **streams, struct ScrDyn *cb);
-/* pipeline(...[, cb]) with one run of function stages (pipeline.js): the
- * run starts at streams[at] (count functions). flags bit 0: the first
- * stage is a source function, called with only its options; bits 1-2:
- * the last stage is a function destination (2: an async function whose
- * promise, boxed through box, carries the value to the callback), and
- * pipeline() answers a PassThrough. Other
- * stages get the previous stream itself or the previous stage's async
- * generator. mask bit i: stage i takes { signal } (the pipeline's own
- * AbortSignal, aborted through abort when the pipeline finishes). The
- * last generator before a stream or a PassThrough is pumped
- * (pumpToNode) through its helpers: next/ret answer the resume's
- * promise, read maps its IteratorResult to the value or
- * scr_stream_from_done. Streams and closures borrowed (helpers, box,
- * signal and abort NULL when unused); cb moves. */
-ScrStream *scr_stream_pipeline_stages(double n, ScrStream **streams, double at, double count,
-                                      ScrClosure **stages, double flags, double mask,
-                                      ScrClosure *next, ScrClosure *read, ScrClosure *ret,
-                                      ScrClosure *box, struct ScrDyn *signal, ScrClosure *abort,
-                                      ScrClosure *cb, ScrStreamErrInv inv);
-ScrStream *scr_stream_pipeline_stages_dyn(double n, ScrStream **streams, double at, double count,
-                                          ScrClosure **stages, double flags, double mask,
-                                          ScrClosure *next, ScrClosure *read, ScrClosure *ret,
-                                          ScrClosure *box, struct ScrDyn *signal,
-                                          ScrClosure *abort, struct ScrDyn *cb);
-struct ScrPromise *scr_sp_pipeline_stages(double n, ScrStream **streams, double at, double count,
-                                          ScrClosure **stages, double flags, double mask,
-                                          ScrClosure *next, ScrClosure *read, ScrClosure *ret,
-                                          ScrClosure *box, struct ScrDyn *signal,
-                                          ScrClosure *abort);
+/* pipeline(...[, cb]) with function stages (pipeline.js): positions bit j
+ * marks the j-th of the n + count stages a function. A function at
+ * position 0 is a source function, called with only its options. flags
+ * bits 1-2: the last stage is a function destination (2: an async
+ * function whose promise, boxed through box, carries the value to the
+ * callback), and pipeline() answers a PassThrough. Other stages get the
+ * previous stream itself or the previous stage's async generator. mask
+ * bit i: function i takes { signal } (the pipeline's own AbortSignal,
+ * aborted through abort when the pipeline finishes). The last generator
+ * of each run that a stream follows is pumped (pumpToNode) through its
+ * three helpers in `helpers`: next/ret answer the resume's promise, read
+ * maps its IteratorResult to the value or scr_stream_from_done. Streams
+ * and closures borrowed (helpers, box, signal and abort NULL when
+ * unused); cb moves. */
+ScrStream *scr_stream_pipeline_stages(double n, ScrStream **streams, double count,
+                                      ScrClosure **stages, double positions, double flags,
+                                      double mask, ScrClosure **helpers, ScrClosure *box,
+                                      struct ScrDyn *signal, ScrClosure *abort, ScrClosure *cb,
+                                      ScrStreamErrInv inv);
+ScrStream *scr_stream_pipeline_stages_dyn(double n, ScrStream **streams, double count,
+                                          ScrClosure **stages, double positions, double flags,
+                                          double mask, ScrClosure **helpers, ScrClosure *box,
+                                          struct ScrDyn *signal, ScrClosure *abort,
+                                          struct ScrDyn *cb);
+struct ScrPromise *scr_sp_pipeline_stages(double n, ScrStream **streams, double count,
+                                          ScrClosure **stages, double positions, double flags,
+                                          double mask, ScrClosure **helpers, ScrClosure *box,
+                                          struct ScrDyn *signal, ScrClosure *abort);
 /* stream.compose(s1..sn): a pipeline over the streams and a Duplex that
  * writes to the first and reads from the last (compose.js). One stream
  * answers itself (Duplex.from of a duplex). +1, or NULL with
@@ -266,6 +272,7 @@ ScrStream *scr_stream_set_push_encoding(ScrStream *s, ScrStr *enc);
 bool scr_stream_push_null(ScrStream *s);
 void scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
 void scr_stream_unshift_str(ScrStream *s, ScrStr *str);
+void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
 ScrBytes *scr_stream_read(ScrStream *s, double size);
 ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, bool prepend);
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0 = all/first; throws once encoded (the static type is Buffer|null) */
@@ -285,6 +292,8 @@ typedef struct ScrPromise ScrPromise; /* full declaration below (C11 repeat) */
  * each chunk before asking again). */
 bool scr_stream_push_dyn(ScrStream *s, const ScrDyn *d);       /* borrows d; tag dispatch */
 bool scr_stream_write_dyn(ScrStream *s, const ScrDyn *d, ScrClosure *cb); /* cb moves */
+/* write(chunk, encoding, cb): enc borrowed, NULL or undefined when absent */
+bool scr_stream_write_enc(ScrStream *s, const ScrDyn *chunk, ScrDyn *enc, ScrClosure *cb);
 ScrPromise *scr_stream_next_chunk(ScrStream *s);
 ScrPromise *scr_stream_next_chunk_dyn(ScrStream *s);
 /* node:stream/promises — the promise forms over the finished/pipeline
@@ -469,6 +478,28 @@ void scr_stream_final_done(ScrStream *s, ScrError *err);
 void scr_stream_destroy_done(ScrStream *s, ScrError *err);
 void scr_stream_transform_done(ScrStream *s, ScrError *err, ScrBytes *data, ScrStr *data_str);
 void scr_stream_flush_done(ScrStream *s, ScrError *err, ScrBytes *data, ScrStr *data_str);
+/* The same completions with a checked-dynamic data value (borrowed; NULL,
+ * null and undefined push nothing): an object-mode Transform's data, or an
+ * untyped callback's. err moves. */
+/* objectMode: scr_stream_set_object_mode applies the option's sides right
+ * after construction; scr_stream_writes_values answers whether the write
+ * and transform steps receive dyn values instead of Buffers. */
+void scr_stream_set_object_mode(ScrStream *s, bool readable, bool writable);
+ScrStream *scr_stream_object_mode(ScrStream *s, bool readable, bool writable);
+bool scr_stream_writes_values(ScrStream *s);
+/* A compiled write or transform callback's chunk by its declared type: a
+ * Buffer (+1, or NULL with a TypeError for another object-mode value), a
+ * dyn value (+1), and the encoding argument (+1). */
+ScrBytes *scr_stream_chunk_bytes(ScrStream *s, ScrBytes *chunk);
+struct ScrDyn *scr_stream_chunk_value(ScrStream *s, ScrBytes *chunk);
+ScrStr *scr_stream_chunk_encoding(ScrStream *s);
+ScrDyn *scr_stream_chunk_encoding_value(ScrStream *s);
+/* emit('data', value) with a checked-dynamic chunk (borrowed). */
+bool scr_stream_emit_value(ScrStream *s, ScrStr *name, struct ScrDyn *v);
+/* Whether a dyn for-await step (readable.nextChunkDyn) answered the end. */
+bool scr_stream_chunk_done(const struct ScrDyn *v);
+void scr_stream_transform_done_value(ScrStream *s, ScrError *err, struct ScrDyn *v);
+void scr_stream_flush_done_value(ScrStream *s, ScrError *err, struct ScrDyn *v);
 
 /* Runtime-backed streams (the fs streams in scr_fs_stream.c).
  * - construct: Node's _construct. The hook runs on a tick after

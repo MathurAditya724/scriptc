@@ -15,6 +15,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's curve, key, point, encoding and format errors.
   "crypto.ecdhNew",
   "crypto.ecdhConvertKey",
+  // Node's prime, generator, size, encoding and group-name errors.
+  "crypto.dhNew",
+  "crypto.dhGroupNew",
   // node:test's { timeout } and { concurrency } range checks.
   "test.register",
   "test.registerEmpty",
@@ -82,6 +85,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "procStream.write",
   "child.stdioStream",
   "stream.unboxDyn",
+  "stream.handleStream",
   "stream.pipeDyn",
   "stream.unpipeDyn",
   "weakMap.new",
@@ -99,6 +103,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "atomics.op",
   "atomics.wait",
   "atomics.notify",
+  "atomics.opDyn",
+  "atomics.waitDyn",
+  "atomics.notifyDyn",
   "arrayBuffer.byteLengthGetter",
   "arrayBuffer.viewU8C",
   "arrayBuffer.viewI8",
@@ -228,6 +235,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http2.createSecureServerDynCb",
   "tls.connect",
   "tls.connectCb",
+  "tls.wrapSocket",
+  "tls.wrapSocketCtx",
   // The CA-store surface: an unknown getCACertificates type throws
   // Node's ERR_INVALID_ARG_VALUE TypeError; setDefaultCACertificates
   // throws Node's ERR_CRYPTO_OPERATION_FAILED on a certificate-free
@@ -356,6 +365,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "readable.pushU",
   "readable.pushDyn",
   "readable.unshift",
+  "readable.unshiftDyn",
   "readable.unshiftStr",
   "readable.read",
   "readable.readDyn",
@@ -368,6 +378,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "writable.writeStr",
   "writable.writeU",
   "writable.writeDyn",
+  "writable.writeEnc",
   "writable.end",
   "writable.uncork",
   "stream.destroy",
@@ -536,6 +547,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "date.nativeNew",
   "date.nativeNewFields",
   "date.nativeNewValue",
+  "date.argumentsTime",
   "date.checkedValue",
   "util.parseArgs",
   "util.parseEnv",
@@ -603,6 +615,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
   "dyn.setPrototype",
+  // Error.captureStackTrace: Node's TypeError for a primitive target, and
+  // the error string conversion of name and message
+  "dyn.errorCaptureStackTrace",
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
@@ -788,6 +803,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromArray",
   "buffer.poolFromDyn",
   "buffer.poolFromDynRef",
+  "buffer.poolFromDynOffset",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",
@@ -978,4 +994,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.x509ValidFromStr",
   "crypto.x509ValidTo",
   "crypto.x509ValidToStr",
+  "crypto.createPrivateKey",
+  "crypto.createPublicKey",
+  "crypto.generateKeyPairSync",
+  "crypto.generateKeyPairCb",
+  "crypto.signOneshot",
+  "crypto.verifyOneshot",
+  "crypto.createSign",
+  "crypto.createVerify",
 ]);

@@ -20,6 +20,9 @@ ScrStr *scr_crypto_hash_digest_bytes(ScrStr *alg, ScrBytes *data, ScrStr *enc);
 typedef struct ScrCryptoHash ScrCryptoHash;
 ScrCryptoHash *scr_crypto_hash_new(ScrStr *alg);
 ScrDyn *scr_crypto_native(void);
+/* The crypto global as a value: scr_crypto_native's object with the Crypto
+ * methods (scr_webcrypto_object.c, linked with the webcrypto feature). */
+ScrDyn *scr_webcrypto_object(void);
 ScrCryptoHash *scr_crypto_hmac_new_str(ScrStr *alg, ScrStr *key);
 ScrCryptoHash *scr_crypto_hmac_new_bytes(ScrStr *alg, ScrBytes *key);
 ScrCryptoHash *scr_crypto_hash_retain(ScrCryptoHash *h);
@@ -82,6 +85,10 @@ ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding);
 ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options);
 ScrBytes *scr_crypto_key_object_input(ScrDyn *key);
 bool scr_crypto_is_key_object(const ScrDyn *value);
+/* Throws Node's ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE for a private or public
+ * KeyObject used as a secret key. scr_pki.c, which makes those keys,
+ * installs it with them, so its messages stay out of other programs. */
+extern void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key);
 const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len);
 /* crypto.createCipheriv (decrypt false) and crypto.createDecipheriv
  * (decrypt true) over checked-dynamic arguments (scr_cipher.c, linked
@@ -94,6 +101,13 @@ ScrDyn *scr_crypto_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn 
  * or result, or NULL with Node's error pending. */
 ScrDyn *scr_crypto_ecdh_new(ScrDyn *curve);
 ScrDyn *scr_crypto_ecdh_convert_key(ScrDyn *key, ScrDyn *curve, ScrDyn *in_enc, ScrDyn *out_enc, ScrDyn *format);
+/* crypto.createDiffieHellman(sizeOrKey, keyEncoding, generator,
+ * generatorEncoding) and crypto.getDiffieHellman(groupName) over
+ * checked-dynamic arguments (scr_dh.c, linked with the vendored mbedTLS
+ * archive). +1 DiffieHellman or DiffieHellmanGroup handle, or NULL with
+ * Node's error pending. */
+ScrDyn *scr_crypto_dh_new(ScrDyn *size_or_key, ScrDyn *key_encoding, ScrDyn *generator, ScrDyn *generator_encoding);
+ScrDyn *scr_crypto_dh_group_new(ScrDyn *name);
 ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
                             double iterations, double keylen, ScrStr *digest);
 ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double iterations,
@@ -202,19 +216,55 @@ size_t scr_crypto_digest_raw(const char *alg, const unsigned char *data, size_t 
 size_t scr_crypto_hmac_raw(const char *alg, const unsigned char *key, size_t keylen,
                            const unsigned char *data, size_t len, unsigned char out[64]);
 /* ── WebCrypto (scr_webcrypto.c) ─────────────────────────────────────
- * crypto.subtle.importKey (raw HMAC keys), sign and verify (HMAC) and
- * digest (SHA-1/SHA-2) over node:crypto's digest core. Each takes the
+ * crypto.subtle.importKey (HMAC, AES, PBKDF2 and HKDF keys, raw and jwk),
+ * generateKey and exportKey (HMAC and AES keys), sign and verify (HMAC)
+ * and digest (SHA-1/SHA-2) over node:crypto's digest core. Each takes the
  * call's argument vector as one dyn array (borrowed) and answers a +1
  * promise that every argument or validation failure rejects with Node's
  * TypeError or DOMException; algorithms and formats outside the slice
- * reject with a coded SC2020 Error. importKey settles at once with a
- * CryptoKey handle; sign and digest fulfill with an ArrayBuffer and
- * verify with a boolean on a later loop turn. scr_webcrypto_is_crypto_key
- * answers `value instanceof CryptoKey`. */
+ * reject with a coded SC2020 Error. importKey and exportKey settle at
+ * once with a CryptoKey handle, an ArrayBuffer or a JWK object;
+ * generateKey fulfills with a CryptoKey, sign and digest with an
+ * ArrayBuffer and verify with a boolean on a later loop turn.
+ * scr_webcrypto_is_crypto_key answers `value instanceof CryptoKey`. */
 ScrPromise *scr_webcrypto_import_key(ScrDyn *args);
+ScrPromise *scr_webcrypto_generate_key(ScrDyn *args);
+ScrPromise *scr_webcrypto_export_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_sign(ScrDyn *args);
 ScrPromise *scr_webcrypto_verify(ScrDyn *args);
 ScrPromise *scr_webcrypto_digest(ScrDyn *args);
+/* encrypt and decrypt (scr_webcrypto_aes.c, linked with the cipher
+ * feature's mbedTLS archive) run scr_webcrypto_cipher with the AES cipher
+ * as `aes`, which answers the +1 output bytes or NULL when the operation
+ * fails. encrypt and decrypt fulfill with an ArrayBuffer, or reject with
+ * a job failure, on a later loop turn. */
+typedef struct {
+  const unsigned char *iv; /* the IV, or the CTR counter block */
+  size_t iv_len;
+  const unsigned char *aad;
+  size_t aad_len;
+  size_t tag_len; /* bytes */
+  unsigned counter_bits;
+} ScrWebCryptoAesParams;
+typedef ScrBytes *(*ScrWebCryptoAesFn)(const char *name, bool decrypt, const unsigned char *key,
+                                       size_t key_len, const ScrWebCryptoAesParams *params,
+                                       const unsigned char *in, size_t len);
+ScrPromise *scr_webcrypto_cipher(ScrDyn *args, bool decrypt, ScrWebCryptoAesFn aes);
+ScrPromise *scr_webcrypto_encrypt(ScrDyn *args);
+ScrPromise *scr_webcrypto_decrypt(ScrDyn *args);
+/* wrapKey and unwrapKey run the same way (AES-KW wrapping, or the AES
+ * ciphers): wrapKey fulfills with an ArrayBuffer and unwrapKey with a
+ * CryptoKey on a later loop turn. */
+ScrPromise *scr_webcrypto_wrap(ScrDyn *args, ScrWebCryptoAesFn aes);
+ScrPromise *scr_webcrypto_unwrap(ScrDyn *args, ScrWebCryptoAesFn aes);
+ScrPromise *scr_webcrypto_wrap_key(ScrDyn *args);
+ScrPromise *scr_webcrypto_unwrap_key(ScrDyn *args);
+/* deriveBits and deriveKey (PBKDF2 and HKDF) over node:crypto's KDF core:
+ * deriveBits fulfills with an ArrayBuffer (at once for a zero length) and
+ * deriveKey with a CryptoKey of the derived key type, on a later loop
+ * turn. */
+ScrPromise *scr_webcrypto_derive_bits(ScrDyn *args);
+ScrPromise *scr_webcrypto_derive_key(ScrDyn *args);
 bool scr_webcrypto_is_crypto_key(const ScrDyn *value);
 
 /* The composed `new crypto.X509Certificate(data).fingerprint` read (the
@@ -229,5 +279,17 @@ ScrStr *scr_crypto_x509_valid_from(ScrBytes *data);
 ScrStr *scr_crypto_x509_valid_from_str(ScrStr *pem);
 ScrStr *scr_crypto_x509_valid_to(ScrBytes *data);
 ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem);
+/* Asymmetric keys and signatures (scr_pki.c, the pki unit). Arguments
+ * borrowed; results +1, or NULL with the error pending. */
+ScrDyn *scr_crypto_create_private_key(ScrDyn *key);
+ScrDyn *scr_crypto_create_public_key(ScrDyn *key);
+ScrDyn *scr_crypto_generate_key_pair_sync(ScrDyn *type, ScrDyn *options);
+void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *callback);
+ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key);
+ScrDyn *scr_crypto_verify_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature);
+ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm);
+ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm);
+bool scr_crypto_is_asymmetric_key(const ScrDyn *value);
+const char *scr_crypto_asymmetric_key_type(const ScrDyn *value);
 
 #endif /* SCR_CRYPTO_H */

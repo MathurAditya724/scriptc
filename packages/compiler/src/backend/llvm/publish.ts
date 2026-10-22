@@ -25,7 +25,7 @@ import type { IrClassDef, IrRecordShape, IrType, IrUnionDef, SrcLoc } from "../.
 import { mapOf, STRING, typeKey } from "../../ir/ir.js";
 import { mangleClassStruct, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS } from "./shapes.js";
-import { COMPACT_ID_MASK } from "./classes.js";
+import { COMPACT_ID_MASK, compactRefLoadLines } from "./classes.js";
 import { shapeTagFn } from "./nullable-unions.js";
 import type { InlineUnionFields } from "./inline-unions.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -69,8 +69,10 @@ export interface PublishClassInfo {
   idInRc: boolean;
   /** Instances have the 32-bit header (classes.ts LlClassMeta.compact). */
   compact: boolean;
-  /** The class's own and inherited fields: GEP index and storage type. */
-  fields: { name: string; index: number; type: IrType }[];
+  /** The class's own and inherited fields: GEP index and storage type;
+   * `compressed` when the field holds a 32-bit reference (classes.ts
+   * LlClassMeta.compressed), which the walker decodes. */
+  fields: { name: string; index: number; type: IrType; compressed?: boolean }[];
 }
 
 /** scr_pub_mark's object kinds (SCR_PUB_KIND_* in scr_runtime.h), for the RC audit. */
@@ -536,7 +538,7 @@ export class PublishWalkers {
     head: string,
     struct: string,
     traced: boolean,
-    members: { name: string; index: number; type: IrType }[],
+    members: PublishClassInfo["fields"],
     path: string,
     loc: SrcLoc,
     classId = false,
@@ -559,7 +561,12 @@ export class PublishWalkers {
       }
       lines.push(
         `  %f${n} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${member.index} ; ${llvmComment(member.name)}`,
-        `  %v${n} = load ptr, ptr %f${n}`,
+        ...(member.compressed === true
+          ? [
+              `  %v${n}.i = load i32, ptr %f${n}`,
+              ...compactRefLoadLines(`%v${n}.i`, `%v${n}`, `%v${n}.d`),
+            ]
+          : [`  %v${n} = load ptr, ptr %f${n}`]),
         ...this.push(`%v${n}`, fn, `${n}`, this.compactRef(member.type)),
       );
       n++;
