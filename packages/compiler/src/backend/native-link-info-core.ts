@@ -94,6 +94,12 @@ export interface NativeLinkFeatures {
   /** crypto.createDiffieHellman, getDiffieHellman and
    * createDiffieHellmanGroup: scr_dh.c plus the mbedTLS archive. */
   dh: boolean;
+  /** Asymmetric KeyObjects, crypto.sign/verify and Sign/Verify: scr_pki.c
+   * plus the mbedTLS archive. */
+  pki: boolean;
+  /** Ed25519 keys and signatures with pki: scr_ed25519.c (the vendored
+   * libsodium Ed25519). */
+  ed25519: boolean;
   /** perf_hooks event-loop metrics: scr_perf_loop.c. */
   perfLoop: boolean;
   tlsCa: boolean;

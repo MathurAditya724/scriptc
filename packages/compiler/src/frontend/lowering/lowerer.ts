@@ -1915,6 +1915,9 @@ export class Lowerer {
    * pinned values resolve through genericFnOf exactly like top-level
    * generic function declarations (bindingGenericFnInfoOf). */
   readonly bindingGenericFns = new Map<ts.Node, GenericFnInfo>();
+  /** Identifiers by spelling, per file, for the generic bindings' use
+   * ordering (runsAfterDeclaration). */
+  readonly bindingIdentifiers = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   /** Per-symbol result of the never-reassigned file scan
    * (bindingNeverReassigned — object-literal generic-method receivers). */
   readonly neverReassignedCache = new Map<ts.Symbol, boolean>();
