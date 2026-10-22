@@ -4074,6 +4074,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     return { kind: "record", shapeId: ctx.shapes.intern(fields, false, undefined, order) };
   }
+  // crypto.getCipherInfo's result is Node's info object itself, read as a
+  // checked-dynamic value: Node leaves out the fields a cipher lacks,
+  // including the nid the declaration requires, so a record cannot hold
+  // every result.
+  if (
+    isStdlibInterface("CipherInfo") &&
+    psym!.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "crypto"),
+    )
+  )
+    return DYN;
   // Filesystem options are data records. Keep their declared optional fields
   // instead of allowing arbitrary standard-library interfaces into records.
   if (

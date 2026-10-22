@@ -2840,6 +2840,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * undefined, and call it in a later macrotask; Node's argument errors
    * throw (may-throw). */
   "crypto.checkPrimeSync": { argTypes: [DYN, DYN], result: DYN },
+  /** getCipherInfo(nameOrNid, options) over checked-dynamic arguments
+   * (scr_cipher_info.c): the info object or undefined. */
+  "crypto.getCipherInfo": { argTypes: [DYN, DYN], result: DYN },
   "crypto.checkPrimeCb": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
   "crypto.generatePrimeSync": { argTypes: [DYN, DYN], result: DYN },
   "crypto.generatePrimeCb": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },

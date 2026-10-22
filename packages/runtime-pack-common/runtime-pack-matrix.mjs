@@ -49,6 +49,8 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_itable.c",
   "scr_slots.c",
   "scr_alloc.c",
+  // crypto.getCipherInfo's table; it links only into programs that call it.
+  "scr_cipher_info.c",
 ];
 
 export const OPTIONAL_RUNTIME_SOURCES = [
