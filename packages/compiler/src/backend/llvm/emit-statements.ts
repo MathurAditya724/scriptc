@@ -517,6 +517,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         s.index,
         s.value,
         emitter.bytesBounds.has(s),
+        emitter.bytesOwned.has(s),
       );
       break;
     }
@@ -970,6 +971,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           done = B.newLabel("bytes.version.done");
         emitBytesLoopVersionGuard(emitter, version, fast, slow);
         const originalBounds = emitter.bytesBounds,
+          originalOwned = emitter.bytesOwned,
           originalRanges = emitter.integerRanges;
         emitter.bytesLoopVersioning.add(s);
         try {
@@ -978,6 +980,8 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.br(done);
           B.startBlock(fast);
           emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
+          if (version.owned.size > 0)
+            emitter.bytesOwned = new Set([...originalOwned, ...version.owned]);
           if (version.ranges.size > 0)
             emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
           if (version.counted?.guarded) emitter.provenCountedGuards.add(s);
@@ -985,6 +989,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.br(done);
         } finally {
           emitter.bytesBounds = originalBounds;
+          emitter.bytesOwned = originalOwned;
           emitter.integerRanges = originalRanges;
           emitter.provenCountedGuards.delete(s);
           emitter.bytesLoopVersioning.delete(s);
