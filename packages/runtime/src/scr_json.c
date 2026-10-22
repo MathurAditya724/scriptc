@@ -10279,20 +10279,29 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
       !scr_typed_ref_is_length(key) && !scr_typed_ref_canonical_index(key->data, key->len, &element)) {
     double number;
     bool numeric = scr_arr_numeric_key(key->data, key->len, &number);
-    if (numeric) scr_arr_delete(recv->v.typed_ref.ptr, number);
     if (recv->v.typed_ref.commit) {
       ScrDyn *view = scr_dyn_typed_ref_materialize(recv);
       if (!scr_exc_pending() && view->kind == SCR_DYN_ARR) {
-        bool own = view->v.arr.properties && scr_dyn_obj_get(view->v.arr.properties, key->data, key->len);
-        if (own) scr_dyn_key_delete(view, key, strict);
-        if (own && !scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
+        ScrDynEntry *own = view->v.arr.properties ? scr_dyn_entry(view->v.arr.properties, key) : NULL;
+        /* A non-configurable property refuses the delete before either
+         * store changes. */
+        if (own && !own->configurable) {
+          scr_dyn_key_delete(view, key, strict);
+        } else {
+          if (numeric) scr_arr_delete(recv->v.typed_ref.ptr, number);
+          if (own) scr_dyn_key_delete(view, key, strict);
+          if (own && !scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
+        }
         scr_dyn_release(view);
         return;
       }
       scr_dyn_release(view);
       if (scr_exc_pending()) return;
     }
-    if (numeric) return;
+    if (numeric) {
+      scr_arr_delete(recv->v.typed_ref.ptr, number);
+      return;
+    }
   }
   if (recv->kind == SCR_DYN_FUNC) {
     if (scr_dyn_fn_property_fence(key)) return;
