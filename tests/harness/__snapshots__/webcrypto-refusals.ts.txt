@@ -1,26 +1,17 @@
-webcrypto-refusals.ts:7:3 - error SC2020: 'crypto.subtle.importKey with the 'jwk' key format' is part of the standard library types but has no scriptc lowering yet
+webcrypto-refusals.ts:5:16 - error SC2020: 'crypto.subtle as a value' is part of the standard library types but has no scriptc lowering yet
 
-  6 | const fromJwk = await crypto.subtle.importKey(
-  7 |   "jwk",
-    |   ^~~~~
-  8 |   { kty: "oct", k: "c2VjcmV0" },
+  4 | // (node-types/fenced.ts pins their fence under @types/node).
+  5 | const subtle = crypto.subtle;
+    |                ^~~~~~~~~~~~~
+  6 | console.log(typeof subtle);
 
-  hint: the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
+  hint: the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
 
-webcrypto-refusals.ts:15:16 - error SC2020: 'crypto.subtle as a value' is part of the standard library types but has no scriptc lowering yet
+webcrypto-refusals.ts:8:20 - error SC2020: 'crypto.subtle.sign as a value' is part of the standard library types but has no scriptc lowering yet
 
-  14 | 
-  15 | const subtle = crypto.subtle;
-     |                ^~~~~~~~~~~~~
-  16 | console.log(typeof subtle);
+  7 | 
+  8 | console.log(typeof crypto.subtle.sign);
+    |                    ^~~~~~~~~~~~~~~~~~
+  9 | 
 
-  hint: the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
-
-webcrypto-refusals.ts:18:20 - error SC2020: 'crypto.subtle.sign as a value' is part of the standard library types but has no scriptc lowering yet
-
-  17 | 
-  18 | console.log(typeof crypto.subtle.sign);
-     |                    ^~~~~~~~~~~~~~~~~~
-  19 | 
-
-  hint: the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
+  hint: the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle

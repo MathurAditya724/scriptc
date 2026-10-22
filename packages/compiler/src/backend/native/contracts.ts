@@ -249,6 +249,12 @@ export interface CcOptions {
   /** crypto.createECDH and ECDH.convertKey: compiles scr_ecdh.c and links
    * the mbedTLS archive (shared with tls). */
   ecdh?: boolean;
+  /** Asymmetric KeyObjects and signatures: compiles scr_pki.c and links
+   * the mbedTLS archive. */
+  pki?: boolean;
+  /** Ed25519 with pki: compiles scr_ed25519.c (the vendored libsodium
+   * Ed25519). */
+  ed25519?: boolean;
   /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
   webcrypto?: boolean;
   /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */

@@ -18,6 +18,7 @@
  * SC2020 Error instead of silently diverging. The compiler links the unit
  * only into programs that call these methods (the webcrypto feature). */
 #include "scr_runtime.h"
+#include "scr_webcrypto.h"
 
 #include <math.h>
 #include <stdarg.h>
@@ -43,13 +44,12 @@ static const char *const scr_wc_sign_names[] = {
     "ECDSA",     "Ed25519",   "Ed448",   "HMAC",    "KMAC128",           "KMAC256",
     "ML-DSA-44", "ML-DSA-65", "ML-DSA-87", "RSA-PSS", "RSASSA-PKCS1-v1_5",
 };
-static const char *const scr_wc_digest_names[] = {
+const char *const scr_wc_digest_names[] = {
     "SHA-1",     "SHA-256",   "SHA-384",   "SHA-512",   "SHA3-256",      "SHA3-384",
     "SHA3-512",  "cSHAKE128", "cSHAKE256", "KT128",     "KT256",         "TurboSHAKE128",
     "TurboSHAKE256",
 };
 
-#define SCR_WC_COUNT(names) (sizeof(names) / sizeof((names)[0]))
 
 /* The implemented hashes: WebCrypto name and node:crypto digest name. */
 static const struct {
@@ -75,7 +75,7 @@ static bool scr_wc_ascii_ieq(const ScrStr *s, const char *name) {
 }
 
 /* The canonical registered spelling of `name`, or NULL. */
-static const char *scr_wc_lookup(const char *const *names, size_t count, const ScrStr *name) {
+const char *scr_wc_lookup(const char *const *names, size_t count, const ScrStr *name) {
   for (size_t i = 0; i < count; i++)
     if (scr_wc_ascii_ieq(name, names[i])) return names[i];
   return NULL;
@@ -89,11 +89,9 @@ static const char *scr_wc_native_hash(const char *name) {
 
 /* ── errors ────────────────────────────────────────────────────────── */
 
-static const char *const scr_wc_ordinals[] = {"1st", "2nd", "3rd", "4th", "5th"};
+const char *const scr_wc_ordinals[] = {"1st", "2nd", "3rd", "4th", "5th"};
 
-static void scr_wc_type_error(const char *code, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
-static void scr_wc_type_error(const char *code, const char *fmt, ...) {
+void scr_wc_type_error(const char *code, const char *fmt, ...) {
   char message[512];
   va_list ap;
   va_start(ap, fmt);
@@ -105,7 +103,7 @@ static void scr_wc_type_error(const char *code, const char *fmt, ...) {
 }
 
 /* An operation or algorithm Node supports that this slice does not. */
-static void scr_wc_unsupported(const char *method, const char *what) {
+void scr_wc_unsupported(const char *method, const char *what) {
   char message[256];
   int n = snprintf(message, sizeof message, "crypto.subtle.%s with %s is not supported yet", method,
                    what);
@@ -113,7 +111,7 @@ static void scr_wc_unsupported(const char *method, const char *what) {
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)n, "SC2020");
 }
 
-static void scr_wc_unsupported_algorithm(const char *method, const char *name) {
+void scr_wc_unsupported_algorithm(const char *method, const char *name) {
   char what[96];
   snprintf(what, sizeof what, "the %s algorithm", name);
   scr_wc_unsupported(method, what);
@@ -123,7 +121,7 @@ static void scr_wc_unsupported_algorithm(const char *method, const char *name) {
  * Each answers NULL/false with the TypeError pending. `prefix` is
  * "Failed to execute '<method>' on 'SubtleCrypto'". */
 
-static bool scr_wc_is_object(const ScrDyn *v) {
+bool scr_wc_is_object(const ScrDyn *v) {
   switch (v->kind) {
   case SCR_DYN_UNDEF:
   case SCR_DYN_NULL:
@@ -139,14 +137,14 @@ static bool scr_wc_is_object(const ScrDyn *v) {
 }
 
 /* A typed reference capsule as its plain view; other values retained. */
-static ScrDyn *scr_wc_plain(ScrDyn *v) {
+ScrDyn *scr_wc_plain(ScrDyn *v) {
   if (v->kind == SCR_DYN_TYPED_REF) return scr_dyn_typed_ref_materialize(v);
   return scr_dyn_retain(v);
 }
 
 /* BufferSource: the bytes of a TypedArray, DataView, Buffer or
  * ArrayBuffer as a u8 view (+1). */
-static ScrBytes *scr_wc_buffer_source(const char *prefix, size_t index, ScrDyn *value) {
+ScrBytes *scr_wc_buffer_source(const char *prefix, size_t index, ScrDyn *value) {
   ScrDyn *plain = scr_wc_plain(value);
   if (!plain) return NULL;
   ScrBytes *view = NULL;
@@ -163,14 +161,14 @@ static ScrBytes *scr_wc_buffer_source(const char *prefix, size_t index, ScrDyn *
 }
 
 /* DOMString conversion (+1). */
-static ScrStr *scr_wc_dom_string(const ScrDyn *value) { return scr_dyn_string_coerce_js(value); }
+ScrStr *scr_wc_dom_string(const ScrDyn *value) { return scr_dyn_string_coerce_js(value); }
 
 static const char *const scr_wc_key_formats[] = {
     "raw", "raw-public", "raw-seed", "raw-secret", "raw-private", "pkcs8", "spki", "jwk",
 };
 
 /* KeyFormat: the canonical enum spelling, or NULL. */
-static const char *scr_wc_key_format(const char *prefix, ScrDyn *value) {
+const char *scr_wc_key_format(const char *prefix, ScrDyn *value) {
   ScrStr *s = scr_wc_dom_string(value);
   if (!s) return NULL;
   for (size_t i = 0; i < SCR_WC_COUNT(scr_wc_key_formats); i++) {
@@ -188,15 +186,14 @@ static const char *scr_wc_key_format(const char *prefix, ScrDyn *value) {
 }
 
 /* Node's canonical usage order; the bit is the index. */
-static const char *const scr_wc_usages[] = {
+const char *const scr_wc_usages[] = {
     "encrypt",        "decrypt",         "sign",           "verify",
     "deriveKey",      "deriveBits",      "wrapKey",        "unwrapKey",
     "encapsulateKey", "encapsulateBits", "decapsulateKey", "decapsulateBits",
 };
-enum { SCR_WC_USAGE_SIGN = 1u << 2, SCR_WC_USAGE_VERIFY = 1u << 3 };
 
 /* sequence<KeyUsage> over an array: the usage mask (-1 on failure). */
-static long scr_wc_key_usages(const char *prefix, size_t index, ScrDyn *value) {
+long scr_wc_key_usages(const char *prefix, size_t index, ScrDyn *value) {
   ScrDyn *plain = scr_wc_plain(value);
   if (!plain) return -1;
   if (plain->kind != SCR_DYN_ARR) {
@@ -245,9 +242,9 @@ typedef struct {
   double length;
 } ScrWcAlgorithm;
 
-static const char scr_wc_normalize_prefix[] = "Failed to normalize algorithm";
+const char scr_wc_normalize_prefix[] = "Failed to normalize algorithm";
 
-static void scr_wc_missing_member(const char *dict, const char *member) {
+void scr_wc_missing_member(const char *dict, const char *member) {
   scr_wc_type_error("ERR_MISSING_OPTION",
                     "%s: passed algorithm cannot be converted to '%s' because '%s' is required in "
                     "'%s'.",
@@ -255,7 +252,7 @@ static void scr_wc_missing_member(const char *dict, const char *member) {
 }
 
 /* Reads `key` off an algorithm dictionary (+1; undefined when absent). */
-static ScrDyn *scr_wc_member(const ScrDyn *dict, const char *key) {
+ScrDyn *scr_wc_member(const ScrDyn *dict, const char *key) {
   if (dict->kind != SCR_DYN_OBJ) return scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *v = scr_dyn_obj_read(dict, key, strlen(key));
   return v ? v : scr_dyn_retain(scr_dyn_undefined());
@@ -264,7 +261,7 @@ static ScrDyn *scr_wc_member(const ScrDyn *dict, const char *key) {
 /* The name an AlgorithmIdentifier carries (+1), with the Algorithm
  * dictionary's missing-name TypeError. `dict` names the dictionary the
  * value converts to. */
-static ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
+ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
   if (!scr_wc_is_object(identifier)) return scr_wc_dom_string(identifier);
   ScrDyn *plain = scr_wc_plain(identifier);
   if (!plain) return NULL;
@@ -279,7 +276,7 @@ static ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
 
 /* The digest a HashAlgorithmIdentifier names: canonical name, or NULL
  * with NotSupportedError / the SC2020 refusal pending. */
-static const char *scr_wc_digest_algorithm(ScrDyn *identifier, const char *method) {
+const char *scr_wc_digest_algorithm(ScrDyn *identifier, const char *method) {
   ScrStr *name = scr_wc_algorithm_name(identifier, "Algorithm");
   if (!name) return NULL;
   const char *canonical = scr_wc_lookup(scr_wc_digest_names, SCR_WC_COUNT(scr_wc_digest_names), name);
@@ -436,10 +433,10 @@ static ScrCryptoKey *scr_crypto_key_of(const ScrDyn *value) {
 
 bool scr_webcrypto_is_crypto_key(const ScrDyn *value) {
   if (value->kind == SCR_DYN_TYPED_REF) return false;
-  return scr_crypto_key_of(value) != NULL;
+  return scr_crypto_key_of(value) != NULL || (scr_wc_asymmetric && scr_wc_asymmetric->is_key(value));
 }
 
-static ScrDyn *scr_wc_cstr(const char *s) {
+ScrDyn *scr_wc_cstr(const char *s) {
   ScrStr *str = scr_str_new(s, strlen(s));
   ScrDyn *out = scr_dyn_new_str(str);
   scr_str_release(str);
@@ -567,7 +564,43 @@ static ScrDyn *scr_crypto_key_new(const unsigned char *data, size_t len, const c
  * Each takes its argument vector as one dyn array (borrowed) and answers
  * a +1 promise. */
 
-static ScrPromise *scr_wc_rejected(void) {
+const ScrWcAsymmetric *scr_wc_asymmetric = NULL;
+
+static const char *const scr_wc_asymmetric_names[] = {"ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5"};
+
+/* Whether the AlgorithmIdentifier at args[index] names ECDSA,
+ * RSASSA-PKCS1-v1_5, RSA-PSS or Ed25519, read without side effects or errors: a
+ * string, or the name member of an object (a statically typed one through
+ * its plain view). A value that does not read cleanly takes the HMAC path,
+ * which reports its errors. */
+static const char *scr_wc_asymmetric_name(const ScrDyn *args, size_t index) {
+  if ((size_t)scr_dyn_arr_len(args) <= index) return NULL;
+  ScrDyn *identifier = scr_dyn_arr_at(args, (double)index);
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) scr_exc_clear();
+  const char *found = NULL;
+  if (plain) {
+    const ScrDyn *name = plain;
+    if (plain->kind == SCR_DYN_OBJ) name = scr_dyn_obj_get(plain, "name", 4);
+    if (name && name->kind == SCR_DYN_STR)
+      found = scr_wc_lookup(scr_wc_asymmetric_names, SCR_WC_COUNT(scr_wc_asymmetric_names),
+                            name->v.str);
+    scr_dyn_release(plain);
+  }
+  scr_dyn_release(identifier);
+  return found;
+}
+
+/* The asymmetric algorithms run in scr_webcrypto_pki.c, which the compiler
+ * links when a string literal in the program names one of them. */
+static ScrPromise *scr_wc_asymmetric_missing(const char *method, const char *name) {
+  char what[160];
+  snprintf(what, sizeof what, "the %s algorithm named only by a computed string", name);
+  scr_wc_unsupported(method, what);
+  return scr_wc_rejected();
+}
+
+ScrPromise *scr_wc_rejected(void) {
   ScrPromise *p = scr_promise_new();
   scr_promise_reject_pending(p);
   return p;
@@ -575,7 +608,7 @@ static ScrPromise *scr_wc_rejected(void) {
 
 /* The argument count check every method starts with (after the receiver
  * check the compiler's call shape already guarantees). */
-static bool scr_wc_required(const char *prefix, const ScrDyn *args, size_t required) {
+bool scr_wc_required(const char *prefix, const ScrDyn *args, size_t required) {
   size_t argc = (size_t)scr_dyn_arr_len(args);
   if (argc >= required) return true;
   scr_wc_type_error("ERR_MISSING_ARGS", "%s: %zu arguments required, but only %zu present.", prefix,
@@ -583,15 +616,12 @@ static bool scr_wc_required(const char *prefix, const ScrDyn *args, size_t requi
   return false;
 }
 
-typedef struct {
-  ScrDyn *v[5];
-} ScrWcArgs;
 
-static void scr_wc_args_take(ScrWcArgs *a, const ScrDyn *args, size_t n) {
+void scr_wc_args_take(ScrWcArgs *a, const ScrDyn *args, size_t n) {
   for (size_t i = 0; i < n; i++) a->v[i] = scr_dyn_arr_at(args, (double)i);
 }
 
-static void scr_wc_args_drop(ScrWcArgs *a, size_t n) {
+void scr_wc_args_drop(ScrWcArgs *a, size_t n) {
   for (size_t i = 0; i < n; i++) scr_dyn_release(a->v[i]);
 }
 
@@ -681,6 +711,11 @@ done:
 }
 
 ScrPromise *scr_webcrypto_import_key(ScrDyn *args) {
+  const char *asymmetric = scr_wc_asymmetric_name(args, 2);
+  if (asymmetric) {
+    return scr_wc_asymmetric ? scr_wc_asymmetric->import_key(args)
+                             : scr_wc_asymmetric_missing("importKey", asymmetric);
+  }
   ScrDyn *key = scr_wc_import(args);
   if (!key) return scr_wc_rejected();
   return scr_promise_settled_ref(key, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
@@ -706,7 +741,8 @@ static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, unsigned char ma
     scr_str_release(s);
   }
   ScrCryptoKey *key = scr_crypto_key_of(a.v[1]);
-  if (!key) {
+  bool asymmetric_key = !key && scr_wc_asymmetric && scr_wc_asymmetric->is_key(a.v[1]);
+  if (!key && !asymmetric_key) {
     scr_wc_type_error("ERR_INVALID_ARG_TYPE", "%s: 2nd argument is not of type CryptoKey.", prefix);
     goto done;
   }
@@ -722,6 +758,10 @@ static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, unsigned char ma
     goto done;
   if (strcmp(algorithm.name, "HMAC") != 0) {
     scr_wc_unsupported_algorithm(method, algorithm.name);
+    goto done;
+  }
+  if (asymmetric_key) {
+    scr_throw_domex("InvalidAccessError", "Key algorithm mismatch");
     goto done;
   }
   if (!(key->usages & (verify ? SCR_WC_USAGE_VERIFY : SCR_WC_USAGE_SIGN))) {
@@ -744,6 +784,11 @@ done:
 }
 
 ScrPromise *scr_webcrypto_sign(ScrDyn *args) {
+  const char *asymmetric = scr_wc_asymmetric_name(args, 0);
+  if (asymmetric) {
+    return scr_wc_asymmetric ? scr_wc_asymmetric->sign(args)
+                             : scr_wc_asymmetric_missing("sign", asymmetric);
+  }
   unsigned char mac[64];
   size_t mac_len = 0;
   if (!scr_wc_sign_verify(args, false, mac, &mac_len, NULL)) return scr_wc_rejected();
@@ -766,6 +811,11 @@ static void scr_wc_settle_verified(ScrClosure *cb, ScrError *error, ScrBytes *va
 }
 
 ScrPromise *scr_webcrypto_verify(ScrDyn *args) {
+  const char *asymmetric = scr_wc_asymmetric_name(args, 0);
+  if (asymmetric) {
+    return scr_wc_asymmetric ? scr_wc_asymmetric->verify(args)
+                             : scr_wc_asymmetric_missing("verify", asymmetric);
+  }
   unsigned char mac[64];
   size_t mac_len = 0;
   ScrBytes *signature = NULL;
@@ -826,4 +876,54 @@ done:
   scr_crypto_defer_bytes(out, NULL, scr_crypto_promise_callback(p),
                          scr_crypto_promise_settle_array_buffer);
   return p;
+}
+
+/* generateKey(algorithm, extractable, keyUsages): ECDSA,
+ * RSASSA-PKCS1-v1_5 and RSA-PSS key pairs (scr_webcrypto_pki.c); other
+ * recognized algorithms are refused after Node's argument conversions. */
+ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
+  const char *asymmetric = scr_wc_asymmetric_name(args, 0);
+  if (asymmetric) {
+    return scr_wc_asymmetric ? scr_wc_asymmetric->generate_key(args)
+                             : scr_wc_asymmetric_missing("generateKey", asymmetric);
+  }
+  static const char prefix[] = "Failed to execute 'generateKey' on 'SubtleCrypto'";
+  if (!scr_wc_required(prefix, args, 3)) return scr_wc_rejected();
+  ScrWcArgs a;
+  scr_wc_args_take(&a, args, 3);
+  bool converted = true;
+  if (!scr_wc_is_object(a.v[0])) {
+    ScrStr *str = scr_wc_dom_string(a.v[0]);
+    if (str) scr_str_release(str);
+    else converted = false;
+  }
+  if (converted && scr_wc_key_usages(prefix, 2, a.v[2]) >= 0) {
+    ScrStr *name = scr_wc_algorithm_name(a.v[0], "Algorithm");
+    if (name) {
+      const char *known = scr_wc_lookup(scr_wc_import_names, SCR_WC_COUNT(scr_wc_import_names), name);
+      scr_str_release(name);
+      if (!known) scr_throw_domex("NotSupportedError", "Unrecognized algorithm name");
+      else scr_wc_unsupported_algorithm("generateKey", known);
+    }
+  }
+  scr_wc_args_drop(&a, 3);
+  return scr_wc_rejected();
+}
+
+/* exportKey(format, key): ECDSA and RSA keys (scr_webcrypto_pki.c); HMAC
+ * keys are refused after Node's argument conversions. */
+ScrPromise *scr_webcrypto_export_key(ScrDyn *args) {
+  static const char prefix[] = "Failed to execute 'exportKey' on 'SubtleCrypto'";
+  if (!scr_wc_required(prefix, args, 2)) return scr_wc_rejected();
+  ScrWcArgs a;
+  scr_wc_args_take(&a, args, 2);
+  ScrPromise *result = NULL;
+  if (scr_wc_key_format(prefix, a.v[0])) {
+    if (scr_wc_asymmetric && scr_wc_asymmetric->is_key(a.v[1])) result = scr_wc_asymmetric->export_key(args);
+    else if (scr_crypto_key_of(a.v[1])) scr_wc_unsupported("exportKey", "HMAC keys");
+    else
+      scr_wc_type_error("ERR_INVALID_ARG_TYPE", "%s: 2nd argument is not of type CryptoKey.", prefix);
+  }
+  scr_wc_args_drop(&a, 2);
+  return result ? result : scr_wc_rejected();
 }

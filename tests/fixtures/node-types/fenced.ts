@@ -69,11 +69,11 @@ http2.createSecureServer({
 http2.createSecureServer({ allowHTTP1: true, cert: "pem", key: "pem", streamResetBurst: 1 + 0 });
 http2.connect("https://localhost");
 /* The crypto surface beyond the lowered slice (randomness, the hash
- * chain, the introspection statics): asymmetric-key operations name the
- * missing public-key stack, symmetric ciphers the missing cipher stack,
- * prime checks theirs, and setFips the FIPS truth (getFips() lowers to 0). */
-import { checkPrimeSync, createCipheriv, generateKeyPair, setFips } from "node:crypto";
-generateKeyPair("rsa", { modulusLength: 2048 }, () => {});
+ * chain, the introspection statics): Diffie-Hellman names the lowered
+ * asymmetric surface, symmetric ciphers the missing cipher stack, prime
+ * checks theirs, and setFips the FIPS truth (getFips() lowers to 0). */
+import { checkPrimeSync, createCipheriv, createDiffieHellman, setFips } from "node:crypto";
+createDiffieHellman(512);
 createCipheriv("aes-128-ccm", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
 checkPrimeSync(7n);
 setFips(false);
@@ -103,9 +103,9 @@ cipherStream.on("data", () => {});
 import { createECDH } from "node:crypto";
 createECDH("sect163k1");
 createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
-/* WebCrypto beyond the HMAC slice: @types/node declares the whole
- * SubtleCrypto surface, and the methods outside importKey, sign, verify
- * and digest fence by name. */
+/* WebCrypto beyond the lowered methods: @types/node declares the whole
+ * SubtleCrypto surface, and the methods outside generateKey, importKey,
+ * exportKey, sign, verify and digest fence by name. */
 async function encryptWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
   await crypto.subtle.encrypt({ name: "AES-GCM", iv: new Uint8Array(12) }, key, new Uint8Array(1));
 }

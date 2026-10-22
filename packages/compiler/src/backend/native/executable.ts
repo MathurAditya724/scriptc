@@ -114,6 +114,7 @@ interface RuntimeUnitContext {
   tlsCa: boolean;
   cipher: boolean;
   ecdh: boolean;
+  pki: boolean;
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
   tlsArchive: string | null;
@@ -297,6 +298,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.foreignFfi, "scr_ffi_queue.c"),
   unit((u) => u.opts.nodeTest, "scr_test.c"),
   unit((u) => u.opts.webcrypto, "scr_webcrypto.c"),
+  unit((u) => u.opts.webcrypto === true && u.opts.pki === true, "scr_webcrypto_pki.c"),
+  unit((u) => u.opts.pki === true && u.opts.ed25519 === true, "scr_ed25519.c"),
   // The CA-store unit rides its own gate OR the tls one: scr_tls.c
   // references its default-set override unconditionally.
   unit((u) => u.tlsCa, "scr_tls_ca.c"),
@@ -308,6 +311,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           ...(u.tls ? [u.rt(join(u.rtDir, "scr_tls.c"))] : []),
           ...(u.cipher ? [u.rt(join(u.rtDir, "scr_cipher.c"))] : []),
           ...(u.ecdh ? [u.rt(join(u.rtDir, "scr_ecdh.c"))] : []),
+          ...(u.pki ? [u.rt(join(u.rtDir, "scr_pki.c"))] : []),
           u.tlsArchive,
           // mbedTLS's win32 entropy poll is BCryptGenRandom (bcrypt.h).
           // The unconditional win32 libs above do not carry it.
@@ -375,7 +379,8 @@ export async function compileCInternal(
   // Symmetric ciphers and ECDH link the same mbedTLS archive as TLS.
   const cipher = opts.cipher ?? false;
   const ecdh = opts.ecdh ?? false;
-  const mbedtls = tls || cipher || ecdh;
+  const pki = opts.pki ?? false;
+  const mbedtls = tls || cipher || ecdh || pki;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -733,6 +738,7 @@ export async function compileCInternal(
       tlsCa,
       cipher,
       ecdh,
+      pki,
       lreObjects,
       zlibObjects,
       tlsArchive,

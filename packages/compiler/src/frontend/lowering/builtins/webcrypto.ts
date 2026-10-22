@@ -6,23 +6,27 @@ import { lowerDynObjectLiteral } from "../expressions/object-literals.js";
 import { stdlibGlobalNameOf } from "../surfaces.js";
 import { WEBCRYPTO_DYN_TYPES } from "../../type-mapper.js";
 
-/* WebCrypto's HMAC slice (scr_webcrypto.c): `crypto.subtle.importKey`,
- * `sign`, `verify` and `digest` called on the crypto global (also through
- * globalThis) lower to runtime entry points that take the argument vector
- * as one dyn array and answer a promise, so Web IDL conversion, algorithm
- * normalization and every error stay Node-shaped at run time. CryptoKey
- * values are native handles; their type maps to dyn and their members
- * are handle reads. Other SubtleCrypto methods are refused by name. */
+/* WebCrypto (scr_webcrypto.c, and scr_webcrypto_pki.c for ECDSA, Ed25519,
+ * RSASSA-PKCS1-v1_5 and RSA-PSS): `crypto.subtle.generateKey`,
+ * `importKey`, `exportKey`, `sign`, `verify` and `digest` called on the
+ * crypto global (also through globalThis) lower to runtime entry points
+ * that take the argument vector as one dyn array and answer a promise, so
+ * Web IDL conversion, algorithm normalization and every error stay
+ * Node-shaped at run time. CryptoKey values are native handles; their type
+ * maps to dyn and their members are handle reads. Other SubtleCrypto
+ * methods are refused by name. */
 
 const SUBTLE_LOWERED: ReadonlyMap<string, IrLibFn> = new Map([
+  ["generateKey", "webcrypto.generateKey"],
   ["importKey", "webcrypto.importKey"],
+  ["exportKey", "webcrypto.exportKey"],
   ["sign", "webcrypto.sign"],
   ["verify", "webcrypto.verify"],
   ["digest", "webcrypto.digest"],
 ]);
 
 const SUBTLE_HINT =
-  "the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle";
+  "the native WebCrypto surface is crypto.subtle.importKey('raw', ...) for HMAC keys, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle";
 
 /** Whether `node` is `crypto.subtle` on the WebCrypto global. */
 function isSubtleReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
@@ -50,17 +54,6 @@ export function lowerWebCryptoCall(lowerer: Lowerer, call: ts.CallExpression): I
   }
   if (call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`crypto.subtle.${member} with spread arguments`, call, SUBTLE_HINT);
-  }
-  // JsonWebKey imports are not implemented: a literal 'jwk' format is
-  // refused here (the runtime refuses a computed one).
-  const format = call.arguments.nodes[0];
-  if (
-    member === "importKey" &&
-    format !== undefined &&
-    ts.isStringLiteralLike(format) &&
-    format.text === "jwk"
-  ) {
-    lowerer.noLowering("crypto.subtle.importKey with the 'jwk' key format", format, SUBTLE_HINT);
   }
   const loc = locOf(call);
   const args = call.arguments.nodes.map((arg) =>

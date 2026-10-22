@@ -172,7 +172,8 @@ async function build() {
               ...(unit.source === "scr_regex.c" ? ["-I", quickjs] : []),
               ...(unit.source === "scr_tls.c" ||
               unit.source === "scr_cipher.c" ||
-              unit.source === "scr_ecdh.c"
+              unit.source === "scr_ecdh.c" ||
+              unit.source === "scr_pki.c"
                 ? ["-I", join(mbedtls, "include")]
                 : []),
               ...(unit.source === "scr_zlib.c" || unit.source === "scr_fetch.c"

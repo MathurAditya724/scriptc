@@ -976,4 +976,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.x509ValidFromStr",
   "crypto.x509ValidTo",
   "crypto.x509ValidToStr",
+  "crypto.createPrivateKey",
+  "crypto.createPublicKey",
+  "crypto.generateKeyPairSync",
+  "crypto.generateKeyPairCb",
+  "crypto.signOneshot",
+  "crypto.verifyOneshot",
+  "crypto.createSign",
+  "crypto.createVerify",
 ]);
