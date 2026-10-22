@@ -1049,8 +1049,8 @@ SCR_COLD static void scr_ee_listener_mismatch(const ScrStr *name, bool typed_emi
 }
 
 /* A message emit (scr_emitter_emit_message): listeners with a typed message
- * entry read the message; the others share one decoded argument, made when
- * the first of them runs. */
+ * entry read the message until a listener without one runs; that listener
+ * and every later one share one decoded argument. */
 struct ScrEeMessage {
   const struct ScrMessage *message;
   ScrDyn *(*decode)(const struct ScrMessage *);
@@ -1101,7 +1101,10 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
         continue;
       }
     }
-    if (message && e->flex_message && e->flex_message(e->flex_cb, message->message)) {
+    /* Once a listener has the decoded value, later listeners read that
+     * value: an earlier listener may have changed it, as in Node. */
+    if (message && !message->decoded && e->flex_message &&
+        e->flex_message(e->flex_cb, message->message)) {
       scr_ee_entry_unref(e);
       continue;
     }

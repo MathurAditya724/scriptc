@@ -4681,8 +4681,8 @@ export class LlDyn {
 
   /** Whether a message reader can build T: numbers, booleans and strings;
    * records of them with only declared fields, none of union type; and
-   * boxed unions of those arms and null or undefined, with at most one
-   * number, boolean and string arm. */
+   * boxed unions of those arms and null or undefined without a literal
+   * discriminator, with at most one number, boolean and string arm. */
   private messageReadable(t: IrType, seen: Set<string>): boolean {
     switch (t.kind) {
       case "f64":
@@ -4706,7 +4706,9 @@ export class LlDyn {
       }
       case "union": {
         const def = this.host.unionsById.get(t.unionId);
-        if (!def || this.host.nullableUnions.has(t.unionId)) return false;
+        // A discriminated union's checked conversion also tests the arm's
+        // literal discriminator, which the readers do not.
+        if (!def || def.discriminant || this.host.nullableUnions.has(t.unionId)) return false;
         const scalars = new Set<string>();
         for (const arm of def.arms) {
           if (arm.kind === "nullT" || arm.kind === "undefinedT") continue;
