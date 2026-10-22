@@ -711,17 +711,18 @@ function counterStep(s: IrStmt): { id: string; k: number; wraps: boolean } | nul
   return { id: s.localId, k: value.right.value, wraps };
 }
 
-/** Typed-array accesses of a while loop that happen at a counter below a
- * loop-invariant bound. A counter is a number local that the loop changes
- * only by positive integer increments, written as statements of the body,
- * of its blocks and branches, or of nested while loops. The condition of
- * the loop, an `if` or a `&&` chain that compares the counter below a bound
- * (`while (pos < end && bytes[pos] === 32) pos++`) makes it below that
- * bound until the next increment on the path. The counter starts at its
- * entry value and only grows (a `| 0` increment never wraps when every
- * bound is at most 2^31 minus the increments), so an access at `counter +
- * d` is in bounds for the whole loop when the entry value is at least `-d`
- * and `bound + d < length` (`+ 1` for `<=`). */
+/** Typed-array and string accesses of a while loop that happen at a
+ * counter below a loop-invariant bound. A counter is a number local that
+ * the loop changes only by positive integer increments, written as
+ * statements of the body, of its blocks and branches, or of nested while
+ * loops. The condition of the loop, an `if` or a `&&` chain that compares
+ * the counter below a bound (`while (pos < end && bytes[pos] === 32)
+ * pos++`, or `s.charCodeAt(pos)` of a string) makes it below that bound
+ * until the next increment on the path. The counter starts at its entry
+ * value and only grows (a `| 0` increment never wraps when every bound is
+ * at most 2^31 minus the increments), so an access at `counter + d` is in
+ * bounds for the whole loop when the entry value is at least `-d` and
+ * `bound + d < length` (`+ 1` for `<=`). */
 function findWhileCounterAccesses(
   loop: IrStmt & { kind: "while" },
   host: {
@@ -831,6 +832,12 @@ function findWhileCounterAccesses(
           : undefined;
       if (index) record(e, index, clean);
     }
+    if (
+      e.kind === "strIntrinsic" &&
+      (e.method === "charCodeAt" || e.method === "charAt") &&
+      e.args[0]
+    )
+      record(e, e.args[0], clean);
     if (e.kind === "logical" && e.op === "&&") {
       expr(e.left, clean);
       expr(e.right, withFacts(clean, e.left));
