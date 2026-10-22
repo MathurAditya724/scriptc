@@ -39,6 +39,7 @@ import {
   MAP_ITER_NUM_DECL,
   SCR_MAP_NUM_DEAD,
   NUMBER_MAP_ENTRY_DECL,
+  STRING_MAP_ENTRY_C_DECL,
   STRING_MAP_ENTRY_DECL,
 } from "./map-number-lookup.js";
 import { RUNTIME_ABI_MARKER } from "../runtime-abi.js";
@@ -465,6 +466,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // length fields 15 and 16.
     ...(emitter.decls.has(NUMBER_MAP_ENTRY_DECL) ||
     emitter.decls.has(STRING_MAP_ENTRY_DECL) ||
+    emitter.decls.has(STRING_MAP_ENTRY_C_DECL) ||
     emitter.decls.has(MAP_ITER_DECL) ||
     emitter.decls.has(MAP_ITER_NUM_DECL) ||
     emitter.decls.has(MAP_SIZE_DECL)
@@ -481,6 +483,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     emitter.decls.has(MAP_ITER_DECL) ||
     emitter.decls.has(MAP_ITER_NUM_DECL)
       ? [`%ScrMapEntry = type { i64, i64, i64 }`, `%ScrMapNumEntry = type { i64, i64 }`]
+      : []),
+    // A compact-value map's { key, hash, val } entry (scr_map.h ScrMapCEntry):
+    // a 32-bit hash and the value as an address over 8.
+    ...(emitter.decls.has(STRING_MAP_ENTRY_C_DECL)
+      ? [`%ScrMapCEntry = type { i64, i32, i32 }`]
       : []),
     // The runtime error prefix { rc, vt, name, message, code, cause } and the
     // class-object shape { rc, pre, post, ctor, name } — field reads on
@@ -548,7 +555,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ``,
     `@scr_error_vts = external ${tl}global [${RUNTIME_ERROR_CLASSES.size} x %ScrVt]`,
     `declare void @scr_init()`,
-    ...(emitter.usesCompactRefs ? [`declare void @scr_plr_init()`] : []),
+    ...(emitter.compactRegion ? [`declare void @scr_plr_init()`] : []),
     `declare void @scr_lib_init(i32, ptr)`,
     ...(emitter.mod.workers ? [`declare void @scr_runtime_workers_v8()`] : []),
     ...(emitter.stackChecks?.size ? [`declare void @scr_stack_guard_init()`] : []),
@@ -843,7 +850,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `  call void @scr_init()`,
     // Compressed fields hold addresses in the program-lifetime region, which
     // is reserved below 32 GiB before compiled code runs.
-    ...(emitter.usesCompactRefs ? [`  call void @scr_plr_init()`] : []),
+    ...(emitter.compactRegion ? [`  call void @scr_plr_init()`] : []),
     // Each context (the main thread, every worker) installs its stack
     // guard before running compiled code that checks it.
     ...(emitter.stackChecks?.size ? [`  call void @scr_stack_guard_init()`] : []),
@@ -1316,36 +1323,69 @@ export function helperDefs(emitter: LlEmitter): string[] {
   // and the filter reads its bits 44..55, which are the capacity word's
   // own. A key without a cached hash, and every possible hit, take the
   // runtime lookup.
-  if (emitter.decls.has(STRING_MAP_ENTRY_DECL)) {
+  // A compact-value map's lookup (sc_map_entry_str_c) tests the same filter
+  // and calls scr_map_entry_str_c; its iteration step (sc_map_iter_entry_c)
+  // reads 16-byte entries and their 32-bit hash.
+  const stringMapEntry = (helper: string, runtime: string): string[] => [
+    `define internal ptr @${helper}(ptr %m, ptr %k) ${FN_ATTRS} {`,
+    `entry:`,
+    ...(emitter.sizeType === "i64"
+      ? [
+          `  %fp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 10`,
+          `  %filter = load i64, ptr %fp`,
+          `  %capp = getelementptr inbounds %ScrStr, ptr %k, i32 0, i32 2`,
+          `  %cap = load i64, ptr %capp`,
+          `  %cached = icmp uge i64 %cap, 4294967296`,
+          `  br i1 %cached, label %test, label %slow`,
+          `test:`,
+          `  %s1 = lshr i64 %cap, 44`,
+          `  %i1 = and i64 %s1, 63`,
+          `  %b1 = shl i64 1, %i1`,
+          `  %s2 = lshr i64 %cap, 50`,
+          `  %i2 = and i64 %s2, 63`,
+          `  %b2 = shl i64 1, %i2`,
+          `  %bits = or i64 %b1, %b2`,
+          `  %have = and i64 %filter, %bits`,
+          `  %maybe = icmp eq i64 %have, %bits`,
+          `  br i1 %maybe, label %slow, label %absent`,
+          `absent:`,
+          `  ret ptr null`,
+        ]
+      : [`  br label %slow`]),
+    `slow:`,
+    `  %r = call ptr @${runtime}(ptr %m, ptr %k)`,
+    `  ret ptr %r`,
+    `}`,
+    ``,
+  ];
+  if (emitter.decls.has(STRING_MAP_ENTRY_DECL))
+    defs.push(...stringMapEntry("sc_map_entry_str", "scr_map_entry_str"));
+  if (emitter.decls.has(STRING_MAP_ENTRY_C_DECL)) {
+    const sz = emitter.sizeType;
     defs.push(
-      `define internal ptr @sc_map_entry_str(ptr %m, ptr %k) ${FN_ATTRS} {`,
+      ...stringMapEntry("sc_map_entry_str_c", "scr_map_entry_str_c"),
+      `define internal ptr @sc_map_iter_entry_c(ptr %m, double %i) ${FN_ATTRS} {`,
       `entry:`,
-      ...(emitter.sizeType === "i64"
-        ? [
-            `  %fp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 10`,
-            `  %filter = load i64, ptr %fp`,
-            `  %capp = getelementptr inbounds %ScrStr, ptr %k, i32 0, i32 2`,
-            `  %cap = load i64, ptr %capp`,
-            `  %cached = icmp uge i64 %cap, 4294967296`,
-            `  br i1 %cached, label %test, label %slow`,
-            `test:`,
-            `  %s1 = lshr i64 %cap, 44`,
-            `  %i1 = and i64 %s1, 63`,
-            `  %b1 = shl i64 1, %i1`,
-            `  %s2 = lshr i64 %cap, 50`,
-            `  %i2 = and i64 %s2, 63`,
-            `  %b2 = shl i64 1, %i2`,
-            `  %bits = or i64 %b1, %b2`,
-            `  %have = and i64 %filter, %bits`,
-            `  %maybe = icmp eq i64 %have, %bits`,
-            `  br i1 %maybe, label %slow, label %absent`,
-            `absent:`,
-            `  ret ptr null`,
-          ]
-        : [`  br label %slow`]),
-      `slow:`,
-      `  %r = call ptr @scr_map_entry_str(ptr %m, ptr %k)`,
-      `  ret ptr %r`,
+      `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+      `  %n = load i32, ptr %np`,
+      `  %nf = uitofp i32 %n to double`,
+      `  %lo = fcmp oge double %i, 0.0`,
+      `  %hi = fcmp olt double %i, %nf`,
+      `  %in = and i1 %lo, %hi`,
+      `  br i1 %in, label %load, label %none`,
+      `load:`,
+      `  %ix = fptoui double %i to ${sz}`,
+      `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+      `  %entries = load ptr, ptr %ep`,
+      `  %e = getelementptr inbounds %ScrMapCEntry, ptr %entries, ${sz} %ix`,
+      `  %hp = getelementptr inbounds %ScrMapCEntry, ptr %e, i32 0, i32 1`,
+      `  %h = load i32, ptr %hp`,
+      `  %live = icmp ne i32 %h, 0`,
+      `  br i1 %live, label %yes, label %none`,
+      `yes:`,
+      `  ret ptr %e`,
+      `none:`,
+      `  ret ptr null`,
       `}`,
       ``,
     );

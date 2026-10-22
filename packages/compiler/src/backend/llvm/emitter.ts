@@ -654,9 +654,11 @@ export class LlEmitter {
    * 32-bit references to compact class instances (LlClassMeta.compressed):
    * loadField/loadRef decode them and storeField/storeRef encode them. */
   readonly compressedFieldPtrs = new Set<string>();
-  /** Whether a class has compressed fields: main reserves the region before
-   * compiled code runs (scr_plr_init). */
-  usesCompactRefs = false;
+  /** Compact class instances live in the program-lifetime region below
+   * 32 GiB (LlvmTargetOptions.lowRegion, and the program has compact
+   * classes): main reserves it before compiled code runs (scr_plr_init), and
+   * fields and arrays of compactRefType hold 32-bit references. */
+  compactRegion = false;
 
   /** Native class fields with different property names cannot occupy the
    * same slot of one object. Inherited views of the same property share a
@@ -1489,6 +1491,8 @@ export class LlEmitter {
       }
     }
     this.shapeHost = {
+      compactArrayElem: (elem) => this.compactArrayElem(elem),
+      compactRegion: () => this.compactRegion,
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
       tracedShapes: this.tracedShapes,
@@ -1618,22 +1622,19 @@ export class LlEmitter {
           ? (cls, i, isCompact) => {
               const f = cls.fields[i]!;
               if (this.inlineUnions.classField(cls.name, f.name)) return false;
-              const t = f.type;
-              if (t.kind === "object") return isCompact(t.className);
-              if (t.kind !== "union") return false;
-              const single = this.nullableUnions.single(t.unionId);
-              if (single !== null)
-                return (
-                  single.nullTag < 0 &&
-                  single.arm.kind === "object" &&
-                  isCompact(single.arm.className)
-                );
-              const nullable = this.nullableFields.get(cls.name, f.name);
+              if (this.compactRefType(f.type, isCompact)) return true;
+              const nullable =
+                f.type.kind === "union" && this.nullableUnions.single(f.type.unionId) === null
+                  ? this.nullableFields.get(cls.name, f.name)
+                  : null;
               return nullable !== null && isCompact(nullable.arm.className);
             }
           : undefined,
       );
-    this.usesCompactRefs = [...this.classMeta.values()].some((m) => m.compressed.some(Boolean));
+    this.compactRegion =
+      mod.lib === undefined &&
+      options.lowRegion === true &&
+      [...this.classMeta.values()].some((m) => m.compact);
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -2245,7 +2246,7 @@ export class LlEmitter {
       B.condBr(thrown, rejected, clean);
       B.startBlock(clean);
       if (acc === "ref") this.toHeap(value);
-      this.arrPush(values, acc, value.name);
+      this.arrPush(values, acc, value.name, elem);
       B.br(next);
       B.startBlock(rejected);
       const promise = B.tmp();
@@ -3598,6 +3599,30 @@ export class LlEmitter {
     return { ptr: p, type, inline: this.inlineUnions.classField(className, field), compressed };
   }
 
+  /** Whether values of `t` are NULL or a compact class instance: `C`,
+   * `C | undefined` or `C | null` for a compact class `C`. `C | null |
+   * undefined` is not: its null is a sentinel outside the region. */
+  compactRefType(
+    t: IrType,
+    isCompact: (className: string) => boolean = (name) =>
+      this.classMeta.get(name)?.compact === true,
+  ): boolean {
+    if (t.kind === "object") return isCompact(t.className);
+    if (t.kind !== "union") return false;
+    const single = this.nullableUnions.single(t.unionId);
+    return (
+      single !== null &&
+      single.nullTag < 0 &&
+      single.arm.kind === "object" &&
+      isCompact(single.arm.className)
+    );
+  }
+
+  /** Whether arrays of `elem` hold 32-bit references (SCR_ELEM_CREF). */
+  compactArrayElem(elem: IrType): boolean {
+    return this.compactRegion && this.compactRefType(elem);
+  }
+
   /** Loads the reference a field pointer addresses: a pointer, or the
    * decoded 32-bit reference of a compressed field (compressedFieldPtrs).
    * `tagged`: the load carries the field's alias tags. */
@@ -4045,7 +4070,7 @@ export class LlEmitter {
     const acc = boxAccess(t);
     const cell = B.tmp();
     B.line(`${cell} = ${arrNewCall(this.shapeHost, t, "1")} ; TDZ cell`);
-    this.arrPush(cell, acc === "bool" ? "bool" : "f64", value);
+    this.arrPush(cell, acc === "bool" ? "bool" : "f64", value, null);
     this.declare(`declare void @scr_box_set_ref(ptr, ptr)`);
     B.line(`call void @scr_box_set_ref(ptr ${box}, ptr ${cell})`);
   }
@@ -6195,8 +6220,8 @@ export class LlEmitter {
     return tagInSet(this, uName, unionId, tags);
   }
 
-  arrPush(arr: string, acc: "f64" | "bool" | "ref", value: string): string {
-    return arrPush(this, arr, acc, value);
+  arrPush(arr: string, acc: "f64" | "bool" | "ref", value: string, element: IrType | null): string {
+    return arrPush(this, arr, acc, value, element);
   }
 
   emitArrayCopyLoop(dst: string, src: string, acc: "f64" | "bool" | "ref"): void {

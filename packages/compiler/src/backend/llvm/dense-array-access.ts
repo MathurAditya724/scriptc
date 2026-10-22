@@ -27,6 +27,8 @@ import {
   storeArrCount,
 } from "./common.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
+import { compactRefLoadLines, compactRefStoreLines } from "./classes.js";
+import { elemAccess } from "./shapes.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 
 const SCR_ARR_VALUE = 1;
@@ -209,26 +211,40 @@ function statePointer(
   return statePtr;
 }
 
-/** The dense slot type: boolean arrays store one byte per element, every
- * other element kind an 8-byte slot. */
-function slotType(acc: ArrayAccess): "i8" | "i64" {
-  return acc === "bool" ? "i8" : "i64";
+/** How an array's dense slots hold its elements: the access kind, or
+ * `cref` for references to compact class instances (SCR_ELEM_CREF: a 4-byte
+ * slot holding the address over 8; LlEmitter.compactArrayElem). */
+type SlotKind = ArrayAccess | "cref";
+
+function slotKind(host: LlvmEmitterContext, acc: ArrayAccess, element: IrType): SlotKind {
+  return acc === "ref" && host.compactArrayElem(element) ? "cref" : acc;
+}
+
+/** The dense slot type: boolean arrays store one byte per element, compact
+ * references four, every other element kind an 8-byte slot. */
+function slotType(kind: SlotKind): "i8" | "i32" | "i64" {
+  return kind === "bool" ? "i8" : kind === "cref" ? "i32" : "i64";
 }
 
 /** Bytes per dense slot (scr_arr_slot_width). */
-export function slotWidth(acc: ArrayAccess): number {
-  return acc === "bool" ? 1 : 8;
+function slotWidth(kind: SlotKind): number {
+  return kind === "bool" ? 1 : kind === "cref" ? 4 : 8;
+}
+
+/** Bytes per dense slot of an array of `element` (scr_arr_slot_width). */
+export function denseSlotWidth(host: LlvmEmitterContext, element: IrType): number {
+  return slotWidth(slotKind(host, elemAccess(element), element));
 }
 
 function valuePointer(
   host: LlvmEmitterContext,
   guard: Pick<DenseGuard, "offset" | "data">,
-  acc: ArrayAccess,
+  kind: SlotKind,
 ): string {
   const B = host.B;
   const valuePtr = B.tmp();
   B.line(
-    `${valuePtr} = getelementptr inbounds ${slotType(acc)}, ptr ${guard.data}, ${host.sizeType} ${guard.offset}`,
+    `${valuePtr} = getelementptr inbounds ${slotType(kind)}, ptr ${guard.data}, ${host.sizeType} ${guard.offset}`,
   );
   host.markMemoryPointer(valuePtr, "array:elements");
   return valuePtr;
@@ -300,6 +316,7 @@ export function emitDenseArrayGet(
   const B = host.B;
   const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
   const ret = acc === "bool" ? "zeroext i1" : ty;
+  const kind = slotKind(host, acc, element);
   host.declare(`declare ${ret} @${getter}(ptr, double)`);
   if (acc === "ref" && retain && !isRefCounted(element)) {
     const t = B.tmp();
@@ -322,7 +339,7 @@ export function emitDenseArrayGet(
     slow,
     true,
     valueLabel,
-    slotWidth(acc),
+    slotWidth(kind),
     proven,
     induction,
   );
@@ -333,7 +350,7 @@ export function emitDenseArrayGet(
     B.condBr(present, valueLabel, slow);
   }
   B.startBlock(valueLabel);
-  const ptr = valuePointer(host, guard, acc);
+  const ptr = valuePointer(host, guard, kind);
   let fast: string;
   let fastLabel = valueLabel;
   if (acc === "f64") {
@@ -347,7 +364,13 @@ export function emitDenseArrayGet(
   } else {
     const raw = B.tmp(),
       nonnull = B.tmp();
-    B.line(`${raw} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
+    if (kind === "cref") {
+      const ref = B.tmp();
+      B.line(`${ref} = load i32, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
+      for (const line of compactRefLoadLines(ref, raw, `${raw}.r`)) B.line(line.trimStart());
+    } else {
+      B.line(`${raw} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
+    }
     B.line(`${nonnull} = icmp ne ptr ${raw}, null`);
     fastLabel = B.newLabel("arr.get.ref");
     B.condBr(nonnull, fastLabel, slow);
@@ -448,6 +471,7 @@ export function emitDenseArraySet(
 ): void {
   const B = host.B;
   const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
+  const kind = slotKind(host, acc, element);
   const setter = `scr_arr_set_${acc}`;
   host.declare(`declare void @${setter}(ptr, double, ${acc === "bool" ? "i1 zeroext" : ty})`);
   const call = (attrs: string): void =>
@@ -467,7 +491,7 @@ export function emitDenseArraySet(
     slow,
     false,
     filledLabel,
-    slotWidth(acc),
+    slotWidth(kind),
     proven,
   );
   const { offset, len } = guard;
@@ -478,15 +502,20 @@ export function emitDenseArraySet(
       const bits = B.tmp();
       B.line(`${bits} = zext i1 ${value} to i8`);
       B.line(`store i8 ${bits}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    } else if (kind === "cref") {
+      const ref = B.tmp();
+      for (const line of compactRefStoreLines(value, ref, `${ref}.r`)) B.line(line.trimStart());
+      B.line(`store i32 ${ref}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
     } else {
       B.line(`store ptr ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
     }
   };
   const statePtr = statePointer(host, guard);
-  const valuePtr = valuePointer(host, guard, acc);
+  const valuePtr = valuePointer(host, guard, kind);
   let oldState: string | null = null;
   let old: string | null = null;
-  if (acc === "ref") {
+  // Compact instances are never released: a replaced one needs nothing.
+  if (kind === "ref") {
     oldState = B.tmp();
     old = B.tmp();
     B.line(`${oldState} = load i8, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
@@ -537,7 +566,7 @@ export function emitDenseArraySet(
   storeArrCount(host, nextLen, lenPtr, host.fieldAliasAttachment(lenPtr));
   B.br(storedLabel);
   B.startBlock(storedLabel);
-  if (acc === "ref" && oldState && old) {
+  if (kind === "ref" && oldState && old) {
     const hadValue = B.tmp();
     B.line(`${hadValue} = icmp eq i8 ${oldState}, ${SCR_ARR_VALUE}`);
     const releaseLabel = B.newLabel("arr.set.release");
@@ -549,9 +578,9 @@ export function emitDenseArraySet(
   // Below the bound the slot holds a present value: replace it, leaving
   // the state alone, and release a replaced reference after the store.
   B.startBlock(filledLabel);
-  const filledValuePtr = valuePointer(host, guard, acc);
+  const filledValuePtr = valuePointer(host, guard, kind);
   let filledOld: string | null = null;
-  if (acc === "ref") {
+  if (kind === "ref") {
     filledOld = B.tmp();
     B.line(
       `${filledOld} = load ptr, ptr ${filledValuePtr}${host.fieldAliasAttachment(filledValuePtr)}`,
@@ -578,10 +607,12 @@ export function emitDenseArrayPop(
   host: LlvmEmitterContext,
   array: string,
   acc: ArrayAccess,
+  element: IrType,
   empty: string,
   slow: string,
 ): string {
   const B = host.B;
+  const kind = slotKind(host, acc, element);
   const size = host.sizeType;
   const header = (field: number): string => {
     const ptr = B.tmp();
@@ -615,16 +646,23 @@ export function emitDenseArrayPop(
     states = B.tmp();
   B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
   loadArrCount(host, cap, capPtr, host.fieldAliasAttachment(capPtr));
-  scrArrStates(host, states, data, cap, slotWidth(acc));
-  const valuePtr = valuePointer(host, { offset: last, data }, acc);
+  scrArrStates(host, states, data, cap, slotWidth(kind));
+  const valuePtr = valuePointer(host, { offset: last, data }, kind);
   const statePtr = statePointer(host, { offset: last, states });
-  const slotTy = slotType(acc);
+  const slotTy = slotType(kind);
   let raw = B.tmp();
   B.line(`${raw} = load ${slotTy}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   if (slotTy === "i8") {
     const wide = B.tmp();
     B.line(`${wide} = zext i8 ${raw} to i64`);
     raw = wide;
+  } else if (slotTy === "i32") {
+    // The 8-byte slot of a compact reference is its address.
+    const wide = B.tmp(),
+      address = B.tmp();
+    B.line(`${wide} = zext i32 ${raw} to i64`);
+    B.line(`${address} = shl nuw nsw i64 ${wide}, 3`);
+    raw = address;
   }
   B.line(`store ${slotTy} 0, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   B.line(`store i8 0, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
@@ -648,10 +686,12 @@ export function emitDenseArrayPush(
   host: LlvmEmitterContext,
   array: string,
   acc: ArrayAccess,
+  element: IrType | null,
   value: string,
 ): string {
   const B = host.B;
   const size = host.sizeType;
+  const kind = element === null ? acc : slotKind(host, acc, element);
   const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
   const pusher = `scr_arr_push_${acc}`;
   host.declare(`declare double @${pusher}(ptr, ${acc === "bool" ? "i1 zeroext" : ty})`);
@@ -685,16 +725,20 @@ export function emitDenseArrayPush(
   B.line(`${spare} = sub nuw ${size} ${cap}, ${len}`);
   B.line(`${near} = getelementptr inbounds i8, ptr ${data}, ${size} ${spare}`);
   B.line(
-    `${statePtr} = getelementptr inbounds [${slotWidth(acc)} x i8], ptr ${near}, ${size} ${cap}, ${size} -1`,
+    `${statePtr} = getelementptr inbounds [${slotWidth(kind)} x i8], ptr ${near}, ${size} ${cap}, ${size} -1`,
   );
   host.markMemoryPointer(statePtr, "array:present");
-  const valuePtr = valuePointer(host, { offset: len, data }, acc);
+  const valuePtr = valuePointer(host, { offset: len, data }, kind);
   if (acc === "f64") {
     B.line(`store double ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   } else if (acc === "bool") {
     const bits = B.tmp();
     B.line(`${bits} = zext i1 ${value} to i8`);
     B.line(`store i8 ${bits}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  } else if (kind === "cref") {
+    const ref = B.tmp();
+    for (const line of compactRefStoreLines(value, ref, `${ref}.r`)) B.line(line.trimStart());
+    B.line(`store i32 ${ref}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   } else {
     B.line(`store ptr ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   }
