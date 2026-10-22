@@ -1,4 +1,4 @@
-import type { IrExpr, IrLocal, IrStmt } from "../../ir/ir.js";
+import { F64, type IrExpr, type IrLocal, type IrStmt } from "../../ir/ir.js";
 import type { IntegerRange, IntegerRanges } from "../../ir/integer-ranges.js";
 import type { IntegerCountedForLoop } from "../../ir/integer-loops.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
@@ -6,7 +6,8 @@ import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import { emitCountedLoopLimit, emitCountedLoopSafety } from "./counted-loops.js";
-import { emitBytesHeaderLength } from "./expr-bytes.js";
+import { emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
+import { f64Lit } from "./common.js";
 
 type Node = IrExpr | IrStmt;
 type VarRef = IrExpr & { kind: "varRef" };
@@ -20,6 +21,24 @@ interface Term {
 
 interface KeyedTerm extends Term {
   key: string;
+}
+
+/** Every access of `receiver` at a while loop counter `c + d` happens while
+ * `c < bound` (`c <= bound` when `inclusive`) holds and before the counter
+ * advances, so it is in bounds when `bound + slack <= length`. */
+interface BoundedCheck {
+  receiver: number;
+  bound: IrExpr;
+  slack: number;
+}
+
+/** A while loop counter whose entry value the guard tests: an exact
+ * integer of at least `min`. A counter that `| 0` wraps also needs every
+ * bound of its loops at most `wrapLimit`, so that it never reaches 2^31. */
+interface CounterCheck {
+  ref: VarRef;
+  min: number;
+  wrapBounds: { bound: IrExpr; limit: number }[];
 }
 
 /** Every access of `receiver` at a static index range ends below `end + 1`. */
@@ -41,10 +60,21 @@ interface AffineCheck {
 export interface BytesLoopVersion {
   /** Typed-array accesses that are in bounds whenever the guard holds. */
   bounds: ReadonlySet<Node>;
+  /** Worker programs: typed-array accesses whose views the guard proves
+   * thread-owned (no shared storage). */
+  owned: ReadonlySet<Node>;
   /** Root receiver bindings, read once before the loop. */
   receivers: { ref: VarRef; global: boolean }[];
+  /** Receivers the guard requires to have no shared storage. */
+  ownedReceivers: number[];
   fixed: FixedCheck[];
   affine: AffineCheck[];
+  /** While loops: accesses at a counter below a loop-invariant bound. */
+  bounded: BoundedCheck[];
+  counters: CounterCheck[];
+  /** Keys of affine terms the guard tests at run time: exact integers
+   * within GUARDED_TERM. */
+  guarded: ReadonlySet<string>;
   /** The counted loop whose iteration space the affine checks cover. */
   counted: IntegerCountedForLoop | null;
   /** The guard also requires every counter value within [-bound, bound]. */
@@ -66,13 +96,21 @@ export interface BytesLoopFacts {
   initialized: ReadonlySet<string>;
   /** Accesses already proved in bounds without a guard. */
   proven: ReadonlySet<Node>;
+  /** Worker programs: an access of a view that may be shared tests the
+   * view's shared storage first. */
+  workers: boolean;
+  /** Accesses already proved thread-owned by an enclosing version. */
+  owned: ReadonlySet<Node>;
 }
 
 const MAX_COST = 400;
-const MAX_FIXED_END = 2 ** 32;
+const MAX_FIXED_END = 2 ** 31;
 const MAX_CHECKS = 8;
 const MAX_OFFSET = 2 ** 31;
 const SAFE = Number.MAX_SAFE_INTEGER;
+/** The range the guard requires of an invariant index term without a
+ * proven one: every index of a typed array of at most 2^32 elements. */
+const GUARDED_TERM: IntegerRange = { min: -(2 ** 32), max: 2 ** 32 };
 const INVARIANT_OPS = new Set(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>"]);
 
 /** Loop versioning for typed-array bounds. A typed array's length and data
@@ -85,14 +123,21 @@ const INVARIANT_OPS = new Set(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>"])
  *   `hi < length`, such as `table[x & 0xff]` or a constant-trip counter;
  * - an index `k * counter + invariant + c` of a counted loop needs its first
  *   and last values in bounds, such as `out[base + i]` for `i < n` or
- *   `view.getUint32(i * 4)`.
+ *   `view.getUint32(i * 4)`. An invariant without a proven integer range,
+ *   such as `base` for `const base = r * cols`, must also be an exact
+ *   integer between -2^32 and 2^32, which the guard tests.
+ *
+ * In worker programs, every access of a view that may be shared tests its
+ * shared storage. A view's storage is also fixed at construction, so the
+ * same guard tests each invariant receiver once, and the fast copy reads
+ * and writes thread-owned views directly.
  *
  * Only small synchronous loops are versioned (nested loops included), and
  * the emitter bounds how deeply versions nest. The checked loop runs
  * whenever the guard fails, and keeps every out-of-bounds read, ignored
  * write and NaN-index behavior. */
 export function matchBytesLoopVersion(
-  loop: IrStmt & { kind: "for" },
+  loop: IrStmt & { kind: "for" | "while" },
   counted: IntegerCountedForLoop | null,
   facts: BytesLoopFacts,
 ): BytesLoopVersion | null {
@@ -131,10 +176,10 @@ export function matchBytesLoopVersion(
   // writes is not invariant either: `for (let i = (a = b, 0); ...)` must
   // not keep the bounds the guard proved for the old `a`.
   if (
-    (loop.init !== null && !scanStmt(loop.init)) ||
+    (loop.kind === "for" && loop.init !== null && !scanStmt(loop.init)) ||
     !loop.body.every(scanStmt) ||
     (loop.cond !== null && !scanExpr(loop.cond)) ||
-    (loop.update !== null && !scanStmt(loop.update))
+    (loop.kind === "for" && loop.update !== null && !scanStmt(loop.update))
   )
     return null;
   // A body temp stands for its initializer only when it is a constant
@@ -183,9 +228,8 @@ export function matchBytesLoopVersion(
     }
     return invariant(e.localId) ? e : null;
   };
-  // A pure integer operand evaluated again before the loop.
-  const invariantKey = (e: IrExpr): string | null => {
-    if (!facts.ranges.get(e)) return null;
+  // A pure loop-invariant number, evaluated again before the loop.
+  const pureKey = (e: IrExpr): string | null => {
     if (e.kind === "numLit") return Number.isSafeInteger(e.value) ? `n${e.value}` : null;
     if (e.kind === "varRef")
       return invariant(e.localId) ? `v${e.localId.length}:${e.localId}` : null;
@@ -195,12 +239,27 @@ export function matchBytesLoopVersion(
       e.left.type.kind === "f64" &&
       e.right.type.kind === "f64"
     ) {
-      const left = invariantKey(e.left),
-        right = invariantKey(e.right);
+      const left = pureKey(e.left),
+        right = pureKey(e.right);
       return left !== null && right !== null ? `(${e.op} ${left} ${right})` : null;
     }
     return null;
   };
+  // Invariant terms without a proven range, such as `base` in
+  // `w[base + j]` with `const base = r * cols` for a parameter `cols`. The
+  // guard tests each one: an exact integer (not -0) within GUARDED_TERM.
+  const guardedRanges = new Map<IrExpr, IntegerRange>();
+  const guardedNodes = new Map<IrExpr, string>();
+  // The key of a loop-invariant index term, with a proven range or guarded.
+  const invariantKey = (e: IrExpr): string | null => {
+    const key = pureKey(e);
+    if (key === null || facts.ranges.get(e)) return key;
+    if (e.kind === "numLit") return null;
+    guardedRanges.set(e, GUARDED_TERM);
+    guardedNodes.set(e, key);
+    return key;
+  };
+  const termRange = (e: IrExpr): IntegerRange => facts.ranges.get(e) ?? guardedRanges.get(e)!;
   interface Affine {
     /** The counter's coefficient; 0 when the value is loop-invariant. */
     counter: number;
@@ -208,9 +267,10 @@ export function matchBytesLoopVersion(
     offset: number;
   }
   // Every operand of an affine index is `counter * k + Σ terms + offset`.
-  // Invariant terms need proven ranges. Operands that involve the counter
-  // need none: the guard bounds the counter so that each of them is a safe
-  // integer, which makes the index's double arithmetic exact.
+  // Invariant terms need proven ranges or the guard's test (guarded terms).
+  // Operands that involve the counter need none: the guard bounds the
+  // counter so that each of them is a safe integer, which makes the index's
+  // double arithmetic exact.
   const shapes = new Map<IrExpr, Affine | null>();
   const affine = (e: IrExpr): Affine | null => {
     if (shapes.has(e)) return shapes.get(e)!;
@@ -294,10 +354,48 @@ export function matchBytesLoopVersion(
   };
   const termMagnitude = (terms: Term[]): number =>
     terms.reduce((sum, t) => {
-      const r = facts.ranges.get(t.expr)!;
+      const r = termRange(t.expr);
       return sum + Math.max(Math.abs(r.min), Math.abs(r.max));
     }, 0);
 
+  const whileAccesses = loop.kind === "while" ? whileCounterAccesses(loop) : null;
+  function whileCounterAccesses(loop: IrStmt & { kind: "while" }) {
+    return findWhileCounterAccesses(loop, {
+      counterLocal: (id) => {
+        const local = facts.locals.get(id);
+        return (
+          local?.type.kind === "f64" &&
+          !local.boxed &&
+          !local.tdz &&
+          !facts.captured.has(id) &&
+          facts.initialized.has(id)
+        );
+      },
+      boundKey: (e) => {
+        if (e.type.kind !== "f64") return null;
+        // The guard evaluates the bound before the loop: a typed array's
+        // length needs the binding itself, not a temp the body declares.
+        if (
+          e.kind === "bytesIntrinsic" &&
+          e.method === "length" &&
+          e.receiver.kind === "varRef" &&
+          e.receiver.type.kind === "bytes" &&
+          invariant(e.receiver.localId)
+        )
+          return `bytes-length:${e.receiver.localId}`;
+        if (
+          e.kind === "strIntrinsic" &&
+          e.method === "length" &&
+          e.args.length === 0 &&
+          e.receiver.kind === "varRef" &&
+          e.receiver.type.kind === "string" &&
+          invariant(e.receiver.localId)
+        )
+          return `string-length:${e.receiver.localId}`;
+        return pureKey(e);
+      },
+    });
+  }
   const receivers: { ref: VarRef; global: boolean }[] = [];
   const receiverIndex = new Map<string, number>();
   const fixed = new Map<number, { check: FixedCheck; nodes: Node[] }>();
@@ -314,10 +412,24 @@ export function matchBytesLoopVersion(
     }
     return index;
   };
+  // Worker programs: accesses through invariant receivers, proven or not,
+  // become thread-owned when the guard finds no shared storage.
+  const owned = new Map<number, Node[]>();
+  // While loops: accesses at a counter below a bound, by receiver and bound.
+  const boundedChecks = new Map<
+    string,
+    { check: BoundedCheck; nodes: { node: Node; access: WhileAccess }[] }
+  >();
   const access = (node: Node, array: IrExpr, index: IrExpr, width: number): void => {
-    if (facts.proven.has(node)) return;
     const ref = root(array);
     if (!ref) return;
+    if (facts.workers && !facts.owned.has(node)) {
+      const receiver = receiverOf(ref);
+      const nodes = owned.get(receiver);
+      if (nodes) nodes.push(node);
+      else owned.set(receiver, [node]);
+    }
+    if (facts.proven.has(node)) return;
     const shape = counter !== null ? affine(index) : null;
     if (shape && shape.counter !== 0) {
       const operands = new Set<IrExpr>();
@@ -342,11 +454,30 @@ export function matchBytesLoopVersion(
         });
       return;
     }
+    const bounded = whileAccesses?.accesses.get(node);
+    const loopCounter = bounded && whileAccesses!.counters.get(bounded.counter);
+    if (bounded && loopCounter && (!loopCounter.wraps || loopCounter.bounds !== null)) {
+      const receiver = receiverOf(ref);
+      const key = `${receiver}|${bounded.key}|${bounded.adj}`;
+      const slack = bounded.offset + width - 1 + bounded.adj;
+      const group = boundedChecks.get(key);
+      if (group) {
+        group.check.slack = Math.max(group.check.slack, slack);
+        group.nodes.push({ node, access: bounded });
+      } else
+        boundedChecks.set(key, {
+          check: { receiver, bound: bounded.bound, slack },
+          nodes: [{ node, access: bounded }],
+        });
+      return;
+    }
     const range = facts.ranges.get(index);
     if (!range) return;
     const end = range.max + width - 1;
-    // Only a length a buffer can have: an outer loop must not pay for a
-    // guard that bounds an inner loop's unbounded counter.
+    // Only an end below 2^31: an outer loop must not pay for a guard that
+    // bounds an inner loop's unbounded counter, and the counter of a loop to
+    // an array's length reaches 2^32 - 2, a length no typed array in
+    // practice has.
     if (range.min < 0 || end >= MAX_FIXED_END) return;
     const receiver = receiverOf(ref);
     const group = fixed.get(receiver);
@@ -368,6 +499,7 @@ export function matchBytesLoopVersion(
     return everyStmtChild(s, visitExpr, visitStmt);
   };
   loop.body.every(visitStmt);
+  if (loop.kind === "while") visitExpr(loop.cond);
   // Bound the counter so every counter operand stays a safe integer.
   let bound = SAFE;
   const affineGroups = [...affineChecks.values()].filter((group) => {
@@ -383,9 +515,25 @@ export function matchBytesLoopVersion(
   });
   const fixedKept = [...fixed.values()].slice(0, MAX_CHECKS);
   const affineKept = affineGroups.slice(0, MAX_CHECKS - fixedKept.length);
-  if (fixedKept.length === 0 && affineKept.length === 0) return null;
+  const boundedKept = [...boundedChecks.values()].slice(
+    0,
+    Math.max(0, MAX_CHECKS - fixedKept.length - affineKept.length),
+  );
+  const ownedKept = [...owned.entries()].slice(0, MAX_CHECKS);
+  if (
+    fixedKept.length === 0 &&
+    affineKept.length === 0 &&
+    boundedKept.length === 0 &&
+    ownedKept.length === 0
+  )
+    return null;
   const bounds = new Set<Node>();
+  const ownedNodes = new Set<Node>();
   const used = new Set<number>();
+  for (const [receiver, nodes] of ownedKept) {
+    used.add(receiver);
+    for (const node of nodes) ownedNodes.add(node);
+  }
   const ranges = new Map<IrExpr, IntegerRange>();
   const counterLow = Math.max(counted?.range.min ?? 0, -bound),
     counterHigh = Math.min(counted?.range.max ?? 0, bound);
@@ -397,19 +545,64 @@ export function matchBytesLoopVersion(
     used.add(group.check.receiver);
     for (const node of group.nodes) bounds.add(node);
     for (const operand of group.operands) {
-      if (facts.ranges.get(operand)) continue;
       const shape = shapes.get(operand)!;
       const a = shape.counter * counterLow,
         b = shape.counter * counterHigh;
       let min = Math.min(a, b) + shape.offset,
         max = Math.max(a, b) + shape.offset;
       for (const term of shape.terms) {
-        const r = facts.ranges.get(term.expr)!;
+        const r = termRange(term.expr);
         min += term.sign > 0 ? r.min : -r.max;
         max += term.sign > 0 ? r.max : -r.min;
       }
-      if (counterLow <= counterHigh) ranges.set(operand, { min, max });
+      if (counterLow > counterHigh) continue;
+      // The guard's bound on the counter can narrow a range the operand
+      // already has (a loop to a length proves only `i < 2^53`), so that
+      // `i * 4` in the fast copy is exact integer arithmetic.
+      const known = facts.ranges.get(operand);
+      if (!known) ranges.set(operand, { min, max });
+      else if (min > known.min || max < known.max)
+        ranges.set(operand, { min: Math.max(min, known.min), max: Math.min(max, known.max) });
     }
+  }
+  // Guarded terms of the kept checks, and the range the guard proves for
+  // every node of each in the fast copy.
+  const guarded = new Set<string>();
+  for (const group of affineKept)
+    for (const term of group.check.terms) if (guardedRanges.has(term.expr)) guarded.add(term.key);
+  for (const [node, key] of guardedNodes) if (guarded.has(key)) ranges.set(node, GUARDED_TERM);
+  // While loop counters of the kept checks: each entry value is an exact
+  // integer that no access offset takes below 0. In the fast copy each
+  // access's index is below its length, and its counter read at least the
+  // most negative offset.
+  const narrow = (e: IrExpr, range: IntegerRange): void => {
+    const known = ranges.get(e) ?? facts.ranges.get(e);
+    ranges.set(
+      e,
+      known ? { min: Math.max(known.min, range.min), max: Math.min(known.max, range.max) } : range,
+    );
+  };
+  const counterMins = new Map<string, number>();
+  for (const group of boundedKept) {
+    used.add(group.check.receiver);
+    for (const { node, access } of group.nodes) {
+      bounds.add(node);
+      const min = 0 - access.offset;
+      counterMins.set(access.counter, Math.max(counterMins.get(access.counter) ?? -SAFE, min));
+      narrow(access.ref, { min: -MAX_OFFSET, max: SAFE });
+      if (access.index !== access.ref) narrow(access.index, { min: 0, max: SAFE });
+    }
+  }
+  const counterChecks: CounterCheck[] = [];
+  for (const [id, min] of counterMins) {
+    const info = whileAccesses!.counters.get(id)!;
+    counterChecks.push({
+      ref: { kind: "varRef", localId: id, type: F64, loc: loop.loc },
+      min,
+      wrapBounds: info.wraps
+        ? info.bounds!.map((b) => ({ bound: b.bound, limit: 2 ** 31 - info.sum - b.adj }))
+        : [],
+    });
   }
   // Renumber the receivers the kept checks use.
   const order = [...used].sort((a, b) => a - b);
@@ -420,7 +613,9 @@ export function matchBytesLoopVersion(
     (counted.range.min < -bound || counted.range.max > bound);
   return {
     bounds,
+    owned: ownedNodes,
     receivers: order.map((index) => receivers[index]!),
+    ownedReceivers: ownedKept.map(([receiver]) => renumber.get(receiver)!),
     fixed: fixedKept.map((g) => ({
       receiver: renumber.get(g.check.receiver)!,
       end: g.check.end,
@@ -432,14 +627,323 @@ export function matchBytesLoopVersion(
       minOffset: g.check.minOffset,
       maxEnd: g.check.maxEnd,
     })),
+    bounded: boundedKept.map((g) => ({
+      receiver: renumber.get(g.check.receiver)!,
+      bound: g.check.bound,
+      slack: g.check.slack,
+    })),
+    counters: counterChecks,
+    guarded,
     counted: affineKept.length > 0 ? counted : null,
     counterBound: needsBound ? bound : null,
     ranges,
   };
 }
 
+/** A typed-array access at a while loop counter: `counter + offset`, read
+ * or written while `counter < bound` (`<=` when `adj` is 1) holds. */
+interface WhileAccess {
+  counter: string;
+  /** The index, and the counter's read in it. */
+  index: IrExpr;
+  ref: IrExpr;
+  bound: IrExpr;
+  key: string;
+  adj: number;
+  offset: number;
+}
+
+interface WhileCounter {
+  /** Some increment is `c = (c + k) | 0`. */
+  wraps: boolean;
+  /** The sum of every increment literal in the loop. */
+  sum: number;
+  /** One bound from the condition of the loop and of every nested while
+   * loop that advances the counter; null when one of them has none. */
+  bounds: { bound: IrExpr; adj: number }[] | null;
+}
+
+/** `counter = counter + k`, `counter = (counter + k) | 0` or `counter++`. */
+function counterStep(s: IrStmt): { id: string; k: number; wraps: boolean } | null {
+  if (s.kind === "exprStmt" && s.expr.kind === "incDec" && s.expr.op === "+")
+    return { id: s.expr.localId, k: 1, wraps: false };
+  if (s.kind !== "assign") return null;
+  let value = s.value,
+    wraps = false;
+  if (
+    value.kind === "bin" &&
+    value.op === "|" &&
+    value.right.kind === "numLit" &&
+    value.right.value === 0 &&
+    value.left.kind === "bin"
+  ) {
+    value = value.left;
+    wraps = true;
+  }
+  if (
+    value.kind !== "bin" ||
+    value.op !== "+" ||
+    value.left.kind !== "varRef" ||
+    value.left.localId !== s.localId ||
+    value.right.kind !== "numLit" ||
+    !Number.isSafeInteger(value.right.value) ||
+    value.right.value <= 0 ||
+    value.right.value > MAX_OFFSET
+  )
+    return null;
+  return { id: s.localId, k: value.right.value, wraps };
+}
+
+/** Typed-array accesses of a while loop that happen at a counter below a
+ * loop-invariant bound. A counter is a number local that the loop changes
+ * only by positive integer increments, written as statements of the body,
+ * of its blocks and branches, or of nested while loops. The condition of
+ * the loop, an `if` or a `&&` chain that compares the counter below a bound
+ * (`while (pos < end && bytes[pos] === 32) pos++`) makes it below that
+ * bound until the next increment on the path. The counter starts at its
+ * entry value and only grows (a `| 0` increment never wraps when every
+ * bound is at most 2^31 minus the increments), so an access at `counter +
+ * d` is in bounds for the whole loop when the entry value is at least `-d`
+ * and `bound + d < length` (`+ 1` for `<=`). */
+function findWhileCounterAccesses(
+  loop: IrStmt & { kind: "while" },
+  host: {
+    counterLocal: (id: string) => boolean;
+    /** A key for a bound expression whose value the loop never changes. */
+    boundKey: (e: IrExpr) => string | null;
+  },
+): { accesses: Map<Node, WhileAccess>; counters: Map<string, WhileCounter> } {
+  const steps = new Map<string, { sum: number; wraps: boolean }>();
+  const refused = new Set<string>();
+  // Increments count only as statements of the loop's straight-line
+  // structure; any other write refuses the binding.
+  const writes = (list: readonly IrStmt[], direct: boolean): void => {
+    for (const s of list) {
+      const step = counterStep(s);
+      if (step && direct) {
+        const prior = steps.get(step.id);
+        steps.set(step.id, {
+          sum: (prior?.sum ?? 0) + step.k,
+          wraps: (prior?.wraps ?? false) || step.wraps,
+        });
+        continue;
+      }
+      if (step) refused.add(step.id);
+      const nested =
+        direct &&
+        (s.kind === "if" || s.kind === "while" || (s.kind === "block" && !s.labels?.length));
+      if (s.kind === "assign" || s.kind === "varDecl" || s.kind === "forOf") refused.add(s.localId);
+      if (s.kind === "tryCatch" && s.catchLocalId) refused.add(s.catchLocalId);
+      everyStmtChild(
+        s,
+        (e) => (exprWrites(e), true),
+        (c) => (writes([c], nested), true),
+      );
+    }
+  };
+  const exprWrites = (e: IrExpr): void => {
+    if (e.kind === "assignExpr" || e.kind === "incDec") refused.add(e.localId);
+    everyExprChild(
+      e,
+      (c) => (exprWrites(c), true),
+      (c) => (writes([c], false), true),
+    );
+  };
+  exprWrites(loop.cond);
+  writes(loop.body, true);
+  const counter = (id: string): boolean =>
+    steps.has(id) && !refused.has(id) && host.counterLocal(id);
+
+  type Fact = { bound: IrExpr; key: string; adj: number };
+  type Clean = ReadonlyMap<string, Fact>;
+  // The bounds a condition puts on counters while it holds.
+  const facts = (cond: IrExpr, into: Map<string, Fact>): void => {
+    if (cond.kind === "toBool") return facts(cond.operand, into);
+    if (cond.kind === "logical" && cond.op === "&&") {
+      facts(cond.left, into);
+      facts(cond.right, into);
+      return;
+    }
+    if (cond.kind !== "bin") return;
+    const below = cond.op === "<" || cond.op === "<=",
+      above = cond.op === ">" || cond.op === ">=";
+    const c = below ? cond.left : above ? cond.right : null,
+      bound = below ? cond.right : cond.left;
+    if (c?.kind !== "varRef" || !counter(c.localId) || into.has(c.localId)) return;
+    const key = host.boundKey(bound);
+    if (key === null) return;
+    into.set(c.localId, { bound, key, adj: cond.op === "<=" || cond.op === ">=" ? 1 : 0 });
+  };
+  // The facts that hold after either of two paths.
+  const meet = (a: Clean | null, b: Clean | null): Clean | null => {
+    if (a === null) return b;
+    if (b === null) return a;
+    const out = new Map<string, Fact>();
+    for (const [id, fact] of a) if (b.get(id) === fact) out.set(id, fact);
+    return out;
+  };
+  const withFacts = (clean: Clean, cond: IrExpr): Clean => {
+    const out = new Map(clean);
+    facts(cond, out);
+    return out;
+  };
+  const accesses = new Map<Node, WhileAccess>();
+  const record = (node: Node, index: IrExpr, clean: Clean): void => {
+    let ref: IrExpr = index,
+      offset = 0;
+    if (index.kind === "bin" && (index.op === "+" || index.op === "-")) {
+      const literal =
+        index.right.kind === "numLit" ? index.right : index.op === "+" ? index.left : null;
+      const other = literal === index.right ? index.left : index.right;
+      if (literal?.kind !== "numLit" || !Number.isSafeInteger(literal.value)) return;
+      if (Math.abs(literal.value) > MAX_OFFSET || Object.is(literal.value, -0)) return;
+      offset = index.op === "-" ? -literal.value : literal.value;
+      ref = other;
+    }
+    if (ref.kind !== "varRef") return;
+    const fact = clean.get(ref.localId);
+    if (fact) accesses.set(node, { counter: ref.localId, index, ref, ...fact, offset });
+  };
+  const expr = (e: IrExpr, clean: Clean): void => {
+    if (e.kind === "bytesIntrinsic") {
+      const numeric = byteNumberAccess(e);
+      const index = numeric
+        ? e.args[numeric.offsetArg]
+        : e.method === "get"
+          ? e.args[0]
+          : undefined;
+      if (index) record(e, index, clean);
+    }
+    if (e.kind === "logical" && e.op === "&&") {
+      expr(e.left, clean);
+      expr(e.right, withFacts(clean, e.left));
+      return;
+    }
+    if (e.kind === "ternary") {
+      expr(e.cond, clean);
+      expr(e.then, withFacts(clean, e.cond));
+      expr(e.else_, clean);
+      return;
+    }
+    everyExprChild(
+      e,
+      (c) => (expr(c, clean), true),
+      (c) => (stmts([c], clean), true),
+    );
+  };
+  // Walks statements in order; the result is the clean state where the
+  // list falls through, or null when it never does.
+  const stmts = (list: readonly IrStmt[], clean: Clean): Clean | null => {
+    let current: Clean | null = clean;
+    for (const s of list) {
+      if (current === null) return null;
+      const step = counterStep(s);
+      if (step) {
+        const next: Map<string, Fact> = new Map(current);
+        next.delete(step.id);
+        current = next;
+        continue;
+      }
+      switch (s.kind) {
+        case "if": {
+          expr(s.cond, current);
+          const then = stmts(s.then, withFacts(current, s.cond));
+          const otherwise = stmts(s.else_ ?? [], current);
+          current = meet(then, otherwise);
+          break;
+        }
+        case "while": {
+          // A pass of the nested loop may follow its own increments.
+          const advanced: Map<string, Fact> = new Map(current);
+          for (const id of writtenCounters(s.body)) advanced.delete(id);
+          expr(s.cond, advanced);
+          stmts(s.body, withFacts(advanced, s.cond));
+          current = advanced;
+          break;
+        }
+        case "block":
+          if (!s.labels?.length) {
+            current = stmts(s.body, current);
+            break;
+          }
+          everyStmtChild(
+            s,
+            (e) => (expr(e, current!), true),
+            (c) => (stmts([c], current!), true),
+          );
+          break;
+        case "bytesSet":
+          record(s, s.index, current);
+          everyStmtChild(
+            s,
+            (e) => (expr(e, current!), true),
+            (c) => (stmts([c], current!), true),
+          );
+          break;
+        case "break":
+        case "continue":
+        case "return":
+        case "throw":
+          everyStmtChild(
+            s,
+            (e) => (expr(e, current!), true),
+            (c) => (stmts([c], current!), true),
+          );
+          current = null;
+          break;
+        default:
+          everyStmtChild(
+            s,
+            (e) => (expr(e, current!), true),
+            (c) => (stmts([c], current!), true),
+          );
+          break;
+      }
+    }
+    return current;
+  };
+  const writtenCounters = (list: readonly IrStmt[]): Set<string> => {
+    const out = new Set<string>();
+    const visit = (s: IrStmt): boolean => {
+      const step = counterStep(s);
+      if (step) out.add(step.id);
+      return everyStmtChild(s, () => true, visit);
+    };
+    list.every(visit);
+    return out;
+  };
+  expr(loop.cond, new Map());
+  stmts(loop.body, withFacts(new Map(), loop.cond));
+
+  // Each counter's bounds: the loop's and those of nested while loops that
+  // advance it.
+  const counters = new Map<string, WhileCounter>();
+  const loops: (IrStmt & { kind: "while" })[] = [loop];
+  const collectLoops = (s: IrStmt): boolean => {
+    if (s.kind === "while") loops.push(s);
+    return everyStmtChild(s, () => true, collectLoops);
+  };
+  loop.body.every(collectLoops);
+  for (const [id, step] of steps) {
+    if (!counter(id)) continue;
+    let bounds: WhileCounter["bounds"] = [];
+    for (const l of loops) {
+      if (l !== loop && !writtenCounters(l.body).has(id)) continue;
+      const fact = withFacts(new Map(), l.cond).get(id);
+      if (!fact) {
+        bounds = null;
+        break;
+      }
+      bounds.push({ bound: fact.bound, adj: fact.adj });
+    }
+    counters.set(id, { ...step, bounds });
+  }
+  return { accesses, counters };
+}
+
 /** Branches to `fast` when every access the version proves is in bounds for
- * every iteration, and to `slow` otherwise (including a counted loop whose
+ * every iteration and every view it proves thread-owned has no shared
+ * storage, and to `slow` otherwise (including a counted loop whose
  * integer form is not established, or a module receiver not yet set). */
 export function emitBytesLoopVersionGuard(
   host: LlvmEmitterContext,
@@ -473,9 +977,47 @@ export function emitBytesLoopVersionGuard(
     return wide;
   });
   const conditions: string[] = [];
+  for (const index of version.ownedReceivers) {
+    const owned = B.tmp();
+    B.line(`${owned} = icmp eq ptr ${emitBytesSharedStorage(host, receivers[index]!)}, null`);
+    conditions.push(owned);
+  }
   for (const check of version.fixed) {
     const ok = B.tmp();
     B.line(`${ok} = icmp ugt i64 ${lengths[check.receiver]}, ${check.end}`);
+    conditions.push(ok);
+  }
+  for (const counter of version.counters) {
+    const value = host.emitExpr(counter.ref);
+    // A counter held as an integer (an int32 slot) is exact already and
+    // needs at most its lower bound tested.
+    const integer = exactInteger(host, value, counter.ref);
+    if (integer && integer.range.max <= SAFE) {
+      if (integer.range.min < counter.min) {
+        const ok = B.tmp();
+        B.line(`${ok} = icmp sge i64 ${widenInteger(host, integer)}, ${counter.min}`);
+        conditions.push(ok);
+      }
+    } else conditions.push(emitExactIntegerTest(host, value.name, counter.min, SAFE).ok);
+    for (const wrap of counter.wrapBounds) {
+      const bound = host.emitExpr(wrap.bound);
+      const boundInteger = exactInteger(host, bound, wrap.bound);
+      if (boundInteger && boundInteger.range.max <= wrap.limit) continue;
+      const ok = B.tmp();
+      B.line(`${ok} = fcmp ole double ${bound.name}, ${f64Lit(wrap.limit)}`);
+      conditions.push(ok);
+    }
+  }
+  for (const check of version.bounded) {
+    // `bound <= length - slack` in doubles: both sides are exact (a length
+    // is below 2^53 and a slack below 2^32), and NaN fails.
+    const bound = host.emitExpr(check.bound).name;
+    const length = B.tmp(),
+      room = B.tmp(),
+      ok = B.tmp();
+    B.line(`${length} = uitofp i64 ${lengths[check.receiver]} to double`);
+    B.line(`${room} = fsub double ${length}, ${f64Lit(check.slack)}`);
+    B.line(`${ok} = fcmp ole double ${bound}, ${room}`);
     conditions.push(ok);
   }
   if (counted && version.affine.length > 0) {
@@ -523,6 +1065,14 @@ export function emitBytesLoopVersionGuard(
       let base = "0";
       for (const term of check.terms) {
         const value = host.emitExpr(term.expr);
+        if (version.guarded.has(term.key)) {
+          const tested = emitExactIntegerTest(host, value.name, GUARDED_TERM.min, GUARDED_TERM.max);
+          conditions.push(tested.ok);
+          const sum = B.tmp();
+          B.line(`${sum} = ${term.sign > 0 ? "add" : "sub"} i64 ${base}, ${tested.integer}`);
+          base = sum;
+          continue;
+        }
         const integer = exactInteger(host, value, term.expr);
         if (!integer) {
           // Unreachable: every term has a proven range. Stay checked.
@@ -568,6 +1118,39 @@ export function emitBytesLoopVersionGuard(
   }
   if (valid === "true") B.br(fast);
   else B.condBr(valid, fast, slow);
+}
+
+/** Tests that a double is an exact integer within [min, max] (not -0; NaN
+ * fails the ordered comparisons) and gives its i64. The integer is frozen,
+ * so it is a fixed value even when the test fails. */
+function emitExactIntegerTest(
+  host: LlvmEmitterContext,
+  value: string,
+  min: number,
+  max: number,
+): { ok: string; integer: string } {
+  const B = host.B;
+  const low = B.tmp(),
+    high = B.tmp(),
+    inRange = B.tmp(),
+    raw = B.tmp(),
+    integer = B.tmp(),
+    back = B.tmp(),
+    bits = B.tmp(),
+    backBits = B.tmp(),
+    exact = B.tmp(),
+    ok = B.tmp();
+  B.line(`${low} = fcmp oge double ${value}, ${f64Lit(min)}`);
+  B.line(`${high} = fcmp ole double ${value}, ${f64Lit(max)}`);
+  B.line(`${inRange} = and i1 ${low}, ${high}`);
+  B.line(`${raw} = fptosi double ${value} to i64`);
+  B.line(`${integer} = freeze i64 ${raw}`);
+  B.line(`${back} = sitofp i64 ${integer} to double`);
+  B.line(`${bits} = bitcast double ${value} to i64`);
+  B.line(`${backBits} = bitcast double ${back} to i64`);
+  B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
+  B.line(`${ok} = and i1 ${inRange}, ${exact}`);
+  return { ok, integer };
 }
 
 function scaleCounter(host: LlvmEmitterContext, value: string, scale: number): string {

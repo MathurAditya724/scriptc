@@ -134,9 +134,11 @@ test("likely-hot functions with untyped values report as a performance warning",
 test("the performance warning names the untyped value of each function", () => {
   const { coverage } = analyze(fixture("dynamic-tier/typed-hot.ts"));
   expect(coverage.performance?.[0]?.message.split("\n")).toEqual([
-    "2 functions that likely run often use untyped values, which runs slower than typed code:",
-    "  regionTotals (typed-hot.ts:3): `items` is `any`, in a loop",
-    "  countRegions (typed-hot.ts:9): `parsed` holds an untyped `JSON.parse` result, in a loop",
+    "4 functions that likely run often use untyped values, which runs slower than typed code:",
+    "  regionTotals (typed-hot.ts:5): `items` is `any`, in a loop",
+    "  entryCount (typed-hot.ts:26): `key` is `any`, in a loop",
+    "  countRegions (typed-hot.ts:11): `parsed` holds an untyped `JSON.parse` result, in a loop",
+    "  weights (typed-hot.ts:18): `rows` is `any`, in a loop",
   ]);
 });
 
@@ -145,6 +147,22 @@ test("untyped setup code that runs once reports no performance warning", () => {
   expect(coverage.diagnostics).toEqual([]);
   expect(coverage.performance).toBeUndefined();
   expect(coveragePasses(coverage, "dynamic")).toBe(true);
+});
+
+test("the performance warning names function expressions as the source does", () => {
+  const { coverage } = analyze(fixture("dynamic-tier/function-names.js"));
+  expect(coverage.performance?.[0]?.message.split("\n").slice(1)).toEqual([
+    "  sum (function-names.js:5): untyped JavaScript file, in a loop",
+    "  count (function-names.js:13): untyped JavaScript file, in a loop",
+    "  scale (function-names.js:20): untyped JavaScript file, in a loop",
+    "  anonymous function (function-names.js:27): untyped JavaScript file, in a loop",
+  ]);
+});
+
+test("the performance warning names neither type names nor generated helpers", () => {
+  const { coverage } = analyze(fixture("dynamic-tier/unnamed.ts"));
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.performance).toBeUndefined();
 });
 
 test("dynamic-tier code in npm packages is summarized by package", () => {
@@ -487,6 +505,19 @@ test("JavaScript builtin aliases keep their deferred value fence", async () => {
   await expect(report(fixture("js-builtin-callable-alias.js"))).toMatchFileSnapshot(
     "__snapshots__/coverage-js-builtin-callable-alias.txt",
   );
+});
+
+test("types only a package's .d.ts declares stay static through re-exports and .mjs entries", () => {
+  // shape-kinds re-exports types its .d.ts entry imports; row-module's
+  // runtime entry is an .mjs file. Without their declared types the
+  // program's uses of Form, Kind and Row run in the dynamic tier (12
+  // statements); with them only the packages' own JavaScript and one
+  // arithmetic on a JavaScript return value do (4).
+  const { coverage } = analyze(
+    join(repoRoot, "tests/corpus/7004-package-declared-type-reexports/main.ts"),
+  );
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.stats.statementsDynamic).toBe(4);
 });
 
 test("any-typed checked-dynamic operators compile natively", () => {

@@ -1,13 +1,24 @@
 import { expect, test } from "vitest";
-import { DYN, F64, STRING, VOID, type IrModule } from "../../ir/ir.js";
 import {
+  DYN,
+  F64,
+  STRING,
+  VOID,
+  type IrExpr,
+  type IrFunction,
+  type IrModule,
+  type IrType,
+} from "../../ir/ir.js";
+import {
+  assignCompactLayouts,
   buildClassGraph,
+  classFieldIndex,
   classIdLoadLines,
   classMembershipIntervals,
   emitClassMembershipHelper,
   type LlClassMeta,
 } from "./classes.js";
-import { emitLlvmModule } from "./emitter.js";
+import { emitLlvmModule, lowRegionTarget } from "./emitter.js";
 import {
   mangleClassNew,
   mangleClassReleaseDirect,
@@ -196,11 +207,9 @@ test("classes whose trace visits nothing start acyclic in a traced hierarchy", (
 });
 
 test("ProgramLifetime classes pack their fields after a 32-bit header", () => {
-  const node = { kind: "object" as const, className: "Node" };
-  const leaf = { kind: "object" as const, className: "Leaf" };
   const BOOL = { kind: "bool" as const };
   const nodeFields = [
-    { name: "parent", type: node },
+    { name: "parent", type: STRING },
     { name: "flag", type: BOOL },
     { name: "weight", type: F64 },
   ];
@@ -214,7 +223,7 @@ test("ProgramLifetime classes pack their fields after a 32-bit header", () => {
       {
         name: "Leaf",
         base: "Node",
-        fields: [...nodeFields, { name: "next", type: leaf }, { name: "mark", type: BOOL }],
+        fields: [...nodeFields, { name: "next", type: STRING }, { name: "mark", type: BOOL }],
         methods: [],
         loc,
       },
@@ -222,15 +231,208 @@ test("ProgramLifetime classes pack their fields after a 32-bit header", () => {
     contracts: { programLifetime: ["Node"] },
   };
   const llvm = emitLlvmModule(mod, { pointerBits: 64 });
-  // Fields go widest first, each at the first offset that fits it. Node's
-  // weight (an int32 slot: nothing stores a fraction) takes the word the
-  // header shares (24 bytes, not 32); Leaf keeps Node's offsets and puts its
-  // bool next to Node's (32 bytes, not 48).
-  expect(llvm).toContain(`%${mangleClassStruct("Node")} = type { i32, i32, ptr, i8 }`);
-  expect(llvm).toContain(`%${mangleClassStruct("Leaf")} = type { i32, i32, ptr, i8, i8, ptr }`);
+  // Scalars narrower than 8 bytes go first, then the rest, widest first,
+  // each at the first offset that fits it. Node's weight (an int32 slot:
+  // nothing stores a fraction) takes the word the header shares and its
+  // flag the next one (24 bytes, not 32); Leaf keeps Node's offsets and puts
+  // its bool next to Node's (32 bytes, not 48).
+  expect(llvm).toContain(`%${mangleClassStruct("Node")} = type { i32, i32, i8, ptr }`);
+  expect(llvm).toContain(`%${mangleClassStruct("Leaf")} = type { i32, i32, i8, i8, ptr, ptr }`);
   // Without the contract, the layout is the declared one.
   const mortal = emitLlvmModule({ ...mod, contracts: {} }, { pointerBits: 64 });
   expect(mortal).toContain(`%${mangleClassStruct("Leaf")} = type { i64, ptr, i8, i32, ptr, i8 }`);
+});
+
+test("references between ProgramLifetime instances are 32-bit indexes into their region", () => {
+  const node = { kind: "object" as const, className: "Node" };
+  const leaf = { kind: "object" as const, className: "Leaf" };
+  const root = { localId: "root", name: "root", type: leaf };
+  const nodeFields = [{ name: "parent", type: node }];
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [
+      {
+        name: "main",
+        params: [root],
+        returnType: VOID,
+        locals: [{ id: "root", name: "root", type: leaf, mutable: false }],
+        body: [
+          {
+            kind: "fieldSet",
+            obj: { kind: "varRef", localId: "root", type: leaf, loc },
+            className: "Leaf",
+            field: "parent",
+            value: {
+              kind: "fieldGet",
+              obj: { kind: "varRef", localId: "root", type: leaf, loc },
+              className: "Leaf",
+              field: "next",
+              type: leaf,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      },
+    ],
+    classes: [
+      { name: "Node", fields: nodeFields, methods: [], loc },
+      {
+        name: "Leaf",
+        base: "Node",
+        fields: [...nodeFields, { name: "next", type: leaf }, { name: "label", type: STRING }],
+        methods: [],
+        loc,
+      },
+    ],
+    contracts: { programLifetime: ["Node"] },
+  };
+  // Linux executables without sanitizers (lowRegionTarget).
+  const llvm = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false, lowRegion: true });
+  // parent and next take 4 bytes each; the string keeps its pointer.
+  expect(llvm).toContain(`%${mangleClassStruct("Node")} = type { i32, i32 }`);
+  expect(llvm).toContain(`%${mangleClassStruct("Leaf")} = type { i32, i32, ptr, i32 }`);
+  // Instances come from the region, reserved below 32 GiB before compiled
+  // code runs: a bump of the thread's chunk, and the runtime when it is used
+  // up.
+  const nw =
+    new RegExp(`^define internal ptr @${mangleClassNew("Leaf")}\\([^]*?^}`, "m").exec(llvm)?.[0] ??
+    "";
+  expect(nw).toContain("%plr.end = getelementptr i8, ptr %plr.next");
+  expect(nw).toContain("store ptr %plr.end, ptr %plr.c");
+  expect(nw).toMatch(/%plr.o = call ptr @scr_plr_alloc\(i64 /);
+  expect(llvm).toMatch(/call void @scr_init\(\)\n {2}call void @scr_plr_init\(\)/);
+  // A reference is the instance's address over 8 (0 is NULL): a read
+  // shifts the loaded word, a write shifts the pointer.
+  const main = llvm.split(/^define /m).find((fn) => fn.includes("; main\n")) ?? "";
+  expect(main).toMatch(/= load i32, ptr %\S+, !tbaa/);
+  expect(main).toMatch(/= shl nuw nsw i64 %\S+, 3\n\s+%\S+ = inttoptr i64 %\S+ to ptr/);
+  expect(main).toMatch(/= ptrtoint ptr %\S+ to i64\n\s+%\S+ = lshr i64 %\S+, 3/);
+  expect(main).toMatch(/store i32 %\S+, ptr %\S+/);
+  expect(main).not.toContain("select");
+  expect(lowRegionTarget("linux", false)).toBe(true);
+  expect(lowRegionTarget("linux", true)).toBe(false);
+  expect(lowRegionTarget("darwin", false)).toBe(false);
+  expect(lowRegionTarget("win32", false)).toBe(false);
+  // Other targets, 32-bit targets and mortal classes keep pointers.
+  const elsewhere = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false });
+  expect(elsewhere).toContain(`%${mangleClassStruct("Leaf")} = type { i32, ptr, ptr, ptr }`);
+  expect(elsewhere).not.toContain("scr_plr");
+  const llvm32 = emitLlvmModule(mod, { pointerBits: 32, lowRegion: true });
+  expect(llvm32).not.toContain("scr_plr");
+  const mortal = emitLlvmModule({ ...mod, contracts: {} }, { pointerBits: 64, lowRegion: true });
+  expect(mortal).not.toContain("scr_plr");
+  // Field accessors that read the storage as a pointer are refused.
+  const metas = buildClassGraph(mod, new Map());
+  assignCompactLayouts(
+    metas,
+    () => true,
+    (cls) => cls.fields.map(() => "ptr"),
+    (cls, i, isCompact) => {
+      const t = cls.fields[i]!.type;
+      return t.kind === "object" && isCompact(t.className);
+    },
+  );
+  const leafMeta = metas.get("Leaf")!;
+  expect(() => classFieldIndex(leafMeta, "next")).toThrow(/holds a 32-bit reference/);
+  expect(classFieldIndex(leafMeta, "next", "compressed").compressed).toBe(true);
+  expect(classFieldIndex(leafMeta, "label").compressed).toBe(false);
+});
+
+test("arrays of ProgramLifetime instances keep 32-bit references in 4-byte slots", () => {
+  const node = { kind: "object" as const, className: "Node" };
+  const nodes = { kind: "array" as const, elem: node };
+  const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
+  const fn = (name: string, body: IrExpr, returnType: IrType): IrFunction => ({
+    name,
+    params: [
+      { name: "a", localId: "a", type: nodes },
+      { name: "v", localId: "v", type: node },
+    ],
+    returnType,
+    locals: [
+      { id: "a", name: "a", type: nodes, mutable: false },
+      { id: "v", name: "v", type: node, mutable: false },
+    ],
+    body: [{ kind: "return", value: body, loc }],
+    loc,
+  });
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [
+      { name: "main", params: [], returnType: VOID, locals: [], body: [], loc },
+      fn(
+        "first",
+        {
+          kind: "arrayGet",
+          arr: ref("a", nodes),
+          index: { kind: "numLit", value: 0, type: F64, loc },
+          type: node,
+          loc,
+        },
+        node,
+      ),
+      fn(
+        "add",
+        {
+          kind: "arrIntrinsic",
+          method: "push",
+          receiver: ref("a", nodes),
+          args: [ref("v", node)],
+          type: F64,
+          loc,
+        },
+        F64,
+      ),
+      fn("make", { kind: "arrayLit", elems: [ref("v", node)], type: nodes, loc }, nodes),
+      fn(
+        "find",
+        {
+          kind: "arrIntrinsic",
+          method: "indexOf",
+          receiver: ref("a", nodes),
+          args: [ref("v", node)],
+          type: F64,
+          loc,
+        },
+        F64,
+      ),
+    ],
+    classes: [{ name: "Node", fields: [{ name: "kids", type: nodes }], methods: [], loc }],
+    contracts: { programLifetime: ["Node"] },
+  };
+  const body = (llvm: string, name: string): string =>
+    llvm.split(/^define /m).find((f) => f.includes(`; ${name}\n`)) ?? "";
+  const llvm = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false, lowRegion: true });
+  // The element type's ops say so (SCR_ARR_OPS_COMPACT), so the runtime makes
+  // the arrays SCR_ELEM_CREF.
+  expect(llvm).toMatch(
+    /^@sc_arrops\.\S+\.c = internal global \{ ptr, ptr, ptr, i32, i32 \} \{ [^}]*, i32 0, i32 1 \}$/m,
+  );
+  // A read loads the 32-bit reference and shifts it; an append stores one.
+  const first = body(llvm, "first");
+  expect(first).toMatch(/getelementptr inbounds i32, ptr %\S+, i64 \S+\n\s+%\S+ = load i32/);
+  // The states follow 4-byte slots.
+  expect(first).toContain("getelementptr inbounds [5 x i8]");
+  expect(first).toMatch(/= inttoptr i64 %\S+ to ptr/);
+  expect(body(llvm, "add")).toMatch(
+    /= lshr i64 %\S+, 3\n\s+%\S+ = trunc i64 %\S+ to i32\n\s+store i32/,
+  );
+  // indexOf scans the 4-byte slots for the needle's reference.
+  expect(llvm).toMatch(/call double @sc_arr_index_of_cref\(ptr %\S+, ptr %\S+\)/);
+  expect(/^define internal double @sc_arr_index_of_cref[^]*?^}/m.exec(llvm)?.[0]).toContain(
+    "load i32, ptr %qp0",
+  );
+  // Elsewhere the arrays keep 8-byte slots.
+  const elsewhere = emitLlvmModule(mod, { pointerBits: 64, objectAudit: false });
+  expect(elsewhere).not.toMatch(/sc_arrops\.\S+\.c /);
+  expect(body(elsewhere, "first")).not.toContain("inttoptr");
+  expect(elsewhere).not.toContain("sc_arr_index_of_cref");
 });
 
 test("a recycled block is cleared from the end of a ProgramLifetime instance's 32-bit header", () => {

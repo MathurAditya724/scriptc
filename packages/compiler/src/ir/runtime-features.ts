@@ -75,6 +75,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.propsInstall",
   "child.propsResolve",
   "crypto.native",
+  // The crypto global's object extends crypto.native's.
+  "webcrypto.object",
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
@@ -214,6 +216,8 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.stdioStream",
+  "stream.chunkDone",
+  "stream.objectMode",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",
@@ -237,6 +241,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.prop",
   "stream.stdioWritable",
   "stream.unboxDyn",
+  "stream.handleStream",
   "stream.unpipeDyn",
   "stream.workerStdio",
 ]);
@@ -621,6 +626,63 @@ const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 /* The HTTP, HTTPS, HTTP/2 and TLS surfaces, which link the net unit. */
 const NET_PREFIXES: readonly string[] = ["net.", "http.", "tls.", "https.", "http2."];
 
+/** The scr_pki.c entry points (the pki unit). */
+export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "crypto.createPrivateKey",
+  "crypto.createPublicKey",
+  "crypto.createSign",
+  "crypto.createVerify",
+  "crypto.generateKeyPairCb",
+  "crypto.generateKeyPairSync",
+  "crypto.signOneshot",
+  "crypto.verifyOneshot",
+]);
+
+/** The WebCrypto algorithms scr_webcrypto_pki.c implements over the pki
+ * unit (lowercased). */
+const WEBCRYPTO_ASYMMETRIC_NAMES: ReadonlySet<string> = new Set([
+  "ecdsa",
+  "ed25519",
+  "rsa-pss",
+  "rsassa-pkcs1-v1_5",
+]);
+
+/** Whether a string literal in the module names Ed25519, without regard
+ * to case ("ed25519" for node:crypto, "Ed25519" for WebCrypto): the
+ * Ed25519 unit links then, alongside the pki unit. */
+export function moduleNamesEd25519(mod: IrModule): boolean {
+  let named = false;
+  everyModuleNode(mod, {
+    expr: (node) => {
+      if (node.kind === "strLit" && node.value.toLowerCase() === "ed25519") named = true;
+      return !named;
+    },
+    stmt: () => !named,
+    type: () => true,
+  });
+  return named;
+}
+
+/** Whether the module calls WebCrypto and a string literal in it names one
+ * of the asymmetric algorithms (matched without regard to case, as
+ * normalizeAlgorithm matches names): scr_webcrypto_pki.c and the pki unit
+ * link then. */
+export function moduleUsesWebCryptoAsymmetric(mod: IrModule): boolean {
+  let webcrypto = false;
+  let named = false;
+  everyModuleNode(mod, {
+    expr: (node) => {
+      if (node.kind === "libCall" && node.fn.startsWith("webcrypto.")) webcrypto = true;
+      if (node.kind === "strLit" && WEBCRYPTO_ASYMMETRIC_NAMES.has(node.value.toLowerCase()))
+        named = true;
+      return !(webcrypto && named);
+    },
+    stmt: () => !(webcrypto && named),
+    type: () => true,
+  });
+  return webcrypto && named;
+}
+
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
  * and its early exit derive from this table. The lists above keep one
@@ -647,8 +709,17 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
-   * inspect unit. */
-  cipher: rule({ fns: ["crypto.cipherNew"] }),
+   * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
+   * (scr_webcrypto_aes.c) link the same archive. */
+  cipher: rule({
+    fns: [
+      "crypto.cipherNew",
+      "webcrypto.encrypt",
+      "webcrypto.decrypt",
+      "webcrypto.wrapKey",
+      "webcrypto.unwrapKey",
+    ],
+  }),
   copying: rule({
     expr: (node, _tables) =>
       (node.kind === "arrIntrinsic" && COPYING_ARR_METHODS.has(node.method)) ||
@@ -675,12 +746,17 @@ const RUNTIME_FEATURE_RULES = {
       ),
     // The legacy url functions, crypto.createCipheriv and
     // ecdh.setPublicKey emit their deprecation warnings through the
-    // dyn-async unit; scr_wasm.c boxes its handles and promises through it.
+    // dyn-async unit (WebCrypto's encrypt and decrypt link scr_cipher.c
+    // too); scr_wasm.c boxes its handles and promises through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
+      "webcrypto.encrypt",
+      "webcrypto.decrypt",
+      "webcrypto.wrapKey",
+      "webcrypto.unwrapKey",
       "crypto.ecdhNew",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
@@ -744,6 +820,9 @@ const RUNTIME_FEATURE_RULES = {
    * process-warning unit, and unknown encodings and formats render through
    * the inspect unit. */
   ecdh: rule({ fns: ["crypto.ecdhNew", "crypto.ecdhConvertKey"] }),
+  /** scr_dh.c over the mbedTLS archive; unknown encodings render through
+   * the inspect unit. */
+  dh: rule({ fns: ["crypto.dhNew", "crypto.dhGroupNew"] }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -787,8 +866,14 @@ const RUNTIME_FEATURE_RULES = {
       "global.native",
       "util.styleText",
       "crypto.cipherNew",
+      "webcrypto.encrypt",
+      "webcrypto.decrypt",
+      "webcrypto.wrapKey",
+      "webcrypto.unwrapKey",
       "crypto.ecdhNew",
       "crypto.ecdhConvertKey",
+      "crypto.dhNew",
+      "crypto.dhGroupNew",
       ...BUILTIN_CLASS_LIB_FNS,
       ...UTIL_CALLABLE_LIB_FNS,
     ],
@@ -819,6 +904,12 @@ const RUNTIME_FEATURE_RULES = {
   /** perf_hooks event-loop metrics (eventLoopUtilization,
    * monitorEventLoopDelay): scr_perf_loop.c. */
   perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
+  /** scr_pki.c over the mbedTLS archive: asymmetric KeyObjects and
+   * signatures. */
+  pki: rule({ initial: moduleUsesWebCryptoAsymmetric, fns: [...PKI_LIB_FNS] }),
+  /** scr_ed25519.c (the vendored libsodium Ed25519), linked with pki: a
+   * string literal in the module names Ed25519. */
+  ed25519: rule({ initial: moduleNamesEd25519 }),
   processEvents: rule({ fns: [...PROCESS_EVENT_LIB_FNS, "util.styleText"], types: ["procStream"] }),
   /** scr_url_legacy.c parses and stringifies queries. */
   qs: rule({ fns: [...QS_LIB_FNS, ...LEGACY_URL_LIB_FNS] }),
@@ -910,6 +1001,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynInvoke: false,
     dynTier: false,
     ecdh: false,
+    dh: false,
     emitter: false,
     eventTarget: false,
     eventsOnceSignal: false,
@@ -926,6 +1018,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     nodeTest: false,
     parseArgs: false,
     perfLoop: false,
+    pki: false,
+    ed25519: false,
     processEvents: false,
     qs: false,
     regex: false,

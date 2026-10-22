@@ -163,7 +163,7 @@ function emitObjEntryPairs(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   B.line(`${row} = call ptr @${mangleRecordNew(rowT.shapeId)}()`);
   host.storeField(host.recordFieldPtr(row, rowT.shapeId, "0").ptr, STRING, key, false);
   host.storeField(host.recordFieldPtr(row, rowT.shapeId, "1").ptr, DYN, item, false);
-  host.arrPush(arr, "ref", row); // push takes ownership of the row
+  host.arrPush(arr, "ref", row, null); // push takes ownership of the row
   const next = B.tmp();
   B.line(`${next} = add ${size} ${i}, 1`);
   B.line(`store ${size} ${next}, ptr ${iSlot}`);
@@ -536,7 +536,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const parent = B.tmp();
     B.line(`${parent} = call ptr @scr_fs_glob_parent(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
     B.line(`store ptr ${parent}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`);
-    host.arrPush(arr, "ref", row); // push takes ownership of the row
+    host.arrPush(arr, "ref", row, null); // push takes ownership of the row
     const i2 = B.tmp();
     B.line(`${i2} = add ${host.sizeType} ${i}, 1`);
     B.line(`store ${host.sizeType} ${i2}, ptr ${iSlot}`);
@@ -620,7 +620,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(
       `store ptr ${host.retainHeap(path.name, STRING)}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`,
     );
-    host.arrPush(arr, "ref", row); // push takes ownership of the row
+    host.arrPush(arr, "ref", row, null); // push takes ownership of the row
     const i2 = B.tmp();
     B.line(`${i2} = add ${host.sizeType} ${i}, 1`);
     B.line(`store ${host.sizeType} ${i2}, ptr ${iSlot}`);
@@ -955,7 +955,7 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.startBlock(lj);
     const rows = B.tmp();
     B.line(`${rows} = load ptr, ptr ${rowsSlot}`);
-    host.arrPush(rows, "ref", row); // push takes ownership of the row
+    host.arrPush(rows, "ref", row, null); // push takes ownership of the row
     B.line(`call void @scr_arr_release(ptr ${rows})`);
     B.line(`call void @scr_str_release(ptr ${nm})`);
     const i2 = B.tmp();
@@ -967,6 +967,64 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     return out;
   }
   return host.emitGenericLibCall(e);
+}
+
+/** Math.pow(2, n): for an integer n from -1074 to 1023 the result is the
+ * power of two whose bits are its exponent field (or, below -1022, one
+ * mantissa bit of a subnormal), the value pow returns. Other exponents call
+ * scr_math_pow. */
+function emitPowerOfTwo(host: LlvmEmitterContext, n: string): string {
+  const B = host.B;
+  const check = B.newLabel("pow2.check");
+  const exact = B.newLabel("pow2.exact");
+  const call = B.newLabel("pow2.call");
+  const join = B.newLabel("pow2.join");
+  const low = B.tmp();
+  const high = B.tmp();
+  const inRange = B.tmp();
+  B.line(`${low} = fcmp oge double ${n}, ${f64Lit(-1074)}`);
+  B.line(`${high} = fcmp ole double ${n}, ${f64Lit(1023)}`);
+  B.line(`${inRange} = and i1 ${low}, ${high}`);
+  B.condBr(inRange, check, call);
+  B.startBlock(check);
+  const int = B.tmp();
+  const back = B.tmp();
+  const integral = B.tmp();
+  B.line(`${int} = fptosi double ${n} to i32`);
+  B.line(`${back} = sitofp i32 ${int} to double`);
+  B.line(`${integral} = fcmp oeq double ${back}, ${n}`);
+  B.condBr(integral, exact, call);
+  B.startBlock(exact);
+  const normal = B.tmp();
+  const biased = B.tmp();
+  const biasedWide = B.tmp();
+  const normalBits = B.tmp();
+  const shift = B.tmp();
+  const shiftWide = B.tmp();
+  const subnormalBits = B.tmp();
+  const bits = B.tmp();
+  const power = B.tmp();
+  B.line(`${normal} = icmp sge i32 ${int}, -1022`);
+  B.line(`${biased} = add i32 ${int}, 1023`);
+  B.line(`${biasedWide} = zext i32 ${biased} to i64`);
+  B.line(`${normalBits} = shl i64 ${biasedWide}, 52`);
+  B.line(`${shift} = add i32 ${int}, 1074`);
+  B.line(`${shiftWide} = zext i32 ${shift} to i64`);
+  B.line(`${subnormalBits} = shl i64 1, ${shiftWide}`);
+  B.line(`${bits} = select i1 ${normal}, i64 ${normalBits}, i64 ${subnormalBits}`);
+  B.line(`${power} = bitcast i64 ${bits} to double`);
+  const exactEnd = B.currentLabel();
+  B.br(join);
+  B.startBlock(call);
+  host.declare(`declare double @scr_math_pow(double, double)`);
+  const called = B.tmp();
+  B.line(`${called} = call double @scr_math_pow(double ${f64Lit(2)}, double ${n})`);
+  const callEnd = B.currentLabel();
+  B.br(join);
+  B.startBlock(join);
+  const out = B.tmp();
+  B.line(`${out} = phi double [ ${power}, %${exactEnd} ], [ ${called}, %${callEnd} ]`);
+  return out;
 }
 
 export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
@@ -985,6 +1043,10 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
   if (e.fn === "math.trunc") {
     const v = host.emitExpr(e.args[0]!);
     return { name: emitTruncF64(host, v.name), type: e.type };
+  }
+  if (e.fn === "math.pow" && e.args[0]!.kind === "numLit" && e.args[0]!.value === 2) {
+    const v = host.emitExpr(e.args[1]!);
+    return { name: emitPowerOfTwo(host, v.name), type: e.type };
   }
   if (e.fn === "math.floor" || e.fn === "math.ceil") {
     const intr = e.fn === "math.floor" ? "floor" : "ceil";

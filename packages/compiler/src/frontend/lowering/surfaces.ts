@@ -1553,6 +1553,16 @@ export const BUILTIN_MODULE_FNS: Record<
     createSecretKey: { fn: "crypto.createSecretKey", params: [DYN, DYN], result: DYN },
     generateKeySync: { fn: "crypto.generateKeySync", params: [DYN, DYN], result: DYN },
     generateKey: { fn: "crypto.generateKeyCb", params: [], result: VOID },
+    // Asymmetric keys and signatures (lowerPkiCall): checked-dynamic
+    // arguments, results converted to the call site's type.
+    createPrivateKey: { fn: "crypto.createPrivateKey", params: [DYN], result: DYN },
+    createPublicKey: { fn: "crypto.createPublicKey", params: [DYN], result: DYN },
+    createSign: { fn: "crypto.createSign", params: [DYN], result: DYN },
+    createVerify: { fn: "crypto.createVerify", params: [DYN], result: DYN },
+    generateKeyPairSync: { fn: "crypto.generateKeyPairSync", params: [], result: DYN },
+    generateKeyPair: { fn: "crypto.generateKeyPairCb", params: [], result: VOID },
+    sign: { fn: "crypto.signOneshot", params: [], result: DYN },
+    verify: { fn: "crypto.verifyOneshot", params: [], result: DYN },
     pbkdf2Sync: {
       fn: "crypto.pbkdf2",
       params: [BYTES_U8, BYTES_U8, F64, F64, STRING],
@@ -1574,6 +1584,12 @@ export const BUILTIN_MODULE_FNS: Record<
     // A checked-dynamic curve name; the result is a native ECDH handle
     // (lowerCreateEcdh).
     createECDH: { fn: "crypto.ecdhNew", params: [DYN], result: DYN },
+    // Checked-dynamic arguments; the result is a native DiffieHellman or
+    // DiffieHellmanGroup handle (lowerCreateDiffieHellman and
+    // lowerGetDiffieHellman).
+    createDiffieHellman: { fn: "crypto.dhNew", params: [DYN, DYN, DYN, DYN], result: DYN },
+    getDiffieHellman: { fn: "crypto.dhGroupNew", params: [DYN], result: DYN },
+    createDiffieHellmanGroup: { fn: "crypto.dhGroupNew", params: [DYN], result: DYN },
   },
   zlib: {
     // The default-options convenience family is special-cased in
@@ -2210,15 +2226,28 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     id: "stdlib.webcrypto.subtle",
     kind: "stdlib",
     name: "globalThis.crypto.subtle",
-    fns: ["webcrypto.importKey", "webcrypto.sign", "webcrypto.verify", "webcrypto.digest"],
-    note: "importKey('raw') for HMAC keys, HMAC sign and verify, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
+    fns: [
+      "webcrypto.generateKey",
+      "webcrypto.importKey",
+      "webcrypto.exportKey",
+      "webcrypto.encrypt",
+      "webcrypto.decrypt",
+      "webcrypto.wrapKey",
+      "webcrypto.unwrapKey",
+      "webcrypto.deriveBits",
+      "webcrypto.deriveKey",
+      "webcrypto.sign",
+      "webcrypto.verify",
+      "webcrypto.digest",
+    ],
+    note: "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
   },
   {
     id: "stdlib.webcrypto.CryptoKey",
     kind: "stdlib",
     name: "CryptoKey",
     fns: ["webcrypto.isCryptoKey"],
-    note: "secret HMAC keys with type, extractable, algorithm and usages, and instanceof CryptoKey",
+    note: "secret HMAC, AES, PBKDF2 and HKDF keys with type, extractable, algorithm and usages, and instanceof CryptoKey",
   },
   {
     id: "stdlib.atomics",
@@ -2262,6 +2291,8 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
       "date.newLocal",
       "date.nativeNewFields",
       "date.nativeNewValue",
+      "date.argumentsTime",
+      "date.classOperation",
     ],
     note: "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice",
   },
@@ -3054,30 +3085,16 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   crypto: {
     ...Object.fromEntries(
-      [
-        "generateKeyPair",
-        "generateKeyPairSync",
-        "createPrivateKey",
-        "createPublicKey",
-        "createSign",
-        "createVerify",
-        "sign",
-        "verify",
-        "createDiffieHellman",
-        "createDiffieHellmanGroup",
-        "getDiffieHellman",
-        "diffieHellman",
-        "publicEncrypt",
-        "publicDecrypt",
-        "privateEncrypt",
-        "privateDecrypt",
-      ].map((m) => [
+      ["publicEncrypt", "publicDecrypt", "privateEncrypt", "privateDecrypt"].map((m) => [
         m,
-        "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and " +
-          "public and private KeyObjects — neither exists in the static runtime, so no faithful lowering " +
-          "can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics",
+        "RSA encryption has no lowering — the asymmetric crypto surface is " +
+          "RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, " +
+          "createSign, createVerify, createECDH, and createDiffieHellman",
       ]),
     ),
+    diffieHellman:
+      "crypto.diffieHellman takes DH, EC or X25519 KeyObjects and has no lowering; " +
+      "the objects of createDiffieHellman, getDiffieHellman and createECDH compute shared secrets",
     ...Object.fromEntries(
       ["getCipherInfo"].map((m) => [
         m,
@@ -3088,9 +3105,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
     setFips:
       "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
       "in a non-FIPS build — getFips() answers 0 here",
-    webcrypto:
-      "the WebCrypto object has no lowering — the lowered crypto surface is randomUUID, " +
-      "randomBytes, and the createHash chain",
   },
   zlib: {
     brotliCompressSync: BROTLI_HINT,

@@ -42,6 +42,7 @@
  * emit-overrides block at the bottom of this file (per-event
  * monomorphization of the override body, dispatch on the dynamic class,
  * super.emit as the prototype chain). */
+import { keyedHelperName } from "./stable-names.js";
 import { checkKeypressListener } from "./builtins/readline.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
@@ -631,7 +632,7 @@ function lowerFlexListenerCall(
   const key = `emitter.${registering ? "onFlex" : "offDyn"}:${typeKey(recvT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%emitter.${registering ? "onFlex" : "offFlex"}.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%emitter.${registering ? "onFlex" : "offFlex"}`, key);
     lowerer.arrHofHelpers.set(key, helper);
     const params: IrParam[] = [
       { localId: "r.0", name: "r", type: recvT },
@@ -850,7 +851,7 @@ function lowerDynListenerCall(
   const existing = lowerer.arrHofHelpers.get(key);
   let helper = existing;
   if (!helper) {
-    helper = `%emitter.${registering ? "onDyn" : "offDyn"}.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%emitter.${registering ? "onDyn" : "offDyn"}`, key);
     lowerer.arrHofHelpers.set(key, helper);
     const check: IrStmt = {
       kind: "exprStmt",
@@ -1000,7 +1001,7 @@ export function lowerDynamicEmitterEmit(
   const key = `emitter.dynEmit:${typeKey(recvT)}:${k}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%emitter.dynEmit.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%emitter.dynEmit", key);
     lowerer.arrHofHelpers.set(key, helper);
     const params: IrParam[] = [
       { localId: "r.0", name: "r", type: recvT },
@@ -1092,7 +1093,7 @@ export function lowerDynamicEmitterOn(
   const key = `emitter.dynOn:${typeKey(recvT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%emitter.dynOn.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%emitter.dynOn", key);
     lowerer.arrHofHelpers.set(key, helper);
     const params: IrParam[] = [
       { localId: "r.0", name: "r", type: recvT },
@@ -1457,10 +1458,11 @@ export function lowerEmitterMethodCall(
     const receiver = lowerReceiver();
     const once = member === "once" || member === "prependOnceListener";
     const prepend = member === "prependListener" || member === "prependOnceListener";
-    // Stream 'data' rides its own two-slot payload ABI (bytes + string —
-    // encoded streams deliver strings; scr_stream_emit_data): listeners
-    // on readable-sided receivers register through DATA thunks that
-    // unwrap the declared side (typed) or box by tag (dyn).
+    // Stream 'data' rides its own three-slot payload ABI (bytes, string —
+    // encoded streams deliver strings — and an object-mode value;
+    // scr_stream_emit_data): listeners on readable-sided receivers
+    // register through DATA thunks that unwrap the declared side, convert
+    // to the declared type, or take the value (dyn).
     const sides = streamSidesOf(lowerer, info);
     if (name === "data" && (sides === "r" || sides === "rw")) {
       const dynFlavor = dynListenerFlavor(lowerer, args[1]!);
@@ -1499,16 +1501,25 @@ export function lowerEmitterMethodCall(
         (lowerer.unions.get(p.unionId)?.arms ?? []).every(
           (arm) => (arm.kind === "bytes" && arm.elem === "u8") || arm.kind === "string",
         );
+      // Any other chunk type converts from the chunk's value (an
+      // object-mode stream's value, or the Buffer or string) when the
+      // listener runs, or throws a TypeError there.
       if (
         p !== undefined &&
         !(p.kind === "bytes" && p.elem === "u8") &&
         p.kind !== "string" &&
-        !chunkUnion
+        !chunkUnion &&
+        (p.kind === "func" ||
+          !canConvertToDyn(
+            p,
+            (id) => lowerer.shapes.get(id),
+            (id) => lowerer.unions.get(id),
+          ))
       ) {
         lowerer.noLowering(
           `a 'data' listener whose chunk parameter is '${lowerer.fmt(p)}'`,
           args[1]!,
-          "chunks are Buffers — or strings once setEncoding/the encoding option applies",
+          "declare the chunk as a type that converts from a checked-dynamic value",
         );
       }
       if (!registering) {
@@ -1653,8 +1664,10 @@ export function lowerEmitterMethodCall(
         loc,
       );
     }
-    // Stream 'data' rides the two-slot payload ABI: a user emit fills
-    // the chunk's slot (bytes or string), NULLs the other.
+    // Stream 'data' rides the three-slot payload ABI: a user emit fills
+    // the chunk's slot (bytes or string) and NULLs the others; any other
+    // value is emitted as a checked-dynamic value, filling the slots by
+    // its tag.
     const emitSides = streamSidesOf(lowerer, info);
     if (name === "data" && (emitSides === "r" || emitSides === "rw")) {
       if (args.length !== 2) {
@@ -1664,16 +1677,27 @@ export function lowerEmitterMethodCall(
           "the event carries one chunk (a Buffer or string)",
         );
       }
-      const chunk = lowerer.lowerExpr(args[1]!);
+      let chunk = lowerer.lowerExpr(args[1]!);
       if (
         !(chunk.type.kind === "bytes" && chunk.type.elem === "u8") &&
         chunk.type.kind !== "string"
       ) {
-        lowerer.noLowering(
-          `emit('data') with a '${lowerer.fmt(chunk.type)}' chunk`,
-          args[1]!,
-          "chunks are Buffers or strings",
-        );
+        if (
+          chunk.type.kind === "func" ||
+          (chunk.type.kind !== "dyn" &&
+            !canConvertToDyn(
+              chunk.type,
+              (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
+            ))
+        ) {
+          lowerer.noLowering(
+            `emit('data') with a '${lowerer.fmt(chunk.type)}' chunk`,
+            args[1]!,
+            "the chunk is a value that converts to a checked-dynamic value",
+          );
+        }
+        chunk = lowerer.coerceToExpected(chunk, DYN);
       }
       return {
         kind: "libCall",
@@ -2359,7 +2383,7 @@ function emitDispatchExpr(
   const key = `emitter.emitDispatch:${typeKey(recvT)}:${name}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%emitter.emitDispatch.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%emitter.emitDispatch", key);
     lowerer.arrHofHelpers.set(key, helper);
     const params: IrParam[] = [
       { localId: "r.0", name: "r", type: recvT },
@@ -2424,7 +2448,7 @@ function eventsOnceBoxer(
   const key = `eventsOnce:${typeKey(fnType)}`;
   let name = lowerer.valueHelpers.get(key);
   if (name === undefined) {
-    name = `%events.onceArgs.${lowerer.valueHelpers.size}`;
+    name = keyedHelperName(lowerer, "%events.onceArgs", key);
     lowerer.valueHelpers.set(key, name);
     const params: IrParam[] = tuple.map((type, i) => ({
       localId: `%once.a${i}`,
