@@ -11594,10 +11594,23 @@ function lowerForInArray(
   try {
     const arr = lowerer.declareHiddenLocal("%inarr", arrExpr.type);
     const len = lowerer.declareHiddenLocal("%inlen", F64);
+    const keysT: IrType = { kind: "array", elem: STRING };
+    const keys = lowerer.declareHiddenLocal("%inkeys", keysT);
+    const total = lowerer.declareHiddenLocal("%intotal", F64);
     const i = lowerer.declareHiddenLocal("%ini", F64);
     i.mutable = true;
     const arrRef = (): IrExpr => ({ kind: "varRef", localId: arr.id, type: arrExpr.type, loc });
+    const keysRef = (): IrExpr => ({ kind: "varRef", localId: keys.id, type: keysT, loc });
+    const lenRef = (): IrExpr => ({ kind: "varRef", localId: len.id, type: F64, loc });
     const iRef = (): IrExpr => ({ kind: "varRef", localId: i.id, type: F64, loc });
+    const isIndex = (): IrExpr => ({
+      kind: "bin",
+      op: "<",
+      left: iRef(),
+      right: lenRef(),
+      type: BOOL,
+      loc,
+    });
     const liveLen = (): IrExpr => ({
       kind: "arrIntrinsic",
       method: "length",
@@ -11606,7 +11619,52 @@ function lowerForInArray(
       type: F64,
       loc,
     });
-    const keyInit: IrExpr = { kind: "toString", operand: iRef(), type: STRING, loc };
+    // Indices first, then the named keys the array had when the loop began.
+    const namedKey = (): IrExpr => ({
+      kind: "arrayGet",
+      arr: keysRef(),
+      index: { kind: "bin", op: "-", left: iRef(), right: lenRef(), type: F64, loc },
+      type: STRING,
+      loc,
+    });
+    const keyInit: IrExpr = {
+      kind: "ternary",
+      cond: isIndex(),
+      then: { kind: "toString", operand: iRef(), type: STRING, loc },
+      else_: namedKey(),
+      type: STRING,
+      loc,
+    };
+    // An index is visited while it is below the live length and not a hole,
+    // a named key while the array still has it.
+    const visits: IrExpr = {
+      kind: "ternary",
+      cond: isIndex(),
+      then: {
+        kind: "logical",
+        op: "&&",
+        left: { kind: "bin", op: "<", left: iRef(), right: liveLen(), type: BOOL, loc },
+        right: {
+          kind: "bin",
+          op: "!==",
+          left: { kind: "arrayState", arr: arrRef(), index: iRef(), type: F64, loc },
+          right: { kind: "numLit", value: 0, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      else_: {
+        kind: "libCall",
+        fn: "array.hasNamedKey",
+        args: [arrRef(), namedKey()],
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
 
     // The three binding forms, sharing the per-visit key declaration.
     let keyDecl: IrStmt;
@@ -11671,6 +11729,32 @@ function lowerForInArray(
         { kind: "varDecl", localId: arr.id, init: arrExpr, loc },
         { kind: "varDecl", localId: len.id, init: liveLen(), loc },
         {
+          kind: "varDecl",
+          localId: keys.id,
+          init: { kind: "libCall", fn: "array.namedKeys", args: [arrRef()], type: keysT, loc },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: total.id,
+          init: {
+            kind: "bin",
+            op: "+",
+            left: lenRef(),
+            right: {
+              kind: "arrIntrinsic",
+              method: "length",
+              receiver: keysRef(),
+              args: [],
+              type: F64,
+              loc,
+            },
+            type: F64,
+            loc,
+          },
+          loc,
+        },
+        {
           kind: "for",
           init: {
             kind: "varDecl",
@@ -11682,7 +11766,7 @@ function lowerForInArray(
             kind: "bin",
             op: "<",
             left: iRef(),
-            right: { kind: "varRef", localId: len.id, type: F64, loc },
+            right: { kind: "varRef", localId: total.id, type: F64, loc },
             type: BOOL,
             loc,
           },
@@ -11702,7 +11786,7 @@ function lowerForInArray(
           body: [
             {
               kind: "if",
-              cond: { kind: "bin", op: "<", left: iRef(), right: liveLen(), type: BOOL, loc },
+              cond: visits,
               then: [keyDecl, ...writes, ...body],
               else_: null,
               loc,

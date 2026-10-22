@@ -176,6 +176,7 @@ export function streamTypedRefCommitAdapter(
     const check = host.dyn.dynCheckHelper(t);
     host.declare(`declare void @scr_arr_release(ptr)`);
     host.declare(`declare void @scr_arr_outline(ptr)`);
+    host.declare(`declare void @scr_arr_adopt_view_properties(ptr, ptr, ptr)`);
     const lines = [
       `define internal void @${commit}(ptr %target, ptr %d) ${FN_ATTRS} { ; commit live stream element ${typeKey(t)}`,
       `entry:`,
@@ -183,6 +184,8 @@ export function streamTypedRefCommitAdapter(
       `  %missing = icmp eq ptr %next, null`,
       `  br i1 %missing, label %done, label %swap`,
       `swap:`,
+      // Properties move with the storage (in its out-of-line part).
+      `  call void @scr_arr_adopt_view_properties(ptr %next, ptr %d, ptr %target)`,
       // Inline slots live in each header's block; move them out first.
       `  call void @scr_arr_outline(ptr %target)`,
       `  call void @scr_arr_outline(ptr %next)`,
