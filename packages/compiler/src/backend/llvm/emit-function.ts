@@ -1117,8 +1117,11 @@ export function emitAsyncAwaitCall(
       ``,
     ];
   }
-  emitter.declare(`declare void @scr_async_inline_enter(ptr)`);
-  emitter.declare(`declare void @scr_async_inline_exit(ptr)`);
+  const framed = emitter.fiberlessFrames;
+  if (framed) {
+    emitter.declare(`declare void @scr_async_inline_enter(ptr)`);
+    emitter.declare(`declare void @scr_async_inline_exit(ptr)`);
+  }
   emitter.declare(`declare void @scr_await_hop()`);
   emitter.declare(`declare ptr @scr_promise_new()`);
   emitter.declare(`declare void @scr_promise_reject_pending(ptr)`);
@@ -1127,11 +1130,12 @@ export function emitAsyncAwaitCall(
   const out = [
     head,
     `entry:`,
-    `  %frame = alloca { ptr, ptr }`,
-    `  call void @scr_async_inline_enter(ptr %frame)`,
+    ...(framed
+      ? [`  %frame = alloca { ptr, ptr }`, `  call void @scr_async_inline_enter(ptr %frame)`]
+      : []),
     retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`,
     ...emitter.pendingTestLines("%pend"),
-    `  call void @scr_async_inline_exit(ptr %frame)`,
+    ...(framed ? [`  call void @scr_async_inline_exit(ptr %frame)`] : []),
     // Adopting: the then job's turn comes before the settled promise's
     // own reaction, whichever way the body completed.
     ...(adopt ? [`  call void @scr_await_hop()`] : []),

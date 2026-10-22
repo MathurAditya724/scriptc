@@ -62,7 +62,9 @@ test("awaiting a direct call to a body that never suspends skips the promise", a
   expect(definition(llvm, "sc_f_middle")).toContain("call double @sc_aw_leaf(double");
   const entry = definition(llvm, "sc_aw_leaf");
   expect(entry).toContain("call double @sc_f_leaf(double %a0)");
-  expect(entry).toContain("call void @scr_async_inline_exit(ptr %frame)");
+  // Nothing here enters an AsyncLocalStorage store or reads a stack, so the
+  // body runs with a plain call (fiberlessFrames).
+  expect(entry).not.toContain("@scr_async_inline_enter");
   // The clean result takes the await's microtask turn and returns directly;
   // only the throw path builds the rejected promise.
   const clean = entry.slice(entry.indexOf("clean:"), entry.indexOf("thrown:"));
@@ -122,10 +124,10 @@ test("returning a direct call adopts its promise one microtask turn later", asyn
   // A body that never suspends: the adoption's then-job turn, then the
   // settled promise's own turn, still without materializing the promise.
   const entry = definition(llvm, "sc_ad_leaf");
-  const exit = entry.indexOf("call void @scr_async_inline_exit(ptr %frame)");
+  const body = entry.indexOf("call double @sc_f_leaf(double %a0)");
   const hop = entry.indexOf("call void @scr_await_hop()");
-  expect(exit).toBeGreaterThan(0);
-  expect(hop).toBeGreaterThan(exit);
+  expect(body).toBeGreaterThan(0);
+  expect(hop).toBeGreaterThan(body);
   expect(hop).toBeLessThan(entry.indexOf("clean:"));
   const clean = entry.slice(entry.indexOf("clean:"), entry.indexOf("thrown:"));
   expect(clean).toContain("call void @scr_await_hop()");
@@ -190,7 +192,7 @@ test("bodies that suspend only at their own awaits compile to stackless coroutin
   expect(middle).toContain("call double @sc_ai_leaf(double");
   const inline = definition(llvm, "sc_ai_leaf");
   expect(inline).toContain("call double @sc_f_leaf(double %a0)");
-  expect(inline).toContain("call void @scr_async_inline_exit(ptr %frame)");
+  expect(inline).not.toContain("@scr_async_inline_enter");
   expect(middle).toContain("call zeroext i1 @scr_coro_hop_prepare(ptr");
   expect(middle).toContain("call void @scr_promise_reject_pending(ptr");
   expect(middle).toContain("call void @scr_coro_async_finish(ptr");
@@ -205,6 +207,58 @@ test("bodies that suspend only at their own awaits compile to stackless coroutin
   const entry = definition(llvm, "sc_aw_middle");
   expect(entry).toContain("call ptr @sc_as_middle(double %a0)");
   expect(entry).toContain("call double @scr_await_f64(ptr %p)");
-  // A body that never suspends stays fiberless.
-  expect(definition(llvm, "sc_as_leaf")).toContain("@scr_async_inline_enter(");
+  // A body that never suspends stays fiberless: its spawn wrapper calls the
+  // body and settles a fresh promise.
+  const spawn = definition(llvm, "sc_as_leaf");
+  expect(spawn).toContain("call double @sc_f_leaf(double %a0)");
+  expect(spawn).toContain("call ptr @scr_promise_new()");
+  expect(spawn).not.toContain("@scr_async_spawn");
+});
+
+const framedSources = {
+  // Entering a store makes the frame isolate the AsyncLocalStorage context.
+  context: `
+import { AsyncLocalStorage } from "node:async_hooks";
+const store = new AsyncLocalStorage<string>();
+async function leaf(x: number): Promise<number> {
+  store.enterWith("leaf");
+  return x + 1;
+}`,
+  // Reading a stack makes the frame isolate the Error.stack frame chain.
+  stack: `
+async function leaf(x: number): Promise<number> {
+  if (x < 0) console.log(new Error("negative").stack);
+  return x + 1;
+}`,
+};
+
+test("fiberless bodies keep their frame where it isolates a context or a stack", async () => {
+  for (const [name, prefix] of Object.entries(framedSources)) {
+    const llvm = await emit(`${prefix}
+async function slow(x: number): Promise<number> {
+  await null;
+  return x;
+}
+async function coroutine(x: number): Promise<number> {
+  return (await slow(x)) + (await leaf(x));
+}
+async function* tick(): AsyncGenerator<number, void, undefined> {
+  yield 0;
+}
+async function fibered(x: number): Promise<number> {
+  for await (const t of tick()) x += t;
+  return await leaf(x);
+}
+async function main(): Promise<void> {
+  const pending = leaf(1);
+  console.log((await coroutine(2)) + (await fibered(3)) + (await pending));
+}
+void main();
+`);
+    for (const symbol of ["sc_ai_leaf", "sc_aw_leaf", "sc_as_leaf"]) {
+      expect(definition(llvm, symbol), `${name} ${symbol}`).toContain(
+        "call void @scr_async_inline_enter(ptr %frame)",
+      );
+    }
+  }
 });
