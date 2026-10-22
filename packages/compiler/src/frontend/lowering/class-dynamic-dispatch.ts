@@ -510,10 +510,11 @@ function receiverIndex(lowerer: Lowerer, plans: readonly PropertyReceiver[]): Re
           position,
         );
       }
-      for (const name of c.genericMethods?.keys() ?? []) {
-        add(methods, name, position);
-        add(members, name, position);
-      }
+      if (c.genericMethods)
+        for (const name of c.genericMethods.keys()) {
+          add(methods, name, position);
+          add(members, name, position);
+        }
     }
     for (const name of info.fields.keys()) add(members, name, position);
   });
@@ -1430,9 +1431,8 @@ export class ClassDynamicDispatch {
     ): readonly PropertyReceiver[] => {
       if (name.startsWith("emit:")) return plans;
       const found = indexOf(plans);
-      return mergePositions(found[table].get(name) ?? [], found.rooted).map(
-        (position) => plans[position]!,
-      );
+      const positions = (table === "methods" ? found.methods : found.members).get(name);
+      return mergePositions(positions ?? [], found.rooted).map((position) => plans[position]!);
     };
     const candidates = (method: string): ClassInfo[] => {
       const found = byMethod.get(method);
