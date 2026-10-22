@@ -155,6 +155,13 @@ function formatDate(date: number): number {
   return Math.round(date);
 }
 
+/** console.error of an arbitrary value, as hot-shots logs errors. The
+ * value crosses as unknown: the typed Error path has no inspect lowering
+ * in programs whose Error subclasses define accessors. */
+function logError(value: unknown): void {
+  console.error(value);
+}
+
 function errorWithCode(message: string, code: string | undefined): Error {
   const error: NodeJS.ErrnoException = new Error(message);
   error.code = code;
@@ -1013,7 +1020,7 @@ export class StatsD {
     this.flushQueue((err) => {
       if (err) {
         if (callback) return callback(err);
-        console.error(err);
+        logError(err);
         return;
       }
       let intervalAttempts = 0;
