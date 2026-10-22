@@ -47,14 +47,23 @@ export interface IterableUnion {
 
 /** The iterable union `t` names, or null. */
 export function iterableUnionOf(lowerer: Lowerer, t: IrType): IterableUnion | null {
+  const info = iterableSlotUnionOf(lowerer, t);
+  // An optional Iterable (`Iterable<T> | undefined`) is consumed only once
+  // narrowed to the iterable union itself.
+  if (info === null || info.arms.some((arm) => arm.kind === "undefinedT" || arm.kind === "nullT"))
+    return null;
+  return info;
+}
+
+/** The iterable union `t` names, also an optional or nullable one
+ * (`Iterable<T> | undefined`, whose unit arms sit beside the iterable
+ * arms), or null. */
+function iterableSlotUnionOf(lowerer: Lowerer, t: IrType): IterableUnion | null {
   if (t.kind !== "union") return null;
   const arms = lowerer.unions.get(t.unionId)?.arms;
   if (!arms) return null;
   const elem = iterableArmsElem(arms);
-  // An optional Iterable (`Iterable<T> | undefined`) is consumed only once
-  // narrowed to the iterable union itself.
-  if (elem === null || arms.some((arm) => arm.kind === "undefinedT" || arm.kind === "nullT"))
-    return null;
+  if (elem === null) return null;
   const gen = arms.find((arm) => arm.kind === "generator") as GenType;
   return { unionId: t.unionId, type: t, elem, arms, gen };
 }
@@ -65,13 +74,14 @@ export function iterableGeneratorArm(lowerer: Lowerer, t: IrType): IrType {
   return iterableUnionOf(lowerer, t)?.gen ?? t;
 }
 
-/** A value flowing into an iterable-typed slot: a source arm wraps as
- * itself; a generator over other channel types or a checked-dynamic
- * iterator (a Map or Set iterator) adapts into the generator arm. Null
- * when neither applies, leaving the ordinary conversion fences to refuse
- * other sources (class iterables, typed arrays, other element types). */
+/** A value flowing into an iterable-typed slot, optional or nullable
+ * ones included: a source arm wraps as itself; a generator over other
+ * channel types or a checked-dynamic iterator (a Map or Set iterator)
+ * adapts into the generator arm. Null when neither applies, leaving the
+ * ordinary conversion fences to refuse other sources (class iterables,
+ * typed arrays, other element types). */
 export function iterableSlotValue(lowerer: Lowerer, expr: IrExpr, expected: IrType): IrExpr | null {
-  const info = iterableUnionOf(lowerer, expected);
+  const info = iterableSlotUnionOf(lowerer, expected);
   if (info === null || expr.type.kind === "union") return null;
   const wrap = (value: IrExpr): IrExpr => ({
     kind: "unionWrap",
@@ -232,8 +242,11 @@ export function lowerForOfIterable(
       iterableGenerator(lowerer, source, info) as IrExpr & { type: GenType },
       labels,
     );
-  if (stmt.awaitModifier || declaresClass(stmt.statement)) return generatorLoop(iterable);
   const arrayTag = info.arms.findIndex((arm) => arm.kind === "array");
+  // A union without an array arm (`Set<T> | Generator<T>`) has only the
+  // generator loop.
+  if (stmt.awaitModifier || declaresClass(stmt.statement) || arrayTag < 0)
+    return generatorLoop(iterable);
   const arrT = info.arms[arrayTag]!;
   lowerer.scopes.push(new Map());
   try {
