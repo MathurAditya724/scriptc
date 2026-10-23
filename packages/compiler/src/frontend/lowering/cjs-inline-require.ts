@@ -31,6 +31,7 @@ import {
   requireBindingEarlyUse7,
   requireSpecOf,
   resolveImport,
+  splitRequireCallOf,
 } from "../program.js";
 import { createRequireCalleeFileOf } from "./builtins/module-bindings.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
@@ -172,6 +173,10 @@ function computeSplitRequireBinding(
 
   const req = inlineProgramRequireOf(lowerer, assign.right);
   if (req === null) return null;
+  // Preflight treats the same bindings as require declarations (module edge,
+  // cycle admission, early-read fence); a binding it does not know keeps
+  // ordinary storage.
+  if (splitRequireCallOf(lowerer.program, decl) !== req.call) return null;
 
   // Any other write makes the value depend on runtime control flow.
   let writes = 0;

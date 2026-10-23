@@ -325,13 +325,14 @@ console.log(cells.join(","));
     );
   });
 
-  test("a split require closing a CommonJS cycle throws the partial-exports fence", async () => {
+  test("a split require closing a CommonJS cycle keeps the const form's SC1016", async () => {
     // Node answers the closing require with the dependency's partial exports
     // ({ fromA: 1 } at this point), which the static export model cannot
-    // represent. The split assignment must hit the same fence as an inline
-    // require in expression position instead of reading uninitialized
-    // export storage.
-    const r = await compileAndRun(
+    // represent. Preflight treats the split assignment like `const a =
+    // require("./a.cjs")`, so the cycle keeps that form's SC1016 instead of
+    // reading uninitialized export storage. A cycle whose reads are all deferred
+    // compiles (tests/corpus/split-cjs-require-cycle).
+    const r = compileAndRun(
       "split-require-cycle",
       `require("./a.cjs");
 `,
@@ -348,10 +349,8 @@ console.log(a.fromA, a.fromB);
 `,
       },
     );
-    expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("");
-    expect(r.stderr).toMatch(
-      /^Uncaught Error: require\(\) of '\.\/a\.cjs' while it is still evaluating \(a require cycle: Node answers its partial exports, which the static export table does not model\) is not supported yet \[SC1090 at .*b\.cjs:3\]\n$/,
+    await expect(r).rejects.toThrow(
+      /SC1016: circular imports \(.*a\.cjs → .*b\.cjs → .*a\.cjs; the cycle closes through a require\(\) edge/,
     );
   });
 
@@ -879,7 +878,7 @@ describe("unimplemented cipher names", () => {
     const r = await compileAndRun(
       "cipher-computed-name",
       `import { createCipheriv } from "node:crypto";
-const mode = ["c", "c", "m"].join("");
+const mode = ["o", "c", "b"].join("");
 try {
   createCipheriv("aes-128-" + mode, Buffer.alloc(16), Buffer.alloc(12));
 } catch (error) {
@@ -896,11 +895,38 @@ try {
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
-      "Error SC2020 The cipher 'aes-128-ccm' has no native implementation; the supported ciphers are " +
-        "aes-128, aes-192 and aes-256 in cbc, ctr, gcm, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede3 in " +
-        "cbc, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede in cbc, ecb, cfb and ofb modes, chacha20 and " +
-        "chacha20-poly1305\n" +
+      "Error SC2020 The cipher 'aes-128-ocb' has no native implementation; the supported ciphers are " +
+        "aes-128, aes-192 and aes-256 in cbc, ctr, gcm, ccm, ecb, cfb, cfb8, cfb1 and ofb modes and their " +
+        "wrap, wrap-pad, wrap-inv and wrap-pad-inv key wraps, des-ede3 in cbc, ecb, cfb, cfb8, cfb1 and " +
+        "ofb modes, des-ede in cbc, ecb, cfb and ofb modes, chacha20 and chacha20-poly1305\n" +
         "Error ERR_CRYPTO_UNKNOWN_CIPHER Unknown cipher\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
+// getCipherInfo's result is Node's info object; CipherInfo declares nid as
+// required, and Node reports the SIV ciphers without one.
+describe("getCipherInfo through CipherInfo", () => {
+  test("a typed read of a missing nid throws a TypeError", async () => {
+    const r = await compileAndRun(
+      "cipher-info-no-nid",
+      `import { getCipherInfo } from "node:crypto";
+const siv = getCipherInfo("aes-128-siv")!;
+console.log(JSON.stringify(siv), getCipherInfo("aes-128-gcm")?.nid);
+try {
+  const nid: number = siv.nid;
+  console.log(nid);
+} catch (error) {
+  const e = error as Error;
+  console.log(e.name, e.message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"mode":"siv","name":"aes-128-siv","blockSize":1,"keyLength":32} 895\n' +
+        "TypeError expected number at $, got undefined\n",
     );
     expect(r.stderr).toBe("");
   });
@@ -1150,6 +1176,41 @@ try {
       "Error SC2020 An output encoding that is a function or an instance of a class defining toString has no lowering; " +
       "pass the encoding name as a string\n";
     expect(r.stdout).toBe(message + message);
+    expect(r.stderr).toBe("");
+  });
+});
+
+// getCipherInfo reads keyLength and ivLength through getters, which a
+// class instance's accessors are not visible to from the runtime, so a
+// class that defines either throws a coded SC2020 error.
+describe("getCipherInfo options whose class defines keyLength or ivLength", () => {
+  test("throw SC2020 after the argument checks", async () => {
+    const r = await compileAndRun(
+      "cipher-info-class-options",
+      `import { getCipherInfo } from "node:crypto";
+class Options {
+  get keyLength(): number {
+    return 17;
+  }
+}
+const options: any = new Options();
+const names: any[] = ["aes-128-cbc", 1.5];
+for (const name of names) {
+  try {
+    getCipherInfo(name, options);
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 getCipherInfo options whose class defines keyLength or ivLength have no lowering; " +
+        "pass an object with those properties\n" +
+        'RangeError ERR_OUT_OF_RANGE The value of "nameOrNid" is out of range. It must be an integer. Received 1.5\n',
+    );
     expect(r.stderr).toBe("");
   });
 });
