@@ -179,6 +179,16 @@ bool TakeFunction(Isolate *isolate, Local<Context> context, Local<Object> from, 
   return true;
 }
 
+uint32_t ExportIdOf(Isolate *isolate, Local<Context> context, Local<Value> v);
+
+// isExport(value): whether a value is the representative of a native value
+// (NI-5), for the bootstrap's structuredClone of native data.
+void IsExport(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  info.GetReturnValue().Set(info.Length() > 0 &&
+                            ExportIdOf(isolate, isolate->GetCurrentContext(), info[0]) != 0);
+}
+
 char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *argv0,
             uintptr_t stack_limit) {
   if (g_setup) return nullptr;
@@ -237,6 +247,7 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
   SetMethod(context, native, "settle", Settle);
   SetMethod(context, native, "run", Run);
   SetMethod(context, native, "listen", Listen);
+  SetMethod(context, native, "isExport", IsExport);
   global->Set(context, Utf8(isolate, "__scriptcNodeIslandHost"), native).Check();
   TryCatch try_catch(isolate);
   if (node::LoadEnvironment(g_setup->env(), bootstrap).IsEmpty()) {

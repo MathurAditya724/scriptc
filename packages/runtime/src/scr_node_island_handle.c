@@ -1141,6 +1141,58 @@ ScrDyn *scr_ni_value_in(const ScrNodeValue *v) {
   return d != NULL ? d : scr_dyn_retain(scr_dyn_undefined());
 }
 
+/* ── island arrays as copies (results typed as arrays of copied values) ─
+ * An island array whose declared native type is an array of primitives or
+ * strings (or arrays of those) crosses as a copy of its elements, the
+ * values the checked cast then meets; nested island arrays copy too, any
+ * other value (a native export coming back, an island object) is itself. */
+ScrDyn *scr_node_island_copy_arrays(ScrDyn *value) {
+  ScrNodeRef *ref = nh_ref_of(value);
+  if (ref == NULL || (ref->flags & SCR_NVF_ARRAY) == 0) return scr_dyn_retain(value);
+  ScrDyn *len = scr_ni_get_str(value, "length", 6);
+  if (len == NULL) return NULL;
+  double n = len->kind == SCR_DYN_NUM ? len->v.num : 0;
+  scr_dyn_release(len);
+  ScrDyn *out = scr_dyn_new_arr();
+  for (double i = 0; i < n; i++) {
+    ScrDyn *key = scr_dyn_new_num(i);
+    ScrDyn *element = scr_ni_get(value, key);
+    scr_dyn_release(key);
+    ScrDyn *copy = element != NULL ? scr_node_island_copy_arrays(element) : NULL;
+    scr_dyn_release(element);
+    if (copy == NULL) {
+      scr_dyn_release(out);
+      return NULL;
+    }
+    scr_dyn_arr_push(out, copy);
+  }
+  return out;
+}
+
+static void nh_copy_fulfilled(ScrPromise *dst, ScrPromise *src) {
+  ScrDyn *payload = scr_promise_payload_is_dyn(src) ? (ScrDyn *)scr_promise_payload_ref(src)
+                                                    : scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *copy = scr_node_island_copy_arrays(payload);
+  scr_dyn_release(payload);
+  if (copy == NULL) {
+    scr_promise_reject_pending(dst);
+    return;
+  }
+  scr_promise_fulfill_ref(dst, copy, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+}
+
+/* `await` of an island promise whose declared result holds arrays: the
+ * fulfillment value's island arrays copied (inside the settlement, so no
+ * reaction turn is added), rejections as they are. +1 promise<dyn>. */
+ScrPromise *scr_node_island_await_copy(ScrDyn *value) {
+  ScrPromise *src = scr_ni_await(value);
+  ScrPromise *dst = scr_promise_new();
+  scr_promise_mark_handled(src);
+  scr_promise_race_add(dst, src, nh_copy_fulfilled);
+  scr_promise_release(src);
+  return dst;
+}
+
 uint32_t scr_ni_live_handles(void) {
   const ScrNodeBridge *b = scr_ni_bridge_loaded();
   if (b == NULL) return 0;
