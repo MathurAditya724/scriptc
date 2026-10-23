@@ -1618,7 +1618,9 @@ function holdsReference(lowerer: Lowerer, t: IrType, seen = new Set<string>()): 
   if (t.kind === "record" || t.kind === "array") return true;
   if (t.kind !== "union" || seen.has(t.unionId)) return false;
   seen.add(t.unionId);
-  return lowerer.unions.get(t.unionId)?.arms.some((arm) => holdsReference(lowerer, arm, seen)) ?? false;
+  return (
+    lowerer.unions.get(t.unionId)?.arms.some((arm) => holdsReference(lowerer, arm, seen)) ?? false
+  );
 }
 
 /** `(<package expr> as __scriptc_decl_N)`: check the dynamic value against
@@ -1654,7 +1656,13 @@ function declBoundaryCast(
       {
         kind: "varDecl",
         localId: value.id,
-        init: { kind: "dynCheck", value: varRef(source.id, DYN, loc), adopt: true, type: target, loc },
+        init: {
+          kind: "dynCheck",
+          value: varRef(source.id, DYN, loc),
+          adopt: true,
+          type: target,
+          loc,
+        },
         loc,
       },
       {
@@ -1664,7 +1672,13 @@ function declBoundaryCast(
           fn: "dyn.declAdopt",
           args: [
             varRef(source.id, DYN, loc),
-            { kind: "dynFrom", value: varRef(value.id, target, loc), liveRef: true, type: DYN, loc },
+            {
+              kind: "dynFrom",
+              value: varRef(value.id, target, loc),
+              liveRef: true,
+              type: DYN,
+              loc,
+            },
           ],
           type: VOID,
           loc,

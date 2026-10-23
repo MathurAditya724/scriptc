@@ -316,7 +316,8 @@ function isWriteTarget(node: ts.Node): boolean {
     return op === ts.SyntaxKind.PlusPlusToken || op === ts.SyntaxKind.MinusMinusToken;
   }
   if (ts.isDeleteExpression(parent)) return true;
-  if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) return parent.initializer === child;
+  if (ts.isForOfStatement(parent) || ts.isForInStatement(parent))
+    return parent.initializer === child;
   if (ts.isShorthandPropertyAssignment(parent)) return true;
   if (
     ts.isArrayLiteralExpression(parent) ||
@@ -325,9 +326,19 @@ function isWriteTarget(node: ts.Node): boolean {
   ) {
     // Destructuring assignment targets: conservative, skip.
     let up: ts.Node | undefined = parent;
-    while (up !== undefined && (ts.isArrayLiteralExpression(up) || ts.isObjectLiteralExpression(up) || ts.isPropertyAssignment(up) || ts.isSpreadElement(up)))
+    while (
+      up !== undefined &&
+      (ts.isArrayLiteralExpression(up) ||
+        ts.isObjectLiteralExpression(up) ||
+        ts.isPropertyAssignment(up) ||
+        ts.isSpreadElement(up))
+    )
       up = up.parent;
-    if (up !== undefined && ts.isBinaryExpression(up) && up.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+    if (
+      up !== undefined &&
+      ts.isBinaryExpression(up) &&
+      up.operatorToken.kind === ts.SyntaxKind.EqualsToken
+    )
       return true;
   }
   return false;
@@ -469,21 +480,27 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
     const considerExpr = (jsNode: ts.Node, declNode: ts.Node): void => {
       if (!ts.isExpression(jsNode)) return;
       const isCall =
-        ts.isCallExpression(jsNode) || ts.isNewExpression(jsNode) || ts.isTaggedTemplateExpression(jsNode);
-      const isAccess = ts.isPropertyAccessExpression(jsNode) || ts.isElementAccessExpression(jsNode);
+        ts.isCallExpression(jsNode) ||
+        ts.isNewExpression(jsNode) ||
+        ts.isTaggedTemplateExpression(jsNode);
+      const isAccess =
+        ts.isPropertyAccessExpression(jsNode) || ts.isElementAccessExpression(jsNode);
       const isAwait = ts.isAwaitExpression(jsNode);
       if (!isCall && !isAccess && !isAwait && !ts.isIdentifier(jsNode)) return;
       if (inTypeContext(jsNode) || isCallee(jsNode) || isWriteTarget(jsNode)) return;
       if (inOptionalChain(jsNode)) return;
       const parent = jsNode.parent;
       if (parent !== undefined && ts.isExpressionStatement(parent)) return;
-      if (parent !== undefined && (ts.isImportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent) || ts.isExportSpecifier(parent)))
+      if (
+        parent !== undefined &&
+        (ts.isImportSpecifier(parent) ||
+          ts.isImportClause(parent) ||
+          ts.isNamespaceImport(parent) ||
+          ts.isExportSpecifier(parent))
+      )
         return;
       if (ts.isIdentifier(jsNode)) {
-        if (
-          parent !== undefined &&
-          (ts.isPropertyAccessExpression(parent) && parent.name === jsNode)
-        )
+        if (parent !== undefined && ts.isPropertyAccessExpression(parent) && parent.name === jsNode)
           return;
       }
       const jsType = typeAt(jsChecker, jsNode);
@@ -556,7 +573,8 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
 
     const annotated = new Set<ts.Node>();
     const considerParam = (jsNode: ts.Node, declNode: ts.Node): void => {
-      if (!ts.isParameter(jsNode) || jsNode.type !== undefined || !ts.isIdentifier(jsNode.name)) return;
+      if (!ts.isParameter(jsNode) || jsNode.type !== undefined || !ts.isIdentifier(jsNode.name))
+        return;
       const fn = jsNode.parent;
       if (fn === undefined || !(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))) return;
       if (jsNode.dotDotDotToken !== undefined) return;
@@ -570,7 +588,13 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
         const ctxFn = declChecker.getContextualType(declNode.parent as ts.Expression);
         if (ctxFn === undefined) return;
         const sigs = declChecker.getCallSignatures(ctxFn);
-        if (!sigs.some((s) => s.declaration !== undefined && isPackageDeclarationFile(ts.getSourceFileOfNode(s.declaration))))
+        if (
+          !sigs.some(
+            (s) =>
+              s.declaration !== undefined &&
+              isPackageDeclarationFile(ts.getSourceFileOfNode(s.declaration)),
+          )
+        )
           return;
       } catch {
         return;
@@ -582,7 +606,10 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       const nameStart = ts.tokenStartOfNode(name);
       const text = jsSf.text;
       const bareArrow =
-        ts.isArrowFunction(fn) && fn.parameters.nodes.length === 1 && text[ts.tokenStartOfNode(fn)] !== "(" && text.slice(ts.tokenStartOfNode(fn), nameStart).trim() === "" ;
+        ts.isArrowFunction(fn) &&
+        fn.parameters.nodes.length === 1 &&
+        text[ts.tokenStartOfNode(fn)] !== "(" &&
+        text.slice(ts.tokenStartOfNode(fn), nameStart).trim() === "";
       const afterName = jsNode.questionToken !== undefined ? jsNode.questionToken.end : name.end;
       if (bareArrow) {
         fileEdits.push({ start: nameStart, end: nameStart, text: "(" });
@@ -633,7 +660,11 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
         const decls = sym.declarations;
         if (decls.length === 1) {
           const decl = decls[0]!;
-          if (ts.isVariableDeclaration(decl) && decl.initializer !== undefined && decl.type === undefined)
+          if (
+            ts.isVariableDeclaration(decl) &&
+            decl.initializer !== undefined &&
+            decl.type === undefined
+          )
             result = willBeTyped(decl.initializer, depth + 1);
           else if (ts.isParameter(decl) && annotated.has(decl)) result = true;
           else if (ts.isBindingElement(decl)) result = false;
@@ -675,10 +706,17 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       return found;
     };
     for (const e of kept) {
-      if (!ts.isAwaitExpression(e) && containsKept(e) && (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e))) {
+      if (
+        !ts.isAwaitExpression(e) &&
+        containsKept(e) &&
+        (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e))
+      ) {
         // `a.b.c` with `a.b` wrapped: the outer access reads typed data.
         const recv = receiverOf(e);
-        if (recv !== null && (keptSet.has(unwrapTransparent(recv as ts.Expression)) || willBeTyped(recv)))
+        if (
+          recv !== null &&
+          (keptSet.has(unwrapTransparent(recv as ts.Expression)) || willBeTyped(recv))
+        )
           continue;
       }
       const alias = exprCandidates.get(e)!;
@@ -689,13 +727,19 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       // semicolon continues the previous expression: guard it.
       let up: ts.Node | undefined = e;
       while (up?.parent !== undefined && !ts.isStatement(up.parent)) up = up.parent;
-      if (up?.parent !== undefined && ts.isExpressionStatement(up.parent) && ts.tokenStartOfNode(up.parent) === start)
+      if (
+        up?.parent !== undefined &&
+        ts.isExpressionStatement(up.parent) &&
+        ts.tokenStartOfNode(up.parent) === start
+      )
         prefix = ";(";
       void stmt;
       fileEdits.push({ start, end: start, text: prefix });
       // Closing parts at one position close inner wraps first.
       fileEdits.push({ start: e.end, end: e.end, text: ` as ${alias})`, rank: -start });
-      plan.push(`${file}:${start}: cast ${jsSf.text.slice(start, Math.min(e.end, start + 60)).replace(/\s+/g, " ")} as ${alias}`);
+      plan.push(
+        `${file}:${start}: cast ${jsSf.text.slice(start, Math.min(e.end, start + 60)).replace(/\s+/g, " ")} as ${alias}`,
+      );
     }
 
     if (fileEdits.length === 0) continue;

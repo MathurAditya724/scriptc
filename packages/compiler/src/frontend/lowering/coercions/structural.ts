@@ -290,7 +290,11 @@ export function applyWidthLift(
         throw new InternalCompilerError("lowerer bug: dynIn lift against a non-dyn slot");
       // The declaration-typed boundary keeps user values' identity when
       // they cross into package code (decl-projection.ts).
-      if (lowerer.declBoundary && !/[\\/]node_modules[\\/]/.test(loc.file) && liveBoxable(lowerer, value.type))
+      if (
+        lowerer.declBoundary &&
+        !/[\\/]node_modules[\\/]/.test(loc.file) &&
+        liveBoxable(lowerer, value.type)
+      )
         return { kind: "dynFrom", value, liveRef: true, type: DYN, loc };
       return { kind: "dynFrom", value, type: DYN, loc };
     }
@@ -790,5 +794,7 @@ function liveBoxable(lowerer: Lowerer, t: IrType, seen = new Set<string>()): boo
   if (t.kind === "array") return true;
   if (t.kind !== "union" || seen.has(t.unionId)) return false;
   seen.add(t.unionId);
-  return lowerer.unions.get(t.unionId)?.arms.some((arm) => liveBoxable(lowerer, arm, seen)) ?? false;
+  return (
+    lowerer.unions.get(t.unionId)?.arms.some((arm) => liveBoxable(lowerer, arm, seen)) ?? false
+  );
 }

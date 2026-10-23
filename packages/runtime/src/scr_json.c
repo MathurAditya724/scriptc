@@ -15756,138 +15756,13 @@ bool scr_error_has_key(ScrError *e, const ScrStr *key) {
   return scr_dyn_object_proto_name(key);
 }
 
-/* ── declaration-typed boundary: adoption ───────────────────────────────
- * A boundary cast (decl-projection.ts in the compiler) checks a value
- * package code produced against the type the package's declarations give
- * it and builds the native value. Copying would be observable whenever
- * something else still references a source object or array, so this pass
- * walks the source next to a live capsule of the built value and turns
- * every source node with another holder (rc above one) into a live
- * capsule of the native value built from it: every holder then reads and
- * writes the same native value. Unshared nodes are left to be released
- * with their parent, which no program can tell apart from a move.
- *
- * Phase one checks that every converted node is plain data (the native
- * value has no prototype, accessors, symbol keys or frozen state) and
- * collects the shared ones; it throws the path TypeError before anything
- * changes. Phase two converts the shared nodes in place. Programs without
- * boundary casts never reference this code (the linker drops it). */
-typedef struct {
-  ScrDyn *node;
-  ScrDyn *capsule; /* owned */
-} ScrDeclAdopt;
-
-typedef struct {
-  ScrDeclAdopt *items;
-  size_t len, cap;
-} ScrDeclAdoptList;
-
-static void scr_decl_adopt_push(ScrDeclAdoptList *list, ScrDyn *node, ScrDyn *capsule) {
-  if (list->len == list->cap) {
-    list->cap = list->cap ? list->cap * 2 : 8;
-    list->items = realloc(list->items, list->cap * sizeof *list->items);
-    if (!list->items) scr_trap("scriptc: out of memory\n");
-  }
-  list->items[list->len].node = node;
-  list->items[list->len].capsule = capsule;
-  list->len++;
-}
-
-static bool scr_decl_adopt_plain(const ScrDyn *n, const ScrDynPath *path) {
-  const char *want = NULL;
-  if (n->kind == SCR_DYN_OBJ) {
-    if (n->prototype || n->null_proto || n->v.obj.class_name)
-      want = "a plain object (this value has a prototype)";
-    else if (n->symbol_properties || n->symbol_keys)
-      want = "a plain object (this value has symbol-keyed properties)";
-    else if (n->non_extensible)
-      want = "a plain object (this value is frozen, sealed or not extensible)";
-    else if (n->v.obj.source_access && !n->v.obj.source_identity)
-      want = "a plain object";
-    else {
-      for (size_t i = 0; i < n->v.obj.len && !want; i++) {
-        const ScrDynEntry *e = &n->v.obj.entries[i];
-        if (e->accessor) want = "a plain object (this value has accessor properties)";
-        else if (!e->writable || !e->enumerable || !e->configurable)
-          want = "a plain object (this value has non-default property attributes)";
-      }
-    }
-  } else if (n->kind == SCR_DYN_ARR) {
-    if (n->prototype)
-      want = "a plain array (this value has a prototype)";
-    else if (n->v.arr.properties || n->symbol_properties || n->symbol_keys)
-      want = "a plain array (this value has extra properties)";
-    else if (n->v.arr.sealed || n->v.arr.frozen || n->non_extensible)
-      want = "a plain array (this value is frozen, sealed or not extensible)";
-  }
-  if (!want) return true;
-  scr_dyn_check_fail(path, want, n);
-  return false;
-}
-
-static ScrDyn *scr_decl_capsule_ptr_holder(const ScrDeclAdoptList *list, const ScrDyn *node) {
-  for (size_t i = 0; i < list->len; i++)
-    if (list->items[i].node == node) return list->items[i].capsule;
-  return NULL;
-}
-
-/* `capsule` is owned by the call: pushed or released. */
-static bool scr_decl_adopt_walk(ScrDeclAdoptList *list, ScrDyn *n, ScrDyn *capsule,
-                                const ScrDynPath *path, unsigned depth) {
-  if (!n || (n->kind != SCR_DYN_OBJ && n->kind != SCR_DYN_ARR) || !capsule ||
-      capsule->kind != SCR_DYN_TYPED_REF || capsule == n || depth > 4096) {
-    scr_dyn_release(capsule);
-    return true;
-  }
-  if (!scr_decl_adopt_plain(n, path)) {
-    scr_dyn_release(capsule);
-    return false;
-  }
-  if (n->rc > 1 && n->rc != SIZE_MAX) {
-    ScrDyn *seen = scr_decl_capsule_ptr_holder(list, n);
-    if (seen) {
-      bool same = seen->v.typed_ref.ptr == capsule->v.typed_ref.ptr;
-      scr_dyn_release(capsule);
-      if (!same)
-        scr_dyn_check_fail(path, "a value that is not also stored elsewhere in this value (scriptc builds a separate native copy for each place)", n);
-      return same;
-    }
-    scr_decl_adopt_push(list, n, capsule);
-  }
-  void *ptr = capsule->v.typed_ref.ptr;
-  if (capsule->v.typed_ref.record && capsule->v.typed_ref.array && n->kind == SCR_DYN_OBJ) {
-    const ScrDynTypedRecordOps *ops = (const ScrDynTypedRecordOps *)(const void *)capsule->v.typed_ref.array;
-    for (size_t i = 0; i < ops->count; i++) {
-      if (!ops->has(ptr, i)) continue;
-      const ScrStr *name = ops->names[i];
-      ScrDyn *child = scr_dyn_obj_get(n, name->data, name->len);
-      if (!child || (child->kind != SCR_DYN_OBJ && child->kind != SCR_DYN_ARR)) continue;
-      ScrDynPath p = { path, name->data, 0 };
-      if (!scr_decl_adopt_walk(list, child, ops->get(ptr, i), &p, depth + 1)) {
-        if (!(n->rc > 1 && n->rc != SIZE_MAX)) scr_dyn_release(capsule);
-        return false;
-      }
-    }
-  } else if (!capsule->v.typed_ref.record && !capsule->v.typed_ref.klass &&
-             capsule->v.typed_ref.array && n->kind == SCR_DYN_ARR && !n->v.arr.presence) {
-    const ScrDynTypedArrayOps *ops = capsule->v.typed_ref.array;
-    for (size_t i = 0; i < n->v.arr.len; i++) {
-      ScrDyn *child = n->v.arr.items[i];
-      if (!child || (child->kind != SCR_DYN_OBJ && child->kind != SCR_DYN_ARR)) continue;
-      ScrDynPath p = { path, NULL, i };
-      if (!scr_decl_adopt_walk(list, child, ops->get(ptr, (double)i), &p, depth + 1)) {
-        if (!(n->rc > 1 && n->rc != SIZE_MAX)) scr_dyn_release(capsule);
-        return false;
-      }
-    }
-  }
-  if (!(n->rc > 1 && n->rc != SIZE_MAX)) scr_dyn_release(capsule);
-  return true;
-}
-
-/* Weak collections key a plain object by its node and a capsule by its
- * native identity: move the node's entries to the identity it now has. */
-static bool scr_decl_adopt_rekey(ScrDyn *node, void *ptr) {
+/* ── declaration-typed boundary: in-place capsules ─────────────────────
+ * scr_decl_adopt.c (linked only into programs with boundary casts) turns a
+ * shared source node into a live capsule of the native value built from
+ * it. The node's old payload moves to a scratch node released here; the
+ * node's weak-collection entries move to the capsule's native identity.
+ * Nothing else in the runtime calls this. */
+static bool scr_dyn_decl_rekey(ScrDyn *node, void *ptr) {
   bool moved = false;
   if (!scr_weak_observing) return false;
   for (;;) {
@@ -15905,11 +15780,10 @@ static bool scr_decl_adopt_rekey(ScrDyn *node, void *ptr) {
   }
 }
 
-static void scr_decl_adopt_become(ScrDyn *n, const ScrDyn *capsule) {
+void scr_dyn_decl_become(ScrDyn *n, const ScrDyn *capsule);
+void scr_dyn_decl_become(ScrDyn *n, const ScrDyn *capsule) {
   ScrDynRegion *region = scr_dyn_region_of(n);
   if (region) region->intact = false;
-  /* The old payload moves to a fresh node, which is released below. A
-   * misc node carries no buffers of an earlier life. */
   ScrDyn *old = scr_dyn_alloc(SCR_DYN_NULL);
   old->kind = n->kind;
   old->buffer = n->buffer;
@@ -15929,36 +15803,14 @@ static void scr_decl_adopt_become(ScrDyn *n, const ScrDyn *capsule) {
   n->symbol_properties = NULL;
   n->symbol_keys = NULL;
   memset(&n->v, 0, sizeof n->v);
+  n->v.typed_ref = capsule->v.typed_ref;
   n->v.typed_ref.ptr = capsule->v.typed_ref.retain(capsule->v.typed_ref.ptr);
-  n->v.typed_ref.retain = capsule->v.typed_ref.retain;
-  n->v.typed_ref.release = capsule->v.typed_ref.release;
-  n->v.typed_ref.type_key = capsule->v.typed_ref.type_key;
-  n->v.typed_ref.type_key_len = capsule->v.typed_ref.type_key_len;
-  n->v.typed_ref.materialize = capsule->v.typed_ref.materialize;
-  n->v.typed_ref.commit = capsule->v.typed_ref.commit;
-  n->v.typed_ref.array = capsule->v.typed_ref.array;
-  n->v.typed_ref.record = capsule->v.typed_ref.record;
-  n->v.typed_ref.klass = capsule->v.typed_ref.klass;
-  n->v.typed_ref.traced = capsule->v.typed_ref.traced;
-  n->v.typed_ref.observed = capsule->v.typed_ref.observed;
-  if (scr_decl_adopt_rekey(n, n->v.typed_ref.ptr)) n->v.typed_ref.observed = true;
-  /* A record with undeclared properties answers them from its retained
-   * view, as a freshly boxed capsule does. */
-  if (scr_record_source_count && n->v.typed_ref.type_key_len >= 7 &&
-      memcmp(n->v.typed_ref.type_key, "record:", 7) == 0) {
+  n->v.typed_ref.materialized = NULL;
+  n->v.typed_ref.casts = NULL;
+  if (scr_dyn_decl_rekey(n, n->v.typed_ref.ptr)) n->v.typed_ref.observed = true;
+  if (n->v.typed_ref.type_key_len >= 7 && memcmp(n->v.typed_ref.type_key, "record:", 7) == 0) {
     ScrDyn *view = scr_record_source_view(n->v.typed_ref.ptr);
     if (view) n->v.typed_ref.materialized = scr_dyn_retain(view);
   }
   scr_dyn_release(old);
-}
-
-void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule) {
-  ScrDeclAdoptList list = { NULL, 0, 0 };
-  bool ok = scr_decl_adopt_walk(&list, source, scr_dyn_retain(capsule), NULL, 0);
-  for (size_t i = 0; i < list.len; i++) {
-    ScrDeclAdopt *item = &list.items[i];
-    if (ok && item->node->kind != SCR_DYN_TYPED_REF) scr_decl_adopt_become(item->node, item->capsule);
-    scr_dyn_release(item->capsule);
-  }
-  free(list.items);
 }

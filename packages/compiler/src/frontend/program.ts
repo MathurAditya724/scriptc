@@ -387,6 +387,9 @@ export interface LoadResult {
    * checkPreflight. */
   startupCrash?: StartupCrash | null;
   configDiags: ScrDiagnostic[];
+  /** SC6102 performance notes of the declaration-typed boundary
+   * (decl-projection.ts): files whose projection was dropped. */
+  declBoundaryNotes?: ScrDiagnostic[];
   /** The files whose JSX the program lowers (jsx-source.ts), by file name.
    * The program holds their rewritten text; positions in diagnostics refer
    * to it. */
@@ -932,6 +935,7 @@ function loadProgram7(
     // lowering compiles holds them with their JSX lowered.
     const jsx = lowerProgramJsx7(program, options);
     let tscWorld: LoadResult["tscWorld"];
+    const declBoundaryNotes: ScrDiagnostic[] = [];
     if (jsx.refusal !== null) {
       config.diags.push(jsx.refusal);
     } else if (jsx.sources.size > 0) {
@@ -977,9 +981,7 @@ function loadProgram7(
         if (dropped.length > 0) {
           program.dispose();
           program = host.createProgram([...programRoots, overridesDtsPath()], options);
-          for (const file of dropped) {
-            config.diags.push(declBoundaryDroppedDiag(file));
-          }
+          for (const file of dropped) declBoundaryNotes.push(declBoundaryDroppedDiag(file));
         }
         if (dropped.length === projection.files.size) {
           program.dispose();
@@ -1004,6 +1006,7 @@ function loadProgram7(
       entry,
       moduleOrder: [],
       configDiags: config.diags,
+      ...(declBoundaryNotes.length > 0 ? { declBoundaryNotes } : {}),
       typeWorld: {
         nodeFallback: nodeTypes === null,
         projectLib: config.projectLib ?? null,
@@ -1299,7 +1302,15 @@ function declBoundaryUserFiles(program: ts.Program, packages: readonly string[])
       continue;
     if (name.endsWith(".tsx")) continue; // JSX files: not projected yet
     const text = sf.text;
-    if (packages.some((pkg) => text.includes(`"${pkg}"`) || text.includes(`'${pkg}'`) || text.includes(`"${pkg}/`) || text.includes(`'${pkg}/`)))
+    if (
+      packages.some(
+        (pkg) =>
+          text.includes(`"${pkg}"`) ||
+          text.includes(`'${pkg}'`) ||
+          text.includes(`"${pkg}/`) ||
+          text.includes(`'${pkg}/`),
+      )
+    )
       out.push(sf.fileName);
   }
   return out;
