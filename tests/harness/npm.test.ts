@@ -45,20 +45,20 @@ const KNOWN: Record<string, Known> = {
   "any-chaining": { build: "SC2003" },
   "assert-shims": { run: "SC1043" },
   "buffer-shims": { run: "SC2020" },
-  "bytes-exit": { build: "SC2004" },
+  "bytes-exit": { island: true },
   "cjs-esm-named": { island: true },
   "cjs-lexer-aligned": { island: true },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },
   "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
   "create-require": { run: "SC1090" },
-  "dotfolder": { run: "SC1090" },
+  "dotfolder": { island: true },
   "dual-package-kinds": { island: true },
   "dynamic-import": { island: true },
   "dynamic-import-local": { build: "SC2012" },
   "esbuild-require": { island: true },
   "esm-missing-default": { build: "SC1090" },
   "esm-missing-export": { build: "SC1090" },
-  "fetch-destructure": { run: "SC1031" },
+  "fetch-destructure": { island: true },
   "fs-shims": { run: "SC1101" },
   "import-refusal": { build: "SC2020" },
   "island-registry": { build: "SC2011" },
@@ -66,42 +66,46 @@ const KNOWN: Record<string, Known> = {
     divergence:
       "Timeout handles are numbers (typeof) and lose their ref flag once fired or cleared",
   },
+  "hot-shots-udp": {
+    divergence:
+      "as a Node island (its runtime fences pick one), output stops after the socket-not-running error; the built-in hot-shots shim (#1836) compiles it natively",
+  },
   "island-web-plumbing": { run: "SC2020" },
   "lazy-traps": { island: true },
-  "misc-shims": { run: "SC2020" },
+  "misc-shims": { island: true },
   namespace: { island: true },
   "node24-async-events": { run: "SC2020" },
   "node24-commonjs-metadata": { island: true },
   "node24-crypto-kdf": { run: "SC2020" },
-  "node24-deep-equality": { run: "SC2020" },
+  "node24-deep-equality": { island: true },
   "node24-diagnostics-async": { run: "SC1090" },
   "node24-diagnostics-tracing": { run: "SC1090" },
-  "node24-env": { run: "SC1090" },
-  "node24-esm-metadata": { run: "SC1090" },
+  "node24-env": { island: true },
+  "node24-esm-metadata": { island: true },
   "node24-event-emitter": { run: "SC2020" },
   "node24-file-url-conversion": { island: true },
   "node24-fs-descriptors": { run: "SC2020" },
-  "node24-mime": { run: "SC2020" },
-  "node24-mime-errors": { run: "SC1090" },
+  "node24-mime": { island: true },
+  "node24-mime-errors": { island: true },
   "node24-no-error-assertions": { run: "SC2020" },
-  "node24-parseargs": { run: "SC1090" },
+  "node24-parseargs": { island: true },
   "node24-promise-timers": { run: "SC2020" },
   "node24-string-decoder": { run: "SC2020" },
-  "node24-style-text": { run: "SC2020" },
+  "node24-style-text": { island: true },
   "node24-system-errors": { run: "SC1090" },
   "node24-text-encoding": { run: "SC2020" },
   "node24-text-utilities": { run: "SC2020" },
   "node24-timers-unref": { run: "SC2020" },
   "node24-url-factories": { run: "SC2020" },
   "node24-url-mutation": { run: "SC1090" },
-  "node24-util-adapters": { run: "Object.create with this value is not supported yet" },
-  "node24-util-types": { run: "SC1090" },
+  "node24-util-adapters": { island: true },
+  "node24-util-types": { island: true },
   "node24-web-stream-encoding": { run: "SC1090" },
   "node24-web-stream-errors": { run: "SC1090" },
   "node24-web-stream-lifecycle": { run: "SC1090" },
   "node24-web-stream-pipe-abort": { run: "SC2020" },
   "node24-web-stream-pipe-errors": { run: "SC1090" },
-  "node24-web-stream-pipes": { run: "SC1090" },
+  "node24-web-stream-pipes": { island: true },
   "node24-web-stream-queues": { run: "SC1090" },
   "node24-web-stream-readable-lifecycle": { run: "SC2020" },
   "node24-web-stream-readers": { run: "SC1090" },
@@ -110,8 +114,8 @@ const KNOWN: Record<string, Known> = {
   "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
-  "stream-shims": { run: "SC1090" },
-  "util-shims": { run: "SC2020" },
+  "stream-shims": { island: true },
+  "util-shims": { island: true },
   "web-streams": { run: "SC1090" },
   "workspace-copied": { island: true },
   "workspace-unclean": { build: "SC2013" },
@@ -189,7 +193,45 @@ async function build(entry: string): Promise<Built> {
   };
 }
 
-async function expectMatchesNode(c: NpmCase, binary: string): Promise<void> {
+/** The two stderr texts with their stack frame runs cut to the frames
+ * they share: an uncaught error from a Node island prints Node's report,
+ * whose frames match Node's from the throw site up to the first native
+ * frame, which has no Node-identical spelling (DESIGN.md §2.10). Every
+ * other line, and each run's common leading frames, compare exactly. */
+
+/** Node's uncaught-error report ends with `Node.js v<version>`: the island
+ * prints libnode's release, which may differ from the reference Node's
+ * patch release. */
+function normalizeNodeVersion([a, b]: [string, string]): [string, string] {
+  const re = /^Node\.js v\d+\.\d+\.\d+$/m;
+  return [a.replace(re, "Node.js v<version>"), b.replace(re, "Node.js v<version>")];
+}
+
+function sharedFrames(native: Buffer, node: Buffer): [string, string] {
+  const frame = (line: string): boolean => /^ {4}at /.test(line);
+  const a = native.toString("utf8").split("\n");
+  const b = node.toString("utf8").split("\n");
+  const outA: string[] = [];
+  const outB: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && frame(a[i]!) && frame(b[j]!)) {
+      while (i < a.length && j < b.length && frame(a[i]!) && a[i] === b[j]) {
+        outA.push(a[i++]!);
+        outB.push(b[j++]!);
+      }
+      while (i < a.length && frame(a[i]!)) i++;
+      while (j < b.length && frame(b[j]!)) j++;
+      continue;
+    }
+    if (i < a.length) outA.push(a[i++]!);
+    if (j < b.length) outB.push(b[j++]!);
+  }
+  return [outA.join("\n"), outB.join("\n")];
+}
+
+async function expectMatchesNode(c: NpmCase, binary: string, islandFrames = false): Promise<void> {
   const cwd = dirname(c.entry);
   for (const argv of c.argvs ?? [[]]) {
     const [nodeRes, nativeRes] = await Promise.all([
@@ -202,7 +244,13 @@ async function expectMatchesNode(c: NpmCase, binary: string): Promise<void> {
       expect.unreachable("stdout differed at byte level but not after utf8 decode");
     }
     expect(nativeRes.exitCode, label).toBe(nodeRes.exitCode);
-    if (c.compareStderr) expect(programStderr(nativeRes.stderr), label).toEqual(nodeRes.stderr);
+    if (c.compareStderr && islandFrames) {
+      const [native, node] = normalizeNodeVersion(
+        sharedFrames(programStderr(nativeRes.stderr), nodeRes.stderr),
+      );
+      expect(native, label).toBe(node);
+    } else if (c.compareStderr)
+      expect(programStderr(nativeRes.stderr), label).toEqual(nodeRes.stderr);
   }
 }
 
@@ -231,7 +279,7 @@ describe(`npm native (${cases.length} programs${sanitize ? ", sanitized" : ""}${
           return;
         }
         if (!built.ok) throw new Error(`npm fixture failed to compile:\n${built.text}`);
-        await expectMatchesNode(c, built.binary);
+        await expectMatchesNode(c, built.binary, true);
       }, 120_000);
       continue;
     }
