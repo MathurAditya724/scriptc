@@ -1883,6 +1883,25 @@ ScrDyn *scr_dyn_error_constructor(const char *name) {
   return NULL;
 }
 
+/* `Error.stackTraceLimit` read or written through the Error constructor
+ * held as a value (zod's `const E = Error; E.stackTraceLimit = 0`): the
+ * same limit the static member reads and stack capture honors. */
+static bool scr_dyn_is_stack_limit(const ScrDyn *d, const char *key, size_t key_len) {
+  return key_len == 15 && memcmp(key, "stackTraceLimit", 15) == 0 && d->kind == SCR_DYN_FUNC &&
+      scr_error_ctor_values[0] && d->v.fn.clo == scr_error_ctor_values[0]->v.fn.clo;
+}
+
+/* An own `stackTraceLimit` on the Error value, assigned a non-number or
+ * defined with Object.defineProperty, replaces the limit for reads and
+ * writes through the value; writes to it keep its descriptor. */
+static bool scr_dyn_stack_limit_shadowed(const ScrDyn *d) {
+  ScrClosure *owner = scr_closure_identity(d->v.fn.clo);
+  ScrDyn *table = owner->props ? (ScrDyn *)scr_box_get_ref(owner->props) : NULL;
+  bool own = table && scr_dyn_find_entry(table, "stackTraceLimit", 15);
+  scr_dyn_release(table);
+  return own;
+}
+
 ScrDyn *scr_dyn_object_prototype(void) {
   if (!scr_builtin_object_prototype) {
     scr_builtin_object_prototype = scr_dyn_alloc(SCR_DYN_OBJ);
@@ -9211,8 +9230,19 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   }
   if (recv->kind == SCR_DYN_FUNC) {
     if (scr_dyn_fn_property_fence(key)) return;
+    bool limit = scr_dyn_is_stack_limit(recv, key->data, key->len);
+    /* A frozen Error keeps the limit read-only. */
+    if (limit && value->kind == SCR_DYN_NUM && !scr_dyn_stack_limit_shadowed(recv) && !scr_dyn_is_frozen(recv)) {
+      scr_stack_limit_set(value->v.num);
+      return;
+    }
     ScrDyn *table = scr_dyn_fn_properties(recv);
     scr_dyn_object_key_set(table, key, value, recv);
+    /* A number the own data property takes also sets the limit. */
+    ScrDynEntry *own = limit && value->kind == SCR_DYN_NUM && !scr_exc_pending()
+        ? scr_dyn_find_entry(table, key->data, key->len)
+        : NULL;
+    if (own && own->value == value) scr_stack_limit_set(value->v.num);
     scr_dyn_release(table);
     return;
   }
@@ -11992,6 +12022,8 @@ static ScrDyn *scr_function_constructor(uint32_t kind) {
 /* Keyed read on a FUNC node (see scr_runtime.h): own props first, then
  * the function-instance built-ins name/length. +1 or NULL. */
 ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
+  if (scr_dyn_is_stack_limit(d, key, key_len) && !scr_dyn_stack_limit_shadowed(d))
+    return scr_dyn_new_num(scr_stack_limit_get());
   ScrClosure *owner = scr_closure_identity(d->v.fn.clo);
   if (d->v.fn.class_obj && d->v.fn.class_obj->static_data && !owner->props)
     owner->props = scr_box_retain(d->v.fn.class_obj->static_data);
