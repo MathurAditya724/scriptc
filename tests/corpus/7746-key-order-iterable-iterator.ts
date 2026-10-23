@@ -56,3 +56,54 @@ const ordered = [...newest(listed)];
 console.log(JSON.stringify(ordered), ordered[0] === listed[1]);
 const step = newest(listed).next();
 console.log(step.done, JSON.stringify(step.value));
+
+// Deleting the current entry before leaving a loop over an iterator-typed
+// method: the iterator parks after that entry and continues with the next.
+class Store {
+  readonly rows = new Map<string, number>();
+  readonly tags = new Set<string>();
+  values(): IterableIterator<number> {
+    return this.rows.values();
+  }
+  keys(): IterableIterator<string> {
+    return this.rows.keys();
+  }
+  tagValues(): IterableIterator<string> {
+    return this.tags.values();
+  }
+  anyPairs(): IterableIterator<any> {
+    return this.rows.entries();
+  }
+  unknownPairs(): IterableIterator<unknown> {
+    return this.rows.entries();
+  }
+  tagAny(): IterableIterator<any> {
+    return this.tags.entries();
+  }
+}
+const store = new Store();
+for (const [k, v] of [["a", 1], ["b", 2], ["c", 3]] as const) store.rows.set(k, v);
+for (const t of ["x", "y", "z"]) store.tags.add(t);
+console.log(JSON.stringify([...store.anyPairs()]), JSON.stringify([...store.unknownPairs()]));
+console.log(JSON.stringify([...store.tagAny()]));
+const values = store.values();
+for (const v of values) {
+  if (v === 2) {
+    store.rows.delete("b");
+    break;
+  }
+}
+console.log([...values].join(), [...store.rows.keys()].join());
+for (const k of store.keys()) {
+  store.rows.delete(k);
+  break;
+}
+console.log([...store.rows.keys()].join());
+const tags = store.tagValues();
+for (const t of tags) {
+  if (t === "y") {
+    store.tags.delete("y");
+    break;
+  }
+}
+console.log([...tags].join(), [...store.tags].join());
