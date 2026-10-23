@@ -99,6 +99,70 @@ function declaredInPackage(symbol: ts.Symbol | undefined): boolean {
   return symbol.declarations.some((d) => isPackageDeclarationFile(ts.getSourceFileOfNode(d)));
 }
 
+/** The parts of a call signature's declaration that pass-through detection
+ * reads, for the declaration kinds a resolved call signature has. */
+function signatureParts(node: ts.Node | undefined): {
+  typeParameters: readonly ts.TypeParameterDeclaration[];
+  parameters: readonly ts.ParameterDeclaration[];
+  type: ts.TypeNode | undefined;
+} | null {
+  if (node === undefined) return null;
+  if (ts.isFunctionTypeNode(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isFunctionDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isMethodDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isMethodSignatureDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isCallSignatureDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  return null;
+}
+
+/** A signature that returns one of its own type parameters which also types
+ * a parameter (`<T extends object>(obj: T) => T`) hands back the argument
+ * or something standing in for it, a proxy or a marked object, whose
+ * identity the package may track (Effect's `Equal.byReference`). Its result
+ * type comes from the caller's argument, not from data the package
+ * declares, so the boundary leaves it alone: converting it would build a
+ * separate native value. */
+function passesArgumentThrough(declaration: ts.Node | undefined): boolean {
+  const sig = signatureParts(declaration);
+  if (sig === null || sig.type === undefined || !ts.isTypeReferenceNode(sig.type)) return false;
+  const ret = sig.type;
+  if (!ts.isIdentifier(ret.typeName) || ret.typeArguments !== undefined) return false;
+  const name = ret.typeName.text;
+  if (!sig.typeParameters.some((tp) => tp.name.text === name)) return false;
+  return sig.parameters.some(
+    (param) =>
+      param.type !== undefined &&
+      ts.isTypeReferenceNode(param.type) &&
+      ts.isIdentifier(param.type.typeName) &&
+      param.type.typeName.text === name,
+  );
+}
+
 function declaredInUserFile(symbol: ts.Symbol | undefined): boolean {
   if (symbol === undefined) return false;
   const decls = symbol.declarations;
@@ -511,16 +575,16 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       if (ts.isCallExpression(d) || ts.isNewExpression(d)) {
         const callee = d.expression;
         const target = ts.isPropertyAccessExpression(callee) ? callee.name : callee;
-        produced = declaredInPackage(declSymbol(target));
-        if (!produced) {
-          try {
-            const sig = declChecker.getResolvedSignature(d);
-            const decl = sig?.declaration;
-            produced = decl !== undefined && isPackageDeclarationFile(ts.getSourceFileOfNode(decl));
-          } catch {
-            produced = false;
-          }
+        let decl: ts.Node | undefined;
+        try {
+          decl = declChecker.getResolvedSignature(d)?.declaration;
+        } catch {
+          decl = undefined;
         }
+        produced =
+          (declaredInPackage(declSymbol(target)) ||
+            (decl !== undefined && isPackageDeclarationFile(ts.getSourceFileOfNode(decl)))) &&
+          !passesArgumentThrough(decl);
       } else if (ts.isTaggedTemplateExpression(d)) {
         produced = declaredInPackage(declSymbol(d.tag));
       } else if (ts.isPropertyAccessExpression(d) || ts.isElementAccessExpression(d)) {

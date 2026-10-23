@@ -3445,7 +3445,11 @@ export type IrExpr =
         | "array"
         | "truthy"
         | "error"
-        | "function";
+        | "function"
+        /** The value is a capsule of a compiled class instance. */
+        | "classCapsule"
+        /** The value is a boxed function or class value (exact kind test). */
+        | "funcKind";
       bytesElem?: IrBytesElem;
       negated?: true;
       value: IrExpr;
