@@ -12,6 +12,7 @@ import {
   nodeVersionFor,
   cwd,
   envValue,
+  plain,
   type Config,
 } from "argprobe";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -54,6 +55,8 @@ const none = projectSettings(false);
 console.log(version("/work", "unused", { nodeVersion: project?.nodeVersion }, undefined, available));
 console.log(version("/work", "unused", { nodeVersion: none?.nodeVersion }, undefined, available));
 console.log(probe("p", { nodeVersion: project?.nodeVersion }), probe("n", { nodeVersion: none?.nodeVersion }));
+const claims = { role: "admin" };
+console.log("plain", plain({ sub: "alice" }), plain(claims));
 
 async function main(): Promise<void> {
   // A package.json the program writes just before the island reads it.

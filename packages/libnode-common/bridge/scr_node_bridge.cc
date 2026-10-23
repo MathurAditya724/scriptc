@@ -1444,6 +1444,11 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
   } else {
     obj = ExportTemplate(isolate)->NewInstance(context).ToLocalChecked();
     obj->SetInternalField(0, data);
+    // A template instance inherits from its implicit constructor's own
+    // prototype object; a native plain object is a plain object to island
+    // code (`Object.getPrototypeOf(o) === Object.prototype`, as jose's
+    // isObject checks), so it inherits Object.prototype directly.
+    obj->SetPrototypeV2(context, v8::Object::New(isolate)->GetPrototypeV2()).FromMaybe(false);
   }
   if (!obj->IsProxy()) obj->SetPrivate(context, ExportKey(isolate), data).Check();
   Global<Object> &slot = g_exports[id];
