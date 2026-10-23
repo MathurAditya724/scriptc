@@ -2223,6 +2223,26 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   return NULL;
 }
 
+/* scr_dyn_get_prototype for a walk that compares each prototype with a
+ * program class's prototype (instanceof against a class value): a native
+ * Date, RegExp, Map, Set, WeakMap or WeakSet, or a promise, has only builtin
+ * prototypes on its chain, and no program class extends these (a class
+ * extending Date makes instances of its own), so the walk ends there with
+ * null. */
+ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object) {
+  if (object->kind == SCR_DYN_PROMISE) return scr_dyn_new_null();
+  if (object->kind == SCR_DYN_HANDLE) {
+    switch (object->v.handle.tag) {
+    case SCR_DYNH_DATE: case SCR_DYNH_REGEXP: case SCR_DYNH_MAP: case SCR_DYNH_SET:
+    case SCR_DYNH_WEAK_MAP: case SCR_DYNH_WEAK_SET:
+      return scr_dyn_new_null();
+    default:
+      break;
+    }
+  }
+  return scr_dyn_get_prototype(object);
+}
+
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
   /* A primitive receiver is returned unchanged when the prototype is null or
    * any object or function; nothing is mutated, so the prototype's kind is the
@@ -4102,28 +4122,33 @@ ScrDyn *scr_array_buffer_constructor(void) {
 
 /* `value instanceof C` for C a global constructor held as a value
  * (`{ instanceOf: Date }`, scr_dyn_global_constructor): 1 or 0 by the
- * value's native kind, or -1 when callee is not one of them, or for Object
- * and for class instances, which these kinds cannot answer (except Date,
- * whose subclasses' instances are known). A typed record or array is none
- * of these kinds. */
+ * value's native kind, or -1 when callee is not one of them, or for Object.
+ * A typed record or array is none of these kinds, and neither is an
+ * instance of a program class: a class can extend Date (answered through
+ * scr_dyn_date_instance_is), and extending RegExp, Map, Set, WeakMap,
+ * WeakSet or Promise refuses where the class is defined. The error
+ * constructors (scr_dyn_error_constructor) answer -1. */
 static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrDyn *callee) {
   if (!callee->v.fn.sig || !callee->v.fn.name || strcmp(callee->v.fn.sig, "native:constructor") != 0 ||
       strcmp(callee->v.fn.name, "Object") == 0)
     return -1;
   /* A native Date, or an instance of a class declared `extends Date`. */
   if (strcmp(callee->v.fn.name, "Date") == 0) return scr_dyn_date_instance_is(value);
-  if (value->kind == SCR_DYN_TYPED_REF)
-    return strncmp(value->v.typed_ref.type_key, "record:", 7) == 0 || scr_dyn_ref_is_array(value) ? 0 : -1;
   static const struct { const char *name; int tag; } kinds[] = {
-    {"Date", SCR_DYNH_DATE}, {"RegExp", SCR_DYNH_REGEXP}, {"Map", SCR_DYNH_MAP}, {"Set", SCR_DYNH_SET},
+    {"RegExp", SCR_DYNH_REGEXP}, {"Map", SCR_DYNH_MAP}, {"Set", SCR_DYNH_SET},
     {"WeakMap", SCR_DYNH_WEAK_MAP}, {"WeakSet", SCR_DYNH_WEAK_SET},
     {"FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY},
   };
-  if (strcmp(callee->v.fn.name, "Promise") == 0) return value->kind == SCR_DYN_PROMISE;
-  for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
-    if (strcmp(callee->v.fn.name, kinds[i].name) == 0)
-      return value->kind == SCR_DYN_HANDLE && (int)value->v.handle.tag == kinds[i].tag;
+  bool promise = strcmp(callee->v.fn.name, "Promise") == 0;
+  int tag = -1;
+  for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++)
+    if (strcmp(callee->v.fn.name, kinds[i].name) == 0) tag = kinds[i].tag;
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    if (strncmp(value->v.typed_ref.type_key, "record:", 7) == 0 || scr_dyn_ref_is_array(value)) return 0;
+    return (promise || tag >= 0) && strncmp(value->v.typed_ref.type_key, "object:", 7) == 0 ? 0 : -1;
   }
+  if (promise) return value->kind == SCR_DYN_PROMISE;
+  if (tag >= 0) return value->kind == SCR_DYN_HANDLE && (int)value->v.handle.tag == tag;
   return -1;
 }
 
