@@ -68,6 +68,17 @@ export const eventLoopCases: EventLoopCase[] = [
     },
   },
   {
+    title: "stdio values: 'readable' with 'data' and resume() holds input at the read-ahead mark",
+    fixture: "stdio-readable-backpressure.mjs",
+    script: {
+      writes: Array.from({ length: 16 }, (_, i) => ({
+        delayMs: i === 0 ? 0 : 5,
+        data: String.fromCharCode(97 + i).repeat(65536),
+      })),
+      end: true,
+    },
+  },
+  {
     title: "stdio values: 'readable' on an immediately ended pipe",
     fixture: "stdio-readable.mjs",
     script: { writes: [], end: true },
