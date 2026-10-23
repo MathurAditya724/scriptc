@@ -832,10 +832,6 @@ export class LlEmitter {
   readonly cstrs = new Map<string, { sym: string; len: number }>();
   /** Interned ScrMapOps descriptors (scr_map.h): initializer → symbol. */
   readonly mapOpsConsts = new Map<string, string>();
-  /** Method-id slots of checked-dynamic method calls
-   * (scr_dyn_invoke_prepared_id): method name → symbol of an i32 the
-   * runtime fills with the name's id on the first call. */
-  readonly methodIdSlots = new Map<string, string>();
   /** Type-directed walker functions (JSON serializers, the indent
    * rewriter, union ToString/join) — interned per typeKey/unionId, defs
    * flushed with the shape helpers. */
@@ -1028,6 +1024,11 @@ export class LlEmitter {
   /** See moduleUsesDynBuiltinStream. */
   get usesDynBuiltinStream(): boolean {
     return this.runtimeFeatures.dynBuiltinStream;
+  }
+  /** A checked-dynamic for-await may hold a native stream: the program
+   * links the stream unit (and the dyn-async one the loop needs). */
+  get dynForAwaitStreams(): boolean {
+    return this.runtimeFeatures.stream && this.runtimeFeatures.dynAsync;
   }
   /** Runtime-arm dispatchers for live union values. */
   readonly liveDynUnionRefAdapters = new Map<string, string>();
@@ -2472,16 +2473,6 @@ export class LlEmitter {
     }
     this.journal?.entry("cstr", text, c);
     return `@${c.sym}`;
-  }
-
-  /** The method-id slot for a constant method name (methodIdSlots). */
-  methodIdSlot(name: string): string {
-    let sym = this.methodIdSlots.get(name);
-    if (!sym) {
-      sym = this.contentSymbol("sc_mid_", name);
-      this.methodIdSlots.set(name, sym);
-    }
-    return `@${sym}`;
   }
 
   needBadTag(): void {
@@ -6474,7 +6465,10 @@ export class LlEmitter {
     return streamDataAdapter(this, cbT);
   }
 
-  streamDoneFnFor(kind: "w" | "f" | "d" | "t" | "l", doneT: IrType & { kind: "func" }): string {
+  streamDoneFnFor(
+    kind: "w" | "f" | "d" | "t" | "l" | "c",
+    doneT: IrType & { kind: "func" },
+  ): string {
     return streamDoneFnFor(this, kind, doneT);
   }
 
@@ -6498,7 +6492,7 @@ export class LlEmitter {
     return zlibBytesThunkFor(this, cbT);
   }
 
-  streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e", cbT: IrType): string {
+  streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e" | "c" | "v", cbT: IrType): string {
     return streamCbThunkFor(this, kind, cbT);
   }
 

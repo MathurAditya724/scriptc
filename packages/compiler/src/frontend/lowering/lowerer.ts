@@ -67,6 +67,7 @@ import { valueStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
+import { iterableSlotValue } from "./iterable-values.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { CoercionState } from "./coercions/state.js";
@@ -3309,6 +3310,9 @@ export class Lowerer {
    * the class and constructed-class counts, it tells caches over the class
    * graph when the graph changed. */
   subclassLinks = 0;
+  /** Function-local classes by the class node they extend, built on first
+   * use (localSubclassesOf in lower-classes.ts). */
+  localSubclassIndex: Map<ts.Node, ts.ClassLikeDeclaration[]> | null = null;
   /** Set while a subclass constructor's super() call notes its base
    * constructor edge: that edge does not instantiate the base exactly. */
   private superConstructorEdge = false;
@@ -9450,6 +9454,11 @@ export class Lowerer {
       const adapted = iteratorSlotAdapter(this, expr, expected);
       if (adapted) return adapted;
     }
+    // Iterable-typed slots: other iterators enter the generator arm.
+    if (expected.kind === "union" && !typeEquals(expr.type, expected)) {
+      const iterable = iterableSlotValue(this, expr, expected);
+      if (iterable) return iterable;
+    }
 
     // an any-typed slot marshals implicitly (tsc allows the assignment;
     // the marshal is where its semantics live). OUT: an 'any' value
@@ -10858,7 +10867,27 @@ export class Lowerer {
     // Contextual types (such as Proxy descriptors' symbol-valued fields)
     // must not force an intermediate record with incompatible field slots.
     if (this.returnsLiteralIntoDyn(node, expected)) return this.lowerExprExpecting(node, expected);
+    if (this.returnsFreshCollection(node) && expected.kind !== "void")
+      return this.lowerExprExpecting(node, expected);
     return this.asyncReturnValueOf(node, this.lowerExpr(node), expected);
+  }
+
+  /** An array literal or a `new Map(...)`, `new Set(...)` or `new
+   * Array(...)` of the builtins: a fresh collection, never a thenable, so
+   * an async return takes the declared result type as its construction
+   * layout the way a synchronous return does (`return []` in a function
+   * whose inferred result is `Promise<string[]>`). */
+  private returnsFreshCollection(node: ts.Expression): boolean {
+    let e = node;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isArrayLiteralExpression(e)) return true;
+    return (
+      ts.isNewExpression(e) &&
+      ts.isIdentifier(e.expression) &&
+      (this.isStdlibGlobal(e.expression, "Map") ||
+        this.isStdlibGlobal(e.expression, "Set") ||
+        this.isStdlibGlobal(e.expression, "Array"))
+    );
   }
 
   /** A fresh JS object literal returned into a checked-native (dyn) result,
@@ -10992,7 +11021,11 @@ export class Lowerer {
         loc,
       };
     }
-    if (this.adoptsReturnedPromise() && !this.returnsLiteralIntoDyn(node, expected)) {
+    if (
+      this.adoptsReturnedPromise() &&
+      !this.returnsLiteralIntoDyn(node, expected) &&
+      !this.returnsFreshCollection(node)
+    ) {
       // The async return lowers its operand untyped first (a promise
       // adopts before its payload converts); a maybe-promise union needs
       // the statement form, which branches between adoption and fulfillment.
@@ -11455,8 +11488,8 @@ export class Lowerer {
     }
   }
 
-  lowerClassExpression(expr: ts.ClassLikeDeclaration): IrExpr {
-    return lowerClassExpression(this, expr);
+  lowerClassExpression(expr: ts.ClassLikeDeclaration, binding?: IrLocal): IrExpr {
+    return lowerClassExpression(this, expr, binding);
   }
 
   /* ── the class graph (single inheritance) ─────────────────────────── */

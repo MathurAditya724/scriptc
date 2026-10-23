@@ -32,7 +32,7 @@ import type { LibraryProfile } from "../library/library-profile.js";
 import type { IrModule } from "../ir/ir.js";
 import { deserializeModuleBytes, serializeModuleParts } from "../ir/serialize.js";
 import { contentDigest, NATIVE_STRING_BYTES, type NativeCache } from "./cache.js";
-import { batchTextParts } from "./text-file.js";
+import { batchTextParts, textSlices } from "./text-file.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { nativeFileIdentity } from "./file-identity.js";
 
@@ -61,37 +61,57 @@ interface FrontendCacheEntry {
   ir: string[] | null;
 }
 
-function frontendCacheParts(probes: FrontendInputSnapshot, input: NativeExecutableInput): string[] {
+/** The entry's JSON text, generated as it is written. The LLVM text is
+ * escaped in slices (`textSlices`), the same JSON string as escaping it
+ * whole, so a large module is never copied whole. */
+function* frontendCacheParts(
+  probes: FrontendInputSnapshot,
+  input: NativeExecutableInput,
+): Generator<string> {
   const metadata = JSON.stringify({
     schema: "scriptc.native-frontend.v3",
     probes,
     input: { ...input, llvm: "", ir: null },
   });
-  const parts = [metadata.slice(0, metadata.length - 1) + ',"llvm":', JSON.stringify(input.llvm)];
-  if (input.ir === null) parts.push(',"ir":null}');
+  yield metadata.slice(0, metadata.length - 1) + ',"llvm":"';
+  for (const slice of textSlices(input.llvm)) yield JSON.stringify(slice).slice(1, -1);
+  yield '"';
+  if (input.ir === null) yield ',"ir":null}';
   else {
-    parts.push(',"ir":[');
+    yield ',"ir":[';
     for (let index = 0; index < input.ir.length; index++) {
-      if (index > 0) parts.push(",");
-      parts.push(JSON.stringify(input.ir[index]!));
+      if (index > 0) yield ",";
+      yield JSON.stringify(input.ir[index]!);
     }
-    parts.push("]}");
+    yield "]}";
   }
-  return parts;
+}
+
+/** The parts while their total length stays within `limit`; past it, a
+ * throw abandons the write. */
+function* boundedParts(parts: Generator<string>, limit: number): Generator<string> {
+  let length = 0;
+  for (const part of parts) {
+    length += part.length;
+    if (length > limit) throw new Error("frontend cache entry exceeds one native string");
+    yield part;
+  }
 }
 
 /** Publish an entry only when a native reader can decode it as one string;
- * UTF-16 length never exceeds the UTF-8 byte length. */
+ * UTF-16 length never exceeds the UTF-8 byte length. A longer entry
+ * abandons its write, which writeParts discards. */
 function publishFrontendCache(
   cache: NativeCache,
   key: string,
   probes: FrontendInputSnapshot,
   input: NativeExecutableInput,
 ): void {
-  const parts = frontendCacheParts(probes, input);
-  let length = 0;
-  for (const part of parts) length += part.length;
-  if (length <= NATIVE_STRING_BYTES) cache.writeParts("frontend", key, parts);
+  cache.writeParts(
+    "frontend",
+    key,
+    boundedParts(frontendCacheParts(probes, input), NATIVE_STRING_BYTES),
+  );
 }
 
 /** The cached input when every frontend input still matches, else the

@@ -1,6 +1,7 @@
+import { emitPerKeyOrder } from "./key-orders.js";
 import { typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
-import { BYTES_ELEM_NUM, SCR_ARR_FIELD, f64Lit, sizeToDouble } from "./common.js";
+import { BYTES_ELEM_NUM, SCR_ARR_FIELD, SCR_ARR_STATES, f64Lit, sizeToDouble } from "./common.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   INLINE_UNION_FIELD,
@@ -37,6 +38,8 @@ import {
   accessorSlotProp,
   DYN_HANDLE_KINDS,
   isDirentShape,
+  KEY_ORDER_FIELD,
+  shapeKeyOrders,
   isDynTypedRefType,
   isRefCounted,
   isUnitType,
@@ -1107,9 +1110,10 @@ export class LlDyn {
         }
         B.condBr(readable, l0, fail);
         B.startBlock(l0);
-        // dyn ('unknown') fields match ANY value, present or missing.
+        // dyn ('unknown') fields match ANY value, present or missing. The
+        // order index is no key.
         for (const f of shape.fields) {
-          if (f.type.kind === "dyn") continue;
+          if (f.type.kind === "dyn" || f.name === KEY_ORDER_FIELD) continue;
           const { value: m, release } = this.memberRead(B, f.name, f.type);
           const lNext = B.newLabel("dm.n");
           this.pendingBail(
@@ -1292,9 +1296,10 @@ export class LlDyn {
         return (
           shape.fields.every(
             (f) =>
-              !f.name.startsWith("%") &&
-              f.name !== "__proto__" &&
-              this.jsonSchemaSupported(f.type, visiting, true),
+              f.name === KEY_ORDER_FIELD ||
+              (!f.name.startsWith("%") &&
+                f.name !== "__proto__" &&
+                this.jsonSchemaSupported(f.type, visiting, true)),
           ) &&
           (!index || this.jsonSchemaSupported(index, visiting))
         );
@@ -1380,7 +1385,9 @@ export class LlDyn {
         const base = host.nullableUnions.fieldBase(t.shapeId);
         const index = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         // The runtime names kept-source keys by this index (record-sources.ts).
-        const order = recordSourceFieldOrder(shape);
+        // The order index is no key: parsed values keep the table's order
+        // and their source's own order.
+        const order = recordSourceFieldOrder(shape).filter((name) => name !== KEY_ORDER_FIELD);
         if (recordMayKeepSource(shape)) this.keepsRecordSources = true;
         const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
         const entries = order.map((fieldName) => {
@@ -1780,6 +1787,32 @@ export class LlDyn {
             B.line(`store ${member.type} ${oldValue}, ptr ${checkedPtr}`);
           });
           if (t.kind !== "record") {
+            // Whether the dense slots carry states (SCR_ARR_STATES in
+            // `spare`) moves with them; the rest of `spare` stays.
+            const cachedSpare = B.tmp(),
+              checkedSpare = B.tmp();
+            const sparePtr = (array: string): string => {
+              const ptr = B.tmp();
+              B.line(
+                `${ptr} = getelementptr inbounds %ScrArr, ptr ${array}, i64 0, i32 ${SCR_ARR_FIELD.spare}`,
+              );
+              return ptr;
+            };
+            const cachedSparePtr = sparePtr(cached),
+              checkedSparePtr = sparePtr(checked);
+            B.line(`${cachedSpare} = load i16, ptr ${cachedSparePtr}`);
+            B.line(`${checkedSpare} = load i16, ptr ${checkedSparePtr}`);
+            const exchange = (own: string, other: string, ptr: string): void => {
+              const kept = B.tmp(),
+                moved = B.tmp(),
+                next = B.tmp();
+              B.line(`${kept} = and i16 ${own}, ${~SCR_ARR_STATES}`);
+              B.line(`${moved} = and i16 ${other}, ${SCR_ARR_STATES}`);
+              B.line(`${next} = or i16 ${kept}, ${moved}`);
+              B.line(`store i16 ${next}, ptr ${ptr}`);
+            };
+            exchange(cachedSpare, checkedSpare, cachedSparePtr);
+            exchange(checkedSpare, cachedSpare, checkedSparePtr);
             // Sparse slots and numeric properties live out of line; each
             // array keeps its own match metadata.
             host.declare("declare void @scr_arr_swap_indexed_ext(ptr, ptr)");
@@ -2130,7 +2163,10 @@ export class LlDyn {
         }
         B.line(`%r0 = call ptr @${mangleRecordNew(t.shapeId)}()`);
         if (recursive) this.recordBuilt(B, name, "%r0");
+        // The order index stays 0: the source's own order is kept below
+        // when it differs from the table.
         for (const f of shape.fields) {
+          if (f.name === KEY_ORDER_FIELD) continue;
           const { value: m, release } = this.memberRead(B, f.name, f.type);
           this.pendingBail(
             B,
@@ -2863,70 +2899,79 @@ export class LlDyn {
           host.declare(`declare ptr @scr_dyn_new_obj()`);
           B.line(`${d} = call ptr @scr_dyn_new_obj()`);
         }
-        // Keys insert in DECLARED order (JS insertion order); internal
-        // '%'-fields follow so a record→dyn→record round trip keeps them.
+        // Keys insert in DECLARED order (JS insertion order), or in the
+        // value's own order for a shape with orderVariants; internal
+        // '%'-fields follow so a record→dyn→record round trip keeps them
+        // (all but the order index, which is no key).
         const byName = new Map(shape.fields.map((f) => [f.name, f]));
         // An accessor property is one key whose getter and setter are the
         // slot closures (see accessorSlotProp), in accessorOrder's place.
-        const order = shape.accessorOrder ?? shape.declaredOrder ?? shape.fields.map((f) => f.name);
-        const inOrder = new Set(order);
-        const accessors = new Set(
-          shape.accessorOrder === undefined
-            ? []
-            : shape.fields.flatMap((f) => {
-                const slot = accessorSlotProp(f.name);
-                return slot === null ? [] : [slot.prop];
-              }),
-        );
-        type DynField = { name: string; type: IrType } | { accessor: string };
-        const dynFields: DynField[] = [
-          ...order.flatMap((n) => {
-            if (accessors.has(n)) return [{ accessor: n } as DynField];
-            const f = byName.get(n);
-            return f === undefined ? [] : [f as DynField];
-          }),
-          ...shape.fields.filter(
-            (f) =>
-              !inOrder.has(f.name) && !(accessors.size > 0 && accessorSlotProp(f.name) !== null),
-          ),
-        ];
-        for (const entry of dynFields) {
-          if ("accessor" in entry) {
-            host.declare(
-              `declare void @scr_dyn_obj_set_accessor(ptr, ptr, ${host.sizeType}, ptr, ptr)`,
-            );
-            const boxed = (kind: "get" | "set"): string => {
-              const slot = byName.get(`%${kind}:${entry.accessor}`);
-              if (slot === undefined) return "null";
-              const fv = loadFieldOf(slot.name, slot.type);
-              const conv = B.tmp();
-              B.line(
-                `${conv} = call ptr @${this.toDynHelper(slot.type)}(${this.valTy(slot.type)} ${fv})`,
-              );
-              return conv;
-            };
-            const getter = boxed("get");
-            const setter = boxed("set");
-            B.line(
-              `call void @scr_dyn_obj_set_accessor(ptr ${d}, ptr ${host.cstr(entry.accessor)}, ${host.sizeType} ${Buffer.byteLength(entry.accessor, "utf8")}, ptr ${getter}, ptr ${setter}) ; ${llvmCommentText(entry.accessor)}`,
-            );
-            continue;
-          }
-          const f = entry;
-          const klen = Buffer.byteLength(f.name, "utf8");
-          const fv = loadFieldOf(f.name, f.type);
-          // An ABSENT optional field contributes no key.
-          const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
-          const conv = B.tmp();
-          B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
-          B.line(
-            `call void @scr_dyn_obj_set(ptr ${d}, ptr ${host.cstr(f.name)}, ${host.sizeType} ${klen}, ptr ${conv}) ; ${llvmCommentText(f.name)}`,
+        const orders =
+          shape.accessorOrder !== undefined ? [shape.accessorOrder] : shapeKeyOrders(shape);
+        const perOrder = (order: readonly string[]): void => {
+          const inOrder = new Set(order);
+          const accessors = new Set(
+            shape.accessorOrder === undefined
+              ? []
+              : shape.fields.flatMap((f) => {
+                  const slot = accessorSlotProp(f.name);
+                  return slot === null ? [] : [slot.prop];
+                }),
           );
-          if (lSkip !== null) {
-            B.br(lSkip);
-            B.startBlock(lSkip);
+          type DynField = { name: string; type: IrType } | { accessor: string };
+          const dynFields: DynField[] = [
+            ...order.flatMap((n) => {
+              if (accessors.has(n)) return [{ accessor: n } as DynField];
+              const f = byName.get(n);
+              return f === undefined ? [] : [f as DynField];
+            }),
+            ...shape.fields.filter(
+              (f) =>
+                !inOrder.has(f.name) &&
+                f.name !== KEY_ORDER_FIELD &&
+                !(accessors.size > 0 && accessorSlotProp(f.name) !== null),
+            ),
+          ];
+          for (const entry of dynFields) {
+            if ("accessor" in entry) {
+              host.declare(
+                `declare void @scr_dyn_obj_set_accessor(ptr, ptr, ${host.sizeType}, ptr, ptr)`,
+              );
+              const boxed = (kind: "get" | "set"): string => {
+                const slot = byName.get(`%${kind}:${entry.accessor}`);
+                if (slot === undefined) return "null";
+                const fv = loadFieldOf(slot.name, slot.type);
+                const conv = B.tmp();
+                B.line(
+                  `${conv} = call ptr @${this.toDynHelper(slot.type)}(${this.valTy(slot.type)} ${fv})`,
+                );
+                return conv;
+              };
+              const getter = boxed("get");
+              const setter = boxed("set");
+              B.line(
+                `call void @scr_dyn_obj_set_accessor(ptr ${d}, ptr ${host.cstr(entry.accessor)}, ${host.sizeType} ${Buffer.byteLength(entry.accessor, "utf8")}, ptr ${getter}, ptr ${setter}) ; ${llvmCommentText(entry.accessor)}`,
+              );
+              continue;
+            }
+            const f = entry;
+            const klen = Buffer.byteLength(f.name, "utf8");
+            const fv = loadFieldOf(f.name, f.type);
+            // An ABSENT optional field contributes no key.
+            const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
+            const conv = B.tmp();
+            B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
+            B.line(
+              `call void @scr_dyn_obj_set(ptr ${d}, ptr ${host.cstr(f.name)}, ${host.sizeType} ${klen}, ptr ${conv}) ; ${llvmCommentText(f.name)}`,
+            );
+            if (lSkip !== null) {
+              B.br(lSkip);
+              B.startBlock(lSkip);
+            }
           }
-        }
+        };
+        if (orders.length === 1) perOrder(orders[0]!);
+        else emitPerKeyOrder(B, shape, base, "%v", perOrder);
         // A Dirent row takes Node's Dirent prototype (the type probes) and
         // its Symbol(type) key; %dtype stays readable but non-enumerable.
         if (isDirentShape(shape)) {

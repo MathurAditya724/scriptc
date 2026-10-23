@@ -2,7 +2,7 @@ import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import { declaredMemberOf, isPromisePrototypeRead } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
-import { lowerForAwaitDynStream } from "./dyn-streams.js";
+import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
 import { lowerForAwaitValueStream } from "./builtins/hash-stream.js";
 import { lowerChildPropertyWrite } from "./handle-properties.js";
 import {
@@ -67,9 +67,11 @@ import {
   F64,
   type IrExpr,
   type IrGlobal,
+  type IrLibFn,
   type IrLocal,
   type IrStmt,
   type IrType,
+  SEARCH_PARAMS_T,
   STRING,
   type SrcLoc,
   UNDEFINED_T,
@@ -106,6 +108,7 @@ import {
   COMPOUND_ASSIGN_OPS,
   type CompoundOp,
   STR_METHODS,
+  NARROW_FIRST,
   UNSUPPORTED_STMT,
   isStdlibMember,
   sideEffectFreeOptionValue,
@@ -163,7 +166,11 @@ import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { genericIfaceBindingKeepsClass, superConditionLead } from "./lower-classes.js";
-import { lowerStreamUnderscoreAssign, streamClassAliasDecl } from "./lower-stream.js";
+import {
+  lowerStreamUnderscoreAssign,
+  streamClassAliasDecl,
+  streamSidesOf,
+} from "./lower-stream.js";
 import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
   lowerHttpResPropertyAssignment,
@@ -239,6 +246,7 @@ import { npmStaticPackageOfPath } from "../npm-static.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { classGeneratorIterable } from "./class-iterables.js";
+import { iterableUnionOf, lowerForOfIterable } from "./iterable-values.js";
 
 interface UsingRegistration {
   acquire: IrStmt[];
@@ -1523,6 +1531,14 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     const info = lowerer.lowerClassExpressionInfo(stmt);
     const type: IrType = { kind: "classval", className: info.def.name };
     const local = lowerer.declareLocal(stmt.name, stmt.name.text, type, true);
+    // Static members of a function-local class run while the class value is
+    // built and may read the class by name: the class value assigns the
+    // binding before them.
+    if (info.localClass && (info.runtimeStatics || info.runtimePrototypeMembers))
+      return [
+        { kind: "varDecl", localId: local.id, init: null, loc: locOf(stmt) },
+        { kind: "exprStmt", expr: lowerer.lowerClassExpression(stmt, local), loc: locOf(stmt) },
+      ];
     const init = lowerer.lowerClassExpression(stmt);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(stmt) };
   }
@@ -3210,6 +3226,20 @@ export function lowerBindingPattern(
     lowerModuleNamespacePattern(lowerer, pattern, nsSource, isLet, out);
     return;
   }
+  if (srcType.kind === "url") {
+    lowerUrlObjectPattern(lowerer, pattern, srcRef, isLet, out);
+    return;
+  }
+  if (
+    srcType.kind === "union" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(pattern)) &&
+    lowerer.unions
+      .get(srcType.unionId)
+      ?.arms.every((arm) => arm.kind === "record" || arm.kind === "object")
+  ) {
+    lowerUnionObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
+    return;
+  }
   if (srcType.kind !== "record") {
     lowerer.unsupported(
       "SC1031",
@@ -3424,7 +3454,10 @@ function patternSourceValue(
     !arms ||
     !present?.length ||
     present.length === arms.length ||
-    (present.length > 1 && !(arrayPattern && present.every((arm) => arm.kind === "array")))
+    (present.length > 1 &&
+      !(arrayPattern
+        ? present.every((arm) => arm.kind === "array")
+        : present.every((arm) => arm.kind === "record" || arm.kind === "object")))
   )
     return value;
   for (const [tag, arm] of arms.entries()) {
@@ -3536,6 +3569,149 @@ function lowerModuleNamespacePattern(
       );
     }
     let value = lowerer.lowerExpr(declared);
+    if (el.initializer) value = applyBindingDefault(lowerer, el, value);
+    lowerer.bindPatternTarget(el.name, value, isLet, out);
+  }
+}
+
+/** The URL getters an object pattern reads (`const { protocol, hostname }
+ * = new URL(text)`), each a read of the URL's current serialization. */
+const URL_PATTERN_GETTERS: Record<string, IrLibFn> = {
+  href: "url.href",
+  origin: "url.origin",
+  protocol: "url.protocol",
+  username: "url.username",
+  password: "url.password",
+  host: "url.host",
+  hostname: "url.hostname",
+  port: "url.port",
+  pathname: "url.pathname",
+  search: "url.search",
+  hash: "url.hash",
+};
+
+/** An object pattern over a URL: each element reads its getter in pattern
+ * order, as `url.name` does; `searchParams` binds the URL's live view.
+ * Methods and rest elements stay fenced. */
+function lowerUrlObjectPattern(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  srcRef: () => IrExpr,
+  isLet: boolean,
+  out: IrStmt[],
+): void {
+  for (const el of pattern.elements.nodes) {
+    if (el.name === undefined) continue;
+    if (el.dotDotDotToken) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings over URL sources (a URL's properties are prototype getters, which rest elements do not copy)",
+      );
+    }
+    const prop = el.propertyName ?? el.name;
+    const propName =
+      ts.isIdentifier(prop) ||
+      ts.isComputedPropertyName(prop) ||
+      ts.isStringLiteralLike(prop) ||
+      ts.isNumericLiteral(prop)
+        ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
+        : null;
+    const loc = locOf(el);
+    let value: IrExpr;
+    if (propName !== null && Object.hasOwn(URL_PATTERN_GETTERS, propName)) {
+      value = {
+        kind: "libCall",
+        fn: URL_PATTERN_GETTERS[propName]!,
+        args: [srcRef()],
+        type: STRING,
+        loc,
+      };
+    } else if (propName === "searchParams") {
+      value = {
+        kind: "libCall",
+        fn: "url.searchParams",
+        args: [srcRef()],
+        type: SEARCH_PARAMS_T,
+        loc,
+      };
+    } else {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        propName === null
+          ? "destructuring with computed keys that do not fold to one property name"
+          : `destructuring '${propName}' from a URL (${Object.keys(URL_PATTERN_GETTERS).join(", ")} and searchParams are the supported URL properties)`,
+      );
+    }
+    if (el.initializer) value = applyBindingDefault(lowerer, el, value);
+    lowerer.bindPatternTarget(el.name, value, isLet, out);
+  }
+}
+
+/** An object pattern over a union of records and class instances
+ * (`function f({ kind, path }: Add | Remove)`): each element reads a data
+ * field every arm declares with one type, through the runtime tag, as
+ * `value.field` does. Rest elements and fields the arms type differently
+ * stay fenced. */
+function lowerUnionObjectPattern(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  srcRef: () => IrExpr,
+  srcType: IrType & { kind: "union" },
+  isLet: boolean,
+  out: IrStmt[],
+): void {
+  const arms = lowerer.unions.get(srcType.unionId)?.arms ?? [];
+  for (const el of pattern.elements.nodes) {
+    if (el.name === undefined) continue;
+    if (el.dotDotDotToken) {
+      lowerer.unsupported("SC1031", el, `rest bindings over union sources (${NARROW_FIRST})`);
+    }
+    const prop = el.propertyName ?? el.name;
+    const propName =
+      ts.isIdentifier(prop) ||
+      ts.isComputedPropertyName(prop) ||
+      ts.isStringLiteralLike(prop) ||
+      ts.isNumericLiteral(prop)
+        ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
+        : null;
+    if (propName === null) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "destructuring with computed keys that do not fold to one property name",
+      );
+    }
+    let common: IrType | null = null;
+    for (const arm of arms) {
+      let ft: IrType | undefined;
+      if (arm.kind === "record") {
+        ft = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === propName)?.type;
+      } else if (arm.kind === "object") {
+        ft = lowerer.classes.get(arm.className)?.fields.get(propName);
+      }
+      if (!ft || ft.kind === "void" || isUnitType(ft) || (common && !typeEquals(common, ft))) {
+        common = null;
+        break;
+      }
+      common = ft;
+    }
+    if (common === null) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        `destructuring '${propName}' from a union whose arms type it differently (every arm must be a record or class with a same-typed field '${propName}' — ${NARROW_FIRST})`,
+      );
+    }
+    let value: IrExpr = {
+      kind: "unionDisc",
+      unionId: srcType.unionId,
+      field: propName,
+      value: srcRef(),
+      type: common,
+      loc: locOf(el),
+    };
     if (el.initializer) value = applyBindingDefault(lowerer, el, value);
     lowerer.bindPatternTarget(el.name, value, isLet, out);
   }
@@ -9513,6 +9689,21 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     ) {
       return lowerForAwaitStdin(lowerer, stmt);
     }
+    // NodeJS.WritableStream is what @types/node answers for pipeline()
+    // with a function destination, whose value is a PassThrough.
+    if (nodeStreamInterfaceSide(lowerer, lowerer.typeOf(stmt.expression)) === "w") {
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
+      const sides =
+        mapped?.kind === "object"
+          ? streamSidesOf(lowerer, lowerer.classes.get(mapped.className))
+          : null;
+      if (sides !== "r" && sides !== "rw")
+        lowerer.noLowering(
+          "for await over a NodeJS.WritableStream",
+          stmt.expression,
+          "type the stream as the readable class it is: pipeline() answers a PassThrough for a function destination (pipeline(...) as PassThrough, or a JSDoc @type)",
+        );
+    }
     // A checked-dynamic NodeJS.ReadableStream iterates its native stream,
     // and a Hash, Hmac, Cipheriv or Decipheriv iterates its Transform.
     const dynStream =
@@ -9699,6 +9890,10 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   }
   iterSrc ??= stmt.expression;
   let iterable = lowerer.lowerExpr(iterSrc);
+  {
+    const iterableUnion = iterableUnionOf(lowerer, iterable.type);
+    if (iterableUnion) return lowerForOfIterable(lowerer, stmt, iterable, iterableUnion, labels);
+  }
   let tupleSource: {
     shapeId: string;
     fields: { name: string; type: IrType }[];
