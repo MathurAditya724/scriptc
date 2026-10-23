@@ -14017,19 +14017,74 @@ ScrDyn *scr_dyn_object_rest(const ScrDyn *source, const ScrDyn *excluded) {
 
 /* Compiler-owned native class views retain every property and its flags,
  * including nonenumerable data, without invoking accessors. */
-ScrDyn *scr_dyn_copy_property_descriptors(ScrDyn *target, const ScrDyn *src) {
-  if (!src || src->kind == SCR_DYN_UNDEF) return scr_dyn_retain(target);
-  ScrDyn *keys = scr_dyn_obj_own_keys(src);
-  if (!keys) return NULL;
-  for (size_t i = 0; i < keys->v.arr.len; i++) {
-    ScrDyn *key = keys->v.arr.items[i];
-    ScrDyn *descriptor = scr_dyn_own_descriptor(src, key->v.str);
+static void scr_dyn_copy_property_descriptor(ScrDyn *target, const ScrDyn *src,
+                                             const ScrDynEntry *from) {
+  /* Exactly scr_dyn_define_property(target, key, own descriptor of key)
+   * when `target` has no such property and accepts new ones: the entry
+   * takes the source's attributes, value or accessor pair. */
+  ScrDynEntry *prior = scr_dyn_find_entry(target, from->key, from->key_len);
+  if (prior || target->non_extensible) {
+    ScrStr *name = scr_str_new(from->key, from->key_len);
+    ScrDyn *key = scr_dyn_new_str(name);
+    ScrDyn *descriptor = scr_dyn_own_descriptor(src, name);
     ScrDyn *result = descriptor ? scr_dyn_define_property(target, key, descriptor) : NULL;
     scr_dyn_release(descriptor);
     scr_dyn_release(result);
-    if (scr_exc_pending()) break;
+    scr_dyn_release(key);
+    scr_str_release(name);
+    return;
   }
-  scr_dyn_release(keys);
+  /* The names whose definition may move into a native Error's slots
+   * (scr_error_sync_slots). */
+  static const char *const slots[] = {"cause", "stack", "name", "message", "code"};
+  bool slot = false;
+  for (size_t i = 0; i < sizeof slots / sizeof *slots && !slot; i++)
+    slot = from->key_len == strlen(slots[i]) && memcmp(from->key, slots[i], from->key_len) == 0;
+  bool accessor = from->accessor, writable = !accessor && from->writable;
+  bool enumerable = from->enumerable, configurable = from->configurable;
+  ScrDyn *value = scr_dyn_retain(accessor ? scr_dyn_undefined() : from->value);
+  ScrDyn *getter = accessor && from->getter ? scr_dyn_retain(from->getter) : NULL;
+  ScrDyn *setter = accessor && from->setter ? scr_dyn_retain(from->setter) : NULL;
+  ScrStr *name = slot ? scr_str_new(from->key, from->key_len) : NULL;
+  scr_dyn_obj_set(target, from->key, from->key_len, value);
+  ScrDynEntry *entry = &target->v.obj.entries[target->v.obj.len - 1];
+  entry->accessor = accessor;
+  entry->getter = getter;
+  entry->setter = setter;
+  entry->writable = writable;
+  entry->enumerable = enumerable;
+  entry->configurable = configurable;
+  if (name) {
+    scr_error_sync_cause(target, name);
+    scr_str_release(name);
+  }
+}
+
+ScrDyn *scr_dyn_copy_property_descriptors(ScrDyn *target, const ScrDyn *src) {
+  if (!src || src->kind == SCR_DYN_UNDEF) return scr_dyn_retain(target);
+  if (src->kind == SCR_DYN_OBJ && target->kind == SCR_DYN_OBJ && src != target &&
+      src != scr_builtin_object_prototype && target != scr_builtin_error_prototype) {
+    /* Plain objects on both sides: no fence, proxy trap or accessor runs,
+     * so each property is copied from its entry without building the key
+     * and descriptor objects the general path goes through. */
+    if (src->v.obj.len) scr_dyn_region_store(target, NULL);
+    size_t *order = scr_dyn_obj_key_order(src);
+    for (size_t i = 0; i < src->v.obj.len && !scr_exc_pending(); i++)
+      scr_dyn_copy_property_descriptor(target, src, &src->v.obj.entries[order ? order[i] : i]);
+    free(order);
+  } else {
+    ScrDyn *keys = scr_dyn_obj_own_keys(src);
+    if (!keys) return NULL;
+    for (size_t i = 0; i < keys->v.arr.len; i++) {
+      ScrDyn *key = keys->v.arr.items[i];
+      ScrDyn *descriptor = scr_dyn_own_descriptor(src, key->v.str);
+      ScrDyn *result = descriptor ? scr_dyn_define_property(target, key, descriptor) : NULL;
+      scr_dyn_release(descriptor);
+      scr_dyn_release(result);
+      if (scr_exc_pending()) break;
+    }
+    scr_dyn_release(keys);
+  }
   if (!scr_exc_pending()) {
     ScrDyn *symbols = scr_dyn_get_own_property_symbols(src);
     if (!symbols) return NULL;

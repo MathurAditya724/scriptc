@@ -309,6 +309,22 @@ function mayHoldError(lowerer: Lowerer, type: ts.Type, errorType: ts.Type | null
   );
 }
 
+/** The `f` of a `(0, f)` callee (a numeric left operand, so dropping it
+ * changes only the call's receiver), or null. */
+function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
+  let e = callee;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (
+    !ts.isBinaryExpression(e) ||
+    e.operatorToken.kind !== ts.SyntaxKind.CommaToken ||
+    !ts.isNumericLiteral(e.left)
+  )
+    return null;
+  let right = e.right;
+  while (ts.isParenthesizedExpression(right)) right = right.expression;
+  return right;
+}
+
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
   if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
@@ -331,6 +347,17 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // require() of a JSON document: the shared parsed object.
   const json = lowerJsonRequireCall(lowerer, expr);
   if (json) return json;
+
+  // `(0, ns.member)(...)` over a builtin module (tsc's and esbuild's call
+  // without a receiver): Node's module functions do not read `this`, so it
+  // is the member call.
+  {
+    const member = receiverlessCalleeOf(expr.expression);
+    if (member !== null && ts.isPropertyAccessExpression(member)) {
+      const builtin = lowerer.lowerNamespaceBuiltinCall(expr, member);
+      if (builtin) return builtin;
+    }
+  }
 
   // eval(...) and Function(...): Node's EvalError under
   // --disallow-code-generation-from-strings (code-generation.ts).
