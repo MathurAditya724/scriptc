@@ -269,7 +269,7 @@ const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "cl
 
 /** `Object.defineProperty(target, ...)`, `Object.defineProperties`,
  * `Reflect.defineProperty`, and `target.__defineGetter__/__defineSetter__`
- * over an untyped or Error-shaped target can install an accessor over an
+ * over a target that may hold an Error can install an accessor over an
  * error's `name` or `message` (error-methods.ts). */
 function noteErrorAccessorReflection(lowerer: Lowerer, expr: ts.CallExpression): void {
   const callee = expr.expression;
@@ -282,13 +282,26 @@ function noteErrorAccessorReflection(lowerer: Lowerer, expr: ts.CallExpression):
         ? callee.expression
         : undefined;
   if (!target) return;
-  const type = lowerer.checker.getTypeAtLocation(target);
-  if (
-    type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown) ||
-    (lowerer.checker.getPropertyOfType(type, "message") &&
-      lowerer.checker.getPropertyOfType(type, "name"))
-  )
+  const error = lowerer.checker.resolveName("Error", ts.SymbolFlags.Type, target, false);
+  const errorType = error ? lowerer.checker.getDeclaredTypeOfSymbol(error) : null;
+  if (mayHoldError(lowerer, lowerer.checker.getTypeAtLocation(target), errorType))
     lowerer.errorAccessorReflection = locOf(expr);
+}
+
+/** An untyped or generic type, a type Error is assignable to (`object`,
+ * `{}`, `Object`, `{ message?: string }`), or
+ * an Error-shaped type with both `name` and `message`, alone or in a
+ * union or intersection. */
+function mayHoldError(lowerer: Lowerer, type: ts.Type, errorType: ts.Type | null): boolean {
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Instantiable))
+    return true;
+  if (type.flags & (ts.TypeFlags.Union | ts.TypeFlags.Intersection))
+    return ts.constituentTypes(type).some((part) => mayHoldError(lowerer, part, errorType));
+  return (
+    (lowerer.checker.getPropertyOfType(type, "message") !== undefined &&
+      lowerer.checker.getPropertyOfType(type, "name") !== undefined) ||
+    (errorType !== null && lowerer.checker.isTypeAssignableTo(errorType, type))
+  );
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
