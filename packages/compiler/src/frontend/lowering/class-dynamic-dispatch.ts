@@ -412,7 +412,9 @@ function returnsParam(value: IrExpr, param: string): boolean {
 function branchKind(cond: IrExpr, param: string): "classCapsule" | "funcKind" | null {
   if (
     cond.kind === "libCall" &&
-    (cond.fn === "dyn.typedRefIs" || cond.fn === "dyn.typedRefKeyIs" || cond.fn === "dyn.classIs") &&
+    (cond.fn === "dyn.typedRefIs" ||
+      cond.fn === "dyn.typedRefKeyIs" ||
+      cond.fn === "dyn.classIs") &&
     cond.args[0]?.kind === "varRef" &&
     cond.args[0].localId === param
   ) {
@@ -4766,7 +4768,8 @@ export class ClassDynamicDispatch {
       const param = fn.params[0]?.localId;
       if (param === undefined) continue;
       const last = fn.body[fn.body.length - 1]!;
-      if (last.kind !== "return" || last.value === null || !returnsParam(last.value, param)) continue;
+      if (last.kind !== "return" || last.value === null || !returnsParam(last.value, param))
+        continue;
       let test: "classCapsule" | "funcKind" | null = null;
       let ok = true;
       for (const stmt of fn.body.slice(0, -1)) {
@@ -4777,7 +4780,8 @@ export class ClassDynamicDispatch {
           stmt.value.callee === "%dyn.class.normalize"
         )
           continue;
-        const kind = stmt.kind === "if" && stmt.else_ === null ? branchKind(stmt.cond, param) : null;
+        const kind =
+          stmt.kind === "if" && stmt.else_ === null ? branchKind(stmt.cond, param) : null;
         if (kind === null || (test !== null && kind !== test)) {
           ok = false;
           break;
@@ -4786,7 +4790,8 @@ export class ClassDynamicDispatch {
       }
       if (!ok || test === null) continue;
       const first = fn.body[0]!;
-      if (first.kind === "if" && first.cond.kind === "dynTest" && first.cond.test === test) continue;
+      if (first.kind === "if" && first.cond.kind === "dynTest" && first.cond.test === test)
+        continue;
       const loc = fn.loc;
       fn.body.unshift({
         kind: "if",
