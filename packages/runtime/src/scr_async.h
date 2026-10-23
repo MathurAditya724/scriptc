@@ -62,12 +62,14 @@ ScrPromise *scr_async_spawn_after(ScrPromise *dependency,
 /* Fiberless async call (native targets): the compiler proves an async body
  * can never park its execution context and runs it directly on the
  * caller's stack between enter and leave. The frame saves what a fresh
- * fiber would isolate — the Error.stack frame chain and the
- * AsyncLocalStorage context — and leave restores both, returning a fresh
- * pending promise (+1) the caller settles from the body's outcome. */
+ * fiber would isolate, the Error.stack frame chain, and leave restores it,
+ * returning a fresh pending promise (+1) the caller settles from the body's
+ * outcome. The body runs in the caller's AsyncLocalStorage context, as
+ * Node runs an async body's synchronous prefix. The second word is unused;
+ * emitted frames keep its size. */
 typedef struct ScrAsyncInline {
   void *stack;
-  void *als;
+  void *reserved;
 } ScrAsyncInline;
 void scr_async_inline_enter(ScrAsyncInline *frame);
 ScrPromise *scr_async_inline_leave(ScrAsyncInline *frame);
@@ -109,6 +111,15 @@ double scr_coro_await_f64(ScrPromise *p);
 bool scr_coro_await_bool(ScrPromise *p);
 ScrStr *scr_coro_await_str(ScrPromise *p); /* +1 */
 void *scr_coro_await_ref(ScrPromise *p);   /* +1 via the stored retain */
+/* A direct await of a stackless body: its promise stays inside the fiber
+ * record the spawn returns, and the awaiter takes the result from it. */
+ScrFiber *scr_async_spawn_direct(void (*entry)(ScrFiber *, void *), void *argpack);
+bool scr_coro_direct_prepare(ScrFiber *self, ScrFiber *callee);
+void scr_coro_direct_void(ScrFiber *f);
+double scr_coro_direct_f64(ScrFiber *f);
+bool scr_coro_direct_bool(ScrFiber *f);
+ScrStr *scr_coro_direct_str(ScrFiber *f); /* +1 */
+void *scr_coro_direct_ref(ScrFiber *f);   /* +1 */
 
 double scr_await_f64(ScrPromise *p); /* rejected promises re-throw */
 bool scr_await_bool(ScrPromise *p);

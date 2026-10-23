@@ -305,6 +305,26 @@ describe("checked catch-binding casts", () => {
     );
   });
 
+  test("a typed-array write through an undefined index is a named runtime fence", async () => {
+    // Node stores an ordinary property named "undefined" on the typed
+    // array, which a compiled typed array cannot hold; defined indexes
+    // before it store as usual.
+    const r = await compileAndRun(
+      "typed-array-undefined-index",
+      `const holey: number[] = [1];
+holey[3] = 3;
+const cells = new Float64Array(4);
+for (const i of holey) cells[i] = 9;
+console.log(cells.join(","));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: typed array properties named 'undefined' \(an element index that is undefined\) are not supported yet \[SC1090 at .*typed-array-undefined-index\.ts:4\]\n$/,
+    );
+  });
+
   test("an EFFECTFUL surplus argument is a named deferred fence (JS lane)", async () => {
     // Effect-free surplus args drop at compile time, JS-exact (corpus
     // 1760 — the test-string-decoder writeSequences shape). An effectful
@@ -847,11 +867,107 @@ try {
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
       "Error SC2020 The cipher 'aes-128-ccm' has no native implementation; the supported ciphers are " +
-        "aes-128-cbc, aes-192-cbc, aes-256-cbc, aes-128-ctr, aes-192-ctr, aes-256-ctr, aes-128-gcm, " +
-        "aes-192-gcm, aes-256-gcm and chacha20-poly1305\n" +
+        "aes-128, aes-192 and aes-256 in cbc, ctr, gcm, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede3 in " +
+        "cbc, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede in cbc, ecb, cfb and ofb modes, chacha20 and " +
+        "chacha20-poly1305\n" +
         "Error ERR_CRYPTO_UNKNOWN_CIPHER Unknown cipher\n",
     );
     expect(r.stderr).toBe("");
+  });
+});
+
+// new tls.TLSSocket reads a runtime options record: the client mode, whose
+// handshake Node never starts, and members without a lowering throw the
+// fence, as do sockets it cannot take over (a second wrap, and
+// tls.connect({ socket }) over a socket that is still dialing).
+describe("tls.TLSSocket runtime fences", () => {
+  test("client mode, unlowered members and sockets that cannot be taken over throw", async () => {
+    const r = await compileAndRun(
+      "tls-socket-fences",
+      `import { readFileSync } from "node:fs";
+import * as net from "node:net";
+import * as tls from "node:tls";
+const certs = "tests/fixtures/server/certs";
+const cert = readFileSync(\`\${certs}/localhost.pem\`);
+const key = readFileSync(\`\${certs}/localhost-key.pem\`);
+function report(label: string, run: () => void): void {
+  try {
+    run();
+    console.log(label, "no error");
+  } catch (error) {
+    console.log(label, (error as Error).message);
+  }
+}
+const client: Record<string, unknown> = { cert, key };
+const session: Record<string, unknown> = { isServer: true, cert, key, session: Buffer.alloc(1) };
+const server: Record<string, unknown> = { isServer: true, cert, key };
+const listener = net.createServer((raw) => {
+  report("client mode", () => new tls.TLSSocket(raw, client));
+  report("session", () => new tls.TLSSocket(raw, session));
+  const wrapped = new tls.TLSSocket(raw, server);
+  report("twice", () => new tls.TLSSocket(raw, server));
+  wrapped.destroy();
+  listener.close();
+});
+listener.listen(0, () => {
+  const c = net.connect((listener.address() as net.AddressInfo).port, "localhost");
+  report("dialing", () => tls.connect({ socket: c }));
+  c.on("error", () => {});
+});
+`,
+    );
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "dialing tls.connect over a socket that is not connected, or is already wrapped, is not supported yet\n" +
+        "client mode new tls.TLSSocket option 'isServer' has no static lowering — Node starts no handshake for a client-mode TLSSocket; tls.connect({ socket }) runs the client handshake over an open socket\n" +
+        "session new tls.TLSSocket option 'session' has no static lowering — isServer, cert, key, secureContext, ALPNProtocols, minVersion and maxVersion are the implemented members\n" +
+        "twice new tls.TLSSocket over a socket that is not connected, or is already wrapped, is not supported yet\n",
+    );
+  });
+});
+
+// With a secureContext, the TLSSocket's own options still apply: a truthy
+// requestCert, which asks for client certificates this runtime does not
+// verify, and SNICallback throw the fence instead of being dropped.
+describe("tls.TLSSocket socket options beside a secureContext", () => {
+  test("requestCert and SNICallback throw the fence", async () => {
+    const r = await compileAndRun(
+      "tls-socket-context-fences",
+      `import { readFileSync } from "node:fs";
+import * as net from "node:net";
+import * as tls from "node:tls";
+const certs = "tests/fixtures/server/certs";
+const cert = readFileSync(\`\${certs}/localhost.pem\`);
+const key = readFileSync(\`\${certs}/localhost-key.pem\`);
+const context = tls.createSecureContext({ cert, key });
+function report(label: string, run: () => void): void {
+  try {
+    run();
+    console.log(label, "no error");
+  } catch (error) {
+    console.log(label, (error as Error).message);
+  }
+}
+const listener = net.createServer((raw) => {
+  report("requestCert", () => new tls.TLSSocket(raw, { isServer: true, secureContext: context, requestCert: true, rejectUnauthorized: true }));
+  report("SNICallback", () => new tls.TLSSocket(raw, { isServer: true, secureContext: context, SNICallback: (name: string, cb: (err: Error | null, ctx?: tls.SecureContext) => void) => cb(null, context) }));
+  report("requestCert false", () => new tls.TLSSocket(raw, { isServer: true, secureContext: context, requestCert: false, rejectUnauthorized: true }).destroy());
+  listener.close();
+});
+listener.listen(0, () => {
+  const c = net.connect((listener.address() as net.AddressInfo).port, "localhost");
+  c.on("error", () => {});
+  c.on("close", () => console.log("client closed"));
+});
+`,
+    );
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "requestCert new tls.TLSSocket option 'requestCert' has no static lowering — client-certificate handshakes are not modeled (SEMANTICS.md divergence 55) — requestCert stays at Node's false default\n" +
+        "SNICallback new tls.TLSSocket option 'SNICallback' has no static lowering — isServer, cert, key, secureContext, ALPNProtocols, minVersion and maxVersion are the implemented members\n" +
+        "requestCert false no error\n" +
+        "client closed\n",
+    );
   });
 });
 
@@ -915,6 +1031,53 @@ for (const run of [() => ecdh.getPublicKey.name, () => { ecdh.custom = 1; }]) {
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("Error SC2020\nError SC2020\n");
+  });
+});
+
+// DiffieHellman primes past mbedTLS's 8192-bit limit throw a coded SC2020
+// error, as do property reads other than verifyError, property writes, and
+// Object.prototype method calls on an untyped DiffieHellman.
+describe("DiffieHellman runtime refusals", () => {
+  test("primes longer than 8192 bits throw SC2020", async () => {
+    const r = await compileAndRun(
+      "dh-long-prime",
+      `import { createDiffieHellman } from "node:crypto";
+const prime = Buffer.alloc(1025, 0xff);
+for (const run of [() => createDiffieHellman(prime), () => createDiffieHellman(8193)]) {
+  try {
+    run();
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+}
+console.log(createDiffieHellman(Buffer.alloc(1024, 0xff)).verifyError);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    const message = "DiffieHellman primes longer than 8192 bits have no native implementation";
+    expect(r.stdout).toBe(`Error SC2020 ${message}\nError SC2020 ${message}\n1\n`);
+    expect(r.stderr).toBe("");
+  });
+
+  test("DiffieHellman property reads, writes and Object.prototype calls throw SC2020", async () => {
+    const r = await compileAndRun(
+      "dh-properties",
+      `const crypto = require("node:crypto");
+const dh = crypto.getDiffieHellman("modp1");
+console.log(dh.verifyError);
+for (const run of [() => dh.getPrime.name, () => { dh.verifyError = 1; }, () => dh.hasOwnProperty("verifyError")]) {
+  try {
+    run();
+  } catch (e) {
+    console.log(e.name, e.code);
+  }
+}
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("0\nError SC2020\nError SC2020\nError SC2020\n");
   });
 });
 
@@ -1568,9 +1731,10 @@ describe("builtin constructor values (JS lane)", () => {
   test("members without a lowering stay refused instead of reading undefined", async () => {
     // Builtin constructors read as interned function values that model only
     // name, length and constructor. Every other static member or prototype
-    // read (direct, bracketed, `in`, through an alias or globalThis), and
+    // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
+    // `key in Ctor` answers from the constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -1588,7 +1752,6 @@ describe("builtin constructor values (JS lane)", () => {
       ],
       ["isExtensible(Date.prototype)", "Object.isExtensible(Date.prototype)"],
       ["Map['prototype']", 'Map["prototype"]'],
-      ["'prototype' in Map", '"prototype" in Map'],
       ["globalThis.Map.prototype", "globalThis.Map.prototype"],
       ["Map alias prototype", "MapAlias.prototype"],
       ["Date alias prototype", "DateAlias.prototype"],
@@ -1611,6 +1774,7 @@ console.log(Date.length, RegExp.length, Promise.length, Object.length, Map.lengt
 console.log(Date.name, Map.name, Map.constructor === Function, Object.constructor === Function);
 const promisePrototype = Promise.prototype;
 console.log(typeof promisePrototype, typeof promisePrototype.then, promisePrototype.constructor === Promise);
+console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, "nope" in Map);
 `;
     const r = await compileAndRun("builtin-constructor-members", source, "cjs");
     expect(r.stderr).toBe("");
@@ -1625,23 +1789,26 @@ console.log(typeof promisePrototype, typeof promisePrototype.then, promiseProtot
         ),
       ),
     );
-    // Promise.prototype reads as an object holding the runtime's methods.
+    // Promise.prototype reads as an object holding the runtime's methods,
+    // and `in` on a builtin constructor answers from its fixed keys.
     expect(lines.slice(reads.length)).toEqual([
       "7 2 1 1 0 0",
       "Date Map true true",
       "object function true",
+      "true true true false",
     ]);
   });
 });
 
-// WebCrypto's native slice is HMAC importKey('raw'), sign and verify, and
-// the SHA-1/SHA-2 digests. Algorithms Node recognizes outside that slice
-// reject with a coded SC2020 Error instead of a Node-shaped success, and a
-// JavaScript call with the 'jwk' format meets its named fence when it runs.
+// WebCrypto's native slice is crypto.subtle's secret-key methods and its
+// ECDSA, Ed25519 and RSA algorithms. Algorithms Node recognizes outside
+// that slice reject with a coded SC2020
+// Error instead of a Node-shaped success, and a JavaScript call of a
+// method outside it meets its named fence when it runs.
 // Node's own rejections (unknown names, bad usages) are corpus-pinned
 // (6292, 6294); these refusals have no Node twin, so they live here.
 describe("WebCrypto refusals (JS lane)", () => {
-  test("recognized algorithms outside the HMAC slice reject with SC2020", async () => {
+  test("recognized algorithms outside the lowered ones reject with SC2020", async () => {
     const r = await compileAndRun(
       "webcrypto-unsupported-algorithms",
       `const bytes = new TextEncoder().encode("secret");
@@ -1653,18 +1820,25 @@ async function attempt(label, run) {
     console.log(label, e.name, e.code, e.message);
   }
 }
-await attempt("rsa", () =>
-  crypto.subtle.importKey("raw", bytes, { name: "RSA-PSS", hash: "SHA-256" }, false, ["verify"]),
-);
 const key = await crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-await attempt("ecdsa", () => crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, bytes));
+await attempt("ed448", () => crypto.subtle.sign({ name: "Ed448" }, key, bytes));
+await attempt("ecdsa with an hmac key", () => crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, bytes));
 await attempt("sha3", () => crypto.subtle.digest("SHA3-256", bytes));
 await attempt("sha3 hmac", () =>
   crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA3-256" }, false, ["sign"]),
 );
-const format = JSON.parse('"jwk"');
-await attempt("computed jwk", () =>
-  crypto.subtle.importKey(format, { kty: "oct", k: "c2VjcmV0" }, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
+const aes = await crypto.subtle.generateKey({ name: "AES-GCM", length: 128 }, false, ["encrypt"]);
+await attempt("aes-ocb", () => crypto.subtle.encrypt({ name: "AES-OCB", iv: new Uint8Array(12) }, aes, bytes));
+await attempt("ecdh bits", () => crypto.subtle.deriveBits({ name: "ECDH" }, key, 256));
+await attempt("rsa-oaep wrap", () => crypto.subtle.wrapKey("raw", key, key, { name: "RSA-OAEP" }));
+const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+const kw = await crypto.subtle.generateKey({ name: "AES-KW", length: 128 }, false, ["wrapKey", "unwrapKey"]);
+await attempt("wrap an ecdsa key", () => crypto.subtle.wrapKey("spki", pair.publicKey, kw, "AES-KW"));
+await attempt("wrap with an ecdsa key", () => crypto.subtle.wrapKey("raw", aes, pair.privateKey, "AES-KW"));
+await attempt("unwrap an ecdsa key", () =>
+  crypto.subtle.unwrapKey("spki", new Uint8Array(24), kw, "AES-KW", { name: "ECDSA", namedCurve: "P-256" }, true, [
+    "verify",
+  ]),
 );
 `,
       "mjs",
@@ -1672,26 +1846,83 @@ await attempt("computed jwk", () =>
     expect(r.exitCode).toBe(0);
     expect(r.stderr).toBe("");
     expect(r.stdout).toBe(
-      "rsa Error SC2020 crypto.subtle.importKey with the RSA-PSS algorithm is not supported yet\n" +
-        "ecdsa Error SC2020 crypto.subtle.sign with the ECDSA algorithm is not supported yet\n" +
+      "ed448 Error SC2020 crypto.subtle.sign with the Ed448 algorithm is not supported yet\n" +
+        "ecdsa with an hmac key InvalidAccessError 15 Key algorithm mismatch\n" +
         "sha3 Error SC2020 crypto.subtle.digest with the SHA3-256 algorithm is not supported yet\n" +
         "sha3 hmac Error SC2020 crypto.subtle.importKey with the SHA3-256 algorithm is not supported yet\n" +
-        "computed jwk Error SC2020 crypto.subtle.importKey with the 'jwk' key format is not supported yet\n",
+        "aes-ocb Error SC2020 crypto.subtle.encrypt with the AES-OCB algorithm is not supported yet\n" +
+        "ecdh bits Error SC2020 crypto.subtle.deriveBits with the ECDH algorithm is not supported yet\n" +
+        "rsa-oaep wrap Error SC2020 crypto.subtle.wrapKey with the RSA-OAEP algorithm is not supported yet\n" +
+        "wrap an ecdsa key Error SC2020 crypto.subtle.wrapKey with an ECDSA, Ed25519 or RSA key is not supported yet\n" +
+        "wrap with an ecdsa key InvalidAccessError 15 Key algorithm mismatch\n" +
+        "unwrap an ecdsa key Error SC2020 crypto.subtle.unwrapKey with the ECDSA algorithm is not supported yet\n",
     );
   });
 
-  test("a literal 'jwk' import is a named fence where it runs", async () => {
+  test("a method outside the slice is a named fence where it runs", async () => {
     const r = await compileAndRun(
-      "webcrypto-jwk-literal",
+      "webcrypto-get-public-key",
       `console.log("before");
-await crypto.subtle.importKey("jwk", { kty: "oct", k: "c2VjcmV0" }, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+const key = await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign"]);
+await crypto.subtle.getPublicKey(key, ["verify"]);
 `,
       "mjs",
     );
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("before\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'crypto\.subtle\.importKey with the 'jwk' key format' is part of the standard library types but has no scriptc lowering yet.*\n$/,
+      /^Uncaught Error: 'crypto\.subtle\.getPublicKey' is part of the standard library types but has no scriptc lowering yet.*\n$/,
+    );
+  });
+});
+
+// The Ed25519 arithmetic (scr_ed25519.c) links only into programs whose
+// string literals name Ed25519. Without it, an Ed25519 public key still
+// imports and exports, while private-key parsing, signing and verification
+// reject with a coded SC2020 Error where Node answers; there is no Node
+// twin, so this lives here. The corpus (7080, 7081) pins the linked path.
+describe("Ed25519 without the Ed25519 unit (JS lane)", () => {
+  test("a program that never names Ed25519 refuses its arithmetic with SC2020", async () => {
+    const r = await compileAndRun(
+      "ed25519-unit-not-linked",
+      `import * as c from "node:crypto";
+const spki = Buffer.from("302a300506032b6570032100d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "hex");
+const pkcs8 = Buffer.from("302e020100300506032b6570042204209d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", "hex");
+const pub = c.createPublicKey({ key: spki, format: "der", type: "spki" });
+console.log(pub.asymmetricKeyType, pub.export({ format: "jwk" }).x);
+async function attempt(label, run) {
+  try {
+    await run();
+    console.log(label, "resolved");
+  } catch (e) {
+    console.log(label, e.name, e.code, e.message);
+  }
+}
+await attempt("pkcs8", () => c.createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" }));
+await attempt("verify", () => c.verify(null, Buffer.from("x"), pub, Buffer.alloc(64)));
+// ECDSA links the WebCrypto key unit; the Ed25519 name is built at run time.
+const ecdsa = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+console.log(ecdsa.privateKey.type);
+const name = ["Ed", "25519"].join("");
+await attempt("generateKey", () => crypto.subtle.generateKey(name, false, ["sign", "verify"]));
+await attempt("importKey", () => crypto.subtle.importKey("pkcs8", pkcs8, name, false, ["sign"]));
+const raw = await crypto.subtle.importKey("raw", spki.subarray(12), name, false, ["verify"]);
+await attempt("subtle verify", () => crypto.subtle.verify(name, raw, new Uint8Array(64), new Uint8Array(1)));
+`,
+      "mjs",
+    );
+    const refusal =
+      "Error SC2020 Ed25519 keys are supported when a string literal in the program names 'ed25519'";
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "ed25519 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\n" +
+        `pkcs8 ${refusal}\n` +
+        `verify ${refusal}\n` +
+        "private\n" +
+        `generateKey ${refusal}\n` +
+        `importKey ${refusal}\n` +
+        `subtle verify ${refusal}\n`,
     );
   });
 });
@@ -1775,5 +2006,47 @@ console.log("unreachable");
     expect(push.stderr).toMatch(
       /^Uncaught Error: Elements on Array\.prototype are not supported yet \[SC2020[^\]]*\]\n$/,
     );
+  });
+});
+
+describe("numeric properties of native arrays", () => {
+  // A native array keeps its numeric properties ("-1", "1.5") in a property
+  // table that holds values without attributes, so defining one with a
+  // descriptor refuses instead of dropping the attributes.
+  test("Object.defineProperty on a numeric key is a named fence", async () => {
+    const r = await compileAndRun(
+      "array-numeric-define-property",
+      `const words: string[] = ["a"];
+words[-1] = "x";
+console.log(words[-1]);
+Object.defineProperty(words as unknown as Record<string, unknown>, "-3", { value: "kept" });
+console.log("unreachable");
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("x\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: Object\.defineProperty on a numeric property of a native array is not supported yet\n$/,
+    );
+  });
+
+  test("a number key that is not an array index takes the same fence", async () => {
+    const r = await compileAndRun(
+      "array-numeric-define-property-number",
+      `const words: string[] = ["a"];
+for (const key of [-3, 1.5]) {
+  try {
+    Object.defineProperty(words as unknown as Record<number, unknown>, key, { value: "kept" });
+  } catch (e) {
+    console.log((e as Error).message);
+  }
+}
+console.log(words.length);
+`,
+    );
+    const fence =
+      "Object.defineProperty on a numeric property of a native array is not supported yet\n";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(`${fence}${fence}1\n`);
   });
 });

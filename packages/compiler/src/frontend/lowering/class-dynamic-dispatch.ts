@@ -1,9 +1,19 @@
 import { primitiveConstructorOr } from "./lower-exprs.js";
+import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { constructedValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
+  DATE_PROTOTYPE_METHOD_NAMES,
+  DATE_TIME_FIELD,
+  dateInheritedMember,
+  dateRootOf,
+  programDeclaresDateClass,
+} from "./builtins/date-classes.js";
+import { dateValueMethod } from "./builtins/dates.js";
+import {
   BOOL,
+  DATE_T,
   DYN,
   F64,
   DYN_CLASS_PROPERTIES as PROPERTY_BAG,
@@ -68,13 +78,14 @@ import { isClassCallback } from "./class-callbacks.js";
 import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
+import { DispatchSites } from "./dispatch-sites.js";
 import {
   emitterRooted,
   lowerDynamicEmitterEmit,
   lowerDynamicEmitterOn,
 } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
-import { STREAM_OPERATORS } from "./lower-stream.js";
+import { STREAM_OPERATORS, operatorSignalOptions, reduceSignalSetup } from "./lower-stream.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 
 const STREAM_METHODS = new Set([
@@ -217,7 +228,7 @@ const KEY_CALLS = new Map<string, "object" | "any" | "value">([
   ["dyn.keySetComputed", "value"],
 ]);
 
-function toPrimitiveHint(expr: IrExpr): ToPrimitiveHint | null {
+export function toPrimitiveHint(expr: IrExpr): ToPrimitiveHint | null {
   if (expr.kind === "toString") return expr.operand.type.kind === "dyn" ? "string" : null;
   if (expr.kind === "dynKeyGet") return expr.key.type.kind === "dyn" ? "string" : null;
   if (expr.kind !== "libCall") return null;
@@ -281,6 +292,7 @@ export function classInstanceOf(
   classValue?: IrExpr,
 ): IrExpr {
   const name = `%dyn.class.${classValue ? "valueInstanceof" : "instanceof"}:${info.def.name}`;
+  lowerer.shareHelper(name);
   const params = [
     { localId: "value", name: "value", type: DYN },
     ...(classValue ? [{ localId: "class", name: "class", type: classValue.type }] : []),
@@ -295,6 +307,32 @@ export function classInstanceOf(
     );
     const body: IrStmt[] = prototype
       ? [
+          // In a program that declares a class extending Date, a Date can
+          // meet a class test (`date instanceof Moment`): its prototype
+          // chain holds no class prototype.
+          ...(programDeclaresDateClass(lowerer)
+            ? [
+                {
+                  kind: "if" as const,
+                  cond: {
+                    kind: "libCall" as const,
+                    fn: "dyn.nativeDateHandleIs" as const,
+                    args: [varRef("value", DYN, loc)],
+                    type: BOOL,
+                    loc,
+                  },
+                  then: [
+                    {
+                      kind: "return" as const,
+                      value: { kind: "boolLit" as const, value: false, type: BOOL, loc },
+                      loc,
+                    },
+                  ],
+                  else_: null,
+                  loc,
+                },
+              ]
+            : []),
           { kind: "varDecl", localId: "candidate", init: varRef("value", DYN, loc), loc },
           {
             kind: "while",
@@ -386,8 +424,127 @@ function readOnlyBagBody(body: IrStmt[], orEmpty = false): IrStmt[] {
   return body;
 }
 
+/** `value` with the class branch's checked receiver (`p.0` as a dynamic
+ * value, possibly cast to the branch's class) replaced by `receiver`, the
+ * typed receiver of a per-class helper. */
+function withTypedReceiver(value: IrExpr, receiver: IrExpr): IrExpr {
+  const checked = (e: IrExpr): boolean =>
+    e.kind === "dynCheck" && e.value.kind === "varRef" && e.value.localId === "p.0";
+  return transformExpr(value, {
+    stmt: (stmt) => stmt,
+    expr: (expr) =>
+      (expr.kind === "downcast" &&
+        checked(expr.value) &&
+        expr.type.kind === "object" &&
+        receiver.type.kind === "object" &&
+        expr.type.className === receiver.type.className) ||
+      checked(expr)
+        ? receiver
+        : expr,
+  });
+}
+
+/** Re-adds the classes of `set` after the first `from` in a fixed order:
+ * the program's classes by name, then the classes the runtime implements by
+ * name. The dispatch helpers add each class's branch in front of the
+ * earlier ones, so a runtime class's branch, which answers its methods for
+ * instances of the program's subclasses too, is tested before the
+ * subclasses' own branches. */
+function sortAdded(lowerer: Lowerer, set: Set<string>, from: number): void {
+  const runtime = (name: string): boolean => {
+    const info = lowerer.classes.get(name);
+    return !!(
+      info &&
+      (info.def.runtime || info.builtinEmitter || info.builtinStream || info.builtinError)
+    );
+  };
+  const added = [...set]
+    .slice(from)
+    .sort(
+      (left, right) =>
+        Number(runtime(left)) - Number(runtime(right)) ||
+        (left < right ? -1 : left > right ? 1 : 0),
+    );
+  for (const name of added) set.delete(name);
+  for (const name of added) set.add(name);
+}
+
+/** The receivers of one property-receiver list (propertyReceivers) by the
+ * names that can make them answer a member, as positions in the list. A
+ * receiver whose root answers names of its own (an emitter, a stream, an
+ * EventTarget or a Date) is in `rooted` instead. */
+interface ReceiverIndex {
+  plans: readonly PropertyReceiver[];
+  /** By a method or generic method its base chain declares. */
+  methods: Map<string, number[]>;
+  /** By a method, generic method or accessor its base chain declares (an
+   * accessor under its key and under its property name), or a field it has. */
+  members: Map<string, number[]>;
+  rooted: number[];
+}
+
+function receiverIndex(lowerer: Lowerer, plans: readonly PropertyReceiver[]): ReceiverIndex {
+  const methods = new Map<string, number[]>();
+  const members = new Map<string, number[]>();
+  const rooted: number[] = [];
+  const add = (table: Map<string, number[]>, name: string, position: number): void => {
+    const positions = table.get(name);
+    if (positions === undefined) table.set(name, [position]);
+    else if (positions[positions.length - 1] !== position) positions.push(position);
+  };
+  plans.forEach(({ info }, position) => {
+    if (
+      emitterRooted(lowerer, info) ||
+      info.builtinStream !== undefined ||
+      eventTargetApiMembers(info) !== null ||
+      dateRootOf(info) !== null
+    ) {
+      rooted.push(position);
+      return;
+    }
+    for (let c: ClassInfo | null = info; c; c = c.base) {
+      for (const name of c.methods.keys()) {
+        add(methods, name, position);
+        // A `get:`/`set:` key is an accessor of the property after the
+        // prefix, or a method whose quoted name has that prefix; the test
+        // looks up both.
+        add(members, name, position);
+        if (name.startsWith("get:") || name.startsWith("set:"))
+          add(members, name.slice(4), position);
+      }
+      if (c.genericMethods)
+        for (const name of c.genericMethods.keys()) {
+          add(methods, name, position);
+          add(members, name, position);
+        }
+    }
+    for (const name of info.fields.keys()) add(members, name, position);
+  });
+  for (const table of [methods, members])
+    for (const positions of table.values()) positions.sort((a, b) => a - b);
+  return { plans, methods, members, rooted };
+}
+
+/** The ascending union of two ascending position lists. */
+function mergePositions(left: readonly number[], right: readonly number[]): number[] {
+  const out: number[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < left.length || j < right.length) {
+    const next =
+      j >= right.length || (i < left.length && left[i]! <= right[j]!) ? left[i++]! : right[j++]!;
+    if (out[out.length - 1] !== next) out.push(next);
+  }
+  return out;
+}
+
+/** SCRIPTC_CHECK_DISPATCH_CANDIDATES=1 checks every indexed receiver selection
+ * against a test of every receiver. */
+const CHECK_CANDIDATES = process.env["SCRIPTC_CHECK_DISPATCH_CANDIDATES"] === "1";
+
 export function classPropertiesHelper(lowerer: Lowerer, loc: SrcLoc, readOnly = false): IrFunction {
   const name = readOnly ? READ_PROPERTIES : "%dyn.class.properties";
+  lowerer.shareHelper(name);
   const existing = lowerer.liftedFnNamed(name);
   if (existing) return existing;
   const helper: IrFunction = {
@@ -427,6 +584,8 @@ export function classForInHasKey(
   loc: SrcLoc,
 ): IrExpr {
   const name = "%dyn.class.forInHasKey";
+  lowerer.shareHelper(name);
+  lowerer.shareHelper("%dyn.class.forInBagHas");
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     // The read-only table: a recheck never creates an instance's table, which
     // is undefined while the instance has no own dynamic properties.
@@ -696,6 +855,8 @@ export class ClassDynamicDispatch {
   private readonly generatorDispatch = new GeneratorDynamicDispatch();
   private readonly caughtDispatch = new CaughtValueDispatch();
   private readonly constructionDispatch = new ClassConstructionDispatch();
+  /** What each function's body holds for this pass and its sub-passes. */
+  readonly sites = new DispatchSites();
   /** Property names a delete can remove (null: any name), for the field
    * creation tracking decision. */
   private deletedNames: Set<string> | null | undefined;
@@ -728,7 +889,11 @@ export class ClassDynamicDispatch {
   private readonly readPropertyBags: {
     helper: IrFunction;
     initialize: Extract<IrStmt, { kind: "fieldSet" }>;
+    orEmpty?: boolean;
   }[] = [];
+  /** Read-only bags of exactly one class (exactPropertyBag), by class and
+   * whether an absent bag reads as a fresh empty object. */
+  private readonly exactPropertyBags = new Map<string, IrFunction>();
   private readonly generated = new Set<IrFunction>();
   /** Protocol dispatch helpers and callee reads whose receivers normalize. */
   private readonly protocols: IrFunction[] = [];
@@ -743,6 +908,11 @@ export class ClassDynamicDispatch {
   private readonly prototypeClasses = new Set<string>();
   private prototypeIdentityHelper: IrFunction | null = null;
   private readonly prototypeIdentityClasses = new Set<string>();
+  /** `value instanceof Error` through Error.prototype: boxed instances of
+   * classes with a heritage evaluated at run time test their prototype
+   * data's chain. */
+  private errorPrototypeHelper: IrFunction | null = null;
+  private readonly errorPrototypeClasses = new Set<string>();
   private readonly instancePrototypes = new Map<string, { fn: IrFunction; classes: Set<string> }>();
   private readonly checkedCasts = new Map<string, { fn: IrFunction; classes: Set<string> }>();
   /** The for-in key helpers, by libCall (dyn and native string[] keys). */
@@ -774,12 +944,13 @@ export class ClassDynamicDispatch {
       )
         fn.body.shift();
     }
-    let changed = this.caughtDispatch.process(lowerer, functions);
+    let changed = this.caughtDispatch.process(lowerer, functions, this.sites);
     changed = refreshErrorMethodDispatch(lowerer, functions) || changed;
     changed = refreshClassMethodValueSelections(lowerer) || changed;
     changed = refreshErrorPropertyDispatch(lowerer, functions) || changed;
-    changed = this.generatorDispatch.process(lowerer, functions, this.generated) || changed;
-    changed = this.constructionDispatch.process(lowerer, functions) || changed;
+    changed =
+      this.generatorDispatch.process(lowerer, functions, this.generated, this.sites) || changed;
+    changed = this.constructionDispatch.process(lowerer, functions, this.sites) || changed;
     const seenTypes = new Set<string>();
     const rewrite = new Set<IrFunction>();
     const toPrimitiveSites = new Set<IrFunction>();
@@ -801,100 +972,24 @@ export class ClassDynamicDispatch {
       else if (type.kind === "func") discover(type.ret);
       else if (type.kind === "promise") discover(type.inner);
     };
-    for (const fn of functions)
-      everyStmtList(fn.body, {
-        stmt: (statement) => {
-          // Field-creation instrumentation can box a base-constructor receiver
-          // even when only its derived instances otherwise cross the boundary.
-          if (
-            statement.kind === "fieldSet" &&
-            lowerer.classes.get(statement.className)?.def.tracksOwnFields &&
-            isClassOwnEnumerableFieldName(statement.field)
-          )
-            discover(statement.obj.type);
-          return true;
-        },
-        expr: (expr) => {
-          if (
-            expr.kind === "jsonStringify" ||
-            (expr.kind === "libCall" &&
-              (expr.fn === "json.stringifyValue" || expr.fn === "json.stringifyReplacer"))
-          ) {
-            this.serializesClasses = true;
-          }
-          if (
-            toPrimitiveHint(expr) !== null ||
-            (expr.kind === "libCall" && (expr.fn === "dyn.valueOf" || expr.fn === "dyn.toString"))
-          )
-            toPrimitiveSites.add(fn);
-          switch (expr.kind) {
-            case "dynFrom":
-              discover(expr.value.type);
-              break;
-            case "fieldIncDec":
-              if (
-                lowerer.classes.get(expr.className)?.def.tracksOwnFields &&
-                isClassOwnEnumerableFieldName(expr.field)
-              )
-                discover(expr.obj.type);
-              break;
-            case "call":
-              if (
-                (expr.callee === "%dyn.class.properties" ||
-                  expr.callee === "%dyn.class.readProperties") &&
-                expr.args[0]?.kind === "dynFrom" &&
-                isDynTypedRefType(expr.args[0].value.type)
-              )
-                rewrite.add(fn);
-              break;
-            case "dynHasKey":
-              hasKeySites.add(fn);
-              break;
-            case "caughtTest":
-              if (expr.test === "instanceof") caughtSites.add(fn);
-              break;
-            case "caughtNarrow":
-            case "caughtCheck":
-              if (expr.type.kind === "object") caughtSites.add(fn);
-              break;
-            case "dynKeyGet":
-            case "dynInvoke":
-              rewrite.add(fn);
-              break;
-            case "dynCheck":
-              if (isDynTypedRefType(expr.type)) rewrite.add(fn);
-              // A dynamic function checked into a native function type
-              // receives its arguments as dynamic values: class instances
-              // passed to it cross the boundary when it is called (a JS
-              // `list.map((rec) => rec.match(x))` callback with an untyped
-              // parameter).
-              if (expr.type.kind === "func") expr.type.params.forEach(discover);
-              break;
-            case "libCall":
-              if (
-                expr.fn === "bytes.construct" ||
-                expr.fn === "dyn.keySet" ||
-                expr.fn === "dyn.keySetComputed" ||
-                expr.fn === "dyn.iterator" ||
-                expr.fn === "dyn.arrayFromIterator" ||
-                expr.fn === "dyn.toString" ||
-                expr.fn === "dyn.stringConstructor" ||
-                expr.fn === "dyn.forInKeys" ||
-                expr.fn === "dyn.forInKeyStrings" ||
-                expr.fn === "dyn.hasKeyComputed" ||
-                expr.fn === "dyn.hasOwnComputed" ||
-                expr.fn === "dyn.propertyIsEnumerableComputed" ||
-                expr.fn === "dyn.defineProperty" ||
-                expr.fn === "dyn.getPrototype" ||
-                expr.fn === "dyn.reflectGet" ||
-                expr.fn === "dyn.reflectSet"
-              )
-                rewrite.add(fn);
-              break;
-          }
-          return true;
-        },
-      });
+    const boxedBefore = this.boxed.size;
+    const boxedConstructorsBefore = this.boxedConstructors.size;
+    for (const fn of functions) {
+      const found = this.sites.of(fn);
+      // A class starts tracking its own fields during this pass.
+      for (const { type, fieldClass } of found.boxing)
+        if (fieldClass === undefined || lowerer.classes.get(fieldClass)?.def.tracksOwnFields)
+          discover(type);
+      if (found.serializes) this.serializesClasses = true;
+      if (found.conversions) toPrimitiveSites.add(fn);
+      if (found.dispatches) rewrite.add(fn);
+      if (found.keyTests) hasKeySites.add(fn);
+      if (found.caughtClassTests) caughtSites.add(fn);
+    }
+    // The classes this pass found join the tables in a fixed order, not in
+    // the order the scan met them.
+    sortAdded(lowerer, this.boxed, boxedBefore);
+    sortAdded(lowerer, this.boxedConstructors, boxedConstructorsBefore);
     changed = this.caughtDispatch.dynamicPayloads(lowerer, caughtSites, this.boxed) || changed;
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);
@@ -1019,6 +1114,49 @@ export class ClassDynamicDispatch {
               loc,
             },
             then: [{ kind: "return", value: prototype, loc }],
+            else_: null,
+            loc,
+          });
+        changed = true;
+      }
+      if (
+        this.errorPrototypeHelper &&
+        !this.errorPrototypeClasses.has(className) &&
+        hasRuntimeHeritage(info)
+      ) {
+        this.errorPrototypeClasses.add(className);
+        const loc = this.errorPrototypeHelper.loc;
+        const type: IrType = { kind: "object", className };
+        const value = varRef("value", DYN, loc);
+        const prototype = classPrototypeData(lowerer, info, loc, {
+          kind: "dynCheck",
+          value,
+          type,
+          loc,
+        });
+        if (prototype)
+          this.errorPrototypeHelper.body.unshift({
+            kind: "if",
+            cond: {
+              kind: "libCall",
+              fn: "dyn.typedRefIs",
+              args: [value, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "return",
+                value: {
+                  kind: "libCall",
+                  fn: "dyn.inheritsErrorPrototype",
+                  args: [prototype],
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ],
             else_: null,
             loc,
           });
@@ -1248,10 +1386,30 @@ export class ClassDynamicDispatch {
     }
     refreshDescriptorGuards(lowerer);
     const byMethod = new Map<string, ClassInfo[]>();
+    // A query asks every receiver about one name, and the program's dispatch
+    // sites ask about thousands: index the receivers by name once per list.
+    let index: ReceiverIndex | null = null;
+    const indexOf = (plans: readonly PropertyReceiver[]): ReceiverIndex =>
+      index?.plans === plans ? index : (index = receiverIndex(lowerer, plans));
+    /** The receivers of `plans` that can answer `name`, in list order: those
+     * `table` lists under it and the rooted ones. Emit-override
+     * specializations (`emit:<event>`) join a class's methods while bodies
+     * lower, so they keep every receiver. */
+    const receiversFor = (
+      plans: readonly PropertyReceiver[],
+      name: string,
+      table: "methods" | "members",
+    ): readonly PropertyReceiver[] => {
+      if (name.startsWith("emit:")) return plans;
+      const found = indexOf(plans);
+      const positions = (table === "methods" ? found.methods : found.members).get(name);
+      return mergePositions(positions ?? [], found.rooted).map((position) => plans[position]!);
+    };
     const candidates = (method: string): ClassInfo[] => {
       const found = byMethod.get(method);
       if (found) return found;
-      const matching = this.propertyReceivers(lowerer, true).flatMap(({ info }) => {
+      const plans = this.propertyReceivers(lowerer, true);
+      const test = ({ info }: PropertyReceiver): ClassInfo[] => {
         if (!info || info.fields.has(method) || info.builtinError) return [];
         if (emitterRooted(lowerer, info) && EMITTER_METHODS.has(method)) return [info];
         if (
@@ -1270,7 +1428,13 @@ export class ClassDynamicDispatch {
         return findMethodOn(lowerer, info, method) || findGenericMethodOn(lowerer, info, method)
           ? [info]
           : [];
-      });
+      };
+      const matching = receiversFor(plans, method, "methods").flatMap(test);
+      if (CHECK_CANDIDATES) {
+        const every = plans.flatMap(test);
+        if (every.length !== matching.length || every.some((info, i) => info !== matching[i]))
+          throw new InternalCompilerError(`indexed candidates for ${method} differ`);
+      }
       byMethod.set(method, matching);
       return matching;
     };
@@ -1399,6 +1563,31 @@ export class ClassDynamicDispatch {
               changed = true;
             }
             return { kind: "call", callee: cast.fn.name, args: [expr.value], type, loc: expr.loc };
+          }
+          if (expr.kind === "libCall" && expr.fn === "dyn.inheritsErrorPrototype") {
+            if (!this.errorPrototypeHelper) {
+              const loc = expr.loc;
+              this.errorPrototypeHelper = {
+                name: "%dyn.class.inheritsErrorPrototype",
+                params: [{ localId: "value", name: "value", type: DYN }],
+                locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+                returnType: BOOL,
+                loc,
+                body: [
+                  { kind: "return", value: { ...expr, args: [varRef("value", DYN, loc)] }, loc },
+                ],
+              };
+              lowerer.liftedFns.push(this.errorPrototypeHelper);
+              this.generated.add(this.errorPrototypeHelper);
+              changed = true;
+            }
+            return {
+              kind: "call",
+              callee: this.errorPrototypeHelper.name,
+              args: expr.args,
+              type: BOOL,
+              loc: expr.loc,
+            };
           }
           if (
             expr.kind === "libCall" &&
@@ -2557,7 +2746,6 @@ export class ClassDynamicDispatch {
         if (dispatch.classes.has(plan.key) || !matching!.has(info)) continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.source.loc;
-        const value = varRef("p.0", DYN, loc);
         const { receiver, condition } = this.propertyReceiver(plan, loc);
         if (isClassCallback(lowerer, info, dispatch.source.method)) {
           const prototypeMethod = observedPrototypeMethod(
@@ -2567,7 +2755,7 @@ export class ClassDynamicDispatch {
             loc,
             receiver,
           );
-          const bag = this.readPropertyBagOrEmpty(lowerer, value, loc);
+          const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
           const methodKey: IrExpr = {
             kind: "strLit",
             value: dispatch.source.method,
@@ -2805,30 +2993,56 @@ export class ClassDynamicDispatch {
           });
           changed = true;
         }
-      for (const plan of this.propertyReceivers(lowerer, true)) {
+      // Only the receivers that declare or hold the name, and the rooted
+      // ones, can pass the test, except for names it decides on every
+      // receiver. Fields added while bodies lower (the property bag and the
+      // attribute words) have compiler names, which take every receiver.
+      const plans = this.propertyReceivers(lowerer, true);
+      const anyReceiver =
+        !isClassOwnEnumerableFieldName(dispatch.name) ||
+        dispatch.name === "constructor" ||
+        dispatch.name === "stack";
+      const skips = (plan: PropertyReceiver): boolean =>
+        !isClassOwnEnumerableFieldName(dispatch.name) ||
+        (!(plan.info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
+          !eventTargetInheritedMember(plan.info, dispatch.name) &&
+          !dateInheritedMember(lowerer, plan.info, dispatch.name) &&
+          !findMethodOn(lowerer, plan.info, dispatch.name) &&
+          !findGenericMethodOn(lowerer, plan.info, dispatch.name) &&
+          dispatch.name !== "constructor" &&
+          !plan.info.fields.has(dispatch.name) &&
+          !(dispatch.name === "stack" && lowerer.isSubclassOf(plan.info.def.name, "%Error")) &&
+          !findMethodOn(lowerer, plan.info, `get:${dispatch.name}`) &&
+          !findMethodOn(lowerer, plan.info, `set:${dispatch.name}`));
+      const selected = anyReceiver ? plans : receiversFor(plans, dispatch.name, "members");
+      if (
+        CHECK_CANDIDATES &&
+        plans.some(
+          (plan) => !dispatch.classes.has(plan.key) && !skips(plan) && !selected.includes(plan),
+        )
+      )
+        throw new InternalCompilerError(`indexed receivers for ${dispatch.name} differ`);
+      for (const plan of selected) {
         const { info } = plan;
         // Classes answered in an earlier pass skip the member lookups.
         if (dispatch.classes.has(plan.key)) continue;
-        if (
-          !isClassOwnEnumerableFieldName(dispatch.name) ||
-          (!(info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
-            !eventTargetInheritedMember(info, dispatch.name) &&
-            !findMethodOn(lowerer, info, dispatch.name) &&
-            !findGenericMethodOn(lowerer, info, dispatch.name) &&
-            dispatch.name !== "constructor" &&
-            !info.fields.has(dispatch.name) &&
-            !(dispatch.name === "stack" && lowerer.isSubclassOf(info.def.name, "%Error")) &&
-            !findMethodOn(lowerer, info, `get:${dispatch.name}`) &&
-            !findMethodOn(lowerer, info, `set:${dispatch.name}`))
-        )
-          continue;
+        if (skips(plan)) continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const { receiver, condition } = this.propertyReceiver(plan, loc);
+        // The branch checks its receiver once: each use of the checked
+        // receiver would repeat the check.
+        const local = `receiver.${dispatch.fn.locals.length}`;
+        dispatch.fn.locals.push({
+          id: local,
+          name: "receiver",
+          type: receiver.type,
+          mutable: false,
+        });
         const before = lowerer.diags.length;
         let branch: IrStmt[];
         try {
-          branch = this.propertyBody(lowerer, dispatch, info, receiver);
+          branch = this.propertyBody(lowerer, dispatch, info, varRef(local, receiver.type, loc));
         } catch (error) {
           if (!(error instanceof PoisonError) || !info.decl) throw error;
           const fence = lowerer.deferToRuntimeFence(before, info.decl, { kind: "statement" });
@@ -2838,7 +3052,7 @@ export class ClassDynamicDispatch {
         dispatch.fn.body.unshift({
           kind: "if",
           cond: condition,
-          then: branch,
+          then: [{ kind: "varDecl", localId: local, init: receiver, loc }, ...branch],
           else_: null,
           loc,
         });
@@ -2920,7 +3134,8 @@ export class ClassDynamicDispatch {
             ];
           if (
             ((info.builtinStream !== undefined && streamProperty(name)) ||
-              eventTargetInheritedMember(info, name)) &&
+              eventTargetInheritedMember(info, name) ||
+              dateInheritedMember(lowerer, info, name)) &&
             dispatch.probe
           )
             return [
@@ -2938,11 +3153,7 @@ export class ClassDynamicDispatch {
             !info.fields.has(name) && observedPrototypeMethod(lowerer, info, name, loc, receiver);
           if (info.fields.has(name) || (dispatch.probe === "in" && !prototypeMethod)) {
             if (info.fields.has(name) && info.def.tracksOwnFields) {
-              const bag = this.readPropertyBagOrEmpty(
-                lowerer,
-                lowerer.coerceToExpected(receiver, DYN),
-                loc,
-              );
+              const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
               const symbol = symbolMemberKey(lowerer, info, name, loc);
               const fn =
                 dispatch.probe === "in"
@@ -2968,11 +3179,7 @@ export class ClassDynamicDispatch {
               { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
             ];
           }
-          const bag = this.readPropertyBagOrEmpty(
-            lowerer,
-            lowerer.coerceToExpected(receiver, DYN),
-            loc,
-          );
+          const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
           const symbol = name.startsWith("sym:") || name.startsWith("%symbol:");
           const fn =
             dispatch.probe === "in"
@@ -3042,9 +3249,8 @@ export class ClassDynamicDispatch {
           }
           const branches: IrStmt[] = [];
           if (!dispatch.write && !dispatch.reflect && !info.def.tracksOwnFields) {
-            const value = varRef("p.0", DYN, loc);
             const key = varRef("p.key", DYN, loc);
-            const bag = this.readPropertyBagOrEmpty(lowerer, value, loc);
+            const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
             branches.push({
               kind: "if",
               cond: {
@@ -3142,6 +3348,9 @@ export class ClassDynamicDispatch {
           for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
         const inherited = eventTargetApiMembers(info);
         if (inherited) for (const name of inherited) names.add(name);
+        if (dateRootOf(info))
+          for (const name of DATE_PROTOTYPE_METHOD_NAMES)
+            if (dateInheritedMember(lowerer, info, name)) names.add(name);
 
         for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
           const methodNames = [...owner.methods.keys()];
@@ -3805,6 +4014,70 @@ export class ClassDynamicDispatch {
       ];
       return { kind: "if", cond: condition, then: body, else_: null, loc };
     }
+    // Date.prototype[Symbol.toPrimitive] takes "default" as "string", and a
+    // class declared `extends Date` inherits Date's toString and valueOf,
+    // which answer primitives from the time value.
+    const dateRoot = dateRootOf(info);
+    if (dateRoot) {
+      const dateOrder: ("valueOf" | "toString")[] =
+        hint === "number" ? ["valueOf", "toString"] : ["toString", "valueOf"];
+      const { receiver } = this.propertyReceiver(plan, loc);
+      const body: IrStmt[] = [];
+      for (const method of dateOrder) {
+        if (!conversionMethod(lowerer, info, method)) {
+          const time: IrExpr = {
+            kind: "fieldGet",
+            obj: upcastTo(lowerer, receiver, dateRoot.def.name),
+            className: dateRoot.def.name,
+            field: DATE_TIME_FIELD,
+            type: DATE_T,
+            loc,
+          };
+          body.push({
+            kind: "return",
+            value: lowerer.coerceToExpected(dateValueMethod(method, time, loc)!, DYN),
+            loc,
+          });
+          break;
+        }
+        const result = `%toPrimitive.${method}.${helper.locals.length}`;
+        helper.locals.push({ id: result, name: method, type: DYN, mutable: false });
+        body.push(
+          {
+            kind: "varDecl",
+            localId: result,
+            init: {
+              kind: "call",
+              callee: this.toPrimitiveCall(lowerer, plan, method, 0, loc),
+              args: [varRef("p.0", DYN, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "if",
+            cond: isPrimitive(varRef(result, DYN, loc), loc),
+            then: [{ kind: "return", value: varRef(result, DYN, loc), loc }],
+            else_: null,
+            loc,
+          },
+        );
+      }
+      if (body.at(-1)?.kind !== "return")
+        body.push({
+          kind: "return",
+          value: nodeThrowExpr(1, "", "Cannot convert object to primitive value", DYN, loc),
+          loc,
+        });
+      return {
+        kind: "if",
+        cond: this.propertyReceiver(plan, loc).condition,
+        then: body,
+        else_: null,
+        loc,
+      };
+    }
     const order: ("valueOf" | "toString")[] =
       hint === "string" ? ["toString", "valueOf"] : ["valueOf", "toString"];
     if (!order.some((method) => conversionMethod(lowerer, info, method))) return null;
@@ -4070,6 +4343,98 @@ export class ClassDynamicDispatch {
     return helper;
   }
 
+  /** The read-only bag a class branch reads for its receiver: the
+   * receiver's own field when the branch selected the receiver's exact
+   * class, otherwise the dispatch over every class (readPropertyBag, or
+   * readPropertyBagOrEmpty with `orEmpty`). */
+  private branchPropertyBag(
+    lowerer: Lowerer,
+    info: ClassInfo,
+    receiver: IrExpr,
+    orEmpty: boolean,
+    loc: SrcLoc,
+  ): IrExpr {
+    const helper = this.exactPropertyBag(lowerer, info, receiver, orEmpty, loc);
+    if (helper) return { kind: "call", callee: helper.name, args: [receiver], type: DYN, loc };
+    return orEmpty
+      ? this.readPropertyBagOrEmpty(lowerer, lowerer.coerceToExpected(receiver, DYN), loc)
+      : this.readPropertyBag(lowerer, receiver, loc);
+  }
+
+  /** `%class.branchProperties[OrEmpty]:<class>(receiver)`: the read-only bag of
+   * an instance of exactly `info`. A class branch of the dispatch helpers
+   * selects a canonical receiver (normalizeDispatches gives an instance its
+   * actual class's capsule), so its branch for `info` sees only instances
+   * of `info`; instances of its subclasses take their own branches. Such a
+   * receiver needs neither the dispatch over every class nor a boxed copy of
+   * itself. Null
+   * when `receiver` is not typed as `info`, when a runtime or builtin class
+   * in the family keeps its own property contract, or before the class has
+   * a bag. */
+  private exactPropertyBag(
+    lowerer: Lowerer,
+    info: ClassInfo,
+    receiver: IrExpr,
+    orEmpty: boolean,
+    loc: SrcLoc,
+  ): IrFunction | null {
+    const type = receiver.type;
+    if (type.kind !== "object" || type.className !== info.def.name) return null;
+    for (let current: ClassInfo | null = info; current; current = current.base)
+      if (
+        current.def.runtime ||
+        current.builtinEmitter ||
+        current.builtinStream ||
+        current.builtinError
+      )
+        return null;
+    const key = `${type.className}:${orEmpty}`;
+    const existing = this.exactPropertyBags.get(key);
+    if (existing) return existing;
+    const initializers = this.bagInitializers.get(type.className);
+    if (!initializers) return null;
+    const self = varRef("p.0", type, loc);
+    const bag: IrExpr = {
+      kind: "fieldGet",
+      obj: self,
+      className: type.className,
+      field: PROPERTY_BAG,
+      type: DYN,
+      loc,
+    };
+    const initialize: Extract<IrStmt, { kind: "fieldSet" }> = {
+      ...initializers[0]!,
+      obj: self,
+      value: withTypedReceiver(initializers[0]!.value, self),
+      loc,
+    };
+    const helper: IrFunction = {
+      name: `%class.branchProperties${orEmpty ? "OrEmpty" : ""}:${type.className}`,
+      params: [{ localId: "p.0", name: "value", type }],
+      returnType: DYN,
+      locals: [{ id: "p.0", name: "value", type, mutable: false }],
+      loc,
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "undefined", value: bag, type: BOOL, loc },
+          then: [initialize],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: bag, loc },
+      ],
+    };
+    // Initializers gain their prototype as subclasses become constructible;
+    // finalize then turns the lazy store into the read's result.
+    initializers.push(initialize);
+    this.exactPropertyBags.set(key, helper);
+    this.readPropertyBags.push({ helper, initialize, orEmpty });
+    this.generated.add(helper);
+    lowerer.liftedFns.push(helper);
+    return helper;
+  }
+
   /** The prototype a new property bag of `current` (or of the subclass the
    * receiver is) starts from, or null when `current` has no prototype data.
    * A class with constructible subclasses that have prototype data selects
@@ -4149,9 +4514,11 @@ export class ClassDynamicDispatch {
    * prototype-backed bag is produced for this read only. A published object
    * cannot take the store, and Node's reads never write. */
   finalize(lowerer?: Lowerer): void {
-    for (const { helper, initialize } of this.readPropertyBags) {
+    // Each table serves every site that reaches it.
+    if (lowerer) for (const fn of this.generated) lowerer.shareHelper(fn);
+    for (const { helper, initialize, orEmpty } of this.readPropertyBags) {
       const absent = helper.body[0];
-      if (isEmptyBag(initialize.value)) helper.body.shift();
+      if (isEmptyBag(initialize.value) && !orEmpty) helper.body.shift();
       else if (absent?.kind === "if")
         absent.then = [{ kind: "return", value: initialize.value, loc: initialize.loc }];
     }
@@ -4579,9 +4946,11 @@ export class ClassDynamicDispatch {
   ): IrStmt[] {
     const { name, write } = dispatch;
     const loc = dispatch.fn.loc;
-    // The inherited EventTarget/Event members of a subclass instance: the
-    // runtime's capsule view answers the accessors and method values.
-    if (eventTargetInheritedMember(info, name)) {
+    // The inherited EventTarget/Event members of a subclass instance, and
+    // the inherited Date methods of an instance of a class declared
+    // `extends Date`: the runtime's capsule view answers the accessors and
+    // method values.
+    if (eventTargetInheritedMember(info, name) || dateInheritedMember(lowerer, info, name)) {
       const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
       if (!write)
         return [
@@ -4733,7 +5102,7 @@ export class ClassDynamicDispatch {
                 cond: this.readBagHas(
                   lowerer,
                   "dyn.hasKey",
-                  this.readPropertyBag(lowerer, receiver, loc),
+                  this.branchPropertyBag(lowerer, info, receiver, false, loc),
                   key,
                   loc,
                 ),
@@ -4748,7 +5117,7 @@ export class ClassDynamicDispatch {
           { kind: "return", value: null, loc },
         ];
       }
-      const bag = this.readPropertyBag(lowerer, receiver, loc);
+      const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
       return [
         {
           kind: "return",
@@ -4816,7 +5185,7 @@ export class ClassDynamicDispatch {
       ) {
         this.constructors.set(info.def.name, info);
         const cls = lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl), DYN);
-        const bag = this.readPropertyBag(lowerer, receiver, loc);
+        const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
         return [
           {
@@ -4894,7 +5263,7 @@ export class ClassDynamicDispatch {
           if (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:"))) {
             const prototypeMethod = observedPrototypeMethod(lowerer, info, name, loc, receiver);
             // Selecting the method must not give the object own storage.
-            const bag = this.readPropertyBag(lowerer, receiver, loc);
+            const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
             const key: IrExpr = symbol ?? { kind: "strLit", value: name, type: STRING, loc };
             body.push({
               kind: "if",
@@ -4962,7 +5331,7 @@ export class ClassDynamicDispatch {
       }
       if (!field && !accessor) {
         const instance = lowerer.coerceToExpected(receiver, DYN);
-        const bag = this.readPropertyBagOrEmpty(lowerer, instance, loc);
+        const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
         const own: IrExpr = {
           kind: "libCall",
@@ -5009,11 +5378,7 @@ export class ClassDynamicDispatch {
         (t.kind === "union" && (getUnion(t.unionId)?.arms.some(mutable) ?? false));
       if (boxed.kind === "dynFrom" && mutable(boxed.value.type)) boxed.liveRef = true;
       if (accessor) {
-        const bag = this.readPropertyBagOrEmpty(
-          lowerer,
-          lowerer.coerceToExpected(receiver, DYN),
-          loc,
-        );
+        const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
         return [
           {
@@ -5040,7 +5405,7 @@ export class ClassDynamicDispatch {
       }
       if (field && info.def.tracksOwnFields) {
         const instance = lowerer.coerceToExpected(receiver, DYN);
-        const bag = this.readPropertyBagOrEmpty(lowerer, instance, loc);
+        const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
         const symbol = symbolMemberKey(lowerer, info, name, loc);
         const key: IrExpr = symbol ?? { kind: "strLit", value: name, type: STRING, loc };
         return [
@@ -5348,13 +5713,16 @@ export class ClassDynamicDispatch {
         const readableT: IrType = { kind: "object", className: "%Readable" };
         const op = (fn: string, args: IrExpr[], type: IrType): IrStmt[] =>
           ret({ kind: "libCall", fn: fn as IrLibFn, args: [receiver, ...args], type, loc });
+        // Node passes every callback its { signal }; the callback's
+        // declared parameters are not known here.
+        const sig = (): IrExpr => operatorSignalOptions(lowerer, arg(1), loc);
         switch (method) {
           case "map":
-            return op("readable.opMap", [arg(0), arg(1)], readableT);
+            return op("readable.opMap", [arg(0), arg(1), sig()], readableT);
           case "filter":
-            return op("readable.opFilter", [arg(0), arg(1)], readableT);
+            return op("readable.opFilter", [arg(0), arg(1), sig()], readableT);
           case "flatMap":
-            return op("readable.opFlatMap", [arg(0), arg(1)], readableT);
+            return op("readable.opFlatMap", [arg(0), arg(1), sig()], readableT);
           case "drop":
             return op("readable.opDrop", [arg(0), arg(1)], readableT);
           case "take":
@@ -5362,25 +5730,49 @@ export class ClassDynamicDispatch {
           case "toArray":
             return op("readable.opToArray", [arg(0)], { kind: "promise", inner: DYN });
           case "forEach":
-            return op("readable.opForEach", [arg(0), arg(1)], { kind: "promise", inner: VOID });
+            return op("readable.opForEach", [arg(0), arg(1), sig()], {
+              kind: "promise",
+              inner: VOID,
+            });
           case "some":
-            return op("readable.opSome", [arg(0), arg(1)], { kind: "promise", inner: BOOL });
+            return op("readable.opSome", [arg(0), arg(1), sig()], { kind: "promise", inner: BOOL });
           case "every":
-            return op("readable.opEvery", [arg(0), arg(1)], { kind: "promise", inner: BOOL });
+            return op("readable.opEvery", [arg(0), arg(1), sig()], {
+              kind: "promise",
+              inner: BOOL,
+            });
           case "find":
-            return op("readable.opFind", [arg(0), arg(1)], { kind: "promise", inner: DYN });
-          case "reduce":
-            return op(
-              "readable.opReduce",
-              [
-                arg(0),
-                arg(1),
-                { kind: "boolLit", value: dispatch.source.args.length >= 2, type: BOOL, loc },
-                arg(2),
-                { kind: "numLit", value: 0, type: F64, loc },
-              ],
-              { kind: "promise", inner: DYN },
-            );
+            return op("readable.opFind", [arg(0), arg(1), sig()], { kind: "promise", inner: DYN });
+          case "reduce": {
+            // the dispatch function's locals: there is no function
+            // context while dispatch bodies are built
+            const setup = reduceSignalSetup(lowerer, arg(2), loc, (name, type) => {
+              const local = {
+                id: `${name}.${dispatch.fn.locals.length}`,
+                name,
+                type,
+                mutable: false,
+              };
+              dispatch.fn.locals.push(local);
+              return local;
+            });
+            return [
+              ...setup.stmts,
+              ...op(
+                "readable.opReduceSignal",
+                [
+                  arg(0),
+                  arg(1),
+                  { kind: "boolLit", value: dispatch.source.args.length >= 2, type: BOOL, loc },
+                  arg(2),
+                  { kind: "numLit", value: 0, type: F64, loc },
+                  setup.abort,
+                  setup.cbOpts,
+                ],
+                { kind: "promise", inner: DYN },
+              ),
+            ];
+          }
         }
       }
       if (method === "destroy" && (!incoming.length || incoming[0]?.kind === "unitLit"))
@@ -5623,3 +6015,11 @@ const INHERITED_OBJECT_METHODS: ReadonlySet<string> = new Set([
   "hasOwnProperty",
   "propertyIsEnumerable",
 ]);
+
+/** Whether a class or one of its bases has a heritage evaluated at run
+ * time, whose prototype chain may reach Error.prototype. */
+function hasRuntimeHeritage(info: ClassInfo): boolean {
+  for (let current: ClassInfo | null = info; current; current = current.base)
+    if (current.callableBase) return true;
+  return false;
+}

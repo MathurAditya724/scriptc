@@ -46,6 +46,7 @@ import {
 } from "../lower-exprs.js";
 import { isConstAssertionTypeNode, unitOnlyUnion } from "../../type-mapper.js";
 import { assertsGlobalObject, extractionCopiesReference } from "../assertion-identity.js";
+import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 
 /** `c ? a : b`. An explicit destination constructs each branch at that
  * layout before joining it. Without one, retain the expression's inferred
@@ -692,6 +693,18 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     const hosted = hostedStorageView(lowerer, expr, narrowed, expr.loc);
     if (hosted) return hosted;
   }
+  // An optional Iterable narrowed to the iterable union (`xs !== undefined`):
+  // re-tag into it, so for-of, spread and the other consumers see the
+  // Iterable itself.
+  if (
+    narrowed?.kind === "union" &&
+    narrowed.unionId !== expr.type.unionId &&
+    iterableUnionOf(lowerer, narrowed)
+  ) {
+    const helper = lowerer.narrowedRetagHelper(node, expr.type.unionId, narrowed.unionId, expr.loc);
+    if (helper)
+      return { kind: "call", callee: helper, args: [expr], type: narrowed, loc: expr.loc };
+  }
   // A checker type narrowed to a UNIT arm (the `=== undefined` branch)
   // also stays union-typed: a unit arm has no payload to extract, and
   // nothing useful reads such a value anyway. (Standalone undefined maps
@@ -985,11 +998,41 @@ export function runtimeOptionalReceiverRead(
       loc,
     };
   }
+  // An array hole in a slot with more than two arms fails the member
+  // access with Node's TypeError before the checked extraction runs.
+  const holeGuarded = (extracted: IrExpr): IrExpr => {
+    if (local.type.kind !== "union") return extracted;
+    const holeTag = lowerer.armTag(local.type.unionId, UNDEFINED_T);
+    if (holeTag < 0) return extracted;
+    return {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId: local.type.unionId,
+        tag: holeTag,
+        negated: false,
+        value: varRef(local.id, local.type, loc),
+        type: BOOL,
+        loc,
+      },
+      then: nodeThrowExpr(
+        1,
+        "",
+        runtimeOptionalReceiverMessage(expr, property),
+        extracted.type,
+        loc,
+      ),
+      else_: extracted,
+      type: extracted.type,
+      loc,
+    };
+  };
   if (narrowed.kind === "object") {
     const view = checkedClassAssertion(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
     // Preserve the member-specific missing-value error on the two-arm
     // path below; mixed storage also needs to validate its concrete class.
-    if (view && (lowerer.unions.get(local.type.unionId)?.arms.length ?? 0) > 2) return view;
+    if (view && (lowerer.unions.get(local.type.unionId)?.arms.length ?? 0) > 2)
+      return holeGuarded(view);
   }
   if (narrowed.kind === "record" && lowerer.armTag(local.type.unionId, narrowed) < 0) {
     const hosted = hostedStorageView(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
@@ -1014,7 +1057,9 @@ export function runtimeOptionalReceiverRead(
         "a direct read from a runtime-optional capture with multiple value arms",
       );
     }
-    return lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), narrowed, loc);
+    return holeGuarded(
+      lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), narrowed, loc),
+    );
   }
   // A predicate can strengthen a record's fields or narrow a base class
   // to a subclass without changing the slot's stored value arm. Extract
@@ -1029,10 +1074,7 @@ export function runtimeOptionalReceiverRead(
       "a runtime-optional receiver without a representable value arm",
     );
   }
-  const message =
-    property === null
-      ? `${expr.text} is not a function`
-      : `Cannot read properties of undefined (reading '${property}')`;
+  const message = runtimeOptionalReceiverMessage(expr, property);
   return lowerer.maybeNarrow(
     {
       kind: "ternary",
@@ -1059,6 +1101,14 @@ export function runtimeOptionalReceiverRead(
     },
     narrowedNode,
   );
+}
+
+/** Node's TypeError message for a member read (`property`) or a call
+ * (`property` null) through an undefined runtime-optional receiver. */
+function runtimeOptionalReceiverMessage(expr: ts.Identifier, property: string | null): string {
+  return property === null
+    ? `${expr.text} is not a function`
+    : `Cannot read properties of undefined (reading '${property}')`;
 }
 
 export function runtimeOptionalTrueIds(lowerer: Lowerer, node: ts.Expression): IrLocal[] {
@@ -1487,6 +1537,10 @@ export function lowerAsExpression(
   // reach it (assertion-identity.ts).
   if (extractionCopiesReference(lowerer, target) && assertsGlobalObject(lowerer, expr))
     return inner;
+  // `value as Iterable<T>`: the value's own iterator, stepped lazily with
+  // each element checked against T (the generator arm's adapter).
+  const iterable = iterableSlotValue(lowerer, inner, target);
+  if (iterable) return iterable;
   if (
     target.kind === "void" ||
     !canDynCheckTo(

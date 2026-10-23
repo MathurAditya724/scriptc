@@ -1,4 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
+import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
 import * as ts from "../../ts7/adapter.js";
@@ -11,6 +12,7 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrLocal,
   type IrType,
   STRING,
   type SrcLoc,
@@ -45,6 +47,7 @@ import {
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { runtimeOptionalReceiverRead } from "./narrowing.js";
+import { iterableUnionOf } from "../iterable-values.js";
 import { builtinGlobalValueAt } from "./property-access.js";
 import { varRef } from "../../../ir/build.js";
 import {
@@ -73,6 +76,7 @@ import {
   builtinModuleConstOf,
   builtinModuleFnOf,
   builtinModulesArrayLit,
+  identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
 import { builtinConstantsObject } from "../lower-builtin-values.js";
@@ -231,7 +235,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (use?.kind === "element") {
         const key = runtimeOptionalElementKey(use.access.argumentExpression);
         if (key === null) {
-          return varRef(local.id, local.type, loc);
+          return (
+            runtimeOptionalKeyedRecord(lowerer, expr, local, loc) ??
+            varRef(local.id, local.type, loc)
+          );
         }
         return runtimeOptionalReceiverRead(lowerer, expr, local, key, loc);
       }
@@ -322,6 +329,16 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // value arm before routing the member/element operation so dynamic
       // keys and builtin record walkers do not see a union receiver.
       const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      // An optional Iterable proven present re-tags into the Iterable.
+      if (
+        g.type.kind === "union" &&
+        narrowed?.kind === "union" &&
+        narrowed.unionId !== g.type.unionId &&
+        iterableUnionOf(lowerer, narrowed)
+      ) {
+        const helper = lowerer.narrowedRetagHelper(expr, g.type.unionId, narrowed.unionId, loc);
+        if (helper) return { kind: "call", callee: helper, args: [ref], type: narrowed, loc };
+      }
       const arithmeticUnion =
         g.type.kind === "union" &&
         lowerer.unions.get(g.type.unionId)?.arms.length === 2 &&
@@ -554,6 +571,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         const callable = lowerer.lowerBuiltinCallableValue(bi, loc);
         if (callable) return callable;
       }
+      // node:crypto's webcrypto is the WebCrypto global's object.
+      if (bi.module === "crypto" && bi.member === "webcrypto")
+        return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
       // JavaScript sources: an otherwise unsupported builtin VALUE is
       // the same identity-token story as stdlib globals above (the
       // harness adds worker_threads.Worker to its identity Set).
@@ -726,7 +746,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return { kind: "closure", fnName: name, captures: [], type, loc };
   }
   if (lowerer.isStdlibGlobal(expr, "crypto"))
-    return { kind: "libCall", fn: "crypto.native", args: [], type: DYN, loc };
+    return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
   const nativeAlias = stdlibGlobalNameOf(lowerer, expr);
   if (nativeAlias === "Buffer" && expr.text !== "Buffer") {
     return { kind: "strLit", value: "[builtin Buffer]", type: STRING, loc };
@@ -751,7 +771,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return lowerGlobalValue(lowerer, expr);
   }
   {
-    const sym = lowerer.checker.getSymbolAtLocation(expr);
+    const sym = identifierReadSymbol(lowerer, expr);
     // The temporal global is typed (TS 7's lib slice) but Node 24 does
     // not define it: the read throws Node's ReferenceError.
     if (isTemporalGlobalRoot(lowerer, expr, sym)) {
@@ -787,8 +807,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",
         WeakRef:
           "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
-        FinalizationRegistry:
-          "finalization callbacks expose GC timing — genuinely dynamic; release resources explicitly instead",
         eval: "runtime code evaluation cannot be compiled ahead of time",
       };
       lowerer.noLowering(expr.text, expr, globalHints[expr.text], sym ?? undefined);
@@ -848,6 +866,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   {
     const sym = lowerer.resolveValueSymbol(expr);
     const classInfo = sym ? lowerer.classBySymbol.get(sym) : undefined;
+    // A local class referenced from a function hoisted above its statement:
+    // its TDZ box, holding the class as a checked-dynamic constructor.
+    if (!classInfo && sym && predeclareForwardClass(lowerer, sym)) {
+      const local = lowerer.resolveLocal(expr);
+      if (local) return { kind: "varRef", localId: local.id, type: local.type, loc };
+    }
     // A GENERIC class name whose CONTEXTUAL type pins one instantiation
     // (`const B: new (v: string) => Counter<string> = Counter`): the
     // value is that instantiation's class object — the generic-fn
@@ -961,10 +985,43 @@ function moduleFileName(lowerer: Lowerer, sf: ts.SourceFile): string {
     : sf.fileName;
 }
 
-/** Object.keys/Object.entries require an object receiver, but their first
- * argument is not syntactically a member receiver. Recognize that one
- * standard-library position so a runtime-optional loop element can be
- * checked against the checker-narrowed record arm before builtin lowering. */
+/** A computed-key access (`value[key]` after `typeof value === "object"`)
+ * of a runtime-optional binding the checker narrowed to one record arm of a
+ * wider union. The binding re-tags to that record or undefined, so the keyed
+ * read or write evaluates its operands and then throws Node's TypeError for
+ * an undefined receiver. The other arms, which the checker excluded, fail
+ * the checked re-tag. Null when the binding stores only the record and
+ * undefined, or the narrowed record is not one of its arms. */
+function runtimeOptionalKeyedRecord(
+  lowerer: Lowerer,
+  expr: ts.Identifier,
+  local: IrLocal,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (local.type.kind !== "union") return null;
+  const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (narrowed?.kind !== "record") return null;
+  const fromId = local.type.unionId;
+  const arms = lowerer.unions.get(fromId)?.arms;
+  const recordTag = lowerer.armTag(fromId, narrowed);
+  const undefTag = lowerer.armTag(fromId, UNDEFINED_T);
+  if (!arms || arms.length <= 2 || recordTag < 0 || undefTag < 0) return null;
+  const target = lowerer.withUndefinedArm(narrowed);
+  if (target.kind !== "union") return null;
+  const trappable = new Set<number>();
+  for (let tag = 0; tag < arms.length; tag++) {
+    if (tag !== recordTag && tag !== undefTag) trappable.add(tag);
+  }
+  const helper = lowerer.unionRetagHelper(fromId, target.unionId, loc, trappable);
+  if (!helper) return null;
+  return lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), target, loc);
+}
+
+/** Object.keys, Object.values and Object.entries require an object
+ * receiver, but their first argument is not syntactically a member
+ * receiver. Recognize that one standard-library position so a
+ * runtime-optional loop element can be checked against the checker-narrowed
+ * record arm before builtin lowering. */
 function runtimeOptionalObjectWalkerArg(lowerer: Lowerer, expr: ts.Expression): boolean {
   let arg = expr;
   while (
@@ -985,7 +1042,9 @@ function runtimeOptionalObjectWalkerArg(lowerer: Lowerer, expr: ts.Expression): 
     return false;
   const access = call.expression;
   return (
-    (access.name.text === "keys" || access.name.text === "entries") &&
+    (access.name.text === "keys" ||
+      access.name.text === "values" ||
+      access.name.text === "entries") &&
     lowerer.isStdlibMember(access)
   );
 }

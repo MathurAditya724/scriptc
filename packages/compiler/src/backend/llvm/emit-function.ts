@@ -16,9 +16,7 @@ import {
   withInitializerBindings,
   withInitializerLocals,
 } from "../../ir/initializer-bindings.js";
-import { findUnaliasedLocalArrays } from "../../ir/array-length-stability.js";
 import { constructorClass } from "../../ir/final-fields.js";
-import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findCallArrayReads, findLocalArrayReads } from "./local-array-reads.js";
 import { findScalarStringSlices, findScratchStringSlices } from "./string-slices.js";
@@ -35,6 +33,7 @@ import {
   mangleArgPack,
   mangleAsyncAdoptCall,
   mangleAsyncAwaitCall,
+  mangleAsyncDirectSpawn,
   mangleAsyncSpawn,
   mangleBorrowedFunction,
   mangleClassStruct,
@@ -54,11 +53,15 @@ import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { f64Lit } from "./common.js";
 import { RESULT_ENTRY_PREFIX } from "./record-results.js";
 import { emitIntegerClone, emitIntegerDispatcher } from "./integer-clones.js";
+import { beginFunctionLoops, LOOPS } from "./loop-state.js";
+import { runningExtremumUpdates } from "./running-extrema.js";
+import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
 
 export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const B = new BlockBuilder();
   emitter.B = B;
   emitter.currentFunctionName = fn.name;
+  emitter.findInt32Allocations(fn);
   emitter.currentTier = fn.tier;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
@@ -80,8 +83,11 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     emitter.currentLocals.set(id, plain);
     emitter.lazyCaptureBoxes.set(id, "");
   }
+  emitter.runningExtrema = emitter.debug === null ? runningExtremumUpdates(fn) : new Set();
   emitter.currentConstantCallbacks =
     emitter.debug === null ? (emitter.constantCallbacks.get(fn.name) ?? new Map()) : new Map();
+  emitter.knownCallbacks.clear();
+  emitter.callbackVersionsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   // Preserve concrete source bindings for debugger inspection. Suspended
   // functions keep the established array lifetime across continuations.
   emitter.streamingSplitsEnabled = emitter.debug === null && !fn.async && !fn.generator;
@@ -96,7 +102,6 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const initializerBindings = emitter.initializerBindings.get(fn.name) ?? [];
   const numericFn = withInitializerBindings(fn, initializerBindings);
   emitter.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
-  emitter.unaliasedArrays = findUnaliasedLocalArrays(fn);
   emitter.borrowedParameters.clear();
   emitter.referenceWrites?.enter(fn);
   emitter.reboundOwnerSlots.clear();
@@ -127,32 +132,23 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.stableCaptureIds =
     fn.captures !== undefined ? emitter.lazyCaptures.stableCaptures(fn.name) : new Set();
   emitter.integerLoopBindings.clear();
-  emitter.countedLoopsEnabled = emitter.debug === null && !fn.async && !fn.generator;
-  emitter.speculativeLoopsEnabled = emitter.countedLoopsEnabled;
+  emitter.integerTemps.clear();
+  emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
+  beginFunctionLoops(emitter, fn, numericFn);
+  emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
   emitter.speculativeFunction = fn.name;
   emitter.speculation = null;
   emitter.speculationResume = null;
+  emitter.int32Kinds = null;
+  emitter.int32KindResume = null;
   emitter.finalFieldBorrows =
     !fn.async &&
     !fn.generator &&
     constructorClass(fn.name) === null &&
     emitter.finalFields.size > 0;
-  emitter.byteWindowsEnabled = emitter.countedLoopsEnabled;
-  emitter.bytesLoopVersionsEnabled = emitter.countedLoopsEnabled;
-  emitter.bytesLoopEntries = null;
-  emitter.bytesLoopFunction = fn;
-  emitter.denseLoopsEnabled = emitter.countedLoopsEnabled;
-  emitter.denseLoop = null;
-  emitter.denseLoopEntries =
-    emitter.denseLoopsEnabled && numericFn.locals.some((l) => l.type.kind === "array")
-      ? findInitializedByteLoopBindings(fn)
-      : new Map();
-  emitter.byteWindowEntries =
-    emitter.byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === "bytes")
-      ? findInitializedByteLoopBindings(fn)
-      : new Map();
   emitter.integerViews.clear();
   emitter.fieldPointerTags.clear();
+  emitter.compressedFieldPtrs.clear();
   emitter.integerArrayBindings.clear();
   emitter.loopArrayBorrows =
     emitter.debug === null
@@ -225,7 +221,9 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerRanges = rangeFacts.ranges;
   emitter.integerLoopRanges = rangeFacts.loopRanges;
   emitter.int32Elements = slotFacts.elements ?? null;
+  emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
   emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
+  emitter.bytesOwned = new Set();
   // Debug builds keep every number local a double for the debugger's
   // variable view. Lazily boxed captured parameters keep their double,
   // which the box is created from, and so do plain copies of a capture or
@@ -406,7 +404,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
       if (local.boxed || emitter.captureIds.has(local.id)) slots.add(`%${mangleLocal(local.id)}`);
     B.volatileSlots = slots;
     // Without optimization a versioned copy only adds code.
-    emitter.bytesLoopVersionsEnabled = false;
+    LOOPS.of(emitter).bytesLoopVersionsEnabled = false;
   }
   // Captured bindings come in through the environment — borrowed for the
   // whole call (the closure owns them): bound here, never released here.
@@ -910,6 +908,20 @@ export function emitAsyncScaffolding(emitter: LlEmitter): string[] {
       for (const line of emitter.emitAsyncAwaitCall(fn, argPackLines, true)) out.push(line);
     }
     const stackless = emitter.stacklessAsync.has(fn.name);
+    if (stackless && emitter.directAwaitCallees.has(fn.name)) {
+      // A coroutine's direct await: the same prefix, with the promise kept
+      // inside the returned fiber record.
+      emitter.declare(`declare ptr @scr_async_spawn_direct(ptr, ptr)`);
+      out.push(
+        `define internal ptr @${mangleAsyncDirectSpawn(fn.name)}(${spawnParams.join(", ")}) ${FN_ATTRS} { ; direct spawn ${fn.name}`,
+        `entry:`,
+        ...argPackLines,
+        `  %f = call ptr @scr_async_spawn_direct(ptr @${mangleTrampoline(fn.name)}, ptr %ap)`,
+        `  ret ptr %f`,
+        `}`,
+        ``,
+      );
+    }
     const spawn = stackless ? "scr_async_spawn_stackless" : "scr_async_spawn";
     emitter.declare(`declare ptr @scr_fiber_promise(ptr)`);
     emitter.declare(`declare ptr @${spawn}(ptr, ptr)`);
@@ -1117,8 +1129,11 @@ export function emitAsyncAwaitCall(
       ``,
     ];
   }
-  emitter.declare(`declare void @scr_async_inline_enter(ptr)`);
-  emitter.declare(`declare void @scr_async_inline_exit(ptr)`);
+  const framed = emitter.fiberlessFrames;
+  if (framed) {
+    emitter.declare(`declare void @scr_async_inline_enter(ptr)`);
+    emitter.declare(`declare void @scr_async_inline_exit(ptr)`);
+  }
   emitter.declare(`declare void @scr_await_hop()`);
   emitter.declare(`declare ptr @scr_promise_new()`);
   emitter.declare(`declare void @scr_promise_reject_pending(ptr)`);
@@ -1127,11 +1142,12 @@ export function emitAsyncAwaitCall(
   const out = [
     head,
     `entry:`,
-    `  %frame = alloca { ptr, ptr }`,
-    `  call void @scr_async_inline_enter(ptr %frame)`,
+    ...(framed
+      ? [`  %frame = alloca { ptr, ptr }`, `  call void @scr_async_inline_enter(ptr %frame)`]
+      : []),
     retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`,
     ...emitter.pendingTestLines("%pend"),
-    `  call void @scr_async_inline_exit(ptr %frame)`,
+    ...(framed ? [`  call void @scr_async_inline_exit(ptr %frame)`] : []),
     // Adopting: the then job's turn comes before the settled promise's
     // own reaction, whichever way the body completed.
     ...(adopt ? [`  call void @scr_await_hop()`] : []),

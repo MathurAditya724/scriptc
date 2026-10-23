@@ -6,6 +6,7 @@ import {
   DYN,
   STRING,
   SYMBOL_T,
+  VOID,
   isUnitType,
   type IrExpr,
   type IrFunction,
@@ -121,6 +122,7 @@ export function classPrototypeData(
     const globalId = `%g.${name}`;
     const readyId = `${globalId}.ready`;
     info.def.prototypeDataHelper = name;
+    lowerer.shareHelper(name);
     const className = info.def.jsName ?? info.def.name;
     lowerer.globalsList.push({
       id: globalId,
@@ -153,6 +155,18 @@ export function classPrototypeData(
               value: base
                 ? { kind: "libCall", fn: "dyn.objCreate", args: [base], type: DYN, loc }
                 : { kind: "dynObjLit", fields: [], type: DYN, loc },
+              loc,
+            },
+            // util.inspect prints an instance with its class's name.
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "dyn.nameClassPrototype",
+                args: [value, { kind: "strLit", value: className, type: STRING, loc }],
+                type: VOID,
+                loc,
+              },
               loc,
             },
             {
@@ -443,6 +457,28 @@ export function isCompiledPrototypeMember(
   );
 }
 
+/** `Error.prototype` read as the checked-dynamic object, as a value or for
+ * a member other than `toString` and `constructor`, which keep the Error
+ * class's prototype data (`this.toString !== Error.prototype.toString`
+ * compares class method values). */
+export function isErrorPrototypeValue(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): boolean {
+  let node: ts.Node = expr;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  return (
+    expr.name.text === "prototype" &&
+    lowerer.isStdlibGlobal(expr.expression, "Error") &&
+    !(
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === node &&
+      (parent.name.text === "toString" || parent.name.text === "constructor")
+    )
+  );
+}
+
 /** Named data and method slots have native descriptors. Bare reflection and
  * accessor replacement still require a complete view of the prototype. */
 export function lowerClassPrototypeData(
@@ -455,6 +491,11 @@ export function lowerClassPrototypeData(
     exactClassOfReceiver(lowerer, expr.expression) ??
     (stored?.kind === "classval" ? lowerer.classes.get(stored.className) : undefined);
   if (!info) return null;
+  // Error.prototype as a value: the checked-dynamic object an ES5
+  // constructor function inherits from (`F.prototype =
+  // Object.create(Error.prototype)`).
+  if (isErrorPrototypeValue(lowerer, expr))
+    return { kind: "libCall", fn: "dyn.errorPrototype", args: [], type: DYN, loc: locOf(expr) };
   // EventEmitter.prototype and the stream prototypes: the untyped
   // constructor's prototype object (builtin-class-dyn.ts).
   const builtinKind = builtinClassKind(info.def.name);

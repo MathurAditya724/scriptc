@@ -1,3 +1,4 @@
+import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, boolLit } from "../../ir/build.js";
 /* The dgram/dns-surface lowering (node:dgram + node:dns — a spoke module
  * like lower-server.ts): module-function calls (dgram createSocket, dns
@@ -357,7 +358,7 @@ function checkedDynPromise(
   const key = `dns.promise:${typeKey(declared)}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%dns.promise.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%dns.promise", key);
     lowerer.valueHelpers.set(key, helper);
     const promiseT: IrType = { kind: "promise", inner: DYN };
     lowerer.liftedFns.push({
@@ -611,8 +612,10 @@ export function lowerDgramMethodCall(
       const fn: IrLibFn = data.type.kind === "string" ? "dgram.sendStr" : "dgram.sendBytes";
       return { kind: "libCall", fn, args: [receiver, data, port, host], type: VOID, loc };
     }
+    // TypeScript reaches the ladder for the completion-callback form
+    // send(msg, port, address, callback) (the hot-shots package shim).
     if (
-      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      (isJsSourceFile(ts.getSourceFileOfNode(call)) || args.length === 4) &&
       args.length <= 6 &&
       !args.some(ts.isSpreadElement)
     ) {
@@ -891,7 +894,7 @@ export function lowerPromisifiedDnsCall(
   const key = `dnsPromise:${JSON.stringify(value)}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
-    name = `%dnsPromise.${lowerer.valueHelpers.size}`;
+    name = keyedHelperName(lowerer, "%dnsPromise", key);
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,

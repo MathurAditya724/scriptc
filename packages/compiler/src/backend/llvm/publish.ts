@@ -25,12 +25,19 @@ import type { IrClassDef, IrRecordShape, IrType, IrUnionDef, SrcLoc } from "../.
 import { mapOf, STRING, typeKey } from "../../ir/ir.js";
 import { mangleClassStruct, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS } from "./shapes.js";
-import { COMPACT_ID_MASK } from "./classes.js";
+import { COMPACT_ID_MASK, compactRefLoadLines } from "./classes.js";
 import { shapeTagFn } from "./nullable-unions.js";
 import type { InlineUnionFields } from "./inline-unions.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
 export interface PublishHost {
+  /** Chunk emitters only (emit-journal.ts): EmitJournal's allocated, built,
+   * opened, used and entry. */
+  journalAllocated?: ((name: string, op: string, args: readonly unknown[]) => void) | undefined;
+  journalBuilt?: (() => void) | undefined;
+  journalOpened?: ((op: string) => void) | undefined;
+  journalUsed?: ((name: string, op: string, args: readonly unknown[]) => void) | undefined;
+  journalEntry?: ((table: string, key: string, value: unknown) => void) | undefined;
   declare(decl: string): void;
   /** An interned NUL-terminated constant. */
   cstr(text: string): string;
@@ -69,8 +76,10 @@ export interface PublishClassInfo {
   idInRc: boolean;
   /** Instances have the 32-bit header (classes.ts LlClassMeta.compact). */
   compact: boolean;
-  /** The class's own and inherited fields: GEP index and storage type. */
-  fields: { name: string; index: number; type: IrType }[];
+  /** The class's own and inherited fields: GEP index and storage type;
+   * `compressed` when the field holds a 32-bit reference (classes.ts
+   * LlClassMeta.compressed), which the walker decodes. */
+  fields: { name: string; index: number; type: IrType; compressed?: boolean }[];
 }
 
 /** scr_pub_mark's object kinds (SCR_PUB_KIND_* in scr_runtime.h), for the RC audit. */
@@ -101,6 +110,14 @@ export class PublishWalkers {
 
   constructor(private readonly host: PublishHost) {}
 
+  /** Journal replay (emit-journal.ts): builds or finds the walker a chunk
+   * emitter recorded, and answers its name. */
+  replayHelper(op: string, args: readonly unknown[]): string {
+    if (op === "publish.walker")
+      return this.walker(args[0] as IrType, args[1] as string, args[2] as SrcLoc)!;
+    return this.refusal(args[0] as string, args[1] as string);
+  }
+
   /** The definitions emitted so far (module-level LLVM text). */
   defs(): string[] {
     return this.defsOut;
@@ -117,6 +134,7 @@ export class PublishWalkers {
     }
     const fn = this.walker(t, "the published value", loc);
     if (fn === null) return [];
+    this.host.journalUsed?.(fn, "publish.walker", [t, "the published value", loc]);
     this.host.declare(`declare void @scr_publish(ptr, ptr)`);
     return [`  call void @scr_publish(ptr ${v}, ptr ${fn})`];
   }
@@ -154,8 +172,10 @@ export class PublishWalkers {
     if (known !== undefined) return known;
     const sym = `@sc_pub_${this.counter++}`;
     this.walkers.set(key, sym);
+    this.host.journalOpened?.("publish.walker");
     const body = this.body(t, sym, path, loc);
     this.defsOut.push(...body, ``);
+    this.host.journalBuilt?.();
     return sym;
   }
 
@@ -170,6 +190,7 @@ export class PublishWalkers {
     if (known !== undefined) return known;
     const sym = `@sc_pub_${this.counter++}`;
     this.refusals.set(key, sym);
+    this.host.journalOpened?.("publish.refusal");
     this.host.declare(`declare void @scr_pub_refuse_at(ptr, ptr, ptr)`);
     this.defsOut.push(
       `define internal void ${sym}(ptr %o, ptr %ctx) ${FN_ATTRS} { ; refuse ${llvmComment(detail)}`,
@@ -179,6 +200,7 @@ export class PublishWalkers {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return sym;
   }
 
@@ -434,12 +456,13 @@ export class PublishWalkers {
     let buf = classId || compact ? String(PUB_LOG_COUNT) : "0";
     if (cyc) {
       // ScrCycHdr.buf, the word before the object: its top bit while the
-      // object is a buffered candidate.
+      // object is a buffered candidate, and -1 (SCR_CYC_ACYCLIC) for an
+      // object that never is one.
       this.host.declare(`declare i32 @scr_cyc_pub_take(ptr)`);
       lines.push(
         `  %mbufp = getelementptr inbounds i8, ptr %o, i64 -4`,
         `  %mbufw = load i32, ptr %mbufp`,
-        `  %mfree = icmp sge i32 %mbufw, 0`,
+        `  %mfree = icmp sge i32 %mbufw, -1`,
         `  br i1 %mfree, label %mput, label %mtake`,
         `mtake:`,
         `  %mix = call i32 @scr_cyc_pub_take(ptr %o)`,
@@ -535,7 +558,7 @@ export class PublishWalkers {
     head: string,
     struct: string,
     traced: boolean,
-    members: { name: string; index: number; type: IrType }[],
+    members: PublishClassInfo["fields"],
     path: string,
     loc: SrcLoc,
     classId = false,
@@ -558,7 +581,12 @@ export class PublishWalkers {
       }
       lines.push(
         `  %f${n} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${member.index} ; ${llvmComment(member.name)}`,
-        `  %v${n} = load ptr, ptr %f${n}`,
+        ...(member.compressed === true
+          ? [
+              `  %v${n}.i = load i32, ptr %f${n}`,
+              ...compactRefLoadLines(`%v${n}.i`, `%v${n}`, `%v${n}.d`),
+            ]
+          : [`  %v${n} = load ptr, ptr %f${n}`]),
         ...this.push(`%v${n}`, fn, `${n}`, this.compactRef(member.type)),
       );
       n++;

@@ -42,6 +42,10 @@ export interface CoverageInput {
    * the program compiles, but these sites can behave differently natively.
    * Never blockers; `--fail-on=divergences` opts into failing on them. */
   divergences?: ScrDiagnostic[];
+  /** The performance warning (SC6101): likely-hot functions the source
+   * leaves untyped. Never blockers; `--fail-on=dynamic` opts into failing
+   * on it. */
+  performance?: ScrDiagnostic[];
   /** Each dependency's native compilation outcome, with the first refusal
    * reason for a refused package. */
   npmStatic?: NpmStaticStatus[];
@@ -314,12 +318,23 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
   // statements the module carries): they compile, but executing one
   // throws its SC-coded error — the report lists them so a "compiling"
   // JS program never hides its dynamic gaps.
+  // Fences in a module's top-level code run when the module initializes:
+  // they are listed first, as sites that run at startup.
   const fences = input.runtimeFences ?? [];
-  if (fences.length > 0) {
+  const startup = fences.filter((d) => d.startup === true);
+  const later = fences.filter((d) => d.startup !== true);
+  if (startup.length > 0) {
     out.push(
-      `  ${c(YELLOW, "deferred to runtime")}   ${fences.length} site${fences.length === 1 ? "" : "s"} ${c(DIM, "(JS statements that throw their fence if executed)")}`,
+      `  ${c(YELLOW, "runs at startup")}   ${startup.length} site${startup.length === 1 ? "" : "s"} ${c(DIM, "(JS statements in module top-level code, which runs when the module loads)")}`,
     );
-    renderRows(groupBlockers(fences, "deferred"), YELLOW);
+    renderRows(groupBlockers(startup, "deferred"), YELLOW);
+    out.push("");
+  }
+  if (later.length > 0) {
+    out.push(
+      `  ${c(YELLOW, "deferred to runtime")}   ${later.length} site${later.length === 1 ? "" : "s"} ${c(DIM, "(JS statements that throw their fence if executed)")}`,
+    );
+    renderRows(groupBlockers(later, "deferred"), YELLOW);
     out.push("");
   }
 
@@ -333,6 +348,17 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     );
     renderRows(groupBlockers(divergences), YELLOW);
   };
+  // The performance warning: its message names the functions.
+  const performance = input.performance ?? [];
+  const renderPerformance = () => {
+    for (const d of performance) {
+      out.push("");
+      const [head, ...rest] = d.message.split("\n");
+      out.push(`  ${c(YELLOW, "untyped and likely hot")}   ${head}`);
+      for (const line of rest) out.push(`  ${line}`);
+      if (d.hint !== undefined) out.push(`    ${c(DIM, `hint: ${d.hint}`)}`);
+    }
+  };
 
   const unreachedDiags = [...(un?.diagnostics ?? []), ...(un?.runtimeFences ?? [])];
   if (failed === 0 && input.diagnostics.length === 0 && unreachedDiags.length === 0) {
@@ -341,6 +367,7 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       out.push("");
       renderDivergences();
     }
+    renderPerformance();
     return out.join("\n");
   }
 
@@ -381,6 +408,7 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     out.push("");
     renderDivergences();
   }
+  renderPerformance();
   return out.join("\n");
 }
 
@@ -449,8 +477,9 @@ function displayPath(file: string, root: string | undefined): string {
 }
 
 /** What `coverage --fail-on` checks: reached blockers (they fail a build)
- * and, optionally, divergences. Unreached blockers never fail. */
-export type CoverageFailOn = "blockers" | "divergences";
+ * and, optionally, divergences or the performance warning. Unreached
+ * blockers never fail. */
+export type CoverageFailOn = "blockers" | "divergences" | "dynamic";
 
 /** Whether the analysis passes the selected gate. Preflight failures
  * always fail; `failOn` undefined means only preflight fails (the report's
@@ -462,6 +491,7 @@ export function coveragePasses(input: CoverageInput, failOn?: CoverageFailOn): b
   // runtime fences build (the statement throws only if it executes).
   if (input.diagnostics.length > 0) return false;
   if (failOn === "divergences" && (input.divergences?.length ?? 0) > 0) return false;
+  if (failOn === "dynamic" && (input.performance?.length ?? 0) > 0) return false;
   return true;
 }
 
@@ -492,6 +522,7 @@ export function coverageEnvelope(
     add(input.unreached?.diagnostics, "unreached");
     add(input.unreached?.runtimeFences, "deferred");
     add(input.divergences, "reached");
+    add(input.performance, "reached");
   }
   const un = input.unreached;
   const total = input.stats.statementsTotal + (un?.stats.statementsTotal ?? 0);

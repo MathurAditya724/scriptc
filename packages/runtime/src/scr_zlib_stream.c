@@ -104,7 +104,8 @@ static void scr_zs_finish(ScrZlibStream *zs, ScrStream *s) {
     zs->flushing = false;
     scr_stream_flush_done(s, NULL, NULL, NULL);
   } else {
-    scr_stream_transform_done(s, NULL, NULL, NULL);
+    /* scr_zs_complete has applied Transform._write's callback rule. */
+    scr_stream_write_done(s, NULL);
   }
 }
 
@@ -548,7 +549,12 @@ void scr_zlib_stream_flush(ScrStream *s, ScrDyn *kind, ScrClosure *cb) {
     return;
   }
   int ki = (int)k;
-  if (zs->flush_bufs[ki] == NULL) zs->flush_bufs[ki] = scr_bytes_new(SCR_BYTES_U8, 0);
+  if (zs->flush_bufs[ki] == NULL) {
+    /* a Buffer, as Node's kFlushBuffers are: write() passes a Buffer
+     * through unchanged, so _transform recognizes the sentinel */
+    zs->flush_bufs[ki] = scr_bytes_new(SCR_BYTES_U8, 0);
+    zs->flush_bufs[ki]->is_buffer = true;
+  }
   scr_stream_write(s, zs->flush_bufs[ki], cb);
 }
 

@@ -20,7 +20,14 @@ import {
 } from "../../ir/ir.js";
 import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
-import { type LlClassMeta, classFieldIndex, classPreLines, classStructSym } from "./classes.js";
+import {
+  type LlClassMeta,
+  classFieldIndex,
+  classPreLines,
+  classStructSym,
+  compactRefLoadLines,
+  compactRefStoreLines,
+} from "./classes.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   FN_ATTRS,
@@ -36,6 +43,8 @@ import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context
 import type { NullableRefField } from "./nullable-fields.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
+import { recordMayKeepSource } from "./record-sources.js";
+import { registerReplay } from "./emit-journal.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
  * (the unit arm's immortal instance, or a fresh box around a retained
@@ -83,6 +92,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   if (existing) return existing;
   const sym = `sc_dpa_${host.dynPromiseAdapters.size}`;
   host.dynPromiseAdapters.set(key, sym);
+  host.journal?.allocated(sym, "dynPromiseAdapter", [inner]);
   host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
   host.declare(`declare void @scr_dyn_release_v(ptr)`);
   host.declare(`declare void @scr_promise_reject_pending(ptr)`);
@@ -138,6 +148,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
     `}`,
     ``,
   );
+  host.journal?.built();
   return sym;
 }
 
@@ -176,6 +187,7 @@ export function streamTypedRefCommitAdapter(
     const check = host.dyn.dynCheckHelper(t);
     host.declare(`declare void @scr_arr_release(ptr)`);
     host.declare(`declare void @scr_arr_outline(ptr)`);
+    host.declare(`declare void @scr_arr_adopt_view_properties(ptr, ptr, ptr)`);
     const lines = [
       `define internal void @${commit}(ptr %target, ptr %d) ${FN_ATTRS} { ; commit live stream element ${typeKey(t)}`,
       `entry:`,
@@ -183,6 +195,8 @@ export function streamTypedRefCommitAdapter(
       `  %missing = icmp eq ptr %next, null`,
       `  br i1 %missing, label %done, label %swap`,
       `swap:`,
+      // Properties move with the storage (in its out-of-line part).
+      `  call void @scr_arr_adopt_view_properties(ptr %next, ptr %d, ptr %target)`,
       // Inline slots live in each header's block; move them out first.
       `  call void @scr_arr_outline(ptr %target)`,
       `  call void @scr_arr_outline(ptr %next)`,
@@ -276,7 +290,7 @@ export function streamTypedRefCommitAdapter(
       const pending = `f${index}_pending`;
       const store = `f${index}_store`;
       const after = `f${index}_after`;
-      const { index: fieldIndex } = classFieldIndex(meta, field.name);
+      const { index: fieldIndex, compressed } = classFieldIndex(meta, field.name, "compressed");
       const int32 = host.int32Slots.isField(t.className, field.name);
       const inline = host.inlineUnions.classField(t.className, field.name);
       const fieldTy = int32 ? "i32" : llFieldType(field.type, inline);
@@ -331,7 +345,12 @@ export function streamTypedRefCommitAdapter(
         `  br i1 %${pending}, label %done, label %${store}`,
         `${store}:`,
         `  %f${index}_ptr = getelementptr inbounds %${classStructSym(t.className)}, ptr %target, i64 0, i32 ${fieldIndex}`,
-        `  %f${index}_old = load ${fieldTy}, ptr %f${index}_ptr`,
+        ...(compressed
+          ? [
+              `  %f${index}_oldidx = load i32, ptr %f${index}_ptr`,
+              ...compactRefLoadLines(`%f${index}_oldidx`, `%f${index}_old`, `%f${index}_od`),
+            ]
+          : [`  %f${index}_old = load ${fieldTy}, ptr %f${index}_ptr`]),
       );
       if (int32) {
         // int32-slots.ts keeps a field int32 only when no dynamic store in
@@ -371,7 +390,12 @@ export function streamTypedRefCommitAdapter(
           `  %f${index}_pay = load ptr, ptr %f${index}_payp`,
           `  %f${index}_sel = select i1 %f${index}_isref, ptr %f${index}_pay, ptr null`,
           `  %f${index}_new = call ptr ${rc.retain}(ptr %f${index}_sel)`,
-          `  store ptr %f${index}_new, ptr %f${index}_ptr`,
+          ...(compressed
+            ? [
+                ...compactRefStoreLines(`%f${index}_new`, `%f${index}_newidx`, `%f${index}_ne`),
+                `  store i32 %f${index}_newidx, ptr %f${index}_ptr`,
+              ]
+            : [`  store ptr %f${index}_new, ptr %f${index}_ptr`]),
           `  call void @scr_union_release(ptr %${next})`,
           `  call void ${rc.release}(ptr %f${index}_old)`,
           `  br label %${after}`,
@@ -393,6 +417,11 @@ export function streamTypedRefCommitAdapter(
         lines.push(
           `  %f${index}_stored = zext i1 %${next} to i8`,
           `  store i8 %f${index}_stored, ptr %f${index}_ptr`,
+        );
+      } else if (compressed) {
+        lines.push(
+          ...compactRefStoreLines(`%${next}`, `%f${index}_nextidx`, `%f${index}_nx`),
+          `  store i32 %f${index}_nextidx, ptr %f${index}_ptr`,
         );
       } else {
         lines.push(`  store ${fieldTy} %${next}, ptr %f${index}_ptr`);
@@ -536,6 +565,12 @@ export function streamTypedRefCommitAdapter(
       `  store ${member.type} %old${index}, ptr %np${index}`,
     );
   });
+  // The conversion kept the view's undeclared properties for %next. Shapes
+  // with accessor slots keep their accessors in the view instead.
+  if (recordMayKeepSource(shape) && !shapeHasAccessorSlots(shape)) {
+    host.declare(`declare void @scr_record_source_move(ptr, ptr)`);
+    lines.push(`  call void @scr_record_source_move(ptr %next, ptr %target)`);
+  }
   lines.push(
     `  call void ${releaseSym(host.shapeHost, t)}(ptr %next)`,
     `  br label %done`,
@@ -570,6 +605,7 @@ export function liveDynUnionRefAdapter(
 
   const sym = `sc_ldu_${host.liveDynUnionRefAdapters.size}`;
   host.liveDynUnionRefAdapters.set(key, sym);
+  host.journal?.allocated(sym, "liveDynUnionRefAdapter", [t]);
 
   const adapters = new Map<number, LlStreamTypedRefAdapter>();
   for (const { arm, tag } of mutableArms) {
@@ -652,6 +688,7 @@ export function liveDynUnionRefAdapter(
     `}`,
     ``,
   );
+  host.journal?.built();
   return sym;
 }
 
@@ -700,6 +737,11 @@ export function streamTypedRefMaterializeAdapter(
   const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
   const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
   host.liveDynRefAdapters.set(key, adapter);
+  host.journal?.allocated(
+    snapshot.replace(/_materialize$/, ""),
+    "streamTypedRefMaterializeAdapter",
+    [t],
+  );
   if (isDynTypedRefType(t)) {
     const fields = host.classMeta.get(t.className)?.def.fields;
     if (
@@ -712,6 +754,7 @@ export function streamTypedRefMaterializeAdapter(
     ) {
       host.declare(`declare ptr @scr_dyn_class_view_unavailable(ptr)`);
       adapter.snapshot = "scr_dyn_class_view_unavailable";
+      host.journal?.built();
       return adapter;
     }
   }
@@ -822,7 +865,7 @@ export function streamTypedRefMaterializeAdapter(
         B.condBr(present, yes, afterField);
         B.startBlock(yes);
       }
-      const { index } = classFieldIndex(meta, field.name);
+      const { index, compressed } = classFieldIndex(meta, field.name, "compressed");
       const fieldPtr = B.tmp();
       let fieldValue = B.tmp();
       B.line(
@@ -834,7 +877,12 @@ export function streamTypedRefMaterializeAdapter(
         B.line(`${fieldValue} = sitofp i32 ${raw} to double`);
       } else if (host.inlineUnions.classField(t.className, field.name))
         fieldValue = loadStructField(B, host.sizeType, fieldPtr, field.type, true);
-      else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
+      else if (compressed) {
+        const idx = B.tmp();
+        B.line(`${idx} = load i32, ptr ${fieldPtr}`);
+        for (const line of compactRefLoadLines(idx, fieldValue, `${fieldValue}.r`))
+          B.line(line.trimStart());
+      } else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
       if (llFieldType(field.type, false) === "i8") {
         const boolValue = B.tmp();
         B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
@@ -1148,6 +1196,7 @@ export function streamTypedRefMaterializeAdapter(
     `}`,
     ``,
   );
+  host.journal?.built();
   return adapter;
 }
 
@@ -1432,6 +1481,7 @@ export function streamFromArrayAdapter(
   if (existing) return existing;
   const sym = `sc_sfa_${host.streamFromArrayAdapters.size}`;
   host.streamFromArrayAdapters.set(key, sym);
+  host.journal?.allocated(sym, "streamFromArrayAdapter", [t]);
   const B = new BlockBuilder();
   const unionDef = elem.kind === "union" ? host.unionsById.get(elem.unionId) : undefined;
   if (elem.kind === "union" && !unionDef) {
@@ -1548,5 +1598,17 @@ export function streamFromArrayAdapter(
     `}`,
     ``,
   );
+  host.journal?.built();
   return sym;
 }
+
+registerReplay("dynPromiseAdapter", (host, args) => dynPromiseAdapter(host, args[0] as IrType));
+registerReplay("liveDynUnionRefAdapter", (host, args) =>
+  liveDynUnionRefAdapter(host, args[0] as IrType & { kind: "union" }),
+);
+registerReplay("streamTypedRefMaterializeAdapter", (host, args) =>
+  streamTypedRefMaterializeAdapter(host, args[0] as IrType).snapshot.replace(/_materialize$/, ""),
+);
+registerReplay("streamFromArrayAdapter", (host, args) =>
+  streamFromArrayAdapter(host, args[0] as IrType & { kind: "array" }),
+);

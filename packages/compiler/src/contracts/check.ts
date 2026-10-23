@@ -174,7 +174,8 @@ class ContractChecker {
       return `${owner}.${method[2]}`;
     }
     if (fn?.sourceName !== undefined && fn.sourceName !== "<anonymous>") return fn.sourceName;
-    if (fn !== undefined && /^%fn\d+$/.test(fnName)) return `the function at ${this.where(fn.loc)}`;
+    if (fn !== undefined && /^%fn\.[0-9a-f]{12}$/.test(fnName))
+      return `the function at ${this.where(fn.loc)}`;
     return fnName.replace(/^%/, "");
   }
 
@@ -284,9 +285,10 @@ class ContractChecker {
    * the lifetimes of the objects they receive). Publication to other
    * threads needs no check: an instance carries a reference count of its
    * own until publication marks it like any other object it reaches
-   * (classes.ts programLifetimeRc). Static code has no WeakRef or
-   * FinalizationRegistry; weak collections stay correct because an entry
-   * keyed by an object that is never freed is never observable as removed. */
+   * (classes.ts programLifetimeRc). Static code has no WeakRef, and a
+   * FinalizationRegistry never runs its cleanup callbacks; weak collections
+   * stay correct because an entry keyed by an object that is never freed is
+   * never observable as removed. */
   private checkProgramLifetime(): void {
     if (this.notes.classes.size === 0) return;
     const roots: string[] = [];

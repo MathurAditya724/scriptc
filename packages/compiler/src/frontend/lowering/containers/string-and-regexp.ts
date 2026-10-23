@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import { matchAllRowsReadByElements } from "./match-row-uses.js";
 import {
   boolLit,
@@ -159,7 +160,7 @@ export function lowerStringSplitCall(
   const key = `str.split:${receiver.type.kind === "union" ? typeKey(receiver.type) : receiver.type.kind}:${typeKey(separator.type)}:${typeKey(limit.type)}:${absent}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%str.split.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%str.split", key);
     const values = [receiver, separator, limit];
     const params = values.map((value, index) => ({
       localId: `arg.${index}`,
@@ -395,7 +396,7 @@ function stringIndexHelperCall(
   const key = `str.index:${method}:${typeKey(receiver.type)}:${typeKey(index.type)}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%str.index.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%str.index", key);
     lowerer.valueHelpers.set(key, helper);
     const rawReceiver = varRef("arg.0", receiver.type, loc);
     const rawIndex = varRef("arg.1", index.type, loc);
@@ -673,7 +674,7 @@ export function lowerStringPaddingCall(
   const key = `str.pad:${method}:${values.map((value) => typeKey(value.type)).join(":")}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%str.pad.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%str.pad", key);
     const params = values.map((value, index) => ({
       localId: `arg.${index}`,
       name: `arg${index}`,
@@ -919,12 +920,12 @@ export function lowerRegexMethodCall(
     })();
   if ((receiverKind === "string" || nullableStringRecv) && name === "match") {
     const arg0 = call.arguments.nodes[0];
-    if (!arg0 || lowerer.mapTypeOf(lowerer.typeOf(arg0))?.kind !== "regex") return null; // string-pattern match: the SC2020 fence
+    if (!arg0 || !isRegexPatternArgument(lowerer, arg0)) return null; // string-pattern match: the SC2020 fence
     if (call.arguments.nodes.length !== 1) return null;
     const receiver = nullableStringRecv
       ? lowerMethodReceiver(lowerer, access.expression, STRING, access.name.text)
       : lowerReceiver();
-    const re = lowerer.lowerExprExpecting(arg0, { kind: "regex" });
+    const re = lowerRegexPatternArgument(lowerer, arg0);
     // RegExpMatchArray | null maps to the string[] | null union by
     // itself; intern it directly when the checker's spelling doesn't —
     // or when it maps to something WIDER (an optional-chain call node
@@ -982,10 +983,10 @@ export function lowerRegexMethodCall(
   // 0, exactly Node. Never throws.
   if (receiverKind === "string" && name === "search") {
     const arg0 = call.arguments.nodes[0];
-    if (!arg0 || lowerer.mapTypeOf(lowerer.typeOf(arg0))?.kind !== "regex") return null; // string-pattern form: the SC2020 fence
+    if (!arg0 || !isRegexPatternArgument(lowerer, arg0)) return null; // string-pattern form: the SC2020 fence
     if (call.arguments.nodes.length !== 1) return null;
     const receiver = lowerReceiver();
-    const re = lowerer.lowerExprExpecting(arg0, { kind: "regex" });
+    const re = lowerRegexPatternArgument(lowerer, arg0);
     return { kind: "regexIntrinsic", method: "search", receiver, args: [re], type: F64, loc };
   }
   if (receiverKind === "string" && (name === "replace" || name === "replaceAll")) {
@@ -1309,7 +1310,7 @@ export function lowerStringMethodCall(
     const key = `str.positions:${entry.method}:${typeKey(needle.type)}:${typeKey(position.type)}`;
     let helper = lowerer.valueHelpers.get(key);
     if (!helper) {
-      helper = `%str.positions.${lowerer.valueHelpers.size}`;
+      helper = keyedHelperName(lowerer, "%str.positions", key);
       const params = [receiver, needle, position].map((arg, index) => ({
         localId: `arg.${index}`,
         name: `arg${index}`,
@@ -1411,7 +1412,7 @@ export function lowerStringMethodCall(
     const key = `str.positions:${entry.method}:${args.map((arg) => typeKey(arg.type)).join(":")}`;
     let helper = lowerer.valueHelpers.get(key);
     if (!helper) {
-      helper = `%str.positions.${lowerer.valueHelpers.size}`;
+      helper = keyedHelperName(lowerer, "%str.positions", key);
       const params = [receiver, ...args].map((arg, index) => ({
         localId: `arg.${index}`,
         name: `arg${index}`,
@@ -1919,4 +1920,32 @@ export function lowerDynPrimitiveMethodCall(
       buildStringMethod(lowerer, call, name, s, args, call.expression, branchStmts),
     );
   return seq(stmts, result);
+}
+
+/** Whether the pattern of `match` or `search` is a RegExp, or a RegExp that
+ * may be undefined (`s.match(patterns[i])` under noUncheckedIndexedAccess). */
+function isRegexPatternArgument(lowerer: Lowerer, node: ts.Expression): boolean {
+  const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (t?.kind === "regex") return true;
+  if (t?.kind !== "union") return false;
+  const arms = lowerer.unions.get(t.unionId)?.arms ?? [];
+  return (
+    arms.length === 2 &&
+    arms.some((arm) => arm.kind === "regex") &&
+    arms.some((arm) => arm.kind === "undefinedT")
+  );
+}
+
+/** The pattern of `match` or `search` as a RegExp: an undefined pattern is
+ * `new RegExp(undefined)`, the empty pattern, as in Node. */
+function lowerRegexPatternArgument(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const regex: IrType = { kind: "regex" };
+  const empty: IrExpr = {
+    kind: "regexLit",
+    pattern: "(?:)",
+    flags: "",
+    type: regex,
+    loc: locOf(node),
+  };
+  return lowerOptionalArgument(lowerer, node, regex, empty);
 }

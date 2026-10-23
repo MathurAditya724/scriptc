@@ -553,7 +553,11 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         // which also takes those streams.
         e.fn === "stream.unboxDyn" && host.usesDynBuiltinStream
         ? "scr_dyn_builtin_stream_unbox"
-        : LIB_FN_SYMS[e.fn]);
+        : // for await over a checked-dynamic value iterates a native
+          // stream behind it (scr_dyn_for_await_stream.c)
+          e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
+          ? "scr_stream_dyn_async_iterator_open"
+          : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
     ? emitBorrowedInputs(host, e.args)
@@ -734,7 +738,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (e.fn === "process.nextTick") return host.emitAsyncContextLibCall(e);
   if (
     e.fn === "sp.pipeline" ||
-    e.fn === "sp.pipelineStages" ||
+    e.fn.startsWith("sp.pipelineStages") ||
     e.fn.startsWith("sp.pipelineOpts") ||
     e.fn.startsWith("sp.finishedOpts")
   )
@@ -758,6 +762,14 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     const inline = emitInlineAtomicsOp(host, e);
     if (inline) return inline;
   }
+  if (e.fn === "bytes.isAbsent") {
+    // A borrowed read: retaining an absent Buffer would dereference NULL.
+    const value = host.emitReadReceiver(e.args[0]!);
+    const t = host.B.tmp();
+    host.B.line(`${t} = icmp eq ptr ${value.name}, null`);
+    return { name: t, type: e.type };
+  }
+  if (e.fn === "bytes.absent") return host.own({ name: "null", type: e.type });
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
   // events.once builds typed listener adapters beside the emitter calls.
   if (e.fn === "events.once" || e.fn === "events.onceSignal")
@@ -850,6 +862,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return host.emitGenericLibCall(e);
     case "weakMap":
     case "weakSet":
+    case "finalizationRegistry":
     case "ffi":
     case "sharedArrayBuffer":
     case "arrayBuffer":
@@ -864,6 +877,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "events":
     case "blob":
     case "wasm":
+    case "array":
     case "record":
     case "disposable":
     case "punycode":
