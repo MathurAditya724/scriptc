@@ -6,12 +6,14 @@ import {
   STRING,
   VOID,
   isClassOwnEnumerableFieldName,
+  typeEquals,
   type IrExpr,
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import type { Lowerer } from "./lowerer.js";
+import { PoisonError, type Lowerer } from "./lowerer.js";
+import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { observedPrototypeMethod } from "./class-prototypes.js";
@@ -186,27 +188,53 @@ export function classCallbackCall(
     loc,
   };
   const observed = observedSlot(lowerer, receiver, name, loc);
-  const result: IrExpr = observed
-    ? call
-    : {
-        kind: "ternary",
-        cond: varRef(present.id, BOOL, loc),
-        then: call,
-        else_:
-          fallback.type.kind === "void"
-            ? {
-                kind: "seqExpr",
-                stmts: [{ kind: "exprStmt", expr: fallback, loc }],
-                result: dynUndefinedExpr(loc),
-                type: DYN,
-                loc,
-              }
-            : lowerer.coerceToExpected(fallback, DYN),
-        type: DYN,
-        loc,
-      };
-  const answer =
-    fallback.type.kind === "void" ? result : lowerer.coerceToExpected(result, fallback.type);
+  const boxed =
+    observed || fallback.type.kind === "void" ? null : lowerer.coerceToExpected(fallback, DYN);
+  let answer: IrExpr;
+  if (boxed !== null && boxed.type.kind !== "dyn") {
+    // A result with no checked-dynamic form (an Iterable<T>, whose
+    // generator arm does not box) keeps its native type: the unchanged
+    // method's result stays as it is, and a replacement's dynamic result
+    // takes the checked conversion into that type.
+    const converted = lowerer.coerceToExpected(call, fallback.type);
+    if (!typeEquals(converted.type, fallback.type)) {
+      lowerer.pushDiag(
+        unsupportedDiag(
+          "SC1090",
+          loc,
+          `calling replaceable method '${calleeName}' with a '${lowerer.fmt(fallback.type)}' result`,
+        ),
+      );
+      throw new PoisonError();
+    }
+    answer = {
+      kind: "ternary",
+      cond: varRef(present.id, BOOL, loc),
+      then: converted,
+      else_: fallback,
+      type: fallback.type,
+      loc,
+    };
+  } else {
+    const result: IrExpr = observed
+      ? call
+      : {
+          kind: "ternary",
+          cond: varRef(present.id, BOOL, loc),
+          then: call,
+          else_: boxed ?? {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: fallback, loc }],
+            result: dynUndefinedExpr(loc),
+            type: DYN,
+            loc,
+          },
+          type: DYN,
+          loc,
+        };
+    answer =
+      fallback.type.kind === "void" ? result : lowerer.coerceToExpected(result, fallback.type);
+  }
   return {
     kind: "seqExpr",
     stmts: [
