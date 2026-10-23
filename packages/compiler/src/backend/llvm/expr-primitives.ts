@@ -16,10 +16,12 @@ import {
   int32Number,
   integerNumber,
   narrowInteger,
+  wideArithmetic,
   widenInteger,
 } from "./integer-values.js";
 import {
   bitwiseIdentityOperand,
+  INT32_RANGE,
   integerArithmeticRange,
   isBitwiseOp,
   withinInt32,
@@ -32,7 +34,15 @@ import {
   emitPowerOfTwoRemainder,
   emitSignedIntegerRemainder,
 } from "./integer-remainder.js";
-import { denseSlotWidth, emitDenseArrayGet, emitDenseArrayState } from "./dense-array-access.js";
+import {
+  denseSlotWidth,
+  emitDenseArrayRead,
+  emitDenseArrayState,
+  runtimeAccess,
+  SCR_ELEM_I32,
+  slotWidth,
+  type ArrayAccess,
+} from "./dense-array-access.js";
 import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
 
 export function emitLiteralExpr(
@@ -337,7 +347,14 @@ export function emitOperatorExpr(
         if (arith[e.op] !== undefined) {
           B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
           const uint32 = emitWrappingSum(host, e, l, r, li, ri);
-          if (uint32 !== undefined) return { name: t, type: e.type, uint32 };
+          // The exact integer beside the double, for index consumers.
+          const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
+          if (uint32 !== undefined || wideInteger) {
+            const value: LlValue = { name: t, type: e.type };
+            if (uint32 !== undefined) value.uint32 = uint32;
+            if (wideInteger) value.wideInteger = wideInteger;
+            return value;
+          }
         } else B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
       } else if (bit[e.op] !== undefined) {
         if (e.left.type.kind !== "f64" || e.right.type.kind !== "f64") {
@@ -648,7 +665,7 @@ export function emitStringExpr(
       // equals no unit, as "" equals no one-unit literal.
       const unit = charAtUnitTest(e);
       if (unit !== null) {
-        const code = host.emitExpr(charAtUnitRead(unit.charAt));
+        const code = host.emitExpr(charAtUnitRead(host, unit.charAt));
         const t = B.tmp();
         B.line(
           `${t} = fcmp ${e.negated ? "une" : "oeq"} double ${code.name}, ${f64Lit(unit.code)}`,
@@ -682,7 +699,7 @@ export function emitStringExpr(
       // the code unit, as the equality above does.
       const unit = charAtUnitTest(e);
       if (unit !== null) {
-        const code = host.emitExpr(charAtUnitRead(unit.charAt));
+        const code = host.emitExpr(charAtUnitRead(host, unit.charAt));
         const t = B.tmp();
         B.line(
           `${t} = fcmp ${charAtUnitPredicate(e.op, unit.left)} double ${code.name}, ${f64Lit(unit.code)}`,
@@ -886,9 +903,23 @@ export function emitContainerExpr(
       // the plain elements up to the next one (scr_arr_reserve_spread).
       const firstSpread = e.elems.findIndex((_, i) => spreadSet.has(i));
       const capacity = small ? 0 : (e.capacity ?? (firstSpread < 0 ? e.elems.length : firstSpread));
-      B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small)}`);
+      // An int32 array's allocation (ir/int32-arrays.ts) constructs
+      // SCR_ELEM_I32 storage; its elements are proven int32s.
+      const int32 = host.int32Allocations.has(e);
+      if (int32) {
+        host.declare(
+          small
+            ? `declare ptr @scr_arr_new_small(i32)`
+            : `declare ptr @scr_arr_new(i32, ${host.sizeType})`,
+        );
+        B.line(
+          small
+            ? `${arr} = call ptr @scr_arr_new_small(i32 ${SCR_ELEM_I32})`
+            : `${arr} = call ptr @scr_arr_new(i32 ${SCR_ELEM_I32}, ${host.sizeType} ${capacity})`,
+        );
+      } else B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small)}`);
       const out = host.own({ name: arr, type: e.type });
-      const acc = elemAccess(elem);
+      const acc: ArrayAccess = int32 ? "i32" : elemAccess(elem);
       let pending: LlValue[] = [];
       let buffer: string | undefined;
       const flush = (): void => {
@@ -909,7 +940,8 @@ export function emitContainerExpr(
           B.line(
             `call void @scr_arr_reserve_spread(ptr ${arr}, ptr ${v.name}, ${host.sizeType} ${plain})`,
           );
-          host.emitArrayCopyLoop(arr, v.name, acc);
+          // A literal with spreads is never an int32 allocation.
+          host.emitArrayCopyLoop(arr, v.name, runtimeAccess(acc));
           return;
         }
         pending.push(host.emitExpr(el));
@@ -954,19 +986,27 @@ export function emitContainerExpr(
       // Ref-element reads return +1 (the inline dense path retains like
       // the runtime getter); own registers the owned temp in the frame.
       const elem = e.arr.type.elem;
-      const acc = elemAccess(elem);
-      const t = emitDenseArrayGet(
+      const acc = host.arrayAccess(e.arr, elem);
+      const read = emitDenseArrayRead(
         host,
         arr.name,
         idx,
         e.index,
         acc,
         elem,
-        `scr_arr_get_${acc}`,
+        `scr_arr_get_${runtimeAccess(acc)}`,
         true,
         host.provenDenseIndex(e.arr, e.index),
       );
-      return host.own({ name: t, type: e.type });
+      if (read.int32 !== null)
+        // An int32 array's element: its i32 is exact for index consumers.
+        return {
+          name: read.value,
+          type: e.type,
+          uint32: read.int32,
+          integer: { name: read.int32, type: "i32", signed: true, range: INT32_RANGE },
+        };
+      return host.own({ name: read.value, type: e.type });
     }
     case "arrayHas": {
       const arr = host.emitStableReceiver(e.arr, [e.index]);
@@ -979,7 +1019,7 @@ export function emitContainerExpr(
         idx,
         e.index,
         "has",
-        denseSlotWidth(host, e.arr.type.elem),
+        host.int32Array(e.arr) ? slotWidth("i32") : denseSlotWidth(host, e.arr.type.elem),
       );
       return { name: t, type: e.type };
     }
@@ -994,7 +1034,7 @@ export function emitContainerExpr(
         idx,
         e.index,
         "state",
-        denseSlotWidth(host, e.arr.type.elem),
+        host.int32Array(e.arr) ? slotWidth("i32") : denseSlotWidth(host, e.arr.type.elem),
       );
       return { name: t, type: e.type };
     }

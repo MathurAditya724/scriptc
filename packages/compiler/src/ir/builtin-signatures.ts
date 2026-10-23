@@ -3817,6 +3817,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // elements: noncanonical numeric keys, match metadata or named
   // properties. Borrowed; never throws.
   "array.hasProperties": { argTypes: [null], result: BOOL },
+  // The key of an element access whose index is undefined (the property
+  // named "undefined"; frontend/lowering/undefined-index.ts).
+  "array.undefinedKey": { argTypes: [], result: F64 },
   // node:events EventEmitter: receivers are emitter-hierarchy objects and
   // the chaining forms (on/off/removeAll/setMax) return the receiver's
   // own class — program-dependent object types, checked in the libCall

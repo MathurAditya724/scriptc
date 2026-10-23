@@ -161,6 +161,10 @@ function unitLocal(local: IrLocal): IrLocal {
  * declaration from a one-argument charAt, a one-unit test, or a switch
  * over one-unit cases. */
 function understoodMention(node: Record<string, unknown>): string | null {
+  // count() visits every object in the body (types, locations, cases), so
+  // only the node kinds handled here are read as IR nodes
+  const kind = node.kind;
+  if (kind !== "varDecl" && kind !== "strEq" && kind !== "strCmp" && kind !== "switch") return null;
   const n = node as unknown as IrExpr | IrStmt;
   if (n.kind === "varDecl") return n.init && isCharAt(n.init) ? n.localId : null;
   if (n.kind === "strEq" || n.kind === "strCmp") return unitUse(n)?.id ?? null;

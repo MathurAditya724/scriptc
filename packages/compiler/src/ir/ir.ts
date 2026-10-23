@@ -1073,6 +1073,11 @@ export interface IrModule {
    * write in the program (ir/contract-check.ts). Backends may rely on them
    * unconditionally. Absent when the program writes no contract. */
   contracts?: IrContracts;
+  /** Local number arrays (`function\0local`) the backend may store as
+   * int32 slots, proposed by ir/int32-arrays.ts after their element-reader
+   * calls were inlined; the int32 slot analysis keeps the ones whose every
+   * stored element it proves an int32. Absent when there is none. */
+  int32ArrayCandidates?: string[];
   /** The WebAssembly modules translated into this program (wasm/
    * translate.ts), present exactly when the program uses the WebAssembly
    * API (possibly empty). The backend appends each module's translation
@@ -2094,8 +2099,9 @@ export type IrStmt =
    * and whose `code` carries the SC diagnostic code; unwinds exactly like
    * `throw`.
    * TypeScript sources produce it only as the tsc-unreachable fallthrough
-   * trap (appendImplicitUndefinedReturn's SC9002) — their construct fences
-   * stay compile errors. */
+   * trap (appendImplicitUndefinedReturn's SC9002) and for a typed-array
+   * store through an element index that is undefined at run time
+   * (undefined-index.ts); their construct fences stay compile errors. */
   | { kind: "runtimeFence"; code: string; message: string; loc: SrcLoc }
   /** Rethrow of a catch binding (`throw e` where e is the binding):
    * re-raises the SAVED exception exactly — kind and payload preserved,

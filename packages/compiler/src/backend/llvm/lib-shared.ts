@@ -1584,6 +1584,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "array.namedKeys": "scr_arr_named_keys",
   "array.hasNamedKey": "scr_arr_has_named_key",
   "array.hasProperties": "scr_arr_has_properties",
+  "array.undefinedKey": "scr_arr_undefined_key",
   // queueMicrotask's checked-dynamic form (borrowed dyn; a non-function
   // throws synchronously), the minted setImmediate value, and the
   // timers/promises immediate — all mark the loop live.
