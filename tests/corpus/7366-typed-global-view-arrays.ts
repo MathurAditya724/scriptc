@@ -30,3 +30,19 @@ const counts = globalThis as typeof globalThis & { __exampleCounts?: number[][] 
 counts.__exampleCounts = [[1], [2, 3]];
 counts.__exampleCounts[1]!.push(4);
 console.log(JSON.stringify(counts.__exampleCounts));
+
+// a parenthesized or `satisfies`-wrapped literal is kept the same way
+type Wrapped = typeof globalThis & { __exampleWrapped?: number[]; __exampleSatisfied?: number[] };
+function wrapped(): number[] {
+  const g = globalThis as Wrapped;
+  g.__exampleWrapped ??= ([5]);
+  return g.__exampleWrapped;
+}
+function satisfied(): number[] {
+  const g = globalThis as Wrapped;
+  g.__exampleSatisfied ||= [7] satisfies number[];
+  return g.__exampleSatisfied;
+}
+wrapped().push(6);
+satisfied().push(8);
+console.log(wrapped().join(","), wrapped() === wrapped(), satisfied().join(","), satisfied() === satisfied());

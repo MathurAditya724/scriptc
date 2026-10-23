@@ -10607,25 +10607,31 @@ export class Lowerer {
     return this.coerceInto(node, value, expected);
   }
 
-  /** Lower for a known destination, then apply ordinary value coercion.
-   * Fresh arrays and records use the destination layout directly. */
-  /** `value` is the right side of a write to a member of a typed view of the
-   * global object (`(globalThis as typeof globalThis & { k?: T }).k = value`,
-   * also through `??=` and `||=`). */
-  private globalViewSlot(value: ts.Expression): boolean {
-    const write = value.parent;
+  /** The right side of a write to a member of a typed view of the global
+   * object (`(globalThis as typeof globalThis & { k?: T }).k = value`, also
+   * through `??=` and `||=`) that is `value` itself or wraps only it in
+   * parentheses or `satisfies`; null when `value` is not in such a write. */
+  private globalViewSlot(value: ts.Expression): ts.Expression | null {
+    let operand: ts.Expression = value;
+    while (
+      operand.parent !== undefined &&
+      (ts.isParenthesizedExpression(operand.parent) || ts.isSatisfiesExpression(operand.parent))
+    )
+      operand = operand.parent;
+    const write = operand.parent;
     if (
+      write === undefined ||
       !ts.isBinaryExpression(write) ||
-      write.right !== value ||
+      write.right !== operand ||
       (write.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
         write.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionEqualsToken &&
         write.operatorToken.kind !== ts.SyntaxKind.BarBarEqualsToken)
     )
-      return false;
+      return null;
     let target = write.left;
     while (ts.isParenthesizedExpression(target)) target = target.expression;
     if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target))
-      return false;
+      return null;
     const receiver = this.typeOf(target.expression);
     const isGlobal = (type: ts.Type): boolean => {
       const symbol = type.getSymbol();
@@ -10635,12 +10641,14 @@ export class Lowerer {
         symbol.declarations.length === 0
       );
     };
-    return (
-      isGlobal(receiver) ||
+    return isGlobal(receiver) ||
       (receiver.isIntersectionType() && ts.constituentTypes(receiver).some(isGlobal))
-    );
+      ? operand
+      : null;
   }
 
+  /** Lower for a known destination, then apply ordinary value coercion.
+   * Fresh arrays and records use the destination layout directly. */
   lowerExprExpecting(node: ts.Expression, expected: IrType | undefined): IrExpr {
     // These wrappers do not change the value or its inferred type. Keep a
     // fresh literal visible to destination-directed construction. Assertions
@@ -10712,7 +10720,8 @@ export class Lowerer {
         // the native array and store it boxed: every typed read then extracts
         // that same array (a dynamic literal would be copied on each read,
         // losing writes such as push).
-        const slotType = this.globalViewSlot(x) ? this.checker.getContextualType(x) : undefined;
+        const slot = this.globalViewSlot(x);
+        const slotType = slot ? this.checker.getContextualType(slot) : undefined;
         const declared = slotType && this.checker.getNonNullableType(slotType);
         const native =
           declared && !(declared.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))
