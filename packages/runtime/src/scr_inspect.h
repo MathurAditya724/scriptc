@@ -115,6 +115,9 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path); /* +1 */
  * with the exception pending. */
 ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc);
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding);
+/* readFileSync's encoding check (ERR_INVALID_ARG_VALUE), on its own: the
+ * check Node runs before it converts a URL path. */
+void scr_fs_check_read_encoding(ScrStr *encoding);
 ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding);
 ScrDyn *scr_fs_callback_value(ScrStr *member);
 ScrDyn *scr_fs_callback_call(ScrStr *member, const ScrDyn *args);

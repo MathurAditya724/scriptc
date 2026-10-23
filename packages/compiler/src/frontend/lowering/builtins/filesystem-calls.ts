@@ -265,7 +265,7 @@ export function lowerFsPromisesOpenCall(
       "use open(path[, stringFlags[, numericMode]])",
     );
   }
-  const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const defaultFlags: IrExpr = { kind: "strLit", value: "r", type: STRING, loc };
   const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
   const flags = expr.arguments.nodes[1]
@@ -705,7 +705,7 @@ export function lowerFsPromisesEncodedRead(
     )
       return null;
   }
-  const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const encoding: IrExpr =
     optionsType.kind === "string"
       ? lowerer.lowerExprExpecting(options, STRING)
@@ -853,7 +853,7 @@ export function lowerFsPromisesMkdirCall(
     );
   }
   const { recursive, modeNode } = options;
-  const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
   const type: IrType = { kind: "promise", inner: VOID };
   if (!recursive) {

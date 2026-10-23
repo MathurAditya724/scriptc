@@ -1006,6 +1006,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.set": { argTypes: [URL_T, STRING, STRING], result: VOID },
   "url.setChecked": { argTypes: [URL_T, STRING, DYN], result: VOID },
   "url.fileURLToPathUrl": { argTypes: [URL_T], result: STRING },
+  /** fileURLToPathUrl as a value: the path string, or the error it would
+   * throw (fs.existsSync and fs.promises URL paths). Never throws. */
+  "url.fileURLToPathValue": { argTypes: [URL_T], result: DYN },
+  /** getValidatedPath's null-byte check on a string path, and
+   * readFileSync's encoding check: what Node validates before it converts
+   * a later URL path. (path, argument name) and (encoding). */
+  "fs.checkPath": { argTypes: [STRING, STRING], result: VOID },
+  "fs.checkReadEncoding": { argTypes: [STRING], result: VOID },
   "url.fileURLToPathChecked": { argTypes: [DYN], result: STRING },
   "url.fileURLToPathOptions": { argTypes: [DYN, DYN], result: STRING },
   /** node:url's legacy API (scr_url_legacy.c): parse(url, parseQueryString,
