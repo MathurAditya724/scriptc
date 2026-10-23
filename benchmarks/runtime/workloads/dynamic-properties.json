@@ -1,6 +1,0 @@
-{
-  "entry": "workloads/dynamic-properties.mjs",
-  "args": [
-    "1000000"
-  ]
-}
