@@ -611,6 +611,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // fence; the zero-argument form always throws ERR_MISSING_ARGS. The
   // DOMException clone shares the option validation.
   "dyn.structuredClone",
+  "dyn.declAdopt",
   "dyn.cloneMissing",
   "dyn.cloneTransferFail",
   "dyn.cloneTransferFailWith",

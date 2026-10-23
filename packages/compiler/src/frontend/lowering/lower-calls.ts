@@ -1,4 +1,5 @@
 import { keyedHelperName } from "./stable-names.js";
+import { perKeyOrder } from "./key-order-witness.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerDynStreamMemberCall } from "./dyn-streams.js";
@@ -73,6 +74,7 @@ import {
   isDynTypedRefType,
   isUnitType,
   shapeHasAccessorSlots,
+  shapeKeyOrders,
   typeEquals,
   RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
@@ -2400,6 +2402,20 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
     return { kind: "libCall", fn: "bigint.parse", args: [arg], type: BIGINT_T, loc };
   if (arg.type.kind === "f64")
     return { kind: "libCall", fn: "bigint.fromF64", args: [arg], type: BIGINT_T, loc };
+  // Byte storage converts through ToPrimitive, which BigInt then parses: a
+  // typed array's text is its elements joined with "," (one element reads
+  // as that element, none as 0n, several throw the SyntaxError for the
+  // joined text), a Buffer's is its UTF-8 decoding and a DataView's is
+  // "[object DataView]". The runtime value tells them apart, as for String.
+  if (arg.type.kind === "bytes") {
+    const text: IrExpr = {
+      kind: "toString",
+      operand: { kind: "dynFrom", value: arg, type: DYN, loc },
+      type: STRING,
+      loc,
+    };
+    return { kind: "libCall", fn: "bigint.parse", args: [text], type: BIGINT_T, loc };
+  }
   if (arg.type.kind === "bool") {
     return {
       kind: "ternary",
@@ -2440,6 +2456,7 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
         arm.kind === "string" ||
         arm.kind === "f64" ||
         arm.kind === "bool" ||
+        arm.kind === "bytes" ||
         isUnitType(arm),
     )
   )
@@ -7144,8 +7161,12 @@ export function recordKeysArrayCall(
           loc,
         },
       ];
-      const order = current.declaredOrder ?? current.fields.map((f) => f.name);
-      for (const name of order) {
+      // One walk per key order (see perKeyOrder).
+      const orders = shapeKeyOrders(current);
+      const walks = orders.map((): IrStmt[] => []);
+      for (const [k, name] of orders.flatMap((order, k) =>
+        order.map((name) => [k, name] as const),
+      )) {
         const f = current.fields.find((x) => x.name === name)!;
         const pushStmt: IrStmt = {
           kind: "exprStmt",
@@ -7162,12 +7183,13 @@ export function recordKeysArrayCall(
         // Fields that can be absent push behind their presence test (the
         // key exists exactly when Object.keys would list it).
         const present = lowerer.recordFieldPresent(ref, argIr.shapeId, f.name, loc);
-        body.push(
+        walks[k]!.push(
           present.kind === "recordHas"
             ? { kind: "if", cond: present, then: [pushStmt], else_: null, loc }
             : pushStmt,
         );
       }
+      body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
       fn.body = body;
     };
@@ -8870,8 +8892,12 @@ function lowerObjectStaticCall(
           loc,
         },
       ];
-      const order = current.declaredOrder ?? current.fields.map((f) => f.name);
-      for (const name of order) {
+      // One walk per key order (see perKeyOrder).
+      const orders = shapeKeyOrders(current);
+      const walks = orders.map((): IrStmt[] => []);
+      for (const [k, name] of orders.flatMap((order, k) =>
+        order.map((name) => [k, name] as const),
+      )) {
         const f = current.fields.find((x) => x.name === name)!;
         const raw: IrExpr = {
           kind: "recordGet",
@@ -9033,8 +9059,9 @@ function lowerObjectStaticCall(
             loc,
           };
         }
-        body.push(stmt);
+        walks[k]!.push(stmt);
       }
+      body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
       fn.body = body;
     };
@@ -10195,6 +10222,23 @@ export function lowerObjectMethodCall(
           type: found.sig.ret,
           loc,
         };
+    // The declaring class's original value, built with the observed slot.
+    // An override below (a virtual call) keeps the dynamic call: a slot
+    // reassigned to an ancestor's method must not reach the override. So do
+    // methods declared in unchecked JavaScript, whose results are inferred,
+    // and calls with a spread argument: the dynamic call drains the spread
+    // through the iterator's current `next`, which may be a replacement.
+    const declarerFile = found.declarer.decl ? ts.getSourceFileOfNode(found.declarer.decl) : null;
+    const original =
+      virtual ||
+      call.arguments.nodes.some(ts.isSpreadElement) ||
+      !declarerFile ||
+      (isJsSourceFile(declarerFile) && !lowerer.checkedJsFile(declarerFile))
+        ? undefined
+        : {
+            originalId: (): string | undefined => found.declarer.prototypeOriginals?.get(method),
+            directCall: (): IrExpr => fallback,
+          };
     const result = classCallbackCall(
       lowerer,
       value,
@@ -10203,6 +10247,7 @@ export function lowerObjectMethodCall(
       fallback,
       loc,
       ts.getTextOfNode(access),
+      original,
     );
     return {
       kind: "seqExpr",
