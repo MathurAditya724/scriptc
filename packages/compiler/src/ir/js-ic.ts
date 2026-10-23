@@ -61,17 +61,68 @@ export class JsIcSites {
     if (fn.params.some((p) => p.type.kind !== "dyn")) return null;
     const receiver = fn.params[0]?.localId;
     if (receiver === undefined) return null;
+    const second = fn.params[1]?.localId;
+    const exits: JsIcSite[] = [];
     let i = 0;
-    while (
-      i < fn.body.length &&
-      (this.capsuleBranch(fn.body[i]!, receiver) || this.rebinding(fn.body[i]!, receiver))
-    )
-      i++;
+    for (; i < fn.body.length; i++) {
+      const s = fn.body[i]!;
+      if (this.capsuleBranch(s, receiver) || this.rebinding(s, receiver)) continue;
+      const exit = this.plainExit(s, receiver, second);
+      if (exit === null) break;
+      exits.push(exit);
+    }
     const tail = fn.body.slice(i);
-    if (fn.params.length === 1) return this.getTail(tail, receiver);
-    if (fn.params.length !== 2) return null;
-    const second = fn.params[1]!.localId;
-    return this.setTail(tail, receiver, second) ?? this.keyedTail(tail, receiver, second);
+    let site: JsIcSite | null;
+    if (fn.params.length === 1) site = this.getTail(tail, receiver);
+    else if (fn.params.length !== 2 || second === undefined) return null;
+    else site = this.setTail(tail, receiver, second) ?? this.keyedTail(tail, receiver, second);
+    if (site === null || site.kind === "keyed") return exits.length === 0 ? site : null;
+    // An exit answers plain values with the operation the site caches.
+    return exits.every((exit) => exit.kind === site.kind && exit.key === site.key) ? site : null;
+  }
+
+  /** `if (!classCapsule(receiver)) { [if (!funcKind(receiver))] OP }`, no
+   * else: an exit that runs the helper's generic operation directly on a
+   * value no class table matches. OP is `return [js.fromDyn](dynKeyGet(R,
+   * K))` or `dyn.keySet(R, K, value); return`, with R the receiver (or a
+   * bag of it). */
+  private plainExit(s: IrStmt, receiver: string, value: string | undefined): JsIcSite | null {
+    const negated = (e: IrExpr, test: "classCapsule" | "funcKind"): boolean =>
+      e.kind === "dynTest" && e.test === test && e.negated === true && isVar(e.value, receiver);
+    if (s.kind !== "if" || s.else_ !== null || !negated(s.cond, "classCapsule")) return null;
+    let body = s.then;
+    const inner = body[0];
+    if (
+      body.length === 1 &&
+      inner?.kind === "if" &&
+      inner.else_ === null &&
+      negated(inner.cond, "funcKind")
+    )
+      body = inner.then;
+    const [first, ret] = body;
+    if (body.length === 1 && first?.kind === "return") {
+      const read = unwrapFromDyn(first.value);
+      if (
+        read?.kind !== "dynKeyGet" ||
+        read.key.kind !== "strLit" ||
+        !this.bagOf(read.value, receiver)
+      )
+        return null;
+      return { kind: "get", key: read.key.value };
+    }
+    if (
+      body.length !== 2 ||
+      first?.kind !== "exprStmt" ||
+      ret?.kind !== "return" ||
+      ret.value !== null
+    )
+      return null;
+    const call = first.expr;
+    if (call.kind !== "libCall" || call.fn !== "dyn.keySet" || call.args.length !== 3) return null;
+    const [bag, key, stored] = call.args;
+    if (!bag || !this.bagOf(bag, receiver) || key?.kind !== "strLit") return null;
+    if (value === undefined || !isVar(stored, value)) return null;
+    return { kind: "set", key: key.value };
   }
 
   /** `varDecl bag = BAG(receiver); return [js.fromDyn](bag === receiver ?

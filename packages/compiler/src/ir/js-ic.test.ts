@@ -371,3 +371,57 @@ test("bag helpers that exit early for values no class branch matches are still t
   expect(sites.site("%dyn.class.property.2")).toBeNull();
   expect(sites.site("%dyn.class.property.3")).toBeNull();
 });
+
+test("helpers that answer plain values first with the same operation are cache sites", () => {
+  const negated = (test: "classCapsule" | "funcKind"): IrExpr => ({
+    kind: "dynTest",
+    test,
+    negated: true,
+    value: ref("p.0"),
+    type: BOOL,
+    loc,
+  });
+  const exit = (body: IrStmt[], test: IrExpr = negated("classCapsule")): IrStmt => ({
+    kind: "if",
+    cond: test,
+    then: [{ kind: "if", cond: negated("funcKind"), then: body, else_: null, loc }],
+    else_: null,
+    loc,
+  });
+  const store = (key: string): IrStmt[] => [
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.keySet",
+        args: [ref("p.0"), str(key), ref("p.1")],
+        type: VOID,
+        loc,
+      },
+      loc,
+    },
+    ret(null),
+  ];
+  const load = (key: string): IrStmt[] => [
+    ret({ kind: "dynKeyGet", value: ref("p.0"), key: str(key), type: DYN, loc }),
+  ];
+  const sites = sitesOf(
+    setHelper("%dyn.class.property.0", "x", [exit(store("x")), capsuleBranch("p.0")]),
+    getHelper("%dyn.class.property.1", "x", [exit(load("x")), capsuleBranch("p.0")]),
+    // An exit for another key, or one plain values do not take.
+    setHelper("%dyn.class.property.2", "x", [exit(store("y"))]),
+    setHelper("%dyn.class.property.3", "x", [
+      exit(store("x"), {
+        kind: "dynTest",
+        test: "classCapsule",
+        value: ref("p.0"),
+        type: BOOL,
+        loc,
+      }),
+    ]),
+  );
+  expect(sites.site("%dyn.class.property.0")).toEqual({ kind: "set", key: "x" });
+  expect(sites.site("%dyn.class.property.1")).toEqual({ kind: "get", key: "x" });
+  expect(sites.site("%dyn.class.property.2")).toBeNull();
+  expect(sites.site("%dyn.class.property.3")).toBeNull();
+});
