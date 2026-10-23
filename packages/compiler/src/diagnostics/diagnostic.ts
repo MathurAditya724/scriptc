@@ -129,7 +129,6 @@ export function widthCopyDivergenceDiag(
   useText: string,
   site: "call" | "declaration" | "cast" | "element",
   loc: SrcLoc,
-  dictionary = false,
 ): ScrDiagnostic {
   const how =
     site === "call"
@@ -143,16 +142,11 @@ export function widthCopyDivergenceDiag(
     use === "write"
       ? `the write to '${useText}' updates only the copy, while under Node it updates the original object`
       : `'${useText}' compares the copy, which is never the original object, while under Node it is the same object`;
-  const cause = dictionary
-    ? "converting an object held as '{}', 'object' or 'unknown' to a dictionary type"
-    : "converting to a record type with other properties";
   return {
     code: "SC6001",
-    message: `${how} copies the object (${cause} compiles as a field copy): ${effect}`,
+    message: `${how} copies the object (converting to a record type with other properties compiles as a field copy): ${effect}`,
     loc,
-    hint: dictionary
-      ? `keep the value at its own type ('${sourceType}'), or declare the dictionary's values as 'unknown', which keeps the original object`
-      : `declare the parameter or binding with the value's full type ('${sourceType}'), or make the shape a class — class instances keep their identity when passed as a base class`,
+    hint: `declare the parameter or binding with the value's full type ('${sourceType}'), or make the shape a class — class instances keep their identity when passed as a base class`,
   };
 }
 

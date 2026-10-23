@@ -45,3 +45,10 @@ const opaque: {} = counts;
 const again: Record<string, string> = opaque;
 again[counts["a"] ?? "a"] = "y";
 console.log(JSON.stringify(counts));
+
+// A record stored in a dictionary binding and written through it stays
+// the same object.
+const named: { first: string } = { first: "a" };
+const byName: Record<string, string> = named;
+byName[named.first] = "b";
+console.log(JSON.stringify(named));

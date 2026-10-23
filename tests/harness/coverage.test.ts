@@ -107,20 +107,6 @@ test("record width copies report at every storing site", async () => {
   );
 });
 
-test("dictionary conversions of checked-dynamic views report copies", async () => {
-  const { coverage } = analyze(fixture("dictionary-view-copies.ts"));
-  expect(coverage.diagnostics).toEqual([]);
-  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
-    "SC6001",
-    "SC6001",
-    "SC6001",
-    "SC6001",
-  ]);
-  await expect(report(fixture("dictionary-view-copies.ts"))).toMatchFileSnapshot(
-    "__snapshots__/coverage-dictionary-view-copies.txt",
-  );
-});
-
 test("ordinary code reports no divergence", () => {
   const { coverage } = analyze(fixture("no-divergences.ts"));
   expect(coverage.diagnostics).toEqual([]);

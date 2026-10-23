@@ -180,15 +180,7 @@ export function scanDivergences(
       const copy = safely(() => widthCopyBetween(lowerer, arg, param.type!));
       if (copy === undefined || copy === null) return;
       out.push(
-        widthCopyDivergenceDiag(
-          copy.source,
-          copy.target,
-          use.kind,
-          use.text,
-          "call",
-          locOf(arg),
-          copy.dictionary,
-        ),
+        widthCopyDivergenceDiag(copy.source, copy.target, use.kind, use.text, "call", locOf(arg)),
       );
     });
   }
@@ -208,7 +200,6 @@ export function scanDivergences(
         use.text,
         "declaration",
         locOf(decl.initializer!),
-        copy.dictionary,
       ),
     );
   }
@@ -224,15 +215,7 @@ export function scanDivergences(
     const copy = safely(() => widthCopyBetween(lowerer, source, type));
     if (copy === undefined || copy === null) continue;
     out.push(
-      widthCopyDivergenceDiag(
-        copy.source,
-        copy.target,
-        use.kind,
-        use.text,
-        "cast",
-        locOf(source),
-        copy.dictionary,
-      ),
+      widthCopyDivergenceDiag(copy.source, copy.target, use.kind, use.text, "cast", locOf(source)),
     );
   }
   for (const assignment of assignments) {
@@ -257,7 +240,6 @@ export function scanDivergences(
         use.text,
         "declaration",
         locOf(assignment.right),
-        copy.dictionary,
       ),
     );
   }
@@ -272,15 +254,7 @@ export function scanDivergences(
       const copy = safely(() => widthCopyBetween(lowerer, item, element));
       if (copy === undefined || copy === null) continue;
       out.push(
-        widthCopyDivergenceDiag(
-          copy.source,
-          copy.target,
-          "write",
-          use,
-          "element",
-          locOf(item),
-          copy.dictionary,
-        ),
+        widthCopyDivergenceDiag(copy.source, copy.target, "write", use, "element", locOf(item)),
       );
       break;
     }
@@ -679,23 +653,14 @@ function enclosingScope(node: ts.Node): ts.Node | undefined {
  * instance flowing into a plain record type that does not keep class
  * identity (ClassProtocols marks the targets a class instance visibly
  * flows into; a value reaching another record type is a field copy). */
-/** The types a width copy converts between, and whether the target is a
- * dictionary. */
-interface WidthCopy {
-  source: string;
-  target: string;
-  dictionary?: boolean;
-}
-
 function widthCopyBetween(
   lowerer: Lowerer,
   source: ts.Expression,
   targetNode: ts.TypeNode,
-): WidthCopy | null {
+): { source: string; target: string } | null {
   const checker = lowerer.checker;
   const s = checker.getTypeAtLocation(source);
   const t = checker.getTypeFromTypeNode(targetNode);
-  if (isDictionaryType(checker, t)) return dictionaryViewCopy(lowerer, source, s, t);
   if (!isPlainRecordType(checker, t)) return null;
   const classSource = isProgramClassType(checker, s);
   if (!classSource && !isPlainRecordType(checker, s)) return null;
@@ -713,73 +678,6 @@ function widthCopyBetween(
       return null;
   }
   return { source: checker.typeToString(s), target: checker.typeToString(t) };
-}
-
-/** A copy made by converting a checked-dynamic view (`{}`, `object`,
- * `unknown`) to a dictionary type that compiles to a native record (a
- * dictionary of `unknown` values stays checked-dynamic and keeps the
- * object). A dictionary of that type comes back out of the view as itself,
- * so a copy is reported only when the view is a constant binding
- * initialized with a class instance or a record: that object is converted
- * field by field into a new dictionary. */
-function dictionaryViewCopy(
-  lowerer: Lowerer,
-  source: ts.Expression,
-  s: ts.Type,
-  t: ts.Type,
-): WidthCopy | null {
-  const checker = lowerer.checker;
-  if (!isDynamicViewType(checker, s)) return null;
-  if (lowerer.mapTypeOf(t)?.kind !== "record") return null;
-  while (ts.isParenthesizedExpression(source) || ts.isNonNullExpression(source))
-    source = source.expression;
-  if (!ts.isIdentifier(source)) return null;
-  const decl = checker.getSymbolAtLocation(source)?.valueDeclaration;
-  if (
-    decl === undefined ||
-    !ts.isVariableDeclaration(decl) ||
-    decl.initializer === undefined ||
-    !ts.isVariableDeclarationList(decl.parent) ||
-    !(decl.parent.flags & ts.NodeFlags.Const)
-  )
-    return null;
-  let origin = decl.initializer;
-  while (
-    ts.isParenthesizedExpression(origin) ||
-    ts.isNonNullExpression(origin) ||
-    ts.isAsExpression(origin) ||
-    ts.isTypeAssertion(origin)
-  )
-    origin = origin.expression;
-  const o = checker.getTypeAtLocation(origin);
-  if (!isProgramClassType(checker, o) && !isPlainRecordType(checker, o)) return null;
-  return { source: checker.typeToString(o), target: checker.typeToString(t), dictionary: true };
-}
-
-/** `{}`, `object` and `unknown`: types whose values lower to checked
- * dynamic storage that keeps the original object. */
-function isDynamicViewType(checker: ts.TypeChecker, type: ts.Type): boolean {
-  if (type.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive)) return true;
-  return (
-    (type.flags & ts.TypeFlags.Object) !== 0 &&
-    checker.getPropertiesOfType(type).length === 0 &&
-    checker.getIndexInfosOfType(type).length === 0 &&
-    checker.getCallSignatures(type).length === 0 &&
-    checker.getConstructSignatures(type).length === 0
-  );
-}
-
-/** A string-keyed dictionary with no declared properties
- * (`Record<string, string>`, `{ [key: string]: number }`). */
-function isDictionaryType(checker: ts.TypeChecker, type: ts.Type): boolean {
-  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
-  if (checker.isArrayType(type) || checker.isTupleType(type)) return false;
-  if (checker.getCallSignatures(type).length > 0) return false;
-  if (checker.getConstructSignatures(type).length > 0) return false;
-  if (checker.getPropertiesOfType(type).length > 0) return false;
-  return checker
-    .getIndexInfosOfType(type)
-    .some((index) => (index.keyType.flags & ts.TypeFlags.String) !== 0);
 }
 
 function isProgramClassType(checker: ts.TypeChecker, type: ts.Type): boolean {
