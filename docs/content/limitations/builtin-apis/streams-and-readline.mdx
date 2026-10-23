@@ -33,6 +33,7 @@
   `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.
   Stream constructors accept a `signal` option in an options object literal, and `stream.addAbortSignal` accepts any stream.
   The `construct` option and `_construct` method, `decodeStrings`, and `defaultEncoding` work on every stream class, and the `writev` option and `_writev` method on every class with a writable side.
+  A `decodeStrings` or `defaultEncoding` value known only at run time is unsupported after an option member whose value has effects (a call or an assignment).
   In typed code, a `writev` entry's `encoding` declared as a string receives `""` where Node passes `undefined` or `null` (an object-mode write).
   `setDefaultEncoding()` takes any encoding Node knows.
   `node:readline` and `node:readline/promises` (also reached as `readline.promises`) interfaces, from `createInterface(options)` or `createInterface(input, output, completer, terminal)`, read `process.stdin` or a readable stream: `question`, `prompt`, `write` (with a key object literal of `name`, `ctrl`, `meta`, and `shift`), `pause`, `resume`, `'line'`/`'close'`/`'pause'`/`'resume'`/`'error'`/`'history'`/`'SIGINT'`/`'SIGTSTP'`/`'SIGCONT'` listeners, and `for await` compile.

@@ -3975,6 +3975,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.setTransform": { argTypes: [null, null], result: VOID },
   "stream.setFlush": { argTypes: [null, null], result: VOID },
   "stream.setConstruct": { argTypes: [null, null], result: VOID },
+  "stream.replaceConstruct": { argTypes: [null, null], result: VOID },
   "stream.setWritev": { argTypes: [null, null], result: VOID },
   "stream.setWritevDefault": { argTypes: [null, null], result: VOID },
   /** The dyn-options twins (a checked-dynamic options record — the JS

@@ -5508,6 +5508,7 @@ function validateFunction(
       e.fn === "stream.duplexFromGenSignal" ||
       e.fn === "stream.duplexFromAsyncFnSignal" ||
       e.fn === "stream.setConstruct" ||
+      e.fn === "stream.replaceConstruct" ||
       e.fn === "stream.setWritev" ||
       e.fn === "stream.setWritevDefault" ||
       e.fn === "stream.iteratorClose" ||

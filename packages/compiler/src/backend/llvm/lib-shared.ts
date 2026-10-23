@@ -1768,6 +1768,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "stream.setTransform",
   "stream.setFlush",
   "stream.setConstruct",
+  "stream.replaceConstruct",
   "stream.duplexFromGen",
   "stream.duplexFromDyn",
   "stream.duplexifyReadable",

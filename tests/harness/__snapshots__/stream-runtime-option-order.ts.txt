@@ -1,0 +1,17 @@
+stream-runtime-option-order.ts:15:3 - error SC2020: 'the Writable option 'defaultEncoding' with a runtime value after an option value with effects' is part of the standard library types but has no scriptc lowering yet
+
+  14 |   highWaterMark: bump(),
+  15 |   defaultEncoding: encoding,
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~
+  16 |   write(_chunk, _encoding, done) {
+
+  hint: compute the earlier option values into consts before the options object (the runtime value is read before the other options run)
+
+stream-runtime-option-order.ts:22:3 - error SC2020: 'the Writable option 'decodeStrings' with a runtime value after an option value with effects' is part of the standard library types but has no scriptc lowering yet
+
+  21 |   highWaterMark: bump(),
+  22 |   decodeStrings: decode,
+     |   ^~~~~~~~~~~~~~~~~~~~~
+  23 |   write(_chunk, _encoding, done) {
+
+  hint: compute the earlier option values into consts before the options object (the runtime value is read before the other options run)

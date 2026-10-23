@@ -561,6 +561,10 @@ void scr_stream_set_writev_concat(ScrStream *s);
 /* The user construct option / _construct method (scheduled now; cb
  * moves), and the writev option / _writev method (cb moves). */
 void scr_stream_set_construct(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
+/* `s._construct = fn` after construction: replaces a construct hook whose
+ * tick has not run yet (Node's constructNT reads _construct then), and has
+ * no effect otherwise (cb moves). */
+void scr_stream_replace_construct(ScrStream *s, ScrClosure *cb, ScrStreamPlainInv inv);
 void scr_stream_set_writev(ScrStream *s, ScrClosure *cb, ScrStreamWritevInv inv);
 void scr_stream_set_writev_default(ScrStream *s, ScrClosure *cb, ScrStreamWritevInv inv);
 /* A compiled writev whose entries declare `encoding` a string: entries

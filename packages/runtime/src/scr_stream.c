@@ -269,6 +269,7 @@ struct ScrStreamState {
    * destroyed and runs its _destroy once construction completes. */
   bool constructing, destroy_deferred;
   bool construct_finished; /* onConstruct ran: a second callback is ERR_MULTIPLE_CALLBACK */
+  bool construct_called;   /* the construct tick called the hook */
   ScrError *destroy_err; /* owned: the deferred destroy's error */
   ScrClosure *construct_cb;
   ScrStreamPlainInv construct_inv;
@@ -7523,6 +7524,17 @@ void scr_stream_set_construct(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamP
   scr_stream_construct(s, cb, inv);
 }
 
+void scr_stream_replace_construct(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamPlainInv inv) {
+  ScrStreamState *st = s->st;
+  if (!st->constructing || st->construct_called || !st->construct_cb) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_closure_release(st->construct_cb);
+  st->construct_cb = cb;
+  st->construct_inv = inv;
+}
+
 /* A class's _writev under options that may carry their own writev (the
  * option, an instance property in Node, wins). */
 void scr_stream_set_writev_default(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamWritevInv inv) {
@@ -7791,6 +7803,7 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
       scr_stream_error_buffer(s);
       break;
     case SCR_ST_CONSTRUCT: {
+      st->construct_called = true;
       if (st->construct_cb) {
         st->construct_inv(st->construct_cb, s);
         /* a throw inside _construct reaches onConstruct on a tick */

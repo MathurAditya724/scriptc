@@ -106,6 +106,21 @@ function pureRead(node: ts.Expression): boolean {
   return false;
 }
 
+/** Whether every option member before `prop` evaluates without effects.
+ * Runtime decodeStrings and defaultEncoding values are read into locals
+ * before the constructor evaluates the other members, while Node evaluates
+ * the members in order: an earlier member with effects could change them. */
+function earlierOptionsPure(options: ts.ObjectLiteralExpression, prop: ts.Node): boolean {
+  for (const member of options.properties.nodes) {
+    if (member === prop) return true;
+    if (ts.isPropertyAssignment(member)) {
+      if (!sideEffectFreeOptionValue(member.initializer) && !pureRead(member.initializer))
+        return false;
+    } else if (ts.isSpreadAssignment(member)) return false;
+  }
+  return true;
+}
+
 /** The stream sides of a receiver class: the nearest stream-class
  * ancestor's, or null off the stream hierarchy. */
 export function streamSidesOf(
@@ -1021,6 +1036,16 @@ function parseStreamOptions(
           break;
         }
         // a runtime value: WritableState's `options.decodeStrings !== false`
+        if (
+          optsLit !== undefined &&
+          ts.isObjectLiteralExpression(optsLit) &&
+          !earlierOptionsPure(optsLit, prop)
+        )
+          lowerer.noLowering(
+            `the ${ctorName} option 'decodeStrings' with a runtime value after an option value with effects`,
+            prop,
+            "compute the earlier option values into consts before the options object (the runtime value is read before the other options run)",
+          );
         const local = lowerer.declareHiddenLocal("%decodeStrings", DYN);
         out.valueDecls.push({
           kind: "varDecl",
@@ -1076,6 +1101,16 @@ function parseStreamOptions(
           // a runtime value: null, undefined and utf8 are the default,
           // another name Buffer.isEncoding knows is kept as given, and any
           // other value throws ERR_UNKNOWN_ENCODING before construction
+          if (
+            optsLit !== undefined &&
+            ts.isObjectLiteralExpression(optsLit) &&
+            !earlierOptionsPure(optsLit, prop)
+          )
+            lowerer.noLowering(
+              `the ${ctorName} option 'defaultEncoding' with a runtime value after an option value with effects`,
+              prop,
+              "compute the earlier option values into consts before the options object (the runtime value is read before the other options run)",
+            );
           const local = lowerer.declareHiddenLocal("%defaultEncoding", DYN);
           const ref = varRef(local.id, DYN, loc);
           out.valueDecls.push(
@@ -1869,24 +1904,15 @@ export function lowerStreamUnderscoreAssign(
   const loc = locOf(expr);
   const cls = base.def.name;
   const clsName = cls.slice(1);
-  if (methodName === "_construct") {
-    // Node's constructor reads _construct once; a later assignment has no
-    // effect on the stream, so only the receiver and the value are
-    // evaluated
-    const value = lowerer.lowerExpr(expr.right);
-    return {
-      kind: "exprStmt",
-      expr: {
-        kind: "seqExpr",
-        stmts: [{ kind: "exprStmt", expr: recv, loc }],
-        result: value,
-        type: value.type,
-        loc,
-      },
-      loc,
-    };
-  }
-  const which = methodName === "_writev" ? "writev" : optionByMethod.get(methodName)!;
+  // `_construct`: Node's constructNT reads it on the construction tick, so
+  // an assignment before that tick replaces a scheduled hook
+  // (stream.replaceConstruct) and has no effect after it or without one.
+  const which =
+    methodName === "_writev"
+      ? "writev"
+      : methodName === "_construct"
+        ? "construct"
+        : optionByMethod.get(methodName)!;
   const { accepted } = streamCtorShape(cls);
   if (!accepted.includes(which) && !streamExtraCallbacks(cls).includes(which)) {
     lowerer.noLowering(
@@ -1925,6 +1951,7 @@ export function lowerStreamUnderscoreAssign(
     transform: "stream.setTransform",
     flush: "stream.setFlush",
     writev: "stream.setWritev",
+    construct: "stream.replaceConstruct",
   };
   return {
     kind: "exprStmt",
