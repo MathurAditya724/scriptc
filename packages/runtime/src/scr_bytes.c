@@ -874,6 +874,19 @@ ScrBytes *scr_bytes_from_dyn(ScrBytesElem elem, const ScrDyn *value, bool from) 
   // Constructors drain array iterators before element coercion. Node's .from
   // fast path reads ordinary array elements during conversion instead. Strings
   // supplied to .from iterate by code point (set reads UTF-16 code units).
+  // An object with a Symbol.iterator method iterates; others are array-like.
+  if (scr_dyn_has_iterator_method(value)) {
+    ScrDyn *items = scr_dyn_destructure_rest(value, NULL);
+    if (!items) return NULL;
+    ScrBytes *out = scr_bytes_new(elem, (double)items->v.arr.len);
+    if (out && !scr_bytes_copy_array_like(out, items, 0, out->len)) {
+      scr_bytes_release(out);
+      out = NULL;
+    }
+    scr_dyn_release(items);
+    return out;
+  }
+  if (scr_exc_pending()) return NULL;
   if ((!from && value->kind == SCR_DYN_ARR) || (from && value->kind == SCR_DYN_STR)) {
     ScrDyn *items = scr_dyn_iter_pack(value, NULL);
     if (!items) return NULL;

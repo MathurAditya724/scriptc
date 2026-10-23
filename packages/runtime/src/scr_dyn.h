@@ -1382,6 +1382,13 @@ ScrDyn *scr_dyn_invoke_buffer_to_string(ScrDyn *recv, ScrDyn *callee, const char
 ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* A %TypedArray%.prototype method called on a checked typed array (not a
+ * DataView): its answer (+1, or NULL with the exception pending), with
+ * *handled false for a name it does not implement. */
+ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, bool *handled);
+/* Whether a plain object has a Symbol.iterator method (its getter may
+ * throw: check for a pending exception). */
+bool scr_dyn_has_iterator_method(const ScrDyn *value);
 /* Keyed read on a FUNC node: the own-property table first (defineProperties
  * writes land there), then "name" (the box's best-effort static name; ""
  * for anonymous) and "length" (the boxed arity). Returns +1, or NULL when
