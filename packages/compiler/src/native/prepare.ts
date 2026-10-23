@@ -1,3 +1,4 @@
+import { targetCpuField } from "../backend/target-cpu.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { CompilationTiming } from "../timing.js";
 import { readFileSync } from "node:fs";
@@ -395,6 +396,7 @@ export function prepareNativeExecutable(
           forkPrimitives: emitForkPrimitives(),
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
+          ...targetCpuField(options.targetCpu),
           ...(options.optimization === "dev" && !options.strip
             ? { debugSources: prepared.sourceTexts }
             : {}),

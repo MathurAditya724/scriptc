@@ -202,6 +202,16 @@ test("detached exit defines the runtime opt-in symbol only when requested", () =
   expect(detached.replace("@scr_detached_exit = constant i8 1\n", "")).toBe(plain);
 });
 
+test("a target CPU level reaches every function attribute group and nothing else", () => {
+  const module = moduleFor([call()]);
+  const plain = emitLlvmModule(module);
+  expect(plain).not.toContain("target-cpu");
+  const v3 = emitLlvmModule(module, { targetCpu: "x86-64-v3" });
+  expect(v3).toMatch(/^attributes #0 = \{ sanitize_address "target-cpu"="x86-64-v3" \}$/m);
+  expect(v3.replaceAll(' "target-cpu"="x86-64-v3"', "")).toBe(plain);
+  expect(emitLlvmModule(module, { targetCpu: "baseline" })).toBe(plain);
+});
+
 test("inline RC inlines every fast path at speed and keeps box releases as calls in release", () => {
   for (const boxed of [false, true]) {
     const module = moduleFor(Array.from({ length: 4 }, call), { boxed });
