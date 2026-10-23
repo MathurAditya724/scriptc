@@ -10624,6 +10624,46 @@ export class Lowerer {
     return this.coerceInto(node, value, expected);
   }
 
+  /** The right side of a write to a member of a typed view of the global
+   * object (`(globalThis as typeof globalThis & { k?: T }).k = value`, also
+   * through `??=` and `||=`) that is `value` itself or wraps only it in
+   * parentheses or `satisfies`; null when `value` is not in such a write. */
+  private globalViewSlot(value: ts.Expression): ts.Expression | null {
+    let operand: ts.Expression = value;
+    while (
+      operand.parent !== undefined &&
+      (ts.isParenthesizedExpression(operand.parent) || ts.isSatisfiesExpression(operand.parent))
+    )
+      operand = operand.parent;
+    const write = operand.parent;
+    if (
+      write === undefined ||
+      !ts.isBinaryExpression(write) ||
+      write.right !== operand ||
+      (write.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+        write.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionEqualsToken &&
+        write.operatorToken.kind !== ts.SyntaxKind.BarBarEqualsToken)
+    )
+      return null;
+    let target = write.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target))
+      return null;
+    const receiver = this.typeOf(target.expression);
+    const isGlobal = (type: ts.Type): boolean => {
+      const symbol = type.getSymbol();
+      return (
+        symbol !== undefined &&
+        ts.symbolName(symbol) === "globalThis" &&
+        symbol.declarations.length === 0
+      );
+    };
+    return isGlobal(receiver) ||
+      (receiver.isIntersectionType() && ts.constituentTypes(receiver).some(isGlobal))
+      ? operand
+      : null;
+  }
+
   /** Lower for a known destination, then apply ordinary value coercion.
    * Fresh arrays and records use the destination layout directly. */
   lowerExprExpecting(node: ts.Expression, expected: IrType | undefined): IrExpr {
@@ -10691,6 +10731,21 @@ export class Lowerer {
           (element) => !ts.isSpreadElement(element) && !ts.isOmittedExpression(element),
         )
       ) {
+        // A checked slot that the program declares as a native array (a
+        // member of a typed view of the global object, `typeof globalThis &
+        // { cache?: number[] }`) is read back through that declaration. Build
+        // the native array and store it boxed: every typed read then extracts
+        // that same array (a dynamic literal would be copied on each read,
+        // losing writes such as push).
+        const slot = this.globalViewSlot(x);
+        const slotType = slot ? this.checker.getContextualType(slot) : undefined;
+        const declared = slotType && this.checker.getNonNullableType(slotType);
+        const native =
+          declared && !(declared.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))
+            ? this.mapTypeOf(declared)
+            : null;
+        if (native?.kind === "array")
+          return this.coerceInto(node, this.lowerArrayLiteral(x, native), DYN);
         return {
           kind: "dynArrLit",
           elems: x.elements.nodes.map((element) => this.lowerExprExpecting(element, DYN)),
