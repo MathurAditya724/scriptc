@@ -1273,6 +1273,8 @@ export function lowerBytesMethodCall(
         "the numeric families read/write Buffer bytes",
       );
     }
+    if (!numericArguments(lowerer, call))
+      return dynNumericCall(lowerer, call, access, name, receiverIr, loc);
     const write = name.startsWith("write");
     const required = write ? 1 : 0; // value; offset defaults to 0
     if (nArgs < required || nArgs > required + 1) {
@@ -1449,6 +1451,39 @@ const BUF_BIGINT_METHODS: Record<string, { sign: boolean; le: boolean } | undefi
   writeBigUint64BE: { sign: false, le: false },
   writeBigUint64LE: { sign: false, le: true },
 };
+
+/** Whether every argument of a numeric read/write is statically a number. */
+function numericArguments(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  return call.arguments.nodes.every((a) => lowerer.mapTypeOf(lowerer.typeOf(a))?.kind === "f64");
+}
+
+/** A numeric read/write with an argument that is not a number (a string
+ * offset from untyped JavaScript): the checked-dynamic Buffer method runs
+ * Node's argument validation at runtime. */
+function dynNumericCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+  receiverIr: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
+  return {
+    kind: "dynCheck",
+    value: {
+      kind: "dynInvoke",
+      recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
+      method: name,
+      calleeName: ts.getTextOfNode(access),
+      args: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+      type: DYN,
+      loc,
+    },
+    type: F64,
+    loc,
+  };
+}
 
 /** The variable-width quartet (offset + byteLength) → sign/endian token. */
 const BUF_NUM_VAR_METHODS: Record<string, string | undefined> = {

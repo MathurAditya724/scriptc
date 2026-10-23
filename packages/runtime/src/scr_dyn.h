@@ -395,6 +395,25 @@ typedef struct ScrDynTypedClassOps {
   ScrStr *class_name;   /* immortal constructor name; NULL for an anonymous class */
 } ScrDynTypedClassOps;
 
+/* A compiled JavaScript class whose instances record their own properties
+ * in a property bag and whose views inherit from the class's prototype
+ * data, emitted per class by the compiler. The view of such an instance is
+ * a fresh object holding exactly the bag's string-keyed properties, where
+ * each declared field among them takes its value from the native slot, and
+ * whose prototype is the class's. A method call can therefore resolve
+ * without building the view (scr_dyn_typed_ref_bag_method).
+ *   bag: the instance's bag, borrowed; NULL or undefined when it has none;
+ *   prototype: +1 prototype a fresh view of the instance takes;
+ *   names: the declared fields whose values come from native slots;
+ *   field: +1 view value of declared field `index`. */
+typedef struct ScrDynTypedBagClassOps {
+  ScrDyn *(*bag)(void *instance);
+  ScrDyn *(*prototype)(void *instance);
+  size_t count;
+  ScrStr *const *names; /* immortal field-name strings */
+  ScrDyn *(*field)(void *instance, size_t index);
+} ScrDynTypedBagClassOps;
+
 struct ScrDyn {
   size_t rc; /* SIZE_MAX = immortal (unused for dyn; kept per convention) */
   ScrDynKind kind;
@@ -479,7 +498,9 @@ struct ScrDyn {
        * keep their ScrDynTypedRecordOps here instead, flagged by `record`
        * (scr_dyn_typed_ref_bind_record), and class instances their
        * ScrDynTypedClassOps, flagged by `klass`
-       * (scr_dyn_typed_ref_bind_class). NULL for other referents. */
+       * (scr_dyn_typed_ref_bind_class), or their ScrDynTypedBagClassOps,
+       * flagged by `bag_class` (scr_dyn_typed_ref_bind_bag_class). NULL for
+       * other referents. */
       const ScrDynTypedArrayOps *array;
       /* Both caches belong to this capsule. ReadableStream canonicalizes
        * capsules for repeated source references, so the refreshed dyn view
@@ -488,11 +509,12 @@ struct ScrDyn {
       ScrDyn *materialized;
       ScrDynTypedCast *casts;
       /* One word keeps this, the largest payload, at its previous size. */
-      uint32_t type_key_len : 28;
+      uint32_t type_key_len : 27;
       uint32_t traced : 1; /* native referent has a cycle header */
       uint32_t observed : 1; /* native release reports this identity's disposal */
       uint32_t record : 1; /* `array` holds ScrDynTypedRecordOps */
       uint32_t klass : 1; /* `array` holds ScrDynTypedClassOps */
+      uint32_t bag_class : 1; /* `array` holds ScrDynTypedBagClassOps */
     } typed_ref;
     /* SCR_DYN_PROMISE: the retained promise. The boundary contract: it
      * settles with a dyn payload (SCR_EXC_REF ScrDyn fulfillment or a
@@ -629,7 +651,9 @@ static inline const char *scr_dyn_class_name(const ScrDyn *d) {
 /* The element hooks of a live array capsule, or NULL (including for record
  * and class capsules, which keep their hooks in the same slot). */
 static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDyn *d) {
-  return d->v.typed_ref.record || d->v.typed_ref.klass ? NULL : d->v.typed_ref.array;
+  return d->v.typed_ref.record || d->v.typed_ref.klass || d->v.typed_ref.bag_class
+             ? NULL
+             : d->v.typed_ref.array;
 }
 
 /* BORROWED member lookup on a SCR_DYN_OBJ; NULL when the key is absent. */
@@ -935,6 +959,8 @@ ScrDyn *scr_dyn_new_obj_null_proto(void);
 ScrDyn *scr_dyn_obj_create(ScrDyn *prototype);
 ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptors);
 ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object);
+bool scr_dyn_bag_create_field(ScrDyn *bag, const ScrStr *key);
+bool scr_dyn_is_class_capsule(const ScrDyn *d);
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object);
 ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object);
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype);
@@ -1030,6 +1056,17 @@ ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec);
 /* Attach the prototype member names of a class instance capsule
  * (idempotent), so `in` sees its methods and accessors. */
 void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);
+/* Attach the bag and prototype hooks of a capsule of a bag-tracked class
+ * instance (idempotent). */
+void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *ops);
+/* The method `key` that a call on a bag-tracked class instance capsule
+ * reads from its view, +1, when an ordinary data property answers it: an
+ * own one (a declared field's value from its native slot, or another bag
+ * property's value), or else one on the view's prototype chain. NULL when
+ * only the view can answer (the caller builds it), and also NULL, with the
+ * exception pending, when the prototype hook threw. Never runs user
+ * code. */
+ScrDyn *scr_dyn_typed_ref_bag_method(const ScrDyn *d, const char *key, size_t key_len);
 /* The constructor name of a class instance capsule's own class, for
  * util.inspect; NULL when the capsule is not a bound class instance, its
  * class is anonymous, or its prototype was replaced. */
@@ -1476,6 +1513,19 @@ ScrDyn *scr_dyn_visit_view(const ScrDyn *capsule);
  * (scr_http_dyn_install / scr_net_dyn_install — emitted main() calls
  * them exactly when the unit is linked, the scr_net_install story), so
  * this always-linked core never references gated units. */
+/* A method a handle class answers through invoke, read as a value
+ * (`typeof req.json`, `raw[key]()`): the read answers one function per
+ * (tag, method) that calls invoke on its `this`. length is the method's
+ * Function.prototype.length; rejects marks a method whose call on another
+ * receiver answers a rejected promise instead of throwing (the async
+ * WebIDL operations: Body's json(), ReadableStream's cancel()). */
+typedef struct ScrDynHandleMethod {
+  const char *name;
+  uint32_t length;
+  bool rejects;
+  const char *invalid_this; /* NULL = the class's (ScrDynHandleOps) */
+} ScrDynHandleMethod;
+
 typedef struct ScrDynHandleOps {
   const char *cls; /* Node's constructor name — error texts and dynCheck's "got ..." */
   void *(*retain)(void *h);
@@ -1541,6 +1591,16 @@ typedef struct ScrDynHandleOps {
    * stream unit builds the handle's Transform from these operations on its
    * first stream use. NULL = the class is not a stream. */
   const struct ScrDynHandleTransform *transform;
+  /* The class's methods as values, terminated by a NULL name; NULL = a
+   * property read answers no methods (member calls still reach invoke).
+   * See ScrDynHandleMethod. */
+  const ScrDynHandleMethod *methods;
+  /* The TypeError (code ERR_INVALID_THIS) a method value called on another
+   * receiver raises; NULL = WebIDL's "Illegal invocation". */
+  const char *invalid_this;
+  /* A promise rejected with the pending exception (+1), for the rejects
+   * methods; the owning unit supplies it, since promises are a gated unit. */
+  ScrDyn *(*rejected)(void);
 } ScrDynHandleOps;
 
 /* The operations a Transform handle gives the stream unit (scr_stream.c):

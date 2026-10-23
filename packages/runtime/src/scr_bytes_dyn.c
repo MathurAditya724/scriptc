@@ -771,7 +771,16 @@ ScrDyn *scr_buffer_prototype_member(const ScrDyn *key) {
     return scr_buffer_proto_unsupported("Buffer.prototype members keyed by %s are not supported yet", "objects");
   }
   const ScrStr *name = key->v.str;
-  if (name->len == 11 && memcmp(name->data, "constructor", 11) == 0) return scr_buffer_constructor_value();
+  if (name->len == 11 && memcmp(name->data, "constructor", 11) == 0) {
+    /* A program that reads the Buffer function's value answers it (the
+     * builtin-values unit installs the hook); otherwise Buffer keeps its
+     * builtin identity token, as typed array reads do (scr_json.c). */
+    if (scr_bytes_buffer_constructor_fn) return scr_bytes_buffer_constructor_fn();
+    ScrStr *token = scr_str_new("[builtin Buffer]", 16);
+    ScrDyn *result = scr_dyn_new_str(token);
+    scr_str_release(token);
+    return result;
+  }
   for (size_t i = 0; i < sizeof scr_buffer_proto_inherited / sizeof scr_buffer_proto_inherited[0]; i++) {
     const char *inherited = scr_buffer_proto_inherited[i];
     if (strlen(inherited) == name->len && memcmp(inherited, name->data, name->len) == 0)

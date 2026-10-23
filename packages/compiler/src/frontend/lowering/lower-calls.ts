@@ -11269,6 +11269,7 @@ const SHIM_INTRINSICS: ReadonlyMap<string, { fn: IrLibFn; args: IrType[]; ret: I
   ["scriptcUnixDgramConnect", { fn: "dgram.unixConnect", args: [F64, STRING], ret: F64 }],
   ["scriptcUnixDgramSend", { fn: "dgram.unixSend", args: [F64, BYTES_U8], ret: F64 }],
   ["scriptcUnixDgramClose", { fn: "dgram.unixClose", args: [F64], ret: F64 }],
+  ["scriptcResponseLight", { fn: "fetch.responseLight", args: [DYN], ret: arrayOf(STRING) }],
 ]);
 
 function lowerShimIntrinsicCall(
