@@ -16,6 +16,7 @@ import { dynUndefinedExpr, nodeThrowExpr, countedFor, numLit, varRef } from "../
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { threadsImportOf } from "../threads-import.js";
 import { nodeApiCalleeOf } from "../node-api-import.js";
+import { lowerIslandSuperCall, lowerIslandSuperMethodCall } from "./lower-node-island.js";
 import { lowerNodeApiCall } from "./lower-node-island.js";
 import {
   adaptZeroArgTimerCallback,
@@ -492,6 +493,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (expr.expression.kind === ts.SyntaxKind.SuperKeyword) {
     const superCall = lowerer.ctx.superCall;
     if (superCall) return superCall(expr) as IrExpr;
+    const island = lowerIslandSuperCall(lowerer, expr);
+    if (island) return island;
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -504,6 +507,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     ts.isPropertyAccessExpression(expr.expression) &&
     expr.expression.expression.kind === ts.SyntaxKind.SuperKeyword
   ) {
+    const island = lowerIslandSuperMethodCall(lowerer, expr, expr.expression);
+    if (island) return island;
     return lowerer.lowerSuperMethodCall(expr, expr.expression);
   }
 
