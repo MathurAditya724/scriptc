@@ -52194,6 +52194,7 @@
           "tests/corpus/6294-webcrypto-js-values.mjs",
           "tests/corpus/6295-jose-hs256/main.mjs",
           "tests/corpus/6331-jose-root-entry/main.ts",
+          "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -53443,8 +53444,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.TransformStream",
+        "tests": [
+          "tests/corpus/7743-transform-stream-identity.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111483,6 +111487,7 @@
           "tests/corpus/2630-stream-consumers-errors.ts",
           "tests/corpus/2862-web-readable-async-iteration.ts",
           "tests/corpus/4875-stream-consumers-array-buffer.ts",
+          "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
           "tests/harness/fetch-conformance.test.ts"
@@ -112957,8 +112962,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.TransformStream",
+        "tests": [
+          "tests/corpus/7743-transform-stream-identity.ts"
+        ]
       },
       "anchorSource": "exact"
     },

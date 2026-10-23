@@ -213,6 +213,9 @@ export const FETCH_AMBIENT_TYPES = [
   "ReadableStreamReadResult",
   "ReadableStreamReadValueResult",
   "ReadableStreamReadDoneResult",
+  "TransformStream",
+  "WritableStream",
+  "WritableStreamDefaultWriter",
   "Blob",
   "File",
   "BlobPropertyBag",
@@ -3109,7 +3112,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     psym &&
     (FETCH_AMBIENT_TYPES as readonly string[]).includes(ts.symbolName(psym)) &&
     !(
-      ts.symbolName(psym) === "ReadableStream" &&
+      (ts.symbolName(psym) === "ReadableStream" || ts.symbolName(psym) === "WritableStream") &&
       psym.declarations.some(
         (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientNamespace(d, "NodeJS"),
       )

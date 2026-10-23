@@ -60,7 +60,7 @@ import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
 import { globalSlotAlias } from "./bytes-alias.js";
-import type { IntegerCountedForLoop } from "../../ir/integer-loops.js";
+import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
 import {
   materializeSplitPiece,
   type SplitSpan,
@@ -68,7 +68,7 @@ import {
   type StringSplit,
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
-import { addRecordResultEntries } from "./record-results.js";
+import { addRecordResultEntries, resultEntryName } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import {
   type ChunkResult,
@@ -82,6 +82,7 @@ import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
+  int32ArrayKey,
   selectInt32Arrays,
 } from "../../ir/int32-arrays.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
@@ -185,7 +186,7 @@ import {
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
 import { StackCaptures } from "./stack-captures.js";
-import { emitFieldAbsentTest, f64Lit, SCR_ARR_FIELD } from "./common.js";
+import { emitFieldAbsentTest, f64Lit, SCR_ARR_FIELD, SCR_ARR_FROZEN } from "./common.js";
 import { ffiExtendsNarrowIntegers } from "../targets.js";
 import {
   emitLiteralExpr,
@@ -513,6 +514,15 @@ function provenInt32Arrays(mod: IrModule): ReadonlySet<string> {
   return new Set([...slots.int32Arrays, ...slots.checkedInt32Arrays]);
 }
 
+/** The functions whose calls the backend may emit as calls of their
+ * result-slot entries (record-results.ts). */
+function resultEntryTargets(mod: IrModule): ReadonlySet<string> {
+  const names = new Set(mod.functions.map((fn) => fn.name));
+  const targets = new Set<string>();
+  for (const name of names) if (names.has(resultEntryName(name))) targets.add(name);
+  return targets;
+}
+
 /** The emitter for `input` after the module passes every emission runs. */
 function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
@@ -548,6 +558,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
             ),
           ),
           provenInt32Arrays,
+          resultEntryTargets,
         )
       : mod,
     options,
@@ -784,7 +795,7 @@ export class LlEmitter {
     everyStmtList(fn.body, {
       stmt: (s) => {
         if (s.kind !== "varDecl" && s.kind !== "assign") return true;
-        const key = `${fn.name}\0${s.localId}`;
+        const key = int32ArrayKey(fn.name, s.localId);
         const checked = checkedInt32Arrays.has(key);
         if (!checked && !int32Arrays.has(key)) return true;
         const value = s.kind === "varDecl" ? s.init : s.value;
@@ -802,15 +813,16 @@ export class LlEmitter {
     });
   }
 
-  /** Whether `arr` is one of the current function's int32 arrays
-   * (ir/int32-arrays.ts, kept by the int32 slot analysis). */
+  /** Whether `arr` reads one of the int32 arrays (ir/int32-arrays.ts, kept
+   * by the int32 slot analysis): a local or parameter of the current
+   * function, or a module global. */
   int32Array(arr: IrExpr): boolean {
     if (arr.kind !== "varRef") return false;
     if (this.int32KindArray(arr)) return true;
     if (this.int32Slots.int32Arrays.size === 0) return false;
     return (
       this.int32ArrayTemps.has(arr.localId) ||
-      this.int32Slots.int32Arrays.has(`${this.currentFunctionName}\0${arr.localId}`)
+      this.int32Slots.int32Arrays.has(int32ArrayKey(this.currentFunctionName, arr.localId))
     );
   }
 
@@ -977,8 +989,8 @@ export class LlEmitter {
   }
 
   /** Whether an element access at `index` of `arr` lies in the hole-free
-   * prefix: the counter of a dense array loop's fast copy indexing one of
-   * the arrays its entry test covered. */
+   * prefix: a counter of a dense array loop's fast copy indexing one of the
+   * arrays its entry test covered. */
   provenDenseIndex(arr: IrExpr, index: IrExpr): boolean {
     const loop = LOOPS.of(this).denseLoop;
     return (
@@ -986,8 +998,8 @@ export class LlEmitter {
       arr.kind === "varRef" &&
       loop.arrays.has(arr.localId) &&
       index.kind === "varRef" &&
-      index.localId === loop.counter &&
-      this.integerLoopBindings.has(loop.counter)
+      (index.localId === loop.counter || index.localId === loop.pair?.high) &&
+      this.integerLoopBindings.has(index.localId)
     );
   }
 
@@ -4256,6 +4268,7 @@ export class LlEmitter {
   matchBytesLoopVersion(
     s: IrStmt & { kind: "for" | "while" },
     counted: IntegerCountedForLoop | null,
+    paired: IntegerPairedForLoop | null = null,
   ): ReturnType<typeof matchBytesLoopVersion> {
     const fn = LOOPS.of(this).bytesLoopFunction;
     if (!fn) return null;
@@ -4265,17 +4278,22 @@ export class LlEmitter {
     const invariantGlobals = new Set(this.stableGlobals);
     for (const global of this.initializerBindings.get(fn.name) ?? [])
       invariantGlobals.add(global.id);
-    return matchBytesLoopVersion(s, counted, {
-      locals: this.currentLocals,
-      invariantGlobals,
-      captured: this.captureIds,
-      ranges: this.integerRanges,
-      initialized,
-      proven: this.bytesBounds,
-      workers: this.mod.workers === true,
-      owned: this.bytesOwned,
-      scalarStrings: new Set(this.stringSlices.keys()),
-    });
+    return matchBytesLoopVersion(
+      s,
+      counted,
+      {
+        locals: this.currentLocals,
+        invariantGlobals,
+        captured: this.captureIds,
+        ranges: this.integerRanges,
+        initialized,
+        proven: this.bytesBounds,
+        workers: this.mod.workers === true,
+        owned: this.bytesOwned,
+        scalarStrings: new Set(this.stringSlices.keys()),
+      },
+      paired,
+    );
   }
 
   /** The alias tag of a whole-slot load of a binding (module globals only). */
@@ -6284,6 +6302,41 @@ export class LlEmitter {
     return ok;
   }
 
+  /** Branches on "the array `arr` is frozen" (SCR_ARR_FROZEN in its storage
+   * flags, scr_array.h), or published too when `published`; like
+   * emitPublishedTest, leaves the builder in the cold block and answers the
+   * continuation label. */
+  private emitFrozenArrayTest(arr: string, published: boolean): string {
+    const B = this.B;
+    const sparep = B.tmp(),
+      spare = B.tmp(),
+      bit = B.tmp();
+    let frozen = B.tmp();
+    B.line(
+      `${sparep} = getelementptr inbounds %ScrArr, ptr ${arr}, i32 0, i32 ${SCR_ARR_FIELD.spare}`,
+    );
+    B.line(`${spare} = load i16, ptr ${sparep}`);
+    B.line(`${bit} = and i16 ${spare}, ${SCR_ARR_FROZEN}`);
+    B.line(`${frozen} = icmp ne i16 ${bit}, 0`);
+    if (published) {
+      const rc = B.tmp(),
+        immortal = B.tmp(),
+        either = B.tmp();
+      B.line(`${rc} = load ${this.sizeType}, ptr ${arr}`);
+      B.line(`${immortal} = icmp eq ${this.sizeType} ${rc}, -1`);
+      B.line(`${either} = or i1 ${frozen}, ${immortal}`);
+      frozen = either;
+    }
+    this.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
+    const expected = B.tmp();
+    B.line(`${expected} = call i1 @llvm.expect.i1(i1 ${frozen}, i1 false)`);
+    const cold = B.newLabel("arr.frozen"),
+      ok = B.newLabel("arr.ok");
+    B.condBr(expected, cold, ok);
+    B.startBlock(cold);
+    return ok;
+  }
+
   private publishedNamesSym: string | null = null;
 
   /** The class-name table the hierarchy field guards index by preorder. */
@@ -6348,15 +6401,29 @@ export class LlEmitter {
     op: number,
     index = f64Lit(0),
     count = f64Lit(0),
+    third: string | null = null,
   ): void {
-    if (this.publishedTypes?.containerGuarded(arrType) !== true) return;
+    const published = this.publishedTypes;
+    if (published?.containerGuarded(arrType) !== true) return;
     const B = this.B;
-    const ok = this.emitPublishedTest(arr);
-    this.declare(`declare zeroext i1 @scr_throw_published_array(i32, ptr, double, double)`);
+    const guards = published.arrayGuards(arrType);
+    const ok = guards.frozen
+      ? this.emitFrozenArrayTest(arr, guards.published)
+      : this.emitPublishedTest(arr);
     const threw = B.tmp();
-    B.line(
-      `${threw} = call zeroext i1 @scr_throw_published_array(i32 ${op}, ptr ${arr}, double ${index}, double ${count})`,
-    );
+    if (third === null) {
+      this.declare(`declare zeroext i1 @scr_throw_published_array(i32, ptr, double, double)`);
+      B.line(
+        `${threw} = call zeroext i1 @scr_throw_published_array(i32 ${op}, ptr ${arr}, double ${index}, double ${count})`,
+      );
+    } else {
+      this.declare(
+        `declare zeroext i1 @scr_throw_published_array_range(i32, ptr, double, double, double)`,
+      );
+      B.line(
+        `${threw} = call zeroext i1 @scr_throw_published_array_range(i32 ${op}, ptr ${arr}, double ${index}, double ${count}, double ${third})`,
+      );
+    }
     const unwind = B.newLabel("pub.throw");
     B.condBr(threw, unwind, ok);
     B.startBlock(unwind);
