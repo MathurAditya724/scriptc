@@ -104,6 +104,10 @@ export interface ScrDiagnostic {
    * alone does not say it (a computed require(), a native addon, `with`).
    * Report-only: never part of the rendered message. */
   reason?: string;
+  /** A runtime fence in a module's top-level code, outside every function
+   * and class member body: it throws when the module initializes, which is
+   * program startup for a module the entry imports. */
+  startup?: true;
 }
 
 /** SC3002–SC3004 — native-helper target, installation, and execution
