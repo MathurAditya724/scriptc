@@ -17,6 +17,7 @@ import {
 } from "../mangle.js";
 import {
   type IrGlobal,
+  type IrNodeIslandModules,
   type IrType,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_EVENT_CLASS,
@@ -57,7 +58,8 @@ import {
   ffiNativeTypeLl,
 } from "./common.js";
 import { literalCapWord, literalCapWord32 } from "./string-key-hash.js";
-import { hasLoneSurrogate, wtf8Bytes } from "../literals.js";
+import { hasLoneSurrogate, llvmBytes, wtf8Bytes } from "../literals.js";
+import { nodeIslandManifest } from "../../node-islands/modules.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
 import { NULLABLE_ABSENT, NULLABLE_NULL } from "./nullable-unions.js";
 import { literalEqualityDefinition } from "./string-literal-equality.js";
@@ -381,6 +383,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
         emitter.cstr(emitter.mod.nodeIsland?.nodeVersion ?? ""),
       ]
     : null;
+  // The island module tree: its manifest, and its files unless they ship
+  // beside the executable (node-islands/modules.ts).
+  const nodeIslandModules = usesNodeIsland ? emitter.mod.nodeIsland?.modules : undefined;
+  const nodeIslandModulesCall =
+    nodeIslandModules === undefined ? null : nodeIslandModulesInstall(emitter, nodeIslandModules);
   if (emitter.ffiHasForeignCallback) emitter.declare(`declare void @scr_ffi_install()`);
   if (usesStream) emitter.declare(`declare void @scr_stream_install()`);
   if (usesNetLookup) emitter.declare(`declare void @scr_net_lookup_install()`);
@@ -732,6 +739,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     for (let site = 0; site < emitter.jsIcSiteCount; site++)
       out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
   }
+  if (nodeIslandModulesCall !== null) out.push(...nodeIslandModulesCall.globals);
   for (const table of emitter.constantNumericTables.values()) {
     const n = table.values.length;
     let tableTmp = 0;
@@ -1027,6 +1035,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
           `  call void @scr_node_island_install(ptr ${nodeIslandConfig[0]}, ptr ${nodeIslandConfig[1]})`,
         ]
       : []),
+    ...(nodeIslandModulesCall === null ? [] : [nodeIslandModulesCall.call]),
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
@@ -1171,6 +1180,33 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
 /** The shared abort helpers (emitted only when referenced): the OOM
  * abort of untraced shape allocation and the invalid-union-tag abort —
  * both print the runtime ABI’s exact message on fd 2 and abort. */
+/** The island module tree's install call before %main, and the constant
+ * that carries its files when the executable ships them itself
+ * (scr_node_island.c: scr_node_island_install_modules). */
+function nodeIslandModulesInstall(
+  emitter: LlEmitter,
+  modules: IrNodeIslandModules,
+): { call: string; globals: string[] } {
+  emitter.declare(
+    `declare void @scr_node_island_install_modules(ptr, ${emitter.sizeType}, ptr, ${emitter.sizeType}, ptr)`,
+  );
+  const manifest = nodeIslandManifest(modules);
+  const manifestPtr = emitter.cstr(manifest);
+  const location = emitter.cstr(modules.location ?? "");
+  const data = modules.location === undefined ? emitter.nodeIslandModuleData : null;
+  const globals =
+    data === null || data.length === 0
+      ? []
+      : [
+          `@sc_node_island_modules = private unnamed_addr constant [${data.length} x i8] c"${llvmBytes(data, false)}", align 16`,
+        ];
+  const st = emitter.sizeType;
+  return {
+    call: `  call void @scr_node_island_install_modules(ptr ${manifestPtr}, ${st} ${Buffer.byteLength(manifest, "utf8")}, ptr ${globals.length > 0 ? "@sc_node_island_modules" : "null"}, ${st} ${globals.length > 0 ? data!.length : 0}, ptr ${location})`,
+    globals,
+  };
+}
+
 export function helperDefs(emitter: LlEmitter): string[] {
   const defs: string[] = [];
   const msgHelper = (fnName: string, msgSym: string, msg: string): void => {

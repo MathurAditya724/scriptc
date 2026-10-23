@@ -8,7 +8,11 @@
  * Semantics, shared with packages/node/index.js (the Node implementation):
  * the arguments are copied with JSON.stringify of the argument array; the
  * module loads with require() from the calling module, so relative
- * specifiers resolve from it; the result crosses as its JSON copy and is
+ * specifiers resolve from it. The specifier is a string literal: the build
+ * collects the module and what it loads into the executable
+ * (node-islands/modules.ts), and the call names its caller by its path in
+ * that tree, never by a path on the build machine. The result crosses as
+ * its JSON copy and is
  * checked against the declared result type, like `JSON.parse(s) as T`; a
  * thrown Error crosses as its nearest intrinsic class with its message and
  * string `code`. */
@@ -16,7 +20,8 @@ import { realpathSync } from "node:fs";
 import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
 import type { NodeApiMember } from "../node-api-import.js";
-import { type Lowerer } from "./lowerer.js";
+import { PoisonError, type Lowerer } from "./lowerer.js";
+import { nodeIslandModuleDiag } from "../../diagnostics/diagnostic.js";
 import { DYN, STRING, type IrExpr, type IrType } from "../../ir/ir.js";
 
 const JSON_HINT =
@@ -89,7 +94,20 @@ export function lowerNodeApiCall(
       "pass the module specifier, the export name and each argument explicitly",
     );
   }
-  const specifier = lowerer.lowerExprExpecting(argNodes[0]!, STRING);
+  const specifierNode = argNodes[0]!;
+  if (!ts.isStringLiteral(specifierNode) && !ts.isNoSubstitutionTemplateLiteral(specifierNode)) {
+    lowerer.pushDiag(
+      nodeIslandModuleDiag(`${surface} with a computed module specifier`, locOf(specifierNode)),
+    );
+    throw new PoisonError();
+  }
+  const caller = callerPath(call);
+  const problem = lowerer.nodeIslandModules.add(caller, specifierNode.text);
+  if (problem !== null) {
+    lowerer.pushDiag(nodeIslandModuleDiag(`${surface}: ${problem}`, locOf(specifierNode)));
+    throw new PoisonError();
+  }
+  const specifier = lowerer.lowerExprExpecting(specifierNode, STRING);
   const name = lowerer.lowerExprExpecting(argNodes[1]!, STRING);
   const values = argNodes.slice(2).map((arg) => {
     const value = lowerer.lowerExpr(arg);
@@ -109,15 +127,18 @@ export function lowerNodeApiCall(
       lowerer.noLowering(`'${lowerer.fmt(bad)}' results of ${surface}`, call, JSON_HINT);
   }
   lowerer.usesNodeIsland = true;
+  // The caller's tree path is known once every call is collected (Lowerer).
+  const callerLiteral: IrExpr & { kind: "strLit" } = {
+    kind: "strLit",
+    value: caller,
+    type: STRING,
+    loc,
+  };
+  lowerer.nodeIslandCallers.push({ literal: callerLiteral, caller });
   const raw: IrExpr = {
     kind: "libCall",
     fn: member === "call" ? "nodeIsland.call" : "nodeIsland.callSync",
-    args: [
-      { kind: "strLit", value: callerPath(call), type: STRING, loc },
-      specifier,
-      name,
-      { kind: "dynArrLit", elems: values, type: DYN, loc },
-    ],
+    args: [callerLiteral, specifier, name, { kind: "dynArrLit", elems: values, type: DYN, loc }],
     type: member === "call" ? { kind: "promise", inner: DYN } : DYN,
     loc,
   };

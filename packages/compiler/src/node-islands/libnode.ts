@@ -30,7 +30,7 @@ import { basename, isAbsolute, join, resolve, sep } from "node:path";
 export const NODE_ISLAND_MIN_NODE = "24.13.1";
 
 /** The bridge ABI this compiler's runtime speaks (scr_node_bridge.h). */
-export const NODE_BRIDGE_ABI = 2;
+export const NODE_BRIDGE_ABI = 3;
 
 /** The prefix of a recorded path relative to the executable's directory. */
 export const ORIGIN = "$ORIGIN/";
@@ -142,11 +142,13 @@ export function libnodeRecord(
   return { libnode: `${ORIGIN}${name}`, nodeVersion: manifest.nodeVersion };
 }
 
-/** The part of an executable's cache key that names its libnode pack, or
- * undefined when neither --libnode nor SCRIPTC_LIBNODE is set. It holds the
- * option, the pack directory and a digest of the pack's manifest.json, so
- * that a pack upgraded in place (another Node version, bridge ABI or file
- * list) gives cached executables a new key instead of their old record. */
+/** The identity of the libnode pack a build that calls into Node.js
+ * records, which the program's executable cache entry keeps
+ * (EarlyExecutableCacheOptions.libnodeIdentity), or undefined when neither
+ * --libnode nor SCRIPTC_LIBNODE is set. It holds the option, the pack
+ * directory and a digest of the pack's manifest.json, so that a pack
+ * upgraded in place (another Node version, bridge ABI or file list)
+ * invalidates the entry instead of restoring its old record. */
 export function libnodeCacheKey(
   option: string | undefined,
   env: NodeJS.ProcessEnv = process.env,

@@ -11,3 +11,13 @@ exports.unreadable = () => {
   });
   throw error;
 };
+// A fork without an execPath of its own: in a program it would start the
+// program again.
+exports.forkSelf = () => {
+  try {
+    require("node:child_process").fork(__filename);
+    return "forked";
+  } catch (error) {
+    return error.message;
+  }
+};
