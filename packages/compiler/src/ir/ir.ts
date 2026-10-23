@@ -1697,6 +1697,24 @@ export interface IrRecordShape {
    * an accessor property named once (see accessorSlotProp). The
    * checked-dynamic copy lists its keys in this order. */
   accessorOrder?: string[];
+  /** Every order the shape's values enumerate their keys in, when its
+   * object literals write the keys in more than one order (see
+   * key-order-witness.ts); declaredOrder is the first. Each value holds the
+   * index of its order in the hidden number field KEY_ORDER_FIELD: the
+   * literal that wrote it stores its order's index, a copy its source's,
+   * and every other construction leaves 0. Each key-order surface
+   * dispatches on that field. */
+  orderVariants?: string[][];
+}
+
+/** The hidden field of a shape with orderVariants: the index of the value's
+ * key order. */
+export const KEY_ORDER_FIELD = "%order";
+
+/** The orders a record shape's values enumerate their keys in: each order
+ * of a shape with orderVariants, or its one table. */
+export function shapeKeyOrders(shape: IrRecordShape): readonly (readonly string[])[] {
+  return shape.orderVariants ?? [shape.declaredOrder ?? shape.fields.map((f) => f.name)];
 }
 
 /** fs.Dirent rows: the hidden %dtype entry kind (libuv's UV_DIRENT
