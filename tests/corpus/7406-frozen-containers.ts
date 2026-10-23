@@ -69,6 +69,16 @@ function arrays(): void {
   Object.freeze(single);
   console.log(unsorted.join(), calls > 0, single.sort(byValue).join());
 
+  // A comparator that freezes the array stops the sort's write-back.
+  const freezing: number[] = [3, 1, 2];
+  try {
+    freezing.sort((x, y) => {
+      Object.freeze(freezing);
+      return x - y;
+    });
+  } catch (e) { report(e); }
+  console.log(freezing.join(), Object.isFrozen(freezing));
+
   const open: number[] = [4, 5];
   open.push(6);
   open[0] = 1;

@@ -4,6 +4,8 @@
 
 /** @typedef {{ count: number, label: string }} Counter */
 /** @typedef {{ id: number, note?: string }} Note */
+/** @typedef {{ kind: "a", name: string }} Small */
+/** @typedef {{ kind: "b", name: string, size: number }} Large */
 
 /** @param {Counter} c */
 function bump(c) {
@@ -32,3 +34,20 @@ const note = { id: 1, note: "n" };
 Object.freeze(note);
 dropNote(note);
 console.log(JSON.stringify(note));
+
+/** @param {Small | Large} shape */
+function rename(shape) {
+  shape.name = "renamed";
+}
+
+/** @param {boolean} large @returns {Small | Large} */
+function shapeOf(large) {
+  return large ? { kind: "b", name: "b", size: 1 } : { kind: "a", name: "a" };
+}
+
+const openShape = shapeOf(true);
+const frozenShape = shapeOf(false);
+Object.freeze(frozenShape);
+rename(openShape);
+rename(frozenShape);
+console.log(openShape.name, frozenShape.name);

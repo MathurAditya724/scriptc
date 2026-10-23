@@ -68,7 +68,7 @@ import {
   type StringSplit,
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
-import { addRecordResultEntries } from "./record-results.js";
+import { addRecordResultEntries, resultEntryName } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import {
   type ChunkResult,
@@ -82,6 +82,7 @@ import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
+  int32ArrayKey,
   selectInt32Arrays,
 } from "../../ir/int32-arrays.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
@@ -169,6 +170,7 @@ import { type MapEntryFusion } from "./map-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import { findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
+import { IrNodeIndex } from "../../ir/node-index.js";
 import { lastUseRead } from "./local-extents.js";
 import { findReboundParameters } from "./rebound-parameters.js";
 import { ReferenceEffects } from "./reference-effects.js";
@@ -509,6 +511,15 @@ function provenInt32Arrays(mod: IrModule): ReadonlySet<string> {
   return new Set([...slots.int32Arrays, ...slots.checkedInt32Arrays]);
 }
 
+/** The functions whose calls the backend may emit as calls of their
+ * result-slot entries (record-results.ts). */
+function resultEntryTargets(mod: IrModule): ReadonlySet<string> {
+  const names = new Set(mod.functions.map((fn) => fn.name));
+  const targets = new Set<string>();
+  for (const name of names) if (names.has(resultEntryName(name))) targets.add(name);
+  return targets;
+}
+
 /** The emitter for `input` after the module passes every emission runs. */
 function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
@@ -544,6 +555,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
             ),
           ),
           provenInt32Arrays,
+          resultEntryTargets,
         )
       : mod,
     options,
@@ -780,7 +792,7 @@ export class LlEmitter {
     everyStmtList(fn.body, {
       stmt: (s) => {
         if (s.kind !== "varDecl" && s.kind !== "assign") return true;
-        const key = `${fn.name}\0${s.localId}`;
+        const key = int32ArrayKey(fn.name, s.localId);
         const checked = checkedInt32Arrays.has(key);
         if (!checked && !int32Arrays.has(key)) return true;
         const value = s.kind === "varDecl" ? s.init : s.value;
@@ -798,15 +810,16 @@ export class LlEmitter {
     });
   }
 
-  /** Whether `arr` is one of the current function's int32 arrays
-   * (ir/int32-arrays.ts, kept by the int32 slot analysis). */
+  /** Whether `arr` reads one of the int32 arrays (ir/int32-arrays.ts, kept
+   * by the int32 slot analysis): a local or parameter of the current
+   * function, or a module global. */
   int32Array(arr: IrExpr): boolean {
     if (arr.kind !== "varRef") return false;
     if (this.int32KindArray(arr)) return true;
     if (this.int32Slots.int32Arrays.size === 0) return false;
     return (
       this.int32ArrayTemps.has(arr.localId) ||
-      this.int32Slots.int32Arrays.has(`${this.currentFunctionName}\0${arr.localId}`)
+      this.int32Slots.int32Arrays.has(int32ArrayKey(this.currentFunctionName, arr.localId))
     );
   }
 
@@ -973,8 +986,8 @@ export class LlEmitter {
   }
 
   /** Whether an element access at `index` of `arr` lies in the hole-free
-   * prefix: the counter of a dense array loop's fast copy indexing one of
-   * the arrays its entry test covered. */
+   * prefix: a counter of a dense array loop's fast copy indexing one of the
+   * arrays its entry test covered. */
   provenDenseIndex(arr: IrExpr, index: IrExpr): boolean {
     const loop = LOOPS.of(this).denseLoop;
     return (
@@ -982,8 +995,8 @@ export class LlEmitter {
       arr.kind === "varRef" &&
       loop.arrays.has(arr.localId) &&
       index.kind === "varRef" &&
-      index.localId === loop.counter &&
-      this.integerLoopBindings.has(loop.counter)
+      (index.localId === loop.counter || index.localId === loop.pair?.high) &&
+      this.integerLoopBindings.has(index.localId)
     );
   }
 
@@ -1183,6 +1196,9 @@ export class LlEmitter {
   /** Module constants that keep one value once initialized
    * (immutability.ts stableGlobals). */
   stableGlobals: ReadonlySet<string> = new Set();
+  /** Every function body's nodes in walk order (ir/node-index.ts), for the
+   * constructor's analyses. */
+  readonly nodeIndex: IrNodeIndex;
   private readonly tdzGlobals = new Map<string, string>();
   readonly constantNumericTables: ReadonlyMap<string, ConstantNumericTable>;
   /** Constant-key reads on checked-dynamic objects, each with its own
@@ -1251,7 +1267,7 @@ export class LlEmitter {
   /** The module's runtime features (moduleRuntimeFeatures), found with one
    * walk of the module the first time any of them is read. */
   get runtimeFeatures(): RuntimeFeatures {
-    return (this.runtimeFeaturesValue ??= moduleRuntimeFeatures(this.mod));
+    return (this.runtimeFeaturesValue ??= moduleRuntimeFeatures(this.mod, this.nodeIndex));
   }
   /** Whether timer and tick scheduling goes through the *_als entry
    * points (RuntimeFeatures asyncContext). */
@@ -1548,8 +1564,15 @@ export class LlEmitter {
       ((options.functionWorkers ?? 1) > 1 &&
         options.forkPrimitives !== undefined &&
         options.debugSources === undefined);
-    this.stackTraces = observesStacks(mod);
-    this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
+    // One walk of every body, which the analyses below read instead of
+    // walking the bodies themselves.
+    this.nodeIndex = new IrNodeIndex(mod);
+    this.stackTraces = observesStacks(mod, this.nodeIndex);
+    this.nullableUnions = new NullableUnions(
+      mod,
+      options.debugSources === undefined,
+      this.nodeIndex,
+    );
     this.mockTimers = this.runtimeFeatures.mockTimers;
     this.debug =
       options.debugSources === undefined
@@ -1562,19 +1585,20 @@ export class LlEmitter {
             this.nullableUnions.armTypes(),
           );
     this.constantNumericTables = findConstantNumericTables(mod);
-    this.initializerBindings = findInitializerBindings(mod);
+    this.initializerBindings = findInitializerBindings(mod, this.nodeIndex);
     // One walk finds the dynamic field stores every analysis below consults.
-    const dynamicStores = dynamicFieldStores(mod);
+    const dynamicStores = dynamicFieldStores(mod, undefined, undefined, this.nodeIndex);
     this.int32Slots = analyzeInt32Slots(mod, {
       dynamicStores,
       initializerBindings: this.initializerBindings,
+      nodes: this.nodeIndex,
     });
     this.liveViewsReadOnly =
       mod.lib === undefined && !dynamicStores.all && dynamicStores.names.size === 0;
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
-    this.finalFields = analyzeFinalFields(mod, false, dynamicStores);
+    this.finalFields = analyzeFinalFields(mod, false, dynamicStores, this.nodeIndex);
     this.sizeType = options.pointerBits === 32 ? "i32" : "i64";
     this.ffiExtendNarrowIntegers =
       options.wasi === true || ffiExtendsNarrowIntegers(options.targetTriple);
@@ -1622,7 +1646,7 @@ export class LlEmitter {
     this.ffiHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
     this.ffiHasForeignCallback = hasForeignFfiCallback(mod.ffiImports ?? []);
     for (const fn of mod.functions) this.fnByName.set(fn.name, fn);
-    this.appendedArrayLiterals = findAppendedArrayLiterals(mod);
+    this.appendedArrayLiterals = findAppendedArrayLiterals(mod, this.nodeIndex);
     for (const entry of mod.ffiImports ?? []) {
       this.ffiByName.set(entry.name, entry);
     }
@@ -1630,10 +1654,11 @@ export class LlEmitter {
     // and per async fiber; WASI, Windows and library builds have none.
     const triple = (options.targetTriple ?? "").toLowerCase();
     const windows = triple === "" ? process.platform === "win32" : triple.includes("windows");
-    this.publishedTypes = computePublishedTypes(mod);
+    this.publishedTypes = computePublishedTypes(mod, this.nodeIndex);
     const mt = computeMayThrow(mod, {
       stackChecks: !this.wasi && mod.lib === undefined && !windows,
       published: this.publishedTypes,
+      nodes: this.nodeIndex,
     });
     this.mayThrow = mt.fns;
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
@@ -1692,12 +1717,14 @@ export class LlEmitter {
         new Set((mod.globals ?? []).map((g) => g.id)),
         { unions: mod.unions, records: mod.records },
         this.immutableFields,
+        this.nodeIndex,
       );
     const walkParameters = new Map<string, Set<number>>();
     if (this.debug === null) {
       const host = {
         pointerLocal: (local: IrLocal) => this.plainReference(local.type),
         borrowsWithoutOwning: (e: IrExpr) => this.borrowsWithoutOwning(e),
+        nodes: this.nodeIndex,
       };
       for (const fn of this.fnByName.values()) {
         const preserving = this.referenceEffects.functions.has(fn.name);
@@ -1750,7 +1777,7 @@ export class LlEmitter {
     );
     this.lentStringParameters =
       this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
-    this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
+    this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes, this.nodeIndex);
     // Integer clones signal a stack overflow through their result, which
     // needs the single-threaded guard; worker programs also poll for
     // termination, and debug builds and stack traces keep every frame.
@@ -1892,7 +1919,7 @@ export class LlEmitter {
       this.globalTypes.set(g.id, g.type);
       if (g.tdz) this.tdzGlobals.set(g.id, g.name);
     }
-    this.stableGlobals = stableGlobals(mod);
+    this.stableGlobals = stableGlobals(mod, this.nodeIndex);
     // Runtime error, EventEmitter, stream, EventTarget and Event classes
     // have known layouts. Subclasses embed the runtime prefixes from
     // classes.ts.

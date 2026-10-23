@@ -881,6 +881,20 @@ static ScrDyn *scr_dyn_invoke_impl(
       scr_dyn_release(date_method);
       return result;
     }
+    /* A method of a bag-tracked class instance that its view holds as an
+     * ordinary data property, own or inherited: the call the view's
+     * dispatch below makes, without building the view. */
+    size_t method_len = strlen(method);
+    ScrDyn *inherited = scr_dyn_typed_ref_bag_method(recv, method, method_len);
+    if (scr_exc_pending()) return NULL;
+    if (inherited && scr_dyn_is_callable(inherited)) {
+      scr_dyn_this_push_dyn(recv);
+      ScrDyn *result = scr_dyn_call(inherited, args, argc, what);
+      scr_dyn_this_pop();
+      scr_dyn_release(inherited);
+      return result;
+    }
+    scr_dyn_release(inherited);
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
     if (scr_exc_pending()) {
       scr_dyn_release(materialized);

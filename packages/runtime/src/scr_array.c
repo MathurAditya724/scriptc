@@ -5134,15 +5134,12 @@ bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned, in
     free(src);
     return true;
   }
-  if (a->rc == SIZE_MAX) {
-    /* The comparator published the array: the first write fails as in Node
-     * (scr_throw_published_array's index write). */
+  if (a->rc == SIZE_MAX || scr_arr_frozen(a)) {
+    /* The comparator published or froze the array: the first write fails
+     * as in Node. */
     if (retained)
       for (size_t i = 0; i < n; i++) scr_elem_release_with(elem, ops, src[i]);
-    static const char assign[] = "Cannot assign to read only property '0' of object '[object Array]'";
-    static const char add[] = "Cannot add property 0, object is not extensible";
-    if (a->len > 0) scr_throw_error_msg(SCR_ERR_TYPE, assign, sizeof assign - 1);
-    else scr_throw_error_msg(SCR_ERR_TYPE, add, sizeof add - 1);
+    scr_array_frozen_error(0, a->len, 0, 0, 0);
   } else if (a->len >= n && a->cap >= n) {
     if (!retained) {
       memcpy(a->data, src, n * sizeof(*src));

@@ -3453,7 +3453,11 @@ export type IrExpr =
         | "array"
         | "truthy"
         | "error"
-        | "function";
+        | "function"
+        /** The value is a capsule of a compiled class instance. */
+        | "classCapsule"
+        /** The value is a boxed function or class value (exact kind test). */
+        | "funcKind";
       bytesElem?: IrBytesElem;
       negated?: true;
       value: IrExpr;
@@ -3902,8 +3906,10 @@ export type IrExpr =
    * not shape equality; missing or wrong-typed fields throw, EXCEPT that a
    * missing key for an undefined-armed union field — an optional field —
    * builds the interned undefined arm instead); arrays check every element;
-   * unions try arms in canonical order and the first FULL match wins (no
-   * match → throw; an undefined arm matches no dyn value); JSON null matches
+   * unions try arms in canonical order, except that record arms with more
+   * required fields and then more fields go first, and the first FULL match
+   * wins (no match → throw; an undefined arm matches no dyn value); JSON
+   * null matches
    * exactly the nullT arm of a union target (bare null targets cannot
    * exist). MAY THROW:
    * backends' may-throw analyses must treat it like a `throw` statement.
