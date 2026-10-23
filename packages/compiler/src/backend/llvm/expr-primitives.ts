@@ -1,7 +1,7 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { F64, isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
+import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -26,14 +26,14 @@ import {
   withinInt32,
   withinUint32,
 } from "../../ir/integer-ranges.js";
-import { emitArrayValues } from "./expr-containers.js";
+import { charAtUnitRead, emitArrayValues } from "./expr-containers.js";
 import {
   constantDivisor,
   emitCheckedRemainder,
   emitPowerOfTwoRemainder,
   emitSignedIntegerRemainder,
 } from "./integer-remainder.js";
-import { emitDenseArrayGet, emitDenseArrayState, slotWidth } from "./dense-array-access.js";
+import { denseSlotWidth, emitDenseArrayGet, emitDenseArrayState } from "./dense-array-access.js";
 import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
 
 export function emitLiteralExpr(
@@ -571,14 +571,16 @@ export function regexLiteralTemplate(
     };
     host.regexInstances.set(key, re);
   }
+  host.journal?.entry("regex", key, re);
   return `@${re.sym}`;
 }
 
-/** A string equality between `s.charAt(i)` and a literal of exactly one
- * UTF-16 code unit: the charAt call and the unit. */
+/** A string equality or comparison between `s.charAt(i)` and a literal of
+ * exactly one UTF-16 code unit: the charAt call, the unit, and whether the
+ * charAt is the left operand. */
 function charAtUnitTest(
-  e: ExprOf<"strEq">,
-): { charAt: ExprOf<"strIntrinsic">; code: number } | null {
+  e: ExprOf<"strEq" | "strCmp">,
+): { charAt: ExprOf<"strIntrinsic">; code: number; left: boolean } | null {
   let text: string;
   let other: IrExpr;
   if (e.right.kind === "strLit") {
@@ -593,7 +595,17 @@ function charAtUnitTest(
   if (text.length !== 1) return null;
   if (other.kind !== "strIntrinsic" || other.method !== "charAt" || other.args.length !== 1)
     return null;
-  return { charAt: other, code: text.charCodeAt(0) };
+  return { charAt: other, code: text.charCodeAt(0), left: other === e.left };
+}
+
+/** The fcmp predicate of `s.charAt(i) op "c"` on the code unit (or of
+ * `"c" op s.charAt(i)` when `charAtLeft` is false). A one-unit string
+ * compares as its unit; an index out of range reads "", which is below
+ * every one-unit literal, and its unit read is NaN, which the unordered
+ * predicates count as below. */
+function charAtUnitPredicate(op: IrStrCmpOp, charAtLeft: boolean): string {
+  const flipped = charAtLeft ? op : ({ "<": ">", "<=": ">=", ">": "<", ">=": "<=" } as const)[op];
+  return { "<": "ult", "<=": "ule", ">": "ogt", ">=": "oge" }[flipped];
 }
 
 export function emitStringExpr(
@@ -644,14 +656,7 @@ export function emitStringExpr(
       // equals no unit, as "" equals no one-unit literal.
       const unit = charAtUnitTest(e);
       if (unit !== null) {
-        const code = host.emitExpr({
-          kind: "strIntrinsic",
-          method: "charCodeAt",
-          receiver: unit.charAt.receiver,
-          args: unit.charAt.args,
-          type: F64,
-          loc: unit.charAt.loc,
-        });
+        const code = host.emitExpr(charAtUnitRead(unit.charAt));
         const t = B.tmp();
         B.line(
           `${t} = fcmp ${e.negated ? "une" : "oeq"} double ${code.name}, ${f64Lit(unit.code)}`,
@@ -681,6 +686,17 @@ export function emitStringExpr(
       return { name: t, type: e.type };
     }
     case "strCmp": {
+      // `s.charAt(i) < "c"` (and `s[i]`) for a one-unit literal compares
+      // the code unit, as the equality above does.
+      const unit = charAtUnitTest(e);
+      if (unit !== null) {
+        const code = host.emitExpr(charAtUnitRead(unit.charAt));
+        const t = B.tmp();
+        B.line(
+          `${t} = fcmp ${charAtUnitPredicate(e.op, unit.left)} double ${code.name}, ${f64Lit(unit.code)}`,
+        );
+        return { name: t, type: e.type };
+      }
       const [l, r] = emitStringInputs(host, [e.left, e.right]);
       const fn = "scr_str_cmp_u16";
       host.declare(`declare i32 @${fn}(ptr, ptr)`);
@@ -831,6 +847,7 @@ export function emitStringExpr(
         };
         host.templateStringsInstances.set(e.key, inst);
       }
+      host.journal?.entry("templateStrings", e.key, inst);
       return host.own({ name: host.retainFrame(`@${inst.sym}`, e.type), type: e.type });
     }
     case "regexIntrinsic":
@@ -887,7 +904,7 @@ export function emitContainerExpr(
           buffer = B.tmp();
           B.entryAllocas.push(`${buffer} = alloca [${Math.min(e.elems.length, 64)} x i64]`);
         }
-        if (pending.length > 0) emitArrayValues(host, arr, acc, pending, false, buffer);
+        if (pending.length > 0) emitArrayValues(host, arr, acc, elem, pending, false, buffer);
         pending = [];
       };
       e.elems.forEach((el, i) => {
@@ -932,7 +949,7 @@ export function emitContainerExpr(
       }
       const bound = B.tmp();
       B.line(`${bound} = fsub double ${n.name}, ${f64Lit(1)}`);
-      B.countedLoop(bound, () => host.arrPush(arr, acc, fill), "ole");
+      B.countedLoop(bound, () => host.arrPush(arr, acc, fill, elem), "ole");
       return out;
     }
     case "arrayGet": {
@@ -970,7 +987,7 @@ export function emitContainerExpr(
         idx,
         e.index,
         "has",
-        slotWidth(elemAccess(e.arr.type.elem)),
+        denseSlotWidth(host, e.arr.type.elem),
       );
       return { name: t, type: e.type };
     }
@@ -985,7 +1002,7 @@ export function emitContainerExpr(
         idx,
         e.index,
         "state",
-        slotWidth(elemAccess(e.arr.type.elem)),
+        denseSlotWidth(host, e.arr.type.elem),
       );
       return { name: t, type: e.type };
     }

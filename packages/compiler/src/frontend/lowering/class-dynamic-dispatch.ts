@@ -85,7 +85,7 @@ import {
   lowerDynamicEmitterOn,
 } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
-import { STREAM_OPERATORS } from "./lower-stream.js";
+import { STREAM_OPERATORS, operatorSignalOptions, reduceSignalSetup } from "./lower-stream.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 
 const STREAM_METHODS = new Set([
@@ -5640,13 +5640,16 @@ export class ClassDynamicDispatch {
         const readableT: IrType = { kind: "object", className: "%Readable" };
         const op = (fn: string, args: IrExpr[], type: IrType): IrStmt[] =>
           ret({ kind: "libCall", fn: fn as IrLibFn, args: [receiver, ...args], type, loc });
+        // Node passes every callback its { signal }; the callback's
+        // declared parameters are not known here.
+        const sig = (): IrExpr => operatorSignalOptions(lowerer, arg(1), loc);
         switch (method) {
           case "map":
-            return op("readable.opMap", [arg(0), arg(1)], readableT);
+            return op("readable.opMap", [arg(0), arg(1), sig()], readableT);
           case "filter":
-            return op("readable.opFilter", [arg(0), arg(1)], readableT);
+            return op("readable.opFilter", [arg(0), arg(1), sig()], readableT);
           case "flatMap":
-            return op("readable.opFlatMap", [arg(0), arg(1)], readableT);
+            return op("readable.opFlatMap", [arg(0), arg(1), sig()], readableT);
           case "drop":
             return op("readable.opDrop", [arg(0), arg(1)], readableT);
           case "take":
@@ -5654,25 +5657,49 @@ export class ClassDynamicDispatch {
           case "toArray":
             return op("readable.opToArray", [arg(0)], { kind: "promise", inner: DYN });
           case "forEach":
-            return op("readable.opForEach", [arg(0), arg(1)], { kind: "promise", inner: VOID });
+            return op("readable.opForEach", [arg(0), arg(1), sig()], {
+              kind: "promise",
+              inner: VOID,
+            });
           case "some":
-            return op("readable.opSome", [arg(0), arg(1)], { kind: "promise", inner: BOOL });
+            return op("readable.opSome", [arg(0), arg(1), sig()], { kind: "promise", inner: BOOL });
           case "every":
-            return op("readable.opEvery", [arg(0), arg(1)], { kind: "promise", inner: BOOL });
+            return op("readable.opEvery", [arg(0), arg(1), sig()], {
+              kind: "promise",
+              inner: BOOL,
+            });
           case "find":
-            return op("readable.opFind", [arg(0), arg(1)], { kind: "promise", inner: DYN });
-          case "reduce":
-            return op(
-              "readable.opReduce",
-              [
-                arg(0),
-                arg(1),
-                { kind: "boolLit", value: dispatch.source.args.length >= 2, type: BOOL, loc },
-                arg(2),
-                { kind: "numLit", value: 0, type: F64, loc },
-              ],
-              { kind: "promise", inner: DYN },
-            );
+            return op("readable.opFind", [arg(0), arg(1), sig()], { kind: "promise", inner: DYN });
+          case "reduce": {
+            // the dispatch function's locals: there is no function
+            // context while dispatch bodies are built
+            const setup = reduceSignalSetup(lowerer, arg(2), loc, (name, type) => {
+              const local = {
+                id: `${name}.${dispatch.fn.locals.length}`,
+                name,
+                type,
+                mutable: false,
+              };
+              dispatch.fn.locals.push(local);
+              return local;
+            });
+            return [
+              ...setup.stmts,
+              ...op(
+                "readable.opReduceSignal",
+                [
+                  arg(0),
+                  arg(1),
+                  { kind: "boolLit", value: dispatch.source.args.length >= 2, type: BOOL, loc },
+                  arg(2),
+                  { kind: "numLit", value: 0, type: F64, loc },
+                  setup.abort,
+                  setup.cbOpts,
+                ],
+                { kind: "promise", inner: DYN },
+              ),
+            ];
+          }
         }
       }
       if (method === "destroy" && (!incoming.length || incoming[0]?.kind === "unitLit"))

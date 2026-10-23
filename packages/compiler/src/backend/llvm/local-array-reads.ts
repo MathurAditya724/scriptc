@@ -15,6 +15,13 @@ import { ReferenceEffects } from "./reference-effects.js";
 import { SCR_ARR_FIELD, loadArrCount, scrArrStateAt } from "./common.js";
 import { indexInteger } from "./integer-values.js";
 import { READ_FALLBACK } from "./dense-array-access.js";
+import { compactRefLoadLines } from "./classes.js";
+
+/** The dense slot load of a reference read from an array of type
+ * `arrayType`: a pointer, or a compact class reference (SCR_ELEM_CREF). */
+function referenceLoad(host: LlvmEmitterContext, arrayType: IrType): "ptr" | "cref" {
+  return arrayType.kind === "array" && host.compactArrayElem(arrayType.elem) ? "cref" : "ptr";
+}
 
 export interface LocalArrayRead {
   type: IrType;
@@ -469,7 +476,7 @@ function emitDenseReferenceArrayRead(
   no: string,
   slow: string,
   join: string,
-  loadType: "ptr" | "i64" | "i8" = "ptr",
+  loadType: "ptr" | "cref" | "i64" | "i8" = "ptr",
 ): void {
   const B = host.B;
   const header = (field: number): string => {
@@ -555,7 +562,14 @@ function emitDenseReferenceArrayRead(
     const statePtr = B.tmp(),
       denseState = B.tmp(),
       densePresent = B.tmp();
-    scrArrStateAt(host, statePtr, data, cap, loadType === "i8" ? 1 : 8, offset);
+    scrArrStateAt(
+      host,
+      statePtr,
+      data,
+      cap,
+      loadType === "i8" ? 1 : loadType === "cref" ? 4 : 8,
+      offset,
+    );
     host.markMemoryPointer(statePtr, "array:present");
     B.line(`${denseState} = load i8, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
     B.line(`${densePresent} = icmp eq i8 ${denseState}, 1`);
@@ -564,13 +578,20 @@ function emitDenseReferenceArrayRead(
   B.startBlock(valueLabel);
   const valuePtr = B.tmp(),
     raw = B.tmp();
-  // Boolean arrays store one byte per element; every other kind an 8-byte slot.
-  const slotType = loadType === "i8" ? "i8" : "i64";
+  // Boolean arrays store one byte per element, compact references four,
+  // every other kind an 8-byte slot.
+  const slotType = loadType === "i8" ? "i8" : loadType === "cref" ? "i32" : "i64";
   B.line(
     `${valuePtr} = getelementptr inbounds ${slotType}, ptr ${data}, ${host.sizeType} ${offset}`,
   );
   host.markMemoryPointer(valuePtr, "array:elements");
-  B.line(`${raw} = load ${loadType}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  if (loadType === "cref") {
+    const ref = B.tmp();
+    B.line(`${ref} = load i32, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    for (const line of compactRefLoadLines(ref, raw, `${raw}.r`)) B.line(line.trimStart());
+  } else {
+    B.line(`${raw} = load ${loadType}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  }
   present(raw);
   B.br(join);
 }
@@ -598,6 +619,18 @@ export function emitBorrowedArrayRead(
     );
     host.markMemoryPointer(dataPtr, "array:header");
     B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
+    if (referenceLoad(host, read.arr.type) === "cref") {
+      // Compact references: 4-byte slots holding the address over 8.
+      const ref = B.tmp();
+      B.line(
+        `${valuePtr} = getelementptr inbounds i32, ptr ${data}, ${host.sizeType} ${loopIndex}`,
+      );
+      host.markMemoryPointer(valuePtr, "array:elements");
+      B.line(`${ref} = load i32, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+      for (const line of compactRefLoadLines(ref, value, `${value}.r`)) B.line(line.trimStart());
+      B.line(`store ptr ${value}, ptr ${slot}`);
+      return;
+    }
     B.line(`${valuePtr} = getelementptr inbounds i64, ptr ${data}, ${host.sizeType} ${loopIndex}`);
     host.markMemoryPointer(valuePtr, "array:elements");
     B.line(`${value} = load ptr, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
@@ -622,6 +655,7 @@ export function emitBorrowedArrayRead(
     slow,
     slow,
     join,
+    referenceLoad(host, read.arr.type),
   );
   B.startBlock(slow);
   host.declare("declare ptr @scr_arr_borrow_ref(ptr, double)");
@@ -674,7 +708,7 @@ export function emitLocalArrayRead(
         no,
         slow,
         join,
-        "ptr",
+        referenceLoad(host, read.array.type),
       );
     else B.br(slow);
     B.startBlock(slow);
@@ -735,7 +769,7 @@ export function emitLocalArrayRead(
       no,
       slow,
       join,
-      !scalar ? "ptr" : read.element.kind === "bool" ? "i8" : "i64",
+      !scalar ? referenceLoad(host, read.array.type) : read.element.kind === "bool" ? "i8" : "i64",
     );
   else B.br(slow);
   B.startBlock(slow);
