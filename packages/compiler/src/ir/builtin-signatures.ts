@@ -4037,6 +4037,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "stream.setTransform": { argTypes: [null, null], result: VOID },
   "stream.setFlush": { argTypes: [null, null], result: VOID },
   "stream.setConstruct": { argTypes: [null, null], result: VOID },
+  "stream.replaceConstruct": { argTypes: [null, null], result: VOID },
   "stream.setWritev": { argTypes: [null, null], result: VOID },
   "stream.setWritevDefault": { argTypes: [null, null], result: VOID },
   /** The dyn-options twins (a checked-dynamic options record — the JS
@@ -4173,6 +4174,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * after construction; answers the receiver (+1, the chaining shape). */
   "stream.objectMode": { argTypes: [null, BOOL, BOOL], result: VOID },
   "stream.decodeStrings": { argTypes: [null, BOOL], result: VOID },
+  /** Runtime decodeStrings and defaultEncoding option values, applied
+   * after construction (answers the receiver +1); the encoding was
+   * validated by stream.checkEncodingOption before construction. */
+  "stream.optionValues": { argTypes: [null, DYN, DYN], result: VOID },
+  "stream.checkEncodingOption": { argTypes: [DYN], result: VOID },
   "stream.duplexFromGen": { argTypes: [null, null, null, null, null, null], result: VOID },
   "stream.duplexFromDyn": { argTypes: [DYN], result: VOID },
   /** Duplex.from over a lone Readable or Writable, or a { readable,

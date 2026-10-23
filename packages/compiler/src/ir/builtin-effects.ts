@@ -380,6 +380,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "transform.newDyn",
   "passthrough.newDyn",
   "readable.initDyn",
+  "stream.checkEncodingOption",
   "writable.initDyn",
   "duplex.initDyn",
   "transform.initDyn",

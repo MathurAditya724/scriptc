@@ -832,7 +832,7 @@ test("a cycle whose top level calls a builtin with a builtin function value is a
 
 test("Node islands (report-only): one package per class, gap islands first", async () => {
   // ni-gap (a fence inside the native subset), ni-eval (new Function),
-  // ni-ctor (a constructor function, carrying ni-dep), ni-minified (not
+  // ni-ctor (a constructor function, carrying ni-dep), ni-bundled (not
   // compilable as shipped), ni-typed (native, also reached from ni-ctor).
   const entry = fixture("node-islands/main.ts");
   await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-node-islands.txt");
@@ -842,7 +842,7 @@ test("Node islands (report-only): one package per class, gap islands first", asy
     ["ni-gap", "gap"],
     ["ni-eval", "runtime"],
     ["ni-ctor", "object-model"],
-    ["ni-minified", "packaging"],
+    ["ni-bundled", "packaging"],
   ]);
   expect(islands.packages.map((p) => [p.package, p.status, p.islands])).toEqual([
     ["ni-dep", "inside", ["ni-ctor"]],
@@ -861,10 +861,10 @@ test("Node islands (report-only): one package per class, gap islands first", asy
     ["ni-gap", "gap", 7],
     ["ni-eval", "runtime", 4],
     ["ni-ctor", "object-model", 9],
-    ["ni-minified", "packaging", undefined],
+    ["ni-bundled", "packaging", undefined],
   ]);
   // The gates: the blocker gate is today's build (which refuses
-  // ni-minified with SC2013, and nothing else); the island gates fail on
+  // ni-bundled with SC2013, and nothing else); the island gates fail on
   // the would-be islands.
   expect(coverage.diagnostics.every((d) => d.code === "SC2013")).toBe(true);
   expect(coveragePasses(coverage, "island-gaps")).toBe(false);
@@ -879,7 +879,7 @@ test("Node island policy from the command line: native, forced, off", () => {
   expect(forced.islands.map((i) => [i.package, i.class, i.decision])).toEqual([
     ["ni-gap", "gap", "auto"],
     ["ni-ctor", "object-model", "auto"],
-    ["ni-minified", "packaging", "auto"],
+    ["ni-bundled", "packaging", "auto"],
     ["ni-typed", "marked", "cli"],
   ]);
   expect(forced.violations.map((v) => v.code)).toEqual(["SC8003"]);
