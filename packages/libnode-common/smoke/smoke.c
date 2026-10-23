@@ -28,7 +28,8 @@
 /* The bootstrap runs as the environment's main script. It hands the bridge
  * a dispatcher that evaluates `name` as an expression and answers the
  * bridge's outcome strings: "R<json>" when it returns, "T<json>" when it
- * throws; an asynchronous call settles through the host. */
+ * throws; an asynchronous call settles through the host. Its `finish` is
+ * the program end the bridge reports, which the smoke test does not use. */
 static const char kBootstrap[] =
     "const host = globalThis.__scriptcNodeIslandHost;\n"
     "globalThis.require = require;\n"
@@ -42,6 +43,7 @@ static const char kBootstrap[] =
     "    Promise.resolve(value).then((v) => host.settle(id, outcome(true, v)),\n"
     "                                (e) => host.settle(id, outcome(false, e)));\n"
     "  },\n"
+    "  finish(code) {},\n"
     "};\n";
 
 static double now_ms(void) {

@@ -3145,6 +3145,12 @@ export class Lowerer {
   readonly nodeIslandModules = new NodeIslandModuleCollector();
   /** Each call's caller literal, set to its tree path when lowering ends. */
   readonly nodeIslandCallers: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
+  /** Absolute specifiers, rewritten to the shipped file relative to their caller. */
+  readonly nodeIslandSpecifiers: {
+    literal: IrExpr & { kind: "strLit" };
+    caller: string;
+    target: string;
+  }[] = [];
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */
@@ -8656,6 +8662,8 @@ export class Lowerer {
     const modules = this.nodeIslandModules.tree();
     for (const { literal, caller } of this.nodeIslandCallers)
       literal.value = NodeIslandModuleCollector.callerPath(modules, caller);
+    for (const { literal, caller, target } of this.nodeIslandSpecifiers)
+      literal.value = NodeIslandModuleCollector.relativeSpecifier(caller, target);
     return { libnode: "", nodeVersion: "", ...(modules === null ? {} : { modules }) };
   }
 

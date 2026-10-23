@@ -70,6 +70,9 @@ async function tryFastPath(): Promise<number | null> {
     values["profile-generate"] !== undefined ||
     values["profile-use"] !== undefined ||
     values.sparse ||
+    // A --libnode=beside build places the pack and the island modules next
+    // to the executable, which a routed hit does not do.
+    values.libnode === "beside" ||
     (values["external-types"] ?? []).length > 0
   )
     return null;

@@ -14,13 +14,14 @@
  * also the hook for bundling Node into the executable itself later. */
 import { createHash } from "node:crypto";
 import {
+  constants,
   copyFileSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
   rmSync,
-  statSync,
 } from "node:fs";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -86,12 +87,15 @@ function readManifest(dir: string): PackManifest | string {
 }
 
 /** Copies the pack next to the executable (hard links where possible), or
- * returns why it cannot: the target would replace the pack itself, or the
- * manifest names a file outside the pack. */
+ * returns why it cannot: the target would replace the pack itself, the
+ * manifest names a file outside the pack, or a pack file is not a regular
+ * file (a symbolic link could point anywhere). Every destination is checked
+ * to resolve inside the target directory. */
 function placeBeside(source: string, manifest: PackManifest, target: string): string | undefined {
   const names = ["manifest.json", "LICENSE", ...Object.keys(manifest.files)];
   const unsafe = names.find(
-    (name) => name === "" || name === "." || name === ".." || /[/\\]/.test(name),
+    (name) =>
+      name === "" || name === "." || name === ".." || /[/\\\0]/.test(name) || isAbsolute(name),
   );
   if (unsafe !== undefined)
     return `the libnode pack at ${source} lists a file outside the pack ('${unsafe}')`;
@@ -99,19 +103,30 @@ function placeBeside(source: string, manifest: PackManifest, target: string): st
   const to = realpathOr(target);
   if (from === to || from.startsWith(to + sep) || to.startsWith(from + sep))
     return `--libnode=beside would replace the libnode pack it copies (${source}); point SCRIPTC_LIBNODE at a pack outside ${target}`;
-  rmSync(target, { recursive: true, force: true });
-  mkdirSync(target, { recursive: true });
+  const present: string[] = [];
   for (const name of names) {
-    const file = join(source, name);
+    let info;
     try {
-      statSync(file);
+      info = lstatSync(join(source, name));
     } catch {
       continue;
     }
+    if (!info.isFile())
+      return `the libnode pack at ${source} holds ${name} as a ${info.isSymbolicLink() ? "symbolic link" : "non-regular file"}; pack files must be regular files`;
+    present.push(name);
+  }
+  rmSync(target, { recursive: true, force: true });
+  mkdirSync(target, { recursive: true });
+  const inside = resolve(target) + sep;
+  for (const name of present) {
+    const destination = resolve(target, name);
+    if (!destination.startsWith(inside))
+      return `the libnode pack at ${source} lists a file outside the pack ('${name}')`;
+    const file = join(source, name);
     try {
-      linkSync(file, join(target, name));
+      linkSync(file, destination);
     } catch {
-      copyFileSync(file, join(target, name));
+      copyFileSync(file, destination, constants.COPYFILE_EXCL);
     }
   }
   return undefined;
@@ -137,7 +152,8 @@ export function libnodeTarget(env: NodeJS.ProcessEnv = process.env): string {
 function installedPackProblem(dir: string, packageName: string): string | null {
   let pack: LibnodePack;
   try {
-    pack = readLibnodePack(dir, { packageName });
+    // An installed pack is found, not named: check its files' digests too.
+    pack = readLibnodePack(dir, { packageName, verifyHashes: true });
   } catch (error) {
     return error instanceof LibnodePackError ? error.message : String(error);
   }

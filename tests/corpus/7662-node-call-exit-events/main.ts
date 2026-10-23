@@ -1,3 +1,4 @@
+// @exit: 4
 // @requires-libnode
 // The program and the Node.js it loads end as one process: Node's
 // 'beforeExit' and 'exit' run when the program ends, work that 'beforeExit'

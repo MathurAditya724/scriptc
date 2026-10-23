@@ -200,6 +200,18 @@ test("an installed pack of another scriptc version is refused", () => {
   );
 });
 
+test("an installed pack whose files do not match their digests is refused", () => {
+  const root = temp();
+  const name = libnodePackPackage(hostLibnodeTarget());
+  if (name === null) return;
+  const pack = fakePack(join(root, "node_modules", name), () => {}, name);
+  // Same size, other bytes.
+  writeFileSync(join(pack, "libnode.so.137"), "stand-in libnodX");
+  expect(libnodeRecord(undefined, join(root, "app"), {}, root)).toBe(
+    `libnode.so.137 in the libnode pack at ${pack} does not match its manifest`,
+  );
+});
+
 describe("readLibnodePack", () => {
   test("reads a pack in build-pack.mjs's format and checks its package", () => {
     const pack = fakePack(join(temp(), "pack"));
@@ -215,16 +227,27 @@ describe("readLibnodePack", () => {
     );
   });
 
-  test("refuses other manifest schemas and nested file names", () => {
+  test("refuses other manifest schemas and file names outside the pack", () => {
     const schema = fakePack(join(temp(), "pack"), (m) => {
       m["schema"] = "scriptc.libnode-pack.v0";
     });
     expect(thrown(() => readLibnodePack(schema)).kind).toBe("invalid");
-    const nested = fakePack(join(temp(), "pack"), (m) => {
-      m["libnode"] = "lib/libnode.so.137";
-      m["files"] = { ...(m["files"] as object), "lib/libnode.so.137": entry("stand-in libnode") };
-    });
-    expect(thrown(() => readLibnodePack(nested)).message).toContain("nested file");
+    for (const name of [
+      "lib/libnode.so.137",
+      "../libnode.so.137",
+      "..",
+      "/etc/libnode.so",
+      "a\\b",
+      "a\0b",
+    ]) {
+      const pack = fakePack(join(temp(), "pack"), (m) => {
+        m["libnode"] = name;
+        m["files"] = { ...(m["files"] as object), [name]: entry("stand-in libnode") };
+      });
+      expect(thrown(() => readLibnodePack(pack)).message).toBe(
+        `the libnode pack at ${pack} names a file outside the pack (${JSON.stringify(name)})`,
+      );
+    }
   });
 
   test("checks sizes always and hashes on request", () => {
