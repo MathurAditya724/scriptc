@@ -5171,6 +5171,10 @@ bool scr_arr_numeric_key(const char *key, size_t len, double *out) {
     return true;
   }
   if (len == 0 || len >= sizeof text) return false;
+  /* A number's spelling starts with a digit, '-', "NaN" or "Infinity":
+   * other names answer without parsing. */
+  char first = key[0];
+  if (!(first >= '0' && first <= '9') && first != '-' && first != 'N' && first != 'I') return false;
   memcpy(text, key, len);
   text[len] = '\0';
   char *end;
@@ -5184,6 +5188,11 @@ bool scr_arr_numeric_key(const char *key, size_t len, double *out) {
   return true;
 }
 
+bool scr_arr_has_properties(const ScrArr *a) {
+  const ScrArrExt *x = scr_arr_ext_of(a);
+  return x && (x->prop_len || x->metadata);
+}
+
 void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
   const ScrDyn *metadata = SCR_AX(a)->metadata;
   if (metadata && metadata->kind == SCR_DYN_HANDLE && metadata->v.handle.tag == SCR_DYNH_MATCH_SOURCE &&
@@ -5191,21 +5200,7 @@ void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
     return;
   metadata = SCR_AX(a)->metadata;
   if (!metadata) return;
-  for (size_t i = 0; i < metadata->v.obj.len; i++) {
-    const ScrDynEntry *entry = &metadata->v.obj.entries[i];
-    ScrStr *key = scr_str_new(entry->key, entry->key_len);
-    if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
-      scr_dyn_key_set(target, key, entry->value);
-    } else {
-      /* Properties defined through a view keep their attributes. */
-      ScrDyn *name = scr_dyn_new_str(key);
-      ScrDyn *descriptor = scr_dyn_own_descriptor(metadata, key);
-      if (descriptor) scr_dyn_release(scr_dyn_define_property(target, name, descriptor));
-      scr_dyn_release(descriptor);
-      scr_dyn_release(name);
-    }
-    scr_str_release(key);
-  }
+  for (size_t i = 0; i < metadata->v.obj.len; i++) scr_dyn_copy_entry(target, metadata, &metadata->v.obj.entries[i]);
 }
 
 ScrArr *scr_arr_named_keys(ScrArr *a) {
@@ -5263,8 +5258,27 @@ void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
   }
   ScrDyn *named = view && view->kind == SCR_DYN_ARR ? view->v.arr.properties : NULL;
   if (!named || named->v.obj.len == 0) return;
+  /* The view's numeric properties are copies of the native ones (every
+   * write to them goes to the native array), so only the others move. */
+  bool numeric = false;
+  for (size_t i = 0; i < named->v.obj.len && !numeric; i++) {
+    double number;
+    numeric = scr_arr_numeric_key(named->v.obj.entries[i].key, named->v.obj.entries[i].key_len, &number);
+  }
+  if (numeric) {
+    ScrDyn *rest = scr_dyn_new_obj();
+    for (size_t i = 0; i < named->v.obj.len; i++) {
+      const ScrDynEntry *entry = &named->v.obj.entries[i];
+      double number;
+      if (!scr_arr_numeric_key(entry->key, entry->key_len, &number)) scr_dyn_copy_entry(rest, named, entry);
+    }
+    named = rest;
+  } else {
+    scr_dyn_retain(named);
+  }
   ScrArrExt *x = scr_arr_ext(a);
   ScrDyn *old = x->metadata;
-  x->metadata = scr_dyn_retain(named);
+  x->metadata = named->v.obj.len ? named : NULL;
+  if (!x->metadata) scr_dyn_release(named);
   scr_dyn_release(old);
 }

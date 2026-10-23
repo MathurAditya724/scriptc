@@ -2005,3 +2005,45 @@ console.log("unreachable");
     );
   });
 });
+
+describe("numeric properties of native arrays", () => {
+  // A native array keeps its numeric properties ("-1", "1.5") in a property
+  // table that holds values without attributes, so defining one with a
+  // descriptor refuses instead of dropping the attributes.
+  test("Object.defineProperty on a numeric key is a named fence", async () => {
+    const r = await compileAndRun(
+      "array-numeric-define-property",
+      `const words: string[] = ["a"];
+words[-1] = "x";
+console.log(words[-1]);
+Object.defineProperty(words as unknown as Record<string, unknown>, "-3", { value: "kept" });
+console.log("unreachable");
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("x\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: Object\.defineProperty on a numeric property of a native array is not supported yet\n$/,
+    );
+  });
+
+  test("a number key that is not an array index takes the same fence", async () => {
+    const r = await compileAndRun(
+      "array-numeric-define-property-number",
+      `const words: string[] = ["a"];
+for (const key of [-3, 1.5]) {
+  try {
+    Object.defineProperty(words as unknown as Record<number, unknown>, key, { value: "kept" });
+  } catch (e) {
+    console.log((e as Error).message);
+  }
+}
+console.log(words.length);
+`,
+    );
+    const fence =
+      "Object.defineProperty on a numeric property of a native array is not supported yet\n";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(`${fence}${fence}1\n`);
+  });
+});

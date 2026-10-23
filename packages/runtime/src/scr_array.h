@@ -476,6 +476,10 @@ bool scr_arr_has_named_key(ScrArr *a, ScrStr *key);
  * noncanonical numeric properties, then the named properties in insertion
  * order. +1. */
 ScrArr *scr_arr_named_keys(ScrArr *a);
+/* Whether the array has properties besides its elements (noncanonical
+ * numeric keys, match metadata, named properties): util.inspect lists
+ * them after the elements. */
+bool scr_arr_has_properties(const ScrArr *a);
 /* Installed by scr_regex.c when it records a pending match source; this
  * unit links without the regex runtime. Writes the pending metadata of
  * `a` into its dynamic copy or materializes it, answering whether it
