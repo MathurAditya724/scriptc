@@ -500,6 +500,20 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     };
     return mapped.inner.kind === "dyn" ? promise : lowerer.coerceToExpected(promise, mapped);
   }
+  // Arrays of copied values (or arrays of those) cross as copies of the
+  // island array as an awaited promise's value, and directly where they do
+  // not stay handles (below); the checked cast then meets the copy. A
+  // native array that crossed in comes back as itself.
+  if (mapped.kind === "promise" && copiedArrayType(lowerer, mapped.inner)) {
+    const promise: IrExpr = {
+      kind: "libCall",
+      fn: "nodeIsland.awaitCopy",
+      args: [raw],
+      type: { kind: "promise", inner: DYN },
+      loc: raw.loc,
+    };
+    return lowerer.coerceToExpected(promise, mapped);
+  }
   // NI-5: a native value the program passed in comes back as itself (an
   // export); the checked cast unboxes it, and anything else fails the cast
   // (types don't lie).
@@ -509,6 +523,17 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
   // operations follow the value).
   if (!copiedType(lowerer, mapped) && containerType(lowerer, tsType) && handleUseOk(lowerer, node))
     return raw;
+  // Otherwise an array of copied values is a copy (above).
+  if (copiedArrayType(lowerer, mapped)) {
+    const copy: IrExpr = {
+      kind: "libCall",
+      fn: "nodeIsland.copyArrays",
+      args: [raw],
+      type: DYN,
+      loc: raw.loc,
+    };
+    return lowerer.coerceToExpected(copy, mapped);
+  }
   if (!copiedType(lowerer, mapped) && exportedByReference(lowerer, tsType))
     return lowerer.coerceToExpected(raw, mapped);
   if (!copiedType(lowerer, mapped))
@@ -518,6 +543,12 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
       node,
     );
   return lowerer.coerceToExpected(raw, mapped);
+}
+
+/** An array whose elements are copied values or such arrays. */
+function copiedArrayType(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind !== "array") return false;
+  return copiedType(lowerer, t.elem) || copiedArrayType(lowerer, t.elem);
 }
 
 /** Whether a value of IR type `t` is copied at the boundary: primitives,
