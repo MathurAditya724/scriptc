@@ -1392,10 +1392,18 @@ function genChannels(
         : mapType(nextTs, ctx);
   if (!nextT || nextT.kind === "void" || nextT.kind === "nullT") return null;
   const ownChannel = (t: IrType): boolean =>
-    t.kind === "f64" || t.kind === "bool" || t.kind === "string" || t.kind === "record";
+    t.kind === "f64" || t.kind === "bool" || t.kind === "string";
+  // A record yield channel keeps its type beside a dyn return (an
+  // `IterableIterator<Row>`). A record return channel beside a dyn yield
+  // does not: the value a delegating `yield*` answers (Effect.gen's
+  // generators) is often an object whose methods a record would drop.
   const dynMix =
     (yieldT.kind === "dyn" && retT.kind !== "dyn" && retT.kind !== "void" && !ownChannel(retT)) ||
-    (retT.kind === "dyn" && yieldT.kind !== "dyn" && yieldT.kind !== "void" && !ownChannel(yieldT));
+    (retT.kind === "dyn" &&
+      yieldT.kind !== "dyn" &&
+      yieldT.kind !== "void" &&
+      !ownChannel(yieldT) &&
+      yieldT.kind !== "record");
   if (dynMix) return { yieldT: DYN, retT: DYN, nextT };
   return { yieldT, retT, nextT };
 }
@@ -3956,10 +3964,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   //                    argument — fenced at the call).
   // Mixed dyn/concrete value channels share checked storage, so either
   // branch of the result record has the same representation. A number,
-  // boolean, string or record channel keeps its own type beside a dyn one
-  // (the `Generator<number>` and `IterableIterator<Row>` defaults): its
-  // values ride OUT typed and box only when the result record is built, so
-  // for-of and spread read them back unchecked.
+  // boolean or string channel keeps its own type beside a dyn one (the
+  // `Generator<number>` default), and so does a record yield channel beside
+  // a dyn return (`IterableIterator<Row>`): its values ride OUT typed and box
+  // only when the result record is built, so for-of and spread read them
+  // back unchecked.
   if (
     isStdlibInterface("Generator") ||
     isStdlibInterface("AsyncGenerator") ||
