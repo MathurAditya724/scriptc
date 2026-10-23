@@ -49,6 +49,8 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_itable.c",
   "scr_slots.c",
   "scr_alloc.c",
+  // crypto.getCipherInfo's table; it links only into programs that call it.
+  "scr_cipher_info.c",
 ];
 
 export const OPTIONAL_RUNTIME_SOURCES = [
@@ -130,8 +132,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_dyn.c", "streamDyn"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
+  ["scr_decl_adopt.c", "declAdopt"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
+  ["scr_dyn_for_await_stream.c", all("dynForAwait", "stream", "dynAsync")],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],
   // FileHandle streams reference both the stream unit and FileHandle.
@@ -167,6 +171,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // over the SCR_NODE_ISLANDS build of scr_async.c.
   ["scr_node_island.c", "nodeIsland"],
   ["scr_node_island_handle.c", "nodeIsland"],
+  ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
 export function variantsFor(source) {

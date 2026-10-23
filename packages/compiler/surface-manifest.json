@@ -481,6 +481,18 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.crypto.checkPrime",
+      "kind": "node-builtin",
+      "name": "crypto.checkPrime",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.checkPrimeSync",
+      "kind": "node-builtin",
+      "name": "crypto.checkPrimeSync",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.createCipheriv",
       "kind": "node-builtin",
       "name": "crypto.createCipheriv",
@@ -585,12 +597,22 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.generatePrime",
+      "kind": "node-builtin",
+      "name": "crypto.generatePrime",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.generatePrimeSync",
+      "kind": "node-builtin",
+      "name": "crypto.generatePrimeSync",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.getCipherInfo",
       "kind": "node-builtin",
       "name": "crypto.getCipherInfo",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "cipher metadata has no lowering — createCipheriv and createDecipheriv support aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.getDiffieHellman",

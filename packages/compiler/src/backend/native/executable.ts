@@ -281,8 +281,15 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
   // Own properties JavaScript adds to children.
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
+  // The declaration-typed boundary's adoption.
+  unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // for await over checked-dynamic values that may hold native streams.
+  unit(
+    (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
+    "scr_dyn_for_await_stream.c",
+  ),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
@@ -335,6 +342,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
   unit((u) => u.opts.nodeIsland === true, "scr_node_island.c", "scr_node_island_handle.c"),
+  // Readable.fromWeb reads a web ReadableStream through its reader.
+  unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */

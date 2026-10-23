@@ -181,6 +181,7 @@ ScrDyn *scr_fetch_headers_new(ScrDyn *init);
 ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init); /* +1 promise<Response handle> */
 ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init); /* borrowed args; +1 Response handle or NULL pending */
 ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init); /* Response.json; borrowed args; +1 Response handle or NULL pending */
+ScrArr *scr_fetch_response_light(ScrDyn *response); /* @hono/node-server shim: borrowed; +1 string[] */
 ScrPromise *scr_fetch_response_json(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_text(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_array_buffer(ScrDyn *response); /* +1 promise<dyn> */
@@ -200,5 +201,17 @@ ScrDyn *scr_fetch_stream_from_bytes(
 ScrDyn *scr_fetch_stream_from_string(
     ScrStr *iterable); /* borrowed string; +1 handle */
 ScrPromise *scr_fetch_reader_read(ScrDyn *reader); /* borrowed handle; +1 */
+/* A read request served by callbacks instead of a promise (the streams
+ * spec's readableStreamDefaultReaderRead with a read request; Node's
+ * Readable.fromWeb adapter uses one). chunk and error borrow their value;
+ * error's reason is NULL when the reader was released. */
+typedef struct ScrFetchReadSink {
+  void (*chunk)(void *ctx, ScrDyn *value);
+  void (*close)(void *ctx);
+  void (*error)(void *ctx, ScrDyn *reason);
+} ScrFetchReadSink;
+/* Queue a sink read request on a reader handle (borrowed). false with a
+ * TypeError pending for a value that is not a reader or a released one. */
+bool scr_fetch_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx);
 
 #endif /* SCR_GENERATOR_H */
