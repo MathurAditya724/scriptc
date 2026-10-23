@@ -163,6 +163,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fetch.abortNow": { argTypes: [DYN], result: DYN },
   "fetch.abortAny": { argTypes: [DYN], result: DYN },
   "fetch.streamNew": { argTypes: [DYN], result: DYN },
+  "fetch.transformNew": { argTypes: [], result: DYN },
   // Program-dependent iterable: typed arrays/bytes/string stay intact so
   // the native stream can pull lazily; checked-dynamic values are the
   // fallback. The libCall validator in validate.ts checks the closed set.

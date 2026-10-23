@@ -147,6 +147,9 @@ struct SfStream {
   bool pull_again;
   bool discarded;
   bool request_discarding;
+  /* A zero high-water mark (a TransformStream's readable side): pull only
+   * while a read is pending. */
+  bool hwm_zero;
   ScrDyn *error;
   SfReader *reader;       /* owned while locked */
   SfCollector *collector; /* owned while a body reader is active */
@@ -898,6 +901,7 @@ static void sf_stream_release(SfStream *s) {
     sf_response_discard_if_unobserved(s);
     return;
   }
+  scr_weak_dispose_inline(s);
   sf_stream_drop_chunks(s);
   if (s->reader) {
     s->reader->stream = NULL;
@@ -1625,6 +1629,12 @@ static void sf_stream_pull(SfStream *s) {
       s->error) {
     return;
   }
+  /* ReadableStreamDefaultControllerShouldCallPull: with no room in the
+   * queue, only a pending read (or a body collector) asks for a chunk. */
+  if (s->hwm_zero && !s->collector &&
+      !(s->reader && s->reader->pending_head)) {
+    return;
+  }
   if (s->pulling) {
     s->pull_again = true;
     return;
@@ -1852,6 +1862,7 @@ static ScrPromise *sf_stream_collect(SfStream *s, int mode) {
   c->mode = mode;
   s->collector = c;
   sf_stream_drain(s);
+  if (s->hwm_zero && !s->head) sf_stream_pull(s);
   return p;
 }
 
@@ -2661,6 +2672,895 @@ static ScrDyn *sf_headers_get(void *ptr, const char *key, size_t len) {
   (void)ptr;
   (void)key;
   (void)len;
+  return NULL;
+}
+
+/* ── TransformStream / WritableStream ────────────────────────────── */
+
+/*
+ * The identity TransformStream (`new TransformStream()`): a native
+ * readable side (an SfStream with a zero high-water mark, fed by the
+ * transform) and a writable side implemented here with the streams spec's
+ * WritableStream state machine (default high-water mark 1, chunk size 1).
+ * The writable side has no other sink, so the TransformStream object, its
+ * WritableStream and the sink share one SfTransform; the handles differ
+ * only by tag. Promise reactions the spec chains on already-settled
+ * promises run after the same number of microtask turns as in Node's
+ * implementation (lib/internal/webstreams), so interleavings with user
+ * code match.
+ *
+ * Ownership: the transform owns its readable side and its writer; the
+ * readable side's pull/cancel callbacks own the transform until that side
+ * closes or errors (fetch teardown drops the callbacks of transforms
+ * nobody finished). A writer handle retains the transform while bound,
+ * like a reader handle retains its stream.
+ */
+enum { SFW_WRITABLE, SFW_ERRORING, SFW_ERRORED, SFW_CLOSED };
+
+typedef struct SfTransform SfTransform;
+
+typedef struct SfWriteReq {
+  ScrDyn *chunk;
+  ScrPromise *promise;
+  struct SfWriteReq *next;
+} SfWriteReq;
+
+typedef struct SfWriter {
+  size_t rc;
+  size_t handle_refs;
+  SfTransform *stream; /* weak; handle refs retain it while bound */
+  ScrPromise *ready;
+  ScrPromise *closed;
+} SfWriter;
+
+struct SfTransform {
+  size_t rc;
+  SfStream *readable;
+  /* WritableStream */
+  bool started; /* the start algorithm's promise settled (one turn) */
+  int state;
+  ScrDyn *stored_error;
+  SfWriter *writer; /* owned while locked */
+  SfWriteReq *head; /* queued writes (chunk + request promise) */
+  SfWriteReq *tail;
+  SfWriteReq *in_flight;
+  size_t queue_size; /* queueTotalSize: queued chunks + the in-flight one */
+  bool close_queued; /* the close sentinel is in the queue */
+  ScrPromise *close_request;
+  ScrPromise *in_flight_close;
+  bool has_pending_abort;
+  ScrPromise *pending_abort;
+  ScrDyn *pending_abort_reason;
+  bool pending_abort_was_erroring;
+  bool backpressure;
+  /* TransformStream */
+  bool t_backpressure;
+  ScrPromise *bp_change;
+  bool write_waiting; /* the in-flight write waits for bp_change */
+  ScrDyn *write_error; /* the in-flight write's failure, if any */
+  ScrDyn *cancel_reason; /* the readable side's cancel reason, until it reacts */
+  ScrPromise *finish; /* finishPromise of close/abort/cancel */
+};
+
+static SfTransform *sf_transform_retain(SfTransform *t) {
+  t->rc++;
+  return t;
+}
+
+static void sf_write_req_free(SfWriteReq *w) {
+  if (!w) return;
+  scr_dyn_release(w->chunk);
+  scr_promise_release(w->promise);
+  free(w);
+}
+
+static void sf_writer_release(SfWriter *w) {
+  if (!w || --w->rc > 0) return;
+  scr_promise_release(w->ready);
+  scr_promise_release(w->closed);
+  free(w);
+}
+
+static void sf_transform_release(SfTransform *t) {
+  if (!t || --t->rc > 0) return;
+  sf_stream_release(t->readable);
+  scr_dyn_release(t->stored_error);
+  if (t->writer) {
+    t->writer->stream = NULL;
+    sf_writer_release(t->writer);
+  }
+  while (t->head) {
+    SfWriteReq *w = t->head;
+    t->head = w->next;
+    sf_write_req_free(w);
+  }
+  sf_write_req_free(t->in_flight);
+  scr_promise_release(t->close_request);
+  scr_promise_release(t->in_flight_close);
+  scr_promise_release(t->pending_abort);
+  scr_dyn_release(t->pending_abort_reason);
+  scr_promise_release(t->bp_change);
+  scr_promise_release(t->finish);
+  scr_dyn_release(t->write_error);
+  scr_dyn_release(t->cancel_reason);
+  free(t);
+}
+
+static void *sf_transform_retain_v(void *p) {
+  return sf_transform_retain((SfTransform *)p);
+}
+static void sf_transform_release_v(void *p) {
+  sf_transform_release((SfTransform *)p);
+}
+
+static void *sf_writer_handle_retain_v(void *p) {
+  SfWriter *w = p;
+  w->rc++;
+  w->handle_refs++;
+  if (w->stream) sf_transform_retain(w->stream);
+  return w;
+}
+
+static void sf_writer_handle_release_v(void *p) {
+  SfWriter *w = p;
+  SfTransform *t = w->stream;
+  if (w->handle_refs > 0) w->handle_refs--;
+  sf_writer_release(w);
+  sf_transform_release(t);
+}
+
+static ScrBox *sf_transform_box(SfTransform *t) {
+  ScrBox *box = scr_box_new_obj(&sf_transform_retain_v,
+                                &sf_transform_release_v, NULL);
+  scr_box_set_ref(box, sf_transform_retain(t));
+  return box;
+}
+
+static void sf_invalid_state(const char *message) {
+  char buf[96];
+  int n = snprintf(buf, sizeof buf, "Invalid state: %s", message);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, buf, (size_t)n, "ERR_INVALID_STATE");
+}
+
+static ScrPromise *sf_promise_invalid_state(const char *message) {
+  ScrPromise *p = scr_promise_new();
+  sf_invalid_state(message);
+  scr_promise_reject_pending(p);
+  return p;
+}
+
+static ScrPromise *sf_promise_rejected_with(ScrDyn *reason) {
+  ScrPromise *p = scr_promise_new();
+  sf_reject_promise_reason(p, reason);
+  return p;
+}
+
+static ScrPromise *sf_promise_resolved(void) {
+  ScrPromise *p = scr_promise_new();
+  scr_promise_fulfill_void(p);
+  return p;
+}
+
+/* Deferred steps: the reaction `op` after `ticks` microtask turns. */
+enum {
+  SFT_WRITE_DONE,
+  SFT_WRITE_CONTINUE,
+  SFT_CLOSE_DONE,
+  SFT_ABORT_DONE,
+  SFT_START,
+  SFT_CANCEL_DONE,
+};
+
+static void sf_transform_step(SfTransform *t, int op);
+
+typedef struct SfTransformTask {
+  size_t rc;
+  SfTransform *t;
+  int op;
+  int ticks;
+} SfTransformTask;
+
+static void *sf_transform_task_retain_v(void *p) {
+  ((SfTransformTask *)p)->rc++;
+  return p;
+}
+
+static void sf_transform_task_release_v(void *p) {
+  SfTransformTask *task = p;
+  if (--task->rc > 0) return;
+  sf_transform_release(task->t);
+  free(task);
+}
+
+static void sf_transform_tick_task(ScrClosure *cb) {
+  SfTransformTask *task = (SfTransformTask *)scr_box_get_ref(cb->caps[0]);
+  if (--task->ticks > 0) {
+    ScrClosure *next = scr_closure_new((void *)&sf_transform_tick_task, 1);
+    next->caps[0] = scr_box_new_obj(&sf_transform_task_retain_v,
+                                    &sf_transform_task_release_v, NULL);
+    scr_box_set_ref(next->caps[0], sf_transform_task_retain_v(task));
+    scr_queue_microtask(next);
+  } else {
+    sf_transform_step(task->t, task->op);
+  }
+  sf_transform_task_release_v(task);
+}
+
+static void sf_transform_defer(SfTransform *t, int op, int ticks) {
+  SfTransformTask *task = calloc(1, sizeof *task);
+  if (!task) sf_oom();
+  task->rc = 1;
+  task->t = sf_transform_retain(t);
+  task->op = op;
+  task->ticks = ticks;
+  ScrClosure *cb = scr_closure_new((void *)&sf_transform_tick_task, 1);
+  cb->caps[0] = scr_box_new_obj(&sf_transform_task_retain_v,
+                                &sf_transform_task_release_v, NULL);
+  scr_box_set_ref(cb->caps[0], task); /* the box takes the reference */
+  scr_queue_microtask(cb);
+}
+
+/* ── WritableStream abstract operations ── */
+
+static bool sfw_close_queued_or_in_flight(const SfTransform *t) {
+  return t->close_request || t->in_flight_close;
+}
+
+static bool sfw_has_operation_in_flight(const SfTransform *t) {
+  return t->in_flight || t->in_flight_close;
+}
+
+static void sfw_writer_ensure_ready_rejected(SfWriter *w, ScrDyn *reason) {
+  if (!scr_promise_is_pending(w->ready)) {
+    scr_promise_release(w->ready);
+    w->ready = scr_promise_new();
+  }
+  sf_reject_promise_reason(w->ready, reason);
+  scr_promise_mark_handled(w->ready);
+}
+
+static void sfw_writer_ensure_closed_rejected(SfWriter *w, ScrDyn *reason) {
+  if (!scr_promise_is_pending(w->closed)) {
+    scr_promise_release(w->closed);
+    w->closed = scr_promise_new();
+  }
+  sf_reject_promise_reason(w->closed, reason);
+  scr_promise_mark_handled(w->closed);
+}
+
+static void sfw_update_backpressure(SfTransform *t, bool backpressure) {
+  SfWriter *w = t->writer;
+  if (w && backpressure != t->backpressure) {
+    if (backpressure) {
+      scr_promise_release(w->ready);
+      w->ready = scr_promise_new();
+      scr_promise_mark_handled(w->ready);
+    } else {
+      scr_promise_fulfill_void(w->ready);
+    }
+  }
+  t->backpressure = backpressure;
+}
+
+static void sfw_reject_close_and_closed(SfTransform *t) {
+  if (t->close_request) {
+    sf_reject_promise_reason(t->close_request, t->stored_error);
+    scr_promise_release(t->close_request);
+    t->close_request = NULL;
+  }
+  if (t->writer) {
+    sf_reject_promise_reason(t->writer->closed, t->stored_error);
+    scr_promise_mark_handled(t->writer->closed);
+  }
+}
+
+static void sft_abort_algorithm(SfTransform *t, ScrDyn *reason);
+
+static void sfw_finish_erroring(SfTransform *t) {
+  t->state = SFW_ERRORED;
+  /* The controller's queue resets; every queued write rejects. */
+  while (t->head) {
+    SfWriteReq *w = t->head;
+    t->head = w->next;
+    sf_reject_promise_reason(w->promise, t->stored_error);
+    sf_write_req_free(w);
+  }
+  t->tail = NULL;
+  t->queue_size = 0;
+  t->close_queued = false;
+  if (!t->has_pending_abort) {
+    sfw_reject_close_and_closed(t);
+    return;
+  }
+  if (t->pending_abort_was_erroring) {
+    t->has_pending_abort = false;
+    sf_reject_promise_reason(t->pending_abort, t->stored_error);
+    scr_promise_release(t->pending_abort);
+    t->pending_abort = NULL;
+    scr_dyn_release(t->pending_abort_reason);
+    t->pending_abort_reason = NULL;
+    sfw_reject_close_and_closed(t);
+    return;
+  }
+  /* The sink's abort runs; its promise settles the abort request. */
+  sft_abort_algorithm(t, t->pending_abort_reason);
+}
+
+static void sfw_start_erroring(SfTransform *t, ScrDyn *reason) {
+  t->state = SFW_ERRORING;
+  scr_dyn_release(t->stored_error);
+  t->stored_error = scr_dyn_retain(reason);
+  if (t->writer) sfw_writer_ensure_ready_rejected(t->writer, reason);
+  if (!sfw_has_operation_in_flight(t) && t->started) sfw_finish_erroring(t);
+}
+
+static void sfw_deal_with_rejection(SfTransform *t, ScrDyn *error) {
+  if (t->state == SFW_WRITABLE) {
+    sfw_start_erroring(t, error);
+    return;
+  }
+  sfw_finish_erroring(t);
+}
+
+static void sfw_error_if_needed(SfTransform *t, ScrDyn *error) {
+  if (t->state == SFW_WRITABLE) sfw_start_erroring(t, error);
+}
+
+static void sft_set_backpressure(SfTransform *t, bool backpressure);
+static void sft_sink_write(SfTransform *t);
+static void sft_sink_close(SfTransform *t);
+
+static void sfw_advance_queue(SfTransform *t) {
+  if (!t->started || t->in_flight || t->in_flight_close) return;
+  if (t->state == SFW_ERRORING) {
+    sfw_finish_erroring(t);
+    return;
+  }
+  if (t->head) {
+    SfWriteReq *w = t->head;
+    t->head = w->next;
+    if (!t->head) t->tail = NULL;
+    w->next = NULL;
+    t->in_flight = w;
+    sft_sink_write(t);
+    return;
+  }
+  if (t->close_queued) {
+    t->close_queued = false;
+    t->in_flight_close = t->close_request;
+    t->close_request = NULL;
+    sft_sink_close(t);
+  }
+}
+
+static void sfw_finish_write(SfTransform *t, ScrDyn *error) {
+  SfWriteReq *w = t->in_flight;
+  t->in_flight = NULL;
+  if (error) {
+    sf_reject_promise_reason(w->promise, error);
+    sf_write_req_free(w);
+    sfw_deal_with_rejection(t, error);
+    return;
+  }
+  scr_promise_fulfill_void(w->promise);
+  sf_write_req_free(w);
+  if (t->queue_size) t->queue_size--;
+  if (!sfw_close_queued_or_in_flight(t) && t->state == SFW_WRITABLE) {
+    sfw_update_backpressure(t, t->queue_size >= 1);
+  }
+  sfw_advance_queue(t);
+}
+
+static void sfw_finish_close(SfTransform *t, ScrDyn *error) {
+  ScrPromise *p = t->in_flight_close;
+  t->in_flight_close = NULL;
+  if (error) {
+    sf_reject_promise_reason(p, error);
+    scr_promise_release(p);
+    if (t->has_pending_abort) {
+      t->has_pending_abort = false;
+      sf_reject_promise_reason(t->pending_abort, error);
+      scr_promise_release(t->pending_abort);
+      t->pending_abort = NULL;
+      scr_dyn_release(t->pending_abort_reason);
+      t->pending_abort_reason = NULL;
+    }
+    sfw_deal_with_rejection(t, error);
+    return;
+  }
+  scr_promise_fulfill_void(p);
+  scr_promise_release(p);
+  if (t->state == SFW_ERRORING) {
+    scr_dyn_release(t->stored_error);
+    t->stored_error = NULL;
+    if (t->has_pending_abort) {
+      t->has_pending_abort = false;
+      scr_promise_fulfill_void(t->pending_abort);
+      scr_promise_release(t->pending_abort);
+      t->pending_abort = NULL;
+      scr_dyn_release(t->pending_abort_reason);
+      t->pending_abort_reason = NULL;
+    }
+  }
+  t->state = SFW_CLOSED;
+  if (t->writer) scr_promise_fulfill_void(t->writer->closed);
+}
+
+/* WritableStreamAbort: +1 promise. */
+static ScrPromise *sfw_abort(SfTransform *t, ScrDyn *reason) {
+  if (t->state == SFW_CLOSED || t->state == SFW_ERRORED) {
+    return sf_promise_resolved();
+  }
+  if (t->has_pending_abort) return scr_promise_retain(t->pending_abort);
+  bool was_erroring = t->state == SFW_ERRORING;
+  ScrPromise *p = scr_promise_new();
+  t->has_pending_abort = true;
+  t->pending_abort = scr_promise_retain(p);
+  t->pending_abort_reason =
+      scr_dyn_retain(was_erroring ? scr_dyn_undefined() : reason);
+  t->pending_abort_was_erroring = was_erroring;
+  if (!was_erroring) sfw_start_erroring(t, reason);
+  return p;
+}
+
+/* WritableStreamClose: +1 promise. */
+static ScrPromise *sfw_close(SfTransform *t) {
+  if (t->state == SFW_CLOSED || t->state == SFW_ERRORED) {
+    char message[64];
+    snprintf(message, sizeof message, "WritableStream is %s",
+             t->state == SFW_CLOSED ? "closed" : "errored");
+    return sf_promise_invalid_state(message);
+  }
+  ScrPromise *p = scr_promise_new();
+  t->close_request = scr_promise_retain(p);
+  if (t->writer && t->backpressure && t->state == SFW_WRITABLE) {
+    scr_promise_fulfill_void(t->writer->ready);
+  }
+  t->close_queued = true;
+  sfw_advance_queue(t);
+  return p;
+}
+
+/* WritableStreamDefaultWriterWrite: +1 promise. */
+static ScrPromise *sfw_writer_write(SfWriter *w, ScrDyn *chunk) {
+  SfTransform *t = w->stream;
+  if (!t) return sf_promise_invalid_state("Writer is not bound to a WritableStream");
+  if (t->state == SFW_ERRORED || t->state == SFW_ERRORING) {
+    return sf_promise_rejected_with(t->stored_error);
+  }
+  if (sfw_close_queued_or_in_flight(t) || t->state == SFW_CLOSED) {
+    return sf_promise_invalid_state("WritableStream is closed");
+  }
+  SfWriteReq *req = calloc(1, sizeof *req);
+  if (!req) sf_oom();
+  req->chunk = scr_dyn_retain(chunk);
+  req->promise = scr_promise_new();
+  ScrPromise *p = scr_promise_retain(req->promise);
+  if (t->tail) t->tail->next = req;
+  else t->head = req;
+  t->tail = req;
+  t->queue_size++;
+  sfw_update_backpressure(t, t->queue_size >= 1);
+  sfw_advance_queue(t);
+  return p;
+}
+
+static SfWriter *sfw_get_writer(SfTransform *t) {
+  if (t->writer) {
+    sf_invalid_state("WritableStream is locked");
+    return NULL;
+  }
+  SfWriter *w = calloc(1, sizeof *w);
+  if (!w) sf_oom();
+  w->rc = 1;
+  w->stream = t;
+  w->ready = scr_promise_new();
+  w->closed = scr_promise_new();
+  scr_promise_mark_handled(w->ready);
+  scr_promise_mark_handled(w->closed);
+  switch (t->state) {
+    case SFW_WRITABLE:
+      if (sfw_close_queued_or_in_flight(t) || !t->backpressure) {
+        scr_promise_fulfill_void(w->ready);
+      }
+      break;
+    case SFW_ERRORING:
+      sf_reject_promise_reason(w->ready, t->stored_error);
+      break;
+    case SFW_CLOSED:
+      scr_promise_fulfill_void(w->ready);
+      scr_promise_fulfill_void(w->closed);
+      break;
+    default:
+      sf_reject_promise_reason(w->ready, t->stored_error);
+      sf_reject_promise_reason(w->closed, t->stored_error);
+      break;
+  }
+  t->writer = w;
+  w->rc++; /* the stream's ownership */
+  return w;
+}
+
+static void sfw_writer_release_lock(SfWriter *w) {
+  SfTransform *t = w->stream;
+  if (!t) return;
+  sf_invalid_state("Writer has been released");
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *released = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  sfw_writer_ensure_ready_rejected(w, released);
+  sfw_writer_ensure_closed_rejected(w, released);
+  scr_dyn_release(released);
+  size_t handle_refs = w->handle_refs;
+  t->writer = NULL;
+  w->stream = NULL;
+  sf_writer_release(w); /* the stream's ownership */
+  while (handle_refs-- > 0) sf_transform_release(t);
+}
+
+/* ── TransformStream algorithms (identity transformer) ── */
+
+static void sft_set_backpressure(SfTransform *t, bool backpressure) {
+  if (t->bp_change) {
+    scr_promise_fulfill_void(t->bp_change);
+    scr_promise_release(t->bp_change);
+  }
+  t->bp_change = scr_promise_new();
+  t->t_backpressure = backpressure;
+  if (t->write_waiting) {
+    t->write_waiting = false;
+    sf_transform_defer(t, SFT_WRITE_CONTINUE, 1);
+  }
+}
+
+static bool sft_readable_wants_chunk(const SfStream *r) {
+  return r->collector || (r->reader && r->reader->pending_head);
+}
+
+static bool sft_readable_can_enqueue(const SfStream *r) {
+  return !r->close_requested && !r->closed && !r->error;
+}
+
+/* TransformStreamErrorWritableAndUnblockWrite */
+static void sft_error_writable(SfTransform *t, ScrDyn *error) {
+  sfw_error_if_needed(t, error);
+  if (t->t_backpressure) sft_set_backpressure(t, false);
+}
+
+/* The identity transform's enqueue: NULL on success, else +1 error. */
+static ScrDyn *sft_perform_transform(SfTransform *t, ScrDyn *chunk) {
+  SfStream *r = t->readable;
+  if (!sft_readable_can_enqueue(r)) {
+    sf_invalid_state("Unable to enqueue");
+    ScrCaught *caught = scr_exc_take();
+    ScrDyn *error = scr_caught_to_dyn(caught);
+    scr_caught_release(caught);
+    sft_error_writable(t, error);
+    return error;
+  }
+  sf_stream_enqueue_value(r, chunk);
+  if (scr_exc_pending()) {
+    ScrCaught *caught = scr_exc_take();
+    ScrDyn *error = scr_caught_to_dyn(caught);
+    scr_caught_release(caught);
+    sf_stream_error(r, error);
+    sft_error_writable(t, error);
+    return error;
+  }
+  bool backpressure = !sft_readable_wants_chunk(r);
+  if (backpressure != t->t_backpressure) sft_set_backpressure(t, true);
+  return NULL;
+}
+
+static void sft_sink_write(SfTransform *t) {
+  if (t->t_backpressure) {
+    t->write_waiting = true;
+    return;
+  }
+  ScrDyn *error = sft_perform_transform(t, t->in_flight->chunk);
+  if (error) {
+    scr_dyn_release(t->write_error);
+    t->write_error = error;
+  }
+  sf_transform_defer(t, SFT_WRITE_DONE, 2);
+}
+
+static void sft_sink_close(SfTransform *t) {
+  if (!t->finish) {
+    t->finish = scr_promise_new();
+    scr_promise_mark_handled(t->finish);
+    sf_transform_defer(t, SFT_CLOSE_DONE, 1);
+    return;
+  }
+  /* A cancel or abort already finished the transform. */
+  sf_transform_defer(t, SFT_CLOSE_DONE, 1);
+}
+
+static void sft_abort_algorithm(SfTransform *t, ScrDyn *reason) {
+  (void)reason;
+  if (!t->finish) {
+    t->finish = scr_promise_new();
+    scr_promise_mark_handled(t->finish);
+  }
+  sf_transform_defer(t, SFT_ABORT_DONE, 1);
+}
+
+static void sf_transform_step(SfTransform *t, int op) {
+  switch (op) {
+    case SFT_WRITE_CONTINUE: {
+      if (!t->in_flight) return;
+      if (t->state == SFW_ERRORING) {
+        ScrDyn *error = scr_dyn_retain(t->stored_error);
+        scr_dyn_release(t->write_error);
+        t->write_error = error;
+      } else {
+        ScrDyn *error = sft_perform_transform(t, t->in_flight->chunk);
+        if (error) {
+          scr_dyn_release(t->write_error);
+          t->write_error = error;
+        }
+      }
+      sf_transform_defer(t, SFT_WRITE_DONE, 3);
+      return;
+    }
+    case SFT_WRITE_DONE: {
+      if (!t->in_flight) return;
+      ScrDyn *error = t->write_error;
+      t->write_error = NULL;
+      sfw_finish_write(t, error);
+      scr_dyn_release(error);
+      return;
+    }
+    case SFT_CLOSE_DONE: {
+      SfStream *r = t->readable;
+      ScrDyn *error = NULL;
+      if (r->error) {
+        error = scr_dyn_retain(r->error);
+      } else {
+        sf_stream_close(r);
+      }
+      if (error) sf_reject_promise_reason(t->finish, error);
+      else scr_promise_fulfill_void(t->finish);
+      if (t->in_flight_close) sfw_finish_close(t, error);
+      scr_dyn_release(error);
+      return;
+    }
+    case SFT_ABORT_DONE: {
+      SfStream *r = t->readable;
+      ScrDyn *reason = t->pending_abort_reason
+                           ? scr_dyn_retain(t->pending_abort_reason)
+                           : scr_dyn_retain(scr_dyn_undefined());
+      bool readable_errored = r->error != NULL;
+      if (!readable_errored) sf_stream_error(r, reason);
+      if (t->has_pending_abort) {
+        t->has_pending_abort = false;
+        if (readable_errored) {
+          sf_reject_promise_reason(t->pending_abort, r->error);
+        } else {
+          scr_promise_fulfill_void(t->pending_abort);
+        }
+        scr_promise_release(t->pending_abort);
+        t->pending_abort = NULL;
+        scr_dyn_release(t->pending_abort_reason);
+        t->pending_abort_reason = NULL;
+      }
+      sfw_reject_close_and_closed(t);
+      scr_dyn_release(reason);
+      return;
+    }
+    case SFT_CANCEL_DONE: {
+      ScrDyn *reason = t->cancel_reason;
+      t->cancel_reason = NULL;
+      if (t->state == SFW_ERRORED) {
+        sf_reject_promise_reason(t->finish, t->stored_error);
+      } else {
+        sfw_error_if_needed(t, reason ? reason : scr_dyn_undefined());
+        if (t->t_backpressure) sft_set_backpressure(t, false);
+        scr_promise_fulfill_void(t->finish);
+      }
+      scr_dyn_release(reason);
+      return;
+    }
+    case SFT_START: {
+      /* Both sides start one turn after construction, the writable side
+       * first (Node registers its start reaction first). */
+      t->started = true;
+      sfw_advance_queue(t);
+      SfStream *r = t->readable;
+      r->started = true;
+      if (!r->close_requested && !r->closed && !r->error) {
+        sf_stream_drain(r);
+        sf_stream_pull(r);
+      }
+      return;
+    }
+  }
+}
+
+/* The readable side's pull: release backpressure; the pull completes when
+ * backpressure changes again. */
+static ScrDyn *sft_pull_thunk(ScrClosure *cb, ScrDyn *const *args,
+                              size_t argc) {
+  (void)args;
+  (void)argc;
+  SfTransform *t = (SfTransform *)scr_box_get_ref(cb->caps[0]);
+  sft_set_backpressure(t, false);
+  ScrDyn *out = scr_dyn_new_promise(t->bp_change);
+  sf_transform_release(t);
+  return out;
+}
+
+/* The readable side's cancel (TransformStreamDefaultSourceCancelAlgorithm):
+ * errors the writable side with the reason and unblocks a waiting write. */
+static ScrDyn *sft_cancel_thunk(ScrClosure *cb, ScrDyn *const *args,
+                                size_t argc) {
+  SfTransform *t = (SfTransform *)scr_box_get_ref(cb->caps[0]);
+  ScrDyn *reason = argc ? args[0] : scr_dyn_undefined();
+  if (!t->finish) {
+    t->finish = scr_promise_new();
+    scr_promise_mark_handled(t->finish);
+    scr_dyn_release(t->cancel_reason);
+    t->cancel_reason = scr_dyn_retain(reason);
+    /* The (identity) cancel algorithm's resolved promise reacts a turn
+     * later. */
+    sf_transform_defer(t, SFT_CANCEL_DONE, 1);
+  }
+  ScrDyn *out = scr_dyn_new_promise(t->finish);
+  sf_transform_release(t);
+  return out;
+}
+
+static ScrDyn *sft_func(SfTransform *t, ScrDynThunk thunk, const char *name) {
+  ScrClosure *cb = scr_closure_new((void *)thunk, 1);
+  cb->caps[0] = sf_transform_box(t);
+  return scr_dyn_new_func(cb, thunk, 1, "(controller)", name);
+}
+
+ScrDyn *scr_fetch_transform_new(void) {
+  SfTransform *t = calloc(1, sizeof *t);
+  if (!t) sf_oom();
+  t->rc = 1;
+  t->state = SFW_WRITABLE;
+  SfStream *r = sf_stream_new_native();
+  r->started = false;
+  r->hwm_zero = true;
+  r->pull_cb = sft_func(t, &sft_pull_thunk, "pull");
+  r->cancel_cb = sft_func(t, &sft_cancel_thunk, "cancel");
+  r->source_this = scr_dyn_retain(scr_dyn_undefined());
+  sf_stream_track_callbacks(r);
+  t->readable = r;
+  /* The writable side's high-water mark of 1 leaves room: no backpressure.
+   * The readable side's 0 does: writes wait for a read. */
+  t->backpressure = false;
+  sft_set_backpressure(t, true);
+  sf_transform_defer(t, SFT_START, 1);
+  ScrDyn *out = scr_dyn_new_handle(t, SCR_DYNH_WEB_TRANSFORM);
+  sf_transform_release(t);
+  return out;
+}
+
+static ScrDyn *sf_transform_get(void *ptr, const char *key, size_t len) {
+  SfTransform *t = ptr;
+  if (sf_name(key, len, "readable")) {
+    return scr_dyn_new_handle(t->readable, SCR_DYNH_WEB_STREAM);
+  }
+  if (sf_name(key, len, "writable")) {
+    return scr_dyn_new_handle(t, SCR_DYNH_WEB_WRITABLE);
+  }
+  return NULL;
+}
+
+static ScrDyn *sf_transform_invoke(void *ptr, ScrDyn *self,
+                                   const char *method, ScrDyn *const *args,
+                                   size_t argc, const char *what) {
+  (void)ptr;
+  (void)self;
+  (void)args;
+  (void)argc;
+  (void)method;
+  sf_not_function(what);
+  return NULL;
+}
+
+static ScrDyn *sf_promise_dyn(ScrPromise *p) {
+  ScrDyn *out = scr_dyn_new_promise(p);
+  scr_promise_release(p);
+  return out;
+}
+
+static ScrDyn *sf_writable_invoke(void *ptr, ScrDyn *self,
+                                  const char *method, ScrDyn *const *args,
+                                  size_t argc, const char *what) {
+  SfTransform *t = ptr;
+  (void)self;
+  if (strcmp(method, "getWriter") == 0) {
+    SfWriter *w = sfw_get_writer(t);
+    if (!w) return NULL;
+    ScrDyn *out = scr_dyn_new_handle(w, SCR_DYNH_WEB_WRITER);
+    sf_writer_release(w);
+    return out;
+  }
+  if (strcmp(method, "abort") == 0) {
+    if (t->writer) {
+      return sf_promise_dyn(
+          sf_promise_invalid_state("WritableStream is locked"));
+    }
+    return sf_promise_dyn(sfw_abort(t, argc ? args[0] : scr_dyn_undefined()));
+  }
+  if (strcmp(method, "close") == 0) {
+    if (t->writer) {
+      return sf_promise_dyn(
+          sf_promise_invalid_state("WritableStream is locked"));
+    }
+    if (sfw_close_queued_or_in_flight(t)) {
+      return sf_promise_dyn(
+          sf_promise_invalid_state("WritableStream is closed"));
+    }
+    return sf_promise_dyn(sfw_close(t));
+  }
+  sf_not_function(what);
+  return NULL;
+}
+
+static ScrDyn *sf_writable_get(void *ptr, const char *key, size_t len) {
+  SfTransform *t = ptr;
+  if (sf_name(key, len, "locked")) return scr_dyn_new_bool(t->writer != NULL);
+  return NULL;
+}
+
+static ScrDyn *sf_writer_invoke(void *ptr, ScrDyn *self, const char *method,
+                                ScrDyn *const *args, size_t argc,
+                                const char *what) {
+  SfWriter *w = ptr;
+  (void)self;
+  if (strcmp(method, "write") == 0) {
+    return sf_promise_dyn(
+        sfw_writer_write(w, argc ? args[0] : scr_dyn_undefined()));
+  }
+  if (strcmp(method, "close") == 0) {
+    SfTransform *t = w->stream;
+    if (!t) {
+      return sf_promise_dyn(sf_promise_invalid_state(
+          "Writer is not bound to a WritableStream"));
+    }
+    if (sfw_close_queued_or_in_flight(t)) {
+      return sf_promise_dyn(
+          sf_promise_invalid_state("WritableStream is closed"));
+    }
+    return sf_promise_dyn(sfw_close(t));
+  }
+  if (strcmp(method, "abort") == 0) {
+    SfTransform *t = w->stream;
+    if (!t) {
+      return sf_promise_dyn(sf_promise_invalid_state(
+          "Writer is not bound to a WritableStream"));
+    }
+    return sf_promise_dyn(sfw_abort(t, argc ? args[0] : scr_dyn_undefined()));
+  }
+  if (strcmp(method, "releaseLock") == 0) {
+    sfw_writer_release_lock(w);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  sf_not_function(what);
+  return NULL;
+}
+
+static ScrDyn *sf_writer_get(void *ptr, const char *key, size_t len) {
+  SfWriter *w = ptr;
+  if (sf_name(key, len, "ready")) return scr_dyn_new_promise(w->ready);
+  if (sf_name(key, len, "closed")) return scr_dyn_new_promise(w->closed);
+  if (sf_name(key, len, "desiredSize")) {
+    SfTransform *t = w->stream;
+    if (!t) {
+      sf_invalid_state("Writer is not bound to a WritableStream");
+      return NULL;
+    }
+    if (t->state == SFW_ERRORED || t->state == SFW_ERRORING) {
+      return scr_dyn_new_null();
+    }
+    if (t->state == SFW_CLOSED) return scr_dyn_new_num(0);
+    return scr_dyn_new_num(1.0 - (double)t->queue_size);
+  }
   return NULL;
 }
 
@@ -5675,6 +6575,13 @@ static const ScrDynHandleMethod sf_headers_methods[] = {
     {"has", 1, false}, {"keys", 0, false}, {"set", 2, false},
     {"values", 0, false}, {NULL, 0, false}};
 
+static const ScrDynHandleMethod sf_writable_methods[] = {
+    {"abort", 0, true}, {"close", 0, true}, {"getWriter", 0, false},
+    {NULL, 0, false}};
+static const ScrDynHandleMethod sf_writer_methods[] = {
+    {"abort", 0, true}, {"close", 0, true}, {"releaseLock", 0, false},
+    {"write", 0, true}, {NULL, 0, false}};
+
 static ScrDyn *sf_rejected(void) {
   ScrPromise *p = scr_promise_settled_ref(NULL, &scr_dyn_retain_v,
                                           &scr_dyn_release_v, NULL);
@@ -5721,6 +6628,23 @@ static const ScrDynHandleOps sf_headers_ops = {
     &sf_headers_invoke, &sf_headers_get, &sf_no_set, NULL, NULL,
     &sf_headers_step, .methods = sf_headers_methods};
 
+static const ScrDynHandleOps sf_transform_ops = {
+    "TransformStream", &sf_transform_retain_v, &sf_transform_release_v,
+    &sf_transform_invoke, &sf_transform_get, &sf_no_set, NULL};
+static const ScrDynHandleOps sf_writable_ops = {
+    "WritableStream", &sf_transform_retain_v, &sf_transform_release_v,
+    &sf_writable_invoke, &sf_writable_get, &sf_no_set, NULL,
+    .methods = sf_writable_methods,
+    .invalid_this = "Value of \"this\" must be of type WritableStream",
+    .rejected = &sf_rejected};
+static const ScrDynHandleOps sf_writer_ops = {
+    "WritableStreamDefaultWriter", &sf_writer_handle_retain_v,
+    &sf_writer_handle_release_v, &sf_writer_invoke, &sf_writer_get,
+    &sf_no_set, NULL, .methods = sf_writer_methods,
+    .invalid_this =
+        "Value of \"this\" must be of type WritableStreamDefaultWriter",
+    .rejected = &sf_rejected};
+
 static void sf_teardown(void) {
   while (sf_live) {
     SfTransfer *t = sf_live;
@@ -5760,6 +6684,9 @@ void scr_fetch_install(void) {
   scr_dyn_handle_install(SCR_DYNH_FETCH_REQUEST, &sf_request_ops);
   scr_dyn_handle_install(SCR_DYNH_FETCH_RESPONSE, &sf_response_ops);
   scr_dyn_handle_install(SCR_DYNH_FETCH_HEADERS, &sf_headers_ops);
+  scr_dyn_handle_install(SCR_DYNH_WEB_TRANSFORM, &sf_transform_ops);
+  scr_dyn_handle_install(SCR_DYNH_WEB_WRITABLE, &sf_writable_ops);
+  scr_dyn_handle_install(SCR_DYNH_WEB_WRITER, &sf_writer_ops);
   scr_et_signal_core_fn = sf_signal_core_of;
   scr_atexit(sf_teardown);
 }

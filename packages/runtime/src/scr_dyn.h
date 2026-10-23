@@ -212,6 +212,9 @@ typedef enum {
   X(WEB_CONTROLLER, 11) /* native ReadableStreamDefaultController */ \
   X(WEB_READER, 10) /* native ReadableStreamDefaultReader */ \
   X(WEB_STREAM, 9) /* native WHATWG ReadableStream */ \
+  X(WEB_TRANSFORM, 73) /* native identity TransformStream (scr_fetch.c) */ \
+  X(WEB_WRITABLE, 74) /* a TransformStream's WritableStream (scr_fetch.c) */ \
+  X(WEB_WRITER, 75) /* WritableStreamDefaultWriter (scr_fetch.c) */ \
   X(WORKER, 35)
 
 typedef enum {
