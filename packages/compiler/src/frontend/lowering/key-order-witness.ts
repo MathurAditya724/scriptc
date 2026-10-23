@@ -28,7 +28,19 @@
  *    build keeps today's table, since another table would make values
  *    parsed in today's order keep a source view; a shape object literals
  *    also build takes the literals' order. Their order is unknown, so a
- *    copy out of such a shape cannot be ordered statically;
+ *    copy out of such a shape cannot be ordered statically. A conversion
+ *    builds only the records it can create from a JavaScript value: none
+ *    for a boxed primitive or a class instance (a native instance whose
+ *    fields its own writes fill), none for a checked function's record
+ *    parameters, and none for the checked result of a typed call of a
+ *    method the program may replace on its instance. Without a replacement
+ *    that result is the method's own native value, boxed and checked back
+ *    unchanged; a replacement's result keeps its own order in its record
+ *    source, and only copies out of it follow the chosen table, as they
+ *    followed today's;
+ *  - a literal that starts by spreading a value of its own shape copies
+ *    that value's order. While no checked conversion builds the shape,
+ *    every value has the one chosen order, so the copy adds no witness;
  *  - a write to an optional key that may be absent appends it in Node. A
  *    key no construction creates ("late-only") goes after every key a
  *    construction can create; any other moving write goes after every key.
@@ -57,6 +69,7 @@ import {
   transformStmtList,
 } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
+import * as ts from "../ts7/adapter.js";
 import { ALWAYS_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 
 /** The statements a key-order helper runs for record `ref`: `walks[0]`,
@@ -112,6 +125,7 @@ export type KeyOrderSegment =
 export class KeyOrderNotes {
   private readonly literals = new Map<IrExpr, KeyOrderSegment[]>();
   private readonly copies = new Map<IrExpr, string>();
+  private readonly methodResults = new Map<IrExpr, string>();
   /** Shapes a frontend order surface (keys, values/entries, inspect,
    * index-signature merges) walks. */
   readonly observed = new Set<string>();
@@ -128,13 +142,22 @@ export class KeyOrderNotes {
     return node;
   }
 
+  /** The checked result of a typed call of method `name`, which the program
+   * may replace on its instance (class-callbacks.ts classCallbackCall). */
+  methodResult(node: IrExpr, name: string): IrExpr {
+    this.methodResults.set(node, name);
+    return node;
+  }
+
   /** A pass rebuilt `from` as `to` (traverse.ts mapExprChildren): the
-   * rebuilt literal is the same construction, so it keeps the witness. */
+   * rebuilt node is the same construction, so it keeps the witness. */
   follow(from: IrExpr, to: IrExpr): void {
     const segments = this.literals.get(from);
     if (segments !== undefined) this.literals.set(to, segments);
     const source = this.copies.get(from);
     if (source !== undefined) this.copies.set(to, source);
+    const method = this.methodResults.get(from);
+    if (method !== undefined) this.methodResults.set(to, method);
   }
 
   observe(type: IrType): void {
@@ -147,6 +170,11 @@ export class KeyOrderNotes {
 
   copyOf(node: IrExpr): string | undefined {
     return this.copies.get(node);
+  }
+
+  /** The method whose checked result `node` is, if it is one. */
+  methodResultOf(node: IrExpr): string | undefined {
+    return this.methodResults.get(node);
   }
 }
 
@@ -201,6 +229,71 @@ function orderPreservingClone(node: IrExpr & { kind: "dynCheck" }): boolean {
   );
 }
 
+const PRIMITIVE_KINDS = new Set([
+  "f64",
+  "bigint",
+  "string",
+  "bool",
+  "undefinedT",
+  "nullT",
+  "symbol",
+]);
+
+/** A checked conversion of a boxed primitive (the `undefined` a dynamic
+ * construction passes for a missing argument) answers that primitive or
+ * throws: it builds no record. */
+function primitiveSource(node: IrExpr & { kind: "dynCheck" }): boolean {
+  return node.value.kind === "dynFrom" && PRIMITIVE_KINDS.has(node.value.value.type.kind);
+}
+
+/** Whether a census site for a method name can only read the method or
+ * install a replacement whose result holds no object: a read
+ * (`C.prototype.m`, `obj.m`) outside an assignment target, or an assignment
+ * of a function expression whose return type is primitive. Other sites (a
+ * computed write of another value, a reflection call, a property bag) may
+ * install a replacement that returns a record. */
+function replacesWithoutRecords(lowerer: Lowerer, site: ts.Node): boolean {
+  const parent = site.parent;
+  if (ts.isPropertyAccessExpression(site) || ts.isElementAccessExpression(site))
+    return !(
+      parent !== undefined &&
+      ts.isBinaryExpression(parent) &&
+      parent.left === site &&
+      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    );
+  if (!ts.isBinaryExpression(site) || site.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+    return false;
+  let value = site.right;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isArrowFunction(value) && !ts.isFunctionExpression(value)) return false;
+  const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(value));
+  return (
+    signatures.length > 0 &&
+    signatures.every((signature) =>
+      primitiveOnly(lowerer.checker.getReturnTypeOfSignature(signature)),
+    )
+  );
+}
+
+/** A type whose values are primitives (or void): it holds no record. */
+function primitiveOnly(type: ts.Type): boolean {
+  if (type.isUnionType()) return ts.constituentTypes(type).every(primitiveOnly);
+  return (
+    (type.flags &
+      (ts.TypeFlags.StringLike |
+        ts.TypeFlags.NumberLike |
+        ts.TypeFlags.BooleanLike |
+        ts.TypeFlags.BigIntLike |
+        ts.TypeFlags.ESSymbolLike |
+        ts.TypeFlags.Null |
+        ts.TypeFlags.Undefined |
+        ts.TypeFlags.Void |
+        ts.TypeFlags.Never)) !==
+    0
+  );
+}
+
 /** Chooses each in-scope record shape's enumeration table from its
  * witnesses. Runs once retained reachability has settled the historical
  * tables and derived metadata, before the order-snapshotting helper bodies
@@ -239,35 +332,60 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   /** Every record shape a type can hold, through fields, arms, elements,
    * callables, promises and class fields. */
   /** Each walk shares one `seen` set per result set, so every type graph
-   * is walked once however many roots reach it. */
-  const shapesIn = (type: IrType, out: Set<string>, seen: Set<string>): void => {
-    const visit = (t: IrType): boolean => {
+   * is walked once however many roots reach it.
+   *
+   * `produced` walks only what a checked conversion into the type can
+   * build. It answers an existing native instance for a class type (a plain
+   * object cannot acquire a class brand; only %Error rebuilds), so the
+   * records the instance's fields hold come from the class's own writes and
+   * its checked field setters, each a witness of its own. A checked
+   * function's parameters receive native values: a record parameter is
+   * passed out, never built, though a callback among them receives values
+   * built from JavaScript again. */
+  const shapesIn = (type: IrType, out: Set<string>, seen: Set<string>, produced = false): void => {
+    const visit = (t: IrType, built: boolean): boolean => {
+      const mark = built ? "" : "-";
+      // A container JavaScript builds converts into fresh native storage, so
+      // its children are built too. One passed out stays shared: JavaScript
+      // writes into it (built children) and reads native values out of it,
+      // such as callbacks whose parameters it then builds (children passed
+      // out). Those children count in both directions.
+      const child = (type: IrType): boolean => {
+        visit(type, true);
+        if (!built) visit(type, false);
+        return true;
+      };
       if (t.kind === "record") {
-        if (seen.has("r:" + t.shapeId)) return true;
-        seen.add("r:" + t.shapeId);
-        out.add(t.shapeId);
+        if (seen.has(mark + "r:" + t.shapeId)) return true;
+        seen.add(mark + "r:" + t.shapeId);
+        if (built) out.add(t.shapeId);
         const shape = shapes.get(t.shapeId);
         if (shape) {
-          for (const f of shape.fields) visit(f.type);
-          if (shape.indexValue) visit(shape.indexValue);
+          for (const f of shape.fields) child(f.type);
+          if (shape.indexValue) child(shape.indexValue);
         }
         return true;
       }
       if (t.kind === "union") {
-        if (seen.has("u:" + t.unionId)) return true;
-        seen.add("u:" + t.unionId);
-        for (const arm of lowerer.unions.get(t.unionId)?.arms ?? []) visit(arm);
+        if (seen.has(mark + "u:" + t.unionId)) return true;
+        seen.add(mark + "u:" + t.unionId);
+        for (const arm of lowerer.unions.get(t.unionId)?.arms ?? []) visit(arm, built);
         return true;
       }
       if (t.kind === "object") {
-        if (seen.has("c:" + t.className)) return true;
-        seen.add("c:" + t.className);
-        for (const f of lowerer.classes.get(t.className)?.def.fields ?? []) visit(f.type);
+        if (produced && t.className !== "%Error") return true;
+        if (seen.has(mark + "c:" + t.className)) return true;
+        seen.add(mark + "c:" + t.className);
+        for (const f of lowerer.classes.get(t.className)?.def.fields ?? []) child(f.type);
         return true;
       }
-      return everyTypeChild(t, visit);
+      if (produced && t.kind === "func") {
+        for (const param of t.params) visit(param, !built);
+        return visit(t.ret, built);
+      }
+      return everyTypeChild(t, child);
     };
-    visit(type);
+    visit(type, true);
   };
   const opaqueShapes = new Set<string>();
   const opaqueSeen = new Set<string>();
@@ -278,9 +396,17 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
    * declaration's order, the order their table holds. */
   const declaredShapes = new Set<string>();
   const declaredSeen = new Set<string>();
+  /** The checked result of a replaceable method call while every site that
+   * can replace the method installs functions that return no record. */
+  const unchangedMethodResult = (node: IrExpr): boolean => {
+    const name = notes.methodResultOf(node);
+    if (name === undefined) return false;
+    const sites = lowerer.methodAccessSites.get(name) ?? [];
+    return sites.every((site) => replacesWithoutRecords(lowerer, site));
+  };
   const producedBy = (type: IrType, opaque: boolean): void => {
     if (opaque) shapesIn(type, opaqueShapes, opaqueSeen);
-    else shapesIn(type, runtimeShapes, runtimeSeen);
+    else shapesIn(type, runtimeShapes, runtimeSeen, true);
   };
 
   // ── collection ──────────────────────────────────────────────────────
@@ -380,15 +506,31 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       case "strIntrinsic":
       case "regexIntrinsic":
       case "bytesIntrinsic":
-      // Generator results ({ done, value }) and Promise.withResolvers
-      // records are built by the backend in a fixed layout.
-      case "genResume":
+      // Promise.withResolvers records are built by the backend in a fixed
+      // layout.
       case "promiseWithResolvers":
         producedBy(e.type, true);
         return;
+      case "genResume": {
+        // A resume builds at most its IteratorResult record ({ done, value }
+        // in a fixed layout; an async generator's settles a promise of it).
+        // The value it carries is the generator's own yielded or returned
+        // value, which the generator's body constructs. The record-free
+        // drives build nothing: `value` moves that value out, and step,
+        // close and a record-free delegate answer a boolean or nothing.
+        if (e.mode === "step" || e.mode === "value" || e.mode === "close") return;
+        const result = e.type.kind === "promise" ? e.type.inner : e.type;
+        if (result.kind === "record") opaqueShapes.add(result.shapeId);
+        return;
+      }
       case "dynCheck":
         if (e.adopt === true) shapesIn(e.type, declaredShapes, declaredSeen);
-        else if (!orderPreservingClone(e)) producedBy(e.type, false);
+        // Conversions that build no record: a boxed primitive, and a
+        // replaceable method's result while no replacement the program can
+        // install returns a record: then it is the method's own value,
+        // boxed and checked back unchanged.
+        else if (!orderPreservingClone(e) && !primitiveSource(e) && !unchangedMethodResult(e))
+          producedBy(e.type, false);
         return;
       case "dynDestrCheck":
       case "caughtCheck":
@@ -649,6 +791,29 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     for (const c of f.copies) deps.add(c.source);
     return [...deps];
   };
+  /** `{ ...value, ...rest }` that starts with a spread of a value of the
+   * literal's own shape holding every key: it creates its keys in the
+   * value's order, and the later segments only overwrite them. With no
+   * checked conversion building the shape, every value enumerates in the
+   * one table this pass chooses, so the copy agrees with any choice and
+   * adds no edge. */
+  const copiesItself = (
+    id: string,
+    f: ShapeFacts,
+    table: readonly string[],
+    segments: readonly KeyOrderSegment[],
+  ): boolean => {
+    const first = segments[0];
+    return (
+      first !== undefined &&
+      first.kind === "spread" &&
+      first.shapeId === id &&
+      !first.maybeAbsent &&
+      !f.runtime &&
+      segments.every((s) => s.kind !== "opaque") &&
+      table.every((k) => !maybeAbsent(id, k))
+    );
+  };
   /** One shape's order given its sources' current orders. */
   const resolveOne = (id: string, current: (source: string) => Resolved): Resolved => {
     const shape = shapes.get(id);
@@ -666,6 +831,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const edges: [string, string][] = [];
     if (f.pinned) chain(table, edges);
     for (const segments of f.literals) {
+      if (copiesItself(id, f, table, segments)) continue;
       const sequences = literalSequences(segments, keySet, current);
       if (sequences === null) return "unknown";
       for (const seq of sequences) chain(seq, edges);
