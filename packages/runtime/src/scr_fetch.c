@@ -3227,8 +3227,17 @@ static void sft_set_backpressure(SfTransform *t, bool backpressure) {
   }
 }
 
+/* After an enqueue: whether a read is still waiting. A fetch upload's read
+ * was just satisfied by the chunk, and it reads again through the next
+ * pull, as a reader's next read() does. */
 static bool sft_readable_wants_chunk(const SfStream *r) {
-  return sf_stream_has_consumer(r);
+  return r->collector || (r->reader && r->reader->pending_head);
+}
+
+/* The readable side is closed or errored: a pull still waiting on
+ * bp_change can no longer receive a chunk, so complete it. */
+static void sft_finish_pull(SfTransform *t) {
+  if (t->bp_change && scr_promise_is_pending(t->bp_change)) scr_promise_fulfill_void(t->bp_change);
 }
 
 static bool sft_readable_can_enqueue(const SfStream *r) {
@@ -3334,6 +3343,7 @@ static void sf_transform_step(SfTransform *t, int op) {
       } else {
         sf_stream_close(r);
       }
+      sft_finish_pull(t);
       if (error) sf_reject_promise_reason(t->finish, error);
       else scr_promise_fulfill_void(t->finish);
       if (t->in_flight_close) sfw_finish_close(t, error);
@@ -3355,6 +3365,7 @@ static void sf_transform_step(SfTransform *t, int op) {
                              : scr_dyn_retain(scr_dyn_undefined());
         bool readable_errored = r->error != NULL;
         if (!readable_errored) sf_stream_error(r, reason);
+        sft_finish_pull(t);
         /* The sink abort algorithm's finish promise, which a
          * readable.cancel() after the abort answers too: rejected with the
          * readable side's stored error when it had already errored, else
@@ -3395,6 +3406,7 @@ static void sf_transform_step(SfTransform *t, int op) {
       } else {
         sfw_error_if_needed(t, reason ? reason : scr_dyn_undefined());
         if (t->t_backpressure) sft_set_backpressure(t, false);
+        sft_finish_pull(t);
         scr_promise_fulfill_void(t->finish);
       }
       scr_dyn_release(reason);
