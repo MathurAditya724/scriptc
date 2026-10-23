@@ -1557,6 +1557,8 @@ static ScrDyn *scr_dyn_not_iterable(const ScrDyn *src, const ScrStr *msg) {
   return NULL;
 }
 
+static ScrDyn *scr_native_iterator_drain(const ScrDyn *src);
+
 /* Math.max(...src) / Math.min(...src) over an untyped iterable: every
  * value's ToNumber runs in order, then NaN poisons and ±0 orders as in
  * Node. A non-iterable source throws V8's call-spread TypeError: `what`
@@ -1575,7 +1577,14 @@ double scr_dyn_math_fold(const ScrDyn *src, bool max, const ScrStr *what) {
   }
   static const char spread_msg[] = "Spread syntax requires ...iterable[Symbol.iterator] to be a function";
   ScrStr *msg = scr_str_new(spread_msg, sizeof spread_msg - 1);
-  ScrDyn *pack = scr_dyn_iter_pack(src, msg);
+  /* The spread takes every value before the call: arrays, strings, bytes
+   * and collections pack, a native iterator (a Map's keys()) drains, and
+   * other iterables (a generator, an object with a Symbol.iterator method)
+   * step their iterator to the end. */
+  ScrDyn *pack = src->kind == SCR_DYN_HANDLE && (src->v.handle.tag == SCR_DYNH_ITERATOR ||
+                                                 scr_dyn_handle_ops_of(src)->iter_step)
+                     ? scr_native_iterator_drain(src)
+                     : scr_dyn_destructure_rest(src, msg);
   scr_str_release(msg);
   if (!pack) return NAN;
   double best = max ? -INFINITY : INFINITY;
