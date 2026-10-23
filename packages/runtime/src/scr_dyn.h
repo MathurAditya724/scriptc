@@ -1472,6 +1472,19 @@ ScrDyn *scr_dyn_visit_view(const ScrDyn *capsule);
  * (scr_http_dyn_install / scr_net_dyn_install — emitted main() calls
  * them exactly when the unit is linked, the scr_net_install story), so
  * this always-linked core never references gated units. */
+/* A method a handle class answers through invoke, read as a value
+ * (`typeof req.json`, `raw[key]()`): the read answers one function per
+ * (tag, method) that calls invoke on its `this`. length is the method's
+ * Function.prototype.length; rejects marks a method whose call on another
+ * receiver answers a rejected promise instead of throwing (the async
+ * WebIDL operations: Body's json(), ReadableStream's cancel()). */
+typedef struct ScrDynHandleMethod {
+  const char *name;
+  uint32_t length;
+  bool rejects;
+  const char *invalid_this; /* NULL = the class's (ScrDynHandleOps) */
+} ScrDynHandleMethod;
+
 typedef struct ScrDynHandleOps {
   const char *cls; /* Node's constructor name — error texts and dynCheck's "got ..." */
   void *(*retain)(void *h);
@@ -1537,6 +1550,16 @@ typedef struct ScrDynHandleOps {
    * stream unit builds the handle's Transform from these operations on its
    * first stream use. NULL = the class is not a stream. */
   const struct ScrDynHandleTransform *transform;
+  /* The class's methods as values, terminated by a NULL name; NULL = a
+   * property read answers no methods (member calls still reach invoke).
+   * See ScrDynHandleMethod. */
+  const ScrDynHandleMethod *methods;
+  /* The TypeError (code ERR_INVALID_THIS) a method value called on another
+   * receiver raises; NULL = WebIDL's "Illegal invocation". */
+  const char *invalid_this;
+  /* A promise rejected with the pending exception (+1), for the rejects
+   * methods; the owning unit supplies it, since promises are a gated unit. */
+  ScrDyn *(*rejected)(void);
 } ScrDynHandleOps;
 
 /* The operations a Transform handle gives the stream unit (scr_stream.c):
