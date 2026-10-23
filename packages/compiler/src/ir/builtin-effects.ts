@@ -671,6 +671,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
   "dyn.iterPack",
+  // ToNumber of each element can run valueOf
+  "dyn.mathFold",
   "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",

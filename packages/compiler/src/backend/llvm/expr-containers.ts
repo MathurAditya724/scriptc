@@ -60,7 +60,10 @@ import {
   emitDenseArrayNumber,
   emitDenseArrayPop,
   emitDenseArrayPush,
+  runtimeAccess,
+  type ArrayAccess,
 } from "./dense-array-access.js";
+import { INT32_ARRAY_METHODS } from "../../ir/int32-arrays.js";
 import { emitUnionWiden } from "./expr-records.js";
 import { registerReplay } from "./emit-journal.js";
 
@@ -115,7 +118,7 @@ export function tagInSet(
 export function arrPush(
   host: LlvmEmitterContext,
   arr: string,
-  acc: "f64" | "bool" | "ref",
+  acc: ArrayAccess,
   value: string,
   element: IrType | null,
 ): string {
@@ -126,7 +129,7 @@ export function arrPush(
 export function emitArrayValues(
   host: LlvmEmitterContext,
   arr: string,
-  acc: "f64" | "bool" | "ref",
+  acc: ArrayAccess,
   element: IrType,
   values: LlValue[],
   prepend = false,
@@ -142,12 +145,15 @@ export function emitArrayValues(
   }
   if (values.length === 1) {
     if (!prepend) return arrPush(host, arr, acc, values[0]!.name, element);
-    const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
+    const flat = runtimeAccess(acc);
+    const ty = flat === "f64" ? "double" : flat === "bool" ? "i1" : "ptr";
     host.declare(
-      `declare double @scr_arr_unshift_${acc}(ptr, ${ty}${acc === "bool" ? " zeroext" : ""})`,
+      `declare double @scr_arr_unshift_${flat}(ptr, ${ty}${flat === "bool" ? " zeroext" : ""})`,
     );
     const result = B.tmp();
-    B.line(`${result} = call double @scr_arr_unshift_${acc}(ptr ${arr}, ${ty} ${values[0]!.name})`);
+    B.line(
+      `${result} = call double @scr_arr_unshift_${flat}(ptr ${arr}, ${ty} ${values[0]!.name})`,
+    );
     return result;
   }
   const capacity = Math.min(values.length, 64);
@@ -165,8 +171,9 @@ export function emitArrayValues(
       const slot = B.tmp(),
         pointer = B.tmp();
       const value = values[start + i]!.name;
+      // The runtime takes double bits for int32 arrays too, and converts.
       const pack =
-        acc === "f64"
+        acc === "f64" || acc === "i32"
           ? `bitcast double ${value} to i64`
           : acc === "bool"
             ? `zext i1 ${value} to i64`
@@ -607,7 +614,15 @@ export function emitArrIntrinsic(
   if (e.receiver.type.kind !== "array")
     throw new InternalCompilerError("llvm emitter bug: arrIntrinsic on non-array");
   const elem = e.receiver.type.elem;
-  const acc = elemAccess(elem);
+  // Int32 arrays (ir/int32-arrays.ts) reach only these methods; the others
+  // take the runtime family's flat access. One with checked stores tests
+  // its kind at each inline access (emitByElementKind) and otherwise takes
+  // the double entry points, which serve both kinds.
+  const checked = host.checkedInt32Array(e.receiver);
+  const access = checked ? "f64" : host.arrayAccess(e.receiver, elem);
+  if ((access === "i32" || checked) && !INT32_ARRAY_METHODS.has(e.method))
+    throw new InternalCompilerError(`llvm emitter bug: ${e.method} on an int32 array`);
+  const acc = runtimeAccess(access);
   const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
   const accArg = acc === "bool" ? "i1 zeroext" : accTy;
   const method = e.method;
@@ -628,6 +643,13 @@ export function emitArrIntrinsic(
         e.receiver.kind === "varRef"
           ? host.constantNumericTables.get(e.receiver.localId)
           : undefined;
+      if (!table && elem.kind === "f64" && checked) {
+        const proven = host.provenDenseIndex(e.receiver, e.args[0]!);
+        const value = host.emitByElementKind(r.name, "double", (kind) =>
+          emitDenseArrayNumber(host, r.name, index, e.args[0], proven, kind),
+        )!;
+        return { name: value, type: e.type };
+      }
       if (!table && elem.kind === "f64")
         return {
           name: emitDenseArrayNumber(
@@ -636,6 +658,7 @@ export function emitArrIntrinsic(
             index,
             e.args[0],
             host.provenDenseIndex(e.receiver, e.args[0]!),
+            access === "i32" ? "i32" : "f64",
           ),
           type: e.type,
         };
@@ -672,7 +695,22 @@ export function emitArrIntrinsic(
       // no-op zero-argument call.
       const vs = e.args.map((a) => host.emitExpr(a));
       host.emitPublishedArrayGuard(r.name, e.receiver.type, 1, f64Lit(0), f64Lit(vs.length));
-      return { name: emitArrayValues(host, r.name, acc, elem, vs), type: e.type };
+      if (checked && vs.length > 0) {
+        // Each value appends in its own kind test: one that is not an int32
+        // widens the array before it is pushed.
+        let length = "";
+        vs.forEach((v, i) => {
+          length = host.emitByElementKind(r.name, "double", (kind, widened) => {
+            if (kind === "i32") host.emitCheckedInt32Store(r.name, v.name, e.args[i]!, widened);
+            return arrPush(host, r.name, kind, v.name, elem);
+          })!;
+        });
+        return { name: length, type: e.type };
+      }
+      // In an int32 kind loop's fast copy, every value is checked before
+      // the first appends.
+      vs.forEach((v, i) => host.emitInt32KindStoreCheck(e.receiver, v, e.args[i]!));
+      return { name: emitArrayValues(host, r.name, access, elem, vs), type: e.type };
     }
     case "pushSpread": {
       // `a.push(...src)`: append src's elements in order (borrowed src,
@@ -746,7 +784,13 @@ export function emitArrIntrinsic(
       let slowLabel = "";
       if (method === "pop") {
         slowLabel = B.newLabel("remove.slow");
-        denseRaw = emitDenseArrayPop(host, r.name, acc, elem, la, slowLabel);
+        const empty = la,
+          slow = slowLabel;
+        denseRaw = checked
+          ? host.emitByElementKind(r.name, "i64", (kind) =>
+              emitDenseArrayPop(host, r.name, kind, elem, empty, slow),
+            )!
+          : emitDenseArrayPop(host, r.name, access, elem, la, slowLabel);
         denseLabel = B.currentLabel();
         B.br(lp);
         B.startBlock(slowLabel);
@@ -935,6 +979,14 @@ export function emitArrIntrinsic(
     case "fillUndefined": {
       const args = e.args.map((arg) => host.emitExpr(arg));
       host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      if (host.checkedFills.has(e)) {
+        // A new int32 array with checked stores, filled with a value that
+        // may not be an int32: widen it first then.
+        const filled = B.newLabel("arr.fill.kind");
+        host.emitCheckedInt32Store(r.name, args[0]!.name, e.args[0]!, filled);
+        B.br(filled);
+        B.startBlock(filled);
+      }
       const helper =
         e.method === "copyWithin"
           ? "scr_arr_copy_within"

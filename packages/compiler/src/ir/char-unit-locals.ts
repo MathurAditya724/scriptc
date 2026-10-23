@@ -486,6 +486,19 @@ function understoodMention(
   reads: ReadonlyMap<string, OptionalCharRead>,
   localTags: (operand: IrExpr) => OptionalCharRead | null,
 ): string | null {
+  // count() visits every object in the body (types, locations, cases), so
+  // only the node kinds handled here are read as IR nodes
+  const kind = node.kind;
+  if (
+    kind !== "varDecl" &&
+    kind !== "strEq" &&
+    kind !== "strCmp" &&
+    kind !== "switch" &&
+    kind !== "unionEq" &&
+    kind !== "libCall" &&
+    kind !== "unionIsTag"
+  )
+    return null;
   const n = node as unknown as IrExpr | IrStmt;
   if (n.kind === "varDecl") {
     if (!n.init) return null;

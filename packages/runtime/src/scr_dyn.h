@@ -624,6 +624,9 @@ static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDy
 ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
 /* Own-enumerable check on a SCR_DYN_OBJ. */
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len);
+/* Stores own property `entry` of `source` on `target` with its attributes:
+ * plain data properties by an ordinary write, others by their descriptor. */
+void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry);
 /* Literal discriminator tests used before selecting a typed record layout.
  * Missing fields and different primitive kinds never match. Borrowed args. */
 bool scr_dyn_field_eq_str(const ScrDyn *d, const ScrStr *key, const ScrStr *value);
@@ -864,6 +867,7 @@ ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators);
  * for-of protocol reads it. +1, or NULL with the error pending. */
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
+void scr_dyn_install_has_instance_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
@@ -1273,6 +1277,10 @@ void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *va
 ScrDyn *scr_errdyn_view_of(const ScrError *e); /* borrowed or NULL */
 /* ToBoolean over the dyn kind (JS-exact); borrowed, never throws. */
 bool scr_dyn_truthy(const ScrDyn *d);
+/* Math.max/Math.min(...src) over an untyped iterable; `what` names the
+ * source in V8's null/undefined spread TypeError. NaN with it pending. */
+double scr_dyn_math_fold(const ScrDyn *src, bool max, const ScrStr *what);
+int scr_dyn_has_instance_hook(const ScrDyn *value, const ScrDyn *callee);
 /* JS String() over a dyn value (arrays join, [object Object], the error
  * encoding renders "name: message"); borrowed, result +1, never throws. */
 ScrStr *scr_dyn_display(const ScrDyn *d);
@@ -1288,15 +1296,19 @@ bool scr_dyn_strict_eq(const ScrDyn *a, const ScrDyn *b);
  * result owned (+1). MAY THROW (NULL with the exception pending). */
 ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method);
 ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
-/* scr_dyn_invoke_prepared for Buffer.prototype method names (scr_bytes_dyn.c),
- * one entry per method family: a Buffer receiver runs the method, any other
- * takes the ordinary dispatch. */
-ScrDyn *scr_dyn_invoke_buffer_num(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
-ScrDyn *scr_dyn_invoke_buffer_write(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
-ScrDyn *scr_dyn_invoke_buffer_fill(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
-ScrDyn *scr_dyn_invoke_buffer_to_string(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
-ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
-ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* scr_dyn_invoke_prepared for a call site whose method name is a constant:
+ * *mid_slot, the site's -1-initialized slot, caches the name's method id
+ * after the first call, so later calls skip the name lookup. */
+ScrDyn *scr_dyn_invoke_prepared_id(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
+/* scr_dyn_invoke_prepared_id for Buffer.prototype method names
+ * (scr_bytes_dyn.c), one entry per method family: a Buffer receiver runs
+ * the method, any other takes the ordinary dispatch. */
+ScrDyn *scr_dyn_invoke_buffer_num(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
+ScrDyn *scr_dyn_invoke_buffer_write(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
+ScrDyn *scr_dyn_invoke_buffer_fill(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
+ScrDyn *scr_dyn_invoke_buffer_to_string(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
+ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
+ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
 /* Keyed read on a FUNC node: the own-property table first (defineProperties
  * writes land there), then "name" (the box's best-effort static name; ""
