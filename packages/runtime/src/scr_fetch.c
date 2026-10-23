@@ -3443,6 +3443,21 @@ static bool sf_request_header_ok(
       !sf_header_name_ci(name, name_len, "expect");
 }
 
+/* Whether every value in `pairs` is already trimmed (sf_trim_header_value
+ * would keep it): the form a copy can take unchanged (SfHeaders.canonical).
+ * Combining duplicate names with an empty value leaves the separator's
+ * space at the end of the combined value, which a copy trims again. */
+static bool sf_header_values_trimmed(ScrArr *pairs) {
+  size_t n = (size_t)scr_arr_len(pairs);
+  for (size_t i = 1; i < n; i += 2) {
+    const ScrStr *value = sf_pair_at(pairs, i);
+    if (value->len == 0) continue;
+    char first = value->data[0], last = value->data[value->len - 1];
+    if (first == ' ' || first == '\t' || last == ' ' || last == '\t') return false;
+  }
+  return true;
+}
+
 static ScrStr *sf_trim_header_value(const ScrStr *value) {
   size_t start = 0;
   size_t end = value->len;
@@ -5065,7 +5080,7 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
   response->rc = 1;
   response->body = stream;
   response->headers = sf_headers_new(header_pairs, false);
-  response->headers->canonical = true;
+  response->headers->canonical = sf_header_values_trimmed(header_pairs);
   response->url = scr_str_new("", 0);
   response->status_text = status_text;
   response->status = status;
@@ -5189,7 +5204,7 @@ ScrDyn *scr_fetch_headers_new(ScrDyn *init) {
   scr_arr_release(converted);
   if (!ok) { scr_arr_release(pairs); return NULL; }
   SfHeaders *headers = sf_headers_new(pairs, false);
-  headers->canonical = true;
+  headers->canonical = sf_header_values_trimmed(pairs);
   ScrDyn *result = scr_dyn_new_handle(headers, SCR_DYNH_FETCH_HEADERS);
   sf_headers_release(headers);
   return result;

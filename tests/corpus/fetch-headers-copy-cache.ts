@@ -106,3 +106,20 @@ console.log(spacedList(new Headers(spaced)));
 console.log(spacedList(new Headers(new Headers(spaced))));
 console.log(spacedList(new Response("", { headers: spaced }).headers));
 console.log(spacedList(new Request("http://example.test/", { headers: spaced }).headers));
+
+// The same through duplicate constructor entries, in a Headers object and
+// in a Response's own headers.
+const entries: [string, string][] = [
+  ["a", "x"],
+  ["a", ""],
+  ["c", ""],
+  ["c", ""],
+  ["d", "plain"],
+];
+const built = new Headers(entries);
+console.log(spacedList(built));
+console.log(spacedList(new Headers(built)));
+const builtResponse = new Response("", { headers: entries });
+console.log(spacedList(builtResponse.headers));
+console.log(spacedList(new Headers(builtResponse.headers)));
+console.log(spacedList(new Request("http://example.test/", { headers: built }).headers));
