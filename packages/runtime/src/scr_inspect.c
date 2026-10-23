@@ -646,6 +646,54 @@ ScrStr *scr_insp_nested_end(ScrStr *prefix, ScrStr *inner) {
   return ib_take(&out);
 }
 
+/* The inspector's state at the start of a top-level render. A render that
+ * an inspection refusal ends leaves its compiled frames open: the Error
+ * propagates out of the emitted helpers before their scr_insp_end and
+ * scr_insp_nested_end calls. The emitted render takes a mark first and
+ * unwinds to it on every exit (lower-inspect.ts), so later renders start
+ * from the state the refused one found. */
+typedef struct {
+  size_t nframes;
+  size_t nsaved;
+  size_t nseen;
+  size_t indent;
+  double cur_depth;
+} InspMark;
+
+static SCR_TL InspMark *g_marks;
+static SCR_TL size_t g_nmarks;
+static SCR_TL size_t g_marks_cap;
+
+void scr_insp_mark(void) {
+  if (g_nmarks == g_marks_cap) {
+    g_marks_cap = g_marks_cap ? g_marks_cap * 2 : 4;
+    g_marks = realloc(g_marks, g_marks_cap * sizeof(InspMark));
+    if (!g_marks) insp_oom();
+  }
+  g_marks[g_nmarks++] = (InspMark){g_nframes, g_nsaved, g_nseen, g_indent, g_cur_depth};
+}
+
+void scr_insp_unwind(void) {
+  InspMark m = g_marks[--g_nmarks];
+  while (g_nframes > m.nframes) {
+    InspFrame *f = &g_frames[--g_nframes];
+    for (size_t i = 0; i < f->len; i++) scr_str_release(f->items[i]);
+    free(f->items);
+  }
+  while (g_nsaved > m.nsaved) {
+    InspSaved *sv = &g_saved[--g_nsaved];
+    free(g_seen);
+    g_seen = sv->seen;
+    g_seen_cap = sv->seen_cap;
+    memcpy(g_circ, sv->circ, sizeof g_circ);
+    g_ncirc = sv->ncirc;
+  }
+  if (g_nseen > m.nseen) g_nseen = m.nseen;
+  g_indent = m.indent;
+  g_cur_depth = m.cur_depth;
+  g_pending_seen = NULL;
+}
+
 /* ── string values (formatPrimitive's string half) ───────────────────── */
 
 /* Byte offset of UTF-16 unit `units` — when the boundary splits an astral
@@ -1422,7 +1470,7 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
   for (size_t i = 0; i < d->v.obj.len; i++) {
     ScrDynEntry *ent = &d->v.obj.entries[i];
     if (!insp_obj_shows(ent)) continue;
-    ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
+    ScrStr *val = ent->accessor ? insp_accessor_tag(ent) : scr_insp_dyn(ent->value, recurse + 1, depth);
     InspBuf eb = {0};
     if (ent->enumerable) {
       insp_key_into(&eb, ent->key, ent->key_len);
@@ -1443,7 +1491,7 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
     ScrDynEntry *ent = scr_insp_symbol_entry(d, i);
     if (!ent) continue;
     ScrStr *key = scr_insp_dyn(d->symbol_keys->v.arr.items[i], recurse + 1, depth);
-    ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
+    ScrStr *val = ent->accessor ? insp_accessor_tag(ent) : scr_insp_dyn(ent->value, recurse + 1, depth);
     InspBuf eb = {0};
     /* A hidden symbol key is bracketed like a hidden string key. */
     if (!ent->enumerable) ib_char(&eb, '[');
@@ -1635,10 +1683,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_ARR: {
       size_t len = d->v.arr.len;
       /* Named and noncanonical numeric properties follow the elements as
-       * `key: value` entries (Node's array extras). */
+       * `key: value` entries (Node's array extras); under showHidden the
+       * own `length` comes first, and non-enumerable properties show too. */
       const ScrDyn *props = d->v.arr.properties;
       size_t nprops = 0;
-      for (size_t i = 0; props && i < props->v.obj.len; i++) nprops += props->v.obj.entries[i].enumerable;
+      for (size_t i = 0; props && i < props->v.obj.len; i++) nprops += insp_obj_shows(&props->v.obj.entries[i]);
       if (len == 0 && nprops == 0 && !g_show_hidden) return scr_str_new("[]", 2);
       if (recurse > depth) return scr_str_new("[Array]", 7);
       scr_insp_begin(recurse + 1);
@@ -1672,9 +1721,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_str_release(m);
       }
       if (g_show_hidden) {
-        /* The own non-enumerable `length`, after the items and before the
-         * other own properties. Node's grouping reads value[k] for every
-         * output position k, this one included. */
+        /* The own non-enumerable `length`, after the items. Node's
+         * grouping reads value[k] for every output position k, this one
+         * included. */
         char line[48];
         int n = snprintf(line, sizeof line, "[length]: %zu", len);
         ScrStr *s = scr_str_new(line, (size_t)n);
@@ -1685,10 +1734,13 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       }
       for (size_t k = 0; props && k < props->v.obj.len; k++) {
         const ScrDynEntry *ent = &props->v.obj.entries[k];
-        if (!ent->enumerable) continue;
+        if (!insp_obj_shows(ent)) continue;
         ScrStr *val = ent->accessor ? insp_accessor_tag(ent) : scr_insp_dyn(ent->value, recurse + 1, depth);
         InspBuf eb = {0};
+        /* formatProperty's hidden key: the key's rendering in brackets. */
+        if (!ent->enumerable) ib_char(&eb, '[');
         insp_key_into(&eb, ent->key, ent->key_len);
+        if (!ent->enumerable) ib_char(&eb, ']');
         ib_cstr(&eb, ": ");
         ib_bytes(&eb, val->data, val->len);
         scr_str_release(val);
@@ -1702,9 +1754,8 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         entries++;
       }
       /* Node's grouping leaves out the last entry when there are more
-       * entries than maxArrayLength (the `... more items` entry when the
-       * array has no properties, or under showHidden the `[length]`
-       * entry). */
+       * entries than maxArrayLength (100): the `... more items` entry,
+       * `[length]` under showHidden, or the last property. */
       bool last_out = entries > 100;
       ScrStr *base = scr_str_new("", 0);
       ScrStr *b0 = scr_str_new("[", 1);

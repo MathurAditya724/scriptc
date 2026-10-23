@@ -901,6 +901,112 @@ export function inspectExpr(
   depth: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
+  const render = inspectExprBody(lowerer, t, value, recurse, depth, loc);
+  // A top-level render through emitted helpers that can reach a refusal
+  // (the 'not supported yet' Error of insp.dyn) unwinds the inspector to
+  // its state before the render on every exit: the Error propagates out of
+  // the helpers before they close their frames.
+  if (
+    render.kind !== "call" ||
+    recurse.kind !== "numLit" ||
+    recurse.value !== 0 ||
+    !inspectMayRefuse(lowerer, t)
+  )
+    return render;
+  return withInspectUnwind(lowerer, render, t, loc);
+}
+
+/** A top-level helper render (`call helper(v, r, d)`) through a lifted
+ * wrapper that takes insp.mark first and runs insp.unwind however the
+ * render ends: `try { return helper(v, r, d); } finally { insp.unwind(); }`.
+ * A seqExpr cannot hold the try. */
+function withInspectUnwind(
+  lowerer: Lowerer,
+  render: IrExpr & { kind: "call" },
+  t: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const key = `unwind:${render.callee}`;
+  let name = lowerer.inspectHelpers.get(key);
+  if (name === undefined) {
+    name = keyedHelperName(lowerer, "%util.inspUnwound", key);
+    lowerer.inspectHelpers.set(key, name);
+    const params = [
+      { localId: "v.0", name: "v", type: t },
+      { localId: "r.0", name: "r", type: F64 },
+      { localId: "d.0", name: "d", type: F64 },
+    ];
+    const call = (fn: "insp.mark" | "insp.unwind"): IrStmt => ({
+      kind: "exprStmt",
+      expr: { kind: "libCall", fn, args: [], type: VOID, loc },
+      loc,
+    });
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: STRING,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+      body: [
+        call("insp.mark"),
+        {
+          kind: "tryCatch",
+          tryBody: [
+            {
+              kind: "return",
+              value: {
+                kind: "call",
+                callee: render.callee,
+                args: params.map((p) => varRef(p.localId, p.type, loc)),
+                type: STRING,
+                loc,
+              },
+              loc,
+            },
+          ],
+          catchBody: null,
+          catchLocalId: null,
+          finallyBody: [call("insp.unwind")],
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { ...render, callee: name };
+}
+
+/** Whether inspecting a `t` value can end in an inspection refusal: `t`
+ * or a type reachable from it is a checked-dynamic value, a generator, a
+ * Dirent row or a class instance, which can render through a
+ * checked-dynamic view. */
+function inspectMayRefuse(lowerer: Lowerer, t: IrType): boolean {
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    if (u.kind === "dyn" || u.kind === "generator") return true;
+    if (u.kind === "record") {
+      const shape = lowerer.shapes.get(u.shapeId);
+      if (shape && isDirentShape(shape)) return true;
+    }
+    // A class instance can render through its checked-dynamic view, which
+    // a helper built earlier may only learn at the end of lowering
+    // (classInspectsAddedProperties).
+    if (u.kind === "object") return true;
+    const k = typeKey(u);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return typeConstituents(lowerer, u).some(walk);
+  };
+  return walk(t);
+}
+
+function inspectExprBody(
+  lowerer: Lowerer,
+  t: IrType,
+  value: IrExpr,
+  recurse: IrExpr,
+  depth: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
   // A Dirent row renders through its dyn view: Node's `Dirent { ... }`
   // with the Symbol(type) key.
   if (t.kind === "record") {
@@ -2350,40 +2456,55 @@ function parseInspectOptions(
 
 /** A render under non-default breakLength/compact/sorted: the value is evaluated
  * first, the layout applies to this render only, and the defaults return
- * afterwards. */
+ * however the render ends, an inspection refusal included. The render runs
+ * in a lifted function, `(v) => { insp.layout(...); try { return render(v); }
+ * finally { insp.layout(80, 3, false); } }`, since a seqExpr cannot hold the
+ * try; `tag` names the render for the function's key. */
 function withInspectLayout(
   lowerer: Lowerer,
   options: InspectOptions,
   value: IrExpr,
+  tag: string,
   render: (value: IrExpr) => IrExpr,
   loc: SrcLoc,
 ): IrExpr {
   if (options.breakLength === 80 && options.compact === 3 && !options.sorted) return render(value);
-  const input = lowerer.declareHiddenLocal("%inspectInput", value.type);
-  const text = lowerer.declareHiddenLocal("%inspectText", STRING);
-  const layout = (breakLength: number, compact: number, sorted: boolean): IrStmt => ({
-    kind: "exprStmt",
-    expr: {
-      kind: "libCall",
-      fn: "insp.layout",
-      args: [numLit(breakLength, loc), numLit(compact, loc), boolLit(sorted, loc)],
-      type: VOID,
+  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.depth}`;
+  let name = lowerer.inspectHelpers.get(key);
+  if (name === undefined) {
+    name = keyedHelperName(lowerer, "%util.inspLayout", key);
+    lowerer.inspectHelpers.set(key, name);
+    const layout = (breakLength: number, compact: number, sorted: boolean): IrStmt => ({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "insp.layout",
+        args: [numLit(breakLength, loc), numLit(compact, loc), boolLit(sorted, loc)],
+        type: VOID,
+        loc,
+      },
       loc,
-    },
-    loc,
-  });
-  return {
-    kind: "seqExpr",
-    stmts: [
-      { kind: "varDecl", localId: input.id, init: value, loc },
-      layout(options.breakLength, options.compact, options.sorted),
-      { kind: "varDecl", localId: text.id, init: render(varRef(input.id, value.type, loc)), loc },
-      layout(80, 3, false),
-    ],
-    result: varRef(text.id, STRING, loc),
-    type: STRING,
-    loc,
-  };
+    });
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "v.0", name: "v", type: value.type }],
+      returnType: STRING,
+      locals: [{ id: "v.0", name: "v", type: value.type, mutable: false }],
+      body: [
+        layout(options.breakLength, options.compact, options.sorted),
+        {
+          kind: "tryCatch",
+          tryBody: [{ kind: "return", value: render(varRef("v.0", value.type, loc)), loc }],
+          catchBody: null,
+          catchLocalId: null,
+          finallyBody: [layout(80, 3, false)],
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [value], type: STRING, loc };
 }
 
 /** `util.inspect(fn)` / `util.inspect(Cls)` over a DIRECT identifier
@@ -2500,6 +2621,7 @@ export function lowerInspectValue(
         lowerer,
         options,
         value,
+        "typedArray",
         (input) => ({
           kind: "libCall",
           fn: "insp.typedArray",
@@ -2525,6 +2647,7 @@ export function lowerInspectValue(
       lowerer,
       options,
       value,
+      "dirDyn",
       (input) => ({
         kind: "libCall",
         fn: "console.dirDyn",
@@ -2539,6 +2662,7 @@ export function lowerInspectValue(
     lowerer,
     options,
     value,
+    "inspect",
     (input) => inspectExpr(lowerer, value.type, input, numLit(0, loc), numLit(depth, loc), loc),
     loc,
   );

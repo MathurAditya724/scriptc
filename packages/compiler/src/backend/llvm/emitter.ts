@@ -4859,7 +4859,7 @@ export class LlEmitter {
         return;
       }
       case "classObj":
-        addEntry(this.classObjs, key, value as { nameSym: string });
+        addEntry(this.classObjs, key, value as { nameSym: string; baseNameSym: string | null });
         return;
       case "retainWrapper":
         addEntry(this.nullableUnions.retainWrappers, key, value as string);

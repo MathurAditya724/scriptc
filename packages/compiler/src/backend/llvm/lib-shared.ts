@@ -663,6 +663,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.moreItems": "scr_insp_more_items",
   "insp.end": "scr_insp_end",
   "insp.nestedBegin": "scr_insp_nested_begin",
+  "insp.mark": "scr_insp_mark",
+  "insp.unwind": "scr_insp_unwind",
   "insp.nestedEnd": "scr_insp_nested_end",
   // Circular references over cycle-capable composites (Node's
   // seen/circular machinery — none of these throw; refWrap borrows its

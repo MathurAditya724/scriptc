@@ -76,6 +76,10 @@ ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse,
  * caller's level (+1; borrows both). */
 void scr_insp_nested_begin(void);
 ScrStr *scr_insp_nested_end(ScrStr *prefix, ScrStr *inner);
+/* Mark the inspector's state before a top-level render, and return to the
+ * mark when the render ends, normally or by an inspection refusal. */
+void scr_insp_mark(void);
+void scr_insp_unwind(void);
 
 /* The buf.read* / buf.write* numeric families on u8 bytes, Node-exact:
  * boundsError's ladder (non-integer offset → 'It must be an integer', a

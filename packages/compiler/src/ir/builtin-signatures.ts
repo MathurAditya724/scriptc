@@ -4414,6 +4414,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * `prefix inner` re-indented at the caller's level (+1). */
   "insp.nestedBegin": { argTypes: [], result: VOID },
   "insp.nestedEnd": { argTypes: [STRING, STRING], result: STRING },
+  /** Around a top-level render that an inspection refusal can end: mark
+   * records the inspector's frame and nesting depth, unwind (in the
+   * render's finally) closes what the render left open above it. */
+  "insp.mark": { argTypes: [], result: VOID },
+  "insp.unwind": { argTypes: [], result: VOID },
   /** node:string_decoder's utf8 StringDecoder (scr_string.c): the decoder
    * value is a one-field record whose f64 PACKS the pending partial
    * sequence (count + up to 3 raw bytes — Node buffers at most 3 for
