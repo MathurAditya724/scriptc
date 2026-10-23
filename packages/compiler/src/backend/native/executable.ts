@@ -114,6 +114,7 @@ interface RuntimeUnitContext {
   tlsCa: boolean;
   cipher: boolean;
   ecdh: boolean;
+  dh: boolean;
   pki: boolean;
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
@@ -278,8 +279,15 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
   // Own properties JavaScript adds to children.
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
+  // The declaration-typed boundary's adoption.
+  unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // for await over checked-dynamic values that may hold native streams.
+  unit(
+    (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
+    "scr_dyn_for_await_stream.c",
+  ),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
@@ -313,6 +321,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           ...(u.tls ? [u.rt(join(u.rtDir, "scr_tls.c"))] : []),
           ...(u.cipher ? [u.rt(join(u.rtDir, "scr_cipher.c"))] : []),
           ...(u.ecdh ? [u.rt(join(u.rtDir, "scr_ecdh.c"))] : []),
+          ...(u.dh ? [u.rt(join(u.rtDir, "scr_dh.c"))] : []),
           ...(u.pki ? [u.rt(join(u.rtDir, "scr_pki.c"))] : []),
           ...(u.cipher && u.opts.webcrypto ? [u.rt(join(u.rtDir, "scr_webcrypto_aes.c"))] : []),
           u.tlsArchive,
@@ -330,6 +339,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  // Readable.fromWeb reads a web ReadableStream through its reader.
+  unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -379,11 +390,13 @@ export async function compileCInternal(
   const http = (opts.http ?? false) || nativeFetch;
   const tls = (opts.tls ?? false) || nativeFetch;
   const tlsCa = (opts.tlsCa ?? false) || tls;
-  // Symmetric ciphers and ECDH link the same mbedTLS archive as TLS.
+  // Symmetric ciphers, ECDH and DiffieHellman link the same mbedTLS
+  // archive as TLS.
   const cipher = opts.cipher ?? false;
   const ecdh = opts.ecdh ?? false;
+  const dh = opts.dh ?? false;
   const pki = opts.pki ?? false;
-  const mbedtls = tls || cipher || ecdh || pki;
+  const mbedtls = tls || cipher || ecdh || dh || pki;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -741,6 +754,7 @@ export async function compileCInternal(
       tlsCa,
       cipher,
       ecdh,
+      dh,
       pki,
       lreObjects,
       zlibObjects,

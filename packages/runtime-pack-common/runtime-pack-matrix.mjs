@@ -127,8 +127,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_dyn.c", "streamDyn"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
+  ["scr_decl_adopt.c", "declAdopt"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
+  ["scr_dyn_for_await_stream.c", all("dynForAwait", "stream", "dynAsync")],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],
   // FileHandle streams reference both the stream unit and FileHandle.
@@ -151,6 +153,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
   ["scr_ecdh.c", "ecdh"],
+  ["scr_dh.c", "dh"],
   ["scr_pki.c", "pki"],
   ["scr_wasm.c", "wasm"],
   ["scr_webcrypto.c", "webcrypto"],
@@ -159,6 +162,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // WebCrypto's AES ciphers run over the cipher feature's mbedTLS archive.
   ["scr_webcrypto_aes.c", all("cipher", "webcrypto")],
   ["scr_fetch.c", "nativeFetch"],
+  ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
 export function variantsFor(source) {
@@ -219,7 +223,7 @@ export function createRuntimePackMatrix({
     { id: "quickjs", predicate: false },
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
-    { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "pki") },
+    { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];
   const matrix = withLibraryRuntimeFlavors(
     withWorkerRuntimeVariants({
