@@ -909,6 +909,9 @@ export class ClassDynamicDispatch {
   private descriptorHelper: IrFunction | null = null;
   private prototypeHelper: IrFunction | null = null;
   private readonly prototypeClasses = new Set<string>();
+  /** The stand-in prototype object of each class without prototype data
+   * (prototypeStandIn), by class name. */
+  private readonly prototypeStandIns = new Set<string>();
   /** The prototype reads of identity walks, by libCall, and the classes
    * each one answers for boxed instances. */
   private readonly prototypeIdentityHelpers = new Map<
@@ -1181,32 +1184,76 @@ export class ClassDynamicDispatch {
         const value = varRef("value", DYN, loc);
         // A class with no prototype data in its chain (one extending
         // Error, or with no methods) has no prototype a program can name:
-        // a fresh object stands in, so an identity comparison or an
-        // instanceof walk (through Object.prototype to null) answers false
-        // instead of reaching the reflection refusal.
-        const standIn: IrExpr = { kind: "dynObjLit", fields: [], type: DYN, loc };
-        const prototype = hasClassPrototypeData(info)
-          ? classPrototypeData(lowerer, info, loc, {
-              kind: "dynCheck",
-              value,
-              type,
-              loc,
-            })
-          : standIn;
-        if (prototype)
-          helper.fn.body.unshift({
+        // an object of the class's own stands in, so instances of one class
+        // share it (`Object.getPrototypeOf(a) === Object.getPrototypeOf(b)`),
+        // other prototypes differ from it, and an instanceof walk (through
+        // Object.prototype to null) answers false instead of reaching the
+        // reflection refusal.
+        const answer = (name: string): IrStmt[] | null => {
+          const of = lowerer.classes.get(name)!;
+          const prototype = hasClassPrototypeData(of)
+            ? classPrototypeData(lowerer, of, loc, {
+                kind: "dynCheck",
+                value,
+                type: { kind: "object", className: name },
+                loc,
+              })
+            : null;
+          if (prototype) return [{ kind: "return", value: prototype, loc }];
+          return hasClassPrototypeData(of) ? null : this.prototypeStandIn(lowerer, name, loc);
+        };
+        const own = answer(className);
+        if (!own) {
+          changed = true;
+          continue;
+        }
+        // A capsule boxed at this class can hold a subclass instance: the
+        // most derived subclass the instance belongs to answers.
+        const depth = (name: string): number => {
+          let n = 0;
+          for (let at = lowerer.classes.get(name)?.base; at; at = at.base) n++;
+          return n;
+        };
+        const subclasses = [...lowerer.classes.keys()]
+          .filter(
+            (name) =>
+              name !== className &&
+              lowerer.isSubclassOf(name, className) &&
+              isDynTypedRefType({ kind: "object", className: name }),
+          )
+          .sort((a, b) => depth(b) - depth(a));
+        const then: IrStmt[] = [];
+        for (const name of subclasses) {
+          const sub = answer(name);
+          if (!sub) continue;
+          then.push({
             kind: "if",
             cond: {
-              kind: "libCall",
-              fn: "dyn.typedRefIs",
-              args: [value, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
+              kind: "instanceOf",
+              value: { kind: "dynCheck", value, type, loc },
+              className: name,
               type: BOOL,
               loc,
             },
-            then: [{ kind: "return", value: prototype, loc }],
+            then: sub,
             else_: null,
             loc,
           });
+        }
+        then.push(...own);
+        helper.fn.body.unshift({
+          kind: "if",
+          cond: {
+            kind: "libCall",
+            fn: "dyn.typedRefIs",
+            args: [value, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
+            type: BOOL,
+            loc,
+          },
+          then,
+          else_: null,
+          loc,
+        });
         changed = true;
       }
     for (const plan of this.propertyReceivers(lowerer, false, false)) {
@@ -3528,6 +3575,43 @@ export class ClassDynamicDispatch {
 
   /** The receiver's own dynamic properties for a read: undefined while it has
    * none, and never stored, so reads stay valid on published objects. */
+  /** Statements that return `className`'s stand-in prototype: one empty
+   * object per class, created on first use and kept in a module global. */
+  private prototypeStandIn(lowerer: Lowerer, className: string, loc: SrcLoc): IrStmt[] {
+    const globalId = `%g.%prototype.standIn.${className}`;
+    const readyId = `${globalId}.ready`;
+    if (!this.prototypeStandIns.has(className)) {
+      this.prototypeStandIns.add(className);
+      lowerer.globalsList.push(
+        { id: globalId, name: `${className}.prototype`, type: DYN, mutable: true },
+        { id: readyId, name: `${className}.prototype.ready`, type: BOOL, mutable: true },
+      );
+    }
+    return [
+      {
+        kind: "if",
+        cond: { kind: "unary", op: "!", operand: varRef(readyId, BOOL, loc), type: BOOL, loc },
+        then: [
+          {
+            kind: "assign",
+            localId: globalId,
+            value: { kind: "dynObjLit", fields: [], type: DYN, loc },
+            loc,
+          },
+          {
+            kind: "assign",
+            localId: readyId,
+            value: { kind: "boolLit", value: true, type: BOOL, loc },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+      { kind: "return", value: varRef(globalId, DYN, loc), loc },
+    ];
+  }
+
   private readPropertyBag(lowerer: Lowerer, receiver: IrExpr, loc: SrcLoc): IrExpr {
     const helper = classPropertiesHelper(lowerer, loc, true);
     this.generated.add(helper);
