@@ -982,6 +982,11 @@ function initializeBag(lowerer: Lowerer, className: string, self: IrExpr, loc: S
   ];
 }
 
+/** `value` as JSON without its source locations. */
+function withoutLocations(value: IrExpr): string {
+  return JSON.stringify(value, (key, field: unknown) => (key === "loc" ? undefined : field));
+}
+
 /** Whether `value` reads local `id`. */
 function mentionsLocal(value: IrExpr, id: string): boolean {
   return JSON.stringify(value).includes(`"localId":${JSON.stringify(id)}`);
@@ -4903,6 +4908,18 @@ export class ClassDynamicDispatch {
       const self = varRef("this", { kind: "object", className }, init.loc);
       const value = withTypedReceiver(structuredClone(init.value), self);
       if (mentionsLocal(value, "p.0")) continue;
+      // The class-table branches can give the class's instances different
+      // bags (a base class's own prototype for its instances, the
+      // instance's class prototype for subclass instances); only a class
+      // whose branches all agree has one initializer for every instance.
+      const shape = withoutLocations(value);
+      if (
+        initializers.some(
+          (other) =>
+            withoutLocations(withTypedReceiver(structuredClone(other.value), self)) !== shape,
+        )
+      )
+        continue;
       // Lowerer stand-ins in unit tests may not carry the table.
       lowerer.classBagInitializers?.set(className, value);
     }
