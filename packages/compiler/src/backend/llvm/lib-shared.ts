@@ -1014,6 +1014,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "class.descriptorHasValue": "scr_class_descriptor_has_value",
   "class.throwReadOnly": "scr_class_throw_read_only",
   "class.throwNotExtensible": "scr_class_throw_not_extensible",
+  "record.freeze": "scr_record_freeze",
+  "record.throwFrozen": "scr_record_throw_frozen",
   "dyn.nativeSetNew": "scr_dyn_native_set_new",
   "dyn.nativeSetIs": "scr_dyn_native_set_is",
   "dyn.nativeMapIs": "scr_dyn_native_map_is",

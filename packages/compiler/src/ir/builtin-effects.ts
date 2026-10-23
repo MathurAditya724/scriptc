@@ -687,6 +687,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.defineField",
   "class.throwReadOnly",
   "class.throwNotExtensible",
+  "record.throwFrozen",
   "dyn.toString",
   "dyn.valueOf",
   "string.fromCodePoint",

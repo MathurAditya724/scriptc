@@ -245,6 +245,7 @@ import {
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
 import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
 import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
+import { freezableRecordType, lowerRecordFreeze } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
@@ -7206,7 +7207,7 @@ export function recordKeysArrayCall(
  * (a key is own exactly when Object.keys would list it — the two share
  * the test), everything else true. Unmatched keys probe the overflow
  * map when present, so explicit undefined values remain own keys. */
-function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string {
+export function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string {
   const key = `obj.hasOwn:${shapeId}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
@@ -8455,10 +8456,23 @@ function lowerObjectStaticCall(
   // the argument — no alias exists, so the frozen bit is unobservable
   // (writes through the Readonly<T> result are compile errors, and no
   // other reference can write). Primitives pass through per ES2015.
-  // Aliased objects keep a fence: a later write through the original
-  // reference would need the runtime frozen bit (strict mode throws).
+  // Aliased records get the frozen bit of their rc word (frozen-records.ts);
+  // other aliased objects keep a fence: a later write through the original
+  // reference would need a runtime frozen bit (strict mode throws).
   if (member === "isFrozen" && call.arguments.nodes.length === 1) {
-    const value = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN);
+    const argNode = call.arguments.nodes[0]!;
+    if (tryLowerExpression(lowerer, argNode)?.type.kind === "record") {
+      const record = lowerer.lowerExpr(argNode);
+      if (record.type.kind === "record")
+        return {
+          kind: "libCall",
+          fn: "record.isFrozen",
+          args: [record],
+          type: BOOL,
+          loc: locOf(call),
+        };
+    }
+    const value = lowerer.lowerExprExpecting(argNode, DYN);
     return { kind: "libCall", fn: "dyn.isFrozen", args: [value], type: BOOL, loc: locOf(call) };
   }
   if (member === "freeze") {
@@ -8508,6 +8522,8 @@ function lowerObjectStaticCall(
     if (fnIntegrity) return fnIntegrity;
     const integrity = lowerClassIntegrity(lowerer, call, "freeze", value);
     if (integrity) return integrity;
+    if (freezableRecordType(lowerer, value.type))
+      return lowerRecordFreeze(lowerer, value, value.type, locOf(call));
     lowerer.noLowering(
       "Object.freeze of a possibly-aliased value",
       call,

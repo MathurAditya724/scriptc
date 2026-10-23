@@ -2293,6 +2293,55 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
   return scr_dyn_retain(object);
 }
 
+/* The native record a record capsule refers to, or NULL for any other
+ * value. */
+static void *scr_dyn_typed_record(const ScrDyn *d) {
+  if (d->kind != SCR_DYN_TYPED_REF || d->v.typed_ref.type_key_len < 7 ||
+      memcmp(d->v.typed_ref.type_key, "record:", 7) != 0)
+    return NULL;
+  return d->v.typed_ref.ptr;
+}
+
+/* Freezes the checked view of a frozen record: its fields, and every
+ * property added through the view. */
+static void scr_dyn_record_view_freeze(ScrDyn *view) {
+  view->non_extensible = true;
+  if (view->kind == SCR_DYN_OBJ) {
+    for (size_t i = 0; i < view->v.obj.len; i++) {
+      ScrDynEntry *entry = &view->v.obj.entries[i];
+      entry->configurable = false;
+      if (!entry->accessor) entry->writable = false;
+    }
+  } else if (view->kind == SCR_DYN_ARR) {
+    view->v.arr.sealed = true;
+    view->v.arr.frozen = true;
+    if (view->v.arr.properties) scr_dyn_release(scr_dyn_freeze_data(view->v.arr.properties));
+  }
+  if (view->symbol_properties) scr_dyn_release(scr_dyn_freeze_data(view->symbol_properties));
+}
+
+void scr_record_freeze(void *record) {
+  size_t *rc = record;
+  if (*rc != SIZE_MAX) *rc |= SCR_RC_FROZEN;
+}
+
+void scr_record_throw_frozen(ScrStr *key, ScrStr *owner, double operation) {
+  ScrJsonBuf buffer;
+  scr_jb_init(&buffer);
+  if (operation == 1) {
+    scr_jb_puts(&buffer, "Cannot add property ");
+    scr_jb_write(&buffer, key->data, key->len);
+    scr_jb_puts(&buffer, ", object is not extensible");
+  } else {
+    scr_jb_puts(&buffer, operation == 2 ? "Cannot delete property '" : "Cannot assign to read only property '");
+    scr_jb_write(&buffer, key->data, key->len);
+    scr_jb_puts(&buffer, operation == 2 ? "' of " : "' of object '");
+    scr_jb_write(&buffer, owner->data, owner->len);
+    if (operation != 2) scr_jb_puts(&buffer, "'");
+  }
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+}
+
 /* A class instance's integrity state lives in its native layout, which only
  * statically typed calls can reach (the compiler adds the state to the
  * hierarchies they name). Through an untyped value the operation throws. */
@@ -2301,7 +2350,9 @@ static bool scr_dyn_class_integrity_fence(const ScrDyn *object, const char *oper
   ScrJsonBuf buffer;
   scr_jb_init(&buffer);
   scr_jb_puts(&buffer, operation);
-  scr_jb_puts(&buffer, " of a class instance held in an untyped value is not supported yet");
+  scr_jb_puts(&buffer, scr_dyn_typed_record(object)
+                           ? " of an object held in an untyped value is not supported yet"
+                           : " of a class instance held in an untyped value is not supported yet");
   ScrStr *message = scr_jb_finish(&buffer);
   scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
   scr_str_release(message);
@@ -3628,12 +3679,16 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     fresh->rc = fresh_rc;
     scr_dyn_release(fresh);
   }
+  void *record = scr_dyn_typed_record(capsule);
+  if (record && scr_rc_frozen(record)) scr_dyn_record_view_freeze(capsule->v.typed_ref.materialized);
   return scr_dyn_retain(capsule->v.typed_ref.materialized);
 }
 
 void scr_dyn_typed_ref_commit(ScrDyn *d) {
+  /* A frozen record's view cannot have changed its fields. */
   if (d && d->kind == SCR_DYN_TYPED_REF && d->v.typed_ref.commit &&
-      d->v.typed_ref.materialized) {
+      d->v.typed_ref.materialized &&
+      !(scr_dyn_typed_record(d) && scr_rc_frozen(d->v.typed_ref.ptr))) {
     d->v.typed_ref.commit(d->v.typed_ref.ptr,
                           d->v.typed_ref.materialized);
   }
@@ -15627,8 +15682,18 @@ ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrSt
   return scr_dyn_to_string_method_args(d, enc, what, NULL, 0);
 }
 
+/* Freezing a record capsule freezes the native record, whose emitted writes
+ * then refuse to change it, and its checked view. */
+static ScrDyn *scr_dyn_freeze_record(ScrDyn *capsule, void *record) {
+  scr_record_freeze(record);
+  if (capsule->v.typed_ref.materialized) scr_dyn_record_view_freeze(capsule->v.typed_ref.materialized);
+  return scr_dyn_retain(capsule);
+}
+
 ScrDyn *scr_dyn_freeze(ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value) || scr_dyn_error_prototype_fence(value)) return NULL;
+  void *record = scr_dyn_typed_record(value);
+  if (record) return scr_dyn_freeze_record(value, record);
   if (scr_dyn_class_integrity_fence(value, "Object.freeze")) return NULL;
   ScrDyn *table = scr_dyn_fn_integrity_table(value);
   if (!table) return scr_dyn_freeze_data(value);
@@ -15640,6 +15705,8 @@ ScrDyn *scr_dyn_freeze(ScrDyn *value) {
 
 ScrDyn *scr_dyn_freeze_data(ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value) || scr_dyn_error_prototype_fence(value)) return NULL;
+  void *record = scr_dyn_typed_record(value);
+  if (record) return scr_dyn_freeze_record(value, record);
   if (scr_dyn_class_integrity_fence(value, "Object.freeze")) return NULL;
   if (value->symbol_properties) scr_dyn_release(scr_dyn_freeze_data(value->symbol_properties));
   if (value->kind == SCR_DYN_ARR) {

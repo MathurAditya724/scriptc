@@ -45,14 +45,32 @@ typedef size_t ScrRcCount;
 /* Whether `obj`, an object of any kind, is published (immortal). */
 #define SCR_RC_PUBLISHED(obj) (SCR_RC_COUNT(obj) >= SCR_RC_PUBLISHED_MIN)
 
+/* Frozen records (Object.freeze). The rc word of a record a program may
+ * freeze (llvm/shapes.ts) carries SCR_RC_FROZEN beside its count, and that
+ * record's emitted release ignores the bit. On 64-bit targets the bit is in
+ * the high half, outside the count; on 32-bit targets it is the count's bit
+ * 30, which SCR_RC_REFS masks. An immortal word has the bit set too; it
+ * does not read as frozen. */
+#if SIZE_MAX > UINT32_MAX
+#define SCR_RC_FROZEN ((size_t)1 << 62)
+#define SCR_RC_REFS(obj) SCR_RC_COUNT(obj)
+#else
+#define SCR_RC_FROZEN ((size_t)1 << 30)
+#define SCR_RC_REFS(obj) (SCR_RC_COUNT(obj) == SCR_RC_IMMORTAL ? SCR_RC_IMMORTAL : SCR_RC_COUNT(obj) & ~SCR_RC_FROZEN)
+#endif
+static inline bool scr_rc_frozen(const void *obj) {
+  size_t word = *(const size_t *)obj;
+  return word != SIZE_MAX && (word & SCR_RC_FROZEN) != 0;
+}
+
 /* The class id in the high half of `obj`'s rc word, or 0 for an object
- * without one: the high half of any other object's word is 0, or 0xffffffff
- * (immortal) or 0x80000000 (program-lifetime), and a class id is never one of
- * these. */
+ * without one: the high half of any other object's word is 0, 0xffffffff
+ * (immortal), 0x80000000 (program-lifetime) or 0x40000000 (a frozen record),
+ * and a class id is never one of these. */
 static inline uint32_t scr_rc_class_id(const void *obj) {
 #if SIZE_MAX > UINT32_MAX
   uint32_t high = (uint32_t)(*(const size_t *)obj >> 32);
-  return high == UINT32_MAX || high == UINT32_C(0x80000000) ? 0 : high;
+  return high == UINT32_MAX || high == UINT32_C(0x80000000) || high == UINT32_C(0x40000000) ? 0 : high;
 #else
   (void)obj;
   return 0;

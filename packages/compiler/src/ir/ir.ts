@@ -1685,6 +1685,10 @@ export interface IrRecordShape {
    * dynCheck), and JSON serialization appends overflow entries after the
    * declared fields in insertion order. */
   indexValue?: IrType;
+  /** Values of this shape may be frozen (frozen-records.ts): their rc word
+   * can carry the frozen bit, which their release ignores, and every write
+   * to them checks it. */
+  freezable?: true;
   /** Field names in FIRST-SEEN declaration order (the checker's property
    * order of the first ts.Type interned to this shape) — metadata, NOT
    * part of the interned identity: a later structurally-equal type with a

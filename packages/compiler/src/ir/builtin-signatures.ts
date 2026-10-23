@@ -271,6 +271,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Throws Node's TypeError for a class field initializer on a
    * non-extensible instance: the field name. */
   "class.throwNotExtensible": { argTypes: [STRING], result: VOID },
+  /** Object.freeze of a record whose shape is freezable (frozen-records.ts):
+   * sets the frozen bit in its rc word (scr_record_freeze). The receiver is
+   * any record type. */
+  "record.freeze": { argTypes: [null], result: VOID },
+  /** Whether a record is frozen: its rc word's frozen bit, set by
+   * record.freeze and dyn.freeze of a capsule. Emitted inline. The receiver
+   * is any record type. */
+  "record.isFrozen": { argTypes: [null], result: BOOL },
+  /** Throws Node's TypeError for a write to a frozen record: the key, the
+   * object's text in the message ("#<Object>") and the operation (0 assign,
+   * 1 add, 2 delete). */
+  "record.throwFrozen": { argTypes: [STRING, STRING, F64], result: VOID },
   "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
   "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
