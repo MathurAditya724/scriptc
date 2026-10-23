@@ -43,7 +43,9 @@ function bindingOf(node: ts.Node): Binding {
 
 interface Dispatch {
   info: ClassInfo;
-  /** The constructor's class and its descendants, deepest first. */
+  /** The constructor's descendants, deepest first, then its class. A
+   * generic family stands for its instantiations, also those that later
+   * bodies instantiate: its interval holds them all. */
   classes: ClassInfo[];
   self: IrExpr | null;
 }
@@ -69,11 +71,23 @@ function dispatchOf(lowerer: Lowerer, expr: ts.MetaProperty): Dispatch | null {
     );
     return null;
   }
-  const classes = [info];
+  // An instantiation's subclasses can also be instantiations of generic
+  // subclasses of its family (`class G<T> extends Box<T>` under Box<number>).
+  const family = info.genericInstance?.family;
+  const descendants: ClassInfo[] = [];
   for (const other of lowerer.classes.values()) {
-    if (other === info || other.generic) continue;
-    if (lowerer.isSubclassOf(other.def.name, info.def.name)) classes.push(other);
+    if (other === info) continue;
+    if (
+      lowerer.isSubclassOf(other.def.name, info.def.name) ||
+      (family !== undefined &&
+        other.generic !== undefined &&
+        other !== family &&
+        lowerer.isSubclassOf(other.def.name, family.def.name))
+    )
+      descendants.push(other);
   }
+  descendants.sort((a, b) => depth(b) - depth(a));
+  const classes = [...descendants, info];
   for (const c of classes) {
     if (c.localClass) {
       lowerer.unsupported(
@@ -84,7 +98,6 @@ function dispatchOf(lowerer: Lowerer, expr: ts.MetaProperty): Dispatch | null {
       return null;
     }
   }
-  classes.sort((a, b) => depth(b) - depth(a));
   let self: IrExpr | null = null;
   if (classes.length > 1) {
     const thisLocal = lowerer.resolveThis(expr);
@@ -140,6 +153,13 @@ export function lowerNewTarget(lowerer: Lowerer, expr: ts.MetaProperty): IrExpr 
   const dispatch = dispatchOf(lowerer, expr)!;
   const type: IrType = { kind: "classval", className: dispatch.info.def.name };
   for (const c of dispatch.classes) {
+    if (c.generic) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `'new.target' as a value where '${c.def.jsName ?? c.def.name}' is a generic subclass (its instantiations have no common class value; read 'new.target.name' or compare 'new.target' with a class instead)`,
+      );
+    }
     if (c !== dispatch.info && !lowerer.ctorAbiEquals(c, dispatch.info)) {
       lowerer.unsupported(
         "SC1090",
@@ -166,13 +186,37 @@ export function lowerNewTargetName(
   const dispatch = dispatchOf(lowerer, target);
   if (!dispatch) return null;
   const loc = locOf(access);
-  return select(dispatch, STRING, loc, (c) => ({
-    kind: "libCall",
-    fn: "class.name",
-    args: [classValueRef(lowerer, c, target)],
-    type: STRING,
-    loc,
-  }));
+  return select(dispatch, STRING, loc, (c) => {
+    // An own static `name` field replaces the class's name; a subclass has
+    // its own name. An instantiation's statics are its family's.
+    const owner = c.genericInstance?.family ?? c;
+    const field = owner.staticFields.find((f) => f.name === "name");
+    if (field !== undefined) {
+      if (field.type.kind !== "string")
+        lowerer.unsupported(
+          "SC1090",
+          access,
+          `'new.target.name' where '${c.def.jsName ?? c.def.name}' declares a static 'name' that is not a string`,
+        );
+      return { kind: "varRef", localId: field.globalId, type: field.type, loc };
+    }
+    if (owner.staticMethods?.has("name") || owner.genericStatics?.has("name"))
+      lowerer.unsupported(
+        "SC1090",
+        access,
+        `'new.target.name' where '${c.def.jsName ?? c.def.name}' declares a static method 'name'`,
+      );
+    // A generic family's instantiations share its name.
+    if (c.generic)
+      return { kind: "strLit", value: c.def.jsName ?? c.generic.baseName, type: STRING, loc };
+    return {
+      kind: "libCall",
+      fn: "class.name",
+      args: [classValueRef(lowerer, c, target)],
+      type: STRING,
+      loc,
+    };
+  });
 }
 
 /** `new.target === C` (and `!==`, `==`, `!=`, either operand order) with a
