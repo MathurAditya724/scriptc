@@ -32,6 +32,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's prime, generator, size, encoding and group-name errors.
   "crypto.dhNew",
   "crypto.dhGroupNew",
+  // Node's nameOrNid and options errors.
+  "crypto.getCipherInfo",
+  // Node's candidate, size, options, add and rem errors, and OpenSSL's
+  // generation errors.
+  "crypto.checkPrimeSync",
+  "crypto.checkPrimeCb",
+  "crypto.generatePrimeSync",
+  "crypto.generatePrimeCb",
   // node:test's { timeout } and { concurrency } range checks.
   "test.register",
   "test.registerEmpty",
@@ -104,6 +112,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.unpipeDyn",
   "weakMap.new",
   "weakSet.new",
+  // Node's "cleanup must be callable" TypeError.
+  "finalizationRegistry.new",
   "dyn.fromEntries",
   "bytes.constructor",
   "bytes.instanceOf",
@@ -356,7 +366,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "sp.finished",
   "sp.pipeline",
   "sp.pipelineStages",
+  "sp.pipelineStagesOpts",
   "stream.pipelineStages",
+  "stream.composeStages",
   "stream.pipelineStagesDyn",
   "sc.text",
   "sc.json",
@@ -395,6 +407,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "writable.writeEnc",
   "writable.end",
   "writable.uncork",
+  "writable.setDefaultEncoding",
+  "stream.duplexFromGen",
+  "stream.duplexFromDyn",
+  "stream.duplexFromPromise",
+  "stream.duplexFromAsyncFn",
+  "stream.duplexFromGenSignal",
+  "stream.duplexFromAsyncFnSignal",
+  "fetch.readableFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -444,6 +464,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "global.undefRead",
   // The compiler-resolved Node-parity throw: always throws, catchably.
   "error.nodeThrow",
+  // An accessor over an error's own name or message runs user code.
+  "error.accessorGet",
+  "error.accessorSet",
   // USVString coercion runs user toString/valueOf — throws propagate.
   "dyn.toStringCoerce",
   "dyn.stringConstructor",
@@ -529,6 +552,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "readable.opMap",
   "readable.opFilter",
   "readable.opFlatMap",
+  "readable.opFlatMapAsyncGen",
+  "readable.opFlatMapSyncGen",
   "readable.opDrop",
   "readable.opTake",
   "rl.createSignal",
@@ -606,6 +631,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // fence; the zero-argument form always throws ERR_MISSING_ARGS. The
   // DOMException clone shares the option validation.
   "dyn.structuredClone",
+  "dyn.declAdopt",
   "dyn.cloneMissing",
   "dyn.cloneTransferFail",
   "dyn.cloneTransferFailWith",
@@ -628,6 +654,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreate",
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
+  "dyn.getPrototypeForIdentity",
   "dyn.setPrototype",
   // Error.captureStackTrace: Node's TypeError for a primitive target, and
   // the error string conversion of name and message
@@ -667,6 +694,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
   "dyn.iterPack",
+  // ToNumber of each element can run valueOf
+  "dyn.mathFold",
   "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",
@@ -1016,4 +1045,26 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.verifyOneshot",
   "crypto.createSign",
   "crypto.createVerify",
+]);
+
+/** libCall members that always throw. Their result type is the replaced
+ * expression's own and is never materialized: global.undefRead's is the
+ * declared type of the undefined global; the others stand in for a value
+ * of the expression they replace. The fs Chk ladders qualify: every
+ * validation failure throws Node's typed error, and a full pass throws the
+ * trailing compiler-rendered fence. */
+export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "global.undefRead",
+  "error.nodeThrow",
+  "error.argTypeThrow",
+  "error.propTypeThrow",
+  "fs.mkdtempChk",
+  "fs.readFileChk",
+  "fs.opendirChk",
+  "fs.watchFileChk",
+  "fs.lchmodChk",
+  "fs.readChk",
+  "fs.streamOptsChk",
+  "net.connectOptsChk",
+  "tls.caCertsChk",
 ]);

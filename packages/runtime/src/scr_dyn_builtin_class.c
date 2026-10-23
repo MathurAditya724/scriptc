@@ -1584,6 +1584,8 @@ bool scr_dyn_function_instanceof(ScrDyn *value, ScrDyn *callee) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return false;
   }
+  int hooked = scr_dyn_has_instance_hook(value, callee);
+  if (hooked >= 0) return hooked == 1;
   ScrDyn *prototype = bc_get(callee, "prototype");
   if (!prototype) return false;
   bool found = false;

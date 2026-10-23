@@ -2,8 +2,8 @@
  * one: a plain C program that never includes a Node or V8 header, dlopens
  * the pack's bridge, checks its ABI and Node version, starts Node (one
  * environment from the built-in startup snapshot), evaluates expressions
- * synchronously and asynchronously through the bridge's C ABI, and tears
- * Node down.
+ * synchronously and asynchronously through the bridge's C ABI, runs Node's
+ * event loop until the asynchronous ones settle, and tears Node down.
  *
  *   smoke <pack directory>     (or SCRIPTC_LIBNODE=<pack directory> smoke)
  *
@@ -28,7 +28,9 @@
 /* The bootstrap runs as the environment's main script. It hands the bridge
  * a dispatcher that evaluates `name` as an expression and answers the
  * bridge's outcome strings: "R<json>" when it returns, "T<json>" when it
- * throws; an asynchronous call settles through the host. */
+ * throws; an asynchronous call settles through the host. The smoke test
+ * schedules no runtime jobs and listens to no process events, so the rest
+ * of the dispatcher the bridge requires does nothing. */
 static const char kBootstrap[] =
     "const host = globalThis.__scriptcNodeIslandHost;\n"
     "globalThis.require = require;\n"
@@ -42,6 +44,9 @@ static const char kBootstrap[] =
     "    Promise.resolve(value).then((v) => host.settle(id, outcome(true, v)),\n"
     "                                (e) => host.settle(id, outcome(false, e)));\n"
     "  },\n"
+    "  setTimer() { return 0; }, clearTimer() {}, refTimer() {}, refreshTimer() {},\n"
+    "  setImmediate() { return 0; }, clearImmediate() {}, refImmediate() {},\n"
+    "  nextTick() {}, emit() {},\n"
     "};\n";
 
 static double now_ms(void) {
@@ -71,15 +76,20 @@ static int mapped(const char *needle) {
   return found;
 }
 
-static char *settled = NULL;
-static size_t settled_len = 0;
+/* The asynchronous expressions, by call id, and their outcomes. */
+static const char *const kAsync[] = {
+    "new Promise((resolve) => setTimeout(() => resolve('timer fired'), 5))",
+    "require('node:fs/promises').readFile(process.execPath).then((b) => b.length > 0)",
+    "Promise.reject(new RangeError('rejected'))",
+};
+#define ASYNC_COUNT (sizeof kAsync / sizeof kAsync[0])
+static char *settled[ASYNC_COUNT];
 
 static void host_settle(uint32_t id, const char *outcome, size_t len) {
-  (void)id;
-  settled = malloc(len + 1);
-  memcpy(settled, outcome, len);
-  settled[len] = '\0';
-  settled_len = len;
+  if (id >= ASYNC_COUNT || settled[id] != NULL) return;
+  settled[id] = malloc(len + 1);
+  memcpy(settled[id], outcome, len);
+  settled[id][len] = '\0';
 }
 
 static void host_exit(int code) {
@@ -87,7 +97,26 @@ static void host_exit(int code) {
   exit(code);
 }
 
-static const ScrNodeBridgeHost kHost = {host_settle, host_exit};
+/* The smoke test never calls host_loop, so Node's loop runs alone: no
+ * runtime jobs, I/O or listeners, and V8 keeps the thread's stack limit. */
+static void host_run(uint32_t kind, uint32_t token) { (void)kind, (void)token; }
+static void host_io_state(ScrNodeIoState *state) {
+  state->nfds = 0;
+  state->alive = 0;
+  state->ready = 0;
+  state->cap_ms = -1;
+}
+static void host_io_dispatch(void) {}
+static void host_microtasks_done(void) {}
+static void host_listen(uint32_t event, const char *name, uint32_t listener, int add, int once) {
+  (void)event, (void)name, (void)listener, (void)add, (void)once;
+}
+static uintptr_t host_stack_limit(void) { return 0; }
+
+static const ScrNodeBridgeHost kHost = {
+    host_settle,     host_exit,           host_run,    host_io_state,
+    host_io_dispatch, host_microtasks_done, host_listen, host_stack_limit,
+};
 
 static const ScrNodeBridge *bridge;
 
@@ -98,22 +127,21 @@ static void eval_sync(const char *expression) {
   bridge->release(outcome);
 }
 
-static void eval_async(const char *expression) {
-  settled = NULL;
-  size_t len = 0;
-  char *immediate = bridge->call(1, 0, "", "", expression, "[]", 2, &len);
-  if (immediate != NULL) bridge->release(immediate);
-  /* Drive Node's loop until the promise settles, as the runtime's loop does
-   * before NI-3 hosts its queues on libuv. */
-  while (settled == NULL && bridge->alive()) {
-    struct pollfd fd = {bridge->backend_fd(), POLLIN, 0};
-    poll(&fd, 1, bridge->backend_timeout());
-    bridge->pump();
+/* Starts every asynchronous expression, then runs Node's event loop until
+ * nothing keeps it alive, as the runtime does at the end of a program. */
+static void eval_async_all(void) {
+  for (uint32_t id = 0; id < ASYNC_COUNT; id++) {
+    size_t len = 0;
+    char *immediate = bridge->call(id, 0, "", "", kAsync[id], "[]", 2, &len);
+    if (immediate != NULL) bridge->release(immediate);
+    bridge->checkpoint(0);
   }
-  if (settled == NULL) bridge->pump();
-  printf("await %s => %s\n", expression, settled != NULL ? settled : "(never settled)");
-  free(settled);
-  settled = NULL;
+  bridge->run_loop(0);
+  for (uint32_t id = 0; id < ASYNC_COUNT; id++) {
+    printf("await %s => %s\n", kAsync[id], settled[id] != NULL ? settled[id] : "(never settled)");
+    free(settled[id]);
+    settled[id] = NULL;
+  }
 }
 
 int main(int argc, char **argv) {
@@ -163,9 +191,7 @@ int main(int argc, char **argv) {
   eval_sync("require('node:zlib').gunzipSync(require('node:zlib').gzipSync('round trip')).toString()");
   eval_sync("[typeof require('node:fs').readFileSync, require('node:path').join('a', 'b')]");
   eval_sync("null.property");
-  eval_async("new Promise((resolve) => setTimeout(() => resolve('timer fired'), 5))");
-  eval_async("require('node:fs/promises').readFile(process.execPath).then((b) => b.length > 0)");
-  eval_async("Promise.reject(new RangeError('rejected'))");
+  eval_async_all();
   fprintf(stderr,
           "smoke: dlopen %.1f ms, start %.1f ms, first result %.2f ms, dlopen to first result "
           "%.1f ms, max RSS %ld KB\n",
