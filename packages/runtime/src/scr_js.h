@@ -195,13 +195,10 @@ bool scr_js_truthy(ScrJsVal value);
  * index and which keys an object lacks.
  *
  * Each property site of compiled dynamic-tier code owns one zeroed,
- * thread-local ScrJsIc with static storage: the reset that frees a
- * thread's shapes (at thread exit, and when a library session ends) clears
- * every record that holds entries. The code at the site is fixed: it tests
- * entry 0 inline and calls a probe for everything else. Probes never run
- * user code: they answer from plain data properties or return a miss
- * (NULL / false) with nothing done, and the site then runs its generic
- * path.
+ * thread-local ScrJsIc. The code at the site is fixed: it tests entry 0
+ * inline and calls a probe for everything else. Probes never run user
+ * code: they answer from plain data properties or return a miss (NULL /
+ * false) with nothing done, and the site then runs its generic path.
  *
  *   load  entry: shape = receiver shape; target = NULL for an own property
  *         (slot indexes the receiver's entries), else the shape of

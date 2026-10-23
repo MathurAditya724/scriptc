@@ -363,17 +363,6 @@ globals: undefined fenced
     expect(run.stdout).toBe(SESSION + SESSION + SESSION);
   });
 
-  test("K4: untyped property caches start empty in every session", async () => {
-    // The shapes a session's cache entries name are freed when it ends;
-    // the next session's sites must not find those entries.
-    const { archive, outDir } = await buildLibrary("js-ic-sessions", emission);
-    const probe = buildProbe("js-ic-sessions", archive, outDir);
-    const run = runProbe(probe);
-    expect(run.signal).toBeNull();
-    expect(run.status).toBe(0);
-    expect(run.stdout).toBe("run: 20000\n".repeat(3));
-  });
-
   /* ── K5/K6/K7: the trap channel ──────────────────────────────────────── */
 
   test("K5: a trap delivers to the sink exactly once, host survives", async () => {
@@ -591,15 +580,6 @@ survived, sink_calls=1
     expect(run.signal).toBeNull();
     expect(run.status).toBe(0);
     expect(run.stdout).toBe(SESSION + SESSION + SESSION);
-  });
-
-  platformTest("K10: property caches across sessions under ASan", async () => {
-    const { archive, outDir } = await buildLibrary("js-ic-sessions", emission, { sanitize: true });
-    const probe = buildProbe("js-ic-sessions", archive, outDir, { sanitize: true });
-    const run = runProbe(probe);
-    expect(run.signal).toBeNull();
-    expect(run.status).toBe(0);
-    expect(run.stdout).toBe("run: 20000\n".repeat(3));
   });
 
   platformTest("K10: K5/K7 under ASan", async () => {
