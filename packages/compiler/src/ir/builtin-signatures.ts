@@ -3429,6 +3429,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * throw-site fields, dynamic writes) or an Object.prototype member. */
   "error.hasKey": { argTypes: [null, STRING], result: BOOL },
   "error.hasCode": { argTypes: [null], result: BOOL },
+  /** Whether the error's own `name` or `message` (the key) is an accessor
+   * a reflective definition installed. Borrows both; never throws. */
+  "error.ownAccessor": { argTypes: [null, STRING], result: BOOL },
+  /** That accessor's getter called on the error (owned result), and its
+   * setter called with the value (V8's TypeError without one). Borrow
+   * their arguments; throw what the accessor throws. */
+  "error.accessorGet": { argTypes: [null, STRING], result: DYN },
+  "error.accessorSet": { argTypes: [null, STRING, DYN], result: VOID },
   "error.defineCause": { argTypes: [null, DYN], result: VOID },
   "error.deleteCause": { argTypes: [null], result: VOID },
   /** The compiler-resolved Node-parity throw for always-throwing lowered

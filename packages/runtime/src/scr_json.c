@@ -8010,35 +8010,36 @@ ScrDyn *scr_errdyn_view_of(const ScrError *e) {
 static void scr_error_cause_drop_impl(void *obj);
 
 void scr_error_commit_dyn(ScrError *e, const ScrDyn *view) {
-  ScrDynEntry *name_entry = NULL;
-  for (size_t i = 0; i < view->v.obj.len; i++) {
-    ScrDynEntry *entry = &view->v.obj.entries[i];
-    if (entry->key_len == 4 && memcmp(entry->key, "name", 4) == 0) { name_entry = entry; break; }
-  }
-  ScrDyn *name = name_entry ? name_entry->value : NULL;
+  ScrDynEntry *name_entry = scr_dyn_find_entry(view, "name", 4);
+  ScrDynEntry *message_entry = scr_dyn_find_entry(view, "message", 7);
+  /* An own accessor over `name` or `message` (zod's lazy error message)
+   * has no value to snapshot: the slot keeps its last value, and the
+   * property reads as absent so typed reads take the accessor path
+   * (scr_error_own_accessor) and toString asks the installed reader. */
+  ScrDyn *name = name_entry && !name_entry->accessor ? name_entry->value : NULL;
   if (name && name->kind != SCR_DYN_STR) {
     scr_dyn_check_fail(NULL, "string", name);
     return;
   }
-  ScrStr *next_name = name ? scr_str_retain(name->v.str) : scr_error_default_name(e);
-  scr_str_release(e->name);
-  e->name = next_name;
-  e->name_present = name != NULL;
-  e->name_enumerable = name_entry && name_entry->enumerable;
-  ScrDyn *message = scr_dyn_obj_get(view, "message", 7);
+  ScrDyn *message = message_entry && !message_entry->accessor ? message_entry->value : NULL;
   if (message && message->kind != SCR_DYN_STR) {
     scr_dyn_check_fail(NULL, "string", message);
     return;
   }
-  ScrStr *next_message = message ? scr_str_retain(message->v.str) : scr_str_new("", 0);
-  scr_str_release(e->message);
-  e->message = next_message;
-  e->message_present = message != NULL;
-  e->message_enumerable = false;
-  for (size_t i = 0; message && i < view->v.obj.len; i++) {
-    const ScrDynEntry *entry = &view->v.obj.entries[i];
-    if (entry->key_len == 7 && memcmp(entry->key, "message", 7) == 0) e->message_enumerable = entry->enumerable;
+  if (!name_entry || !name_entry->accessor) {
+    ScrStr *next_name = name ? scr_str_retain(name->v.str) : scr_error_default_name(e);
+    scr_str_release(e->name);
+    e->name = next_name;
   }
+  e->name_present = name != NULL;
+  e->name_enumerable = name_entry && name_entry->enumerable;
+  if (!message_entry || !message_entry->accessor) {
+    ScrStr *next_message = message ? scr_str_retain(message->v.str) : scr_str_new("", 0);
+    scr_str_release(e->message);
+    e->message = next_message;
+  }
+  e->message_present = message != NULL;
+  e->message_enumerable = message_entry && message_entry->enumerable;
   ScrDyn *stack = scr_dyn_obj_get(view, "stack", 5);
   if (stack && stack->kind == SCR_DYN_STR) {
     ScrStr *replacement = scr_str_retain(stack->v.str);
@@ -8134,8 +8135,20 @@ static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *
     return;
   }
   if (name || message) {
-    /* The native error's toString and inspect read these fields. */
-    if (!entry || entry->accessor || entry->value->kind != SCR_DYN_STR) return;
+    /* The native error's toString and inspect read these fields. An own
+     * accessor leaves the slot, which then reads as absent: typed reads
+     * call it (scr_error_own_accessor). */
+    if (entry && entry->accessor) {
+      if (name) {
+        e->name_present = false;
+        e->name_enumerable = entry->enumerable;
+      } else {
+        e->message_present = false;
+        e->message_enumerable = entry->enumerable;
+      }
+      return;
+    }
+    if (!entry || entry->value->kind != SCR_DYN_STR) return;
     ScrStr **field = name ? &e->name : &e->message;
     scr_str_release(*field);
     *field = scr_str_retain(entry->value->v.str);
@@ -16044,6 +16057,61 @@ bool scr_error_has_code(ScrError *e) {
  * property set at runtime, which lives on the error's checked-dynamic node
  * (that node exists once anything reflected or wrote through it), or a
  * member of Object.prototype. Borrows both; never throws. */
+/* Whether the error's own `name` or `message` (the key) is an accessor a
+ * reflective definition installed on its checked-dynamic node (the slot
+ * then reads as absent): typed reads call its getter and typed writes its
+ * setter through that node. A class view keeps the accessor in its last
+ * materialized object. Borrows both; never throws. */
+static ScrDynEntry *scr_error_accessor_entry(ScrError *e, const ScrStr *key) {
+  const ScrDyn *view = scr_errdyn_view_of(e);
+  if (view != NULL && view->kind == SCR_DYN_TYPED_REF) view = view->v.typed_ref.materialized;
+  if (view == NULL || view->kind != SCR_DYN_OBJ) return NULL;
+  ScrDynEntry *entry = scr_dyn_find_entry(view, key->data, key->len);
+  return entry != NULL && entry->accessor ? entry : NULL;
+}
+
+bool scr_error_own_accessor(ScrError *e, const ScrStr *key) { return scr_error_accessor_entry(e, key) != NULL; }
+
+/* A typed read of that accessor: its getter called on the error's node
+ * (the undefined value without one). Owned result, or NULL with the
+ * getter's exception pending. */
+ScrDyn *scr_error_accessor_get(ScrError *e, const ScrStr *key) {
+  ScrDynEntry *entry = scr_error_accessor_entry(e, key);
+  if (entry == NULL || entry->getter == NULL) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *getter = scr_dyn_retain(entry->getter);
+  ScrDyn *receiver = scr_dyn_from_error(e);
+  scr_dyn_this_push_dyn(receiver);
+  ScrDyn *result = scr_dyn_call(getter, NULL, 0, "getter");
+  scr_dyn_this_pop();
+  scr_dyn_release(receiver);
+  scr_dyn_release(getter);
+  return result;
+}
+
+/* A typed write of that accessor: its setter called on the error's node
+ * with the value, or V8's strict-mode TypeError without one. Borrows all;
+ * the setter's exception stays pending. */
+void scr_error_accessor_set(ScrError *e, const ScrStr *key, ScrDyn *value) {
+  ScrDynEntry *entry = scr_error_accessor_entry(e, key);
+  if (entry == NULL) return;
+  if (entry->setter == NULL) {
+    char message[256];
+    int n = snprintf(message, sizeof message, "Cannot set property %.*s of %.*s which has only a getter",
+                     (int)key->len, key->data, (int)e->name->len, e->name->data);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n < sizeof message ? (size_t)n : sizeof message - 1);
+    return;
+  }
+  ScrDyn *setter = scr_dyn_retain(entry->setter);
+  ScrDyn *receiver = scr_dyn_from_error(e);
+  ScrDyn *args[1] = {value};
+  scr_dyn_this_push_dyn(receiver);
+  ScrDyn *result = scr_dyn_call(setter, args, 1, "setter");
+  scr_dyn_this_pop();
+  scr_dyn_release(result);
+  scr_dyn_release(receiver);
+  scr_dyn_release(setter);
+}
+
 bool scr_error_has_key(ScrError *e, const ScrStr *key) {
   const ScrDyn *view = scr_errdyn_view_of(e);
   if (view != NULL && view->kind == SCR_DYN_OBJ && scr_dyn_find_entry(view, key->data, key->len) != NULL)
