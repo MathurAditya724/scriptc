@@ -52,7 +52,12 @@ import {
   matchIntegerPairedForLoop,
 } from "../../ir/integer-loops.js";
 import { emitByteWindowGuard, matchByteWindow } from "./byte-windows.js";
-import { countedDenseShape, emitDenseLoopGuard, matchDenseArrayLoop } from "./dense-array-loops.js";
+import {
+  countedDenseShape,
+  emitDenseLoopGuard,
+  matchDenseArrayLoop,
+  pairedDenseShape,
+} from "./dense-array-loops.js";
 import {
   emitCountedLoopLimit,
   emitCountedLoopSafety,
@@ -966,7 +971,9 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
             }
           : countedLoop && !countedLoop.guarded && countedLoop.followers.length === 0
             ? countedDenseShape(s, countedLoop)
-            : null;
+            : pairedLoop
+              ? pairedDenseShape(pairedLoop)
+              : null;
       const dense =
         denseShape && !window
           ? matchDenseArrayLoop(
@@ -1144,11 +1151,15 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.line(`${start} = fptosi double ${value.name} to i64`);
           B.line(`store i64 ${start}, ptr ${slot}`);
           pairedSlots.push(slot);
+          const dense = LOOPS.of(emitter).denseLoop;
           emitter.integerLoopBindings.set(counter.localId, {
             slot,
             type: "i64",
             signed: true,
-            range: pairedLoop.range,
+            range:
+              dense?.pair && dense.counter === pairedLoop.low.localId
+                ? dense.range
+                : pairedLoop.range,
           });
         }
       } else if (s.init) {

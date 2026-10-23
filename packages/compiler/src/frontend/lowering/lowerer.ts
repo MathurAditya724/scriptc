@@ -496,7 +496,7 @@ import { lowerBuiltinExtraProperty } from "./builtins/properties.js";
 import { registerPromisifiedBuiltinDecl } from "./builtins/callable-aliases.js";
 import { lowerExecFileAsyncCall } from "./builtins/child-process-async.js";
 import { lowerStringDecoderMethodCall, lowerTextCodecCall } from "./builtins/text-codecs.js";
-import { lowerReadlineMethodCall } from "./builtins/readline.js";
+import { isOptionalReadlineCursorRead, lowerReadlineMethodCall } from "./builtins/readline.js";
 import {
   lowerDiagnosticsChannelMethodCall,
   lowerDiagnosticsChannelProperty,
@@ -5555,6 +5555,7 @@ export class Lowerer {
       if (isIndexedRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isRecordIndexPropertyRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
+      if (ts.isPropertyAccessExpression(e) && isOptionalReadlineCursorRead(this, e)) return true;
       if (isOptionalProcessVersionsRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isSettledIteratorValueRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOsConstantsSymbol(symbolOf(e.expression), this))
