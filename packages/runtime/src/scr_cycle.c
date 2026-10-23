@@ -293,24 +293,22 @@ static SCR_TL ScrDestroyEntry *scr_destroy_pending;
 static SCR_TL size_t scr_destroy_count, scr_destroy_capacity;
 #endif
 
-void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
-  if (scr_destroy_depth == SCR_DESTROY_DEPTH) {
-    if (scr_destroy_count == scr_destroy_capacity) {
-      size_t capacity = scr_destroy_capacity ? scr_destroy_capacity * 2 : 64;
-      if (capacity < scr_destroy_capacity || capacity > SIZE_MAX / sizeof(ScrDestroyEntry))
-        scr_cyc_oom();
-      ScrDestroyEntry *entries = realloc(scr_destroy_pending, capacity * sizeof(*entries));
-      if (!entries) scr_cyc_oom();
-      scr_destroy_pending = entries;
-      scr_destroy_capacity = capacity;
-    }
-    scr_destroy_pending[scr_destroy_count++] = (ScrDestroyEntry){ obj, destroy };
-    return;
+/* Queues a disposal past the depth budget; the outermost disposal runs it. */
+static void scr_rc_destroy_defer(void *obj, void (*destroy)(void *)) {
+  if (scr_destroy_count == scr_destroy_capacity) {
+    size_t capacity = scr_destroy_capacity ? scr_destroy_capacity * 2 : 64;
+    if (capacity < scr_destroy_capacity || capacity > SIZE_MAX / sizeof(ScrDestroyEntry))
+      scr_cyc_oom();
+    ScrDestroyEntry *entries = realloc(scr_destroy_pending, capacity * sizeof(*entries));
+    if (!entries) scr_cyc_oom();
+    scr_destroy_pending = entries;
+    scr_destroy_capacity = capacity;
   }
-  scr_destroy_depth++;
-  destroy(obj);
-  scr_destroy_depth--;
-  if (scr_destroy_depth) return;
+  scr_destroy_pending[scr_destroy_count++] = (ScrDestroyEntry){ obj, destroy };
+}
+
+/* Runs the queued disposals once the outermost one has returned. */
+static void scr_rc_destroy_drain(void) {
   while (scr_destroy_count) {
     ScrDestroyEntry entry = scr_destroy_pending[--scr_destroy_count];
     scr_destroy_depth = 1;
@@ -324,6 +322,30 @@ void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
     scr_destroy_pending = NULL;
     scr_destroy_capacity = 0;
   }
+}
+
+void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
+  if (scr_destroy_depth == SCR_DESTROY_DEPTH) {
+    scr_rc_destroy_defer(obj, destroy);
+    return;
+  }
+  scr_destroy_depth++;
+  destroy(obj);
+  scr_destroy_depth--;
+  if (scr_destroy_depth == 0) scr_rc_destroy_drain();
+}
+
+void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
+                         void (*destroy)(void *), void *tail) {
+  if (scr_destroy_depth == SCR_DESTROY_DEPTH) {
+    scr_rc_destroy_defer(obj, destroy);
+    return tail;
+  }
+  scr_destroy_depth++;
+  tail = destroy_seg(obj, tail);
+  scr_destroy_depth--;
+  if (scr_destroy_depth == 0) scr_rc_destroy_drain();
+  return tail;
 }
 
 /* Live cycle-headered objects and the running count of OLD objects freed.
