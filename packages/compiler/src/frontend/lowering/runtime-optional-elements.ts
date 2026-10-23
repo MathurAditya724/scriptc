@@ -45,7 +45,9 @@ export interface ElementStateHost {
    * can reach, as live views ("*" for any array). */
   nativeViewKeys(): ReadonlySet<string>;
   /** Debug provenance for a new fact. */
-  note: ((fact: "undefined" | "holes", key: string, site: ts.Node | undefined) => void) | null;
+  note:
+    | ((fact: "undefined" | "holes" | "foreign", key: string, site: ts.Node | undefined) => void)
+    | null;
   /** The scan read, or added to, the facts of an element key, of an owning
    * slot, or of every array (ANY_ARRAY), for dependency tracking
    * (SiteDependencies). */
@@ -57,6 +59,8 @@ export interface ElementStateHost {
 const ANY_ARRAY = "*";
 /** The fact name of holes stored through dynamic views. */
 const VIEW_HOLES = "%view";
+/** The fact name of values stored through dynamic views. */
+const VIEW_VALUES = "%view-values";
 
 /** What an array value can contain besides present values. */
 interface Contents {
@@ -93,6 +97,9 @@ export class ArrayElementStates {
   /** A store through a dynamic value can leave holes; they land in every
    * native array such a value views. */
   private viewHoles = false;
+  /** A store through a dynamic value can write any value, which the
+   * viewed native arrays then hold as undefined or foreign elements. */
+  private viewValues = false;
   private viewKeys: ReadonlySet<string> | null = null;
   /** Facts of arrays owned by one storage slot. */
   private readonly undefinedOwners = new Set<ts.Symbol>();
@@ -344,19 +351,52 @@ export class ArrayElementStates {
     if (keys === null) return null;
     for (const key of keys) this.host.read?.(key);
     this.host.read?.(VIEW_HOLES);
+    this.host.read?.(VIEW_VALUES);
     return {
       undefined:
         this.anyUndefined ||
-        keys.some((key) => this.undefinedKeys.has(key) || this.host.elementAdmitsUndefined(key)),
+        keys.some(
+          (key) =>
+            this.undefinedKeys.has(key) ||
+            this.host.elementAdmitsUndefined(key) ||
+            this.viewedValues(key),
+        ),
       holes: this.anyHoley || keys.some((key) => this.holeyKeys.has(key) || this.viewed(key)),
     };
   }
 
   /** Holes stored through a dynamic view can be in arrays of this key. */
   private viewed(key: string): boolean {
-    if (!this.viewHoles) return false;
+    return this.viewHoles && this.isViewed(key);
+  }
+
+  /** Values of any type stored through a dynamic view can be in arrays of
+   * this key. */
+  private viewedValues(key: string): boolean {
+    return this.viewValues && this.isViewed(key);
+  }
+
+  private isViewed(key: string): boolean {
     this.viewKeys ??= this.host.nativeViewKeys();
     return this.viewKeys.has(key) || this.viewKeys.has(ANY_ARRAY);
+  }
+
+  /** Element keys whose arrays can hold elements outside their element
+   * type, stored through dynamic views; "*" for every array. Final once
+   * the fixed point is reached. */
+  foreignKeys(): ReadonlySet<string> {
+    if (!this.viewValues) return new Set();
+    return (this.viewKeys ??= this.host.nativeViewKeys());
+  }
+
+  /** A store through `receiver`, which has no native element key, can
+   * write a value of any type into a viewed native array. */
+  private addViewValues(receiver: ts.Expression): boolean {
+    if (this.viewValues || !this.host.isDynamicArray(receiver)) return false;
+    this.viewValues = true;
+    this.host.changed?.(VIEW_VALUES);
+    this.host.note?.("foreign", VIEW_VALUES, this.site);
+    return true;
   }
 
   /** A store through `receiver`, which has no native element key, can
@@ -522,11 +562,18 @@ export class ArrayElementStates {
         op === ts.SyntaxKind.QuestionQuestionEqualsToken ||
         op === ts.SyntaxKind.BarBarEqualsToken ||
         op === ts.SyntaxKind.AmpersandAmpersandEqualsToken;
+      const keys = this.host.arrayKeys(target.expression);
+      if (keys !== null && keys.length === 0) {
+        // Through a dynamic value: any element write can store a value the
+        // viewed native array's element type does not hold.
+        if (namesProperty(target)) return false;
+        let changed = false;
+        if (holes && this.addViewHoles(target.expression)) changed = true;
+        if (this.addViewValues(target.expression)) changed = true;
+        return changed;
+      }
       const undefinedValue = storesValue && this.host.mayBeUndefined(node.right);
       if (!holes && !undefinedValue) return false;
-      const keys = this.host.arrayKeys(target.expression);
-      if (keys !== null && keys.length === 0)
-        return holes && !namesProperty(target) && this.addViewHoles(target.expression);
       let changed = false;
       if (holes && this.addHolesTo(target.expression)) changed = true;
       if (undefinedValue && this.addUndefinedTo(target.expression)) changed = true;
@@ -575,7 +622,14 @@ export class ArrayElementStates {
         return changed;
     }
     const receiver = this.host.arrayKeys(callee.expression);
-    if (receiver !== null && receiver.length === 0) return changed;
+    if (receiver !== null && receiver.length === 0) {
+      if (
+        (stored.length > 0 || callee.name.text === "fill") &&
+        this.addViewValues(callee.expression)
+      )
+        changed = true;
+      return changed;
+    }
     for (const value of stored)
       if (this.valueMayBeUndefined(value) && this.addUndefinedTo(callee.expression)) changed = true;
     return changed;
@@ -616,6 +670,7 @@ export class ArrayElementStates {
       const keys = this.host.arrayKeys(target);
       if (keys !== null && keys.length === 0) {
         if (index === written && this.addViewHoles(target)) changed = true;
+        if (index === written && this.addViewValues(target)) changed = true;
         continue;
       }
       if (this.addUndefinedTo(target)) changed = true;

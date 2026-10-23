@@ -1,4 +1,6 @@
 import { keyedHelperName } from "./stable-names.js";
+import { perKeyOrder } from "./key-order-witness.js";
+import { elementMayBeForeign } from "./array-values.js";
 import {
   dynUndefinedExpr,
   boolLit,
@@ -40,6 +42,7 @@ import {
   isDynTypedRefType,
   recordTextCodecClass,
   shapeHasAccessorSlots,
+  shapeKeyOrders,
   typeKey,
 } from "../../ir/ir.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -1287,11 +1290,29 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       const i = (): IrExpr => varRef("i.0", F64, loc);
       const next = (): IrExpr => varRef("next.0", F64, loc);
       const hasMore = (): IrExpr => lt(i(), n());
+      // A foreign element (state 3) holds a value outside the element type.
+      const foreignElements = elementMayBeForeign(lowerer, t.elem);
+      const foreign = (): IrExpr => ({
+        kind: "libCall",
+        fn: "array.foreign",
+        args: [v(), i()],
+        type: DYN,
+        loc,
+      });
       const isNumber = (): IrExpr => ({
         kind: "ternary",
         cond: eq(state(i()), numLit(1, loc)),
         then: isNumberFlag(lowerer, t.elem, () => at(i()), loc),
-        else_: boolLit(false, loc),
+        else_: foreignElements
+          ? {
+              kind: "ternary",
+              cond: eq(state(i()), numLit(3, loc)),
+              then: isNumberFlag(lowerer, DYN, foreign, loc),
+              else_: boolLit(false, loc),
+              type: BOOL,
+              loc,
+            }
+          : boolLit(false, loc),
         type: BOOL,
         loc,
       });
@@ -1370,7 +1391,16 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
                     kind: "ternary",
                     cond: eq(state(i()), numLit(1, loc)),
                     then: child(t.elem, at(i())),
-                    else_: strLit("undefined", loc),
+                    else_: foreignElements
+                      ? {
+                          kind: "ternary",
+                          cond: eq(state(i()), numLit(3, loc)),
+                          then: child(DYN, foreign()),
+                          else_: strLit("undefined", loc),
+                          type: STRING,
+                          loc,
+                        }
+                      : strLit("undefined", loc),
                     type: STRING,
                     loc,
                   },
@@ -1647,7 +1677,12 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
           });
         }
         body.push(depthGate("[Object]"), ...begin());
-        for (const fname of order) {
+        // One walk per key order (see perKeyOrder).
+        const orders = shapeKeyOrders(current);
+        const walks = orders.map((): IrStmt[] => []);
+        for (const [k, fname] of orders.flatMap((order, k) =>
+          order.map((name) => [k, name] as const),
+        )) {
           const ft = byName.get(fname);
           if (!ft) continue;
           const show = entry(
@@ -1655,12 +1690,13 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             boolLit(false, loc),
           );
           const present = lowerer.recordFieldPresent(v(), t.shapeId, fname, loc);
-          body.push(
+          walks[k]!.push(
             present.kind === "recordHas"
               ? { kind: "if", cond: present, then: [show], else_: null, loc }
               : show,
           );
         }
+        body.push(...perKeyOrder(current, v(), walks, loc));
         body.push(
           ret(end(strLit("", loc), strLit("{", loc), strLit("}", loc), false, boolLit(false, loc))),
         );
@@ -1918,13 +1954,21 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
 
   // A closed record that kept the undeclared properties of its checked
   // source renders through its live checked view, which holds them in the
-  // source's own-key order beside the current field values.
+  // source's own-key order beside the current field values. An array with
+  // properties besides its elements does too: the view lists them after
+  // the elements.
   let prependSourceGate: (() => void) | null = null;
-  if (t.kind === "record" && recordMayKeepSource(lowerer, t)) {
+  const sourceTest: IrExpr | null =
+    t.kind === "record" && recordMayKeepSource(lowerer, t)
+      ? recordSourceTest(v(), loc)
+      : t.kind === "array" && lowerer.dynConvertible(t)
+        ? { kind: "libCall", fn: "array.hasProperties", args: [v()], type: BOOL, loc }
+        : null;
+  if (sourceTest !== null) {
     prependSourceGate = (): void => {
       body.unshift({
         kind: "if",
-        cond: recordSourceTest(v(), loc),
+        cond: sourceTest,
         then: [
           ret({
             kind: "libCall",

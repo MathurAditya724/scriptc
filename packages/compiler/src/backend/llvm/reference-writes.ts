@@ -106,7 +106,9 @@ const INERT_LIB_CALLS = new Set([
   "regex.groupParseInt",
   "regex.resultProp",
   "array.namedKeys",
+  "array.foreign",
   "array.hasNamedKey",
+  "array.hasProperties",
   "process.cwd",
   "process.argv",
   "process.execArgv",
@@ -118,6 +120,7 @@ const INERT_LIB_CALLS = new Set([
   "worker.parentPort",
   "worker.root",
   "cp.spawnSyncOpts",
+  "cp.spawnSyncEnv",
 ]);
 
 /** jsval conversions (ir/jsval.ts): no user code, no stores. */

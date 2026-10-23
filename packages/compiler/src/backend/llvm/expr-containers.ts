@@ -1,8 +1,9 @@
+import { dynDesc } from "../../ir/analysis.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { arraySearchHelperName, arraySearchKind } from "./array-search.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isStableReceiverOperand, undefinedArmTag } from "../../ir/analysis.js";
-import { type IrExpr, type IrType, isRefCounted, typeEquals, typeKey } from "../../ir/ir.js";
+import { F64, type IrExpr, type IrType, isRefCounted, typeEquals, typeKey } from "../../ir/ir.js";
 import { mangleResolveThunk } from "../mangle.js";
 import {
   arrOps,
@@ -51,6 +52,8 @@ import {
   STRING_CHAR_AT_INT_MARKER,
   STRING_CHAR_CODE_AT_DECL,
   STRING_CHAR_CODE_AT_INT_MARKER,
+  emitAsciiChar,
+  emitAsciiCharCode,
   STRING_UTF16_LEN_DECL,
 } from "./string-reads.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
@@ -58,8 +61,12 @@ import {
   emitDenseArrayNumber,
   emitDenseArrayPop,
   emitDenseArrayPush,
+  runtimeAccess,
+  type ArrayAccess,
 } from "./dense-array-access.js";
+import { INT32_ARRAY_METHODS } from "../../ir/int32-arrays.js";
 import { emitUnionWiden } from "./expr-records.js";
+import { registerReplay } from "./emit-journal.js";
 
 export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string {
   const key = typeKey(inner);
@@ -67,6 +74,7 @@ export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string
   if (!sym) {
     sym = mangleResolveThunk(host.resolveThunks.size);
     host.resolveThunks.set(key, sym);
+    host.journal?.allocated(sym, "resolveThunkFor", [inner]);
     const v = vAdapters(host.shapeHost, inner);
     host.declare(`declare void @scr_resolve_ref_impl(ptr, ptr, ptr, ptr, ptr)`);
     host.resolveThunkDefs.push(
@@ -77,6 +85,7 @@ export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string
       `}`,
       ``,
     );
+    host.journal?.built();
   }
   return sym;
 }
@@ -110,7 +119,7 @@ export function tagInSet(
 export function arrPush(
   host: LlvmEmitterContext,
   arr: string,
-  acc: "f64" | "bool" | "ref",
+  acc: ArrayAccess,
   value: string,
   element: IrType | null,
 ): string {
@@ -121,7 +130,7 @@ export function arrPush(
 export function emitArrayValues(
   host: LlvmEmitterContext,
   arr: string,
-  acc: "f64" | "bool" | "ref",
+  acc: ArrayAccess,
   element: IrType,
   values: LlValue[],
   prepend = false,
@@ -137,12 +146,15 @@ export function emitArrayValues(
   }
   if (values.length === 1) {
     if (!prepend) return arrPush(host, arr, acc, values[0]!.name, element);
-    const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
+    const flat = runtimeAccess(acc);
+    const ty = flat === "f64" ? "double" : flat === "bool" ? "i1" : "ptr";
     host.declare(
-      `declare double @scr_arr_unshift_${acc}(ptr, ${ty}${acc === "bool" ? " zeroext" : ""})`,
+      `declare double @scr_arr_unshift_${flat}(ptr, ${ty}${flat === "bool" ? " zeroext" : ""})`,
     );
     const result = B.tmp();
-    B.line(`${result} = call double @scr_arr_unshift_${acc}(ptr ${arr}, ${ty} ${values[0]!.name})`);
+    B.line(
+      `${result} = call double @scr_arr_unshift_${flat}(ptr ${arr}, ${ty} ${values[0]!.name})`,
+    );
     return result;
   }
   const capacity = Math.min(values.length, 64);
@@ -160,8 +172,9 @@ export function emitArrayValues(
       const slot = B.tmp(),
         pointer = B.tmp();
       const value = values[start + i]!.name;
+      // The runtime takes double bits for int32 arrays too, and converts.
       const pack =
-        acc === "f64"
+        acc === "f64" || acc === "i32"
           ? `bitcast double ${value} to i64`
           : acc === "bool"
             ? `zext i1 ${value} to i64`
@@ -281,6 +294,33 @@ export function emitArrayCopyLoop(
   host.B.line(`call double @scr_arr_push_spread(ptr ${dst}, ptr ${src})`);
 }
 
+/** `s.charCodeAt(i)` in place of `s.charAt(i)`, the same index read as a
+ * code unit. The emitter records the charAt it stands for
+ * (charAtUnitReads), so a loop version's proof for the charAt covers it. */
+export function charAtUnitRead(
+  host: LlvmEmitterContext,
+  charAt: IrExpr & { kind: "strIntrinsic" },
+): IrExpr & { kind: "strIntrinsic" } {
+  const read: IrExpr & { kind: "strIntrinsic" } = {
+    kind: "strIntrinsic",
+    method: "charCodeAt",
+    receiver: charAt.receiver,
+    args: charAt.args,
+    type: F64,
+    loc: charAt.loc,
+  };
+  host.charAtUnitReads.set(read, charAt);
+  return read;
+}
+
+/** An enclosing loop version proved the string of `e` ASCII and its index
+ * below the length (bytes-loop-versions.ts). */
+function provenStringRead(host: LlvmEmitterContext, e: IrExpr): boolean {
+  if (host.bytesBounds.has(e)) return true;
+  const origin = host.charAtUnitReads.get(e);
+  return origin !== undefined && host.bytesBounds.has(origin);
+}
+
 export function emitStrIntrinsic(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "strIntrinsic" },
@@ -326,8 +366,10 @@ export function emitStrIntrinsic(
       const t = B.tmp();
       const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
       if (index) {
-        host.declare(STRING_CHAR_CODE_AT_INT_MARKER);
         const wide = widenInteger(host, index);
+        if (provenStringRead(host, e))
+          return { name: emitAsciiCharCode(host, r.name, wide), type: e.type };
+        host.declare(STRING_CHAR_CODE_AT_INT_MARKER);
         B.line(`${t} = call double @sc_str_char_code_at_int(ptr ${r.name}, i64 ${wide})`);
         return { name: t, type: e.type };
       }
@@ -340,8 +382,11 @@ export function emitStrIntrinsic(
       const t = B.tmp();
       const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
       if (index) {
-        host.declare(STRING_CHAR_AT_INT_MARKER);
         const wide = widenInteger(host, index);
+        // The table entry is immortal: nothing owns it.
+        if (provenStringRead(host, e))
+          return host.markImmortal({ name: emitAsciiChar(host, r.name, wide), type: e.type });
+        host.declare(STRING_CHAR_AT_INT_MARKER);
         B.line(`${t} = call ptr @sc_str_char_at_int(ptr ${r.name}, i64 ${wide})`);
       } else {
         const at = args[0]?.name ?? f64Lit(0);
@@ -570,7 +615,15 @@ export function emitArrIntrinsic(
   if (e.receiver.type.kind !== "array")
     throw new InternalCompilerError("llvm emitter bug: arrIntrinsic on non-array");
   const elem = e.receiver.type.elem;
-  const acc = elemAccess(elem);
+  // Int32 arrays (ir/int32-arrays.ts) reach only these methods; the others
+  // take the runtime family's flat access. One with checked stores tests
+  // its kind at each inline access (emitByElementKind) and otherwise takes
+  // the double entry points, which serve both kinds.
+  const checked = host.checkedInt32Array(e.receiver);
+  const access = checked ? "f64" : host.arrayAccess(e.receiver, elem);
+  if ((access === "i32" || checked) && !INT32_ARRAY_METHODS.has(e.method))
+    throw new InternalCompilerError(`llvm emitter bug: ${e.method} on an int32 array`);
+  const acc = runtimeAccess(access);
   const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
   const accArg = acc === "bool" ? "i1 zeroext" : accTy;
   const method = e.method;
@@ -591,6 +644,13 @@ export function emitArrIntrinsic(
         e.receiver.kind === "varRef"
           ? host.constantNumericTables.get(e.receiver.localId)
           : undefined;
+      if (!table && elem.kind === "f64" && checked) {
+        const proven = host.provenDenseIndex(e.receiver, e.args[0]!);
+        const value = host.emitByElementKind(r.name, "double", (kind) =>
+          emitDenseArrayNumber(host, r.name, index, e.args[0], proven, kind),
+        )!;
+        return { name: value, type: e.type };
+      }
       if (!table && elem.kind === "f64")
         return {
           name: emitDenseArrayNumber(
@@ -599,6 +659,7 @@ export function emitArrIntrinsic(
             index,
             e.args[0],
             host.provenDenseIndex(e.receiver, e.args[0]!),
+            access === "i32" ? "i32" : "f64",
           ),
           type: e.type,
         };
@@ -635,7 +696,22 @@ export function emitArrIntrinsic(
       // no-op zero-argument call.
       const vs = e.args.map((a) => host.emitExpr(a));
       host.emitPublishedArrayGuard(r.name, e.receiver.type, 1, f64Lit(0), f64Lit(vs.length));
-      return { name: emitArrayValues(host, r.name, acc, elem, vs), type: e.type };
+      if (checked && vs.length > 0) {
+        // Each value appends in its own kind test: one that is not an int32
+        // widens the array before it is pushed.
+        let length = "";
+        vs.forEach((v, i) => {
+          length = host.emitByElementKind(r.name, "double", (kind, widened) => {
+            if (kind === "i32") host.emitCheckedInt32Store(r.name, v.name, e.args[i]!, widened);
+            return arrPush(host, r.name, kind, v.name, elem);
+          })!;
+        });
+        return { name: length, type: e.type };
+      }
+      // In an int32 kind loop's fast copy, every value is checked before
+      // the first appends.
+      vs.forEach((v, i) => host.emitInt32KindStoreCheck(e.receiver, v, e.args[i]!));
+      return { name: emitArrayValues(host, r.name, access, elem, vs), type: e.type };
     }
     case "pushSpread": {
       // `a.push(...src)`: append src's elements in order (borrowed src,
@@ -687,6 +763,9 @@ export function emitArrIntrinsic(
     case "shift": {
       host.emitPublishedArrayGuard(r.name, e.receiver.type, method === "pop" ? 2 : 6);
       const checkedValue = elem.kind === "dyn" && e.type.kind === "dyn";
+      // A foreign element (SCR_ARR_FOREIGN) cannot be the typed result:
+      // removing one throws the checked conversion's TypeError.
+      const foreignElements = !checkedValue && host.mayHoldForeign(elem);
       if (!checkedValue && e.type.kind !== "union")
         throw new InternalCompilerError("llvm emitter bug: array removal result is not a union");
       const def = e.type.kind === "union" ? host.unionsById.get(e.type.unionId) : undefined;
@@ -709,7 +788,13 @@ export function emitArrIntrinsic(
       let slowLabel = "";
       if (method === "pop") {
         slowLabel = B.newLabel("remove.slow");
-        denseRaw = emitDenseArrayPop(host, r.name, acc, elem, la, slowLabel);
+        const empty = la,
+          slow = slowLabel;
+        denseRaw = checked
+          ? host.emitByElementKind(r.name, "i64", (kind) =>
+              emitDenseArrayPop(host, r.name, kind, elem, empty, slow),
+            )!
+          : emitDenseArrayPop(host, r.name, access, elem, la, slowLabel);
         denseLabel = B.currentLabel();
         B.br(lp);
         B.startBlock(slowLabel);
@@ -723,7 +808,25 @@ export function emitArrIntrinsic(
       );
       B.line(`${slowRaw} = load i64, ptr ${rawSlot}`);
       B.line(`${has} = icmp eq i8 ${state}, 1`);
-      B.condBr(has, lp, la);
+      const lf = foreignElements ? B.newLabel("remove.f") : la;
+      B.condBr(has, lp, lf);
+      if (foreignElements) {
+        // Only the runtime call removes a foreign element; its value moves
+        // out with the slot, and the throw releases it.
+        B.startBlock(lf);
+        const foreign = B.tmp();
+        const throwLabel = B.newLabel("remove.foreign");
+        B.line(`${foreign} = icmp eq i8 ${state}, 3`);
+        B.condBr(foreign, throwLabel, la);
+        B.startBlock(throwLabel);
+        const payload = B.tmp();
+        B.line(`${payload} = inttoptr i64 ${slowRaw} to ptr`);
+        host.declare(`declare void @scr_dyn_foreign_throw(ptr, ptr)`);
+        const want = host.cstr(dynDesc(e.type, host.recordsById, host.unionsById));
+        B.line(`call void @scr_dyn_foreign_throw(ptr ${payload}, ptr ${want})`);
+        host.emitAlwaysPendingUnwind();
+        B.br(la);
+      }
       B.startBlock(lp);
       let raw = slowRaw;
       const value = B.tmp();
@@ -898,6 +1001,14 @@ export function emitArrIntrinsic(
     case "fillUndefined": {
       const args = e.args.map((arg) => host.emitExpr(arg));
       host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      if (host.checkedFills.has(e)) {
+        // A new int32 array with checked stores, filled with a value that
+        // may not be an int32: widen it first then.
+        const filled = B.newLabel("arr.fill.kind");
+        host.emitCheckedInt32Store(r.name, args[0]!.name, e.args[0]!, filled);
+        B.br(filled);
+        B.startBlock(filled);
+      }
       const helper =
         e.method === "copyWithin"
           ? "scr_arr_copy_within"
@@ -1548,3 +1659,5 @@ export function emitSetNew(host: LlvmEmitterContext, e: IrExpr & { kind: "setNew
   }
   return out;
 }
+
+registerReplay("resolveThunkFor", (host, args) => resolveThunkFor(host, args[0] as IrType));

@@ -1,4 +1,6 @@
+import { isDeclBoundaryFile } from "../decl-projection.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import { moduleNamespaceObject } from "./module-namespace-elements.js";
 import { keyedHelperName } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import { onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
@@ -67,6 +69,7 @@ import { valueStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
+import { iterableSlotValue } from "./iterable-values.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { CoercionState } from "./coercions/state.js";
@@ -183,7 +186,7 @@ export { newFnCtx, type FnCtx } from "./function-context.js";
  */
 import { dirname, relative, resolve } from "node:path";
 import { bindingSource } from "../binding-source.js";
-import { tsgoPath } from "../dts-paths.js";
+import { compilerOwnedFileName, tsgoPath } from "../dts-paths.js";
 import * as ts from "../ts7/adapter.js";
 import { isBundledShimForwarder } from "../package-shims.js";
 import { erasedTypeOnlyImport } from "../type-only-imports.js";
@@ -230,6 +233,7 @@ import {
   arrayOf,
   BOOL,
   canAdaptDynFuncTo,
+  canBoxFuncIntoDyn,
   canDynCheckTo,
   canConvertToDyn,
   DYN,
@@ -612,6 +616,7 @@ import {
   lowerForStatement,
   matchGroupsPatternSource,
   isGuardedRecordRead,
+  holdsEvolvingArray,
 } from "./lower-stmts.js";
 import {
   type FieldTarget,
@@ -1920,6 +1925,9 @@ export class Lowerer {
   /** Identifiers by spelling, per file, for the generic bindings' use
    * ordering (runsAfterDeclaration). */
   readonly bindingIdentifiers = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
+  /** Per JavaScript file, the declarations of the bindings it assigns an
+   * own `toString` (jsAssignsOwnToString in lower-calls.ts). */
+  readonly ownToStringTargets = new Map<ts.SourceFile, Set<ts.Node>>();
   /** Per-symbol result of the never-reassigned file scan
    * (bindingNeverReassigned — object-literal generic-method receivers). */
   readonly neverReassignedCache = new Map<ts.Symbol, boolean>();
@@ -2182,6 +2190,9 @@ export class Lowerer {
    * and erased instances). */
   erasingDepth = 0;
   localClassInstantiations: { owner: ts.FunctionLikeDeclaration; name: string }[] = [];
+  /** The function-local classes of the program with an `extends` clause, whether lowering collected
+   * them yet or not (new-target.ts); found on first use. */
+  functionLocalSubclasses: ts.ClassLikeDeclaration[] | undefined = undefined;
   /** Instance types (by checker type id) of the local classes generic
    * factory calls return, and the per-instance class each names. */
   readonly localClassInstanceTypes = new Map<number, string>();
@@ -2345,6 +2356,11 @@ export class Lowerer {
   /** for-of loops over arrays that can hold neither holes nor undefined:
    * each pass reads the element payload directly. */
   readonly presentElementLoops = new Set<ts.ForOfStatement>();
+  /** Element keys (typeKey of the element type) of native arrays that can
+   * hold elements outside their element type, stored through dynamic views
+   * (SCR_ARR_FOREIGN); "*" for every array. Empty unless the program stores
+   * values through a dynamic value that can view a native array. */
+  foreignElementKeys: ReadonlySet<string> = new Set();
   /** The fs/promises glob() call lowerForOf is lowering as a for await
    * head; other glob() calls have no lowering. */
   fspGlobHead: ts.Node | null = null;
@@ -2401,6 +2417,51 @@ export class Lowerer {
       }
     }
     return fallback ?? null;
+  }
+
+  /** A fresh TypeScript data literal (`{ message: "m" }`) passed to a
+   * checked-dynamic parameter of a callee implemented in JavaScript, whose
+   * contract lets it reshape the object: a call through an untyped value, an
+   * untyped parameter of a JavaScript function, or a package-declared
+   * parameter type (a non-library `.d.ts`) that makes one of the literal's
+   * properties optional (zod's `normalizeParams` deletes `params.message`).
+   * No typed alias of a fresh literal exists, so it is built as the plain
+   * object the callee receives instead of a view whose record layout refuses
+   * that delete. Standard-library and TypeScript callees, and literals with
+   * methods or accessors, keep their native storage. */
+  private reshapeableContextualLiteral(
+    literal: ts.ObjectLiteralExpression,
+    contextual: readonly ts.Type[],
+  ): boolean {
+    const call = literal.parent;
+    if (
+      call === undefined ||
+      !(ts.isCallExpression(call) || ts.isNewExpression(call)) ||
+      !call.arguments?.nodes.includes(literal) ||
+      literal.properties.nodes.length === 0 ||
+      !literal.properties.nodes.every(
+        (prop) =>
+          (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
+          (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)),
+      )
+    )
+      return false;
+    const declaration = this.checker.getResolvedSignature(call)?.declaration;
+    const file = declaration ? ts.getSourceFileOfNode(declaration) : undefined;
+    const untyped = contextual.some((part) => part.flags & ts.TypeFlags.Any);
+    if (file === undefined) return untyped;
+    if (isJsSourceFile(file)) return untyped;
+    if (!file.isDeclarationFile || this.isStdlibFile(file)) return false;
+    if (untyped) return true;
+    const objects = contextual.filter((part) => part.flags & ts.TypeFlags.Object);
+    if (objects.length === 0) return false;
+    return literal.properties.nodes.some((prop) => {
+      const name = (prop.name as ts.Identifier | ts.StringLiteral).text;
+      return objects.every((part) => {
+        const symbol = this.checker.getPropertyOfType(part, name);
+        return symbol !== undefined && (symbol.flags & ts.SymbolFlags.Optional) !== 0;
+      });
+    });
   }
 
   /** A TypeScript object literal handed to a JavaScript checked-value
@@ -2966,9 +3027,14 @@ export class Lowerer {
    * ABI and shared prototype descriptors instead of call-site specialization. */
   readonly prototypeMethodAccesses = new Map<string, ts.Node>();
   /** Whether the program reads `Error.prototype`, the checked-dynamic
-   * object an ES5 constructor function can inherit from: only then can a
-   * value that is not an Error instance be `instanceof Error`. */
+   * object an ES5 constructor function can inherit from, or has a class
+   * whose heritage is evaluated at run time (`extends (Base ?? Error)`):
+   * only then can a value that is not an Error instance be
+   * `instanceof Error`. */
   errorPrototypeValues = false;
+  /** The property names the program assigns on the global object
+   * (property-access.ts), collected on first use. */
+  globalThisWrittenNames: Set<string> | null = null;
   /** Well-known symbol methods (`sym:iterator`) the program may replace
    * through a symbol-keyed write: an instance or prototype property, or a
    * reflection call. */
@@ -3192,16 +3258,22 @@ export class Lowerer {
    * dispatch revision needs no weak-key identity or process-global state. */
   errorMethodDispatchRevision: string | null = null;
   errorPropertyDispatchRevision: string | null = null;
+  /** The program defines properties by reflection on an untyped or
+   * Error-shaped target, so an own accessor may replace an error's `name`
+   * or `message`: typed reads and writes of those slots check for one.
+   * Holds the first such call's location. */
+  errorAccessorReflection: SrcLoc | null = null;
   /** Structural source positions (structural-positions.ts) for names that
    * stay the same when unrelated code moves. */
   /** Files are named by their path relative to the entry's directory, so
-   * names do not depend on where the program sits, and default library
-   * files by their base name: two checkers install them in different
-   * directories. */
+   * names do not depend on where the program sits, default library files
+   * by their base name (two checkers install them in different
+   * directories), and the files scriptc ships by their name inside scriptc,
+   * so names do not depend on where scriptc is installed either. */
   readonly positions = new StructuralPositions((sf) =>
     this.program.isSourceFileDefaultLibrary(sf)
       ? `lib:${sf.fileName.slice(sf.fileName.lastIndexOf("/") + 1)}`
-      : relative(dirname(this.entry.fileName), sf.fileName),
+      : (compilerOwnedFileName(sf.fileName) ?? relative(dirname(this.entry.fileName), sf.fileName)),
   );
 
   /** The outermost node whose token span is exactly `loc`, or null. */
@@ -3233,7 +3305,10 @@ export class Lowerer {
    * before it. */
   closureName(loc: SrcLoc, suffix = "", prefix = "%fn"): string {
     const node = this.nodeAtLoc(loc);
-    const where = node === null ? `${loc.file}:${loc.start}:${loc.end}` : this.positions.of(node);
+    const where =
+      node === null
+        ? `${compilerOwnedFileName(loc.file) ?? loc.file}:${loc.start}:${loc.end}`
+        : this.positions.of(node);
     const key = `${prefix}|${this.closureRoot}|${where}|${suffix}`;
     const first = keyedHelperName(this, prefix, key);
     const seen = this.closureNameCounts.get(first) ?? 0;
@@ -3308,6 +3383,9 @@ export class Lowerer {
    * the class and constructed-class counts, it tells caches over the class
    * graph when the graph changed. */
   subclassLinks = 0;
+  /** Function-local classes by the class node they extend, built on first
+   * use (localSubclassesOf in lower-classes.ts). */
+  localSubclassIndex: Map<ts.Node, ts.ClassLikeDeclaration[]> | null = null;
   /** Set while a subclass constructor's super() call notes its base
    * constructor edge: that edge does not instantiate the base exactly. */
   private superConstructorEdge = false;
@@ -3371,8 +3449,18 @@ export class Lowerer {
       if (interned.has(fn.name)) this.sharedHelpers.add(fn);
     if (this.sharedHelpers.size === 0) return;
     const shared = new Map([...this.sharedHelpers].map((fn) => [fn.name, fn]));
-    const earlier = (left: SrcLoc, right: SrcLoc): boolean =>
-      left.file < right.file || (left.file === right.file && left.start < right.start);
+    // Files scriptc ships compare by their name inside scriptc, so the
+    // choice does not depend on where scriptc is installed.
+    const fileKeys = new Map<string, string>();
+    const fileKey = (file: string): string => {
+      let key = fileKeys.get(file);
+      if (key === undefined) fileKeys.set(file, (key = compilerOwnedFileName(file) ?? file));
+      return key;
+    };
+    const earlier = (left: SrcLoc, right: SrcLoc): boolean => {
+      if (left.file === right.file) return left.start < right.start;
+      return fileKey(left.file) < fileKey(right.file);
+    };
     // The earliest use of each shared helper outside the shared helpers, and
     // which shared helpers each shared helper uses.
     const uses = new Map<string, SrcLoc>();
@@ -3557,6 +3645,21 @@ export class Lowerer {
     else if (kind === "failed") s.failed += 1;
   }
 
+  /** The program holds the declaration-typed boundary's projection
+   * (decl-projection.ts): user-file record and array values crossing into
+   * dynamic slots (package parameters) box as live capsules, so a value
+   * that comes back through a boundary cast keeps its identity. */
+  private declBoundaryMemo: boolean | null = null;
+  get declBoundary(): boolean {
+    this.declBoundaryMemo ??= this.program
+      .getSourceFiles()
+      .some((sf) => isDeclBoundaryFile(sf.fileName));
+    return this.declBoundaryMemo;
+  }
+  /** Tracked classes' bag initializers over a typed `this`
+   * (class-dynamic-dispatch.ts recordBagInitializers). */
+  readonly classBagInitializers = new Map<string, IrExpr>();
+
   constructor(
     readonly program: ts.Program,
     readonly entry: ts.SourceFile,
@@ -3679,8 +3782,11 @@ export class Lowerer {
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
       isStdlibFile: this.isStdlibFile,
       isNpmFile: this.isNpmFile,
+      // The declaration-typed boundary's generated types (decl-projection.ts)
+      // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: (sf) =>
-        this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))),
+        this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))) ||
+        isDeclBoundaryFile(sf.fileName),
       typeMemo: this.typeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
@@ -6456,25 +6562,68 @@ export class Lowerer {
         undefined,
       );
       const declaration = symbol?.valueDeclaration;
-      if (!declaration) return false;
-      if (ts.isVariableDeclaration(declaration)) {
-        const list = declaration.parent;
-        return (
-          ts.isVariableDeclarationList(list) &&
-          (list.flags & ts.NodeFlags.Const) !== 0 &&
-          declaration.initializer !== undefined &&
-          freshDynamicStorage(declaration.initializer, depth + 1)
-        );
+      if (!symbol || !declaration) return false;
+      // Variables and class properties only: parameters take any argument,
+      // and object literals fill interface properties.
+      if (
+        !(ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) &&
+        !ts.isPropertyDeclaration(declaration)
+      )
+        return false;
+      const assigned = assignedValues(symbol);
+      if (assigned === null) return false;
+      const values = [
+        ...(declaration.initializer ? [declaration.initializer] : []),
+        ...(assigned ?? []),
+      ];
+      return values.length > 0 && values.every((value) => freshDynamicStorage(value, depth + 1));
+    };
+    // Every value `=` assigns to each variable or property of the program,
+    // by symbol; null for one also written another way (compound or
+    // destructuring assignment). Built on first use.
+    let assignments: Map<ts.Symbol, ts.Expression[] | null> | null = null;
+    const assignedValues = (symbol: ts.Symbol): ts.Expression[] | null | undefined => {
+      if (assignments === null) {
+        const found = new Map<ts.Symbol, ts.Expression[] | null>();
+        const add = (target: ts.Expression, value: ts.Expression | null): void => {
+          const e = peel(target);
+          if (ts.isArrayLiteralExpression(e) || ts.isObjectLiteralExpression(e)) {
+            // Destructuring: every target is written with a part of the value.
+            ts.forEachChild(e, (child) => {
+              if (ts.isIdentifier(child) || ts.isPropertyAccessExpression(child)) add(child, null);
+              else if (ts.isSpreadElement(child)) add(child.expression, null);
+              else if (ts.isPropertyAssignment(child)) add(child.initializer, null);
+              else if (ts.isShorthandPropertyAssignment(child))
+                add(child.name as ts.Expression, null);
+              else if (ts.isBinaryExpression(child)) add(child.left, null);
+              return undefined;
+            });
+            return;
+          }
+          const name = ts.isIdentifier(e) ? e : ts.isPropertyAccessExpression(e) ? e.name : null;
+          const written = name
+            ? panicSafe(() => this.checker.getSymbolAtLocation(name), undefined)
+            : undefined;
+          if (!written) return;
+          const list = found.get(written);
+          if (list === null) return;
+          if (value === null) found.set(written, null);
+          else if (list) list.push(value);
+          else found.set(written, [value]);
+        };
+        for (const sf of sourceFiles)
+          ts.walkPreorder(sf, (node) => {
+            if (ts.isBinaryExpression(node)) {
+              const op = node.operatorToken.kind;
+              if (op === ts.SyntaxKind.EqualsToken) add(node.left, node.right);
+              else if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment)
+                add(node.left, null);
+            }
+            return undefined;
+          });
+        assignments = found;
       }
-      return (
-        ts.isPropertyDeclaration(declaration) &&
-        declaration.initializer !== undefined &&
-        (declaration.modifiers?.nodes.some(
-          (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
-        ) ??
-          false) &&
-        freshDynamicStorage(declaration.initializer, depth + 1)
-      );
+      return assignments.get(symbol);
     };
     const elementStates = new ArrayElementStates({
       isDynamicArray: (node) => {
@@ -7326,6 +7475,7 @@ export class Lowerer {
     }
     for (const [site, present] of presentSites) if (present) this.presentElementCalls.add(site);
     for (const [loop, present] of presentLoops) if (present) this.presentElementLoops.add(loop);
+    this.foreignElementKeys = elementStates.foreignKeys();
     const globalsById = new Map(this.globalsList.map((global) => [global.id, global]));
     for (const [symbol, field] of staticFieldsBySymbol) {
       if (!optionalSymbols.has(symbol)) continue;
@@ -7872,6 +8022,10 @@ export class Lowerer {
             entry: ENTRY_NAME,
             ...(this.usesWorkers ? { workers: true } : {}),
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
+            ...(this.declBoundary ? { declBoundary: true as const } : {}),
+            ...(this.foreignElementKeys.size > 0
+              ? { foreignElementKeys: [...this.foreignElementKeys].sort() }
+              : {}),
             ...(this.threadSlotKeys.size > 0
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
@@ -9506,6 +9660,21 @@ export class Lowerer {
    * type-mapper.ts's chalk-shape mapping — call paths and func-slot coercions
    * share it. */
   hybridCallUnwrap(expr: IrExpr): IrExpr {
+    // A callable CLASS instance: a class whose merged interface carries a
+    // call signature stores its call behavior in a `%call` field (the
+    // chalk package shim's builder). Calls read the field.
+    if (expr.type.kind === "object") {
+      const callType = this.classes.get(expr.type.className)?.fields.get("%call");
+      if (callType === undefined || callType.kind !== "func") return expr;
+      return {
+        kind: "fieldGet",
+        obj: expr,
+        className: expr.type.className,
+        field: "%call",
+        type: callType,
+        loc: expr.loc,
+      };
+    }
     if (expr.type.kind !== "record") return expr;
     const shape = this.shapes.get(expr.type.shapeId);
     const call = shape?.fields.find((f) => f.name === "%call");
@@ -9597,6 +9766,22 @@ export class Lowerer {
     }
     if (expr.type.kind === "void" && expected.kind !== "void" && this.neverValued.has(expr))
       return this.divergentValue(expr, expected);
+    // A builtin error constructor global stored in a slot of its class value
+    // type (`{ Parent: Error }`): the class value itself, which a checked
+    // cast of the dynamic constructor value could not produce.
+    if (
+      expected.kind === "classval" &&
+      expr.kind === "libCall" &&
+      expr.fn === "dyn.globalConstructor" &&
+      expr.args[0]?.kind === "strLit" &&
+      `%${expr.args[0].value}` === expected.className
+    ) {
+      const info = this.classes.get(expected.className);
+      if (info?.builtinError && info.valueCtorParams !== undefined) {
+        this.defineClassValueConstruct(info);
+        return { kind: "classRef", className: info.def.name, type: expected, loc: expr.loc };
+      }
+    }
     // process.stdout/stderr into a general Writable slot (general-streams.ts).
     const stdioStream = stdioIntoGeneralStream(this, expr, expected);
     if (stdioStream) return this.coerceToExpected(stdioStream, expected);
@@ -9605,6 +9790,11 @@ export class Lowerer {
     if (expected.kind === "generator" && !typeEquals(expr.type, expected)) {
       const adapted = iteratorSlotAdapter(this, expr, expected);
       if (adapted) return adapted;
+    }
+    // Iterable-typed slots: other iterators enter the generator arm.
+    if (expected.kind === "union" && !typeEquals(expr.type, expected)) {
+      const iterable = iterableSlotValue(this, expr, expected);
+      if (iterable) return iterable;
     }
 
     // an any-typed slot marshals implicitly (tsc allows the assignment;
@@ -9698,6 +9888,13 @@ export class Lowerer {
       // constructor. `require("events")` is the EventEmitter class itself,
       // so its module binding is too (`ReleaseEmitter = EventEmitter` over
       // `const EventEmitter = require("events")`).
+      if (expr.type.kind === "moduleNs" && isJsSourceFileName(expr.loc.file)) {
+        const object = moduleNamespaceObject(
+          this,
+          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
+        );
+        if (object) return object;
+      }
       if (
         expr.type.kind === "moduleNs" &&
         expr.type.moduleId === "builtin:events" &&
@@ -9836,9 +10033,27 @@ export class Lowerer {
     // A HYBRID (function-with-properties) record flowing into a plain
     // func slot extracts its reserved %call field — the chalk shape's
     // "the value IS callable" half (type-mapper.ts's hybrid mapping).
-    if (expected.kind === "func" && expr.type.kind === "record") {
+    if (expected.kind === "func" && (expr.type.kind === "record" || expr.type.kind === "object")) {
       const un = this.hybridCallUnwrap(expr);
       if (un !== expr && typeEquals(un.type, expected)) return un;
+      // A callable class instance (the chalk shim's variadic builder) in a
+      // narrower function slot: its call closure crosses the checked
+      // function boundary, which adapts the arity.
+      if (
+        un !== expr &&
+        expr.type.kind === "object" &&
+        un.type.kind === "func" &&
+        canBoxFuncIntoDyn(
+          un.type,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        )
+      ) {
+        return this.coerceToExpected(
+          { kind: "dynFrom", value: un, type: DYN, loc: un.loc },
+          expected,
+        );
+      }
     }
     // A zero-param function whose RETURN is a wider record array than the
     // slot's (`getRoutes: () => cachedRoutes` against `() => Narrow[]`):
@@ -10686,6 +10901,46 @@ export class Lowerer {
     return this.coerceInto(node, value, expected);
   }
 
+  /** The right side of a write to a member of a typed view of the global
+   * object (`(globalThis as typeof globalThis & { k?: T }).k = value`, also
+   * through `??=` and `||=`) that is `value` itself or wraps only it in
+   * parentheses or `satisfies`; null when `value` is not in such a write. */
+  private globalViewSlot(value: ts.Expression): ts.Expression | null {
+    let operand: ts.Expression = value;
+    while (
+      operand.parent !== undefined &&
+      (ts.isParenthesizedExpression(operand.parent) || ts.isSatisfiesExpression(operand.parent))
+    )
+      operand = operand.parent;
+    const write = operand.parent;
+    if (
+      write === undefined ||
+      !ts.isBinaryExpression(write) ||
+      write.right !== operand ||
+      (write.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+        write.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionEqualsToken &&
+        write.operatorToken.kind !== ts.SyntaxKind.BarBarEqualsToken)
+    )
+      return null;
+    let target = write.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target))
+      return null;
+    const receiver = this.typeOf(target.expression);
+    const isGlobal = (type: ts.Type): boolean => {
+      const symbol = type.getSymbol();
+      return (
+        symbol !== undefined &&
+        ts.symbolName(symbol) === "globalThis" &&
+        symbol.declarations.length === 0
+      );
+    };
+    return isGlobal(receiver) ||
+      (receiver.isIntersectionType() && ts.constituentTypes(receiver).some(isGlobal))
+      ? operand
+      : null;
+  }
+
   /** Lower for a known destination, then apply ordinary value coercion.
    * Fresh arrays and records use the destination layout directly. */
   lowerExprExpecting(node: ts.Expression, expected: IrType | undefined): IrExpr {
@@ -10753,6 +11008,21 @@ export class Lowerer {
           (element) => !ts.isSpreadElement(element) && !ts.isOmittedExpression(element),
         )
       ) {
+        // A checked slot that the program declares as a native array (a
+        // member of a typed view of the global object, `typeof globalThis &
+        // { cache?: number[] }`) is read back through that declaration. Build
+        // the native array and store it boxed: every typed read then extracts
+        // that same array (a dynamic literal would be copied on each read,
+        // losing writes such as push).
+        const slot = this.globalViewSlot(x);
+        const slotType = slot ? this.checker.getContextualType(slot) : undefined;
+        const declared = slotType && this.checker.getNonNullableType(slotType);
+        const native =
+          declared && !(declared.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))
+            ? this.mapTypeOf(declared)
+            : null;
+        if (native?.kind === "array")
+          return this.coerceInto(node, this.lowerArrayLiteral(x, native), DYN);
         return {
           kind: "dynArrLit",
           elems: x.elements.nodes.map((element) => this.lowerExprExpecting(element, DYN)),
@@ -10781,7 +11051,9 @@ export class Lowerer {
           builtinOption("UrlObject") ||
           builtinOption("URLFormatOptions") ||
           !this.mapTypeOf(this.typeOf(x)) ||
-          this.excessJsContextualProperty(x, parts)
+          this.excessJsContextualProperty(x, parts) ||
+          this.reshapeableContextualLiteral(x, parts) ||
+          holdsEvolvingArray(this, x)
         ) {
           return lowerDynObjectLiteral(this, x);
         }
@@ -10996,7 +11268,27 @@ export class Lowerer {
     // Contextual types (such as Proxy descriptors' symbol-valued fields)
     // must not force an intermediate record with incompatible field slots.
     if (this.returnsLiteralIntoDyn(node, expected)) return this.lowerExprExpecting(node, expected);
+    if (this.returnsFreshCollection(node) && expected.kind !== "void")
+      return this.lowerExprExpecting(node, expected);
     return this.asyncReturnValueOf(node, this.lowerExpr(node), expected);
+  }
+
+  /** An array literal or a `new Map(...)`, `new Set(...)` or `new
+   * Array(...)` of the builtins: a fresh collection, never a thenable, so
+   * an async return takes the declared result type as its construction
+   * layout the way a synchronous return does (`return []` in a function
+   * whose inferred result is `Promise<string[]>`). */
+  private returnsFreshCollection(node: ts.Expression): boolean {
+    let e = node;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isArrayLiteralExpression(e)) return true;
+    return (
+      ts.isNewExpression(e) &&
+      ts.isIdentifier(e.expression) &&
+      (this.isStdlibGlobal(e.expression, "Map") ||
+        this.isStdlibGlobal(e.expression, "Set") ||
+        this.isStdlibGlobal(e.expression, "Array"))
+    );
   }
 
   /** A fresh JS object literal returned into a checked-native (dyn) result,
@@ -11130,7 +11422,11 @@ export class Lowerer {
         loc,
       };
     }
-    if (this.adoptsReturnedPromise() && !this.returnsLiteralIntoDyn(node, expected)) {
+    if (
+      this.adoptsReturnedPromise() &&
+      !this.returnsLiteralIntoDyn(node, expected) &&
+      !this.returnsFreshCollection(node)
+    ) {
       // The async return lowers its operand untyped first (a promise
       // adopts before its payload converts); a maybe-promise union needs
       // the statement form, which branches between adoption and fulfillment.
@@ -11593,8 +11889,8 @@ export class Lowerer {
     }
   }
 
-  lowerClassExpression(expr: ts.ClassLikeDeclaration): IrExpr {
-    return lowerClassExpression(this, expr);
+  lowerClassExpression(expr: ts.ClassLikeDeclaration, binding?: IrLocal): IrExpr {
+    return lowerClassExpression(this, expr, binding);
   }
 
   /* ── the class graph (single inheritance) ─────────────────────────── */

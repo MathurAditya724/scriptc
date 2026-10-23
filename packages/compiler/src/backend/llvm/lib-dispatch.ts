@@ -553,7 +553,11 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         // which also takes those streams.
         e.fn === "stream.unboxDyn" && host.usesDynBuiltinStream
         ? "scr_dyn_builtin_stream_unbox"
-        : LIB_FN_SYMS[e.fn]);
+        : // for await over a checked-dynamic value iterates a native
+          // stream behind it (scr_dyn_for_await_stream.c)
+          e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
+          ? "scr_stream_dyn_async_iterator_open"
+          : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
     ? emitBorrowedInputs(host, e.args)
@@ -734,7 +738,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (e.fn === "process.nextTick") return host.emitAsyncContextLibCall(e);
   if (
     e.fn === "sp.pipeline" ||
-    e.fn === "sp.pipelineStages" ||
+    e.fn.startsWith("sp.pipelineStages") ||
     e.fn.startsWith("sp.pipelineOpts") ||
     e.fn.startsWith("sp.finishedOpts")
   )
@@ -858,6 +862,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return host.emitGenericLibCall(e);
     case "weakMap":
     case "weakSet":
+    case "finalizationRegistry":
     case "ffi":
     case "sharedArrayBuffer":
     case "arrayBuffer":
@@ -873,6 +878,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "blob":
     case "wasm":
     case "array":
+      if (e.fn === "array.foreignThrow") return emitArrayForeignThrow(host, e);
+      return host.emitGenericLibCall(e);
     case "record":
     case "disposable":
     case "punycode":
@@ -890,4 +897,27 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** `array.foreignThrow`: the checked conversion's TypeError for a foreign
+ * element read into a typed result. Always throws; the result is a dummy
+ * of the replaced read's type (the error.argTypeThrow pattern). */
+function emitArrayForeignThrow(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
+  const B = host.B;
+  const arr = host.emitExpr(e.args[0]!);
+  const index = host.emitExpr(e.args[1]!);
+  const want = host.emitExpr(e.args[2]!);
+  host.declare(`declare void @scr_arr_foreign_throw(ptr, double, ptr)`);
+  B.line(
+    `call void @scr_arr_foreign_throw(ptr ${arr.name}, double ${index.name}, ptr ${want.name})`,
+  );
+  const ty = host.llType(e.type);
+  if (ty === "void") {
+    host.emitAlwaysPendingUnwind();
+    return { name: "", type: e.type };
+  }
+  const dummy = ty === "double" ? "0.0" : ty === "i1" ? "false" : "null";
+  const out = host.own({ name: dummy, type: e.type });
+  host.emitAlwaysPendingUnwind();
+  return out;
 }

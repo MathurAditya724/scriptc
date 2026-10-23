@@ -157,6 +157,25 @@ states[3] = view;
 console.log(items.findIndex((item) => weigh(item) > 1));
 `);
   expect(signature(fresh, "weigh")).toBe("weigh(Item): f64");
+  // A mutable property every assignment of which is a fresh array is fresh
+  // storage too.
+  const reassigned = await lower(`${ITEM}
+class Facts {
+  private facts: unknown[] = [];
+  begin(): void {
+    this.facts = [];
+  }
+  add(fact: unknown): void {
+    this.facts[3] = fact;
+  }
+}
+const items: Item[] = [new Item(1)];
+const facts = new Facts();
+facts.begin();
+facts.add(items);
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(reassigned, "weigh")).toBe("weigh(Item): f64");
 });
 
 test("holes that only their owning slot can observe stay out of callbacks", async () => {
