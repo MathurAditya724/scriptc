@@ -1436,8 +1436,20 @@ function requiresOf7(
   return out;
 }
 
+/** `true`, or `!0`, its minified spelling. */
+function isTrueLiteral(expr: ts.Expression): boolean {
+  return (
+    expr.kind === ts.SyntaxKind.TrueKeyword ||
+    (ts.isPrefixUnaryExpression(expr) &&
+      expr.operator === ts.SyntaxKind.ExclamationToken &&
+      ts.isNumericLiteral(expr.operand) &&
+      expr.operand.text === "0")
+  );
+}
+
 /** The exact `Object.defineProperty(exports|module.exports, "__esModule",
- * { value: true })` interop stamp (shared by preflight and the no-op lowering). */
+ * { value: true })` interop stamp (shared by preflight and the no-op lowering);
+ * `{ value: !0 }` is the same stamp. */
 export function isEsModuleStamp(expr: ts.Expression): boolean {
   if (!ts.isCallExpression(expr) || expr.questionDotToken !== undefined) return false;
   const callee = expr.expression;
@@ -1471,7 +1483,7 @@ export function isEsModuleStamp(expr: ts.Expression): boolean {
     ts.isPropertyAssignment(p) &&
     ts.isIdentifier(p.name) &&
     p.name.text === "value" &&
-    p.initializer.kind === ts.SyntaxKind.TrueKeyword
+    isTrueLiteral(p.initializer)
   );
 }
 
