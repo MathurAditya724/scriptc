@@ -204,6 +204,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** NI-5: a class instance crossing into an island, with the builder of
    * its class's method table (run once per class). Answers the value. */
   "nodeIsland.classMethods": { argTypes: [DYN, DYN], result: DYN },
+  /** NI-6 shared modules: registers a module the program shares with its
+   * islands (real path, exports JSON, accessor); the TDZ sentinel an
+   * accessor answers; the method table and constructor helper of an
+   * exported class by its class value (either may be undefined; answers
+   * the class value). */
+  "nodeIsland.share": { argTypes: [STRING, STRING, DYN], result: VOID },
+  "nodeIsland.sharedTdz": { argTypes: [], result: DYN },
+  "nodeIsland.classMethodsOf": { argTypes: [DYN, DYN, DYN], result: DYN },
   /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
    * checked-dynamic object (args: receiver, key string, value — all
    * borrowed; the runtime copies the key and retains the value in). An
