@@ -1591,6 +1591,11 @@ export class LlEmitter {
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
       classRootOf: (name) => this.classMeta.get(name)?.root.def.name,
+      releasesNothing: (t) => {
+        if (t.kind !== "object" || (this.shapeHost.regions ?? null) !== null) return false;
+        const meta = this.classMeta.get(t.className);
+        return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
+      },
       classSubtypes: (name) => {
         const target = this.classMetaOf(name);
         const intervals = classMembershipIntervals(this.classMeta, target.def.name);
