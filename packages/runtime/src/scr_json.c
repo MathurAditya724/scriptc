@@ -15218,6 +15218,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
         key->v.handle.tag != SCR_DYNH_WEAK_SET && key->v.handle.tag != SCR_DYNH_FINALIZATION_REGISTRY &&
         key->v.handle.tag != SCR_DYNH_STDIO &&
         key->v.handle.tag != SCR_DYNH_FETCH_REQUEST && key->v.handle.tag != SCR_DYNH_FETCH_RESPONSE &&
+        key->v.handle.tag != SCR_DYNH_WEB_STREAM &&
         key->v.handle.tag != SCR_DYNH_MAP && key->v.handle.tag != SCR_DYNH_SET &&
         key->v.handle.tag != SCR_DYNH_NET_SOCKET && key->v.handle.tag != SCR_DYNH_NET_SERVER) return -1;
     *ptr = key->v.handle.ptr; *kind = 4 + key->v.handle.tag; return 1;

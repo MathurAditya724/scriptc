@@ -958,6 +958,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.streamIs": "scr_fetch_stream_is",
   "zlib.streamIs": "scr_zlib_stream_is",
   "fetch.streamNew": "scr_fetch_stream_new",
+  "fetch.transformNew": "scr_fetch_transform_new",
   "fetch.streamFrom": "scr_fetch_stream_from",
   "fetch.readerRead": "scr_fetch_reader_read",
   "json.parse": "scr_json_parse",
@@ -1697,6 +1698,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "fetch.abortAny",
   "fetch.streamNew",
   "fetch.streamFrom",
+  "fetch.transformNew",
   "readable.new",
   // fs.ReadStream / fs.WriteStream open, read and write on the worker pool.
   "fs.createReadStream",
