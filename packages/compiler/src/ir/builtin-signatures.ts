@@ -4458,6 +4458,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * (inspect, Object.keys/values/entries) then answer through its live
    * checked view. The receiver is any such record type. Never throws. */
   "record.sourceHas": { argTypes: [null], result: BOOL },
+  /** `record.sourceSpread(built, value)`: the record a literal starting
+   * with `...value` just built keeps the order of value's kept source
+   * (key-order-witness.ts ordered spreads). Both are record types. Never
+   * throws. */
+  "record.sourceSpread": { argTypes: [null, null], result: VOID },
   "insp.key": { argTypes: [STRING], result: STRING },
   "insp.moreItems": { argTypes: [F64], result: STRING },
   "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },

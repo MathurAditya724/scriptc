@@ -3283,6 +3283,45 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
   scr_record_source_put(&probe);
 }
 
+void scr_record_source_spread(void *dst, const void *src, const char *const *names,
+                              const size_t *lens, size_t count) {
+  if (!scr_record_source_count || !dst || !src) return;
+  ScrRecordSource *found = scr_record_source_find(src);
+  if (!found) return;
+  ScrRecordSource probe = { dst, NULL, (const char *)names, (const char *)lens,
+                            sizeof *names, sizeof *lens, count };
+  /* Nothing to keep when the declared keys come in the table's order and
+   * the keys src lacks would follow them in it anyway. */
+  const ScrDyn *from = found->view;
+  bool keep = false;
+  size_t next = 0;
+  for (size_t i = 0; i < from->v.obj.len && !keep; i++) {
+    const ScrDynEntry *entry = &from->v.obj.entries[i];
+    size_t index = scr_record_source_index(&probe, entry->key, entry->key_len);
+    if (index == count) continue;
+    keep = index != next;
+    next++;
+  }
+  if (!keep) return;
+  ScrDyn *view = scr_dyn_new_obj();
+  for (size_t i = 0; i < from->v.obj.len; i++) {
+    const ScrDynEntry *entry = &from->v.obj.entries[i];
+    if (scr_record_source_declared(&probe, entry->key, entry->key_len))
+      scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(scr_dyn_undefined()));
+  }
+  /* The keys src lacks follow in the table's order. The view lists them
+   * too, so an integer key among them comes first in its own-key order, as
+   * the literal creates it. */
+  for (size_t i = 0; i < count; i++) {
+    if (scr_dyn_obj_get(view, names[i], lens[i])) continue;
+    scr_dyn_obj_set(view, names[i], lens[i], scr_dyn_retain(scr_dyn_undefined()));
+  }
+  ScrRecordSource *old = scr_record_source_find(dst);
+  if (old) scr_record_source_drop(old);
+  probe.view = view;
+  scr_record_source_put(&probe);
+}
+
 void scr_record_source_move(void *from, void *to) {
   if (!scr_record_source_count) return;
   ScrRecordSource *old = scr_record_source_find(to);
