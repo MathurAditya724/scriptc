@@ -182,6 +182,57 @@ test("statements of a signature-blocked function count as not static", () => {
   expect(coverage.stats.statementsFailed + (un?.statementsFailed ?? 0)).toBe(5);
 });
 
+test("the body of a signature-blocked function reports its diagnostics", () => {
+  const { coverage } = analyze(fixture("blocked-signature-body.ts"));
+  const sites = (diags: readonly { code: string; message: string }[]) =>
+    diags.map((d) => `${d.code} ${d.message}`).sort();
+  // measure is called: its body's diagnostics join the reached ones.
+  expect(sites(coverage.diagnostics)).toEqual([
+    "SC2004 uses of 'extra' inherit the blocker on its declaration",
+    "SC2004 uses of 'measure' inherit the blocker on its declaration",
+    "SC2004 uses of 'target' inherit the blocker on its declaration",
+    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'new WeakRef' is part of the standard library types but has no scriptc lowering yet",
+  ]);
+  // Nothing calls unused or described: their signatures and bodies report
+  // as unreached. described's declared `this` is its receiver, so
+  // `this.label` reports nothing.
+  expect(sites(coverage.unreached?.diagnostics ?? [])).toEqual([
+    "SC2004 uses of 'extra' inherit the blocker on its declaration",
+    "SC2004 uses of 'target' inherit the blocker on its declaration",
+    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'new WeakRef' is part of the standard library types but has no scriptc lowering yet",
+  ]);
+  // The bodies' statements still count once each, as not static.
+  const un = coverage.unreached?.stats;
+  expect(coverage.stats.functionsSkipped + (un?.functionsSkipped ?? 0)).toBe(3);
+  expect(coverage.stats.statementsTotal + (un?.statementsTotal ?? 0)).toBe(7);
+  expect(coverage.stats.statementsFailed + (un?.statementsFailed ?? 0)).toBe(7);
+});
+
+test("deferred fences in a module's top-level code report as running at startup", () => {
+  const { coverage, sourceTexts } = analyze(fixture("startup-fences.js"));
+  expect(
+    (coverage.runtimeFences ?? []).map((d) => [d.code, d.loc.start, d.startup === true]),
+  ).toEqual([
+    ["SC1090", expect.any(Number), true],
+    ["SC1090", expect.any(Number), false],
+  ]);
+  const out = report(fixture("startup-fences.js"));
+  expect(out).toMatch(
+    /runs at startup {3}1 site .*\n.*instanceof against this native constructor\n\s+at tests\/coverage-fixtures\/startup-fences\.js:5:13/,
+  );
+  expect(out).toMatch(
+    /deferred to runtime {3}1 site .*\n.*instanceof against this native constructor\n\s+at tests\/coverage-fixtures\/startup-fences\.js:7:10/,
+  );
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope.diagnostics.map((d) => [d.scope, d.line, d.startup])).toEqual([
+    ["deferred", 5, true],
+    ["deferred", 7, undefined],
+  ]);
+});
+
 test("a failed unreached JavaScript statement is always explained", () => {
   const { coverage } = analyze(fixture("unreached-js-fence.js"));
   const failed =
@@ -510,13 +561,14 @@ test("types only a package's .d.ts declares stay static through re-exports and .
   // shape-kinds re-exports types its .d.ts entry imports; row-module's
   // runtime entry is an .mjs file. Without their declared types the
   // program's uses of Form, Kind and Row run in the dynamic tier (12
-  // statements); with them only the packages' own JavaScript and one
-  // arithmetic on a JavaScript return value do (4).
+  // statements); with them only the packages' own JavaScript does (3).
+  // readRows's result keeps its declared number type, so `count - 1` is
+  // native arithmetic too.
   const { coverage } = analyze(
     join(repoRoot, "tests/corpus/7004-package-declared-type-reexports/main.ts"),
   );
   expect(coverage.diagnostics).toEqual([]);
-  expect(coverage.stats.statementsDynamic).toBe(4);
+  expect(coverage.stats.statementsDynamic).toBe(3);
 });
 
 test("any-typed checked-dynamic operators compile natively", () => {
