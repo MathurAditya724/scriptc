@@ -6,13 +6,15 @@ import {
   emitRecordShapes,
   inlineRcDecls,
   INLINE_DYN_RELEASES_PER_FUNCTION,
+  INLINE_STR_RELEASES_PER_FUNCTION,
   inlineRcOption,
-  limitInlineDynReleases,
+  limitInlineReleases,
   releaseSym,
   retainSym,
   type ShapeHost,
   vAdapters,
 } from "./shapes.js";
+import { mangleRecordRelease } from "../mangle.js";
 import { NullableUnions } from "./nullable-unions.js";
 import { InlineUnionFields } from "./inline-unions.js";
 
@@ -132,10 +134,10 @@ describe("LLVM runtime RC symbols", () => {
     ]);
   });
 
-  test("release builds inline only string retains and dyn retains and releases", () => {
+  test("release builds inline only string and dyn retains and releases and Map retains", () => {
     const { host } = declarationHost(64, "release");
     expect(retainSym(host, { kind: "string" })).toBe("@sc_rc_retain_str");
-    expect(releaseSym(host, { kind: "string" })).toBe("@scr_str_release");
+    expect(releaseSym(host, { kind: "string" })).toBe("@sc_rc_release_str");
     expect(retainSym(host, { kind: "dyn" })).toBe("@sc_rc_retain_dyn");
     expect(releaseSym(host, { kind: "dyn" })).toBe("@sc_rc_release_dyn");
     expect(releaseSym(host, { kind: "union", unionId: "u0" } as never)).toBe("@scr_union_release");
@@ -251,12 +253,12 @@ describe("LLVM runtime RC symbols", () => {
   });
 });
 
-describe("inline dyn release budget", () => {
-  const body = (name: string, sites: number): string =>
+describe("inline release budgets", () => {
+  const body = (name: string, sites: number, family = "dyn"): string =>
     [
       `define internal void @${name}(ptr %v) #0 {`,
       "entry:",
-      ...Array.from({ length: sites }, () => "  call void @sc_rc_release_dyn(ptr %v)"),
+      ...Array.from({ length: sites }, () => `  call void @sc_rc_release_${family}(ptr %v)`),
       "  ret void",
       "}",
       "",
@@ -266,13 +268,29 @@ describe("inline dyn release budget", () => {
     const small = body("small", INLINE_DYN_RELEASES_PER_FUNCTION);
     const large = body("large", INLINE_DYN_RELEASES_PER_FUNCTION + 1);
     // main's lines are separate parts.
-    const limited = limitInlineDynReleases([`; header\n${small}`, ...large.split("\n")]).join("\n");
+    const limited = limitInlineReleases([`; header\n${small}`, ...large.split("\n")], "speed").join(
+      "\n",
+    );
     expect(limited.startsWith("; header\n")).toBe(true);
     expect(limited).toContain(small);
     const out = limited.slice(limited.indexOf("@large("));
     expect(out).not.toContain("@sc_rc_release_dyn(");
     expect(out.split("call void @scr_dyn_release(ptr %v)").length - 1).toBe(
       INLINE_DYN_RELEASES_PER_FUNCTION + 1,
+    );
+  });
+
+  test("a function over the string budget calls the runtime string release at every site", () => {
+    const small = body("small", INLINE_STR_RELEASES_PER_FUNCTION, "str");
+    const large = body("large", INLINE_STR_RELEASES_PER_FUNCTION + 1, "str");
+    const limited = limitInlineReleases([small, large], "release").join("\n");
+    expect(limited).toContain(small);
+    // Speed emission keeps every inline string release.
+    expect(limitInlineReleases([small, large], "speed").join("\n")).toBe([small, large].join("\n"));
+    const out = limited.slice(limited.indexOf("@large("));
+    expect(out).not.toContain("@sc_rc_release_str(");
+    expect(out.split("call void @scr_str_release(ptr %v)").length - 1).toBe(
+      INLINE_STR_RELEASES_PER_FUNCTION + 1,
     );
   });
 });
@@ -297,6 +315,42 @@ describe("emitted object releases", () => {
     expect(root.indexOf("enqueue:")).toBeLessThan(
       root.indexOf("call void @scr_cyc_on_release(ptr %o)"),
     );
+  });
+
+  test("freezable records count their references without the frozen bit", () => {
+    const mod: IrModule = {
+      irVersion: 17,
+      sourceFile: "frozen.ts",
+      entry: "main",
+      functions: [],
+      records: [
+        { id: "plain", fields: [{ name: "n", type: F64 }] },
+        { id: "frozen", fields: [{ name: "n", type: F64 }], freezable: true },
+      ],
+    };
+    const body = (defs: string, name: string): string =>
+      new RegExp(`^define internal void @${name}\\([^]*?^}`, "m").exec(defs)?.[0] ?? "";
+    for (const [pointerBits, notFrozen, sharedBelow] of [
+      [64, "-4611686018427387905", "-4611686018427387907"],
+      [32, "-1073741825", "-1073741827"],
+    ] as const) {
+      const { host } = declarationHost(pointerBits);
+      const defs = emitRecordShapes({ ...host, objectAudit: false }, mod).defs.join("\n");
+      const S = pointerBits === 64 ? "i64" : "i32";
+      const plain = body(defs, mangleRecordRelease("plain"));
+      expect(plain).toContain(`%shared = icmp ult ${S} %rcm2, -3`);
+      expect(plain).not.toContain("%refs");
+      // The immortal word's count is ~FROZEN, which the compare sends to the
+      // immortal test, like counts 0 and 1.
+      const fast = body(defs, mangleRecordRelease("frozen"));
+      expect(fast).toContain(`%refs = and ${S} %rc, ${notFrozen}`);
+      expect(fast).toContain(`%rcm2 = sub ${S} %refs, 2`);
+      expect(fast).toContain(`%shared = icmp ult ${S} %rcm2, ${sharedBelow}`);
+      expect(fast).toContain(`%imm = icmp eq ${S} %rc, -1`);
+      const slow = body(defs, `${mangleRecordRelease("frozen")}_slow`);
+      expect(slow).toContain(`%refs = and ${S} %n, ${notFrozen}`);
+      expect(slow).toContain(`%dead = icmp eq ${S} %refs, 0`);
+    }
   });
 });
 

@@ -134,6 +134,7 @@ import {
 import { expandoMemberRead } from "../lower-expando.js";
 import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
+import { lowerAsyncLocalStorageProperty } from "../builtins/async-context.js";
 import { lowerEventStaticProperty } from "../builtins/numbers.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
 import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
@@ -306,10 +307,10 @@ export function lowerPropertyAccessExpr(
       };
     }
   }
-  if (!expr.questionDotToken) {
-    const navigator = lowerNavigatorMember(lowerer, expr, NODE_COMPAT_VERSION);
-    if (navigator) return navigator;
-  }
+  // Node's navigator is never nullish, so `navigator?.userAgent` (zod's
+  // Cloudflare probe) folds like `navigator.userAgent`.
+  const navigator = lowerNavigatorMember(lowerer, expr, NODE_COMPAT_VERSION);
+  if (navigator) return navigator;
   // A dgram socket's method read as a value in JavaScript (`emit:
   // socket.emit.bind(socket)`): the socket crosses as its checked-dynamic
   // handle, whose methods are function values that dispatch on their
@@ -553,6 +554,19 @@ export function lowerPropertyAccessExpr(
       expr.name.text,
     )
   ) {
+    // A name the program stores on the global object
+    // (`(_a = globalThis).__config ?? (_a.__config = {})`) reads back from
+    // the global object's own properties.
+    const globalType = lowerer.typeOf(staticallySelected(lowerer, expr.expression));
+    if (globalThisWrittenNames(lowerer, globalType).has(expr.name.text)) {
+      return {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      };
+    }
     return dynUndefinedExpr(loc);
   }
   // `Uint8Array.prototype.toBase64` and its siblings, the base64/hex
@@ -666,14 +680,20 @@ export function lowerPropertyAccessExpr(
       );
       if (fixedArity) {
         // A `this` parameter is type-only: callers never pass it.
-        return {
-          kind: "numLit",
-          value: (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
-            (p) => !isThisParameter(p),
-          ).length,
-          type: F64,
-          loc,
-        };
+        const declared = (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
+          (p) => !isThisParameter(p),
+        ).length;
+        const count = Math.max(declared, contextualArgumentCount(lowerer, fn) ?? 0);
+        // Calls through the expression's own name pass the declared count,
+        // calls through the wider slot pass more: no constant answers both.
+        if (count > declared && referencesOwnName(lowerer, fn)) {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            "'arguments.length' in a function expression that is called both through its own name and through a function type with more parameters (the count varies per call)",
+          );
+        }
+        return { kind: "numLit", value: count, type: F64, loc };
       }
       lowerer.unsupported(
         "SC1090",
@@ -814,6 +834,8 @@ export function lowerPropertyAccessExpr(
     // diagnostics_channel Channel receivers — name/hasSubscribers
     // over the f64 channel handle.
     lowerer.lowerDiagnosticsChannelProperty(expr) ??
+    // AsyncLocalStorage receivers — the name option.
+    lowerAsyncLocalStorageProperty(lowerer, expr) ??
     // readline Interface receivers — the history and option members
     // over the f64 interface handle.
     lowerReadlineProperty(lowerer, expr) ??
@@ -1479,6 +1501,25 @@ export function lowerPropertyAccessExpr(
     typedArrayLacksMember(expr.name.text, recvLowered.type.elem === "u8")
   ) {
     return afterReceiver(recvLowered, dynUndefinedExpr(loc), loc);
+  }
+  // A typed array under a checker `any` (a JS binding its own initializer's
+  // inference refers to: hono's etag digest `nextChunk`) reads through its
+  // box, as the method-call twin dispatches. The box shares the native
+  // storage, so it needs no fresh-result restriction.
+  if (
+    recvLowered.type.kind === "bytes" &&
+    (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0
+  ) {
+    return lowerer.maybeNarrow(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      expr,
+    );
   }
   lowerer.unsupported(
     "SC1090",
@@ -4120,6 +4161,7 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Promise",
   "WeakMap",
   "WeakSet",
+  "FinalizationRegistry",
   ...ERROR_CONSTRUCTOR_VALUES,
 ]);
 
@@ -4439,4 +4481,74 @@ function lowerPromiseConstructorRead(
         };
   }
   return null;
+}
+
+/** Whether a named function expression refers to itself by name in its
+ * body (a recursive call, or the function escaping under its own name). */
+function referencesOwnName(lowerer: Lowerer, fn: ts.Node): boolean {
+  if (!ts.isFunctionExpression(fn) || fn.name === undefined || fn.body === undefined) return false;
+  const self = lowerer.checker.getSymbolAtLocation(fn.name);
+  if (self === undefined) return false;
+  const name = fn.name.text;
+  let found = false;
+  ts.walkPreorder(fn.body, (node) => {
+    if (found) return "stop";
+    if (
+      ts.isIdentifier(node) &&
+      node.text === name &&
+      lowerer.checker.getSymbolAtLocation(node) === self
+    )
+      found = true;
+    return undefined;
+  });
+  return found;
+}
+
+/** The argument count every caller passes a function expression whose
+ * value flows into one fixed-arity function type, an array method's
+ * callback or an annotated slot: that type's parameter count. Null when
+ * there is no such type or its arity varies. */
+function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | null {
+  if (!ts.isFunctionExpression(fn)) return null;
+  const contextual = lowerer.checker.getContextualType(fn);
+  if (contextual === undefined) return null;
+  const signatures = lowerer.checker.getCallSignatures(
+    lowerer.checker.getNonNullableType(contextual),
+  );
+  if (signatures.length !== 1) return null;
+  const declaration = signatures[0]!.declaration;
+  if (declaration === undefined) return null;
+  let count = 0;
+  for (const parameter of (declaration.parameters?.nodes ?? []) as ts.ParameterDeclaration[]) {
+    if (isThisParameter(parameter)) continue;
+    if (parameter.questionToken || parameter.initializer || parameter.dotDotDotToken) return null;
+    count++;
+  }
+  return count;
+}
+
+/** The property names the program assigns on the global object, through
+ * `globalThis` or a binding of its type (`(_a = globalThis).x = v`). */
+function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<string> {
+  const known = lowerer.globalThisWrittenNames;
+  if (known) return known;
+  const names = new Set<string>();
+  lowerer.globalThisWrittenNames = names;
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile || !sf.text.includes("globalThis")) continue;
+    ts.walkPreorder(sf, (node) => {
+      if (
+        ts.isBinaryExpression(node) &&
+        (node.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
+          node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken ||
+          node.operatorToken.kind === ts.SyntaxKind.BarBarEqualsToken ||
+          node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken) &&
+        ts.isPropertyAccessExpression(node.left) &&
+        lowerer.typeOf(node.left.expression) === globalType
+      )
+        names.add(node.left.name.text);
+      return undefined;
+    });
+  }
+  return names;
 }

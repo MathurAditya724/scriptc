@@ -1,6 +1,11 @@
 /* Binary operators: arithmetic, comparisons and equality, logical and nullish pairs, and string conversion for concatenation. */
 import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
+import {
+  lowerOptionalIndex,
+  splitUndefinedIndex,
+  undefinedTypedArrayKeyFence,
+} from "../undefined-index.js";
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
 import {
@@ -759,10 +764,21 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
       (lowerer.unions
         .get(elem.unionId)
         ?.arms.every(
-          (a) => a.kind === "f64" || a.kind === "string" || a.kind === "bool" || isUnitType(a),
+          (a) =>
+            a.kind === "f64" ||
+            a.kind === "string" ||
+            a.kind === "bool" ||
+            a.kind === "date" ||
+            isUnitType(a),
         ) ??
         false);
-    if (elem.kind === "f64" || elem.kind === "string" || elem.kind === "bool" || joinableUnion) {
+    if (
+      elem.kind === "f64" ||
+      elem.kind === "string" ||
+      elem.kind === "bool" ||
+      elem.kind === "date" ||
+      joinableUnion
+    ) {
       const sep: IrExpr = { kind: "strLit", value: ",", type: STRING, loc: e.loc };
       return {
         kind: "arrIntrinsic",
@@ -1160,12 +1176,26 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         }
         if (recv?.type.kind === "array" || recv?.type.kind === "bytes") {
           const receiver = lowerer.declareHiddenLocal("%setArray", recv.type);
-          const index = lowerOptionalNumber(
-            lowerer,
-            lowerer.lowerExpr(expr.left.argumentExpression),
-            locOf(expr.left.argumentExpression),
-            expr.left.argumentExpression,
-          );
+          // An undefined index names the "undefined" property
+          // (undefined-index.ts), which a typed array cannot hold.
+          const rawIndex = lowerer.lowerExpr(expr.left.argumentExpression);
+          const split =
+            recv.type.kind === "bytes"
+              ? splitUndefinedIndex(
+                  lowerer,
+                  rawIndex,
+                  expr.left.argumentExpression,
+                  locOf(expr.left.argumentExpression),
+                )
+              : null;
+          const index =
+            split?.index ??
+            lowerOptionalIndex(
+              lowerer,
+              rawIndex,
+              locOf(expr.left.argumentExpression),
+              expr.left.argumentExpression,
+            );
           if (index.type.kind !== "f64")
             lowerer.unsupported(
               "SC1090",
@@ -1178,7 +1208,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           const result = varRef(value.id, raw.type, loc);
           const arr = varRef(receiver.id, recv.type, loc);
           const idx = varRef(key.id, F64, loc);
-          const write: IrStmt =
+          const store: IrStmt =
             recv.type.kind === "array"
               ? arrayValueStore(lowerer, arr, idx, result, recv.type.elem, loc)
               : {
@@ -1188,10 +1218,20 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
                   value: lowerer.coerceInto(expr.right, result, F64),
                   loc,
                 };
+          const write: IrStmt = split
+            ? {
+                kind: "if",
+                cond: split.isUndefined,
+                then: [undefinedTypedArrayKeyFence(lowerer, expr.left, loc)],
+                else_: [store],
+                loc,
+              }
+            : store;
           return {
             kind: "seqExpr",
             stmts: [
               { kind: "varDecl", localId: receiver.id, init: recv, loc },
+              ...(split?.stmts ?? []),
               { kind: "varDecl", localId: key.id, init: index, loc },
               { kind: "varDecl", localId: value.id, init: raw, loc },
               write,
@@ -2166,14 +2206,41 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       if (bothStr) return { kind: "strCmp", op: cmpOp, left, right, type: BOOL, loc };
-      // A Date converts to a new checked-dynamic Date on each crossing, so
-      // comparisons keep their Date fence instead of comparing copies.
-      if (
-        left.type.kind !== "date" &&
-        right.type.kind !== "date" &&
-        lowerer.dynConvertible(left.type) &&
-        lowerer.dynConvertible(right.type)
-      ) {
+      // Dates compare by time value, the number hint of ToPrimitive. Both
+      // operands evaluate before either converts, so a right operand that
+      // mutates the left Date (`a < (a.setTime(t), b)`) is seen: with such
+      // a right operand, both Dates bind first and their times read after.
+      if (left.type.kind === "date" && right.type.kind === "date") {
+        const time = (d: IrExpr): IrExpr => ({
+          kind: "libCall",
+          fn: "date.getTime",
+          args: [d],
+          type: F64,
+          loc,
+        });
+        if (isSafeToRepeat(right))
+          return { kind: "bin", op: cmpOp, left: time(left), right: time(right), type: BOOL, loc };
+        const leftDate = lowerer.declareHiddenLocal("%date", left.type);
+        const rightDate = lowerer.declareHiddenLocal("%date", right.type);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: leftDate.id, init: left, loc },
+            { kind: "varDecl", localId: rightDate.id, init: right, loc },
+          ],
+          result: {
+            kind: "bin",
+            op: cmpOp,
+            left: time(varRef(leftDate.id, left.type, loc)),
+            right: time(varRef(rightDate.id, right.type, loc)),
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        };
+      }
+      if (lowerer.dynConvertible(left.type) && lowerer.dynConvertible(right.type)) {
         return {
           kind: "libCall",
           fn: "dyn.compare",
@@ -2387,6 +2454,7 @@ export function lowerStrictEquality(
       idLeft.type.kind === "map" ||
       idLeft.type.kind === "set" ||
       idLeft.type.kind === "regex" ||
+      idLeft.type.kind === "date" ||
       idLeft.type.kind === "url" ||
       idLeft.type.kind === "object" ||
       idLeft.type.kind === "record" ||
@@ -2423,14 +2491,7 @@ export function lowerStrictEquality(
       loc,
     };
   }
-  // A Date converts to a new checked-dynamic Date on each crossing; its
-  // identity has no representation, so equality keeps the fence.
-  if (
-    idLeft.type.kind !== "date" &&
-    idRight.type.kind !== "date" &&
-    lowerer.dynConvertible(idLeft.type) &&
-    lowerer.dynConvertible(idRight.type)
-  ) {
+  if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),
@@ -2809,6 +2870,24 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
         left: lowerer.coerceInto(expr.left, left, target),
         right: lowerer.coerceInto(expr.right, right, target),
         type: target,
+        loc,
+      };
+    }
+    // A JavaScript default that tsc types `any` (`e.title || null` in an
+    // instance of a function with untyped parameters, where `e.title` is a
+    // string): the checked domain, as for union operands above.
+    if (
+      target === null &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      lowerer.dynConvertible(left.type) &&
+      lowerer.dynConvertible(right.type)
+    ) {
+      return {
+        kind: "logical",
+        op: op === ts.SyntaxKind.AmpersandAmpersandToken ? "&&" : "||",
+        left: lowerer.coerceInto(expr.left, left, DYN),
+        right: lowerer.coerceInto(expr.right, right, DYN),
+        type: DYN,
         loc,
       };
     }

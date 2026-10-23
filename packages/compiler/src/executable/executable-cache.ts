@@ -70,6 +70,7 @@ export interface EarlyExecutableNativeFeatures {
   dynTier?: boolean;
   streamDyn?: boolean;
   handleProps?: boolean;
+  declAdopt?: boolean;
   dynForAwait?: boolean;
   eventsOnceSignal?: boolean;
   dynBuffer?: boolean;
@@ -91,6 +92,7 @@ export interface EarlyExecutableNativeFeatures {
   dgram: boolean;
   dnsPromises: boolean;
   dgramDyn: boolean;
+  textCodecDyn: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
@@ -234,6 +236,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "dgram",
   "dnsPromises",
   "dgramDyn",
+  "textCodecDyn",
   "watch",
   "foreignFfi",
   "nodeTest",

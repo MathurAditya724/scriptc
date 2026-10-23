@@ -109,8 +109,15 @@ export interface IrModuleVisitor extends IrVisitor {
  * source text, locations, labels, or other metadata. A false predicate stops
  * the whole walk. Results are never retained across mutable compiler passes. */
 export function everyModuleNode(mod: IrModule, visitor: IrModuleVisitor): boolean {
-  const type = (node: IrType, loc: SrcLoc): boolean =>
-    visitor.type(node, loc) && everyTypeChild(node, (child) => type(child, loc));
+  // Every node of one type tree reports the tree's location: one shared
+  // child callback serves them all.
+  let typeLoc: SrcLoc;
+  const typeNode = (node: IrType): boolean =>
+    visitor.type(node, typeLoc) && everyTypeChild(node, typeNode);
+  const type = (node: IrType, loc: SrcLoc): boolean => {
+    typeLoc = loc;
+    return typeNode(node);
+  };
   const expr = (node: IrExpr): boolean =>
     visitor.expr(node) && everyExprChild(node, expr, stmt) && type(node.type, node.loc);
   const stmt = (node: IrStmt): boolean => visitor.stmt(node) && everyStmtChild(node, expr, stmt);
@@ -466,9 +473,10 @@ export function everyStmtChild(
   throw new Error("unhandled IR node");
 }
 
-/** Called with each record literal mapExprChildren rebuilds and its
- * replacement, so a side table keyed by node identity (the lowering's
- * key-order witness notes) follows the literal into the rewritten tree. */
+/** Called with each record literal and checked conversion mapExprChildren
+ * rebuilds and its replacement, so a side table keyed by node identity (the
+ * lowering's key-order witness notes) follows the node into the rewritten
+ * tree. */
 let recordLiteralRebuilt: ((from: IrExpr, to: IrExpr) => void) | null = null;
 
 /** Installs (or with null removes) the record-literal rebuild observer. */
@@ -497,8 +505,11 @@ export function mapExprChildren(
       return node;
     case "libCall":
       return { ...node, args: mapOf(node.args, expr) };
-    case "dynCheck":
-      return { ...node, value: expr(node.value) };
+    case "dynCheck": {
+      const rebuilt: IrExpr = { ...node, value: expr(node.value) };
+      if (recordLiteralRebuilt !== null) recordLiteralRebuilt(node, rebuilt);
+      return rebuilt;
+    }
     case "strEq":
       return { ...node, left: expr(node.left), right: expr(node.right) };
     case "fieldGet":

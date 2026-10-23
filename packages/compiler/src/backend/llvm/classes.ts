@@ -43,6 +43,9 @@ import {
   destroyDefinitions,
   directChildReleaseLines,
   directDestroyTarget,
+  segmentPrologueLines,
+  segmentTeardownLines,
+  segmentedTeardown,
   usedDirectTargets,
   type DirectDestroy,
   type RegionHooks,
@@ -703,11 +706,13 @@ export function classFieldTypes(host: ShapeHost, cls: IrClassDef, int32?: Int32S
 
 /** Gives the classes `compact` admits (whole hierarchies: the test is the
  * root's) the 32-bit header and packed fields. A class keeps its base's
- * field offsets, and places each of its own fields, widest first, at the
- * first offset after the header that fits it: in a hole another field's
- * alignment left, in the base's tail padding, or at the end. So 32-bit and
- * smaller fields share 8-byte words. The struct lists the header and the
- * fields by offset, which LLVM's layout of the type reproduces (checked). */
+ * field offsets, and places each of its own fields at the first offset
+ * after the header that fits it: in a hole another field's alignment left,
+ * in the base's tail padding, or at the end. Scalars narrower than 8 bytes
+ * (flags, ids, counts) go first, widest first, so they share the header's
+ * cache line; then the other fields, widest first. So 32-bit and smaller
+ * fields share 8-byte words. The struct lists the header and the fields by
+ * offset, which LLVM's layout of the type reproduces (checked). */
 export function assignCompactLayouts(
   metaMap: ReadonlyMap<string, LlClassMeta>,
   compact: (root: LlClassMeta) => boolean,
@@ -751,10 +756,12 @@ export function assignCompactLayouts(
         );
       return COMPACT_REF;
     });
+    const smallScalar = (f: { type: string; field: number; size: number }): number =>
+      f.size < 8 && f.type !== "ptr" && !compressed[f.field] ? 0 : 1;
     const own = types
       .map((type, field) => ({ type, field, ...fieldStorage(type) }))
       .slice(baseCount)
-      .sort((a, b) => b.size - a.size || a.field - b.field);
+      .sort((a, b) => smallScalar(a) - smallScalar(b) || b.size - a.size || a.field - b.field);
     for (const f of own) {
       const sorted = [...elems].sort((a, b) => a.offset - b.offset);
       let at = -1;
@@ -860,9 +867,9 @@ export function emitClassShapes(
   nullable?: NullableRefFields,
   int32?: Int32Slots,
 ): { typeDefs: string[]; defs: string[] } {
-  // Whether compact instances live in the program-lifetime region (any
-  // field holds a 32-bit reference to one; emitter.ts assignCompactLayouts).
-  const regionRefs = [...metaMap.values()].some((m) => m.compressed.some(Boolean));
+  // Whether compact instances live in the program-lifetime region, where
+  // fields and arrays can refer to them in 32 bits (LlEmitter.compactRegion).
+  const regionRefs = host.compactRegion?.() === true;
   const typeDefs: string[] = [];
   const defs: string[] = [];
   const emitted = (mod.classes ?? []).filter((c) => !c.runtime);
@@ -1078,25 +1085,62 @@ export function emitClassShapes(
       bounded &&
       (directTargets.has(`object:${cls.name}`) ||
         refFields.some((f) => directDestroyTarget(host, f.type, directTargets) !== null));
+    // The teardown's own symbol, and whether it keeps a segment (shapes.ts
+    // segmentedTeardown).
+    const destroy = `${meta.hierarchy ? mangleClassReleaseDirect(cls.name) : mangleClassRelease(cls.name)}_destroy`;
+    const segmented =
+      chained &&
+      !meta.compact &&
+      runtimePrefix === null &&
+      !isStreamRooted &&
+      !meta.threadSlot &&
+      segmentedTeardown(
+        host,
+        destroy,
+        refFields.map((f) => f.type),
+        directTargets,
+      );
     // The field-releasing teardown body shared by both release shapes
     // (the public one on standalone classes, the DIRECT one on hierarchy
     // members). Runs at rc == 0.
     const teardown = (lines: string[]): void => {
-      refFields.forEach((f, t) => {
-        lines.push(
-          `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
-          `  %v${t} = load ptr, ptr %f${t}`,
-        );
+      const release = (prefix: string, f: (typeof refFields)[number], t: number): string[] => {
         const direct = bounded ? directDestroyTarget(host, f.type, directTargets) : null;
-        if (direct)
-          lines.push(
-            ...directChildReleaseLines(host, `td${t}`, `%v${t}`, direct, llvmCommentText(f.name)),
-          );
-        else
-          lines.push(
+        if (direct === null)
+          return [
             `  call void ${releaseSym(host, f.type)}(ptr %v${t}) ; ${llvmCommentText(f.name)}`,
-          );
-      });
+          ];
+        const own = segmented && direct.destroy === destroy;
+        return directChildReleaseLines(
+          host,
+          `${prefix}${t}`,
+          `%v${t}`,
+          direct,
+          llvmCommentText(f.name),
+          own,
+        );
+      };
+      const loads = refFields.map((f, t) => [
+        `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
+        `  %v${t} = load ptr, ptr %f${t}`,
+      ]);
+      if (segmented) {
+        // A segmented teardown loads its fields, releases its own block, and
+        // then releases the fields (shapes.ts segmentTeardownLines).
+        const ownType = refFields.flatMap((f, t) =>
+          directDestroyTarget(host, f.type, directTargets)?.destroy === destroy ? [`%v${t}`] : [],
+        );
+        lines.push(
+          ...segmentPrologueLines(),
+          ...loads.flat(),
+          ...emitObjectFree(host, traced, "weak", "%sg.own"),
+          ...segmentTeardownLines(ownType, (prefix) =>
+            refFields.flatMap((f, t) => release(prefix, f, t)),
+          ),
+        );
+        return;
+      }
+      refFields.forEach((f, t) => lines.push(...loads[t]!, ...release("td", f, t)));
       if (runtimePrefix) lines.push(...regCall("td", runtimePrefix.drop, ""));
       if (isStreamRooted) lines.push(...stCall("tds", "scr_stream_st_release", ""));
       if (meta.threadSlot) lines.push(...slotForgetLines(host, struct, meta, "tdw"));
@@ -1178,10 +1222,12 @@ export function emitClassShapes(
         ];
         if (traced) reld.push(...cycleDeadLines(host, "teardown"));
         if (bounded) {
-          const destroy = `${mangleClassReleaseDirect(cls.name)}_destroy`;
           const destroyBody: string[] = [];
           teardown(destroyBody);
-          defs.push(...destroyDefinitions(destroy, destroyBody, chained), ``);
+          defs.push(
+            ...destroyDefinitions(destroy, destroyBody, chained, segmented ? host : null),
+            ``,
+          );
           host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
           reld.push(`  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`);
         } else teardown(reld);
@@ -1203,6 +1249,7 @@ export function emitClassShapes(
           bounded,
           lifetime,
           chained,
+          segmented,
         ),
         ``,
       );

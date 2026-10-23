@@ -92,6 +92,10 @@ export interface ScrDiagnostic {
    * the error may not reproduce under the project's tsc. Machine-readable
    * output reports these under the "environment" category. */
   typeWorld?: boolean;
+  /** A runtime fence in a module's top-level code, outside every function
+   * and class member body: it throws when the module initializes, which is
+   * program startup for a module the entry imports. */
+  startup?: true;
 }
 
 /** SC3002–SC3004 — native-helper target, installation, and execution
@@ -652,7 +656,7 @@ export function genericSignatureTypeDiag(typeText: string, loc: SrcLoc): ScrDiag
 export function indexSignatureTypeDiag(typeText: string, loc: SrcLoc): ScrDiagnostic {
   return {
     code: "SC2006",
-    message: `values of type '${typeText}' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Promises, or 'unknown')`,
+    message: `values of type '${typeText}' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Dates, Promises, or 'unknown')`,
     loc,
     milestone: "M2",
     hint: "string- and number-keyed index signatures over the supported value types compile directly; symbol keys and dual signatures with unequal value types have no lowering",

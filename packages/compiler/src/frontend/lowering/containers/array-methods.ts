@@ -361,6 +361,21 @@ export function lowerArrayMethodCall(
     if (probe.type.kind === "array") {
       receiverIr = probe.type;
       probedUntyped = true;
+    } else if (
+      probe.type.kind === "dyn" &&
+      !isJsSourceFile(ts.getSourceFileOfNode(access)) &&
+      lowerer.isStdlibMember(access)
+    ) {
+      // An `unknown[]` (or `any[]`) array stored checked-dynamic — a
+      // generic body instantiated at `unknown`, a spread of unknown
+      // elements: the method runs on the runtime array (dynInvoke, JS
+      // exact), and a typed result is checked like any member read.
+      const dispatched = lowerDynDispatchMethodCall(lowerer, call, access, probe, true);
+      if (!dispatched) return null;
+      const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+      return result && result.kind !== "void" && result.kind !== "dyn"
+        ? lowerer.coerceInto(call, dispatched, result)
+        : dispatched;
     }
   }
   if (receiverIr?.kind === "union") {
@@ -1066,14 +1081,25 @@ export function lowerArrayMethodCall(
       (lowerer.unions
         .get(elem.unionId)
         ?.arms.every(
-          (a) => a.kind === "f64" || a.kind === "string" || a.kind === "bool" || isUnitType(a),
+          (a) =>
+            a.kind === "f64" ||
+            a.kind === "string" ||
+            a.kind === "bool" ||
+            a.kind === "date" ||
+            isUnitType(a),
         ) ??
         false);
-    if (elem.kind !== "f64" && elem.kind !== "string" && elem.kind !== "bool" && !joinableUnion) {
+    if (
+      elem.kind !== "f64" &&
+      elem.kind !== "string" &&
+      elem.kind !== "bool" &&
+      elem.kind !== "date" &&
+      !joinableUnion
+    ) {
       lowerer.unsupported(
         "SC1090",
         call,
-        "'.join()' on arrays of this element type (number, string, and boolean arrays join — unions of those with undefined/null arms too, the units printing empty like JS)",
+        "'.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS)",
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);

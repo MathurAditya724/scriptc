@@ -1945,6 +1945,19 @@ export function lowerStaticReadableStreamNew(
   };
 }
 
+/** `new TransformStream()`: the identity transform, a native handle whose
+ * readable side is a native ReadableStream and whose writable side is the
+ * runtime's WritableStream. A transformer or queuing strategies have no
+ * native lowering yet and keep the SC2020 refusal. */
+export function lowerStaticTransformStreamNew(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+): IrExpr | null {
+  if (stdlibGlobalNameOf(lowerer, expr.expression) !== "TransformStream") return null;
+  if ((expr.arguments?.nodes.length ?? 0) > 0) return null;
+  return { kind: "libCall", fn: "fetch.transformNew", args: [], type: DYN, loc: locOf(expr) };
+}
+
 /** Native Request and Headers values share the fetch runtime's handles. */
 export function lowerFetchWebNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   const name = stdlibGlobalNameOf(lowerer, expr.expression);
@@ -2496,6 +2509,25 @@ export function lowerStdlibMethodCall(
     // method, drains into the number[] the fold reads.
     src = classGeneratorIterable(lowerer, src) ?? src;
     if (src.type.kind === "generator") src = generatorDrain(lowerer, src, F64, loc) ?? src;
+    // An untyped iterable (`Math.min(...caps.map(f))` in JavaScript): the
+    // runtime packs its values and folds their ToNumber like Node. V8 names
+    // a null or undefined source by its text, calls as `f(...)`.
+    if (src.type.kind === "dyn") {
+      const what = ts.isCallExpression(spread.expression)
+        ? `${ts.getTextOfNode(spread.expression.expression)}(...)`
+        : ts.getTextOfNode(spread.expression);
+      return {
+        kind: "libCall",
+        fn: "dyn.mathFold",
+        args: [
+          src,
+          { kind: "boolLit", value: name === "max", type: BOOL, loc },
+          { kind: "strLit", value: what, type: STRING, loc },
+        ],
+        type: F64,
+        loc,
+      };
+    }
     if (src.type.kind !== "array" || src.type.elem.kind !== "f64") {
       lowerer.unsupported(
         "SC1090",

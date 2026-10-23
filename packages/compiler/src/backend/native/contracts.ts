@@ -122,6 +122,7 @@ export interface CcOptions {
   streamDyn?: boolean;
   /** Own properties JavaScript adds to children: compiles scr_dyn_handle_props.c. */
   handleProps?: boolean;
+  declAdopt?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
   /** events.once with options (events.onceSignal): compiles
@@ -219,6 +220,10 @@ export interface CcOptions {
    * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
    * their exact link line. */
   dgramDyn?: boolean;
+  /** A TextEncoder or TextDecoder record converts to or from an untyped
+   * value: compiles scr_text_codec_dyn.c, so typed codec binaries keep
+   * their exact link line. */
+  textCodecDyn?: boolean;
 
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free

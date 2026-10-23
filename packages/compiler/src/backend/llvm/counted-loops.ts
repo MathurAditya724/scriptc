@@ -1,4 +1,9 @@
-import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
+import type {
+  IntegerCountedForLoop,
+  IntegerLoopFollower,
+  IntegerPairedForLoop,
+} from "../../ir/integer-loops.js";
+import { FOLLOWER_GUARD_LIMIT } from "../../ir/integer-loops.js";
 import type { IrExpr } from "../../ir/ir.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { f64Lit } from "./common.js";
@@ -61,7 +66,45 @@ export function emitCountedLoopSafety(
     );
   }
   if (loop.startGuarded) safe = andSafe(host, safe, emitExactStart(host, loop.start));
+  for (const follower of loop.followers) {
+    if (follower.startGuarded) safe = andSafe(host, safe, emitExactStart(host, follower.start));
+    if (follower.tripGuarded) safe = andSafe(host, safe, emitFollowerReach(host, loop, follower));
+  }
   return safe;
+}
+
+/** `|start| + |step| * span / |driver step| <= 2^52` for a follower, where
+ * `span` is the distance from the driver's start to the limit. The body runs
+ * at most `span / |driver step| + 1` times, so every value the follower holds
+ * on a body entry is within the bound. NaN and infinities fail the ordered
+ * test. */
+function emitFollowerReach(
+  host: LlvmEmitterContext,
+  loop: IntegerCountedForLoop,
+  follower: IntegerLoopFollower,
+): string {
+  const B = host.B;
+  const start = host.emitExpr(loop.start),
+    limit = host.emitExpr(loop.limit),
+    from = host.emitExpr(follower.start);
+  const span = B.tmp(),
+    reach = B.tmp(),
+    magnitude = B.tmp(),
+    total = B.tmp(),
+    ok = B.tmp();
+  B.line(
+    loop.step > 0
+      ? `${span} = fsub double ${limit.name}, ${start.name}`
+      : `${span} = fsub double ${start.name}, ${limit.name}`,
+  );
+  B.line(
+    `${reach} = fmul double ${span}, ${f64Lit(Math.abs(follower.step) / Math.abs(loop.step))}`,
+  );
+  host.declare(`declare double @llvm.fabs.f64(double)`);
+  B.line(`${magnitude} = call double @llvm.fabs.f64(double ${from.name})`);
+  B.line(`${total} = fadd double ${magnitude}, ${reach}`);
+  B.line(`${ok} = fcmp ole double ${total}, ${f64Lit(FOLLOWER_GUARD_LIMIT)}`);
+  return ok;
 }
 
 /** The run-time test of a guarded paired loop: each unproven start is an
@@ -107,4 +150,37 @@ function emitExactStart(host: LlvmEmitterContext, expr: IrExpr): string {
   B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
   B.line(`${ok} = and i1 ${inRange}, ${exact}`);
   return ok;
+}
+
+/** Tests that a double is an exact integer within [min, max] (not -0; NaN
+ * fails the ordered comparisons) and gives its i64. The integer is frozen,
+ * so it is a fixed value even when the test fails. */
+export function emitExactIntegerTest(
+  host: LlvmEmitterContext,
+  value: string,
+  min: number,
+  max: number,
+): { ok: string; integer: string } {
+  const B = host.B;
+  const low = B.tmp(),
+    high = B.tmp(),
+    inRange = B.tmp(),
+    raw = B.tmp(),
+    integer = B.tmp(),
+    back = B.tmp(),
+    bits = B.tmp(),
+    backBits = B.tmp(),
+    exact = B.tmp(),
+    ok = B.tmp();
+  B.line(`${low} = fcmp oge double ${value}, ${f64Lit(min)}`);
+  B.line(`${high} = fcmp ole double ${value}, ${f64Lit(max)}`);
+  B.line(`${inRange} = and i1 ${low}, ${high}`);
+  B.line(`${raw} = fptosi double ${value} to i64`);
+  B.line(`${integer} = freeze i64 ${raw}`);
+  B.line(`${back} = sitofp i64 ${integer} to double`);
+  B.line(`${bits} = bitcast double ${value} to i64`);
+  B.line(`${backBits} = bitcast double ${back} to i64`);
+  B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
+  B.line(`${ok} = and i1 ${inRange}, ${exact}`);
+  return { ok, integer };
 }

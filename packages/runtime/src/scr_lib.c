@@ -12549,6 +12549,39 @@ static ScrStr *scr_date_text(double ms, int mode) {
 }
 
 ScrStr *scr_date_to_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_FULL); }
+
+/* JSON.stringify of a Date object: its toJSON(), the quoted
+ * toISOString() text, or null for an invalid date. */
+void scr_jb_put_date(ScrJsonBuf *b, const ScrDate *date) {
+  if (isnan(date->ms)) {
+    scr_jb_puts(b, "null");
+    return;
+  }
+  ScrStr *iso = scr_date_to_iso(date->ms);
+  scr_jb_put_json_str(b, iso);
+  scr_str_release(iso);
+}
+
+/* String(date) of a Date object: Date arrays' default ordering key. +1. */
+ScrStr *scr_date_object_to_string(void *date) {
+  return scr_date_text(((ScrDate *)date)->ms, SCR_DATE_TEXT_FULL);
+}
+
+/* Array.prototype.join over Date objects: each element's String() text,
+ * holes empty. Both borrowed; +1. */
+ScrStr *scr_date_arr_join(ScrArr *dates, const ScrStr *sep) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  double len = scr_arr_len(dates);
+  for (double i = 0; i < len; i++) {
+    if (i > 0) scr_jb_put_str(&b, sep);
+    if (scr_arr_state(dates, i) != 1) continue;
+    ScrStr *text = scr_date_object_to_string(scr_arr_peek_ref(dates, i));
+    scr_jb_put_str(&b, text);
+    scr_str_release(text);
+  }
+  return scr_jb_finish(&b);
+}
 ScrStr *scr_date_to_date_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_DATE); }
 ScrStr *scr_date_to_time_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_TIME); }
 
@@ -12961,58 +12994,77 @@ static bool scr_set_to_arr_sparse(const ScrMap *s, ScrArr *out) {
 ScrArr *scr_set_to_arr_f64(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_F64, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
-    out->data[out->len] = scr_map_entry_at(s, i)->key;
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    out->data[out->len++] = scr_map_entry_at(s, i)->key;
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_bool(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_BOOL, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
-    scr_arr_dense_put(out, out->len, scr_map_entry_at(s, i)->key != 0);
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    scr_arr_dense_put(out, out->len++, scr_map_entry_at(s, i)->key != 0);
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_str(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
     scr_str_retain((ScrStr *)(uintptr_t)scr_map_entry_at(s, i)->key);
-    out->data[out->len] = scr_map_entry_at(s, i)->key;
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    out->data[out->len++] = scr_map_entry_at(s, i)->key;
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_ref(const ScrMap *s, const ScrArrOps *ops) {
   ScrArr *out = scr_arr_new_ops(ops, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
     ops->retain((void *)(uintptr_t)scr_map_entry_at(s, i)->key);
-    out->data[out->len] = scr_map_entry_at(s, i)->key;
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    scr_arr_dense_put(out, out->len, scr_map_entry_at(s, i)->key);
+    out->len++;
   }
+  scr_arr_refill(out);
   return out;
 }
 
-/* JS Date storage owns an identity; the typed read-only Date ABI continues
- * to use milliseconds and explicitly extracts them for native getters. */
-typedef struct { size_t rc; double milliseconds; } ScrNativeDate;
-static void *scr_native_date_retain(void *ptr) { ((ScrNativeDate *)ptr)->rc++; return ptr; }
-static void scr_native_date_release(void *ptr) { if (--((ScrNativeDate *)ptr)->rc == 0) free(ptr); }
+/* A Date object: one time value, and its identity. Compiled code and
+ * checked-dynamic Date handles share these objects, so a Date keeps its
+ * identity across `unknown` conversions. */
+ScrDate *scr_date_new(double ms) {
+  ScrDate *date = malloc(sizeof *date);
+  if (!date) scr_trap("scriptc: out of memory\n");
+  date->rc = 1;
+  date->ms = ms;
+  return date;
+}
+
+ScrDate *scr_date_retain(ScrDate *date) {
+  if (date->rc != SIZE_MAX) date->rc++;
+  return date;
+}
+
+void scr_date_release(ScrDate *date) {
+  if (!date || date->rc == SIZE_MAX) return;
+  if (--date->rc == 0) free(date);
+}
+
+void *scr_date_retain_v(void *p) { return scr_date_retain(p); }
+void scr_date_release_v(void *p) { scr_date_release(p); }
 
 bool scr_dyn_native_date_is(const ScrDyn *value) {
   return value && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE;
@@ -13123,11 +13175,23 @@ static ScrStr *scr_date_class_name(const ScrDyn *value) {
 }
 
 double scr_dyn_native_date_value(const ScrDyn *value) {
-  if (scr_dyn_native_date_is(value)) return ((ScrNativeDate *)value->v.handle.ptr)->milliseconds;
+  if (scr_dyn_native_date_is(value)) return ((ScrDate *)value->v.handle.ptr)->ms;
   double time;
   if (scr_dyn_date_class_time(value, &time)) return time;
   scr_dyn_check_fail(NULL, "Date", value);
   return NAN;
+}
+
+/* The Date object a checked-dynamic Date value holds, +1: the Date itself,
+ * or a new Date with the time value of an instance of a class declared
+ * `extends Date`. NULL with the check failure pending for any other
+ * value. */
+ScrDate *scr_dyn_native_date_check(const ScrDyn *value, const ScrDynPath *path) {
+  if (scr_dyn_native_date_is(value)) return scr_date_retain(value->v.handle.ptr);
+  double time;
+  if (scr_dyn_date_class_time(value, &time)) return scr_date_new(time);
+  scr_dyn_check_fail(path, "Date", value);
+  return NULL;
 }
 
 /* Method names without another use in this file, in named arrays (see
@@ -13138,7 +13202,7 @@ static const char scr_date_to_time_string_name[] = "toTimeString";
 static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *method,
     ScrDyn *const *args, size_t argc, const char *what) {
   (void)self; (void)what;
-  double ms = ((ScrNativeDate *)ptr)->milliseconds;
+  double ms = ((ScrDate *)ptr)->ms;
   if (!strcmp(method, "getTime") || !strcmp(method, "valueOf")) return scr_dyn_new_num(ms);
   if (!strcmp(method, "toString") || !strcmp(method, scr_date_to_date_string_name) ||
       !strcmp(method, scr_date_to_time_string_name) || !strcmp(method, "toUTCString")) {
@@ -13161,8 +13225,8 @@ static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *metho
   if (!strcmp(method, "setTime")) {
     double time = NAN;
     if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &time)) return NULL;
-    ((ScrNativeDate *)ptr)->milliseconds = scr_date_new_ms(time);
-    return scr_dyn_new_num(((ScrNativeDate *)ptr)->milliseconds);
+    ((ScrDate *)ptr)->ms = scr_date_new_ms(time);
+    return scr_dyn_new_num(((ScrDate *)ptr)->ms);
   }
 #define DATE_GET(name, fn) if (!strcmp(method, name)) return scr_dyn_new_num(fn(ms))
   DATE_GET("getFullYear", scr_date_get_full_year_local);
@@ -13208,7 +13272,7 @@ double scr_dyn_date_arguments_time(const ScrDyn *arguments) {
   ScrDyn *date = arguments->v.arr.len > 1 ? scr_dyn_native_date_new_fields(arguments)
                                           : scr_dyn_native_date_new_value(arguments);
   if (!date) return NAN;
-  double time = ((ScrNativeDate *)date->v.handle.ptr)->milliseconds;
+  double time = ((ScrDate *)date->v.handle.ptr)->ms;
   scr_dyn_release(date);
   return time;
 }
@@ -13273,10 +13337,10 @@ static ScrDyn *scr_native_date_method_call(ScrClosure *closure, ScrDyn *const *a
       result = isfinite(time) ? scr_date_class_call(SCR_DATE_CLASS_TO_ISO_STRING, self, NULL)
                               : scr_dyn_new_null();
     } else {
-      ScrNativeDate date = { 1, time };
+      ScrDate date = { 1, time };
       result = scr_native_date_invoke(&date, self, method, args, argc, method);
-      if (result && date.milliseconds != time && !(isnan(date.milliseconds) && isnan(time))) {
-        ScrDyn *stored = scr_dyn_new_num(date.milliseconds);
+      if (result && date.ms != time && !(isnan(date.ms) && isnan(time))) {
+        ScrDyn *stored = scr_dyn_new_num(date.ms);
         ScrDyn *set = scr_date_class_call(SCR_DATE_CLASS_SET_TIME, self, stored);
         scr_dyn_release(stored);
         if (!set) {
@@ -13329,19 +13393,22 @@ static ScrDyn *scr_native_date_get(void *ptr, const char *key, size_t key_len) {
   return NULL;
 }
 
-/* A Date handle holding the time value `ms` (already TimeClip'd). */
-ScrDyn *scr_dyn_native_date_from_ms(double ms) {
+/* A checked-dynamic handle for the Date object `date` (borrowed; the
+ * handle retains it), so the value stays the same object. */
+ScrDyn *scr_dyn_native_date(ScrDate *date) {
   static const ScrDynHandleOps ops = {
-    "Date", &scr_native_date_retain, &scr_native_date_release, &scr_native_date_invoke,
+    "Date", &scr_date_retain_v, &scr_date_release_v, &scr_native_date_invoke,
     &scr_native_date_get, NULL, NULL, NULL,
   };
   scr_dyn_handle_install(SCR_DYNH_DATE, &ops);
-  ScrNativeDate *date = malloc(sizeof *date);
-  if (!date) scr_trap("scriptc: out of memory\n");
-  date->rc = 1;
-  date->milliseconds = ms;
-  ScrDyn *result = scr_dyn_new_handle(date, SCR_DYNH_DATE);
-  scr_native_date_release(date);
+  return scr_dyn_new_handle(date, SCR_DYNH_DATE);
+}
+
+/* A Date handle holding the time value `ms` (already TimeClip'd). */
+ScrDyn *scr_dyn_native_date_from_ms(double ms) {
+  ScrDate *date = scr_date_new(ms);
+  ScrDyn *result = scr_dyn_native_date(date);
+  scr_date_release(date);
   return result;
 }
 

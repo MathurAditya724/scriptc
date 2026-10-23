@@ -1,7 +1,6 @@
 import { expect, test } from "vitest";
 import {
   BOOL,
-  DATE_T,
   F64,
   PROCSTREAM_T,
   STRING,
@@ -13,6 +12,7 @@ import {
   type IrType,
 } from "../../ir/ir.js";
 import { emitLlvmModule, emitLlvmModuleSource, LlEmitter } from "./emitter.js";
+import { INLINE_STR_RELEASES_PER_FUNCTION } from "./shapes.js";
 
 /** A pending-exception check: the inline active-cell test or a runtime call. */
 const PENDING_CHECK = /@scr_exc_(?:active|pending)\b/;
@@ -201,17 +201,24 @@ test("detached exit defines the runtime opt-in symbol only when requested", () =
   expect(detached.replace("@scr_detached_exit = constant i8 1\n", "")).toBe(plain);
 });
 
-test("inline RC inlines every fast path at speed and keeps string and box releases as calls in release", () => {
+test("inline RC inlines every fast path at speed and keeps box releases as calls in release", () => {
   for (const boxed of [false, true]) {
     const module = moduleFor(Array.from({ length: 4 }, call), { boxed });
     const release = emitLlvmModule(module);
     expect(release).not.toContain("@sc_rc_");
     expect(release).not.toContain("%ScrMapRc");
-    // The release subset inlines string retains and dyn retains and releases
-    // only; these string and box releases stay runtime calls.
+    // The release subset inlines string and dyn retains and releases and Map
+    // retains only: box releases stay runtime calls, and so do the string
+    // releases of a function with more than INLINE_STR_RELEASES_PER_FUNCTION.
     const subset = emitLlvmModule(module, { inlineRc: "release" });
-    expect(subset).not.toContain("@sc_rc_release_str");
-    expect(subset).not.toContain("@sc_rc_release_box");
+    expect(subset).not.toContain("call void @sc_rc_release_box(");
+    const sites = (ir: string, fn: string): number => ir.split(`call void @${fn}(ptr`).length - 1;
+    if (!boxed) {
+      expect(sites(subset, "sc_rc_release_str")).toBe(0);
+      // Every site calls the runtime, and so does the unused helper's slow path.
+      expect(sites(subset, "scr_str_release")).toBe(sites(release, "scr_str_release") + 1);
+      expect(sites(release, "scr_str_release")).toBeGreaterThan(INLINE_STR_RELEASES_PER_FUNCTION);
+    }
     const speed = emitLlvmModule(module, { inlineRc: "speed" });
     const helper = boxed ? "sc_rc_release_box" : "sc_rc_release_str";
     const runtime = boxed ? "scr_box_release" : "scr_str_release";
@@ -279,7 +286,7 @@ test("shared exceptional exits preserve the function's scalar return ABI", () =>
 });
 
 test("exceptional exits use each scalar kind's LLVM return type", () => {
-  for (const type of [F64, DATE_T, BOOL, PROCSTREAM_T]) {
+  for (const type of [F64, BOOL, PROCSTREAM_T]) {
     for (const ownedLocals of [false, true]) {
       const module = moduleFor([call(), call(), { kind: "throw", value: literal("failed"), loc }]);
       const work = module.functions[1]!;
@@ -451,6 +458,33 @@ test("class brand probes borrow a local only across an inert literal key", () =>
   expect(computed).toContain("call ptr @scr_dyn_retain_v(");
 });
 
+test("class constructor probes test the function tag and borrow across a literal key", () => {
+  const dyn: IrType = { kind: "dyn" };
+  const key: IrExpr = { kind: "strLit", value: "classval:Example", type: STRING, loc: receiverLoc };
+  const probe: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.classIs",
+    args: [ref(dyn), key],
+    type: BOOL,
+    loc: receiverLoc,
+  };
+  const borrowed = work(probe, dyn);
+  expect(borrowed).not.toContain("call ptr @scr_dyn_retain_v(");
+  expect(borrowed).toContain("icmp ne ptr");
+  expect(borrowed).toContain("icmp eq i32 %t");
+  expect(borrowed).toMatch(/icmp eq i32 %t\d+, 8\b/);
+  expect(borrowed).toContain("call zeroext i1 @scr_dyn_class_is_key(");
+  const computed = work(
+    {
+      ...probe,
+      args: [ref(dyn), { kind: "toString", operand: ref(dyn), type: STRING, loc: receiverLoc }],
+    },
+    dyn,
+  );
+  expect(computed).toContain("call ptr @scr_dyn_retain_v(");
+  expect(computed).toContain("call zeroext i1 @scr_dyn_class_is_key(");
+});
+
 test("class brand probes compare the program's key constant before the key text", () => {
   const dyn: IrType = { kind: "dyn" };
   const key: IrExpr = { kind: "strLit", value: "object:Example", type: STRING, loc: receiverLoc };
@@ -464,6 +498,27 @@ test("class brand probes compare the program's key constant before the key text"
   const named = work(probe("dyn.typedRefIs"), dyn);
   expect(named).toContain("; ->v.typed_ref.type_key");
   expect(named).toContain("@scr_dyn_typed_ref_is_key");
+  // Another key pointer is rejected on its length and last eight bytes
+  // ("Example" plus the prefix's ':') before the out-of-line comparison.
+  expect(named).toContain("; ->v.typed_ref.type_key_len");
+  expect(named).toContain("and i32 %t");
+  expect(named).toMatch(/icmp eq i32 %t\d+, 14\b/);
+  const tail = Buffer.from("object:Example").readBigInt64LE(6);
+  expect(named).toContain(`icmp eq i64 %t`);
+  expect(named).toContain(`, ${tail}`);
+  const shortKey: IrExpr = { kind: "strLit", value: "o:E", type: STRING, loc: receiverLoc };
+  const short = work(
+    {
+      kind: "libCall",
+      fn: "dyn.typedRefIs",
+      args: [ref(dyn), shortKey],
+      type: BOOL,
+      loc: receiverLoc,
+    },
+    dyn,
+  );
+  expect(short).toMatch(/icmp eq i32 %t\d+, 3\b/);
+  expect(short).not.toContain("load i64");
   // The key-pointer test answers false for capsules boxed elsewhere.
   const exact = work(probe("dyn.typedRefKeyIs"), dyn);
   expect(exact).toContain("; ->v.typed_ref.type_key");

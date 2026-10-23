@@ -13,7 +13,10 @@ import {
   classFieldAttributesName,
   isClassOwnEnumerableFieldName,
   isDirentShape,
+  KEY_ORDER_FIELD,
+  shapeKeyOrders,
   isDynTypedRefType,
+  textCodecRecordClass,
   isRefCounted,
   shapeHasAccessorSlots,
   typeKey,
@@ -44,6 +47,8 @@ import type { NullableRefField } from "./nullable-fields.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
 import { recordMayKeepSource } from "./record-sources.js";
+import { emitPerKeyOrder } from "./key-orders.js";
+import { registerReplay } from "./emit-journal.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
  * (the unit arm's immortal instance, or a fresh box around a retained
@@ -91,6 +96,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   if (existing) return existing;
   const sym = `sc_dpa_${host.dynPromiseAdapters.size}`;
   host.dynPromiseAdapters.set(key, sym);
+  host.journal?.allocated(sym, "dynPromiseAdapter", [inner]);
   host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
   host.declare(`declare void @scr_dyn_release_v(ptr)`);
   host.declare(`declare void @scr_promise_reject_pending(ptr)`);
@@ -116,12 +122,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   if (inner.kind === "void") {
     host.declare(`declare void @scr_promise_fulfill_void(ptr)`);
     B.line(`call void @scr_promise_fulfill_void(ptr %dst)`);
-  } else if (
-    inner.kind === "f64" ||
-    inner.kind === "date" ||
-    inner.kind === "procStream" ||
-    inner.kind === "bool"
-  ) {
+  } else if (inner.kind === "f64" || inner.kind === "procStream" || inner.kind === "bool") {
     const fn = inner.kind !== "bool" ? "scr_promise_fulfill_f64" : "scr_promise_fulfill_bool";
     host.declare(
       `declare void @${fn}(ptr, ${host.llType(inner)}${inner.kind === "bool" ? " zeroext" : ""})`,
@@ -146,6 +147,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
     `}`,
     ``,
   );
+  host.journal?.built();
   return sym;
 }
 
@@ -591,17 +593,27 @@ export function liveDynUnionRefAdapter(
   if (!union) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of unknown union ${t.unionId}`);
   }
+  // Codec records box as their own handles, by reference, through toDynHelper.
+  const codecArm = (arm: IrType): boolean =>
+    textCodecRecordClass(arm, (id) => host.recordsById.get(id)) !== null;
   const mutableArms = union.arms
     .map((arm, tag) => ({ arm, tag }))
     .filter(
-      ({ arm }) => arm.kind !== "bytes" && (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
+      ({ arm }) =>
+        arm.kind !== "bytes" &&
+        !codecArm(arm) &&
+        (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
     );
-  if (mutableArms.length === 0 && !union.arms.some((arm) => arm.kind === "bytes")) {
+  if (
+    mutableArms.length === 0 &&
+    !union.arms.some((arm) => arm.kind === "bytes" || codecArm(arm))
+  ) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of immutable union ${key}`);
   }
 
   const sym = `sc_ldu_${host.liveDynUnionRefAdapters.size}`;
   host.liveDynUnionRefAdapters.set(key, sym);
+  host.journal?.allocated(sym, "liveDynUnionRefAdapter", [t]);
 
   const adapters = new Map<number, LlStreamTypedRefAdapter>();
   for (const { arm, tag } of mutableArms) {
@@ -684,6 +696,7 @@ export function liveDynUnionRefAdapter(
     `}`,
     ``,
   );
+  host.journal?.built();
   return sym;
 }
 
@@ -704,7 +717,13 @@ export function streamTypedRefBoxValue(
     B.line(`${boxed} = call ptr @${host.liveDynUnionRefAdapter(t)}(ptr ${value})`);
     return boxed;
   }
-  if (t.kind === "bytes" || (!streamTypedRefEligible(t) && !isDynTypedRefType(t))) {
+  // A codec record boxes as its own handle, by reference (toDynHelper), as
+  // it does outside a live view.
+  if (
+    t.kind === "bytes" ||
+    textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null ||
+    (!streamTypedRefEligible(t) && !isDynTypedRefType(t))
+  ) {
     const valueTy = host.llType(t);
     B.line(`${boxed} = call ptr @${host.dyn.toDynHelper(t)}(${valueTy} ${value})`);
     return boxed;
@@ -732,6 +751,11 @@ export function streamTypedRefMaterializeAdapter(
   const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
   const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
   host.liveDynRefAdapters.set(key, adapter);
+  host.journal?.allocated(
+    snapshot.replace(/_materialize$/, ""),
+    "streamTypedRefMaterializeAdapter",
+    [t],
+  );
   if (isDynTypedRefType(t)) {
     const fields = host.classMeta.get(t.className)?.def.fields;
     if (
@@ -744,6 +768,7 @@ export function streamTypedRefMaterializeAdapter(
     ) {
       host.declare(`declare ptr @scr_dyn_class_view_unavailable(ptr)`);
       adapter.snapshot = "scr_dyn_class_view_unavailable";
+      host.journal?.built();
       return adapter;
     }
   }
@@ -753,6 +778,7 @@ export function streamTypedRefMaterializeAdapter(
   // class view ops are published first.
   const opsMeta = isDynTypedRefType(t) ? host.classMeta.get(t.className) : undefined;
   if (opsMeta && liveClassOpsEligible(opsMeta)) adapter.classOps = `@${snapshot}_cops`;
+  else if (opsMeta && liveBagClassOpsEligible(opsMeta)) adapter.bagClassOps = `@${snapshot}_bops`;
   adapter.commit = `@${snapshot}_commit`;
   adapter.commit = host.streamTypedRefCommitAdapter(t, snapshot);
   const B = new BlockBuilder();
@@ -765,6 +791,7 @@ export function streamTypedRefMaterializeAdapter(
       );
     }
     if (adapter.classOps !== undefined) liveClassOps(host, snapshot, meta);
+    if (adapter.bagClassOps !== undefined) liveBagClassOps(host, snapshot, meta, t);
     if (meta.hierarchy && meta.children.length) {
       const pre = B.tmp();
       for (const line of classPreLines(meta, classStructSym(t.className), "%p", pre, host.sizeType))
@@ -836,11 +863,7 @@ export function streamTypedRefMaterializeAdapter(
       B.line(`call void @scr_dyn_release_v(ptr ${prototype})`);
       B.line(`call void @scr_dyn_release_v(ptr ${attached})`);
     }
-    for (const field of meta.def.fields.filter(
-      (f) =>
-        isClassOwnEnumerableFieldName(f.name) &&
-        !(meta.root.def.name === "%Error" && (f.name === "message" || f.name === "name")),
-    )) {
+    for (const field of classViewFields(meta)) {
       const afterField = meta.def.tracksOwnFields ? B.newLabel("field.after") : null;
       if (afterField) {
         host.declare(`declare ptr @scr_dyn_obj_get(ptr, ptr, ${host.sizeType})`);
@@ -854,32 +877,7 @@ export function streamTypedRefMaterializeAdapter(
         B.condBr(present, yes, afterField);
         B.startBlock(yes);
       }
-      const { index, compressed } = classFieldIndex(meta, field.name, "compressed");
-      const fieldPtr = B.tmp();
-      let fieldValue = B.tmp();
-      B.line(
-        `${fieldPtr} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${index}`,
-      );
-      if (host.int32Slots.isField(t.className, field.name)) {
-        const raw = B.tmp();
-        B.line(`${raw} = load i32, ptr ${fieldPtr}`);
-        B.line(`${fieldValue} = sitofp i32 ${raw} to double`);
-      } else if (host.inlineUnions.classField(t.className, field.name))
-        fieldValue = loadStructField(B, host.sizeType, fieldPtr, field.type, true);
-      else if (compressed) {
-        const idx = B.tmp();
-        B.line(`${idx} = load i32, ptr ${fieldPtr}`);
-        for (const line of compactRefLoadLines(idx, fieldValue, `${fieldValue}.r`))
-          B.line(line.trimStart());
-      } else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
-      if (llFieldType(field.type, false) === "i8") {
-        const boolValue = B.tmp();
-        B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
-        fieldValue = boolValue;
-      }
-      const nullable = host.nullableFields.get(t.className, field.name);
-      if (nullable) fieldValue = nullableFieldUnion(host, B, fieldValue, nullable);
-      const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
+      const { boxed, nullable, fieldValue } = classFieldDynValue(host, B, meta, t, field);
       // Attributes copied from the bag do not stop the view taking the value.
       const setter = withAttributes ? "scr_dyn_obj_set_field" : "scr_dyn_obj_set";
       if (withAttributes)
@@ -1054,52 +1052,68 @@ export function streamTypedRefMaterializeAdapter(
       const out = B.tmp();
       B.line(`${out} = call ptr @scr_dyn_new_obj()`);
       const byName = new Map(shape.fields.map((field) => [field.name, field]));
-      const order = shape.declaredOrder ?? shape.fields.map((field) => field.name);
-      const inOrder = new Set(order);
-      const fields = [
-        ...order.map((name) => byName.get(name)).filter((field) => field !== undefined),
-        ...shape.fields.filter((field) => !inOrder.has(field.name)),
-      ];
+      // A shape with orderVariants has one field list per key order; its
+      // order index is no key.
+      const orders = shapeKeyOrders(shape);
+      const fieldsOf = (order: readonly string[]): IrRecordShape["fields"][number][] => {
+        const inOrder = new Set(order);
+        return [
+          ...order.map((name) => byName.get(name)).filter((field) => field !== undefined),
+          ...shape.fields.filter(
+            (field) => !inOrder.has(field.name) && field.name !== KEY_ORDER_FIELD,
+          ),
+        ];
+      };
       // Published before the field converters, like the array hooks below.
       // A Dirent row reads through its finished view (the prototype and
       // the non-enumerable %dtype).
       const dirent = isDirentShape(shape);
-      if (!dirent && liveRecordOpsEligible(fields)) {
-        adapter.recordOps = `@${snapshot}_rops`;
-        liveRecordOps(host, t, snapshot, fields);
-      }
-      for (const field of fields) {
-        const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
-        const fieldPtr = B.tmp();
-        B.line(
-          `${fieldPtr} = getelementptr inbounds %${mangleRecordStruct(t.shapeId)}, ptr %p, i64 0, i32 ${index}`,
-        );
-        const fieldValue = loadStructField(
-          B,
-          host.sizeType,
-          fieldPtr,
-          field.type,
-          host.inlineUnions.record(field.type),
-        );
-        // An ABSENT optional field contributes no key.
-        const undefinedTag = undefinedArmTag(field.type, host.unionsById);
-        let skip: string | null = null;
-        if (undefinedTag >= 0 && field.type.kind === "union") {
-          const absent = host.fieldAbsentTestIn(B, fieldValue, field.type.unionId);
-          skip = B.newLabel("live.record.absent");
-          const set = B.newLabel("live.record.set");
-          B.condBr(absent, skip, set);
-          B.startBlock(set);
-        }
-        const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
-        B.line(
-          `call void @scr_dyn_obj_set(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
-        );
-        if (skip !== null) {
-          B.br(skip);
-          B.startBlock(skip);
+      if (!dirent && orders.every((order) => liveRecordOpsEligible(fieldsOf(order)))) {
+        if (orders.length === 1) {
+          adapter.recordOps = `@${snapshot}_rops`;
+          liveRecordOps(host, t, snapshot, fieldsOf(orders[0]!));
+        } else {
+          orders.forEach((order, i) =>
+            liveRecordOps(host, t, `${snapshot}_o${i}`, fieldsOf(order)),
+          );
+          adapter.recordOps = `@${snapshot}_rops`;
+          liveRecordOrderSelect(host, shape, snapshot);
         }
       }
+      emitPerKeyOrder(B, shape, host.nullableUnions.fieldBase(t.shapeId), "%p", (order) => {
+        for (const field of fieldsOf(order)) {
+          const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
+          const fieldPtr = B.tmp();
+          B.line(
+            `${fieldPtr} = getelementptr inbounds %${mangleRecordStruct(t.shapeId)}, ptr %p, i64 0, i32 ${index}`,
+          );
+          const fieldValue = loadStructField(
+            B,
+            host.sizeType,
+            fieldPtr,
+            field.type,
+            host.inlineUnions.record(field.type),
+          );
+          // An ABSENT optional field contributes no key.
+          const undefinedTag = undefinedArmTag(field.type, host.unionsById);
+          let skip: string | null = null;
+          if (undefinedTag >= 0 && field.type.kind === "union") {
+            const absent = host.fieldAbsentTestIn(B, fieldValue, field.type.unionId);
+            skip = B.newLabel("live.record.absent");
+            const set = B.newLabel("live.record.set");
+            B.condBr(absent, skip, set);
+            B.startBlock(set);
+          }
+          const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
+          B.line(
+            `call void @scr_dyn_obj_set(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
+          );
+          if (skip !== null) {
+            B.br(skip);
+            B.startBlock(skip);
+          }
+        }
+      });
       if (dirent) {
         host.declare(`declare void @scr_dyn_dirent_finish(ptr)`);
         B.line(`call void @scr_dyn_dirent_finish(ptr ${out})`);
@@ -1185,6 +1199,7 @@ export function streamTypedRefMaterializeAdapter(
     `}`,
     ``,
   );
+  host.journal?.built();
   return adapter;
 }
 
@@ -1361,7 +1376,35 @@ function liveRecordOps(
     ``,
     `@${names} = internal constant [${fields.length} x ptr] [${literals.join(", ")}]`,
     // Mutable: the runtime fills the trailing key-array slot on first use.
-    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null }`,
+    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null, ptr null }`,
+    ``,
+  );
+}
+
+/** `@<snapshot>_rops` for a shape with orderVariants: a record-ops table
+ * whose `select` hook answers the `_o<i>_rops` table (liveRecordOps) of the
+ * record's current key order, which a write of an optional key can change
+ * after the record is boxed. */
+function liveRecordOrderSelect(
+  host: LlvmEmitterContext,
+  shape: IrRecordShape,
+  snapshot: string,
+): void {
+  const B = new BlockBuilder();
+  const out = B.slot();
+  B.entryAllocas.push(`${out} = alloca ptr`);
+  emitPerKeyOrder(B, shape, host.nullableUnions.fieldBase(shape.id), "%p", (_, i) => {
+    B.line(`store ptr @${snapshot}_o${i}_rops, ptr ${out}`);
+  });
+  const ops = B.tmp();
+  B.line(`${ops} = load ptr, ptr ${out}`);
+  B.terminate(`ret ptr ${ops}`);
+  host.resolveThunkDefs.push(
+    `define internal ptr @${snapshot}_select(ptr %p) ${FN_ATTRS} { ; live record ops by key order`,
+    B.render(),
+    `}`,
+    ``,
+    `@${snapshot}_rops = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr } { ${host.sizeType} 0, ptr null, ptr null, ptr null, i8 0, ptr null, ptr @${snapshot}_select }`,
     ``,
   );
 }
@@ -1432,14 +1475,157 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
   );
 }
 
+/** The checked-dynamic value a class instance's view holds for `field`, read
+ * from its native slot of `%p`: `boxed` (+1), and the nullable union
+ * `fieldValue` the caller releases when `nullable` is set. */
+function classFieldDynValue(
+  host: LlvmEmitterContext,
+  B: BlockBuilder,
+  meta: LlClassMeta,
+  t: Extract<IrType, { kind: "object" }>,
+  field: LlClassMeta["def"]["fields"][number],
+): { boxed: string; nullable: NullableRefField | null; fieldValue: string } {
+  const { index, compressed } = classFieldIndex(meta, field.name, "compressed");
+  const fieldPtr = B.tmp();
+  let fieldValue = B.tmp();
+  B.line(
+    `${fieldPtr} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${index}`,
+  );
+  if (host.int32Slots.isField(t.className, field.name)) {
+    const raw = B.tmp();
+    B.line(`${raw} = load i32, ptr ${fieldPtr}`);
+    B.line(`${fieldValue} = sitofp i32 ${raw} to double`);
+  } else if (host.inlineUnions.classField(t.className, field.name))
+    fieldValue = loadStructField(B, host.sizeType, fieldPtr, field.type, true);
+  else if (compressed) {
+    const idx = B.tmp();
+    B.line(`${idx} = load i32, ptr ${fieldPtr}`);
+    for (const line of compactRefLoadLines(idx, fieldValue, `${fieldValue}.r`))
+      B.line(line.trimStart());
+  } else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
+  if (llFieldType(field.type, false) === "i8") {
+    const boolValue = B.tmp();
+    B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
+    fieldValue = boolValue;
+  }
+  const nullable = host.nullableFields.get(t.className, field.name);
+  if (nullable) fieldValue = nullableFieldUnion(host, B, fieldValue, nullable);
+  return { boxed: host.streamTypedRefBoxValue(B, field.type, fieldValue), nullable, fieldValue };
+}
+
+/** The fields an instance's view takes from their native slots, in order:
+ * its own enumerable fields, except an Error's message and name. */
+function classViewFields(meta: LlClassMeta): LlClassMeta["def"]["fields"] {
+  return meta.def.fields.filter(
+    (f) =>
+      isClassOwnEnumerableFieldName(f.name) &&
+      !(meta.root.def.name === "%Error" && (f.name === "message" || f.name === "name")),
+  );
+}
+
+/** Classes whose instance views the materializer builds from the property
+ * bag and the prototype data alone (see liveBagClassOps): JavaScript classes
+ * tracking their own fields, outside the Error and runtime families, with no
+ * subclass whose view another materializer builds. */
+function liveBagClassOpsEligible(meta: LlClassMeta): boolean {
+  return (
+    meta.def.tracksOwnFields === true &&
+    (meta.def.prototypeDataHelper !== undefined ||
+      meta.def.instancePrototypeHelper !== undefined) &&
+    !meta.def.runtime &&
+    !meta.root.def.runtime &&
+    meta.root.def.name !== "%Error" &&
+    !(meta.hierarchy && meta.children.length > 0) &&
+    meta.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES) &&
+    !meta.def.fields.some(
+      (field) =>
+        field.name === CLASS_ATTRIBUTES ||
+        meta.def.fields.some((f) => f.name === classFieldAttributesName(field.name)),
+    )
+  );
+}
+
+/** The hooks of a bag-tracked class instance capsule
+ * (ScrDynTypedBagClassOps). The materializer gives the instance's view
+ * exactly the bag's string-keyed properties, the values of the declared
+ * fields among them from their native slots, and the prototype these hooks
+ * return, so a method call resolves without building the view. */
+function liveBagClassOps(
+  host: LlvmEmitterContext,
+  snapshot: string,
+  meta: LlClassMeta,
+  t: Extract<IrType, { kind: "object" }>,
+): void {
+  const struct = classStructSym(t.className);
+  const bag = new BlockBuilder();
+  const slot = bag.tmp(),
+    value = bag.tmp();
+  bag.line(
+    `${slot} = getelementptr inbounds %${struct}, ptr %p, i64 0, i32 ${classFieldIndex(meta, DYN_CLASS_PROPERTIES).index}`,
+  );
+  bag.line(`${value} = load ptr, ptr ${slot}`);
+  bag.terminate(`ret ptr ${value}`);
+  const proto = new BlockBuilder();
+  const prototype = proto.tmp();
+  if (meta.def.instancePrototypeHelper) {
+    const receiver = proto.tmp();
+    proto.line(`${receiver} = call ptr ${vAdapters(host.shapeHost, t).retain}(ptr %p)`);
+    proto.line(
+      `${prototype} = call ptr @${mangleFunction(meta.def.instancePrototypeHelper)}(ptr ${receiver})`,
+    );
+  } else proto.line(`${prototype} = call ptr @${mangleFunction(meta.def.prototypeDataHelper!)}()`);
+  proto.terminate(`ret ptr ${prototype}`);
+  // Field `%i` of the view's field list, as the materializer boxes it.
+  const fields = classViewFields(meta);
+  const get = new BlockBuilder();
+  const cases = fields.map((_, i) => get.newLabel(`field.${i}`));
+  const none = get.newLabel("field.none");
+  get.terminate(
+    `switch ${host.sizeType} %i, label %${none} [ ${cases.map((label, i) => `${host.sizeType} ${i}, label %${label}`).join(" ")} ]`,
+  );
+  fields.forEach((field, i) => {
+    get.startBlock(cases[i]!);
+    const { boxed, nullable, fieldValue } = classFieldDynValue(host, get, meta, t, field);
+    if (nullable) {
+      host.declare(`declare void @scr_union_release(ptr)`);
+      get.line(`call void @scr_union_release(ptr ${fieldValue})`);
+    }
+    get.terminate(`ret ptr ${boxed}`);
+  });
+  get.startBlock(none);
+  get.terminate(`ret ptr null`);
+  const names = fields.map((field) => `ptr ${host.internLiteral(field.name)}`);
+  host.resolveThunkDefs.push(
+    `define internal ptr @${snapshot}_field(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; view field of ${meta.def.name}`,
+    get.render(),
+    `}`,
+    ``,
+    `@${snapshot}_fnames = internal constant [${names.length} x ptr] ${names.length ? `[${names.join(", ")}]` : "zeroinitializer"}`,
+  );
+  host.resolveThunkDefs.push(
+    `define internal ptr @${snapshot}_bag(ptr %p) ${FN_ATTRS} { ; property bag of ${meta.def.name}`,
+    bag.render(),
+    `}`,
+    ``,
+    `define internal ptr @${snapshot}_proto(ptr %p) ${FN_ATTRS} { ; view prototype of ${meta.def.name}`,
+    proto.render(),
+    `}`,
+    ``,
+    `@${snapshot}_bops = internal constant { ptr, ptr, ${host.sizeType}, ptr, ptr } { ptr @${snapshot}_bag, ptr @${snapshot}_proto, ${host.sizeType} ${fields.length}, ptr @${snapshot}_fnames, ptr @${snapshot}_field }`,
+    ``,
+  );
+}
+
 /** The live view a capsule of this adapter binds: the runtime bind call
  * and its ops constant, with the view code a deferred receiver recipe
- * records (1 array, 2 record, 3 class). */
+ * records (1 array, 2 record, 3 class, 4 bag-tracked class). */
 export function liveRefView(
   adapter: LlStreamTypedRefAdapter,
-): { bind: string; ops: string; code: 1 | 2 | 3 } | null {
+): { bind: string; ops: string; code: 1 | 2 | 3 | 4 } | null {
   if (adapter.classOps !== undefined)
     return { bind: "scr_dyn_typed_ref_bind_class", ops: adapter.classOps, code: 3 };
+  if (adapter.bagClassOps !== undefined)
+    return { bind: "scr_dyn_typed_ref_bind_bag_class", ops: adapter.bagClassOps, code: 4 };
   if (adapter.recordOps !== undefined)
     return { bind: "scr_dyn_typed_ref_bind_record", ops: adapter.recordOps, code: 2 };
   if (adapter.arrayOps !== undefined)
@@ -1469,6 +1655,7 @@ export function streamFromArrayAdapter(
   if (existing) return existing;
   const sym = `sc_sfa_${host.streamFromArrayAdapters.size}`;
   host.streamFromArrayAdapters.set(key, sym);
+  host.journal?.allocated(sym, "streamFromArrayAdapter", [t]);
   const B = new BlockBuilder();
   const unionDef = elem.kind === "union" ? host.unionsById.get(elem.unionId) : undefined;
   if (elem.kind === "union" && !unionDef) {
@@ -1585,5 +1772,17 @@ export function streamFromArrayAdapter(
     `}`,
     ``,
   );
+  host.journal?.built();
   return sym;
 }
+
+registerReplay("dynPromiseAdapter", (host, args) => dynPromiseAdapter(host, args[0] as IrType));
+registerReplay("liveDynUnionRefAdapter", (host, args) =>
+  liveDynUnionRefAdapter(host, args[0] as IrType & { kind: "union" }),
+);
+registerReplay("streamTypedRefMaterializeAdapter", (host, args) =>
+  streamTypedRefMaterializeAdapter(host, args[0] as IrType).snapshot.replace(/_materialize$/, ""),
+);
+registerReplay("streamFromArrayAdapter", (host, args) =>
+  streamFromArrayAdapter(host, args[0] as IrType & { kind: "array" }),
+);

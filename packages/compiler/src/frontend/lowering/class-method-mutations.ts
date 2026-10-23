@@ -84,7 +84,7 @@ export function collectClassMethodMutations(
     for (const name of literalValues(lowerer.typeOf(key)) ?? []) methods.add(String(name));
   const markName = (name: string, site: ts.Node, arrow = false): void => {
     if (name === "prototype" || name === "__proto__") unknownKey = site;
-    if (methods.has(name)) lowerer.prototypeMethodAccesses.set(name, site);
+    if (methods.has(name)) lowerer.noteMethodAccess(name, site);
     if (!arrow) receiverFields.add(name);
   };
   const unwrap = (value: ts.Expression): ts.Expression => {
@@ -380,6 +380,13 @@ export function collectClassMethodMutations(
         markTarget(node.initializer, node);
       if (ts.isPropertyAccessExpression(node) && isErrorPrototypeValue(lowerer, node))
         lowerer.errorPrototypeValues = true;
+      // A heritage evaluated at run time may be Error, which links the
+      // class's instances to Error.prototype.
+      if (
+        (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
+        runtimeHeritage(lowerer, node)
+      )
+        lowerer.errorPrototypeValues = true;
       if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
         const base = unwrap(node.expression);
         const prototype =
@@ -388,10 +395,9 @@ export function collectClassMethodMutations(
             ts.isStringLiteralLike(base.argumentExpression) &&
             base.argumentExpression.text === "prototype");
         if (prototype) {
-          if (ts.isPropertyAccessExpression(node))
-            lowerer.prototypeMethodAccesses.set(node.name.text, node);
+          if (ts.isPropertyAccessExpression(node)) lowerer.noteMethodAccess(node.name.text, node);
           else if (ts.isStringLiteralLike(node.argumentExpression))
-            lowerer.prototypeMethodAccesses.set(node.argumentExpression.text, node);
+            lowerer.noteMethodAccess(node.argumentExpression.text, node);
           else markKey(node.argumentExpression, node);
         }
       }
@@ -428,7 +434,7 @@ export function collectClassMethodMutations(
       ? lowerer.checker.getSymbolAtLocation(access.name)
       : lowerer.checker.getPropertyOfType(lowerer.typeOf(access.expression), name);
     if (symbol && symbol.declarations.some(ts.isMethodDeclaration))
-      lowerer.prototypeMethodAccesses.set(name, access);
+      lowerer.noteMethodAccess(name, access);
   }
   lowerer.checker.prefetchSymbolRoots([...globals, ...reflection]);
   for (const node of globals)
@@ -564,9 +570,10 @@ export function collectClassMethodMutations(
   );
   for (const { target, site } of propertyWrites) {
     const name = target.name.text;
-    if (lowerer.prototypeMethodAccesses.has(name) || functionFree(lowerer.typeOf(target))) continue;
-    if (!methodOwnerCanInhabit(target.expression, name)) continue;
-    lowerer.prototypeMethodAccesses.set(name, site);
+    if (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(target.expression, name))
+      continue;
+    if (lowerer.prototypeMethodAccesses.has(name)) lowerer.noteMethodSite(name, site);
+    else lowerer.noteMethodAccess(name, site);
   }
   for (const { key, receiver, site } of computedWrites) {
     // A class method declared with a well-known symbol key is not a write;
@@ -613,11 +620,30 @@ export function collectClassMethodMutations(
     }
   }
   if (unknownKey) {
-    for (const method of methods) lowerer.prototypeMethodAccesses.set(method, unknownKey);
+    for (const method of methods) lowerer.noteMethodAccess(method, unknownKey);
     for (const method of symbolMethods) lowerer.replacedSymbolMethods.add(method);
   }
   if (!unknownKey && !unknownOwnField)
     for (const field of arrowFields) {
       if (!receiverFields.has(field)) lowerer.receiverFreeCallbackFields.add(field);
     }
+}
+
+/** Whether a class's `extends` expression is a value computed at run time:
+ * anything other than a name of a class declaration or of a builtin
+ * constructor (`extends Parent` over `const Parent = params.Parent ?? Object`,
+ * `extends make()`). */
+function runtimeHeritage(
+  lowerer: Lowerer,
+  node: ts.ClassDeclaration | ts.ClassExpression,
+): boolean {
+  const heritage = node.heritageClauses?.nodes.find(
+    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+  )?.types?.nodes[0]?.expression;
+  if (heritage === undefined) return false;
+  if (!ts.isIdentifier(heritage) && !ts.isPropertyAccessExpression(heritage)) return true;
+  let symbol = lowerer.checker.getSymbolAtLocation(heritage);
+  if (symbol === undefined) return true;
+  if (symbol.flags & ts.SymbolFlags.Alias) symbol = lowerer.checker.getAliasedSymbol(symbol);
+  return !(symbol.flags & ts.SymbolFlags.Class) && !lowerer.isStdlibSymbol(symbol);
 }

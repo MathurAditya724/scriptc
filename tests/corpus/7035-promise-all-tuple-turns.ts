@@ -65,6 +65,9 @@ async function main(): Promise<void> {
   const raw: any = JSON.parse('{"value":41}');
   const [dynamic, counted] = await Promise.all([raw.value, later("z", 2, 2)]);
   log.push(`dynamic ${dynamic + counted}`);
+  // A Date entry's payload is its time value.
+  const [when, label] = await Promise.all([later("date", 1, new Date(86400000)), text()]);
+  log.push(`date ${when.toISOString()} ${label}`);
   try {
     await Promise.all([later("late", 4, 1, true), later("early", 2, "e", true), num()]);
   } catch (err) {

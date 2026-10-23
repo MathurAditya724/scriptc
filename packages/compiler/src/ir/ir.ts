@@ -440,6 +440,7 @@ const POINTER_KIND_LIST = [
   "url",
   "searchParams",
   "symbol",
+  "date",
   ...POINTER_HANDLE_KINDS,
   "func",
   "object",
@@ -463,7 +464,7 @@ export const POINTER_KINDS = irKindSet(POINTER_KIND_LIST);
 export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   f64: "",
   bigint: "scr_bigint",
-  date: "",
+  date: "scr_date",
   string: "scr_str",
   bool: "",
   array: "scr_arr",
@@ -645,6 +646,7 @@ export function isSupportedArrayElem(t: IrType): boolean {
     case "func":
     case "promise":
     case "regex":
+    case "date":
     case "child":
     case "netServer":
     // fs.Stats snapshots (`await Promise.all(paths.map(stat))`): immutable
@@ -689,7 +691,8 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // functions intern one immortal closure, inner closures allocate once
     // per evaluation), so pointer identity is JS function identity.
     // Closures are cycle-headered and traced like records.
-    t.kind === "func"
+    t.kind === "func" ||
+    t.kind === "date"
   );
 }
 
@@ -728,6 +731,32 @@ function isCollectionValueKey(t: IrType): boolean {
     t.kind === "bool" ||
     isIdentityCollectionKey(t)
   );
+}
+
+/** The element type of an ITERABLE union (`Iterable<T>`,
+ * iterableUnionType): its one generator arm — a synchronous generator over
+ * T that returns nothing and takes no `.next()` values — beside source arms
+ * (T[], Set<T>, a Map of [K, V] entries, a string), and the undefined and
+ * null arms of an optional Iterable. A generator arm is legal only in such
+ * a union. Null for every other union. */
+export function iterableArmsElem(arms: readonly IrType[]): IrType | null {
+  let elem: IrType | null = null;
+  for (const arm of arms) {
+    if (arm.kind !== "generator") continue;
+    if (elem !== null || arm.async || arm.retT.kind !== "void" || arm.nextT.kind !== "undefinedT")
+      return null;
+    elem = arm.yieldT;
+  }
+  if (elem === null) return null;
+  for (const arm of arms) {
+    if (arm.kind === "generator" || arm.kind === "undefinedT" || arm.kind === "nullT") continue;
+    if (arm.kind === "array" || arm.kind === "set") {
+      if (!typeEquals(arm.elem, elem)) return null;
+    } else if (arm.kind === "string") {
+      if (elem.kind !== "string") return null;
+    } else if (arm.kind !== "map") return null;
+  }
+  return elem;
 }
 
 /** Set elements and Map keys share storage, equality and ownership rules. */
@@ -770,6 +799,9 @@ export function isSupportedMapValue(t: IrType): boolean {
     // the same ordinary refcounted pointer story as child, without even
     // the pre-settle closures.
     case "secureCtx":
+      return true;
+    // A Date object: immutable, holds no references.
+    case "date":
       return true;
     // A promise (Map<string, Promise<SecureContext>> — the SNI callback's
     // in-flight dedupe map): refcounted, with trace/cycle support already
@@ -823,8 +855,9 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
  * promises nullable-only; declared maybe-promise unions are admitted by
  * maybePromiseUnionArmsOk. */
 export function unionContainerArmsOk(arms: IrType[]): boolean {
-  return arms.every(
-    (a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b)),
+  return (
+    arms.every((a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b))) &&
+    dateUnionArmsOk(arms)
   );
 }
 
@@ -835,7 +868,13 @@ export function unionContainerArmsOk(arms: IrType[]): boolean {
  * non-thenable path). Data arms must not be thenable; the type mapper
  * checks that against the checker types before minting such a union. */
 export function maybePromiseUnionArmsOk(arms: IrType[]): boolean {
-  return arms.filter((a) => a.kind === "promise").length <= 1;
+  return arms.filter((a) => a.kind === "promise").length <= 1 && dateUnionArmsOk(arms);
+}
+
+/** A Date arm has a union home beside undefined and null arms only: no
+ * narrowing contract tells it from other data arms yet. */
+function dateUnionArmsOk(arms: IrType[]): boolean {
+  return arms.every((a, i) => a.kind !== "date" || arms.every((b, j) => j === i || isUnitType(b)));
 }
 
 /** Canonical, injective text form of an IrType — the building block of
@@ -1018,6 +1057,10 @@ export interface IrModule {
   entry: string;
   /** Executable roots run in isolated native worker contexts. */
   workers?: boolean;
+  /** The program has declaration-typed boundary casts (decl-projection.ts):
+   * closures boxed for package code return records and arrays as live
+   * capsules, so a value that comes back keeps its identity. */
+  declBoundary?: true;
   /** The program constructs LifetimeRegion (@scriptc/experimental): every
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
@@ -1026,6 +1069,10 @@ export interface IrModule {
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
   threadSlotKeys?: string[];
+  /** typeKeys of the array types whose values the program may freeze
+   * (frontend frozen-records.ts): their writes test the array's frozen bit
+   * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
+  freezableArrays?: string[];
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
@@ -1047,6 +1094,12 @@ export interface IrModule {
    * write in the program (ir/contract-check.ts). Backends may rely on them
    * unconditionally. Absent when the program writes no contract. */
   contracts?: IrContracts;
+  /** Local number arrays (`function\0local`) the backend may store as
+   * int32 slots, proposed by ir/int32-arrays.ts after their element-reader
+   * calls were inlined; the int32 slot analysis keeps the ones whose every
+   * stored element it proves an int32, and those whose stores are exact
+   * integers with checked stores. Absent when there is none. */
+  int32ArrayCandidates?: string[];
   /** The WebAssembly modules translated into this program (wasm/
    * translate.ts), present exactly when the program uses the WebAssembly
    * API (possibly empty). The backend appends each module's translation
@@ -1649,6 +1702,10 @@ export interface IrRecordShape {
    * dynCheck), and JSON serialization appends overflow entries after the
    * declared fields in insertion order. */
   indexValue?: IrType;
+  /** Values of this shape may be frozen (frozen-records.ts): their rc word
+   * can carry the frozen bit, which their release ignores, and every write
+   * to them checks it. */
+  freezable?: true;
   /** Field names in FIRST-SEEN declaration order (the checker's property
    * order of the first ts.Type interned to this shape) — metadata, NOT
    * part of the interned identity: a later structurally-equal type with a
@@ -1665,6 +1722,24 @@ export interface IrRecordShape {
    * an accessor property named once (see accessorSlotProp). The
    * checked-dynamic copy lists its keys in this order. */
   accessorOrder?: string[];
+  /** Every order the shape's values enumerate their keys in, when its
+   * object literals write the keys in more than one order (see
+   * key-order-witness.ts); declaredOrder is the first. Each value holds the
+   * index of its order in the hidden number field KEY_ORDER_FIELD: the
+   * literal that wrote it stores its order's index, a copy its source's,
+   * and every other construction leaves 0. Each key-order surface
+   * dispatches on that field. */
+  orderVariants?: string[][];
+}
+
+/** The hidden field of a shape with orderVariants: the index of the value's
+ * key order. */
+export const KEY_ORDER_FIELD = "%order";
+
+/** The orders a record shape's values enumerate their keys in: each order
+ * of a shape with orderVariants, or its one table. */
+export function shapeKeyOrders(shape: IrRecordShape): readonly (readonly string[])[] {
+  return shape.orderVariants ?? [shape.declaredOrder ?? shape.fields.map((f) => f.name)];
 }
 
 /** fs.Dirent rows: the hidden %dtype entry kind (libuv's UV_DIRENT
@@ -1689,6 +1764,18 @@ export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "Tex
   if (shape.fields.some((f) => f.name === "%TextEncoder")) return "TextEncoder";
   if (shape.fields.some((f) => f.name === "%TextDecoder")) return "TextDecoder";
   return null;
+}
+
+/** The codec class of a TextEncoder or TextDecoder record type, else null.
+ * Such a record crosses an `unknown` slot as a native handle that holds the
+ * record itself (scr_text_codec_dyn.c), never as a copy or a field view. */
+export function textCodecRecordClass(
+  t: IrType,
+  getRecord: (shapeId: string) => IrRecordShape | undefined,
+): "TextEncoder" | "TextDecoder" | null {
+  if (t.kind !== "record") return null;
+  const shape = getRecord(t.shapeId);
+  return shape ? recordTextCodecClass(shape) : null;
 }
 
 /** Object-literal ACCESSOR properties (`{ get x() {...}, set x(v) {...} }`)
@@ -1943,8 +2030,18 @@ export type IrStmt =
    * RangeError from the runtime. `pop` marks the stores that implement
    * `pop()`: a frozen (published) array fails with pop's TypeError rather
    * than the length assignment's, and pop's `length = 0` store on an empty
-   * array is dropped unless the array may be frozen. */
-  | { kind: "arraySetLength"; arr: IrExpr; length: IrExpr; loc: SrcLoc; pop?: boolean }
+   * array is dropped unless the array may be frozen. `reserve` marks a
+   * capacity hint instead: dense storage for `length` elements of a fresh
+   * array that statements fill next, with no change to its length and no
+   * observable effect. */
+  | {
+      kind: "arraySetLength";
+      arr: IrExpr;
+      length: IrExpr;
+      loc: SrcLoc;
+      pop?: boolean;
+      reserve?: boolean;
+    }
   /** Write an explicit present `undefined` state without shrinking length. */
   | { kind: "arraySetUndefined"; arr: IrExpr; index: IrExpr; loc: SrcLoc }
   /** Delete an indexed/property slot without changing Array.length. */
@@ -2058,8 +2155,9 @@ export type IrStmt =
    * and whose `code` carries the SC diagnostic code; unwinds exactly like
    * `throw`.
    * TypeScript sources produce it only as the tsc-unreachable fallthrough
-   * trap (appendImplicitUndefinedReturn's SC9002) — their construct fences
-   * stay compile errors. */
+   * trap (appendImplicitUndefinedReturn's SC9002) and for a typed-array
+   * store through an element index that is undefined at run time
+   * (undefined-index.ts); their construct fences stay compile errors. */
   | { kind: "runtimeFence"; code: string; message: string; loc: SrcLoc }
   /** Rethrow of a catch binding (`throw e` where e is the binding):
    * re-raises the SAVED exception exactly — kind and payload preserved,
@@ -3380,7 +3478,11 @@ export type IrExpr =
         | "array"
         | "truthy"
         | "error"
-        | "function";
+        | "function"
+        /** The value is a capsule of a compiled class instance. */
+        | "classCapsule"
+        /** The value is a boxed function or class value (exact kind test). */
+        | "funcKind";
       bytesElem?: IrBytesElem;
       negated?: true;
       value: IrExpr;
@@ -3829,8 +3931,10 @@ export type IrExpr =
    * not shape equality; missing or wrong-typed fields throw, EXCEPT that a
    * missing key for an undefined-armed union field — an optional field —
    * builds the interned undefined arm instead); arrays check every element;
-   * unions try arms in canonical order and the first FULL match wins (no
-   * match → throw; an undefined arm matches no dyn value); JSON null matches
+   * unions try arms in canonical order, except that record arms with more
+   * required fields and then more fields go first, and the first FULL match
+   * wins (no match → throw; an undefined arm matches no dyn value); JSON
+   * null matches
    * exactly the nullT arm of a union target (bare null targets cannot
    * exist). MAY THROW:
    * backends' may-throw analyses must treat it like a `throw` statement.
@@ -3843,10 +3947,19 @@ export type IrExpr =
   /** `exact`: the value is known to be a capsule this program boxed from
    * exactly the class `type` names (a `dyn.typedRefKeyIs` test guards the
    * expression), so the check is one load of the capsule's instance. */
+  /** `adopt`: the declaration-typed boundary's cast (decl-projection.ts).
+   * The conversion preserves identity: a source object or array that
+   * something else still references (reference count above one) is
+   * turned, after the whole check succeeded, into a live capsule of the
+   * value built from it, so every holder sees the same native value; an
+   * unshared source is simply consumed. Values must be plain data
+   * (ordinary objects and arrays without accessors, prototypes, symbols
+   * or frozen state), otherwise the cast throws the path TypeError. */
   | {
       kind: "dynCheck";
       value: IrExpr;
       preserveRefs?: true;
+      adopt?: true;
       exact?: true;
       type: IrType;
       loc: SrcLoc;
@@ -3939,6 +4052,9 @@ function isJsonSafeAt(
     case "string":
     case "bool":
       return true;
+    // JSON.stringify writes a Date's toJSON(); JSON text never parses to one.
+    case "date":
+      return stringify;
     case "array":
       return isJsonSafeAt(
         t.elem,
@@ -4037,7 +4153,6 @@ function isJsonSafeAt(
     // Maps are not JSON (JSON.stringify(new Map()) is "{}" in Node — an
     // empty-object husk nobody wants; stringify/dynCheck reject instead).
     case "map":
-    case "date":
     // URLSearchParams stringifies as the same "{}" husk — rejected; use
     // sp.toString() instead.
     case "searchParams":
@@ -4193,6 +4308,7 @@ export function canConvertToDyn(
   visiting: Set<string> = new Set(),
 ): boolean {
   if (isJsonSafeType(t, getRecord, getUnion)) return true;
+  if (textCodecRecordClass(t, getRecord) !== null) return true;
   // numeric typed arrays and boxable functions are dyn kinds the walker boxes
   // ANYWHERE (bytes and functions held by identity), including nested
   // in records/arrays/unions. isJsonSafeType rejects them, but dynFrom
@@ -4239,6 +4355,7 @@ export function canConvertToDyn(
           // either its result or a promise of it.
           canBoxDynComposite(a, getRecord, getUnion, visiting) ||
           isDynTypedRefType(a) ||
+          textCodecRecordClass(a, getRecord) !== null ||
           a.kind === "classval" ||
           DYN_HANDLE_KINDS.has(a.kind) ||
           (a.kind === "func" && canBoxFuncIntoDyn(a, getRecord, getUnion, visiting)) ||
@@ -4318,7 +4435,8 @@ function canBoxDynCompositeAt(
     case "record": {
       const shape = getRecord(t.shapeId);
       if (!shape) return false;
-      if (recordTextCodecClass(shape) !== null) return false;
+      // A codec boxes as its own handle wherever it sits (toDynHelper).
+      if (recordTextCodecClass(shape) !== null) return true;
       // Recursive shapes answer coinductively, like isJsonSafeType.
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);
@@ -4419,6 +4537,8 @@ function canDynCheckToAt(
     visiting.delete(key);
     return result;
   }
+  // A codec handle unboxes to the record it holds.
+  if (textCodecRecordClass(t, getRecord) !== null) return true;
   if (t.kind === "record") {
     const key = typeKey(t);
     if (visiting.has(key)) return false;

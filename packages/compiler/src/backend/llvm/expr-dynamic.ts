@@ -16,7 +16,9 @@ import { streamTypedRefEligible } from "../../ir/analysis.js";
 import {
   DYN,
   type IrExpr,
+  type IrType,
   isDynTypedRefType,
+  textCodecRecordClass,
   isRefCounted,
   isUnitType,
   typeEquals,
@@ -85,7 +87,10 @@ export function emitDynamicExpr(
       // Bytes already box their shared mutable storage directly. A second
       // capsule would split identity between checked and native views.
       const errorRef = v.type.kind === "object" && host.shapeHost.isErrorClass(v.type.className);
-      if (!errorRef && ((e.liveRef && v.type.kind !== "bytes") || identityRef)) {
+      // A TextEncoder or TextDecoder record boxes as its own handle, which
+      // keeps the record's identity (toDynHelper).
+      const codecRef = textCodecRecordClass(v.type, (id) => host.recordsById.get(id)) !== null;
+      if (!errorRef && !codecRef && ((e.liveRef && v.type.kind !== "bytes") || identityRef)) {
         if (v.type.kind === "union") {
           const adapter = host.liveDynUnionRefAdapter(v.type);
           const boxed = B.tmp();
@@ -221,6 +226,19 @@ export function emitDynamicExpr(
       host.own({ name: prepared, type: { kind: "dyn" } });
       host.emitPendingCheck();
       const args = e.args.map((a) => emitBorrowedInput(host, a));
+      // A closure registered as a 'message' listener gets a typed message
+      // entry: ports deliver messages of its parameter's layout without
+      // decoding them to checked-dynamic values first.
+      const listener = messageListenerArg(e);
+      if (listener !== null) {
+        const entry = host.dyn.messageListenerHelper(listener);
+        if (entry !== null) {
+          host.declare(`declare void @scr_dyn_func_set_message(ptr, ptr, ptr)`);
+          B.line(
+            `call void @scr_dyn_func_set_message(ptr ${args[1]!.name}, ptr @${host.dyn.dynFuncThunkHelper(listener)}, ptr @${entry})`,
+          );
+        }
+      }
       let argsPtr = "null";
       if (args.length > 0) {
         const arr = B.slot();
@@ -236,8 +254,10 @@ export function emitDynamicExpr(
       }
       // Buffer.prototype method names take their scr_bytes_dyn.c entry, which
       // runs them on Buffer receivers and dispatches any other receiver.
-      const invoke = DYN_BUFFER_METHODS.get(e.method) ?? "scr_dyn_invoke_prepared";
-      host.declare(`declare ptr @${invoke}(ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`);
+      // Each call passes its method name's id slot, so only the first call
+      // looks the name up.
+      const invoke = DYN_BUFFER_METHODS.get(e.method) ?? "scr_dyn_invoke_prepared_id";
+      host.declare(`declare ptr @${invoke}(ptr, ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`);
       let name = host.cstr(e.calleeName);
       if (e.calleeNameValue !== undefined) {
         const value = emitBorrowedInput(host, e.calleeNameValue);
@@ -246,7 +266,7 @@ export function emitDynamicExpr(
       }
       const t = B.tmp();
       B.line(
-        `${t} = call ptr @${invoke}(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name})`,
+        `${t} = call ptr @${invoke}(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${host.methodIdSlot(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name})`,
       );
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck();
@@ -703,6 +723,10 @@ export function emitDynamicExpr(
         B.line(
           `${test} = call zeroext i1 @scr_dyn_typed_array_is(ptr ${d.name}, i32 ${BYTES_ELEM_NUM[e.bytesElem ?? "u8"]})`,
         );
+      } else if (e.test === "classCapsule") {
+        host.declare(`declare zeroext i1 @scr_dyn_is_class_capsule(ptr)`);
+        test = B.tmp();
+        B.line(`${test} = call zeroext i1 @scr_dyn_is_class_capsule(ptr ${d.name})`);
       } else if (e.test === "truthy") {
         host.declare(`declare zeroext i1 @scr_dyn_truthy(ptr)`);
         test = B.tmp();
@@ -823,6 +847,7 @@ export function emitDynamicExpr(
             undefined: DYN_KIND.UNDEF,
             null: DYN_KIND.NULL,
             bytes: DYN_KIND.BYTES,
+            funcKind: DYN_KIND.FUNC,
           };
           test = oneOf([kindOf[e.test]!]);
         }
@@ -1282,9 +1307,7 @@ function emitUnionEqWrappedScalar(
     B.startBlock(same);
     const eq = B.tmp();
     if (arm.kind === "f64") {
-      host.declare(`declare double @scr_union_get_f64(ptr)`);
-      const v = B.tmp();
-      B.line(`${v} = call double @scr_union_get_f64(ptr ${union.name})`);
+      const v = host.unionGetF64(union.name);
       if (e.sameValue) {
         host.declare(`declare zeroext i1 @scr_num_same_value(double, double)`);
         B.line(`${eq} = call zeroext i1 @scr_num_same_value(double ${v}, double ${plain.name})`);
@@ -1292,9 +1315,7 @@ function emitUnionEqWrappedScalar(
         B.line(`${eq} = fcmp oeq double ${v}, ${plain.name}`);
       }
     } else {
-      host.declare(`declare zeroext i1 @scr_union_get_bool(ptr)`);
-      const v = B.tmp();
-      B.line(`${v} = call zeroext i1 @scr_union_get_bool(ptr ${union.name})`);
+      const v = host.unionGetBool(union.name);
       B.line(`${eq} = icmp eq i1 ${v}, ${plain.name}`);
     }
     B.line(`store i1 ${eq}, ptr ${slot}`);
@@ -1323,3 +1344,24 @@ export const INHERITED_OBJECT_MEMBERS: ReadonlySet<string> = new Set([
   "hasOwnProperty",
   "propertyIsEnumerable",
 ]);
+
+/** EventEmitter methods that register their second argument as a listener. */
+const LISTENER_METHODS: ReadonlySet<string> = new Set([
+  "on",
+  "once",
+  "addListener",
+  "prependListener",
+  "prependOnceListener",
+]);
+
+/** The closure type of `recv.on("message", listener)` and the other
+ * listener registrations with a typed closure for the 'message' event, or
+ * null. */
+function messageListenerArg(e: ExprOf<"dynInvoke">): (IrType & { kind: "func" }) | null {
+  if (!LISTENER_METHODS.has(e.method) || e.args.length !== 2) return null;
+  const [event, listener] = e.args;
+  if (event?.kind !== "dynFrom" || event.value.kind !== "strLit" || event.value.value !== "message")
+    return null;
+  if (listener?.kind !== "dynFrom" || listener.value.type.kind !== "func") return null;
+  return listener.value.type;
+}

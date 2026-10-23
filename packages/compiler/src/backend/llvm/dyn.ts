@@ -1,6 +1,7 @@
+import { emitPerKeyOrder } from "./key-orders.js";
 import { typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
-import { BYTES_ELEM_NUM, SCR_ARR_FIELD, f64Lit, sizeToDouble } from "./common.js";
+import { BYTES_ELEM_NUM, SCR_ARR_FIELD, SCR_ARR_STATES, f64Lit, sizeToDouble } from "./common.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   INLINE_UNION_FIELD,
@@ -37,9 +38,13 @@ import {
   accessorSlotProp,
   DYN_HANDLE_KINDS,
   isDirentShape,
+  KEY_ORDER_FIELD,
+  shapeKeyOrders,
   isDynTypedRefType,
   isRefCounted,
   isUnitType,
+  recordTextCodecClass,
+  textCodecRecordClass,
   typeKey,
 } from "../../ir/ir.js";
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
@@ -91,6 +96,17 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   cryptoHmac: 53,
 };
 
+/** The handle tags of TextEncoder and TextDecoder records boxed as dyn
+ * (scr_dyn.h; scr_text_codec_dyn.c boxes and unboxes them). */
+export const TEXT_CODEC_TAG_NUM: Record<"TextEncoder" | "TextDecoder", number> = {
+  TextDecoder: 76,
+  TextEncoder: 77,
+};
+
+/** The decoder record fields scr_text_decoder_to_dyn reads, in its
+ * parameter order. */
+const TEXT_DECODER_FIELDS = ["%TextDecoder", "%fatal", "%ignoreBOM", "%state"] as const;
+
 /** Handle kinds whose runtime unit boxes them through its own function,
  * which installs the tag's ops on first use (scr_crypto.h). Programs that
  * never box one of these values do not link its dynamic members. */
@@ -107,6 +123,15 @@ const DYN_HANDLE_BOX_FN: Record<string, string> = {
 const DYN_HANDLE_UNBOX_FN: Record<string, string> = {
   dgramSocket: "scr_dgram_from_dyn",
 };
+
+/** ScrMessageKind (scr_message.h): the node kinds message readers test. */
+const MESSAGE_KIND = {
+  UNDEFINED: 0,
+  NULL: 1,
+  BOOL: 2,
+  NUMBER: 3,
+  STRING: 4,
+} as const;
 
 export const DYN_KIND = {
   NULL: 0,
@@ -144,6 +169,8 @@ export interface DynHost extends WalkerHost {
   /** See moduleUsesDynBuiltinStream. */
   usesDynBuiltinStream?(): boolean;
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
+  /** The module has declaration-typed boundary casts (IrModule.declBoundary). */
+  declBoundary?(): boolean;
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
   classSubtypes(className: string): readonly string[];
@@ -173,6 +200,8 @@ export class LlDyn {
   private readonly dynFuncThunks = new Map<string, string>();
   private readonly dynFuncBoxes = new Map<string, string>();
   private readonly dynFuncAdapters = new Map<string, string>();
+  private readonly messageListeners = new Map<string, string | null>();
+  private readonly messageReaders = new Map<string, string>();
   private readonly promiseDynAdapters = new Map<string, string>();
   private readonly mapDynOps = new Map<string, string>();
   private dynToStrFn: string | null = null;
@@ -184,6 +213,55 @@ export class LlDyn {
   readonly defs: string[] = [];
 
   constructor(private readonly host: DynHost) {}
+
+  /** Journal replay (emit-journal.ts): builds or finds the helper a chunk
+   * emitter recorded, and answers its name. */
+  replayHelper(op: string, args: readonly unknown[]): string {
+    switch (op) {
+      case "dyn.collectionDynOps":
+        return this.collectionDynOps(args[0] as IrType & { kind: "map" | "set" });
+      case "dyn.dynMatchHelper":
+        return this.dynMatchHelper(args[0] as IrType, args[1] as boolean);
+      case "dyn.jsonSchema":
+        return this.jsonSchema(args[0] as IrType);
+      case "dyn.recordNameTable": {
+        const shapeId = args[0] as string;
+        return this.recordNameTable(shapeId, this.host.recordsById.get(shapeId)!).names;
+      }
+      case "dyn.jsonParseHelper":
+        return this.jsonParseHelper(args[0] as IrType)!;
+      case "dyn.dynCheckHelper":
+        return this.dynCheckHelper(args[0] as IrType, args[1] as boolean);
+      case "dyn.toDynHelper":
+        return this.toDynHelper(args[0] as IrType);
+      case "dyn.promiseDynAdapterHelper":
+        return this.promiseDynAdapterHelper(args[0] as IrType);
+      case "dyn.dynFuncThunkHelper":
+        return this.dynFuncThunkHelper(args[0] as IrType & { kind: "func" });
+      case "dyn.dynFuncBoxHelper":
+        return this.dynFuncBoxHelper(args[0] as IrType & { kind: "func" });
+      case "dyn.dynFuncAdapterHelper":
+        return this.dynFuncAdapterHelper(args[0] as IrType & { kind: "func" });
+      case "dyn.dynToStrHelper":
+        return this.dynToStrHelper();
+      case "dyn.dynIterNHelper":
+        return this.dynIterNHelper();
+      case "dyn.dynDestrCheckHelper":
+        return this.dynDestrCheckHelper();
+      case "dyn.dynKeyGetHelper":
+        return this.dynKeyGetHelper();
+      case "dyn.dynComputedKeyGetHelper":
+        return this.dynComputedKeyGetHelper();
+      case "dyn.caughtToDynHelper":
+        return this.caughtToDynHelper();
+      case "dyn.messageListenerHelper":
+        return this.messageListenerHelper(args[0] as IrType & { kind: "func" }) ?? "";
+      case "dyn.messageReaderHelper":
+        return this.messageReaderHelper(args[0] as IrType);
+      default:
+        throw new InternalCompilerError(`llvm emitter bug: no dyn helper replay ${op}`);
+    }
+  }
 
   /** The types a dyn matcher or builder for `t` checks structurally: record
    * fields and index values, array elements and union arms. */
@@ -305,6 +383,36 @@ export class LlDyn {
     B.line(`call void @scr_dyn_build_add(ptr %d, ptr @${name}, ptr ${value})`);
   }
 
+  /** The order a dyn value tries a union's arms in: the canonical order,
+   * except that among the record arms, those with more required fields go
+   * first, then those with more fields. Records are width-tolerant, so an
+   * arm with fewer fields (`{}`, or one whose fields are all optional,
+   * matches every object) would otherwise take an object that a wider arm
+   * also matches and drop the fields only the wider arm has. */
+  private unionArmOrder(def: IrUnionDef): number[] {
+    const width = (i: number): [number, number] | null => {
+      const arm = def.arms[i]!;
+      if (arm.kind !== "record") return null;
+      const shape = this.host.recordsById.get(arm.shapeId);
+      if (!shape || shape.tuple) return null;
+      const required = shape.fields.filter(
+        (field) =>
+          field.type.kind !== "union" ||
+          !this.host.unionsById.get(field.type.unionId)?.arms.some((x) => x.kind === "undefinedT"),
+      ).length;
+      return [required, shape.fields.length];
+    };
+    const order = def.arms.map((_, i) => i);
+    const records = order.filter((i) => width(i) !== null);
+    const widest = [...records].sort((x, y) => {
+      const [rx, fx] = width(x)!;
+      const [ry, fy] = width(y)!;
+      return ry - rx || fy - fx || x - y;
+    });
+    records.forEach((slot, k) => (order[slot] = widest[k]!));
+    return order;
+  }
+
   /** Branch to a variant only after its literal discriminator and complete
    * structure match. Use the same path for predicates and builders. */
   private unionArmMatch(
@@ -361,7 +469,7 @@ export class LlDyn {
 
   /** The value LLVM type of a dynCheck result / toDyn operand for `t`. */
   private valTy(t: IrType): string {
-    return t.kind === "f64" || t.kind === "date" || t.kind === "procStream"
+    return t.kind === "f64" || t.kind === "procStream"
       ? "double"
       : t.kind === "bool"
         ? "i1"
@@ -374,6 +482,7 @@ export class LlDyn {
     if (prior) return prior;
     const name = `sc_map_dyn_${this.mapDynOps.size}`;
     this.mapDynOps.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.collectionDynOps", [t]);
     const keyType = t.kind === "map" ? t.key : t.elem;
     const valueType: IrType = t.kind === "map" ? t.value : { kind: "f64" };
     const emitSlot = (type: IrType, role: string): void => {
@@ -431,6 +540,7 @@ export class LlDyn {
       `@${name} = internal constant { ptr, ptr, ptr, ptr, ptr, ptr } { ptr ${this.host.cstr(key)}, ptr @${name}_key_box, ptr @${name}_key_unbox, ptr @${this.dynMatchHelper(keyType)}, ptr @${name}_value_box, ptr @${name}_value_unbox }`,
       "",
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -829,6 +939,22 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dm_${this.dynMatchers.size}`;
     this.dynMatchers.set(matcherKey, name);
+    this.host.journalAllocated?.(name, "dyn.dynMatchHelper", [t, preserveRefs]);
+    const codec = textCodecRecordClass(t, (id) => this.host.recordsById.get(id));
+    if (codec !== null) {
+      // A codec matches only its own handle box.
+      const B = new BlockBuilder();
+      const matched = this.handleTagMatches(B, TEXT_CODEC_TAG_NUM[codec]);
+      B.terminate(`ret i1 ${matched}`);
+      this.defs.push(
+        `define internal zeroext i1 @${name}(ptr %d) ${FN_ATTRS} { ; matches ${key}`,
+        B.render(),
+        `}`,
+        ``,
+      );
+      this.host.journalBuilt?.();
+      return name;
+    }
     const recursive = this.isRecursiveShape(t);
     const wrapped = recursive || this.holdsRecursiveShape(t);
     const B = new BlockBuilder();
@@ -1044,9 +1170,10 @@ export class LlDyn {
         }
         B.condBr(readable, l0, fail);
         B.startBlock(l0);
-        // dyn ('unknown') fields match ANY value, present or missing.
+        // dyn ('unknown') fields match ANY value, present or missing. The
+        // order index is no key.
         for (const f of shape.fields) {
-          if (f.type.kind === "dyn") continue;
+          if (f.type.kind === "dyn" || f.name === KEY_ORDER_FIELD) continue;
           const { value: m, release } = this.memberRead(B, f.name, f.type);
           const lNext = B.newLabel("dm.n");
           this.pendingBail(
@@ -1189,6 +1316,7 @@ export class LlDyn {
       ``,
     );
     if (wrapped) this.emitVisitWrapper(name, t, recursive ? "match" : "visit");
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -1228,9 +1356,10 @@ export class LlDyn {
         return (
           shape.fields.every(
             (f) =>
-              !f.name.startsWith("%") &&
-              f.name !== "__proto__" &&
-              this.jsonSchemaSupported(f.type, visiting, true),
+              f.name === KEY_ORDER_FIELD ||
+              (!f.name.startsWith("%") &&
+                f.name !== "__proto__" &&
+                this.jsonSchemaSupported(f.type, visiting, true)),
           ) &&
           (!index || this.jsonSchemaSupported(index, visiting))
         );
@@ -1282,6 +1411,7 @@ export class LlDyn {
     const S = host.sizeType;
     const name = `sc_jsch_${this.jsonSchemas.size}`;
     this.jsonSchemas.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.jsonSchema", [t]);
     let body: string;
     switch (t.kind) {
       case "f64":
@@ -1315,7 +1445,9 @@ export class LlDyn {
         const base = host.nullableUnions.fieldBase(t.shapeId);
         const index = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         // The runtime names kept-source keys by this index (record-sources.ts).
-        const order = recordSourceFieldOrder(shape);
+        // The order index is no key: parsed values keep the table's order
+        // and their source's own order.
+        const order = recordSourceFieldOrder(shape).filter((name) => name !== KEY_ORDER_FIELD);
         if (recordMayKeepSource(shape)) this.keepsRecordSources = true;
         const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
         const entries = order.map((fieldName) => {
@@ -1353,6 +1485,7 @@ export class LlDyn {
       `@${name} = internal constant { ${S}, ${S}, ptr, ptr, ptr, ptr, ptr, ptr, ${S} } { ${body} }`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -1430,6 +1563,19 @@ export class LlDyn {
     return descriptor;
   }
 
+  /** `record.sourceSpread(built, value)`: the built record keeps value's
+   * kept-source order over its own declared names. */
+  emitRecordSourceSpread(B: BlockBuilder, built: string, value: string, shapeId: string): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId)!;
+    this.keepsRecordSources = true;
+    const names = this.recordNameTable(shapeId, shape);
+    host.declare(`declare void @scr_record_source_spread(ptr, ptr, ptr, ptr, ${host.sizeType})`);
+    B.line(
+      `call void @scr_record_source_spread(ptr ${built}, ptr ${value}, ptr ${names.names}, ptr ${names.lens}, ${host.sizeType} ${shape.fields.length})`,
+    );
+  }
+
   /** The declared-name tables scr_record_source_note scans: parallel
    * constant arrays of field-name bytes and byte lengths in declaration
    * order (the order the record serializes), interned per shape. Internal
@@ -1442,6 +1588,7 @@ export class LlDyn {
     const base = `sc_rnames_${this.recordNameTables.size}`;
     const table = { names: `@${base}`, lens: `@${base}_lens` };
     this.recordNameTables.set(shapeId, table);
+    this.host.journalAllocated?.(base, "dyn.recordNameTable", [shapeId]);
     const n = shape.fields.length;
     const names = recordSourceFieldOrder(shape);
     this.defs.push(
@@ -1449,6 +1596,7 @@ export class LlDyn {
       `@${base}_lens = internal constant [${n} x ${S}] [${names.map((name) => `${S} ${Buffer.byteLength(name, "utf8")}`).join(", ")}]`,
       ``,
     );
+    this.host.journalBuilt?.();
     return table;
   }
 
@@ -1467,6 +1615,7 @@ export class LlDyn {
     const host = this.host;
     const name = `sc_jp_${this.jsonParsers.size}`;
     this.jsonParsers.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.jsonParseHelper", [t]);
     const schema = this.jsonSchema(t);
     const check = this.dynCheckHelper(t);
     host.declare(`declare ptr @scr_json_parse_schema(ptr, ptr)`);
@@ -1493,6 +1642,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -1508,6 +1658,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dc_${this.dynBuilders.size}`;
     this.dynBuilders.set(builderKey, name);
+    this.host.journalAllocated?.(name, "dyn.dynCheckHelper", [t, preserveRefs]);
     const recursive = this.isRecursiveShape(t);
     const memo = !recursive && this.holdsRecursiveShape(t) && this.valTy(t) === "ptr";
     const host = this.host;
@@ -1530,6 +1681,25 @@ export class LlDyn {
         `}`,
         ``,
       );
+      this.host.journalBuilt?.();
+      return name;
+    }
+    const codec = textCodecRecordClass(t, (id) => host.recordsById.get(id));
+    if (codec !== null) {
+      // The record the codec's handle box holds (+1), or the path TypeError.
+      host.declare(`declare ptr @scr_text_codec_from_dyn(ptr, i1 zeroext, ptr, ptr)`);
+      const checked = B.tmp();
+      B.line(
+        `${checked} = call ptr @scr_text_codec_from_dyn(ptr %d, i1 ${codec === "TextDecoder"}, ptr %path, ptr ${want})`,
+      );
+      B.terminate(`ret ptr ${checked}`);
+      this.defs.push(
+        `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} {`,
+        B.render(),
+        `}`,
+        ``,
+      );
+      this.host.journalBuilt?.();
       return name;
     }
     if (isRefCounted(t) && t.kind !== "dyn") {
@@ -1708,6 +1878,32 @@ export class LlDyn {
             B.line(`store ${member.type} ${oldValue}, ptr ${checkedPtr}`);
           });
           if (t.kind !== "record") {
+            // Whether the dense slots carry states (SCR_ARR_STATES in
+            // `spare`) moves with them; the rest of `spare` stays.
+            const cachedSpare = B.tmp(),
+              checkedSpare = B.tmp();
+            const sparePtr = (array: string): string => {
+              const ptr = B.tmp();
+              B.line(
+                `${ptr} = getelementptr inbounds %ScrArr, ptr ${array}, i64 0, i32 ${SCR_ARR_FIELD.spare}`,
+              );
+              return ptr;
+            };
+            const cachedSparePtr = sparePtr(cached),
+              checkedSparePtr = sparePtr(checked);
+            B.line(`${cachedSpare} = load i16, ptr ${cachedSparePtr}`);
+            B.line(`${checkedSpare} = load i16, ptr ${checkedSparePtr}`);
+            const exchange = (own: string, other: string, ptr: string): void => {
+              const kept = B.tmp(),
+                moved = B.tmp(),
+                next = B.tmp();
+              B.line(`${kept} = and i16 ${own}, ${~SCR_ARR_STATES}`);
+              B.line(`${moved} = and i16 ${other}, ${SCR_ARR_STATES}`);
+              B.line(`${next} = or i16 ${kept}, ${moved}`);
+              B.line(`store i16 ${next}, ptr ${ptr}`);
+            };
+            exchange(cachedSpare, checkedSpare, cachedSparePtr);
+            exchange(checkedSpare, cachedSpare, checkedSparePtr);
             // Sparse slots and numeric properties live out of line; each
             // array keeps its own match metadata.
             host.declare("declare void @scr_arr_swap_indexed_ext(ptr, ptr)");
@@ -1758,10 +1954,10 @@ export class LlDyn {
     };
     switch (t.kind) {
       case "date": {
-        host.declare(`declare double @scr_dyn_native_date_value(ptr)`);
+        host.declare(`declare ptr @scr_dyn_native_date_check(ptr, ptr)`);
         const r = B.tmp();
-        B.line(`${r} = call double @scr_dyn_native_date_value(ptr %d)`);
-        B.terminate(`ret double ${r}`);
+        B.line(`${r} = call ptr @scr_dyn_native_date_check(ptr %d, ptr %path)`);
+        B.terminate(`ret ptr ${r}`);
         break;
       }
       case "url":
@@ -2058,7 +2254,10 @@ export class LlDyn {
         }
         B.line(`%r0 = call ptr @${mangleRecordNew(t.shapeId)}()`);
         if (recursive) this.recordBuilt(B, name, "%r0");
+        // The order index stays 0: the source's own order is kept below
+        // when it differs from the table.
         for (const f of shape.fields) {
+          if (f.name === KEY_ORDER_FIELD) continue;
           const { value: m, release } = this.memberRead(B, f.name, f.type);
           this.pendingBail(
             B,
@@ -2258,9 +2457,10 @@ export class LlDyn {
           throw new InternalCompilerError(
             `llvm emitter bug: dynCheck of unknown union ${t.unionId}`,
           );
-        // Arms in CANONICAL order, first FULL match wins. The matched
-        // arm's builder can no longer fail.
-        def.arms.forEach((arm, i) => {
+        // Arms in unionArmOrder, first FULL match wins. The matched arm's
+        // builder can no longer fail.
+        for (const i of this.unionArmOrder(def)) {
+          const arm = def.arms[i]!;
           const lHit = B.newLabel("dcu.h");
           const lNext = B.newLabel("dcu.n");
           this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs);
@@ -2304,7 +2504,7 @@ export class LlDyn {
             B.terminate(`ret ptr ${u}`);
           }
           B.startBlock(lNext);
-        });
+        }
         if (preserveRefs) {
           B.line(
             `call void @scr_dyn_check_fail(ptr %path, ptr ${host.cstr("reference with its original layout")}, ptr %d)`,
@@ -2526,7 +2726,79 @@ export class LlDyn {
       ``,
     );
     if (recursive || memo) this.emitVisitWrapper(name, t, recursive ? "build" : "memo");
+    this.host.journalBuilt?.();
     return name;
+  }
+
+  /** `i1`: %d is a handle box with tag `tag`. */
+  private handleTagMatches(B: BlockBuilder, tag: number): string {
+    const kd = this.kindOf(B, "%d");
+    const isHandle = B.tmp();
+    B.line(`${isHandle} = icmp eq i32 ${kd}, ${DYN_KIND.HANDLE}`);
+    const lHandle = B.newLabel("dm.handle");
+    const lDone = B.newLabel("dm.handle.done");
+    const entry = B.currentLabel();
+    B.condBr(isHandle, lHandle, lDone);
+    B.startBlock(lHandle);
+    const tagPtr = B.tmp();
+    const loaded = B.tmp();
+    B.line(
+      `${tagPtr} = getelementptr inbounds i8, ptr %d, i64 ${this.abiOffset(24, 20)} ; ->v.handle.tag`,
+    );
+    B.line(`${loaded} = load i32, ptr ${tagPtr}`);
+    const same = B.tmp();
+    B.line(`${same} = icmp eq i32 ${loaded}, ${tag}`);
+    B.br(lDone);
+    B.startBlock(lDone);
+    const matched = B.tmp();
+    B.line(`${matched} = phi i1 [ false, %${entry} ], [ ${same}, %${lHandle} ]`);
+    return matched;
+  }
+
+  /** A TextEncoder or TextDecoder record boxes as its handle (+1), which
+   * holds the record by reference. A decoder passes the byte offsets of the
+   * fields its boxed decode reads. */
+  private textCodecToDyn(
+    B: BlockBuilder,
+    t: IrType & { kind: "record" },
+    shape: IrRecordShape,
+    codec: "TextEncoder" | "TextDecoder",
+  ): void {
+    const host = this.host;
+    const rc = vAdapters(host, t);
+    const r = B.tmp();
+    if (codec === "TextEncoder") {
+      host.declare(`declare ptr @scr_text_encoder_to_dyn(ptr, ptr, ptr)`);
+      B.line(
+        `${r} = call ptr @scr_text_encoder_to_dyn(ptr %v, ptr ${rc.retain}, ptr ${rc.release})`,
+      );
+    } else {
+      const struct = mangleRecordStruct(t.shapeId);
+      const base = host.nullableUnions.fieldBase(t.shapeId);
+      const start = B.tmp();
+      B.line(`${start} = ptrtoint ptr %v to ${this.S}`);
+      const offsets = TEXT_DECODER_FIELDS.map((field) => {
+        const index = shape.fields.findIndex((f) => f.name === field);
+        if (index < 0)
+          throw new InternalCompilerError(`llvm emitter bug: TextDecoder record lacks ${field}`);
+        const p = B.tmp();
+        const at = B.tmp();
+        const offset = B.tmp();
+        B.line(
+          `${p} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 ${index + base} ; .${llvmCommentText(field)}`,
+        );
+        B.line(`${at} = ptrtoint ptr ${p} to ${this.S}`);
+        B.line(`${offset} = sub ${this.S} ${at}, ${start}`);
+        return `${this.S} ${offset}`;
+      });
+      host.declare(
+        `declare ptr @scr_text_decoder_to_dyn(ptr, ptr, ptr, ${this.S}, ${this.S}, ${this.S}, ${this.S})`,
+      );
+      B.line(
+        `${r} = call ptr @scr_text_decoder_to_dyn(ptr %v, ptr ${rc.retain}, ptr ${rc.release}, ${offsets.join(", ")})`,
+      );
+    }
+    B.terminate(`ret ptr ${r}`);
   }
 
   /* ── toDynHelper (walkers.ts, ported) ─────────────────────────── */
@@ -2540,16 +2812,16 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_td_${this.toDynFns.size}`;
     this.toDynFns.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.toDynHelper", [t]);
     const host = this.host;
     const B = new BlockBuilder();
     let sourceAccessor: { name: string; release: string } | null = null;
     switch (t.kind) {
       case "date": {
-        // A Date handle holding the same time value; native Dates are
-        // immutable values, and so is the handle.
-        host.declare(`declare ptr @scr_dyn_native_date_from_ms(double)`);
+        // A Date handle holding the same Date object.
+        host.declare(`declare ptr @scr_dyn_native_date(ptr)`);
         const r = B.tmp();
-        B.line(`${r} = call ptr @scr_dyn_native_date_from_ms(double %v)`);
+        B.line(`${r} = call ptr @scr_dyn_native_date(ptr %v)`);
         B.terminate(`ret ptr ${r}`);
         break;
       }
@@ -2703,6 +2975,11 @@ export class LlDyn {
         const shape = host.recordsById.get(t.shapeId);
         if (!shape)
           throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
+        const codec = recordTextCodecClass(shape);
+        if (codec !== null) {
+          this.textCodecToDyn(B, t, shape, codec);
+          break;
+        }
         const struct = mangleRecordStruct(t.shapeId);
         const base = host.nullableUnions.fieldBase(t.shapeId);
         const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + base]));
@@ -2789,70 +3066,79 @@ export class LlDyn {
           host.declare(`declare ptr @scr_dyn_new_obj()`);
           B.line(`${d} = call ptr @scr_dyn_new_obj()`);
         }
-        // Keys insert in DECLARED order (JS insertion order); internal
-        // '%'-fields follow so a record→dyn→record round trip keeps them.
+        // Keys insert in DECLARED order (JS insertion order), or in the
+        // value's own order for a shape with orderVariants; internal
+        // '%'-fields follow so a record→dyn→record round trip keeps them
+        // (all but the order index, which is no key).
         const byName = new Map(shape.fields.map((f) => [f.name, f]));
         // An accessor property is one key whose getter and setter are the
         // slot closures (see accessorSlotProp), in accessorOrder's place.
-        const order = shape.accessorOrder ?? shape.declaredOrder ?? shape.fields.map((f) => f.name);
-        const inOrder = new Set(order);
-        const accessors = new Set(
-          shape.accessorOrder === undefined
-            ? []
-            : shape.fields.flatMap((f) => {
-                const slot = accessorSlotProp(f.name);
-                return slot === null ? [] : [slot.prop];
-              }),
-        );
-        type DynField = { name: string; type: IrType } | { accessor: string };
-        const dynFields: DynField[] = [
-          ...order.flatMap((n) => {
-            if (accessors.has(n)) return [{ accessor: n } as DynField];
-            const f = byName.get(n);
-            return f === undefined ? [] : [f as DynField];
-          }),
-          ...shape.fields.filter(
-            (f) =>
-              !inOrder.has(f.name) && !(accessors.size > 0 && accessorSlotProp(f.name) !== null),
-          ),
-        ];
-        for (const entry of dynFields) {
-          if ("accessor" in entry) {
-            host.declare(
-              `declare void @scr_dyn_obj_set_accessor(ptr, ptr, ${host.sizeType}, ptr, ptr)`,
-            );
-            const boxed = (kind: "get" | "set"): string => {
-              const slot = byName.get(`%${kind}:${entry.accessor}`);
-              if (slot === undefined) return "null";
-              const fv = loadFieldOf(slot.name, slot.type);
-              const conv = B.tmp();
-              B.line(
-                `${conv} = call ptr @${this.toDynHelper(slot.type)}(${this.valTy(slot.type)} ${fv})`,
-              );
-              return conv;
-            };
-            const getter = boxed("get");
-            const setter = boxed("set");
-            B.line(
-              `call void @scr_dyn_obj_set_accessor(ptr ${d}, ptr ${host.cstr(entry.accessor)}, ${host.sizeType} ${Buffer.byteLength(entry.accessor, "utf8")}, ptr ${getter}, ptr ${setter}) ; ${llvmCommentText(entry.accessor)}`,
-            );
-            continue;
-          }
-          const f = entry;
-          const klen = Buffer.byteLength(f.name, "utf8");
-          const fv = loadFieldOf(f.name, f.type);
-          // An ABSENT optional field contributes no key.
-          const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
-          const conv = B.tmp();
-          B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
-          B.line(
-            `call void @scr_dyn_obj_set(ptr ${d}, ptr ${host.cstr(f.name)}, ${host.sizeType} ${klen}, ptr ${conv}) ; ${llvmCommentText(f.name)}`,
+        const orders =
+          shape.accessorOrder !== undefined ? [shape.accessorOrder] : shapeKeyOrders(shape);
+        const perOrder = (order: readonly string[]): void => {
+          const inOrder = new Set(order);
+          const accessors = new Set(
+            shape.accessorOrder === undefined
+              ? []
+              : shape.fields.flatMap((f) => {
+                  const slot = accessorSlotProp(f.name);
+                  return slot === null ? [] : [slot.prop];
+                }),
           );
-          if (lSkip !== null) {
-            B.br(lSkip);
-            B.startBlock(lSkip);
+          type DynField = { name: string; type: IrType } | { accessor: string };
+          const dynFields: DynField[] = [
+            ...order.flatMap((n) => {
+              if (accessors.has(n)) return [{ accessor: n } as DynField];
+              const f = byName.get(n);
+              return f === undefined ? [] : [f as DynField];
+            }),
+            ...shape.fields.filter(
+              (f) =>
+                !inOrder.has(f.name) &&
+                f.name !== KEY_ORDER_FIELD &&
+                !(accessors.size > 0 && accessorSlotProp(f.name) !== null),
+            ),
+          ];
+          for (const entry of dynFields) {
+            if ("accessor" in entry) {
+              host.declare(
+                `declare void @scr_dyn_obj_set_accessor(ptr, ptr, ${host.sizeType}, ptr, ptr)`,
+              );
+              const boxed = (kind: "get" | "set"): string => {
+                const slot = byName.get(`%${kind}:${entry.accessor}`);
+                if (slot === undefined) return "null";
+                const fv = loadFieldOf(slot.name, slot.type);
+                const conv = B.tmp();
+                B.line(
+                  `${conv} = call ptr @${this.toDynHelper(slot.type)}(${this.valTy(slot.type)} ${fv})`,
+                );
+                return conv;
+              };
+              const getter = boxed("get");
+              const setter = boxed("set");
+              B.line(
+                `call void @scr_dyn_obj_set_accessor(ptr ${d}, ptr ${host.cstr(entry.accessor)}, ${host.sizeType} ${Buffer.byteLength(entry.accessor, "utf8")}, ptr ${getter}, ptr ${setter}) ; ${llvmCommentText(entry.accessor)}`,
+              );
+              continue;
+            }
+            const f = entry;
+            const klen = Buffer.byteLength(f.name, "utf8");
+            const fv = loadFieldOf(f.name, f.type);
+            // An ABSENT optional field contributes no key.
+            const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
+            const conv = B.tmp();
+            B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
+            B.line(
+              `call void @scr_dyn_obj_set(ptr ${d}, ptr ${host.cstr(f.name)}, ${host.sizeType} ${klen}, ptr ${conv}) ; ${llvmCommentText(f.name)}`,
+            );
+            if (lSkip !== null) {
+              B.br(lSkip);
+              B.startBlock(lSkip);
+            }
           }
-        }
+        };
+        if (orders.length === 1) perOrder(orders[0]!);
+        else emitPerKeyOrder(B, shape, base, "%v", perOrder);
         // A Dirent row takes Node's Dirent prototype (the type probes) and
         // its Symbol(type) key; %dtype stays readable but non-enumerable.
         if (isDirentShape(shape)) {
@@ -3146,6 +3432,7 @@ export class LlDyn {
         ``,
       );
     }
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -3162,6 +3449,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_pda_${this.promiseDynAdapters.size}`;
     this.promiseDynAdapters.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.promiseDynAdapterHelper", [inner]);
     const host = this.host;
     const B = new BlockBuilder();
     host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
@@ -3239,6 +3527,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -3251,6 +3540,7 @@ export class LlDyn {
     if (this.dynToStrFn) return this.dynToStrFn;
     const name = "sc_ds";
     this.dynToStrFn = name;
+    this.host.journalAllocated?.(name, "dyn.dynToStrHelper", []);
     const host = this.host;
     host.declare(`declare void @scr_jb_init(ptr)`);
     host.declare(`declare ptr @scr_jb_finish(ptr)`);
@@ -3555,6 +3845,7 @@ export class LlDyn {
         ``,
       );
     }
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -3566,6 +3857,7 @@ export class LlDyn {
     if (this.caughtToDynFn) return this.caughtToDynFn;
     const name = "sc_cd";
     this.caughtToDynFn = name;
+    this.host.journalAllocated?.(name, "dyn.caughtToDynHelper", []);
     const host = this.host;
     const B = new BlockBuilder();
     const kp = B.tmp();
@@ -3671,6 +3963,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -3684,6 +3977,7 @@ export class LlDyn {
     this.helperMemo.set(name, name);
     const B = new BlockBuilder();
     const host = this.host;
+    this.host.journalAllocated?.(name, "dyn.dynComputedKeyGetHelper", []);
     const stringHelper = this.dynKeyGetHelper();
     host.declare(`declare ptr @scr_dyn_property_key_value(ptr)`);
     host.declare(`declare ptr @scr_dyn_symbol_key_get(ptr, ptr, i1 zeroext)`);
@@ -3721,6 +4015,7 @@ export class LlDyn {
       "}",
       "",
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -3730,6 +4025,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = "sc_dyn_key_get";
     this.dynBuilders.set(memoKey, name);
+    this.host.journalAllocated?.(name, "dyn.dynKeyGetHelper", []);
     const host = this.host;
     const B = new BlockBuilder();
     const kd = this.kindOf(B, "%d");
@@ -4123,6 +4419,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4134,6 +4431,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = "sc_dyn_destr_check";
     this.dynBuilders.set(memoKey, name);
+    this.host.journalAllocated?.(name, "dyn.dynDestrCheckHelper", []);
     const host = this.host;
     host.declare(`declare void @scr_jb_init(ptr)`);
     host.declare(`declare ptr @scr_jb_finish(ptr)`);
@@ -4188,6 +4486,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4199,6 +4498,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = "sc_dyn_iter_n";
     this.dynBuilders.set(memoKey, name);
+    this.host.journalAllocated?.(name, "dyn.dynIterNHelper", []);
     const host = this.host;
     host.declare(`declare ptr @scr_dyn_new_arr()`);
     host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
@@ -4403,6 +4703,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4411,6 +4712,31 @@ export class LlDyn {
   /** The dyn argument spelling of one static value: dyn passes through
    * (+1), funcs box anonymously, everything else rides toDyn. `expr` is
    * BORROWED in every arm. Emits into the given builder. */
+  /** A live capsule of a record or array value (+1; the value is
+   * borrowed), as `dynFrom` with `liveRef` builds it; null for other
+   * types. Closures boxed in a declaration-typed boundary program return
+   * their records and arrays this way. */
+  private liveToDyn(B: BlockBuilder, t: IrType, expr: string): string | null {
+    const host = this.host;
+    if (t.kind === "union") {
+      const arms = host.unionsById.get(t.unionId)?.arms ?? [];
+      if (!arms.some((arm) => arm.kind === "record" || arm.kind === "array")) return null;
+      const boxed = B.tmp();
+      B.line(`${boxed} = call ptr @${host.liveDynUnionRefAdapter(t)}(ptr ${expr})`);
+      return boxed;
+    }
+    if ((t.kind !== "record" && t.kind !== "array") || !streamTypedRefEligible(t)) return null;
+    const key = typeKey(t);
+    const adapter = host.liveDynRefAdapter(t);
+    const rc = vAdapters(host, t);
+    const boxed = B.tmp();
+    B.line(
+      `${boxed} = call ptr ${typedRefConstructor(host, t)}(ptr ${expr}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
+    );
+    for (const line of bindLiveArrayOps(host, adapter, boxed)) B.line(line);
+    return boxed;
+  }
+
   private toDynExpr(B: BlockBuilder, t: IrType, expr: string): string {
     if (t.kind === "dyn") return this.retainDyn(B, expr);
     if (t.kind === "func") {
@@ -4434,6 +4760,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dfk_${this.dynFuncThunks.size}`;
     this.dynFuncThunks.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.dynFuncThunkHelper", [t]);
     const host = this.host;
     const B = new BlockBuilder();
     const argNames: string[] = [];
@@ -4541,6 +4868,26 @@ export class LlDyn {
           },
           "ptr null",
         );
+        // Declaration-typed boundary programs: an argument package code
+        // passes keeps its identity (scr_dyn_decl_adopt).
+        const capsule = this.host.declBoundary?.() === true ? this.liveToDyn(B, p, a) : null;
+        if (capsule !== null) {
+          host.declare(`declare void @scr_dyn_decl_adopt(ptr, ptr)`);
+          host.declare(`declare void @scr_dyn_release(ptr)`);
+          B.line(`call void @scr_dyn_decl_adopt(ptr ${ad}, ptr ${capsule})`);
+          B.line(`call void @scr_dyn_release(ptr ${capsule})`);
+          this.pendingBail(
+            B,
+            "dfk.adopt",
+            () => {
+              t.params.slice(0, i + 1).forEach((q, j) => {
+                const name = j === i ? a : argNames[j];
+                if (isRefCounted(q)) B.line(`call void ${releaseSym(host, q)}(ptr ${name})`);
+              });
+            },
+            "ptr null",
+          );
+        }
         argNames.push(a);
       }
     });
@@ -4573,7 +4920,10 @@ export class LlDyn {
       const r = B.tmp();
       B.line(`${r} = call ${retTy} ${fn}(${callArgs})`);
       this.pendingBail(B, "dfkr", () => {}, "ptr null");
-      const out = this.toDynExpr(B, t.ret, r);
+      const out =
+        this.host.declBoundary?.() === true
+          ? (this.liveToDyn(B, t.ret, r) ?? this.toDynExpr(B, t.ret, r))
+          : this.toDynExpr(B, t.ret, r);
       if (isRefCounted(t.ret)) B.line(`call void ${releaseSym(host, t.ret)}(ptr ${r})`);
       B.terminate(`ret ptr ${out}`);
     }
@@ -4583,6 +4933,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4593,6 +4944,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dfb_${this.dynFuncBoxes.size}`;
     this.dynFuncBoxes.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.dynFuncBoxHelper", [t]);
     const host = this.host;
     const thunk = this.dynFuncThunkHelper(t);
     host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
@@ -4607,6 +4959,305 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
+    return name;
+  }
+
+  /** `sc_dml_<n>(ptr c, ptr message) -> i1`, the typed message entry of a
+   * closure registered as a 'message' listener (ScrDynMessageListener):
+   * builds the closure's parameter from the message's nodes and calls the
+   * closure. It answers false, without calling it, when the message does
+   * not have the parameter's exact layout, and the listener then runs
+   * through its thunk on the decoded message, as before. Null when the
+   * signature's parameter has no message reader (messageReadable). */
+  messageListenerHelper(t: IrType & { kind: "func" }): string | null {
+    const key = typeKey(t);
+    const existing = this.messageListeners.get(key);
+    if (existing !== undefined) return existing;
+    const param = t.params[0];
+    const supported =
+      t.params.length === 1 &&
+      t.rest !== true &&
+      param !== undefined &&
+      (t.ret.kind === "void" || t.ret.kind === "f64" || t.ret.kind === "bool") &&
+      this.messageReadable(param, new Set());
+    if (!supported) {
+      // A signature without an entry still takes a number.
+      this.messageListeners.set(key, null);
+      this.host.journalAllocated?.("", "dyn.messageListenerHelper", [t]);
+      this.host.journalBuilt?.();
+      return null;
+    }
+    const name = `sc_dml_${this.messageListeners.size}`;
+    this.messageListeners.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.messageListenerHelper", [t]);
+    const B = new BlockBuilder();
+    B.entryAllocas.push(`%fail = alloca i1`);
+    B.line(`store i1 false, ptr %fail`);
+    const value = B.tmp();
+    B.line(
+      `${value} = call ${this.valTy(param)} @${this.messageReaderHelper(param)}(ptr %m, ${this.host.sizeType} 0, ptr %fail)`,
+    );
+    const failed = B.tmp();
+    B.line(`${failed} = load i1, ptr %fail`);
+    const lMiss = B.newLabel("dml.miss");
+    const lCall = B.newLabel("dml.call");
+    B.condBr(failed, lMiss, lCall);
+    B.startBlock(lMiss);
+    B.terminate(`ret i1 false`);
+    B.startBlock(lCall);
+    // The closure consumes its parameter; a pending exception stays for
+    // the emitter, as after the thunk.
+    const fnp = B.tmp();
+    const fn = B.tmp();
+    B.line(`${fnp} = getelementptr inbounds %ScrClosure, ptr %c, i64 0, i32 1`);
+    B.line(`${fn} = load ptr, ptr ${fnp}`);
+    const args = `ptr %c, ${this.valTy(param)} ${value}`;
+    if (t.ret.kind === "void") B.line(`call void ${fn}(${args})`);
+    else B.line(`${B.tmp()} = call ${this.valTy(t.ret)} ${fn}(${args})`);
+    B.terminate(`ret i1 true`);
+    this.defs.push(
+      `define internal zeroext i1 @${name}(ptr %c, ptr %m) ${FN_ATTRS} { ; message entry for ${llvmCommentText(key)}`,
+      B.render(),
+      `}`,
+      ``,
+    );
+    this.host.journalBuilt?.();
+    return name;
+  }
+
+  /** Whether a message reader can build T: numbers, booleans and strings;
+   * records of them with only declared fields, none of union type; and
+   * boxed unions of those arms and null or undefined without a literal
+   * discriminator, with at most one number, boolean and string arm. */
+  private messageReadable(t: IrType, seen: Set<string>): boolean {
+    switch (t.kind) {
+      case "f64":
+      case "bool":
+      case "string":
+        return true;
+      case "record": {
+        const shape = this.host.recordsById.get(t.shapeId);
+        if (!shape || shape.tuple || shape.indexValue || shape.fields.length === 0) return false;
+        if (seen.has(t.shapeId) || this.isRecursiveShape(t)) return false;
+        seen.add(t.shapeId);
+        const readable = shape.fields.every(
+          (f) =>
+            !f.name.startsWith("%") &&
+            f.type.kind !== "union" &&
+            llFieldType(f.type, this.host.inlineUnions.record(f.type)) !== INLINE_UNION_FIELD &&
+            this.messageReadable(f.type, seen),
+        );
+        seen.delete(t.shapeId);
+        return readable;
+      }
+      case "union": {
+        const def = this.host.unionsById.get(t.unionId);
+        // A discriminated union's checked conversion also tests the arm's
+        // literal discriminator, which the readers do not.
+        if (!def || def.discriminant || this.host.nullableUnions.has(t.unionId)) return false;
+        const scalars = new Set<string>();
+        for (const arm of def.arms) {
+          if (arm.kind === "nullT" || arm.kind === "undefinedT") continue;
+          if (arm.kind === "f64" || arm.kind === "bool" || arm.kind === "string") {
+            if (scalars.has(arm.kind)) return false;
+            scalars.add(arm.kind);
+            continue;
+          }
+          if (arm.kind !== "record" || !this.messageReadable(arm, seen)) return false;
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  /** `sc_dmr_<n>(ptr message, size node, ptr fail) -> T`: T (+1) built
+   * from a message node, for a type messageReadable accepts. Sets *fail
+   * and returns a dummy when the node does not have T's layout: the arm
+   * the checked conversion would choose, a record's declared keys in
+   * declaration order and no others. */
+  private messageReaderHelper(t: IrType): string {
+    const key = typeKey(t);
+    const existing = this.messageReaders.get(key);
+    if (existing) return existing;
+    const name = `sc_dmr_${this.messageReaders.size}`;
+    this.messageReaders.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.messageReaderHelper", [t]);
+    const host = this.host;
+    const S = host.sizeType;
+    if (t.kind !== "record") host.declare(`declare i32 @scr_message_kind(ptr, ${S})`);
+    const retTy = this.valTy(t);
+    const dummy = retTy === "double" ? f64Lit(0) : retTy === "i1" ? "false" : "null";
+    const B = new BlockBuilder();
+    const lFail = B.newLabel("dmr.fail");
+    // scr_message_fields tests a record's kind itself.
+    const kind = B.tmp();
+    if (t.kind !== "record") B.line(`${kind} = call i32 @scr_message_kind(ptr %m, ${S} %n)`);
+    const requireKind = (want: number): void => {
+      const ok = B.tmp();
+      B.line(`${ok} = icmp eq i32 ${kind}, ${want}`);
+      const lOk = B.newLabel("dmr.kind");
+      B.condBr(ok, lOk, lFail);
+      B.startBlock(lOk);
+    };
+    switch (t.kind) {
+      case "f64":
+      case "bool": {
+        host.declare(`declare double @scr_message_number(ptr, ${S})`);
+        requireKind(t.kind === "f64" ? MESSAGE_KIND.NUMBER : MESSAGE_KIND.BOOL);
+        const n = B.tmp();
+        B.line(`${n} = call double @scr_message_number(ptr %m, ${S} %n)`);
+        if (t.kind === "f64") B.terminate(`ret double ${n}`);
+        else {
+          const b = B.tmp();
+          B.line(`${b} = fcmp une double ${n}, ${f64Lit(0)}`);
+          B.terminate(`ret i1 ${b}`);
+        }
+        break;
+      }
+      case "string": {
+        host.declare(`declare ptr @scr_message_string(ptr, ${S})`);
+        requireKind(MESSAGE_KIND.STRING);
+        const str = B.tmp();
+        B.line(`${str} = call ptr @scr_message_string(ptr %m, ${S} %n)`);
+        B.terminate(`ret ptr ${str}`);
+        break;
+      }
+      case "record": {
+        const shape = host.recordsById.get(t.shapeId)!;
+        const order = recordSourceFieldOrder(shape);
+        const fields = new Map(shape.fields.map((f, i) => [f.name, { field: f, index: i }]));
+        const base = host.nullableUnions.fieldBase(t.shapeId);
+        const struct = mangleRecordStruct(t.shapeId);
+        const names = this.recordNameTable(t.shapeId, shape);
+        host.declare(`declare zeroext i1 @scr_message_fields(ptr, ${S}, ptr, ptr, ${S}, ptr)`);
+        B.entryAllocas.push(`%kids = alloca [${order.length} x ${S}]`);
+        const matched = B.tmp();
+        B.line(
+          `${matched} = call zeroext i1 @scr_message_fields(ptr %m, ${S} %n, ptr ${names.names}, ptr ${names.lens}, ${S} ${order.length}, ptr %kids)`,
+        );
+        const lBuild = B.newLabel("dmr.build");
+        B.condBr(matched, lBuild, lFail);
+        B.startBlock(lBuild);
+        B.line(`%r0 = call ptr @${mangleRecordNew(t.shapeId)}()`);
+        order.forEach((fieldName, i) => {
+          const { field, index } = fields.get(fieldName)!;
+          const kidp = B.tmp();
+          const kid = B.tmp();
+          B.line(
+            `${kidp} = getelementptr inbounds [${order.length} x ${S}], ptr %kids, i64 0, i64 ${i}`,
+          );
+          B.line(`${kid} = load ${S}, ptr ${kidp}`);
+          const v = B.tmp();
+          B.line(
+            `${v} = call ${this.valTy(field.type)} @${this.messageReaderHelper(field.type)}(ptr %m, ${S} ${kid}, ptr %fail)`,
+          );
+          const failed = B.tmp();
+          B.line(`${failed} = load i1, ptr %fail`);
+          const lDrop = B.newLabel("dmr.drop");
+          const lStore = B.newLabel("dmr.store");
+          B.condBr(failed, lDrop, lStore);
+          B.startBlock(lDrop);
+          B.line(`call void ${releaseSym(host, t)}(ptr %r0)`);
+          B.terminate(`ret ptr null`);
+          B.startBlock(lStore);
+          const p = B.tmp();
+          B.line(
+            `${p} = getelementptr inbounds %${struct}, ptr %r0, i64 0, i32 ${index + base} ; .${llvmCommentText(fieldName)}`,
+          );
+          const fieldTy = llFieldType(field.type, host.inlineUnions.record(field.type));
+          if (fieldTy === "i8") {
+            const z = B.tmp();
+            B.line(`${z} = zext i1 ${v} to i8`);
+            B.line(`store i8 ${z}, ptr ${p}`);
+          } else {
+            B.line(`store ${fieldTy} ${v}, ptr ${p}`);
+          }
+        });
+        B.terminate(`ret ptr %r0`);
+        break;
+      }
+      case "union": {
+        const def = host.unionsById.get(t.unionId)!;
+        def.arms.forEach((arm, i) => {
+          const lNext = B.newLabel("dmr.next");
+          if (arm.kind === "nullT" || arm.kind === "undefinedT") {
+            const hit = B.tmp();
+            B.line(
+              `${hit} = icmp eq i32 ${kind}, ${arm.kind === "nullT" ? MESSAGE_KIND.NULL : MESSAGE_KIND.UNDEFINED}`,
+            );
+            const lHit = B.newLabel("dmr.unit");
+            B.condBr(hit, lHit, lNext);
+            B.startBlock(lHit);
+            B.terminate(`ret ptr ${host.unitInstanceRef(t.unionId, i)}`);
+            B.startBlock(lNext);
+            return;
+          }
+          if (arm.kind !== "record") {
+            const want =
+              arm.kind === "f64"
+                ? MESSAGE_KIND.NUMBER
+                : arm.kind === "bool"
+                  ? MESSAGE_KIND.BOOL
+                  : MESSAGE_KIND.STRING;
+            const hit = B.tmp();
+            B.line(`${hit} = icmp eq i32 ${kind}, ${want}`);
+            const lHit = B.newLabel("dmr.arm");
+            B.condBr(hit, lHit, lNext);
+            B.startBlock(lHit);
+          }
+          // A record arm that does not match leaves *fail clear for the
+          // next arm, like the checked conversion's next-arm match.
+          const v = B.tmp();
+          B.line(
+            `${v} = call ${this.valTy(arm)} @${this.messageReaderHelper(arm)}(ptr %m, ${S} %n, ptr %fail)`,
+          );
+          if (arm.kind === "record") {
+            const failed = B.tmp();
+            B.line(`${failed} = load i1, ptr %fail`);
+            const lHit = B.newLabel("dmr.arm");
+            const lMiss = B.newLabel("dmr.miss");
+            B.condBr(failed, lMiss, lHit);
+            B.startBlock(lMiss);
+            B.line(`store i1 false, ptr %fail`);
+            B.br(lNext);
+            B.startBlock(lHit);
+          }
+          const u = B.tmp();
+          if (arm.kind === "f64") {
+            host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
+            B.line(`${u} = call ptr @scr_union_new_f64(i32 ${i}, double ${v})`);
+          } else if (arm.kind === "bool") {
+            host.declare(`declare ptr @scr_union_new_bool(i32, i1 zeroext)`);
+            B.line(`${u} = call ptr @scr_union_new_bool(i32 ${i}, i1 ${v})`);
+          } else {
+            const rc = vAdapters(host, arm);
+            host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
+            B.line(
+              `${u} = call ptr @scr_union_new_ref(i32 ${i}, ptr ${v}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host, arm)})`,
+            );
+          }
+          B.terminate(`ret ptr ${u}`);
+          B.startBlock(lNext);
+        });
+        B.br(lFail);
+        break;
+      }
+      default:
+        throw new InternalCompilerError(`llvm emitter bug: message reader of ${key}`);
+    }
+    B.startBlock(lFail);
+    B.line(`store i1 true, ptr %fail`);
+    B.terminate(`ret ${retTy} ${dummy}`);
+    this.defs.push(
+      `define internal ${retTy === "i1" ? "zeroext i1" : retTy} @${name}(ptr %m, ${S} %n, ptr %fail) ${FN_ATTRS} { ; message reader for ${llvmCommentText(key)}`,
+      B.render(),
+      `}`,
+      ``,
+    );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4618,6 +5269,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dfa_${this.dynFuncAdapters.size}`;
     this.dynFuncAdapters.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.dynFuncAdapterHelper", [t]);
     const host = this.host;
     const B = new BlockBuilder();
     host.declare(`declare ptr @scr_box_get_ref(ptr)`);
@@ -4720,6 +5372,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 }

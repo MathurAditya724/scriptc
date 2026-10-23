@@ -170,7 +170,8 @@ void scr_weak_dispose(void *object) {
 #include <string.h>
 
 /* Every heap object's first member is `size_t rc`; the collector works on
- * its count (SCR_RC_COUNT). */
+ * its count (SCR_RC_COUNT), and tests it without a frozen record's bit
+ * (SCR_RC_REFS). */
 #define SCR_RC(obj) SCR_RC_COUNT(obj)
 
 static void scr_cyc_oom(void) {
@@ -293,24 +294,22 @@ static SCR_TL ScrDestroyEntry *scr_destroy_pending;
 static SCR_TL size_t scr_destroy_count, scr_destroy_capacity;
 #endif
 
-void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
-  if (scr_destroy_depth == SCR_DESTROY_DEPTH) {
-    if (scr_destroy_count == scr_destroy_capacity) {
-      size_t capacity = scr_destroy_capacity ? scr_destroy_capacity * 2 : 64;
-      if (capacity < scr_destroy_capacity || capacity > SIZE_MAX / sizeof(ScrDestroyEntry))
-        scr_cyc_oom();
-      ScrDestroyEntry *entries = realloc(scr_destroy_pending, capacity * sizeof(*entries));
-      if (!entries) scr_cyc_oom();
-      scr_destroy_pending = entries;
-      scr_destroy_capacity = capacity;
-    }
-    scr_destroy_pending[scr_destroy_count++] = (ScrDestroyEntry){ obj, destroy };
-    return;
+/* Queues a disposal past the depth budget; the outermost disposal runs it. */
+static void scr_rc_destroy_defer(void *obj, void (*destroy)(void *)) {
+  if (scr_destroy_count == scr_destroy_capacity) {
+    size_t capacity = scr_destroy_capacity ? scr_destroy_capacity * 2 : 64;
+    if (capacity < scr_destroy_capacity || capacity > SIZE_MAX / sizeof(ScrDestroyEntry))
+      scr_cyc_oom();
+    ScrDestroyEntry *entries = realloc(scr_destroy_pending, capacity * sizeof(*entries));
+    if (!entries) scr_cyc_oom();
+    scr_destroy_pending = entries;
+    scr_destroy_capacity = capacity;
   }
-  scr_destroy_depth++;
-  destroy(obj);
-  scr_destroy_depth--;
-  if (scr_destroy_depth) return;
+  scr_destroy_pending[scr_destroy_count++] = (ScrDestroyEntry){ obj, destroy };
+}
+
+/* Runs the queued disposals once the outermost one has returned. */
+static void scr_rc_destroy_drain(void) {
   while (scr_destroy_count) {
     ScrDestroyEntry entry = scr_destroy_pending[--scr_destroy_count];
     scr_destroy_depth = 1;
@@ -324,6 +323,30 @@ void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
     scr_destroy_pending = NULL;
     scr_destroy_capacity = 0;
   }
+}
+
+void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
+  if (scr_destroy_depth == SCR_DESTROY_DEPTH) {
+    scr_rc_destroy_defer(obj, destroy);
+    return;
+  }
+  scr_destroy_depth++;
+  destroy(obj);
+  scr_destroy_depth--;
+  if (scr_destroy_depth == 0) scr_rc_destroy_drain();
+}
+
+void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
+                         void (*destroy)(void *), void *tail) {
+  if (scr_destroy_depth == SCR_DESTROY_DEPTH) {
+    scr_rc_destroy_defer(obj, destroy);
+    return tail;
+  }
+  scr_destroy_depth++;
+  tail = destroy_seg(obj, tail);
+  scr_destroy_depth--;
+  if (scr_destroy_depth == 0) scr_rc_destroy_drain();
+  return tail;
 }
 
 /* Live cycle-headered objects and the running count of OLD objects freed.
@@ -529,7 +552,8 @@ static SCR_TL size_t scr_cyc_live_after[SCR_CYC_NGENS];
  * large program, say) those walks dominate collection time. The cap trades
  * that walking for memory only when passes find nothing: while they find
  * garbage, the yield keeps the fraction narrow. SCR_CYCLE_GROWTH_CAP lowers
- * the cap for memory-sensitive programs: a power of two from 1 to 16, with
+ * the cap for memory-sensitive programs, as scr_cyc_set_growth_cap does for
+ * a program that sets its own: a power of two from 1 to 16, with
  * other positive values rounded down to a power of two and larger ones read
  * as 16. At 1 the heap may at most double past its size after the last pass
  * at a level before the next. */
@@ -539,20 +563,34 @@ static SCR_TL unsigned char scr_cyc_growth_shift[SCR_CYC_NGENS];
 static SCR_TL unsigned char scr_cyc_growth_streak[SCR_CYC_NGENS];
 #endif
 
+/* The growth cap a program sets for itself (scr_cyc_set_growth_cap), 0 for
+ * the default; SCR_CYCLE_GROWTH_CAP takes precedence over it. */
+static long scr_cyc_growth_cap_set = 0;
+static SCR_TL unsigned char scr_cyc_growth_max_shift_cached = 0;
+
 /* Shift of the configured growth cap: 2 + log2(cap), since the base
  * fraction is 1/4. */
 static unsigned scr_cyc_growth_max_shift(void) {
-  static SCR_TL unsigned char cached = 0;
-  if (cached == 0) {
+  if (scr_cyc_growth_max_shift_cached == 0) {
     const char *env = scr_getenv("SCR_CYCLE_GROWTH_CAP");
     long v = env ? strtol(env, NULL, 10) : 0;
+    if (v <= 0) v = scr_cyc_growth_cap_set;
     unsigned shift = SCR_CYC_GROWTH_MAX_SHIFT;
     if (v > 0)
       for (shift = 2; shift < SCR_CYC_GROWTH_MAX_SHIFT && (2L << (shift - 2)) <= v;)
         shift++;
-    cached = (unsigned char)shift;
+    scr_cyc_growth_max_shift_cached = (unsigned char)shift;
   }
-  return cached;
+  return scr_cyc_growth_max_shift_cached;
+}
+
+void scr_cyc_set_growth_cap(long cap) {
+  scr_cyc_growth_cap_set = cap;
+  scr_cyc_growth_max_shift_cached = 0;
+  /* Fractions already widened past the new cap start at it. */
+  unsigned max = scr_cyc_growth_max_shift();
+  for (unsigned gen = 0; gen < SCR_CYC_NGENS; gen++)
+    if (scr_cyc_growth_shift[gen] > max) scr_cyc_growth_shift[gen] = (unsigned char)max;
 }
 
 /* Doublings of each generation's backlog threshold earned by consecutive
@@ -1244,9 +1282,9 @@ void scr_cyc_on_release(void *obj) {
 #define SCR_CYC_ARRAY_WALK(name, visit)                                  \
   static __attribute__((noinline)) void name(const ScrArr *arr, void *ctx) { \
     size_t end = arr->len < arr->cap ? arr->len : arr->cap;               \
-    size_t filled = arr->filled < end ? arr->filled : end;                \
+    const uint8_t *states = scr_arr_scan_states(arr);                     \
+    size_t filled = !states || arr->filled > end ? end : arr->filled;     \
     for (size_t i = 0; i < filled; i++) visit((void *)(uintptr_t)arr->data[i], ctx); \
-    const uint8_t *states = scr_arr_states_end(arr);                      \
     for (size_t i = filled; i < end; i++)                                 \
       if (*scr_arr_state_in(states, i) == SCR_ARR_VALUE)                   \
         visit((void *)(uintptr_t)arr->data[i], ctx);                      \
@@ -1293,7 +1331,8 @@ static void scr_mg_visit(void *child, void *ctx) {
     scr_mg_skip_edge(child);
     return;
   }
-  size_t rc = --SCR_RC(child);
+  --SCR_RC(child);
+  size_t rc = SCR_RC_REFS(child);
   if (scr_cyc_color(h) == SCR_CYC_GRAY) {
     if (rc == 0) {
       scr_gray_referenced--;
@@ -1321,7 +1360,7 @@ static inline __attribute__((always_inline)) void scr_mark_gray(void *obj, uintp
                                     ))
     h->buf = scr_gray_comp;
   if (scr_white.n < SCR_CYC_GRAY_LIST_MAX) scr_cyc_push_gray(&scr_white, obj);
-  if (SCR_RC(obj) > 0) {
+  if (SCR_RC_REFS(obj) > 0) {
     scr_gray_referenced++;
     scr_comp_referenced++;
   }
@@ -1393,7 +1432,7 @@ static void scr_scan_visit(void *child, void *ctx) {
 static void scr_scan(void *obj, uintptr_t depth) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   if (scr_cyc_color(h) != SCR_CYC_GRAY) return;
-  if (SCR_RC(obj) > 0) {
+  if (SCR_RC_REFS(obj) > 0) {
     scr_restore_from(obj);
     return;
   }
@@ -1461,7 +1500,7 @@ static void scr_xg_destroy(void *obj) {
 }
 
 static SCR_CYC_COMPACT void scr_xg_release(void *obj) {
-  if (SCR_RC(obj) > 1) {
+  if (SCR_RC_REFS(obj) > 1) {
     SCR_RC(obj) -= 1;
     scr_cyc_on_release(obj); /* lost a reference: a possible cycle root */
     return;
@@ -1753,14 +1792,14 @@ static __attribute__((noinline)) size_t scr_yin_collect(void) {
     if (scr_cyc_gen(h) != SCR_CYC_YOUNG || !scr_cyc_is_buffered(h) || scr_cyc_buf_index(h) != k ||
         scr_cyc_color(h) != SCR_CYC_BLACK)
       scr_trap("scriptc: corrupt young nursery entry\n");
-    if (SCR_RC(v[k]) == 0 || SCR_RC(v[k]) < scr_yin_counts[k])
+    if (SCR_RC_REFS(v[k]) == 0 || SCR_RC_REFS(v[k]) < scr_yin_counts[k])
       scr_trap("scriptc: young object with uncounted references\n");
   }
 #endif
   for (size_t k = 0; k < n; k++) {
     void *obj = v[k];
     ScrCycHdr *h = scr_cyc_hdr(obj);
-    if (scr_cyc_color(h) == SCR_CYC_GRAY || SCR_RC(obj) <= scr_yin_counts[k]) continue;
+    if (scr_cyc_color(h) == SCR_CYC_GRAY || SCR_RC_REFS(obj) <= scr_yin_counts[k]) continue;
     scr_cyc_set_color(h, SCR_CYC_GRAY);
     scr_yin_push(&scr_yin_stack, obj);
     while (scr_yin_stack.n) {
@@ -1784,7 +1823,7 @@ static __attribute__((noinline)) size_t scr_yin_collect(void) {
       scr_cyc_set_gen(h, SCR_CYC_YIN_PROMOTED);
       scr_cyc_clear_buffered(h);
       /* An outside root becomes a candidate (see "candidates" above). */
-      if (SCR_RC(obj) > scr_yin_counts[k]) scr_cyc_on_release(obj);
+      if (SCR_RC_REFS(obj) > scr_yin_counts[k]) scr_cyc_on_release(obj);
       scr_yin_met(h->id, false);
     } else {
       scr_yin_met(h->id, true);
@@ -2132,7 +2171,7 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
       for (size_t j = start; j < end; j++) {
         void *obj = scr_white.v[j];
         if (scr_cyc_color(scr_cyc_hdr(obj)) != SCR_CYC_GRAY) continue;
-        if (SCR_RC(obj) > 0) scr_restore_from(obj);
+        if (SCR_RC_REFS(obj) > 0) scr_restore_from(obj);
         else scr_white.v[kept++] = obj;
       }
       from = end;
@@ -2161,7 +2200,7 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
    * whitened only to be restored again. */
   for (size_t i = 0; i < scr_cands.n; i++) {
     void *obj = scr_cands.v[i];
-    if (scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_GRAY && SCR_RC(obj) > 0) scr_restore_from(obj);
+    if (scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_GRAY && SCR_RC_REFS(obj) > 0) scr_restore_from(obj);
   }
   for (size_t i = 0; i < scr_cands.n; i++) {
     void *obj = scr_cands.v[i];
