@@ -1220,6 +1220,43 @@ function lowerJsVarFromExisting(
   };
 }
 
+/** Whether a JavaScript declaration's object value changes shape after its
+ * initializer (jsOpenObjectType, jsObjectBindingExpands) or carries
+ * methods, so only the checked-dynamic representation holds it.
+ * `inferred` is the declaration's mapped checker type. */
+function jsDeclarationExpandsObject(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  inferred: IrType | null,
+): boolean {
+  const arms =
+    inferred?.kind === "union"
+      ? (lowerer.unions.get(inferred.unionId)?.arms ?? [])
+      : inferred
+        ? [inferred]
+        : [];
+  return (
+    (!decl.type &&
+      !hasJsTypeAnnotation(decl) &&
+      inferred !== null &&
+      jsOpenObjectType(decl, inferred, lowerer.shapes, lowerer.unions).kind === "dyn") ||
+    arms.some((arm) => arm.kind === "record" && jsObjectBindingExpands(lowerer, decl, arm)) ||
+    (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+      !decl.type &&
+      !hasJsTypeAnnotation(decl) &&
+      decl.initializer !== undefined &&
+      ts.isObjectLiteralExpression(decl.initializer) &&
+      decl.initializer.properties.nodes.some(
+        (property) =>
+          ts.isMethodDeclaration(property) ||
+          ts.isAccessor(property) ||
+          (ts.isPropertyAssignment(property) &&
+            (ts.isFunctionExpression(property.initializer) ||
+              ts.isArrowFunction(property.initializer))),
+      ))
+  );
+}
+
 /** The `var` symbol's function-scoped binding TYPE — the declared type at
  * the binding name, with the JS-source fallbacks every mutable binding
  * takes (an empty-object-literal type is checked-dynamic because tsc
@@ -1254,6 +1291,19 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
     type = staticImportNamespaceType(lowerer, nameNode.parent.initializer) ?? type;
   }
   if (!type || type.kind === "void") return null;
+  // A JavaScript `var` holds whatever its writes store, as a `let` does:
+  // the checker types it by its initializer and checks no later write
+  // (`var fraction = 0;`, later `fraction = match[7].slice(0, 3)`), and an
+  // object it holds may gain members (`mark.snippet = snippet(mark)`).
+  if (
+    type.kind !== "dyn" &&
+    ts.isVariableDeclaration(nameNode.parent) &&
+    nameNode.parent.name === nameNode &&
+    isJsSourceFile(ts.getSourceFileOfNode(nameNode)) &&
+    (jsBindingHasOpenWrites(lowerer, nameNode.parent) ||
+      jsDeclarationExpandsObject(lowerer, nameNode.parent, type))
+  )
+    return DYN;
   // A binding readable before its first store holds undefined until then.
   return lowerer.runtimeOptionalBindingType(nameNode, type);
 }
@@ -5597,26 +5647,7 @@ export function lowerVarDecl(
       : inferredObjectType
         ? [inferredObjectType]
         : [];
-  const expandsObject =
-    (!decl.type &&
-      !hasJsTypeAnnotation(decl) &&
-      inferredObjectType !== null &&
-      jsOpenObjectType(decl, inferredObjectType, lowerer.shapes, lowerer.unions).kind === "dyn") ||
-    inferredObjectArms.some(
-      (arm) => arm.kind === "record" && jsObjectBindingExpands(lowerer, decl, arm),
-    ) ||
-    (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-      !decl.type &&
-      !hasJsTypeAnnotation(decl) &&
-      ts.isObjectLiteralExpression(decl.initializer) &&
-      decl.initializer.properties.nodes.some(
-        (property) =>
-          ts.isMethodDeclaration(property) ||
-          ts.isAccessor(property) ||
-          (ts.isPropertyAssignment(property) &&
-            (ts.isFunctionExpression(property.initializer) ||
-              ts.isArrowFunction(property.initializer))),
-      ));
+  const expandsObject = jsDeclarationExpandsObject(lowerer, decl, inferredObjectType);
   let init: IrExpr;
   try {
     init =
@@ -6327,18 +6358,15 @@ export function hasJsTypeAnnotation(decl: ts.VariableDeclaration): boolean {
   );
 }
 
-/** Inferred JS scalar initializers do not constrain later writes through
- * an any-valued callback. Keep those bindings open, including captured writes. */
-export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
-  if (
-    !isJsSourceFile(ts.getSourceFileOfNode(decl)) ||
-    decl.type ||
-    hasJsTypeAnnotation(decl) ||
-    !ts.isIdentifier(decl.name)
-  )
-    return false;
-  const symbol = lowerer.resolveValueSymbol(decl.name);
-  if (!symbol) return false;
+/** The assignments to a declaration's binding in its function (or file),
+ * `=` and compound alike. Null when the name has no symbol. */
+function jsBindingWrites(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  name: ts.Identifier,
+): ts.BinaryExpression[] | null {
+  const symbol = lowerer.resolveValueSymbol(name);
+  if (!symbol) return null;
   let owner: ts.Node = decl;
   while (owner.parent && !ts.isFunctionLike(owner) && !ts.isSourceFile(owner)) owner = owner.parent;
   let writes = lowerer.jsBindingWritesByOwner.get(owner);
@@ -6359,9 +6387,36 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
     writes = indexed;
     lowerer.jsBindingWritesByOwner.set(owner, writes);
   }
-  const candidates = (writes.get(decl.name.text) ?? []).filter(
+  return (writes.get(name.text) ?? []).filter(
     (node) => lowerer.resolveValueSymbol(node.left as ts.Identifier) === symbol,
   );
+}
+
+/** Whether a JavaScript binding always holds a string: the checker types it
+ * as one, and every write appends to it (`result += part`), which yields a
+ * string whatever the part is. */
+export function jsBindingAppendsOnly(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (!ts.isIdentifier(decl.name)) return false;
+  if (lowerer.mapTypeOf(lowerer.typeOf(decl.name))?.kind !== "string") return false;
+  const writes = jsBindingWrites(lowerer, decl, decl.name);
+  return (
+    writes !== null &&
+    writes.every((node) => node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken)
+  );
+}
+
+/** Inferred JS scalar initializers do not constrain later writes through
+ * an any-valued callback. Keep those bindings open, including captured writes. */
+export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (
+    !isJsSourceFile(ts.getSourceFileOfNode(decl)) ||
+    decl.type ||
+    hasJsTypeAnnotation(decl) ||
+    !ts.isIdentifier(decl.name)
+  )
+    return false;
+  const candidates = jsBindingWrites(lowerer, decl, decl.name);
+  if (candidates === null) return false;
   if (
     candidates.some(
       (node) =>
@@ -6369,6 +6424,18 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
     )
   )
     return true;
+  // A `+=` of a string turns a number or boolean binding into a string
+  // (`n += "px"`); the checker keeps the declared type.
+  if (
+    candidates.some(
+      (node) =>
+        node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
+        (lowerer.typeOf(node.right).flags & ts.TypeFlags.StringLike) !== 0,
+    )
+  ) {
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+    if (declared?.kind === "f64" || declared?.kind === "bool") return true;
+  }
   // A write that can store null or undefined into a binding the checker
   // types as a primitive (`offset = match[3] || null`): JavaScript files
   // are checked without strict null checks, so the declared type does not
