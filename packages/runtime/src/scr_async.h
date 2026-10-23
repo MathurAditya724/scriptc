@@ -390,6 +390,8 @@ void scr_promise_all_store_f64(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_bool(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_str(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_ref(ScrArr *a, double i, ScrPromise *src);
+/* Stores the fulfilled entry promise itself (+1), for Promise.all's tuple form. */
+void scr_promise_all_store_promise(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_adapt_copy(ScrPromise *dst, ScrPromise *src);
 double scr_promise_payload_f64(ScrPromise *p);
 bool scr_promise_payload_bool(ScrPromise *p);
