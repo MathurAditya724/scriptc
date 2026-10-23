@@ -36,9 +36,20 @@ export function collectClassMethodMutations(
   const computedWrites: {
     key: ts.Expression | undefined;
     receiver: ts.Expression | undefined;
+    /** The written element access, when the write has one. */
+    target?: ts.ElementAccessExpression;
     site: ts.Node;
   }[] = [];
   const propertyWrites: { target: ts.PropertyAccessExpression; site: ts.Node }[] = [];
+  /** Writes and deletes of a method name through an element access with a
+   * known key (`o["m"] = f`, `o[k] = f` with `k: "m" | "n"`), judged like
+   * the named writes in propertyWrites. */
+  const keyedWrites: {
+    name: string;
+    receiver: ts.Expression;
+    target: ts.ElementAccessExpression;
+    site: ts.Node;
+  }[] = [];
   const reflection: ts.PropertyAccessExpression[] = [];
   const globals: ts.Identifier[] = [];
   const jsAssignments: (ts.PropertyAccessExpression | ts.ElementAccessExpression)[] = [];
@@ -242,13 +253,32 @@ export function collectClassMethodMutations(
       sameBinding(receiver, keys.arguments.nodes[0]!)
     );
   };
-  const markKey = (key: ts.Expression, site: ts.Node, receiver?: ts.Expression): void => {
+  /** A write of the known key `name`: through an element access, a write
+   * to a method name is judged like a named write (keyedWrites). */
+  const markKeyed = (
+    name: string,
+    site: ts.Node,
+    receiver?: ts.Expression,
+    target?: ts.ElementAccessExpression,
+  ): void => {
+    if (receiver && target && methods.has(name) && name !== "prototype" && name !== "__proto__") {
+      receiverFields.add(name);
+      keyedWrites.push({ name, receiver, target, site });
+    } else markName(name, site);
+  };
+  const markKey = (
+    key: ts.Expression,
+    site: ts.Node,
+    receiver?: ts.Expression,
+    target?: ts.ElementAccessExpression,
+  ): void => {
     const value = unwrap(key);
-    if (ts.isStringLiteralLike(value)) markName(value.text, site);
-    else if (ts.isNumericLiteral(value)) markName(String(Number(value.text)), site);
+    if (ts.isStringLiteralLike(value)) markKeyed(value.text, site, receiver, target);
+    else if (ts.isNumericLiteral(value))
+      markKeyed(String(Number(value.text)), site, receiver, target);
     // The key keeps its assertions: `slots[at as number]` and `slots[at!]`
     // write a number key whatever the type of `at`.
-    else computedWrites.push({ key, receiver, site });
+    else computedWrites.push(target ? { key, receiver, target, site } : { key, receiver, site });
   };
   const markFields = (value: ts.Expression, site: ts.Node, receiver?: ts.Expression): void => {
     value = unwrap(value);
@@ -275,7 +305,7 @@ export function collectClassMethodMutations(
         propertyWrites.push({ target, site });
       } else markName(name, site, arrow);
     } else if (ts.isElementAccessExpression(target))
-      markKey(target.argumentExpression, site, target.expression);
+      markKey(target.argumentExpression, site, target.expression, target);
     else if (ts.isArrayLiteralExpression(target)) {
       for (const element of target.elements.nodes) {
         if (ts.isSpreadElement(element)) markTarget(element.expression, site);
@@ -575,7 +605,7 @@ export function collectClassMethodMutations(
     if (!methodOwnerCanInhabit(target.expression, name)) continue;
     lowerer.prototypeMethodAccesses.set(name, site);
   }
-  for (const { key, receiver, site } of computedWrites) {
+  for (const { key, receiver, target, site } of computedWrites) {
     // A class method declared with a well-known symbol key is not a write;
     // any other write with one can replace that method.
     const symbolName = key ? wellKnownMethodName(unwrap(key)) : null;
@@ -592,7 +622,7 @@ export function collectClassMethodMutations(
     const type = key ? lowerer.typeOf(key) : undefined;
     const names = type && (literalValues(type) ?? (key ? literalLoopKeys(unwrap(key)) : null));
     if (names) {
-      for (const name of names) markName(String(name), site);
+      for (const name of names) markKeyed(String(name), site, receiver, target);
       continue;
     }
     if (key && receiver && preservesExistingMethod(key, receiver, site)) continue;
@@ -613,6 +643,15 @@ export function collectClassMethodMutations(
     } else if (!(flags & ts.TypeFlags.ESSymbolLike)) {
       unknownKey = site;
     }
+  }
+  lowerer.checker.prefetchClassCollection(
+    keyedWrites.flatMap((write) => [write.target, write.receiver]),
+    [],
+  );
+  for (const { name, receiver, target, site } of keyedWrites) {
+    if (lowerer.prototypeMethodAccesses.has(name) || functionFree(lowerer.typeOf(target))) continue;
+    if (!methodOwnerCanInhabit(receiver, name)) continue;
+    lowerer.prototypeMethodAccesses.set(name, site);
   }
   if (numericKey) {
     for (const name of [...methods, ...arrowFields]) {
