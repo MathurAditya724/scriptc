@@ -164,6 +164,7 @@ export function classCallbackCall(
   fallback: IrExpr,
   loc: SrcLoc,
   calleeName = name,
+  original?: { originalId: () => string | undefined; directCall: () => IrExpr },
 ): IrExpr {
   const bag = lowerer.declareHiddenLocal("%callbackBag", DYN);
   const present = lowerer.declareHiddenLocal("%callbackPresent", BOOL);
@@ -234,6 +235,44 @@ export function classCallbackCall(
         };
     answer =
       fallback.type.kind === "void" ? result : lowerer.coerceToExpected(result, fallback.type);
+  }
+  // Read after observedSlot built the prototype data and its originals.
+  const originalId = observed ? original?.originalId() : undefined;
+  if (original && originalId !== undefined) {
+    // The slot still holds the method's original value: calling it is
+    // calling the method, so the call stays native (no boxed arguments,
+    // dynamic call or checked result). A replacement takes the dynamic call.
+    const unchanged: IrExpr = {
+      kind: "libCall",
+      fn: "dyn.sameValue",
+      args: [varRef(callback.id, DYN, loc), varRef(originalId, DYN, loc)],
+      type: BOOL,
+      loc,
+    };
+    answer =
+      fallback.type.kind === "void"
+        ? {
+            kind: "ternary",
+            cond: unchanged,
+            then: {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: original.directCall(), loc }],
+              result: dynUndefinedExpr(loc),
+              type: DYN,
+              loc,
+            },
+            else_: call,
+            type: DYN,
+            loc,
+          }
+        : {
+            kind: "ternary",
+            cond: unchanged,
+            then: original.directCall(),
+            else_: answer,
+            type: answer.type,
+            loc,
+          };
   }
   return {
     kind: "seqExpr",
