@@ -6638,7 +6638,7 @@ function staticCallOn(
     // functions, called directly as `%C.static:m%n` — with the same
     // through-a-VALUE shadowing fence as plain statics.
     const gfound = findGenericStaticOn(lowerer, info, access.name.text);
-    if (!gfound) return null;
+    if (!gfound) return classConstructorCall(lowerer, call, access, info);
     if (throughValue && staticShadowBelow(info, access.name.text)) {
       lowerer.unsupported(
         "SC1090",
@@ -6729,6 +6729,89 @@ function staticCallOn(
   lowerer.noteEdge(fnName);
   const args = lowerer.completeArgs(call.arguments.nodes, found.method.params, loc, call);
   return { kind: "call", callee: fnName, args, type: found.method.ret, loc };
+}
+
+/** `C.call(thisArg, ...)` / `C.apply(thisArg, args)` on a program class that
+ * declares no such static: Function.prototype.call/apply invoke the class
+ * constructor without `new`, which throws Node's TypeError "Class
+ * constructor C cannot be invoked without 'new'" after the arguments are
+ * evaluated (and, for apply, after the argument list is read). The boxed
+ * class value's call path throws exactly that. Neither expando statics nor
+ * writes through untyped values can give a class an own `call` or `apply`.
+ * A receiver that may hold a subclass at run time (a class value, `this` in
+ * a static method) needs every subclass to lack such a static too. The
+ * receiver must be one the caller does not evaluate again (a name, `this`,
+ * or a namespace member). Null otherwise. */
+function classConstructorCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  info: ClassInfo,
+): IrExpr | null {
+  const name = access.name.text;
+  const receiver = access.expression;
+  if (
+    (name !== "call" && name !== "apply") ||
+    !info.decl ||
+    info.def.runtime ||
+    info.builtinError ||
+    info.builtinEmitter ||
+    info.builtinStream ||
+    info.builtinEventTarget ||
+    info.runtimeStatics?.length ||
+    declaresStaticAbove(info, name) ||
+    (exactClassOfReceiver(lowerer, receiver) !== info &&
+      info.subclasses.some((subclass) => declaresStaticBelow(subclass, name))) ||
+    call.arguments.nodes.some(ts.isSpreadElement) ||
+    !(
+      ts.isIdentifier(receiver) ||
+      receiver.kind === ts.SyntaxKind.ThisKeyword ||
+      (ts.isPropertyAccessExpression(receiver) && nsMemberIdentOf(lowerer, receiver) !== null)
+    )
+  )
+    return null;
+  return {
+    kind: "dynInvoke",
+    recv: lowerer.lowerExprExpecting(receiver, DYN),
+    method: name,
+    calleeName: ts.getTextOfNode(access),
+    args: call.arguments.nodes.map((argument) => lowerer.lowerExprExpecting(argument, DYN)),
+    type: DYN,
+    loc: locOf(call),
+  };
+}
+
+/** Whether `info`'s declaration has a static member that may be named `name`
+ * (a method, field or accessor of that name, or a computed name), or `info`
+ * has no declaration to tell. */
+function declaresStatic(info: ClassInfo, name: string): boolean {
+  if (!info.decl) return true;
+  return info.decl.members.nodes.some(
+    (member) =>
+      member.name !== undefined &&
+      ts.canHaveModifiers(member) &&
+      ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ===
+        true &&
+      (ts.isComputedPropertyName(member.name) ||
+        ((ts.isIdentifier(member.name) || ts.isStringLiteral(member.name)) &&
+          member.name.text === name)),
+  );
+}
+
+/** declaresStatic over `info` and its bases, which it inherits statics from. */
+function declaresStaticAbove(info: ClassInfo, name: string): boolean {
+  for (let c: ClassInfo | null = info; c; c = c.base) if (declaresStatic(c, name)) return true;
+  return false;
+}
+
+/** declaresStatic over `info` and its subclasses, or runtime statics, which a
+ * function-local JavaScript class defines at run time. */
+function declaresStaticBelow(info: ClassInfo, name: string): boolean {
+  return (
+    declaresStatic(info, name) ||
+    !!info.runtimeStatics?.length ||
+    info.subclasses.some((subclass) => declaresStaticBelow(subclass, name))
+  );
 }
 
 /** `C.m(...)` where `m` is a static method that a function-local
