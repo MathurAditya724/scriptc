@@ -799,6 +799,22 @@ export function lowerObjectLiteral(
   expr: ts.ObjectLiteralExpression,
   expected?: IrType & { kind: "record" },
 ): IrExpr {
+  // A spread of an untyped (`any`) source into a typed slot: TypeScript
+  // types such a literal `any`, and the copy holds whatever own properties
+  // the source has at runtime. Build it as a checked-dynamic object, then
+  // check it into the expected record like any other `any` value assigned
+  // to that slot.
+  if (
+    expected &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    expr.properties.nodes.some(
+      (prop) =>
+        ts.isSpreadAssignment(prop) &&
+        (lowerer.typeOf(prop.expression).flags & ts.TypeFlags.Any) !== 0,
+    )
+  ) {
+    return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr), expected);
+  }
   // Unannotated JavaScript accumulator fields have no element contract.
   // Preserve their checked arrays instead of assigning never[] a numeric ABI.
   // An empty object field is a map the program adds keys to.
