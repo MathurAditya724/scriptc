@@ -656,7 +656,7 @@ export function emitStringExpr(
       // equals no unit, as "" equals no one-unit literal.
       const unit = charAtUnitTest(e);
       if (unit !== null) {
-        const code = host.emitExpr(charAtUnitRead(unit.charAt));
+        const code = host.emitExpr(charAtUnitRead(host, unit.charAt));
         const t = B.tmp();
         B.line(
           `${t} = fcmp ${e.negated ? "une" : "oeq"} double ${code.name}, ${f64Lit(unit.code)}`,
@@ -690,7 +690,7 @@ export function emitStringExpr(
       // the code unit, as the equality above does.
       const unit = charAtUnitTest(e);
       if (unit !== null) {
-        const code = host.emitExpr(charAtUnitRead(unit.charAt));
+        const code = host.emitExpr(charAtUnitRead(host, unit.charAt));
         const t = B.tmp();
         B.line(
           `${t} = fcmp ${charAtUnitPredicate(e.op, unit.left)} double ${code.name}, ${f64Lit(unit.code)}`,

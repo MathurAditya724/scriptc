@@ -1201,6 +1201,10 @@ export class LlEmitter {
    * (findIntegerOrNaNLocals in wrapping-sums.ts). */
   integerOrNaNLocals: ReadonlyMap<string, IntegerRange> = new Map();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
+  /** The charCodeAt reads standing for charAt reads the emitter rewrote
+   * (one-unit tests and switches, charAtUnitRead), with the charAt each
+   * stands for: a loop version's proof for the charAt covers its read. */
+  readonly charAtUnitReads = new Map<IrExpr, IrExpr>();
   /** Worker programs: typed-array accesses whose views an enclosing version
    * guard proved thread-owned. */
   bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
