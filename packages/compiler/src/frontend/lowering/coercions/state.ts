@@ -12,7 +12,14 @@ export class CoercionState {
   // Provenance for checked extraction; consumers must not infer it from names.
   readonly checkedNarrows = new Set<string>();
   // The extracted arm of each checked (non-defaulting) extraction helper.
-  readonly checkedNarrowArms = new Map<string, { unionId: string; tag: number; target: IrType }>();
+  readonly checkedNarrowArms = new Map<
+    string,
+    { unionId: string; tag: number; target: IrType; widens?: true }
+  >();
   readonly retags = new Map<string, string>();
   readonly narrows = new Map<string, string>();
+  readonly widthNarrows = new Map<string, string>();
+  /** Unions widenReducedReturn produced: only these read through the
+   * width-converting extraction (widthNarrowHelper). */
+  readonly widenedReturns = new Set<string>();
 }
