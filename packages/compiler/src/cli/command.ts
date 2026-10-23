@@ -19,7 +19,7 @@ import {
 } from "../node-islands/policy.js";
 import { TIER_MODES, type TierMode } from "../frontend/tier-analysis.js";
 import { buildEnvelope } from "../diagnostics/envelope.js";
-import { renderWarnings } from "../diagnostics/render.js";
+import { renderConfigWarnings, renderWarnings } from "../diagnostics/render.js";
 import { isPerformanceCode, renderPerformanceWarnings } from "../diagnostics/dynamic-tier.js";
 import { isNativeOptimization } from "../backend/optimization.js";
 import { setProvenanceSources } from "../frontend/provenance-registry.js";
@@ -609,14 +609,21 @@ async function main(args: string[], host: CliHost): Promise<number> {
       // warning names likely-hot functions that use untyped values. `run`
       // keeps stderr for the program's own output.
       const color = process.stderr.isTTY ?? false;
-      const divergences = warnings.filter((d) => !isPerformanceCode(d.code));
+      const config = warnings.filter((d) => d.code === "SC8004");
+      const divergences = warnings.filter((d) => !isPerformanceCode(d.code) && d.code !== "SC8004");
       const performance = warnings.filter((d) => isPerformanceCode(d.code));
-      if (divergences.length > 0)
+      if (config.length > 0)
+        process.stderr.write(
+          renderConfigWarnings(config, result.sourceTexts ?? new Map(), { color }) + "\n",
+        );
+      if (divergences.length > 0) {
+        if (config.length > 0) process.stderr.write("\n");
         process.stderr.write(
           renderWarnings(divergences, result.sourceTexts ?? new Map(), { color }) + "\n",
         );
+      }
       if (performance.length > 0) {
-        if (divergences.length > 0) process.stderr.write("\n");
+        if (divergences.length > 0 || config.length > 0) process.stderr.write("\n");
         process.stderr.write(renderPerformanceWarnings(performance) + "\n");
       }
     }
