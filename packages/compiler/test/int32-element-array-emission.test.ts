@@ -196,3 +196,42 @@ test("only the candidates the proof keeps are rewritten", async () => {
   for (const fn of selected.functions)
     if (fn.name !== "compose") expect(fn).toBe(mod.functions.find((f) => f.name === fn.name));
 });
+
+const sharedSource = `
+const data: number[] = [];
+for (let i = 0; i < 64; i++) data.push((i * 7) & 255);
+function fnv(values: number[]): number {
+  let h = 2166136261;
+  for (let i = 0; i < values.length; i++) h = Math.imul(h ^ values[i]!, 16777619) >>> 0;
+  return h;
+}
+function mean(values: number[]): number {
+  let s = 0;
+  for (let i = 0; i < values.length; i++) s += values[i]!;
+  return s / values.length;
+}
+function first(values: number[]): number {
+  return values[0]!;
+}
+const ints = [1, 2, 3];
+const halves = [0.5, 1.5];
+const pick: (values: number[]) => number = first;
+console.log(fnv(data), mean(ints), mean(halves), pick([4]));
+`;
+
+test("arrays passed to helpers and held in module globals get 4-byte slots", async () => {
+  const mod = await lowerIr(sharedSource);
+  const proposed = markInt32ArrayCandidates(mod).int32ArrayCandidates ?? [];
+  // A global and the parameter every call passes it to; a function used as
+  // a value keeps its parameter.
+  expect(proposed).toEqual(expect.arrayContaining(["\0%g.e.data", "fnv\0values.0"]));
+  expect(proposed.some((key) => key.startsWith("first\0"))).toBe(false);
+  const llvm = await emitLlvm(sharedSource);
+  // The helper reads int32 slots; `mean`, also called with fractions,
+  // reads doubles.
+  expect(functions(llvm, "fnv")).toMatch(
+    /getelementptr inbounds i32, ptr %\w+, i64 %\w+\n\s+%\w+ = load i32/,
+  );
+  expect(functions(llvm, "mean")).not.toMatch(/getelementptr inbounds i32, ptr/);
+  expect(llvm).toMatch(/@scr_arr_new(_small)?\(i32 7/);
+});

@@ -10,7 +10,13 @@ import {
 } from "./integer-ranges.js";
 import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
 import { findInitializerBindings, withInitializerBindings } from "./initializer-bindings.js";
-import { checkableInt32Allocations, int32ArrayStores } from "./int32-arrays.js";
+import {
+  checkableInt32Allocations,
+  int32ArrayGroups,
+  int32ArrayKey,
+  int32ArraySlot,
+  int32ArrayStores,
+} from "./int32-arrays.js";
 import { everyExprChild, everyStmtChild, everyStmtList, everyTypeChild } from "./traverse.js";
 
 /** The storage slot an array-valued expression reads, as an
@@ -247,9 +253,10 @@ export class Int32Slots {
   /** Whether the module has int32 array candidates (the narrowedReads
    * range fact). */
   narrowedReads = false;
-  /** Local number arrays (`function\0local`) stored as int32 slots: the
-   * module's int32 array candidates whose every stored element the
-   * fixpoint proved an int32. */
+  /** Number arrays stored as int32 slots (int32ArrayKey keys: locals and
+   * parameters as `function\0local`, globals as `\0global`): the module's
+   * int32 array candidates whose every stored element, through every
+   * binding that can hold the same array, the fixpoint proved an int32. */
   readonly int32Arrays = new Set<string>();
   /** Local number arrays that may hold int32 slots with checked stores: the
    * candidates whose element stores the fixpoint proved exact integers but
@@ -779,17 +786,29 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
   for (const key of contracts?.int32Locals ?? []) slots.addInt32Local(key);
   for (const key of contracts?.int32Elements ?? []) slots.addInt32Elements(key);
   // Int32 array candidates (ir/int32-arrays.ts): assumed to hold int32
-  // elements until a store the fixpoint cannot prove drops one.
+  // elements until a store the fixpoint cannot prove drops one, with every
+  // candidate the same array can reach (its group).
   const arrayCandidates = new Map<string, Set<string>>();
-  slots.narrowedReads = (mod.int32ArrayCandidates?.length ?? 0) > 0;
-  for (const key of mod.int32ArrayCandidates ?? []) {
+  const globalArrays = new Set<string>();
+  const arrayKeys = new Set(mod.int32ArrayCandidates ?? []);
+  slots.narrowedReads = arrayKeys.size > 0;
+  for (const key of arrayKeys) {
     const cut = key.indexOf("\0");
-    const fnName = key.slice(0, cut);
-    const set = arrayCandidates.get(fnName) ?? new Set<string>();
-    set.add(key.slice(cut + 1));
-    arrayCandidates.set(fnName, set);
-    slots.addInt32Elements(`l:${key}`);
+    if (cut === 0) globalArrays.add(key.slice(1));
+    else {
+      const fnName = key.slice(0, cut);
+      const set = arrayCandidates.get(fnName) ?? new Set<string>();
+      set.add(key.slice(cut + 1));
+      arrayCandidates.set(fnName, set);
+    }
+    slots.addInt32Elements(int32ArraySlot(key));
   }
+  const arrayGroups = arrayKeys.size > 0 ? int32ArrayGroups(mod, arrayKeys) : null;
+  // Functions that read or write a candidate global.
+  const globalArrayFunctions = new Set<string>();
+  if (arrayGroups)
+    for (const names of arrayGroups.globalReaders.values())
+      for (const name of names) globalArrayFunctions.add(name);
 
   /* ── candidate fields ── */
   const children = new Map<string, string[]>();
@@ -1070,6 +1089,7 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
   };
   const hasCandidateWrite = (fn: IrFunction): boolean => {
     if (arrayCandidates.has(fn.name)) return true;
+    if (globalArrayFunctions.has(fn.name)) return true;
     const box = (localId: string): boolean => slots.hasBox(slots.boxGroup(fn.name, localId));
     const returns = slots.hasReturn(fn.name);
     return !everyStmtList(fn.body, {
@@ -1124,25 +1144,49 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
     // (checkableInt32Allocations), it keeps int32 slots with checked stores
     // (checkedInt32Arrays), which widen it to doubles in place at the first
     // store that is not an int32.
-    const arrays = arrayCandidates.get(fn.name);
-    if (arrays) {
-      let dropped = false;
+    const locals = arrayCandidates.get(fn.name);
+    let arrays = locals;
+    if (globalArrayFunctions.has(fn.name)) {
+      const both = new Set<string>();
+      if (locals) for (const id of locals) both.add(id);
+      for (const id of globalArrays) both.add(id);
+      arrays = both;
+    }
+    if (arrays && arrayGroups) {
+      const requeue = (name: string): void => {
+        if (queued.has(name)) return;
+        queued.add(name);
+        queue.push(name);
+      };
+      const params = new Set(fn.params.map((param) => param.localId));
       for (const [id, values] of int32ArrayStores(fn, arrays)) {
-        const key = `l:${fn.name}\0${id}`;
-        if (!slots.hasInt32ElementSlot(key) || values.every(int32)) continue;
-        slots.dropInt32Elements(key);
+        const key = int32ArrayKey(fn.name, id);
+        if (!slots.hasInt32ElementSlot(int32ArraySlot(key)) || values.every(int32)) continue;
+        // The array's group drops together: every function reading a
+        // member is analyzed again without its facts.
+        const group = arrayGroups.group.get(key) ?? [key];
+        for (const member of group) {
+          slots.dropInt32Elements(int32ArraySlot(member));
+          if (member.startsWith("\0")) {
+            const names = arrayGroups.globalReaders.get(member);
+            if (names) for (const name of names) requeue(name);
+          } else requeue(member.slice(0, member.indexOf("\0")));
+        }
+        // Checked stores serve a lone local: its allocations are the only
+        // arrays it holds.
         const checkable = (value: IrExpr): boolean => {
           const range = ranges.get(value);
           return int32(value) || range != null;
         };
-        if (values.every(checkable) && checkableInt32Allocations(fn, id))
-          slots.checkedInt32Arrays.add(`${fn.name}\0${id}`);
-        else reason(`array:${fn.name}\0${id}`, "an element store is not int32");
-        dropped = true;
-      }
-      if (dropped && !queued.has(fn.name)) {
-        queued.add(fn.name);
-        queue.push(fn.name);
+        if (
+          group.length === 1 &&
+          !key.startsWith("\0") &&
+          !params.has(id) &&
+          values.every(checkable) &&
+          checkableInt32Allocations(fn, id)
+        )
+          slots.checkedInt32Arrays.add(key);
+        else for (const member of group) reason(`array:${member}`, "an element store is not int32");
       }
     }
     // An int32 written into a slot still assumed non-negative: widen the
@@ -1213,10 +1257,8 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
   }
   for (const proven of provenByFunction.values())
     for (const value of proven) slots.provenWrites.add(value);
-  for (const [fnName, ids] of arrayCandidates)
-    for (const id of ids)
-      if (slots.hasInt32ElementSlot(`l:${fnName}\0${id}`))
-        slots.int32Arrays.add(`${fnName}\0${id}`);
+  for (const key of arrayKeys)
+    if (slots.hasInt32ElementSlot(int32ArraySlot(key))) slots.int32Arrays.add(key);
   const ranged = rangedParameters(slots, functions, retry, numeric, (callee) =>
     readers.get(`ret:${callee}`),
   );

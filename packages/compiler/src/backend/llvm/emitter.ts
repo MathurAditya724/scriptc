@@ -68,7 +68,7 @@ import {
   type StringSplit,
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
-import { addRecordResultEntries } from "./record-results.js";
+import { addRecordResultEntries, resultEntryName } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import {
   type ChunkResult,
@@ -82,6 +82,7 @@ import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
+  int32ArrayKey,
   selectInt32Arrays,
 } from "../../ir/int32-arrays.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
@@ -509,6 +510,15 @@ function provenInt32Arrays(mod: IrModule): ReadonlySet<string> {
   return new Set([...slots.int32Arrays, ...slots.checkedInt32Arrays]);
 }
 
+/** The functions whose calls the backend may emit as calls of their
+ * result-slot entries (record-results.ts). */
+function resultEntryTargets(mod: IrModule): ReadonlySet<string> {
+  const names = new Set(mod.functions.map((fn) => fn.name));
+  const targets = new Set<string>();
+  for (const name of names) if (names.has(resultEntryName(name))) targets.add(name);
+  return targets;
+}
+
 /** The emitter for `input` after the module passes every emission runs. */
 function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
@@ -544,6 +554,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
             ),
           ),
           provenInt32Arrays,
+          resultEntryTargets,
         )
       : mod,
     options,
@@ -780,7 +791,7 @@ export class LlEmitter {
     everyStmtList(fn.body, {
       stmt: (s) => {
         if (s.kind !== "varDecl" && s.kind !== "assign") return true;
-        const key = `${fn.name}\0${s.localId}`;
+        const key = int32ArrayKey(fn.name, s.localId);
         const checked = checkedInt32Arrays.has(key);
         if (!checked && !int32Arrays.has(key)) return true;
         const value = s.kind === "varDecl" ? s.init : s.value;
@@ -798,15 +809,16 @@ export class LlEmitter {
     });
   }
 
-  /** Whether `arr` is one of the current function's int32 arrays
-   * (ir/int32-arrays.ts, kept by the int32 slot analysis). */
+  /** Whether `arr` reads one of the int32 arrays (ir/int32-arrays.ts, kept
+   * by the int32 slot analysis): a local or parameter of the current
+   * function, or a module global. */
   int32Array(arr: IrExpr): boolean {
     if (arr.kind !== "varRef") return false;
     if (this.int32KindArray(arr)) return true;
     if (this.int32Slots.int32Arrays.size === 0) return false;
     return (
       this.int32ArrayTemps.has(arr.localId) ||
-      this.int32Slots.int32Arrays.has(`${this.currentFunctionName}\0${arr.localId}`)
+      this.int32Slots.int32Arrays.has(int32ArrayKey(this.currentFunctionName, arr.localId))
     );
   }
 
