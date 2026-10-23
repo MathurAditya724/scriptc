@@ -2877,22 +2877,6 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
-      "id": "node-builtin.zlib.BrotliCompress",
-      "kind": "node-builtin",
-      "name": "zlib.BrotliCompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
-    },
-    {
-      "id": "node-builtin.zlib.BrotliDecompress",
-      "kind": "node-builtin",
-      "name": "zlib.BrotliDecompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
-    },
-    {
       "id": "node-builtin.zlib.DEFLATE",
       "kind": "node-builtin",
       "name": "zlib.DEFLATE",
@@ -3645,33 +3629,25 @@
       "id": "node-builtin.zlib.brotliCompress",
       "kind": "node-builtin",
       "name": "zlib.brotliCompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.brotliCompressSync",
       "kind": "node-builtin",
       "name": "zlib.brotliCompressSync",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.brotliDecompress",
       "kind": "node-builtin",
       "name": "zlib.brotliDecompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.brotliDecompressSync",
       "kind": "node-builtin",
       "name": "zlib.brotliDecompressSync",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.crc32",
@@ -3683,17 +3659,13 @@
       "id": "node-builtin.zlib.createBrotliCompress",
       "kind": "node-builtin",
       "name": "zlib.createBrotliCompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.createBrotliDecompress",
       "kind": "node-builtin",
       "name": "zlib.createBrotliDecompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.createDeflate",

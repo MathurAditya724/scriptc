@@ -62,6 +62,7 @@ export interface EarlyExecutableNativeFeatures {
   warningReplace?: boolean;
   stdioExtended?: boolean;
   zlib: boolean;
+  brotli?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;

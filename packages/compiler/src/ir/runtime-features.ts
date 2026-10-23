@@ -1121,6 +1121,9 @@ const RUNTIME_FEATURE_RULES = {
    * scr_webcrypto.c. */
   webcrypto: rule({ prefixes: ["webcrypto."] }),
   zlib: rule({ prefixes: ["zlib."] }),
+  /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
+   * the program uses Brotli (scr_brotli.c). */
+  brotli: rule({ fns: ["zlib.brotliInstall"] }),
 };
 
 type RuntimeFeatureName = keyof typeof RUNTIME_FEATURE_RULES;
@@ -1190,6 +1193,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     wasm: false,
     webcrypto: false,
     zlib: false,
+    brotli: false,
   };
 }
 
