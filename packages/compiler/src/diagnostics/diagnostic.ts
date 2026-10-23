@@ -249,6 +249,21 @@ export function nodeIslandsOffDiag(pkg: string, why: string, loc: SrcLoc): ScrDi
   };
 }
 
+/** SC8002 — a user module is marked to run in a Node island while
+ * Node islands are off. */
+export function nodeIslandsOffModuleDiag(
+  file: string,
+  source: "config" | "cli",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8002",
+    message: `user module '${file}' is marked to run in Node (${source === "cli" ? "--node-island" : "scriptc.nodeIslands.modules"}) and Node islands are off`,
+    loc,
+    hint: "allow Node islands (--node-islands=auto or explicit), or remove the marking",
+  };
+}
+
 /** SC8003 — a package marked "native" is outside the native subset. */
 export function nativePackageDiag(pkg: string, why: string, loc: SrcLoc): ScrDiagnostic {
   return {

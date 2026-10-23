@@ -14,6 +14,7 @@
 import {
   nativePackageDiag,
   nodeIslandsOffDiag,
+  nodeIslandsOffModuleDiag,
   userJsObjectModelDiag,
   type ScrDiagnostic,
 } from "../diagnostics/diagnostic.js";
@@ -67,7 +68,9 @@ interface PackageState {
   dir: string | null;
   reasons: NodeIslandReason[];
   importers: Set<string>;
-  nativeSites: SrcLoc[];
+  /** Every import site, with its importer ("" native user code,
+   * "user:<file>" a marked user module, else a package key). */
+  sites: { from: string; loc: SrcLoc }[];
   island: boolean;
   decision: IslandDecision;
   carriedBy: string | null;
@@ -88,7 +91,7 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
         dir,
         reasons: [],
         importers: new Set<string>(),
-        nativeSites: [],
+        sites: [],
         island: false,
         decision: "auto",
         carriedBy: null,
@@ -113,16 +116,22 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     const s = state(m.packageName, m.packageDir);
     for (const marker of m.markers) addReason(s, classifyMarker(marker));
   }
-  // Import edges.
+  // Import edges. A marked user module is an island owner of its own
+  // (unless islands are off, where it is a violation and stays native).
+  const USER = "user:";
+  const userIsland = (file: string): boolean =>
+    policy.mode !== "off" && isMarkedUserModule(policy, file) !== null;
+  const imports = new Map<string, Set<string>>();
   for (const e of input.scan.edges) {
     if (e.shim || ignored(e.to)) continue;
     const s = state(e.to, e.toDir);
-    if (e.fromDir === null) {
-      s.importers.add("");
-      s.nativeSites.push(e.loc);
-    } else if (e.fromDir !== s.key) {
-      s.importers.add(e.fromDir);
-    }
+    const from = e.fromDir ?? (userIsland(e.fromFile) ? USER + e.fromFile : "");
+    if (from === s.key) continue;
+    s.importers.add(from);
+    s.sites.push({ from, loc: e.loc });
+    let out = imports.get(from);
+    if (out === undefined) imports.set(from, (out = new Set<string>()));
+    out.add(s.key);
   }
   // Lowering refusals and fences inside npm modules.
   const addDiagnostics = (diags: readonly ScrDiagnostic[], source: NodeIslandReasonSource) => {
@@ -161,7 +170,7 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     const forcedNode = policy.forcedNode.get(s.name);
     const forcedNative = policy.forcedNative.get(s.name);
     const outside = s.reasons.length > 0;
-    const loc = s.nativeSites[0] ?? fallbackLoc;
+    const loc = (s.sites.find((x) => x.from === "") ?? s.sites[0])?.loc ?? fallbackLoc;
     if (forcedNative !== undefined) {
       if (outside) {
         s.violation = true;
@@ -197,6 +206,16 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     s.decision = "auto";
   }
 
+  // The island that owns an importer: a marked user module, an island
+  // package, or the island a carried package runs inside; null for native.
+  const ownerOf = (from: string): string | null => {
+    if (from.startsWith(USER)) return from;
+    const importer = states.get(from);
+    return importer === undefined ? null : importer.island ? importer.key : importer.carriedBy;
+  };
+  const ownerName = (owner: string): string =>
+    owner.startsWith(USER) ? owner.slice(USER.length) : states.get(owner)!.name;
+
   // Closure: packages imported only by islands (or by packages inside
   // them) run inside the island.
   for (let changed = true; changed;) {
@@ -207,9 +226,7 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
       let carrier: string | null = null;
       let all = true;
       for (const from of s.importers) {
-        const importer = states.get(from);
-        const owner =
-          importer === undefined ? null : importer.island ? importer.key : importer.carriedBy;
+        const owner = ownerOf(from);
         if (owner === null) {
           all = false;
           break;
@@ -219,6 +236,31 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
       if (all && carrier !== null) {
         s.carriedBy = carrier;
         changed = true;
+      }
+    }
+  }
+
+  // Transitive reach: every non-island package an island loads, through
+  // carried and shared packages alike (an island package is a boundary).
+  const reach = new Map<string, Set<string>>();
+  const owners = [...imports.keys()].filter(
+    (k) => k.startsWith(USER) || states.get(k)?.island === true,
+  );
+  for (const owner of owners) {
+    const name = ownerName(owner);
+    const queue = [...(imports.get(owner) ?? new Set<string>())];
+    const seen = new Set<string>(queue);
+    while (queue.length > 0) {
+      const key = queue.pop()!;
+      if (states.get(key)?.island === true) continue;
+      let names = reach.get(key);
+      if (names === undefined) reach.set(key, (names = new Set<string>()));
+      names.add(name);
+      for (const next of imports.get(key) ?? new Set<string>()) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          queue.push(next);
+        }
       }
     }
   }
@@ -248,7 +290,7 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
         reasons: s.reasons,
         modules: modules.size,
         carries,
-        importedFrom: s.nativeSites,
+        importedFrom: s.sites.filter((x) => ownerOf(x.from) === null).map((x) => x.loc),
         evaluation: "eager",
       });
       continue;
@@ -257,23 +299,13 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     // A package that resolves to no installed JavaScript never loads (an
     // optional dependency that is absent): nothing to compile or island.
     if (s.dir === null && s.reasons.length === 0) continue;
-    const reachingIslands: string[] = [];
-    for (const from of s.importers) {
-      const importer = states.get(from);
-      if (importer === undefined) continue;
-      const owner = importer.island ? importer.key : importer.carriedBy;
-      if (owner !== null) {
-        const name = states.get(owner)!.name;
-        if (!reachingIslands.includes(name)) reachingIslands.push(name);
-      }
-    }
-    reachingIslands.sort();
+    const reachingIslands = [...(reach.get(s.key) ?? new Set<string>())].sort();
     packages.push({
       package: s.name,
       version,
       path: s.dir,
       status: s.carriedBy !== null ? "inside" : reachingIslands.length > 0 ? "shared" : "native",
-      islands: s.carriedBy !== null ? [states.get(s.carriedBy)!.name] : reachingIslands,
+      islands: s.carriedBy !== null ? [ownerName(s.carriedBy)] : reachingIslands,
     });
   }
   islands.sort(
@@ -292,9 +324,12 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
   for (const m of input.scan.modules) {
     if (m.origin !== "user") continue;
     const marked = isMarkedUserModule(policy, m.file);
-    if (marked !== null) {
+    if (marked !== null && policy.mode !== "off") {
       userModules.push({ file: m.file, source: marked });
       continue;
+    }
+    if (marked !== null) {
+      violations.push(nodeIslandsOffModuleDiag(m.file, marked, { file: m.file, start: 0, end: 0 }));
     }
     if (!policy.strictUserJs) continue;
     for (const marker of m.markers) {
