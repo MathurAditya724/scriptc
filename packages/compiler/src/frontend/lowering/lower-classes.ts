@@ -10556,6 +10556,45 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         loc,
       };
     }
+    // A FinalizationRegistry construction: register and unregister keep
+    // their bookkeeping, and the cleanup callback never runs, which
+    // ECMAScript allows (scr_finalization_registry_new).
+    if (
+      symbol !== null &&
+      ts.symbolName(symbol) === "FinalizationRegistry" &&
+      lowerer.isStdlibSymbol(symbol)
+    ) {
+      const args = expr.arguments?.nodes ?? [];
+      if (args.some(ts.isSpreadElement)) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "FinalizationRegistry construction with spread arguments",
+        );
+      }
+      const cleanup = args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc);
+      const surplus = args.slice(1).map((arg) => lowerer.lowerExpr(arg));
+      const created: IrExpr = {
+        kind: "libCall",
+        fn: "finalizationRegistry.new",
+        args: [cleanup],
+        type: DYN,
+        loc,
+      };
+      if (surplus.length === 0) return created;
+      // Surplus arguments evaluate after the cleanup argument and are ignored.
+      const local = lowerer.declareHiddenLocal("%finalizationCleanup", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: local.id, init: cleanup, loc },
+          ...surplus.map((value): IrStmt => ({ kind: "exprStmt", expr: value, loc })),
+        ],
+        result: { ...created, args: [varRef(local.id, DYN, loc)] },
+        type: DYN,
+        loc,
+      };
+    }
     // `new Set<T>()`: construct + bulk add from supported values,
     // including live collection cursors. Duplicates collapse in insertion order.
     if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Set")) {
@@ -10767,8 +10806,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         Boolean: "boxed wrapper objects have no lowering — use the boolean primitive",
         WeakRef:
           "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
-        FinalizationRegistry:
-          "finalization callbacks expose GC timing — genuinely dynamic; release resources explicitly instead",
         SharedArrayBuffer:
           "no shared-memory threads exist in a compiled program — Uint8Array is the byte storage",
         ArrayBuffer:
