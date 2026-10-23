@@ -4684,6 +4684,26 @@ export class LlDyn {
           },
           "ptr null",
         );
+        // Declaration-typed boundary programs: an argument package code
+        // passes keeps its identity (scr_dyn_decl_adopt).
+        const capsule = this.host.declBoundary?.() === true ? this.liveToDyn(B, p, a) : null;
+        if (capsule !== null) {
+          host.declare(`declare void @scr_dyn_decl_adopt(ptr, ptr)`);
+          host.declare(`declare void @scr_dyn_release(ptr)`);
+          B.line(`call void @scr_dyn_decl_adopt(ptr ${ad}, ptr ${capsule})`);
+          B.line(`call void @scr_dyn_release(ptr ${capsule})`);
+          this.pendingBail(
+            B,
+            "dfk.adopt",
+            () => {
+              t.params.slice(0, i + 1).forEach((q, j) => {
+                const name = j === i ? a : argNames[j];
+                if (isRefCounted(q)) B.line(`call void ${releaseSym(host, q)}(ptr ${name})`);
+              });
+            },
+            "ptr null",
+          );
+        }
         argNames.push(a);
       }
     });
