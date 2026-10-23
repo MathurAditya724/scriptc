@@ -29,6 +29,8 @@
   Candidates and sizes longer than 262144 bits throw a coded SC2020 error, and wasm32-wasi builds are refused.
   Node calls their callbacks with `undefined` as the error, which a callback whose error parameter is typed `Error | null`, as @types/node declares it, receives as `null`.
   RSA, EC, and Ed25519 private and public KeyObjects come from `generateKeyPairSync`, `generateKeyPair`, `createPrivateKey`, and `createPublicKey`, on native targets.
+  `generateKeyPairSync` and `generateKeyPair` check their arguments in Node's order, with Node's errors, including the OpenSSL errors for RSA modulus lengths below 512 or above 2147483647 bits and for public exponents of 0, 1, or an even number, which `generateKeyPair` passes to its callback.
+  RSA keys generate with even modulus lengths from 1024 to 8192 bits and public exponents up to 2147483647; other lengths and exponents that Node accepts, the `raw-public`, `raw-private`, and `raw-seed` encodings, and `paramEncoding: 'explicit'` throw a coded SC2020 error.
   The EC curves are prime256v1 (P-256), secp384r1 (P-384), secp521r1 (P-521), and secp256k1.
   Keys read and write PEM and DER as PKCS#1, SEC1, PKCS#8, and SubjectPublicKeyInfo, and JWK (Ed25519 keys use PKCS#8, SubjectPublicKeyInfo, and JWK); `createPublicKey` also takes a private key or an X.509 certificate.
   They support `type`, `asymmetricKeyType`, `asymmetricKeyDetails`, `export()`, `equals()`, and `instanceof KeyObject`.
