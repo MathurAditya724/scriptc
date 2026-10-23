@@ -131,10 +131,6 @@ function dispatchHelper(
 
 const returning = (value: IrExpr, loc: SrcLoc): IrStmt[] => [{ kind: "return", value, loc }];
 
-/** Safe-read helpers mapped to their numeric twins, for the fusion of an
- * immediate ToNumber (tryLowerNumericIndexRead). */
-const numericTwins = new WeakMap<Lowerer, Map<string, string>>();
-
 /** `u[i]` read as an element or undefined (an invalid index), as the
  * typed-array and number-array reads answer. */
 export function lowerIndexedUnionRead(
@@ -164,9 +160,7 @@ export function lowerIndexedUnionRead(
     loc,
   );
   const numeric = indexedUnionNumberHelper(lowerer, receiver.type, arms, loc);
-  let twins = numericTwins.get(lowerer);
-  if (!twins) numericTwins.set(lowerer, (twins = new Map()));
-  twins.set(name, numeric);
+  lowerer.indexedUnionNumericTwins.set(name, numeric);
   return { kind: "call", callee: name, args: [receiver, index], type: resultT, loc };
 }
 
@@ -221,7 +215,7 @@ function indexedUnionNumberHelper(
 /** The numeric twin of an indexed-union read helper call, or null. */
 export function indexedUnionNumericTwin(lowerer: Lowerer, call: IrExpr): IrExpr | null {
   if (call.kind !== "call") return null;
-  const twin = numericTwins.get(lowerer)?.get(call.callee);
+  const twin = lowerer.indexedUnionNumericTwins.get(call.callee);
   return twin === undefined ? null : { ...call, callee: twin, type: F64 };
 }
 
@@ -479,12 +473,49 @@ function inlineDispatch(receiver: IrExpr, operands: readonly IrExpr[]): boolean 
   );
 }
 
-/** Whether evaluating `e` can rebind one of the plain reads `reads`. */
+/** Expressions that run no program code: reads, literals and operators
+ * over primitive values. */
+const CODE_FREE_EXPRS = new Set<IrExpr["kind"]>([
+  "numLit",
+  "boolLit",
+  "strLit",
+  "unitLit",
+  "varRef",
+  "unary",
+  "logical",
+  "ternary",
+  "toBool",
+  "strEq",
+  "strCmp",
+  "arrayGet",
+  "arrayHas",
+  "arrayState",
+  "bytesIntrinsic",
+  "fieldGet",
+  "recordGet",
+  "unionNarrow",
+  "unionIsTag",
+  "unionDisc",
+  "upcast",
+  "nullish",
+]);
+const PRIMITIVE_OPERANDS = new Set<IrType["kind"]>(["f64", "bool", "string", "bigint"]);
+
+/** Whether evaluating `e` can rebind one of the plain reads `reads`: by
+ * assigning it, or by running program code (a call, a getter, a
+ * conversion) that could assign a captured binding. */
 function rebinds(e: IrExpr, reads: readonly IrExpr[]): boolean {
   const ids = new Set(reads.flatMap((r) => (r.kind === "varRef" ? [r.localId] : [])));
   let found = false;
   const expr = (x: IrExpr): boolean => {
     if ((x.kind === "assignExpr" || x.kind === "incDec") && ids.has(x.localId)) found = true;
+    else if (x.kind === "bin") {
+      if (!PRIMITIVE_OPERANDS.has(x.left.type.kind) || !PRIMITIVE_OPERANDS.has(x.right.type.kind))
+        found = true;
+    } else if (x.kind === "call") {
+      // The union dispatch helpers only read and store elements.
+      if (!x.callee.startsWith("%union.")) found = true;
+    } else if (!CODE_FREE_EXPRS.has(x.kind)) found = true;
     return !found && everyExprChild(x, expr, stmt);
   };
   const stmt = (x: IrStmt): boolean => {

@@ -54,3 +54,55 @@ test("a typed-array union read through a computed receiver goes through one help
   // The receiver is a call: evaluated once, then dispatched by the helper.
   expect(body(llvm, "first")).toContain("@sc_bf__x25_union_getNumber");
 });
+
+const stores = `
+type Wide = Uint8Array | Uint16Array;
+const pick = (wide: boolean): Wide => (wide ? new Uint16Array(4) : new Uint8Array(4));
+function fill(xs: Wide): void {
+  for (let i = 0; i < xs.length; i++) xs[i] = i + 1;
+}
+function rebind(): void {
+  let u = pick(false);
+  let i = 0;
+  const swap = (): number => {
+    u = pick(true);
+    i = 2;
+    return 3;
+  };
+  u[i] = swap();
+  console.log(u, i);
+}
+fill(pick(process.argv.length > 9));
+rebind();
+`;
+
+test("a typed-array union store runs in place unless its value can rebind the receiver or index", async () => {
+  const llvm = await emitLlvm(stores);
+  expect(body(llvm, "fill")).not.toContain("@sc_bf__x25_union_idxSet");
+  // The call may assign the captured receiver and index, which the store
+  // read before it: the helper evaluates them first.
+  expect(body(llvm, "rebind")).toContain("@sc_bf__x25_union_idxSet");
+});
+
+test("typed-array methods on a union with a Buffer arm need a narrowing first", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-typed-array-unions-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(
+      entry,
+      `import { Buffer } from "node:buffer";
+const u: Buffer | Uint16Array = process.argv.length > 9 ? new Uint16Array(2) : Buffer.alloc(2);
+console.log(u.slice(1));
+`,
+    );
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ll"),
+      outputKind: "llvm",
+    });
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result.diagnostics)).toContain("slice");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

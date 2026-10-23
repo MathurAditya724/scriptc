@@ -948,7 +948,13 @@ export function inspectExpr(
       }
       // A Uint8Array, a Buffer and a DataView share the u8 representation
       // and print differently: the view's own flags pick.
-      return { kind: "libCall", fn: "insp.bytes", args: [value, recurse, depth], type: STRING, loc };
+      return {
+        kind: "libCall",
+        fn: "insp.bytes",
+        args: [value, recurse, depth],
+        type: STRING,
+        loc,
+      };
     case "dyn":
       return { kind: "libCall", fn: "insp.dyn", args: [value, recurse, depth], type: STRING, loc };
     case "generator":
@@ -2510,7 +2516,10 @@ export function lowerInspectValue(
         value,
         (input) => ({
           kind: "libCall",
-          fn: value.type.kind === "bytes" && value.type.elem === "u8" ? "insp.bytes" : "insp.typedArray",
+          fn:
+            value.type.kind === "bytes" && value.type.elem === "u8"
+              ? "insp.bytes"
+              : "insp.typedArray",
           args: [input, numLit(0, loc), numLit(options.depth, loc)],
           type: STRING,
           loc,

@@ -961,6 +961,11 @@ function lowerUnionBytesMethodCall(
   name: string,
 ): IrExpr | null {
   if (isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
+  // A Buffer arm's methods differ from a typed array's (slice aliases, fill
+  // checks its range, searches take strings and wrap numbers), so such a
+  // union narrows to its arms first.
+  const receiverName = lowerer.checker.typeToString(lowerer.typeOf(access.expression));
+  if (/(^|\| )(NonShared)?Buffer\b/.test(receiverName)) return null;
   const nodes = call.arguments.nodes;
   if (nodes.some(ts.isSpreadElement)) return null;
   const loc = locOf(call);
