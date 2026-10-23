@@ -32,7 +32,7 @@ import { allocateLocalUnion, storeLocalUnion } from "./local-union-storage.js";
 import { boxAccess, boxNewCall, elemAccess } from "./shapes.js";
 import { dynHoleRead } from "./loop-array-borrows.js";
 import { endsWithJump, matchStringSelfConcat } from "../../ir/analysis.js";
-import { emitDiscardedSplice } from "./expr-containers.js";
+import { charAtUnitRead, emitDiscardedSplice } from "./expr-containers.js";
 import { InternalCompilerError } from "../../errors.js";
 import { emitDenseArrayGet, emitDenseArrayPop, emitDenseArraySet } from "./dense-array-access.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
@@ -2531,7 +2531,7 @@ function charAtUnitSwitch(s: IrStmt & { kind: "switch" }): (IrStmt & { kind: "sw
     return null;
   return {
     ...s,
-    disc: { ...disc, method: "charCodeAt", type: F64 },
+    disc: charAtUnitRead(disc),
     cases: s.cases.map((c) =>
       c.test?.kind === "strLit"
         ? {

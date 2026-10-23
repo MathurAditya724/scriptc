@@ -2,7 +2,7 @@
 import { arraySearchHelperName, arraySearchKind } from "./array-search.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isStableReceiverOperand, undefinedArmTag } from "../../ir/analysis.js";
-import { type IrExpr, type IrType, isRefCounted, typeEquals, typeKey } from "../../ir/ir.js";
+import { F64, type IrExpr, type IrType, isRefCounted, typeEquals, typeKey } from "../../ir/ir.js";
 import { mangleResolveThunk } from "../mangle.js";
 import {
   arrOps,
@@ -51,6 +51,7 @@ import {
   STRING_CHAR_AT_INT_MARKER,
   STRING_CHAR_CODE_AT_DECL,
   STRING_CHAR_CODE_AT_INT_MARKER,
+  emitAsciiChar,
   emitAsciiCharCode,
   STRING_UTF16_LEN_DECL,
 } from "./string-reads.js";
@@ -285,6 +286,36 @@ export function emitArrayCopyLoop(
   host.B.line(`call double @scr_arr_push_spread(ptr ${dst}, ptr ${src})`);
 }
 
+/** The `charCodeAt` reads that stand for `charAt` reads the emitter
+ * rewrote, such as one-unit tests and switches: a loop version's proof
+ * for the charAt covers its read. */
+const unitReadOrigins = new WeakMap<IrExpr, IrExpr>();
+
+/** `s.charCodeAt(i)` in place of `s.charAt(i)`, the same index read as a
+ * code unit. */
+export function charAtUnitRead(
+  charAt: IrExpr & { kind: "strIntrinsic" },
+): IrExpr & { kind: "strIntrinsic" } {
+  const read: IrExpr & { kind: "strIntrinsic" } = {
+    kind: "strIntrinsic",
+    method: "charCodeAt",
+    receiver: charAt.receiver,
+    args: charAt.args,
+    type: F64,
+    loc: charAt.loc,
+  };
+  unitReadOrigins.set(read, charAt);
+  return read;
+}
+
+/** An enclosing loop version proved the string of `e` ASCII and its index
+ * below the length (bytes-loop-versions.ts). */
+function provenStringRead(host: LlvmEmitterContext, e: IrExpr): boolean {
+  if (host.bytesBounds.has(e)) return true;
+  const origin = unitReadOrigins.get(e);
+  return origin !== undefined && host.bytesBounds.has(origin);
+}
+
 export function emitStrIntrinsic(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "strIntrinsic" },
@@ -331,9 +362,7 @@ export function emitStrIntrinsic(
       const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
       if (index) {
         const wide = widenInteger(host, index);
-        // An enclosing loop version proved the string ASCII and the index
-        // below its length (bytes-loop-versions.ts).
-        if (host.bytesBounds.has(e))
+        if (provenStringRead(host, e))
           return { name: emitAsciiCharCode(host, r.name, wide), type: e.type };
         host.declare(STRING_CHAR_CODE_AT_INT_MARKER);
         B.line(`${t} = call double @sc_str_char_code_at_int(ptr ${r.name}, i64 ${wide})`);
@@ -348,8 +377,11 @@ export function emitStrIntrinsic(
       const t = B.tmp();
       const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
       if (index) {
-        host.declare(STRING_CHAR_AT_INT_MARKER);
         const wide = widenInteger(host, index);
+        // The table entry is immortal: nothing owns it.
+        if (provenStringRead(host, e))
+          return host.markImmortal({ name: emitAsciiChar(host, r.name, wide), type: e.type });
+        host.declare(STRING_CHAR_AT_INT_MARKER);
         B.line(`${t} = call ptr @sc_str_char_at_int(ptr ${r.name}, i64 ${wide})`);
       } else {
         const at = args[0]?.name ?? f64Lit(0);
