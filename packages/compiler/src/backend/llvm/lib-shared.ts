@@ -585,6 +585,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.ecdhConvertKey": "scr_crypto_ecdh_convert_key",
   "crypto.dhNew": "scr_crypto_dh_new",
   "crypto.checkPrimeSync": "scr_crypto_check_prime_sync",
+  "crypto.getCipherInfo": "scr_crypto_get_cipher_info",
   "crypto.checkPrimeCb": "scr_crypto_check_prime_async",
   "crypto.generatePrimeSync": "scr_crypto_generate_prime_sync",
   "crypto.generatePrimeCb": "scr_crypto_generate_prime_async",
