@@ -38,10 +38,17 @@ int main(void) {
   assert(p != NULL);
   srand(7);
   double start = now_ms();
+  /* Each deadline counts from its own arm call: arming takes time, here
+   * stretched by a pause halfway, and the poller reads the clock at each
+   * call. */
   for (int i = 0; i < KEYS; i++) {
+    if (i == KEYS / 2)
+      for (double until = now_ms() + 3; now_ms() < until;) {
+      }
     double ms = 5 + rand() % 120;
+    double t = now_ms();
     assert(scrp_timer_arm(p, &keys[i], ms, &keys[i]));
-    deadline[i] = start + ms;
+    deadline[i] = t + ms;
     state[i] = 1;
   }
   /* re-arm a third later and earlier, cancel a third (the heap and the key
