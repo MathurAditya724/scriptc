@@ -2400,6 +2400,20 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
     return { kind: "libCall", fn: "bigint.parse", args: [arg], type: BIGINT_T, loc };
   if (arg.type.kind === "f64")
     return { kind: "libCall", fn: "bigint.fromF64", args: [arg], type: BIGINT_T, loc };
+  // A typed array converts through ToPrimitive to its elements joined with
+  // ",", which BigInt then parses: one element reads as that element, none
+  // as 0n, and several throw the SyntaxError for the joined text.
+  if (arg.type.kind === "bytes") {
+    const text: IrExpr = {
+      kind: "bytesIntrinsic",
+      method: "join",
+      receiver: arg,
+      args: [{ kind: "strLit", value: ",", type: STRING, loc }],
+      type: STRING,
+      loc,
+    };
+    return { kind: "libCall", fn: "bigint.parse", args: [text], type: BIGINT_T, loc };
+  }
   if (arg.type.kind === "bool") {
     return {
       kind: "ternary",
@@ -2440,6 +2454,7 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
         arm.kind === "string" ||
         arm.kind === "f64" ||
         arm.kind === "bool" ||
+        arm.kind === "bytes" ||
         isUnitType(arm),
     )
   )
