@@ -155,6 +155,7 @@ import {
 } from "./lower-event-emitter.js";
 import { declSymbolOf } from "./lower-modules.js";
 import {
+  INSPECT_CUSTOM_MEMBER,
   classSymbolKeyOf,
   classSymbolKeyOfSymbol,
   symbolFieldDisplayName,
@@ -3208,6 +3209,15 @@ export function collectClassShapeInner(
             symbolMethods.set(key.identity, mName);
           }
         }
+        // Error values held as untyped values render through their error
+        // encoding, which keeps no compiled methods to call.
+        if (mName === INSPECT_CUSTOM_MEMBER && errorRooted) {
+          lowerer.unsupported(
+            "SC1090",
+            member.name,
+            "[util.inspect.custom] methods on Error subclasses",
+          );
+        }
         // Generator calls use their spawn wrapper. Public methods are
         // direct calls only when no subclass overrides the method;
         // override chains involving generators fence below.
@@ -4422,6 +4432,9 @@ export function collectClassShapeInner(
         ...(methods.size > 0 ? { methods: [...methods.keys()] } : {}),
         ...((): { prototypeNames?: string[] } => {
           const names = classPrototypeNames(decl);
+          // A [util.inspect.custom] method, by its reserved slot name: the
+          // checked-dynamic inspect walk refuses instances that have one.
+          if (methods.has(INSPECT_CUSTOM_MEMBER)) names.push(INSPECT_CUSTOM_MEMBER);
           return names.length > 0 ? { prototypeNames: names } : {};
         })(),
         ...(abstractClass ? { abstract: true as const } : {}),
