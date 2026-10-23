@@ -219,6 +219,8 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.chunkDone",
   "stream.objectMode",
   "stream.decodeStrings",
+  "stream.optionValues",
+  "stream.checkEncodingOption",
   "stream.duplexFromGen",
   "stream.duplexFromDyn",
   "stream.duplexFromPromise",

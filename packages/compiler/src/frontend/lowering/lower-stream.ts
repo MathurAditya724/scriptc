@@ -179,15 +179,15 @@ export const UNDERSCORE_METHODS: ReadonlyMap<string, string> = new Map([
 
 /** The option callbacks applied after construction rather than through
  * the constructor's callback slots (option name → method name): construct
- * on every stream class, and writev on the writable classes whose
- * machinery hands it batches (Writable and Duplex). */
+ * on every stream class, and writev on every class with a writable side
+ * (a Transform's batches reach writev, not the transform, as in Node). */
 export const STREAM_EXTRA_CALLBACKS: ReadonlyMap<string, string> = new Map([
   ["construct", "_construct"],
   ["writev", "_writev"],
 ]);
 
 export function streamExtraCallbacks(cls: string): readonly string[] {
-  return cls === "%Writable" || cls === "%Duplex" ? ["construct", "writev"] : ["construct"];
+  return cls === "%Readable" ? ["construct"] : ["construct", "writev"];
 }
 
 /** The completion callback's parameter position in each underscore
@@ -442,6 +442,13 @@ interface StreamOptions {
    * right after construction (Node's constructors call addAbortSignal
    * once the state exists), or null when absent. */
   signal: IrExpr | null;
+  /** Non-literal decodeStrings and defaultEncoding values: valueDecls
+   * evaluates them into locals before construction (the defaultEncoding
+   * validated there, as the state constructors throw before the stream
+   * exists), and stream.optionValues applies them to the fresh stream. */
+  valueDecls: IrStmt[];
+  decodeStringsValue: IrExpr | null;
+  defaultEncodingValue: IrExpr | null;
   /** The objectMode option's sides (a Duplex's readableObjectMode and
    * writableObjectMode set one side): applied with stream.objectMode
    * right after construction. */
@@ -732,12 +739,71 @@ function pinAnyDataCompletion(
   if (!symbol || lowerer.stageSourceTypes.has(symbol)) return null;
   const declared = lowerer.paramShape(param).type;
   if (declared.kind !== "func" || declared.rest || declared.params[1]?.kind !== "dyn") return null;
+  // Only when every use calls the callback with a Buffer, a string or
+  // nothing as `data`: another value (or a callback that escapes) keeps
+  // `data` checked-dynamic, so the runtime pushes it as push(data) does
+  // and reports ERR_INVALID_ARG_TYPE through 'error', as Node does.
+  if (fnNode.body === undefined || !completionDataIsChunk(lowerer, fnNode.body, symbol, param.name))
+    return null;
   const data = unionOf(lowerer, [BYTES, STRING, { kind: "undefinedT" }]);
   lowerer.stageSourceTypes.set(
     symbol,
     funcOf([declared.params[0]!, data, ...declared.params.slice(2)], declared.ret),
   );
   return symbol;
+}
+
+/** Whether every reference to the completion callback `symbol` in `body`
+ * calls it with a `data` argument that is a Buffer, a string, null or
+ * undefined (or with no data). */
+function completionDataIsChunk(
+  lowerer: Lowerer,
+  body: ts.Node,
+  symbol: ts.Symbol,
+  declaration: ts.Node,
+): boolean {
+  let ok = true;
+  const visit = (node: ts.Node): void => {
+    if (!ok) return;
+    if (
+      ts.isIdentifier(node) &&
+      node !== declaration &&
+      lowerer.checker.getSymbolAtLocation(node) === symbol
+    ) {
+      const call = node.parent;
+      if (!call || !ts.isCallExpression(call) || call.expression !== node) {
+        ok = false;
+        return;
+      }
+      const data = call.arguments.nodes[1];
+      if (data !== undefined) {
+        let t: IrType | null;
+        try {
+          t = lowerer.mapTypeOf(lowerer.typeOf(data));
+        } catch {
+          t = null;
+        }
+        const arms =
+          t?.kind === "union" ? (lowerer.unions.get(t.unionId)?.arms ?? null) : t ? [t] : null;
+        if (
+          arms === null ||
+          !arms.every(
+            (a) =>
+              (a.kind === "bytes" && a.elem === "u8") ||
+              a.kind === "string" ||
+              a.kind === "undefinedT" ||
+              a.kind === "nullT",
+          )
+        ) {
+          ok = false;
+          return;
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+  return ok;
 }
 
 /** Parses the options object literal of a stream constructor. `which`
@@ -767,6 +833,9 @@ function parseStreamOptions(
     badEncoding: null,
     pushEncoding: null,
     signal: null,
+    valueDecls: [],
+    decodeStringsValue: null,
+    defaultEncodingValue: null,
     readableObject: false,
     writableObject: false,
     decodeStringsOff: false,
@@ -802,6 +871,21 @@ function parseStreamOptions(
     optsLit !== undefined &&
     ts.isObjectLiteralExpression(optsLit) &&
     literalWritesValues(optsLit, ctorName !== "Readable" && ctorName !== "Writable");
+  // In JavaScript a decodeStrings value known only at run time may let
+  // string writes through, so the write and transform callbacks' chunk
+  // parameters read as any (the declarations type it Buffer).
+  const runtimeDecodeStrings =
+    optsLit !== undefined &&
+    isJsSourceFile(ts.getSourceFileOfNode(optsLit)) &&
+    ts.isObjectLiteralExpression(optsLit) &&
+    (optsLit.properties?.nodes ?? []).some(
+      (p) =>
+        ts.isPropertyAssignment(p) &&
+        (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+        p.name.text === "decodeStrings" &&
+        p.initializer.kind !== ts.SyntaxKind.TrueKeyword &&
+        p.initializer.kind !== ts.SyntaxKind.FalseKeyword,
+    );
   if (out.readableObject) out.hwmR = numLit(16, loc);
   if (out.writableObject) out.hwmW = numLit(16, loc);
   const tuples = cbTuples(lowerer);
@@ -851,6 +935,7 @@ function parseStreamOptions(
       }
       const full = tuples[name]!.map((t) => (t === "fn" ? null : t));
       const pinned = out.readableObject ? null : pinAnyDataCompletion(lowerer, name, fnNode);
+      let anyChunk: ts.Symbol | undefined;
       try {
         // The completion-callback tail: typed by the checker contextually;
         // accept the user's declared func type as the tuple's entry so the
@@ -867,12 +952,22 @@ function parseStreamOptions(
           }
           return declared ?? funcOf([], VOID);
         });
+        const chunkParam =
+          runtimeDecodeStrings && (name === "write" || name === "transform")
+            ? fnNode.parameters.nodes[0]
+            : undefined;
+        anyChunk =
+          chunkParam !== undefined && ts.isIdentifier(chunkParam.name) && !chunkParam.type
+            ? lowerer.checker.getSymbolAtLocation(chunkParam.name)
+            : undefined;
+        if (anyChunk) lowerer.anySymbols.add(anyChunk);
         present.set(
           name,
           lowerStreamCallback(lowerer, name, fnNode, thisType, tuple, writesValues),
         );
       } finally {
         if (pinned) lowerer.stageSourceTypes.delete(pinned);
+        if (anyChunk) lowerer.anySymbols.delete(anyChunk);
       }
       continue;
     }
@@ -925,11 +1020,15 @@ function parseStreamOptions(
           if (writableClass) out.decodeStringsOff = true;
           break;
         }
-        lowerer.noLowering(
-          `${ctorName} with a runtime 'decodeStrings' value`,
-          prop,
-          "write 'decodeStrings: true' or 'decodeStrings: false'",
-        );
+        // a runtime value: WritableState's `options.decodeStrings !== false`
+        const local = lowerer.declareHiddenLocal("%decodeStrings", DYN);
+        out.valueDecls.push({
+          kind: "varDecl",
+          localId: local.id,
+          init: lowerer.lowerExprExpecting(value, DYN),
+          loc,
+        });
+        if (writableClass) out.decodeStringsValue = varRef(local.id, DYN, loc);
         break;
       }
       case "encoding": {
@@ -973,11 +1072,33 @@ function parseStreamOptions(
             break;
           }
         }
-        lowerer.noLowering(
-          `the ${ctorName} option 'defaultEncoding' with a runtime value`,
-          prop,
-          "write the encoding as a string literal",
-        );
+        {
+          // a runtime value: null, undefined and utf8 are the default,
+          // another name Buffer.isEncoding knows is kept as given, and any
+          // other value throws ERR_UNKNOWN_ENCODING before construction
+          const local = lowerer.declareHiddenLocal("%defaultEncoding", DYN);
+          const ref = varRef(local.id, DYN, loc);
+          out.valueDecls.push(
+            {
+              kind: "varDecl",
+              localId: local.id,
+              init: lowerer.lowerExprExpecting(value, DYN),
+              loc,
+            },
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "stream.checkEncodingOption",
+                args: [ref],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          );
+          out.defaultEncodingValue = ref;
+        }
         break;
       case "signal": {
         // `if (options.signal) addAbortSignal(options.signal, this)`:
@@ -1041,9 +1162,7 @@ function parseStreamOptions(
         lowerer.noLowering(
           `the ${ctorName} option 'writev'`,
           prop,
-          ctorName === "Readable"
-            ? "a Readable has no writable side"
-            : "batched writes on a Transform would bypass its transform — writev is supported on Writable and Duplex",
+          "a Readable has no writable side",
         );
         break;
       default:
@@ -1083,6 +1202,9 @@ function streamCtorArgs(
   badEncoding: string | null;
   pushEncoding: string | null;
   signal: IrExpr | null;
+  valueDecls: IrStmt[];
+  decodeStringsValue: IrExpr | null;
+  defaultEncodingValue: IrExpr | null;
   readableObject: boolean;
   writableObject: boolean;
   decodeStringsOff: boolean;
@@ -1117,6 +1239,9 @@ function streamCtorArgs(
     badEncoding: o.badEncoding,
     pushEncoding: o.pushEncoding,
     signal: o.signal,
+    valueDecls: o.valueDecls,
+    decodeStringsValue: o.decodeStringsValue,
+    defaultEncodingValue: o.defaultEncodingValue,
     readableObject: o.readableObject,
     writableObject: o.writableObject,
     decodeStringsOff: o.decodeStringsOff,
@@ -1237,6 +1362,18 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
       loc,
     };
   }
+  const values = optionValuesArgs(parsed, loc);
+  if (values) {
+    // runtime decodeStrings and defaultEncoding values (answers the
+    // receiver +1)
+    built = {
+      kind: "libCall",
+      fn: "stream.optionValues",
+      args: [built, ...values],
+      type: thisType,
+      loc,
+    };
+  }
   if (parsed.pushEncoding !== null) {
     // { defaultEncoding }: chain the push-side decode default (the
     // setEncoding chaining shape — answers the receiver +1).
@@ -1269,8 +1406,11 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
       loc,
     };
   }
-  if (!parsed.decodeStringsOff && parsed.writeEncoding === null && parsed.extras.length === 0)
-    return built;
+  if (!parsed.decodeStringsOff && parsed.writeEncoding === null && parsed.extras.length === 0) {
+    return parsed.valueDecls.length > 0
+      ? { kind: "seqExpr", stmts: parsed.valueDecls, result: built, type: thisType, loc }
+      : built;
+  }
   const fresh = lowerer.declareHiddenLocal("%stream", thisType);
   const followUps = streamOptionFollowUps(
     parsed,
@@ -1280,11 +1420,28 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
   );
   return {
     kind: "seqExpr",
-    stmts: [{ kind: "varDecl", localId: fresh.id, init: built, loc }, ...followUps],
+    stmts: [
+      ...parsed.valueDecls,
+      { kind: "varDecl", localId: fresh.id, init: built, loc },
+      ...followUps,
+    ],
     result: varRef(fresh.id, thisType, loc),
     type: thisType,
     loc,
   };
+}
+
+/** stream.optionValues' (decodeStrings, defaultEncoding) arguments, or
+ * null when both options are literals or absent. */
+function optionValuesArgs(
+  parsed: { decodeStringsValue: IrExpr | null; defaultEncodingValue: IrExpr | null },
+  loc: SrcLoc,
+): IrExpr[] | null {
+  if (parsed.decodeStringsValue === null && parsed.defaultEncodingValue === null) return null;
+  return [
+    parsed.decodeStringsValue ?? dynUndefinedExpr(loc),
+    parsed.defaultEncodingValue ?? dynUndefinedExpr(loc),
+  ];
 }
 
 /** True when a value of Node's argument type `passed` widens implicitly
@@ -1589,6 +1746,7 @@ export function lowerStreamSuperCall(
     ];
   }
   const out: IrStmt[] = [
+    ...parsed.valueDecls,
     {
       kind: "exprStmt",
       expr: {
@@ -1608,6 +1766,20 @@ export function lowerStreamSuperCall(
         kind: "libCall",
         fn: "stream.objectMode",
         args: [thisRef(), boolLit(parsed.readableObject, loc), boolLit(parsed.writableObject, loc)],
+        type: thisType,
+        loc,
+      },
+      loc,
+    });
+  }
+  const values = optionValuesArgs(parsed, loc);
+  if (values) {
+    out.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "stream.optionValues",
+        args: [thisRef(), ...values],
         type: thisType,
         loc,
       },
@@ -1699,12 +1871,20 @@ export function lowerStreamUnderscoreAssign(
   const clsName = cls.slice(1);
   if (methodName === "_construct") {
     // Node's constructor reads _construct once; a later assignment has no
-    // effect there
-    lowerer.noLowering(
-      `assigning '${methodName}' on a ${clsName}`,
-      expr.left,
-      "declare _construct on the class or pass the construct option",
-    );
+    // effect on the stream, so only the receiver and the value are
+    // evaluated
+    const value = lowerer.lowerExpr(expr.right);
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: recv, loc }],
+        result: value,
+        type: value.type,
+        loc,
+      },
+      loc,
+    };
   }
   const which = methodName === "_writev" ? "writev" : optionByMethod.get(methodName)!;
   const { accepted } = streamCtorShape(cls);

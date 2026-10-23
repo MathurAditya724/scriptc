@@ -32,9 +32,9 @@
   `readable.compose(stage, { signal })` is `stream.compose(readable, stage)` with the signal added; the options are an object literal whose `signal` is a variable or a property read.
   `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.
   Stream constructors accept a `signal` option in an options object literal, and `stream.addAbortSignal` accepts any stream.
-  The `construct` option and `_construct` method, `decodeStrings`, and `defaultEncoding` work on every stream class, and the `writev` option and `_writev` method on Writable and Duplex; `writev` on a Transform or PassThrough, assigning `_construct` after construction, and a non-literal `decodeStrings` or `defaultEncoding` in an options object literal are unsupported.
+  The `construct` option and `_construct` method, `decodeStrings`, and `defaultEncoding` work on every stream class, and the `writev` option and `_writev` method on every class with a writable side.
+  In typed code, a `writev` entry's `encoding` declared as a string receives `""` where Node passes `undefined` or `null` (an object-mode write).
   `setDefaultEncoding()` takes any encoding Node knows.
-  A `transform` or `flush` option callback whose completion callback types `data` as `any`, as @types/node's `TransformCallback` does, may pass a Buffer, a string, or nothing; any other value throws a TypeError where the callback is called, instead of Node's `ERR_INVALID_ARG_TYPE` stream error.
   `node:readline` and `node:readline/promises` (also reached as `readline.promises`) interfaces, from `createInterface(options)` or `createInterface(input, output, completer, terminal)`, read `process.stdin` or a readable stream: `question`, `prompt`, `write` (with a key object literal of `name`, `ctrl`, `meta`, and `shift`), `pause`, `resume`, `'line'`/`'close'`/`'pause'`/`'resume'`/`'error'`/`'history'`/`'SIGINT'`/`'SIGTSTP'`/`'SIGCONT'` listeners, and `for await` compile.
   `on`, `once`, and `addListener` return the interface, so registrations chain.
   The `history`, `historySize`, `removeHistoryDuplicates`, `completer`, `tabSize`, and `escapeCodeTimeout` options are validated as in Node.
