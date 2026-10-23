@@ -1000,6 +1000,11 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
  * retained view released with the record. Its capsules adopt that view, and
  * the typed serializers consult `has` to serialize through the capsule.
  * `apply` consumes a fresh copying snapshot and returns it merged (+1). */
+/* The declaration-typed boundary's adoption (scr_json.c): every object or
+ * array of `source` that something else still references becomes a live
+ * capsule of the native value `capsule` built from it. Throws the path
+ * TypeError, changing nothing, when a converted node is not plain data. */
+void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
