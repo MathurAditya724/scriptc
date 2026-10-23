@@ -16,6 +16,9 @@
   "cpu": [
     "arm64"
   ],
+  "libc": [
+    "glibc"
+  ],
   "files": [
     "libnode.so.137",
     "libscr_node_bridge.so",

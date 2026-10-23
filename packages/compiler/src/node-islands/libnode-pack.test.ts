@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
+import { compilerReleaseVersion } from "../library/sidecar.js";
 import { NODE_BRIDGE_ABI, libnodeRecord } from "./libnode.js";
 import {
   LIBNODE_PACK_SCHEMA,
@@ -48,7 +49,10 @@ function fakePack(
   writeFileSync(join(dir, "libnode.so.137"), libnode);
   writeFileSync(join(dir, "libscr_node_bridge.so"), bridge);
   writeFileSync(join(dir, "LICENSE"), "Node.js is licensed for use as follows:\n\nMIT\n");
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version: "0.4.1" }));
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({ name, version: compilerReleaseVersion() }),
+  );
   const manifest: Record<string, unknown> = {
     schema: LIBNODE_PACK_SCHEMA,
     nodeVersion: "24.22.0",
@@ -59,7 +63,7 @@ function fakePack(
     libnode: "libnode.so.137",
     bridge: "libscr_node_bridge.so",
     package: name,
-    version: "0.4.1",
+    version: compilerReleaseVersion(),
     target: "linux-x64-gnu",
     license: "LICENSE",
     files: { "libnode.so.137": entry(libnode), "libscr_node_bridge.so": entry(bridge) },
@@ -180,6 +184,22 @@ describe("finding the installed pack", () => {
   });
 });
 
+test("an installed pack of another scriptc version is refused", () => {
+  const root = temp();
+  const name = libnodePackPackage(hostLibnodeTarget());
+  if (name === null) return;
+  const pack = fakePack(
+    join(root, "node_modules", name),
+    (m) => {
+      m["version"] = "0.0.1";
+    },
+    name,
+  );
+  expect(libnodeRecord(undefined, join(root, "app"), {}, root)).toBe(
+    `the installed libnode pack ${name} at ${pack} is version 0.0.1; this scriptc is ${compilerReleaseVersion()}: install ${name}@${compilerReleaseVersion()}`,
+  );
+});
+
 describe("readLibnodePack", () => {
   test("reads a pack in build-pack.mjs's format and checks its package", () => {
     const pack = fakePack(join(temp(), "pack"));
@@ -233,7 +253,7 @@ test("the license notices carry Node's LICENSE", () => {
   expect(path).toBe(`${out}.licenses.txt`);
   expect(readFileSync(path, "utf8")).toBe(
     [
-      "server runs part of its code in Node.js 24.22.0, loaded from libnode.so.137 (@scriptc/libnode-linux-x64-gnu@0.4.1).",
+      `server runs part of its code in Node.js 24.22.0, loaded from libnode.so.137 (@scriptc/libnode-linux-x64-gnu@${compilerReleaseVersion()}).`,
       "Node.js and the components it bundles are licensed as follows. The scriptc bridge,",
       "libscr_node_bridge.so, is licensed under Apache-2.0.",
       "",

@@ -16,4 +16,12 @@ if (mode !== "never") {
   console.log("mapped after", mapped());
 }
 if (mode === "exit") process.exit(5);
+if (mode === "fork") console.log(callSync<string>("./helper.cjs", "forkSelf"));
+if (mode === "unreadable") {
+  try {
+    callSync("./helper.cjs", "unreadable");
+  } catch (error) {
+    console.log("caught", error instanceof Error, JSON.stringify((error as Error).message));
+  }
+}
 console.log("done");

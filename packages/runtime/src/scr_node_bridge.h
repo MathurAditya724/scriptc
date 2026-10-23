@@ -16,7 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 2u
+#define SCR_NODE_BRIDGE_ABI 3u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -27,6 +27,12 @@ typedef struct ScrNodeBridgeHost {
   /* Node ends the process (process.exit, an uncaught exception): the
    * runtime runs its exit sequence with this code and never returns. */
   void (*exit)(int code);
+  /* The start (highest address) of the stack the caller runs on when the
+   * runtime provides it (Node's own stack), 0 for a thread's own stack.
+   * V8 scans the stack conservatively from the current position up to the
+   * start it records for the thread, so it must not record the thread's
+   * when JavaScript runs on the runtime's stack. */
+  uintptr_t (*stack_start)(void);
 } ScrNodeBridgeHost;
 
 typedef struct ScrNodeBridge {
@@ -58,6 +64,10 @@ typedef struct ScrNodeBridge {
   void (*pump)(void);
   /* Tears Node down at process exit. */
   void (*stop)(void);
+  /* The program ends with `code`, before stop: Node's 'beforeExit' and
+   * 'exit' run, and the result is the code Node's process ends with
+   * (process.exitCode in Node, else `code`). */
+  int (*finish)(int code);
 } ScrNodeBridge;
 
 #endif /* SCR_NODE_BRIDGE_H */

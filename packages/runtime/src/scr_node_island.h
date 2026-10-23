@@ -14,6 +14,15 @@
  * before %main. */
 void scr_node_island_install(const char *libnode, const char *node_version);
 
+/* Records the island module tree (node-islands/modules.ts): its manifest,
+ * and its files concatenated in manifest order when the executable carries
+ * them (NULL when they ship beside it at `location`, a `$ORIGIN/` path; ""
+ * otherwise). All static. The emitted main calls it after
+ * scr_node_island_install. */
+void scr_node_island_install_modules(const char *manifest, size_t manifest_len,
+                                     const unsigned char *data, size_t data_len,
+                                     const char *location);
+
 /* @scriptc/node callSync(specifier, name, ...args): `file` is the calling
  * module's path (relative specifiers resolve from it), `args` the boxed
  * argument array, copied as JSON. Returns the JSON copy of the result, +1,

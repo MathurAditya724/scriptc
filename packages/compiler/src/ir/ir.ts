@@ -1009,6 +1009,18 @@ export function isRefCounted(t: IrType): boolean {
 
 /* ── module ────────────────────────────────────────────────────────────── */
 
+/** The island module tree of a program (node-islands/modules.ts): paths
+ * relative to `root`, the directory on the build machine that holds them.
+ * Only the relative paths enter an executable. */
+export interface IrNodeIslandModules {
+  root: string;
+  files: { path: string; size: number; sha256: string }[];
+  links: { path: string; target: string }[];
+  /** Where the executable finds the tree: absent when it carries the tree
+   * itself, else a `$ORIGIN/` path (`--libnode=beside`). */
+  location?: string;
+}
+
 export interface IrModule {
   /** Bumped on any breaking IR change; serialize.ts refuses mismatches. */
   irVersion: 17;
@@ -1067,7 +1079,13 @@ export interface IrModule {
    * executable) and the exact Node version its bridge links. Set by the
    * executable build (node-islands/libnode.ts); the emitted main records
    * both before %main. */
-  nodeIsland?: { libnode: string; nodeVersion: string };
+  nodeIsland?: {
+    libnode: string;
+    nodeVersion: string;
+    /** The modules the calls load (node-islands/modules.ts), when any call
+     * loads a file. */
+    modules?: IrNodeIslandModules;
+  };
   /** Outbound native FFI declarations used by `ffiCall` expressions.
    * These are link-time C ABI imports, not runtime dynamic-library handles:
    * executable builds resolve their symbols from the manifest's archive
@@ -3904,8 +3922,10 @@ export type IrExpr =
    * not shape equality; missing or wrong-typed fields throw, EXCEPT that a
    * missing key for an undefined-armed union field — an optional field —
    * builds the interned undefined arm instead); arrays check every element;
-   * unions try arms in canonical order and the first FULL match wins (no
-   * match → throw; an undefined arm matches no dyn value); JSON null matches
+   * unions try arms in canonical order, except that record arms with more
+   * required fields and then more fields go first, and the first FULL match
+   * wins (no match → throw; an undefined arm matches no dyn value); JSON
+   * null matches
    * exactly the nullT arm of a union target (bare null targets cannot
    * exist). MAY THROW:
    * backends' may-throw analyses must treat it like a `throw` statement.
