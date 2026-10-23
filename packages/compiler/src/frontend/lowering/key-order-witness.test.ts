@@ -15,6 +15,7 @@ import {
   type KeyOrderSegment,
 } from "./key-order-witness.js";
 import type { Lowerer } from "./lowerer.js";
+import * as ts from "../ts7/adapter.js";
 
 const loc = { file: "order.ts", start: 0, end: 1 };
 /** `number | undefined`: the optional-field slot type. */
@@ -40,6 +41,7 @@ function fixture(): Fixture {
     keyOrder: notes,
     unions: new Map([["u0", { id: "u0", arms: [F64, { kind: "undefinedT" }] }]]),
     classes: new Map(),
+    methodAccessSites: new Map(),
     armTag: (unionId: string, arm: IrType): number =>
       unionId === "u0" && arm.kind === "undefinedT" ? 1 : -1,
     recordFieldPresent: (obj: IrExpr, shapeId: string, field: string): IrExpr => ({
@@ -739,20 +741,38 @@ test("a replaceable method's checked result builds no record", () => {
   expect(
     selfCopy((f, ab) => {
       const result: IrExpr = { kind: "dynCheck", value: ref("r", { kind: "dyn" }), type: ab, loc };
-      return [observe(f.notes.methodResult(result))];
+      return [observe(f.notes.methodResult(result, "load"))];
     }),
   ).toEqual(["b", "a"]);
+});
+
+test("a replaceable method's checked result builds records when a replacement may return one", () => {
+  expect(
+    selfCopy((f, ab) => {
+      // A site the census cannot see through (a computed write of some
+      // value, a reflection call) may install a replacement returning a
+      // record built in any order.
+      (f.lowerer.methodAccessSites as Map<string, ts.Node[]>).set("load", [
+        { kind: ts.SyntaxKind.CallExpression } as unknown as ts.Node,
+      ]);
+      const result: IrExpr = { kind: "dynCheck", value: ref("r", { kind: "dyn" }), type: ab, loc };
+      return [observe(f.notes.methodResult(result, "load"))];
+    }),
+  ).toEqual(["a", "b"]);
 });
 
 test("a replaceable method's result keeps its witness through an IR rewrite", () => {
   expect(
     selfCopy((f, ab) => {
-      const result = f.notes.methodResult({
-        kind: "dynCheck",
-        value: ref("r", { kind: "dyn" }),
-        type: ab,
-        loc,
-      });
+      const result = f.notes.methodResult(
+        {
+          kind: "dynCheck",
+          value: ref("r", { kind: "dyn" }),
+          type: ab,
+          loc,
+        },
+        "load",
+      );
       const identity = { expr: (e: IrExpr): IrExpr => e, stmt: (st: IrStmt): IrStmt => st };
       observeRecordLiteralRebuilds((from, to) => f.notes.follow(from, to));
       try {

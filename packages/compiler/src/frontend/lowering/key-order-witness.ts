@@ -69,6 +69,7 @@ import {
   transformStmtList,
 } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
+import * as ts from "../ts7/adapter.js";
 import { ALWAYS_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 
 /** The statements a key-order helper runs for record `ref`: `walks[0]`,
@@ -124,7 +125,7 @@ export type KeyOrderSegment =
 export class KeyOrderNotes {
   private readonly literals = new Map<IrExpr, KeyOrderSegment[]>();
   private readonly copies = new Map<IrExpr, string>();
-  private readonly methodResults = new Set<IrExpr>();
+  private readonly methodResults = new Map<IrExpr, string>();
   /** Shapes a frontend order surface (keys, values/entries, inspect,
    * index-signature merges) walks. */
   readonly observed = new Set<string>();
@@ -141,10 +142,10 @@ export class KeyOrderNotes {
     return node;
   }
 
-  /** The checked result of a typed call of a method the program may
-   * replace on its instance (class-callbacks.ts classCallbackCall). */
-  methodResult(node: IrExpr): IrExpr {
-    this.methodResults.add(node);
+  /** The checked result of a typed call of method `name`, which the program
+   * may replace on its instance (class-callbacks.ts classCallbackCall). */
+  methodResult(node: IrExpr, name: string): IrExpr {
+    this.methodResults.set(node, name);
     return node;
   }
 
@@ -155,7 +156,8 @@ export class KeyOrderNotes {
     if (segments !== undefined) this.literals.set(to, segments);
     const source = this.copies.get(from);
     if (source !== undefined) this.copies.set(to, source);
-    if (this.methodResults.has(from)) this.methodResults.add(to);
+    const method = this.methodResults.get(from);
+    if (method !== undefined) this.methodResults.set(to, method);
   }
 
   observe(type: IrType): void {
@@ -170,8 +172,9 @@ export class KeyOrderNotes {
     return this.copies.get(node);
   }
 
-  isMethodResult(node: IrExpr): boolean {
-    return this.methodResults.has(node);
+  /** The method whose checked result `node` is, if it is one. */
+  methodResultOf(node: IrExpr): string | undefined {
+    return this.methodResults.get(node);
   }
 }
 
@@ -243,6 +246,54 @@ function primitiveSource(node: IrExpr & { kind: "dynCheck" }): boolean {
   return node.value.kind === "dynFrom" && PRIMITIVE_KINDS.has(node.value.value.type.kind);
 }
 
+/** Whether a census site for a method name can only read the method or
+ * install a replacement whose result holds no object: a read
+ * (`C.prototype.m`, `obj.m`) outside an assignment target, or an assignment
+ * of a function expression whose return type is primitive. Other sites (a
+ * computed write of another value, a reflection call, a property bag) may
+ * install a replacement that returns a record. */
+function replacesWithoutRecords(lowerer: Lowerer, site: ts.Node): boolean {
+  const parent = site.parent;
+  if (ts.isPropertyAccessExpression(site) || ts.isElementAccessExpression(site))
+    return !(
+      parent !== undefined &&
+      ts.isBinaryExpression(parent) &&
+      parent.left === site &&
+      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    );
+  if (!ts.isBinaryExpression(site) || site.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+    return false;
+  let value = site.right;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isArrowFunction(value) && !ts.isFunctionExpression(value)) return false;
+  const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(value));
+  return (
+    signatures.length > 0 &&
+    signatures.every((signature) =>
+      primitiveOnly(lowerer.checker.getReturnTypeOfSignature(signature)),
+    )
+  );
+}
+
+/** A type whose values are primitives (or void): it holds no record. */
+function primitiveOnly(type: ts.Type): boolean {
+  if (type.isUnionType()) return ts.constituentTypes(type).every(primitiveOnly);
+  return (
+    (type.flags &
+      (ts.TypeFlags.StringLike |
+        ts.TypeFlags.NumberLike |
+        ts.TypeFlags.BooleanLike |
+        ts.TypeFlags.BigIntLike |
+        ts.TypeFlags.ESSymbolLike |
+        ts.TypeFlags.Null |
+        ts.TypeFlags.Undefined |
+        ts.TypeFlags.Void |
+        ts.TypeFlags.Never)) !==
+    0
+  );
+}
+
 /** Chooses each in-scope record shape's enumeration table from its
  * witnesses. Runs once retained reachability has settled the historical
  * tables and derived metadata, before the order-snapshotting helper bodies
@@ -294,16 +345,24 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   const shapesIn = (type: IrType, out: Set<string>, seen: Set<string>, produced = false): void => {
     const visit = (t: IrType, built: boolean): boolean => {
       const mark = built ? "" : "-";
+      // A container JavaScript builds converts into fresh native storage, so
+      // its children are built too. One passed out stays shared: JavaScript
+      // writes into it (built children) and reads native values out of it,
+      // such as callbacks whose parameters it then builds (children passed
+      // out). Those children count in both directions.
+      const child = (type: IrType): boolean => {
+        visit(type, true);
+        if (!built) visit(type, false);
+        return true;
+      };
       if (t.kind === "record") {
         if (seen.has(mark + "r:" + t.shapeId)) return true;
         seen.add(mark + "r:" + t.shapeId);
         if (built) out.add(t.shapeId);
         const shape = shapes.get(t.shapeId);
         if (shape) {
-          // A record passed out can be written through: its fields take
-          // values JavaScript builds.
-          for (const f of shape.fields) visit(f.type, true);
-          if (shape.indexValue) visit(shape.indexValue, true);
+          for (const f of shape.fields) child(f.type);
+          if (shape.indexValue) child(shape.indexValue);
         }
         return true;
       }
@@ -315,17 +374,16 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       }
       if (t.kind === "object") {
         if (produced && t.className !== "%Error") return true;
-        if (seen.has("c:" + t.className)) return true;
-        seen.add("c:" + t.className);
-        for (const f of lowerer.classes.get(t.className)?.def.fields ?? []) visit(f.type, true);
+        if (seen.has(mark + "c:" + t.className)) return true;
+        seen.add(mark + "c:" + t.className);
+        for (const f of lowerer.classes.get(t.className)?.def.fields ?? []) child(f.type);
         return true;
       }
       if (produced && t.kind === "func") {
         for (const param of t.params) visit(param, !built);
         return visit(t.ret, built);
       }
-      // Containers passed out stay writable: their elements count as built.
-      return everyTypeChild(t, (child) => visit(child, true));
+      return everyTypeChild(t, child);
     };
     visit(type, true);
   };
@@ -338,6 +396,14 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
    * declaration's order, the order their table holds. */
   const declaredShapes = new Set<string>();
   const declaredSeen = new Set<string>();
+  /** The checked result of a replaceable method call while every site that
+   * can replace the method installs functions that return no record. */
+  const unchangedMethodResult = (node: IrExpr): boolean => {
+    const name = notes.methodResultOf(node);
+    if (name === undefined) return false;
+    const sites = lowerer.methodAccessSites.get(name) ?? [];
+    return sites.every((site) => replacesWithoutRecords(lowerer, site));
+  };
   const producedBy = (type: IrType, opaque: boolean): void => {
     if (opaque) shapesIn(type, opaqueShapes, opaqueSeen);
     else shapesIn(type, runtimeShapes, runtimeSeen, true);
@@ -449,10 +515,10 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       case "dynCheck":
         if (e.adopt === true) shapesIn(e.type, declaredShapes, declaredSeen);
         // Conversions that build no record: a boxed primitive, and a
-        // replaceable method's result, which is the value the method
-        // returns (boxed and checked back unchanged) or what a replacement
-        // installed on the instance returns.
-        else if (!orderPreservingClone(e) && !primitiveSource(e) && !notes.isMethodResult(e))
+        // replaceable method's result while no replacement the program can
+        // install returns a record: then it is the method's own value,
+        // boxed and checked back unchanged.
+        else if (!orderPreservingClone(e) && !primitiveSource(e) && !unchangedMethodResult(e))
           producedBy(e.type, false);
         return;
       case "dynDestrCheck":
