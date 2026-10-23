@@ -927,8 +927,9 @@ function bytesSetIntrinsic(
 
 /** `Uint8Array.prototype.set.call(target, src, offset?)`, through any typed
  * array constructor's prototype (they share %TypedArray%.prototype.set). A
- * typed-array target lowers like `target.set(src, offset)`. Any other
- * target is checked at run time: a typed array calls its `set`, and
+ * target the checker types as a typed array or Buffer lowers like
+ * `target.set(src, offset)`. Any other target, a DataView included, is
+ * checked at run time: a typed array calls its `set`, and
  * anything else throws Node's TypeError "this is not a typed array.",
  * after every argument is evaluated. */
 export function lowerBytesPrototypeSetCall(
@@ -961,7 +962,16 @@ export function lowerBytesPrototypeSetCall(
   if (argNodes.length < 2 || argNodes.length > 3 || argNodes.some(ts.isSpreadElement)) return null;
   const loc = locOf(call);
   const target = lowerer.lowerExpr(argNodes[0]!);
-  if (target.type.kind === "bytes")
+  // A DataView lowers to the same bytes type, so the checker type decides:
+  // only a typed array (or a Buffer) takes the method's path.
+  const targetSymbol = lowerer.typeOf(argNodes[0]!).getSymbol();
+  if (
+    target.type.kind === "bytes" &&
+    targetSymbol !== undefined &&
+    lowerer.isStdlibSymbol(targetSymbol) &&
+    (own(BYTES_CTORS, ts.symbolName(targetSymbol)) !== undefined ||
+      ts.symbolName(targetSymbol) === "Buffer")
+  )
     return bytesSetIntrinsic(lowerer, target, argNodes.slice(1), loc);
   const slot = (value: IrExpr): { decl: IrStmt; read: IrExpr } => {
     const local = lowerer.declareHiddenLocal("%setArg", DYN);
