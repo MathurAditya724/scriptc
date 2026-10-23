@@ -278,6 +278,16 @@ export function hasClassPrototypeData(info: ClassInfo): boolean {
   );
 }
 
+/** Methods and accessors that live on the class's prototype. */
+function declaresPrototypeMembers(decl: ts.ClassLikeDeclaration): boolean {
+  return decl.members.nodes.some(
+    (member) =>
+      (ts.isMethodDeclaration(member) || ts.isAccessor(member)) &&
+      !ts.isPrivateIdentifier(member.name) &&
+      !ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword),
+  );
+}
+
 /** Populate the shared prototype view before exposing it to reflection.
  * Methods and accessors are non-enumerable and retain declaration identity. */
 export function reflectClassPrototype(
@@ -307,7 +317,10 @@ export function reflectClassPrototype(
   // Local JavaScript factories initialize captured prototype members on
   // their constructor value, so the shared runtime view is already complete.
   if (info.localClass && info.runtimePrototypeMembers) return prototype;
-  if (info.localClass)
+  // A function-local class declaring no prototype members (zod 4's
+  // `class Definition extends Parent {}`) has nothing to install: its
+  // shared runtime view is complete once its base's is.
+  if (info.localClass && declaresPrototypeMembers(info.decl))
     return refuse("prototype reflection on a function-local class is not supported yet");
   if (info.base && !info.base.builtinError) {
     reflectClassPrototype(
@@ -532,6 +545,15 @@ export function lowerClassPrototypeData(
     name !== null && lowerer.prototypeMethodAccesses.has(name) && findMethodOn(lowerer, info, name);
   if (name === "constructor") {
     return reflectClassPrototype(lowerer, info, locOf(expr), classValueRef(lowerer, info, expr));
+  }
+  // The whole prototype of a function-local class: the shared view
+  // Object.getPrototypeOf answers for its instances.
+  if (name === null && info.localClass) {
+    const receiver = lowerer.lowerExprExpecting(expr.expression, {
+      kind: "classval",
+      className: info.def.name,
+    });
+    return reflectClassPrototype(lowerer, info, locOf(expr), receiver);
   }
   if (name === null || (isCompiledPrototypeMember(lowerer, info, name) && !method)) {
     lowerer.unsupported(
