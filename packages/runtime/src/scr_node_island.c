@@ -478,6 +478,8 @@ static const ScrNodeBridgeHost ni_host = {
     &ni_host_listen,
     &ni_stack_limit,
     &ni_stack_start,
+    &scr_ni_settle_value,
+    &scr_ni_bytes_free,
 };
 
 void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int arg) {
@@ -492,6 +494,7 @@ void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int a
 
 static void ni_stop_job(void *p) {
   (void)p;
+  scr_ni_stop();
   ni_bridge->stop();
 }
 
@@ -500,6 +503,13 @@ static void ni_stop_job(void *p) {
  * the events unit's own, which then finds them done), then Node stops. */
 static void ni_stop_atexit(void) {
   scr_run_exit_listeners((double)scr_exit_code_hint_get());
+  /* SCRIPTC_NODE_ISLANDS_TRACE=handles: the import table at exit (leak
+   * tests: acyclic island objects the program dropped are released). */
+  const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+  if (trace != NULL && strcmp(trace, "handles") == 0) {
+    fflush(stdout);
+    fprintf(stderr, "[node-islands] live handles %u\n", scr_ni_live_handles());
+  }
   ni_on_node_stack(ni_stop_job, NULL);
 }
 
@@ -582,11 +592,21 @@ static void ni_start(void) {
    * delivery; installed before the stop handler, whose 'exit' listeners
    * run first. */
   scr_events_install();
+  scr_ni_handles_install();
   scr_atexit(ni_stop_atexit);
   ni_hosted = *bridge;
   ni_hosted.run_loop = &ni_run_loop;
   scr_loop_host(&ni_hosted, since);
 }
+
+const ScrNodeBridge *scr_ni_bridge(void) {
+  ni_start();
+  return ni_bridge;
+}
+
+const ScrNodeBridge *scr_ni_bridge_loaded(void) { return ni_bridge; }
+
+void scr_ni_on_node_stack(void (*job)(void *), void *arg) { ni_on_node_stack(job, arg); }
 
 /* ── calls ────────────────────────────────────────────────────────────── */
 
