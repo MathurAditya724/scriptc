@@ -105,6 +105,7 @@ export const MODELED_GLOBALS: ReadonlySet<string> = new Set([
   "encodeURI",
   "decodeURI",
   "BigInt",
+  "Proxy",
 ]);
 
 /** Results of string (and number) methods, by name. Anything else is ⊤. */

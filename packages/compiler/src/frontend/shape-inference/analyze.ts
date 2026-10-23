@@ -447,6 +447,10 @@ class Analyzer {
       id = this.newNode();
       m.set(name, id);
       if (this.traceTop) this.nodeLabel.set(id, `${atom.label}.${name}`);
+      if (name === "*") {
+        for (const dst of this.unknownKeyReaders.get(atom) ?? []) this.edge(id, dst);
+        this.unknownKeyReaders.delete(atom);
+      }
       const reason = this.escaped.get(atom);
       if (reason !== undefined) {
         this.sink(id, reason);
@@ -1367,10 +1371,7 @@ class Analyzer {
       return this.constNode(this.prim("number"));
     }
     if (ts.isSpreadElement(e)) return this.expr(e.expression);
-    if (ts.isTaggedTemplateExpression(e)) {
-      this.expr(e.tag);
-      return this.constNode(this.top);
-    }
+    if (ts.isTaggedTemplateExpression(e)) return this.taggedTemplate(e);
     if (ts.isYieldExpression(e)) {
       if (e.expression !== undefined)
         this.sink(this.expr(e.expression), `yielded at ${locLabel(e)}`);
@@ -1695,6 +1696,25 @@ class Analyzer {
     return this.field(atom, "*");
   }
 
+  /** Loads waiting for an atom's first write under an unknown key. */
+  private readonly unknownKeyReaders = new Map<Atom, number[]>();
+
+  /** dst ⊇ the values written to `atom` under unknown keys, now and later,
+   * without creating the field for atoms that have none. */
+  unknownKeysInto(atom: Atom, dst: number): void {
+    const id = this.fields.get(atom)?.get("*");
+    if (id !== undefined) {
+      this.edge(id, dst);
+      return;
+    }
+    let readers = this.unknownKeyReaders.get(atom);
+    if (readers === undefined) {
+      readers = [];
+      this.unknownKeyReaders.set(atom, readers);
+    }
+    readers.push(dst);
+  }
+
   copyFields(src: number, dstAtom: Atom, site: Node): void {
     this.on(src, (a) => {
       if (a.kind === "top") {
@@ -1727,6 +1747,60 @@ class Analyzer {
 
   /** Field copies re-run after solving rounds (fields created later). */
   private readonly lateCopies: (() => void)[] = [];
+
+  /** node ⊇ the own field and element values of every value in it, now and
+   * later: the values JSON.stringify serializes. */
+  childrenInto(node: number): void {
+    this.on(node, (a) => {
+      if (
+        a.kind !== "object" &&
+        a.kind !== "array" &&
+        a.kind !== "instance" &&
+        a.kind !== "dictionary"
+      )
+        return;
+      const seen = new Set<string>();
+      const copy = (): void => {
+        for (const [name, id] of this.fields.get(a) ?? new Map<string, number>()) {
+          if (seen.has(name) || name.startsWith("#")) continue;
+          seen.add(name);
+          this.edge(id, node);
+        }
+        const el = this.elements.get(a);
+        if (el !== undefined && !seen.has("[]")) {
+          seen.add("[]");
+          this.edge(el, node);
+        }
+      };
+      copy();
+      this.lateCopies.push(copy);
+    });
+  }
+
+  /** JSON.stringify's call of `value.toJSON(key)` on a value that has one
+   * (a class member, or an own field once it exists); the result goes to `out`. */
+  callToJSON(
+    value: Atom,
+    key: number,
+    out: number,
+    site: ts.CallExpression | ts.TaggedTemplateExpression,
+  ): void {
+    if (value.kind !== "object" && value.kind !== "instance" && value.kind !== "dictionary") return;
+    let called = false;
+    const call = (): void => {
+      if (called) return;
+      const has =
+        this.fields.get(value)?.has("toJSON") === true ||
+        (value.kind === "instance" && this.lookupMember(value.node!, "toJSON", false) !== null);
+      if (!has) return;
+      called = true;
+      const fn = this.newNode();
+      this.loadAtom(value, "toJSON", fn, site);
+      this.invoke(fn, this.constNode(value), [key], false, out, site);
+    };
+    call();
+    if (!called) this.lateCopies.push(call);
+  }
 
   arrayLiteral(e: ts.ArrayLiteralExpression): number {
     const atom = this.atoms.intern(`arr:${this.nodeKey(e)}`, () => ({
@@ -1948,6 +2022,7 @@ class Analyzer {
         if (this.classChain(decl).some((c) => this.baseClass(c) === undefined))
           this.add(dst, this.top);
         this.edge(this.field(a, name), dst);
+        this.unknownKeysInto(a, dst);
         return;
       }
       case "class": {
@@ -1977,6 +2052,7 @@ class Analyzer {
         for (const c of this.classChain(decl)) {
           const cls = this.classAtoms(c).cls;
           this.edge(this.field(cls, name), dst);
+          this.unknownKeysInto(cls, dst);
         }
         return;
       }
@@ -1986,7 +2062,10 @@ class Analyzer {
         else if (name === "prototype") this.add(dst, this.top);
         else if (name === "name") this.add(dst, this.prim("string"));
         else if (name === "length") this.add(dst, this.prim("number"));
-        else this.edge(this.field(a, name), dst);
+        else {
+          this.edge(this.field(a, name), dst);
+          this.unknownKeysInto(a, dst);
+        }
         return;
       case "array":
         if (name === "length") this.add(dst, this.prim("number"));
@@ -2081,6 +2160,7 @@ class Analyzer {
           return;
         case "array":
           if (/^\d+$/.test(name)) this.edge(value, this.element(a));
+          else if (name !== "length") this.edge(value, this.field(a, name));
           return;
         case "prim":
           return;
@@ -2148,6 +2228,37 @@ class Analyzer {
   }
 
   // ---- calls ---------------------------------------------------------------------------
+
+  /** tag`…${x}…`: a call of the tag with the template's strings array (an
+   * array of strings with a `raw` array of strings) and each substitution. */
+  taggedTemplate(e: ts.TaggedTemplateExpression): number {
+    this.noteSite(e);
+    const tag = unparen(e.tag);
+    const recv =
+      ts.isPropertyAccessExpression(tag) && tag.expression.kind !== ts.SyntaxKind.SuperKeyword
+        ? this.expr(tag.expression)
+        : null;
+    const callee = recv === null ? this.expr(tag) : null;
+    const strings = this.syntheticArray(e, "template");
+    const raw = this.syntheticArray(e.template, "raw");
+    this.add(this.element(strings), this.prim("string"));
+    this.add(this.element(raw), this.prim("string"));
+    this.add(this.field(strings, "raw"), raw);
+    const args = [this.constNode(strings)];
+    if (ts.isTemplateExpression(e.template))
+      for (const span of list(e.template.templateSpans)) args.push(this.expr(span.expression));
+    const dst = this.newNode();
+    if (recv !== null && ts.isPropertyAccessExpression(tag)) {
+      const name = tag.name.text;
+      this.ops.push({ kind: "read", recv, name, node: tag });
+      this.on(recv, (a) => {
+        const fn = this.newNode();
+        this.loadAtom(a, name, fn, tag);
+        this.invoke(fn, this.constNode(a), args, false, dst, e);
+      });
+    } else this.invoke(callee!, null, args, false, dst, e);
+    return dst;
+  }
 
   args(e: ts.CallExpression | ts.NewExpression): { args: number[]; spread: boolean } {
     const out: number[] = [];
@@ -2245,7 +2356,7 @@ class Analyzer {
     args: number[],
     spread: boolean,
     dst: number,
-    site: ts.CallExpression,
+    site: ts.CallExpression | ts.TaggedTemplateExpression,
   ): void {
     const undefNode = recv === null ? this.constNode(this.prim("undefined")) : recv;
     this.on(callee, (a) => {
@@ -2358,6 +2469,13 @@ class Analyzer {
         this.add(dst, this.syntheticArray(site, "Array"));
         return;
       }
+      case "Proxy":
+        // The handler's traps run on every operation with the target.
+        if (args[0] !== undefined)
+          this.ops.push({ kind: "proxy", recv: args[0], name: null, node: site });
+        for (const x of args) this.sink(x, `argument of new Proxy at ${locLabel(site)}`);
+        this.add(dst, this.top);
+        return;
       default:
         for (const x of args) this.sink(x, `argument of new ${path} at ${locLabel(site)}`);
         this.add(dst, this.top);
@@ -2370,7 +2488,7 @@ class Analyzer {
     args: number[],
     spread: boolean,
     dst: number,
-    site: ts.CallExpression,
+    site: ts.CallExpression | ts.TaggedTemplateExpression,
     recvNode: number | null,
   ): void {
     const path = a.path ?? "";
@@ -2768,11 +2886,61 @@ class Analyzer {
         return;
       }
       case "JSON.parse":
+        // A reviver runs on every parsed value with its key, the holder as `this`.
+        if (args[1] !== undefined)
+          this.on(args[1], (f) => {
+            if (f.kind === "function")
+              this.callFunction(
+                this.infoOfAtom(f)!,
+                this.constNode(this.top),
+                [this.constNode(this.prim("string")), this.constNode(this.top)],
+                false,
+                this.newNode(),
+                site,
+              );
+          });
         this.add(dst, this.top);
         return;
-      case "JSON.stringify":
+      case "JSON.stringify": {
+        // Every value it serializes: toJSON methods run on them, and a
+        // replacer function with each key and value, the holder as `this`.
+        // Their results are serialized in turn.
+        const serialized = this.newNode();
+        this.childrenInto(serialized);
+        this.edge(arg(0), serialized);
+        const key = this.constNode(this.prim("string"));
+        this.on(serialized, (v) => this.callToJSON(v, key, serialized, site));
+        if (args[1] !== undefined)
+          this.on(args[1], (f) => {
+            if (f.kind === "function")
+              this.callFunction(
+                this.infoOfAtom(f)!,
+                serialized,
+                [key, serialized],
+                false,
+                serialized,
+                site,
+              );
+            else if (f.kind === "top")
+              this.sink(serialized, `JSON.stringify replacer at ${locLabel(site)}`);
+          });
         prim("string");
         prim("undefined");
+        return;
+      }
+      case "Reflect.deleteProperty": {
+        const key = ts.isCallExpression(site) ? unparen(list(site.arguments)[1]!) : undefined;
+        const name =
+          key !== undefined && (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key))
+            ? key.text
+            : null;
+        this.ops.push({ kind: "delete", recv: arg(0), name, node: site });
+        prim("boolean");
+        return;
+      }
+      case "Proxy.revocable":
+        this.ops.push({ kind: "proxy", recv: arg(0), name: null, node: site });
+        escapeAll();
         return;
       case "String":
       case "encodeURIComponent":
