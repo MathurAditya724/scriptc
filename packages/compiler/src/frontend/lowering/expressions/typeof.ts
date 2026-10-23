@@ -88,6 +88,12 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   if (builtinClassRefOf(lowerer, expr.expression) !== null) {
     return { kind: "strLit", value: "function", type: STRING, loc };
   }
+  // The Buffer constructor and its aliases (`const B = globalThis.Buffer`,
+  // `(globalThis as { Buffer?: B }).Buffer`): a value read of an alias is an
+  // identity token, so its typeof is decided here.
+  if (stdlibGlobalNameOf(lowerer, expr.expression) === "Buffer") {
+    return { kind: "strLit", value: "function", type: STRING, loc };
+  }
   if (ts.isPropertyAccessExpression(expr.expression)) {
     const member = expr.expression;
     const prototype = member.expression;
