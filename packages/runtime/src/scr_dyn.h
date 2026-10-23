@@ -872,6 +872,10 @@ ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*r
 ScrDyn *scr_dyn_new_str(ScrStr *s);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
+/* Gives a builtin constructor value (Object, Array, Error) its builtin
+ * `prototype`: non-writable, non-enumerable, non-configurable. Takes the
+ * prototype. */
+void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);

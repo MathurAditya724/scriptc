@@ -1924,6 +1924,8 @@ ScrDyn *scr_dyn_error_constructor(const char *name) {
       scr_error_ctor_values[i] =
           scr_dyn_new_func(scr_closure_new((void *)scr_error_ctor_names[i], 0), scr_error_ctor_call, length,
                            "native:constructor", scr_error_ctor_names[i]);
+      /* Error.prototype is modeled; the other error prototypes are not. */
+      if (i == 0) scr_dyn_fn_seed_prototype(scr_error_ctor_values[i], scr_dyn_error_prototype());
     }
     return scr_dyn_retain(scr_error_ctor_values[i]);
   }
@@ -4302,6 +4304,7 @@ static ScrDyn *scr_array_ctor_call(ScrClosure *closure, ScrDyn *const *args, siz
 ScrDyn *scr_dyn_array_constructor(void) {
   if (!scr_array_ctor) {
     scr_array_ctor = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_array_ctor_call, 1, "native:Array", "Array");
+    scr_dyn_fn_seed_prototype(scr_array_ctor, scr_dyn_array_prototype_base());
     scr_atexit(scr_array_ctor_cleanup);
   }
   return scr_dyn_retain(scr_array_ctor);
@@ -5507,6 +5510,16 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
     }
   }
   return (ScrDyn *)scr_box_get_ref(owner->props);
+}
+
+void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype) {
+  ScrDyn *table = scr_dyn_fn_properties(function);
+  scr_dyn_obj_set(table, "prototype", 9, prototype);
+  ScrDynEntry *entry = scr_dyn_find_entry(table, "prototype", 9);
+  entry->writable = false;
+  entry->enumerable = false;
+  entry->configurable = false;
+  scr_dyn_release(table);
 }
 
 ScrDyn *scr_dyn_class_inherit(ScrDyn *constructor, ScrDyn *base) {
@@ -12445,6 +12458,13 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
   ScrClosure *owner = scr_closure_identity(d->v.fn.clo);
   if (d->v.fn.class_obj && d->v.fn.class_obj->static_data && !owner->props)
     owner->props = scr_box_retain(d->v.fn.class_obj->static_data);
+  if (d->v.fn.thunk == scr_function_constructor_call && key_len == 9 && !memcmp(key, "prototype", 9)) {
+    /* A function's `constructor.prototype`: Function.prototype has no value
+     * here, and undefined would be a wrong answer. */
+    static const char function_prototype[] = "Function.prototype through a constructor value is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, function_prototype, sizeof function_prototype - 1, "SC2020");
+    return NULL;
+  }
   if (!d->v.fn.class_obj && key_len == 9 && !memcmp(key, "prototype", 9) && !owner->props) {
     if (owner->function_kind & 1) {
       static const char message[] = "Native generator function prototypes have no lowering";
@@ -13221,6 +13241,20 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
   }
   if (value->kind == SCR_DYN_OBJ) {
     ScrDyn *keys = scr_dyn_obj_own_keys(value);
+    if (value == scr_builtin_object_prototype) {
+      /* Object.prototype's builtin members, in Node's order. */
+      static const char *const names[] = {
+        "constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty",
+        "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable",
+        "toString", "valueOf", "__proto__", "toLocaleString"
+      };
+      ScrDyn *all = scr_dyn_new_arr();
+      for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        scr_dyn_arr_push(all, scr_dyn_objwalk_key(names[i], strlen(names[i])));
+      for (size_t i = 0; i < keys->v.arr.len; i++) scr_dyn_arr_push(all, scr_dyn_retain(keys->v.arr.items[i]));
+      scr_dyn_release(keys);
+      return all;
+    }
     if (!scr_dyn_obj_get(value, "%error", 6)) return keys;
     /* The checked-dynamic tree's error marker is not a property. */
     ScrDyn *names = scr_dyn_new_arr();
@@ -13246,6 +13280,7 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
     }
     if (value->kind != SCR_DYN_BYTES)
       scr_dyn_arr_push(keys, scr_dyn_objwalk_key("length", 6));
+    if (value == scr_builtin_array_prototype) scr_dyn_arr_push(keys, scr_dyn_objwalk_key("constructor", 11));
     if (value->kind == SCR_DYN_ARR && value->v.arr.properties) {
       ScrDyn *properties = scr_dyn_obj_own_keys(value->v.arr.properties);
       for (size_t i = 0; i < properties->v.arr.len; i++)
@@ -14332,10 +14367,16 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
 
 
   if (v->kind == SCR_DYN_OBJ) {
+    /* Object.prototype's builtin members are its own properties (zod's
+     * isPlainObject asks whether the prototype has its own isPrototypeOf). */
+    if (v == scr_builtin_object_prototype && scr_dyn_object_proto_name(key)) return true;
     return scr_dyn_obj_get(v, key->data, key->len) != NULL;
   }
   if (v->kind == SCR_DYN_ARR) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return true;
+    /* Array.prototype's own constructor (its methods are table entries). */
+    if (v == scr_builtin_array_prototype && key->len == 11 && memcmp(key->data, "constructor", 11) == 0)
+      return true;
     if (v->v.arr.properties && scr_dyn_obj_get(v->v.arr.properties, key->data, key->len)) return true;
     if (!scr_dyn_canonical_own_index(key, v->v.arr.len)) return false;
     size_t index = 0;
