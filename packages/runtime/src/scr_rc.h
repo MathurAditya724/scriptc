@@ -570,6 +570,14 @@ _Static_assert(sizeof(((ScrCycHdr *)0)->gen) == 1 && SCR_CYC_OLD == 2,
  * depth; deeper objects wait until the outer disposal drains the worklist.
  * The callback owns the object and must release its children and free it. */
 void scr_rc_destroy(void *obj, void (*destroy)(void *));
+/* scr_rc_destroy for an emitted teardown that keeps the blocks it frees in
+ * a segment, linked through their first words, instead of freeing them onto
+ * the free list (llvm/shapes.ts): destroy_seg tears obj down, appending its
+ * blocks after the segment's last link `tail`, and returns the new last
+ * link, which this returns. A disposal past the depth budget is queued with
+ * `destroy`, which frees its own blocks, and leaves `tail` as it was. */
+void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
+                         void (*destroy)(void *), void *tail);
 
 /* RC hooks for cycle-headered types. on_release: rc was decremented and
  * stayed above zero — buffer the object as a possible cycle root (may run

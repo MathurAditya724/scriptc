@@ -9482,10 +9482,12 @@ static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
 }
 
+/* One lookup of the own property decides the assignment: an own property
+ * is written (or runs its setter, or refuses the write); an absent one
+ * consults the prototype chain and is then added. */
 static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, const ScrDyn *receiver) {
-  for (size_t i = 0; i < recv->v.obj.len; i++) {
-    ScrDynEntry *entry = &recv->v.obj.entries[i];
-    if (entry->key_len != key->len || memcmp(entry->key, key->data, key->len) != 0) continue;
+  ScrDynEntry *entry = scr_dyn_entry(recv, key);
+  if (entry) {
     if (entry->accessor && entry->setter) {
       ScrDyn *args[] = {value};
       ScrDyn *setter = scr_dyn_retain(entry->setter);
@@ -9500,8 +9502,14 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
       scr_dyn_throw_property(receiver, key->data, key->len, false);
       return;
     }
+    scr_dyn_region_store(recv, value);
+    ScrDyn *old = entry->value;
+    entry->value = scr_dyn_retain(value);
+    scr_dyn_release(old);
+    scr_error_sync_cause(recv, key);
+    return;
   }
-  if (!scr_dyn_entry(recv, key)) {
+  {
     for (const ScrDyn *current = scr_dyn_proto_next(recv); current;) {
       ScrDyn *table = current->kind == SCR_DYN_FUNC ? scr_dyn_fn_properties(current) : NULL;
       const ScrDyn *object = table ? table : current;
@@ -9532,7 +9540,7 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
       break;
     }
   }
-  if (recv->non_extensible && !scr_dyn_entry(recv, key)) {
+  if (recv->non_extensible) {
     ScrJsonBuf buffer;
     scr_jb_init(&buffer);
     scr_jb_puts(&buffer, "Cannot add property ");
@@ -9541,9 +9549,8 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
     return;
   }
-  bool created = scr_dyn_entry(recv, key) == NULL;
   scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
-  if (created && key->len == 5 && memcmp(key->data, "stack", 5) == 0 &&
+  if (key->len == 5 && memcmp(key->data, "stack", 5) == 0 &&
       scr_errdyn_find(recv, false) != SIZE_MAX) {
     /* An error's own `stack` exists from construction as a non-enumerable
      * data property, so assigning it adds no enumerable key. */

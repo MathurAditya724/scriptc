@@ -249,6 +249,11 @@ test("emitted loops version the body and tag typed-array memory", () => {
   const elements = /store double [^\n]*!tbaa !(\d+)/.exec(body)![1];
   const header = /load ptr, ptr [^\n]*!tbaa !(\d+)/.exec(body)![1];
   expect(elements).not.toBe(header);
+  // Header loads are invariant for the view's lifetime; element accesses
+  // are not.
+  expect(body).toMatch(/load ptr, ptr [^\n]*, !tbaa !\d+, !invariant\.load !\{\}$/m);
+  expect(body).toMatch(/load i64, ptr [^\n]*, !tbaa !\d+, !invariant\.load !\{\}$/m);
+  expect(body).not.toMatch(/(load double|store double)[^\n]*invariant\.load/);
 });
 
 test("loops to a typed array's length version the other typed arrays they index", () => {
