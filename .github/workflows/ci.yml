@@ -526,7 +526,7 @@ jobs:
     runs-on: ubuntu-24.04
     # The two corpus compiles run back to back and take close to 30 minutes on a
     # slow hosted runner, so a 30-minute limit cancels otherwise healthy runs.
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
