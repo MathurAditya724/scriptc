@@ -167,6 +167,10 @@ struct SfStream {
   SfTransfer *response_owner; /* weak; transfer owns the stream */
   bool callbacks_tracked;
   SfStream *callbacks_next;
+  /* Told when the stream errors (a tee watching its source's closed
+   * promise); ctx is borrowed and the watcher clears it before it goes. */
+  void (*error_watch)(void *ctx, ScrDyn *reason);
+  void *error_watch_ctx;
 };
 
 struct SfHeaders {
@@ -1291,6 +1295,7 @@ static void sf_stream_error(SfStream *s, ScrDyn *reason) {
   if (s->reader) {
     sf_reject_promise_reason(s->reader->closed, reason);
   }
+  if (s->error_watch) s->error_watch(s->error_watch_ctx, reason);
   if (s->request_owner) {
     sf_transfer_stream_error(s->request_owner, reason);
   }
@@ -1889,6 +1894,10 @@ static SfTee *sf_tee_retain(SfTee *t) {
 
 static void sf_tee_release(SfTee *t) {
   if (!t || --t->rc > 0) return;
+  if (t->source->error_watch_ctx == t) {
+    t->source->error_watch = NULL;
+    t->source->error_watch_ctx = NULL;
+  }
   sf_stream_release(t->branch[0]);
   sf_stream_release(t->branch[1]);
   sf_reader_release(t->reader);
@@ -1951,18 +1960,37 @@ static void sf_tee_sink_close(void *ctx) {
   sf_tee_release(t);
 }
 
+/* The source reader's closed promise rejected (spec: upon its rejection
+ * with r, error both branches, and resolve cancelPromise unless both
+ * branches were canceled), as a promise reaction: in a microtask. */
+static void sf_tee_source_errored_task(ScrClosure *cb) {
+  SfTee *t = (SfTee *)scr_box_get_ref(cb->caps[0]);
+  ScrDyn *reason = (ScrDyn *)scr_box_get_ref(cb->caps[1]);
+  sf_stream_error(t->branch[0], reason);
+  sf_stream_error(t->branch[1], reason);
+  if (!t->canceled[0] || !t->canceled[1]) scr_promise_fulfill_void(t->cancel_promise);
+  scr_dyn_release(reason);
+  sf_tee_release(t);
+}
+
+/* The source errored, with or without a read of it pending. */
+static void sf_tee_source_errored(void *ctx, ScrDyn *reason) {
+  SfTee *t = ctx;
+  t->source->error_watch = NULL;
+  t->source->error_watch_ctx = NULL;
+  ScrClosure *cb = scr_closure_new((void *)&sf_tee_source_errored_task, 2);
+  cb->caps[0] = sf_tee_box(t);
+  cb->caps[1] = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+  scr_box_set_ref(cb->caps[1], scr_dyn_retain(reason));
+  scr_queue_microtask(cb);
+}
+
+/* A read request's error steps only end the read: the source's error
+ * reaches the branches through sf_tee_source_errored. */
 static void sf_tee_sink_error(void *ctx, ScrDyn *reason) {
+  (void)reason;
   SfTee *t = ctx;
   t->reading = false;
-  if (reason) {
-    /* The spec errors both branches when the source reader's closed
-     * promise rejects; a native read request learns it here. */
-    sf_stream_error(t->branch[0], reason);
-    sf_stream_error(t->branch[1], reason);
-    if (!t->canceled[0] || !t->canceled[1]) {
-      scr_promise_fulfill_void(t->cancel_promise);
-    }
-  }
   sf_tee_release(t);
 }
 
@@ -2041,6 +2069,8 @@ static void sf_stream_tee(SfStream *s, SfStream *out[2]) {
   t->rc = 1;
   t->source = sf_stream_retain(s);
   t->reader = sf_stream_get_reader(s);
+  s->error_watch = &sf_tee_source_errored;
+  s->error_watch_ctx = t;
   t->cancel_promise = scr_promise_new();
   scr_promise_mark_handled(t->cancel_promise);
   for (int i = 0; i < 2; i++) {
@@ -2053,6 +2083,8 @@ static void sf_stream_tee(SfStream *s, SfStream *out[2]) {
     t->branch[i] = sf_stream_retain(b);
     out[i] = b;
   }
+  /* An errored source's closed promise has already rejected. */
+  if (s->error) sf_tee_source_errored(t, s->error);
   /* The branches start at once; a branch with room then pulls. */
   sf_stream_schedule_initial_pull(out[0]);
   sf_stream_schedule_initial_pull(out[1]);

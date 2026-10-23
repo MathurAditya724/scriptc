@@ -151,4 +151,62 @@ async function readAllFrom(reader: any): Promise<string> {
   }
 }
 
+
+// Tee branches error when their source errors: after both buffered a
+// chunk and with no source read pending, reads reject once the error's
+// reaction ran (a read issued at once still takes the buffered chunk, as in
+// Node); a clone of an errored body errors both branches.
+async function readFirst(label: string, r: any): Promise<void> {
+  try {
+    const chunk = await r.body.getReader().read();
+    console.log(label, "read", JSON.stringify(chunk.value ? [...chunk.value] : null), chunk.done);
+  } catch (error) {
+    console.log(label, "rejects", (error as Error).message);
+  }
+}
+
+function erroring(): { res: any; error: (reason: Error) => void } {
+  let ctrl: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const source = new ReadableStream<Uint8Array>({
+    start(c) {
+      ctrl = c;
+      c.enqueue(new Uint8Array([1, 2]));
+    },
+  });
+  return { res: new Response(source), error: (reason) => ctrl!.error(reason) };
+}
+
+const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
+
+async function sourceErrors(): Promise<void> {
+  // Error, then read after the reaction: both branches reject.
+  {
+    const { res, error } = erroring();
+    const clone = res.clone();
+    await tick();
+    error(new Error("late"));
+    await tick();
+    await readFirst("later original", res);
+    await readFirst("later clone", clone);
+  }
+  // Error, then read at once: the first read takes the buffered chunk.
+  {
+    const { res, error } = erroring();
+    const clone = res.clone();
+    await tick();
+    error(new Error("soon"));
+    await readFirst("at once original", res);
+    await readFirst("at once clone", clone);
+  }
+  // A body that errored before the clone.
+  {
+    const { res, error } = erroring();
+    error(new Error("before"));
+    const clone = res.clone();
+    await readFirst("errored original", res);
+    await readFirst("errored clone", clone);
+  }
+}
+
 await main();
+await sourceErrors();
