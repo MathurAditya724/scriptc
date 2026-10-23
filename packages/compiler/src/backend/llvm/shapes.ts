@@ -578,15 +578,17 @@ export function inlineRcFamily(host: ShapeHost, stem: string, op: RcOp): InlineR
 }
 
 /** Which RC fast paths an emission inlines. `speed` mirrors every family
- * with a fast path. `release` mirrors only the string and Map retains and
- * the dyn retain and release: the operations that dominate dynamic-value,
- * string and Map code (a Map read from an array or another Map), at almost
- * no size cost. String releases stay calls in `release` because
- * string-heavy programs have many release sites. */
+ * with a fast path. `release` mirrors only the string retain and release,
+ * the Map retain and the dyn retain and release: the operations that
+ * dominate dynamic-value, string and Map code (a Map read from an array or
+ * another Map). String-heavy programs have many string release sites, so a
+ * function with more than INLINE_STR_RELEASES_PER_FUNCTION of them calls the
+ * runtime release at each (limitInlineReleases). */
 export type InlineRcMode = "release" | "speed";
 
 const RELEASE_RC_OPS = new Set([
   "str:retain",
+  "str:release",
   "map:retain",
   "dyn:retain",
   "dyn:release",
@@ -670,12 +672,34 @@ function inlineRcName(family: string, op: RcOp): string {
  * the inline helper mirrors, at every site. */
 export const INLINE_DYN_RELEASES_PER_FUNCTION = 256;
 
-/** Apply {@link INLINE_DYN_RELEASES_PER_FUNCTION} to each function of an
- * emitted module, given as parts joined by newlines. A function can span
- * parts (main's lines) and a part can hold several functions. */
-export function limitInlineDynReleases(parts: readonly string[]): string[] {
-  const call = `call void @${inlineRcName("dyn", "release")}(`;
-  const runtime = `call void @${INLINE_RC_FAMILIES["dyn"]!.release}(`;
+/** Inlined string releases one function body keeps in `release` emission,
+ * which inlines string releases (RELEASE_RC_OPS); the bodies with the most of them, such as
+ * builders of string-heavy records and module initializers, would grow the
+ * most for the least gain, so a body with more calls scr_str_release at
+ * every site. */
+export const INLINE_STR_RELEASES_PER_FUNCTION = 8;
+
+/** Apply {@link INLINE_DYN_RELEASES_PER_FUNCTION}, and in `release` emission
+ * {@link INLINE_STR_RELEASES_PER_FUNCTION}, to each function of an emitted
+ * module, given as parts joined by newlines. A function can span parts
+ * (main's lines) and a part can hold several functions. */
+export function limitInlineReleases(
+  parts: readonly string[],
+  mode: InlineRcMode | undefined,
+): string[] {
+  const dyn = limitInlineReleaseFamily(parts, "dyn", INLINE_DYN_RELEASES_PER_FUNCTION);
+  return mode === "release"
+    ? limitInlineReleaseFamily(dyn, "str", INLINE_STR_RELEASES_PER_FUNCTION)
+    : dyn;
+}
+
+function limitInlineReleaseFamily(
+  parts: readonly string[],
+  family: "dyn" | "str",
+  max: number,
+): string[] {
+  const call = `call void @${inlineRcName(family, "release")}(`;
+  const runtime = `call void @${INLINE_RC_FAMILIES[family]!.release}(`;
   // The function each release site belongs to: the last `define` line
   // before it, counted over the joined text.
   const sites = (
@@ -701,9 +725,7 @@ export function limitInlineDynReleases(parts: readonly string[]): string[] {
   const counts = new Map<number, number>();
   let fn = 0;
   for (const part of parts) fn = sites(part, (_, f) => counts.set(f, (counts.get(f) ?? 0) + 1), fn);
-  const over = new Set(
-    [...counts].filter(([, n]) => n > INLINE_DYN_RELEASES_PER_FUNCTION).map(([f]) => f),
-  );
+  const over = new Set([...counts].filter(([, n]) => n > max).map(([f]) => f));
   if (over.size === 0) return [...parts];
   fn = 0;
   return parts.map((part) => {
