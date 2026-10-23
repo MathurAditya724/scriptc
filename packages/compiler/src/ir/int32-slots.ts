@@ -10,7 +10,7 @@ import {
 } from "./integer-ranges.js";
 import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
 import { findInitializerBindings, withInitializerBindings } from "./initializer-bindings.js";
-import { int32ArrayStores } from "./int32-arrays.js";
+import { checkableInt32Allocations, int32ArrayStores } from "./int32-arrays.js";
 import { everyExprChild, everyStmtChild, everyStmtList, everyTypeChild } from "./traverse.js";
 
 /** The storage slot an array-valued expression reads, as an
@@ -251,6 +251,15 @@ export class Int32Slots {
    * module's int32 array candidates whose every stored element the
    * fixpoint proved an int32. */
   readonly int32Arrays = new Set<string>();
+  /** Local number arrays that may hold int32 slots with checked stores: the
+   * candidates whose element stores the fixpoint proved exact integers but
+   * not int32s, allocated only by fills that may be long. A fill of at least
+   * CHECKED_INT32_MIN_LENGTH elements creates one with int32 slots and a
+   * shorter one with doubles. Their elements give no int32 facts; compiled
+   * accesses test the array's kind (once per innermost loop where they can,
+   * backend/llvm/int32-kind-loops.ts), and a store that is not an int32
+   * widens it first (scr_arr_widen_i32). */
+  readonly checkedInt32Arrays = new Set<string>();
   /** Whether every present element of the number array `arr` evaluates to
    * (read inside `fnName`) is an int32. */
   hasInt32Elements(fnName: string, arr: IrExpr): boolean {
@@ -1108,8 +1117,13 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
     const int32 = (e: IrExpr): boolean => withinInt32(ranges.get(e));
     // Every element stored into an int32 array candidate must be an int32
     // under the facts that assume the candidates' own elements are; a
-    // failing store drops its array, and the function is analyzed again
-    // without it.
+    // failing store drops its array's element facts, and the function is
+    // analyzed again without them. When every failing store is still an
+    // exact integer under those facts (a counter, `a[i]! + 1`) and the array
+    // is only ever allocated by a fill that may be long
+    // (checkableInt32Allocations), it keeps int32 slots with checked stores
+    // (checkedInt32Arrays), which widen it to doubles in place at the first
+    // store that is not an int32.
     const arrays = arrayCandidates.get(fn.name);
     if (arrays) {
       let dropped = false;
@@ -1117,7 +1131,10 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
         const key = `l:${fn.name}\0${id}`;
         if (!slots.hasInt32ElementSlot(key) || values.every(int32)) continue;
         slots.dropInt32Elements(key);
-        reason(`array:${fn.name}\0${id}`, "an element store is not int32");
+        const checkable = (value: IrExpr): boolean => int32(value) || ranges.get(value) != null;
+        if (values.every(checkable) && checkableInt32Allocations(fn, id))
+          slots.checkedInt32Arrays.add(`${fn.name}\0${id}`);
+        else reason(`array:${fn.name}\0${id}`, "an element store is not int32");
         dropped = true;
       }
       if (dropped && !queued.has(fn.name)) {

@@ -542,7 +542,9 @@ export function emitDenseArrayState(
  * value's reference. A dense index stores the slot, marks it present, and
  * extends the length when it lands at or past it; a replaced present
  * reference is released after the new edge is published (a release can
- * collect cycles). Every other index takes the unchanged runtime call. */
+ * collect cycles). Every other index takes the unchanged runtime call.
+ * `int32`, for an int32 array, is the value as an i32 when the caller has
+ * it at hand. */
 export function emitDenseArraySet(
   host: LlvmEmitterContext,
   array: string,
@@ -552,6 +554,7 @@ export function emitDenseArraySet(
   element: IrType,
   value: string,
   proven = false,
+  int32: string | null = null,
 ): void {
   const B = host.B;
   const ty = valueType(acc);
@@ -566,8 +569,8 @@ export function emitDenseArraySet(
   }
   // An int32 array's stores are proven int32s (ir/int32-arrays.ts); both
   // dense paths below store the converted value.
-  let int32Value: string | null = null;
-  if (acc === "i32") {
+  let int32Value: string | null = int32;
+  if (acc === "i32" && int32Value === null) {
     int32Value = B.tmp();
     B.line(`${int32Value} = fptosi double ${value} to i32`);
   }

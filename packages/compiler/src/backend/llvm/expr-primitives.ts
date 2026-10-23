@@ -8,6 +8,7 @@ import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 
 import { BYTES_ELEM_NUM, closureIdentityEqual, f64Lit } from "./common.js";
+import { CHECKED_INT32_MIN_LENGTH } from "../../ir/int32-arrays.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitStringParts, numberPart, stringParts } from "./string-construction.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
@@ -904,7 +905,30 @@ export function emitContainerExpr(
       const firstSpread = e.elems.findIndex((_, i) => spreadSet.has(i));
       const capacity = small ? 0 : (e.capacity ?? (firstSpread < 0 ? e.elems.length : firstSpread));
       // An int32 array's allocation (ir/int32-arrays.ts) constructs
-      // SCR_ELEM_I32 storage; its elements are proven int32s.
+      // SCR_ELEM_I32 storage; its elements are proven int32s. The empty
+      // temporary of a fill that allocates an int32 array with checked
+      // stores takes SCR_ELEM_I32 storage when the fill's length (which
+      // evaluates without effects) is at least CHECKED_INT32_MIN_LENGTH, and
+      // SCR_ELEM_F64 storage otherwise.
+      const fillLength = host.checkedAllocations.get(e);
+      if (fillLength !== undefined && e.elems.length === 0) {
+        const length = host.emitExpr(fillLength);
+        const long = B.tmp(),
+          kind = B.tmp();
+        B.line(`${long} = fcmp oge double ${length.name}, ${f64Lit(CHECKED_INT32_MIN_LENGTH)}`);
+        B.line(`${kind} = select i1 ${long}, i32 ${SCR_ELEM_I32}, i32 0`);
+        host.declare(
+          small
+            ? `declare ptr @scr_arr_new_small(i32)`
+            : `declare ptr @scr_arr_new(i32, ${host.sizeType})`,
+        );
+        B.line(
+          small
+            ? `${arr} = call ptr @scr_arr_new_small(i32 ${kind})`
+            : `${arr} = call ptr @scr_arr_new(i32 ${kind}, ${host.sizeType} ${capacity})`,
+        );
+        return host.own({ name: arr, type: e.type });
+      }
       const int32 = host.int32Allocations.has(e);
       if (int32) {
         host.declare(
@@ -986,6 +1010,26 @@ export function emitContainerExpr(
       // Ref-element reads return +1 (the inline dense path retains like
       // the runtime getter); own registers the owned temp in the frame.
       const elem = e.arr.type.elem;
+      if (host.checkedInt32Array(e.arr)) {
+        const proven = host.provenDenseIndex(e.arr, e.index);
+        const value = host.emitByElementKind(
+          arr.name,
+          "double",
+          (kind) =>
+            emitDenseArrayRead(
+              host,
+              arr.name,
+              idx,
+              e.index,
+              kind,
+              elem,
+              "scr_arr_get_f64",
+              true,
+              proven,
+            ).value,
+        )!;
+        return { name: value, type: e.type };
+      }
       const acc = host.arrayAccess(e.arr, elem);
       const read = emitDenseArrayRead(
         host,
@@ -1013,14 +1057,18 @@ export function emitContainerExpr(
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayHas on non-array");
-      const t = emitDenseArrayState(
-        host,
-        arr.name,
-        idx,
-        e.index,
-        "has",
-        host.int32Array(e.arr) ? slotWidth("i32") : denseSlotWidth(host, e.arr.type.elem),
-      );
+      const t = host.checkedInt32Array(e.arr)
+        ? host.emitByElementKind(arr.name, "i1", (kind) =>
+            emitDenseArrayState(host, arr.name, idx, e.index, "has", slotWidth(kind)),
+          )!
+        : emitDenseArrayState(
+            host,
+            arr.name,
+            idx,
+            e.index,
+            "has",
+            host.int32Array(e.arr) ? slotWidth("i32") : denseSlotWidth(host, e.arr.type.elem),
+          );
       return { name: t, type: e.type };
     }
     case "arrayState": {
@@ -1028,14 +1076,18 @@ export function emitContainerExpr(
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayState on non-array");
-      const t = emitDenseArrayState(
-        host,
-        arr.name,
-        idx,
-        e.index,
-        "state",
-        host.int32Array(e.arr) ? slotWidth("i32") : denseSlotWidth(host, e.arr.type.elem),
-      );
+      const t = host.checkedInt32Array(e.arr)
+        ? host.emitByElementKind(arr.name, "double", (kind) =>
+            emitDenseArrayState(host, arr.name, idx, e.index, "state", slotWidth(kind)),
+          )!
+        : emitDenseArrayState(
+            host,
+            arr.name,
+            idx,
+            e.index,
+            "state",
+            host.int32Array(e.arr) ? slotWidth("i32") : denseSlotWidth(host, e.arr.type.elem),
+          );
       return { name: t, type: e.type };
     }
     case "arrIntrinsic":

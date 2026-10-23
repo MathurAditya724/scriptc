@@ -433,6 +433,9 @@ ScrArr *scr_arr_new_ops(const ScrArrOps *ops, size_t initial_cap);
  * array plus five 8-byte slots). Otherwise exactly scr_arr_new(elem, 0) and
  * scr_arr_new_ops(ops, 0). Returns +1. */
 ScrArr *scr_arr_new_small(ScrElemKind elem);
+/* An int32 array's storage as doubles, in place (SCR_ELEM_I32 to
+ * SCR_ELEM_F64); no-op for any other kind. */
+void scr_arr_widen_i32(ScrArr *a);
 ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops);
 /* scr_arr_new(elem, cap) for a known final length: the `cap` slots share
  * the array's own block (one allocation). With `states`, the array starts
