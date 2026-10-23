@@ -993,6 +993,25 @@ export function streamTypedRefMaterializeAdapter(
           : `call void @scr_error_dyn_place_name(ptr ${out}, ptr ${host.cstr(nameAfter)}, ${host.sizeType} ${Buffer.byteLength(nameAfter, "utf8")})`,
       );
     }
+    // A JavaScript Error subclass's property bag records, once a dynamic
+    // write has committed the view, where `name` and `message` were created
+    // (zod's error factory assigns `name` before it defines `message`); the
+    // slots hold their values.
+    if (
+      meta.def.errorBagOrder &&
+      meta.root.def.name === "%Error" &&
+      meta.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES)
+    ) {
+      host.declare(`declare void @scr_error_dyn_follow_bag(ptr, ptr, ptr)`);
+      const { index } = classFieldIndex(meta, DYN_CLASS_PROPERTIES);
+      const slot = B.tmp(),
+        bag = B.tmp();
+      B.line(
+        `${slot} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${index}`,
+      );
+      B.line(`${bag} = load ptr, ptr ${slot}`);
+      B.line(`call void @scr_error_dyn_follow_bag(ptr ${out}, ptr ${bag}, ptr %p)`);
+    }
     // A frozen, sealed or non-extensible instance's view says so.
     if (withAttributes) {
       host.declare(`declare void @scr_dyn_class_view_attributes(ptr, double)`);
