@@ -150,6 +150,47 @@ console.log("open empty message", (() => {
   return JSON.stringify(Buffer.concat([d.update(Buffer.alloc(0)), d.final()]).toString());
 })());
 
+// An empty message is still authenticated: its tag covers the nonce, the
+// AAD and the declared length, so a wrong tag, other AAD or another
+// plaintextLength fails in final(), as does a decipher without an update.
+const empty = Buffer.alloc(0);
+const sealEmpty = (aadBuf) => {
+  const c = crypto.createCipheriv("aes-128-ccm", key, iv, { authTagLength: 16 });
+  if (aadBuf) c.setAAD(aadBuf, { plaintextLength: 0 });
+  c.update(empty);
+  c.final();
+  return c.getAuthTag();
+};
+const emptyTag = sealEmpty(aad);
+const emptyTagNoAad = sealEmpty(null);
+const flipped = Buffer.from(emptyTag);
+flipped[0] ^= 1;
+const openEmpty = (steps) => {
+  const d = crypto.createDecipheriv("aes-128-ccm", key, iv, { authTagLength: 16 });
+  const out = [];
+  try {
+    for (const step of steps) {
+      const v = step(d);
+      if (Buffer.isBuffer(v)) out.push(v);
+    }
+    return `ok ${JSON.stringify(Buffer.concat(out).toString())}`;
+  } catch (e) {
+    return `${e.name} ${e.code} ${JSON.stringify(e.message)} after ${out.length} outputs`;
+  }
+};
+console.log("empty tag", emptyTag.toString("hex"), emptyTagNoAad.toString("hex"));
+console.log("empty, right tag", openEmpty([setAuthTag(emptyTag), setAAD(aad, { plaintextLength: 0 }), update(empty), final()]));
+console.log("empty, wrong tag", openEmpty([setAuthTag(Buffer.alloc(16, 9)), setAAD(aad, { plaintextLength: 0 }), update(empty), final()]));
+console.log("empty, flipped tag", openEmpty([setAuthTag(flipped), setAAD(aad, { plaintextLength: 0 }), update(empty), final()]));
+console.log("empty, other aad", openEmpty([setAuthTag(emptyTag), setAAD(Buffer.from("other"), { plaintextLength: 0 }), update(empty), final()]));
+console.log("empty, plaintextLength 5", openEmpty([setAuthTag(emptyTag), setAAD(aad, { plaintextLength: 5 }), update(empty), final()]));
+console.log("empty, no update", openEmpty([setAuthTag(emptyTag), setAAD(aad, { plaintextLength: 0 }), final()]));
+console.log("empty, no tag", openEmpty([setAAD(aad, { plaintextLength: 0 }), update(empty), final()]));
+console.log("empty, no aad, right tag", openEmpty([setAuthTag(emptyTagNoAad), update(empty), final()]));
+console.log("empty, no aad, wrong tag", openEmpty([setAuthTag(Buffer.alloc(16, 9)), update(empty), final()]));
+console.log("empty, aad dropped", openEmpty([setAuthTag(emptyTag), update(empty), final()]));
+console.log("empty, a string update", openEmpty([setAuthTag(Buffer.alloc(16, 9)), (d) => d.update(""), final()]));
+
 // As a stream: one write and the end.
 const stream = crypto.createCipheriv("aes-128-ccm", key, iv, { authTagLength: 12 });
 const chunks = [];

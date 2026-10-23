@@ -201,6 +201,7 @@ typedef struct ScCipher {
   bool ccm_iv_set, ccm_len_set, ccm_tag_set;
   bool ccm_updated;      /* a decipher's one update() ran; key wrap: the one update() */
   bool ccm_auth_failed;  /* that update failed to authenticate */
+  bool ccm_verified;     /* a decipher's tag matched the one it computed */
   double ccm_max_message;
   bool wrap_decrypt_block; /* key wrap: the AES key schedule decrypts */
   ScrStr *decoder; /* the StringDecoder encoding once string output starts */
@@ -1284,6 +1285,7 @@ static bool sc_ccm_data(ScCipher *c, const unsigned char *in, unsigned char *out
     return false;
   }
   c->ccm_iv_set = c->ccm_tag_set = c->ccm_len_set = false;
+  c->ccm_verified = true;
   return true;
 }
 
@@ -1294,8 +1296,10 @@ static bool sc_ccm_length_ok(const ScCipher *c, double len) {
 }
 
 /* update(): a decipher takes one, and its authentication failure leaves
- * empty output for final() to report. Node passes empty data to OpenSSL
- * without a buffer, which the provider skips. */
+ * empty output for final() to report. A decipher authenticates even an
+ * empty message, as OpenSSL does: its tag still covers the nonce, the AAD
+ * and the length. A cipher's empty update is skipped, and final() then
+ * runs the empty message. */
 static ScrBytes *sc_ccm_update(ScCipher *c, const unsigned char *in, size_t len) {
   if (!sc_ccm_length_ok(c, (double)len)) return NULL;
   if (c->decrypt && c->ccm_updated) {
@@ -1304,7 +1308,7 @@ static ScrBytes *sc_ccm_update(ScCipher *c, const unsigned char *in, size_t len)
   }
   ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)(len ? len : 1));
   out->is_buffer = true;
-  bool ok = len == 0 || sc_ccm_data(c, in, out->data, len);
+  bool ok = (len == 0 && !c->decrypt) || sc_ccm_data(c, len ? in : out->data, out->data, len);
   if (c->decrypt) {
     c->ccm_updated = true;
     if (!ok) c->ccm_auth_failed = true;
@@ -1321,11 +1325,11 @@ static ScrBytes *sc_ccm_update(ScCipher *c, const unsigned char *in, size_t len)
   return out;
 }
 
-/* final(): a decipher reports the update's verdict; a cipher runs the
- * provider's final (an empty message when no data was encrypted) and
- * reads the tag, which retires the provider's state. */
+/* final(): a decipher succeeds only when its update verified the tag; a
+ * cipher runs the provider's final (an empty message when no data was
+ * encrypted) and reads the tag, which retires the provider's state. */
 static bool sc_ccm_final(ScCipher *c) {
-  if (c->decrypt) return c->tag_state == SC_TAG_SET_BY_USER && c->ccm_updated && !c->ccm_auth_failed;
+  if (c->decrypt) return c->tag_state == SC_TAG_SET_BY_USER && c->ccm_verified;
   unsigned char dummy = 0, sink = 0;
   if (c->ccm_iv_set && !c->ccm_tag_set && !sc_ccm_data(c, &dummy, &sink, 0)) return false;
   if (!c->ccm_tag_set || !sc_ccm_tag(c, c->tag)) return false;
