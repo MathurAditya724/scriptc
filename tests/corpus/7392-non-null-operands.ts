@@ -113,3 +113,25 @@ for (const key of ["one", "none", "missing"]) {
   line(`loose ${key}`, [optional.get(key)! == null, optional.get(key)! != undefined, optional.get(key)! == 1]);
 }
 line("loose call", [lookup("a") == null, lookup("b") == null, lookup("c") != null, reads]);
+
+// `+` with an untyped partner concatenates or adds depending on what the
+// partner holds when it runs.
+const untypedText: any = "x";
+const untypedNumber: any = 5;
+const untypedObject: any = { toString: () => "obj" };
+for (const s of [empty, full]) {
+  let joined: any = "t";
+  let summed: any = 1;
+  joined += s.limit!;
+  summed += s.limit!;
+  line(`untyped ${s === empty ? "empty" : "full"}`, [
+    s.limit! + untypedText,
+    untypedText + s.limit!,
+    s.limit! + untypedNumber,
+    untypedNumber + s.limit!,
+    s.label! + untypedText,
+    s.limit! + untypedObject,
+    joined,
+    summed,
+  ]);
+}

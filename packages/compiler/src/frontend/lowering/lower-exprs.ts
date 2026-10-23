@@ -1008,17 +1008,34 @@ function convertingUseOf(lowerer: Lowerer, expr: ts.NonNullExpression): "number"
   // With a string on either side, `+` concatenates and a comparison
   // compares strings. `undefined + 1` and `undefined + undefined` are NaN,
   // which a string-typed result cannot hold, so `+` takes the union only
-  // with a string partner that is not itself asserted.
+  // with a string partner that is not itself asserted. A partner that may
+  // hold a string or a number at run time (`any`, `unknown`) also gets the
+  // union, and `+` decides between concatenation and addition when it runs.
   if (op === ts.SyntaxKind.PlusToken || op === ts.SyntaxKind.PlusEqualsToken) {
     if (op === ts.SyntaxKind.PlusEqualsToken && parent.right !== outer) return null;
     let partner = other;
     while (ts.isParenthesizedExpression(partner)) partner = partner.expression;
     if (isString(other)) return ts.isNonNullExpression(partner) ? null : "value";
+    if (!numericPartner(lowerer.typeOf(other))) return "value";
     return isString(expr) ? null : "number";
   }
   if (RELATIONAL_OPERATORS.has(op)) return isString(other) || isString(expr) ? "value" : "number";
   if (NUMERIC_OPERATORS.has(op)) return "number";
   return NUMERIC_COMPOUNDS.has(op) && parent.right === outer ? "number" : null;
+}
+
+/** A `+` partner whose every value is a number, a boolean, null or
+ * undefined: `+` adds with it. */
+function numericPartner(type: ts.Type): boolean {
+  const numeric =
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Void;
+  return (type.flags & ts.TypeFlags.Union) !== 0
+    ? constituentTypes(type).every((part) => (part.flags & numeric) !== 0)
+    : (type.flags & numeric) !== 0;
 }
 
 const EQUALITY_OPERATORS = new Set<ts.SyntaxKind>([
