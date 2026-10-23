@@ -1593,6 +1593,9 @@ export const BUILTIN_MODULE_FNS: Record<
     // Prime checks and generation (lowerPrimeCall): checked-dynamic
     // arguments, results converted to the call site's type.
     checkPrimeSync: { fn: "crypto.checkPrimeSync", params: [], result: DYN },
+    // Checked-dynamic arguments, the result converted to the call site's
+    // type (lowerPrimeCall).
+    getCipherInfo: { fn: "crypto.getCipherInfo", params: [], result: DYN },
     checkPrime: { fn: "crypto.checkPrimeCb", params: [], result: VOID },
     generatePrimeSync: { fn: "crypto.generatePrimeSync", params: [], result: DYN },
     generatePrime: { fn: "crypto.generatePrimeCb", params: [], result: VOID },
@@ -3101,14 +3104,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
     diffieHellman:
       "crypto.diffieHellman takes DH, EC or X25519 KeyObjects and has no lowering; " +
       "the objects of createDiffieHellman, getDiffieHellman and createECDH compute shared secrets",
-    ...Object.fromEntries(
-      ["getCipherInfo"].map((m) => [
-        m,
-        "cipher metadata has no lowering — createCipheriv and createDecipheriv support " +
-          "aes-128/192/256 in cbc, ctr, gcm, ecb, cfb, cfb8, cfb1, and ofb modes, des-ede3 and " +
-          "des-ede, chacha20, and chacha20-poly1305",
-      ]),
-    ),
     setFips:
       "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
       "in a non-FIPS build — getFips() answers 0 here",
@@ -3375,6 +3370,17 @@ export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined):
  *     tamper-guard prologue) registered in stdlibGlobalAliases;
  *   - a const binding of the Map or Set constructor (`const M = Map`,
  *     builtinClassAliasOf). */
+/** The symbol an identifier reads. A shorthand property's name (`{ Date }`)
+ * reads the binding of the same name, not the property it declares. */
+export function identifierReadSymbol(lowerer: Lowerer, expr: ts.Identifier): ts.Symbol | undefined {
+  if (expr.parent && ts.isShorthandPropertyAssignment(expr.parent) && expr.parent.name === expr)
+    return (
+      lowerer.checker.getShorthandAssignmentValueSymbol(expr.parent) ??
+      lowerer.checker.getSymbolAtLocation(expr)
+    );
+  return lowerer.checker.getSymbolAtLocation(expr);
+}
+
 export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
   if (ts.isParenthesizedExpression(expr)) return stdlibGlobalNameOf(lowerer, expr.expression);
   // The global-object detection chain (`typeof global < "u" ? global :
@@ -3386,7 +3392,7 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     return stdlibGlobalNameOf(lowerer, taken ? expr.whenTrue : expr.whenFalse);
   }
   if (ts.isIdentifier(expr)) {
-    const symbol = lowerer.checker.getSymbolAtLocation(expr);
+    const symbol = identifierReadSymbol(lowerer, expr);
     // `globalThis` itself: a reserved intrinsic — tsc rejects user
     // global bindings, but local parameters can shadow it. Its special
     // symbol has no ordinary declarations for the provenance check.

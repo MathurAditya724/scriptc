@@ -8,6 +8,7 @@ import { exactInteger, widenInteger } from "./integer-values.js";
 import { emitCountedLoopLimit, emitCountedLoopSafety } from "./counted-loops.js";
 import { emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
 import { f64Lit } from "./common.js";
+import { emitStringAsciiFlag, emitStringByteLength } from "./string-reads.js";
 
 type Node = IrExpr | IrStmt;
 type VarRef = IrExpr & { kind: "varRef" };
@@ -63,8 +64,9 @@ export interface BytesLoopVersion {
   /** Worker programs: typed-array accesses whose views the guard proves
    * thread-owned (no shared storage). */
   owned: ReadonlySet<Node>;
-  /** Root receiver bindings, read once before the loop. */
-  receivers: { ref: VarRef; global: boolean }[];
+  /** Root receiver bindings, read once before the loop; `string` marks a
+   * string whose `charCodeAt` and `charAt` reads the version covers. */
+  receivers: { ref: VarRef; global: boolean; string: boolean }[];
   /** Receivers the guard requires to have no shared storage. */
   ownedReceivers: number[];
   fixed: FixedCheck[];
@@ -101,6 +103,9 @@ export interface BytesLoopFacts {
   workers: boolean;
   /** Accesses already proved thread-owned by an enclosing version. */
   owned: ReadonlySet<Node>;
+  /** String bindings held as a slice of another string (string-slices.ts):
+   * they have no string header for the guard to read. */
+  scalarStrings: ReadonlySet<string>;
 }
 
 const MAX_COST = 400;
@@ -126,6 +131,14 @@ const INVARIANT_OPS = new Set(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>"])
  *   `view.getUint32(i * 4)`. An invariant without a proven integer range,
  *   such as `base` for `const base = r * cols`, must also be an exact
  *   integer between -2^32 and 2^32, which the guard tests.
+ *
+ * `s.charCodeAt(index)` and `s.charAt(index)` (so `s[index]`) of a string
+ * binding qualify the same way. A string is immutable: its bytes, its
+ * length and the capacity-word bit that proves it ASCII (string-reads.ts)
+ * are fixed when it is built. The guard also requires that bit, so each
+ * UTF-16 unit is one byte and the length is the byte length. The fast copy
+ * reads each unit with one byte load, and each character as the immortal
+ * one-character string for its byte.
  *
  * In worker programs, every access of a view that may be shared tests its
  * shared storage. A view's storage is also fixed at construction, so the
@@ -217,7 +230,8 @@ export function matchBytesLoopVersion(
   };
   const resolving = new Set<string>();
   const root = (e: IrExpr): VarRef | null => {
-    if (e.kind !== "varRef" || e.type.kind !== "bytes") return null;
+    if (e.kind !== "varRef" || (e.type.kind !== "bytes" && e.type.kind !== "string")) return null;
+    if (facts.scalarStrings.has(e.localId)) return null;
     const init = temp(e.localId);
     if (init) {
       if (resolving.has(e.localId)) return null;
@@ -396,7 +410,7 @@ export function matchBytesLoopVersion(
       },
     });
   }
-  const receivers: { ref: VarRef; global: boolean }[] = [];
+  const receivers: { ref: VarRef; global: boolean; string: boolean }[] = [];
   const receiverIndex = new Map<string, number>();
   const fixed = new Map<number, { check: FixedCheck; nodes: Node[] }>();
   const affineChecks = new Map<
@@ -408,7 +422,11 @@ export function matchBytesLoopVersion(
     if (index === undefined) {
       index = receivers.length;
       receiverIndex.set(ref.localId, index);
-      receivers.push({ ref, global: !facts.locals.has(ref.localId) });
+      receivers.push({
+        ref,
+        global: !facts.locals.has(ref.localId),
+        string: ref.type.kind === "string",
+      });
     }
     return index;
   };
@@ -423,7 +441,7 @@ export function matchBytesLoopVersion(
   const access = (node: Node, array: IrExpr, index: IrExpr, width: number): void => {
     const ref = root(array);
     if (!ref) return;
-    if (facts.workers && !facts.owned.has(node)) {
+    if (facts.workers && ref.type.kind === "bytes" && !facts.owned.has(node)) {
       const receiver = receiverOf(ref);
       const nodes = owned.get(receiver);
       if (nodes) nodes.push(node);
@@ -491,7 +509,12 @@ export function matchBytesLoopVersion(
       const numeric = byteNumberAccess(e);
       if (numeric) access(e, e.receiver, e.args[numeric.offsetArg]!, numeric.width);
       else if (e.method === "get" && e.args[0]) access(e, e.receiver, e.args[0], 1);
-    }
+    } else if (
+      e.kind === "strIntrinsic" &&
+      (e.method === "charCodeAt" || e.method === "charAt") &&
+      e.args[0]
+    )
+      access(e, e.receiver, e.args[0], 1);
     return everyExprChild(e, visitExpr, visitStmt);
   };
   const visitStmt = (s: IrStmt): boolean => {
@@ -694,17 +717,18 @@ function counterStep(s: IrStmt): { id: string; k: number; wraps: boolean } | nul
   return { id: s.localId, k: value.right.value, wraps };
 }
 
-/** Typed-array accesses of a while loop that happen at a counter below a
- * loop-invariant bound. A counter is a number local that the loop changes
- * only by positive integer increments, written as statements of the body,
- * of its blocks and branches, or of nested while loops. The condition of
- * the loop, an `if` or a `&&` chain that compares the counter below a bound
- * (`while (pos < end && bytes[pos] === 32) pos++`) makes it below that
- * bound until the next increment on the path. The counter starts at its
- * entry value and only grows (a `| 0` increment never wraps when every
- * bound is at most 2^31 minus the increments), so an access at `counter +
- * d` is in bounds for the whole loop when the entry value is at least `-d`
- * and `bound + d < length` (`+ 1` for `<=`). */
+/** Typed-array and string accesses of a while loop that happen at a
+ * counter below a loop-invariant bound. A counter is a number local that
+ * the loop changes only by positive integer increments, written as
+ * statements of the body, of its blocks and branches, or of nested while
+ * loops. The condition of the loop, an `if` or a `&&` chain that compares
+ * the counter below a bound (`while (pos < end && bytes[pos] === 32)
+ * pos++`, or `s.charCodeAt(pos)` of a string) makes it below that bound
+ * until the next increment on the path. The counter starts at its entry
+ * value and only grows (a `| 0` increment never wraps when every bound is
+ * at most 2^31 minus the increments), so an access at `counter + d` is in
+ * bounds for the whole loop when the entry value is at least `-d` and
+ * `bound + d < length` (`+ 1` for `<=`). */
 function findWhileCounterAccesses(
   loop: IrStmt & { kind: "while" },
   host: {
@@ -814,6 +838,12 @@ function findWhileCounterAccesses(
           : undefined;
       if (index) record(e, index, clean);
     }
+    if (
+      e.kind === "strIntrinsic" &&
+      (e.method === "charCodeAt" || e.method === "charAt") &&
+      e.args[0]
+    )
+      record(e, e.args[0], clean);
     if (e.kind === "logical" && e.op === "&&") {
       expr(e.left, clean);
       expr(e.right, withFacts(clean, e.left));
@@ -969,14 +999,20 @@ export function emitBytesLoopVersionGuard(
     }
     return value;
   });
-  const lengths = receivers.map((receiver) => {
-    const len = emitBytesHeaderLength(host, receiver);
+  const lengths = receivers.map((receiver, index) => {
+    const len = version.receivers[index]!.string
+      ? emitStringByteLength(host, receiver)
+      : emitBytesHeaderLength(host, receiver);
     if (host.sizeType === "i64") return len;
     const wide = B.tmp();
     B.line(`${wide} = zext ${host.sizeType} ${len} to i64`);
     return wide;
   });
   const conditions: string[] = [];
+  // A string's byte length is its UTF-16 length when it is ASCII.
+  version.receivers.forEach(({ string }, index) => {
+    if (string) conditions.push(emitStringAsciiFlag(host, receivers[index]!));
+  });
   for (const index of version.ownedReceivers) {
     const owned = B.tmp();
     B.line(`${owned} = icmp eq ptr ${emitBytesSharedStorage(host, receivers[index]!)}, null`);

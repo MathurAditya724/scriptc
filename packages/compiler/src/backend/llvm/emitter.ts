@@ -57,7 +57,6 @@ import {
 } from "../../ir/ir.js";
 import { moduleRuntimeFeatures, type RuntimeFeatures } from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
-import { type DenseArrayLoop } from "./dense-array-loops.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
 import { globalSlotAlias } from "./bytes-alias.js";
@@ -71,11 +70,29 @@ import {
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { addRecordResultEntries } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
+import {
+  type ChunkResult,
+  EmitJournal,
+  registerReplay,
+  renameChunk,
+  replayJournal,
+} from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
+import {
+  allocatedLiteral,
+  fillAllocationLength,
+  selectInt32Arrays,
+} from "../../ir/int32-arrays.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
-import { INT32_RANGE, type IntegerRange, type IntegerRanges } from "../../ir/integer-ranges.js";
+import {
+  INT32_RANGE,
+  withinInt32,
+  type IntegerRange,
+  type IntegerRanges,
+} from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
+import { runPairedWhileLoopsAsFor } from "../../ir/paired-while-loops.js";
 import { copyStableCaptures } from "../../ir/capture-values.js";
 import { resolveSelfCaptures } from "../../ir/self-captures.js";
 import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
@@ -84,6 +101,7 @@ import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
+import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
 import {
   findInt32Abis,
   INT32_ABI_SUFFIX,
@@ -93,7 +111,7 @@ import {
 } from "./int32-abi.js";
 import { type Int32Local } from "./int32-locals.js";
 import { findIntegerClones, NO_INTEGER_CLONES, type IntegerClones } from "./integer-clones.js";
-import { exactInteger, narrowInteger } from "./integer-values.js";
+import { exactInteger, narrowInteger, widenInteger } from "./integer-values.js";
 import { findInitializerBindings } from "../../ir/initializer-bindings.js";
 import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
 import {
@@ -140,12 +158,18 @@ import {
 } from "./inline-unions.js";
 import { OptionalArrayReads, type LocalArrayRead } from "./local-array-reads.js";
 import { CheckedNarrows } from "./checked-narrows.js";
-import { emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
+import {
+  emitDenseArraySet,
+  emitDenseSlotUnlink,
+  SCR_ELEM_I32,
+  type ArrayAccess,
+} from "./dense-array-access.js";
 import { matchMapRead, type MapReadLifetimes } from "./map-read-lifetimes.js";
 import { type MapEntryFusion } from "./map-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import { findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
+import { IrNodeIndex } from "../../ir/node-index.js";
 import { lastUseRead } from "./local-extents.js";
 import { findReboundParameters } from "./rebound-parameters.js";
 import { ReferenceEffects } from "./reference-effects.js";
@@ -161,7 +185,7 @@ import {
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
 import { StackCaptures } from "./stack-captures.js";
-import { emitFieldAbsentTest, f64Lit } from "./common.js";
+import { emitFieldAbsentTest, f64Lit, SCR_ARR_FIELD } from "./common.js";
 import { ffiExtendsNarrowIntegers } from "../targets.js";
 import {
   emitLiteralExpr,
@@ -179,6 +203,7 @@ import { computeImmutableFields, stableGlobals, type ImmutableFields } from "../
 import { computeCycleMutability, hierarchyUnitOfClass } from "../cycle-mutability.js";
 import { computePublishedTypes, type PublishedTypes } from "../publication.js";
 import { emitExpr } from "./expr-dispatch.js";
+import { LOOPS } from "./loop-state.js";
 
 import {
   dynKind,
@@ -394,9 +419,32 @@ export interface LlScopeEntry {
   lazy?: boolean;
 }
 
+/** Process primitives for forked emission workers. */
+export interface ForkPrimitives {
+  /** 0 in the worker, the worker's pid in the parent, -1 on failure. */
+  fork(): number;
+  /** Ends the worker without running exit handlers. */
+  exit(code: number): void;
+  /** The worker's exit status, 128 plus a signal number, or -1. */
+  wait(pid: number): number;
+}
+
 export interface LlvmTargetOptions {
   /** C ABI target; omitted direct emission uses the host ABI. */
   targetTriple?: string;
+  /** Emit the function bodies in this many contiguous ranges, each by its
+   * own emitter, and merge them in function order (emit-journal.ts). The
+   * output is the same as one emitter's. Debug builds (`debugSources`)
+   * emit in one emitter. */
+  functionChunks?: number;
+  /** Emit the function bodies of a large module on this many forked worker
+   * processes at a time (emit-module.ts), forked with `forkPrimitives`. The
+   * output is the same as one emitter's. Debug builds (`debugSources`)
+   * emit in one emitter. */
+  functionWorkers?: number;
+  /** The host's process primitives, where it can fork (the native
+   * compiler's). */
+  forkPrimitives?: ForkPrimitives | undefined;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
@@ -452,35 +500,67 @@ function versionParameters(mod: IrModule): IrModule {
   return versionLoopBoundParameters(mod, mangleFunction);
 }
 
-export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
+/** The int32 arrays the int32 slot analysis keeps in `mod` (proven and
+ * checked), under the inputs LlEmitter gives it (selectInt32Arrays). */
+function provenInt32Arrays(mod: IrModule): ReadonlySet<string> {
+  const slots = analyzeInt32Slots(mod, {
+    dynamicStores: dynamicFieldStores(mod),
+    initializerBindings: findInitializerBindings(mod),
+  });
+  return new Set([...slots.int32Arrays, ...slots.checkedInt32Arrays]);
+}
+
+/** The emitter for `input` after the module passes every emission runs. */
+function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
   const mod = unshareNodes(input);
   // Keep source storage intact for debugger inspection in dev builds.
   return new LlEmitter(
     options.debugSources === undefined
-      ? versionParameters(
-          addRecordResultEntries(
-            scalarizeNumericRecords(
-              specializeCallbackCalls(
-                specializeNumericCalls(
-                  foldConstantGlobals(
-                    copyStableCaptures(
-                      resolveSelfCaptures(
-                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+      ? selectInt32Arrays(
+          versionParameters(
+            addRecordResultEntries(
+              scalarizeNumericRecords(
+                specializeCallbackCalls(
+                  specializeNumericCalls(
+                    foldConstantGlobals(
+                      copyStableCaptures(
+                        resolveSelfCaptures(
+                          hoistFinalFieldReads(
+                            freezeInitOnlyGlobals(
+                              holdCharLocalsAsUnits(
+                                dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
                     ),
+                    mangleFunction,
                   ),
                   mangleFunction,
                 ),
-                mangleFunction,
               ),
             ),
           ),
+          provenInt32Arrays,
         )
       : mod,
     options,
-  ).emit();
+  );
+}
+
+export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
+  return moduleEmitter(input, options).emit();
+}
+
+/** emitLlvmModule's text as parts that concatenate to it, without the copy
+ * that joining them makes: a large program's text is 150 MB. */
+export function emitLlvmModuleParts(input: IrModule, options: LlvmTargetOptions = {}): string[] {
+  return moduleEmitter(input, options)
+    .emitParts()
+    .flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
 }
 
 /** Keep large translation units below the host's single-string limit. */
@@ -490,31 +570,7 @@ export function emitLlvmModuleSource(
 ): string | readonly string[] {
   // IR validation, contracts and the frontend's disposal run after lowering without checks.
   relieveHeapPressure(true);
-  const mod = unshareNodes(input);
-  const parts = new LlEmitter(
-    options.debugSources === undefined
-      ? versionParameters(
-          addRecordResultEntries(
-            scalarizeNumericRecords(
-              specializeCallbackCalls(
-                specializeNumericCalls(
-                  foldConstantGlobals(
-                    copyStableCaptures(
-                      resolveSelfCaptures(
-                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
-                      ),
-                    ),
-                  ),
-                  mangleFunction,
-                ),
-                mangleFunction,
-              ),
-            ),
-          ),
-        )
-      : mod,
-    options,
-  ).emitParts();
+  const parts = moduleEmitter(input, options).emitParts();
   const length = parts.reduce((total, part) => total + part.length, Math.max(0, parts.length - 1));
   if (length <= 256 * 1024 * 1024) return parts.join("\n");
   return parts.flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
@@ -630,6 +686,8 @@ function countLocalMentions(body: readonly IrStmt[], id: string): number {
 }
 
 export class LlEmitter {
+  /** Per-feature state (emitter-state.ts), indexed by each key's slot. */
+  readonly moduleStates: unknown[] = [];
   localArrayReads = new Map<string, LocalArrayRead>();
   loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
@@ -676,6 +734,7 @@ export class LlEmitter {
       tag = 2 + this.fieldAliasTags.size * 2;
       this.fieldAliasTags.set(field, tag);
     }
+    this.journal?.entry("tag", field, tag);
     this.fieldPointerTags.set(ptr, tag);
   }
 
@@ -688,14 +747,237 @@ export class LlEmitter {
       tag = 2 + this.fieldAliasTags.size * 2;
       this.fieldAliasTags.set(category, tag);
     }
+    this.journal?.entry("tag", category, tag);
     return `, !tbaa !${tag}`;
+  }
+
+  /** The current function's int32 array allocations: the array literals
+   * its int32 arrays are written with. They construct SCR_ELEM_I32 arrays. */
+  int32Allocations = new Set<IrExpr>();
+  /** The fill temporaries (`new Array(n).fill(v)`) of those allocations:
+   * the same arrays, so int32 too. */
+  int32ArrayTemps = new Set<string>();
+  /** The same for the current function's int32 arrays with checked stores,
+   * which are only allocated by fills (ir/int32-arrays.ts
+   * checkableInt32Allocations): their temporaries' literals, with the fill's
+   * length (a literal constructs SCR_ELEM_I32 storage when that length is at
+   * least CHECKED_INT32_MIN_LENGTH, SCR_ELEM_F64 otherwise), and their
+   * temporaries. */
+  checkedAllocations = new Map<IrExpr, IrExpr>();
+  checkedArrayTemps = new Set<string>();
+  /** The fill calls (`.fill(v)`) of those allocations: a value that is not
+   * an int32 widens the new array first. */
+  checkedFills = new Set<IrExpr>();
+
+  /** Collect the int32 allocations of `fn`, about to be emitted. */
+  findInt32Allocations(fn: IrFunction): void {
+    this.int32Allocations.clear();
+    this.int32ArrayTemps.clear();
+    this.checkedAllocations.clear();
+    this.checkedArrayTemps.clear();
+    this.checkedFills.clear();
+    const { int32Arrays, checkedInt32Arrays } = this.int32Slots;
+    if (int32Arrays.size === 0 && checkedInt32Arrays.size === 0) return;
+    everyStmtList(fn.body, {
+      stmt: (s) => {
+        if (s.kind !== "varDecl" && s.kind !== "assign") return true;
+        const key = `${fn.name}\0${s.localId}`;
+        const checked = checkedInt32Arrays.has(key);
+        if (!checked && !int32Arrays.has(key)) return true;
+        const value = s.kind === "varDecl" ? s.init : s.value;
+        const allocation = value && allocatedLiteral(value);
+        if (!allocation) return true;
+        const length = checked ? fillAllocationLength(value) : null;
+        if (length !== null) this.checkedAllocations.set(allocation.literal, length);
+        else if (!checked) this.int32Allocations.add(allocation.literal);
+        if (allocation.temporary !== null)
+          (checked ? this.checkedArrayTemps : this.int32ArrayTemps).add(allocation.temporary);
+        if (checked && value !== allocation.literal) this.checkedFills.add(value!);
+        return true;
+      },
+      expr: () => true,
+    });
+  }
+
+  /** Whether `arr` is one of the current function's int32 arrays
+   * (ir/int32-arrays.ts, kept by the int32 slot analysis). */
+  int32Array(arr: IrExpr): boolean {
+    if (arr.kind !== "varRef") return false;
+    if (this.int32KindArray(arr)) return true;
+    if (this.int32Slots.int32Arrays.size === 0) return false;
+    return (
+      this.int32ArrayTemps.has(arr.localId) ||
+      this.int32Slots.int32Arrays.has(`${this.currentFunctionName}\0${arr.localId}`)
+    );
+  }
+
+  /** Whether `arr` is one of the current function's int32 arrays with
+   * checked stores: int32 slots until a store widens it to doubles. Every
+   * access tests its kind (emitByElementKind), except in the fast copy of
+   * an int32 kind loop, which reads and writes it as an int32 array. */
+  checkedInt32Array(arr: IrExpr): boolean {
+    if (arr.kind !== "varRef" || this.int32KindArray(arr)) return false;
+    if (this.int32Kinds?.wide.has(`${this.currentFunctionName}\0${arr.localId}`)) return false;
+    return this.checkedInt32Local(arr.localId);
+  }
+
+  /** Whether the local `localId` holds one of the current function's int32
+   * arrays with checked stores. */
+  checkedInt32Local(localId: string): boolean {
+    if (this.int32Slots.checkedInt32Arrays.size === 0) return false;
+    return (
+      this.checkedArrayTemps.has(localId) ||
+      this.int32Slots.checkedInt32Arrays.has(`${this.currentFunctionName}\0${localId}`)
+    );
+  }
+
+  /** Whether `arr` is an int32 array with checked stores that the fast copy
+   * of the int32 kind loop being emitted holds as an int32 array. */
+  int32KindArray(arr: IrExpr): boolean {
+    return (
+      this.int32Kinds !== null &&
+      arr.kind === "varRef" &&
+      this.int32Kinds.int32.has(`${this.currentFunctionName}\0${arr.localId}`)
+    );
+  }
+
+  /** Before a store of `value` (of `expr`) into `arr`, in the fast copy of
+   * an int32 kind loop: continue when it is an int32 that is not -0, and
+   * otherwise leave for the statement's resume point, where it re-executes
+   * with kind tests. Returns the value as an i32 when it is at hand as an
+   * integer, or null when the store converts the double itself. */
+  emitInt32KindStoreCheck(arr: IrExpr, value: LlValue, expr: IrExpr): string | null {
+    if (!this.int32KindArray(arr) || withinInt32(this.integerRanges.get(expr))) return null;
+    const integer = exactInteger(this, value, expr);
+    if (integer !== null && withinInt32(integer.range)) return narrowInteger(this, integer);
+    const resume = this.int32KindResume;
+    if (resume === null)
+      throw new InternalCompilerError("llvm emitter bug: an int32 kind store without a resume");
+    const B = this.B;
+    const ok = B.tmp(),
+      int = B.tmp();
+    if (integer !== null) {
+      // An exact integer: a range test on its 64-bit form.
+      const wide = widenInteger(this, integer),
+        low = B.tmp(),
+        high = B.tmp();
+      B.line(`${low} = icmp sge i64 ${wide}, -2147483648`);
+      B.line(`${high} = icmp sle i64 ${wide}, 2147483647`);
+      B.line(`${ok} = and i1 ${low}, ${high}`);
+      const store = B.newLabel("arr.store.i32");
+      B.condBr(ok, store, resume);
+      B.startBlock(store);
+      B.line(`${int} = trunc i64 ${wide} to i32`);
+      return int;
+    }
+    this.declare("declare i32 @llvm.fptosi.sat.i32.f64(double)");
+    const back = B.tmp(),
+      exact = B.tmp(),
+      bits = B.tmp(),
+      notNegativeZero = B.tmp();
+    B.line(`${int} = call i32 @llvm.fptosi.sat.i32.f64(double ${value.name})`);
+    B.line(`${back} = sitofp i32 ${int} to double`);
+    B.line(`${exact} = fcmp oeq double ${back}, ${value.name}`);
+    B.line(`${bits} = bitcast double ${value.name} to i64`);
+    B.line(`${notNegativeZero} = icmp ne i64 ${bits}, -9223372036854775808`);
+    B.line(`${ok} = and i1 ${exact}, ${notNegativeZero}`);
+    const store = B.newLabel("arr.store.i32");
+    B.condBr(ok, store, resume);
+    B.startBlock(store);
+    return int;
+  }
+
+  /** Emit an access to the checked int32 array `array` once per element
+   * kind: `arm("i32", widened)` while it holds int32 slots and
+   * `arm("f64", widened)` after it widened, joined after both. `widened` is
+   * the label of the double arm, where an int32 arm's store of a value that
+   * is not an int32 continues after widening the array. Returns the phi of
+   * the arms' results (of LLVM type `ty`), or null when `ty` is null. */
+  emitByElementKind(
+    array: string,
+    ty: string | null,
+    arm: (acc: "i32" | "f64", widened: string) => string | null,
+  ): string | null {
+    const B = this.B;
+    const narrow = B.newLabel("arr.kind.i32"),
+      wide = B.newLabel("arr.kind.f64"),
+      join = B.newLabel("arr.kind.join");
+    const kindPtr = B.tmp(),
+      kind = B.tmp(),
+      isInt32 = B.tmp();
+    B.line(
+      `${kindPtr} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.elem}`,
+    );
+    this.markMemoryPointer(kindPtr, "array:header");
+    B.line(`${kind} = load i8, ptr ${kindPtr}${this.fieldAliasAttachment(kindPtr)}`);
+    B.line(`${isInt32} = icmp eq i8 ${kind}, ${SCR_ELEM_I32}`);
+    B.condBr(isInt32, narrow, wide);
+    B.startBlock(narrow);
+    const narrowValue = arm("i32", wide);
+    const narrowEnd = B.isTerminated() ? null : B.currentLabel();
+    if (narrowEnd !== null) B.br(join);
+    B.startBlock(wide);
+    const wideValue = arm("f64", wide);
+    const wideEnd = B.isTerminated() ? null : B.currentLabel();
+    if (wideEnd !== null) B.br(join);
+    B.startBlock(join);
+    // Arms that end in their own branches (a read's shared join) leave this
+    // join without predecessors.
+    if (narrowEnd === null && wideEnd === null) B.terminate("unreachable");
+    if (ty === null) return null;
+    const arms: string[] = [];
+    if (narrowEnd !== null) arms.push(`[ ${narrowValue}, %${narrowEnd} ]`);
+    if (wideEnd !== null) arms.push(`[ ${wideValue}, %${wideEnd} ]`);
+    const result = B.tmp();
+    B.line(`${result} = phi ${ty} ${arms.join(", ")}`);
+    return result;
+  }
+
+  /** Before storing the double `value` (of `expr`) into an int32 arm
+   * (emitByElementKind) of the checked int32 array `array`: continue in this
+   * arm when it is an int32 that is not -0, or widen the array and continue
+   * at `widened`. A value proven an int32 needs no test. */
+  emitCheckedInt32Store(array: string, value: string, expr: IrExpr, widened: string): void {
+    if (withinInt32(this.integerRanges.get(expr))) return;
+    const B = this.B;
+    this.declare("declare i32 @llvm.fptosi.sat.i32.f64(double)");
+    this.declare("declare void @scr_arr_widen_i32(ptr)");
+    const int = B.tmp(),
+      back = B.tmp(),
+      exact = B.tmp(),
+      bits = B.tmp(),
+      notNegativeZero = B.tmp(),
+      ok = B.tmp();
+    B.line(`${int} = call i32 @llvm.fptosi.sat.i32.f64(double ${value})`);
+    B.line(`${back} = sitofp i32 ${int} to double`);
+    B.line(`${exact} = fcmp oeq double ${back}, ${value}`);
+    B.line(`${bits} = bitcast double ${value} to i64`);
+    B.line(`${notNegativeZero} = icmp ne i64 ${bits}, -9223372036854775808`);
+    B.line(`${ok} = and i1 ${exact}, ${notNegativeZero}`);
+    const store = B.newLabel("arr.store.i32"),
+      widen = B.newLabel("arr.widen");
+    B.condBr(ok, store, widen);
+    B.startBlock(widen);
+    B.line(`call void @scr_arr_widen_i32(ptr ${array})`);
+    B.br(widened);
+    B.startBlock(store);
+  }
+
+  /** The access an element operation on `arr` (of element type `elem`)
+   * takes: int32 arrays read and write their 4-byte slots. */
+  arrayAccess(arr: IrExpr, elem: IrType): ArrayAccess {
+    if (this.checkedInt32Array(arr))
+      throw new InternalCompilerError(
+        "llvm emitter bug: a checked int32 array without its kind test",
+      );
+    return this.int32Array(arr) ? "i32" : elemAccess(elem);
   }
 
   /** Whether an element access at `index` of `arr` lies in the hole-free
    * prefix: the counter of a dense array loop's fast copy indexing one of
    * the arrays its entry test covered. */
   provenDenseIndex(arr: IrExpr, index: IrExpr): boolean {
-    const loop = this.denseLoop;
+    const loop = LOOPS.of(this).denseLoop;
     return (
       loop !== null &&
       arr.kind === "varRef" &&
@@ -798,6 +1080,10 @@ export class LlEmitter {
   readonly cstrs = new Map<string, { sym: string; len: number }>();
   /** Interned ScrMapOps descriptors (scr_map.h): initializer → symbol. */
   readonly mapOpsConsts = new Map<string, string>();
+  /** Method-id slots of checked-dynamic method calls
+   * (scr_dyn_invoke_prepared_id): method name → symbol of an i32 the
+   * runtime fills with the name's id on the first call. */
+  readonly methodIdSlots = new Map<string, string>();
   /** Type-directed walker functions (JSON serializers, the indent
    * rewriter, union ToString/join) — interned per typeKey/unionId, defs
    * flushed with the shape helpers. */
@@ -898,6 +1184,9 @@ export class LlEmitter {
   /** Module constants that keep one value once initialized
    * (immutability.ts stableGlobals). */
   stableGlobals: ReadonlySet<string> = new Set();
+  /** Every function body's nodes in walk order (ir/node-index.ts), for the
+   * constructor's analyses. */
+  readonly nodeIndex: IrNodeIndex;
   private readonly tdzGlobals = new Map<string, string>();
   readonly constantNumericTables: ReadonlyMap<string, ConstantNumericTable>;
   /** Constant-key reads on checked-dynamic objects, each with its own
@@ -966,7 +1255,7 @@ export class LlEmitter {
   /** The module's runtime features (moduleRuntimeFeatures), found with one
    * walk of the module the first time any of them is read. */
   get runtimeFeatures(): RuntimeFeatures {
-    return (this.runtimeFeaturesValue ??= moduleRuntimeFeatures(this.mod));
+    return (this.runtimeFeaturesValue ??= moduleRuntimeFeatures(this.mod, this.nodeIndex));
   }
   /** Whether timer and tick scheduling goes through the *_als entry
    * points (RuntimeFeatures asyncContext). */
@@ -990,6 +1279,11 @@ export class LlEmitter {
   /** See moduleUsesDynBuiltinStream. */
   get usesDynBuiltinStream(): boolean {
     return this.runtimeFeatures.dynBuiltinStream;
+  }
+  /** A checked-dynamic for-await may hold a native stream: the program
+   * links the stream unit (and the dyn-async one the loop needs). */
+  get dynForAwaitStreams(): boolean {
+    return this.runtimeFeatures.stream && this.runtimeFeatures.dynAsync;
   }
   /** Runtime-arm dispatchers for live union values. */
   readonly liveDynUnionRefAdapters = new Map<string, string>();
@@ -1092,14 +1386,6 @@ export class LlEmitter {
    * immortal from construction (classes.ts programLifetimeClass). */
   readonly programLifetime: ReadonlySet<string>;
   numericLocals = new Map<string, IrLocal>();
-  /** Local arrays of the current function that no other binding can hold
-   * (ir/array-length-stability.ts). */
-  unaliasedArrays: ReadonlySet<string> = new Set();
-  /** Dense array loops (dense-array-loops.ts) run in this function. */
-  denseLoopsEnabled = false;
-  denseLoopEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
-  /** The fast copy of a dense array loop being emitted. */
-  denseLoop: DenseArrayLoop | null = null;
   captureIds = new Set<string>();
   /** Active induction bindings retain their width independently of size_t. */
   integerLoopBindings = new Map<
@@ -1117,7 +1403,6 @@ export class LlEmitter {
    * async or generator body resumes with its locals in its frame, which
    * an entry alloca is not part of. */
   integerTempsEnabled = false;
-  countedLoopsEnabled = false;
   /** Speculative integer loops (speculative-integers.ts) run in this function. */
   speculativeLoopsEnabled = false;
   /** The fast copy of a speculative integer loop being emitted: its
@@ -1141,6 +1426,14 @@ export class LlEmitter {
    * (`enterLoopHeader`): records the ordinary copy's header, or sends the
    * third copy's header there. */
   speculationHeader: ((header: string) => void) | null = null;
+  /** A copy of an int32 kind loop (int32-kind-loops.ts) being emitted: the
+   * int32 arrays with checked stores it reads and writes as int32 arrays
+   * (the fast copy) or as double arrays (an ordinary copy entered only
+   * after they widened), as `function\0local` keys, and where each of the
+   * fast copy's writes resumes in the third copy. */
+  int32Kinds: { int32: Set<string>; wide: Set<string>; resume: Map<IrStmt, string> } | null = null;
+  /** The resume label of the fast-copy write being emitted. */
+  int32KindResume: string | null = null;
   /** The function being emitted, for speculative globals. */
   speculativeFunction = "";
   /** Every function that writes each number global (computed on demand). */
@@ -1158,20 +1451,14 @@ export class LlEmitter {
   int32Elements: ((arr: IrExpr) => boolean) | null = null;
   /** Sums whose result only feeds 32-bit conversions (wrapping-sums.ts). */
   wrappingSums = new Set<IrExpr>();
-  byteWindowsEnabled = true;
-  byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
-  /** Typed-array loop versioning (bytes-loop-versions.ts) for the current
-   * function: off in debug and suspending functions and inside a copy. */
-  bytesLoopVersionsEnabled = false;
-  /** Loops being versioned around the statement being emitted: a loop is
-   * never versioned inside its own copies, and versions nest boundedly. */
-  readonly bytesLoopVersioning = new Set<IrStmt>();
-  bytesLoopEntries: ReturnType<typeof findInitializedByteLoopBindings> | null = null;
-  bytesLoopFunction: IrFunction | null = null;
-  /** Counted loops whose integer-form safety test an enclosing version
-   * guard already passed. */
-  readonly provenCountedGuards = new Set<IrStmt>();
+  /** Number locals of the current function that hold exact integers or NaN
+   * (findIntegerOrNaNLocals in wrapping-sums.ts). */
+  integerOrNaNLocals: ReadonlyMap<string, IntegerRange> = new Map();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
+  /** The charCodeAt reads standing for charAt reads the emitter rewrote
+   * (one-unit tests and switches, charAtUnitRead), with the charAt each
+   * stands for: a loop version's proof for the charAt covers its read. */
+  readonly charAtUnitReads = new Map<IrExpr, IrExpr>();
   /** Worker programs: typed-array accesses whose views an enclosing version
    * guard proved thread-owned. */
   bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
@@ -1242,15 +1529,38 @@ export class LlEmitter {
   readonly chainSlots = new Map<string, LlValue>();
   logArgSlots = 0;
   readonly stackTraces: boolean;
+  /** The options this emitter was built with (chunk emitters reuse them). */
+  readonly targetOptions: LlvmTargetOptions;
+  /** Records the module-level effects of emitting a range of functions,
+   * which the emitter that merges the range replays (emit-journal.ts). Null
+   * when this emitter emits the whole module itself. */
+  journal: EmitJournal | null;
+  /** The emitter's hosts forward to `journal` (journal set, or workers). */
+  private readonly journaled: boolean;
   /** Stack-trace mode: functions no capture can include (no frame push). */
   readonly unframedFunctions: ReadonlySet<string>;
 
   constructor(
     readonly mod: IrModule,
     options: LlvmTargetOptions,
+    journal: EmitJournal | null = null,
   ) {
-    this.stackTraces = observesStacks(mod);
-    this.nullableUnions = new NullableUnions(mod, options.debugSources === undefined);
+    this.targetOptions = options;
+    this.journal = journal;
+    this.journaled =
+      journal !== null ||
+      ((options.functionWorkers ?? 1) > 1 &&
+        options.forkPrimitives !== undefined &&
+        options.debugSources === undefined);
+    // One walk of every body, which the analyses below read instead of
+    // walking the bodies themselves.
+    this.nodeIndex = new IrNodeIndex(mod);
+    this.stackTraces = observesStacks(mod, this.nodeIndex);
+    this.nullableUnions = new NullableUnions(
+      mod,
+      options.debugSources === undefined,
+      this.nodeIndex,
+    );
     this.mockTimers = this.runtimeFeatures.mockTimers;
     this.debug =
       options.debugSources === undefined
@@ -1263,19 +1573,20 @@ export class LlEmitter {
             this.nullableUnions.armTypes(),
           );
     this.constantNumericTables = findConstantNumericTables(mod);
-    this.initializerBindings = findInitializerBindings(mod);
+    this.initializerBindings = findInitializerBindings(mod, this.nodeIndex);
     // One walk finds the dynamic field stores every analysis below consults.
-    const dynamicStores = dynamicFieldStores(mod);
+    const dynamicStores = dynamicFieldStores(mod, undefined, undefined, this.nodeIndex);
     this.int32Slots = analyzeInt32Slots(mod, {
       dynamicStores,
       initializerBindings: this.initializerBindings,
+      nodes: this.nodeIndex,
     });
     this.liveViewsReadOnly =
       mod.lib === undefined && !dynamicStores.all && dynamicStores.names.size === 0;
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
-    this.finalFields = analyzeFinalFields(mod, false, dynamicStores);
+    this.finalFields = analyzeFinalFields(mod, false, dynamicStores, this.nodeIndex);
     this.sizeType = options.pointerBits === 32 ? "i32" : "i64";
     this.ffiExtendNarrowIntegers =
       options.wasi === true || ffiExtendsNarrowIntegers(options.targetTriple);
@@ -1323,7 +1634,7 @@ export class LlEmitter {
     this.ffiHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
     this.ffiHasForeignCallback = hasForeignFfiCallback(mod.ffiImports ?? []);
     for (const fn of mod.functions) this.fnByName.set(fn.name, fn);
-    this.appendedArrayLiterals = findAppendedArrayLiterals(mod);
+    this.appendedArrayLiterals = findAppendedArrayLiterals(mod, this.nodeIndex);
     for (const entry of mod.ffiImports ?? []) {
       this.ffiByName.set(entry.name, entry);
     }
@@ -1331,10 +1642,11 @@ export class LlEmitter {
     // and per async fiber; WASI, Windows and library builds have none.
     const triple = (options.targetTriple ?? "").toLowerCase();
     const windows = triple === "" ? process.platform === "win32" : triple.includes("windows");
-    this.publishedTypes = computePublishedTypes(mod);
+    this.publishedTypes = computePublishedTypes(mod, this.nodeIndex);
     const mt = computeMayThrow(mod, {
       stackChecks: !this.wasi && mod.lib === undefined && !windows,
       published: this.publishedTypes,
+      nodes: this.nodeIndex,
     });
     this.mayThrow = mt.fns;
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
@@ -1393,12 +1705,14 @@ export class LlEmitter {
         new Set((mod.globals ?? []).map((g) => g.id)),
         { unions: mod.unions, records: mod.records },
         this.immutableFields,
+        this.nodeIndex,
       );
     const walkParameters = new Map<string, Set<number>>();
     if (this.debug === null) {
       const host = {
         pointerLocal: (local: IrLocal) => this.plainReference(local.type),
         borrowsWithoutOwning: (e: IrExpr) => this.borrowsWithoutOwning(e),
+        nodes: this.nodeIndex,
       };
       for (const fn of this.fnByName.values()) {
         const preserving = this.referenceEffects.functions.has(fn.name);
@@ -1451,7 +1765,7 @@ export class LlEmitter {
     );
     this.lentStringParameters =
       this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
-    this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
+    this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes, this.nodeIndex);
     // Integer clones signal a stack overflow through their result, which
     // needs the single-threaded guard; worker programs also poll for
     // termination, and debug builds and stack traces keep every frame.
@@ -1498,6 +1812,20 @@ export class LlEmitter {
       }
     }
     this.shapeHost = {
+      // Journal hooks only on emitters that can emit ranges (chunk
+      // emitters, and emitters whose workers take a journal after the
+      // fork), so the host's optional calls cost nothing otherwise.
+      journalAllocated: !this.journaled
+        ? undefined
+        : (name, op, args) => this.journal?.allocated(name, op, args),
+      journalBuilt: !this.journaled ? undefined : () => this.journal?.built(),
+      journalOpened: !this.journaled ? undefined : (op) => this.journal?.opened(op),
+      journalUsed: !this.journaled
+        ? undefined
+        : (name, op, args) => this.journal?.used(name, op, args),
+      journalEntry: !this.journaled
+        ? undefined
+        : (table, key, value) => this.journal?.entry(table, key, value),
       compactArrayElem: (elem) => this.compactArrayElem(elem),
       compactRegion: () => this.compactRegion,
       sizeType: this.sizeType,
@@ -1538,9 +1866,15 @@ export class LlEmitter {
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
+      declBoundary: () => this.mod.declBoundary === true,
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
       classRootOf: (name) => this.classMeta.get(name)?.root.def.name,
+      releasesNothing: (t) => {
+        if (t.kind !== "object" || (this.shapeHost.regions ?? null) !== null) return false;
+        const meta = this.classMeta.get(t.className);
+        return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
+      },
       classSubtypes: (name) => {
         const target = this.classMetaOf(name);
         const intervals = classMembershipIntervals(this.classMeta, target.def.name);
@@ -1573,7 +1907,7 @@ export class LlEmitter {
       this.globalTypes.set(g.id, g.type);
       if (g.tdz) this.tdzGlobals.set(g.id, g.name);
     }
-    this.stableGlobals = stableGlobals(mod);
+    this.stableGlobals = stableGlobals(mod, this.nodeIndex);
     // Runtime error, EventEmitter, stream, EventTarget and Event classes
     // have known layouts. Subclasses embed the runtime prefixes from
     // classes.ts.
@@ -2369,6 +2703,7 @@ export class LlEmitter {
       };
       this.literals.set(text, lit);
     }
+    this.journal?.entry("literal", text, lit);
     const name = `@${lit.sym}`;
     this.immortalValues.add(name);
     return name;
@@ -2379,6 +2714,7 @@ export class LlEmitter {
   literalEquals(text: string): string {
     const literal = this.internLiteral(text);
     const name = `@sc_streq_${literal.slice("@sc_lit_".length)}`;
+    this.journal?.entry("literalEquality", text, name);
     if (!this.literalEqualities.has(text)) {
       this.literalEqualities.set(text, name);
       if (Buffer.byteLength(text, "utf8") > INLINE_LITERAL_BYTES) {
@@ -2405,6 +2741,7 @@ export class LlEmitter {
       lit = { sym: this.contentSymbol("sc_bigint_", key), value };
       this.bigintLiterals.set(key, lit);
     }
+    this.journal?.entry("bigint", key, { sym: lit.sym, value: lit.value.toString() });
     const name = `@${lit.sym}`;
     this.immortalValues.add(name);
     return name;
@@ -2418,7 +2755,19 @@ export class LlEmitter {
       c = { sym: this.contentSymbol("sc_cs_", text), len: Buffer.byteLength(text, "utf8") };
       this.cstrs.set(text, c);
     }
+    this.journal?.entry("cstr", text, c);
     return `@${c.sym}`;
+  }
+
+  /** The method-id slot for a constant method name (methodIdSlots). */
+  methodIdSlot(name: string): string {
+    let sym = this.methodIdSlots.get(name);
+    if (!sym) {
+      sym = this.contentSymbol("sc_mid_", name);
+      this.methodIdSlots.set(name, sym);
+    }
+    this.journal?.entry("methodIdSlot", name, sym);
+    return `@${sym}`;
   }
 
   needBadTag(): void {
@@ -2434,6 +2783,7 @@ export class LlEmitter {
       sym = this.contentSymbol("sc_map_ops_", body);
       this.mapOpsConsts.set(body, sym);
     }
+    this.journal?.entry("mapOps", body, sym);
     return `@${sym}`;
   }
 
@@ -2460,6 +2810,7 @@ export class LlEmitter {
       sym = `sc_unit_${this.unitInstances.size}`;
       this.unitInstances.set(key, sym);
     }
+    this.journal?.entry("unit", key, sym);
     const name = `@${sym}`;
     this.immortalValues.add(name);
     return name;
@@ -2473,6 +2824,7 @@ export class LlEmitter {
       sym = `sc_retype_guard_${this.retypeGuards.size}`;
       this.retypeGuards.set(unionId, sym);
     }
+    this.journal?.entry("retype", unionId, sym);
     return `@${sym}`;
   }
 
@@ -2494,6 +2846,7 @@ export class LlEmitter {
       sym = `sc_absent_${this.absentInstances.size}`;
       this.absentInstances.set(unionId, sym);
     }
+    this.journal?.entry("absent", unionId, sym);
     const name = `@${sym}`;
     this.immortalValues.add(name);
     return name;
@@ -2541,6 +2894,7 @@ export class LlEmitter {
   }
 
   declare(decl: string): void {
+    this.journal?.entry("decl", decl, null);
     this.decls.add(decl);
   }
 
@@ -3685,6 +4039,7 @@ export class LlEmitter {
       const meta = this.classMetaOf(className);
       this.classObjs.set(className, { nameSym: this.internLiteral(classJsName(meta.def)) });
     }
+    this.journal?.entry("classObj", className, this.classObjs.get(className));
     return mangleClassObj(className);
   }
 
@@ -3897,10 +4252,10 @@ export class LlEmitter {
     s: IrStmt & { kind: "for" | "while" },
     counted: IntegerCountedForLoop | null,
   ): ReturnType<typeof matchBytesLoopVersion> {
-    const fn = this.bytesLoopFunction;
+    const fn = LOOPS.of(this).bytesLoopFunction;
     if (!fn) return null;
-    this.bytesLoopEntries ??= findInitializedByteLoopBindings(fn);
-    const initialized = this.bytesLoopEntries.get(s);
+    LOOPS.of(this).bytesLoopEntries ??= findInitializedByteLoopBindings(fn);
+    const initialized = LOOPS.of(this).bytesLoopEntries!.get(s);
     if (!initialized) return null;
     const invariantGlobals = new Set(this.stableGlobals);
     for (const global of this.initializerBindings.get(fn.name) ?? [])
@@ -3914,6 +4269,7 @@ export class LlEmitter {
       proven: this.bytesBounds,
       workers: this.mod.workers === true,
       owned: this.bytesOwned,
+      scalarStrings: new Set(this.stringSlices.keys()),
     });
   }
 
@@ -4390,6 +4746,198 @@ export class LlEmitter {
   }
   emitFunction(fn: IrFunction): string {
     return emitFunction(this, fn);
+  }
+
+  /** What this range emitter (chunkEmitter) hands the merging emitter, as
+   * plain data a worker process can write: its journal and the sets and
+   * flags its functions set. */
+  chunkResult(): ChunkResult {
+    return {
+      entries: this.journal!.entries,
+      flags: {
+        usesCoroutines: this.usesCoroutines,
+        usesTimers: this.usesTimers,
+        usesGenSlots: this.usesGenSlots,
+        needsUnionNone: this.needsUnionNone,
+        needsNullableAbsent: this.needsNullableAbsent,
+        needsOom: this.needsOom,
+        needsBadTag: this.needsBadTag,
+        needsBadKey: this.needsBadKey,
+        needsRetainBox: this.needsRetainBox,
+      },
+      publishedNamesSym: this.publishedNamesSym,
+      rcHelpers: this.rcHelpers === null ? [] : [...this.rcHelpers],
+      immortalValues: [...this.immortalValues],
+      fnValues: [...this.fnValues],
+      arraySearchKinds: [...this.arraySearchKinds],
+      recordCloneShapes: [...this.recordCloneShapes],
+      awaitCallees: [...this.awaitCallees],
+      adoptCallees: [...this.adoptCallees],
+      directAwaitCallees: [...this.directAwaitCallees],
+      inlineAwaitCallees: [...this.inlineAwaitCallees],
+    };
+  }
+
+  /** Merges a range emitter's result (chunkResult) into this emitter, in
+   * the range's order, and answers the rename of the range's text to this
+   * emitter's numbered helpers. Ranges merge in function order. */
+  mergeChunk(chunk: ChunkResult): (text: string) => string {
+    const names = new Map<string, string>();
+    const tags = new Map<number, number>();
+    // The range's helpers and table entries first, in its order; then the
+    // sets and flags, which replayed definitions must find as serial
+    // emission left them (a helper set guards the declarations its first
+    // request adds).
+    replayJournal(this, chunk.entries, names, tags);
+    const flags = chunk.flags;
+    this.usesCoroutines ||= flags.usesCoroutines;
+    this.usesTimers ||= flags.usesTimers;
+    this.usesGenSlots ||= flags.usesGenSlots;
+    this.needsUnionNone ||= flags.needsUnionNone;
+    this.needsNullableAbsent ||= flags.needsNullableAbsent;
+    this.needsOom ||= flags.needsOom;
+    this.needsBadTag ||= flags.needsBadTag;
+    this.needsBadKey ||= flags.needsBadKey;
+    this.needsRetainBox ||= flags.needsRetainBox;
+    this.publishedNamesSym ??= chunk.publishedNamesSym;
+    if (this.rcHelpers !== null) for (const key of chunk.rcHelpers) this.rcHelpers.add(key);
+    for (const name of chunk.immortalValues) this.immortalValues.add(name);
+    for (const name of chunk.fnValues) this.fnValues.add(name);
+    for (const kind of chunk.arraySearchKinds) this.arraySearchKinds.add(kind as ArraySearchKind);
+    for (const shapeId of chunk.recordCloneShapes) this.recordCloneShapes.add(shapeId);
+    for (const name of chunk.awaitCallees) this.awaitCallees.add(name);
+    for (const name of chunk.adoptCallees) this.adoptCallees.add(name);
+    for (const name of chunk.directAwaitCallees) this.directAwaitCallees.add(name);
+    for (const name of chunk.inlineAwaitCallees) this.inlineAwaitCallees.add(name);
+    return renameChunk(names, tags);
+  }
+
+  /** Adds a content-named constant a chunk interned. Its symbol is this
+   * emitter's own: a digest collision retries in first-use order, which a
+   * chunk alone does not know. */
+  private addContentEntry<V extends { sym: string }>(
+    into: Map<string, V>,
+    key: string,
+    entry: V,
+    prefix: string,
+    names: Map<string, string>,
+  ): void {
+    let own = into.get(key);
+    if (own === undefined) {
+      own = { ...entry, sym: this.contentSymbol(prefix, key) };
+      into.set(key, own);
+    }
+    if (own.sym !== entry.sym) names.set(entry.sym, own.sym);
+  }
+
+  /** Applies a chunk's table entry (EmitJournal.entry) at its place in the
+   * chunk's order: a key this emitter lacks is added, numbered after its
+   * own entries where the table numbers them, and the chunk's name for it
+   * is renamed to this emitter's. */
+  applyJournalEntry(
+    table: string,
+    key: string,
+    value: unknown,
+    names: Map<string, string>,
+    tags: Map<number, number>,
+  ): void {
+    switch (table) {
+      case "decl":
+        this.decls.add(key);
+        return;
+      case "literal":
+        this.addContentEntry(
+          this.literals,
+          key,
+          value as { sym: string; len: number },
+          "sc_lit_",
+          names,
+        );
+        return;
+      case "literalEquality":
+        addEntry(this.literalEqualities, key, value as string);
+        return;
+      case "bigint":
+        {
+          const entry = value as { sym: string; value: string };
+          this.addContentEntry(
+            this.bigintLiterals,
+            key,
+            { sym: entry.sym, value: BigInt(entry.value) },
+            "sc_bigint_",
+            names,
+          );
+        }
+        return;
+      case "cstr":
+        this.addContentEntry(
+          this.cstrs,
+          key,
+          value as { sym: string; len: number },
+          "sc_cs_",
+          names,
+        );
+        return;
+      case "mapOps": {
+        let own = this.mapOpsConsts.get(key);
+        if (own === undefined) {
+          own = this.contentSymbol("sc_map_ops_", key);
+          this.mapOpsConsts.set(key, own);
+        }
+        if (own !== value) names.set(value as string, own);
+        return;
+      }
+      case "methodIdSlot": {
+        let own = this.methodIdSlots.get(key);
+        if (own === undefined) {
+          own = this.contentSymbol("sc_mid_", key);
+          this.methodIdSlots.set(key, own);
+        }
+        if (own !== value) names.set(value as string, own);
+        return;
+      }
+      case "classObj":
+        addEntry(this.classObjs, key, value as { nameSym: string });
+        return;
+      case "retainWrapper":
+        addEntry(this.nullableUnions.retainWrappers, key, value as string);
+        return;
+      case "unit":
+        return addNumbered(this.unitInstances, key, value as string, "sc_unit_", names);
+      case "absent":
+        return addNumbered(this.absentInstances, key, value as string, "sc_absent_", names);
+      case "retype":
+        return addNumbered(this.retypeGuards, key, value as string, "sc_retype_guard_", names);
+      case "slots":
+        return addNumbered(this.threadSlotsBlocks, key, value as string, "@sc_slots_", names);
+      case "regex":
+        return addNumberedSymbol(this.regexInstances, key, value as never, "sc_re_", names);
+      case "templateStrings":
+        return addNumberedSymbol(
+          this.templateStringsInstances,
+          key,
+          value as never,
+          "sc_tsa_",
+          names,
+        );
+      case "tag": {
+        let own = this.fieldAliasTags.get(key);
+        if (own === undefined) {
+          own = 2 + this.fieldAliasTags.size * 2;
+          this.fieldAliasTags.set(key, own);
+        }
+        if (own !== value) tags.set(value as number, own);
+        return;
+      }
+      default:
+        throw new InternalCompilerError(`llvm emitter bug: no journal table ${table}`);
+    }
+  }
+
+  /** An emitter for a range of this module's functions: the same facts,
+   * empty module-level tables, and a journal of what the range adds. */
+  chunkEmitter(): LlEmitter {
+    return new LlEmitter(this.mod, { ...this.targetOptions, functionChunks: 1 }, new EmitJournal());
   }
 
   /** The double-ABI entry of a function with an i32 entry: every caller
@@ -5010,10 +5558,14 @@ export class LlEmitter {
     const loop =
       s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf";
     if (loop) this.loopDepth++;
+    // An int32 kind loop's fast-copy write leaves for its resume point.
+    const kindResume = this.int32KindResume;
+    this.int32KindResume = this.int32Kinds?.resume.get(s) ?? null;
     try {
       this.emitStmtBody(s);
     } finally {
       this.B.debugLocation = previous;
+      this.int32KindResume = kindResume;
       if (loop) this.loopDepth--;
     }
   }
@@ -5474,6 +6026,7 @@ export class LlEmitter {
       sym = `@sc_slots_${this.threadSlotsBlocks.size}`;
       this.threadSlotsBlocks.set(name, sym);
     }
+    this.journal?.entry("slots", name, sym);
     return sym;
   }
 
@@ -5623,6 +6176,20 @@ export class LlEmitter {
     if (this.publishWalkersCache !== null) return this.publishWalkersCache;
     const byPre = [...this.classMeta.values()].sort((a, b) => a.pre - b.pre);
     this.publishWalkersCache = new PublishWalkers({
+      // Journal hooks only on emitters that can emit ranges (chunk
+      // emitters, and emitters whose workers take a journal after the
+      // fork), so the host's optional calls cost nothing otherwise.
+      journalAllocated: !this.journaled
+        ? undefined
+        : (name, op, args) => this.journal?.allocated(name, op, args),
+      journalBuilt: !this.journaled ? undefined : () => this.journal?.built(),
+      journalOpened: !this.journaled ? undefined : (op) => this.journal?.opened(op),
+      journalUsed: !this.journaled
+        ? undefined
+        : (name, op, args) => this.journal?.used(name, op, args),
+      journalEntry: !this.journaled
+        ? undefined
+        : (table, key, value) => this.journal?.entry(table, key, value),
       declare: (decl) => this.declare(decl),
       cstr: (text) => this.cstr(text),
       sizeType: this.sizeType,
@@ -6109,12 +6676,27 @@ export class LlEmitter {
   }
 
   jsIcSite(): string {
-    return `@sc_js_ic_${this.jsIcSiteCount++}`;
+    const name = `@sc_js_ic_${this.jsIcSiteCount++}`;
+    this.journal?.site(name, "jsIcSite");
+    return name;
   }
 
   /** A fresh read-site cache for one constant-key dyn read. */
   dynReadIcSite(): string {
-    return `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
+    const name = `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
+    this.journal?.site(name, "dynReadIcSite");
+    return name;
+  }
+
+  /** A fresh speculative loop site: the global that counts its bailing
+   * entries in a row. */
+  speculativeLoopSite(): string {
+    const name = `@sc_spec_bails_${this.speculativeLoopSites++}`;
+    this.journal?.site(name, "speculativeLoopSite");
+    this.journal?.opened("speculativeLoopSite");
+    this.declare(`${name} = internal global i8 0`);
+    this.journal?.built();
+    return name;
   }
 
   dynKind(d: string): string {
@@ -6191,7 +6773,10 @@ export class LlEmitter {
     return streamDataAdapter(this, cbT);
   }
 
-  streamDoneFnFor(kind: "w" | "f" | "d" | "t" | "l", doneT: IrType & { kind: "func" }): string {
+  streamDoneFnFor(
+    kind: "w" | "f" | "d" | "t" | "l" | "c",
+    doneT: IrType & { kind: "func" },
+  ): string {
     return streamDoneFnFor(this, kind, doneT);
   }
 
@@ -6215,7 +6800,7 @@ export class LlEmitter {
     return zlibBytesThunkFor(this, cbT);
   }
 
-  streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e", cbT: IrType): string {
+  streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e" | "c" | "v", cbT: IrType): string {
     return streamCbThunkFor(this, kind, cbT);
   }
 
@@ -6227,7 +6812,7 @@ export class LlEmitter {
     return tagInSet(this, uName, unionId, tags);
   }
 
-  arrPush(arr: string, acc: "f64" | "bool" | "ref", value: string, element: IrType | null): string {
+  arrPush(arr: string, acc: ArrayAccess, value: string, element: IrType | null): string {
     return arrPush(this, arr, acc, value, element);
   }
 
@@ -6516,3 +7101,76 @@ export function adoptingAwaitOf(value: IrExpr | null): ExprOf<"awaitExpr"> | nul
   });
   return found;
 }
+
+/** Adds `key` to `into` when it lacks it. */
+function addEntry<V>(into: Map<string, V>, key: string, value: V): void {
+  if (!into.has(key)) into.set(key, value);
+}
+
+/** Adds `key` to a numbered table when it lacks it, numbering it after the
+ * table's own entries (`prefix` and its index), and records the rename of
+ * the chunk's `name` for it. */
+function addNumbered(
+  into: Map<string, string>,
+  key: string,
+  name: string,
+  prefix: string,
+  names: Map<string, string>,
+): void {
+  let own = into.get(key);
+  if (own === undefined) {
+    own = `${prefix}${into.size}`;
+    into.set(key, own);
+  }
+  if (own !== name) names.set(name.replace(/^@/, ""), own.replace(/^@/, ""));
+}
+
+/** addNumbered for entries that keep their numbered name in `sym`. */
+function addNumberedSymbol<V extends { sym: string }>(
+  into: Map<string, V>,
+  key: string,
+  entry: V,
+  prefix: string,
+  names: Map<string, string>,
+): void {
+  let own = into.get(key);
+  if (own === undefined) {
+    own = { ...entry, sym: `${prefix}${into.size}` };
+    into.set(key, own);
+  }
+  if (own.sym !== entry.sym) names.set(entry.sym, own.sym);
+}
+
+registerReplay("jsIcSite", (emitter) => emitter.jsIcSite());
+registerReplay("dynReadIcSite", (emitter) => emitter.dynReadIcSite());
+registerReplay("speculativeLoopSite", (emitter) => emitter.speculativeLoopSite());
+for (const op of [
+  "dyn.collectionDynOps",
+  "dyn.dynMatchHelper",
+  "dyn.jsonSchema",
+  "dyn.recordNameTable",
+  "dyn.jsonParseHelper",
+  "dyn.dynCheckHelper",
+  "dyn.toDynHelper",
+  "dyn.promiseDynAdapterHelper",
+  "dyn.dynFuncThunkHelper",
+  "dyn.dynFuncBoxHelper",
+  "dyn.dynFuncAdapterHelper",
+  "dyn.dynToStrHelper",
+  "dyn.dynIterNHelper",
+  "dyn.dynDestrCheckHelper",
+  "dyn.dynKeyGetHelper",
+  "dyn.dynComputedKeyGetHelper",
+  "dyn.caughtToDynHelper",
+  "dyn.messageListenerHelper",
+  "dyn.messageReaderHelper",
+])
+  registerReplay(op, (emitter, args) => emitter.dyn.replayHelper(op, args));
+for (const op of [
+  "walkers.jsonWriteHelper",
+  "walkers.recordFieldWriter",
+  "walkers.unionJoinHelper",
+])
+  registerReplay(op, (emitter, args) => emitter.walkers.replayHelper(op, args));
+for (const op of ["publish.walker", "publish.refusal"])
+  registerReplay(op, (emitter, args) => emitter.publishWalkers.replayHelper(op, args));

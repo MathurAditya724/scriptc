@@ -58,6 +58,25 @@ export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean
   return false;
 }
 
+/** The literal is the source of an array destructuring: an assignment's
+ * right side or a declaration's initializer under an array pattern. */
+function isPatternSource(expr: ts.ArrayLiteralExpression): boolean {
+  let node: ts.Node = expr;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (ts.isBinaryExpression(parent))
+    return (
+      parent.right === node &&
+      parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isArrayLiteralExpression(parent.left)
+    );
+  return (
+    ts.isVariableDeclaration(parent) &&
+    parent.initializer === node &&
+    ts.isArrayBindingPattern(parent.name)
+  );
+}
+
 /** An empty TypeScript literal whose own type is `never[]`: tsc's type for
  * `[]` with no contextual array type (`return []` in an async function,
  * whose contextual type is `string[] | PromiseLike<string[]>`; `{ files: [] }`).
@@ -124,6 +143,22 @@ export function lowerArrayLiteral(
       (inferred?.kind === "record" && lowerer.shapes.get(inferred.shapeId)?.tuple)
     )
       mapped = inferred;
+  }
+  // A destructuring pattern's implied type ends in a rest element
+  // (`[h, ...t] = [1, 2, 3]` supplies `[number, ...number[]]`), which maps
+  // to an array. The literal keeps its own fixed tuple layout, read by
+  // position like any tuple source.
+  if (
+    expected === undefined &&
+    ctxType &&
+    isPatternSource(expr) &&
+    lowerer.checker.isTupleType(ctxType) &&
+    (
+      (ctxType as ts.TupleTypeReference).getTarget() as ts.TupleType | undefined
+    )?.elementFlags?.some((flag) => (flag & ts.ElementFlags.Rest) !== 0)
+  ) {
+    const own = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (own?.kind === "record" && lowerer.shapes.get(own.shapeId)?.tuple) mapped = own;
   }
   // A JS literal whose OWN inferred type is never-tainted
   // (neverTaintedJsType — the evolving `const gb = []`, the mixed
