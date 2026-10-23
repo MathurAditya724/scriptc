@@ -57,3 +57,31 @@ patch(proto, "list", () => ["patched"]);
 console.log(repo.list().join(","));
 patch(proto, "list", saved);
 console.log(repo.list().join(","));
+
+// a spread argument drains its iterator through the iterator's current `next`
+class Bag {
+  sum(...values: number[]): number {
+    let total = 0;
+    for (const value of values) total += value;
+    return total;
+  }
+}
+class Countdown {
+  private left: number;
+  constructor(left: number) {
+    this.left = left;
+  }
+  next(): IteratorResult<number> {
+    return this.left > 0 ? { done: false, value: this.left-- } : { done: true, value: undefined };
+  }
+  [Symbol.iterator](): Countdown {
+    return this;
+  }
+}
+const bag = new Bag();
+console.log(bag.sum(...[1, 2, 3]), bag.sum(...new Countdown(3)));
+const replaced = new Countdown(3);
+patch(replaced, "next", function (): IteratorResult<number> {
+  return { done: true, value: undefined };
+});
+console.log(bag.sum(...replaced));
