@@ -3,10 +3,12 @@
 // node:http. The published package swaps the global Request and Response
 // for lightweight objects and reparents prototypes, which only pays off
 // under V8; this port builds native Request objects from the incoming
-// message and writes the handler's Response the way the package's
-// listener does (header record, content length for bodies that complete
-// within the first reads, streamed bodies, error responses), so a client
-// sees the same status lines, headers and bodies.
+// message, with a body streamed from it as the app reads it, and writes
+// the handler's Response the way the package's listener does (header
+// record, content length for bodies that complete within the first reads,
+// streamed bodies, error responses), so a client sees the same status
+// lines, headers and bodies. A body the app leaves unread is drained after
+// the response, within the package's limits.
 //
 // HTTP/1.1 only: the http2/https server options and WebSocket upgrades are
 // not declared. A Response that is still exactly its constructor arguments
@@ -136,27 +138,125 @@ function requestHeaders(incoming: IncomingMessage): Headers {
   return headers;
 }
 
-function readIncoming(incoming: IncomingMessage): Promise<Buffer> {
-  return new Promise<Buffer>((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    incoming.on("data", (chunk: Buffer) => {
-      chunks.push(chunk);
-    });
-    incoming.on("end", () => resolve(chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks)));
-    incoming.on("error", reject);
+/** What the listener knows about the incoming body: whether it ended
+ * (the package's `readableEnded`) and whether a drain started. */
+type IncomingState = { ended: boolean; draining: boolean };
+
+/** The request body as the package streams it: each pull reads one chunk
+ * of the incoming message, which pauses between pulls, so the socket
+ * holds what the app has not read yet. The stream pulls once on its own
+ * when it is constructed; the package builds its stream only when the app
+ * reads the body, so until the app's first read a drain discards the
+ * chunks instead of pausing for them. */
+function incomingBody(incoming: IncomingMessage, state: IncomingState): ReadableStream<Uint8Array> {
+  let pulls = 0;
+  let listening = false;
+  let settled = false;
+  let wake: (() => void) | undefined = undefined;
+  const woken = (): void => {
+    const resolve = wake;
+    wake = undefined;
+    if (resolve !== undefined) resolve();
+  };
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls++;
+      return new Promise<void>((resolve) => {
+        if (settled) {
+          resolve();
+          return;
+        }
+        wake = resolve;
+        if (listening) {
+          incoming.resume();
+          return;
+        }
+        listening = true;
+        incoming.on("data", (chunk: Buffer) => {
+          if (state.draining && pulls === 1) return;
+          incoming.pause();
+          if (settled) return;
+          controller.enqueue(chunk);
+          woken();
+        });
+        incoming.on("end", () => {
+          if (settled) return;
+          settled = true;
+          controller.close();
+          woken();
+        });
+        incoming.on("error", (err: Error) => {
+          if (settled) return;
+          settled = true;
+          controller.error(err);
+          woken();
+        });
+      });
+    },
   });
 }
 
-async function newRequest(
+function newRequest(
   incoming: IncomingMessage,
   defaultHostname: string | undefined,
-): Promise<Request> {
+  state: IncomingState,
+): Request {
   const method = normalizeIncomingMethod(incoming.method);
   const url = requestUrl(incoming, defaultHostname);
   const headers = requestHeaders(incoming);
   if (method === "GET" || method === "HEAD") return new Request(url, { method, headers });
-  const body = await readIncoming(incoming);
-  return new Request(url, { method, headers, body });
+  return new Request(url, {
+    method,
+    headers,
+    body: incomingBody(incoming, state),
+    duplex: "half",
+  });
+}
+
+const DRAIN_TIMEOUT_MS = 500;
+const MAX_DRAIN_BYTES = 64 * 1024 * 1024;
+
+/** The package's drain of a body the app left unread: read and discard
+ * up to MAX_DRAIN_BYTES or DRAIN_TIMEOUT_MS, then close the connection
+ * once its writes are out. */
+function drainIncoming(incoming: IncomingMessage, state: IncomingState): void {
+  const socket = incoming.socket;
+  if (socket.destroyed || state.draining) return;
+  state.draining = true;
+  let bytesRead = 0;
+  let done = false;
+  const cleanup = (): void => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+  };
+  const forceClose = (): void => {
+    if (done) return;
+    cleanup();
+    if (!socket.destroyed) socket.destroySoon();
+  };
+  const timer = setTimeout(forceClose, DRAIN_TIMEOUT_MS);
+  timer.unref();
+  incoming.on("data", (chunk: Buffer) => {
+    if (done) return;
+    bytesRead += chunk.length;
+    if (bytesRead > MAX_DRAIN_BYTES) forceClose();
+  });
+  incoming.on("end", cleanup);
+  incoming.on("error", cleanup);
+  incoming.resume();
+}
+
+/** The package's close handler cleanup: an unread body drains two timer
+ * turns after the response closes. */
+function drainAfterClose(incoming: IncomingMessage, state: IncomingState): void {
+  if (state.ended) return;
+  setTimeout(() => {
+    if (!state.ended)
+      setTimeout(() => {
+        drainIncoming(incoming, state);
+      });
+  });
 }
 
 /** The package's outgoing header record: Headers order (lowercase,
@@ -427,6 +527,14 @@ async function respond(
   await writeResponse(res, outgoing, head);
 }
 
+/** A Response the package writes from its cache without waiting: still
+ * exactly its constructor arguments, with no body or a string or bytes
+ * body. */
+function immediateCacheable(res: Response): boolean {
+  const light = scriptcResponseLight(res);
+  return light[0] !== "0" && Number(light[2]!) >= -1;
+}
+
 function handleFetchError(e: unknown): Response {
   return emptyResponse(e instanceof Error && e.name === "TimeoutError" ? 504 : 500);
 }
@@ -439,13 +547,38 @@ async function handleRequest(
 ): Promise<void> {
   let req: Request | undefined = undefined;
   let res: Response | Promise<Response> | undefined = undefined;
+  const state: IncomingState = { ended: false, draining: false };
+  let needsBodyCleanup = false;
+  let closeHandlerAttached = false;
+  const ensureCloseHandler = (): void => {
+    if (req === undefined || closeHandlerAttached) return;
+    closeHandlerAttached = true;
+    if (needsBodyCleanup)
+      outgoing.on("close", () => {
+        drainAfterClose(incoming, state);
+      });
+  };
   try {
-    req = await newRequest(incoming, options.hostname);
+    req = newRequest(incoming, options.hostname, state);
+    needsBodyCleanup =
+      options.autoCleanupIncoming !== false &&
+      !(incoming.method === "GET" || incoming.method === "HEAD");
+    if (needsBodyCleanup)
+      incoming.on("end", () => {
+        state.ended = true;
+      });
     res = fetchCallback(req, { incoming, outgoing });
+    if (!(res instanceof Promise) && immediateCacheable(res)) {
+      if (needsBodyCleanup)
+        outgoing.once("finish", () => {
+          if (!state.ended) drainIncoming(incoming, state);
+        });
+    } else ensureCloseHandler();
   } catch (e) {
     if (res !== undefined) return handleResponseError(e, outgoing);
     const errorHandler = options.errorHandler;
     if (errorHandler !== undefined) {
+      ensureCloseHandler();
       const handled = await errorHandler(
         req !== undefined ? e : e instanceof RequestError ? e : toRequestError(e),
       );

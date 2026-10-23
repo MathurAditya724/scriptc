@@ -1835,7 +1835,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * connection (+1, the same handle net.connect would give);
    * sockRemoteAddress answers `string | undefined` (NULL after the fd
    * closed, Node's destroyed-socket undefined; a dual-stack accept of an
-   * IPv4 peer reads "::ffff:a.b.c.d" like Node). reqResume/reqDestroy and
+   * IPv4 peer reads "::ffff:a.b.c.d" like Node). reqResume/reqPause/reqDestroy and
    * the req error/close listener slots complete the IncomingMessage
    * surface portless's client responses use; resDestroy/resOnClose and
    * resWriteHeadPairs ([k0,v0,k1,v1,...] — the env.pairs helper's flat
@@ -1902,6 +1902,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "http.reqPipeClient": { argTypes: [HTTPREQ_T, HTTPCLIENTREQ_T], result: VOID },
   "http.reqPipeSock": { argTypes: [HTTPREQ_T, NETSOCKET_T], result: VOID },
   "http.reqResume": { argTypes: [HTTPREQ_T], result: VOID },
+  "http.reqPause": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqDestroy": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqOnError": { argTypes: [HTTPREQ_T, null, BOOL], result: VOID },
   "http.reqOnClose": {

@@ -1319,6 +1319,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqPipeClient": "scr_http_req_pipe_client",
   "http.reqPipeSock": "scr_http_req_pipe_sock",
   "http.reqResume": "scr_http_req_resume",
+  "http.reqPause": "scr_http_req_pause",
   "http.reqDestroy": "scr_http_req_destroy",
   "http.reqSetEncoding": "scr_http_req_set_encoding",
   "http.resSetHeader": "scr_http_res_set_header",

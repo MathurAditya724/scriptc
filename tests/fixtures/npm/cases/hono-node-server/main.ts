@@ -2,9 +2,11 @@
 // serving a fetch handler: a raw HTTP client prints each exchange's status
 // line, wire-order headers (Date dropped) and body, covering buffered and
 // streamed bodies, header forms, cookies, request bodies, URL handling,
-// HEAD, empty statuses, handler errors, and a client that disconnects
-// during a streamed body.
+// HEAD, empty statuses, handler errors, a client that disconnects during
+// a streamed body, and request bodies the handler reads, leaves unread or
+// rejects while the upload is still arriving.
 import * as http from "node:http";
+import * as net from "node:net";
 import type { AddressInfo } from "node:net";
 import { getRequestListener, RequestError, serve } from "@hono/node-server";
 
@@ -282,7 +284,104 @@ function startSecond(): void {
     void (async () => {
       console.log(await exchange(port, { method: "GET", path: "/ok" }));
       console.log(await exchange(port, { method: "GET", path: "/fail" }));
-      second.close(() => console.log("second closed"));
+      second.close(() => {
+        console.log("second closed");
+        startUploads();
+      });
     })();
   });
+}
+
+// Request bodies stream to the handler. /size reads the whole body. The
+// other routes leave it unread: /unread answers at once (the package's
+// cached-response path) and /unread-async through a promise, and /reject
+// answers 413 after 300 ms while the client keeps uploading, so the server
+// must stop reading the socket.
+const MiB = 1024 * 1024;
+
+interface UploadResult {
+  status: string;
+  body: string;
+  sentBeforeResponse: number;
+}
+
+/** A chunked POST over a raw socket: 64 KiB chunks, each written after
+ * the previous write's callback, until `limit` bytes are out (then the
+ * last chunk, when `finish` is set) or the response arrives. */
+function chunkedUpload(port: number, path: string, limit: number, finish: boolean): Promise<UploadResult> {
+  return new Promise<UploadResult>((resolve) => {
+    const socket = net.connect(port, "127.0.0.1");
+    const frame = Buffer.concat([Buffer.from("10000\r\n"), Buffer.alloc(65536, 97), Buffer.from("\r\n")]);
+    let sent = 0;
+    let sentBeforeResponse = -1;
+    let response = "";
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      const headEnd = response.indexOf("\r\n\r\n");
+      const status = response.slice(0, response.indexOf("\r\n"));
+      resolve({ status, body: headEnd < 0 ? "" : response.slice(headEnd + 4), sentBeforeResponse });
+      socket.destroy();
+    };
+    const writeNext = (): void => {
+      if (sentBeforeResponse >= 0 || socket.destroyed) return;
+      if (sent >= limit) {
+        if (finish) socket.write("0\r\n\r\n");
+        return;
+      }
+      sent += 65536;
+      socket.write(frame, () => {
+        writeNext();
+      });
+    };
+    socket.on("connect", () => {
+      socket.write(`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n`);
+      writeNext();
+    });
+    socket.on("data", (chunk: Buffer) => {
+      response += chunk.toString("latin1");
+      if (sentBeforeResponse < 0 && response.includes("\r\n\r\n")) sentBeforeResponse = sent;
+      const match = /content-length: (\d+)/i.exec(response);
+      const headEnd = response.indexOf("\r\n\r\n");
+      if (match !== null && headEnd >= 0 && response.length - headEnd - 4 >= Number(match[1])) settle();
+    });
+    socket.on("error", () => settle());
+    socket.on("close", () => settle());
+  });
+}
+
+function startUploads(): void {
+  const server = serve(
+    {
+      fetch: (request: Request): Response | Promise<Response> => {
+        const url = new URL(request.url);
+        if (url.pathname === "/size")
+          return request.arrayBuffer().then((body) => new Response(`size ${body.byteLength}`));
+        if (url.pathname === "/reject")
+          return delay(300).then(() => new Response("too large", { status: 413 }));
+        if (url.pathname === "/unread-async") return Promise.resolve(new Response("unread async"));
+        return new Response(`unread ${url.pathname}`);
+      },
+      port: 0,
+      hostname: "127.0.0.1",
+    },
+    (info: AddressInfo) => {
+      void (async () => {
+        const read = await chunkedUpload(info.port, "/size", 3 * MiB, true);
+        console.log(`### chunked POST /size\n${read.status}\n${read.body}\n`);
+        console.log(await exchange(info.port, { method: "POST", path: "/unread", body: "x".repeat(300000) }));
+        console.log(await exchange(info.port, { method: "GET", path: "/after-unread" }));
+        console.log(await exchange(info.port, { method: "POST", path: "/unread-async", body: "y".repeat(300000) }));
+        console.log(await exchange(info.port, { method: "GET", path: "/after-unread-async" }));
+        const before = process.memoryUsage().rss;
+        const rejected = await chunkedUpload(info.port, "/reject", 512 * MiB, false);
+        const grown = process.memoryUsage().rss - before;
+        console.log(`### chunked POST /reject\n${rejected.status}\n${rejected.body}`);
+        console.log("client stopped before 32 MiB:", rejected.sentBeforeResponse >= 0 && rejected.sentBeforeResponse < 32 * MiB);
+        console.log("server memory grew under 64 MiB:", grown < 64 * MiB);
+        server.close(() => console.log("uploads closed"));
+      })();
+    },
+  );
 }
