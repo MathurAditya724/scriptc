@@ -1557,6 +1557,41 @@ static ScrDyn *scr_dyn_not_iterable(const ScrDyn *src, const ScrStr *msg) {
   return NULL;
 }
 
+/* Math.max(...src) / Math.min(...src) over an untyped iterable: every
+ * value's ToNumber runs in order, then NaN poisons and ±0 orders as in
+ * Node. A non-iterable source throws V8's call-spread TypeError: `what`
+ * names the source for null and undefined, every other kind gets the
+ * Symbol.iterator wording. NaN with the exception pending when packing or
+ * a coercion throws. */
+double scr_dyn_math_fold(const ScrDyn *src, bool max, const ScrStr *what) {
+  if (src->kind == SCR_DYN_UNDEF || src->kind == SCR_DYN_NULL) {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_write(&b, what->data, what->len);
+    scr_jb_puts(&b, src->kind == SCR_DYN_NULL ? " is not iterable (cannot read property null)"
+                                              : " is not iterable (cannot read property undefined)");
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+    return NAN;
+  }
+  static const char spread_msg[] = "Spread syntax requires ...iterable[Symbol.iterator] to be a function";
+  ScrStr *msg = scr_str_new(spread_msg, sizeof spread_msg - 1);
+  ScrDyn *pack = scr_dyn_iter_pack(src, msg);
+  scr_str_release(msg);
+  if (!pack) return NAN;
+  double best = max ? -INFINITY : INFINITY;
+  bool nan = false;
+  for (size_t i = 0; i < pack->v.arr.len; i++) {
+    double v = scr_dyn_number_coerce(pack->v.arr.items[i]);
+    if (scr_exc_pending()) break;
+    if (isnan(v)) nan = true;
+    else if (max ? (v > best || (v == 0.0 && best == 0.0 && !signbit(v)))
+                 : (v < best || (v == 0.0 && best == 0.0 && signbit(v))))
+      best = v;
+  }
+  scr_dyn_release(pack);
+  return nan ? NAN : best;
+}
+
 ScrDyn *scr_dyn_iter_pack(const ScrDyn *src, const ScrStr *msg) {
   if (src->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(src)->iter_pack)
     return scr_dyn_handle_ops_of(src)->iter_pack(src->v.handle.ptr);
