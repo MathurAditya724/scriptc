@@ -28,7 +28,7 @@ import {
 } from "../../ir/ir.js";
 import {
   FN_ATTRS,
-  limitInlineDynReleases,
+  limitInlineReleases,
   releaseSym,
   typedRefConstructor,
   vAdapters,
@@ -873,6 +873,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     out.push(`@${sym} = internal constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr } { ${body} }`);
   }
   if (emitter.mapOpsConsts.size > 0) out.push(``);
+  for (const sym of emitter.methodIdSlots.values()) out.push(`@${sym} = internal global i32 -1`);
+  if (emitter.methodIdSlots.size > 0) out.push(``);
 
   for (const line of ffiCallbacks.globals) out.push(line);
   if (ffiCallbacks.globals.length > 0) out.push(``);
@@ -2469,7 +2471,7 @@ export function emitFfiCallbackDefs(emitter: LlEmitter): { globals: string[]; de
 
 export function emitParts(emitter: LlEmitter): string[] {
   const parts = [
-    ...limitInlineDynReleases(emitter.emitModuleParts()),
+    ...limitInlineReleases(emitter.emitModuleParts(), emitter.shapeHost.rcMode),
     ...emitter.disposeObserverGates(),
   ];
   if (!emitter.executableTls) return parts;
