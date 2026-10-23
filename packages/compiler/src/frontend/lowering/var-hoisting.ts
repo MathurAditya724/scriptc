@@ -6,9 +6,11 @@
  *
  * A binding settles at the first statement of its hoisting scope (the
  * function body or the source file) that stores it unconditionally: a
- * direct `var x = e`, `x = e;`, or a loop declaring it (`for (var i = 0;
- * ...)`, `for (var k in o)`), whose own condition, update and body run
- * after the store. A read settles when it runs after that statement:
+ * direct `var x = e`, `x = e;`, or a `for` loop declaring it (`for (var
+ * i = 0; ...)`), whose own condition, update and body run after the store.
+ * A `for (var k in o)` or `for (var v of xs)` loop stores the binding only
+ * when it iterates, so it settles the reads in its body and no others. A
+ * read settles when it runs after the settling statement:
  * - a read in the scope's own code, in a TypeScript file: tsc's
  *   definite-assignment analysis rejects any earlier one;
  * - a read in the scope's own code, in a JavaScript file: its statement
@@ -201,6 +203,9 @@ interface Settle {
   index: number;
   list: ts.VariableDeclarationList | null;
   end: number;
+  /** The first for-in/of loop declaring the binding before `index`, whose
+   * body runs after its store, or -1. */
+  loop: number;
 }
 
 class ScopeAnalysis {
@@ -229,6 +234,7 @@ class ScopeAnalysis {
   settleIndex(scope: Scope, symbol: ts.Symbol): Settle {
     const statements = statementsOf(scope);
     const checker = this.lowerer.checker;
+    let loopIndex = -1;
     for (let i = 0; i < statements.length; i++) {
       const s = statements[i]!;
       const list = ts.isVariableStatement(s)
@@ -244,8 +250,10 @@ class ScopeAnalysis {
           if (
             (d.initializer !== undefined || loop) &&
             boundIdentifiersOf(d.name).some((n) => checker.getSymbolAtLocation(n) === symbol)
-          )
-            return { index: i, list: loop ? null : list, end: d.end };
+          ) {
+            if (!loop) return { index: i, list, end: d.end, loop: loopIndex };
+            if (loopIndex < 0) loopIndex = i;
+          }
         }
       } else if (
         ts.isExpressionStatement(s) &&
@@ -254,10 +262,10 @@ class ScopeAnalysis {
         ts.isIdentifier(s.expression.left) &&
         checker.getSymbolAtLocation(s.expression.left) === symbol
       ) {
-        return { index: i, list: null, end: -1 };
+        return { index: i, list: null, end: -1, loop: loopIndex };
       }
     }
-    return { index: Infinity, list: null, end: -1 };
+    return { index: Infinity, list: null, end: -1, loop: loopIndex };
   }
 
   /** Whether `ref` (inside `scope`, or in another module) runs only after
@@ -290,12 +298,13 @@ class ScopeAnalysis {
       (index === settle.index &&
         (settlesWithin(top, ref) ||
           // A later declarator of the storing list (`var a = {}, b = { ...a }`).
-          (settle.list !== null && isInside(ref, settle.list) && ref.pos >= settle.end)))
+          (settle.list !== null && isInside(ref, settle.list) && ref.pos >= settle.end))) ||
+      (index === settle.loop && settlesWithin(top, ref))
     );
   }
 
   private functionSettles(scope: Scope, settle: Settle, fn: ts.FunctionDeclaration): boolean {
-    const key = `${fn.pos}:${settle.index}:${settle.end}`;
+    const key = `${fn.pos}:${settle.index}:${settle.end}:${settle.loop}`;
     const known = this.functionMemo.get(key);
     if (known !== undefined) return known;
     this.functionMemo.set(key, true);
