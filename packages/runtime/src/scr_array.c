@@ -108,6 +108,7 @@ ScrArrExt *scr_arr_ext(ScrArr *a) {
 
 /* Registry of element ops by id (scr_arr_ops); slot 0 is no ops. */
 const ScrArrOps *scr_arr_ops_table[SCR_ARR_OPS_OVERFLOW] = {0};
+uint8_t scr_arr_ops_release_nothing[SCR_ARR_OPS_OVERFLOW + 1] = {0};
 static uint32_t scr_arr_ops_count = 1;
 
 /* Assign `ops` its id on its first array; any thread may get there first,
@@ -119,6 +120,9 @@ uint32_t scr_arr_ops_register(ScrArrOps *ops) {
   if (id) return id;
   uint32_t fresh = __atomic_fetch_add(&scr_arr_ops_count, 1, __ATOMIC_RELAXED);
   if (fresh < SCR_ARR_OPS_OVERFLOW) {
+    /* Before the id is published: an array that carries the id can be
+     * released on any thread. */
+    scr_arr_ops_release_nothing[fresh] = scr_arr_ops_release_nothing_flag(ops);
     __atomic_store_n(&scr_arr_ops_table[fresh], ops, __ATOMIC_RELEASE);
   } else {
     fresh = SCR_ARR_OPS_OVERFLOW;
@@ -1530,6 +1534,16 @@ ScrArr *scr_arr_new_ops(const ScrArrOps *ops, size_t initial_cap) {
 
 ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops) { return scr_arr_make_ops(ops, 0, true); }
 
+/* Frees an acyclic array whose elements are already released. */
+static inline __attribute__((always_inline)) void scr_arr_free(ScrArr *a) {
+  scr_arr_free_parts(a);
+#ifdef SCR_RC_AUDIT
+  scr_live_arrays--;
+#endif
+  scr_weak_dispose_inline(a);
+  scr_mem_free(a);
+}
+
 static void scr_arr_destroy(void *object) {
   ScrArr *a = object;
   if (scr_arr_ext_of(a)) {
@@ -1597,21 +1611,29 @@ static void scr_arr_destroy(void *object) {
       }
     }
   }
-  if (a->cyc) {
-    scr_arr_gc_free(a);
-  } else {
-    scr_arr_free_parts(a);
-#ifdef SCR_RC_AUDIT
-    scr_live_arrays--;
-#endif
-    scr_weak_dispose_inline(a);
-    scr_mem_free(a);
-  }
+  if (a->cyc) scr_arr_gc_free(a);
+  else scr_arr_free(a);
+}
+
+/* Whether destroying `a`, an acyclic array, releases nothing: it has no ext
+ * and its elements are numbers, booleans or compact references, or
+ * references whose release does nothing (SCR_ARR_OPS_RELEASE_NOTHING). */
+static inline bool scr_arr_releases_nothing(const ScrArr *a) {
+  if (a->spare & SCR_ARR_HAS_EXT) return false;
+  if (!scr_elem_is_ref(a->elem)) return true;
+  return a->elem == SCR_ELEM_REF &&
+         scr_arr_ops_release_nothing[(uint32_t)a->spare >> SCR_ARR_OPS_SHIFT];
 }
 
 void scr_arr_release(ScrArr *a) {
   if (!a || a->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--a->rc == 0) {
+    /* Nothing to tear down: free the storage without scr_rc_destroy's
+     * queue (no release can recurse) or the element loop. */
+    if (!a->cyc && scr_arr_releases_nothing(a)) {
+      scr_arr_free(a);
+      return;
+    }
     if (a->cyc) scr_cyc_dead(a);
     scr_rc_destroy(a, scr_arr_destroy);
   } else if (a->cyc) {

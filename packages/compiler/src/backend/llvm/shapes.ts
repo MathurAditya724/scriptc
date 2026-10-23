@@ -78,6 +78,10 @@ export interface ShapeHost {
   /** The hierarchy root of a class (a program class or a runtime base),
    * or undefined for classes outside the class graph. */
   classRootOf?(className: string): string | undefined;
+  /** Whether releasing a value of this type does nothing: instances of a
+   * program-lifetime class without lifetime regions (classes.ts
+   * programLifetimeClass). */
+  releasesNothing?(t: IrType): boolean;
   /** Whether arrays of `elem` hold 32-bit references to compact class
    * instances (SCR_ELEM_CREF; LlEmitter.compactArrayElem). */
   compactArrayElem?(elem: IrType): boolean;
@@ -1117,7 +1121,9 @@ export function arrNewCall(
  * writable: the runtime stores its registry id on the first array. Its tail
  * padding is the runtime's flags word (0); arrays of compact class
  * references (ShapeHost.compactArrayElem) spell the word out as
- * SCR_ARR_OPS_COMPACT. */
+ * SCR_ARR_OPS_COMPACT, and on 64-bit targets arrays whose element release
+ * does nothing (ShapeHost.releasesNothing) as SCR_ARR_OPS_RELEASE_NOTHING,
+ * so that destroying them only frees their storage. */
 export function arrOps(host: ShapeHost, elem: IrType): string {
   const v = vAdapters(host, elem);
   const trace = traceArg(host, elem);
@@ -1129,14 +1135,23 @@ export function arrOps(host: ShapeHost, elem: IrType): string {
     );
     return `${name}.c`;
   }
+  const nullable = host.nullableUnions.of(elem);
+  const payload = nullable?.repr === "single" ? nullable.arm : elem;
+  if (host.sizeType === "i64" && host.releasesNothing?.(payload) === true) {
+    host.declare(
+      `${name}.n = internal global { ptr, ptr, ptr, i32, i32 } { ptr ${v.retain}, ptr ${v.release}, ptr ${trace}, i32 0, i32 ${SCR_ARR_OPS_RELEASE_NOTHING} }`,
+    );
+    return `${name}.n`;
+  }
   host.declare(
     `${name} = internal global %ScrArrOps { ptr ${v.retain}, ptr ${v.release}, ptr ${trace}, i32 0 }`,
   );
   return name;
 }
 
-/** scr_array.h SCR_ARR_OPS_COMPACT. */
+/** scr_array.h SCR_ARR_OPS_COMPACT and SCR_ARR_OPS_RELEASE_NOTHING. */
 const SCR_ARR_OPS_COMPACT = 1;
+const SCR_ARR_OPS_RELEASE_NOTHING = 2;
 
 /* ── capture boxes ────────────────────────────────────────────────────── */
 

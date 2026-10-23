@@ -89,6 +89,22 @@ static inline bool scr_arr_ops_compact(const ScrArrOps *ops) {
 #endif
 }
 
+/* `release` does nothing: the element type's instances live until the
+ * process exits (llvm/shapes.ts arrOps). Destroying such an array frees only
+ * its storage. */
+#define SCR_ARR_OPS_RELEASE_NOTHING 2u
+
+/* Whether `ops` has SCR_ARR_OPS_RELEASE_NOTHING. 32-bit descriptors end
+ * before the flags word, so they never have it. */
+static inline bool scr_arr_ops_release_nothing_flag(const ScrArrOps *ops) {
+#if UINTPTR_MAX > 0xffffffffu
+  return (ops->flags & SCR_ARR_OPS_RELEASE_NOTHING) != 0;
+#else
+  (void)ops;
+  return false;
+#endif
+}
+
 typedef struct ScrArr {
   size_t rc; /* SIZE_MAX = immortal (unused for arrays; kept per convention) */
   /* Length and dense capacity are at most SCR_ARR_MAX_LENGTH (2^32 - 1);
@@ -216,6 +232,9 @@ static inline struct ScrArrExt *scr_arr_ext_of(const ScrArr *a) {
 #define SCR_ARR_OPS_SHIFT 5
 #define SCR_ARR_OPS_OVERFLOW (UINT16_MAX >> SCR_ARR_OPS_SHIFT)
 extern const ScrArrOps *scr_arr_ops_table[SCR_ARR_OPS_OVERFLOW];
+/* By registry id: 1 when the descriptor has SCR_ARR_OPS_RELEASE_NOTHING.
+ * Written before the id is published; the overflow id stays 0. */
+extern uint8_t scr_arr_ops_release_nothing[SCR_ARR_OPS_OVERFLOW + 1];
 /* Assigns the id on a descriptor's first array; out of line, so the id
  * load in scr_arr_ops_id stays the only cost on later arrays. */
 __attribute__((cold, noinline)) uint32_t scr_arr_ops_register(ScrArrOps *ops);
