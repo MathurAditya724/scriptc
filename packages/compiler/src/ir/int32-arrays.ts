@@ -222,6 +222,25 @@ function writesLocal(e: IrExpr, id: string): boolean {
   return !expr(e);
 }
 
+/** Expression kinds an index can be built from without running any code. */
+const PURE_INDEX_KINDS: ReadonlySet<string> = new Set([
+  "varRef",
+  "numLit",
+  "boolLit",
+  "bin",
+  "unary",
+  "ternary",
+  "logical",
+  "arrayGet",
+  "arrayState",
+]);
+
+/** Whether evaluating an index runs no code (no call, accessor or
+ * conversion): plain reads, literals and their operators only. */
+function pureIndex(e: IrExpr): boolean {
+  return PURE_INDEX_KINDS.has(e.kind) && everyExprChild(e, pureIndex, () => false);
+}
+
 /** The parameters and globals a module's functions share as candidates,
  * still assumed to qualify. */
 export interface SharedCandidates {
@@ -319,8 +338,14 @@ export function int32ArrayCandidates(
       case "call": {
         if (readers.has(e.callee) && e.args.length === 2) {
           const [array, index] = e.args;
-          // Inlining evaluates the index before the array read.
-          if (array!.kind === "varRef" && writesLocal(index!, array!.localId))
+          // Inlining evaluates the index before the array read: an index
+          // that rebinds the array keeps it out, and so does one that can run
+          // code when the array is a module global (a call can reassign it).
+          if (
+            array!.kind === "varRef" &&
+            (writesLocal(index!, array!.localId) ||
+              (array!.localId.startsWith("%g.") && !pureIndex(index!)))
+          )
             result.delete(array!.localId);
           receiver(array!);
           expr(index!);

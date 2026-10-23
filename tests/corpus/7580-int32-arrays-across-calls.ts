@@ -133,6 +133,25 @@ halve(halved);
 const pick: (values: number[]) => number = first;
 const viaValue: number[] = [9, 8, 7];
 
+// An index that calls a function reassigning the global: the read uses the
+// array the global held before the index ran, as in Node.
+let swapped: number[] = [1, 2, 3];
+function swapIn(): number {
+  swapped = [];
+  for (let i = 0; i < 4; i++) swapped.push(i + 10);
+  return 1;
+}
+function fillSwapped(n: number): number {
+  swapped = [];
+  for (let i = 0; i < n; i++) swapped.push(i & 15);
+  let s = 0;
+  for (let i = 0; i < swapped.length; i++) s += swapped[i]!;
+  return s;
+}
+function readSwapped(): number | undefined {
+  return swapped[swapIn()];
+}
+
 console.log(`fnv ${fnv(data)} ${fnv(data)}`);
 const h = histogram(data, 10);
 console.log(`hist ${h.length} ${h[0]} ${h[9]} ${total(h)}`);
@@ -143,4 +162,5 @@ console.log(`halved ${halved[0]} ${halved[2]} ${halved.length}`);
 console.log(`value ${pick(viaValue)} ${viaValue.length}`);
 console.log(`regrow ${regrow(40)} ${reassigned.length} ${reassigned[39]} ${regrow(5)}`);
 console.log(`span ${spanTotal()}`);
+console.log(`swap ${fillSwapped(6)} ${readSwapped()} ${swapped[1]}`);
 void later().then((v) => console.log(`later ${v}`));
