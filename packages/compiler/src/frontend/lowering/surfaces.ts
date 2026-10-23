@@ -3597,14 +3597,26 @@ export function stdlibGlobalAliasDecl(
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
   if (!symbol) return false;
   lowerer.stdlibGlobalAliases.set(symbol, name);
-  const access = init !== undefined ? unparenthesized(init) : undefined;
-  if (
-    access !== undefined &&
-    ts.isPropertyAccessExpression(access) &&
-    withoutTypeCasts(access.expression) !== unparenthesized(access.expression)
-  )
+  if (init !== undefined && castGlobalAliasSource(lowerer, init))
     lowerer.castGlobalAliases.add(symbol);
   return true;
+}
+
+/** True when an alias initializer reads its global through a cast of the
+ * global object (`(globalThis as { Buffer?: B }).Buffer`), directly or as
+ * the left operand of `||` (stdlibGlobalAliasNameOf's guard), or copies an
+ * alias made that way. Such an alias carries the cast's static type. */
+function castGlobalAliasSource(lowerer: Lowerer, init: ts.Expression): boolean {
+  let source = unparenthesized(init);
+  if (ts.isBinaryExpression(source) && source.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    source = unparenthesized(source.left);
+  if (ts.isPropertyAccessExpression(source))
+    return withoutTypeCasts(source.expression) !== unparenthesized(source.expression);
+  if (ts.isIdentifier(source)) {
+    const symbol = lowerer.checker.getSymbolAtLocation(source);
+    return symbol !== undefined && lowerer.castGlobalAliases.has(symbol);
+  }
+  return false;
 }
 
 /** True iff the symbol is declared ONLY by the adopted @types/node

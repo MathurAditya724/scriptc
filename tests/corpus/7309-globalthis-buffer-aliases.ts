@@ -29,3 +29,15 @@ function utf8Length(value: string): number {
   return runtimeBuffer ? runtimeBuffer.byteLength(value, "utf8") : value.length;
 }
 console.log("function", utf8Length("✓✓"), utf8Length("abc"));
+
+// A copy of an alias, and an alias whose cast read is guarded with `||`,
+// alias the same constructor.
+const copied = runtimeBuffer;
+const fallback: RuntimeBuffer = {
+  byteLength: (value: string) => value.length,
+  from: (value: string) => new Uint8Array(value.length),
+  isBuffer: () => false,
+};
+const orFallback = (globalThis as { Buffer?: RuntimeBuffer }).Buffer || fallback;
+console.log("copy", copied ? copied.byteLength(text, "utf8") : -1, typeof copied, !copied);
+console.log("or", orFallback.byteLength(text, "utf8"), orFallback.isBuffer(bytes), typeof orFallback);

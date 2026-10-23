@@ -10,3 +10,9 @@ function keep(value: unknown): unknown {
 const bytes = runtimeBuffer && runtimeBuffer.from("abc", "utf8");
 keep(runtimeBuffer);
 keep(bytes);
+// A copy of the alias, and an alias whose cast read is guarded with `||`,
+// carry the cast's type too.
+const copied = runtimeBuffer;
+const orFallback = (globalThis as { Buffer?: RuntimeBuffer }).Buffer || { from: () => new Uint8Array(0) };
+keep(copied);
+keep(orFallback);
