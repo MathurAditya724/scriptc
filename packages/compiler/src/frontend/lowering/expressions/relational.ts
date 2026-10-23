@@ -338,6 +338,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         type: BOOL,
         loc,
       };
+    // A codec in untyped storage is its record's handle box.
+    const codec = (["TextEncoder", "TextDecoder"] as const).find((name) =>
+      lowerer.isStdlibGlobal(expr.right, name),
+    );
+    if (codec && lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind === "dyn") {
+      return {
+        kind: "libCall",
+        fn: "text.codecIs",
+        args: [
+          lowerer.lowerExprExpecting(expr.left, DYN),
+          { kind: "boolLit", value: codec === "TextDecoder", type: BOOL, loc },
+        ],
+        type: BOOL,
+        loc,
+      };
+    }
     if (lowerer.isStdlibGlobal(expr.right, "ReadableStream")) {
       const value = lowerer.lowerExprExpecting(expr.left, DYN);
       return { kind: "libCall", fn: "fetch.streamIs", args: [value], type: BOOL, loc };
@@ -438,7 +454,58 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     // (itself — no descendants can flow into the slot), so the answer
     // folds statically exactly like the named-target folds below.
     const rhsClassval = storedClassValueType(lowerer, expr.right);
-    if (rhsClassval?.kind === "classval" && !lowerer.caughtLocalOf(expr.left)) {
+    // A catch binding against a class held by a binding (`var E = class
+    // extends Error {}`). The binding holds the declared class or one of its
+    // subclasses. Without subclasses the test is the class's caught test,
+    // after the right operand's read; otherwise a payload of the declared
+    // class is tested against the class the binding holds.
+    const caught = lowerer.caughtLocalOf(expr.left);
+    const caughtTarget =
+      rhsClassval?.kind === "classval" && caught
+        ? lowerer.classes.get(rhsClassval.className)
+        : undefined;
+    if (caught && caughtTarget && !caughtTarget.localClass && !caughtTarget.def.runtime) {
+      const classValue = lowerer.lowerExpr(expr.right);
+      if (caughtTarget.subclasses.length === 0) {
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: classValue, loc }],
+          result: caughtClassInstanceOf(lowerer, caught.id, caughtTarget, loc),
+          type: BOOL,
+          loc,
+        };
+      }
+      if (classValue.type.kind !== "classval")
+        lowerer.badType(expr.right, lowerer.typeOf(expr.right));
+      const held = lowerer.declareHiddenLocal("%instanceofClass", classValue.type);
+      const instance: IrType = { kind: "object", className: caughtTarget.def.name };
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: held.id, init: classValue, loc }],
+        result: {
+          kind: "logical",
+          op: "&&",
+          left: caughtClassInstanceOf(lowerer, caught.id, caughtTarget, loc),
+          right: {
+            kind: "instanceOfValue",
+            value: {
+              kind: "caughtNarrow",
+              value: varRef(caught.id, CAUGHT, loc),
+              type: instance,
+              loc,
+            },
+            classValue: varRef(held.id, classValue.type, loc),
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+    if (rhsClassval?.kind === "classval" && !caught) {
       const targetInfo = lowerer.classes.get(rhsClassval.className);
       if (!targetInfo) {
         // The type world names a class the lowering never registered
@@ -608,39 +675,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // narrowing then types the branches; reads bridge through caughtRead.
   const caughtLocal = lowerer.caughtLocalOf(expr.left);
   if (caughtLocal) {
-    const caughtInstanceOf = (info: ClassInfo): IrExpr => {
-      if (!lowerer.inHierarchy(info)) {
-        const value = varRef(caughtLocal.id, CAUGHT, loc);
-        return {
-          kind: "ternary",
-          cond: {
-            kind: "caughtTest",
-            value,
-            test: "instanceof",
-            className: info.def.name,
-            type: BOOL,
-            loc,
-          },
-          then: { kind: "boolLit", value: true, type: BOOL, loc },
-          else_: classInstanceOf(
-            lowerer,
-            { kind: "caughtToDyn", value, type: DYN, loc },
-            info,
-            loc,
-          ),
-          type: BOOL,
-          loc,
-        };
-      }
-      return {
-        kind: "caughtTest",
-        value: { kind: "varRef", localId: caughtLocal.id, type: CAUGHT, loc },
-        test: "instanceof",
-        className: info.def.name,
-        type: BOOL,
-        loc,
-      };
-    };
+    const caughtInstanceOf = (info: ClassInfo): IrExpr =>
+      caughtClassInstanceOf(lowerer, caughtLocal.id, info, loc);
     let test = caughtInstanceOf(target);
     // A thrown checked-dynamic object whose prototype chain reaches
     // Error.prototype (an ES5 constructor function inheriting from it).
@@ -1030,6 +1066,42 @@ function writableClassValueTest(
       type: BOOL,
       loc,
     },
+    type: BOOL,
+    loc,
+  };
+}
+
+/** A catch binding tested against a program class: the runtime test against
+ * the class's preorder interval (false for non-hierarchy-object payloads). */
+function caughtClassInstanceOf(
+  lowerer: Lowerer,
+  caughtId: string,
+  info: ClassInfo,
+  loc: SrcLoc,
+): IrExpr {
+  if (!lowerer.inHierarchy(info)) {
+    const value = varRef(caughtId, CAUGHT, loc);
+    return {
+      kind: "ternary",
+      cond: {
+        kind: "caughtTest",
+        value,
+        test: "instanceof",
+        className: info.def.name,
+        type: BOOL,
+        loc,
+      },
+      then: { kind: "boolLit", value: true, type: BOOL, loc },
+      else_: classInstanceOf(lowerer, { kind: "caughtToDyn", value, type: DYN, loc }, info, loc),
+      type: BOOL,
+      loc,
+    };
+  }
+  return {
+    kind: "caughtTest",
+    value: { kind: "varRef", localId: caughtId, type: CAUGHT, loc },
+    test: "instanceof",
+    className: info.def.name,
     type: BOOL,
     loc,
   };

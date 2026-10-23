@@ -84,6 +84,26 @@ function collectionIteratorSlotValue(
       collT.kind === "map"
         ? { kind: "mapIntrinsic", method: m, receiver: coll, args: [index], type: t, loc }
         : { kind: "setIntrinsic", method: "iterKey", receiver: coll, args: [index], type: t, loc };
+    // entries() answers [key, value] pairs: only a slot whose yield type is
+    // that pair as a record of the two fields takes the typed walk; a tuple
+    // or other pair type keeps the checked adapter.
+    if (method === "entries") {
+      const pair =
+        expected.yieldT.kind === "record" ? lowerer.shapes.get(expected.yieldT.shapeId) : undefined;
+      const field = (name: string): IrType | undefined =>
+        pair?.fields.find((f) => f.name === name)?.type;
+      const first = field("0");
+      const second = field("1");
+      if (
+        pair === undefined ||
+        pair.fields.length !== 2 ||
+        first === undefined ||
+        second === undefined ||
+        !typeEquals(first, keyT) ||
+        !typeEquals(second, valueT)
+      )
+        return null;
+    }
     const entry = (): IrExpr =>
       method === "keys" || (collT.kind === "set" && method === "values")
         ? read("iterKey", keyT)
@@ -99,9 +119,13 @@ function collectionIteratorSlotValue(
               loc,
             };
     if (!typeEquals(entry().type, expected.yieldT)) return null;
+    // The entry is read once per step and kept: the parking yield of an
+    // early exit answers it again rather than rereading a slot the loop may
+    // have deleted.
+    const current = varRef("current.0", expected.yieldT, loc);
     const suspend = (): IrStmt => ({
       kind: "exprStmt",
-      expr: { kind: "yieldExpr", value: entry(), type: resumeType(expected.nextT), loc },
+      expr: { kind: "yieldExpr", value: current, type: resumeType(expected.nextT), loc },
       loc,
     });
     const finish: IrStmt = {
@@ -120,6 +144,7 @@ function collectionIteratorSlotValue(
         { id: "native.0", name: "native", type: DYN, mutable: false },
         { id: "index.0", name: "index", type: F64, mutable: true },
         { id: "resumed.0", name: "resumed", type: BOOL, mutable: true },
+        { id: "current.0", name: "current", type: expected.yieldT, mutable: false },
       ],
       body: [
         {
@@ -173,6 +198,7 @@ function collectionIteratorSlotValue(
               loc,
             },
             setResumed(false, loc),
+            { kind: "varDecl", localId: "current.0", init: entry(), loc },
             {
               kind: "tryCatch",
               tryBody: [suspend(), setResumed(true, loc)],

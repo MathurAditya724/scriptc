@@ -103,3 +103,20 @@ showView("replaced view", repo.view(repo.require("y")));
 const again = repo.view(checked);
 showView("again", again);
 console.log(native.version, checked.version, again.availability.onLoan);
+
+// An integer-named key the spread source lacks comes first, as Node
+// creates integer keys first whatever the literal's order.
+interface Ranked {
+  year: number;
+  title: string;
+  tags: readonly string[];
+  id: string;
+  "1": string;
+}
+function rank(source: Draft, id: string): Ranked {
+  return { ...source, id, "1": "gold" };
+}
+for (const ranked of [rank(draft, "r1"), rank({ title: "Native", year: 1990, tags: [] }, "r2")]) {
+  console.log("ranked", JSON.stringify(ranked));
+  console.log(" keys", Object.keys(ranked).join());
+}

@@ -25,6 +25,9 @@ import { rawBytes } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
 
+/** ScrDyn.v.typed_ref.type_key_len: the low 27 bits of its bit-field word. */
+const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
+
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
   if (e.fn === "assert.shapeStr" || e.fn === "assert.shapeRe") {
@@ -290,6 +293,38 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         B.line(`store i1 true, ptr ${slot}`);
         B.condBr(same, done, compare);
         B.startBlock(compare);
+        // A capsule with another key pointer usually belongs to another
+        // class: reject it on its key length and last eight bytes before
+        // the out-of-line name comparison, so a class table's chain of
+        // probes costs a few instructions per class it skips.
+        B.line(`store i1 false, ptr ${slot}`);
+        const bytes = Buffer.from(literal, "utf8");
+        const lenSlot = B.tmp(),
+          lenWord = B.tmp(),
+          len = B.tmp(),
+          lenEq = B.tmp();
+        B.line(
+          `${lenSlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(88, 52)} ; ->v.typed_ref.type_key_len`,
+        );
+        B.line(`${lenWord} = load i32, ptr ${lenSlot}`);
+        B.line(`${len} = and i32 ${lenWord}, ${TYPE_KEY_LEN_MASK}`);
+        B.line(`${lenEq} = icmp eq i32 ${len}, ${bytes.length}`);
+        const full = B.newLabel("brand.full");
+        if (bytes.length >= 8) {
+          const tail = B.newLabel("brand.tail");
+          B.condBr(lenEq, tail, done);
+          B.startBlock(tail);
+          const tailPtr = B.tmp(),
+            word = B.tmp(),
+            wordEq = B.tmp();
+          B.line(`${tailPtr} = getelementptr inbounds i8, ptr ${keyPtr}, i64 ${bytes.length - 8}`);
+          B.line(`${word} = load i64, ptr ${tailPtr}, align 1`);
+          B.line(`${wordEq} = icmp eq i64 ${word}, ${bytes.readBigInt64LE(bytes.length - 8)}`);
+          B.condBr(wordEq, full, done);
+        } else {
+          B.condBr(lenEq, full, done);
+        }
+        B.startBlock(full);
       }
     }
     if (e.fn === "dyn.typedRefIs") {
@@ -301,6 +336,41 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       B.line(`store i1 ${matches}, ptr ${slot}`);
       B.br(done);
     }
+    B.startBlock(done);
+    const result = B.tmp();
+    B.line(`${result} = load i1, ptr ${slot}`);
+    return { name: result, type: e.type };
+  }
+  if (e.fn === "dyn.classIs") {
+    // Only a class constructor's function value can match. Expose the
+    // function tag to LLVM so a chain of constructor probes (a static
+    // property bag's dispatch) costs one test for every other value, and
+    // borrow the receiver across a literal key as the capsule probes do.
+    const literal = e.args[1]!.kind === "strLit";
+    const value = literal ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
+    const key = host.emitExpr(e.args[1]!);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i1`);
+    B.line(`store i1 false, ptr ${slot}`);
+    const present = B.tmp();
+    const inspect = B.newLabel("ctor.inspect");
+    const compare = B.newLabel("ctor.compare");
+    const done = B.newLabel("ctor.done");
+    B.line(`${present} = icmp ne ptr ${value.name}, null`);
+    B.condBr(present, inspect, done);
+    B.startBlock(inspect);
+    const kind = host.dynKind(value.name);
+    const fn = B.tmp();
+    B.line(`${fn} = icmp eq i32 ${kind}, ${DYN_KIND.FUNC}`);
+    B.condBr(fn, compare, done);
+    B.startBlock(compare);
+    host.declare("declare zeroext i1 @scr_dyn_class_is_key(ptr, ptr)");
+    const matches = B.tmp();
+    B.line(
+      `${matches} = call zeroext i1 @scr_dyn_class_is_key(ptr ${value.name}, ptr ${key.name})`,
+    );
+    B.line(`store i1 ${matches}, ptr ${slot}`);
+    B.br(done);
     B.startBlock(done);
     const result = B.tmp();
     B.line(`${result} = load i1, ptr ${slot}`);
@@ -779,6 +849,19 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     return { name: t, type: e.type };
   }
   if (e.fn === "bytes.absent") return host.own({ name: "null", type: e.type });
+  if (e.fn === "record.isFrozen") {
+    // The frozen bit of the record's rc word (scr_rc.h SCR_RC_FROZEN) is
+    // its second-highest bit; an immortal word sets the highest one too.
+    const value = host.emitReadReceiver(e.args[0]!);
+    const S = host.sizeType;
+    const rc = host.B.tmp(),
+      top = host.B.tmp(),
+      t = host.B.tmp();
+    host.B.line(`${rc} = load ${S}, ptr ${value.name}`);
+    host.B.line(`${top} = lshr ${S} ${rc}, ${S === "i64" ? 62 : 30}`);
+    host.B.line(`${t} = icmp eq ${S} ${top}, 1`);
+    return { name: t, type: e.type };
+  }
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
   // events.once builds typed listener adapters beside the emitter calls.
   if (e.fn === "events.once" || e.fn === "events.onceSignal")
@@ -887,6 +970,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "blob":
     case "wasm":
     case "array":
+    case "collection":
     case "record":
     case "disposable":
     case "punycode":
