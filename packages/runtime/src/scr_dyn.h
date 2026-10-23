@@ -368,6 +368,12 @@ typedef struct ScrDynTypedRecordOps {
 /* A record capsule's ops while it answers from the native record (no view
  * created yet), or NULL. */
 const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
+/* The declaration-typed boundary's adoption (scr_decl_adopt.c, linked by
+ * programs with boundary casts): the nodes of `source` that something else
+ * still references become live capsules of the native value `capsule`
+ * holds. Both borrowed; a node that is not plain data throws the path
+ * TypeError before anything changes. */
+void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
 
 /* Prototype members of a compiled class seen as `unknown`, emitted per
  * class by the compiler: the string names of methods, getters and setters

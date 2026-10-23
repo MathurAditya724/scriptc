@@ -16050,3 +16050,62 @@ bool scr_error_has_key(ScrError *e, const ScrStr *key) {
     return true;
   return scr_dyn_object_proto_name(key);
 }
+
+/* ── declaration-typed boundary: in-place capsules ─────────────────────
+ * scr_decl_adopt.c (linked only into programs with boundary casts) turns a
+ * shared source node into a live capsule of the native value built from
+ * it. The node's old payload moves to a scratch node released here; the
+ * node's weak-collection entries move to the capsule's native identity.
+ * Nothing else in the runtime calls this. */
+static bool scr_dyn_decl_rekey(ScrDyn *node, void *ptr) {
+  bool moved = false;
+  if (!scr_weak_observing) return false;
+  for (;;) {
+    ScrWeakEntry **slot = &scr_weak_entries[scr_weak_bucket(node)];
+    while (*slot && !((*slot)->key == (void *)node && (*slot)->kind == 0)) slot = &(*slot)->all_next;
+    ScrWeakEntry *entry = *slot;
+    if (!entry) return moved;
+    *slot = entry->all_next;
+    entry->key = ptr;
+    entry->kind = 32;
+    ScrWeakEntry **head = &scr_weak_entries[scr_weak_bucket(ptr)];
+    entry->all_next = *head;
+    *head = entry;
+    moved = true;
+  }
+}
+
+void scr_dyn_decl_become(ScrDyn *n, const ScrDyn *capsule);
+void scr_dyn_decl_become(ScrDyn *n, const ScrDyn *capsule) {
+  ScrDynRegion *region = scr_dyn_region_of(n);
+  if (region) region->intact = false;
+  ScrDyn *old = scr_dyn_alloc(SCR_DYN_NULL);
+  old->kind = n->kind;
+  old->buffer = n->buffer;
+  old->null_proto = n->null_proto;
+  old->copied_from_native = n->copied_from_native;
+  old->non_extensible = n->non_extensible;
+  old->v = n->v;
+  old->prototype = n->prototype;
+  old->symbol_properties = n->symbol_properties;
+  old->symbol_keys = n->symbol_keys;
+  n->kind = SCR_DYN_TYPED_REF;
+  n->buffer = false;
+  n->null_proto = false;
+  n->copied_from_native = false;
+  n->non_extensible = false;
+  n->prototype = NULL;
+  n->symbol_properties = NULL;
+  n->symbol_keys = NULL;
+  memset(&n->v, 0, sizeof n->v);
+  n->v.typed_ref = capsule->v.typed_ref;
+  n->v.typed_ref.ptr = capsule->v.typed_ref.retain(capsule->v.typed_ref.ptr);
+  n->v.typed_ref.materialized = NULL;
+  n->v.typed_ref.casts = NULL;
+  if (scr_dyn_decl_rekey(n, n->v.typed_ref.ptr)) n->v.typed_ref.observed = true;
+  if (n->v.typed_ref.type_key_len >= 7 && memcmp(n->v.typed_ref.type_key, "record:", 7) == 0) {
+    ScrDyn *view = scr_record_source_view(n->v.typed_ref.ptr);
+    if (view) n->v.typed_ref.materialized = scr_dyn_retain(view);
+  }
+  scr_dyn_release(old);
+}

@@ -1571,6 +1571,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.objValueList": "scr_dyn_obj_value_list",
   "dyn.objEntries": "scr_dyn_obj_entries",
   "dyn.structuredClone": "scr_structured_clone",
+  "dyn.declAdopt": "scr_dyn_decl_adopt",
   "dyn.cloneMissing": "scr_structured_clone_missing",
   "dyn.cloneTransferFail": "scr_structured_clone_transfer_fail",
   "dyn.cloneTransferFailWith": "scr_structured_clone_transfer_fail_with",

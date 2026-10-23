@@ -1,3 +1,4 @@
+import { isDeclBoundaryFile } from "../decl-projection.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { moduleNamespaceObject } from "./module-namespace-elements.js";
 import { keyedHelperName } from "./stable-names.js";
@@ -3589,6 +3590,18 @@ export class Lowerer {
     else if (kind === "failed") s.failed += 1;
   }
 
+  /** The program holds the declaration-typed boundary's projection
+   * (decl-projection.ts): user-file record and array values crossing into
+   * dynamic slots (package parameters) box as live capsules, so a value
+   * that comes back through a boundary cast keeps its identity. */
+  private declBoundaryMemo: boolean | null = null;
+  get declBoundary(): boolean {
+    this.declBoundaryMemo ??= this.program
+      .getSourceFiles()
+      .some((sf) => isDeclBoundaryFile(sf.fileName));
+    return this.declBoundaryMemo;
+  }
+
   constructor(
     readonly program: ts.Program,
     readonly entry: ts.SourceFile,
@@ -3711,8 +3724,11 @@ export class Lowerer {
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
       isStdlibFile: this.isStdlibFile,
       isNpmFile: this.isNpmFile,
+      // The declaration-typed boundary's generated types (decl-projection.ts)
+      // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: (sf) =>
-        this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))),
+        this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))) ||
+        isDeclBoundaryFile(sf.fileName),
       typeMemo: this.typeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
@@ -7732,6 +7748,7 @@ export class Lowerer {
             entry: ENTRY_NAME,
             ...(this.usesWorkers ? { workers: true } : {}),
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
+            ...(this.declBoundary ? { declBoundary: true as const } : {}),
             ...(this.threadSlotKeys.size > 0
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
