@@ -115,7 +115,30 @@ static ScrDyn *ci_object(const ScCipherInfo *info, int iv) {
   return obj;
 }
 
-static ScrDyn *ci_get(const ScrDyn *name_or_nid, const ScrDyn *options) {
+/* Whether options is a class instance whose class defines keyLength or
+ * ivLength, which the runtime cannot read through the class's accessors. */
+static bool ci_class_option(const ScrDyn *options) {
+  if (options->kind != SCR_DYN_TYPED_REF) return false;
+  bool found = false;
+  static const char *const keys[] = {"keyLength", "ivLength"};
+  for (size_t i = 0; i < 2 && !found; i++) {
+    ScrStr *key = scr_str_new(keys[i], strlen(keys[i]));
+    found = scr_dyn_typed_ref_class_has(options, key);
+    scr_str_release(key);
+  }
+  return found;
+}
+
+/* An option as `const { keyLength, ivLength } = options` reads it: own and
+ * inherited properties, through getters. +1, or NULL with the getter's
+ * error pending. */
+static ScrDyn *ci_option(const ScrDyn *options, const char *key) {
+  if (options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_PROXY)
+    return scr_dyn_obj_read(options, key, strlen(key));
+  return scr_dyn_retain((ScrDyn *)scr_dyn_undefined());
+}
+
+static ScrDyn *ci_get(const ScrDyn *name_or_nid, const ScrDyn *options, bool class_option) {
   if (name_or_nid->kind != SCR_DYN_STR && name_or_nid->kind != SCR_DYN_NUM) {
     scr_dyn_arg_type_fail("nameOrNid", "one of type string or number", name_or_nid);
     return NULL;
@@ -131,18 +154,34 @@ static ScrDyn *ci_get(const ScrDyn *name_or_nid, const ScrDyn *options) {
       scr_dyn_arg_type_fail("options", "of type object", options);
       return NULL;
     }
-    const ScrDyn *key_value = options->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(options, "keyLength", 9) : NULL;
-    const ScrDyn *iv_value = options->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(options, "ivLength", 8) : NULL;
-    if (key_value && key_value->kind != SCR_DYN_UNDEF) {
-      if (!ci_validate_int32("options.keyLength", key_value)) return NULL;
+    if (class_option) {
+      static const char message[] = "getCipherInfo options whose class defines keyLength or ivLength have no "
+                                    "lowering; pass an object with those properties";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+    /* Both are read before either is validated, as in Node. */
+    ScrDyn *key_value = ci_option(options, "keyLength");
+    if (!key_value) return NULL;
+    ScrDyn *iv_value = ci_option(options, "ivLength");
+    if (!iv_value) {
+      scr_dyn_release(key_value);
+      return NULL;
+    }
+    bool ok = true;
+    if (key_value->kind != SCR_DYN_UNDEF) {
+      ok = ci_validate_int32("options.keyLength", key_value);
       has_key = true;
-      key = (int)key_value->v.num;
+      key = ok ? (int)key_value->v.num : 0;
     }
-    if (iv_value && iv_value->kind != SCR_DYN_UNDEF) {
-      if (!ci_validate_int32("options.ivLength", iv_value)) return NULL;
+    if (ok && iv_value->kind != SCR_DYN_UNDEF) {
+      ok = ci_validate_int32("options.ivLength", iv_value);
       has_iv = true;
-      iv = (int)iv_value->v.num;
+      iv = ok ? (int)iv_value->v.num : 0;
     }
+    scr_dyn_release(key_value);
+    scr_dyn_release(iv_value);
+    if (!ok) return NULL;
   }
   const ScCipherInfo *info =
     name_or_nid->kind == SCR_DYN_STR ? ci_by_name(name_or_nid->v.str) : ci_by_nid(name_or_nid->v.num);
@@ -154,7 +193,7 @@ ScrDyn *scr_crypto_get_cipher_info(ScrDyn *name_or_nid, ScrDyn *options) {
   ScrDyn *name = ci_plain(name_or_nid);
   if (!name) return NULL;
   ScrDyn *opts = ci_plain(options);
-  ScrDyn *result = opts ? ci_get(name, opts) : NULL;
+  ScrDyn *result = opts ? ci_get(name, opts, ci_class_option(options)) : NULL;
   if (opts) scr_dyn_release(opts);
   scr_dyn_release(name);
   return result;

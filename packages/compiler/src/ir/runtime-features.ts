@@ -218,6 +218,17 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.stdioStream",
   "stream.chunkDone",
   "stream.objectMode",
+  "stream.decodeStrings",
+  "stream.duplexFromGen",
+  "stream.duplexFromDyn",
+  "stream.duplexFromPromise",
+  "stream.duplexFromAsyncFn",
+  "stream.duplexFromGenSignal",
+  "stream.duplexFromAsyncFnSignal",
+  "fetch.readableFromWeb",
+  "stream.duplexifyReadable",
+  "stream.duplexifyWritable",
+  "stream.duplexifyPair",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",
@@ -230,6 +241,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "sp.finished",
   "sp.pipeline",
   "sp.pipelineStages",
+  "sp.pipelineStagesOpts",
   "stream.addAbortSignal",
   "stream.addAbortSignalFn",
   "stream.destroy",
@@ -257,6 +269,7 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
   "sp.pipelineOpts",
   "stream.finishedOpts",
   "stream.pipelineStages",
+  "stream.composeStages",
   "stream.set",
   "transform.",
   "writable.",
@@ -270,6 +283,12 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "readable.fromDone",
   "readable.fromDyn",
   "readable.fromIter",
+  "stream.duplexFromGen",
+  "stream.duplexFromDyn",
+  "stream.duplexFromPromise",
+  "stream.duplexFromAsyncFn",
+  "stream.duplexFromGenSignal",
+  "stream.duplexFromAsyncFnSignal",
 ]);
 
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
@@ -839,6 +858,10 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** Own properties JavaScript adds to children (scr_dyn_handle_props.c). */
   handleProps: rule({ fns: ["child.propsInstall"] }),
+  /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
+   * casts, and closures boxed in a boundary program, which adopt their
+   * arguments. */
+  declAdopt: rule({ fns: ["dyn.declAdopt"], initial: (mod) => mod.declBoundary === true }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
   /** Buffer.prototype methods called on checked-dynamic values
@@ -1062,6 +1085,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stream: false,
     streamDyn: false,
     handleProps: false,
+    declAdopt: false,
     dynForAwait: false,
     dynBuffer: false,
     builtinValues: false,

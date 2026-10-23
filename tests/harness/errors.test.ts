@@ -305,6 +305,26 @@ describe("checked catch-binding casts", () => {
     );
   });
 
+  test("a typed-array write through an undefined index is a named runtime fence", async () => {
+    // Node stores an ordinary property named "undefined" on the typed
+    // array, which a compiled typed array cannot hold; defined indexes
+    // before it store as usual.
+    const r = await compileAndRun(
+      "typed-array-undefined-index",
+      `const holey: number[] = [1];
+holey[3] = 3;
+const cells = new Float64Array(4);
+for (const i of holey) cells[i] = 9;
+console.log(cells.join(","));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: typed array properties named 'undefined' \(an element index that is undefined\) are not supported yet \[SC1090 at .*typed-array-undefined-index\.ts:4\]\n$/,
+    );
+  });
+
   test("an EFFECTFUL surplus argument is a named deferred fence (JS lane)", async () => {
     // Effect-free surplus args drop at compile time, JS-exact (corpus
     // 1760 — the test-string-decoder writeSequences shape). An effectful
@@ -1131,6 +1151,41 @@ try {
   });
 });
 
+// getCipherInfo reads keyLength and ivLength through getters, which a
+// class instance's accessors are not visible to from the runtime, so a
+// class that defines either throws a coded SC2020 error.
+describe("getCipherInfo options whose class defines keyLength or ivLength", () => {
+  test("throw SC2020 after the argument checks", async () => {
+    const r = await compileAndRun(
+      "cipher-info-class-options",
+      `import { getCipherInfo } from "node:crypto";
+class Options {
+  get keyLength(): number {
+    return 17;
+  }
+}
+const options: any = new Options();
+const names: any[] = ["aes-128-cbc", 1.5];
+for (const name of names) {
+  try {
+    getCipherInfo(name, options);
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 getCipherInfo options whose class defines keyLength or ivLength have no lowering; " +
+        "pass an object with those properties\n" +
+        'RangeError ERR_OUT_OF_RANGE The value of "nameOrNid" is out of range. It must be an integer. Received 1.5\n',
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
 // After a Hash's stream flushes its digest, Node copies the finished
 // OpenSSL context, whose later updates and digests fail with OpenSSL
 // error-queue codes. That copy throws a coded SC2020 error.
@@ -1738,9 +1793,10 @@ describe("builtin constructor values (JS lane)", () => {
   test("members without a lowering stay refused instead of reading undefined", async () => {
     // Builtin constructors read as interned function values that model only
     // name, length and constructor. Every other static member or prototype
-    // read (direct, bracketed, `in`, through an alias or globalThis), and
+    // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
+    // `key in Ctor` answers from the constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -1758,7 +1814,6 @@ describe("builtin constructor values (JS lane)", () => {
       ],
       ["isExtensible(Date.prototype)", "Object.isExtensible(Date.prototype)"],
       ["Map['prototype']", 'Map["prototype"]'],
-      ["'prototype' in Map", '"prototype" in Map'],
       ["globalThis.Map.prototype", "globalThis.Map.prototype"],
       ["Map alias prototype", "MapAlias.prototype"],
       ["Date alias prototype", "DateAlias.prototype"],
@@ -1781,6 +1836,7 @@ console.log(Date.length, RegExp.length, Promise.length, Object.length, Map.lengt
 console.log(Date.name, Map.name, Map.constructor === Function, Object.constructor === Function);
 const promisePrototype = Promise.prototype;
 console.log(typeof promisePrototype, typeof promisePrototype.then, promisePrototype.constructor === Promise);
+console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, "nope" in Map);
 `;
     const r = await compileAndRun("builtin-constructor-members", source, "cjs");
     expect(r.stderr).toBe("");
@@ -1795,11 +1851,13 @@ console.log(typeof promisePrototype, typeof promisePrototype.then, promiseProtot
         ),
       ),
     );
-    // Promise.prototype reads as an object holding the runtime's methods.
+    // Promise.prototype reads as an object holding the runtime's methods,
+    // and `in` on a builtin constructor answers from its fixed keys.
     expect(lines.slice(reads.length)).toEqual([
       "7 2 1 1 0 0",
       "Date Map true true",
       "object function true",
+      "true true true false",
     ]);
   });
 });
@@ -2010,5 +2068,47 @@ console.log("unreachable");
     expect(push.stderr).toMatch(
       /^Uncaught Error: Elements on Array\.prototype are not supported yet \[SC2020[^\]]*\]\n$/,
     );
+  });
+});
+
+describe("numeric properties of native arrays", () => {
+  // A native array keeps its numeric properties ("-1", "1.5") in a property
+  // table that holds values without attributes, so defining one with a
+  // descriptor refuses instead of dropping the attributes.
+  test("Object.defineProperty on a numeric key is a named fence", async () => {
+    const r = await compileAndRun(
+      "array-numeric-define-property",
+      `const words: string[] = ["a"];
+words[-1] = "x";
+console.log(words[-1]);
+Object.defineProperty(words as unknown as Record<string, unknown>, "-3", { value: "kept" });
+console.log("unreachable");
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("x\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: Object\.defineProperty on a numeric property of a native array is not supported yet\n$/,
+    );
+  });
+
+  test("a number key that is not an array index takes the same fence", async () => {
+    const r = await compileAndRun(
+      "array-numeric-define-property-number",
+      `const words: string[] = ["a"];
+for (const key of [-3, 1.5]) {
+  try {
+    Object.defineProperty(words as unknown as Record<number, unknown>, key, { value: "kept" });
+  } catch (e) {
+    console.log((e as Error).message);
+  }
+}
+console.log(words.length);
+`,
+    );
+    const fence =
+      "Object.defineProperty on a numeric property of a native array is not supported yet\n";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(`${fence}${fence}1\n`);
   });
 });
