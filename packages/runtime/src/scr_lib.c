@@ -1078,6 +1078,10 @@ bool scr_fs_path_ok(const ScrStr *path, const char *name) {
   return false;
 }
 
+void scr_fs_check_path(ScrStr *path, ScrStr *name) {
+  (void)scr_fs_path_ok(path, name->data);
+}
+
 void scr_process_load_env_file(const ScrDyn *value) {
   ScrStr *path;
   if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) path = scr_str_new("./.env", 6);
