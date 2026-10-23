@@ -176,7 +176,22 @@ static size_t scr_arr_prop_index(const ScrArr *a, const char *key,
   return SIZE_MAX;
 }
 
+#define SCR_ARR_UNDEFINED_KEY_BITS UINT64_C(0x7ff8000000756e64)
+
+double scr_arr_undefined_key(void) {
+  uint64_t bits = SCR_ARR_UNDEFINED_KEY_BITS;
+  double key;
+  memcpy(&key, &bits, sizeof key);
+  return key;
+}
+
 static size_t scr_arr_prop_key(double i, char *buf) {
+  uint64_t bits;
+  memcpy(&bits, &i, sizeof bits);
+  if (bits == SCR_ARR_UNDEFINED_KEY_BITS) {
+    memcpy(buf, "undefined", sizeof "undefined");
+    return sizeof "undefined" - 1;
+  }
   return scr_f64_to_str(i, buf);
 }
 
@@ -2012,7 +2027,7 @@ static uint64_t scr_arr_require_slot(ScrArr *a, double i) {
   if (scr_arr_prop_get_state(a, i, &prop, &state)) {
     if (state == SCR_ARR_UNDEFINED) {
       char buf[32];
-      scr_f64_to_str(i, buf);
+      scr_arr_prop_key(i, buf);
       scr_trap_fmt("scriptc: RangeError: numeric property %s is undefined\n", buf);
     }
     return prop;
@@ -5121,6 +5136,10 @@ ScrStr *scr_str_raw(ScrArr *raw, ScrArr *subs) {
 
 bool scr_arr_numeric_key(const char *key, size_t len, double *out) {
   char text[64];
+  if (len == sizeof "undefined" - 1 && memcmp(key, "undefined", len) == 0) {
+    *out = scr_arr_undefined_key();
+    return true;
+  }
   if (len == 0 || len >= sizeof text) return false;
   memcpy(text, key, len);
   text[len] = '\0';

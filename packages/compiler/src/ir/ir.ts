@@ -2099,8 +2099,9 @@ export type IrStmt =
    * and whose `code` carries the SC diagnostic code; unwinds exactly like
    * `throw`.
    * TypeScript sources produce it only as the tsc-unreachable fallthrough
-   * trap (appendImplicitUndefinedReturn's SC9002) — their construct fences
-   * stay compile errors. */
+   * trap (appendImplicitUndefinedReturn's SC9002) and for a typed-array
+   * store through an element index that is undefined at run time
+   * (undefined-index.ts); their construct fences stay compile errors. */
   | { kind: "runtimeFence"; code: string; message: string; loc: SrcLoc }
   /** Rethrow of a catch binding (`throw e` where e is the binding):
    * re-raises the SAVED exception exactly — kind and payload preserved,
