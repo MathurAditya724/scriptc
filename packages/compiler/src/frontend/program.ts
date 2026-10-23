@@ -4112,6 +4112,13 @@ function cycleReachedDeferredReferences7(
         return "skip";
       }
       if (ts.isImportDeclaration(node)) return "skip";
+      if (node.kind === ts.SyntaxKind.ThisKeyword) {
+        // `this` in a static initializer or block names the class, so it
+        // reaches the class's methods as naming the class does.
+        const owner = staticThisClass7(node);
+        if (owner !== undefined && stored.has(owner)) reach(owner);
+        return undefined;
+      }
       if (!ts.isIdentifier(node) || !names.has(node.text)) return undefined;
       if (inTypePosition7(node)) return undefined;
       const parent = node.parent;
@@ -4497,6 +4504,40 @@ function returnsOnlyClosuresOver7(
  * expressions, decorators, computed member keys, static field
  * initializers and static blocks. Methods and instance fields wait for a
  * call or a construction. */
+/** The class whose static field initializer or static block evaluates `this`
+ * (through arrow functions, which keep the enclosing `this`), or undefined
+ * when another function or a class's instance side binds it. */
+function staticThisClass7(node: ts.Node): ts.ClassLikeDeclaration | undefined {
+  let child = node;
+  for (let n = node.parent; n !== undefined; child = n, n = n.parent) {
+    if (ts.isArrowFunction(n)) continue;
+    if (ts.isClassStaticBlockDeclaration(n)) return n.parent as ts.ClassLikeDeclaration;
+    if (ts.isPropertyDeclaration(n)) {
+      if (n.initializer !== child) return undefined;
+      return (ts.getCombinedModifierFlags(n) & ts.ModifierFlags.Static) !== 0
+        ? (n.parent as ts.ClassLikeDeclaration)
+        : undefined;
+    }
+    if (ts.isComputedPropertyName(n)) {
+      // A computed key evaluates in the scope around the class.
+      const member = n.parent;
+      const cls = member?.parent;
+      if (cls === undefined) return undefined;
+      child = cls;
+      n = cls;
+      continue;
+    }
+    if (
+      ts.isFunctionLike(n) ||
+      ts.isClassDeclaration(n) ||
+      ts.isClassExpression(n) ||
+      ts.isSourceFile(n)
+    )
+      return undefined;
+  }
+  return undefined;
+}
+
 function classSyncParts7(c: ts.ClassLikeDeclaration): ts.Node[] {
   const decorators = (n: ts.Node): ts.Node[] =>
     ((n as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []).filter(

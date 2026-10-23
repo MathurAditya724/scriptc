@@ -406,6 +406,27 @@ test.for([
     ["name"],
   ],
   [
+    // The partner's class calls a method through `this` in a static
+    // initializer; the method reads a const of the importer declared later.
+    {
+      "main.ts": 'import { name } from "./a.ts"; console.log(name);',
+      "a.ts": 'import { Probe } from "./b.ts"; export const name = "n"; console.log(Probe.value);',
+      "b.ts":
+        'import { name } from "./a.ts"; export class Probe { static read(): string { return name; } static value = this.read(); }',
+    },
+    ["name"],
+  ],
+  [
+    // The same through a static block of a class stored by a const.
+    {
+      "main.ts": 'import { name } from "./a.ts"; console.log(name);',
+      "a.ts": 'import { Box } from "./b.ts"; export const name = "n"; console.log(Box.value);',
+      "b.ts":
+        'import { name } from "./a.ts"; export const Box = class { static value = ""; static read(): string { return name; } static { this.value = this.read(); } };',
+    },
+    ["name"],
+  ],
+  [
     // The partner's top level reads the importer's const before it ran.
     {
       "main.ts": 'import { a } from "./a.ts"; console.log(a);',
