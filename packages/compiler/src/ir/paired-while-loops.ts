@@ -211,13 +211,18 @@ function rewriteFunction(fn: IrFunction): IrFunction {
     const renamed = new Map<string, string>();
     const fresh: IrLocal[] = [];
     for (const id of counters) {
-      const local = locals.get(id)!;
+      const local = locals.get(id);
+      if (local === undefined) break;
       let k = 0;
       while (used.has(`${local.name}.${k}`)) k++;
       const next = `${local.name}.${k}`;
       used.add(next);
       renamed.set(id, next);
       fresh.push({ ...local, id: next });
+    }
+    if (renamed.size !== counters.length) {
+      for (const local of fresh) used.delete(local.id);
+      continue;
     }
     const candidate = pairedForLoop(loop, renamed);
     const forLocals = new Map(locals);
@@ -263,9 +268,16 @@ function pairedForLoop(
   loop: WhileLoop,
   renamed: ReadonlyMap<string, string>,
 ): IrStmt & { kind: "for" } {
+  // Each copy spreads one node kind.
   const expr = (e: IrExpr): IrExpr => {
     const next = mapExprChildren(e, expr, stmt);
-    if (next.kind === "varRef" || next.kind === "incDec" || next.kind === "assignExpr") {
+    if (next.kind === "varRef") {
+      const id = renamed.get(next.localId);
+      if (id !== undefined) return { ...next, localId: id };
+    } else if (next.kind === "incDec") {
+      const id = renamed.get(next.localId);
+      if (id !== undefined) return { ...next, localId: id };
+    } else if (next.kind === "assignExpr") {
       const id = renamed.get(next.localId);
       if (id !== undefined) return { ...next, localId: id };
     }
@@ -273,12 +285,16 @@ function pairedForLoop(
   };
   const stmt = (s: IrStmt): IrStmt => {
     const next = mapStmtChildren(s, expr, stmt);
-    if (
-      next.kind === "varDecl" ||
-      next.kind === "assign" ||
-      next.kind === "forOf" ||
-      next.kind === "rethrow"
-    ) {
+    if (next.kind === "varDecl") {
+      const id = renamed.get(next.localId);
+      if (id !== undefined) return { ...next, localId: id };
+    } else if (next.kind === "assign") {
+      const id = renamed.get(next.localId);
+      if (id !== undefined) return { ...next, localId: id };
+    } else if (next.kind === "forOf") {
+      const id = renamed.get(next.localId);
+      if (id !== undefined) return { ...next, localId: id };
+    } else if (next.kind === "rethrow") {
       const id = renamed.get(next.localId);
       if (id !== undefined) return { ...next, localId: id };
     }
