@@ -185,7 +185,7 @@ export { newFnCtx, type FnCtx } from "./function-context.js";
  */
 import { dirname, relative, resolve } from "node:path";
 import { bindingSource } from "../binding-source.js";
-import { tsgoPath } from "../dts-paths.js";
+import { compilerOwnedFileName, tsgoPath } from "../dts-paths.js";
 import * as ts from "../ts7/adapter.js";
 import { isBundledShimForwarder } from "../package-shims.js";
 import { erasedTypeOnlyImport } from "../type-only-imports.js";
@@ -3210,13 +3210,14 @@ export class Lowerer {
   /** Structural source positions (structural-positions.ts) for names that
    * stay the same when unrelated code moves. */
   /** Files are named by their path relative to the entry's directory, so
-   * names do not depend on where the program sits, and default library
-   * files by their base name: two checkers install them in different
-   * directories. */
+   * names do not depend on where the program sits, default library files
+   * by their base name (two checkers install them in different
+   * directories), and the files scriptc ships by their name inside scriptc,
+   * so names do not depend on where scriptc is installed either. */
   readonly positions = new StructuralPositions((sf) =>
     this.program.isSourceFileDefaultLibrary(sf)
       ? `lib:${sf.fileName.slice(sf.fileName.lastIndexOf("/") + 1)}`
-      : relative(dirname(this.entry.fileName), sf.fileName),
+      : (compilerOwnedFileName(sf.fileName) ?? relative(dirname(this.entry.fileName), sf.fileName)),
   );
 
   /** The outermost node whose token span is exactly `loc`, or null. */
@@ -3248,7 +3249,10 @@ export class Lowerer {
    * before it. */
   closureName(loc: SrcLoc, suffix = "", prefix = "%fn"): string {
     const node = this.nodeAtLoc(loc);
-    const where = node === null ? `${loc.file}:${loc.start}:${loc.end}` : this.positions.of(node);
+    const where =
+      node === null
+        ? `${compilerOwnedFileName(loc.file) ?? loc.file}:${loc.start}:${loc.end}`
+        : this.positions.of(node);
     const key = `${prefix}|${this.closureRoot}|${where}|${suffix}`;
     const first = keyedHelperName(this, prefix, key);
     const seen = this.closureNameCounts.get(first) ?? 0;
@@ -3389,8 +3393,18 @@ export class Lowerer {
       if (interned.has(fn.name)) this.sharedHelpers.add(fn);
     if (this.sharedHelpers.size === 0) return;
     const shared = new Map([...this.sharedHelpers].map((fn) => [fn.name, fn]));
-    const earlier = (left: SrcLoc, right: SrcLoc): boolean =>
-      left.file < right.file || (left.file === right.file && left.start < right.start);
+    // Files scriptc ships compare by their name inside scriptc, so the
+    // choice does not depend on where scriptc is installed.
+    const fileKeys = new Map<string, string>();
+    const fileKey = (file: string): string => {
+      let key = fileKeys.get(file);
+      if (key === undefined) fileKeys.set(file, (key = compilerOwnedFileName(file) ?? file));
+      return key;
+    };
+    const earlier = (left: SrcLoc, right: SrcLoc): boolean => {
+      if (left.file === right.file) return left.start < right.start;
+      return fileKey(left.file) < fileKey(right.file);
+    };
     // The earliest use of each shared helper outside the shared helpers, and
     // which shared helpers each shared helper uses.
     const uses = new Map<string, SrcLoc>();
