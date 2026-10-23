@@ -700,3 +700,121 @@ test("a spread reads its source's order right after the literal evaluates the so
   const snapshot = (prologue[2] as IrStmt & { kind: "varDecl" }).localId;
   expect(orderIndexOf(lit)).toMatchObject({ kind: "varRef", localId: snapshot });
 });
+
+/** `{ a, b }` with a declared table `["a", "b"]` and a literal `{ b, a }`
+ * plus `{ ...value, a }` of the same shape, beside `extra`. */
+function selfCopy(extra: (f: Fixture, ab: IrType & { kind: "record" }) => IrStmt[]): string[] {
+  const f = fixture();
+  const ab = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const self: KeyOrderSegment = { kind: "spread", shapeId: ab.shapeId, maybeAbsent: false };
+  f.run([
+    decl("v", f.literal(ab, ["b", "a"])),
+    observe(f.literal(ab, ["a", "b"], [self, { kind: "key", name: "a", definite: true }])),
+    ...extra(f, ab),
+  ]);
+  return f.order(ab)!;
+}
+
+test("a literal that starts by spreading its own shape takes the other literals' order", () => {
+  expect(selfCopy(() => [])).toEqual(["b", "a"]);
+});
+
+test("a self copy of a shape a checked conversion builds cannot be ordered statically", () => {
+  const parsed = (ab: IrType): IrExpr => ({
+    kind: "dynCheck",
+    value: ref("j", { kind: "dyn" }),
+    type: ab,
+    loc,
+  });
+  expect(selfCopy((_, ab) => [observe(parsed(ab))])).toEqual(["a", "b"]);
+});
+
+test("a replaceable method's checked result builds no record", () => {
+  expect(
+    selfCopy((f, ab) => {
+      const result: IrExpr = { kind: "dynCheck", value: ref("r", { kind: "dyn" }), type: ab, loc };
+      return [observe(f.notes.methodResult(result))];
+    }),
+  ).toEqual(["b", "a"]);
+});
+
+test("a replaceable method's result keeps its witness through an IR rewrite", () => {
+  expect(
+    selfCopy((f, ab) => {
+      const result = f.notes.methodResult({
+        kind: "dynCheck",
+        value: ref("r", { kind: "dyn" }),
+        type: ab,
+        loc,
+      });
+      const identity = { expr: (e: IrExpr): IrExpr => e, stmt: (st: IrStmt): IrStmt => st };
+      observeRecordLiteralRebuilds((from, to) => f.notes.follow(from, to));
+      try {
+        const rebuilt = transformExpr(result, identity);
+        expect(rebuilt).not.toBe(result);
+        return [observe(rebuilt)];
+      } finally {
+        observeRecordLiteralRebuilds(null);
+      }
+    }),
+  ).toEqual(["b", "a"]);
+});
+
+test("a checked conversion of a boxed primitive builds no record", () => {
+  expect(
+    selfCopy((_, ab) => {
+      const missing: IrExpr = {
+        kind: "dynFrom",
+        value: { kind: "unitLit", unit: "undefined", type: { kind: "undefinedT" }, loc },
+        type: { kind: "dyn" },
+        loc,
+      };
+      return [observe({ kind: "dynCheck", value: missing, type: ab, loc })];
+    }),
+  ).toEqual(["b", "a"]);
+});
+
+test("a checked conversion into a class builds none of its fields' records", () => {
+  expect(
+    selfCopy((f, ab) => {
+      (f.lowerer.classes as Map<string, unknown>).set("Holder", {
+        def: { fields: [{ name: "value", type: ab }] },
+      });
+      const holder: IrType = { kind: "object", className: "Holder" };
+      const checked: IrExpr = {
+        kind: "dynCheck",
+        value: ref("h", { kind: "dyn" }),
+        type: holder,
+        loc,
+      };
+      return [{ kind: "exprStmt", expr: checked, loc }];
+    }),
+  ).toEqual(["b", "a"]);
+});
+
+test("a checked function passes its record parameters out, and its callbacks' back in", () => {
+  const callable = (params: IrType[]): IrType => ({
+    kind: "func",
+    params,
+    ret: { kind: "string" },
+  });
+  const checkedAs = (type: IrType): IrStmt => ({
+    kind: "exprStmt",
+    expr: { kind: "dynCheck", value: ref("fn", { kind: "dyn" }), type, loc },
+    loc,
+  });
+  expect(selfCopy((_, ab) => [checkedAs(callable([ab]))])).toEqual(["b", "a"]);
+  // A callback parameter receives values the JavaScript function builds.
+  expect(selfCopy((_, ab) => [checkedAs(callable([callable([ab])]))])).toEqual(["a", "b"]);
+  // So does a container parameter, which the function can write into.
+  expect(selfCopy((_, ab) => [checkedAs(callable([{ kind: "array", elem: ab }]))])).toEqual([
+    "a",
+    "b",
+  ]);
+});

@@ -28,7 +28,19 @@
  *    build keeps today's table, since another table would make values
  *    parsed in today's order keep a source view; a shape object literals
  *    also build takes the literals' order. Their order is unknown, so a
- *    copy out of such a shape cannot be ordered statically;
+ *    copy out of such a shape cannot be ordered statically. A conversion
+ *    builds only the records it can create from a JavaScript value: none
+ *    for a boxed primitive or a class instance (a native instance whose
+ *    fields its own writes fill), none for a checked function's record
+ *    parameters, and none for the checked result of a typed call of a
+ *    method the program may replace on its instance. Without a replacement
+ *    that result is the method's own native value, boxed and checked back
+ *    unchanged; a replacement's result keeps its own order in its record
+ *    source, and only copies out of it follow the chosen table, as they
+ *    followed today's;
+ *  - a literal that starts by spreading a value of its own shape copies
+ *    that value's order. While no checked conversion builds the shape,
+ *    every value has the one chosen order, so the copy adds no witness;
  *  - a write to an optional key that may be absent appends it in Node. A
  *    key no construction creates ("late-only") goes after every key a
  *    construction can create; any other moving write goes after every key.
@@ -112,6 +124,7 @@ export type KeyOrderSegment =
 export class KeyOrderNotes {
   private readonly literals = new Map<IrExpr, KeyOrderSegment[]>();
   private readonly copies = new Map<IrExpr, string>();
+  private readonly methodResults = new Set<IrExpr>();
   /** Shapes a frontend order surface (keys, values/entries, inspect,
    * index-signature merges) walks. */
   readonly observed = new Set<string>();
@@ -128,13 +141,21 @@ export class KeyOrderNotes {
     return node;
   }
 
+  /** The checked result of a typed call of a method the program may
+   * replace on its instance (class-callbacks.ts classCallbackCall). */
+  methodResult(node: IrExpr): IrExpr {
+    this.methodResults.add(node);
+    return node;
+  }
+
   /** A pass rebuilt `from` as `to` (traverse.ts mapExprChildren): the
-   * rebuilt literal is the same construction, so it keeps the witness. */
+   * rebuilt node is the same construction, so it keeps the witness. */
   follow(from: IrExpr, to: IrExpr): void {
     const segments = this.literals.get(from);
     if (segments !== undefined) this.literals.set(to, segments);
     const source = this.copies.get(from);
     if (source !== undefined) this.copies.set(to, source);
+    if (this.methodResults.has(from)) this.methodResults.add(to);
   }
 
   observe(type: IrType): void {
@@ -147,6 +168,10 @@ export class KeyOrderNotes {
 
   copyOf(node: IrExpr): string | undefined {
     return this.copies.get(node);
+  }
+
+  isMethodResult(node: IrExpr): boolean {
+    return this.methodResults.has(node);
   }
 }
 
@@ -201,6 +226,23 @@ function orderPreservingClone(node: IrExpr & { kind: "dynCheck" }): boolean {
   );
 }
 
+const PRIMITIVE_KINDS = new Set([
+  "f64",
+  "bigint",
+  "string",
+  "bool",
+  "undefinedT",
+  "nullT",
+  "symbol",
+]);
+
+/** A checked conversion of a boxed primitive (the `undefined` a dynamic
+ * construction passes for a missing argument) answers that primitive or
+ * throws: it builds no record. */
+function primitiveSource(node: IrExpr & { kind: "dynCheck" }): boolean {
+  return node.value.kind === "dynFrom" && PRIMITIVE_KINDS.has(node.value.value.type.kind);
+}
+
 /** Chooses each in-scope record shape's enumeration table from its
  * witnesses. Runs once retained reachability has settled the historical
  * tables and derived metadata, before the order-snapshotting helper bodies
@@ -239,35 +281,53 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   /** Every record shape a type can hold, through fields, arms, elements,
    * callables, promises and class fields. */
   /** Each walk shares one `seen` set per result set, so every type graph
-   * is walked once however many roots reach it. */
-  const shapesIn = (type: IrType, out: Set<string>, seen: Set<string>): void => {
-    const visit = (t: IrType): boolean => {
+   * is walked once however many roots reach it.
+   *
+   * `produced` walks only what a checked conversion into the type can
+   * build. It answers an existing native instance for a class type (a plain
+   * object cannot acquire a class brand; only %Error rebuilds), so the
+   * records the instance's fields hold come from the class's own writes and
+   * its checked field setters, each a witness of its own. A checked
+   * function's parameters receive native values: a record parameter is
+   * passed out, never built, though a callback among them receives values
+   * built from JavaScript again. */
+  const shapesIn = (type: IrType, out: Set<string>, seen: Set<string>, produced = false): void => {
+    const visit = (t: IrType, built: boolean): boolean => {
+      const mark = built ? "" : "-";
       if (t.kind === "record") {
-        if (seen.has("r:" + t.shapeId)) return true;
-        seen.add("r:" + t.shapeId);
-        out.add(t.shapeId);
+        if (seen.has(mark + "r:" + t.shapeId)) return true;
+        seen.add(mark + "r:" + t.shapeId);
+        if (built) out.add(t.shapeId);
         const shape = shapes.get(t.shapeId);
         if (shape) {
-          for (const f of shape.fields) visit(f.type);
-          if (shape.indexValue) visit(shape.indexValue);
+          // A record passed out can be written through: its fields take
+          // values JavaScript builds.
+          for (const f of shape.fields) visit(f.type, true);
+          if (shape.indexValue) visit(shape.indexValue, true);
         }
         return true;
       }
       if (t.kind === "union") {
-        if (seen.has("u:" + t.unionId)) return true;
-        seen.add("u:" + t.unionId);
-        for (const arm of lowerer.unions.get(t.unionId)?.arms ?? []) visit(arm);
+        if (seen.has(mark + "u:" + t.unionId)) return true;
+        seen.add(mark + "u:" + t.unionId);
+        for (const arm of lowerer.unions.get(t.unionId)?.arms ?? []) visit(arm, built);
         return true;
       }
       if (t.kind === "object") {
+        if (produced && t.className !== "%Error") return true;
         if (seen.has("c:" + t.className)) return true;
         seen.add("c:" + t.className);
-        for (const f of lowerer.classes.get(t.className)?.def.fields ?? []) visit(f.type);
+        for (const f of lowerer.classes.get(t.className)?.def.fields ?? []) visit(f.type, true);
         return true;
       }
-      return everyTypeChild(t, visit);
+      if (produced && t.kind === "func") {
+        for (const param of t.params) visit(param, !built);
+        return visit(t.ret, built);
+      }
+      // Containers passed out stay writable: their elements count as built.
+      return everyTypeChild(t, (child) => visit(child, true));
     };
-    visit(type);
+    visit(type, true);
   };
   const opaqueShapes = new Set<string>();
   const opaqueSeen = new Set<string>();
@@ -280,7 +340,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   const declaredSeen = new Set<string>();
   const producedBy = (type: IrType, opaque: boolean): void => {
     if (opaque) shapesIn(type, opaqueShapes, opaqueSeen);
-    else shapesIn(type, runtimeShapes, runtimeSeen);
+    else shapesIn(type, runtimeShapes, runtimeSeen, true);
   };
 
   // ── collection ──────────────────────────────────────────────────────
@@ -388,7 +448,12 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         return;
       case "dynCheck":
         if (e.adopt === true) shapesIn(e.type, declaredShapes, declaredSeen);
-        else if (!orderPreservingClone(e)) producedBy(e.type, false);
+        // Conversions that build no record: a boxed primitive, and a
+        // replaceable method's result, which is the value the method
+        // returns (boxed and checked back unchanged) or what a replacement
+        // installed on the instance returns.
+        else if (!orderPreservingClone(e) && !primitiveSource(e) && !notes.isMethodResult(e))
+          producedBy(e.type, false);
         return;
       case "dynDestrCheck":
       case "caughtCheck":
@@ -649,6 +714,29 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     for (const c of f.copies) deps.add(c.source);
     return [...deps];
   };
+  /** `{ ...value, ...rest }` that starts with a spread of a value of the
+   * literal's own shape holding every key: it creates its keys in the
+   * value's order, and the later segments only overwrite them. With no
+   * checked conversion building the shape, every value enumerates in the
+   * one table this pass chooses, so the copy agrees with any choice and
+   * adds no edge. */
+  const copiesItself = (
+    id: string,
+    f: ShapeFacts,
+    table: readonly string[],
+    segments: readonly KeyOrderSegment[],
+  ): boolean => {
+    const first = segments[0];
+    return (
+      first !== undefined &&
+      first.kind === "spread" &&
+      first.shapeId === id &&
+      !first.maybeAbsent &&
+      !f.runtime &&
+      segments.every((s) => s.kind !== "opaque") &&
+      table.every((k) => !maybeAbsent(id, k))
+    );
+  };
   /** One shape's order given its sources' current orders. */
   const resolveOne = (id: string, current: (source: string) => Resolved): Resolved => {
     const shape = shapes.get(id);
@@ -666,6 +754,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const edges: [string, string][] = [];
     if (f.pinned) chain(table, edges);
     for (const segments of f.literals) {
+      if (copiesItself(id, f, table, segments)) continue;
       const sequences = literalSequences(segments, keySet, current);
       if (sequences === null) return "unknown";
       for (const seq of sequences) chain(seq, edges);
