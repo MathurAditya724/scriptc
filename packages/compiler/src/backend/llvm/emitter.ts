@@ -79,6 +79,7 @@ import {
 } from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
+import { allocatedLiteral, selectInt32Arrays } from "../../ir/int32-arrays.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { INT32_RANGE, type IntegerRange, type IntegerRanges } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
@@ -147,7 +148,7 @@ import {
 } from "./inline-unions.js";
 import { OptionalArrayReads, type LocalArrayRead } from "./local-array-reads.js";
 import { CheckedNarrows } from "./checked-narrows.js";
-import { emitDenseArraySet, emitDenseSlotUnlink } from "./dense-array-access.js";
+import { emitDenseArraySet, emitDenseSlotUnlink, type ArrayAccess } from "./dense-array-access.js";
 import { matchMapRead, type MapReadLifetimes } from "./map-read-lifetimes.js";
 import { type MapEntryFusion } from "./map-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
@@ -483,6 +484,15 @@ function versionParameters(mod: IrModule): IrModule {
   return versionLoopBoundParameters(mod, mangleFunction);
 }
 
+/** The int32 arrays the int32 slot analysis keeps in `mod`, under the
+ * inputs LlEmitter gives it (selectInt32Arrays). */
+function provenInt32Arrays(mod: IrModule): ReadonlySet<string> {
+  return analyzeInt32Slots(mod, {
+    dynamicStores: dynamicFieldStores(mod),
+    initializerBindings: findInitializerBindings(mod),
+  }).int32Arrays;
+}
+
 /** The emitter for `input` after the module passes every emission runs. */
 function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
@@ -491,28 +501,31 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Keep source storage intact for debugger inspection in dev builds.
   return new LlEmitter(
     options.debugSources === undefined
-      ? versionParameters(
-          addRecordResultEntries(
-            scalarizeNumericRecords(
-              specializeCallbackCalls(
-                specializeNumericCalls(
-                  foldConstantGlobals(
-                    copyStableCaptures(
-                      resolveSelfCaptures(
-                        hoistFinalFieldReads(
-                          freezeInitOnlyGlobals(
-                            holdCharLocalsAsUnits(dropUnwrittenPropertyBags(mod)),
+      ? selectInt32Arrays(
+          versionParameters(
+            addRecordResultEntries(
+              scalarizeNumericRecords(
+                specializeCallbackCalls(
+                  specializeNumericCalls(
+                    foldConstantGlobals(
+                      copyStableCaptures(
+                        resolveSelfCaptures(
+                          hoistFinalFieldReads(
+                            freezeInitOnlyGlobals(
+                              holdCharLocalsAsUnits(dropUnwrittenPropertyBags(mod)),
+                            ),
                           ),
                         ),
                       ),
                     ),
+                    mangleFunction,
                   ),
                   mangleFunction,
                 ),
-                mangleFunction,
               ),
             ),
           ),
+          provenInt32Arrays,
         )
       : mod,
     options,
@@ -717,6 +730,53 @@ export class LlEmitter {
     }
     this.journal?.entry("tag", category, tag);
     return `, !tbaa !${tag}`;
+  }
+
+  /** The current function's int32 array allocations: the array literals
+   * its int32 arrays are written with. They construct SCR_ELEM_I32 arrays. */
+  int32Allocations = new Set<IrExpr>();
+  /** The fill temporaries (`new Array(n).fill(v)`) of those allocations:
+   * the same arrays, so int32 too. */
+  int32ArrayTemps = new Set<string>();
+
+  /** Collect the int32 allocations of `fn`, about to be emitted. */
+  findInt32Allocations(fn: IrFunction): void {
+    this.int32Allocations.clear();
+    this.int32ArrayTemps.clear();
+    if (this.int32Slots.int32Arrays.size === 0) return;
+    everyStmtList(fn.body, {
+      stmt: (s) => {
+        if (
+          (s.kind === "varDecl" || s.kind === "assign") &&
+          this.int32Slots.int32Arrays.has(`${fn.name}\0${s.localId}`)
+        ) {
+          const value = s.kind === "varDecl" ? s.init : s.value;
+          const allocation = value && allocatedLiteral(value);
+          if (allocation) {
+            this.int32Allocations.add(allocation.literal);
+            if (allocation.temporary !== null) this.int32ArrayTemps.add(allocation.temporary);
+          }
+        }
+        return true;
+      },
+      expr: () => true,
+    });
+  }
+
+  /** Whether `arr` is one of the current function's int32 arrays
+   * (ir/int32-arrays.ts, kept by the int32 slot analysis). */
+  int32Array(arr: IrExpr): boolean {
+    if (arr.kind !== "varRef" || this.int32Slots.int32Arrays.size === 0) return false;
+    return (
+      this.int32ArrayTemps.has(arr.localId) ||
+      this.int32Slots.int32Arrays.has(`${this.currentFunctionName}\0${arr.localId}`)
+    );
+  }
+
+  /** The access an element operation on `arr` (of element type `elem`)
+   * takes: int32 arrays read and write their 4-byte slots. */
+  arrayAccess(arr: IrExpr, elem: IrType): ArrayAccess {
+    return this.int32Array(arr) ? "i32" : elemAccess(elem);
   }
 
   /** Whether an element access at `index` of `arr` lies in the hole-free
@@ -6507,7 +6567,7 @@ export class LlEmitter {
     return tagInSet(this, uName, unionId, tags);
   }
 
-  arrPush(arr: string, acc: "f64" | "bool" | "ref", value: string, element: IrType | null): string {
+  arrPush(arr: string, acc: ArrayAccess, value: string, element: IrType | null): string {
     return arrPush(this, arr, acc, value, element);
   }
 

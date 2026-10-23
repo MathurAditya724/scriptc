@@ -411,7 +411,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       const v = emitter.emitExpr(s.value);
       if (s.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arraySet on non-array");
-      const acc = elemAccess(s.arr.type.elem);
+      const acc = emitter.arrayAccess(s.arr, s.arr.type.elem);
       emitter.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
       if (acc === "ref") emitter.toHeap(v);
       emitDenseArraySet(
@@ -478,7 +478,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.condBr(dropsLast, pop, call);
         B.startBlock(pop);
         const elem = s.arr.type.elem;
-        const acc = elemAccess(elem);
+        const acc = emitter.arrayAccess(s.arr, elem);
         const raw = emitDenseArrayPop(emitter, arr.name, acc, elem, call, call);
         if (acc === "ref" && isRefCounted(elem)) {
           const old = B.tmp();

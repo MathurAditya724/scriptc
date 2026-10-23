@@ -1614,6 +1614,64 @@ static bool inline_slots(const ScrArr *a) {
   return a->data == (const uint64_t *)((const char *)a + ((sizeof(ScrArr) + 7) & ~(size_t)7));
 }
 
+/* Int32 slots: 4-byte values, then the state bytes when the array has them. */
+static bool i32_layout_ok(const ScrArr *a) {
+  return a->elem == SCR_ELEM_I32 && scr_arr_slot_width(a) == sizeof(int32_t);
+}
+
+/* SCR_ELEM_I32: 4-byte int32 slots behind the double-valued entry points. */
+static void test_i32_slots(void) {
+  ScrArr *a = scr_arr_new_small(SCR_ELEM_I32);
+  for (int i = 0; i < 1000; i++) scr_arr_push_f64(a, (double)(i * 7 - 3000));
+  check(i32_layout_ok(a) && !scr_arr_has_states(a) && a->filled == 1000,
+        "int32 pushes grow four-byte storage without states");
+  bool values_ok = true;
+  for (int i = 0; i < 1000; i++) {
+    values_ok &= ((const int32_t *)a->data)[i] == i * 7 - 3000;
+    values_ok &= scr_arr_get_f64(a, i) == (double)(i * 7 - 3000);
+    values_ok &= scr_arr_get_number(a, i) == (double)(i * 7 - 3000);
+  }
+  check(values_ok, "int32 values are stored as 4-byte integers and read as doubles");
+  scr_arr_set_f64(a, 10, 2147483647);
+  scr_arr_set_f64(a, 11, -2147483648.0);
+  check(scr_arr_get_f64(a, 10) == 2147483647 && scr_arr_get_f64(a, 11) == -2147483648.0,
+        "int32 extremes round-trip");
+  check(scr_arr_pop_f64(a) == 999 * 7 - 3000 && scr_arr_len(a) == 999, "pop reads the last int32");
+  scr_arr_set_len(a, 5);
+  scr_arr_set_len(a, 8);
+  check(i32_layout_ok(a) && scr_arr_has_states(a) && scr_arr_state(a, 6) == SCR_ARR_HOLE &&
+            isnan(scr_arr_get_number(a, 6)) && scr_arr_get_f64(a, 4) == 4 * 7 - 3000,
+        "int32 truncation clears slots and extension adds holes");
+  scr_arr_set_f64(a, 20, 5);
+  check(scr_arr_len(a) == 21 && scr_arr_state(a, 15) == SCR_ARR_HOLE && scr_arr_get_f64(a, 20) == 5,
+        "an int32 store past the length leaves holes");
+  scr_arr_release(scr_arr_fill_f64(a, -9, 0, 21));
+  bool filled_ok = a->filled == 21;
+  for (int i = 0; i < 21; i++) filled_ok &= scr_arr_get_f64(a, i) == -9;
+  check(filled_ok, "int32 fill writes every slot");
+  scr_arr_release(a);
+
+  ScrArr *s = scr_arr_new(SCR_ELEM_I32, 0);
+  scr_arr_set_f64(s, 0, 1);
+  scr_arr_set_f64(s, 3000000, 3);
+  scr_arr_set_f64(s, 2000000, -2);
+  check(arr_sparse_len(s) == 2 && scr_arr_get_f64(s, 2000000) == -2 && scr_arr_get_f64(s, 3000000) == 3,
+        "int32 sparse entries keep double slots");
+  scr_arr_set_len(s, 2000001);
+  scr_arr_release(scr_arr_fill_f64(s, 4, 1, 2000000));
+  check(arr_sparse_len(s) == 0 && i32_layout_ok(s) && scr_arr_get_f64(s, 2000000) == -2 &&
+            scr_arr_get_f64(s, 1999999) == 4 && scr_arr_get_f64(s, 0) == 1,
+        "densifying absorbs sparse entries into int32 slots");
+  scr_arr_release(s);
+
+  ScrArr *k = scr_arr_new(SCR_ELEM_I32, 6);
+  for (int i = 0; i < 6; i++) scr_arr_push_f64(k, i);
+  scr_arr_push_f64(k, 6);
+  check(i32_layout_ok(k) && scr_arr_get_f64(k, 6) == 6 && scr_arr_get_f64(k, 0) == 0,
+        "a known-count int32 array grows out of its block");
+  scr_arr_release(k);
+}
+
 static void test_inline_slots(void) {
 #ifdef SCR_RC_AUDIT
   long strings0 = scr_str_live_count();
@@ -2472,6 +2530,7 @@ int main(int argc, char **argv) {
   test_splice_drop();
   test_filled_prefix();
   test_bool_bytes();
+  test_i32_slots();
   test_inline_slots();
   test_head_room();
   test_states_on_demand();

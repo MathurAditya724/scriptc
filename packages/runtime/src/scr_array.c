@@ -277,6 +277,7 @@ typedef struct {
 static uint64_t scr_arr_storage_get(const ScrArrStorage *s, size_t index) {
   if (s->elem == SCR_ELEM_BOOL) return ((const uint8_t *)s->data)[index];
   if (s->elem == SCR_ELEM_CREF) return scr_cref_decode(((const uint32_t *)s->data)[index]);
+  if (s->elem == SCR_ELEM_I32) return scr_arr_f64_slot((double)((const int32_t *)s->data)[index]);
   return s->data[index];
 }
 
@@ -621,7 +622,7 @@ static void scr_arr_grow_dense_slow(ScrArr *a, size_t need, ScrArrGrow mode);
  * paths pick the same capacity. */
 static inline void scr_arr_grow_dense_to(ScrArr *a, size_t need, ScrArrGrow mode) {
   if (need <= a->cap) return;
-  if (a->elem == SCR_ELEM_BOOL || a->elem == SCR_ELEM_CREF ||
+  if (a->elem == SCR_ELEM_BOOL || a->elem == SCR_ELEM_CREF || a->elem == SCR_ELEM_I32 ||
       (a->spare & (SCR_ARR_INLINE_SLOTS | SCR_ARR_HEAD_ROOM | SCR_ARR_HAS_EXT)) || need > SCR_ARR_DENSE_LIMIT) {
     scr_arr_grow_dense_slow(a, need, mode);
     return;
@@ -1904,6 +1905,10 @@ static ScrArr *scr_arr_fill_slot(ScrArr *a, uint64_t slot, uint8_t state,
     if (state != SCR_ARR_VALUE) scr_arr_cut(a, from);
     if (a->elem == SCR_ELEM_BOOL) memset(scr_arr_dense_at(a, from), (int)slot, until - from);
     else if (a->elem == SCR_ELEM_CREF) for (size_t i = from; i < until; i++) scr_arr_dense_put(a, i, slot);
+    else if (a->elem == SCR_ELEM_I32) {
+      int32_t v = scr_arr_i32_of(slot);
+      for (size_t i = from; i < until; i++) ((int32_t *)a->data)[i] = v;
+    }
     else for (size_t i = from; i < until; i++) a->data[i] = slot;
     if (scr_arr_has_states(a)) memset(scr_arr_state_run(a, from, until - from), state, until - from);
   } else {
