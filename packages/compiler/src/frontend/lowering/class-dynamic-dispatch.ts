@@ -1229,6 +1229,7 @@ export class ClassDynamicDispatch {
         }
       }
     }
+    let live: Map<string, Extract<IrStmt, { kind: "fieldSet" }>[]> | null = null;
     for (const plan of this.propertyReceivers(lowerer, false, false)) {
       const info = plan.info;
       const className = info.def.name;
@@ -1309,7 +1310,11 @@ export class ClassDynamicDispatch {
         );
       const prototypeFor = (current: ClassInfo, receiver: IrExpr, loc: SrcLoc): IrExpr | null =>
         this.bagPrototype(lowerer, current, receiver, loc);
-      for (const existingInit of this.bagInitializers.get(className) ?? []) {
+      live ??= this.liveBagInitializers();
+      for (const existingInit of [
+        ...(this.bagInitializers.get(className) ?? []),
+        ...(live.get(className) ?? []),
+      ]) {
         if (existingInit.value.kind === "dynObjLit" && needsPrototype(info)) {
           const prototype = prototypeFor(info, existingInit.obj, existingInit.loc);
           if (prototype) {
@@ -4440,6 +4445,27 @@ export class ClassDynamicDispatch {
    * A class with constructible subclasses that have prototype data selects
    * it through its `%class.bagPrototype` helper; any other class reads its
    * own prototype data. */
+  /** The lazy bag stores as they stand in the generated bodies, by class.
+   * Worklist passes that transform every function rebuild statement
+   * objects, so a recorded initializer can be a detached copy; a store that
+   * gains its prototype must be updated where it runs. */
+  private liveBagInitializers(): Map<string, Extract<IrStmt, { kind: "fieldSet" }>[]> {
+    const live = new Map<string, Extract<IrStmt, { kind: "fieldSet" }>[]>();
+    const add = (stmt: IrStmt | undefined): void => {
+      if (stmt?.kind !== "if") return;
+      const store = stmt.then[0];
+      if (store?.kind !== "fieldSet" || store.field !== PROPERTY_BAG) return;
+      const list = live.get(store.className);
+      if (list) list.push(store);
+      else live.set(store.className, [store]);
+    };
+    // The complete dispatch guards each class's lazy store by its receiver.
+    for (const stmt of this.propertyBag?.body ?? []) if (stmt.kind === "if") add(stmt.then[0]);
+    for (const helper of this.typedPropertyBags.values()) add(helper.body[0]);
+    for (const helper of this.exactPropertyBags.values()) add(helper.body[0]);
+    return live;
+  }
+
   private bagPrototype(
     lowerer: Lowerer,
     current: ClassInfo,
