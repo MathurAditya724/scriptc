@@ -74,8 +74,18 @@ function errorKind(error) {
 }
 
 // A thrown value crosses as a copy: an Error as its nearest intrinsic
-// class with its message and string code, anything else as JSON data.
+// class with its message and string code, anything else as JSON data. An
+// error whose class, message or code cannot be read crosses as an Error
+// with an empty message.
 function thrown(error) {
+  try {
+    return thrownCopy(error);
+  } catch {
+    return 'T{"error":{"kind":0,"message":""}}';
+  }
+}
+
+function thrownCopy(error) {
   if (error instanceof Error) {
     const copy = { kind: errorKind(error), message: String(error.message) };
     if (typeof error.code === "string") copy.code = error.code;

@@ -13,8 +13,16 @@
  * executable and its Node travel together; a recorded `$ORIGIN/` path is
  * also the hook for bundling Node into the executable itself later. */
 import { createHash } from "node:crypto";
-import { copyFileSync, linkSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import {
+  copyFileSync,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 
 /** The oldest Node.js release Node islands support: synchronous
  * module.registerHooks, which shared modules need, is a release candidate
@@ -67,22 +75,44 @@ function readManifest(dir: string): PackManifest | string {
   };
 }
 
-/** Copies the pack next to the executable (hard links where possible). */
-function placeBeside(source: string, manifest: PackManifest, target: string): void {
+/** Copies the pack next to the executable (hard links where possible), or
+ * returns why it cannot: the target would replace the pack itself, or the
+ * manifest names a file outside the pack. */
+function placeBeside(source: string, manifest: PackManifest, target: string): string | undefined {
+  const names = ["manifest.json", "LICENSE", ...Object.keys(manifest.files)];
+  const unsafe = names.find(
+    (name) => name === "" || name === "." || name === ".." || /[/\\]/.test(name),
+  );
+  if (unsafe !== undefined)
+    return `the libnode pack at ${source} lists a file outside the pack ('${unsafe}')`;
+  const from = realpathOr(source);
+  const to = realpathOr(target);
+  if (from === to || from.startsWith(to + sep) || to.startsWith(from + sep))
+    return `--libnode=beside would replace the libnode pack it copies (${source}); point SCRIPTC_LIBNODE at a pack outside ${target}`;
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
-  for (const name of ["manifest.json", "LICENSE", ...Object.keys(manifest.files)]) {
-    const from = join(source, name);
+  for (const name of names) {
+    const file = join(source, name);
     try {
-      statSync(from);
+      statSync(file);
     } catch {
       continue;
     }
     try {
-      linkSync(from, join(target, name));
+      linkSync(file, join(target, name));
     } catch {
-      copyFileSync(from, join(target, name));
+      copyFileSync(file, join(target, name));
     }
+  }
+  return undefined;
+}
+
+/** The canonical path of `path`, or `path` resolved when it does not exist. */
+function realpathOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
   }
 }
 
@@ -107,7 +137,8 @@ export function libnodeRecord(
   if (typeof manifest === "string") return manifest;
   if (!beside) return { libnode: resolve(source), nodeVersion: manifest.nodeVersion };
   const name = `${basename(outPath)}.libnode`;
-  placeBeside(source, manifest, `${outPath}.libnode`);
+  const refused = placeBeside(source, manifest, `${outPath}.libnode`);
+  if (refused !== undefined) return refused;
   return { libnode: `${ORIGIN}${name}`, nodeVersion: manifest.nodeVersion };
 }
 

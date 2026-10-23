@@ -64,6 +64,12 @@ Local<String> Utf8(Isolate *isolate, const char *text, size_t len) {
       .ToLocalChecked();
 }
 
+// A string longer than V8 can hold is empty instead of a fatal error.
+v8::MaybeLocal<String> MaybeUtf8(Isolate *isolate, const char *text, size_t len) {
+  if (len > static_cast<size_t>(String::kMaxLength)) return {};
+  return String::NewFromUtf8(isolate, text, NewStringType::kNormal, static_cast<int>(len));
+}
+
 Local<String> Utf8(Isolate *isolate, const char *text) {
   return Utf8(isolate, text, std::strlen(text));
 }
@@ -75,15 +81,20 @@ std::string ToStdString(Isolate *isolate, Local<Value> value) {
 
 // The outcome of an exception the dispatcher itself did not catch (a stack
 // overflow, for example): an Error copy with its message.
+// Reading the message runs user code (a getter, a toString), which may throw
+// again; the copy then has an empty message.
 std::string ThrownOutcome(Isolate *isolate, Local<Context> context, Local<Value> exception) {
+  TryCatch inner(isolate);
   Local<Value> message = exception;
   if (exception->IsObject()) {
     Local<Value> own;
     if (exception.As<Object>()->Get(context, Utf8(isolate, "message")).ToLocal(&own))
       message = own;
   }
+  Local<String> text;
   Local<String> quoted;
-  if (!v8::JSON::Stringify(context, message->ToString(context).ToLocalChecked()).ToLocal(&quoted))
+  if (!message->ToString(context).ToLocal(&text) ||
+      !v8::JSON::Stringify(context, text).ToLocal(&quoted))
     return "T{\"error\":{\"kind\":0,\"message\":\"\"}}";
   return "T{\"error\":{\"kind\":0,\"message\":" + ToStdString(isolate, quoted) + "}}";
 }
@@ -192,12 +203,23 @@ char *Call(uint32_t id, int sync, const char *file, const char *specifier, const
   {
     node::CallbackScope scope(isolate, context->Global(), node::async_context{0, 0});
     TryCatch try_catch(isolate);
+    Local<String> args_text;
+    if (!MaybeUtf8(isolate, args, args_len).ToLocal(&args_text)) {
+      // The argument JSON is longer than V8's string limit: the RangeError
+      // V8 throws for such a string.
+      outcome = "T{\"error\":{\"kind\":2,\"message\":\"Invalid string length\"}}";
+      if (!sync) {
+        g_host->settle(id, outcome.data(), outcome.size());
+        return nullptr;
+      }
+      return Copy(outcome, len);
+    }
     Local<Value> argv[] = {Integer::NewFromUnsigned(isolate, id),
                            v8::Boolean::New(isolate, sync != 0),
                            Utf8(isolate, file),
                            Utf8(isolate, specifier),
                            Utf8(isolate, name),
-                           Utf8(isolate, args, args_len)};
+                           args_text};
     Local<Value> result;
     if (g_call.Get(isolate)
             ->Call(context, v8::Undefined(isolate), sizeof argv / sizeof argv[0], argv)

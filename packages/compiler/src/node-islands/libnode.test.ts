@@ -69,6 +69,31 @@ describe("the recorded libnode pack", () => {
     expect(readFileSync(join(out, "app.libnode/libscr_node_bridge.so"), "utf8")).toBe("bridge");
   });
 
+  test("beside refuses to replace the pack it copies", () => {
+    const out = mkdtempSync(join(tmpdir(), "scriptc-libnode-out-"));
+    const first = pack("24.22.0");
+    libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: first });
+    // The placed copy as the source of the next beside build.
+    const placed = join(out, "app.libnode");
+    expect(libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: placed })).toMatch(
+      /^--libnode=beside would replace the libnode pack it copies/,
+    );
+    expect(readFileSync(join(placed, "libscr_node_bridge.so"), "utf8")).toBe("bridge");
+  });
+
+  test("beside refuses manifest file names outside the pack", () => {
+    const dir = pack("24.22.0");
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({ nodeVersion: "24.22.0", bridgeAbi: NODE_BRIDGE_ABI, files: { "../x": {} } }),
+    );
+    const out = mkdtempSync(join(tmpdir(), "scriptc-libnode-out-"));
+    expect(libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: dir })).toBe(
+      `the libnode pack at ${dir} lists a file outside the pack ('../x')`,
+    );
+    expect(existsSync(join(out, "app.libnode"))).toBe(false);
+  });
+
   test("a pack the deployment places beside the executable needs no manifest at build time", () => {
     expect(libnodeRecord("$ORIGIN/node", "/out/app", {})).toEqual({
       libnode: "$ORIGIN/node",

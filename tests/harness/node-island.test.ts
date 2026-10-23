@@ -7,7 +7,7 @@
  * in SCRIPTC_LIBNODE; required in the Linux x64 CI lanes (libnode.ts). */
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, test } from "vitest";
 import { compile, deserializeModule } from "@scriptc/compiler";
@@ -61,11 +61,11 @@ function comparable(stderr: string): string {
     .join("\n");
 }
 
-async function build(name: string, libnode?: string): Promise<string> {
+async function build(name: string, libnode?: string, entry = fixture): Promise<string> {
   const dir = join(outDir, name);
   mkdirSync(dir, { recursive: true });
-  const result = await compile(fixture, {
-    outPath: join(dir, "lifecycle"),
+  const result = await compile(entry, {
+    outPath: join(dir, basename(entry, ".ts")),
     outDir: dir,
     sanitize,
     ...(libnode === undefined ? {} : { libnode }),
@@ -143,6 +143,37 @@ describe.skipIf(skip)("Node islands in-process", () => {
       /^scriptc: cannot load Node\.js for this program's Node islands: .*\/nonexistent\/pack\/libscr_node_bridge\.(so|dylib).*\n$/,
     );
   });
+
+  test("SCRIPTC_LIBNODE must be an absolute path", async () => {
+    const result = await run(binary, [], { ...process.env, SCRIPTC_LIBNODE: "relative/pack" });
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe(`${before}\n`);
+    expect(result.stderr).toBe(
+      "scriptc: SCRIPTC_LIBNODE must be an absolute path to a libnode pack directory\n",
+    );
+  });
+
+  test("an error whose message cannot be read crosses with an empty message", async () => {
+    expect(await run(binary, ["unreadable"])).toEqual({
+      stdout: `${before}\n42\n${after}\ncaught true ""\ndone\n`,
+      stderr: "",
+      code: 0,
+    });
+  });
+
+  test("a call from a worker thread throws", async () => {
+    const worker = await build(
+      "worker",
+      undefined,
+      join(repoRoot, "tests/fixtures/node-island/worker.ts"),
+    );
+    expect(await run(worker, [])).toEqual({
+      stdout:
+        "main 42\nworker Node islands run on the main thread only; this call came from a worker thread\nexit 0\n",
+      stderr: "",
+      code: 0,
+    });
+  }, 300_000);
 
   test("a pack of another Node version fails the first call", async () => {
     const dir = await fakePack("old-node", "SCR_NODE_BRIDGE_ABI", "22.11.0");

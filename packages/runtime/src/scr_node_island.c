@@ -6,13 +6,15 @@
  * dlopens the bridge library of a libnode pack (scr_node_bridge.h), which
  * links libnode, so a run that never calls into Node never maps it.
  *
- * Locating Node. The pack directory is SCRIPTC_LIBNODE when set, else the
- * path recorded at build time; a recorded path that starts with `$ORIGIN/`
- * resolves against the directory of the running executable (the `beside`
- * packaging, and the hook for shipping Node with the program). No search
- * path is used. The bridge must speak SCR_NODE_BRIDGE_ABI and link the
- * Node version recorded at build time; anything else is a fatal error at
- * first use, never a silent use of another Node.
+ * Locating Node. The pack directory is SCRIPTC_LIBNODE when set (an
+ * absolute path), else the path recorded at build time; a recorded path
+ * that starts with `$ORIGIN/` resolves against the directory of the
+ * running executable (the `beside` packaging, and the hook for shipping
+ * Node with the program). A process with elevated privileges ignores
+ * SCRIPTC_LIBNODE and refuses `$ORIGIN/`. No search path is used. The
+ * bridge must speak SCR_NODE_BRIDGE_ABI and link the Node version recorded
+ * at build time; anything else is a fatal error at first use, never a
+ * silent use of another Node.
  *
  * Calls. A call serializes its arguments as JSON, enters JavaScript through
  * the bridge (a callback scope, so ticks and microtasks drain when it
@@ -46,6 +48,10 @@
 #include <dlfcn.h>
 #include <sys/mman.h>
 #include <ucontext.h>
+#include <unistd.h>
+#if defined(__linux__)
+#include <sys/auxv.h>
+#endif
 
 #ifdef __APPLE__
 #define NI_BRIDGE_FILE "libscr_node_bridge.dylib"
@@ -93,24 +99,53 @@ SCR_COLD static void ni_fatal(const char *message) {
   _Exit(1);
 }
 
+/* True when the process runs with elevated privileges (setuid, setgid or
+ * file capabilities). The pack directory then comes only from an absolute
+ * path recorded at build time, as the dynamic linker ignores
+ * LD_LIBRARY_PATH and $ORIGIN for such processes. */
+static bool ni_secure(void) {
+#if defined(__APPLE__)
+  return issetugid() != 0;
+#elif defined(__linux__)
+  return getauxval(AT_SECURE) != 0;
+#else
+  return false;
+#endif
+}
+
 /* The pack directory: SCRIPTC_LIBNODE, else the recorded path with a
- * leading `$ORIGIN/` resolved against the executable's own directory. */
+ * leading `$ORIGIN/` resolved against the executable's own directory.
+ * Both must resolve to absolute paths. */
 static const char *ni_pack_dir(void) {
-  const char *override = getenv("SCRIPTC_LIBNODE");
+  bool secure = ni_secure();
+  const char *override = secure ? NULL : getenv("SCRIPTC_LIBNODE");
+  if (override != NULL && override[0] != '\0' && override[0] != '/')
+    ni_fatal("scriptc: SCRIPTC_LIBNODE must be an absolute path to a libnode pack directory\n");
   const char *dir = override != NULL && override[0] != '\0' ? override : ni_libnode;
   if (dir == NULL || dir[0] == '\0')
     ni_fatal("scriptc: this program calls into Node.js (@scriptc/node), but no libnode pack was "
              "recorded at build time; set SCRIPTC_LIBNODE to a pack directory\n");
   static const char origin[] = "$ORIGIN/";
+  int written;
   if (dir != override && strncmp(dir, origin, sizeof origin - 1) == 0) {
+    if (secure)
+      ni_fatal("scriptc: a program running with elevated privileges cannot load a libnode pack "
+               "beside its executable; build it with an absolute SCRIPTC_LIBNODE\n");
     ScrStr *self = scr_process_exec_path();
     size_t len = self->len;
     while (len > 0 && self->data[len - 1] != '/') len--;
-    snprintf(ni_dir, sizeof ni_dir, "%.*s%s", (int)len, self->data, dir + sizeof origin - 1);
+    if (len == 0 || self->data[0] != '/') {
+      scr_str_release(self);
+      ni_fatal("scriptc: cannot locate this program's executable to find its libnode pack\n");
+    }
+    written = snprintf(ni_dir, sizeof ni_dir, "%.*s%s", (int)len, self->data,
+                       dir + sizeof origin - 1);
     scr_str_release(self);
   } else {
-    snprintf(ni_dir, sizeof ni_dir, "%s", dir);
+    written = snprintf(ni_dir, sizeof ni_dir, "%s", dir);
   }
+  if (written < 0 || (size_t)written >= sizeof ni_dir)
+    ni_fatal("scriptc: the libnode pack path is too long\n");
   return ni_dir;
 }
 
@@ -300,7 +335,9 @@ static void ni_start(void) {
   if (ni_bridge != NULL) return;
   const char *dir = ni_pack_dir();
   char path[4352];
-  snprintf(path, sizeof path, "%s/%s", dir, NI_BRIDGE_FILE);
+  int written = snprintf(path, sizeof path, "%s/%s", dir, NI_BRIDGE_FILE);
+  if (written < 0 || (size_t)written >= sizeof path)
+    ni_fatal("scriptc: the libnode pack path is too long\n");
   /* RTLD_GLOBAL: native addons resolve napi_* and node::* from the global
    * namespace. The executable exports no symbols libnode could bind to. */
   void *library = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
@@ -385,7 +422,23 @@ static char *ni_call(uint32_t id, bool sync, ScrStr *file, ScrStr *specifier, Sc
   return outcome;
 }
 
+/* Node runs on the main thread only: its isolate is entered under the
+ * Locker the starting thread holds, and the loader's state and Node's
+ * stack are process-wide. A call from a worker thread throws an Error. */
+static bool ni_main_thread(void) {
+  if (scr_context_is_main()) return true;
+  ScrStr *code = scr_str_new("", 0);
+  static const char text[] =
+      "Node islands run on the main thread only; this call came from a worker thread";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  scr_throw_node_coded(0, code, message);
+  scr_str_release(message);
+  scr_str_release(code);
+  return false;
+}
+
 ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args) {
+  if (!ni_main_thread()) return NULL;
   ScrDyn *json = ni_args_json(args);
   if (json == NULL) return NULL;
   ni_start();
@@ -400,6 +453,10 @@ ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name,
 
 ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args) {
   ScrPromise *p = scr_promise_new();
+  if (!ni_main_thread()) {
+    scr_promise_reject_pending(p);
+    return p;
+  }
   ScrDyn *json = ni_args_json(args);
   if (json == NULL) {
     scr_promise_reject_pending(p);
