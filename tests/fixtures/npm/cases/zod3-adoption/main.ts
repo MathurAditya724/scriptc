@@ -37,3 +37,12 @@ cyc.meta = cyc;
 const back = AsRow.parse(cyc);
 back.id = 10;
 console.log("cycle", cyc.id, back === cyc, back.meta === cyc);
+// A tuple's elements keep their identity too: the package-side array
+// still holds the element that typed code mutates.
+const Pair = z.custom<[{ id: number; tags: string[] }, string]>();
+const pairSource = JSON.parse('[{"id":1,"tags":["a"]},"s"]') as unknown[];
+const pairHead = pairSource[0];
+const pair = Pair.parse(pairSource);
+pair[0].tags.push("b");
+pair[0].id = 2;
+console.log("tuple", JSON.stringify(pairHead), JSON.stringify(pairSource), pair[1]);

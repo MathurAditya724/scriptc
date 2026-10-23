@@ -605,11 +605,15 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       const name = jsNode.name;
       const nameStart = ts.tokenStartOfNode(name);
       const text = jsSf.text;
+      // `x => ...` or `async x => ...`: nothing but the modifiers comes
+      // before the parameter, which then needs parentheses for its type.
+      const head = ts.isArrowFunction(fn)
+        ? ((ts.getModifiers(fn) ?? []).at(-1)?.end ?? ts.tokenStartOfNode(fn))
+        : nameStart;
       const bareArrow =
         ts.isArrowFunction(fn) &&
         fn.parameters.nodes.length === 1 &&
-        text[ts.tokenStartOfNode(fn)] !== "(" &&
-        text.slice(ts.tokenStartOfNode(fn), nameStart).trim() === "";
+        text.slice(head, nameStart).trim() === "";
       const afterName = jsNode.questionToken !== undefined ? jsNode.questionToken.end : name.end;
       if (bareArrow) {
         fileEdits.push({ start: nameStart, end: nameStart, text: "(" });
@@ -727,10 +731,20 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       // semicolon continues the previous expression: guard it.
       let up: ts.Node | undefined = e;
       while (up?.parent !== undefined && !ts.isStatement(up.parent)) up = up.parent;
+      // Only a statement in a statement list can follow such a line; an
+      // unbraced body (`for (...) S.parse(x).run()`) follows its header,
+      // and a `;` there would become the body.
+      const list = up?.parent?.parent;
       if (
         up?.parent !== undefined &&
         ts.isExpressionStatement(up.parent) &&
-        ts.tokenStartOfNode(up.parent) === start
+        ts.tokenStartOfNode(up.parent) === start &&
+        list !== undefined &&
+        (ts.isBlock(list) ||
+          ts.isSourceFile(list) ||
+          ts.isModuleBlock(list) ||
+          ts.isCaseClause(list) ||
+          ts.isDefaultClause(list))
       )
         prefix = ";(";
       void stmt;

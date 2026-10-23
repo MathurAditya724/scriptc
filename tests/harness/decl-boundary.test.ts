@@ -3,7 +3,10 @@
  * naming the path, and a value the native record cannot represent (a
  * frozen object) fails with the reason. Node does not check, so this is a
  * native-only test; npm.test.ts runs the differential cases
- * (zod3-boundary, zod3-adoption, zod3-infer). */
+ * (zod3-boundary, zod3-adoption, zod3-infer). The rewrite test checks that
+ * a file keeps its projection (no SC6102 note) where the rewrite has to
+ * parenthesize a bare async arrow's parameter and cast the start of an
+ * unbraced loop body. */
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -33,5 +36,33 @@ test(
       "liar threw true expected number at $.n, got string\n" +
         "frozen threw expected a plain object (this value is frozen, sealed or not extensible) at $, got object\n",
     );
+  },
+);
+
+test(
+  "boundary rewrites keep bare async arrows and unbraced loop bodies valid",
+  { timeout: 600_000 },
+  async () => {
+    const rewrites = join(repoRoot, "tests/fixtures/npm/cases/zod3-boundary/rewrites.ts");
+    mkdirSync(outDir, { recursive: true });
+    const result = await compile(rewrites, {
+      outPath: join(outDir, "rewrites"),
+      outDir,
+      sanitize,
+    });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    }
+    // The file keeps its projection: no SC6102 note drops it (a build
+    // that lowered nothing carries no warnings at all).
+    expect((result.warnings ?? []).map((w) => w.code)).not.toContain("SC6102");
+    const pending = execFileAsync(result.binaryPath, [], {
+      cwd: dirname(rewrites),
+      encoding: "utf8",
+    });
+    pending.child.stdin?.end();
+    const { stdout } = await pending;
+    // Node's output: every loop iteration runs the cast statement.
+    expect(stdout).toBe("loops 5\nasync arrow 4\n");
   },
 );

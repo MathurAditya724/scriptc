@@ -22,7 +22,6 @@
 #include <string.h>
 
 void scr_dyn_decl_become(ScrDyn *n, const ScrDyn *capsule);
-void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
 
 typedef struct {
   ScrDyn *node;
@@ -120,6 +119,32 @@ static bool scr_decl_adopt_walk(ScrDeclAdoptList *list, ScrDyn *n, ScrDyn *capsu
         return false;
       }
     }
+  } else if (!capsule->v.typed_ref.record && !capsule->v.typed_ref.klass && !capsule->v.typed_ref.array &&
+             n->kind == SCR_DYN_ARR && !n->v.arr.presence) {
+    /* A capsule without element hooks over an array: a tuple, whose index
+     * field names get no record hooks. Its view holds a live capsule of
+     * each record or array element, which the source element adopts (the
+     * walk skips the other elements). */
+    ScrDyn *view = capsule->v.typed_ref.materialize(ptr);
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      if (!(n->rc > 1 && n->rc != SIZE_MAX)) scr_dyn_release(capsule);
+      return false;
+    }
+    if (view && view->kind == SCR_DYN_ARR) {
+      size_t len = n->v.arr.len < view->v.arr.len ? n->v.arr.len : view->v.arr.len;
+      for (size_t i = 0; i < len; i++) {
+        ScrDyn *child = n->v.arr.items[i], *element = view->v.arr.items[i];
+        if (!child || !element || (child->kind != SCR_DYN_OBJ && child->kind != SCR_DYN_ARR)) continue;
+        ScrDynPath p = { path, NULL, i };
+        if (!scr_decl_adopt_walk(list, child, scr_dyn_retain(element), &p, depth + 1)) {
+          scr_dyn_release(view);
+          if (!(n->rc > 1 && n->rc != SIZE_MAX)) scr_dyn_release(capsule);
+          return false;
+        }
+      }
+    }
+    scr_dyn_release(view);
   } else if (!capsule->v.typed_ref.record && !capsule->v.typed_ref.klass &&
              capsule->v.typed_ref.array && n->kind == SCR_DYN_ARR && !n->v.arr.presence) {
     const ScrDynTypedArrayOps *ops = capsule->v.typed_ref.array;
