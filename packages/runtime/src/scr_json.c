@@ -5812,6 +5812,23 @@ static void scr_native_iterator_release(void *ptr) {
  * next() calls still receive a fresh, independently mutable result object. */
 static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done_out) {
   ScrDyn *source = iterator->source;
+  /* An own element of an untyped array, or its end: no getter can run, so
+   * the general path below is not needed. */
+  if (source && source->kind == SCR_DYN_ARR && iterator->kind == 0 && !iterator->array_like &&
+      iterator->selection == 0) {
+    if (iterator->index >= (double)source->v.arr.len) {
+      iterator->source = NULL;
+      scr_dyn_release(source);
+      *done_out = true;
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    if (scr_dyn_arr_has_index(source, (size_t)iterator->index)) {
+      size_t index = (size_t)iterator->index;
+      iterator->index++;
+      *done_out = false;
+      return scr_dyn_retain(source->v.arr.items[index]);
+    }
+  }
   /* An inherited indexed getter can advance this same iterator recursively.
    * Keep the source alive even if that nested call exhausts the iterator. */
   if (source) scr_dyn_retain(source);
@@ -6955,6 +6972,12 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
   if (method->kind != SCR_DYN_FUNC) {
     scr_dyn_release(method);
     return scr_dyn_not_iterable(source, spell);
+  }
+  /* An array whose iterator method is the builtin values(): what calling
+   * it with the array as `this` returns, without the call. */
+  if (source->kind == SCR_DYN_ARR && method == scr_iterator_functions[1]) {
+    scr_dyn_release(method);
+    return scr_native_iterator_new((ScrDyn *)source);
   }
   ScrDyn *iterator = scr_iterator_call(method, source, "value[Symbol.iterator]");
   scr_dyn_release(method);
