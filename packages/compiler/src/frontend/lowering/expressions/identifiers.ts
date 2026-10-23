@@ -744,6 +744,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
   const nativeAlias = stdlibGlobalNameOf(lowerer, expr);
   if (nativeAlias === "Buffer" && expr.text !== "Buffer") {
+    // JavaScript reads the Buffer function's value (builtinGlobalValue).
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr)))
+      return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
     return { kind: "strLit", value: "[builtin Buffer]", type: STRING, loc };
   }
   if (lowerer.isStdlibGlobal(expr, "fetch")) {

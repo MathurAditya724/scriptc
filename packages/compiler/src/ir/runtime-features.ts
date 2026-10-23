@@ -98,6 +98,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.setDeprecationFlag",
   "process.setEmitWarning",
   "punycode.warn",
+  // DEP0005 for the deprecated Buffer constructor.
+  "buffer.deprecation",
   "timers.immediatePromise",
   // The performance timeline (scr_perf.c, linked with this unit for its
   // MaxPerformanceEntryBufferExceededWarning).
@@ -358,6 +360,10 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.usingDispose",
   "dyn.usingMethod",
   "util.isDeepStrictEqual",
+  // The Buffer function value's Symbol(kIsEncodingSymbol) member
+  "buffer.constructor",
+  "buffer.staticValue",
+  "buffer.prototypeMember",
 ]);
 
 /** Entry points that link the querystring unit. */
@@ -839,6 +845,7 @@ const RUNTIME_FEATURE_RULES = {
       ...UTIL_CALLABLE_LIB_FNS,
       ...BUILTIN_CLASS_LIB_FNS,
       "util.promisifyDyn",
+      "buffer.prototypeMember",
     ],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.
@@ -867,10 +874,22 @@ const RUNTIME_FEATURE_RULES = {
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
+    // Buffer.prototype members read as values dispatch to the same entries.
+    fns: ["buffer.prototypeMember"],
     expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_METHODS.has(node.method),
   }),
   /** Builtin functions read as values (scr_builtin_values.c). */
-  builtinValues: rule({ fns: ["buffer.byteLenValue", "buffer.allocValue", "fs.realpathValue"] }),
+  builtinValues: rule({
+    fns: [
+      "buffer.byteLenValue",
+      "buffer.allocValue",
+      "fs.realpathValue",
+      "buffer.constructor",
+      "buffer.installValue",
+      "buffer.staticValue",
+      "buffer.prototypeMember",
+    ],
+  }),
   /** The stream unit emits through the emitter unit, also when the
    * program constructs no stream (a pipeline of functions). */
   /** scr_ecdh.c over the mbedTLS archive; DEP0031 reports through the

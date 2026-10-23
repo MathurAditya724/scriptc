@@ -46,7 +46,6 @@ import {
   DATE_T,
   DYN,
   F64,
-  bytesOf,
   type IrClassDef,
   type IrExpr,
   type IrFunction,
@@ -115,8 +114,7 @@ import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
-import { knownBufEncoding, lowerNodeModulesBufferConstruct } from "./containers/bytes.js";
-import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
+import { knownBufEncoding, lowerBufferConstruct } from "./containers/bytes.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
 import {
@@ -9776,9 +9774,9 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
-  // A dependency's deprecated `new Buffer(...)` fallback (containers/bytes.ts).
+  // The deprecated `new Buffer(...)` (containers/bytes.ts).
   {
-    const buffer = lowerNodeModulesBufferConstruct(lowerer, expr);
+    const buffer = lowerBufferConstruct(lowerer, expr);
     if (buffer) return buffer;
   }
   // new Function(...): Node's EvalError under
@@ -10855,43 +10853,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // families carry pointed hints: each states WHY no honest static
     // lowering exists (or what to use instead).
     if (lowerer.isStdlibSymbol(symbol ?? undefined)) {
-      // The deprecated `new Buffer(string, encoding?)` ctor's string arm
-      // with a NON-STRING first argument and a string second: Node
-      // throws ERR_INVALID_ARG_TYPE synchronously (and DEP0005 never
-      // fires on this throwing path, so the compiled silence matches).
-      // Every other new Buffer form keeps the fence below — the
-      // constructing forms would owe the deprecation warning.
-      if (
-        expr.expression.text === "Buffer" &&
-        expr.arguments?.nodes.length === 2 &&
-        !expr.arguments.nodes.some(ts.isSpreadElement) &&
-        lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[0]!))?.kind !== "string" &&
-        lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "string"
-      ) {
-        const first = lowerer.lowerExpr(expr.arguments.nodes[0]!);
-        if (
-          first.kind === "unitLit" ||
-          first.type.kind === "dyn" ||
-          lowerer.dynConvertible(first.type)
-        ) {
-          const got: IrExpr =
-            first.type.kind === "dyn" ? first : { kind: "dynFrom", value: first, type: DYN, loc };
-          // The encoding argument still evaluates in Node before the
-          // throw only via the ctor body's later reads — it does NOT
-          // observe it before throwing, so dropping it is exact for
-          // effect-free operands; effectful ones keep the fence.
-          const enc = lowerer.lowerExpr(expr.arguments.nodes[1]!);
-          if (enc.kind === "strLit" || isSafeToRepeat(enc)) {
-            return {
-              kind: "libCall",
-              fn: "buffer.newStringFail",
-              args: [got],
-              type: bytesOf("u8"),
-              loc,
-            };
-          }
-        }
-      }
       const ctorHints: Record<string, string | undefined> = {
         RegExp: "use a regex literal (/pattern/flags) — constructed regexes have no lowering",
         String:

@@ -948,6 +948,22 @@ void scr_punycode_warn(bool immediate, bool report) {
   scr_str_release(message);
 }
 
+void scr_buffer_deprecation(void) {
+  /* Node's showFlaggedDeprecation: after 10000 calls the check stops. */
+  if (scr_buffer_ctor_warned || ++scr_buffer_ctor_checks > 10000) return;
+  static const char text[] =
+      "Buffer() is deprecated due to security and usability issues. Please use the "
+      "Buffer.alloc(), Buffer.allocUnsafe(), or Buffer.from() methods instead.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0005", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred(w);
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+  scr_buffer_ctor_warned = true;
+}
+
 /* The console members' warnings. Node's emitWarning emits on
  * process.nextTick, so these queue in order and each rides one raw tick
  * on the shared tick queue; any left at exit are dropped with it. */

@@ -3445,6 +3445,9 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     return ts.symbolName(resolved) === "global" ? "globalThis" : ts.symbolName(resolved);
   }
   if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
+    // The buffer module's Buffer (`require("buffer").Buffer`, `buffer_1.Buffer`)
+    // is the global constructor.
+    if (bufferNamespaceMember(lowerer, expr)) return "Buffer";
     if (stdlibGlobalNameOf(lowerer, expr.expression) !== "globalThis") return null;
     // Through a detection chain the checker types the receiver as the
     // union of every arm; the selected arm (the global object) owns the

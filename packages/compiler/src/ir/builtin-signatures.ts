@@ -2988,6 +2988,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** poolFromDyn that also copies an array crossing by reference. */
   "buffer.poolFromDynRef": { argTypes: [DYN, STRING], result: BYTES_U8 },
   "buffer.poolFromDynOffset": { argTypes: [DYN, DYN], result: BYTES_U8 },
+  /** Buffer.from(value, byteOffset, length): an ArrayBuffer's range with
+   * Node's fromArrayBuffer checks; other values as poolFromDynOffset. */
+  "buffer.poolFromDynRange": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
   "buffer.poolSize": { argTypes: [], result: F64 },
   "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
@@ -3022,6 +3025,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * always throws Node's ERR_INVALID_ARG_TYPE ("The \"string\" argument
    * must be of type string. Received ..."). Borrowed dyn; may-throw. */
   "buffer.newStringFail": { argTypes: [DYN], result: BYTES_U8 },
+  "buffer.deprecation": { argTypes: [], result: VOID },
+  "buffer.deprecationCount": { argTypes: [], result: VOID },
+  "buffer.constructor": { argTypes: [], result: DYN },
+  "buffer.installValue": { argTypes: [], result: VOID },
+  "buffer.staticValue": { argTypes: [STRING], result: DYN },
+  "buffer.prototypeMember": { argTypes: [DYN], result: DYN },
   /** fs._toUnixTimestamp(time) over a dyn value: numeric strings and
    * finite numbers coerce (negatives answer now/1000, Node's shape);
    * everything else throws Node's ERR_INVALID_ARG_TYPE. May-throw. */

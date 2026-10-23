@@ -829,12 +829,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromDyn",
   "buffer.poolFromDynRef",
   "buffer.poolFromDynOffset",
+  "buffer.poolFromDynRange",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",
   "bytes.equalsChk",
   "bytes.compareChk",
   "buffer.newStringFail",
+  // Inherited and symbol-keyed Buffer.prototype members throw SC2020.
+  "buffer.prototypeMember",
   "fs.toUnixTimestamp",
   "fs.existsChk",
   "fs.mkdtempChk",
