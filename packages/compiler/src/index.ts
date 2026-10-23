@@ -133,6 +133,7 @@ import { moduleRuntimeFeatures } from "./ir/runtime-features.js";
 import { serializeModuleParts } from "./ir/serialize.js";
 import { readTextParts, writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
+import { compilerOwnedFileRoots } from "./frontend/dts-paths.js";
 import { loadProgram } from "./frontend/program-node.js";
 import { runFrontend, type FrontendFactory } from "./frontend/pipeline.js";
 import {
@@ -620,6 +621,7 @@ async function compileExecutableNative(
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
+    ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
@@ -829,7 +831,7 @@ async function prepareExecutableInput(
 
   if (outputKind === "ir") {
     await mkdir(dirname(opts.outPath), { recursive: true });
-    await writeTextParts(opts.outPath, serializeModuleParts(mod));
+    await writeTextParts(opts.outPath, serializeModuleParts(mod, compilerOwnedFileRoots()));
     return { ok: true, artifact: { kind: "ir", path: opts.outPath } };
   }
 
@@ -929,7 +931,7 @@ async function prepareExecutableInput(
   if (opts.emitIr) {
     irPath = defaultSourcePaths.ir;
     irSourcePath = privateSiblingPath(irPath, "ir");
-    await writeTextParts(irSourcePath, serializeModuleParts(mod));
+    await writeTextParts(irSourcePath, serializeModuleParts(mod, compilerOwnedFileRoots()));
   }
 
   const nativeFeatures = executableNativeFeatures(mod, backend, opts.optimization ?? "release");
@@ -2047,7 +2049,7 @@ async function emitSemanticLibraryHit(
   let irPath: string | undefined;
   if (opts.emitIr) {
     irPath = join(opts.outDir, `${stem}.lib.ir.json`);
-    await writeTextParts(irPath, serializeModuleParts(mod));
+    await writeTextParts(irPath, serializeModuleParts(mod, compilerOwnedFileRoots()));
   }
   await compileLibraryNative(profile, llvmPath, archivePath, opts.sanitize ?? false, hit.native);
   timing("native-archive");
@@ -2333,7 +2335,7 @@ async function compileLibraryTracked(
   let irPath: string | undefined;
   if (opts.emitIr) {
     irPath = join(opts.outDir, `${stem}.lib.ir.json`);
-    await writeTextParts(irPath, serializeModuleParts(mod));
+    await writeTextParts(irPath, serializeModuleParts(mod, compilerOwnedFileRoots()));
   }
 
   const nativeFeatures = libraryNativeFeatures(mod, profile.emission);
