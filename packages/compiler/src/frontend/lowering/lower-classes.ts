@@ -6738,8 +6738,10 @@ function staticCallOn(
  * evaluated (and, for apply, after the argument list is read). The boxed
  * class value's call path throws exactly that. Neither expando statics nor
  * writes through untyped values can give a class an own `call` or `apply`.
- * The receiver must be one the caller does not evaluate again (a name,
- * `this`, or a namespace member). Null otherwise. */
+ * A receiver that may hold a subclass at run time (a class value, `this` in
+ * a static method) needs every subclass to lack such a static too. The
+ * receiver must be one the caller does not evaluate again (a name, `this`,
+ * or a namespace member). Null otherwise. */
 function classConstructorCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -6757,6 +6759,9 @@ function classConstructorCall(
     info.builtinStream ||
     info.builtinEventTarget ||
     info.runtimeStatics?.length ||
+    declaresStaticAbove(info, name) ||
+    (exactClassOfReceiver(lowerer, receiver) !== info &&
+      info.subclasses.some((subclass) => declaresStaticBelow(subclass, name))) ||
     call.arguments.nodes.some(ts.isSpreadElement) ||
     !(
       ts.isIdentifier(receiver) ||
@@ -6774,6 +6779,39 @@ function classConstructorCall(
     type: DYN,
     loc: locOf(call),
   };
+}
+
+/** Whether `info`'s declaration has a static member that may be named `name`
+ * (a method, field or accessor of that name, or a computed name), or `info`
+ * has no declaration to tell. */
+function declaresStatic(info: ClassInfo, name: string): boolean {
+  if (!info.decl) return true;
+  return info.decl.members.nodes.some(
+    (member) =>
+      member.name !== undefined &&
+      ts.canHaveModifiers(member) &&
+      ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ===
+        true &&
+      (ts.isComputedPropertyName(member.name) ||
+        ((ts.isIdentifier(member.name) || ts.isStringLiteral(member.name)) &&
+          member.name.text === name)),
+  );
+}
+
+/** declaresStatic over `info` and its bases, which it inherits statics from. */
+function declaresStaticAbove(info: ClassInfo, name: string): boolean {
+  for (let c: ClassInfo | null = info; c; c = c.base) if (declaresStatic(c, name)) return true;
+  return false;
+}
+
+/** declaresStatic over `info` and its subclasses, or runtime statics, which a
+ * function-local JavaScript class defines at run time. */
+function declaresStaticBelow(info: ClassInfo, name: string): boolean {
+  return (
+    declaresStatic(info, name) ||
+    !!info.runtimeStatics?.length ||
+    info.subclasses.some((subclass) => declaresStaticBelow(subclass, name))
+  );
 }
 
 /** `C.m(...)` where `m` is a static method that a function-local
