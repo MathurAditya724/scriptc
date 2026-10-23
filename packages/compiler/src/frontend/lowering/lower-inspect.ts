@@ -35,6 +35,7 @@ import {
   canConvertToDyn,
   canDynCheckTo,
   funcOf,
+  arrayOf,
   CLASS_FIELD_ATTRIBUTES_PREFIX,
   classDynViewSupported,
   DYN_CLASS_PROPERTIES,
@@ -3205,7 +3206,8 @@ export function lowerFormatCall(
 
   if (!firstIsLiteral) {
     const runtime = argNodes.length > 1 ? runtimeFormatString(lowerer, first) : null;
-    if (runtime === "other") return lowerRuntimeFormat(lowerer, argNodes, loc);
+    if (runtime === "other" && !formatStringConverts(lowerer, first))
+      return lowerRuntimeFormat(lowerer, argNodes, loc);
     if (runtime !== null) {
       // A string that substitutes formats at run time; any other string
       // joins with the remaining arguments, as below.
@@ -3576,6 +3578,14 @@ function runtimeFenceValue(
   };
 }
 
+/** Whether the held-argument form can test a format string whose type
+ * only may hold a string: a union that converts to a checked-dynamic value,
+ * or a value whose checker type does not map (its lowered type decides). */
+export function formatStringConverts(lowerer: Lowerer, first: ts.Expression): boolean {
+  const t = lowerer.mapTypeOf(lowerer.typeOf(first));
+  return t === null || t.kind === "dyn" || lowerer.dynConvertible(t);
+}
+
 /** How a non-literal format string is known: "string" and "dyn" values
  * test for a substitution at run time, "other" types (unions with a string
  * arm) format at run time, and null types never hold a string. */
@@ -3673,14 +3683,10 @@ export function heldFormatArgs(
         "util.format of a void call result (call it as its own statement, then pass undefined)",
       );
     }
-    if (value.type.kind !== "dyn" && !lowerer.dynConvertible(value.type)) {
-      // JavaScript keeps the space-joined branch, which printed these
-      // values before, and refuses only a string that substitutes.
-      if (!isJsSourceFile(ts.getSourceFileOfNode(node))) {
-        lowerer.noLowering(unconvertibleSurface(value.type), node, UNCONVERTIBLE_HINT);
-      }
+    // The space-joined branch prints these values as before; only a string
+    // that substitutes refuses them, where it runs.
+    if (value.type.kind !== "dyn" && !lowerer.dynConvertible(value.type))
       unconvertible ??= { node, type: value.type };
-    }
     // Unit values have no local: their effects run here and a literal
     // stands in.
     const k = value.type.kind;
@@ -3694,16 +3700,20 @@ export function heldFormatArgs(
     return { node, ref: () => varRef(held.id, value.type, loc) };
   });
   const first = args[0]!.ref();
+  // A lowered value that is neither a string nor convertible holds no
+  // string, so it never substitutes.
   const specifies: IrExpr =
     first.type.kind === "string"
       ? { kind: "libCall", fn: "insp.formatSpecifies", args: [first], type: BOOL, loc }
-      : {
-          kind: "libCall",
-          fn: "insp.formatSpecifiesDyn",
-          args: [lowerer.coerceToExpected(first, DYN)],
-          type: BOOL,
-          loc,
-        };
+      : first.type.kind === "dyn" || lowerer.dynConvertible(first.type)
+        ? {
+            kind: "libCall",
+            fn: "insp.formatSpecifiesDyn",
+            args: [lowerer.coerceToExpected(first, DYN)],
+            type: BOOL,
+            loc,
+          }
+        : { kind: "boolLit", value: false, type: BOOL, loc };
   const format = (): IrExpr => {
     if (unconvertible !== null) {
       const fenced = unconvertible;
@@ -3725,14 +3735,18 @@ export function heldFormatArgs(
       t.kind === "undefinedT" ||
       t.kind === "nullT" ||
       (t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms.every(primitive) ?? false));
+    // A native list of the checked values: converting into it is a tier
+    // boundary, so the statement stays static.
     return {
       kind: "libCall",
-      fn: args.every((arg) => primitive(arg.ref().type)) ? "insp.formatPrimitives" : "insp.format",
+      fn: args.every((arg) => primitive(arg.ref().type))
+        ? "insp.formatPrimitives"
+        : "insp.formatList",
       args: [
         {
-          kind: "dynArrLit",
+          kind: "arrayLit",
           elems: args.map((arg) => lowerer.coerceToExpected(arg.ref(), DYN)),
-          type: DYN,
+          type: arrayOf(DYN),
           loc,
         },
       ],
@@ -3748,6 +3762,11 @@ export function heldFormatArgs(
     if (t.kind === "bytes") return true;
     return inspectSupport(lowerer, t, new Set(), { recursive: false }) === null;
   });
+  // Without a joined branch every call formats: TypeScript refuses the
+  // value at compile time.
+  const refused = unconvertible as { node: ts.Expression; type: IrType } | null;
+  if (!joinable && refused !== null && !isJsSourceFile(ts.getSourceFileOfNode(refused.node)))
+    lowerer.noLowering(unconvertibleSurface(refused.type), refused.node, UNCONVERTIBLE_HINT);
   return { stmts, args, specifies, format, joinable };
 }
 

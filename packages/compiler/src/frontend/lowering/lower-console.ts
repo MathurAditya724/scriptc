@@ -21,6 +21,7 @@ import {
   lowerInspectValue,
   lowerRuntimeFormat,
   runtimeFormatString,
+  formatStringConverts,
 } from "./lower-inspect.js";
 import { streamSidesOf } from "./lower-stream.js";
 
@@ -372,7 +373,7 @@ export function lowerConsoleOutput(
     return consoleWrite(stdout, [lowerRuntimeFormat(lowerer, nodes, loc)], loc);
   const runtime =
     nodes.length > 1 && !isStringLiteralLike(first) ? runtimeFormatString(lowerer, first!) : null;
-  if (runtime === "other")
+  if (runtime === "other" && !formatStringConverts(lowerer, first!))
     return consoleWrite(stdout, [lowerRuntimeFormat(lowerer, nodes, loc)], loc);
   if (runtime !== null) {
     const held = heldFormatArgs(lowerer, nodes, loc);

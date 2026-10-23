@@ -183,6 +183,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The runtime formatter calls toString, valueOf and toJSON, and refuses
   // renderings it has no lowering for.
   "insp.format",
+  "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
   // The options object reads the caller's options (getters included), and

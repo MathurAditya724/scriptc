@@ -2575,11 +2575,21 @@ static ScrStr *insp_prim_number(ScrDyn *v, int spec) {
 static const InspFmtOps insp_fmt_primitive_ops = {insp_prim_s, insp_prim_j, insp_prim_number,
                                                   insp_prim_inspect};
 
-ScrStr *scr_insp_format_primitives(ScrDyn *pack) {
+/* A native list of checked values (the compiled format calls) as the
+ * runtime's argument pack. +1. */
+static ScrDyn *insp_list_pack(ScrArr *list) {
+  ScrDyn *pack = scr_dyn_new_arr();
+  for (uint32_t i = 0; i < list->len; i++) scr_dyn_arr_push(pack, scr_arr_get_ref(list, i));
+  return pack;
+}
+
+ScrStr *scr_insp_format_primitives(ScrArr *list) {
   ScrInspFormatOptions o;
   scr_insp_format_defaults(&o, "util.format");
-  if (pack->kind != SCR_DYN_ARR) return scr_str_new("", 0);
-  return insp_format_loop(pack->v.arr.items, pack->v.arr.len, &o, &insp_fmt_primitive_ops);
+  ScrDyn *pack = insp_list_pack(list);
+  ScrStr *out = insp_format_loop(pack->v.arr.items, pack->v.arr.len, &o, &insp_fmt_primitive_ops);
+  scr_dyn_release(pack);
+  return out;
 }
 
 /* The arguments of a dyn array pack (+1 text, or NULL pending). */
@@ -2592,6 +2602,13 @@ ScrStr *scr_insp_format_pack(ScrDyn *pack) {
   ScrInspFormatOptions o;
   scr_insp_format_defaults(&o, "util.format");
   return insp_fmt_pack(pack, &o);
+}
+
+ScrStr *scr_insp_format_list(ScrArr *list) {
+  ScrDyn *pack = insp_list_pack(list);
+  ScrStr *out = scr_insp_format_pack(pack);
+  scr_dyn_release(pack);
+  return out;
 }
 
 /* Whether a format string can substitute: a '%' before its last character.

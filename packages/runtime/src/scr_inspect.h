@@ -76,9 +76,13 @@ ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOpt
 /* util.format(...pack) and util.formatWithOptions(options, ...pack) over a
  * dyn array of the arguments (+1). */
 ScrStr *scr_insp_format_pack(ScrDyn *pack);
-/* util.format(...pack) when every argument is a string, number, boolean,
+/* util.format over a native list of checked values, the compiled calls'
+ * held arguments (+1). */
+struct ScrArr;
+ScrStr *scr_insp_format_list(struct ScrArr *list);
+/* scr_insp_format_list when every argument is a string, number, boolean,
  * null or undefined, without the checked-dynamic walk (+1). */
-ScrStr *scr_insp_format_primitives(ScrDyn *pack);
+ScrStr *scr_insp_format_primitives(struct ScrArr *list);
 ScrStr *scr_insp_format_with_options(ScrDyn *options, ScrDyn *pack);
 /* util.inspect(value, options, depth, colors) over checked-dynamic
  * arguments with Node's legacy-argument rules; argc is the call's

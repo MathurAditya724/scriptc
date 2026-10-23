@@ -1036,6 +1036,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.dynS": "scr_insp_dyn_s",
   "insp.format": "scr_insp_format_pack",
   "insp.formatPrimitives": "scr_insp_format_primitives",
+  "insp.formatList": "scr_insp_format_list",
   "insp.formatWithOptions": "scr_insp_format_with_options",
   "insp.inspect": "scr_insp_inspect",
   "insp.customEnabled": "scr_insp_custom_enabled",

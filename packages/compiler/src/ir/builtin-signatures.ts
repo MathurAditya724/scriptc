@@ -4376,7 +4376,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.format": { argTypes: [DYN], result: STRING },
   /** insp.format over arguments that are all strings, numbers, booleans,
    * null or undefined, without the checked-dynamic walk. */
-  "insp.formatPrimitives": { argTypes: [DYN], result: STRING },
+  "insp.formatPrimitives": { argTypes: [arrayOf(DYN)], result: STRING },
+  "insp.formatList": { argTypes: [arrayOf(DYN)], result: STRING },
   "insp.formatWithOptions": { argTypes: [DYN, DYN], result: STRING },
   /** util.inspect(value, options, depth, colors) with the call's argument
    * count: the runtime reads the options and renders the checked-dynamic
