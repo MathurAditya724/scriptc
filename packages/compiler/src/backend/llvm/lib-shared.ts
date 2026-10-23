@@ -896,6 +896,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // ambient-this read never throw. The fs dyn read is the sync-fs story.
   "fetch.start": "scr_fetch_static",
   "fetch.responseNew": "scr_fetch_response_new",
+  "fetch.responseLight": "scr_fetch_response_light",
   "fetch.responseJsonStatic": "scr_fetch_response_json_static",
   "fetch.input": "scr_fetch_input",
   "abort.controllerNew": "scr_fetch_abort_controller_new",
@@ -1322,6 +1323,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqPipeClient": "scr_http_req_pipe_client",
   "http.reqPipeSock": "scr_http_req_pipe_sock",
   "http.reqResume": "scr_http_req_resume",
+  "http.reqPause": "scr_http_req_pause",
   "http.reqDestroy": "scr_http_req_destroy",
   "http.reqSetEncoding": "scr_http_req_set_encoding",
   "http.resSetHeader": "scr_http_res_set_header",
