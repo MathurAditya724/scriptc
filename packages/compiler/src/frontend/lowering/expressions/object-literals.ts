@@ -37,6 +37,7 @@ import { fenceSymbolFieldCopy } from "../symbol-fields.js";
 import { planUnionRetag } from "../union-retag.js";
 import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
 import { builtinGlobalValue } from "./property-access.js";
+import { holdsEvolvingArray } from "../lower-stmts.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -397,7 +398,10 @@ export function lowerDynObjectLiteral(
           ? lowerer.lowerLambda(prop, true)
           : ts.isShorthandPropertyAssignment(prop) && shorthandBuiltinValue(lowerer, prop)
             ? shorthandBuiltinValue(lowerer, prop)!
-            : !boxValue && ts.isObjectLiteralExpression(valueExpr)
+            : !boxValue &&
+                (ts.isObjectLiteralExpression(valueExpr) ||
+                  (ts.isArrayLiteralExpression(valueExpr) &&
+                    holdsEvolvingArray(lowerer, valueExpr)))
               ? lowerer.lowerExprExpecting(valueExpr, DYN)
               : lowerer.lowerExpr(valueExpr as ts.Expression);
       raw = fenceClosureProbe(lowerer, valueExpr, undefined, lowerValue) ?? lowerValue();
@@ -2141,7 +2145,12 @@ export function lowerObjectLiteral(
       orderSegments.push(
         srcLowered.type.kind === "dyn"
           ? { kind: "opaque" }
-          : { kind: "spread", shapeId: srcType.shapeId, maybeAbsent: false },
+          : {
+              kind: "spread",
+              shapeId: srcType.shapeId,
+              maybeAbsent: false,
+              ...(srcLowered.kind === "varRef" ? { value: srcLowered } : {}),
+            },
       );
       for (const f of srcShape.fields) {
         if (laterNames.has(f.name)) continue;

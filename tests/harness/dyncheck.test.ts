@@ -525,6 +525,42 @@ box("box child array", '{"value":1,"rest":null,"child":[]}');
     ]);
   });
 
+  test("nested unions: a value a getter returns while building is matched in full", async () => {
+    // The getter answers a valid node while the arm matches and a wrong one
+    // while it builds. The builder matches the second answer in full, so the
+    // failure names the union that holds it, as without the arm's match.
+    const r = await compileAndRun(
+      "deep-discriminated-getter",
+      `type Expr =
+  | { kind: "num"; value: number }
+  | { kind: "str"; text: string }
+  | { kind: "neg"; operand: Expr }
+  | { kind: "add"; left: Expr; right: Expr };
+const v = JSON.parse('{"kind":"neg"}') as unknown;
+let calls = 0;
+Object.defineProperty(v, "operand", {
+  enumerable: true,
+  get() {
+    calls++;
+    return calls === 1 ? JSON.parse('{"kind":"num","value":1}') : JSON.parse('{"kind":"num","value":"x"}');
+  },
+});
+try {
+  const e = v as Expr;
+  console.log("ok", JSON.stringify(e));
+} catch (err) {
+  console.log((err as Error).message);
+}
+console.log("getter calls", calls);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trimEnd().split("\n")).toEqual([
+      "expected object | object | object | object at $.operand, got object",
+      "getter calls 2",
+    ]);
+  });
+
   test("array where a record is expected names the mismatch at the root", async () => {
     const r = await compileAndRun(
       "root-kind",

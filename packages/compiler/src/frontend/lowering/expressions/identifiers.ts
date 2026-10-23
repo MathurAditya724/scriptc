@@ -1,4 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
+import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
 import * as ts from "../../ts7/adapter.js";
@@ -859,7 +860,27 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // reach here — their hooks claim the property/new forms first).
   {
     const sym = lowerer.resolveValueSymbol(expr);
-    const classInfo = sym ? lowerer.classBySymbol.get(sym) : undefined;
+    let classInfo = sym ? lowerer.classBySymbol.get(sym) : undefined;
+    // A class local to a function lowered once per instantiation
+    // (`$constructor` called with different argument types) registers per
+    // instance under the same symbol: a hoisted function of a later
+    // instance, lowered before its own class statement, must not reach the
+    // class an earlier instance collected.
+    const declaration = sym?.valueDeclaration;
+    if (
+      classInfo &&
+      lowerer.localClassInstantiations.length > 0 &&
+      declaration &&
+      ts.isClassDeclaration(declaration) &&
+      lowerer.classNamer(declaration) !== classInfo.def.name
+    )
+      classInfo = undefined;
+    // A local class referenced from a function hoisted above its statement:
+    // its TDZ box, holding the class as a checked-dynamic constructor.
+    if (!classInfo && sym && predeclareForwardClass(lowerer, sym)) {
+      const local = lowerer.resolveLocal(expr);
+      if (local) return { kind: "varRef", localId: local.id, type: local.type, loc };
+    }
     // A GENERIC class name whose CONTEXTUAL type pins one instantiation
     // (`const B: new (v: string) => Counter<string> = Counter`): the
     // value is that instantiation's class object — the generic-fn
