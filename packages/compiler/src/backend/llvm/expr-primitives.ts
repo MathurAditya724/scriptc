@@ -16,6 +16,7 @@ import {
   int32Number,
   integerNumber,
   narrowInteger,
+  wideArithmetic,
   widenInteger,
 } from "./integer-values.js";
 import {
@@ -337,7 +338,14 @@ export function emitOperatorExpr(
         if (arith[e.op] !== undefined) {
           B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
           const uint32 = emitWrappingSum(host, e, l, r, li, ri);
-          if (uint32 !== undefined) return { name: t, type: e.type, uint32 };
+          // The exact integer beside the double, for index consumers.
+          const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
+          if (uint32 !== undefined || wideInteger) {
+            const value: LlValue = { name: t, type: e.type };
+            if (uint32 !== undefined) value.uint32 = uint32;
+            if (wideInteger) value.wideInteger = wideInteger;
+            return value;
+          }
         } else B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
       } else if (bit[e.op] !== undefined) {
         if (e.left.type.kind !== "f64" || e.right.type.kind !== "f64") {
