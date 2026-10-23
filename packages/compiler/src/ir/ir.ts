@@ -4412,7 +4412,8 @@ function canBoxDynCompositeAt(
     case "record": {
       const shape = getRecord(t.shapeId);
       if (!shape) return false;
-      if (recordTextCodecClass(shape) !== null) return false;
+      // A codec boxes as its own handle wherever it sits (toDynHelper).
+      if (recordTextCodecClass(shape) !== null) return true;
       // Recursive shapes answer coinductively, like isJsonSafeType.
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);
