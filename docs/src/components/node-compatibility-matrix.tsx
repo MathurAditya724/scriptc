@@ -55,27 +55,34 @@ const stabilityStyles: Record<number, string> = {
 
 /** A badge's tooltip, mounted only while the badge is hovered or has
  * keyboard focus (the :focus-visible rule the CSS-only tooltip used), and
- * named by aria-describedby while open. Escape dismisses it. */
+ * named by aria-describedby while open. Hover and focus are tracked apart,
+ * so moving the pointer away keeps a keyboard-focused badge's tooltip.
+ * Escape dismisses it until the next hover or focus. */
 function BadgeTooltip({ tooltipClass, children, badge }: { tooltipClass: string; children: ReactNode; badge: ReactNode }) {
-  const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const open = hovered || focused;
   const id = useId();
-  const show = useCallback(() => setOpen(true), []);
-  const hide = useCallback(() => setOpen(false), []);
+  const enter = useCallback(() => setHovered(true), []);
+  const leave = useCallback(() => setHovered(false), []);
   const focus = useCallback((event: FocusEvent<HTMLSpanElement>) => {
-    if (event.currentTarget.matches(":focus-visible")) setOpen(true);
+    if (event.currentTarget.matches(":focus-visible")) setFocused(true);
   }, []);
+  const blur = useCallback(() => setFocused(false), []);
   const key = useCallback((event: KeyboardEvent<HTMLSpanElement>) => {
-    if (event.key === "Escape") setOpen(false);
+    if (event.key !== "Escape") return;
+    setHovered(false);
+    setFocused(false);
   }, []);
   return (
     <span
       className="relative inline-flex"
       tabIndex={0}
       aria-describedby={open ? id : undefined}
-      onMouseEnter={show}
-      onMouseLeave={hide}
+      onMouseEnter={enter}
+      onMouseLeave={leave}
       onFocus={focus}
-      onBlur={hide}
+      onBlur={blur}
       onKeyDown={key}
     >
       {badge}
