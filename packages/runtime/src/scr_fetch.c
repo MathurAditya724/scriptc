@@ -713,7 +713,8 @@ static ScrDyn *sf_signal_get(void *ptr, const char *key, size_t len) {
                       : scr_dyn_retain(scr_dyn_undefined());
   }
   if (sf_name(key, len, "onabort")) return scr_et_handler_get(&s->core, "abort");
-  return NULL;
+  /* Inherited from EventTarget: the function every target shares. */
+  return scr_event_target_method_value(key, len);
 }
 
 static bool sf_signal_set(void *ptr, const char *key, size_t len,
@@ -5496,13 +5497,10 @@ static bool sf_no_set(void *ptr, const char *key, size_t len,
 }
 
 /* The members invoke answers, as values (ScrDynHandleMethod), with Node's
- * lengths and the brand check each one runs on another receiver. */
+ * lengths and the brand check each one runs on another receiver. The
+ * signal's EventTarget methods are EventTarget's own (sf_signal_get). */
 static const ScrDynHandleMethod sf_signal_methods[] = {
-    {"throwIfAborted", 0, false,
-     "Value of \"this\" must be of type AbortSignal"},
-    {"addEventListener", 2, false},
-    {"removeEventListener", 2, false}, {"dispatchEvent", 1, false},
-    {NULL, 0, false}};
+    {"throwIfAborted", 0, false}, {NULL, 0, false}};
 static const ScrDynHandleMethod sf_stream_methods[] = {
     {"cancel", 0, true}, {"getReader", 0, false}, {NULL, 0, false}};
 static const ScrDynHandleMethod sf_reader_methods[] = {
@@ -5529,7 +5527,7 @@ static const ScrDynHandleOps sf_signal_ops = {
     "AbortSignal", &sf_signal_retain_v, &sf_signal_release_v,
     &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL,
     .methods = sf_signal_methods,
-    .invalid_this = "Value of \"this\" must be of type EventTarget"};
+    .invalid_this = "Value of \"this\" must be of type AbortSignal"};
 static const ScrDynHandleOps sf_abort_controller_ops = {
     "AbortController", &sf_signal_retain_v, &sf_signal_release_v,
     &sf_abort_controller_invoke, &sf_abort_controller_get, &sf_no_set, NULL};
@@ -5613,16 +5611,12 @@ static bool sf_no_set(void *ptr, const char *key, size_t len, const ScrDyn *valu
   return false;
 }
 static const ScrDynHandleMethod sf_signal_methods[] = {
-    {"throwIfAborted", 0, false,
-     "Value of \"this\" must be of type AbortSignal"},
-    {"addEventListener", 2, false},
-    {"removeEventListener", 2, false}, {"dispatchEvent", 1, false},
-    {NULL, 0, false}};
+    {"throwIfAborted", 0, false}, {NULL, 0, false}};
 static const ScrDynHandleOps sf_signal_ops = {
   "AbortSignal", &sf_signal_retain_v, &sf_signal_release_v,
   &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL,
   .methods = sf_signal_methods,
-  .invalid_this = "Value of \"this\" must be of type EventTarget" };
+  .invalid_this = "Value of \"this\" must be of type AbortSignal" };
 static const ScrDynHandleOps sf_abort_controller_ops = {
   "AbortController", &sf_signal_retain_v, &sf_signal_release_v,
   &sf_abort_controller_invoke, &sf_abort_controller_get, &sf_no_set, NULL };

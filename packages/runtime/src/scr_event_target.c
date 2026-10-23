@@ -1054,6 +1054,10 @@ static ScrDyn *scr_et_method_value(const char *key, size_t len, bool target) {
   return NULL;
 }
 
+ScrDyn *scr_event_target_method_value(const char *key, size_t len) {
+  return scr_et_method_value(key, len, true);
+}
+
 static ScrDyn *scr_event_target_value(const ScrEvent *ev) {
   return ev->target ? scr_dyn_retain(ev->target) : scr_dyn_new_null();
 }

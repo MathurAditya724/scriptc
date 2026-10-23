@@ -85,6 +85,22 @@ async function receivers() {
   } catch (e) {
     report("foreign addEventListener", e);
   }
+  // The signal's EventTarget methods are EventTarget's own: one function
+  // shared with every target, which runs on any EventTarget receiver.
+  const target = untyped(new EventTarget());
+  const add = signal.s.addEventListener;
+  console.log(add === target.addEventListener, signal.s.dispatchEvent === target.dispatchEvent);
+  console.log(add.name, add.length, "addEventListener" in signal.s, "throwIfAborted" in target);
+  const heard = (event) => console.log("heard", event.type, event.target === target);
+  add.call(target, "ping", heard);
+  console.log(signal.s.dispatchEvent.call(target, new Event("ping")));
+  signal.s.removeEventListener.call(target, "ping", heard);
+  target.dispatchEvent(new Event("ping"));
+  try {
+    throwIfAborted.call(target);
+  } catch (e) {
+    report("target throwIfAborted", e);
+  }
 }
 
 async function streams() {
