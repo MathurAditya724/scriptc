@@ -46,6 +46,10 @@ export class PublishedTypes {
   readonly records = new Set<string>();
   /** typeKeys of array, map and set types. */
   readonly containers = new Set<string>();
+  /** typeKeys of the array types the program may freeze
+   * (IrModule.freezableArrays): a frozen array refuses writes like a
+   * published one, so their stores carry the same guard. */
+  readonly frozenArrays = new Set<string>();
   /** Constructor stores into a `this` nothing else can reach yet
    * (immutability.ts): never a published target, so never guarded. */
   privateStores: ReadonlySet<IrStmt> = new Set();
@@ -64,10 +68,16 @@ export class PublishedTypes {
   }
 
   containerGuarded(t: IrType): boolean {
-    return (
-      (t.kind === "array" || t.kind === "map" || t.kind === "set") &&
-      this.containers.has(typeKey(t))
-    );
+    if (t.kind !== "array" && t.kind !== "map" && t.kind !== "set") return false;
+    const key = typeKey(t);
+    return this.containers.has(key) || this.frozenArrays.has(key);
+  }
+
+  /** Whether an array of type `t` may be published, and whether it may be
+   * frozen: the two states its write guard tests. */
+  arrayGuards(t: IrType): { published: boolean; frozen: boolean } {
+    const key = typeKey(t);
+    return { published: this.containers.has(key), frozen: this.frozenArrays.has(key) };
   }
 }
 
@@ -82,7 +92,13 @@ export function computePublishedTypes(mod: IrModule): PublishedTypes | null {
   };
   for (const fn of mod.functions)
     everyStmtList(fn.body, { expr: visit, stmt: (_s: IrStmt) => true });
-  if (roots.length === 0) return null;
+  const frozenArrays = mod.freezableArrays ?? [];
+  if (roots.length === 0 && frozenArrays.length === 0) return null;
+  if (roots.length === 0) {
+    const frozen = new PublishedTypes();
+    for (const key of frozenArrays) frozen.frozenArrays.add(key);
+    return frozen;
+  }
 
   const classes = new Map((mod.classes ?? []).map((c) => [c.name, c]));
   const children = new Map<string, string[]>();
@@ -95,6 +111,7 @@ export function computePublishedTypes(mod: IrModule): PublishedTypes | null {
   const records = new Map((mod.records ?? []).map((r) => [r.id, r]));
   const unions = new Map((mod.unions ?? []).map((u) => [u.id, u]));
   const out = new PublishedTypes();
+  for (const key of frozenArrays) out.frozenArrays.add(key);
   out.privateStores = computeConstructionFacts(mod).privateStores;
   const seen = new Set<string>();
   const stack = [...roots];

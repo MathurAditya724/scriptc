@@ -743,12 +743,14 @@ void scr_pub_dyn_fn(void *v, ScrPub *ctx);
 void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem);
 void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val);
 void scr_publish_refuse(const char *message);
-/* Writes into published objects (emitted guards): Node's frozen-object
- * TypeErrors. scr_throw_published_array answers false (and throws nothing)
- * when Node's operation would not write the array. */
+/* Writes into published or frozen objects (emitted guards): Node's
+ * frozen-object TypeErrors. The array guards answer false (and throw
+ * nothing) when Node's operation would not write the array; their ops are
+ * scr_array_frozen_error's (scr_array.h). */
 struct ScrArr;
 SCR_COLD void scr_throw_published_field(const char *prop, const char *owner);
 bool scr_throw_published_array(int op, const struct ScrArr *a, double index, double n);
+bool scr_throw_published_array_range(int op, const struct ScrArr *a, double x, double y, double z);
 SCR_COLD void scr_throw_published_collection(bool set);
 
 /* Young-in nursery (scr_cycle.c built with SCR_YIN, linked by programs

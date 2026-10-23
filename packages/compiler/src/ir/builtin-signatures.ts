@@ -283,6 +283,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * object's text in the message ("#<Object>") and the operation (0 assign,
    * 1 add, 2 delete). */
   "record.throwFrozen": { argTypes: [STRING, STRING, F64], result: VOID },
+  /** Object.freeze of an array (scr_arr_freeze): sets its frozen bit, which
+   * the write guards of IrModule.freezableArrays test, and isFrozen reads.
+   * The receiver is any array type. */
+  "array.freeze": { argTypes: [null], result: VOID },
+  "array.isFrozen": { argTypes: [null], result: BOOL },
+  /** Object.freeze, seal or preventExtensions of a Map or Set
+   * (scr_map_prevent_extensions), which only makes it not extensible: its
+   * entries stay writable. The receiver is any map or set type. */
+  "collection.preventExtensions": { argTypes: [null], result: VOID },
+  "collection.isExtensible": { argTypes: [null], result: BOOL },
   "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
   "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },

@@ -245,7 +245,7 @@ import {
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
 import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
 import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
-import { freezableRecordType, lowerRecordFreeze } from "./frozen-records.js";
+import { freezableRecordType, lowerNativeFreeze } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
@@ -8422,6 +8422,22 @@ function lowerObjectStaticCall(
       locOf(call),
     );
     if (fnIntegrity) return fnIntegrity;
+    // A Map or Set has no own properties: freeze, seal and preventExtensions
+    // all only make it not extensible.
+    if (value.type.kind === "map" || value.type.kind === "set") {
+      if (member === "preventExtensions" || member === "seal")
+        return lowerNativeFreeze(lowerer, "collection.preventExtensions", value, locOf(call));
+      const extensible: IrExpr = {
+        kind: "libCall",
+        fn: "collection.isExtensible",
+        args: [value],
+        type: BOOL,
+        loc: locOf(call),
+      };
+      return member === "isExtensible"
+        ? extensible
+        : { kind: "unary", op: "!", operand: extensible, type: BOOL, loc: locOf(call) };
+    }
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
@@ -8461,15 +8477,36 @@ function lowerObjectStaticCall(
   // reference would need a runtime frozen bit (strict mode throws).
   if (member === "isFrozen" && call.arguments.nodes.length === 1) {
     const argNode = call.arguments.nodes[0]!;
-    if (tryLowerExpression(lowerer, argNode)?.type.kind === "record") {
-      const record = lowerer.lowerExpr(argNode);
-      if (record.type.kind === "record")
+    const probedKind = tryLowerExpression(lowerer, argNode)?.type.kind;
+    if (
+      probedKind === "record" ||
+      probedKind === "array" ||
+      probedKind === "map" ||
+      probedKind === "set"
+    ) {
+      const native = lowerer.lowerExpr(argNode);
+      const loc = locOf(call);
+      if (native.type.kind === "record" || native.type.kind === "array")
         return {
           kind: "libCall",
-          fn: "record.isFrozen",
-          args: [record],
+          fn: native.type.kind === "record" ? "record.isFrozen" : "array.isFrozen",
+          args: [native],
           type: BOOL,
-          loc: locOf(call),
+          loc,
+        };
+      if (native.type.kind === "map" || native.type.kind === "set")
+        return {
+          kind: "unary",
+          op: "!",
+          operand: {
+            kind: "libCall",
+            fn: "collection.isExtensible",
+            args: [native],
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
         };
     }
     const value = lowerer.lowerExprExpecting(argNode, DYN);
@@ -8523,7 +8560,11 @@ function lowerObjectStaticCall(
     const integrity = lowerClassIntegrity(lowerer, call, "freeze", value);
     if (integrity) return integrity;
     if (freezableRecordType(lowerer, value.type))
-      return lowerRecordFreeze(lowerer, value, value.type, locOf(call));
+      return lowerNativeFreeze(lowerer, "record.freeze", value, locOf(call));
+    if (value.type.kind === "array")
+      return lowerNativeFreeze(lowerer, "array.freeze", value, locOf(call));
+    if (value.type.kind === "map" || value.type.kind === "set")
+      return lowerNativeFreeze(lowerer, "collection.preventExtensions", value, locOf(call));
     lowerer.noLowering(
       "Object.freeze of a possibly-aliased value",
       call,

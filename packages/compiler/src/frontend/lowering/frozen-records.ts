@@ -3,6 +3,7 @@ import {
   BOOL,
   VOID,
   shapeHasAccessorSlots,
+  typeKey,
   type IrExpr,
   type IrFunction,
   type IrStmt,
@@ -15,24 +16,31 @@ import type { Lowerer } from "./lowerer.js";
 import { recordHasOwnHelper } from "./lower-calls.js";
 import { isStrictCode } from "./strict-mode.js";
 
-/* Object.freeze of records that other references can still write. Only the
- * shapes a program may freeze pay for it: their values keep a frozen bit in
- * the rc word (scr_rc.h SCR_RC_FROZEN), their release ignores the bit, and
- * every write to them checks it first (guardFrozenRecordWrites). A shape is
+/* Object.freeze of records and arrays that other references can still
+ * write. Only the types a program may freeze pay for it. A record keeps its
+ * frozen bit in the rc word (scr_rc.h SCR_RC_FROZEN), which its release
+ * ignores, and every write to it checks the bit first
+ * (guardFrozenWrites). An array keeps it in its storage flags
+ * (scr_array.h SCR_ARR_FROZEN), which the backend's array write guards test
+ * for the array types the module lists (IrModule.freezableArrays). A type is
  * freezable when a static Object.freeze names it, or, in a program that
  * freezes untyped values, when a value of it or of a type reaching it can be
  * held as a live untyped reference. */
 
 type RecordType = Extract<IrType, { kind: "record" }>;
 type RecordWrite = Extract<IrStmt, { kind: "recordSet" | "recordKeySet" | "recordKeyDelete" }>;
+type FreezeFn = "record.freeze" | "array.freeze" | "collection.preventExtensions";
 
-/** Object.freeze of a record: sets its frozen bit and answers the record. */
-export function lowerRecordFreeze(
+/** Object.freeze of a record or an array, or Object.freeze, seal or
+ * preventExtensions of a Map or Set: `fn` sets the value's bit, and the
+ * call answers the value. */
+export function lowerNativeFreeze(
   lowerer: Lowerer,
+  fn: FreezeFn,
   target: IrExpr,
-  type: RecordType,
   loc: SrcLoc,
 ): IrExpr {
+  const type = target.type;
   const slot = lowerer.declareHiddenLocal("%freezeTarget", type);
   const receiver = (): IrExpr => varRef(slot.id, type, loc);
   return {
@@ -41,7 +49,7 @@ export function lowerRecordFreeze(
       { kind: "varDecl", localId: slot.id, init: target, loc },
       {
         kind: "exprStmt",
-        expr: { kind: "libCall", fn: "record.freeze", args: [receiver()], type: VOID, loc },
+        expr: { kind: "libCall", fn, args: [receiver()], type: VOID, loc },
         loc,
       },
     ],
@@ -92,9 +100,14 @@ function holdsAbsentState(e: IrExpr): boolean {
   return e.kind === "ternary" && (holdsAbsentState(e.then) || holdsAbsentState(e.else_));
 }
 
-/** The shapes whose values the program may freeze. */
-function freezableShapes(lowerer: Lowerer, functions: IrFunction[]): Set<string> {
+/** The record shapes and array types (typeKeys) whose values the program
+ * may freeze. */
+function freezableTypes(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+): { shapes: Set<string>; arrays: Set<string> } {
   const shapes = new Set<string>();
+  const arrays = new Set<string>();
   const live: IrType[] = [];
   let dynFreeze = false;
   for (const fn of functions)
@@ -103,13 +116,16 @@ function freezableShapes(lowerer: Lowerer, functions: IrFunction[]): Set<string>
         if (e.kind === "libCall" && e.fn === "record.freeze") {
           const target = e.args[0];
           if (target && target.type.kind === "record") shapes.add(target.type.shapeId);
+        } else if (e.kind === "libCall" && e.fn === "array.freeze") {
+          const target = e.args[0];
+          if (target && target.type.kind === "array") arrays.add(typeKey(target.type));
         } else if (e.kind === "libCall" && e.fn === "dyn.freeze") dynFreeze = true;
         else if (e.kind === "dynFrom") live.push(e.value.type);
         return true;
       },
       stmt: () => true,
     });
-  if (!dynFreeze) return shapes;
+  if (!dynFreeze) return { shapes, arrays };
   // An untyped reference to a class instance, or to a record or array
   // boxed live, reaches the values its fields and elements hold as further
   // live references. Class instances also cross into untyped code through
@@ -135,7 +151,14 @@ function freezableShapes(lowerer: Lowerer, functions: IrFunction[]): Set<string>
         seen.add(`union:${type.unionId}`);
         for (const arm of lowerer.unions.get(type.unionId)?.arms ?? []) stack.push(arm);
         break;
-      case "array":
+      case "array": {
+        const key = typeKey(type);
+        if (seen.has(key)) break;
+        seen.add(key);
+        arrays.add(key);
+        stack.push(type.elem);
+        break;
+      }
       case "set":
         stack.push(type.elem);
         break;
@@ -156,7 +179,7 @@ function freezableShapes(lowerer: Lowerer, functions: IrFunction[]): Set<string>
         break;
     }
   }
-  return shapes;
+  return { shapes, arrays };
 }
 
 /** The guarded form of a write to a freezable record: the receiver and the
@@ -186,15 +209,18 @@ function guardedWrite(
 }
 
 /** Checks the frozen bit before every write to a record of a freezable
- * shape. A write to a frozen record throws Node's TypeError in strict mode
- * code; in sloppy-mode code it leaves the record unchanged. Deleting a key
- * the record does not have succeeds either way. */
-export function guardFrozenRecordWrites(lowerer: Lowerer, functions: IrFunction[]): void {
-  const freezable = freezableShapes(lowerer, functions);
+ * shape, and lists the freezable array types, whose writes the backend
+ * guards (IrModule.freezableArrays). A write to a frozen record throws
+ * Node's TypeError in strict mode code; in sloppy-mode code it leaves the
+ * record unchanged. Deleting a key the record does not have succeeds either
+ * way. */
+export function guardFrozenWrites(lowerer: Lowerer, functions: IrFunction[]): void {
+  const { shapes: freezable, arrays } = freezableTypes(lowerer, functions);
   for (const id of freezable) {
     const shape = lowerer.shapes.get(id);
     if (shape) shape.freezable = true;
   }
+  for (const key of arrays) lowerer.freezableArrays.add(key);
   if (freezable.size === 0) return;
   const lifted = lowerer.liftedFns.length;
   for (const fn of functions) {

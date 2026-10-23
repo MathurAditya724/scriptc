@@ -1056,6 +1056,10 @@ export interface IrModule {
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
   threadSlotKeys?: string[];
+  /** typeKeys of the array types whose values the program may freeze
+   * (frontend frozen-records.ts): their writes test the array's frozen bit
+   * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
+  freezableArrays?: string[];
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
