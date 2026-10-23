@@ -59,7 +59,7 @@ export interface NativeExecutableInput {
 
 /** The two large artifacts follow the input metadata as separate members so
  * an entry can be written as parts instead of one JSON string; the stored
- * input carries empty placeholders (`""`, `null`) for them. */
+ * input carries empty placeholders (`[]`, `null`) for them. */
 interface FrontendCacheEntry {
   schema: "scriptc.native-frontend.v3";
   probes: FrontendInputSnapshot;
@@ -78,7 +78,7 @@ function* frontendCacheParts(
   const metadata = JSON.stringify({
     schema: "scriptc.native-frontend.v3",
     probes,
-    input: { ...input, llvm: "", ir: null },
+    input: { ...input, llvm: [], ir: null },
   });
   yield metadata.slice(0, metadata.length - 1) + ',"llvm":"';
   for (const part of joinedParts(input.llvm))
