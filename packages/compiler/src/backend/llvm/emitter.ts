@@ -90,6 +90,7 @@ import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
+import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
 import {
   findInt32Abis,
   INT32_ABI_SUFFIX,
@@ -497,7 +498,11 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
                   foldConstantGlobals(
                     copyStableCaptures(
                       resolveSelfCaptures(
-                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                        hoistFinalFieldReads(
+                          freezeInitOnlyGlobals(
+                            holdCharLocalsAsUnits(dropUnwrittenPropertyBags(mod)),
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -531,7 +536,11 @@ export function emitLlvmModuleSource(
                   foldConstantGlobals(
                     copyStableCaptures(
                       resolveSelfCaptures(
-                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                        hoistFinalFieldReads(
+                          freezeInitOnlyGlobals(
+                            holdCharLocalsAsUnits(dropUnwrittenPropertyBags(mod)),
+                          ),
+                        ),
                       ),
                     ),
                   ),
