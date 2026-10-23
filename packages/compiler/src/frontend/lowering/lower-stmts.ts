@@ -36,6 +36,11 @@ import {
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   requireNestedPatternsOf,
+  splitRequireAssignmentOf,
+  splitRequireBindingOf,
+  splitRequireBindingOfIdent,
+  splitRequireEarlyReadOf,
+  wholeExportSymbolOfModule,
 } from "./cjs-inline-require.js";
 import {
   cjsExportMemberWriteGlobalOf,
@@ -1811,6 +1816,23 @@ function lowerVarDeclarator(
   isConst: boolean,
   isLet: boolean,
 ): IrStmt[] {
+  // `var m; m = require("./x")`: the declaration is alias plumbing; the
+  // assignment owns the module's run-once %init (cjs-inline-require.ts).
+  // A read that code before the assignment can reach keeps Node's hoisted
+  // `undefined` divergence visible at build time, like a var require
+  // declaration below runnable code.
+  const split = splitRequireBindingOf(lowerer, decl);
+  if (split !== null) {
+    const early = splitRequireEarlyReadOf(lowerer, split);
+    if (early !== null) {
+      lowerer.unsupported(
+        "SC1013",
+        early,
+        `var require() binding '${(decl.name as ts.Identifier).text}' below code that can reach it (Node reads undefined before the require runs, which is not modeled — assign the require above the code that can run first)`,
+      );
+    }
+    return [];
+  }
   // The canonical ESM bridge to a compiled program module. Like a
   // top-level CommonJS require declaration, the binding is alias
   // plumbing while the dependency evaluates at this statement's
@@ -7015,6 +7037,26 @@ function lowerCjsSingleValueExport(
       return lowerer.requireInitStmt(req.spec, req.call) ?? { kind: "block", body: [], loc };
   }
   if (ts.isIdentifier(rhs)) {
+    const split = splitRequireBindingOfIdent(lowerer, rhs);
+    if (split !== null) {
+      if (wholeExportSymbolOfModule(lowerer, split.dep) === null) {
+        lowerer.unsupported(
+          "SC1090",
+          rhs,
+          `the exports object of '${split.spec}' as a value (its exports compile to a static table: read require(${JSON.stringify(split.spec)}).member directly)`,
+        );
+      }
+      const root = lowerer.globalsByDeclNode.get(expr);
+      if (root !== undefined) {
+        return {
+          kind: "assign",
+          localId: root.id,
+          value: lowerer.lowerExprExpecting(rhs, root.type),
+          loc: locOf(rhs),
+        };
+      }
+      return { kind: "block", body: [], loc };
+    }
     const sym = lowerer.resolveValueSymbol(rhs);
     if (!sym) return null;
     if (
@@ -7923,6 +7965,16 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       }
       if (!ts.isIdentifier(expr.left)) {
         lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");
+      }
+      const splitAssign = splitRequireAssignmentOf(lowerer, expr);
+      if (splitAssign !== null) {
+        return (
+          lowerer.requireInitStmt(splitAssign.spec, splitAssign.call) ?? {
+            kind: "block",
+            body: [],
+            loc: locOf(expr),
+          }
+        );
       }
       const target = lowerer.resolveWritable(expr.left);
       if (!target)

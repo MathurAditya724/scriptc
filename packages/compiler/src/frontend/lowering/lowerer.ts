@@ -331,10 +331,13 @@ import {
 } from "./lower-modules.js";
 import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
 import {
+  type SplitRequireBinding,
   cjsNamespaceModule,
   cjsWholeExportValueOf,
   inlineNamespaceRequireOf,
   inlineProgramRequireOf,
+  splitRequireBindingOf,
+  splitWholeExportAliasTargetOf,
 } from "./cjs-inline-require.js";
 import { tscInteropModuleOf } from "./cjs-tsc-interop.js";
 import { usesCjsExportsIdentity } from "./cjs-exports-object.js";
@@ -2176,6 +2179,14 @@ export class Lowerer {
   /** Per CommonJS file using top-level `this`: the global holding the
    * object that stands for its original exports (lowerCjsTopLevelThis). */
   readonly cjsExportsThis = new Map<ts.SourceFile, IrGlobal>();
+  /** `var m; m = require("./x")` alias bindings (cjs-inline-require.ts).
+   * Null entries cache declarations that keep ordinary storage. */
+  readonly cjsSplitRequireBindings = new Map<ts.VariableDeclaration, SplitRequireBinding | null>();
+  /** Per-module whole-export symbol (cjs-inline-require.ts). Null means the
+   * module's exports are a table. */
+  readonly cjsWholeExportSymbols = new Map<ts.SourceFile, ts.Symbol | null>();
+  /** Per-module live member-export classification (cjs-inline-require.ts). */
+  readonly cjsLiveMemberExports = new Map<ts.SourceFile, boolean>();
   /** Inline program-module require calls whose %init the enclosing member
    * read or member call is already sequencing (cjs-inline-require.ts). */
   readonly inlineRequireInitDone = new Set<ts.CallExpression>();
@@ -3711,6 +3722,11 @@ export class Lowerer {
     // registry (globals, fn signatures, classes) applies unchanged.
     const cjsValue = this.cjsExportValueSymbol(symbol);
     if (cjsValue) symbol = cjsValue;
+    // `var m; m = require("./x"); module.exports = m` over a whole-export
+    // target: TS types the wrapper's export= as `any`, so reconnect it to
+    // the target's value symbol explicitly.
+    const splitAlias = splitWholeExportAliasTargetOf(this, symbol);
+    if (splitAlias) symbol = splitAlias;
     this.flushDeferred(symbol);
     return symbol;
   }
@@ -4104,8 +4120,8 @@ export class Lowerer {
     const decl = decls.find(ts.isImportClause) ?? decls[0];
     if (!decl) return null;
     if (ts.isImportClause(decl)) return this.cjsDefaultImportDepOf(decl);
-    if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name) || !decl.initializer)
-      return null;
+    if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return null;
+    if (decl.initializer === undefined) return splitRequireBindingOf(this, decl)?.dep ?? null;
     {
       const interop = tscInteropModuleOf(this, expr);
       if (interop !== null) return cjsNamespaceModule(this, interop.dep) ? interop.dep : null;
@@ -4210,6 +4226,9 @@ export class Lowerer {
     // a binding (cjs-inline-require.ts sequences the module's %init).
     if (!ts.isIdentifier(expr)) return this.cjsModuleRefDepOf(expr) !== null;
     const sym = this.checker.getSymbolAtLocation(expr);
+    const splitDecl = sym?.declarations.find(ts.isVariableDeclaration);
+    const split = splitDecl === undefined ? null : splitRequireBindingOf(this, splitDecl);
+    if (split !== null) return cjsNamespaceModule(this, split.dep);
     if (this.localModuleBindingDepOf(expr) === null) return false;
     if (this.createRequireWholeExportSymbolOf(expr) !== null) return false;
     // SINGLE-VALUE exporters (`module.exports = Countdown` / `= double` /
