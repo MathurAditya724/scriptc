@@ -233,6 +233,10 @@ export class LlWalkers {
         this.host.declare(`declare void @scr_jb_put_json_str(ptr, ptr)`);
         B.line(`call void @scr_jb_put_json_str(ptr %b, ptr %v)`);
         break;
+      case "date":
+        this.host.declare(`declare void @scr_jb_put_date(ptr, ptr)`);
+        B.line(`call void @scr_jb_put_date(ptr %b, ptr %v) ; toJSON(): ISO text, null if invalid`);
+        break;
       case "dyn":
         // A checked-dynamic value serializes itself (runtime walker).
         // Bare stringify of dyn stays frontend-fenced, and overflow
@@ -924,6 +928,17 @@ export class LlWalkers {
           case "string":
             this.putScrStr(B, buf, this.unionPeek(B, u, unionId));
             break;
+          case "date": {
+            host.declare(`declare ptr @scr_date_object_to_string(ptr)`);
+            host.declare(`declare void @scr_str_release(ptr)`);
+            const text = B.tmp();
+            B.line(
+              `${text} = call ptr @scr_date_object_to_string(ptr ${this.unionPeek(B, u, unionId)})`,
+            );
+            this.putScrStr(B, buf, text);
+            B.line(`call void @scr_str_release(ptr ${text})`);
+            break;
+          }
           case "f64": {
             host.declare(`declare double @scr_union_get_f64(ptr)`);
             host.declare(`declare void @scr_jb_put_number(ptr, double)`);

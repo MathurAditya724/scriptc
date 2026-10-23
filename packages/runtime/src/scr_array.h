@@ -576,6 +576,10 @@ double scr_arr_unshift_spread(ScrArr *a, const ScrArr *src);
 ScrArr *scr_arr_reverse(ScrArr *a);
 /* Default primitive String ordering; stable, borrowed receiver, owned result. */
 ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy);
+/* Default ordering of reference elements by their String() text, which
+ * `text` answers (+1) for each element once (Date arrays). Like
+ * scr_arr_sort_primitive otherwise. */
+ScrArr *scr_arr_sort_by_text(ScrArr *a, bool copy, ScrStr *(*text)(void *));
 /* Stable comparator sort of the first `count` slots of a private, compacted
  * snapshot (every slot a value; f64 or reference elements). `f` is a borrowed
  * closure of `arity` (0..2) element parameters returning a number. Elements

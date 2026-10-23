@@ -767,6 +767,8 @@ ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments);
 ScrDyn *scr_dyn_native_date_new_value(const ScrDyn *arguments);
 ScrStr *scr_dyn_object_tag_of(const ScrDyn *d);
 ScrDyn *scr_dyn_native_date_from_ms(double ms);
+typedef struct ScrDate ScrDate;
+ScrDyn *scr_dyn_native_date(ScrDate *date);
 double scr_dyn_native_date_value(const ScrDyn *value);
 ScrDyn *scr_dyn_native_regex(ScrRegex *value);
 bool scr_dyn_native_regex_is(const ScrDyn *value);
@@ -1406,6 +1408,9 @@ ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, cons
  * prints as "Uncaught TypeError: ..." and exits 1). This is
  * scriptc-specific behavior — JS `as` never checks (SEMANTICS.md). */
 void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *got);
+/* The Date object a checked-dynamic Date handle holds, +1, or NULL with
+ * the check failure pending. */
+ScrDate *scr_dyn_native_date_check(const ScrDyn *value, const ScrDynPath *path);
 
 /* Matchers and builders of recursive shapes (records and arrays whose type
  * reaches itself) track the dyn values they visit, so cyclic values match

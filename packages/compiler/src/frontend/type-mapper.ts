@@ -3204,10 +3204,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   const collectionView = mapCollectionView(widened, ctx);
   if (collectionView) return collectionView;
-  // Date: a TimeClip'd epoch-millisecond scalar in the static runtime.
-  // This supports stored/passed values and the read-only getter slice;
-  // identity and mutation stay fenced because the scalar deliberately
-  // carries no object identity.
+  // Date: a refcounted object holding its TimeClip'd time value (ScrDate),
+  // shared with the checked-dynamic Date handle, so it keeps its identity
+  // through every slot and through `unknown`. Setters stay fenced.
   if (isStdlibInterface("Date")) return DATE_T;
   // RegExp: a reference to the lib RegExp interface — provenance, not the
   // name (a user's own `interface RegExp` maps as a record). Regex values
@@ -5025,7 +5024,6 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           (a) =>
             a.kind === "void" ||
             a.kind === "union" ||
-            a.kind === "date" ||
             a.kind === "dyn" ||
             // A generator arm only comes from an Iterable<T> (an optional
             // one keeps its unit arms beside the iterable union's).
@@ -6558,7 +6556,7 @@ export function genResultRecord(
         for (const a of unions.get(t.unionId)?.arms ?? []) byKey.set(typeKey(a), a);
         return true;
       }
-      if (t.kind === "regex" || t.kind === "date" || t.kind === "generator") {
+      if (t.kind === "regex" || t.kind === "generator") {
         return false; // no legal union arm exists for these kinds
       }
       byKey.set(typeKey(t), t);
@@ -6647,15 +6645,15 @@ export function withUnitArm(
   if (t.kind === "union") {
     const def = unions.get(t.unionId);
     if (!def) return null;
-    if (def.arms.some((a) => a.kind === "date")) return null;
     if (def.arms.some((a) => a.kind === kind)) return t;
     const arms = [...def.arms, unit];
+    // Date and Promise arms beside other data arms have no union home.
+    if (!unionContainerArmsOk(arms)) return null;
     arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
     return { kind: "union", unionId: unions.transform(def, arms) };
   }
   if (
     t.kind === "void" ||
-    t.kind === "date" ||
     t.kind === "dyn" ||
     // A bare unit field type cannot occur (units live only inside unions),
     // but guard against constructing a single-arm union from one.
@@ -8245,7 +8243,6 @@ function armHasUnionHome(arm: IrType): boolean {
     case "void":
     case "union":
     case "regex":
-    case "date":
     case "generator":
     case "dyn":
       return false;

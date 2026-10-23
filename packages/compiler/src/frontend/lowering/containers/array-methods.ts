@@ -1066,14 +1066,25 @@ export function lowerArrayMethodCall(
       (lowerer.unions
         .get(elem.unionId)
         ?.arms.every(
-          (a) => a.kind === "f64" || a.kind === "string" || a.kind === "bool" || isUnitType(a),
+          (a) =>
+            a.kind === "f64" ||
+            a.kind === "string" ||
+            a.kind === "bool" ||
+            a.kind === "date" ||
+            isUnitType(a),
         ) ??
         false);
-    if (elem.kind !== "f64" && elem.kind !== "string" && elem.kind !== "bool" && !joinableUnion) {
+    if (
+      elem.kind !== "f64" &&
+      elem.kind !== "string" &&
+      elem.kind !== "bool" &&
+      elem.kind !== "date" &&
+      !joinableUnion
+    ) {
       lowerer.unsupported(
         "SC1090",
         call,
-        "'.join()' on arrays of this element type (number, string, and boolean arrays join — unions of those with undefined/null arms too, the units printing empty like JS)",
+        "'.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS)",
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);

@@ -3058,10 +3058,12 @@ typedef struct {
 typedef struct {
   ScrElemKind kind;
   const ScrNumberSortKey *numbers;
+  ScrStr *const *texts; /* reference elements: each element's String() text */
 } ScrPrimitiveOrder;
 
 static int scr_arr_primitive_compare(uint64_t left, uint64_t right,
                                       const ScrPrimitiveOrder *order) {
+  if (order->texts) return scr_str_cmp_u16(order->texts[left], order->texts[right]);
   if (order->kind == SCR_ELEM_STR)
     return scr_str_cmp_u16(scr_slot_to_ptr(left), scr_slot_to_ptr(right));
   if (order->kind == SCR_ELEM_BOOL) return (left > right) - (left < right);
@@ -3149,10 +3151,28 @@ static void scr_arr_primitive_order(uint64_t *values, size_t count,
   if (runs != local_runs) free(runs);
 }
 
+static ScrArr *scr_arr_sort_default(ScrArr *a, bool copy, ScrStr *(*text)(void *));
+
+static ScrArr *scr_arr_new_like(const ScrArr *a, size_t cap) {
+  return a->elem == SCR_ELEM_REF ? scr_arr_new_ops(scr_arr_ops(a), cap) : scr_arr_new(a->elem, cap);
+}
+
 ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy) {
   if (a->elem != SCR_ELEM_STR && a->elem != SCR_ELEM_F64 && a->elem != SCR_ELEM_BOOL)
     scr_trap("scriptc: invalid primitive array ordering\n");
-  if (a->len == 0) return copy ? scr_arr_new(a->elem, 0) : scr_arr_retain(a);
+  return scr_arr_sort_default(a, copy, NULL);
+}
+
+/* The default ordering of an array of reference elements that cannot call
+ * user code while converting to strings (Dates): `text` answers each
+ * element's String() text (+1), computed once per element. */
+ScrArr *scr_arr_sort_by_text(ScrArr *a, bool copy, ScrStr *(*text)(void *)) {
+  if (a->elem != SCR_ELEM_REF) scr_trap("scriptc: invalid text array ordering\n");
+  return scr_arr_sort_default(a, copy, text);
+}
+
+static ScrArr *scr_arr_sort_default(ScrArr *a, bool copy, ScrStr *(*text)(void *)) {
+  if (a->len == 0) return copy ? scr_arr_new_like(a, 0) : scr_arr_retain(a);
   size_t dense = a->len < a->cap ? a->len : a->cap;
   size_t count = 0, undefined_count = 0;
   const uint8_t *states = scr_arr_scan_states(a);
@@ -3184,14 +3204,35 @@ ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy) {
       values[i] = i;
     }
   }
-  ScrPrimitiveOrder order = {a->elem, numbers};
+  ScrStr **texts = NULL;
+  uint64_t *originals = NULL;
+  if (text && count > 1) {
+    if (count > SIZE_MAX / sizeof(*texts)) scr_arr_oom();
+    texts = malloc(count * sizeof(*texts));
+    originals = malloc(count * sizeof(*originals));
+    if (!texts || !originals) scr_arr_oom();
+    for (size_t i = 0; i < count; i++) {
+      originals[i] = values[i];
+      texts[i] = text(scr_slot_to_ptr(values[i]));
+      values[i] = i;
+    }
+  }
+  ScrPrimitiveOrder order = {a->elem, numbers, texts};
   scr_arr_primitive_order(values, count, &order);
   if (numbers) {
     for (size_t i = 0; i < count; i++) values[i] = numbers[values[i]].value;
     free(numbers);
   }
+  if (texts) {
+    for (size_t i = 0; i < count; i++) {
+      values[i] = originals[values[i]];
+      scr_str_release(texts[i]);
+    }
+    free(texts);
+    free(originals);
+  }
   size_t present = copy ? a->len : count + undefined_count;
-  ScrArr *out = copy ? scr_arr_new(a->elem, present) : a;
+  ScrArr *out = copy ? scr_arr_new_like(a, present) : a;
   if (!copy && !states) {
     /* Values only, in place. */
     if (count) scr_arr_put_slots(a, 0, count, values);

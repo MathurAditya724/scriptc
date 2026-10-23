@@ -1,7 +1,6 @@
 import { expect, test } from "vitest";
 import {
   BOOL,
-  DATE_T,
   F64,
   PROCSTREAM_T,
   STRING,
@@ -287,7 +286,7 @@ test("shared exceptional exits preserve the function's scalar return ABI", () =>
 });
 
 test("exceptional exits use each scalar kind's LLVM return type", () => {
-  for (const type of [F64, DATE_T, BOOL, PROCSTREAM_T]) {
+  for (const type of [F64, BOOL, PROCSTREAM_T]) {
     for (const ownedLocals of [false, true]) {
       const module = moduleFor([call(), call(), { kind: "throw", value: literal("failed"), loc }]);
       const work = module.functions[1]!;

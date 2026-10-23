@@ -759,10 +759,21 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
       (lowerer.unions
         .get(elem.unionId)
         ?.arms.every(
-          (a) => a.kind === "f64" || a.kind === "string" || a.kind === "bool" || isUnitType(a),
+          (a) =>
+            a.kind === "f64" ||
+            a.kind === "string" ||
+            a.kind === "bool" ||
+            a.kind === "date" ||
+            isUnitType(a),
         ) ??
         false);
-    if (elem.kind === "f64" || elem.kind === "string" || elem.kind === "bool" || joinableUnion) {
+    if (
+      elem.kind === "f64" ||
+      elem.kind === "string" ||
+      elem.kind === "bool" ||
+      elem.kind === "date" ||
+      joinableUnion
+    ) {
       const sep: IrExpr = { kind: "strLit", value: ",", type: STRING, loc: e.loc };
       return {
         kind: "arrIntrinsic",
@@ -2166,14 +2177,18 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       if (bothStr) return { kind: "strCmp", op: cmpOp, left, right, type: BOOL, loc };
-      // A Date converts to a new checked-dynamic Date on each crossing, so
-      // comparisons keep their Date fence instead of comparing copies.
-      if (
-        left.type.kind !== "date" &&
-        right.type.kind !== "date" &&
-        lowerer.dynConvertible(left.type) &&
-        lowerer.dynConvertible(right.type)
-      ) {
+      // Dates compare by time value, the number hint of ToPrimitive.
+      if (left.type.kind === "date" && right.type.kind === "date") {
+        const time = (d: IrExpr): IrExpr => ({
+          kind: "libCall",
+          fn: "date.getTime",
+          args: [d],
+          type: F64,
+          loc,
+        });
+        return { kind: "bin", op: cmpOp, left: time(left), right: time(right), type: BOOL, loc };
+      }
+      if (lowerer.dynConvertible(left.type) && lowerer.dynConvertible(right.type)) {
         return {
           kind: "libCall",
           fn: "dyn.compare",
@@ -2387,6 +2402,7 @@ export function lowerStrictEquality(
       idLeft.type.kind === "map" ||
       idLeft.type.kind === "set" ||
       idLeft.type.kind === "regex" ||
+      idLeft.type.kind === "date" ||
       idLeft.type.kind === "url" ||
       idLeft.type.kind === "object" ||
       idLeft.type.kind === "record" ||
@@ -2423,14 +2439,7 @@ export function lowerStrictEquality(
       loc,
     };
   }
-  // A Date converts to a new checked-dynamic Date on each crossing; its
-  // identity has no representation, so equality keeps the fence.
-  if (
-    idLeft.type.kind !== "date" &&
-    idRight.type.kind !== "date" &&
-    lowerer.dynConvertible(idLeft.type) &&
-    lowerer.dynConvertible(idRight.type)
-  ) {
+  if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),

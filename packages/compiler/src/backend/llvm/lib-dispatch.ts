@@ -9,7 +9,7 @@ import { emitTestLibCall } from "./lib-test.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
-import type { IrExpr, IrType } from "../../ir/ir.js";
+import { F64, type IrExpr, type IrType } from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
@@ -569,6 +569,39 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   // The deep comparisons' number test: computed here, with no runtime call.
   if (e.fn === "assert.sameValue")
     return { name: emitSameValueF64(host, args[0]!.name, args[1]!.name), type: e.type };
+  // The runtime's Date functions take and answer time values: a Date
+  // operand passes its time value, and a Date result is a new Date object.
+  const callArgs = args.map((a) =>
+    a.type.kind === "date" ? { name: emitDateTime(host, a.name), type: F64 } : a,
+  );
+  if (e.type.kind === "date") {
+    const ms = emitSymbolLibCall(host, { ...e, type: F64 }, sym, callArgs);
+    host.declare(`declare ptr @scr_date_new(double)`);
+    const date = B.tmp();
+    B.line(`${date} = call ptr @scr_date_new(double ${ms.name})`);
+    return host.own({ name: date, type: e.type });
+  }
+  return emitSymbolLibCall(host, e, sym, callArgs);
+}
+
+/** A Date object's time value (ScrDate.ms). */
+function emitDateTime(host: LlvmEmitterContext, date: string): string {
+  const B = host.B;
+  const field = B.tmp();
+  const ms = B.tmp();
+  B.line(`${field} = getelementptr inbounds i8, ptr ${date}, i64 8 ; ->ms`);
+  B.line(`${ms} = load double, ptr ${field}`);
+  return ms;
+}
+
+/** The call of runtime function `sym` with evaluated arguments. */
+function emitSymbolLibCall(
+  host: LlvmEmitterContext,
+  e: LibCallExpr,
+  sym: string,
+  args: readonly LlValue[],
+): LlValue {
+  const B = host.B;
   const argDecls = args.map((a) => {
     const ty = host.llType(a.type);
     return ty === "i1" ? "i1 zeroext" : ty;
