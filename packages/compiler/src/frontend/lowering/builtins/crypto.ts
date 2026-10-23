@@ -1455,14 +1455,10 @@ function lowerPkiCall(
       expr,
       `${supported} is supported`,
     );
-  // generateKeyPair(type, callback): Node reads a function in the options
-  // position as the callback.
-  const shifted = fn === "crypto.generateKeyPairCb" && args.length === 2;
+  // generateKeyPair(type, callback): the runtime reads a function in the
+  // options position as the callback, as Node does.
   const values: IrExpr[] = [];
-  for (let i = 0; i < max; i++) {
-    const node = shifted ? (i === 1 ? undefined : i === 2 ? args[1] : args[i]) : args[i];
-    values.push(dynArg(lowerer, node, loc));
-  }
+  for (let i = 0; i < max; i++) values.push(dynArg(lowerer, args[i], loc));
   if (fn === "crypto.generateKeyPairCb")
     return { kind: "libCall", fn, args: values, type: VOID, loc };
   const call: IrExpr = { kind: "libCall", fn, args: values, type: DYN, loc };
