@@ -60,7 +60,10 @@ import {
   emitDenseArrayNumber,
   emitDenseArrayPop,
   emitDenseArrayPush,
+  runtimeAccess,
+  type ArrayAccess,
 } from "./dense-array-access.js";
+import { INT32_ARRAY_METHODS } from "../../ir/int32-arrays.js";
 import { emitUnionWiden } from "./expr-records.js";
 import { registerReplay } from "./emit-journal.js";
 
@@ -115,7 +118,7 @@ export function tagInSet(
 export function arrPush(
   host: LlvmEmitterContext,
   arr: string,
-  acc: "f64" | "bool" | "ref",
+  acc: ArrayAccess,
   value: string,
   element: IrType | null,
 ): string {
@@ -126,7 +129,7 @@ export function arrPush(
 export function emitArrayValues(
   host: LlvmEmitterContext,
   arr: string,
-  acc: "f64" | "bool" | "ref",
+  acc: ArrayAccess,
   element: IrType,
   values: LlValue[],
   prepend = false,
@@ -142,12 +145,15 @@ export function emitArrayValues(
   }
   if (values.length === 1) {
     if (!prepend) return arrPush(host, arr, acc, values[0]!.name, element);
-    const ty = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
+    const flat = runtimeAccess(acc);
+    const ty = flat === "f64" ? "double" : flat === "bool" ? "i1" : "ptr";
     host.declare(
-      `declare double @scr_arr_unshift_${acc}(ptr, ${ty}${acc === "bool" ? " zeroext" : ""})`,
+      `declare double @scr_arr_unshift_${flat}(ptr, ${ty}${flat === "bool" ? " zeroext" : ""})`,
     );
     const result = B.tmp();
-    B.line(`${result} = call double @scr_arr_unshift_${acc}(ptr ${arr}, ${ty} ${values[0]!.name})`);
+    B.line(
+      `${result} = call double @scr_arr_unshift_${flat}(ptr ${arr}, ${ty} ${values[0]!.name})`,
+    );
     return result;
   }
   const capacity = Math.min(values.length, 64);
@@ -165,8 +171,9 @@ export function emitArrayValues(
       const slot = B.tmp(),
         pointer = B.tmp();
       const value = values[start + i]!.name;
+      // The runtime takes double bits for int32 arrays too, and converts.
       const pack =
-        acc === "f64"
+        acc === "f64" || acc === "i32"
           ? `bitcast double ${value} to i64`
           : acc === "bool"
             ? `zext i1 ${value} to i64`
@@ -610,7 +617,12 @@ export function emitArrIntrinsic(
   if (e.receiver.type.kind !== "array")
     throw new InternalCompilerError("llvm emitter bug: arrIntrinsic on non-array");
   const elem = e.receiver.type.elem;
-  const acc = elemAccess(elem);
+  // Int32 arrays (ir/int32-arrays.ts) reach only these methods; the others
+  // take the runtime family's flat access.
+  const access = host.arrayAccess(e.receiver, elem);
+  if (access === "i32" && !INT32_ARRAY_METHODS.has(e.method))
+    throw new InternalCompilerError(`llvm emitter bug: ${e.method} on an int32 array`);
+  const acc = runtimeAccess(access);
   const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
   const accArg = acc === "bool" ? "i1 zeroext" : accTy;
   const method = e.method;
@@ -639,6 +651,7 @@ export function emitArrIntrinsic(
             index,
             e.args[0],
             host.provenDenseIndex(e.receiver, e.args[0]!),
+            access === "i32" ? "i32" : "f64",
           ),
           type: e.type,
         };
@@ -675,7 +688,7 @@ export function emitArrIntrinsic(
       // no-op zero-argument call.
       const vs = e.args.map((a) => host.emitExpr(a));
       host.emitPublishedArrayGuard(r.name, e.receiver.type, 1, f64Lit(0), f64Lit(vs.length));
-      return { name: emitArrayValues(host, r.name, acc, elem, vs), type: e.type };
+      return { name: emitArrayValues(host, r.name, access, elem, vs), type: e.type };
     }
     case "pushSpread": {
       // `a.push(...src)`: append src's elements in order (borrowed src,
@@ -749,7 +762,7 @@ export function emitArrIntrinsic(
       let slowLabel = "";
       if (method === "pop") {
         slowLabel = B.newLabel("remove.slow");
-        denseRaw = emitDenseArrayPop(host, r.name, acc, elem, la, slowLabel);
+        denseRaw = emitDenseArrayPop(host, r.name, access, elem, la, slowLabel);
         denseLabel = B.currentLabel();
         B.br(lp);
         B.startBlock(slowLabel);

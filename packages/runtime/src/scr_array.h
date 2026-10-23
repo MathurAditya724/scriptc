@@ -48,6 +48,12 @@ typedef enum {
    * address over 8, 0 for NULL. Compact instances are never counted or
    * traced, so these arrays retain, release and trace nothing. */
   SCR_ELEM_CREF,
+  /* Numbers that the compiler proves are always int32 (never -0), in
+   * 4-byte slots: arrays that only compiled element accesses ever reach
+   * (backend/llvm int32 arrays). Every runtime slot is the value's double
+   * bits, as for SCR_ELEM_F64: scr_arr_dense_get and scr_arr_dense_put
+   * convert, so the paths compiled code calls need no case of their own. */
+  SCR_ELEM_I32,
 } ScrElemKind;
 
 typedef enum {
@@ -134,11 +140,12 @@ typedef struct ScrArr {
    * 0 is always valid. */
   uint32_t filled;
   /* Dense values: `cap` 8-byte slots, `cap` bytes for SCR_ELEM_BOOL or
-   * `cap` 4-byte slots for SCR_ELEM_CREF (scr_arr_slot_width), followed in
-   * the same allocation, when the array has states (SCR_ARR_STATES), by one
-   * state byte per slot in reverse slot order (scr_arr_states_end). Sparse
-   * entries and properties keep 8-byte slots for every kind; a bool slot is
-   * 0 or 1 wherever it lives, and a CREF slot's 8-byte form is the pointer
+   * `cap` 4-byte slots for SCR_ELEM_CREF and SCR_ELEM_I32
+   * (scr_arr_slot_width), followed in the same allocation, when the array
+   * has states (SCR_ARR_STATES), by one state byte per slot in reverse slot
+   * order (scr_arr_states_end). Sparse entries and properties keep 8-byte
+   * slots for every kind; a bool slot is 0 or 1 wherever it lives, a CREF
+   * slot's 8-byte form is the pointer and an I32 slot's the double's bits
    * (scr_arr_dense_get). Rarely
    * used storage (sparse indices, noncanonical numeric properties,
    * match-result metadata) lives out of line, and an array that has it
@@ -260,7 +267,7 @@ static inline const ScrArrOps *scr_arr_ops(const ScrArr *a) {
 /* Bytes per dense value slot of element kind `elem`. */
 static inline size_t scr_elem_slot_width(uint8_t elem) {
   if (elem == SCR_ELEM_BOOL) return 1;
-  if (__builtin_expect(elem == SCR_ELEM_CREF, 0)) return sizeof(uint32_t);
+  if (__builtin_expect(elem == SCR_ELEM_CREF || elem == SCR_ELEM_I32, 0)) return sizeof(uint32_t);
   return sizeof(uint64_t);
 }
 
@@ -325,11 +332,38 @@ static inline void scr_arr_need_states(ScrArr *a) {
 static inline uint64_t scr_cref_decode(uint32_t ref) { return (uint64_t)ref << 3; }
 static inline uint32_t scr_cref_encode(uint64_t slot) { return (uint32_t)(slot >> 3); }
 
+/* The bits of `d` as a slot, and back. */
+static inline uint64_t scr_arr_f64_slot(double d) {
+  uint64_t slot;
+  memcpy(&slot, &d, sizeof slot);
+  return slot;
+}
+
+static inline double scr_arr_slot_f64(uint64_t slot) {
+  double d;
+  memcpy(&d, &slot, sizeof d);
+  return d;
+}
+
+/* An int32 array's slot for a double: its stores are proven int32s that
+ * are not -0 (and a cleared slot is +0), so anything else is a compiler
+ * bug. */
+static inline int32_t scr_arr_i32_of(uint64_t slot) {
+  double d = scr_arr_slot_f64(slot);
+  if (__builtin_expect(!(d >= -2147483648.0 && d <= 2147483647.0 && d == (double)(int32_t)d) ||
+                           slot == UINT64_C(0x8000000000000000),
+                       0))
+    __builtin_trap();
+  return (int32_t)d;
+}
+
 /* The dense value at `index` (< cap) as an 8-byte slot, and its store. */
 static inline uint64_t scr_arr_dense_get(const ScrArr *a, size_t index) {
   if (a->elem == SCR_ELEM_BOOL) return ((const uint8_t *)a->data)[index];
   if (__builtin_expect(a->elem == SCR_ELEM_CREF, 0))
     return scr_cref_decode(((const uint32_t *)a->data)[index]);
+  if (__builtin_expect(a->elem == SCR_ELEM_I32, 0))
+    return scr_arr_f64_slot((double)((const int32_t *)a->data)[index]);
   return a->data[index];
 }
 
@@ -337,6 +371,8 @@ static inline void scr_arr_dense_put(ScrArr *a, size_t index, uint64_t slot) {
   if (a->elem == SCR_ELEM_BOOL) ((uint8_t *)a->data)[index] = (uint8_t)slot;
   else if (__builtin_expect(a->elem == SCR_ELEM_CREF, 0))
     ((uint32_t *)a->data)[index] = scr_cref_encode(slot);
+  else if (__builtin_expect(a->elem == SCR_ELEM_I32, 0))
+    ((int32_t *)a->data)[index] = scr_arr_i32_of(slot);
   else a->data[index] = slot;
 }
 
