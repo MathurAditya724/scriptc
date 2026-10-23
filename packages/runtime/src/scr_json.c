@@ -4415,6 +4415,11 @@ ScrDyn *scr_dyn_class_prototype(ScrDyn *value, ScrDyn *base) {
      * the class object and no registry keeps it alive, so evaluating a
      * function-local class again releases the previous one's prototype. */
     if (cls->name && cls->name->len) data->v.obj.class_name = cls->name->data;
+    /* Like every class prototype, it starts with its own non-enumerable
+     * `constructor`: the class value. The cycle it closes through the class
+     * object is one the collector traces. */
+    scr_dyn_obj_set(data, "constructor", 11, scr_dyn_retain(value));
+    data->v.obj.entries[data->v.obj.len - 1].enumerable = false;
     cls->prototype_data = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     scr_box_set_ref(cls->prototype_data, data);
   }

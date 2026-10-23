@@ -34,3 +34,22 @@ console.log(a.describe(), b.describe(), c.describe());
 console.log(a instanceof Error, c instanceof Error, Object.keys(a).join(), Object.keys(c).join());
 console.log(Object.getPrototypeOf(a) === Object.getPrototypeOf(b), Object.getPrototypeOf(a) === Object.getPrototypeOf(c));
 console.log(typeof Object.getPrototypeOf(c).describe, "describe" in a, Object.hasOwn(a, "describe"));
+
+// The prototype has its own non-enumerable `constructor`, the class value
+// of that evaluation, as every class prototype does.
+function local(Parent) {
+  class Definition extends Parent {}
+  const proto = Object.getPrototypeOf(new Definition());
+  const descriptor = Object.getOwnPropertyDescriptor(proto, "constructor");
+  console.log(
+    proto.constructor === Definition,
+    Object.hasOwn(proto, "constructor"),
+    JSON.stringify(Object.getOwnPropertyNames(proto)),
+    descriptor.value === Definition,
+    descriptor.writable,
+    descriptor.enumerable,
+    descriptor.configurable,
+  );
+  return Definition;
+}
+console.log(local(Object) !== local(Error));
