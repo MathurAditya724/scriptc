@@ -16,6 +16,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's prime, generator, size, encoding and group-name errors.
   "crypto.dhNew",
   "crypto.dhGroupNew",
+  // Node's nameOrNid and options errors.
+  "crypto.getCipherInfo",
   // Node's candidate, size, options, add and rem errors, and OpenSSL's
   // generation errors.
   "crypto.checkPrimeSync",
@@ -362,6 +364,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "transform.newDyn",
   "passthrough.newDyn",
   "readable.initDyn",
+  "stream.checkEncodingOption",
   "writable.initDyn",
   "duplex.initDyn",
   "transform.initDyn",

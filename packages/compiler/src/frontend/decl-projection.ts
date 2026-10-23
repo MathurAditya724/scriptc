@@ -252,6 +252,16 @@ class TypePrinter {
     return props.length > 0 && props.every((p) => String(p.escapedName).startsWith("__@"));
   }
 
+  /** Whether an interface type and every type it extends are declared in
+   * user files. */
+  private userInterface(type: ts.Type, seen = new Set<ts.Type>()): boolean {
+    if (!declaredInUserFile(type.getSymbol())) return false;
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    if (target === undefined || !target.isClassOrInterface() || seen.has(target)) return true;
+    seen.add(target);
+    return this.checker.getBaseTypes(target).every((base) => this.userInterface(base, seen));
+  }
+
   private printObject(type: ts.Type, depth: number): string | null {
     const checker = this.checker;
     if (checker.isArrayType(type)) {
@@ -280,8 +290,11 @@ class TypePrinter {
       if (symbol.flags & (ts.SymbolFlags.Class | ts.SymbolFlags.Function | ts.SymbolFlags.Method))
         return null;
       // Interfaces: only user-declared ones describe plain data reliably
-      // (package and lib interfaces often describe class instances).
-      if (symbol.flags & ts.SymbolFlags.Interface && !declaredInUserFile(symbol)) return null;
+      // (package and lib interfaces often describe class instances), and
+      // only when every interface they extend is user-declared too: a user
+      // interface extending a package one (effect's Request.Request)
+      // inherits members the package's own constructors create.
+      if (symbol.flags & ts.SymbolFlags.Interface && !this.userInterface(type)) return null;
     }
     if (
       checker.getCallSignatures(type).length > 0 ||
