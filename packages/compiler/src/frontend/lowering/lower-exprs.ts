@@ -72,7 +72,7 @@ import {
 import { nsMemberIdentOf } from "./lower-namespaces.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { implicitMonoFile } from "./generic-functions.js";
-import { lowerTaggedTemplate } from "./lower-calls.js";
+import { lowerPrimitiveUnionNumber, lowerTaggedTemplate } from "./lower-calls.js";
 import { unitOnlyUnion } from "../type-mapper.js";
 import { lowerYield } from "./lower-generators.js";
 import { unionWideningTags } from "../../ir/analysis.js";
@@ -426,6 +426,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         return inner;
       const use = runtimeOptionalUseOf(expr);
       if (runtimeOptionalAssertionErases(lowerer, expr, inner, use)) return inner;
+      const operand = assertionOperand(lowerer, expr, inner, target ?? null, loc);
+      if (operand) return operand;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
         const helper = lowerer.narrowedArmHelper(inner.type.unionId, target, loc);
         if (helper) {
@@ -932,6 +934,134 @@ export function assertedElementKeepsUndefined(
     ((contextual.flags & ts.TypeFlags.Union) !== 0 && constituentTypes(contextual).some(admits))
   );
 }
+
+/** `x!` as the operand of an operator that converts its operands: an
+ * arithmetic, bitwise, relational or equality operator, `+`, a compound
+ * assignment, a unary `-`, `+`, `~` or `!`, a template span, or an argument
+ * of a Math function. `!` performs no runtime check,
+ * so a value that still holds undefined or null reaches the operator, which
+ * converts it as JavaScript does: NaN or 0 in arithmetic, false in a
+ * comparison, "undefined" or "null" in a string. Returns the operand to
+ * use, or null where the assertion narrows as usual. A numeric use gets the
+ * value converted with ToNumber; other uses get the union itself. */
+function assertionOperand(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  inner: IrExpr,
+  target: IrType | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (inner.type.kind !== "union" || target === null || target.kind === "union") return null;
+  const arms = lowerer.unions.get(inner.type.unionId)?.arms;
+  if (
+    !arms?.some(isUnitType) ||
+    !arms.every(
+      (arm) =>
+        arm.kind === "f64" || arm.kind === "string" || arm.kind === "bool" || isUnitType(arm),
+    )
+  )
+    return null;
+  // Array and typed-array element reads keep their own handling of a
+  // missing element.
+  let operand: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (ts.isElementAccessExpression(operand)) {
+    const kind = lowerer.mapTypeOf(lowerer.typeOf(operand.expression))?.kind;
+    if (kind === "array" || kind === "bytes") return null;
+  }
+  const use = convertingUseOf(lowerer, expr);
+  if (use === null) return null;
+  if (use === "value") return inner;
+  return lowerPrimitiveUnionNumber(lowerer, inner, expr, loc);
+}
+
+/** How the converting use of `x!` (see assertionOperand) reads it:
+ * "number" where the use applies ToNumber, "value" where the consumer
+ * lowers the union itself (strings, equality, truthiness), null for other
+ * uses. */
+function convertingUseOf(lowerer: Lowerer, expr: ts.NonNullExpression): "number" | "value" | null {
+  let outer: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  if (ts.isTemplateSpan(parent)) return parent.expression === outer ? "value" : null;
+  if (ts.isPrefixUnaryExpression(parent)) {
+    if (parent.operator === ts.SyntaxKind.ExclamationToken) return "value";
+    return parent.operator === ts.SyntaxKind.MinusToken ||
+      parent.operator === ts.SyntaxKind.PlusToken ||
+      parent.operator === ts.SyntaxKind.TildeToken
+      ? "number"
+      : null;
+  }
+  if (ts.isCallExpression(parent) && parent.arguments.nodes.includes(outer)) {
+    const callee = parent.expression;
+    return ts.isPropertyAccessExpression(callee) &&
+      stdlibGlobalNameOf(lowerer, callee.expression) === "Math"
+      ? "number"
+      : null;
+  }
+  if (!ts.isBinaryExpression(parent)) return null;
+  const op = parent.operatorToken.kind;
+  if (EQUALITY_OPERATORS.has(op)) return "value";
+  const other = parent.left === outer ? parent.right : parent.left;
+  const isString = (node: ts.Expression): boolean =>
+    (lowerer.typeOf(node).flags & ts.TypeFlags.StringLike) !== 0;
+  // With a string on either side, `+` concatenates and a comparison
+  // compares strings. `undefined + 1` and `undefined + undefined` are NaN,
+  // which a string-typed result cannot hold, so `+` takes the union only
+  // with a string partner that is not itself asserted.
+  if (op === ts.SyntaxKind.PlusToken || op === ts.SyntaxKind.PlusEqualsToken) {
+    if (op === ts.SyntaxKind.PlusEqualsToken && parent.right !== outer) return null;
+    let partner = other;
+    while (ts.isParenthesizedExpression(partner)) partner = partner.expression;
+    if (isString(other)) return ts.isNonNullExpression(partner) ? null : "value";
+    return isString(expr) ? null : "number";
+  }
+  if (RELATIONAL_OPERATORS.has(op)) return isString(other) || isString(expr) ? "value" : "number";
+  if (NUMERIC_OPERATORS.has(op)) return "number";
+  return NUMERIC_COMPOUNDS.has(op) && parent.right === outer ? "number" : null;
+}
+
+const EQUALITY_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.EqualsEqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsEqualsToken,
+  ts.SyntaxKind.EqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsToken,
+]);
+
+const RELATIONAL_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.LessThanToken,
+  ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.LessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanEqualsToken,
+]);
+
+const NUMERIC_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.AsteriskToken,
+  ts.SyntaxKind.SlashToken,
+  ts.SyntaxKind.PercentToken,
+  ts.SyntaxKind.AsteriskAsteriskToken,
+  ts.SyntaxKind.AmpersandToken,
+  ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.CaretToken,
+  ts.SyntaxKind.LessThanLessThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+]);
+
+const NUMERIC_COMPOUNDS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.SlashEqualsToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+  ts.SyntaxKind.AmpersandEqualsToken,
+  ts.SyntaxKind.BarEqualsToken,
+  ts.SyntaxKind.CaretEqualsToken,
+  ts.SyntaxKind.LessThanLessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+]);
 
 export function runtimeOptionalAssertionErases(
   lowerer: Lowerer,
