@@ -63,6 +63,22 @@ async function main(): Promise<void> {
   console.log((await fsp.realpath(at("sub/../sub"))).split(dir).join("<dir>"));
   // An array literal lowers its elements more than once.
   console.log([await fsp.realpath(at("sub"))].length, [fs.existsSync(scheme)][0]);
+  // A later argument with effects runs once per call there, and the call
+  // receives its value.
+  let dataCalls = 0;
+  const data = (): string => {
+    dataCalls++;
+    return `data ${dataCalls}`;
+  };
+  console.log([await fsp.writeFile(at("w.txt"), data())].length, dataCalls);
+  console.log(await fsp.readFile(at("w.txt"), "utf8"));
+  const code = (error: unknown): string => String((error as { code?: string }).code);
+  const outcomes = [
+    await fsp.writeFile(scheme, data()).then(() => "fulfilled", code),
+    await fsp.appendFile(at("w.txt"), data()).then(() => "fulfilled", code),
+  ];
+  console.log(outcomes, dataCalls);
+  console.log(await fsp.readFile(at("w.txt"), "utf8"));
   await fsp.rmdir(at("sub/deep"));
   await fsp.unlink(at("moved.txt"));
   await fsp.rm(at("w.txt"));

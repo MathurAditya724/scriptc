@@ -288,6 +288,9 @@ export function lowerFallibleFsUrlCall(
   values.set(first, save(lowerer.lowerExprExpecting(args[first]!, URL_T), "%fsUrl", args[first]!));
   const staged = stagedAfter(lowerer, args, first, name, (_e, i) => urls.includes(i));
   for (const e of staged) {
+    // A call lowered again (an array-literal element) evaluates the
+    // argument anew; the slot an earlier lowering saved it in is gone.
+    lowerer.stagedArguments.delete(e);
     const value = lowerer.lowerExpr(e);
     const slot = save(value, "%fsArg", e);
     lowerer.stagedArguments.set(e, { localId: slot, type: value.type });
