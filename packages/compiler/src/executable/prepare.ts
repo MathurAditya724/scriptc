@@ -461,10 +461,13 @@ function preflightIslands(
 
 /** Packages compiled natively with runtime fences (refusals deferred to the
  * operation that reaches them) that should run in islands instead: those
- * whose island class is runtime (R1) or object-model (R2), by NI-2's report
- * over the pre-scan markers and the fences, or with a fence that itself
- * needs the runtime. Gap-only packages keep their fences until decision 8
- * (D6) retires them. `--node-islands=auto` only; null for none. */
+ * with a fence that surely fires (one in top-level module code, which runs
+ * when the module evaluates) or that itself needs the runtime (R1). Other
+ * fences stay deferred refusals until decision 8 (D6) retires them, so
+ * typed packages like jose stay native. With `requireFence` false (after a
+ * failed build) the package's island class by NI-2's report decides
+ * instead: runtime (R1) or object-model (R2). `--node-islands=auto` only;
+ * null for none. */
 function fenceIslands(
   entryPath: string,
   opts: CompileRequestOptions,
@@ -515,6 +518,11 @@ function fenceIslands(
     if (runtimeFence === undefined || island.path === null) continue;
     if (!compiled.has(island.package) || known.has(island.package)) continue;
     if (policy.forcedNative.has(island.package) || policy.unloaded.has(island.package)) continue;
+    // With fences (requireFence), only fences that surely fire count: a
+    // gap fence inside a function body may never run (jose's typed paths
+    // stay native, DECISIONS.md 2026-10-21). After a failed build
+    // (!requireFence), the package's report class decides.
+    if (requireFence && !runtimeFence) continue;
     if (!runtimeFence && island.class !== "runtime" && island.class !== "object-model") continue;
     grown.set(island.package, {
       name: island.package,
