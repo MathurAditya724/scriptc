@@ -89,3 +89,28 @@ const cut: string[] = ["a", "b"];
 const cutView: unknown[] = cut;
 cutView.splice(1, 0, { toString: () => ((cut.length = 0), "x") });
 console.log(JSON.stringify(cut.join("-")), cut.length);
+
+// JSON of elements whose getters change the array or record holding them.
+const fillers: number[][] = [];
+const rows: number[][] = [[1], [2]];
+const rowView: unknown[] = rows[0]!;
+rowView.push({
+  get grown() {
+    for (let i = 0; i < 64; i++) rows.push([i]);
+    rows.length = 3;
+    // Reuse the memory the old storage held.
+    for (let i = 0; i < 64; i++) fillers.push([i, i]);
+    return true;
+  },
+});
+console.log(JSON.stringify(rows), rows.length);
+const holder = { values: [5] as number[], name: "h" };
+const holderView: unknown[] = holder.values;
+holderView.push({
+  get replaced() {
+    holder.values = [9];
+    for (let i = 0; i < 64; i++) fillers.push([i]);
+    return true;
+  },
+});
+console.log(JSON.stringify(holder), JSON.stringify(holder));

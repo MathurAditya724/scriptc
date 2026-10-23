@@ -26,6 +26,7 @@ import {
   llFieldType,
   loadStructField,
   releaseSym,
+  retainSym,
   traceAdapter,
   type ShapeHost,
 } from "./shapes.js";
@@ -323,9 +324,7 @@ export class LlWalkers {
         if (i > 0) this.putc(B, "%b", "44"); // ','
         if (edgeable(f.type)) this.jbEdgeIdx(B, String(i));
         const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-        B.line(
-          `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; [${llvmCommentText(f.name)}]`,
-        );
+        this.writeField(B, v, f.type, `[${llvmCommentText(f.name)}]`);
       });
       this.putc(B, "%b", "93"); // ']'
       if (cyclic) this.jbLeave(B);
@@ -357,9 +356,7 @@ export class LlWalkers {
           this.puts(B, "%b", `${i > 0 ? "," : ""}${jsonObjectKeyLabel(f.name)}`);
           if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
           const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-          B.line(
-            `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${llvmCommentText(f.name)}`,
-          );
+          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`);
         });
       } else {
         const first = B.slot();
@@ -394,9 +391,7 @@ export class LlWalkers {
           comma();
           this.puts(B, "%b", jsonObjectKeyLabel(f.name));
           if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
-          B.line(
-            `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${llvmCommentText(f.name)}`,
-          );
+          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`);
           if (skip !== null) {
             B.br(skip);
             B.startBlock(skip);
@@ -518,9 +513,7 @@ export class LlWalkers {
       B.startBlock(lKey);
       this.puts(B, "%b", jsonObjectKeyLabel(fieldName));
       if (cyclic && traceAdapter(this.host, f.type) !== null) this.jbEdgeProp(B, fieldName);
-      B.line(
-        `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${llvmCommentText(fieldName)}`,
-      );
+      this.writeField(B, v, f.type, `${llvmCommentText(fieldName)}`);
       B.terminate("ret i1 true");
     });
     B.startBlock(lSkip);
@@ -676,6 +669,47 @@ export class LlWalkers {
     B.line(`call void @scr_arr_release(ptr ${ks})`);
   }
 
+  /** Serializing a value of `t` can call user code that changes the
+   * arrays or records holding it: it reaches an array that can hold
+   * foreign elements (their toJSON and getters), or a value whose own
+   * serialization may (a class instance, a checked-dynamic value), in a
+   * program that has foreign elements at all. */
+  private serializationMayCallUserCode(t: IrType, seen = new Set<string>()): boolean {
+    const host = this.host;
+    if (!host.mayHoldForeign({ kind: "f64" }) && !host.mayHoldForeign({ kind: "string" }))
+      return false;
+    const key = typeKey(t);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    switch (t.kind) {
+      case "dyn":
+      case "object":
+        return true;
+      case "array":
+        return host.mayHoldForeign(t.elem) || this.serializationMayCallUserCode(t.elem, seen);
+      case "record":
+        return (host.recordsById.get(t.shapeId)?.fields ?? []).some((field) =>
+          this.serializationMayCallUserCode(field.type, seen),
+        );
+      case "union":
+        return (host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
+          this.serializationMayCallUserCode(arm, seen),
+        );
+      default:
+        return false;
+    }
+  }
+
+  /** Write a field value loaded borrowed from its record. When its
+   * serialization can call user code that replaces the field, the value
+   * is held across the write. */
+  private writeField(B: BlockBuilder, v: string, t: IrType, comment: string): void {
+    const held = isRefCounted(t) && this.serializationMayCallUserCode(t);
+    if (held) B.line(`call ptr ${retainSym(this.host, t)}(ptr ${v})`);
+    B.line(`call void @${this.jsonWriteHelper(t)}(ptr %b, ${this.valTy(t)} ${v}) ; ${comment}`);
+    if (held) B.line(`call void ${releaseSym(this.host, t)}(ptr ${v})`);
+  }
+
   private emitArrayWriter(B: BlockBuilder, elem: IrType, cyclic: boolean): void {
     const host = this.host;
     const w = this.jsonWriteHelper(elem);
@@ -685,7 +719,12 @@ export class LlWalkers {
     if (cyclic) this.jbEnter(B, true);
     this.putc(B, "%b", "91"); // '['
     const finish = B.newLabel("jwa.end");
-    if (elem.kind !== "bool") this.emitDenseArrayElements(B, elem, w, cyclic, finish);
+    // The dense walk borrows the storage and each element. When an
+    // element's serialization can call user code, which can grow or
+    // shrink the array or replace the element, the general walk below
+    // reads each index afresh and holds its element instead.
+    if (elem.kind !== "bool" && !this.serializationMayCallUserCode(elem))
+      this.emitDenseArrayElements(B, elem, w, cyclic, finish);
     const len = B.tmp();
     B.line(`${len} = call double @scr_arr_len(ptr %v)`);
     B.countedLoop(len, (i) => {
