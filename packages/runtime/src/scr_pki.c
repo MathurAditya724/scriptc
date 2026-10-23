@@ -2102,11 +2102,11 @@ static void sp_key_pair_fail(ScrClosure *self) {
  * (null, publicKey, privateKey), or the error of a key generation that
  * fails, in a later macrotask. */
 void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *callback) {
-  if (options->kind == SCR_DYN_FUNC) {
+  if (scr_dyn_is_callable(options)) {
     callback = options;
     options = scr_dyn_undefined();
   }
-  if (callback->kind != SCR_DYN_FUNC) {
+  if (!scr_dyn_is_callable(callback)) {
     scr_dyn_arg_type_fail("callback", "of type function", callback);
     return;
   }

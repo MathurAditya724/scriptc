@@ -97,7 +97,19 @@ attempt("async, shifted callback", () =>
     console.log("shifted callback", err, publicKey.asymmetricKeyType, privateKey.type);
     crypto.generateKeyPair(
       "ed25519",
-      (err2, publicKey2) => console.log("options callback", err2, publicKey2.type),
+      (err2, publicKey2) => {
+        console.log("options callback", err2, publicKey2.type);
+        // A callable Proxy is a function, in either position.
+        const proxied = new Proxy(
+          (err3, publicKey3) => {
+            console.log("proxy callback", err3, publicKey3.type);
+            crypto.generateKeyPair("ed25519", proxiedOptions);
+          },
+          {},
+        );
+        const proxiedOptions = new Proxy((err4, publicKey4) => console.log("proxy options callback", err4, publicKey4.type), {});
+        crypto.generateKeyPair("ed25519", {}, proxied);
+      },
       () => console.log("never"),
     );
   }),
