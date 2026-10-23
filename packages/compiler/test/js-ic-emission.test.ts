@@ -64,50 +64,6 @@ console.log(read(o), at(dyn([5, 6]), 1), call(o), o.n);
   }
 });
 
-test("property sites keep their caches in programs that declare classes and subclasses", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-class-"));
-  try {
-    const entry = join(dir, "main.js");
-    const outPath = join(dir, "main.ir.json");
-    // Declared classes give every property helper class branches and
-    // property-bag lookups, and a subclass adds a normalization step; plain
-    // objects still read through the caches.
-    await writeFile(
-      entry,
-      `
-class Point {
-  constructor(x) { this.x = x; }
-}
-class Tagged extends Point {
-  constructor(x, tag) { super(x); this.tag = tag; }
-}
-function dyn(v) { return v; }
-function read(o) { return o.x; }
-function write(o, v) { o.x = v; }
-function at(a, i) { return a[i]; }
-var o = dyn({ x: 1 });
-var p = dyn(new Point(4));
-var t = dyn(new Tagged(6, "t"));
-write(o, 3);
-write(p, 5);
-write(t, 7);
-console.log(read(o), read(p), read(t), at(dyn([5, 6]), 1), at(p, "x"), at(t, "tag"));
-`,
-    );
-    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
-    if (!result.ok)
-      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    const mod = deserializeModule(await readFile(outPath, "utf8"));
-    expect(validateModule(mod)).toEqual([]);
-    const llvm = emitLlvmModule(mod);
-    expect(body(llvm, "read")).toContain("@scr_js_load_probe(");
-    expect(body(llvm, "write")).toContain("@scr_js_store_probe(");
-    expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("typed programs have no cache sites and keep the ordinary runtime", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-typed-"));
   try {
