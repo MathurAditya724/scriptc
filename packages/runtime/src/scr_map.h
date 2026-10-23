@@ -243,8 +243,10 @@ void *scr_map_get_span_ref(const ScrMap *m, const char *bytes, size_t length);
  * adapters); NULL keeps the source's descriptor. */
 ScrMap *scr_map_clone(const ScrMap *source, bool keys_only, const ScrMapOps *ops);
 ScrMap *scr_map_clone_dyn(const ScrMap *source, bool keys_only);
-/* The descriptor of a Set of checked values (SCR_MAP_KEY_DYN keys). */
+/* The descriptors of a Set and a Map of checked values (SCR_MAP_KEY_DYN
+ * keys; the Map's values are checked values too). */
 extern const ScrMapOps scr_map_dyn_set_ops;
+extern const ScrMapOps scr_map_dyn_map_ops;
 void scr_map_values_into(ScrMap *set, const ScrMap *source, bool checked);
 
 void scr_map_dyn_attach(ScrMap *map, const ScrMapDynOps *ops);
