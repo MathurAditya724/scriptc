@@ -10744,8 +10744,9 @@ static bool scr_json_callback_depth(size_t depth) {
 
 static ScrStr *scr_json_index_key(size_t index) {
   char bytes[32];
-  int length = snprintf(bytes, sizeof bytes, "%zu", index);
-  return scr_str_new(bytes, (size_t)length);
+  /* array indexes are below 2^32: exact doubles, printed as integers */
+  size_t length = scr_f64_to_str((double)index, bytes);
+  return scr_str_new(bytes, length);
 }
 
 /* Keys passed here come from our own index formatter or own-key walk. */
@@ -11021,12 +11022,22 @@ static bool scr_json_live_container(const ScrDyn *value, bool inspect) {
  * { type, data } view, and an object with a callable toJSON through that
  * method, called with the key. Returns the value to serialize (+1), or NULL
  * with an exception pending. */
-static ScrDyn *scr_json_to_json(ScrDyn *value, const ScrStr *key) {
+/* The toJSON key argument: `key`, or the decimal spelling of array index
+ * `index` when `key` is NULL (formed only for a call that receives it). */
+static ScrDyn *scr_json_key_arg(const ScrStr *key, size_t index) {
+  if (key) return scr_dyn_new_str((ScrStr *)key);
+  ScrStr *text = scr_json_index_key(index);
+  ScrDyn *name = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return name;
+}
+
+static ScrDyn *scr_json_to_json_at(ScrDyn *value, const ScrStr *key, size_t index) {
   /* An instance of a class declared `extends Date` converts through its
    * toJSON, declared or inherited. */
   double time;
   if (value->kind == SCR_DYN_TYPED_REF && scr_dyn_date_class_time(value, &time)) {
-    ScrDyn *name = scr_dyn_new_str((ScrStr *)key);
+    ScrDyn *name = scr_json_key_arg(key, index);
     ScrDyn *converted = scr_dyn_date_class_to_json(value, name);
     scr_dyn_release(name);
     scr_dyn_release(value);
@@ -11054,7 +11065,7 @@ static ScrDyn *scr_json_to_json(ScrDyn *value, const ScrStr *key) {
     ScrDyn *method = scr_dyn_obj_read(inspected, "toJSON", 6);
     if (!method) { scr_dyn_release(view); scr_dyn_release(value); return NULL; }
     if (method->kind == SCR_DYN_FUNC) {
-      ScrDyn *name = scr_dyn_new_str((ScrStr *)key);
+      ScrDyn *name = scr_json_key_arg(key, index);
       ScrDyn *args[] = { name };
       scr_dyn_this_push_dyn(value);
       ScrDyn *converted = scr_dyn_call(method, args, 1, "toJSON");
@@ -11067,6 +11078,10 @@ static ScrDyn *scr_json_to_json(ScrDyn *value, const ScrStr *key) {
   }
   scr_dyn_release(view);
   return value;
+}
+
+static ScrDyn *scr_json_to_json(ScrDyn *value, const ScrStr *key) {
+  return scr_json_to_json_at(value, key, 0);
 }
 
 static ScrDyn *scr_json_replace(const ScrDyn *holder, const ScrStr *key, const ScrDyn *replacer) {
@@ -11203,6 +11218,81 @@ static ScrDyn *scr_json_property_list(const ScrDyn *replacer) {
   return list;
 }
 
+/* The protocol walk over a live record or array capsule without a replacer
+ * (the caller entered it on the circular-structure stack). Members are read
+ * from the native value exactly as scr_json_member reads them, but the walk
+ * needs no key list: a record's present fields are snapshotted by index (its
+ * keys are the immortal field names) and an array's indexes are counted, so
+ * an index key string is formed only for a toJSON call that receives it. */
+static bool scr_json_live_write(ScrJsonBuf *buffer, const ScrDyn *value, bool array,
+                                const ScrStr *gap, size_t depth) {
+  const ScrDynTypedRecordOps *record = array ? NULL : scr_typed_ref_record_ops(value);
+  /* EnumerableOwnProperties runs once, before any member's toJSON (the
+   * caller sends records of more than 64 fields down the key-list walk). */
+  uint64_t present = 0;
+  size_t length;
+  if (array) {
+    length = ((ScrArr *)value->v.typed_ref.ptr)->len;
+  } else {
+    length = record->count;
+    for (size_t i = 0; i < length; i++)
+      if (record->fixed || record->has(value->v.typed_ref.ptr, i)) present |= (uint64_t)1 << i;
+  }
+  scr_jb_putc(buffer, array ? '[' : '{');
+  bool first = true;
+  for (size_t i = 0; i < length; i++) {
+    if (!array && !(present & ((uint64_t)1 << i))) continue;
+    const ScrStr *key = array ? NULL : record->names[i];
+    ScrDyn *child;
+    if (array) {
+      scr_jb_edge_idx(buffer, i);
+      /* scr_json_member's index read, minus the key: a present element
+       * answers directly; holes, a length a callback shrank, a capsule a
+       * callback materialized and inherited event members take the keyed
+       * read */
+      child = !scr_event_ref_hooks && scr_dyn_typed_ref_array_ops(value) ? scr_dyn_typed_ref_element(value, i)
+                                                                        : NULL;
+      if (!child) {
+        ScrStr *index = scr_json_index_key(i);
+        child = scr_json_member(value, index);
+        scr_str_release(index);
+      }
+    } else {
+      scr_jb_edge_key(buffer, key);
+      child = scr_json_member(value, key);
+    }
+    if (child) child = scr_json_to_json_at(child, key, i);
+    if (!child) return false;
+    if (!array && scr_json_omitted(child)) {
+      scr_dyn_release(child);
+      continue;
+    }
+    if (!first) scr_jb_putc(buffer, ',');
+    first = false;
+    scr_json_gap(buffer, gap, depth + 1);
+    if (!array) {
+      scr_jb_put_json_str(buffer, key);
+      scr_jb_putc(buffer, ':');
+      if (gap->len) scr_jb_putc(buffer, ' ');
+    }
+    bool ok = true;
+    if (scr_json_omitted(child)) scr_jb_puts(buffer, "null");
+    else if (scr_json_plain_value(child)) {
+      /* the protocol walk's depth check, then the primitive itself */
+      ok = scr_json_callback_depth(depth + 1);
+      if (ok) {
+        scr_dyn_json_write(buffer, child);
+        ok = !scr_exc_pending();
+      }
+    } else ok = scr_json_replaced_write(buffer, child, scr_dyn_undefined(), NULL, gap, depth + 1);
+    scr_dyn_release(child);
+    if (!ok) return false;
+  }
+  if (!first) scr_json_gap(buffer, gap, depth);
+  scr_jb_putc(buffer, array ? ']' : '}');
+  return true;
+}
+
 /* `properties`, when present, is an array replacer's PropertyList: objects
  * serialize exactly those keys, own or inherited, in that order; arrays
  * keep all their indexes. */
@@ -11232,6 +11322,12 @@ static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
    * after the current frame leaves the traversal stack. */
   const void *identity = view || live ? value->v.typed_ref.ptr : (const void *)value;
   if (!scr_jb_enter(buffer, identity, array)) { scr_dyn_release(view); return false; }
+  if (live && replacer->kind == SCR_DYN_UNDEF && !properties &&
+      (array || scr_typed_ref_record_ops(value)->count <= 64)) {
+    bool ok = scr_json_live_write(buffer, value, array, gap, depth);
+    scr_jb_leave(buffer);
+    return ok;
+  }
   scr_jb_putc(buffer, array ? '[' : '{');
   ScrDyn *keys = array ? NULL : properties ? scr_dyn_retain((ScrDyn *)properties) : scr_dyn_obj_keys(observed);
   if (scr_exc_pending()) { scr_dyn_release(keys); scr_dyn_release(view); scr_jb_leave(buffer); return false; }
