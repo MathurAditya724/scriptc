@@ -1928,6 +1928,22 @@ static __attribute__((noinline)) double scr_str_unit_search(const ScrStr *s, con
 /* Search backwards from a clamped UTF-16 position. A low-surrogate position
  * maps to its scalar's first byte, so that scalar remains searchable. */
 double scr_str_last_index_of_from(ScrStr *s, ScrStr *needle, double position) {
+  /* A proven-ASCII receiver: byte offsets are UTF-16 indexes, and a needle
+   * with other bytes (including lone surrogate halves) is never found. */
+  if (s->ascii) {
+    size_t start = isnan(position) || position >= (double)s->len ? s->len
+                   : position <= 0 ? 0 : (size_t)trunc(position);
+    if (needle->len == 0) return (double)start;
+    if (needle->len > s->len) return -1.0;
+    size_t max_start = s->len - needle->len;
+    if (start < max_start) max_start = start;
+    char first = needle->data[0];
+    for (size_t i = max_start + 1; i-- > 0;) {
+      if (s->data[i] == first && memcmp(s->data + i, needle->data, needle->len) == 0)
+        return (double)i;
+    }
+    return -1.0;
+  }
   ScrSidx *e = scr_sidx_for(s);
   size_t len16 = scr_sidx_len(s, e);
   size_t start16 = isnan(position) || position >= (double)len16 ? len16
@@ -2571,15 +2587,11 @@ ScrArr *scr_str_split_limit(ScrStr *s, ScrStr *sep, double limit_num) {
   while (count < 64 && (bytes = scr_str_split_span(s, sep, &cursor, false, &len)))
     slots[count++] = (uint64_t)(uintptr_t)(s->ascii ? scr_str_from_span_ascii(bytes, len)
                                                     : scr_str_from_span(bytes, len));
-  ScrArr *out = scr_arr_new_inline(SCR_ELEM_STR, count);
+  ScrArr *out = scr_arr_new_inline(SCR_ELEM_STR, count, false);
   if (count) {
-    /* A fresh inline array of exactly `count` slots: store the pieces and
-     * their states directly. */
-    uint8_t *states = scr_arr_states_end(out);
-    for (size_t k = 0; k < count; k++) {
-      out->data[k] = slots[k];
-      *scr_arr_state_in(states, k) = SCR_ARR_VALUE;
-    }
+    /* A fresh inline array of exactly `count` slots: store the pieces
+     * directly. */
+    for (size_t k = 0; k < count; k++) out->data[k] = slots[k];
     out->len = (uint32_t)count;
     out->filled = (uint32_t)count;
   }

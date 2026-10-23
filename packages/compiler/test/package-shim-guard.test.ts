@@ -49,7 +49,11 @@ describe("package shims compile without refusals", () => {
   const entries = packageShimEntries();
   test("the registry lists its shim modules", () => {
     expect(entries.map((e) => e.slice(shimRoot.length + 1))).toEqual([
+      "chalk/v5.ts",
       "fs-extra/index.ts",
+      "hono-node-server/v2.ts",
+      "hot-shots/v8-unix-dgram.ts",
+      "hot-shots/v8.ts",
       "undici/v5.ts",
       "undici/v7.ts",
     ]);

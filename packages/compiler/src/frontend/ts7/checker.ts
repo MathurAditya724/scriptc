@@ -45,7 +45,7 @@ import type {
   TypePredicate,
   TypeReference,
 } from "./semantic-types.js";
-import type { SemanticChecker as Checker } from "./semantic-checker.js";
+import { NODE_BATCH_QUERIES, type SemanticChecker as Checker } from "./semantic-checker.js";
 import { symbolNameOf, type SemanticProject as Project } from "./semantic-model.js";
 import { isTypeNode, walkPreorder } from "./ast.js";
 import { SignatureKind, SyntaxKind, TypeFlags, type SymbolFlags } from "./enums.js";
@@ -77,6 +77,44 @@ function withPanicFence<I, O>(
       ...withPanicFence(chunk.slice(mid), call),
     ];
   }
+}
+
+/** Answers for `items` in chunks, each answer given to `store`. A chunk
+ * that throws is split until the throwing items are alone; those get no
+ * answer, so their direct query throws again where it is made. */
+function batchAnswers<I, O>(
+  items: readonly I[],
+  fetch: (chunk: readonly I[]) => readonly (O | undefined)[],
+  store: (item: I, answer: O | undefined) => void,
+  unknown: (error: unknown) => boolean = () => false,
+): boolean {
+  let known = true;
+  const answer = (chunk: readonly I[]): void => {
+    if (!known) return;
+    let answers: readonly (O | undefined)[];
+    try {
+      answers = fetch(chunk);
+    } catch (error) {
+      if (unknown(error)) {
+        known = false;
+        return;
+      }
+      if (chunk.length === 1) return;
+      const mid = chunk.length >> 1;
+      answer(chunk.slice(0, mid));
+      answer(chunk.slice(mid));
+      return;
+    }
+    chunk.forEach((item, index) => store(item, answers[index]));
+  };
+  for (let i = 0; i < items.length; i += BATCH_CHUNK) answer(items.slice(i, i + BATCH_CHUNK));
+  return known;
+}
+
+/** Whether a request failed because the server has no such method: tsgo,
+ * and tsc-ts before 0.0.7, answer the batch methods this way. */
+function unknownMethod(error: unknown, method: string): boolean {
+  return error instanceof Error && error.message.includes(`unknown API method "${method}"`);
 }
 
 function chunked<T, R>(items: readonly T[], fetch: (chunk: readonly T[]) => readonly R[]): R[] {
@@ -215,6 +253,9 @@ function collectNodes(roots: readonly Node[], walk: PrefetchWalk = "all"): Node[
 
 export class CheckerFacade {
   private readonly cache = new CheckerCache();
+  /** Batch methods the server answered as unknown. Lowering asks those
+   * node by node from then on, without a failed request per prefetch. */
+  private readonly unknownBatchMethods = new Set<string>();
 
   constructor(
     /** The underlying 7.0.2 sync checker — exposed for methods the facade
@@ -322,7 +363,66 @@ export class CheckerFacade {
   prefetchRoots(roots: readonly Node[]): void {
     this.ensureActive();
     this.markManaged(roots);
-    this.prefetchNodes(collectNodes(roots, "reachable"));
+    const nodes = collectNodes(roots, "reachable");
+    this.prefetchNodes(nodes);
+    if (!NODE_BATCH_QUERIES) return;
+    // Lowering a call resolves its signature (reconcileOverloadReturn).
+    this.prefetchResolvedSignatures(
+      nodes.filter(
+        (node) =>
+          node.kind === SyntaxKind.CallExpression ||
+          node.kind === SyntaxKind.TaggedTemplateExpression,
+      ),
+    );
+    // Lowering an array literal or a conditional asks its contextual type.
+    this.prefetchContextualTypes(
+      nodes.filter(
+        (node) =>
+          node.kind === SyntaxKind.ArrayLiteralExpression ||
+          node.kind === SyntaxKind.ConditionalExpression,
+      ),
+    );
+  }
+
+  /** Batches the contextual type of each node, for an analysis that asks it
+   * of many nodes (class-protocols.ts). A query that fails stays out of the
+   * memo, so a later getContextualType asks again as it would have. */
+  prefetchContextualTypes(nodes: readonly Node[]): void {
+    if (!NODE_BATCH_QUERIES) return;
+    this.ensureActive();
+    const missing = [...new Set(nodes)].filter((node) => !this.cache.contextualType.has(node));
+    this.batchNodes(
+      "getContextualTypes",
+      missing,
+      (chunk) => this.raw.getContextualTypes(chunk),
+      (node, type) => this.cache.contextualType.set(node, type),
+    );
+  }
+
+  /** Batches the resolved signature of each call (getResolvedSignature). */
+  prefetchResolvedSignatures(nodes: readonly Node[]): void {
+    if (!NODE_BATCH_QUERIES) return;
+    this.ensureActive();
+    const missing = [...new Set(nodes)].filter((node) => !this.cache.resolvedSignature.has(node));
+    this.batchNodes(
+      "getResolvedSignatures",
+      missing,
+      (chunk) => this.raw.getResolvedSignatures(chunk),
+      (node, signature) => this.cache.resolvedSignature.set(node, signature),
+    );
+  }
+
+  /** Answers a node batch method's chunks (batchAnswers), unless the server
+   * has answered the method as unknown. */
+  private batchNodes<O>(
+    method: string,
+    nodes: readonly Node[],
+    fetch: (chunk: readonly Node[]) => readonly (O | undefined)[],
+    store: (node: Node, answer: O | undefined) => void,
+  ): void {
+    if (nodes.length === 0 || this.unknownBatchMethods.has(method)) return;
+    if (!batchAnswers(nodes, fetch, store, (error) => unknownMethod(error, method)))
+      this.unknownBatchMethods.add(method);
   }
 
   /** Batches symbol queries for every identifier under roots without the
@@ -529,6 +629,14 @@ export class CheckerFacade {
       this.cache.aliasedSymbol.set(symbol, aliased);
     }
     return aliased;
+  }
+
+  /** A module symbol's exports, with the members of its `export *`
+   * declarations resolved (a symbol's own export table lists only the
+   * module's own declarations). */
+  getExportsOfModule(symbol: Ts7Symbol): readonly Ts7Symbol[] {
+    this.ensureActive();
+    return this.raw.getExportsOfModule(symbol);
   }
 
   getDeclaredTypeOfSymbol(symbol: Ts7Symbol): Type {

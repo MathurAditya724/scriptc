@@ -1,8 +1,10 @@
 import { expect, test } from "vitest";
 import { BOOL, F64, arrayOf, type IrExpr, type IrLocal, type IrStmt } from "../../ir/ir.js";
+import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
 import {
   countedDenseShape,
   matchDenseArrayLoop,
+  pairedDenseShape,
   type DenseLoopShape,
 } from "./dense-array-loops.js";
 
@@ -41,6 +43,8 @@ const locals = new Map<string, IrLocal>([
   ["a", { id: "a", name: "a", type: ARR, mutable: false }],
   ["b", { id: "b", name: "b", type: ARR, mutable: true }],
   ["c", { id: "c", name: "c", type: ARR, mutable: false }],
+  ["j", { id: "j", name: "j", type: F64, mutable: true }],
+  ["t", { id: "t", name: "t", type: F64, mutable: false }],
 ]);
 
 /** for (let i = 0; i < a.length; i++) body */
@@ -111,16 +115,24 @@ test("loops that may resize, rebind or move storage keep the ordinary copy only"
   expect([...rebound!.arrays.keys()]).toEqual(["a"]);
 });
 
+const counted = (
+  fields: Pick<IntegerCountedForLoop, "start" | "limit" | "step" | "inclusive" | "range">,
+): IntegerCountedForLoop => ({
+  localId: "i",
+  guarded: false,
+  limitGuarded: false,
+  startGuarded: false,
+  guardLimit: 0,
+  followers: [],
+  ...fields,
+});
+
 test("counted shapes need a non-negative counter strictly below the length", () => {
   const ascending = (limit: IrExpr, inclusive: boolean, min = 0) =>
-    countedDenseShape(loop([]), {
-      localId: "i",
-      start: num(min),
-      limit,
-      step: 1,
-      inclusive,
-      range: { min, max: 100 },
-    });
+    countedDenseShape(
+      loop([]),
+      counted({ start: num(min), limit, step: 1, inclusive, range: { min, max: 100 } }),
+    );
   const minus = (offset: number): IrExpr => ({
     kind: "bin",
     op: "-",
@@ -129,19 +141,155 @@ test("counted shapes need a non-negative counter strictly below the length", () 
     type: F64,
     loc,
   });
-  expect(ascending(method("a", "length"), false)?.length.localId).toBe("a");
-  expect(ascending(minus(1), true)?.length.localId).toBe("a");
+  expect(ascending(method("a", "length"), false)?.length?.localId).toBe("a");
+  expect(ascending(minus(1), true)?.length?.localId).toBe("a");
   expect(ascending(method("a", "length"), true)).toBeNull();
   expect(ascending(minus(1), false, -1)).toBeNull();
+  // Another invariant limit bounds the counter itself; the entry test
+  // compares it with every indexed array's hole-free prefix.
+  const limited = ascending(ref("n"), false);
+  expect(limited?.length).toBeNull();
+  expect(limited?.limit?.limit).toEqual(ref("n"));
+  expect(ascending(ref("n"), false, -1)).toBeNull();
   const descending = (offset: number) =>
-    countedDenseShape(loop([]), {
-      localId: "i",
-      start: minus(offset),
-      limit: num(0),
-      step: -1,
-      inclusive: true,
-      range: { min: 0, max: 100 },
-    });
-  expect(descending(1)?.length.localId).toBe("a");
+    countedDenseShape(
+      loop([]),
+      counted({
+        start: minus(offset),
+        limit: num(0),
+        step: -1,
+        inclusive: true,
+        range: { min: 0, max: 100 },
+      }),
+    );
+  expect(descending(1)?.length?.localId).toBe("a");
   expect(descending(0)).toBeNull();
+});
+
+test("a loop to another invariant limit covers each array whose length it keeps", () => {
+  const limited: DenseLoopShape = {
+    counter: "i",
+    length: null,
+    limit: counted({
+      start: num(0),
+      limit: ref("n"),
+      step: 1,
+      inclusive: false,
+      range: { min: 0, max: 100 },
+    }),
+    range: { min: 0, max: 100 },
+  };
+  const matchLimited = (body: IrStmt[], unaliased = new Set<string>()) =>
+    matchDenseArrayLoop(loop(body), limited, locals, unaliased, new Set(["a", "b"]));
+  const copy = write("b", read("a"));
+  const dense = matchLimited([copy]);
+  expect([...dense!.arrays.keys()].sort()).toEqual(["a", "b"]);
+  expect(dense!.length).toBeNull();
+  expect(dense!.limit?.limit).toEqual(ref("n"));
+  // An array the loop may resize is not covered; neither is one it may
+  // share storage with.
+  const resizing = [
+    { kind: "exprStmt" as const, expr: read("a"), loc },
+    { kind: "exprStmt" as const, expr: method("b", "getNumber", [ref("i")]), loc },
+    { kind: "exprStmt" as const, expr: method("b", "push", [num(1)]), loc },
+  ];
+  expect([...matchLimited(resizing, new Set(["b"]))!.arrays.keys()]).toEqual(["a"]);
+  expect(matchLimited(resizing)).toBeNull();
+});
+
+test("a two-counter loop covers the arrays indexed at either counter", () => {
+  // for (let i = 1, j = k - 1; i < j; i++, j--) { t = a[i]; a[i] = a[j]; a[j] = t; }
+  const paired: IntegerPairedForLoop = {
+    low: { localId: "i", start: num(1), step: 1, startGuarded: false },
+    high: { localId: "j", start: ref("k"), step: -1, startGuarded: true },
+    inclusive: false,
+    guarded: true,
+    range: { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER },
+  };
+  const pairedShape = pairedDenseShape(paired);
+  const matchPaired = (body: IrStmt[]) =>
+    matchDenseArrayLoop(loop(body), pairedShape, locals, new Set(), new Set(["a", "b"]));
+  const swap: IrStmt[] = [
+    { kind: "varDecl", localId: "t", init: read("a"), loc },
+    write("a", read("a", ref("j"))),
+    write("a", ref("t"), ref("j")),
+  ];
+  const dense = matchPaired(swap);
+  expect([...dense!.arrays.keys()]).toEqual(["a"]);
+  expect(dense!.pair).toEqual({ high: "j", lowStart: num(1), highStart: ref("k") });
+  expect(dense!.range).toEqual({ min: 0, max: 2147483646 });
+  // Stores at any other index may extend the array.
+  expect(matchPaired([...swap, write("a", num(0), ref("k"))])).toBeNull();
+});
+
+test("a present-undefined store is covered only where it stores a covered read's missing arm", () => {
+  // const v = b[i] (as number | undefined);
+  // if (v is undefined) c[i] = undefined; else c[i] = v is number ? v : throw;
+  const unionType = { kind: "union" as const, unionId: "u" };
+  const v: IrExpr = { kind: "varRef", localId: "v", type: unionType, loc };
+  const isTag = (tag: number): IrExpr => ({
+    kind: "unionIsTag",
+    unionId: "u",
+    tag,
+    negated: false,
+    value: v,
+    type: BOOL,
+    loc,
+  });
+  const reader = (array: string, index = ref("i")): IrExpr => ({
+    kind: "call",
+    callee: "%arr.idxOr.f64",
+    args: [arr(array), index],
+    type: unionType,
+    loc,
+  });
+  const undefinedStore: IrStmt = { kind: "arraySetUndefined", arr: arr("c"), index: ref("i"), loc };
+  const guarded = (array: string): IrStmt[] => [
+    { kind: "varDecl", localId: "v", init: reader(array), loc },
+    {
+      kind: "if",
+      cond: isTag(1),
+      then: [undefinedStore],
+      else_: [
+        write("c", {
+          kind: "ternary",
+          cond: isTag(0),
+          then: { kind: "unionNarrow", unionId: "u", tag: 0, value: v, type: F64, loc },
+          else_: {
+            kind: "libCall",
+            fn: "error.nodeThrow",
+            args: [num(1), { kind: "strLit", value: "", type: { kind: "string" }, loc }],
+            type: F64,
+            loc,
+          },
+          type: F64,
+          loc,
+        }),
+      ],
+      loc,
+    },
+  ];
+  const withV = new Map([
+    ...locals,
+    ["v", { id: "v", name: "v", type: unionType, mutable: false }],
+  ]);
+  const matchStores = (body: IrStmt[], initialized: string[]) =>
+    matchDenseArrayLoop(loop(body), shape, withV, new Set(), new Set(initialized));
+  const dense = matchStores(guarded("b"), ["a", "b", "c"]);
+  expect([...dense!.arrays.keys()].sort()).toEqual(["b", "c"]);
+  // A read of an array the entry test does not cover may miss in the fast
+  // copy, and its undefined store would run there.
+  expect(matchStores(guarded("b"), ["a", "c"])).toBeNull();
+  // A present undefined stored on its own leaves out its array and every
+  // array the other name may hold.
+  const alone: IrStmt[] = [{ kind: "exprStmt", expr: read("b"), loc }, undefinedStore];
+  expect(matchStores(alone, ["a", "b", "c"])).toBeNull();
+  const separate = matchDenseArrayLoop(
+    loop(alone),
+    shape,
+    withV,
+    new Set(["c"]),
+    new Set(["a", "b", "c"]),
+  );
+  expect([...separate!.arrays.keys()]).toEqual(["b"]);
 });

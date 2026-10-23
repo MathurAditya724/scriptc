@@ -72,11 +72,25 @@ const COMPLETION_CALLBACKS: ReadonlyMap<IrLibFn, CallbackPosition> = new Map<
   ["zlib.unzipCb", 1],
 ]);
 
-/** `cb` bound to the context active where it is evaluated. An empty
- * context leaves it unbound (`always` false): the loop already runs
- * callbacks with an empty context. */
-function bindToActiveContext(cb: IrExpr): IrExpr {
-  const always: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc: cb.loc };
+/** Completion callbacks that fire from other contexts' code (a stream event
+ * that another context's call emits), so an empty context at the call
+ * binds too: the callback then runs with no store, as in Node. */
+const BIND_EMPTY_CONTEXT: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "stream.finished",
+  "stream.finishedDyn",
+  "stream.finishedOpts",
+  "stream.finishedOptsSignal",
+  "stream.pipeline",
+  "stream.pipelineDyn",
+  "stream.pipelineStages",
+  "stream.pipelineStagesDyn",
+]);
+
+/** `cb` bound to the context active where it is evaluated. Unless
+ * `bindEmpty`, an empty context leaves it unbound (`always` false): the
+ * loop already runs those callbacks with an empty context. */
+function bindToActiveContext(cb: IrExpr, bindEmpty = false): IrExpr {
+  const always: IrExpr = { kind: "boolLit", value: bindEmpty, type: BOOL, loc: cb.loc };
   if (cb.type.kind === "func")
     return {
       kind: "libCall",
@@ -127,7 +141,7 @@ function bindCall(e: IrExpr): IrExpr {
   const cb = e.args[index];
   if (cb === undefined || (position === "last" && cb.type.kind !== "func")) return e;
   const args = e.args.slice();
-  args[index] = bindToActiveContext(cb);
+  args[index] = bindToActiveContext(cb, BIND_EMPTY_CONTEXT.has(e.fn));
   return { ...e, args };
 }
 
