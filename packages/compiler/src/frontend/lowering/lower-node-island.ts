@@ -17,6 +17,7 @@
  * thrown Error crosses as its nearest intrinsic class with its message and
  * string `code`. */
 import { realpathSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
 import type { NodeApiMember } from "../node-api-import.js";
@@ -108,6 +109,12 @@ export function lowerNodeApiCall(
     throw new PoisonError();
   }
   const specifier = lowerer.lowerExprExpecting(specifierNode, STRING);
+  // An absolute specifier names a file of the build machine: the call names
+  // the shipped copy, relative to the caller inside the tree.
+  if (isAbsolute(specifierNode.text) && specifier.kind === "strLit") {
+    const target = lowerer.nodeIslandModules.resolvedPath(caller, specifierNode.text);
+    if (target !== null) lowerer.nodeIslandSpecifiers.push({ literal: specifier, caller, target });
+  }
   const name = lowerer.lowerExprExpecting(argNodes[1]!, STRING);
   const values = argNodes.slice(2).map((arg) => {
     const value = lowerer.lowerExpr(arg);

@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -90,6 +98,39 @@ describe("the recorded libnode pack", () => {
     const out = mkdtempSync(join(tmpdir(), "scriptc-libnode-out-"));
     expect(libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: dir })).toBe(
       `the libnode pack at ${dir} lists a file outside the pack ('../x')`,
+    );
+    expect(existsSync(join(out, "app.libnode"))).toBe(false);
+  });
+
+  test("beside refuses manifest file names outside the pack", () => {
+    for (const name of ["..", ".", "../escaped", "/etc/passwd", "a/b", "a\\b", "x\u0000y"]) {
+      const dir = pack("24.22.0");
+      writeFileSync(
+        join(dir, "manifest.json"),
+        JSON.stringify({
+          nodeVersion: "24.22.0",
+          bridgeAbi: NODE_BRIDGE_ABI,
+          files: { [name]: {} },
+        }),
+      );
+      const out = mkdtempSync(join(tmpdir(), "scriptc-libnode-out-"));
+      expect(libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: dir })).toBe(
+        `the libnode pack at ${dir} lists a file outside the pack ('${name}')`,
+      );
+      expect(existsSync(join(out, "app.libnode"))).toBe(false);
+      expect(existsSync(join(out, "escaped"))).toBe(false);
+    }
+  });
+
+  test("beside refuses pack files that are symbolic links", () => {
+    const dir = pack("24.22.0");
+    const elsewhere = join(mkdtempSync(join(tmpdir(), "scriptc-libnode-elsewhere-")), "secret");
+    writeFileSync(elsewhere, "secret");
+    rmSync(join(dir, "libnode.so.137"));
+    symlinkSync(elsewhere, join(dir, "libnode.so.137"));
+    const out = mkdtempSync(join(tmpdir(), "scriptc-libnode-out-"));
+    expect(libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: dir })).toBe(
+      `the libnode pack at ${dir} holds libnode.so.137 as a symbolic link; pack files must be regular files`,
     );
     expect(existsSync(join(out, "app.libnode"))).toBe(false);
   });

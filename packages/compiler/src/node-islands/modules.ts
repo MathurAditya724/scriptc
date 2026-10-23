@@ -211,14 +211,34 @@ export class NodeIslandModuleCollector {
     return null;
   }
 
-  /** The real path of `path`, recording a link when `path` itself (not an
-   * ancestor) is a symbolic link. */
+  /** The real path of `path`, recording a link for each component of it
+   * that is a symbolic link (a linked directory on the way, or the file
+   * itself), so that the path resolves inside the tree as it does here. */
   private placed(path: string): string {
-    const target = trackedRealpath(path) ?? path;
-    const parent = trackedRealpath(dirname(path)) ?? dirname(path);
-    const link = join(parent, basename(path));
-    if (link !== target) this.links.set(link, target);
-    return target;
+    let real: string = sep;
+    for (const part of resolve(path).split(sep)) {
+      if (part === "") continue;
+      const lexical = join(real, part);
+      const target = trackedRealpath(lexical) ?? lexical;
+      if (target !== lexical) this.links.set(lexical, target);
+      real = target;
+    }
+    return real;
+  }
+
+  /** The real path of the file an absolute or relative `specifier` names
+   * from `fromFile`, or null when there is none. */
+  resolvedPath(fromFile: string, specifier: string): string | null {
+    if (!isPathSpecifier(specifier)) return null;
+    const target = resolveFile(resolve(dirname(fromFile), specifier));
+    return target === null ? null : (trackedRealpath(target) ?? target);
+  }
+
+  /** A specifier that names `target` from `caller` inside the tree: the
+   * relative path between them, with `/` separators. */
+  static relativeSpecifier(caller: string, target: string): string {
+    const path = portable(relative(dirname(caller), target));
+    return path.startsWith("../") ? path : `./${path}`;
   }
 
   /** A module of the program: collected with the package.json that scopes
@@ -609,17 +629,29 @@ export function placeNodeIslandModules(
 ): string | null {
   const data = readNodeIslandModules(modules);
   if (typeof data === "string") return data;
+  // Every path, and every link's target, stays inside the tree.
+  const inside = resolve(target) + sep;
+  const placed = (relativePath: string): string | null => {
+    const path = resolve(target, ...relativePath.split("/"));
+    return path.startsWith(inside) ? path : null;
+  };
+  for (const entry of [...modules.files, ...modules.links]) {
+    const path = placed(entry.path);
+    if (path === null) return `the island module tree names a path outside it ('${entry.path}')`;
+    if ("target" in entry && !resolve(dirname(path), entry.target).startsWith(inside))
+      return `the island module tree links outside it ('${entry.path}' to '${entry.target}')`;
+  }
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
   let offset = 0;
   for (const file of modules.files) {
-    const path = join(target, ...file.path.split("/"));
+    const path = placed(file.path)!;
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, data.subarray(offset, offset + file.size));
+    writeFileSync(path, data.subarray(offset, offset + file.size), { flag: "wx" });
     offset += file.size;
   }
   for (const link of modules.links) {
-    const path = join(target, ...link.path.split("/"));
+    const path = placed(link.path)!;
     mkdirSync(dirname(path), { recursive: true });
     symlinkSync(link.target, path);
   }

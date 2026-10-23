@@ -167,6 +167,33 @@ describe("the collected module tree", () => {
     ]);
   });
 
+  test("a require through a linked directory keeps the link in the tree", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/entry.cjs": "module.exports = require('./lib/x.cjs');",
+      "shared/x.cjs": "exports.x = 1;",
+    });
+    symlinkSync("../shared", join(root, "src/lib"));
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./entry.cjs")).toBeNull();
+    const tree = collector.tree()!;
+    expect(tree.links).toEqual([{ path: "src/lib", target: "../shared" }]);
+    expect(tree.files.map((f) => f.path)).toEqual(["shared/x.cjs", "src/entry.cjs"]);
+  });
+
+  test("an absolute specifier names the shipped file relative to its caller", () => {
+    const root = project({ "src/main.ts": "", "lib/m.cjs": "" });
+    const collector = new NodeIslandModuleCollector();
+    const target = collector.resolvedPath(join(root, "src/main.ts"), join(root, "lib/m.cjs"))!;
+    expect(target).toBe(join(root, "lib/m.cjs"));
+    expect(NodeIslandModuleCollector.relativeSpecifier(join(root, "src/main.ts"), target)).toBe(
+      "../lib/m.cjs",
+    );
+    expect(
+      NodeIslandModuleCollector.relativeSpecifier(join(root, "main.ts"), join(root, "m.cjs")),
+    ).toBe("./m.cjs");
+  });
+
   test("built-in modules alone ship no tree", () => {
     const root = project({ "main.ts": "" });
     const collector = new NodeIslandModuleCollector();
