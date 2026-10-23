@@ -5146,10 +5146,17 @@ void scr_dyn_class_super(ScrDyn *constructor, ScrDyn *receiver, ScrDyn *argument
       scr_dyn_release(value);
       if (scr_exc_pending()) return;
     }
-    if (argc > 1 && argv[1]->kind == SCR_DYN_OBJ && scr_dyn_find_entry(argv[1], "cause", 5)) {
-      ScrDyn *cause = scr_dyn_obj_get(argv[1], "cause", 5);
+    /* InstallErrorCause: an options object with a `cause` property, own or
+     * inherited, defines the value its getter or data property reads. */
+    ScrDyn *options = argc > 1 ? argv[1] : NULL;
+    if (options && options->kind != SCR_DYN_NULL &&
+        (options->kind == SCR_DYN_FUNC || scr_dyn_is_object(options))) {
       ScrStr *key = scr_str_new("cause", 5);
-      scr_dyn_define_hidden(receiver, key, cause ? cause : scr_dyn_undefined());
+      if (scr_dyn_in(options, key) && !scr_exc_pending()) {
+        ScrDyn *cause = scr_dyn_obj_read(options, "cause", 5);
+        if (cause && !scr_exc_pending()) scr_dyn_define_hidden(receiver, key, cause);
+        scr_dyn_release(cause);
+      }
       scr_str_release(key);
       if (scr_exc_pending()) return;
     }

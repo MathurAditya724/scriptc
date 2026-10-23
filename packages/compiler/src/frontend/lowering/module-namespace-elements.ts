@@ -32,12 +32,13 @@ export function lowerModuleNamespaceElement(
     try {
       const body: IrStmt[] = [];
       const symbol = lowerer.checker.getSymbolAtLocation(source);
-      symbol?.getExports().forEach((exported, key) => {
+      for (const exported of symbol ? lowerer.checker.getExportsOfModule(symbol) : []) {
+        const key = ts.symbolName(exported);
         const target =
           exported.flags & ts.SymbolFlags.Alias
             ? lowerer.checker.getAliasedSymbol(exported)
             : exported;
-        if (!(target.flags & ts.SymbolFlags.Value)) return;
+        if (!(target.flags & ts.SymbolFlags.Value)) continue;
         const declaration = target.valueDeclaration;
         const identifier = declaration?.name as ts.Node | undefined;
         if (!identifier || !ts.isIdentifier(identifier)) {
@@ -50,7 +51,7 @@ export function lowerModuleNamespaceElement(
             kind: "strEq",
             negated: false,
             left: varRef("key", STRING, loc),
-            right: strLit(String(key), loc),
+            right: strLit(key, loc),
             type: { kind: "bool" },
             loc,
           },
@@ -58,7 +59,7 @@ export function lowerModuleNamespaceElement(
           else_: null,
           loc,
         });
-      });
+      }
       body.push({ kind: "return", value: dynUndefinedExpr(loc), loc });
       const fn: IrFunction = {
         name,
@@ -111,10 +112,12 @@ export function moduleNamespaceObject(
   if (!symbol) return null;
   const exports: { key: string; identifier: ts.Identifier }[] = [];
   let exact = true;
-  symbol.getExports().forEach((exported, key) => {
+  // The module's resolved exports, which include `export *` members.
+  for (const exported of lowerer.checker.getExportsOfModule(symbol)) {
+    const key = ts.symbolName(exported);
     const target =
       exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
-    if (!(target.flags & ts.SymbolFlags.Value)) return;
+    if (!(target.flags & ts.SymbolFlags.Value)) continue;
     const declaration = target.valueDeclaration;
     const identifier = declaration?.name as ts.Node | undefined;
     const immutable =
@@ -125,10 +128,10 @@ export function moduleNamespaceObject(
           (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0));
     if (!identifier || !ts.isIdentifier(identifier) || !immutable) {
       exact = false;
-      return;
+      break;
     }
-    exports.push({ key: String(key), identifier });
-  });
+    exports.push({ key, identifier });
+  }
   if (!exact) return null;
   exports.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const name = `%module.object:${ns.type.moduleId}`;

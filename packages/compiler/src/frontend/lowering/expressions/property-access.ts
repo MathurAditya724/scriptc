@@ -4504,15 +4504,13 @@ function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | null {
   return count;
 }
 
-const globalThisWrites = new WeakMap<Lowerer, Set<string>>();
-
 /** The property names the program assigns on the global object, through
  * `globalThis` or a binding of its type (`(_a = globalThis).x = v`). */
 function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<string> {
-  const known = globalThisWrites.get(lowerer);
+  const known = lowerer.globalThisWrittenNames;
   if (known) return known;
   const names = new Set<string>();
-  globalThisWrites.set(lowerer, names);
+  lowerer.globalThisWrittenNames = names;
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile || !sf.text.includes("globalThis")) continue;
     ts.walkPreorder(sf, (node) => {

@@ -22,3 +22,30 @@ try {
 } catch (err) {
   console.log(err instanceof E, err.message);
 }
+console.log(e instanceof Error, new A() instanceof Error);
+try {
+  throw new E("caught");
+} catch (err) {
+  console.log(err instanceof Error, err.message);
+}
+// The cause option is read like Error's: inherited and accessor causes
+// count, and a throwing getter's exception propagates.
+const inherited = new E("inherited", Object.create({ cause: "from prototype" }));
+console.log(inherited.cause, Object.prototype.hasOwnProperty.call(inherited, "cause"));
+let reads = 0;
+const accessor = new E("accessor", {
+  get cause() {
+    reads++;
+    return "from getter";
+  },
+});
+console.log(accessor.cause, reads, "cause" in new E("none", {}), "cause" in new E("undef", { cause: undefined }));
+try {
+  new E("throws", {
+    get cause() {
+      throw new Error("getter failed");
+    },
+  });
+} catch (err) {
+  console.log(err.message);
+}
