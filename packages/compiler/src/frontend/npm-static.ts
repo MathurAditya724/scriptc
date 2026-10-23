@@ -616,9 +616,8 @@ export function clearProgramBuiltinAliasCache(): void {
  * package whose surface still breaks its consumers — so those bundles are
  * worth ATTEMPTING: eligible when the .d.ts criteria hold, gracefully
  * per-package-degraded when the attempt fails. Minified JS is attempted
- * too: a whitespace-minified dist is ordinary JavaScript, and an
- * identifier-minified bundle whose interop helpers lost their names is
- * refused by the bundle recognizers, which name the reason. */
+ * too: a minified dist is ordinary JavaScript, and the bundle recognizers
+ * know esbuild's __commonJS helper by its shape under any name. */
 const TRANSFORM_MARKERS = ["__webpack_require__"];
 
 function hasTransformMarkers(source: string): boolean {

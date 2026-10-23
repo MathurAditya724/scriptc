@@ -1499,6 +1499,15 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     ]);
   }, 180_000);
 
+  // 7547: an identifier-minified esbuild CommonJS bundle: the __commonJS
+  // helper and chunk parameters renamed, { value: !0 } stamps, and
+  // (0, ns.member)(...) calls of builtin module functions.
+  test("the identifier-minified bundle 7547-minified-cjs-chunks compiles statically and matches Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/7547-minified-cjs-chunks/main.ts"), [
+      "gtminicache",
+    ]);
+  }, 180_000);
+
   // A whitespace/syntax-minified bundle whose helpers keep their names is
   // judged by the recognizers, not refused up front as minified.
   test("--npm-static=auto opts a minified bundle with named helpers in", () => {
