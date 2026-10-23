@@ -3797,16 +3797,19 @@ function lowerDynReceiverMethodCall(
   }
   if (access.name.text === "flatMap") return lowerDynArrayFlatMapCall(lowerer, call, access, recv);
   // String methods claim only names NO other dyn-representable kind's
-  // prototype declares (Array carries includes/indexOf/slice too): for
-  // these, "the receiver is a string, or the call throws V8's TypeError"
-  // IS Node's semantics for every possible dyn value. Shared names would
-  // need a receiver-kind dispatch — they keep the fence.
+  // prototype declares (Array carries includes/indexOf/slice too), so no
+  // other kind inherits them. Shared names would need a receiver-kind
+  // dispatch — they keep the fence.
   if (DYN_STRING_ONLY_METHODS.has(access.name.text) && !ownCallable) {
-    // An object-typed receiver the member is missing from (a JavaScript
-    // module object whose members are assigned in a function body,
-    // `common.repeat(" ", n)`), or an untyped receiver (an object whose
-    // prototype defines `trim`), holds a string or an object with that
-    // member: dispatch on the receiver's runtime kind.
+    // A checked-dynamic object can still carry its OWN member of that
+    // name: zod's schemas assign `trim`, `toLowerCase` and `startsWith`
+    // in their constructors (`z.string().trim().min(1)`), an object's
+    // prototype can define `trim`, and a JavaScript module object can
+    // assign `repeat` in a function body (`common.repeat(" ", n)`, an
+    // object-typed receiver the member is missing from). An untyped
+    // receiver, or a member the checker cannot type, dispatches on the
+    // receiver's runtime kind: a string runs the string lowering, anything
+    // else calls its member as Node does.
     if (
       (checkerUntyped ||
         (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) &&
