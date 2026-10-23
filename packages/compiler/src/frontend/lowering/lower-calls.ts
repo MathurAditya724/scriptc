@@ -4243,6 +4243,7 @@ const DYN_DISPATCH_METHODS = new Set([
   "shift",
   "unshift",
   "slice",
+  "splice",
   "at",
   "indexOf",
   "lastIndexOf",
