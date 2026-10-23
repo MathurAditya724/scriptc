@@ -106,16 +106,56 @@ function pureRead(node: ts.Expression): boolean {
   return false;
 }
 
-/** Whether every option member before `prop` evaluates without effects.
- * Runtime decodeStrings and defaultEncoding values are read into locals
- * before the constructor evaluates the other members, while Node evaluates
- * the members in order: an earlier member with effects could change them. */
-function earlierOptionsPure(options: ts.ObjectLiteralExpression, prop: ts.Node): boolean {
+/** A literal, `undefined`, or a function expression: a value that reads
+ * no binding or property. */
+function constantOptionValue(node: ts.Expression): boolean {
+  let e = node;
+  while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertion(e))
+    e = e.expression;
+  if (ts.isIdentifier(e)) return e.text === "undefined";
+  if (
+    ts.isPrefixUnaryExpression(e) &&
+    (e.operator === ts.SyntaxKind.MinusToken ||
+      e.operator === ts.SyntaxKind.PlusToken ||
+      e.operator === ts.SyntaxKind.ExclamationToken)
+  )
+    return constantOptionValue(e.operand);
+  return (
+    ts.isStringLiteralLike(e) ||
+    ts.isNumericLiteral(e) ||
+    ts.isBigIntLiteral(e) ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    e.kind === ts.SyntaxKind.NullKeyword ||
+    ts.isArrowFunction(e) ||
+    ts.isFunctionExpression(e)
+  );
+}
+
+/** Whether a runtime decodeStrings or defaultEncoding value (`prop`'s
+ * `value`) may be read before the other option members. Those values are
+ * read into locals before the constructor evaluates the other members,
+ * while Node evaluates the members in order, so every earlier member must
+ * evaluate without effects, and when the value itself has effects, every
+ * earlier member must also read nothing those effects could change. */
+function earlierOptionsPure(
+  options: ts.ObjectLiteralExpression,
+  prop: ts.Node,
+  value: ts.Expression,
+): boolean {
+  const valueHasEffects = !sideEffectFreeOptionValue(value) && !pureRead(value);
   for (const member of options.properties.nodes) {
     if (member === prop) return true;
     if (ts.isPropertyAssignment(member)) {
-      if (!sideEffectFreeOptionValue(member.initializer) && !pureRead(member.initializer))
+      const init = member.initializer;
+      if (
+        valueHasEffects
+          ? !constantOptionValue(init)
+          : !sideEffectFreeOptionValue(init) && !pureRead(init)
+      )
         return false;
+    } else if (ts.isShorthandPropertyAssignment(member)) {
+      if (valueHasEffects) return false;
     } else if (ts.isSpreadAssignment(member)) return false;
   }
   return true;
@@ -1039,12 +1079,12 @@ function parseStreamOptions(
         if (
           optsLit !== undefined &&
           ts.isObjectLiteralExpression(optsLit) &&
-          !earlierOptionsPure(optsLit, prop)
+          !earlierOptionsPure(optsLit, prop, value)
         )
           lowerer.noLowering(
-            `the ${ctorName} option 'decodeStrings' with a runtime value after an option value with effects`,
+            `the ${ctorName} option 'decodeStrings' with a runtime value that an earlier option value could observe or change`,
             prop,
-            "compute the earlier option values into consts before the options object (the runtime value is read before the other options run)",
+            "compute the option values into consts before the options object (the runtime value is read before the other options run)",
           );
         const local = lowerer.declareHiddenLocal("%decodeStrings", DYN);
         out.valueDecls.push({
@@ -1104,12 +1144,12 @@ function parseStreamOptions(
           if (
             optsLit !== undefined &&
             ts.isObjectLiteralExpression(optsLit) &&
-            !earlierOptionsPure(optsLit, prop)
+            !earlierOptionsPure(optsLit, prop, value)
           )
             lowerer.noLowering(
-              `the ${ctorName} option 'defaultEncoding' with a runtime value after an option value with effects`,
+              `the ${ctorName} option 'defaultEncoding' with a runtime value that an earlier option value could observe or change`,
               prop,
-              "compute the earlier option values into consts before the options object (the runtime value is read before the other options run)",
+              "compute the option values into consts before the options object (the runtime value is read before the other options run)",
             );
           const local = lowerer.declareHiddenLocal("%defaultEncoding", DYN);
           const ref = varRef(local.id, DYN, loc);

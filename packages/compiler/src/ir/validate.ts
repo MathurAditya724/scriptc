@@ -4146,6 +4146,9 @@ function validateFunction(
       e.fn === "error.assign" ||
       e.fn === "error.hasKey" ||
       e.fn === "error.hasCode" ||
+      e.fn === "error.ownAccessor" ||
+      e.fn === "error.accessorGet" ||
+      e.fn === "error.accessorSet" ||
       e.fn === "error.defineCause" ||
       e.fn === "error.deleteCause"
     ) {

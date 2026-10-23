@@ -66,6 +66,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fetch.start": { argTypes: [STRING, DYN], result: { kind: "promise", inner: DYN } },
   "fetch.responseNew": { argTypes: [DYN, DYN], result: DYN },
   "fetch.responseJsonStatic": { argTypes: [DYN, DYN], result: DYN },
+  "fetch.responseLight": { argTypes: [DYN], result: arrayOf(STRING) },
   "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "abort.controllerNew": { argTypes: [], result: DYN },
   /** EventTarget / Event / CustomEvent construction (scr_event_target.c):
@@ -1835,7 +1836,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * connection (+1, the same handle net.connect would give);
    * sockRemoteAddress answers `string | undefined` (NULL after the fd
    * closed, Node's destroyed-socket undefined; a dual-stack accept of an
-   * IPv4 peer reads "::ffff:a.b.c.d" like Node). reqResume/reqDestroy and
+   * IPv4 peer reads "::ffff:a.b.c.d" like Node). reqResume/reqPause/reqDestroy and
    * the req error/close listener slots complete the IncomingMessage
    * surface portless's client responses use; resDestroy/resOnClose and
    * resWriteHeadPairs ([k0,v0,k1,v1,...] — the env.pairs helper's flat
@@ -1902,6 +1903,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "http.reqPipeClient": { argTypes: [HTTPREQ_T, HTTPCLIENTREQ_T], result: VOID },
   "http.reqPipeSock": { argTypes: [HTTPREQ_T, NETSOCKET_T], result: VOID },
   "http.reqResume": { argTypes: [HTTPREQ_T], result: VOID },
+  "http.reqPause": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqDestroy": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqOnError": { argTypes: [HTTPREQ_T, null, BOOL], result: VOID },
   "http.reqOnClose": {
@@ -2844,6 +2846,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * undefined, and call it in a later macrotask; Node's argument errors
    * throw (may-throw). */
   "crypto.checkPrimeSync": { argTypes: [DYN, DYN], result: DYN },
+  /** getCipherInfo(nameOrNid, options) over checked-dynamic arguments
+   * (scr_cipher_info.c): the info object or undefined. */
+  "crypto.getCipherInfo": { argTypes: [DYN, DYN], result: DYN },
   "crypto.checkPrimeCb": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
   "crypto.generatePrimeSync": { argTypes: [DYN, DYN], result: DYN },
   "crypto.generatePrimeCb": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
@@ -3429,6 +3434,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * throw-site fields, dynamic writes) or an Object.prototype member. */
   "error.hasKey": { argTypes: [null, STRING], result: BOOL },
   "error.hasCode": { argTypes: [null], result: BOOL },
+  /** Whether the error's own `name` or `message` (the key) is an accessor
+   * a reflective definition installed. Borrows both; never throws. */
+  "error.ownAccessor": { argTypes: [null, STRING], result: BOOL },
+  /** That accessor's getter called on the error (owned result), and its
+   * setter called with the value (V8's TypeError without one). Borrow
+   * their arguments; throw what the accessor throws. */
+  "error.accessorGet": { argTypes: [null, STRING], result: DYN },
+  "error.accessorSet": { argTypes: [null, STRING, DYN], result: VOID },
   "error.defineCause": { argTypes: [null, DYN], result: VOID },
   "error.deleteCause": { argTypes: [null], result: VOID },
   /** The compiler-resolved Node-parity throw for always-throwing lowered
@@ -3745,6 +3758,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.assignPrototype": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.definePrototypeProps": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.bagGet": { argTypes: [DYN, STRING, DYN], result: DYN },
+  /** A class field's creation in its instance's property bag: adds the
+   * string key as a default data property when absent, answering false
+   * (nothing changed) when the bag needs the general defineProperty path. */
+  "dyn.bagCreateField": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.bagSet": { argTypes: [DYN, STRING, DYN, DYN], result: VOID },
   "dyn.objCreate": { argTypes: [DYN], result: DYN },
   // Names a compiled class's prototype object (args[0]) after the class
@@ -3752,6 +3769,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.nameClassPrototype": { argTypes: [DYN, STRING], result: VOID },
   "dyn.objCreateWithProperties": { argTypes: [DYN, DYN], result: DYN },
   "dyn.getPrototype": { argTypes: [DYN], result: DYN },
+  // dyn.getPrototype for walks that compare each prototype with a program
+  // class's prototype: native builtin values end the walk (null).
+  "dyn.getPrototypeForIdentity": { argTypes: [DYN], result: DYN },
   "dyn.setPrototype": { argTypes: [DYN, DYN], result: DYN },
   "dyn.getOwnPropertyNames": { argTypes: [DYN], result: DYN },
   "dyn.ownKeys": { argTypes: [DYN], result: DYN },

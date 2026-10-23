@@ -3253,6 +3253,11 @@ export class Lowerer {
    * dispatch revision needs no weak-key identity or process-global state. */
   errorMethodDispatchRevision: string | null = null;
   errorPropertyDispatchRevision: string | null = null;
+  /** The program defines properties by reflection on an untyped or
+   * Error-shaped target, so an own accessor may replace an error's `name`
+   * or `message`: typed reads and writes of those slots check for one.
+   * Holds the first such call's location. */
+  errorAccessorReflection: SrcLoc | null = null;
   /** Structural source positions (structural-positions.ts) for names that
    * stay the same when unrelated code moves. */
   /** Files are named by their path relative to the entry's directory, so
@@ -3646,6 +3651,9 @@ export class Lowerer {
       .some((sf) => isDeclBoundaryFile(sf.fileName));
     return this.declBoundaryMemo;
   }
+  /** Tracked classes' bag initializers over a typed `this`
+   * (class-dynamic-dispatch.ts recordBagInitializers). */
+  readonly classBagInitializers = new Map<string, IrExpr>();
 
   constructor(
     readonly program: ts.Program,
