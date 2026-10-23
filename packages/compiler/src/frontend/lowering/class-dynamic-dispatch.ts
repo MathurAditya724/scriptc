@@ -685,16 +685,154 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
   if (![...lowerer.classes.values()].some((info) => info.def.tracksOwnFields)) return;
   const loc = functions[0]!.loc;
   const name = "%dyn.class.fieldCreated";
-  const value = varRef("value", DYN, loc),
-    key = varRef("key", DYN, loc);
-  const bag = varRef("bag", DYN, loc);
-  const created = (receiver: IrExpr, className: string, field: string, loc: SrcLoc): IrStmt => ({
+  const key = varRef("key", DYN, loc);
+  // One helper per class: the instance's bag is its own hidden field, so a
+  // creation reads it directly instead of boxing the instance and testing
+  // it against every class's capsule (%dyn.class.properties), which runs
+  // only to create the bag, once per instance.
+  const perClass = new Map<string, string>();
+  const helperFor = (className: string): string => {
+    const known = perClass.get(className);
+    if (known !== undefined) return known;
+    const helperName = `${name}:${className}`;
+    perClass.set(className, helperName);
+    const self = varRef("this", { kind: "object", className }, loc);
+    const bagRef = varRef("bag", DYN, loc);
+    functions.push({
+      name: helperName,
+      params: [
+        { localId: "this", name: "this", type: { kind: "object", className } },
+        { localId: "key", name: "key", type: DYN },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "this", name: "this", type: { kind: "object", className }, mutable: false },
+        { id: "key", name: "key", type: DYN, mutable: false },
+        { id: "bag", name: "bag", type: DYN, mutable: true },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "bag",
+          init: { kind: "fieldGet", obj: self, className, field: PROPERTY_BAG, type: DYN, loc },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "undefined", value: bagRef, type: BOOL, loc },
+          then: initializeBag(lowerer, className, self, loc),
+          else_: null,
+          loc,
+        },
+        ...defineIfAbsent(lowerer, bagRef, key, loc),
+      ],
+      loc,
+    });
+    return helperName;
+  };
+  // String-keyed fields take the runtime's direct insert for an ordinary
+  // bag; the general path stays for any other bag and for symbol keys.
+  const stringHelperFor = (className: string): string => {
+    const known = perClass.get(`str:${className}`);
+    if (known !== undefined) return known;
+    const general = helperFor(className);
+    const helperName = `${name}.string:${className}`;
+    perClass.set(`str:${className}`, helperName);
+    const type: IrType = { kind: "object", className };
+    const self = varRef("this", type, loc);
+    const bagRef = varRef("bag", DYN, loc);
+    const field = varRef("field", STRING, loc);
+    functions.push({
+      name: helperName,
+      params: [
+        { localId: "this", name: "this", type },
+        { localId: "field", name: "field", type: STRING },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "this", name: "this", type, mutable: false },
+        { id: "field", name: "field", type: STRING, mutable: false },
+        { id: "bag", name: "bag", type: DYN, mutable: true },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "bag",
+          init: { kind: "fieldGet", obj: self, className, field: PROPERTY_BAG, type: DYN, loc },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "undefined", value: bagRef, type: BOOL, loc },
+          then: initializeBag(lowerer, className, self, loc),
+          else_: null,
+          loc,
+        },
+        {
+          kind: "if",
+          cond: {
+            kind: "libCall",
+            fn: "dyn.bagCreateField",
+            args: [bagRef, field],
+            type: BOOL,
+            loc,
+          },
+          then: [{ kind: "return", value: null, loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "call",
+            callee: general,
+            args: [self, lowerer.coerceToExpected(field, DYN)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+    return helperName;
+  };
+  const created = (receiver: IrExpr, className: string, field: string, loc: SrcLoc): IrStmt => {
+    const symbolKey = symbolMemberKey(lowerer, lowerer.classes.get(className)!, field, loc);
+    if (symbolKey === null) {
+      return {
+        kind: "exprStmt",
+        expr: {
+          kind: "call",
+          callee: stringHelperFor(className),
+          args: [
+            receiver.type.kind === "object" && receiver.type.className !== className
+              ? { kind: "upcast", value: receiver, type: { kind: "object", className }, loc }
+              : receiver,
+            { kind: "strLit", value: field, type: STRING, loc },
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      };
+    }
+    return createdGeneral(receiver, className, field, loc);
+  };
+  const createdGeneral = (
+    receiver: IrExpr,
+    className: string,
+    field: string,
+    loc: SrcLoc,
+  ): IrStmt => ({
     kind: "exprStmt",
     expr: {
       kind: "call",
-      callee: name,
+      callee: helperFor(className),
       args: [
-        lowerer.coerceToExpected(receiver, DYN),
+        receiver.type.kind === "object" && receiver.type.className !== className
+          ? { kind: "upcast", value: receiver, type: { kind: "object", className }, loc }
+          : receiver,
         symbolMemberKey(lowerer, lowerer.classes.get(className)!, field, loc) ??
           lowerer.coerceToExpected({ kind: "strLit", value: field, type: STRING, loc }, DYN),
       ],
@@ -769,80 +907,103 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
       },
     });
   }
-  functions.push({
-    name,
-    params: [
-      { localId: "value", name: "value", type: DYN },
-      { localId: "key", name: "key", type: DYN },
-    ],
-    returnType: VOID,
-    locals: [
-      { id: "value", name: "value", type: DYN, mutable: false },
-      { id: "key", name: "key", type: DYN, mutable: false },
-      { id: "bag", name: "bag", type: DYN, mutable: false },
-    ],
-    body: [
+}
+
+/** `bag = <the class's new bag>`, stored in the instance's hidden field:
+ * the class's own initializer when recorded, else the class-table
+ * dispatch, which creates it. */
+function initializeBag(lowerer: Lowerer, className: string, self: IrExpr, loc: SrcLoc): IrStmt[] {
+  const init = lowerer.classBagInitializers?.get(className);
+  if (init === undefined) {
+    return [
       {
-        kind: "varDecl",
+        kind: "assign",
         localId: "bag",
-        init: {
+        value: {
           kind: "call",
           callee: classPropertiesHelper(lowerer, loc).name,
-          args: [value],
+          args: [lowerer.coerceToExpected(self, DYN)],
           type: DYN,
           loc,
         },
         loc,
       },
-      {
-        kind: "if",
-        cond: {
-          kind: "unary",
-          op: "!",
-          operand: { kind: "libCall", fn: "dyn.hasOwnComputed", args: [bag, key], type: BOOL, loc },
-          type: BOOL,
-          loc,
-        },
-        then: [
-          {
-            kind: "exprStmt",
-            expr: {
-              kind: "libCall",
-              fn: "dyn.defineProperty",
-              args: [
-                bag,
-                lowerer.coerceToExpected(key, DYN),
-                {
-                  kind: "dynObjLit",
-                  fields: [
-                    {
-                      key: { kind: "strLit", value: "value", type: STRING, loc },
-                      value: dynUndefinedExpr(loc),
-                    },
-                    ...["writable", "enumerable", "configurable"].map((key) => ({
-                      key: { kind: "strLit" as const, value: key, type: STRING, loc },
-                      value: lowerer.coerceToExpected(
-                        { kind: "boolLit", value: true, type: BOOL, loc },
-                        DYN,
-                      ),
-                    })),
-                  ],
-                  type: DYN,
-                  loc,
-                },
-              ],
-              type: DYN,
-              loc,
-            },
-            loc,
-          },
-        ],
-        else_: null,
+    ];
+  }
+  return [
+    {
+      kind: "fieldSet",
+      obj: self,
+      className,
+      field: PROPERTY_BAG,
+      value: structuredClone(init),
+      loc,
+    },
+    {
+      kind: "assign",
+      localId: "bag",
+      value: { kind: "fieldGet", obj: self, className, field: PROPERTY_BAG, type: DYN, loc },
+      loc,
+    },
+  ];
+}
+
+/** Whether `value` reads local `id`. */
+function mentionsLocal(value: IrExpr, id: string): boolean {
+  return JSON.stringify(value).includes(`"localId":${JSON.stringify(id)}`);
+}
+
+/** `if (!hasOwn(bag, key)) defineProperty(bag, key, <undefined data field>)`:
+ * a field's creation in its instance's property bag. */
+function defineIfAbsent(lowerer: Lowerer, bag: IrExpr, key: IrExpr, loc: SrcLoc): IrStmt[] {
+  return [
+    {
+      kind: "if",
+      cond: {
+        kind: "unary",
+        op: "!",
+        operand: { kind: "libCall", fn: "dyn.hasOwnComputed", args: [bag, key], type: BOOL, loc },
+        type: BOOL,
         loc,
       },
-    ],
-    loc,
-  });
+      then: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.defineProperty",
+            args: [
+              bag,
+              lowerer.coerceToExpected(key, DYN),
+              {
+                kind: "dynObjLit",
+                fields: [
+                  {
+                    key: { kind: "strLit", value: "value", type: STRING, loc },
+                    value: dynUndefinedExpr(loc),
+                  },
+                  ...["writable", "enumerable", "configurable"].map((key) => ({
+                    key: { kind: "strLit" as const, value: key, type: STRING, loc },
+                    value: lowerer.coerceToExpected(
+                      { kind: "boolLit", value: true, type: BOOL, loc },
+                      DYN,
+                    ),
+                  })),
+                ],
+                type: DYN,
+                loc,
+              },
+            ],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      else_: null,
+      loc,
+    },
+  ];
 }
 
 /** Calls on native class capsules keep the instance's compiled methods. The
@@ -4516,6 +4677,7 @@ export class ClassDynamicDispatch {
   finalize(lowerer?: Lowerer): void {
     // Each table serves every site that reaches it.
     if (lowerer) for (const fn of this.generated) lowerer.shareHelper(fn);
+    if (lowerer) this.recordBagInitializers(lowerer);
     for (const { helper, initialize, orEmpty } of this.readPropertyBags) {
       const absent = helper.body[0];
       if (isEmptyBag(initialize.value) && !orEmpty) helper.body.shift();
@@ -4535,6 +4697,21 @@ export class ClassDynamicDispatch {
         structuredClone(this.propertyBag.body),
         fn.name === READ_PROPERTIES_OR_EMPTY,
       );
+    }
+  }
+
+  /** Each tracked class's bag initializer over a typed receiver (`this`),
+   * for the per-class field-creation helpers (trackClassFieldCreation),
+   * which create an instance's bag without the class-table dispatch. */
+  private recordBagInitializers(lowerer: Lowerer): void {
+    for (const [className, initializers] of this.bagInitializers) {
+      const init = initializers[0];
+      if (!init || !lowerer.classes.get(className)?.def.tracksOwnFields) continue;
+      const self = varRef("this", { kind: "object", className }, init.loc);
+      const value = withTypedReceiver(structuredClone(init.value), self);
+      if (mentionsLocal(value, "p.0")) continue;
+      // Lowerer stand-ins in unit tests may not carry the table.
+      lowerer.classBagInitializers?.set(className, value);
     }
   }
 
