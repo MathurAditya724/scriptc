@@ -134,6 +134,20 @@ export function indexInteger(
   return wide && wide.below >= INDEX_LIMIT ? wide.name : null;
 }
 
+/** An i64 equal to a value's double wherever the value can be: its exact
+ * integer, or a wide view whose magnitude bound is within the magnitude below
+ * which the view is exact. Every integer of magnitude at most 2^53 is a
+ * double, so a bound equal to that limit is exact too. Null otherwise. */
+export function alwaysExactInteger(
+  host: LlvmEmitterContext,
+  value: LlValue,
+  integer: LlInteger | null,
+): string | null {
+  if (integer) return widenInteger(host, integer);
+  const wide = value.wideInteger;
+  return wide && wide.bound <= wide.below ? wide.name : null;
+}
+
 export function widenInteger(host: LlvmEmitterContext, value: LlInteger): string {
   if (value.type === "i64") return value.name;
   const wide = host.B.tmp();
