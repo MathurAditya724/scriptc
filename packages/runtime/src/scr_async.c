@@ -1664,6 +1664,54 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #endif
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* A nested entry into Node (scr_node_island.c) runs on Node's stack in a
+ * context of its own while the fiber that made the call stays suspended in
+ * it. Runtime code that Node calls back there runs as the loop's code does:
+ * no current fiber, the main exception cell and ALS slot. It may resume
+ * other fibers, which saves the resumer's context in scr_loop_ctx (and,
+ * under ASan, its fake stack in the main slot); those belong to whoever
+ * resumed the calling fiber, so they are saved here and put back when the
+ * nested entry returns, or the calling fiber's next park would return to a
+ * context that no longer exists. */
+typedef struct {
+  ScrFiber *current;
+  ScrAlsCtx **als;
+  ScrCtx loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  void *main_fake;
+#endif
+} ScrNestedSave;
+
+void *scr_loop_nested_enter(void) {
+  ScrNestedSave *s = malloc(sizeof *s);
+  if (s == NULL) scr_oom();
+  s->current = scr_current;
+  s->als = scr_als_active;
+  s->loop_ctx = scr_loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  s->main_fake = scr_main_fake_stack;
+  scr_main_fake_stack = NULL;
+#endif
+  scr_current = NULL;
+  scr_exc_swap_cell(NULL);
+  scr_als_active = &scr_als_main_slot;
+  return s;
+}
+
+void scr_loop_nested_leave(void *save) {
+  ScrNestedSave *s = save;
+  scr_loop_ctx = s->loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  scr_main_fake_stack = s->main_fake;
+#endif
+  scr_current = s->current;
+  scr_exc_swap_cell(s->current ? &s->current->exc : NULL);
+  scr_als_active = s->als;
+  free(s);
+}
+#endif
+
 static void scr_promise_settle_wake(ScrPromise *p);
 
 /* Copies src's settlement into a still-pending dst (payload RETAINED —

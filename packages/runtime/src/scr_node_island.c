@@ -332,6 +332,7 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   ni_nested_return = &caller;
   uintptr_t guard = scr_stack_guard;
   SCR_STACK_GUARD_SET(scr_stack_guard_for((uintptr_t)lo, hi - (uintptr_t)lo));
+  void *loop_save = scr_loop_nested_enter();
 #ifdef NI_ASAN
   void *caller_fake = NULL;
   __sanitizer_start_switch_fiber(&caller_fake, lo, hi - (uintptr_t)lo);
@@ -342,6 +343,7 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   size_t size;
   __sanitizer_finish_switch_fiber(caller_fake, &bottom, &size);
 #endif
+  scr_loop_nested_leave(loop_save);
   SCR_STACK_GUARD_SET(guard);
 }
 
