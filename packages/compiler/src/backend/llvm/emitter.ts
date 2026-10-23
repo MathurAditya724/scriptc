@@ -1079,6 +1079,10 @@ export class LlEmitter {
   readonly cstrs = new Map<string, { sym: string; len: number }>();
   /** Interned ScrMapOps descriptors (scr_map.h): initializer → symbol. */
   readonly mapOpsConsts = new Map<string, string>();
+  /** Method-id slots of checked-dynamic method calls
+   * (scr_dyn_invoke_prepared_id): method name → symbol of an i32 the
+   * runtime fills with the name's id on the first call. */
+  readonly methodIdSlots = new Map<string, string>();
   /** Type-directed walker functions (JSON serializers, the indent
    * rewriter, union ToString/join) — interned per typeKey/unionId, defs
    * flushed with the shape helpers. */
@@ -2737,6 +2741,17 @@ export class LlEmitter {
     }
     this.journal?.entry("cstr", text, c);
     return `@${c.sym}`;
+  }
+
+  /** The method-id slot for a constant method name (methodIdSlots). */
+  methodIdSlot(name: string): string {
+    let sym = this.methodIdSlots.get(name);
+    if (!sym) {
+      sym = this.contentSymbol("sc_mid_", name);
+      this.methodIdSlots.set(name, sym);
+    }
+    this.journal?.entry("methodIdSlot", name, sym);
+    return `@${sym}`;
   }
 
   needBadTag(): void {
@@ -4852,6 +4867,15 @@ export class LlEmitter {
         if (own === undefined) {
           own = this.contentSymbol("sc_map_ops_", key);
           this.mapOpsConsts.set(key, own);
+        }
+        if (own !== value) names.set(value as string, own);
+        return;
+      }
+      case "methodIdSlot": {
+        let own = this.methodIdSlots.get(key);
+        if (own === undefined) {
+          own = this.contentSymbol("sc_mid_", key);
+          this.methodIdSlots.set(key, own);
         }
         if (own !== value) names.set(value as string, own);
         return;
