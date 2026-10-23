@@ -5,13 +5,15 @@ scriptc coverage tests/coverage-fixtures/node-islands-user-js.cjs
     in dynamic tier     10  (operate on values typed only at runtime; --explain-dynamic lists them)
   (1 function not analyzed — signature blocked; their statements count as not static)
 
-  deferred to runtime   2 sites (JS statements that throw their fence if executed)
-      ×1  SC1090  parameterized 'arguments' outside an ES module (sloppy-mode parameter aliases)
-          at tests/coverage-fixtures/node-islands-user-js.cjs:15:1
-          hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
+  runs at startup   1 site (JS statements in module top-level code, which runs when the module loads)
       ×1  SC2004  uses of 'legacy' inherit the blocker on its declaration
           at tests/coverage-fixtures/node-islands-user-js.cjs:22:57
           hint: the declaration of 'legacy' did not compile — fix the diagnostic reported there and these sites clear with it
+
+  deferred to runtime   1 site (JS statements that throw their fence if executed)
+      ×1  SC1090  parameterized 'arguments' outside an ES module (sloppy-mode parameter aliases)
+          at tests/coverage-fixtures/node-islands-user-js.cjs:15:1
+          hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
 
   blockers:
       ×1  SC8101  A write of 'Point.prototype.norm' needs a mutable JavaScript object model, which native code does not have
