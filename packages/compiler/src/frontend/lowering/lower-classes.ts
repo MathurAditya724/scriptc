@@ -238,7 +238,7 @@ export function returnsOnlyThisValue(member: ts.MethodDeclaration): boolean {
   return valid;
 }
 
-function functionLocalClass(decl: ts.ClassLikeDeclaration): boolean {
+export function functionLocalClass(decl: ts.ClassLikeDeclaration): boolean {
   for (
     let parent: ts.Node | undefined = decl.parent;
     parent && !ts.isSourceFile(parent);

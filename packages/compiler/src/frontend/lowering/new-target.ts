@@ -16,7 +16,7 @@ import { varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
-import { classValueRef } from "./lower-classes.js";
+import { classValueRef, functionLocalClass } from "./lower-classes.js";
 
 export function isNewTarget(node: ts.Node): node is ts.MetaProperty {
   return (
@@ -54,6 +54,90 @@ function depth(info: ClassInfo): number {
   let d = 0;
   for (let c = info.base; c; c = c.base) d++;
   return d;
+}
+
+/** The function-local classes of the program that extend a class. */
+function functionLocalSubclasses(lowerer: Lowerer): ts.ClassLikeDeclaration[] {
+  let found = lowerer.functionLocalSubclasses;
+  if (found === undefined) {
+    const classes: ts.ClassLikeDeclaration[] = [];
+    for (const sf of lowerer.moduleOrder)
+      ts.walkPreorder(sf, (node) => {
+        if (
+          (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
+          baseExpressionOf(node) !== undefined &&
+          functionLocalClass(node)
+        )
+          classes.push(node);
+      });
+    lowerer.functionLocalSubclasses = found = classes;
+  }
+  return found;
+}
+
+function baseExpressionOf(node: ts.ClassLikeDeclaration): ts.Expression | undefined {
+  let base = node.heritageClauses?.nodes.find(
+    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+  )?.types?.nodes[0]?.expression;
+  while (base !== undefined && ts.isParenthesizedExpression(base)) base = base.expression;
+  return base;
+}
+
+/** Whether the class `node` extends the class of `info` (for an
+ * instantiation, its family), directly or through other classes, as far as
+ * its `extends` clauses name classes. */
+function derivesFrom(
+  lowerer: Lowerer,
+  node: ts.ClassLikeDeclaration,
+  info: ClassInfo,
+  seen: Set<ts.Node>,
+): boolean {
+  if (seen.has(node)) return false;
+  seen.add(node);
+  const base = baseExpressionOf(node);
+  const name =
+    base === undefined
+      ? undefined
+      : ts.isIdentifier(base)
+        ? base
+        : ts.isPropertyAccessExpression(base)
+          ? base.name
+          : undefined;
+  let symbol = name === undefined ? undefined : lowerer.checker.getSymbolAtLocation(name);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  if (symbol === undefined) return false;
+  const named = lowerer.classBySymbol.get(symbol);
+  if (named !== undefined)
+    return (
+      named === info ||
+      named === info.genericInstance?.family ||
+      lowerer.isSubclassOf(named.def.name, info.def.name)
+    );
+  // A class lowering has not collected: through its declaration.
+  for (const declaration of symbol.declarations) {
+    let cls: ts.Node | undefined = declaration;
+    if (ts.isVariableDeclaration(cls)) {
+      cls = cls.initializer;
+      while (cls !== undefined && ts.isParenthesizedExpression(cls)) cls = cls.expression;
+    }
+    if (
+      cls !== undefined &&
+      (ts.isClassDeclaration(cls) || ts.isClassExpression(cls)) &&
+      derivesFrom(lowerer, cls, info, seen)
+    )
+      return true;
+  }
+  return false;
+}
+
+/** `node`'s name, quoted, for diagnostics. */
+function localClassName(node: ts.ClassLikeDeclaration): string {
+  if (node.name) return `'${node.name.text}'`;
+  const parent = node.parent;
+  return parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)
+    ? `'${parent.name.text}'`
+    : "a class expression";
 }
 
 /** The classes `new.target` can denote in the constructor being lowered,
@@ -97,6 +181,16 @@ function dispatchOf(lowerer: Lowerer, expr: ts.MetaProperty): Dispatch | null {
       );
       return null;
     }
+  }
+  // Lowering collects a function-local class with the body declaring it,
+  // which may come after this constructor.
+  for (const local of functionLocalSubclasses(lowerer)) {
+    if (!derivesFrom(lowerer, local, info, new Set())) continue;
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'new.target' where ${localClassName(local)} is a function-local class (each evaluation creates a new class)`,
+    );
   }
   let self: IrExpr | null = null;
   if (classes.length > 1) {
