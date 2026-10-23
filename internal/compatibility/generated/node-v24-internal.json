@@ -19332,6 +19332,10 @@
           "tests/corpus/7151-cipher-legacy-errors.cjs",
           "tests/corpus/7152-crypto-prime.ts",
           "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/7154-crypto-cipher-info.cjs",
+          "tests/corpus/7155-cipher-aes-ccm.cjs",
+          "tests/corpus/7156-cipher-key-wrap.cjs",
+          "tests/corpus/7157-crypto-cipher-info-typed.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -19719,6 +19723,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.createCipheriv",
         "tests": [
+          "tests/corpus/7155-cipher-aes-ccm.cjs",
+          "tests/corpus/7156-cipher-key-wrap.cjs",
           "tests/corpus/7150-cipher-legacy-modes.ts",
           "tests/corpus/7151-cipher-legacy-errors.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
@@ -19760,6 +19766,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.createDecipheriv",
         "tests": [
+          "tests/corpus/7155-cipher-aes-ccm.cjs",
+          "tests/corpus/7156-cipher-key-wrap.cjs",
           "tests/corpus/7150-cipher-legacy-modes.ts",
           "tests/corpus/7151-cipher-legacy-errors.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
@@ -20434,8 +20442,12 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.getCipherInfo"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.crypto.getCipherInfo",
+        "tests": [
+          "tests/corpus/7154-crypto-cipher-info.cjs",
+          "tests/corpus/7157-crypto-cipher-info-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52182,6 +52194,7 @@
           "tests/corpus/6294-webcrypto-js-values.mjs",
           "tests/corpus/6295-jose-hs256/main.mjs",
           "tests/corpus/6331-jose-root-entry/main.ts",
+          "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -53431,8 +53444,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.TransformStream",
+        "tests": [
+          "tests/corpus/7743-transform-stream-identity.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111471,6 +111487,7 @@
           "tests/corpus/2630-stream-consumers-errors.ts",
           "tests/corpus/2862-web-readable-async-iteration.ts",
           "tests/corpus/4875-stream-consumers-array-buffer.ts",
+          "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
           "tests/harness/fetch-conformance.test.ts"
@@ -112945,8 +112962,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.TransformStream",
+        "tests": [
+          "tests/corpus/7743-transform-stream-identity.ts"
+        ]
       },
       "anchorSource": "exact"
     },

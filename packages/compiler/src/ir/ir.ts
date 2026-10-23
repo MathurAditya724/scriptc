@@ -1060,6 +1060,10 @@ export interface IrModule {
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
   threadSlotKeys?: string[];
+  /** typeKeys of the array types whose values the program may freeze
+   * (frontend frozen-records.ts): their writes test the array's frozen bit
+   * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
+  freezableArrays?: string[];
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
@@ -1689,6 +1693,10 @@ export interface IrRecordShape {
    * dynCheck), and JSON serialization appends overflow entries after the
    * declared fields in insertion order. */
   indexValue?: IrType;
+  /** Values of this shape may be frozen (frozen-records.ts): their rc word
+   * can carry the frozen bit, which their release ignores, and every write
+   * to them checks it. */
+  freezable?: true;
   /** Field names in FIRST-SEEN declaration order (the checker's property
    * order of the first ts.Type interned to this shape) — metadata, NOT
    * part of the interned identity: a later structurally-equal type with a
@@ -3902,8 +3910,10 @@ export type IrExpr =
    * not shape equality; missing or wrong-typed fields throw, EXCEPT that a
    * missing key for an undefined-armed union field — an optional field —
    * builds the interned undefined arm instead); arrays check every element;
-   * unions try arms in canonical order and the first FULL match wins (no
-   * match → throw; an undefined arm matches no dyn value); JSON null matches
+   * unions try arms in canonical order, except that record arms with more
+   * required fields and then more fields go first, and the first FULL match
+   * wins (no match → throw; an undefined arm matches no dyn value); JSON
+   * null matches
    * exactly the nullT arm of a union target (bare null targets cannot
    * exist). MAY THROW:
    * backends' may-throw analyses must treat it like a `throw` statement.

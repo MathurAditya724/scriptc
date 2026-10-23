@@ -13,7 +13,7 @@ console.log(numbersView[0], numbersView[2], typeof numbersView[2]);
 console.log(numbers, String(numbers), numbers.join("|"), JSON.stringify(numbers));
 for (const value of numbersView) console.log("value", value, typeof value);
 console.log(numbers.indexOf(2), numbers.includes(2));
-console.log([...numbers], numbers.slice(1), numbers.concat([9]));
+console.log([...numbers], numbers.slice(1), numbers.slice(1, 2), numbers.concat([9]));
 
 // Math over a spread applies ToNumber to every element, as in Node.
 const digits: number[] = [5];
@@ -74,6 +74,44 @@ holeyView[6] = undefined;
 console.log(holey.toSorted(), holey.length);
 holey.sort();
 console.log(holey, holey.length);
+
+// Conversions during an in-place sort that change the array's length:
+// elements added past the sorted length stay.
+const appended: number[] = [3, 1, 2];
+const appendedView: unknown[] = appended;
+let appendedCalls = 0;
+appendedView[1] = {
+  toString(): string {
+    if (appendedCalls++ === 0) appended.push(7, 8);
+    return "1";
+  },
+};
+appended.sort();
+console.log(appended.length, appended.slice(3), String(appendedView[0]), appended[2]);
+const reduced: number[] = [3, 1, 2];
+const reducedView: unknown[] = reduced;
+reducedView[4] = 4;
+let reducedCalls = 0;
+reducedView[1] = {
+  toString(): string {
+    if (reducedCalls++ === 0) reduced.length = 1;
+    return "1";
+  },
+};
+reduced.sort();
+console.log(reduced.length, 3 in reduced, 4 in reduced, reduced[1], reduced[2]);
+const padded: number[] = [3, 1, 2];
+const paddedView: unknown[] = padded;
+paddedView.length = 5;
+let paddedCalls = 0;
+paddedView[1] = {
+  toString(): string {
+    if (paddedCalls++ === 0) padded.push(9);
+    return "1";
+  },
+};
+padded.sort();
+console.log(padded.length, 3 in padded, 4 in padded, padded[5]);
 
 // A conversion that removes the element it converts.
 const shrinking: number[] = [1];

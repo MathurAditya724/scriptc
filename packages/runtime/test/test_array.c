@@ -2539,6 +2539,14 @@ static void test_foreign_elements(void) {
   ScrArr *copy = scr_arr_slice(a, 0, INFINITY);
   check_f64(scr_arr_state(copy, 2), SCR_ARR_FOREIGN, "slice keeps a foreign element");
   scr_arr_release(copy);
+  ScrArr *head = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_foreign(head, 0, x);
+  scr_arr_push_f64(head, 2);
+  scr_arr_push_f64(head, 3);
+  copy = scr_arr_slice(head, 1, INFINITY);
+  check_f64(scr_arr_get_f64(copy, 1), 3, "slice past a foreign element");
+  scr_arr_release(copy);
+  scr_arr_release(head);
   scr_arr_set_f64(a, 2, 5);
   check_f64(scr_arr_get_f64(a, 2), 5, "a number replaces a foreign element");
   scr_arr_set_foreign(a, 2, x);
