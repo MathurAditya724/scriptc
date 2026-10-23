@@ -767,7 +767,37 @@ export function emitLocalArrayRead(
     }
     B.line(`store i32 ${read.presentTag}, ptr ${tag}`);
   };
-  if (inline)
+  if (inline && scalar && host.checkedInt32Array(read.array))
+    // An int32 array with checked stores: its int32 arm stores the element's
+    // double bits, as the double arm does.
+    host.emitByElementKind(array.name, null, (kind) => {
+      const present =
+        kind === "i32"
+          ? (value: string): void => {
+              const number = B.tmp(),
+                bits = B.tmp();
+              B.line(`${number} = sitofp i32 ${value} to double`);
+              B.line(`${bits} = bitcast double ${number} to i64`);
+              storeValue(bits);
+            }
+          : storeValue;
+      const loadType = kind === "i32" ? "i32" : "i64";
+      const induction = loopIndex !== null;
+      emitDenseReferenceArrayRead(
+        host,
+        array,
+        index,
+        integerIndex,
+        induction,
+        present,
+        no,
+        slow,
+        join,
+        loadType,
+      );
+      return null;
+    });
+  else if (inline)
     emitDenseReferenceArrayRead(
       host,
       array,

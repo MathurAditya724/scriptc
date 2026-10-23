@@ -139,6 +139,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.speculativeFunction = fn.name;
   emitter.speculation = null;
   emitter.speculationResume = null;
+  emitter.int32Kinds = null;
+  emitter.int32KindResume = null;
   emitter.finalFieldBorrows =
     !fn.async &&
     !fn.generator &&

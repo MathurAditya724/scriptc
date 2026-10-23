@@ -594,6 +594,36 @@ static void scr_arr_move_inline(ScrArr *a, size_t cap) {
   a->spare &= (uint16_t)~SCR_ARR_INLINE_SLOTS;
 }
 
+/* Widen an int32 array (SCR_ELEM_I32) to doubles in place, one way: its
+ * dense values move to 8-byte slots, with their states when it has them, and
+ * its kind becomes SCR_ELEM_F64. Compiled code calls it before storing a
+ * value that is not an int32 into an int32 array with checked stores; `data`
+ * may move. Sparse entries already hold doubles. */
+void scr_arr_widen_i32(ScrArr *a) {
+  if (a->elem != SCR_ELEM_I32) return;
+  size_t cap = a->cap;
+  if (cap > 0) {
+    /* Int32 arrays never shift, so they have no head room; inline slots
+     * have no ext prefix. */
+    bool inline_slots = scr_arr_inline(a);
+    bool states = scr_arr_has_states(a);
+    size_t unit = sizeof(uint64_t) + (states ? 1 : 0);
+    size_t prefix = inline_slots ? 0 : scr_arr_prefix(a);
+    if (cap > (SIZE_MAX - prefix) / unit) scr_arr_oom();
+    char *start = scr_mem_alloc(prefix + cap * unit);
+    if (!start) scr_arr_oom();
+    if (prefix) memcpy(start, scr_arr_alloc_start(a), prefix);
+    uint64_t *data = (uint64_t *)(start + prefix);
+    const int32_t *old = (const int32_t *)a->data;
+    for (size_t i = 0; i < cap; i++) data[i] = scr_arr_f64_slot((double)old[i]);
+    if (states) memcpy((uint8_t *)data + cap * sizeof(uint64_t), scr_arr_states_end(a) - cap, cap);
+    if (!inline_slots && a->rc != SIZE_MAX) scr_mem_free(scr_arr_alloc_start(a));
+    a->data = data;
+    a->spare &= (uint16_t)~SCR_ARR_INLINE_SLOTS;
+  }
+  a->elem = SCR_ELEM_F64;
+}
+
 /* How a dense allocation is sized. */
 typedef enum {
   SCR_ARR_GROW_APPEND, /* geometric headroom for further appends */

@@ -1076,7 +1076,8 @@ export interface IrModule {
   /** Local number arrays (`function\0local`) the backend may store as
    * int32 slots, proposed by ir/int32-arrays.ts after their element-reader
    * calls were inlined; the int32 slot analysis keeps the ones whose every
-   * stored element it proves an int32. Absent when there is none. */
+   * stored element it proves an int32, and those whose stores are exact
+   * integers with checked stores. Absent when there is none. */
   int32ArrayCandidates?: string[];
   /** The WebAssembly modules translated into this program (wasm/
    * translate.ts), present exactly when the program uses the WebAssembly
