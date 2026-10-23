@@ -156,6 +156,8 @@ export interface DynHost extends WalkerHost {
   /** See moduleUsesDynBuiltinStream. */
   usesDynBuiltinStream?(): boolean;
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
+  /** The module has declaration-typed boundary casts (IrModule.declBoundary). */
+  declBoundary?(): boolean;
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
   classSubtypes(className: string): readonly string[];
@@ -4545,6 +4547,31 @@ export class LlDyn {
   /** The dyn argument spelling of one static value: dyn passes through
    * (+1), funcs box anonymously, everything else rides toDyn. `expr` is
    * BORROWED in every arm. Emits into the given builder. */
+  /** A live capsule of a record or array value (+1; the value is
+   * borrowed), as `dynFrom` with `liveRef` builds it; null for other
+   * types. Closures boxed in a declaration-typed boundary program return
+   * their records and arrays this way. */
+  private liveToDyn(B: BlockBuilder, t: IrType, expr: string): string | null {
+    const host = this.host;
+    if (t.kind === "union") {
+      const arms = host.unionsById.get(t.unionId)?.arms ?? [];
+      if (!arms.some((arm) => arm.kind === "record" || arm.kind === "array")) return null;
+      const boxed = B.tmp();
+      B.line(`${boxed} = call ptr @${host.liveDynUnionRefAdapter(t)}(ptr ${expr})`);
+      return boxed;
+    }
+    if ((t.kind !== "record" && t.kind !== "array") || !streamTypedRefEligible(t)) return null;
+    const key = typeKey(t);
+    const adapter = host.liveDynRefAdapter(t);
+    const rc = vAdapters(host, t);
+    const boxed = B.tmp();
+    B.line(
+      `${boxed} = call ptr ${typedRefConstructor(host, t)}(ptr ${expr}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
+    );
+    for (const line of bindLiveArrayOps(host, adapter, boxed)) B.line(line);
+    return boxed;
+  }
+
   private toDynExpr(B: BlockBuilder, t: IrType, expr: string): string {
     if (t.kind === "dyn") return this.retainDyn(B, expr);
     if (t.kind === "func") {
@@ -4676,6 +4703,26 @@ export class LlDyn {
           },
           "ptr null",
         );
+        // Declaration-typed boundary programs: an argument package code
+        // passes keeps its identity (scr_dyn_decl_adopt).
+        const capsule = this.host.declBoundary?.() === true ? this.liveToDyn(B, p, a) : null;
+        if (capsule !== null) {
+          host.declare(`declare void @scr_dyn_decl_adopt(ptr, ptr)`);
+          host.declare(`declare void @scr_dyn_release(ptr)`);
+          B.line(`call void @scr_dyn_decl_adopt(ptr ${ad}, ptr ${capsule})`);
+          B.line(`call void @scr_dyn_release(ptr ${capsule})`);
+          this.pendingBail(
+            B,
+            "dfk.adopt",
+            () => {
+              t.params.slice(0, i + 1).forEach((q, j) => {
+                const name = j === i ? a : argNames[j];
+                if (isRefCounted(q)) B.line(`call void ${releaseSym(host, q)}(ptr ${name})`);
+              });
+            },
+            "ptr null",
+          );
+        }
         argNames.push(a);
       }
     });
@@ -4708,7 +4755,10 @@ export class LlDyn {
       const r = B.tmp();
       B.line(`${r} = call ${retTy} ${fn}(${callArgs})`);
       this.pendingBail(B, "dfkr", () => {}, "ptr null");
-      const out = this.toDynExpr(B, t.ret, r);
+      const out =
+        this.host.declBoundary?.() === true
+          ? (this.liveToDyn(B, t.ret, r) ?? this.toDynExpr(B, t.ret, r))
+          : this.toDynExpr(B, t.ret, r);
       if (isRefCounted(t.ret)) B.line(`call void ${releaseSym(host, t.ret)}(ptr ${r})`);
       B.terminate(`ret ptr ${out}`);
     }

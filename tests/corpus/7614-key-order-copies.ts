@@ -30,3 +30,22 @@ for (const value of options) {
   const merged = { ...value, tag: "x", label: "y", done: true };
   console.log(Object.keys(merged).join(","), JSON.stringify(merged));
 }
+// A spread between explicit keys takes the order of its own value, not of
+// another value of the same type that a key reads, and the order the value
+// has at the spread, before a later key moves the value's keys.
+type Pair = { a?: number; b: number };
+const pairs: Pair[] = [
+  { b: 2, a: 1 },
+  { a: 1, b: 2 },
+];
+function moveA(pair: Pair): number {
+  delete pair.a;
+  pair.a = 5;
+  return 0;
+}
+for (const value of pairs)
+  for (const other of pairs) {
+    const between = { first: other.b, ...value, last: other.b };
+    const moved = { ...value, z: moveA(value) };
+    console.log(Object.keys(between).join(","), Object.keys(moved).join(","));
+  }

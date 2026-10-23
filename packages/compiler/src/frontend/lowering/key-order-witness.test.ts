@@ -573,13 +573,13 @@ test("a key after a spread that the source may lack picks its order from the sou
   );
   const read = (field: string): IrExpr => ({
     kind: "recordGet",
-    obj: ref("x", s),
+    obj: ref("v", s),
     shapeId: s.shapeId,
     field,
     type: OPT,
     loc,
   });
-  // `{ ...x, b: 1 }`
+  // `{ ...x, b: 1 }`, which evaluates `x` into `v` first
   const merged = f.notes.literal(
     {
       kind: "recordLit",
@@ -592,11 +592,21 @@ test("a key after a spread that the source may lack picks its order from the sou
       loc,
     },
     [
-      { kind: "spread", shapeId: s.shapeId, maybeAbsent: false },
+      {
+        kind: "spread",
+        shapeId: s.shapeId,
+        maybeAbsent: false,
+        value: { kind: "varRef", localId: "v", type: s, loc },
+      },
       { kind: "key", name: "b", definite: true },
     ],
   );
-  f.run([decl("x", f.literal(s, ["c", "a"])), observe(f.literal(s, ["a", "c"])), observe(merged)]);
+  const prologue = [decl("v", ref("x", s))];
+  f.run([
+    decl("x", f.literal(s, ["c", "a"])),
+    observe(f.literal(s, ["a", "c"])),
+    observe({ kind: "seqExpr", stmts: prologue, result: merged, type: t, loc }),
+  ]);
   // b keeps its place in the source's order when the source has it, and
   // follows the source's keys when it does not.
   expect(f.shapes.get(t.shapeId)!.orderVariants).toEqual([
@@ -604,8 +614,89 @@ test("a key after a spread that the source may lack picks its order from the sou
     ["c", "a", "b"],
     ["a", "b", "c"],
   ]);
-  expect(orderIndexOf(merged)).toMatchObject({
-    kind: "ternary",
-    cond: { kind: "recordHas", obj: { kind: "varRef", localId: "x" }, field: "b" },
+  expect(prologue[1]).toMatchObject({
+    kind: "varDecl",
+    init: {
+      kind: "ternary",
+      cond: { kind: "recordHas", obj: { kind: "varRef", localId: "v" }, field: "b" },
+    },
   });
+  const snapshot = (prologue[1] as IrStmt & { kind: "varDecl" }).localId;
+  expect(orderIndexOf(merged)).toMatchObject({ kind: "varRef", localId: snapshot });
+});
+
+test("a spread reads its source's order right after the literal evaluates the source", () => {
+  const f = fixture();
+  const s = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const t = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["first", F64],
+      ["last", F64],
+    ],
+    ["first", "a", "b", "last"],
+  );
+  const read = (localId: string, field: string): IrExpr => ({
+    kind: "recordGet",
+    obj: ref(localId, s),
+    shapeId: s.shapeId,
+    field,
+    type: F64,
+    loc,
+  });
+  // `{ first: y.a, ...x, last: y.b }`: the literal evaluates `first`, then
+  // the source into `v` and its fields, then `last`, which reads another
+  // value of the source's shape.
+  const lit = f.notes.literal(
+    {
+      kind: "recordLit",
+      fields: [
+        { name: "first", value: ref("p", F64) },
+        { name: "a", value: ref("va", F64) },
+        { name: "b", value: ref("vb", F64) },
+        { name: "last", value: read("y", "b") },
+      ],
+      type: t,
+      loc,
+    },
+    [
+      { kind: "key", name: "first", definite: true },
+      {
+        kind: "spread",
+        shapeId: s.shapeId,
+        maybeAbsent: false,
+        value: { kind: "varRef", localId: "v", type: s, loc },
+      },
+      { kind: "key", name: "last", definite: true },
+    ],
+  );
+  const prologue: IrStmt[] = [
+    decl("p", read("y", "a")),
+    decl("v", ref("x", s)),
+    decl("va", read("v", "a")),
+    decl("vb", read("v", "b")),
+  ];
+  f.run([
+    decl("x", f.literal(s, ["b", "a"])),
+    decl("y", f.literal(s, ["a", "b"])),
+    observe({ kind: "seqExpr", stmts: prologue, result: lit, type: t, loc }),
+  ]);
+  expect(f.shapes.get(t.shapeId)!.orderVariants).toEqual([
+    ["first", "a", "b", "last"],
+    ["first", "b", "a", "last"],
+  ]);
+  // The index is the spread binding's, read before `last` evaluates.
+  expect(prologue[2]).toMatchObject({
+    kind: "varDecl",
+    init: { kind: "recordGet", obj: { kind: "varRef", localId: "v" }, field: KEY_ORDER_FIELD },
+  });
+  const snapshot = (prologue[2] as IrStmt & { kind: "varDecl" }).localId;
+  expect(orderIndexOf(lit)).toMatchObject({ kind: "varRef", localId: snapshot });
 });

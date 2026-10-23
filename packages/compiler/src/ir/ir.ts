@@ -1044,6 +1044,10 @@ export interface IrModule {
   entry: string;
   /** Executable roots run in isolated native worker contexts. */
   workers?: boolean;
+  /** The program has declaration-typed boundary casts (decl-projection.ts):
+   * closures boxed for package code return records and arrays as live
+   * capsules, so a value that comes back keeps its identity. */
+  declBoundary?: true;
   /** The program constructs LifetimeRegion (@scriptc/experimental): every
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
@@ -3904,10 +3908,19 @@ export type IrExpr =
   /** `exact`: the value is known to be a capsule this program boxed from
    * exactly the class `type` names (a `dyn.typedRefKeyIs` test guards the
    * expression), so the check is one load of the capsule's instance. */
+  /** `adopt`: the declaration-typed boundary's cast (decl-projection.ts).
+   * The conversion preserves identity: a source object or array that
+   * something else still references (reference count above one) is
+   * turned, after the whole check succeeded, into a live capsule of the
+   * value built from it, so every holder sees the same native value; an
+   * unshared source is simply consumed. Values must be plain data
+   * (ordinary objects and arrays without accessors, prototypes, symbols
+   * or frozen state), otherwise the cast throws the path TypeError. */
   | {
       kind: "dynCheck";
       value: IrExpr;
       preserveRefs?: true;
+      adopt?: true;
       exact?: true;
       type: IrType;
       loc: SrcLoc;

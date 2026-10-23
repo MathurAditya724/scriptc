@@ -2402,6 +2402,20 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
     return { kind: "libCall", fn: "bigint.parse", args: [arg], type: BIGINT_T, loc };
   if (arg.type.kind === "f64")
     return { kind: "libCall", fn: "bigint.fromF64", args: [arg], type: BIGINT_T, loc };
+  // Byte storage converts through ToPrimitive, which BigInt then parses: a
+  // typed array's text is its elements joined with "," (one element reads
+  // as that element, none as 0n, several throw the SyntaxError for the
+  // joined text), a Buffer's is its UTF-8 decoding and a DataView's is
+  // "[object DataView]". The runtime value tells them apart, as for String.
+  if (arg.type.kind === "bytes") {
+    const text: IrExpr = {
+      kind: "toString",
+      operand: { kind: "dynFrom", value: arg, type: DYN, loc },
+      type: STRING,
+      loc,
+    };
+    return { kind: "libCall", fn: "bigint.parse", args: [text], type: BIGINT_T, loc };
+  }
   if (arg.type.kind === "bool") {
     return {
       kind: "ternary",
@@ -2442,6 +2456,7 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
         arm.kind === "string" ||
         arm.kind === "f64" ||
         arm.kind === "bool" ||
+        arm.kind === "bytes" ||
         isUnitType(arm),
     )
   )
@@ -3799,16 +3814,19 @@ function lowerDynReceiverMethodCall(
   }
   if (access.name.text === "flatMap") return lowerDynArrayFlatMapCall(lowerer, call, access, recv);
   // String methods claim only names NO other dyn-representable kind's
-  // prototype declares (Array carries includes/indexOf/slice too): for
-  // these, "the receiver is a string, or the call throws V8's TypeError"
-  // IS Node's semantics for every possible dyn value. Shared names would
-  // need a receiver-kind dispatch — they keep the fence.
+  // prototype declares (Array carries includes/indexOf/slice too), so no
+  // other kind inherits them. Shared names would need a receiver-kind
+  // dispatch — they keep the fence.
   if (DYN_STRING_ONLY_METHODS.has(access.name.text) && !ownCallable) {
-    // An object-typed receiver the member is missing from (a JavaScript
-    // module object whose members are assigned in a function body,
-    // `common.repeat(" ", n)`), or an untyped receiver (an object whose
-    // prototype defines `trim`), holds a string or an object with that
-    // member: dispatch on the receiver's runtime kind.
+    // A checked-dynamic object can still carry its OWN member of that
+    // name: zod's schemas assign `trim`, `toLowerCase` and `startsWith`
+    // in their constructors (`z.string().trim().min(1)`), an object's
+    // prototype can define `trim`, and a JavaScript module object can
+    // assign `repeat` in a function body (`common.repeat(" ", n)`, an
+    // object-typed receiver the member is missing from). An untyped
+    // receiver, or a member the checker cannot type, dispatches on the
+    // receiver's runtime kind: a string runs the string lowering, anything
+    // else calls its member as Node does.
     if (
       (checkerUntyped ||
         (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) &&
@@ -4263,6 +4281,7 @@ const DYN_DISPATCH_METHODS = new Set([
   "shift",
   "unshift",
   "slice",
+  "splice",
   "at",
   "indexOf",
   "lastIndexOf",
@@ -10203,6 +10222,23 @@ export function lowerObjectMethodCall(
           type: found.sig.ret,
           loc,
         };
+    // The declaring class's original value, built with the observed slot.
+    // An override below (a virtual call) keeps the dynamic call: a slot
+    // reassigned to an ancestor's method must not reach the override. So do
+    // methods declared in unchecked JavaScript, whose results are inferred,
+    // and calls with a spread argument: the dynamic call drains the spread
+    // through the iterator's current `next`, which may be a replacement.
+    const declarerFile = found.declarer.decl ? ts.getSourceFileOfNode(found.declarer.decl) : null;
+    const original =
+      virtual ||
+      call.arguments.nodes.some(ts.isSpreadElement) ||
+      !declarerFile ||
+      (isJsSourceFile(declarerFile) && !lowerer.checkedJsFile(declarerFile))
+        ? undefined
+        : {
+            originalId: (): string | undefined => found.declarer.prototypeOriginals?.get(method),
+            directCall: (): IrExpr => fallback,
+          };
     const result = classCallbackCall(
       lowerer,
       value,
@@ -10211,6 +10247,7 @@ export function lowerObjectMethodCall(
       fallback,
       loc,
       ts.getTextOfNode(access),
+      original,
     );
     return {
       kind: "seqExpr",

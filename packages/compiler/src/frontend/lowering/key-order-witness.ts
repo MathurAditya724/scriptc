@@ -98,8 +98,9 @@ export type KeyOrderSegment =
    * exists only when its condition holds. */
   | { kind: "key"; name: string; definite: boolean }
   /** `...source` of a record shape; `maybeAbsent` when the whole source
-   * can be undefined (`...options` of `T | undefined`). */
-  | { kind: "spread"; shapeId: string; maybeAbsent: boolean }
+   * can be undefined (`...options` of `T | undefined`). `value` is the
+   * binding the literal evaluated the source into, when it has one. */
+  | { kind: "spread"; shapeId: string; maybeAbsent: boolean; value?: IrExpr & { kind: "varRef" } }
   /** A spread whose keys are only known at run time. */
   | { kind: "opaque" };
 
@@ -272,6 +273,11 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   const opaqueSeen = new Set<string>();
   const runtimeShapes = new Set<string>();
   const runtimeSeen = new Set<string>();
+  /** Shapes the declaration-typed boundary converts into (adopting casts):
+   * their values come from package code that builds them in the
+   * declaration's order, the order their table holds. */
+  const declaredShapes = new Set<string>();
+  const declaredSeen = new Set<string>();
   const producedBy = (type: IrType, opaque: boolean): void => {
     if (opaque) shapesIn(type, opaqueShapes, opaqueSeen);
     else shapesIn(type, runtimeShapes, runtimeSeen);
@@ -381,7 +387,8 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         producedBy(e.type, true);
         return;
       case "dynCheck":
-        if (!orderPreservingClone(e)) producedBy(e.type, false);
+        if (e.adopt === true) shapesIn(e.type, declaredShapes, declaredSeen);
+        else if (!orderPreservingClone(e)) producedBy(e.type, false);
         return;
       case "dynDestrCheck":
       case "caughtCheck":
@@ -441,6 +448,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     f.opaque = true;
   }
   for (const id of runtimeShapes) factsOf(id).runtime = true;
+  for (const id of declaredShapes) if (!runtimeShapes.has(id)) factsOf(id).pinned = true;
 
   // ── scope ───────────────────────────────────────────────────────────
   // Only plain declared-field shapes with a table take part.
@@ -1033,9 +1041,35 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     return everyExprChild(e, siteOf, siteStmt);
   };
   const siteStmt = (st: IrStmt): boolean => everyStmtChild(st, siteOf, siteStmt);
-  for (const fn of fns) for (const st of fn.body) siteStmt(st);
-  /** The binding a copy or spread reads its fields from. */
+  /** The function each literal with a prologue is built in. */
+  const owners = new Map<IrExpr, IrFunction>();
+  for (const fn of fns) {
+    const before = new Set(prologues.keys());
+    for (const st of fn.body) siteStmt(st);
+    for (const lit of prologues.keys()) if (!before.has(lit)) owners.set(lit, fn);
+  }
+  /** Where a literal evaluated its spread of `source`: the declaration the
+   * spread segment names, in the literal's own prologue. */
+  const spreadBinding = (
+    lit: IrExpr & { kind: "recordLit" },
+    source: string,
+  ): { stmts: IrStmt[]; at: number; value: IrExpr } | null => {
+    const stmts = prologues.get(lit) as IrStmt[] | undefined;
+    if (stmts === undefined) return null;
+    for (const segment of notes.literalOf(lit) ?? []) {
+      if (segment.kind !== "spread" || segment.shapeId !== source || !segment.value) continue;
+      const localId = segment.value.localId;
+      const at = stmts.findIndex((st) => st.kind === "varDecl" && st.localId === localId);
+      const decl = stmts[at];
+      if (decl?.kind !== "varDecl" || decl.init === null) return null;
+      return { stmts, at, value: { kind: "varRef", localId, type: decl.init.type, loc: lit.loc } };
+    }
+    return null;
+  };
+  /** The binding a copy or spread reads its fields from. A literal's spread
+   * names it; every field of a copy reads it. */
   const copySource = (lit: IrExpr & { kind: "recordLit" }, source: string): IrExpr | null => {
+    if (notes.literalOf(lit) !== undefined) return spreadBinding(lit, source)?.value ?? null;
     for (const field of lit.fields) {
       const value = field.value;
       if (value.kind === "recordGet" && value.shapeId === source && value.obj.kind === "varRef")
@@ -1154,14 +1188,31 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   // A shape whose copies cannot read their source keeps today's table, and
   // so do the shapes that mirror it.
   for (const [id, mirror] of mirrors) if (dropped.has(mirror.source)) dropped.add(id);
+  let temporaries = 0;
   for (const [lit, index] of plan) {
     const id = (lit.type as IrType & { kind: "record" }).shapeId;
     if (dropped.has(id)) continue;
-    const value: IrExpr =
+    let value: IrExpr =
       typeof index === "number" ? { kind: "numLit", value: index, type: F64, loc: lit.loc } : index;
+    // A spread's order is the source's order at the spread: a later
+    // property may move the source's keys. Read it right after the literal
+    // evaluates the source.
+    const source = mirrors.get(id)?.source;
+    const binding = typeof index === "number" || !source ? null : spreadBinding(lit, source);
+    const fn = owners.get(lit);
+    if (binding && fn) {
+      const localId = `%keyOrderSource.${temporaries++}`;
+      fn.locals.push({ id: localId, name: "%keyOrderSource", type: F64, mutable: false });
+      binding.stmts.splice(binding.at + 1, 0, {
+        kind: "varDecl",
+        localId,
+        init: value,
+        loc: lit.loc,
+      });
+      value = { kind: "varRef", localId, type: F64, loc: lit.loc };
+    }
     lit.fields.push({ name: KEY_ORDER_FIELD, value });
   }
-  let temporaries = 0;
   const replacements = new Map<IrFunction, Map<IrStmt, IrStmt>>();
   for (const { st, fn } of writeSites) {
     if (dropped.has(st.shapeId)) continue;
