@@ -11,6 +11,12 @@ import { NativeCache } from "./cache.js";
 import { prepareNativeExecutable } from "./prepare.js";
 import type { NativeToolchain } from "./toolchain.js";
 
+/** A prepared input with its LLVM parts joined: a cache hit reads the text
+ * back as one part. */
+function text(input: ReturnType<ReturnType<typeof fixture>["prepare"]>) {
+  return input.ok ? { ...input, llvm: input.llvm.join("") } : input;
+}
+
 const scratch: string[] = [];
 afterEach(() => {
   for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true });
@@ -68,14 +74,14 @@ test("warm frontend reuse survives output creation and invalidates imported sour
   if (!first.ok) return;
   mkdirSync(f.options.outDir);
   writeFileSync(f.options.outPath, "binary placeholder");
-  writeFileSync(join(f.options.outDir, "main.ll"), first.llvm);
+  writeFileSync(join(f.options.outDir, "main.ll"), first.llvm.join(""));
   const warm = f.prepare();
-  expect(warm).toEqual(first);
+  expect(text(warm)).toEqual(text(first));
   expect(f.loads()).toBe(1);
   writeFileSync(f.dependency, 'export const value = "second";\n');
   const edited = f.prepare();
   expect(edited.ok).toBe(true);
-  if (edited.ok) expect(edited.llvm).not.toBe(first.llvm);
+  if (edited.ok) expect(edited.llvm.join("")).not.toBe(first.llvm.join(""));
   expect(f.loads()).toBe(2);
 });
 
@@ -101,13 +107,13 @@ test("serialized IR travels as bounded parts through the frontend cache", () => 
   expect(mod.functions.length).toBeGreaterThan(0);
   const warm = f.prepare({ emitIr: true });
   expect(f.loads()).toBe(1);
-  expect(warm).toEqual(first);
+  expect(text(warm)).toEqual(text(first));
   const family = join(f.cache.root, "frontend");
   const key = readdirSync(family).find((name) => /^[0-9a-f]{64}$/.test(name))!;
   const payload = JSON.parse(readFileSync(join(family, key), "utf8"));
   expect(payload.schema).toBe("scriptc.native-frontend.v3");
   expect(payload.input.llvm).toBe("");
   expect(payload.input.ir).toBeNull();
-  expect(payload.llvm).toBe(first.llvm);
+  expect(payload.llvm).toBe(first.llvm.join(""));
   expect(payload.ir).toEqual(first.ir);
 });

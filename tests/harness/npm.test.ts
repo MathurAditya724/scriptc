@@ -102,7 +102,7 @@ const KNOWN: Record<string, Known> = {
   "package-imports": { build: "SC2013" },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
-  "stream-shims": { run: "SC1090" },
+  "stream-shims": { run: "SC2020" },
   "util-shims": { run: "SC2020" },
   "web-streams": { run: "SC1090" },
   "workspace-copied": { build: "SC2013" },

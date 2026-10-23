@@ -293,14 +293,11 @@ export function emitArrayCopyLoop(
   host.B.line(`call double @scr_arr_push_spread(ptr ${dst}, ptr ${src})`);
 }
 
-/** The `charCodeAt` reads that stand for `charAt` reads the emitter
- * rewrote, such as one-unit tests and switches: a loop version's proof
- * for the charAt covers its read. */
-const unitReadOrigins = new WeakMap<IrExpr, IrExpr>();
-
 /** `s.charCodeAt(i)` in place of `s.charAt(i)`, the same index read as a
- * code unit. */
+ * code unit. The emitter records the charAt it stands for
+ * (charAtUnitReads), so a loop version's proof for the charAt covers it. */
 export function charAtUnitRead(
+  host: LlvmEmitterContext,
   charAt: IrExpr & { kind: "strIntrinsic" },
 ): IrExpr & { kind: "strIntrinsic" } {
   const read: IrExpr & { kind: "strIntrinsic" } = {
@@ -311,7 +308,7 @@ export function charAtUnitRead(
     type: F64,
     loc: charAt.loc,
   };
-  unitReadOrigins.set(read, charAt);
+  host.charAtUnitReads.set(read, charAt);
   return read;
 }
 
@@ -319,7 +316,7 @@ export function charAtUnitRead(
  * below the length (bytes-loop-versions.ts). */
 function provenStringRead(host: LlvmEmitterContext, e: IrExpr): boolean {
   if (host.bytesBounds.has(e)) return true;
-  const origin = unitReadOrigins.get(e);
+  const origin = host.charAtUnitReads.get(e);
   return origin !== undefined && host.bytesBounds.has(origin);
 }
 
