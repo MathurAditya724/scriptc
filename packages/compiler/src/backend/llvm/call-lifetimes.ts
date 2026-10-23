@@ -99,12 +99,18 @@ const NO_INLINE_FIELDS: InlineFieldTest = { record: () => false, classField: () 
  * reads the record and keeps no reference to it. */
 export type RecordDynCopyTest = (shapeId: string) => boolean;
 
+/** Wraps into a nullable-pointer union whose value is the payload pointer
+ * itself (LlEmitter.borrowableNullableWrap): the wrapped binding reaches the
+ * callee's parameter unchanged. */
+export type PointerWrapTest = (wrap: IrExpr & { kind: "unionWrap" }) => boolean;
+
 function collectUses(
   fn: IrFunction,
   nullableField: NullableFieldTest,
   registerReturn: boolean,
   inlineField: InlineFieldTest,
   recordDynCopy: RecordDynCopyTest,
+  pointerWrap: PointerWrapTest,
 ): Uses {
   const uses: Uses = {
     invalid: new Set(),
@@ -200,12 +206,16 @@ function collectUses(
         return node.args.every(expr);
       case "call":
         node.args.forEach((arg, index) => {
-          if (arg.kind !== "varRef") {
+          const value =
+            arg.kind === "unionWrap" && arg.value.kind === "varRef" && pointerWrap(arg)
+              ? arg.value
+              : arg;
+          if (value.kind !== "varRef") {
             expr(arg);
             return;
           }
-          let forwards = uses.forwards.get(arg.localId);
-          if (!forwards) uses.forwards.set(arg.localId, (forwards = []));
+          let forwards = uses.forwards.get(value.localId);
+          if (!forwards) uses.forwards.set(value.localId, (forwards = []));
           forwards.push({ callee: node.callee, index });
         });
         return true;
@@ -345,6 +355,7 @@ export function analyzeCallLifetimes(
   registerReturns: ReadonlySet<string> = new Set(),
   inlineField: InlineFieldTest = NO_INLINE_FIELDS,
   recordDynCopy: RecordDynCopyTest = () => false,
+  pointerWrap: PointerWrapTest = () => false,
 ): CallLifetimes {
   const usesByFunction = new Map<string, Uses>();
   const lazyCaptures = new LazyCaptures(functions);
@@ -361,7 +372,7 @@ export function analyzeCallLifetimes(
   };
   for (const fn of functions.values()) {
     if (fn.generator !== undefined && fn.classCaptures === undefined) {
-      const uses = collectUses(fn, nullableField, false, inlineField, recordDynCopy);
+      const uses = collectUses(fn, nullableField, false, inlineField, recordDynCopy, pointerWrap);
       const locals = new Map(fn.locals.map((local) => [local.id, local]));
       const stable = new Set<string>();
       for (const param of fn.params) {
@@ -386,6 +397,7 @@ export function analyzeCallLifetimes(
       registerReturns.has(fn.name),
       inlineField,
       recordDynCopy,
+      pointerWrap,
     );
     usesByFunction.set(fn.name, uses);
     // Class-capturing bodies get only local facts (computed below from

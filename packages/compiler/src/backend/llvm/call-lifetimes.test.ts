@@ -760,3 +760,49 @@ test("a parameter stored as its last use takes the owned convention", () => {
   const passed = ctor([{ kind: "exprStmt", expr: call("use", [ref("item", cell)]), loc }]);
   expect(analyze(passed).borrowed.get("%Box.constructor")).toEqual(new Set([0, 1]));
 });
+
+test("a wrap into a pointer union forwards the wrapped binding to the callee's parameter", () => {
+  const wrap = (id: string): IrExpr => ({
+    kind: "unionWrap",
+    unionId: "optional",
+    tag: 0,
+    value: ref(id, record),
+    type: optional,
+    loc,
+  });
+  const leaf = helper("leaf");
+  const outer = helper("outer");
+  outer.params[0]!.type = outer.locals[0]!.type = record;
+  outer.locals.push(local("cell", record));
+  outer.body = [
+    {
+      kind: "varDecl",
+      localId: "cell",
+      init: { kind: "recordLit", fields: [], type: record, loc },
+      loc,
+    },
+    { kind: "exprStmt", expr: call("leaf", [wrap("value")]), loc },
+    ret(call("leaf", [wrap("cell")])),
+  ];
+  const functions = new Map([leaf, outer].map((fn) => [fn.name, fn]));
+  const analyzeWith = (pointer: boolean) =>
+    analyzeCallLifetimes(
+      functions,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => pointer,
+    );
+  // A boxed union builds a new box around the payload: a whole-value use.
+  expect(analyzeWith(false).parameters.get("outer")).toBeUndefined();
+  expect(analyzeWith(false).locals.get("outer")).toEqual(new Set());
+  // A pointer union passes the payload pointer itself.
+  expect(analyzeWith(true).parameters.get("outer")).toEqual(new Set([0]));
+  expect(analyzeWith(true).locals.get("outer")).toEqual(new Set(["cell"]));
+  // A callee that keeps its parameter keeps the wrapped binding too.
+  leaf.body.push(ret(ref("value")));
+  expect(analyzeWith(true).parameters.get("outer")).toBeUndefined();
+  expect(analyzeWith(true).locals.get("outer")).toEqual(new Set());
+});
