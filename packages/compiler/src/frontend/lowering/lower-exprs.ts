@@ -426,6 +426,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         return inner;
       const use = runtimeOptionalUseOf(expr);
       if (runtimeOptionalAssertionErases(lowerer, expr, inner, use)) return inner;
+      // A destination that holds null or undefined keeps the value, as `!`
+      // does in JavaScript (`return cache.get(key)!` from a function that
+      // returns `T | null`); the destination's own coercion re-tags it.
+      if (assertionDestinationHoldsNullish(lowerer, expr, inner.type)) return inner;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
         const helper = lowerer.narrowedArmHelper(inner.type.unionId, target, loc);
         if (helper) {
@@ -931,6 +935,40 @@ export function assertedElementKeepsUndefined(
     admits(contextual) ||
     ((contextual.flags & ts.TypeFlags.Union) !== 0 && constituentTypes(contextual).some(admits))
   );
+}
+
+/** Whether `node!` is a returned value, an arrow function's body or a call
+ * argument whose destination type (the return or parameter type) is `any`
+ * or `unknown` (as for `String(x!)` and `Number(x!)`) or holds null or
+ * undefined that the union `inner` holds and the assertion would remove.
+ * Bindings and assignments are left out: the checker narrows them to the
+ * asserted type for later reads. */
+function assertionDestinationHoldsNullish(
+  lowerer: Lowerer,
+  node: ts.NonNullExpression,
+  inner: IrType & { kind: "union" },
+): boolean {
+  const holdsNull = lowerer.armTag(inner.unionId, NULL_T) >= 0;
+  const holdsUndefined = lowerer.armTag(inner.unionId, UNDEFINED_T) >= 0;
+  if (!holdsNull && !holdsUndefined) return false;
+  let outer: ts.Expression = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  const destination =
+    (ts.isReturnStatement(parent) && parent.expression === outer) ||
+    (ts.isArrowFunction(parent) && parent.body === outer) ||
+    ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+      parent.arguments?.nodes.includes(outer) === true);
+  if (!destination) return false;
+  const contextual = lowerer.checker.getContextualType(outer);
+  if (!contextual) return false;
+  const nullish =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    (holdsNull ? ts.TypeFlags.Null : 0) |
+    (holdsUndefined ? ts.TypeFlags.Undefined : 0);
+  if ((contextual.flags & ts.TypeFlags.Union) === 0) return (contextual.flags & nullish) !== 0;
+  return constituentTypes(contextual).some((type) => (type.flags & nullish) !== 0);
 }
 
 export function runtimeOptionalAssertionErases(
