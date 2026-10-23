@@ -1131,7 +1131,10 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
         const key = `l:${fn.name}\0${id}`;
         if (!slots.hasInt32ElementSlot(key) || values.every(int32)) continue;
         slots.dropInt32Elements(key);
-        const checkable = (value: IrExpr): boolean => int32(value) || ranges.get(value) != null;
+        const checkable = (value: IrExpr): boolean => {
+          const range = ranges.get(value);
+          return int32(value) || range != null;
+        };
         if (values.every(checkable) && checkableInt32Allocations(fn, id))
           slots.checkedInt32Arrays.add(`${fn.name}\0${id}`);
         else reason(`array:${fn.name}\0${id}`, "an element store is not int32");
