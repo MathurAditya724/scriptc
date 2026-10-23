@@ -1,6 +1,7 @@
+import { emitPerKeyOrder } from "./key-orders.js";
 import { typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
-import { BYTES_ELEM_NUM, SCR_ARR_FIELD, f64Lit, sizeToDouble } from "./common.js";
+import { BYTES_ELEM_NUM, SCR_ARR_FIELD, SCR_ARR_STATES, f64Lit, sizeToDouble } from "./common.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   INLINE_UNION_FIELD,
@@ -37,6 +38,8 @@ import {
   accessorSlotProp,
   DYN_HANDLE_KINDS,
   isDirentShape,
+  KEY_ORDER_FIELD,
+  shapeKeyOrders,
   isDynTypedRefType,
   isRefCounted,
   isUnitType,
@@ -195,6 +198,55 @@ export class LlDyn {
   readonly defs: string[] = [];
 
   constructor(private readonly host: DynHost) {}
+
+  /** Journal replay (emit-journal.ts): builds or finds the helper a chunk
+   * emitter recorded, and answers its name. */
+  replayHelper(op: string, args: readonly unknown[]): string {
+    switch (op) {
+      case "dyn.collectionDynOps":
+        return this.collectionDynOps(args[0] as IrType & { kind: "map" | "set" });
+      case "dyn.dynMatchHelper":
+        return this.dynMatchHelper(args[0] as IrType, args[1] as boolean);
+      case "dyn.jsonSchema":
+        return this.jsonSchema(args[0] as IrType);
+      case "dyn.recordNameTable": {
+        const shapeId = args[0] as string;
+        return this.recordNameTable(shapeId, this.host.recordsById.get(shapeId)!).names;
+      }
+      case "dyn.jsonParseHelper":
+        return this.jsonParseHelper(args[0] as IrType)!;
+      case "dyn.dynCheckHelper":
+        return this.dynCheckHelper(args[0] as IrType, args[1] as boolean);
+      case "dyn.toDynHelper":
+        return this.toDynHelper(args[0] as IrType);
+      case "dyn.promiseDynAdapterHelper":
+        return this.promiseDynAdapterHelper(args[0] as IrType);
+      case "dyn.dynFuncThunkHelper":
+        return this.dynFuncThunkHelper(args[0] as IrType & { kind: "func" });
+      case "dyn.dynFuncBoxHelper":
+        return this.dynFuncBoxHelper(args[0] as IrType & { kind: "func" });
+      case "dyn.dynFuncAdapterHelper":
+        return this.dynFuncAdapterHelper(args[0] as IrType & { kind: "func" });
+      case "dyn.dynToStrHelper":
+        return this.dynToStrHelper();
+      case "dyn.dynIterNHelper":
+        return this.dynIterNHelper();
+      case "dyn.dynDestrCheckHelper":
+        return this.dynDestrCheckHelper();
+      case "dyn.dynKeyGetHelper":
+        return this.dynKeyGetHelper();
+      case "dyn.dynComputedKeyGetHelper":
+        return this.dynComputedKeyGetHelper();
+      case "dyn.caughtToDynHelper":
+        return this.caughtToDynHelper();
+      case "dyn.messageListenerHelper":
+        return this.messageListenerHelper(args[0] as IrType & { kind: "func" }) ?? "";
+      case "dyn.messageReaderHelper":
+        return this.messageReaderHelper(args[0] as IrType);
+      default:
+        throw new InternalCompilerError(`llvm emitter bug: no dyn helper replay ${op}`);
+    }
+  }
 
   /** The types a dyn matcher or builder for `t` checks structurally: record
    * fields and index values, array elements and union arms. */
@@ -385,6 +437,7 @@ export class LlDyn {
     if (prior) return prior;
     const name = `sc_map_dyn_${this.mapDynOps.size}`;
     this.mapDynOps.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.collectionDynOps", [t]);
     const keyType = t.kind === "map" ? t.key : t.elem;
     const valueType: IrType = t.kind === "map" ? t.value : { kind: "f64" };
     const emitSlot = (type: IrType, role: string): void => {
@@ -442,6 +495,7 @@ export class LlDyn {
       `@${name} = internal constant { ptr, ptr, ptr, ptr, ptr, ptr } { ptr ${this.host.cstr(key)}, ptr @${name}_key_box, ptr @${name}_key_unbox, ptr @${this.dynMatchHelper(keyType)}, ptr @${name}_value_box, ptr @${name}_value_unbox }`,
       "",
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -840,6 +894,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dm_${this.dynMatchers.size}`;
     this.dynMatchers.set(matcherKey, name);
+    this.host.journalAllocated?.(name, "dyn.dynMatchHelper", [t, preserveRefs]);
     const recursive = this.isRecursiveShape(t);
     const wrapped = recursive || this.holdsRecursiveShape(t);
     const B = new BlockBuilder();
@@ -1055,9 +1110,10 @@ export class LlDyn {
         }
         B.condBr(readable, l0, fail);
         B.startBlock(l0);
-        // dyn ('unknown') fields match ANY value, present or missing.
+        // dyn ('unknown') fields match ANY value, present or missing. The
+        // order index is no key.
         for (const f of shape.fields) {
-          if (f.type.kind === "dyn") continue;
+          if (f.type.kind === "dyn" || f.name === KEY_ORDER_FIELD) continue;
           const { value: m, release } = this.memberRead(B, f.name, f.type);
           const lNext = B.newLabel("dm.n");
           this.pendingBail(
@@ -1200,6 +1256,7 @@ export class LlDyn {
       ``,
     );
     if (wrapped) this.emitVisitWrapper(name, t, recursive ? "match" : "visit");
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -1239,9 +1296,10 @@ export class LlDyn {
         return (
           shape.fields.every(
             (f) =>
-              !f.name.startsWith("%") &&
-              f.name !== "__proto__" &&
-              this.jsonSchemaSupported(f.type, visiting, true),
+              f.name === KEY_ORDER_FIELD ||
+              (!f.name.startsWith("%") &&
+                f.name !== "__proto__" &&
+                this.jsonSchemaSupported(f.type, visiting, true)),
           ) &&
           (!index || this.jsonSchemaSupported(index, visiting))
         );
@@ -1293,6 +1351,7 @@ export class LlDyn {
     const S = host.sizeType;
     const name = `sc_jsch_${this.jsonSchemas.size}`;
     this.jsonSchemas.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.jsonSchema", [t]);
     let body: string;
     switch (t.kind) {
       case "f64":
@@ -1326,7 +1385,9 @@ export class LlDyn {
         const base = host.nullableUnions.fieldBase(t.shapeId);
         const index = new Map(shape.fields.map((f, i) => [f.name, i + base]));
         // The runtime names kept-source keys by this index (record-sources.ts).
-        const order = recordSourceFieldOrder(shape);
+        // The order index is no key: parsed values keep the table's order
+        // and their source's own order.
+        const order = recordSourceFieldOrder(shape).filter((name) => name !== KEY_ORDER_FIELD);
         if (recordMayKeepSource(shape)) this.keepsRecordSources = true;
         const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
         const entries = order.map((fieldName) => {
@@ -1364,6 +1425,7 @@ export class LlDyn {
       `@${name} = internal constant { ${S}, ${S}, ptr, ptr, ptr, ptr, ptr, ptr, ${S} } { ${body} }`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -1453,6 +1515,7 @@ export class LlDyn {
     const base = `sc_rnames_${this.recordNameTables.size}`;
     const table = { names: `@${base}`, lens: `@${base}_lens` };
     this.recordNameTables.set(shapeId, table);
+    this.host.journalAllocated?.(base, "dyn.recordNameTable", [shapeId]);
     const n = shape.fields.length;
     const names = recordSourceFieldOrder(shape);
     this.defs.push(
@@ -1460,6 +1523,7 @@ export class LlDyn {
       `@${base}_lens = internal constant [${n} x ${S}] [${names.map((name) => `${S} ${Buffer.byteLength(name, "utf8")}`).join(", ")}]`,
       ``,
     );
+    this.host.journalBuilt?.();
     return table;
   }
 
@@ -1478,6 +1542,7 @@ export class LlDyn {
     const host = this.host;
     const name = `sc_jp_${this.jsonParsers.size}`;
     this.jsonParsers.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.jsonParseHelper", [t]);
     const schema = this.jsonSchema(t);
     const check = this.dynCheckHelper(t);
     host.declare(`declare ptr @scr_json_parse_schema(ptr, ptr)`);
@@ -1504,6 +1569,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -1519,6 +1585,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dc_${this.dynBuilders.size}`;
     this.dynBuilders.set(builderKey, name);
+    this.host.journalAllocated?.(name, "dyn.dynCheckHelper", [t, preserveRefs]);
     const recursive = this.isRecursiveShape(t);
     const memo = !recursive && this.holdsRecursiveShape(t) && this.valTy(t) === "ptr";
     const host = this.host;
@@ -1541,6 +1608,7 @@ export class LlDyn {
         `}`,
         ``,
       );
+      this.host.journalBuilt?.();
       return name;
     }
     if (isRefCounted(t) && t.kind !== "dyn") {
@@ -1719,6 +1787,32 @@ export class LlDyn {
             B.line(`store ${member.type} ${oldValue}, ptr ${checkedPtr}`);
           });
           if (t.kind !== "record") {
+            // Whether the dense slots carry states (SCR_ARR_STATES in
+            // `spare`) moves with them; the rest of `spare` stays.
+            const cachedSpare = B.tmp(),
+              checkedSpare = B.tmp();
+            const sparePtr = (array: string): string => {
+              const ptr = B.tmp();
+              B.line(
+                `${ptr} = getelementptr inbounds %ScrArr, ptr ${array}, i64 0, i32 ${SCR_ARR_FIELD.spare}`,
+              );
+              return ptr;
+            };
+            const cachedSparePtr = sparePtr(cached),
+              checkedSparePtr = sparePtr(checked);
+            B.line(`${cachedSpare} = load i16, ptr ${cachedSparePtr}`);
+            B.line(`${checkedSpare} = load i16, ptr ${checkedSparePtr}`);
+            const exchange = (own: string, other: string, ptr: string): void => {
+              const kept = B.tmp(),
+                moved = B.tmp(),
+                next = B.tmp();
+              B.line(`${kept} = and i16 ${own}, ${~SCR_ARR_STATES}`);
+              B.line(`${moved} = and i16 ${other}, ${SCR_ARR_STATES}`);
+              B.line(`${next} = or i16 ${kept}, ${moved}`);
+              B.line(`store i16 ${next}, ptr ${ptr}`);
+            };
+            exchange(cachedSpare, checkedSpare, cachedSparePtr);
+            exchange(checkedSpare, cachedSpare, checkedSparePtr);
             // Sparse slots and numeric properties live out of line; each
             // array keeps its own match metadata.
             host.declare("declare void @scr_arr_swap_indexed_ext(ptr, ptr)");
@@ -2069,7 +2163,10 @@ export class LlDyn {
         }
         B.line(`%r0 = call ptr @${mangleRecordNew(t.shapeId)}()`);
         if (recursive) this.recordBuilt(B, name, "%r0");
+        // The order index stays 0: the source's own order is kept below
+        // when it differs from the table.
         for (const f of shape.fields) {
+          if (f.name === KEY_ORDER_FIELD) continue;
           const { value: m, release } = this.memberRead(B, f.name, f.type);
           this.pendingBail(
             B,
@@ -2537,6 +2634,7 @@ export class LlDyn {
       ``,
     );
     if (recursive || memo) this.emitVisitWrapper(name, t, recursive ? "build" : "memo");
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -2551,6 +2649,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_td_${this.toDynFns.size}`;
     this.toDynFns.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.toDynHelper", [t]);
     const host = this.host;
     const B = new BlockBuilder();
     let sourceAccessor: { name: string; release: string } | null = null;
@@ -2800,70 +2899,79 @@ export class LlDyn {
           host.declare(`declare ptr @scr_dyn_new_obj()`);
           B.line(`${d} = call ptr @scr_dyn_new_obj()`);
         }
-        // Keys insert in DECLARED order (JS insertion order); internal
-        // '%'-fields follow so a record→dyn→record round trip keeps them.
+        // Keys insert in DECLARED order (JS insertion order), or in the
+        // value's own order for a shape with orderVariants; internal
+        // '%'-fields follow so a record→dyn→record round trip keeps them
+        // (all but the order index, which is no key).
         const byName = new Map(shape.fields.map((f) => [f.name, f]));
         // An accessor property is one key whose getter and setter are the
         // slot closures (see accessorSlotProp), in accessorOrder's place.
-        const order = shape.accessorOrder ?? shape.declaredOrder ?? shape.fields.map((f) => f.name);
-        const inOrder = new Set(order);
-        const accessors = new Set(
-          shape.accessorOrder === undefined
-            ? []
-            : shape.fields.flatMap((f) => {
-                const slot = accessorSlotProp(f.name);
-                return slot === null ? [] : [slot.prop];
-              }),
-        );
-        type DynField = { name: string; type: IrType } | { accessor: string };
-        const dynFields: DynField[] = [
-          ...order.flatMap((n) => {
-            if (accessors.has(n)) return [{ accessor: n } as DynField];
-            const f = byName.get(n);
-            return f === undefined ? [] : [f as DynField];
-          }),
-          ...shape.fields.filter(
-            (f) =>
-              !inOrder.has(f.name) && !(accessors.size > 0 && accessorSlotProp(f.name) !== null),
-          ),
-        ];
-        for (const entry of dynFields) {
-          if ("accessor" in entry) {
-            host.declare(
-              `declare void @scr_dyn_obj_set_accessor(ptr, ptr, ${host.sizeType}, ptr, ptr)`,
-            );
-            const boxed = (kind: "get" | "set"): string => {
-              const slot = byName.get(`%${kind}:${entry.accessor}`);
-              if (slot === undefined) return "null";
-              const fv = loadFieldOf(slot.name, slot.type);
-              const conv = B.tmp();
-              B.line(
-                `${conv} = call ptr @${this.toDynHelper(slot.type)}(${this.valTy(slot.type)} ${fv})`,
-              );
-              return conv;
-            };
-            const getter = boxed("get");
-            const setter = boxed("set");
-            B.line(
-              `call void @scr_dyn_obj_set_accessor(ptr ${d}, ptr ${host.cstr(entry.accessor)}, ${host.sizeType} ${Buffer.byteLength(entry.accessor, "utf8")}, ptr ${getter}, ptr ${setter}) ; ${llvmCommentText(entry.accessor)}`,
-            );
-            continue;
-          }
-          const f = entry;
-          const klen = Buffer.byteLength(f.name, "utf8");
-          const fv = loadFieldOf(f.name, f.type);
-          // An ABSENT optional field contributes no key.
-          const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
-          const conv = B.tmp();
-          B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
-          B.line(
-            `call void @scr_dyn_obj_set(ptr ${d}, ptr ${host.cstr(f.name)}, ${host.sizeType} ${klen}, ptr ${conv}) ; ${llvmCommentText(f.name)}`,
+        const orders =
+          shape.accessorOrder !== undefined ? [shape.accessorOrder] : shapeKeyOrders(shape);
+        const perOrder = (order: readonly string[]): void => {
+          const inOrder = new Set(order);
+          const accessors = new Set(
+            shape.accessorOrder === undefined
+              ? []
+              : shape.fields.flatMap((f) => {
+                  const slot = accessorSlotProp(f.name);
+                  return slot === null ? [] : [slot.prop];
+                }),
           );
-          if (lSkip !== null) {
-            B.br(lSkip);
-            B.startBlock(lSkip);
+          type DynField = { name: string; type: IrType } | { accessor: string };
+          const dynFields: DynField[] = [
+            ...order.flatMap((n) => {
+              if (accessors.has(n)) return [{ accessor: n } as DynField];
+              const f = byName.get(n);
+              return f === undefined ? [] : [f as DynField];
+            }),
+            ...shape.fields.filter(
+              (f) =>
+                !inOrder.has(f.name) &&
+                f.name !== KEY_ORDER_FIELD &&
+                !(accessors.size > 0 && accessorSlotProp(f.name) !== null),
+            ),
+          ];
+          for (const entry of dynFields) {
+            if ("accessor" in entry) {
+              host.declare(
+                `declare void @scr_dyn_obj_set_accessor(ptr, ptr, ${host.sizeType}, ptr, ptr)`,
+              );
+              const boxed = (kind: "get" | "set"): string => {
+                const slot = byName.get(`%${kind}:${entry.accessor}`);
+                if (slot === undefined) return "null";
+                const fv = loadFieldOf(slot.name, slot.type);
+                const conv = B.tmp();
+                B.line(
+                  `${conv} = call ptr @${this.toDynHelper(slot.type)}(${this.valTy(slot.type)} ${fv})`,
+                );
+                return conv;
+              };
+              const getter = boxed("get");
+              const setter = boxed("set");
+              B.line(
+                `call void @scr_dyn_obj_set_accessor(ptr ${d}, ptr ${host.cstr(entry.accessor)}, ${host.sizeType} ${Buffer.byteLength(entry.accessor, "utf8")}, ptr ${getter}, ptr ${setter}) ; ${llvmCommentText(entry.accessor)}`,
+              );
+              continue;
+            }
+            const f = entry;
+            const klen = Buffer.byteLength(f.name, "utf8");
+            const fv = loadFieldOf(f.name, f.type);
+            // An ABSENT optional field contributes no key.
+            const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
+            const conv = B.tmp();
+            B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
+            B.line(
+              `call void @scr_dyn_obj_set(ptr ${d}, ptr ${host.cstr(f.name)}, ${host.sizeType} ${klen}, ptr ${conv}) ; ${llvmCommentText(f.name)}`,
+            );
+            if (lSkip !== null) {
+              B.br(lSkip);
+              B.startBlock(lSkip);
+            }
           }
-        }
+        };
+        if (orders.length === 1) perOrder(orders[0]!);
+        else emitPerKeyOrder(B, shape, base, "%v", perOrder);
         // A Dirent row takes Node's Dirent prototype (the type probes) and
         // its Symbol(type) key; %dtype stays readable but non-enumerable.
         if (isDirentShape(shape)) {
@@ -3157,6 +3265,7 @@ export class LlDyn {
         ``,
       );
     }
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -3173,6 +3282,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_pda_${this.promiseDynAdapters.size}`;
     this.promiseDynAdapters.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.promiseDynAdapterHelper", [inner]);
     const host = this.host;
     const B = new BlockBuilder();
     host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
@@ -3250,6 +3360,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -3262,6 +3373,7 @@ export class LlDyn {
     if (this.dynToStrFn) return this.dynToStrFn;
     const name = "sc_ds";
     this.dynToStrFn = name;
+    this.host.journalAllocated?.(name, "dyn.dynToStrHelper", []);
     const host = this.host;
     host.declare(`declare void @scr_jb_init(ptr)`);
     host.declare(`declare ptr @scr_jb_finish(ptr)`);
@@ -3566,6 +3678,7 @@ export class LlDyn {
         ``,
       );
     }
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -3577,6 +3690,7 @@ export class LlDyn {
     if (this.caughtToDynFn) return this.caughtToDynFn;
     const name = "sc_cd";
     this.caughtToDynFn = name;
+    this.host.journalAllocated?.(name, "dyn.caughtToDynHelper", []);
     const host = this.host;
     const B = new BlockBuilder();
     const kp = B.tmp();
@@ -3682,6 +3796,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -3695,6 +3810,7 @@ export class LlDyn {
     this.helperMemo.set(name, name);
     const B = new BlockBuilder();
     const host = this.host;
+    this.host.journalAllocated?.(name, "dyn.dynComputedKeyGetHelper", []);
     const stringHelper = this.dynKeyGetHelper();
     host.declare(`declare ptr @scr_dyn_property_key_value(ptr)`);
     host.declare(`declare ptr @scr_dyn_symbol_key_get(ptr, ptr, i1 zeroext)`);
@@ -3732,6 +3848,7 @@ export class LlDyn {
       "}",
       "",
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -3741,6 +3858,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = "sc_dyn_key_get";
     this.dynBuilders.set(memoKey, name);
+    this.host.journalAllocated?.(name, "dyn.dynKeyGetHelper", []);
     const host = this.host;
     const B = new BlockBuilder();
     const kd = this.kindOf(B, "%d");
@@ -4134,6 +4252,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4145,6 +4264,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = "sc_dyn_destr_check";
     this.dynBuilders.set(memoKey, name);
+    this.host.journalAllocated?.(name, "dyn.dynDestrCheckHelper", []);
     const host = this.host;
     host.declare(`declare void @scr_jb_init(ptr)`);
     host.declare(`declare ptr @scr_jb_finish(ptr)`);
@@ -4199,6 +4319,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4210,6 +4331,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = "sc_dyn_iter_n";
     this.dynBuilders.set(memoKey, name);
+    this.host.journalAllocated?.(name, "dyn.dynIterNHelper", []);
     const host = this.host;
     host.declare(`declare ptr @scr_dyn_new_arr()`);
     host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
@@ -4414,6 +4536,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4445,6 +4568,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dfk_${this.dynFuncThunks.size}`;
     this.dynFuncThunks.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.dynFuncThunkHelper", [t]);
     const host = this.host;
     const B = new BlockBuilder();
     const argNames: string[] = [];
@@ -4594,6 +4718,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4604,6 +4729,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dfb_${this.dynFuncBoxes.size}`;
     this.dynFuncBoxes.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.dynFuncBoxHelper", [t]);
     const host = this.host;
     const thunk = this.dynFuncThunkHelper(t);
     host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
@@ -4618,6 +4744,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4640,11 +4767,15 @@ export class LlDyn {
       (t.ret.kind === "void" || t.ret.kind === "f64" || t.ret.kind === "bool") &&
       this.messageReadable(param, new Set());
     if (!supported) {
+      // A signature without an entry still takes a number.
       this.messageListeners.set(key, null);
+      this.host.journalAllocated?.("", "dyn.messageListenerHelper", [t]);
+      this.host.journalBuilt?.();
       return null;
     }
     const name = `sc_dml_${this.messageListeners.size}`;
     this.messageListeners.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.messageListenerHelper", [t]);
     const B = new BlockBuilder();
     B.entryAllocas.push(`%fail = alloca i1`);
     B.line(`store i1 false, ptr %fail`);
@@ -4676,6 +4807,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4737,6 +4869,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dmr_${this.messageReaders.size}`;
     this.messageReaders.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.messageReaderHelper", [t]);
     const host = this.host;
     const S = host.sizeType;
     if (t.kind !== "record") host.declare(`declare i32 @scr_message_kind(ptr, ${S})`);
@@ -4909,6 +5042,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -4920,6 +5054,7 @@ export class LlDyn {
     if (existing) return existing;
     const name = `sc_dfa_${this.dynFuncAdapters.size}`;
     this.dynFuncAdapters.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.dynFuncAdapterHelper", [t]);
     const host = this.host;
     const B = new BlockBuilder();
     host.declare(`declare ptr @scr_box_get_ref(ptr)`);
@@ -5022,6 +5157,7 @@ export class LlDyn {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 }

@@ -34,4 +34,6 @@ try {
   console.log((error as Error).name, (error as Error).message);
 }
 console.log(typeof FinalizationRegistry, registry instanceof FinalizationRegistry);
+// A name the registry does not have reads as undefined.
+console.log((registry as any).label);
 console.log(Object.prototype.toString.call(registry), registry);
