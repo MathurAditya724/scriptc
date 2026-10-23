@@ -25,6 +25,7 @@ import { InternalCompilerError } from "../../errors.js";
  * flow (if/while/for/for-of/do, switch, try/catch, abrupt completions),
  * explicit resource management, and blocked-binding poisoning. */
 import * as ts from "../ts7/adapter.js";
+import { lowerOptionalIndex } from "./undefined-index.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
@@ -204,7 +205,6 @@ import {
   lowerElementCompoundStatement,
   lowerIncDec,
   lowerIncDecTarget,
-  lowerOptionalNumber,
   lowerGroupsProjection,
   matchResultNamedGroupsOf,
   runtimeOptionalGuardIds,
@@ -1010,6 +1010,44 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
   return false;
 }
 
+/** The CLASS-DECLARATION twin of predeclareForwardCapture: a function
+ * hoisted above a local `class D` (`function make() { return new D(); }`
+ * reached through an earlier function) captures the class binding, which
+ * is in its temporal dead zone until the class statement runs. The class
+ * cannot be collected yet (its heritage may name bindings declared between
+ * here and the statement), so the binding is pre-declared as a TDZ box
+ * holding the class as a checked-dynamic constructor; the class statement
+ * later initializes it, and every reference reads it from there. */
+export function predeclareForwardClass(lowerer: Lowerer, symbol: ts.Symbol): boolean {
+  const decl = symbol.valueDeclaration;
+  if (!decl || !ts.isClassDeclaration(decl) || decl.name === undefined) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return false;
+  for (let i = lowerer.activeStmtLists.length - 1; i >= 0; i--) {
+    const entry = lowerer.activeStmtLists[i]!;
+    const idx = entry.stmts.indexOf(decl);
+    if (idx < 0) continue;
+    if (idx < entry.index || entry.ctx === lowerer.ctx || entry.ctx.tdzPredeclared.has(symbol))
+      return false;
+    const name = decl.name.text;
+    const count = entry.ctx.localCounters.get(name) ?? 0;
+    entry.ctx.localCounters.set(name, count + 1);
+    const local: IrLocal = {
+      id: `${name}.${count}`,
+      name,
+      type: DYN,
+      mutable: false,
+      boxed: true,
+      tdz: true,
+    };
+    entry.ctx.locals.push(local);
+    entry.frame.set(symbol, local);
+    entry.out.push({ kind: "varDecl", localId: local.id, init: null, loc: locOf(decl) });
+    entry.ctx.tdzPredeclared.set(symbol, local);
+    return true;
+  }
+  return false;
+}
+
 /** The FUNCTION-DECLARATION twin of predeclareForwardCapture: JS hoists a
  * nested `function f() {}` to scope entry — the binding is LIVE from the
  * first statement, so a reference lexically above the declaration in the
@@ -1579,6 +1617,14 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
   if (ts.isClassDeclaration(stmt)) {
     if (!stmt.name) lowerer.unsupported("SC1090", stmt, "anonymous local class declarations");
     const info = lowerer.lowerClassExpressionInfo(stmt);
+    // An earlier hoisted function captured the class: its TDZ box exists.
+    const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
+    const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
+    if (pre) {
+      lowerer.ctx.tdzPredeclared.delete(symbol!);
+      const value = lowerer.coerceToExpected(lowerer.lowerClassExpression(stmt), DYN);
+      return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(stmt) };
+    }
     const type: IrType = { kind: "classval", className: info.def.name };
     const local = lowerer.declareLocal(stmt.name, stmt.name.text, type, true);
     // Static members of a function-local class run while the class value is
@@ -4920,12 +4966,16 @@ export function bindPatternTarget(
     }
     // Preserve checked-value pattern bindings when the inferred type
     // cannot represent them without a refusal or an alias-breaking copy.
+    // A name destructured from a container of an evolving array
+    // (evolvingArrayHold) may hold the array, which the checker types by
+    // the elements written before it.
     const dynStays =
       value.type.kind === "dyn" &&
-      (() => {
+      ((() => {
         const mapped = lowerer.mapTypeOf(lowerer.typeOf(name));
         return mapped === null || jsBindingKeepsCheckedObject(lowerer, name, mapped);
-      })();
+      })() ||
+        readsHeldEvolvingArray(lowerer, name));
     let type = dynStays
       ? DYN
       : (lowerer.runtimeOptionalBindingType(name, lowerer.irTypeOf(name)) ??
@@ -5054,13 +5104,16 @@ function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrTy
   // type once the reads settle it.
   const written: ts.Expression[] = [];
   // The file's identifiers are indexed by name once (identifiersNamed), so
-  // each binding resolves only the uses spelled like it.
+  // each binding resolves only the uses spelled like it. A shorthand
+  // property (`{ xs }`) is a use too.
   for (const node of identifiersNamed(lowerer, ts.getSourceFileOfNode(decl), decl.name.text)) {
     if (
       node === decl.name ||
       node.pos < scope.pos ||
       node.end > scope.end ||
-      lowerer.checker.getSymbolAtLocation(node) !== symbol
+      (ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
+        ? lowerer.checker.getShorthandAssignmentValueSymbol(node.parent)
+        : lowerer.checker.getSymbolAtLocation(node)) !== symbol
     )
       continue;
     let target: ts.Node = node;
@@ -5118,26 +5171,103 @@ function evolvingArrayType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrTy
   return result;
 }
 
-/** An unannotated alias of an evolving array binding whose reads disagree
- * (`const alias = xs` between `xs.push(1)` and `xs.push("two")`): the
- * checker types the alias by the elements written before it, but both names
- * hold one array, so the alias takes the binding's checked-dynamic type and
- * sees the later writes. Aliases of such an alias follow it. Null for other
- * bindings. */
-function evolvingArrayAliasType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | null {
-  let current = decl;
-  for (let depth = 0; depth < 8; depth++) {
-    let initializer = current.initializer;
-    while (initializer !== undefined && ts.isParenthesizedExpression(initializer))
-      initializer = initializer.expression;
-    if (initializer === undefined || !ts.isIdentifier(initializer)) return null;
-    const source = lowerer.checker.getSymbolAtLocation(initializer)?.valueDeclaration;
+/** How a TypeScript expression holds an evolving array binding whose reads
+ * disagree (evolvingArrayType answers checked-dynamic): "evolving" for the
+ * binding itself, "alias" for an unannotated binding initialized with it or
+ * with an alias of it (`const alias = xs`), and "container" for an object or
+ * array literal with it as a property, element or spread source at any
+ * depth (`{ items: xs }`, `[xs]`), an unannotated binding initialized with
+ * or destructured from such a literal, and a property or element read of a
+ * container (`box.items`). The checker types an alias or container by the
+ * elements written before it was taken, but it holds the same array. Null
+ * for other expressions. */
+function evolvingArrayHold(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  depth = 0,
+): "evolving" | "alias" | "container" | null {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (depth >= 8) return null;
+  const binding = (symbol: ts.Symbol | undefined): "evolving" | "alias" | "container" | null => {
+    const source = symbol?.valueDeclaration;
+    // A name destructured from a container (`const { items } = box`) may
+    // be the array or another container.
+    if (source !== undefined && ts.isBindingElement(source) && ts.isIdentifier(source.name)) {
+      const host = hostVariableDeclarationOf(source.name);
+      return host !== null &&
+        !host.type &&
+        host.initializer !== undefined &&
+        evolvingArrayHold(lowerer, host.initializer, depth + 1) === "container"
+        ? "container"
+        : null;
+    }
     if (source === undefined || !ts.isVariableDeclaration(source) || source.type) return null;
     const evolved = evolvingArrayType(lowerer, source);
-    if (evolved !== null) return evolved.kind === "dyn" ? evolved : null;
-    current = source;
+    if (evolved !== null) return evolved.kind === "dyn" ? "evolving" : null;
+    if (source.initializer === undefined) return null;
+    const held = evolvingArrayHold(lowerer, source.initializer, depth + 1);
+    return held === "evolving" ? "alias" : held;
+  };
+  if (ts.isIdentifier(expr)) return binding(lowerer.checker.getSymbolAtLocation(expr));
+  if (ts.isPropertyAccessExpression(expr) || ts.isElementAccessExpression(expr))
+    return evolvingArrayHold(lowerer, expr.expression, depth + 1) === "container"
+      ? "container"
+      : null;
+  // A spread of the array itself (`{ ...xs }`, `[...xs]`) copies its
+  // elements, as in Node; a spread of a container copies its references.
+  if (ts.isObjectLiteralExpression(expr)) {
+    for (const property of expr.properties.nodes) {
+      const held = ts.isPropertyAssignment(property)
+        ? evolvingArrayHold(lowerer, property.initializer, depth + 1)
+        : ts.isShorthandPropertyAssignment(property)
+          ? binding(lowerer.checker.getShorthandAssignmentValueSymbol(property))
+          : ts.isSpreadAssignment(property) &&
+              evolvingArrayHold(lowerer, property.expression, depth + 1) === "container"
+            ? "container"
+            : null;
+      if (held !== null) return "container";
+    }
+    return null;
+  }
+  if (ts.isArrayLiteralExpression(expr)) {
+    for (const element of expr.elements.nodes) {
+      const held = ts.isSpreadElement(element)
+        ? evolvingArrayHold(lowerer, element.expression, depth + 1) === "container"
+          ? "container"
+          : null
+        : evolvingArrayHold(lowerer, element, depth + 1);
+      if (held !== null) return "container";
+    }
   }
   return null;
+}
+
+/** Whether a TypeScript expression is an alias or container of an evolving
+ * array binding whose reads disagree (evolvingArrayHold). Its value is
+ * checked-dynamic, and the checker's type for it lists only the elements
+ * written before it was taken, so element reads through it stay
+ * checked-dynamic instead of checking against that type. */
+export function readsHeldEvolvingArray(lowerer: Lowerer, expr: ts.Expression): boolean {
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
+  const held = evolvingArrayHold(lowerer, expr);
+  return held === "alias" || held === "container";
+}
+
+/** Whether a TypeScript object or array literal holds an evolving array
+ * binding whose reads disagree (evolvingArrayHold), so it builds as a
+ * checked-dynamic literal that keeps the array. */
+export function holdsEvolvingArray(lowerer: Lowerer, expr: ts.Expression): boolean {
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
+  return evolvingArrayHold(lowerer, expr) === "container";
+}
+
+/** An unannotated binding initialized with an evolving array binding whose
+ * reads disagree, or with an alias or container of one (evolvingArrayHold):
+ * it takes the array's checked-dynamic type, so it sees the later writes.
+ * Null for other bindings. */
+function evolvingArrayHolderType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | null {
+  if (decl.initializer === undefined) return null;
+  return evolvingArrayHold(lowerer, decl.initializer) === null ? null : DYN;
 }
 
 /** A single static type for an initializer-less JavaScript `let` whose
@@ -5834,7 +5964,7 @@ export function lowerVarDecl(
     !decl.type &&
     !isJsSourceFile(ts.getSourceFileOfNode(decl))
   ) {
-    const evolved = evolvingArrayType(lowerer, decl) ?? evolvingArrayAliasType(lowerer, decl);
+    const evolved = evolvingArrayType(lowerer, decl) ?? evolvingArrayHolderType(lowerer, decl);
     if (evolved !== null) {
       type = evolved;
       init = lowerer.lowerExprExpecting(decl.initializer, evolved);
@@ -9279,7 +9409,7 @@ function lowerAssignTargetInto(
       if (arr.type.kind === "array") {
         const recv = lowerer.declareHiddenLocal("%dtRecv", arr.type);
         out.push({ kind: "varDecl", localId: recv.id, init: arr, loc });
-        const index = lowerOptionalNumber(
+        const index = lowerOptionalIndex(
           lowerer,
           lowerer.lowerExpr(t.argumentExpression),
           locOf(t.argumentExpression),
