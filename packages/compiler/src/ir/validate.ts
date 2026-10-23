@@ -4146,6 +4146,9 @@ function validateFunction(
       e.fn === "error.assign" ||
       e.fn === "error.hasKey" ||
       e.fn === "error.hasCode" ||
+      e.fn === "error.ownAccessor" ||
+      e.fn === "error.accessorGet" ||
+      e.fn === "error.accessorSet" ||
       e.fn === "error.defineCause" ||
       e.fn === "error.deleteCause"
     ) {
@@ -5497,6 +5500,7 @@ function validateFunction(
       e.fn === "stream.destroyErr" ||
       e.fn === "stream.objectMode" ||
       e.fn === "stream.decodeStrings" ||
+      e.fn === "stream.optionValues" ||
       e.fn === "stream.duplexFromGen" ||
       e.fn === "stream.duplexFromDyn" ||
       e.fn === "stream.duplexifyReadable" ||
@@ -5507,6 +5511,7 @@ function validateFunction(
       e.fn === "stream.duplexFromGenSignal" ||
       e.fn === "stream.duplexFromAsyncFnSignal" ||
       e.fn === "stream.setConstruct" ||
+      e.fn === "stream.replaceConstruct" ||
       e.fn === "stream.setWritev" ||
       e.fn === "stream.setWritevDefault" ||
       e.fn === "stream.iteratorClose" ||
@@ -5869,6 +5874,7 @@ function validateFunction(
         e.fn === "readable.pushEncoding" ||
         e.fn === "stream.objectMode" ||
         e.fn === "stream.decodeStrings" ||
+        e.fn === "stream.optionValues" ||
         e.fn === "writable.writeEncoding" ||
         e.fn === "writable.setDefaultEncoding" ||
         e.fn === "stream.destroy" ||
