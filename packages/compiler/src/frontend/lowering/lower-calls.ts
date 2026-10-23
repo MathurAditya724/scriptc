@@ -3756,6 +3756,14 @@ function lowerDynReceiverMethodCall(
   // 'unknown' slot does.
   if (checkerUntyped && DYN_HANDLE_KINDS.has(recv.type.kind))
     recv = lowerer.coerceToExpected(recv, DYN);
+  // A typed array whose checker type collapsed to `any` (a JS binding
+  // referenced in its own initializer's inference — hono's etag digest
+  // `const nextChunk = new Uint8Array(new ArrayBuffer(f(chunk)))` beside
+  // `chunk = nextChunk`) still lowered to its native bytes. The typed
+  // lowerings key on the checker type and decline it, so it boxes by
+  // reference (the box shares the native storage, so writes through the
+  // call stay visible) and the call dispatches on the runtime kind.
+  if (checkerUntyped && recv.type.kind === "bytes") recv = lowerer.coerceToExpected(recv, DYN);
   // The last-resort retry (boxTypedTemporary — every other lowering
   // already declined): a checker-`any` receiver whose value is a FRESH
   // typed result of an earlier step in the chain (`out.split("\n")`
