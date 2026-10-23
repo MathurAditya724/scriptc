@@ -1,5 +1,10 @@
 /* Element reads and writes (`a[i]`, `a[i] = v`), compound element updates, and keyed record reads. */
 import * as ts from "../../ts7/adapter.js";
+import {
+  lowerOptionalIndex,
+  splitUndefinedIndex,
+  undefinedTypedArrayKeyFence,
+} from "../undefined-index.js";
 import { type Lowerer, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import {
   BOOL,
@@ -779,9 +784,9 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     }
   }
   // Array reads can themselves supply an index. A missing numeric value
-  // is undefined, whose property lookup misses just like NaN; keep that
-  // value instead of rejecting a checker-number index with optional IR.
-  const index = lowerOptionalNumber(
+  // is undefined, which names the array's "undefined" property
+  // (undefined-index.ts).
+  const index = lowerOptionalIndex(
     lowerer,
     lowerer.lowerExpr(expr.argumentExpression),
     locOf(expr.argumentExpression),
@@ -1531,12 +1536,26 @@ export function lowerElementCompoundParts(
       "compound assignment through a non-native array or byte view",
     );
   }
-  const index = lowerOptionalNumber(
-    lowerer,
-    lowerer.lowerExpr(target.argumentExpression),
-    locOf(target.argumentExpression),
-    target.argumentExpression,
-  );
+  // An undefined index names the "undefined" property (undefined-index.ts),
+  // which a typed array cannot hold.
+  const rawIndex = lowerer.lowerExpr(target.argumentExpression);
+  const split =
+    receiver.type.kind === "bytes"
+      ? splitUndefinedIndex(
+          lowerer,
+          rawIndex,
+          target.argumentExpression,
+          locOf(target.argumentExpression),
+        )
+      : null;
+  const index =
+    split?.index ??
+    lowerOptionalIndex(
+      lowerer,
+      rawIndex,
+      locOf(target.argumentExpression),
+      target.argumentExpression,
+    );
   if (index.type.kind !== "f64")
     lowerer.unsupported("SC1090", target.argumentExpression, "indexing with non-number keys");
   const receiverLocal = lowerer.declareHiddenLocal("%compoundArray", receiver.type);
@@ -1645,15 +1664,25 @@ export function lowerElementCompoundParts(
   }
   const resultLocal = lowerer.declareHiddenLocal("%compoundResult", computed.type);
   const resultRef = (): IrExpr => varRef(resultLocal.id, computed.type, loc);
-  const write: IrStmt =
+  const store: IrStmt =
     receiver.type.kind === "array"
       ? arrayValueStore(lowerer, receiverRef(), indexRef(), resultRef(), receiver.type.elem, loc)
       : { kind: "bytesSet", arr: receiverRef(), index: indexRef(), value: resultRef(), loc };
+  const write: IrStmt = split
+    ? {
+        kind: "if",
+        cond: split.isUndefined,
+        then: [undefinedTypedArrayKeyFence(lowerer, target, loc)],
+        else_: [store],
+        loc,
+      }
+    : store;
   return {
     expr: {
       kind: "seqExpr",
       stmts: [
         { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+        ...(split?.stmts ?? []),
         { kind: "varDecl", localId: indexLocal.id, init: index, loc },
         { kind: "varDecl", localId: oldLocal.id, init: oldValue, loc },
         { kind: "varDecl", localId: resultLocal.id, init: computed, loc },
@@ -1880,13 +1909,23 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     // The checker's flow type is a typed array, but the storage is wider.
     if (recv.type.kind !== "bytes") return lowerWiderBytesWrite(lowerer, expr, target, recv);
     // An index the checker types as a number but whose storage may hold
-    // undefined (a hole read) converts with ToNumber, as the reads do.
-    const index = lowerOptionalNumber(
+    // undefined (a hole read) converts with ToNumber, as the reads do; an
+    // undefined index names a property the typed array cannot hold.
+    const rawIndex = lowerer.lowerExpr(target.argumentExpression);
+    const split = splitUndefinedIndex(
       lowerer,
-      lowerer.lowerExpr(target.argumentExpression),
-      locOf(target.argumentExpression),
+      rawIndex,
       target.argumentExpression,
+      locOf(target.argumentExpression),
     );
+    const index =
+      split?.index ??
+      lowerOptionalNumber(
+        lowerer,
+        rawIndex,
+        locOf(target.argumentExpression),
+        target.argumentExpression,
+      );
     if (index.type.kind === "dyn" && recv.type.kind === "bytes") {
       return {
         kind: "exprStmt",
@@ -1902,7 +1941,34 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       lowerer.unsupported("SC1090", target.argumentExpression, "indexing with non-number keys");
     }
     const value = lowerer.lowerExprExpecting(expr.right, F64);
-    return { kind: "bytesSet", arr: recv, index, value, loc: locOf(expr) };
+    if (split === null) return { kind: "bytesSet", arr: recv, index, value, loc: locOf(expr) };
+    const loc = locOf(expr);
+    const receiver = lowerer.declareHiddenLocal("%indexedBytes", recv.type);
+    const valueLocal = lowerer.declareHiddenLocal("%elementValue", F64);
+    return {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: receiver.id, init: recv, loc },
+        ...split.stmts,
+        { kind: "varDecl", localId: valueLocal.id, init: value, loc },
+        {
+          kind: "if",
+          cond: split.isUndefined,
+          then: [undefinedTypedArrayKeyFence(lowerer, target, loc)],
+          else_: [
+            {
+              kind: "bytesSet",
+              arr: varRef(receiver.id, recv.type, loc),
+              index,
+              value: varRef(valueLocal.id, F64, loc),
+              loc,
+            },
+          ],
+          loc,
+        },
+      ],
+      loc,
+    };
   }
   // Tuple element write `t[0] = v`: a positional-field write (recordSet)
   // — literal indices only, like the read.
@@ -2197,7 +2263,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       "assignment through a possibly missing nested array receiver",
     );
   }
-  const index = lowerOptionalNumber(
+  const index = lowerOptionalIndex(
     lowerer,
     lowerer.lowerExpr(target.argumentExpression),
     locOf(target.argumentExpression),

@@ -457,9 +457,15 @@ void scr_arr_copy_metadata(ScrArr *a, struct ScrDyn *target);
  * properties of `target`, so neither is lost when the storage is swapped. */
 void scr_arr_adopt_view_properties(ScrArr *a, struct ScrDyn *view, ScrArr *target);
 /* True when `key` is the string spelling of a number that is not an array
- * index ("-1", "1.5", "NaN", "Infinity"), with the number in *out. Arrays
- * keep such properties in their noncanonical property table. */
+ * index ("-1", "1.5", "NaN", "Infinity"), or "undefined", with the number in
+ * *out (scr_arr_undefined_key for "undefined"). Arrays keep such properties
+ * in their noncanonical property table. */
 bool scr_arr_numeric_key(const char *key, size_t len, double *out);
+/* The number compiled code passes as the key of an element access whose
+ * index is undefined at run time: a NaN with its own payload, which the
+ * property table spells "undefined" (JavaScript names that property, not
+ * "NaN"). */
+double scr_arr_undefined_key(void);
 /* Whether the array still has the named or noncanonical numeric property
  * `key`: `for...in` skips a key deleted before its turn. Borrows both. */
 bool scr_arr_has_named_key(ScrArr *a, ScrStr *key);

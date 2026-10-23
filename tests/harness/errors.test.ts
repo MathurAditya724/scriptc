@@ -305,6 +305,26 @@ describe("checked catch-binding casts", () => {
     );
   });
 
+  test("a typed-array write through an undefined index is a named runtime fence", async () => {
+    // Node stores an ordinary property named "undefined" on the typed
+    // array, which a compiled typed array cannot hold; defined indexes
+    // before it store as usual.
+    const r = await compileAndRun(
+      "typed-array-undefined-index",
+      `const holey: number[] = [1];
+holey[3] = 3;
+const cells = new Float64Array(4);
+for (const i of holey) cells[i] = 9;
+console.log(cells.join(","));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: typed array properties named 'undefined' \(an element index that is undefined\) are not supported yet \[SC1090 at .*typed-array-undefined-index\.ts:4\]\n$/,
+    );
+  });
+
   test("an EFFECTFUL surplus argument is a named deferred fence (JS lane)", async () => {
     // Effect-free surplus args drop at compile time, JS-exact (corpus
     // 1760 — the test-string-decoder writeSequences shape). An effectful
