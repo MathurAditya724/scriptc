@@ -838,3 +838,38 @@ test("a checked function passes its record parameters out, and its callbacks' ba
     "b",
   ]);
 });
+
+test("a generator resume builds only its result record, never the value it carries", () => {
+  const f = fixture();
+  const ab = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const result = f.record(
+    [
+      ["done", { kind: "bool" }],
+      ["value", ab],
+    ],
+    ["value", "done"],
+  );
+  const gen: IrType = {
+    kind: "generator",
+    yieldT: ab,
+    retT: { kind: "void" },
+    nextT: { kind: "undefinedT" },
+  };
+  const resume = (mode: "next" | "value", type: IrType): IrStmt =>
+    observe({ kind: "genResume", mode, gen: ref("g", gen), arg: null, type, loc });
+  f.run([
+    observe(f.literal(ab, ["b", "a"])),
+    observe(f.literal(result, ["done", "value"])),
+    resume("value", ab),
+    resume("next", result),
+  ]);
+  expect(f.order(ab)).toEqual(["b", "a"]);
+  // The result record itself is built in its fixed layout: today's table.
+  expect(f.order(result)).toEqual(["value", "done"]);
+});

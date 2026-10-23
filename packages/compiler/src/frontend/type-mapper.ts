@@ -1389,7 +1389,7 @@ function genChannels(
         : mapType(nextTs, ctx);
   if (!nextT || nextT.kind === "void" || nextT.kind === "nullT") return null;
   const ownChannel = (t: IrType): boolean =>
-    t.kind === "f64" || t.kind === "bool" || t.kind === "string";
+    t.kind === "f64" || t.kind === "bool" || t.kind === "string" || t.kind === "record";
   const dynMix =
     (yieldT.kind === "dyn" && retT.kind !== "dyn" && retT.kind !== "void" && !ownChannel(retT)) ||
     (retT.kind === "dyn" && yieldT.kind !== "dyn" && yieldT.kind !== "void" && !ownChannel(yieldT));
@@ -3954,9 +3954,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   //                    argument — fenced at the call).
   // Mixed dyn/concrete value channels share checked storage, so either
   // branch of the result record has the same representation. A number,
-  // boolean or string channel keeps its own type beside a dyn one (the
-  // `Generator<number>` defaults): its values ride OUT typed and box only
-  // when the result record is built.
+  // boolean, string or record channel keeps its own type beside a dyn one
+  // (the `Generator<number>` and `IterableIterator<Row>` defaults): its
+  // values ride OUT typed and box only when the result record is built, so
+  // for-of and spread read them back unchecked.
   if (
     isStdlibInterface("Generator") ||
     isStdlibInterface("AsyncGenerator") ||

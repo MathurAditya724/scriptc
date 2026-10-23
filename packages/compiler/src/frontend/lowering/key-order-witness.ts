@@ -506,12 +506,23 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       case "strIntrinsic":
       case "regexIntrinsic":
       case "bytesIntrinsic":
-      // Generator results ({ done, value }) and Promise.withResolvers
-      // records are built by the backend in a fixed layout.
-      case "genResume":
+      // Promise.withResolvers records are built by the backend in a fixed
+      // layout.
       case "promiseWithResolvers":
         producedBy(e.type, true);
         return;
+      case "genResume": {
+        // A resume builds at most its IteratorResult record ({ done, value }
+        // in a fixed layout; an async generator's settles a promise of it).
+        // The value it carries is the generator's own yielded or returned
+        // value, which the generator's body constructs. The record-free
+        // drives build nothing: `value` moves that value out, and step,
+        // close and a record-free delegate answer a boolean or nothing.
+        if (e.mode === "step" || e.mode === "value" || e.mode === "close") return;
+        const result = e.type.kind === "promise" ? e.type.inner : e.type;
+        if (result.kind === "record") opaqueShapes.add(result.shapeId);
+        return;
+      }
       case "dynCheck":
         if (e.adopt === true) shapesIn(e.type, declaredShapes, declaredSeen);
         // Conversions that build no record: a boxed primitive, and a
