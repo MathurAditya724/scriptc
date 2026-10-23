@@ -2,7 +2,9 @@
 // "," and parses that text, as in Node: one element reads as its value,
 // an empty array as 0n, and anything else throws the SyntaxError for the
 // joined text. Every element kind, negative and clamped values, float
-// formatting, views and the results in arithmetic.
+// formatting, views and the results in arithmetic. A Buffer converts
+// through its UTF-8 text instead, also when a typed array slot holds it,
+// and a DataView through "[object DataView]".
 
 const one = [
   new Int8Array([-5]),
@@ -44,3 +46,17 @@ for (let i = 0; i < 100; i++) {
   total += BigInt(window) * 3n;
 }
 console.log("window", BigInt(window), total, BigInt(bytes.subarray(2)) ** 2n);
+
+function convert(label, make) {
+  try {
+    console.log(label, BigInt(make()));
+  } catch (e) {
+    console.log(label, e instanceof SyntaxError, e.message);
+  }
+}
+convert("buffer", () => Buffer.from("12"));
+convert("spaced buffer", () => Buffer.from(" -7 "));
+convert("empty buffer", () => Buffer.alloc(0));
+convert("fraction buffer", () => Buffer.from("1.5"));
+convert("data view", () => new DataView(new ArrayBuffer(2)));
+for (const view of [new Uint8Array([5]), Buffer.from("64")]) console.log("slot", BigInt(view));

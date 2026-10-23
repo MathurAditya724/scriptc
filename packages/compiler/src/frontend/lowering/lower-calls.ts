@@ -2400,15 +2400,15 @@ function lowerBigIntConstructorValue(lowerer: Lowerer, arg: IrExpr, loc: SrcLoc)
     return { kind: "libCall", fn: "bigint.parse", args: [arg], type: BIGINT_T, loc };
   if (arg.type.kind === "f64")
     return { kind: "libCall", fn: "bigint.fromF64", args: [arg], type: BIGINT_T, loc };
-  // A typed array converts through ToPrimitive to its elements joined with
-  // ",", which BigInt then parses: one element reads as that element, none
-  // as 0n, and several throw the SyntaxError for the joined text.
+  // Byte storage converts through ToPrimitive, which BigInt then parses: a
+  // typed array's text is its elements joined with "," (one element reads
+  // as that element, none as 0n, several throw the SyntaxError for the
+  // joined text), a Buffer's is its UTF-8 decoding and a DataView's is
+  // "[object DataView]". The runtime value tells them apart, as for String.
   if (arg.type.kind === "bytes") {
     const text: IrExpr = {
-      kind: "bytesIntrinsic",
-      method: "join",
-      receiver: arg,
-      args: [{ kind: "strLit", value: ",", type: STRING, loc }],
+      kind: "toString",
+      operand: { kind: "dynFrom", value: arg, type: DYN, loc },
       type: STRING,
       loc,
     };
