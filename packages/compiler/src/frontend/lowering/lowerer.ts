@@ -3646,6 +3646,9 @@ export class Lowerer {
       .some((sf) => isDeclBoundaryFile(sf.fileName));
     return this.declBoundaryMemo;
   }
+  /** Tracked classes' bag initializers over a typed `this`
+   * (class-dynamic-dispatch.ts recordBagInitializers). */
+  readonly classBagInitializers = new Map<string, IrExpr>();
 
   constructor(
     readonly program: ts.Program,

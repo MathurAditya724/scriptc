@@ -394,6 +394,40 @@ export function classInstanceOf(
   };
 }
 
+/** `value` is the parameter itself, possibly through js.fromDyn. */
+function returnsParam(value: IrExpr, param: string): boolean {
+  if (value.kind === "varRef") return value.localId === param;
+  return (
+    value.kind === "libCall" &&
+    value.fn === "js.fromDyn" &&
+    value.args.length === 1 &&
+    value.args[0]!.kind === "varRef" &&
+    value.args[0]!.localId === param
+  );
+}
+
+/** The kind a class-table branch requires of `param`: a capsule-key test
+ * (alone or guarding a conjunction) needs a capsule, a class-key test a
+ * function value; null for any other condition. */
+function branchKind(cond: IrExpr, param: string): "classCapsule" | "funcKind" | null {
+  if (
+    cond.kind === "libCall" &&
+    (cond.fn === "dyn.typedRefIs" ||
+      cond.fn === "dyn.typedRefKeyIs" ||
+      cond.fn === "dyn.classIs") &&
+    cond.args[0]?.kind === "varRef" &&
+    cond.args[0].localId === param
+  ) {
+    if (cond.fn === "dyn.classIs") return "funcKind";
+    const key = cond.args[1];
+    return key?.kind === "strLit" && key.value.startsWith("object:") ? "classCapsule" : null;
+  }
+  if (cond.kind === "ternary" && cond.else_.kind === "boolLit" && cond.else_.value === false)
+    return branchKind(cond.cond, param);
+  if (cond.kind === "logical" && cond.op === "&&") return branchKind(cond.left, param);
+  return null;
+}
+
 const READ_PROPERTIES = "%dyn.class.readProperties";
 const READ_PROPERTIES_OR_EMPTY = "%dyn.class.readPropertiesOrEmpty";
 
@@ -685,16 +719,154 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
   if (![...lowerer.classes.values()].some((info) => info.def.tracksOwnFields)) return;
   const loc = functions[0]!.loc;
   const name = "%dyn.class.fieldCreated";
-  const value = varRef("value", DYN, loc),
-    key = varRef("key", DYN, loc);
-  const bag = varRef("bag", DYN, loc);
-  const created = (receiver: IrExpr, className: string, field: string, loc: SrcLoc): IrStmt => ({
+  const key = varRef("key", DYN, loc);
+  // One helper per class: the instance's bag is its own hidden field, so a
+  // creation reads it directly instead of boxing the instance and testing
+  // it against every class's capsule (%dyn.class.properties), which runs
+  // only to create the bag, once per instance.
+  const perClass = new Map<string, string>();
+  const helperFor = (className: string): string => {
+    const known = perClass.get(className);
+    if (known !== undefined) return known;
+    const helperName = `${name}:${className}`;
+    perClass.set(className, helperName);
+    const self = varRef("this", { kind: "object", className }, loc);
+    const bagRef = varRef("bag", DYN, loc);
+    functions.push({
+      name: helperName,
+      params: [
+        { localId: "this", name: "this", type: { kind: "object", className } },
+        { localId: "key", name: "key", type: DYN },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "this", name: "this", type: { kind: "object", className }, mutable: false },
+        { id: "key", name: "key", type: DYN, mutable: false },
+        { id: "bag", name: "bag", type: DYN, mutable: true },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "bag",
+          init: { kind: "fieldGet", obj: self, className, field: PROPERTY_BAG, type: DYN, loc },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "undefined", value: bagRef, type: BOOL, loc },
+          then: initializeBag(lowerer, className, self, loc),
+          else_: null,
+          loc,
+        },
+        ...defineIfAbsent(lowerer, bagRef, key, loc),
+      ],
+      loc,
+    });
+    return helperName;
+  };
+  // String-keyed fields take the runtime's direct insert for an ordinary
+  // bag; the general path stays for any other bag and for symbol keys.
+  const stringHelperFor = (className: string): string => {
+    const known = perClass.get(`str:${className}`);
+    if (known !== undefined) return known;
+    const general = helperFor(className);
+    const helperName = `${name}.string:${className}`;
+    perClass.set(`str:${className}`, helperName);
+    const type: IrType = { kind: "object", className };
+    const self = varRef("this", type, loc);
+    const bagRef = varRef("bag", DYN, loc);
+    const field = varRef("field", STRING, loc);
+    functions.push({
+      name: helperName,
+      params: [
+        { localId: "this", name: "this", type },
+        { localId: "field", name: "field", type: STRING },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "this", name: "this", type, mutable: false },
+        { id: "field", name: "field", type: STRING, mutable: false },
+        { id: "bag", name: "bag", type: DYN, mutable: true },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "bag",
+          init: { kind: "fieldGet", obj: self, className, field: PROPERTY_BAG, type: DYN, loc },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "undefined", value: bagRef, type: BOOL, loc },
+          then: initializeBag(lowerer, className, self, loc),
+          else_: null,
+          loc,
+        },
+        {
+          kind: "if",
+          cond: {
+            kind: "libCall",
+            fn: "dyn.bagCreateField",
+            args: [bagRef, field],
+            type: BOOL,
+            loc,
+          },
+          then: [{ kind: "return", value: null, loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "call",
+            callee: general,
+            args: [self, lowerer.coerceToExpected(field, DYN)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+    return helperName;
+  };
+  const created = (receiver: IrExpr, className: string, field: string, loc: SrcLoc): IrStmt => {
+    const symbolKey = symbolMemberKey(lowerer, lowerer.classes.get(className)!, field, loc);
+    if (symbolKey === null) {
+      return {
+        kind: "exprStmt",
+        expr: {
+          kind: "call",
+          callee: stringHelperFor(className),
+          args: [
+            receiver.type.kind === "object" && receiver.type.className !== className
+              ? { kind: "upcast", value: receiver, type: { kind: "object", className }, loc }
+              : receiver,
+            { kind: "strLit", value: field, type: STRING, loc },
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      };
+    }
+    return createdGeneral(receiver, className, field, loc);
+  };
+  const createdGeneral = (
+    receiver: IrExpr,
+    className: string,
+    field: string,
+    loc: SrcLoc,
+  ): IrStmt => ({
     kind: "exprStmt",
     expr: {
       kind: "call",
-      callee: name,
+      callee: helperFor(className),
       args: [
-        lowerer.coerceToExpected(receiver, DYN),
+        receiver.type.kind === "object" && receiver.type.className !== className
+          ? { kind: "upcast", value: receiver, type: { kind: "object", className }, loc }
+          : receiver,
         symbolMemberKey(lowerer, lowerer.classes.get(className)!, field, loc) ??
           lowerer.coerceToExpected({ kind: "strLit", value: field, type: STRING, loc }, DYN),
       ],
@@ -769,80 +941,103 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
       },
     });
   }
-  functions.push({
-    name,
-    params: [
-      { localId: "value", name: "value", type: DYN },
-      { localId: "key", name: "key", type: DYN },
-    ],
-    returnType: VOID,
-    locals: [
-      { id: "value", name: "value", type: DYN, mutable: false },
-      { id: "key", name: "key", type: DYN, mutable: false },
-      { id: "bag", name: "bag", type: DYN, mutable: false },
-    ],
-    body: [
+}
+
+/** `bag = <the class's new bag>`, stored in the instance's hidden field:
+ * the class's own initializer when recorded, else the class-table
+ * dispatch, which creates it. */
+function initializeBag(lowerer: Lowerer, className: string, self: IrExpr, loc: SrcLoc): IrStmt[] {
+  const init = lowerer.classBagInitializers?.get(className);
+  if (init === undefined) {
+    return [
       {
-        kind: "varDecl",
+        kind: "assign",
         localId: "bag",
-        init: {
+        value: {
           kind: "call",
           callee: classPropertiesHelper(lowerer, loc).name,
-          args: [value],
+          args: [lowerer.coerceToExpected(self, DYN)],
           type: DYN,
           loc,
         },
         loc,
       },
-      {
-        kind: "if",
-        cond: {
-          kind: "unary",
-          op: "!",
-          operand: { kind: "libCall", fn: "dyn.hasOwnComputed", args: [bag, key], type: BOOL, loc },
-          type: BOOL,
-          loc,
-        },
-        then: [
-          {
-            kind: "exprStmt",
-            expr: {
-              kind: "libCall",
-              fn: "dyn.defineProperty",
-              args: [
-                bag,
-                lowerer.coerceToExpected(key, DYN),
-                {
-                  kind: "dynObjLit",
-                  fields: [
-                    {
-                      key: { kind: "strLit", value: "value", type: STRING, loc },
-                      value: dynUndefinedExpr(loc),
-                    },
-                    ...["writable", "enumerable", "configurable"].map((key) => ({
-                      key: { kind: "strLit" as const, value: key, type: STRING, loc },
-                      value: lowerer.coerceToExpected(
-                        { kind: "boolLit", value: true, type: BOOL, loc },
-                        DYN,
-                      ),
-                    })),
-                  ],
-                  type: DYN,
-                  loc,
-                },
-              ],
-              type: DYN,
-              loc,
-            },
-            loc,
-          },
-        ],
-        else_: null,
+    ];
+  }
+  return [
+    {
+      kind: "fieldSet",
+      obj: self,
+      className,
+      field: PROPERTY_BAG,
+      value: structuredClone(init),
+      loc,
+    },
+    {
+      kind: "assign",
+      localId: "bag",
+      value: { kind: "fieldGet", obj: self, className, field: PROPERTY_BAG, type: DYN, loc },
+      loc,
+    },
+  ];
+}
+
+/** Whether `value` reads local `id`. */
+function mentionsLocal(value: IrExpr, id: string): boolean {
+  return JSON.stringify(value).includes(`"localId":${JSON.stringify(id)}`);
+}
+
+/** `if (!hasOwn(bag, key)) defineProperty(bag, key, <undefined data field>)`:
+ * a field's creation in its instance's property bag. */
+function defineIfAbsent(lowerer: Lowerer, bag: IrExpr, key: IrExpr, loc: SrcLoc): IrStmt[] {
+  return [
+    {
+      kind: "if",
+      cond: {
+        kind: "unary",
+        op: "!",
+        operand: { kind: "libCall", fn: "dyn.hasOwnComputed", args: [bag, key], type: BOOL, loc },
+        type: BOOL,
         loc,
       },
-    ],
-    loc,
-  });
+      then: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.defineProperty",
+            args: [
+              bag,
+              lowerer.coerceToExpected(key, DYN),
+              {
+                kind: "dynObjLit",
+                fields: [
+                  {
+                    key: { kind: "strLit", value: "value", type: STRING, loc },
+                    value: dynUndefinedExpr(loc),
+                  },
+                  ...["writable", "enumerable", "configurable"].map((key) => ({
+                    key: { kind: "strLit" as const, value: key, type: STRING, loc },
+                    value: lowerer.coerceToExpected(
+                      { kind: "boolLit", value: true, type: BOOL, loc },
+                      DYN,
+                    ),
+                  })),
+                ],
+                type: DYN,
+                loc,
+              },
+            ],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      else_: null,
+      loc,
+    },
+  ];
 }
 
 /** Calls on native class capsules keep the instance's compiled methods. The
@@ -4648,6 +4843,7 @@ export class ClassDynamicDispatch {
   finalize(lowerer?: Lowerer): void {
     // Each table serves every site that reaches it.
     if (lowerer) for (const fn of this.generated) lowerer.shareHelper(fn);
+    if (lowerer) this.recordBagInitializers(lowerer);
     for (const { helper, initialize, orEmpty } of this.readPropertyBags) {
       const absent = helper.body[0];
       if (isEmptyBag(initialize.value) && !orEmpty) helper.body.shift();
@@ -4667,6 +4863,82 @@ export class ClassDynamicDispatch {
         structuredClone(this.propertyBag.body),
         fn.name === READ_PROPERTIES_OR_EMPTY,
       );
+    }
+    if (lowerer) this.guardClassTables(lowerer);
+  }
+
+  /** Each tracked class's bag initializer over a typed receiver (`this`),
+   * for the per-class field-creation helpers (trackClassFieldCreation),
+   * which create an instance's bag without the class-table dispatch. */
+  private recordBagInitializers(lowerer: Lowerer): void {
+    for (const [className, initializers] of this.bagInitializers) {
+      const init = initializers[0];
+      if (!init || !lowerer.classes.get(className)?.def.tracksOwnFields) continue;
+      const self = varRef("this", { kind: "object", className }, init.loc);
+      const value = withTypedReceiver(structuredClone(init.value), self);
+      if (mentionsLocal(value, "p.0")) continue;
+      // Lowerer stand-ins in unit tests may not carry the table.
+      lowerer.classBagInitializers?.set(className, value);
+    }
+  }
+
+  /** Fast exits for the generated class tables: every class branch of
+   * the property-bag, normalization and static-bag helpers tests the
+   * value's capsule key (or class key), so a value of another kind (a
+   * plain object, the common case in untyped code) skips straight to the
+   * table's fallthrough instead of testing every class in the program. */
+  private guardClassTables(lowerer: Lowerer): void {
+    const names = new Set([
+      "%dyn.class.properties",
+      READ_PROPERTIES,
+      READ_PROPERTIES_OR_EMPTY,
+      "%dyn.class.normalize",
+      "%dyn.class.staticProperties",
+    ]);
+    for (const fn of lowerer.liftedFns) {
+      if (!names.has(fn.name) || fn.body.length < 2) continue;
+      const param = fn.params[0]?.localId;
+      if (param === undefined) continue;
+      const last = fn.body[fn.body.length - 1]!;
+      if (last.kind !== "return" || last.value === null || !returnsParam(last.value, param))
+        continue;
+      let test: "classCapsule" | "funcKind" | null = null;
+      let ok = true;
+      for (const stmt of fn.body.slice(0, -1)) {
+        if (
+          stmt.kind === "assign" &&
+          stmt.localId === param &&
+          stmt.value.kind === "call" &&
+          stmt.value.callee === "%dyn.class.normalize"
+        )
+          continue;
+        const kind =
+          stmt.kind === "if" && stmt.else_ === null ? branchKind(stmt.cond, param) : null;
+        if (kind === null || (test !== null && kind !== test)) {
+          ok = false;
+          break;
+        }
+        test = kind;
+      }
+      if (!ok || test === null) continue;
+      const first = fn.body[0]!;
+      if (first.kind === "if" && first.cond.kind === "dynTest" && first.cond.test === test)
+        continue;
+      const loc = fn.loc;
+      fn.body.unshift({
+        kind: "if",
+        cond: {
+          kind: "dynTest",
+          test,
+          negated: true,
+          value: varRef(param, DYN, loc),
+          type: BOOL,
+          loc,
+        },
+        then: [structuredClone(last)],
+        else_: null,
+        loc,
+      });
     }
   }
 
@@ -4741,10 +5013,17 @@ export class ClassDynamicDispatch {
       this.normalizationKey = key;
       const loc = this.normalization.loc;
       const value = varRef("value", DYN, loc);
-      this.normalization.body = entries.map(({ capsule, children }): IrStmt => {
+      // The checked receiver is unboxed once per capsule branch, not once
+      // per subclass test.
+      this.normalization.locals = this.normalization.locals.filter(
+        (local) => !local.id.startsWith("%normalized."),
+      );
+      this.normalization.body = entries.map(({ capsule, children }, index): IrStmt => {
         const type: IrType = { kind: "object", className: capsule.def.name };
-        const receiver: IrExpr = { kind: "dynCheck", value, type, loc };
-        return {
+        const id = `%normalized.${index}`;
+        this.normalization!.locals.push({ id, name: id, type, mutable: false });
+        const receiver: IrExpr = varRef(id, type, loc);
+        const branch: IrStmt = {
           kind: "if",
           cond: {
             kind: "libCall",
@@ -4785,6 +5064,15 @@ export class ClassDynamicDispatch {
           else_: null,
           loc,
         };
+        // The capsule test stays the branch condition; its body unboxes.
+        if (branch.kind === "if")
+          branch.then.unshift({
+            kind: "varDecl",
+            localId: id,
+            init: { kind: "dynCheck", value, type, loc },
+            loc,
+          });
+        return branch;
       });
       this.normalization.body.push({ kind: "return", value, loc });
     }

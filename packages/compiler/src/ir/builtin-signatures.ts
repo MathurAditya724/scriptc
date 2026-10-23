@@ -3745,6 +3745,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.assignPrototype": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.definePrototypeProps": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.bagGet": { argTypes: [DYN, STRING, DYN], result: DYN },
+  /** A class field's creation in its instance's property bag: adds the
+   * string key as a default data property when absent, answering false
+   * (nothing changed) when the bag needs the general defineProperty path. */
+  "dyn.bagCreateField": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.bagSet": { argTypes: [DYN, STRING, DYN, DYN], result: VOID },
   "dyn.objCreate": { argTypes: [DYN], result: DYN },
   // Names a compiled class's prototype object (args[0]) after the class
