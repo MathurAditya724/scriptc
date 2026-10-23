@@ -1,7 +1,7 @@
 // [util.inspect.custom] methods keep their boundaries: a class whose
-// subclass declares the method without declaring it itself, an Error
-// subclass with the method, a method with more than three parameters, a
-// method returning a class instance, and %o over instances with one.
+// subclass declares the method without declaring it itself, a method with
+// more than three parameters, a method returning a class instance, and %o
+// over instances with one.
 import { format, inspect } from "node:util";
 
 class Plain {
@@ -14,13 +14,6 @@ class Fancy extends Plain {
 }
 const items: Plain[] = [new Fancy()];
 console.log(inspect(items));
-
-class Failure extends Error {
-  [inspect.custom](): string {
-    return "failure";
-  }
-}
-console.log(new Failure("x").message);
 
 class Wide {
   [inspect.custom](a: number, b: unknown, c: unknown, d: unknown): string {

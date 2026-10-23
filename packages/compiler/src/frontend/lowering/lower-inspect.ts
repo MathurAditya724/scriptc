@@ -1375,8 +1375,15 @@ function customInspectDynHelper(
 export function customInspectRegistrations(lowerer: Lowerer, loc: SrcLoc): IrStmt[] {
   const stmts: IrStmt[] = [];
   for (const info of lowerer.classes.values()) {
-    if (info.def.runtime || info.def.abstract || isErrorClass(lowerer, info.def.name)) continue;
+    if (info.def.runtime || info.def.abstract) continue;
+    // Error classes register when their own properties render statically
+    // (fieldedErrorReason): the others keep no method to call.
+    if (isErrorClass(lowerer, info.def.name) && fieldedErrorReason(lowerer, info) !== null)
+      continue;
     if (!lowerer.findMethodOn(info, INSPECT_CUSTOM_MEMBER)) continue;
+    // Only constructed classes have instances, and only their methods lower
+    // (the constructor edge reaches the method).
+    if (!lowerer.classCanBeConstructed(info)) continue;
     if (customInspectReason(lowerer, info) !== null) continue;
     const t = { kind: "object" as const, className: info.def.name };
     const fn = customInspectDynHelper(lowerer, t, loc);

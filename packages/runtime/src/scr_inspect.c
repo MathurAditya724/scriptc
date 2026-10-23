@@ -1772,12 +1772,35 @@ static void insp_inspect_function_cleanup(void) {
   g_inspect_function = NULL;
 }
 
+/* util.inspect's own members (custom, colors, styles, defaultOptions)
+ * read or written through the function value: the tables are not modeled,
+ * so each throws SC2020 instead of answering undefined. */
+static ScrDyn *insp_inspect_member_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args; (void)argc;
+  char message[128];
+  int n = snprintf(message, sizeof message, "util.inspect.%s through the inspect function is not supported yet",
+                   (const char *)closure->fn);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)n, "SC2020");
+  return NULL;
+}
+
 static ScrDyn *insp_inspect_value(void) {
   if (!g_inspect_function) {
     ScrClosure *closure = scr_closure_new(NULL, 0);
     g_inspect_function =
         scr_dyn_new_func(closure, insp_inspect_call, 2, "native:util.inspect", "inspect");
     scr_atexit(insp_inspect_function_cleanup);
+    static const char *const members[] = {"custom", "defaultOptions", "colors", "styles"};
+    ScrDyn *table = scr_dyn_function_properties(g_inspect_function);
+    for (size_t i = 0; i < sizeof members / sizeof members[0]; i++) {
+      ScrDyn *get = scr_dyn_new_func(scr_closure_new((void *)members[i], 0), insp_inspect_member_call, 0,
+                                     "native:function", members[i]);
+      ScrDyn *set = scr_dyn_new_func(scr_closure_new((void *)members[i], 0), insp_inspect_member_call, 1,
+                                     "native:function", members[i]);
+      scr_dyn_obj_set_accessor(table, members[i], strlen(members[i]), get, set);
+      table->v.obj.entries[table->v.obj.len - 1].enumerable = false;
+    }
+    scr_dyn_release(table);
   }
   return scr_dyn_retain(g_inspect_function);
 }
@@ -2544,11 +2567,16 @@ static ScrStr *insp_fmt_inspect_full(ScrDyn *value, const ScrInspFormatOptions *
   return insp_fmt_inspect(value, o, depth, o->compact, o->colors);
 }
 
-static const InspFmtOps insp_fmt_full_ops = {insp_fmt_s, scr_util_format_j, insp_fmt_number,
-                                             insp_fmt_inspect_full};
-
+/* The conversion tables are filled where they run: a constant table is a
+ * global, and sanitized builds keep instrumented globals (and the
+ * conversions they point at) through --gc-sections. */
 ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOptions *o) {
-  return insp_format_loop(args, argc, o, &insp_fmt_full_ops);
+  InspFmtOps ops;
+  ops.s = insp_fmt_s;
+  ops.j = scr_util_format_j;
+  ops.number = insp_fmt_number;
+  ops.inspect = insp_fmt_inspect_full;
+  return insp_format_loop(args, argc, o, &ops);
 }
 
 /* The formatter over arguments that are all strings, numbers, booleans,
@@ -2610,9 +2638,6 @@ static ScrStr *insp_prim_number(ScrDyn *v, int spec) {
   return scr_insp_f64(number);
 }
 
-static const InspFmtOps insp_fmt_primitive_ops = {insp_prim_s, insp_prim_j, insp_prim_number,
-                                                  insp_prim_inspect};
-
 /* A native list of checked values (the compiled format calls) as the
  * runtime's argument pack. +1. */
 static ScrDyn *insp_list_pack(ScrArr *list) {
@@ -2625,7 +2650,12 @@ ScrStr *scr_insp_format_primitives(ScrArr *list) {
   ScrInspFormatOptions o;
   scr_insp_format_defaults(&o, "util.format");
   ScrDyn *pack = insp_list_pack(list);
-  ScrStr *out = insp_format_loop(pack->v.arr.items, pack->v.arr.len, &o, &insp_fmt_primitive_ops);
+  InspFmtOps ops;
+  ops.s = insp_prim_s;
+  ops.j = insp_prim_j;
+  ops.number = insp_prim_number;
+  ops.inspect = insp_prim_inspect;
+  ScrStr *out = insp_format_loop(pack->v.arr.items, pack->v.arr.len, &o, &ops);
   scr_dyn_release(pack);
   return out;
 }

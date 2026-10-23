@@ -227,6 +227,11 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   const opaqueSeen = new Set<string>();
   const runtimeShapes = new Set<string>();
   const runtimeSeen = new Set<string>();
+  /** Shapes the declaration-typed boundary converts into (adopting casts):
+   * their values come from package code that builds them in the
+   * declaration's order, the order their table holds. */
+  const declaredShapes = new Set<string>();
+  const declaredSeen = new Set<string>();
   const producedBy = (type: IrType, opaque: boolean): void => {
     if (opaque) shapesIn(type, opaqueShapes, opaqueSeen);
     else shapesIn(type, runtimeShapes, runtimeSeen);
@@ -332,7 +337,8 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         producedBy(e.type, true);
         return;
       case "dynCheck":
-        if (!orderPreservingClone(e)) producedBy(e.type, false);
+        if (e.adopt === true) shapesIn(e.type, declaredShapes, declaredSeen);
+        else if (!orderPreservingClone(e)) producedBy(e.type, false);
         return;
       case "dynDestrCheck":
       case "caughtCheck":
@@ -392,6 +398,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     f.opaque = true;
   }
   for (const id of runtimeShapes) factsOf(id).runtime = true;
+  for (const id of declaredShapes) if (!runtimeShapes.has(id)) factsOf(id).pinned = true;
 
   // ── scope ───────────────────────────────────────────────────────────
   // Only plain declared-field shapes with a table take part.

@@ -5,6 +5,7 @@ import {
   isDatePrototypeMethod,
   lowerDateSuperMethodCall,
 } from "./builtins/date-classes.js";
+import { predeclareForwardClass } from "./lower-stmts.js";
 import { lowerDateStaticCall } from "./builtins/dates.js";
 import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
@@ -478,6 +479,10 @@ export interface ClassInfo {
   prototypeMethodValues?: Map<string, IrExpr>;
   prototypeReflectionReady?: true;
   prototypeObservedMethodsReady?: true;
+  /** The globals holding each observed method's original prototype value
+   * (set when the prototype data is built), by method name. A typed call
+   * whose slot still holds that value calls the method natively. */
+  prototypeOriginals?: Map<string, string>;
   prototypeReflectionRefusal?: string;
   localClass?: {
     context: FnCtx | null;
@@ -2356,6 +2361,7 @@ export function collectClassShapeInner(
     const checkedStatics =
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       ((base && hasRuntimeStatics(base)) ||
+        definedThroughReflection(lowerer, decl) ||
         decl.members.nodes.some(
           (member) =>
             ts.isAccessor(member) &&
@@ -3208,15 +3214,6 @@ export function collectClassShapeInner(
             }
             symbolMethods.set(key.identity, mName);
           }
-        }
-        // Error values held as untyped values render through their error
-        // encoding, which keeps no compiled methods to call.
-        if (mName === INSPECT_CUSTOM_MEMBER && errorRooted) {
-          lowerer.unsupported(
-            "SC1090",
-            member.name,
-            "[util.inspect.custom] methods on Error subclasses",
-          );
         }
         // Generator calls use their spawn wrapper. Public methods are
         // direct calls only when no subclass overrides the method;
@@ -5489,7 +5486,12 @@ export function classValueRef(lowerer: Lowerer, info: ClassInfo, blame: ts.Node)
   const display = info.def.name.replace(/^%|^%m\d+\./, "");
   fenceDecorationThrows(lowerer, info, blame);
   if (info.localClass && ts.isIdentifier(blame)) {
-    const stored = lowerer.resolveLocal(blame);
+    let stored = lowerer.resolveLocal(blame);
+    // A reference from a function hoisted above the class statement.
+    if (!stored) {
+      const symbol = lowerer.resolveValueSymbol(blame);
+      if (symbol && predeclareForwardClass(lowerer, symbol)) stored = lowerer.resolveLocal(blame);
+    }
     if (stored)
       return lowerer.coerceToExpected(
         { kind: "varRef", localId: stored.id, type: stored.type, loc: locOf(blame) },
@@ -11284,4 +11286,38 @@ function genericFieldFnNodeOf(
     return init;
   }
   return null;
+}
+
+/** Whether a JavaScript class's own binding is the target of
+ * `Object.defineProperty`/`defineProperties` in its file
+ * (`Object.defineProperty(Definition, "name", { value })`): its constructor
+ * then needs a live own-property table. */
+function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaration): boolean {
+  const name = decl.name;
+  const sf = ts.getSourceFileOfNode(decl);
+  if (name === undefined || !sf.text.includes("definePropert")) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(name);
+  if (symbol === undefined) return false;
+  let found = false;
+  ts.walkPreorder(sf, (node) => {
+    if (found) return "stop";
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      (node.expression.name.text === "defineProperty" ||
+        node.expression.name.text === "defineProperties") &&
+      lowerer.stdlibGlobalMember(node.expression, "Object") !== null
+    ) {
+      const target = node.arguments.nodes[0];
+      if (
+        target !== undefined &&
+        ts.isIdentifier(target) &&
+        target.text === name.text &&
+        lowerer.checker.getSymbolAtLocation(target) === symbol
+      )
+        found = true;
+    }
+    return undefined;
+  });
+  return found;
 }
