@@ -3803,8 +3803,17 @@ export class LlEmitter {
 
   /** A union value's tag (i32): the box's tag word, or the NULL test of a
    * nullable union's pointer. */
+  /** A box's tag and payload words are written only where the box is
+   * built (runtime constructors and untagged stack stores), so their loads
+   * carry their own alias tags: element and field stores cannot change
+   * them, and loops keep them hoisted. */
   unionTag(uName: string, unionId: string): string {
-    return emitUnionTag(this.B, this.nullableUnions.get(unionId), uName);
+    return emitUnionTag(
+      this.B,
+      this.nullableUnions.get(unionId),
+      uName,
+      this.memoryAliasAttachment("union.tag"),
+    );
   }
 
   /** Guard for helpers that build or read a union's `%ScrUnion` box
@@ -3820,7 +3829,12 @@ export class LlEmitter {
   /** The BORROWED payload pointer of a ref arm (scr_union_peek inlined —
    * the runtime's is a static inline); a nullable union is its payload. */
   unionPeek(uName: string, unionId: string): string {
-    return emitUnionPeek(this.B, this.nullableUnions.get(unionId), uName);
+    return emitUnionPeek(
+      this.B,
+      this.nullableUnions.get(unionId),
+      uName,
+      this.memoryAliasAttachment("union.payload"),
+    );
   }
 
   /** Emits `switch` over a union's tag with one block per arm; each arm

@@ -1,4 +1,5 @@
 import { keyedHelperName } from "../stable-names.js";
+import { allBytesArms, indexedUnionArms, lowerIndexedUnionMethod } from "../indexed-unions.js";
 import { boolLit, dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { BUF_NUM_METHODS } from "./buffer-numeric-methods.js";
 import * as ts from "../../ts7/adapter.js";
@@ -910,6 +911,62 @@ function lowerDataViewNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
  * variable-width read/writeUIntLE quartet — BUF_NUM_METHODS). Everything
  * else the lib declares (fill, indexOf, reverse, ...) falls through to
  * the SC2020 member fence. Null when this isn't a bytes method call. */
+/** The element-kind-generic typed-array methods on a union of typed
+ * arrays (indexed-unions.ts): the arguments lower as for one typed array,
+ * and each arm runs the method on its own receiver. Null for the methods
+ * that need a narrowing to one kind first. */
+function lowerUnionBytesMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+): IrExpr | null {
+  if (isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
+  const nodes = call.arguments.nodes;
+  if (nodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const optional = (i: number, fallback: IrExpr, type: IrType = F64): IrExpr =>
+    nodes[i] ? lowerOptionalArgument(lowerer, nodes[i]!, type, fallback) : fallback;
+  let method: IrBytesIntrinsicMethod;
+  let args: () => IrExpr[];
+  let result: "receiver" | IrType;
+  if ((name === "slice" || name === "subarray") && nodes.length <= 2) {
+    method = name;
+    args = () => [optional(0, num(0)), optional(1, num(Infinity))];
+    result = "receiver";
+  } else if (name === "fill" && nodes.length <= 3) {
+    method = "fillElem";
+    args = () => [optional(0, num(0)), optional(1, num(0)), optional(2, num(Infinity))];
+    result = "receiver";
+  } else if (name === "copyWithin" && nodes.length <= 3) {
+    method = "copyWithin";
+    args = () => [optional(0, num(0)), optional(1, num(0)), optional(2, num(Infinity))];
+    result = "receiver";
+  } else if (name === "toReversed" && nodes.length === 0) {
+    method = "toReversed";
+    args = () => [];
+    result = "receiver";
+  } else if (name === "join" && nodes.length <= 1) {
+    method = "join";
+    args = () => [optional(0, { kind: "strLit", value: ",", type: STRING, loc }, STRING)];
+    result = STRING;
+  } else if (name === "set" && (nodes.length === 1 || nodes.length === 2)) {
+    const source = lowerer.mapTypeOf(lowerer.typeOf(nodes[0]!));
+    method = source?.kind === "bytes" ? "setFrom" : "setFromDyn";
+    args = () => {
+      const src = lowerer.lowerExpr(nodes[0]!);
+      const first = src.type.kind === "bytes" ? src : lowerer.coerceInto(nodes[0]!, src, DYN);
+      return nodes.length === 2 ? [first, optional(1, num(0))] : [first];
+    };
+    result = VOID;
+  } else return null;
+  const receiver = lowerer.lowerExpr(access.expression);
+  const arms = indexedUnionArms(lowerer, receiver.type);
+  if (!arms || !allBytesArms(arms)) return null;
+  return lowerIndexedUnionMethod(lowerer, receiver, arms, method, args(), result, loc);
+}
+
 export function lowerBytesMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -918,6 +975,9 @@ export function lowerBytesMethodCall(
   if (lowerer.chainBlocked(access, call)) return null;
   const name = access.name.text;
   const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  const unionArms = receiverIr ? indexedUnionArms(lowerer, receiverIr) : null;
+  if (unionArms && allBytesArms(unionArms) && lowerer.isStdlibMember(access))
+    return lowerUnionBytesMethodCall(lowerer, call, access, name);
   if (receiverIr?.kind !== "bytes") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const loc = locOf(call);

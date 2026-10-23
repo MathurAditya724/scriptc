@@ -1,4 +1,11 @@
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
+import {
+  allBytesArms,
+  indexedUnionArms,
+  lowerIndexedUnionMember,
+  lowerIndexedUnionNumberRead,
+  lowerIndexedUnionRead,
+} from "./indexed-unions.js";
 import { declaredMemberOf, isPromisePrototypeRead } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
@@ -10132,13 +10139,8 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         loc: locOf(iterSrc),
       };
   }
-  if (iterable.type.kind === "bytes") {
-    return lowerForOfBytes(
-      lowerer,
-      stmt,
-      iterable as IrExpr & { type: IrType & { kind: "bytes" } },
-      labels,
-    );
+  if (iterable.type.kind === "bytes" || indexedUnionArms(lowerer, iterable.type)) {
+    return lowerForOfBytes(lowerer, stmt, iterable, labels);
   }
   if (iterable.type.kind !== "array") {
     // The lib types strings as iterable too, so those for-ofs typecheck;
@@ -10696,7 +10698,7 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
 function lowerForOfBytes(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
-  iterable: IrExpr & { type: IrType & { kind: "bytes" } },
+  iterable: IrExpr,
   labels?: string[],
 ): IrStmt {
   const loc = locOf(stmt);
@@ -10790,7 +10792,16 @@ function lowerForOfStoredNumericIterator(
 
   const loc = locOf(stmt);
   const sourceT = state.sourceType;
-  if (!((sourceT.kind === "array" && sourceT.elem.kind === "f64") || sourceT.kind === "bytes")) {
+  // A union of typed arrays and number arrays (indexed-unions.ts) reads
+  // through its arms' own length and element reads.
+  const unionArms = indexedUnionArms(lowerer, sourceT);
+  if (
+    !(
+      (sourceT.kind === "array" && sourceT.elem.kind === "f64") ||
+      sourceT.kind === "bytes" ||
+      unionArms
+    )
+  ) {
     throw new InternalCompilerError("internal: retained numeric iterator has a non-numeric source");
   }
 
@@ -10798,35 +10809,44 @@ function lowerForOfStoredNumericIterator(
   const doneRef = (): IrExpr => varRef(state.doneLocalId, BOOL, loc);
   const sourceRef = (): IrExpr => varRef(state.sourceLocalId, sourceT, loc);
   const sourceLength = (): IrExpr =>
-    sourceT.kind === "array"
-      ? {
-          kind: "arrIntrinsic",
-          method: "length",
-          receiver: sourceRef(),
-          args: [],
-          type: F64,
-          loc,
-        }
-      : {
-          kind: "bytesIntrinsic",
-          method: "length",
-          receiver: sourceRef(),
-          args: [],
-          type: F64,
-          loc,
-        };
-  const valueT = sourceT.kind === "array" ? arrayValueType(lowerer, F64) : F64;
+    unionArms
+      ? lowerIndexedUnionMember(lowerer, sourceRef(), unionArms, "length", loc)!
+      : sourceT.kind === "array"
+        ? {
+            kind: "arrIntrinsic",
+            method: "length",
+            receiver: sourceRef(),
+            args: [],
+            type: F64,
+            loc,
+          }
+        : {
+            kind: "bytesIntrinsic",
+            method: "length",
+            receiver: sourceRef(),
+            args: [],
+            type: F64,
+            loc,
+          };
+  const valueT =
+    sourceT.kind === "array" || (unionArms && !allBytesArms(unionArms))
+      ? arrayValueType(lowerer, F64)
+      : F64;
   const sourceValue = (): IrExpr =>
-    sourceT.kind === "array"
-      ? arrayValueRead(lowerer, sourceRef(), indexRef(), F64, loc)
-      : {
-          kind: "bytesIntrinsic",
-          method: "get",
-          receiver: sourceRef(),
-          args: [indexRef()],
-          type: F64,
-          loc,
-        };
+    unionArms
+      ? allBytesArms(unionArms)
+        ? lowerIndexedUnionNumberRead(lowerer, sourceRef(), unionArms, indexRef(), loc)
+        : lowerIndexedUnionRead(lowerer, sourceRef(), unionArms, indexRef(), loc)
+      : sourceT.kind === "array"
+        ? arrayValueRead(lowerer, sourceRef(), indexRef(), F64, loc)
+        : {
+            kind: "bytesIntrinsic",
+            method: "get",
+            receiver: sourceRef(),
+            args: [indexRef()],
+            type: F64,
+            loc,
+          };
   const one: IrExpr = { kind: "numLit", value: 1, type: F64, loc };
 
   lowerer.scopes.push(new Map());
