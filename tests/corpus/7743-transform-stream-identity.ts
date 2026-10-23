@@ -1,8 +1,8 @@
 // The identity TransformStream: writes wait for reads (the readable side's
 // high-water mark is 0), the writer's desiredSize/ready track the writable
-// side's queue, close/abort/cancel propagate across the pair, and the
-// readable side feeds a Response body (the StreamingApi pattern of Hono's
-// stream helpers).
+// side's queue, close/abort/cancel propagate across the pair (in either
+// order when they race), and the readable side feeds a Response body (the
+// StreamingApi pattern of Hono's stream helpers).
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -200,6 +200,32 @@ async function writableMethods(): Promise<void> {
   await closing;
 }
 
+// writable.abort() and readable.cancel() share the transform's finish
+// promise: whichever runs second answers the first one's result.
+function settled(label: string, p: Promise<void>): Promise<void> {
+  return p.then(
+    () => console.log(label, "fulfilled"),
+    (e: unknown) => console.log(label, "rejected", describe(e)),
+  );
+}
+
+async function abortCancelRaces(): Promise<void> {
+  const a = new TransformStream<string, string>();
+  const aWriter = a.writable.getWriter();
+  await new Promise((r) => setTimeout(r, 0));
+  const aborted = settled("abort then cancel: abort", aWriter.abort("abort first"));
+  const cancelled = settled("abort then cancel: cancel", a.readable.cancel("cancel second"));
+  await aborted;
+  await cancelled;
+  const b = new TransformStream<string, string>();
+  const bWriter = b.writable.getWriter();
+  await new Promise((r) => setTimeout(r, 0));
+  const cancelledFirst = settled("cancel then abort: cancel", b.readable.cancel("cancel first"));
+  const abortedSecond = settled("cancel then abort: abort", bWriter.abort("abort second"));
+  await cancelledFirst;
+  await abortedSecond;
+}
+
 async function main(): Promise<void> {
   await basics();
   await abortWriter();
@@ -207,6 +233,7 @@ async function main(): Promise<void> {
   await intoResponse();
   await streamedResponse();
   await writableMethods();
+  await abortCancelRaces();
 }
 
 await main();

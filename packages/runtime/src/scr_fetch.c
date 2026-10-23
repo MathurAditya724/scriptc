@@ -1622,6 +1622,14 @@ static void sf_stream_schedule_pull_complete(SfStream *s) {
   scr_queue_microtask(cb);
 }
 
+/* A consumer waiting for the stream's next chunk: a pending read, a body
+ * collector, or a fetch upload (fetch keeps reading the request body,
+ * including after an aborted transfer stops writing it). */
+static bool sf_stream_has_consumer(const SfStream *s) {
+  return s->collector || (s->reader && s->reader->pending_head) || s->request_owner ||
+         s->request_discarding;
+}
+
 static void sf_stream_pull(SfStream *s) {
   if (!s->started ||
       (!s->pull_cb && !sf_stream_has_from_source(s)) ||
@@ -1630,11 +1638,9 @@ static void sf_stream_pull(SfStream *s) {
     return;
   }
   /* ReadableStreamDefaultControllerShouldCallPull: with no room in the
-   * queue, only a pending read (or a body collector) asks for a chunk. */
-  if (s->hwm_zero && !s->collector &&
-      !(s->reader && s->reader->pending_head)) {
-    return;
-  }
+   * queue, only a consumer asks for a chunk: a pending read, a body
+   * collector, or a fetch upload, whose reader is always waiting. */
+  if (s->hwm_zero && !sf_stream_has_consumer(s)) return;
   if (s->pulling) {
     s->pull_again = true;
     return;
@@ -2730,6 +2736,12 @@ struct SfTransform {
   ScrPromise *in_flight_close;
   bool has_pending_abort;
   ScrPromise *pending_abort;
+  /* The sink abort found a finish promise from a cancel or close, which
+   * settles the abort instead (Node returns that promise). */
+  bool abort_joins_finish;
+  /* The abort request's outcome between SFT_ABORT_DONE and
+   * SFT_ABORT_SETTLE: a rejection reason (+1), or NULL to fulfill. */
+  ScrDyn *abort_settle_error;
   ScrDyn *pending_abort_reason;
   bool pending_abort_was_erroring;
   bool backpressure;
@@ -2779,6 +2791,7 @@ static void sf_transform_release(SfTransform *t) {
   scr_promise_release(t->in_flight_close);
   scr_promise_release(t->pending_abort);
   scr_dyn_release(t->pending_abort_reason);
+  scr_dyn_release(t->abort_settle_error);
   scr_promise_release(t->bp_change);
   scr_promise_release(t->finish);
   scr_dyn_release(t->write_error);
@@ -2849,6 +2862,7 @@ enum {
   SFT_ABORT_DONE,
   SFT_START,
   SFT_CANCEL_DONE,
+  SFT_ABORT_SETTLE,
 };
 
 static void sf_transform_step(SfTransform *t, int op);
@@ -3214,7 +3228,7 @@ static void sft_set_backpressure(SfTransform *t, bool backpressure) {
 }
 
 static bool sft_readable_wants_chunk(const SfStream *r) {
-  return r->collector || (r->reader && r->reader->pending_head);
+  return sf_stream_has_consumer(r);
 }
 
 static bool sft_readable_can_enqueue(const SfStream *r) {
@@ -3278,6 +3292,7 @@ static void sft_sink_close(SfTransform *t) {
 
 static void sft_abort_algorithm(SfTransform *t, ScrDyn *reason) {
   (void)reason;
+  t->abort_joins_finish = t->finish != NULL;
   if (!t->finish) {
     t->finish = scr_promise_new();
     scr_promise_mark_handled(t->finish);
@@ -3327,25 +3342,49 @@ static void sf_transform_step(SfTransform *t, int op) {
     }
     case SFT_ABORT_DONE: {
       SfStream *r = t->readable;
-      ScrDyn *reason = t->pending_abort_reason
-                           ? scr_dyn_retain(t->pending_abort_reason)
-                           : scr_dyn_retain(scr_dyn_undefined());
-      bool readable_errored = r->error != NULL;
-      if (!readable_errored) sf_stream_error(r, reason);
+      scr_dyn_release(t->abort_settle_error);
+      t->abort_settle_error = NULL;
+      if (t->abort_joins_finish && !scr_promise_is_pending(t->finish)) {
+        /* The cancel or close that created the finish promise settled
+         * it; the abort request takes its result. */
+        if (scr_promise_is_rejected(t->finish))
+          t->abort_settle_error = scr_promise_reason_dyn(t->finish);
+      } else {
+        ScrDyn *reason = t->pending_abort_reason
+                             ? scr_dyn_retain(t->pending_abort_reason)
+                             : scr_dyn_retain(scr_dyn_undefined());
+        bool readable_errored = r->error != NULL;
+        if (!readable_errored) sf_stream_error(r, reason);
+        /* The sink abort algorithm's finish promise, which a
+         * readable.cancel() after the abort answers too: rejected with the
+         * readable side's stored error when it had already errored, else
+         * resolved. */
+        if (t->finish && scr_promise_is_pending(t->finish)) {
+          if (readable_errored) sf_reject_promise_reason(t->finish, r->error);
+          else scr_promise_fulfill_void(t->finish);
+        }
+        if (readable_errored) t->abort_settle_error = scr_dyn_retain(r->error);
+        scr_dyn_release(reason);
+      }
+      /* WritableStreamFinishErroring settles the abort request in a
+       * reaction to the sink abort's promise, two turns after it. */
+      sf_transform_defer(t, SFT_ABORT_SETTLE, 2);
+      return;
+    }
+    case SFT_ABORT_SETTLE: {
+      ScrDyn *error = t->abort_settle_error;
+      t->abort_settle_error = NULL;
       if (t->has_pending_abort) {
         t->has_pending_abort = false;
-        if (readable_errored) {
-          sf_reject_promise_reason(t->pending_abort, r->error);
-        } else {
-          scr_promise_fulfill_void(t->pending_abort);
-        }
+        if (error) sf_reject_promise_reason(t->pending_abort, error);
+        else scr_promise_fulfill_void(t->pending_abort);
         scr_promise_release(t->pending_abort);
         t->pending_abort = NULL;
         scr_dyn_release(t->pending_abort_reason);
         t->pending_abort_reason = NULL;
       }
       sfw_reject_close_and_closed(t);
-      scr_dyn_release(reason);
+      scr_dyn_release(error);
       return;
     }
     case SFT_CANCEL_DONE: {
