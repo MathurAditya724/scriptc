@@ -1855,6 +1855,210 @@ static ScrPromise *sf_stream_collect(SfStream *s, int mode) {
   return p;
 }
 
+/* ── ReadableStreamDefaultTee ────────────────────────────────────── */
+
+/*
+ * The streams spec's ReadableStreamDefaultTee over a native stream: the
+ * tee locks the source with a reader and feeds two native branches whose
+ * pull and cancel algorithms are native functions. A pull on either branch
+ * reads one chunk from the source and enqueues it into every branch that
+ * was not canceled; canceling both branches cancels the source with both
+ * reasons. Response.clone and Request.clone use it (undici's cloneBody).
+ *
+ * Ownership: the tee owns the source, its reader and both branches; each
+ * branch's callbacks and every pending read own the tee. Closing, erroring
+ * or canceling a branch drops its callbacks (sf_stream_drop_source_callbacks),
+ * and fetch teardown drops the callbacks of branches nobody finished.
+ */
+typedef struct SfTee {
+  size_t rc;
+  SfStream *source;
+  SfReader *reader;
+  SfStream *branch[2];
+  bool reading;
+  bool read_again;
+  bool canceled[2];
+  ScrDyn *reason[2];
+  ScrPromise *cancel_promise;
+} SfTee;
+
+static SfTee *sf_tee_retain(SfTee *t) {
+  t->rc++;
+  return t;
+}
+
+static void sf_tee_release(SfTee *t) {
+  if (!t || --t->rc > 0) return;
+  sf_stream_release(t->branch[0]);
+  sf_stream_release(t->branch[1]);
+  sf_reader_release(t->reader);
+  sf_stream_release(t->source);
+  scr_dyn_release(t->reason[0]);
+  scr_dyn_release(t->reason[1]);
+  scr_promise_release(t->cancel_promise);
+  free(t);
+}
+
+static void *sf_tee_retain_v(void *p) { return sf_tee_retain((SfTee *)p); }
+static void sf_tee_release_v(void *p) { sf_tee_release((SfTee *)p); }
+
+static ScrBox *sf_tee_box(SfTee *t) {
+  ScrBox *box = scr_box_new_obj(&sf_tee_retain_v, &sf_tee_release_v, NULL);
+  scr_box_set_ref(box, sf_tee_retain(t));
+  return box;
+}
+
+static void sf_tee_pull(SfTee *t);
+
+/* The read request's chunk steps run in a microtask (spec: "queue a
+ * microtask"), after the read that produced the chunk settles. */
+static void sf_tee_chunk_task(ScrClosure *cb) {
+  SfTee *t = (SfTee *)scr_box_get_ref(cb->caps[0]);
+  ScrDyn *chunk = (ScrDyn *)scr_box_get_ref(cb->caps[1]);
+  t->read_again = false;
+  for (int i = 0; i < 2; i++) {
+    if (t->canceled[i]) continue;
+    SfStream *b = t->branch[i];
+    if (b->close_requested || b->closed || b->error) continue;
+    sf_stream_enqueue_value(b, chunk);
+    if (scr_exc_pending()) scr_exc_clear();
+  }
+  t->reading = false;
+  if (t->read_again) sf_tee_pull(t);
+  scr_dyn_release(chunk);
+  sf_tee_release(t);
+}
+
+static void sf_tee_sink_chunk(void *ctx, ScrDyn *value) {
+  SfTee *t = ctx;
+  ScrClosure *cb = scr_closure_new((void *)&sf_tee_chunk_task, 2);
+  cb->caps[0] = sf_tee_box(t);
+  cb->caps[1] = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+  scr_box_set_ref(cb->caps[1], scr_dyn_retain(value));
+  scr_queue_microtask(cb);
+  sf_tee_release(t); /* the read request's reference */
+}
+
+static void sf_tee_sink_close(void *ctx) {
+  SfTee *t = ctx;
+  t->reading = false;
+  for (int i = 0; i < 2; i++) {
+    if (!t->canceled[i]) sf_stream_close(t->branch[i]);
+  }
+  if (!t->canceled[0] || !t->canceled[1]) {
+    scr_promise_fulfill_void(t->cancel_promise);
+  }
+  sf_tee_release(t);
+}
+
+static void sf_tee_sink_error(void *ctx, ScrDyn *reason) {
+  SfTee *t = ctx;
+  t->reading = false;
+  if (reason) {
+    /* The spec errors both branches when the source reader's closed
+     * promise rejects; a native read request learns it here. */
+    sf_stream_error(t->branch[0], reason);
+    sf_stream_error(t->branch[1], reason);
+    if (!t->canceled[0] || !t->canceled[1]) {
+      scr_promise_fulfill_void(t->cancel_promise);
+    }
+  }
+  sf_tee_release(t);
+}
+
+static const ScrFetchReadSink sf_tee_sink = {
+    &sf_tee_sink_chunk, &sf_tee_sink_close, &sf_tee_sink_error};
+
+static void sf_tee_pull(SfTee *t) {
+  if (t->reading) {
+    t->read_again = true;
+    return;
+  }
+  t->reading = true;
+  sf_tee_retain(t); /* owned by the read request */
+  if (!sf_reader_read_request(t->reader, NULL, &sf_tee_sink, t)) {
+    scr_exc_clear();
+    t->reading = false;
+    sf_tee_release(t);
+  }
+}
+
+static ScrDyn *sf_tee_pull_thunk(ScrClosure *cb, ScrDyn *const *args,
+                                 size_t argc) {
+  (void)args;
+  (void)argc;
+  SfTee *t = (SfTee *)scr_box_get_ref(cb->caps[0]);
+  sf_tee_pull(t);
+  sf_tee_release(t);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrDyn *sf_tee_cancel(SfTee *t, int i, ScrDyn *reason) {
+  t->canceled[i] = true;
+  scr_dyn_release(t->reason[i]);
+  t->reason[i] = scr_dyn_retain(reason);
+  if (t->canceled[0] && t->canceled[1]) {
+    ScrDyn *composite = scr_dyn_new_arr();
+    scr_dyn_arr_push(composite, scr_dyn_retain(t->reason[0]));
+    scr_dyn_arr_push(composite, scr_dyn_retain(t->reason[1]));
+    ScrPromise *result = sf_stream_cancel(t->source, composite, true);
+    scr_dyn_release(composite);
+    ScrDyn *boxed = scr_dyn_new_promise(result);
+    scr_promise_release(result);
+    sf_then_adopt(t->cancel_promise, boxed);
+    scr_dyn_release(boxed);
+  }
+  return scr_dyn_new_promise(t->cancel_promise);
+}
+
+static ScrDyn *sf_tee_cancel_thunk_0(ScrClosure *cb, ScrDyn *const *args,
+                                     size_t argc) {
+  SfTee *t = (SfTee *)scr_box_get_ref(cb->caps[0]);
+  ScrDyn *out = sf_tee_cancel(t, 0, argc ? args[0] : scr_dyn_undefined());
+  sf_tee_release(t);
+  return out;
+}
+
+static ScrDyn *sf_tee_cancel_thunk_1(ScrClosure *cb, ScrDyn *const *args,
+                                     size_t argc) {
+  SfTee *t = (SfTee *)scr_box_get_ref(cb->caps[0]);
+  ScrDyn *out = sf_tee_cancel(t, 1, argc ? args[0] : scr_dyn_undefined());
+  sf_tee_release(t);
+  return out;
+}
+
+static ScrDyn *sf_tee_func(SfTee *t, ScrDynThunk thunk, const char *name) {
+  ScrClosure *cb = scr_closure_new((void *)thunk, 1);
+  cb->caps[0] = sf_tee_box(t);
+  return scr_dyn_new_func(cb, thunk, 1, "(controller)", name);
+}
+
+/* Tees an unlocked, undisturbed stream: +1 branches in out[0] and out[1].
+ * The source stays locked by the tee. */
+static void sf_stream_tee(SfStream *s, SfStream *out[2]) {
+  SfTee *t = calloc(1, sizeof *t);
+  if (!t) sf_oom();
+  t->rc = 1;
+  t->source = sf_stream_retain(s);
+  t->reader = sf_stream_get_reader(s);
+  t->cancel_promise = scr_promise_new();
+  scr_promise_mark_handled(t->cancel_promise);
+  for (int i = 0; i < 2; i++) {
+    SfStream *b = sf_stream_new_native();
+    b->pull_cb = sf_tee_func(t, &sf_tee_pull_thunk, "pull");
+    b->cancel_cb = sf_tee_func(
+        t, i == 0 ? &sf_tee_cancel_thunk_0 : &sf_tee_cancel_thunk_1, "cancel");
+    b->source_this = scr_dyn_retain(scr_dyn_undefined());
+    sf_stream_track_callbacks(b);
+    t->branch[i] = sf_stream_retain(b);
+    out[i] = b;
+  }
+  /* The branches start at once; a branch with room then pulls. */
+  sf_stream_schedule_initial_pull(out[0]);
+  sf_stream_schedule_initial_pull(out[1]);
+  sf_tee_release(t);
+}
+
 ScrDyn *scr_fetch_stream_new(ScrDyn *source) {
   ScrDyn *source_view = source;
   ScrDyn *materialized = NULL;
@@ -2729,12 +2933,54 @@ static ScrPromise *sf_response_collect(SfResponse *r, int mode) {
   return p;
 }
 
+/* The body and metadata copy of Response.clone and Request.clone (undici
+ * cloneResponse/cloneBody): the body tees, so the original and the clone
+ * each keep one branch, and the clone's headers are a copy with the same
+ * guard. NULL with a TypeError pending when the body is unusable. */
+static SfResponse *sf_response_clone(SfResponse *r, const char *unusable) {
+  if (!r->null_body &&
+      (r->body->disturbed || r->body->reader || r->body->internal_lock)) {
+    sf_type_error(unusable);
+    return NULL;
+  }
+  SfResponse *c = calloc(1, sizeof *c);
+  if (!c) sf_oom();
+  c->rc = 1;
+  if (r->null_body) {
+    c->body = sf_stream_new_native();
+    sf_stream_close(c->body);
+  } else {
+    SfStream *branches[2];
+    sf_stream_tee(r->body, branches);
+    sf_stream_release(r->body);
+    r->body = branches[0];
+    c->body = branches[1];
+  }
+  c->headers = sf_headers_new(scr_arr_slice(r->headers->pairs, 0, INFINITY),
+                              r->headers->immutable);
+  c->url = scr_str_retain(r->url);
+  c->status_text = scr_str_retain(r->status_text);
+  c->status = r->status;
+  c->redirected = r->redirected;
+  c->null_body = r->null_body;
+  c->light_length = r->light_length;
+  return c;
+}
+
 static ScrDyn *sf_response_invoke(void *ptr, ScrDyn *self,
                                   const char *method,
                                   ScrDyn *const *args, size_t argc,
                                   const char *what) {
   SfResponse *r = ptr;
   sf_response_materialize(r);
+  if (strcmp(method, "clone") == 0) {
+    SfResponse *c = sf_response_clone(
+        r, "Response.clone: Body has already been consumed.");
+    if (!c) return NULL;
+    ScrDyn *out = scr_dyn_new_handle(c, SCR_DYNH_FETCH_RESPONSE);
+    sf_response_release(c);
+    return out;
+  }
   int mode = -1;
   if (strcmp(method, "json") == 0) mode = SF_COLLECT_JSON;
   else if (strcmp(method, "text") == 0) mode = SF_COLLECT_TEXT;
@@ -5153,8 +5399,37 @@ static ScrDyn *sf_request_get(void *ptr, const char *key, size_t len) {
   if (sf_name(key, len, "body") || sf_name(key, len, "bodyUsed") || sf_name(key, len, "headers")) return sf_response_get(r->payload, key, len);
   return NULL;
 }
+/* Request.clone: the payload clones as a Response does, and the clone's
+ * signal follows the original's (undici: an AbortController aborted with
+ * the original signal's reason, at once when it already aborted). */
+static ScrDyn *sf_request_clone(SfRequest *r) {
+  SfResponse *payload = sf_response_clone(r->payload, "unusable");
+  if (!payload) return NULL;
+  ScrDyn *sources = scr_dyn_new_arr();
+  scr_dyn_arr_push(sources,
+                   scr_dyn_new_handle(r->signal, SCR_DYNH_ABORT_SIGNAL));
+  ScrDyn *follower = scr_fetch_abort_any(sources);
+  scr_dyn_release(sources);
+  if (!follower) {
+    sf_response_release(payload);
+    return NULL;
+  }
+  SfRequest *c = calloc(1, sizeof *c);
+  if (!c) sf_oom();
+  c->rc = 1;
+  c->payload = payload;
+  c->url = scr_str_retain(r->url);
+  c->method = scr_str_retain(r->method);
+  c->redirect = scr_str_retain(r->redirect);
+  c->signal = sf_signal_retain((SfSignal *)follower->v.handle.ptr);
+  scr_dyn_release(follower);
+  ScrDyn *out = scr_dyn_new_handle(c, SCR_DYNH_FETCH_REQUEST);
+  sf_request_release_v(c);
+  return out;
+}
 static ScrDyn *sf_request_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc, const char *what) {
   SfRequest *r = ptr;
+  if (strcmp(method, "clone") == 0) return sf_request_clone(r);
   return sf_response_invoke(r->payload, self, method, args, argc, what);
 }
 
@@ -5668,7 +5943,7 @@ static const ScrDynHandleMethod sf_reader_methods[] = {
     {NULL, 0, false}};
 static const ScrDynHandleMethod sf_body_methods[] = {
     {"json", 0, true}, {"text", 0, true}, {"bytes", 0, true},
-    {"arrayBuffer", 0, true}, {NULL, 0, false}};
+    {"arrayBuffer", 0, true}, {"clone", 0, false}, {NULL, 0, false}};
 static const ScrDynHandleMethod sf_headers_methods[] = {
     {"append", 2, false}, {"delete", 1, false}, {"entries", 0, false},
     {"forEach", 1, false}, {"get", 1, false}, {"getSetCookie", 0, false},
