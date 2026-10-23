@@ -732,6 +732,7 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.diffieHellman",
 ]);
 
 /** The WebCrypto algorithms scr_webcrypto_pki.c implements over the pki

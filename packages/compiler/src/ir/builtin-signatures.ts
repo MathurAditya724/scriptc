@@ -4878,6 +4878,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
   "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
   "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
+  "crypto.diffieHellman": { argTypes: [DYN, DYN], result: DYN },
   "crypto.verifyOneshot": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
   "crypto.createSign": { argTypes: [DYN], result: DYN },
   "crypto.createVerify": { argTypes: [DYN], result: DYN },
