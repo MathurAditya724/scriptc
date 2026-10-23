@@ -20,3 +20,23 @@ console.log(pick("/a"), pick("/b/*"));
 try { throw new Error("x"); } catch (e) { console.log(e instanceof UnsupportedPathError, e instanceof Error); }
 const u = new UnsupportedPathError("m");
 console.log(u instanceof UnsupportedPathError, u.message, u.name, u instanceof Error);
+
+// A binding that holds a subclass of the class it was declared with: the
+// test reads the class the binding holds at run time.
+class BaseError extends Error {}
+class DerivedError extends BaseError {}
+class LeafError extends DerivedError {}
+var Current = BaseError;
+function caughtIs(value) {
+  try {
+    throw value;
+  } catch (e) {
+    return e instanceof Current;
+  }
+}
+const samples = () => [new BaseError("b"), new DerivedError("d"), new LeafError("l"), new Error("e"), "text"];
+console.log("base", samples().map(caughtIs).join(","));
+Current = DerivedError;
+console.log("derived", samples().map(caughtIs).join(","));
+Current = LeafError;
+console.log("leaf", samples().map(caughtIs).join(","));
