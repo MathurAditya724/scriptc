@@ -119,7 +119,7 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
-import { lowerBytesStaticCall } from "./containers/bytes.js";
+import { lowerBytesPrototypeSetCall, lowerBytesStaticCall } from "./containers/bytes.js";
 import {
   lowerRegexMethodCall,
   lowerStringIndexCall,
@@ -1579,6 +1579,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.lowerTestMethodCall(expr, expr.expression) ??
       lowerer.lowerTimeoutMethodCall(expr, expr.expression) ??
       lowerArrayPrototypeBorrowCall(lowerer, expr, expr.expression) ??
+      lowerBytesPrototypeSetCall(lowerer, expr, expr.expression) ??
       lowerObjectOwnPrototypeCall(lowerer, expr, expr.expression) ??
       lowerObjectPrototypeCall(lowerer, expr, expr.expression) ??
       lowerStringPrototypeCall(lowerer, expr, expr.expression) ??
