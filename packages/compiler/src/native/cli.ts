@@ -16,16 +16,38 @@ import { createNativeTs7Api } from "../frontend/ts7/native-api.js";
 import { resolveProvenanceSourcesWithParser } from "../frontend/provenance-core.js";
 import { setCompilerReleaseVersion } from "../library/sidecar.js";
 import { NativeCompiler } from "./compiler.js";
-import { openNativeCache } from "./cache.js";
+import { NATIVE_STRING_BYTES, openNativeCache } from "./cache.js";
+import {
+  checkerExecutableIdentity,
+  setLibDiagnosticsStore,
+} from "../frontend/ts7/lib-diagnostics.js";
 import { loadNativeToolchain } from "./toolchain.js";
 import { buildSanitizedRuntime } from "./sanitizer.js";
 import { runCompilerTask } from "./task.js";
+import { processFork } from "../frontend/process-fork.js";
 
 declare function compilerNativePrivateDirectory(path: string, harden: boolean): boolean;
 declare function compilerNativeCollectCycles(): void;
+declare function compilerNativeFork(): number;
+declare function compilerNativeExit(code: number): void;
+declare function compilerNativeWait(pid: number): number;
+declare function compilerNativeLockOpen(path: string): boolean;
+declare function compilerNativeLock(): void;
+declare function compilerNativeUnlock(): void;
+declare function compilerNativeBoundCycleGrowth(): void;
 
 async function main(): Promise<number> {
+  compilerNativeBoundCycleGrowth();
   setFrontendDisposedHook(() => compilerNativeCollectCycles());
+  if (process.platform !== "win32")
+    processFork.primitives = {
+      fork: () => compilerNativeFork(),
+      exit: (code) => compilerNativeExit(code),
+      wait: (pid) => compilerNativeWait(pid),
+      openLock: (path) => compilerNativeLockOpen(path),
+      lock: () => compilerNativeLock(),
+      unlock: () => compilerNativeUnlock(),
+    };
   const manifestPath = process.env["SCRIPTC_TOOLCHAIN"] ?? process.execPath + ".json";
   let compiler: NativeCompiler | null = null;
   let cache: ReturnType<typeof openNativeCache> = null;
@@ -35,6 +57,17 @@ async function main(): Promise<number> {
     if (toolchain.declarationsRoot !== undefined) setDeclarationRoot(toolchain.declarationsRoot);
     setCompilerReleaseVersion(toolchain.compilerVersion);
     cache = openNativeCache((path, harden) => compilerNativePrivateDirectory(path, harden));
+    if (cache !== null) {
+      const store = cache;
+      setLibDiagnosticsStore(
+        {
+          read: (key) =>
+            store.read("lib-diagnostics", key, NATIVE_STRING_BYTES)?.toString("utf8") ?? null,
+          write: (key, text) => store.write("lib-diagnostics", key, text),
+        },
+        checkerExecutableIdentity(toolchain.ts7Executable),
+      );
+    }
     compiler = new NativeCompiler(toolchain, cache);
     return compiler;
   };

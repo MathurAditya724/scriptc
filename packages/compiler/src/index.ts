@@ -9,6 +9,7 @@ import {
 } from "./library/prepare.js";
 import { analyzeWithFrontend } from "./frontend/analysis.js";
 import { checkerCacheIdentity } from "./frontend/ts7/checker-backend.js";
+import { setLibDiagnosticsStore } from "./frontend/ts7/lib-diagnostics.js";
 import { analyzeWithVerdictCache, fileVerdictStore } from "./coverage/verdict-cache.js";
 import { coverageCompilerIdentity } from "./coverage/verdict-startup.js";
 import { commentOnlyReplay } from "./coverage/verdict-semantic.js";
@@ -126,6 +127,7 @@ import { moduleRuntimeFeatures } from "./ir/runtime-features.js";
 import { serializeModuleParts } from "./ir/serialize.js";
 import { readTextParts, writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
+import { compilerOwnedFileRoots } from "./frontend/dts-paths.js";
 import { loadProgram } from "./frontend/program-node.js";
 import { runFrontend, type FrontendFactory } from "./frontend/pipeline.js";
 import {
@@ -600,6 +602,7 @@ async function compileExecutableNative(
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
+    ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
@@ -785,7 +788,7 @@ async function prepareExecutableInput(
 
   if (outputKind === "ir") {
     await mkdir(dirname(opts.outPath), { recursive: true });
-    await writeTextParts(opts.outPath, serializeModuleParts(mod));
+    await writeTextParts(opts.outPath, serializeModuleParts(mod, compilerOwnedFileRoots()));
     return { ok: true, artifact: { kind: "ir", path: opts.outPath } };
   }
 
@@ -885,7 +888,7 @@ async function prepareExecutableInput(
   if (opts.emitIr) {
     irPath = defaultSourcePaths.ir;
     irSourcePath = privateSiblingPath(irPath, "ir");
-    await writeTextParts(irSourcePath, serializeModuleParts(mod));
+    await writeTextParts(irSourcePath, serializeModuleParts(mod, compilerOwnedFileRoots()));
   }
 
   const nativeFeatures = executableNativeFeatures(mod, backend, opts.optimization ?? "release");
@@ -1159,9 +1162,28 @@ async function prepareExecutableInputInChild(
  * `requestPath` as `compileTracked` would in-process, and writes what it prepared, without the LLVM
  * text, to `resultPath`.
  */
+/** Has the build reuse the diagnostics of the declaration files scriptc
+ * supplies (lib-diagnostics.ts) through the build cache, when there is one and
+ * the checker is tsc-ts. */
+async function configureLibDiagnostics(): Promise<void> {
+  let checker: string | undefined;
+  try {
+    checker = checkerCacheIdentity();
+  } catch {
+    // A missing checker fails where the build starts it.
+    checker = undefined;
+  }
+  const root = checker === undefined ? null : await prepareBuildCacheRoot(buildCacheRoot());
+  setLibDiagnosticsStore(
+    root === null ? null : fileVerdictStore(join(root, "lib-diagnostics-v1")),
+    checker ?? "",
+  );
+}
+
 export async function runFrontendProcess(requestPath: string, resultPath: string): Promise<void> {
   const request = JSON.parse(await readFile(requestPath, "utf8")) as FrontendProcessRequest;
   clearCompileSessionCaches();
+  await configureLibDiagnostics();
   setProvenanceSources(request.provenance);
   const frontendInputs = new FrontendInputTracker();
   const warnings: CompileWarningSink = { warnings: [], sourceTexts: null };
@@ -1224,6 +1246,7 @@ async function compileTracked(
   const timing = compilationTiming();
   const timingStart = Date.now();
   entryPath = resolve(entryPath);
+  await configureLibDiagnostics();
   const outputKind = opts.outputKind ?? "exe";
   if (
     (opts.backend !== undefined && opts.backend !== "llvm") ||
@@ -1986,7 +2009,7 @@ async function emitSemanticLibraryHit(
   let irPath: string | undefined;
   if (opts.emitIr) {
     irPath = join(opts.outDir, `${stem}.lib.ir.json`);
-    await writeTextParts(irPath, serializeModuleParts(mod));
+    await writeTextParts(irPath, serializeModuleParts(mod, compilerOwnedFileRoots()));
   }
   await compileLibraryNative(profile, llvmPath, archivePath, opts.sanitize ?? false, hit.native);
   timing("native-archive");
@@ -2272,7 +2295,7 @@ async function compileLibraryTracked(
   let irPath: string | undefined;
   if (opts.emitIr) {
     irPath = join(opts.outDir, `${stem}.lib.ir.json`);
-    await writeTextParts(irPath, serializeModuleParts(mod));
+    await writeTextParts(irPath, serializeModuleParts(mod, compilerOwnedFileRoots()));
   }
 
   const nativeFeatures = libraryNativeFeatures(mod, profile.emission);
