@@ -142,56 +142,72 @@ function requestHeaders(incoming: IncomingMessage): Headers {
  * (the package's `readableEnded`) and whether a drain started. */
 type IncomingState = { ended: boolean; draining: boolean };
 
-/** The request body as the package streams it: each pull reads one chunk
- * of the incoming message, which pauses between pulls, so the socket
- * holds what the app has not read yet. The stream pulls once on its own
- * when it is constructed; the package builds its stream only when the app
- * reads the body, so until the app's first read a drain discards the
- * chunks instead of pausing for them. */
+/** The incoming message's readableHighWaterMark: Readable.toWeb queues
+ * this many bytes before it pauses the message. */
+const BODY_HIGH_WATER_MARK = 64 * 1024;
+
+/** The request body as the package streams it: Readable.toWeb over the
+ * incoming message, read one chunk per pull. Chunks queue until
+ * BODY_HIGH_WATER_MARK bytes wait unread, then the message pauses until a
+ * pull takes them, so the socket holds the rest. The stream pulls once on
+ * its own when it is constructed; the package builds its stream only when
+ * the app reads the body, so until the app's first read a drain discards
+ * the chunks instead of queueing them. */
 function incomingBody(incoming: IncomingMessage, state: IncomingState): ReadableStream<Uint8Array> {
   let pulls = 0;
   let listening = false;
-  let settled = false;
+  let ended = false;
+  let failure: Error | undefined = undefined;
+  const queue: Buffer[] = [];
+  let queued = 0;
   let wake: (() => void) | undefined = undefined;
   const woken = (): void => {
     const resolve = wake;
     wake = undefined;
     if (resolve !== undefined) resolve();
   };
+  const listen = (): void => {
+    listening = true;
+    incoming.on("data", (chunk: Buffer) => {
+      if (state.draining && pulls === 1) return;
+      queue.push(chunk);
+      queued += chunk.length;
+      if (queued >= BODY_HIGH_WATER_MARK) incoming.pause();
+      woken();
+    });
+    incoming.on("end", () => {
+      ended = true;
+      woken();
+    });
+    incoming.on("error", (err: Error) => {
+      failure = err;
+      woken();
+    });
+  };
   return new ReadableStream<Uint8Array>({
-    pull(controller) {
+    async pull(controller) {
       pulls++;
-      return new Promise<void>((resolve) => {
-        if (settled) {
-          resolve();
-          return;
-        }
-        wake = resolve;
-        if (listening) {
-          incoming.resume();
-          return;
-        }
-        listening = true;
-        incoming.on("data", (chunk: Buffer) => {
-          if (state.draining && pulls === 1) return;
-          incoming.pause();
-          if (settled) return;
+      if (!listening) listen();
+      for (;;) {
+        const chunk = queue.shift();
+        if (chunk !== undefined) {
+          queued -= chunk.length;
+          if (queued < BODY_HIGH_WATER_MARK) incoming.resume();
           controller.enqueue(chunk);
-          woken();
-        });
-        incoming.on("end", () => {
-          if (settled) return;
-          settled = true;
+          return;
+        }
+        if (failure !== undefined) {
+          controller.error(failure);
+          return;
+        }
+        if (ended) {
           controller.close();
-          woken();
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          wake = resolve;
         });
-        incoming.on("error", (err: Error) => {
-          if (settled) return;
-          settled = true;
-          controller.error(err);
-          woken();
-        });
-      });
+      }
     },
   });
 }
