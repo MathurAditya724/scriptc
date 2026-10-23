@@ -62,7 +62,11 @@ export class JsIcSites {
     const receiver = fn.params[0]?.localId;
     if (receiver === undefined) return null;
     let i = 0;
-    while (i < fn.body.length && this.capsuleBranch(fn.body[i]!, receiver)) i++;
+    while (
+      i < fn.body.length &&
+      (this.capsuleBranch(fn.body[i]!, receiver) || this.rebinding(fn.body[i]!, receiver))
+    )
+      i++;
     const tail = fn.body.slice(i);
     if (fn.params.length === 1) return this.getTail(tail, receiver);
     if (fn.params.length !== 2) return null;
@@ -109,10 +113,14 @@ export class JsIcSites {
   /** `if (typeof key === "symbol") return dynKeyGet(BAG(receiver), key);
    * if (receiver == null) return dynKeyGet(receiver, key);
    * const s = String(key); return dynKeyGet(BAG(receiver), s)`, each read
-   * possibly under js.fromDyn. */
+   * possibly under js.fromDyn. Capsule branches may precede the final read:
+   * a program that declares classes looks the string key up in each class's
+   * key table there. */
   private keyedTail(tail: IrStmt[], receiver: string, key: string): JsIcSite | null {
-    const [symbol, nullish, decl, ret] = tail;
-    if (tail.length !== 4) return null;
+    const [symbol, nullish, decl] = tail;
+    const ret = tail[tail.length - 1];
+    if (tail.length < 4) return null;
+    if (!tail.slice(3, -1).every((s) => this.capsuleBranch(s, receiver))) return null;
     if (!this.guard(symbol, "symbol", key, (read) => this.bagOf(read, receiver), key)) return null;
     if (!this.guard(nullish, "nullish", receiver, (read) => isVar(read, receiver), key))
       return null;
@@ -159,9 +167,12 @@ export class JsIcSites {
   }
 
   /** Whether `e` is the receiver itself for every ordinary object or array:
-   * the receiver, or a chain of property-bag helpers applied to it. */
+   * the receiver, or a chain of property-bag helpers applied to it. A
+   * conversion between the dyn and jsval forms keeps the object it holds. */
   private bagOf(e: IrExpr, receiver: string): boolean {
     if (isVar(e, receiver)) return true;
+    if (e.kind === "libCall" && (e.fn === "js.toDyn" || e.fn === "js.fromDyn"))
+      return e.args.length === 1 && this.bagOf(e.args[0]!, receiver);
     return (
       e.kind === "call" &&
       e.args.length === 1 &&
@@ -180,6 +191,13 @@ export class JsIcSites {
     if (cond.test !== "classCapsule" && cond.test !== "funcKind") return false;
     const ret = s.then[0]!;
     return ret.kind === "return" && ret.value !== null && this.bagOf(ret.value, param);
+  }
+
+  /** `param = <bag of param>`, such as the subclass normalization
+   * `value = %dyn.class.normalize(value)`, which leaves an ordinary object
+   * or array in `param`. */
+  private rebinding(s: IrStmt, param: string): boolean {
+    return s.kind === "assign" && s.localId === param && this.bagOf(s.value, param);
   }
 
   /** A property-bag helper that returns its argument unless a capsule
@@ -204,7 +222,10 @@ export class JsIcSites {
       identity =
         fn.body
           .slice(0, -1)
-          .every((s) => this.capsuleBranch(s, param) || this.kindExit(s, param)) &&
+          .every(
+            (s) =>
+              this.capsuleBranch(s, param) || this.kindExit(s, param) || this.rebinding(s, param),
+          ) &&
         last?.kind === "return" &&
         last.value !== null &&
         this.bagOf(last.value, param);
