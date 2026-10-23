@@ -1321,6 +1321,15 @@ export function lowerRecordKeyRead(
     shape.fields.every((f) => typeEquals(f.type, shape.fields[0]!.type))
   ) {
     declared = shape.fields[0]!.type;
+  } else if (shape.fields.length > 0) {
+    // Fields of different types (`row[key]` with `key: keyof Row`): the
+    // checker types the read as the union of the field types the key can
+    // name. When every declared field surfaces in that union (an arm, or a
+    // union that widens into it), the per-field dispatch wraps each hit
+    // into its arm.
+    const read = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (read !== null && read.kind === "union" && recordKeyResultOk(lowerer, shape, read))
+      declared = read;
   }
   // Fields of different types answer a checked-dynamic value where nothing
   // typed the read: in JavaScript, and where the checker types it 'any'

@@ -43,7 +43,7 @@ import {
   UNDEFINED_T,
   VOID,
 } from "../ir/ir.js";
-import { BIGINT_T, KEY_ORDER_FIELD } from "../ir/ir.js";
+import { BIGINT_T } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
 
@@ -553,21 +553,6 @@ export class ShapeRegistry {
     if (!extra) return order;
     const missing = extra.filter((name) => !order.includes(name));
     return missing.length === 0 ? order : [...order, ...missing];
-  }
-
-  /** Gives a shape with orderVariants its KEY_ORDER_FIELD, in place,
-   * after the bodies lowered (key-order-witness.ts adds the field to each
-   * of the shape's literals). Allocation zeroes it, which every other
-   * construction keeps. */
-  addKeyOrderField(shapeId: string): void {
-    const shape = this.byId.get(shapeId);
-    if (!shape || shape.fields.some((f) => f.name === KEY_ORDER_FIELD)) return;
-    shape.fields = [...shape.fields, { name: KEY_ORDER_FIELD, type: F64 }].sort((a, b) =>
-      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-    );
-    this.revision++;
-    const key = this.keyOf(shape.fields, false, shape.indexValue);
-    if (!this.byKey.has(key)) this.byKey.set(key, shapeId);
   }
 
   /** Adds optional fields to an interned shape in place: members a type
@@ -1860,10 +1845,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
   // reference needs native object identity, including var's undefined state.
   const intrinsic = type.getSymbol();
+  const isIntrinsicGlobal = (symbol: ts.Symbol | undefined): boolean =>
+    symbol !== undefined &&
+    ts.symbolName(symbol) === "globalThis" &&
+    symbol.declarations.length === 0;
+  if (isIntrinsicGlobal(intrinsic)) return DYN;
+  // `typeof globalThis & { key?: T }` (the global-singleton spelling) is the
+  // same global object with declared extra members.
   if (
-    intrinsic !== undefined &&
-    ts.symbolName(intrinsic) === "globalThis" &&
-    intrinsic.declarations.length === 0
+    type.isIntersectionType() &&
+    ts.constituentTypes(type).some((part) => isIntrinsicGlobal(part.getSymbol()))
   )
     return DYN;
   if (ctx.jsDynamicDeclaration !== undefined && intrinsic !== undefined) {
@@ -3192,6 +3183,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Native WeakMap keeps reference identities in checked-dynamic storage.
   // The runtime rejects reference kinds without a weak lifetime contract.
   if (isStdlibInterface("WeakMap") || isStdlibInterface("WeakSet")) return DYN;
+  // FinalizationRegistry is a native handle with register and unregister.
+  if (isStdlibInterface("FinalizationRegistry")) return DYN;
   // Set<T>: Map's sibling — same provenance rule and key domain.
   // Anything else stays unmapped;
   // the `new Set` lowering names the offending element type specifically.

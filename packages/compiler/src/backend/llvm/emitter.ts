@@ -90,6 +90,7 @@ import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
+import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
 import {
   findInt32Abis,
   INT32_ABI_SUFFIX,
@@ -497,7 +498,11 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
                   foldConstantGlobals(
                     copyStableCaptures(
                       resolveSelfCaptures(
-                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                        hoistFinalFieldReads(
+                          freezeInitOnlyGlobals(
+                            holdCharLocalsAsUnits(dropUnwrittenPropertyBags(mod)),
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -531,7 +536,11 @@ export function emitLlvmModuleSource(
                   foldConstantGlobals(
                     copyStableCaptures(
                       resolveSelfCaptures(
-                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                        hoistFinalFieldReads(
+                          freezeInitOnlyGlobals(
+                            holdCharLocalsAsUnits(dropUnwrittenPropertyBags(mod)),
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -1024,6 +1033,11 @@ export class LlEmitter {
   /** See moduleUsesDynBuiltinStream. */
   get usesDynBuiltinStream(): boolean {
     return this.runtimeFeatures.dynBuiltinStream;
+  }
+  /** A checked-dynamic for-await may hold a native stream: the program
+   * links the stream unit (and the dyn-async one the loop needs). */
+  get dynForAwaitStreams(): boolean {
+    return this.runtimeFeatures.stream && this.runtimeFeatures.dynAsync;
   }
   /** Runtime-arm dispatchers for live union values. */
   readonly liveDynUnionRefAdapters = new Map<string, string>();
@@ -1586,6 +1600,11 @@ export class LlEmitter {
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
       classRootOf: (name) => this.classMeta.get(name)?.root.def.name,
+      releasesNothing: (t) => {
+        if (t.kind !== "object" || (this.shapeHost.regions ?? null) !== null) return false;
+        const meta = this.classMeta.get(t.className);
+        return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
+      },
       classSubtypes: (name) => {
         const target = this.classMetaOf(name);
         const intervals = classMembershipIntervals(this.classMeta, target.def.name);
@@ -6460,7 +6479,10 @@ export class LlEmitter {
     return streamDataAdapter(this, cbT);
   }
 
-  streamDoneFnFor(kind: "w" | "f" | "d" | "t" | "l", doneT: IrType & { kind: "func" }): string {
+  streamDoneFnFor(
+    kind: "w" | "f" | "d" | "t" | "l" | "c",
+    doneT: IrType & { kind: "func" },
+  ): string {
     return streamDoneFnFor(this, kind, doneT);
   }
 
@@ -6484,7 +6506,7 @@ export class LlEmitter {
     return zlibBytesThunkFor(this, cbT);
   }
 
-  streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e", cbT: IrType): string {
+  streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e" | "c" | "v", cbT: IrType): string {
     return streamCbThunkFor(this, kind, cbT);
   }
 

@@ -2,7 +2,7 @@ import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import { declaredMemberOf, isPromisePrototypeRead } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
-import { lowerForAwaitDynStream } from "./dyn-streams.js";
+import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
 import { lowerForAwaitValueStream } from "./builtins/hash-stream.js";
 import { lowerChildPropertyWrite } from "./handle-properties.js";
 import {
@@ -166,7 +166,11 @@ import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { genericIfaceBindingKeepsClass, superConditionLead } from "./lower-classes.js";
-import { lowerStreamUnderscoreAssign, streamClassAliasDecl } from "./lower-stream.js";
+import {
+  lowerStreamUnderscoreAssign,
+  streamClassAliasDecl,
+  streamSidesOf,
+} from "./lower-stream.js";
 import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
   lowerHttpResPropertyAssignment,
@@ -9684,6 +9688,21 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
       lowerer.stdlibGlobalMember(stmt.expression, "process") === "stdin"
     ) {
       return lowerForAwaitStdin(lowerer, stmt);
+    }
+    // NodeJS.WritableStream is what @types/node answers for pipeline()
+    // with a function destination, whose value is a PassThrough.
+    if (nodeStreamInterfaceSide(lowerer, lowerer.typeOf(stmt.expression)) === "w") {
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
+      const sides =
+        mapped?.kind === "object"
+          ? streamSidesOf(lowerer, lowerer.classes.get(mapped.className))
+          : null;
+      if (sides !== "r" && sides !== "rw")
+        lowerer.noLowering(
+          "for await over a NodeJS.WritableStream",
+          stmt.expression,
+          "type the stream as the readable class it is: pipeline() answers a PassThrough for a function destination (pipeline(...) as PassThrough, or a JSDoc @type)",
+        );
     }
     // A checked-dynamic NodeJS.ReadableStream iterates its native stream,
     // and a Hash, Hmac, Cipheriv or Decipheriv iterates its Transform.

@@ -1,5 +1,4 @@
 import { keyedHelperName } from "./stable-names.js";
-import { perKeyOrder } from "./key-order-witness.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerDynStreamMemberCall } from "./dyn-streams.js";
@@ -74,7 +73,6 @@ import {
   isDynTypedRefType,
   isUnitType,
   shapeHasAccessorSlots,
-  shapeKeyOrders,
   typeEquals,
   RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
@@ -4403,6 +4401,9 @@ const DYN_DISPATCH_METHODS = new Set([
   "additionalHeaders",
   "altsvc",
   "origin",
+  // FinalizationRegistry's methods (scr_finalization_registry_new).
+  "register",
+  "unregister",
   // Worker and MessagePort methods use the owning context's handle adapter.
   "postMessage",
   "terminate",
@@ -4423,6 +4424,21 @@ export function lowerDynDispatchMethodCall(
     lowerer.chainBlocked(call, access)
   )
     return null;
+  // readable.compose lowers its stages from their syntax, so it needs the
+  // stream's class: a stream a JavaScript function returns untyped has none.
+  if (method === "compose") {
+    const recvT = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+    if (
+      recvT?.kind === "object" &&
+      streamSidesOf(lowerer, lowerer.classes.get(recvT.className)) !== null
+    ) {
+      lowerer.noLowering(
+        "readable.compose on a stream held as a checked-dynamic value",
+        call,
+        "type the stream where it comes from, such as a JSDoc @returns {Readable} on the function that returns it",
+      );
+    }
+  }
   if (call.arguments.nodes.some((arg) => ts.isSpreadElement(arg))) {
     const loc = locOf(call);
     const local = lowerer.declareHiddenLocal("%spreadReceiver", DYN);
@@ -7123,12 +7139,8 @@ export function recordKeysArrayCall(
           loc,
         },
       ];
-      // One walk per key order (see perKeyOrder).
-      const orders = shapeKeyOrders(current);
-      const walks = orders.map((): IrStmt[] => []);
-      for (const [k, name] of orders.flatMap((order, k) =>
-        order.map((name) => [k, name] as const),
-      )) {
+      const order = current.declaredOrder ?? current.fields.map((f) => f.name);
+      for (const name of order) {
         const f = current.fields.find((x) => x.name === name)!;
         const pushStmt: IrStmt = {
           kind: "exprStmt",
@@ -7145,13 +7157,12 @@ export function recordKeysArrayCall(
         // Fields that can be absent push behind their presence test (the
         // key exists exactly when Object.keys would list it).
         const present = lowerer.recordFieldPresent(ref, argIr.shapeId, f.name, loc);
-        walks[k]!.push(
+        body.push(
           present.kind === "recordHas"
             ? { kind: "if", cond: present, then: [pushStmt], else_: null, loc }
             : pushStmt,
         );
       }
-      body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
       fn.body = body;
     };
@@ -8837,12 +8848,8 @@ function lowerObjectStaticCall(
           loc,
         },
       ];
-      // One walk per key order (see perKeyOrder).
-      const orders = shapeKeyOrders(current);
-      const walks = orders.map((): IrStmt[] => []);
-      for (const [k, name] of orders.flatMap((order, k) =>
-        order.map((name) => [k, name] as const),
-      )) {
+      const order = current.declaredOrder ?? current.fields.map((f) => f.name);
+      for (const name of order) {
         const f = current.fields.find((x) => x.name === name)!;
         const raw: IrExpr = {
           kind: "recordGet",
@@ -9004,9 +9011,8 @@ function lowerObjectStaticCall(
             loc,
           };
         }
-        walks[k]!.push(stmt);
+        body.push(stmt);
       }
-      body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
       fn.body = body;
     };
@@ -9956,7 +9962,9 @@ export function lowerObjectMethodCall(
   if (
     info &&
     !found &&
-    (STREAM_API_MEMBERS.has(access.name.text) || STREAM_OPERATORS.has(access.name.text)) &&
+    (STREAM_API_MEMBERS.has(access.name.text) ||
+      STREAM_OPERATORS.has(access.name.text) ||
+      access.name.text === "compose") &&
     streamSidesOf(lowerer, info) !== null
   ) {
     const stream = lowerStreamMethodCall(lowerer, call, access, info);
