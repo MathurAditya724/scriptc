@@ -4187,11 +4187,23 @@ function cycleReachedDeferredReferences7(
     unitsBySymbol.set(symbol, [...(unitsBySymbol.get(symbol) ?? []), ...units]);
     allUnits.push(...units);
   }
+  // A named class expression's inner name (`class Impl { static x =
+  // Impl.m(); }`) names the class inside its own body, as the binding it
+  // is stored in names it outside.
+  const innerNames: ts.Identifier[] = [];
+  for (const unit of allUnits) {
+    if (!ts.isClassExpression(unit) || unit.name === undefined) continue;
+    const symbol = checker.getSymbolAtLocation(unit.name);
+    if (symbol === undefined) continue;
+    innerNames.push(unit.name);
+    unitsBySymbol.set(symbol, [...(unitsBySymbol.get(symbol) ?? []), unit]);
+  }
   // The identifier texts worth resolving: declared names, and the local
   // names of imports (named, default and namespace) in cycle members.
   const names = new Set<string>();
   for (const c of candidates.values()) names.add(c.name.text);
   for (const name of storedNames) names.add(name.text);
+  for (const name of innerNames) names.add(name.text);
   for (const sf of evaluation) {
     for (const stmt of sf.statements.nodes) {
       if (!ts.isImportDeclaration(stmt) || stmt.importClause === undefined) continue;
