@@ -431,13 +431,6 @@ export function inlineNamespaceRequireOf(
 /** `value` evaluated after the required module's run-once %init (and its
  * module-registry link) at the require's own position. */
 export function withRequireInit(lowerer: Lowerer, req: InlineRequire, value: IrExpr): IrExpr {
-  if (lowerer.inlineRequireCycleCalls.has(req.call)) {
-    lowerer.unsupported(
-      "SC1090",
-      req.call,
-      `require() of '${req.spec}' while it is still evaluating (a require cycle: Node answers its partial exports, which the static export table does not model)`,
-    );
-  }
   // Every inline program require is a preflight module edge, so its module
   // has an initializer; never read its exports without evaluating it.
   if (!lowerer.initNameOf.has(req.dep)) {

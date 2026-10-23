@@ -325,6 +325,36 @@ console.log(cells.join(","));
     );
   });
 
+  test("a split require closing a CommonJS cycle throws the partial-exports fence", async () => {
+    // Node answers the closing require with the dependency's partial exports
+    // ({ fromA: 1 } at this point), which the static export model cannot
+    // represent. The split assignment must hit the same fence as an inline
+    // require in expression position instead of reading uninitialized
+    // export storage.
+    const r = await compileAndRun(
+      "split-require-cycle",
+      `require("./a.cjs");
+`,
+      "cjs",
+      {
+        "a.cjs": `exports.fromA = 1;
+const b = require("./b.cjs");
+exports.fromB = b.fromB;
+`,
+        "b.cjs": `exports.fromB = 2;
+var a;
+a = require("./a.cjs");
+console.log(a.fromA, a.fromB);
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: require\(\) of '\.\/a\.cjs' while it is still evaluating \(a require cycle: Node answers its partial exports, which the static export table does not model\) is not supported yet \[SC1090 at .*b\.cjs:3\]\n$/,
+    );
+  });
+
   test("an EFFECTFUL surplus argument is a named deferred fence (JS lane)", async () => {
     // Effect-free surplus args drop at compile time, JS-exact (corpus
     // 1760 — the test-string-decoder writeSequences shape). An effectful
