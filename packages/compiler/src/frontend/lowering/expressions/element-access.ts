@@ -65,6 +65,7 @@ import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
 import { isKeyedFieldAccess } from "./keyed-field-targets.js";
 import { lowerFieldCompoundValue } from "./updates.js";
+import { readsHeldEvolvingArray } from "../lower-stmts.js";
 
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
@@ -751,12 +752,16 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       : lowerer.maybeNarrow(arr, expr.expression);
   }
 
+  // An alias or container of an evolving array whose reads disagree
+  // (`rows[0]` after `const rows = [xs]`) holds elements the checker's type
+  // does not list, so its element read stays checked-dynamic.
+  const heldEvolving = arr.type.kind === "dyn" && readsHeldEvolvingArray(lowerer, expr.expression);
   // The checker sees an array but the VALUE lowered checked-dynamic (a
   // jsdoc-typed default export from a .js module — signature 14): the
   // read rides the dynCheck boundary when the array shape is one the checked-dynamic tree
   // can validate, and fences by name when it is not — an arrayGet over a
   // dyn receiver is never emitted (the validator ICE).
-  if (arr.type.kind === "dyn") {
+  if (arr.type.kind === "dyn" && !heldEvolving) {
     if (
       canDynCheckTo(
         receiverIr,
@@ -782,6 +787,14 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     locOf(expr.argumentExpression),
     expr.argumentExpression,
   );
+  if (heldEvolving)
+    return {
+      kind: "dynKeyGet",
+      value: arr,
+      key: lowerer.coerceToExpected(index, DYN),
+      type: DYN,
+      loc: locOf(expr),
+    };
   if (
     arr.type.kind === "array" &&
     (index.type.kind === "dyn" ||

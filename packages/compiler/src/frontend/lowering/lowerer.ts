@@ -614,6 +614,7 @@ import {
   lowerForStatement,
   matchGroupsPatternSource,
   isGuardedRecordRead,
+  holdsEvolvingArray,
 } from "./lower-stmts.js";
 import {
   type FieldTarget,
@@ -10655,7 +10656,8 @@ export class Lowerer {
           builtinOption("UrlObject") ||
           builtinOption("URLFormatOptions") ||
           !this.mapTypeOf(this.typeOf(x)) ||
-          this.excessJsContextualProperty(x, parts)
+          this.excessJsContextualProperty(x, parts) ||
+          holdsEvolvingArray(this, x)
         ) {
           return lowerDynObjectLiteral(this, x);
         }
