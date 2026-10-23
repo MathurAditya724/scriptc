@@ -17,17 +17,21 @@ const entry = join(repoRoot, "tests/fixtures/npm/cases/zod3-boundary/lying.ts");
 const outDir = join(repoRoot, "node_modules/.cache/scriptc-tests/decl-boundary");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
-test("boundary casts throw a path TypeError for values the declarations misdescribe", { timeout: 600_000 }, async () => {
-  mkdirSync(outDir, { recursive: true });
-  const result = await compile(entry, { outPath: join(outDir, "lying"), outDir, sanitize });
-  if (!result.ok) {
-    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-  }
-  const pending = execFileAsync(result.binaryPath, [], { cwd: dirname(entry), encoding: "utf8" });
-  pending.child.stdin?.end();
-  const { stdout } = await pending;
-  expect(stdout).toBe(
-    "liar threw true expected number at $.n, got string\n" +
-      "frozen threw expected a plain object (this value is frozen, sealed or not extensible) at $, got object\n",
-  );
-});
+test(
+  "boundary casts throw a path TypeError for values the declarations misdescribe",
+  { timeout: 600_000 },
+  async () => {
+    mkdirSync(outDir, { recursive: true });
+    const result = await compile(entry, { outPath: join(outDir, "lying"), outDir, sanitize });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    }
+    const pending = execFileAsync(result.binaryPath, [], { cwd: dirname(entry), encoding: "utf8" });
+    pending.child.stdin?.end();
+    const { stdout } = await pending;
+    expect(stdout).toBe(
+      "liar threw true expected number at $.n, got string\n" +
+        "frozen threw expected a plain object (this value is frozen, sealed or not extensible) at $, got object\n",
+    );
+  },
+);
