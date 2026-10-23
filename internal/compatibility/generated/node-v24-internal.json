@@ -1387,7 +1387,20 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs",
+          "tests/corpus/7391-als-response-end-and-finished.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -1437,7 +1450,20 @@
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs",
+          "tests/corpus/7391-als-response-end-and-finished.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1510,7 +1536,20 @@
         "evidence": "compiler-dedicated:asyncLocalStorage.disable",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs",
+          "tests/corpus/7391-als-response-end-and-finished.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1537,7 +1576,20 @@
         "evidence": "compiler-dedicated:asyncLocalStorage.getStore",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs",
+          "tests/corpus/7391-als-response-end-and-finished.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1564,7 +1616,20 @@
         "evidence": "compiler-dedicated:asyncLocalStorage.enterWith",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs",
+          "tests/corpus/7391-als-response-end-and-finished.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1591,7 +1656,20 @@
         "evidence": "compiler-dedicated:asyncLocalStorage.run",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs",
+          "tests/corpus/7391-als-response-end-and-finished.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1618,7 +1696,20 @@
         "evidence": "compiler-dedicated:asyncLocalStorage.exit",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs",
+          "tests/corpus/7391-als-response-end-and-finished.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1922,6 +2013,19 @@
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
           "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs",
+          "tests/corpus/7391-als-response-end-and-finished.mjs",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -2484,7 +2588,20 @@
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
-          "tests/corpus/5815-als-callback-context.ts"
+          "tests/corpus/5815-als-callback-context.ts",
+          "tests/corpus/7110-als-completion-callbacks.ts",
+          "tests/corpus/7111-als-bind-snapshot-options.ts",
+          "tests/corpus/7112-als-bind-snapshot-dynamic.mjs",
+          "tests/corpus/7119-als-net-event-context.mjs",
+          "tests/corpus/7380-als-http-event-context.mjs",
+          "tests/corpus/7383-als-stream-events.ts",
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs",
+          "tests/corpus/7391-als-response-end-and-finished.mjs"
         ]
       },
       "anchorSource": "exact"

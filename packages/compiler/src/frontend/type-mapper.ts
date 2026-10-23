@@ -4759,6 +4759,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (hybrid) return hybrid;
   }
   const callSigs = checker.getCallSignatures(widened);
+  // AsyncLocalStorage.snapshot()'s generic runner is a dyn function value
+  // (als.snapshot), called through the dyn call path.
+  if (callSigs.length === 1 && isAsyncLocalStorageSnapshot(callSigs[0]!, ctx)) return DYN;
   if (callSigs.length === 1) return mapCallSignature(callSigs[0]!, ctx);
   // Records: object types whose members are all data properties (shorthand
   // methods in type position count — they're func-typed fields) with
@@ -5091,6 +5094,26 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
 /** One non-overloaded call signature's func type (mapTypeInner's
  * single-signature rule; erasedOverloadMemberType maps each overload of a
  * member through it). */
+/** Whether `sig` is the function type AsyncLocalStorage.snapshot() returns:
+ * declared as that static method's return type in the async_hooks module
+ * of the standard library declarations. */
+function isAsyncLocalStorageSnapshot(sig: ts.Signature, ctx: TypeMapperCtx): boolean {
+  const decl = sig.declaration;
+  if (decl === undefined || !ts.isFunctionTypeNode(decl)) return false;
+  const method = decl.parent;
+  return (
+    method !== undefined &&
+    ts.isMethodDeclaration(method) &&
+    ts.isIdentifier(method.name) &&
+    method.name.text === "snapshot" &&
+    method.parent !== undefined &&
+    ts.isClassDeclaration(method.parent) &&
+    method.parent.name?.text === "AsyncLocalStorage" &&
+    ctx.isStdlibFile(ts.getSourceFileOfNode(decl)) &&
+    isDeclaredInAmbientModule(decl, "async_hooks")
+  );
+}
+
 function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null {
   const { checker } = ctx;
   if (sig.getTypeParameters().length && ctx.erasingSignature !== sig) return null;

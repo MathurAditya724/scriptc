@@ -5339,6 +5339,13 @@ function validateFunction(
   }
 
   function checkLibSpecialCall(e: IrExpr & { kind: "libCall" }): boolean {
+    if (e.fn === "als.bindCallback") {
+      // The bound function, at its closure argument's own type.
+      const fn = e.args[0]?.type;
+      if (fn?.kind !== "func" || !typeEquals(e.type, fn))
+        err(`libCall ${e.fn} must return its function argument's type`, e.loc);
+      return true;
+    }
     if (
       e.fn === "crypto.randomFillView" ||
       e.fn === "crypto.randomFillViewRest" ||
