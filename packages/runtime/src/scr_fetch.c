@@ -3358,6 +3358,10 @@ static bool sf_header_value_ok(const ScrStr *value) {
 }
 
 static ScrStr *sf_header_value_bytestring(ScrStr *value) {
+  /* An ASCII value is its own ByteString: each byte is one UTF-16 unit. */
+  size_t ascii = 0;
+  while (ascii < value->len && (unsigned char)value->data[ascii] < 0x80) ascii++;
+  if (ascii == value->len) return scr_str_retain(value);
   size_t len = (size_t)scr_str_utf16_len(value);
   char *bytes = malloc(len ? len : 1);
   if (!bytes) sf_oom();
