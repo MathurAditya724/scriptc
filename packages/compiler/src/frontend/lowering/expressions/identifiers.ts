@@ -9,6 +9,7 @@ import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
+  DATE_T,
   DYN,
   F64,
   type IrExpr,
@@ -171,6 +172,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // when the checker types this USE as a single arm, maybeNarrow
   // bridges the tagged representation with a unionNarrow.
   const local = lowerer.resolveLocal(expr);
+  // A Date local holding its time value reads as that Date: only uses
+  // that read the time value reach here (date-values.ts).
+  if (local && lowerer.timeValueDateLocals.has(local)) {
+    const time: IrExpr = { kind: "varRef", localId: local.id, type: F64, loc };
+    return { kind: "libCall", fn: "date.fromTime", args: [time], type: DATE_T, loc };
+  }
   if (local) {
     // A switch can dispatch past a lexical declaration. Keep this
     // previously refused codec form out until switch-scope TDZ boxes

@@ -4822,6 +4822,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.getMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getUTCMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getTimezoneOffset": { argTypes: [DATE_T], result: F64 },
+  /** A Date object for a time value a local holds (date-values.ts): a
+   * lib-call argument passes the time value itself, and any other use
+   * creates the Date. */
+  "date.fromTime": { argTypes: [F64], result: DATE_T },
   /** Date.prototype.toString / toDateString / toTimeString and String(date):
    * V8's local-time formats with the host zone's long name, "Invalid Date"
    * for an invalid date. Owned (+1) string; never throws. */

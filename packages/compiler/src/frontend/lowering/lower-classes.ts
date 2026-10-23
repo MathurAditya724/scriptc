@@ -1426,7 +1426,7 @@ function undefArmedFieldType(lowerer: Lowerer, p: ts.Symbol): IrType | null {
   const arms =
     mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
   for (const a of arms) {
-    if (a.kind === "map" || a.kind === "regex" || a.kind === "date" || a.kind === "generator") {
+    if (a.kind === "map" || a.kind === "regex" || a.kind === "generator") {
       return null;
     }
     byKey.set(typeKey(a), a);
@@ -3983,7 +3983,6 @@ export function collectClassShapeInner(
           declared.kind !== "union" &&
           declared.kind !== "dyn" &&
           declared.kind !== "map" &&
-          declared.kind !== "date" &&
           declared.kind !== "generator" &&
           declared.kind !== "void" &&
           declared.kind !== "caught";
@@ -10424,8 +10423,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       if (arg.type.kind === "string") {
         return { kind: "libCall", fn: "date.newString", args: [arg], type: DATE_T, loc };
       }
+      // new Date(date): a new Date object with the same time value.
       if (arg.type.kind === "date") {
-        return arg;
+        const time: IrExpr = { kind: "libCall", fn: "date.getTime", args: [arg], type: F64, loc };
+        return { kind: "libCall", fn: "date.newMs", args: [time], type: DATE_T, loc };
       }
       lowerer.noLowering(
         `new Date of '${lowerer.fmt(arg.type)}' values`,
@@ -10628,7 +10629,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           expr,
           `Map values of type '${lowerer.checker.typeToString(targs[1])}' ` +
             `(Map values must be number, string, boolean, records, class instances, functions, ` +
-            `typed arrays, arrays, promises, Maps, Sets, or supported unions and checked values)`,
+            `typed arrays, arrays, promises, Dates, Maps, Sets, or supported unions and checked values)`,
         );
       }
       lowerer.badType(expr, tsType);

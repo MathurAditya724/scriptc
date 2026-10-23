@@ -9,7 +9,7 @@ import { emitTestLibCall } from "./lib-test.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
-import type { IrExpr, IrType } from "../../ir/ir.js";
+import { F64, type IrExpr, type IrType } from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
@@ -638,16 +638,66 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
           ? "scr_stream_dyn_async_iterator_open"
           : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
+  // The runtime's Date functions take and answer time values: a Date
+  // operand passes its time value, read at once from the borrowed object,
+  // and a Date result is a new Date object.
   const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
     ? emitBorrowedInputs(host, e.args)
     : e.args.map((a) =>
-        borrowsJsonInputs(e.fn) || borrowsIteratorInputs(e.fn)
-          ? emitBorrowedInput(host, a)
-          : host.emitExpr(a),
+        a.type.kind === "date"
+          ? { name: emitDateTimeArg(host, a), type: F64 }
+          : borrowsJsonInputs(e.fn) || borrowsIteratorInputs(e.fn)
+            ? emitBorrowedInput(host, a)
+            : host.emitExpr(a),
       );
+  // getTime and valueOf answer the time value the argument already is.
+  if ((e.fn === "date.getTime" || e.fn === "date.valueOf") && e.args[0]?.type.kind === "date")
+    return { name: args[0]!.name, type: e.type };
   // The deep comparisons' number test: computed here, with no runtime call.
   if (e.fn === "assert.sameValue")
     return { name: emitSameValueF64(host, args[0]!.name, args[1]!.name), type: e.type };
+  const callArgs = args;
+  if (e.type.kind === "date") {
+    const ms = emitSymbolLibCall(host, { ...e, type: F64 }, sym, callArgs);
+    host.declare(`declare ptr @scr_date_new(double)`);
+    const date = B.tmp();
+    B.line(`${date} = call ptr @scr_date_new(double ${ms.name})`);
+    return host.own({ name: date, type: e.type });
+  }
+  return emitSymbolLibCall(host, e, sym, callArgs);
+}
+
+/** The time value of a Date argument. A Date that a runtime Date function
+ * produces for this argument alone (`new Date(ms).getTime()`, a
+ * time-value local's read) passes the function's time value and creates
+ * no Date object. */
+function emitDateTimeArg(host: LlvmEmitterContext, date: IrExpr): string {
+  // A time-value local's read is its time value itself.
+  if (date.kind === "libCall" && date.fn === "date.fromTime")
+    return host.emitExpr(date.args[0]!).name;
+  if (date.kind === "libCall" && date.fn.startsWith("date."))
+    return emitGenericLibCall(host, { ...date, type: F64 }).name;
+  return emitDateTime(host, emitBorrowedInput(host, date).name);
+}
+
+/** A Date object's time value (ScrDate.ms). */
+function emitDateTime(host: LlvmEmitterContext, date: string): string {
+  const B = host.B;
+  const field = B.tmp();
+  const ms = B.tmp();
+  B.line(`${field} = getelementptr inbounds i8, ptr ${date}, i64 8 ; ->ms`);
+  B.line(`${ms} = load double, ptr ${field}`);
+  return ms;
+}
+
+/** The call of runtime function `sym` with evaluated arguments. */
+function emitSymbolLibCall(
+  host: LlvmEmitterContext,
+  e: LibCallExpr,
+  sym: string,
+  args: readonly LlValue[],
+): LlValue {
+  const B = host.B;
   const argDecls = args.map((a) => {
     const ty = host.llType(a.type);
     return ty === "i1" ? "i1 zeroext" : ty;

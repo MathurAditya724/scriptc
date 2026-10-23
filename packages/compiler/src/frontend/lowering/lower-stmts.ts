@@ -29,6 +29,7 @@ import { lowerOptionalIndex } from "./undefined-index.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
+import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
 import { lowerConstructorReturn } from "./constructor-returns.js";
 import type { Lowerer } from "./lowerer.js";
@@ -64,6 +65,7 @@ import {
   BOOL,
   BYTES_U8,
   CAUGHT,
+  DATE_T,
   DYN,
   F64,
   type IrExpr,
@@ -5415,6 +5417,16 @@ export function lowerVarDecl(
     if (alias) return alias;
   }
 
+  // A Date local whose identity no use observes stores its time value.
+  if (isTimeValueDateDeclaration(lowerer, decl)) {
+    const loc = locOf(decl);
+    const date = lowerer.lowerExprExpecting(decl.initializer!, DATE_T);
+    const local = lowerer.declareLocal(decl.name, decl.name.text, F64, isLet);
+    lowerer.timeValueDateLocals.add(local);
+    const init: IrExpr = { kind: "libCall", fn: "date.getTime", args: [date], type: F64, loc };
+    return { kind: "varDecl", localId: local.id, init, loc };
+  }
+
   // A NULLISH generic binding (`const i: I<A & B> = null as any` — the
   // declared type has no mapping, the value is provably null/undefined
   // forever): no storage exists; reads know the value (member reads and
@@ -6885,7 +6897,7 @@ function lowerDynSwitch(
         loc: locOf(expression),
       };
     }
-    if (test.type.kind === "date" || !lowerer.dynConvertible(test.type)) {
+    if (!lowerer.dynConvertible(test.type)) {
       lowerer.unsupported(
         "SC1100",
         expression,
