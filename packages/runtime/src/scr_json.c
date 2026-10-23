@@ -3414,7 +3414,7 @@ static ScrDyn *scr_dyn_typed_ref_new(
       return scr_dyn_retain(value);
     }
   }
-  if (type_key_len >= (size_t)1 << 28) scr_trap("scriptc: typed reference key too long\n");
+  if (type_key_len >= (size_t)1 << 27) scr_trap("scriptc: typed reference key too long\n");
   ScrDyn *d = scr_dyn_alloc(SCR_DYN_TYPED_REF);
   d->v.typed_ref.ptr = retain(ptr);
   d->v.typed_ref.retain = retain;
@@ -3437,6 +3437,7 @@ static ScrDyn *scr_dyn_typed_ref_new(
   d->v.typed_ref.observed = observed;
   d->v.typed_ref.record = false;
   d->v.typed_ref.klass = false;
+  d->v.typed_ref.bag_class = false;
   scr_typed_ref_slots[slot] = d; /* the empty slot that ended the probe */
   scr_typed_ref_count++;
   return d;
@@ -3652,6 +3653,7 @@ void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops) {
     d->v.typed_ref.array = ops;
     d->v.typed_ref.record = false;
     d->v.typed_ref.klass = false;
+    d->v.typed_ref.bag_class = false;
   }
 }
 
@@ -3670,6 +3672,7 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops) {
     d->v.typed_ref.array = (const ScrDynTypedArrayOps *)(const void *)ops;
     d->v.typed_ref.record = true;
     d->v.typed_ref.klass = false;
+    d->v.typed_ref.bag_class = false;
   }
 }
 
@@ -3678,7 +3681,73 @@ void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops) {
     d->v.typed_ref.array = (const ScrDynTypedArrayOps *)(const void *)ops;
     d->v.typed_ref.record = false;
     d->v.typed_ref.klass = true;
+    d->v.typed_ref.bag_class = false;
   }
+}
+
+void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *ops) {
+  if (d && d->kind == SCR_DYN_TYPED_REF) {
+    d->v.typed_ref.array = (const ScrDynTypedArrayOps *)(const void *)ops;
+    d->v.typed_ref.record = false;
+    d->v.typed_ref.klass = false;
+    d->v.typed_ref.bag_class = true;
+  }
+}
+
+/* The view's own string keys are the bag's (ScrDynTypedBagClassOps). An
+ * own data property answers as the view would hold it: a declared field
+ * from its native slot (the materializer's ordinary write of that value,
+ * which a read-only or accessor entry would refuse, so those take the
+ * view), another property with the bag's value. A key the bag lacks is
+ * looked up on the prototype the view has: the cached view's, which keeps
+ * prototype changes made through the view, or for a capsule without one,
+ * the prototype a fresh view takes. The walk is scr_dyn_obj_read_receiver's
+ * from the view's prototype on, answering only when it meets an ordinary
+ * data property before anything that needs more (an accessor, a function,
+ * array or capsule link, Object.prototype). */
+ScrDyn *scr_dyn_typed_ref_bag_method(const ScrDyn *d, const char *key, size_t key_len) {
+  if (d->kind != SCR_DYN_TYPED_REF || !d->v.typed_ref.bag_class || d->prototype) return NULL;
+  const ScrDynTypedBagClassOps *ops = (const ScrDynTypedBagClassOps *)(const void *)d->v.typed_ref.array;
+  void *instance = d->v.typed_ref.ptr;
+  const ScrDyn *bag = ops->bag(instance);
+  if (bag && bag->kind != SCR_DYN_UNDEF) {
+    if (bag->kind != SCR_DYN_OBJ) return NULL;
+    const ScrDynEntry *own = scr_dyn_find_entry(bag, key, key_len);
+    if (own) {
+      for (size_t i = 0; i < ops->count; i++) {
+        const ScrStr *name = ops->names[i];
+        if (name->len != key_len || memcmp(name->data, key, key_len) != 0) continue;
+        return own->accessor || !own->writable ? NULL : ops->field(instance, i);
+      }
+      return own->accessor ? NULL : scr_dyn_retain(own->value);
+    }
+  }
+  ScrDyn *prototype;
+  const ScrDyn *cached = d->v.typed_ref.materialized;
+  if (cached) {
+    if (cached->kind != SCR_DYN_OBJ || !cached->prototype) return NULL;
+    prototype = scr_dyn_retain(cached->prototype);
+  } else {
+    prototype = ops->prototype(instance);
+    if (scr_exc_pending()) {
+      scr_dyn_release(prototype);
+      return NULL;
+    }
+    if (!prototype) return NULL;
+  }
+  ScrDyn *found = NULL;
+  for (const ScrDyn *current = prototype; current; current = current->prototype) {
+    if (current == scr_builtin_object_prototype || current->kind == SCR_DYN_FUNC ||
+        current->kind == SCR_DYN_ARR || current->kind == SCR_DYN_TYPED_REF)
+      break;
+    if (current->kind != SCR_DYN_OBJ) continue;
+    ScrDynEntry *entry = scr_dyn_find_entry(current, key, key_len);
+    if (!entry) continue;
+    if (!entry->accessor) found = scr_dyn_retain(entry->value);
+    break;
+  }
+  scr_dyn_release(prototype);
+  return found;
 }
 
 static const ScrDynTypedClassOps *scr_typed_ref_class_ops(const ScrDyn *d) {
@@ -5049,6 +5118,8 @@ ScrDyn *scr_dyn_this_get(void) {
         scr_dyn_typed_ref_bind_record(e->dv, (const ScrDynTypedRecordOps *)r->ops);
       else if (r->view == 3)
         scr_dyn_typed_ref_bind_class(e->dv, (const ScrDynTypedClassOps *)r->ops);
+      else if (r->view == 4)
+        scr_dyn_typed_ref_bind_bag_class(e->dv, (const ScrDynTypedBagClassOps *)r->ops);
     }
     if (e->dv) return scr_dyn_retain(e->dv);
     /* An uninstalled tag never binds: a unit that fires without its dyn
