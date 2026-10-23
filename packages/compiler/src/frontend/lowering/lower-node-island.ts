@@ -31,6 +31,8 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
+import { classMethodValue } from "./class-method-values.js";
+import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { resolveBareModule } from "../resolve.js";
 import { nodeIslandBoundaryDiag } from "../../diagnostics/diagnostic.js";
 import {
@@ -473,6 +475,11 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     };
     return mapped.inner.kind === "dyn" ? promise : lowerer.coerceToExpected(promise, mapped);
   }
+  // NI-5: a native value the program passed in comes back as itself (an
+  // export); the checked cast unboxes it, and anything else fails the cast
+  // (types don't lie).
+  if (!copiedType(lowerer, mapped) && exportedByReference(lowerer, tsType))
+    return lowerer.coerceToExpected(raw, mapped);
   if (!copiedType(lowerer, mapped))
     boundaryFail(
       lowerer,
@@ -534,13 +541,107 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
     case "handle":
       return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
     case "dyn":
+      // NI-5: the runtime exports dyn objects by reference and copies only
+      // primitives, strings and (for now) arrays.
+      return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
     case "refused":
+      // NI-5: closures, promises, records and class instances cross by
+      // reference (scr_node_island_export.c): their dyn boxes keep the
+      // native referent, and the closure's thunk checks its arguments.
+      if (exportedByReference(lowerer, lowerer.typeOf(node))) {
+        const lowered = lowerer.lowerExpr(node);
+        const value = lowerer.coerceToExpected(lowered, DYN);
+        return lowered.type.kind === "object"
+          ? withClassMethods(lowerer, value, lowered.type.className, node)
+          : value;
+      }
       return boundaryFail(
         lowerer,
         `a '${lowerer.checker.typeToString(lowerer.typeOf(node))}' value (a native object would cross as a copy and lose its identity)`,
         node,
       );
   }
+}
+
+/** A class instance crossing into an island: its capsule answers island
+ * reads of its fields, and its prototype methods come from a table the
+ * runtime builds once per class (nodeIsland.classMethods): the unbound
+ * method values, whose thunks check the receiver Node calls them on. */
+function withClassMethods(
+  lowerer: Lowerer,
+  value: IrExpr,
+  className: string,
+  blame: ts.Node,
+): IrExpr {
+  const info = lowerer.classes.get(className);
+  if (info === undefined || info.def.runtime) return value;
+  const names: string[] = [];
+  for (
+    let c: typeof info | undefined = info;
+    c !== undefined;
+    c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
+  ) {
+    for (const m of c.def.methods ?? [])
+      if (!names.includes(m) && m !== "constructor") names.push(m);
+  }
+  if (names.length === 0) return value;
+  const loc = value.loc;
+  const builder = `%island.methods:${className}`;
+  if (!lowerer.classMethodValueHelpers.has(builder)) {
+    lowerer.classMethodValueHelpers.add(builder);
+    const fields: { key: IrExpr; value: IrExpr }[] = [];
+    for (const m of names) {
+      const method = classMethodValue(lowerer, blame, info, m, loc);
+      if (method === null) continue;
+      fields.push({
+        key: { kind: "strLit", value: m, type: STRING, loc },
+        value: lowerer.coerceToExpected(method, DYN),
+      });
+    }
+    lowerer.liftedFns.push({
+      name: builder,
+      params: [],
+      returnType: DYN,
+      locals: [],
+      body: [{ kind: "return", value: { kind: "dynObjLit", fields, type: DYN, loc }, loc }],
+      loc,
+    });
+  }
+  const closure: IrExpr = {
+    kind: "closure",
+    fnName: builder,
+    captures: [],
+    type: funcTypeFromParamShapes([], DYN),
+    loc,
+  };
+  return {
+    kind: "libCall",
+    fn: "nodeIsland.classMethods",
+    args: [value, lowerer.coerceToExpected(closure, DYN)],
+    type: DYN,
+    loc,
+  };
+}
+
+/** Native values NI-5 exports into the island by reference: functions,
+ * promises, and object types other than arrays, tuples, Maps and Sets
+ * (records, interfaces, class instances). A union qualifies when every
+ * arm does or is copied. */
+function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
+  const checker = lowerer.checker;
+  if (type.isUnionType())
+    return ts
+      .constituentTypes(type)
+      .every(
+        (t) =>
+          (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 ||
+          exportedByReference(lowerer, t),
+      );
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  if (checker.isArrayType(type) || checker.isTupleType(type)) return false;
+  const name = type.getSymbol()?.escapedName;
+  if (name === "Map" || name === "Set" || name === "WeakMap" || name === "WeakSet") return false;
+  return true;
 }
 
 /** A fresh object or array literal crosses as a copy (a plain dyn object

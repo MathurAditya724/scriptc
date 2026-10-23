@@ -964,6 +964,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "nodeIsland.apply": "scr_node_island_apply",
   "nodeIsland.construct": "scr_node_island_construct",
   "nodeIsland.instanceof": "scr_node_island_instanceof",
+  "nodeIsland.classMethods": "scr_node_island_class_methods",
   "dyn.keySet": "scr_dyn_key_set",
   "dyn.keySetComputed": "scr_dyn_key_set_computed",
   "dyn.keyDelete": "scr_dyn_key_delete",

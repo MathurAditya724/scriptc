@@ -109,6 +109,8 @@ import {
   requireSpecOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
+import { islandValueOrigin } from "../node-api-import.js";
+import { nativeSubclassOfIslandDiag } from "../../diagnostics/diagnostic.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
@@ -2162,6 +2164,10 @@ export function collectClassShapeInner(
           factoryBaseExpression = t.expression;
           continue;
         }
+      }
+      if (t && islandValueOrigin(lowerer.program, t.expression)) {
+        lowerer.pushDiag(nativeSubclassOfIslandDiag(locOf(t)));
+        throw new PoisonError();
       }
       if (!t || !ts.isIdentifier(t.expression)) {
         if (t && adoptCallableBase(t.expression)) continue;
