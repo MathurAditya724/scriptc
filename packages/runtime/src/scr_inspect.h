@@ -45,6 +45,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth);
 /* A numeric typed array that is not a Buffer: `Uint8Array(n) [ ... ]`,
  * `[Uint8Array]` past the depth limit. Borrows b; +1. */
 ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth);
+/* A u8 byte view whose static type does not say which one it is (a union
+ * arm, an element or field): a DataView, a Buffer (<Buffer ..>) or a
+ * Uint8Array, by the view's own flags. */
+ScrStr *scr_insp_bytes(ScrBytes *b, double recurse, double depth);
 /* format's %s / rest-args twin: dyn strings pass verbatim. */
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth);
 void scr_insp_begin(double recurse);

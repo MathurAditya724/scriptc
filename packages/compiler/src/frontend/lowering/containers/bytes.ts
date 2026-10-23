@@ -41,7 +41,7 @@ import {
   lowerStaticallyUndefinedArgument,
 } from "../optional-arguments.js";
 import { lowerArraySpreadItems, lowerCheckedArrayFrom } from "./array-construction.js";
-import { lowerToNumberArgument } from "../lower-exprs.js";
+import { lowerOptionalNumber, lowerToNumberArgument } from "../lower-exprs.js";
 import { lowerBytesIteratorValue } from "../iterator-adapters.js";
 import { lowerArrayCallback } from "./callback-arguments.js";
 import { callbackSite, findPredicateOk, predicateToBoolean } from "./array-callbacks.js";
@@ -911,6 +911,45 @@ function lowerDataViewNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
  * variable-width read/writeUIntLE quartet — BUF_NUM_METHODS). Everything
  * else the lib declares (fill, indexOf, reverse, ...) falls through to
  * the SC2020 member fence. Null when this isn't a bytes method call. */
+/** The [needle, fromIndex] arguments of TypedArray indexOf, lastIndexOf
+ * and includes. A present fromIndex converts even when it is undefined
+ * (NaN, which ToIntegerOrInfinity makes 0); an absent one is 0, or
+ * +Infinity for lastIndexOf, which starts at the last element. */
+function elementSearchArgs(lowerer: Lowerer, call: ts.CallExpression, name: string): IrExpr[] {
+  const nodes = call.arguments.nodes;
+  const loc = locOf(call);
+  const needle = lowerer.lowerExprExpecting(nodes[0]!, F64);
+  const from: IrExpr = nodes[1]
+    ? lowerOptionalNumber(lowerer, lowerer.lowerExpr(nodes[1]), locOf(nodes[1]), nodes[1])
+    : ({
+        kind: "numLit",
+        value: name === "lastIndexOf" ? Infinity : 0,
+        type: F64,
+        loc,
+      } satisfies IrExpr);
+  // An undefined fromIndex is NaN once converted, which starts at 0.
+  if (from.kind === "unitLit") return [needle, { kind: "numLit", value: NaN, type: F64, loc }];
+  if (from.type.kind === "undefinedT" || from.type.kind === "void")
+    return [
+      needle,
+      {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: from, loc }],
+        result: { kind: "numLit", value: NaN, type: F64, loc },
+        type: F64,
+        loc,
+      },
+    ];
+  if (from.type.kind !== "f64") lowerer.noLowering(`.${name} with a non-number fromIndex`, call);
+  return [needle, from];
+}
+
+const ELEMENT_SEARCHES: Readonly<Record<string, IrBytesIntrinsicMethod>> = {
+  indexOf: "indexOfElem",
+  lastIndexOf: "lastIndexOfElem",
+  includes: "includesElem",
+};
+
 /** The element-kind-generic typed-array methods on a union of typed
  * arrays (indexed-unions.ts): the arguments lower as for one typed array,
  * and each arm runs the method on its own receiver. Null for the methods
@@ -947,6 +986,10 @@ function lowerUnionBytesMethodCall(
     method = "toReversed";
     args = () => [];
     result = "receiver";
+  } else if (Object.hasOwn(ELEMENT_SEARCHES, name) && (nodes.length === 1 || nodes.length === 2)) {
+    method = ELEMENT_SEARCHES[name]!;
+    args = () => elementSearchArgs(lowerer, call, name);
+    result = name === "includes" ? BOOL : F64;
   } else if (name === "join" && nodes.length <= 1) {
     method = "join";
     args = () => [optional(0, { kind: "strLit", value: ",", type: STRING, loc }, STRING)];
@@ -1023,6 +1066,29 @@ export function lowerBytesMethodCall(
       );
       if (value) return value;
     }
+  }
+  // TypedArray indexOf / lastIndexOf / includes (the Buffer-declared forms,
+  // which also take string and Buffer needles, lowered above).
+  if (
+    Object.hasOwn(ELEMENT_SEARCHES, name) &&
+    !lowerer.checker
+      .getSymbolAtLocation(access.name)
+      ?.declarations.some(
+        (d) => ts.isInterfaceDeclaration(d.parent) && d.parent.name.text === "Buffer",
+      )
+  ) {
+    if (nArgs < 1 || nArgs > 2 || call.arguments.nodes.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`.${name} with ${nArgs} arguments on typed arrays`, call);
+    }
+    const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
+    return {
+      kind: "bytesIntrinsic",
+      method: ELEMENT_SEARCHES[name]!,
+      receiver,
+      args: elementSearchArgs(lowerer, call, name),
+      type: name === "includes" ? BOOL : F64,
+      loc,
+    };
   }
   if (name === "toReversed") {
     if (nArgs !== 0) {
