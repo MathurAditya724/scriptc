@@ -5,7 +5,7 @@
 import { describe } from "ni-gap";
 import { compile } from "ni-eval";
 import { Counter } from "ni-ctor";
-import { shout } from "ni-minified";
+import { shout } from "ni-bundled";
 import { twice } from "ni-typed";
 
 console.log(describe());
