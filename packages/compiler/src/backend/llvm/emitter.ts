@@ -92,6 +92,7 @@ import {
   type IntegerRanges,
 } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
+import { runPairedWhileLoopsAsFor } from "../../ir/paired-while-loops.js";
 import { copyStableCaptures } from "../../ir/capture-values.js";
 import { resolveSelfCaptures } from "../../ir/self-captures.js";
 import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
@@ -527,7 +528,9 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                         resolveSelfCaptures(
                           hoistFinalFieldReads(
                             freezeInitOnlyGlobals(
-                              holdCharLocalsAsUnits(dropUnwrittenPropertyBags(mod)),
+                              holdCharLocalsAsUnits(
+                                dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                              ),
                             ),
                           ),
                         ),
