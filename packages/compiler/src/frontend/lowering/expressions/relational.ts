@@ -58,6 +58,44 @@ import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 
+/** The class value an `instanceof` right-hand side holds. A JavaScript
+ * object's property holding a program class (`holder.type`) reads as a
+ * checked-dynamic value that the checker types as the class: it converts
+ * to the class value. Runtime-provided classes keep their own lowering. */
+function classValueOperand(
+  lowerer: Lowerer,
+  right: ts.Expression,
+  type: IrType & { kind: "classval" },
+): IrExpr {
+  if (
+    !isJsSourceFile(ts.getSourceFileOfNode(right)) ||
+    ts.isIdentifier(right) ||
+    lowerer.classes.get(type.className)?.def.runtime
+  )
+    return lowerer.lowerExpr(right);
+  const value = lowerer.lowerExprExpecting(right, DYN);
+  if (value.type.kind !== "dyn") return value;
+  return { kind: "dynCheck", value, type, loc: locOf(right) };
+}
+
+/** The value kinds that never hold an instance of a program class. */
+const NO_CLASS_INSTANCE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "f64",
+  "bigint",
+  "date",
+  "string",
+  "bool",
+  "array",
+  "map",
+  "set",
+  "regex",
+  "bytes",
+  "symbol",
+  "promise",
+  "undefinedT",
+  "nullT",
+]);
+
 /** `x instanceof C` for a program-declared class C. When x's static
  * class and C are both in extends-hierarchies the test is dynamic — the
  * O(1) preorder-interval check against the vtable (`instanceOf` node).
@@ -432,7 +470,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
             "'instanceof' through a runtime-provided class value on an untyped value (give the operand a class type first)",
           );
         }
-        const classValue = lowerer.lowerExpr(expr.right);
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
         return classInstanceOf(lowerer, left, targetInfo, loc, classValue);
       }
       // A union of class instances against a runtime class value (`new K()`
@@ -440,6 +478,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       if (left.type.kind === "union" && targetInfo.def.runtime) {
         const tested = unionClassValueInstanceOf(lowerer, left, expr.right, targetInfo, loc);
         if (tested) return tested;
+      }
+      // A value whose type holds no class instance (a primitive, a native
+      // collection, a date, a regex, an array) is never an instance
+      // of a program class: false, after both operands evaluate.
+      if (!targetInfo.def.runtime && NO_CLASS_INSTANCE_KINDS.has(left.type.kind)) {
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "exprStmt", expr: left, loc },
+            { kind: "exprStmt", expr: classValue, loc },
+          ],
+          result: { kind: "boolLit", value: false, type: BOOL, loc },
+          type: BOOL,
+          loc,
+        };
       }
       if (left.type.kind !== "object") {
         lowerer.unsupported(
@@ -455,7 +509,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         (lowerer.inHierarchy(targetInfo) && lowerer.inHierarchy(lhsInfo)) ||
         (targetInfo.localClass !== undefined && lhsInfo.localClass !== undefined)
       ) {
-        const classValue = lowerer.lowerExpr(expr.right);
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
         if (classValue.type.kind !== "classval")
           lowerer.badType(expr.right, lowerer.typeOf(expr.right));
         const writableTest = writableClassValueTest(
@@ -493,8 +547,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         "statically-decided 'instanceof' on computed operands (bind the values to variables first)",
       );
     }
+    // A checked-dynamic right-hand side (a constructor read from a table, a
+    // structural constructor type, a builtin constructor held as `any`):
+    // the runtime's instanceof over the value, in both source languages.
     const constructor = tryLowerExpression(lowerer, expr.right);
-    if (constructor?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    if (constructor?.type.kind === "dyn") {
       const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
       return checkedClassInstanceOf(
         lowerer,

@@ -364,10 +364,22 @@ typedef struct ScrDynTypedRecordOps {
   /* The field names as an immortal string[], built on first use by
    * for-in over a record with every field present (atomic slot). */
   ScrArr *keys;
+  /* A shape whose values enumerate their keys in more than one order
+   * (IrRecordShape.orderVariants) binds a table with only this hook: it
+   * answers the table of the record's current order, which a write of an
+   * optional key can change after the record is boxed. NULL in every other
+   * table. */
+  const struct ScrDynTypedRecordOps *(*select)(void *rec);
 } ScrDynTypedRecordOps;
 /* A record capsule's ops while it answers from the native record (no view
  * created yet), or NULL. */
 const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
+/* The declaration-typed boundary's adoption (scr_decl_adopt.c, linked by
+ * programs with boundary casts): the nodes of `source` that something else
+ * still references become live capsules of the native value `capsule`
+ * holds. Both borrowed; a node that is not plain data throws the path
+ * TypeError before anything changes. */
+void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
 
 /* Prototype members of a compiled class seen as `unknown`, emitted per
  * class by the compiler: the string names of methods, getters and setters
@@ -922,6 +934,7 @@ void *scr_dyn_obj_source_cast(const ScrDyn *d,
 ScrDyn *scr_dyn_new_obj_null_proto(void);
 ScrDyn *scr_dyn_obj_create(ScrDyn *prototype);
 ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptors);
+ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object);
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object);
 ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object);
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype);

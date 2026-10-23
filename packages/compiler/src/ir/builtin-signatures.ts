@@ -3429,6 +3429,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * throw-site fields, dynamic writes) or an Object.prototype member. */
   "error.hasKey": { argTypes: [null, STRING], result: BOOL },
   "error.hasCode": { argTypes: [null], result: BOOL },
+  /** Whether the error's own `name` or `message` (the key) is an accessor
+   * a reflective definition installed. Borrows both; never throws. */
+  "error.ownAccessor": { argTypes: [null, STRING], result: BOOL },
+  /** That accessor's getter called on the error (owned result), and its
+   * setter called with the value (V8's TypeError without one). Borrow
+   * their arguments; throw what the accessor throws. */
+  "error.accessorGet": { argTypes: [null, STRING], result: DYN },
+  "error.accessorSet": { argTypes: [null, STRING, DYN], result: VOID },
   "error.defineCause": { argTypes: [null, DYN], result: VOID },
   "error.deleteCause": { argTypes: [null], result: VOID },
   /** The compiler-resolved Node-parity throw for always-throwing lowered
@@ -3745,6 +3753,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.assignPrototype": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.definePrototypeProps": { argTypes: [DYN, DYN, DYN], result: DYN },
   "dyn.bagGet": { argTypes: [DYN, STRING, DYN], result: DYN },
+  /** A class field's creation in its instance's property bag: adds the
+   * string key as a default data property when absent, answering false
+   * (nothing changed) when the bag needs the general defineProperty path. */
+  "dyn.bagCreateField": { argTypes: [DYN, STRING], result: BOOL },
   "dyn.bagSet": { argTypes: [DYN, STRING, DYN, DYN], result: VOID },
   "dyn.objCreate": { argTypes: [DYN], result: DYN },
   // Names a compiled class's prototype object (args[0]) after the class
@@ -3752,6 +3764,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.nameClassPrototype": { argTypes: [DYN, STRING], result: VOID },
   "dyn.objCreateWithProperties": { argTypes: [DYN, DYN], result: DYN },
   "dyn.getPrototype": { argTypes: [DYN], result: DYN },
+  // dyn.getPrototype for walks that compare each prototype with a program
+  // class's prototype: native builtin values end the walk (null).
+  "dyn.getPrototypeForIdentity": { argTypes: [DYN], result: DYN },
   "dyn.setPrototype": { argTypes: [DYN, DYN], result: DYN },
   "dyn.getOwnPropertyNames": { argTypes: [DYN], result: DYN },
   "dyn.ownKeys": { argTypes: [DYN], result: DYN },
@@ -3777,6 +3792,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * call: always throws Node's TypeError [ERR_MISSING_ARGS] with Node's
    * own (verbatim, doubly-wrapped) message. */
   "dyn.structuredClone": { argTypes: [DYN, DYN], result: DYN },
+  /** The declaration-typed boundary's adoption (decl-projection.ts):
+   * `source` is the dynamic value a boundary cast just converted, and
+   * `capsule` a live capsule of the native value built from it. Every
+   * object or array of `source` that something else still references
+   * becomes, in place, a live capsule of the native value built from it.
+   * Throws the path TypeError, changing nothing, when a converted object
+   * is not plain data (a prototype, accessors, symbols, frozen state). */
+  "dyn.declAdopt": { argTypes: [DYN, DYN], result: VOID },
   "dyn.cloneMissing": { argTypes: [], result: DYN },
   /** structuredClone with a NON-EMPTY transfer array of static values:
    * nothing static is transferable, so the call always throws Node's

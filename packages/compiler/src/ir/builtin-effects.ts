@@ -446,6 +446,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "global.undefRead",
   // The compiler-resolved Node-parity throw: always throws, catchably.
   "error.nodeThrow",
+  // An accessor over an error's own name or message runs user code.
+  "error.accessorGet",
+  "error.accessorSet",
   // USVString coercion runs user toString/valueOf — throws propagate.
   "dyn.toStringCoerce",
   "dyn.stringConstructor",
@@ -610,6 +613,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // fence; the zero-argument form always throws ERR_MISSING_ARGS. The
   // DOMException clone shares the option validation.
   "dyn.structuredClone",
+  "dyn.declAdopt",
   "dyn.cloneMissing",
   "dyn.cloneTransferFail",
   "dyn.cloneTransferFailWith",
@@ -632,6 +636,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreate",
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
+  "dyn.getPrototypeForIdentity",
   "dyn.setPrototype",
   // Error.captureStackTrace: Node's TypeError for a primitive target, and
   // the error string conversion of name and message

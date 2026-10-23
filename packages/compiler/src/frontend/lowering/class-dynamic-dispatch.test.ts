@@ -458,9 +458,11 @@ test("normalizes base capsules before dispatching each derived member once", () 
   });
   expect(dispatch.body.filter((statement) => statement.kind === "if")).toHaveLength(2);
   const normalize = liftedFns.find((helper) => helper.name === "%dyn.class.normalize")!;
+  // The capsule branch unboxes its receiver once, then tests each subclass.
   expect(normalize.body[0]).toMatchObject({
     kind: "if",
     then: [
+      { kind: "varDecl", init: { kind: "dynCheck", type: { kind: "object", className: "Base" } } },
       {
         kind: "if",
         then: [

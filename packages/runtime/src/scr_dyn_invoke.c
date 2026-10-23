@@ -996,7 +996,20 @@ static ScrDyn *scr_dyn_invoke_impl(
       scr_str_release(piece);
       return r;
     }
-    if ((mid == DYN_M_at) || (mid == DYN_M_concat) ||
+    if (mid == DYN_M_at) {
+      /* String.prototype.at: one UTF-16 code unit, counted from the end
+       * for a negative index; undefined outside the string. */
+      double index = dyn_index_arg(args, argc, 0, 0, what);
+      if (scr_exc_pending()) return NULL;
+      double len = (double)scr_str_utf16_len(s);
+      double k = index < 0 ? len + index : index;
+      if (k < 0 || k >= len) return scr_dyn_retain(scr_dyn_undefined());
+      ScrStr *unit = scr_str_slice(s, k, k + 1);
+      ScrDyn *r = scr_dyn_new_str(unit); /* retains */
+      scr_str_release(unit);
+      return r;
+    }
+    if ((mid == DYN_M_concat) ||
         (mid == DYN_M_indexOf) || (mid == DYN_M_lastIndexOf) ||
         (mid == DYN_M_includes)) {
       if (((mid == DYN_M_indexOf) || (mid == DYN_M_lastIndexOf) ||

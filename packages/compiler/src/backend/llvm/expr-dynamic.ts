@@ -719,6 +719,10 @@ export function emitDynamicExpr(
         B.line(
           `${test} = call zeroext i1 @scr_dyn_typed_array_is(ptr ${d.name}, i32 ${BYTES_ELEM_NUM[e.bytesElem ?? "u8"]})`,
         );
+      } else if (e.test === "classCapsule") {
+        host.declare(`declare zeroext i1 @scr_dyn_is_class_capsule(ptr)`);
+        test = B.tmp();
+        B.line(`${test} = call zeroext i1 @scr_dyn_is_class_capsule(ptr ${d.name})`);
       } else if (e.test === "truthy") {
         host.declare(`declare zeroext i1 @scr_dyn_truthy(ptr)`);
         test = B.tmp();
@@ -839,6 +843,7 @@ export function emitDynamicExpr(
             undefined: DYN_KIND.UNDEF,
             null: DYN_KIND.NULL,
             bytes: DYN_KIND.BYTES,
+            funcKind: DYN_KIND.FUNC,
           };
           test = oneOf([kindOf[e.test]!]);
         }

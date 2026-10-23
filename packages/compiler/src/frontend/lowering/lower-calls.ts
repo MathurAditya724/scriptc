@@ -1,4 +1,5 @@
 import { keyedHelperName } from "./stable-names.js";
+import { perKeyOrder } from "./key-order-witness.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerDynStreamMemberCall } from "./dyn-streams.js";
@@ -73,6 +74,7 @@ import {
   isDynTypedRefType,
   isUnitType,
   shapeHasAccessorSlots,
+  shapeKeyOrders,
   typeEquals,
   RUNTIME_EMITTER_CLASS,
 } from "../../ir/ir.js";
@@ -267,8 +269,46 @@ import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generati
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
+/** `Object.defineProperty(target, ...)`, `Object.defineProperties`,
+ * `Reflect.defineProperty`, and `target.__defineGetter__/__defineSetter__`
+ * over a target that may hold an Error can install an accessor over an
+ * error's `name` or `message` (error-methods.ts). */
+function noteErrorAccessorReflection(lowerer: Lowerer, expr: ts.CallExpression): void {
+  const callee = expr.expression;
+  if (!ts.isPropertyAccessExpression(callee)) return;
+  const member = callee.name.text;
+  const target =
+    member === "defineProperty" || member === "defineProperties"
+      ? expr.arguments.nodes[0]
+      : member === "__defineGetter__" || member === "__defineSetter__"
+        ? callee.expression
+        : undefined;
+  if (!target) return;
+  const error = lowerer.checker.resolveName("Error", ts.SymbolFlags.Type, target, false);
+  const errorType = error ? lowerer.checker.getDeclaredTypeOfSymbol(error) : null;
+  if (mayHoldError(lowerer, lowerer.checker.getTypeAtLocation(target), errorType))
+    lowerer.errorAccessorReflection = locOf(expr);
+}
+
+/** An untyped or generic type, a type Error is assignable to (`object`,
+ * `{}`, `Object`, `{ message?: string }`), or
+ * an Error-shaped type with both `name` and `message`, alone or in a
+ * union or intersection. */
+function mayHoldError(lowerer: Lowerer, type: ts.Type, errorType: ts.Type | null): boolean {
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Instantiable))
+    return true;
+  if (type.flags & (ts.TypeFlags.Union | ts.TypeFlags.Intersection))
+    return ts.constituentTypes(type).some((part) => mayHoldError(lowerer, part, errorType));
+  return (
+    (lowerer.checker.getPropertyOfType(type, "message") !== undefined &&
+      lowerer.checker.getPropertyOfType(type, "name") !== undefined) ||
+    (errorType !== null && lowerer.checker.isTypeAssignableTo(errorType, type))
+  );
+}
+
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
+  if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
   if (
@@ -7159,8 +7199,12 @@ export function recordKeysArrayCall(
           loc,
         },
       ];
-      const order = current.declaredOrder ?? current.fields.map((f) => f.name);
-      for (const name of order) {
+      // One walk per key order (see perKeyOrder).
+      const orders = shapeKeyOrders(current);
+      const walks = orders.map((): IrStmt[] => []);
+      for (const [k, name] of orders.flatMap((order, k) =>
+        order.map((name) => [k, name] as const),
+      )) {
         const f = current.fields.find((x) => x.name === name)!;
         const pushStmt: IrStmt = {
           kind: "exprStmt",
@@ -7177,12 +7221,13 @@ export function recordKeysArrayCall(
         // Fields that can be absent push behind their presence test (the
         // key exists exactly when Object.keys would list it).
         const present = lowerer.recordFieldPresent(ref, argIr.shapeId, f.name, loc);
-        body.push(
+        walks[k]!.push(
           present.kind === "recordHas"
             ? { kind: "if", cond: present, then: [pushStmt], else_: null, loc }
             : pushStmt,
         );
       }
+      body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
       fn.body = body;
     };
@@ -8885,8 +8930,12 @@ function lowerObjectStaticCall(
           loc,
         },
       ];
-      const order = current.declaredOrder ?? current.fields.map((f) => f.name);
-      for (const name of order) {
+      // One walk per key order (see perKeyOrder).
+      const orders = shapeKeyOrders(current);
+      const walks = orders.map((): IrStmt[] => []);
+      for (const [k, name] of orders.flatMap((order, k) =>
+        order.map((name) => [k, name] as const),
+      )) {
         const f = current.fields.find((x) => x.name === name)!;
         const raw: IrExpr = {
           kind: "recordGet",
@@ -9048,8 +9097,9 @@ function lowerObjectStaticCall(
             loc,
           };
         }
-        body.push(stmt);
+        walks[k]!.push(stmt);
       }
+      body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
       fn.body = body;
     };
@@ -10210,6 +10260,23 @@ export function lowerObjectMethodCall(
           type: found.sig.ret,
           loc,
         };
+    // The declaring class's original value, built with the observed slot.
+    // An override below (a virtual call) keeps the dynamic call: a slot
+    // reassigned to an ancestor's method must not reach the override. So do
+    // methods declared in unchecked JavaScript, whose results are inferred,
+    // and calls with a spread argument: the dynamic call drains the spread
+    // through the iterator's current `next`, which may be a replacement.
+    const declarerFile = found.declarer.decl ? ts.getSourceFileOfNode(found.declarer.decl) : null;
+    const original =
+      virtual ||
+      call.arguments.nodes.some(ts.isSpreadElement) ||
+      !declarerFile ||
+      (isJsSourceFile(declarerFile) && !lowerer.checkedJsFile(declarerFile))
+        ? undefined
+        : {
+            originalId: (): string | undefined => found.declarer.prototypeOriginals?.get(method),
+            directCall: (): IrExpr => fallback,
+          };
     const result = classCallbackCall(
       lowerer,
       value,
@@ -10218,6 +10285,7 @@ export function lowerObjectMethodCall(
       fallback,
       loc,
       ts.getTextOfNode(access),
+      original,
     );
     return {
       kind: "seqExpr",
