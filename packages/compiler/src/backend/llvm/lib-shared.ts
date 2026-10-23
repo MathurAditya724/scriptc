@@ -330,6 +330,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.parse": "scr_date_parse",
   "date.getTime": "scr_date_get_time",
   "date.valueOf": "scr_date_get_time",
+  "date.fromTime": "scr_date_get_time",
   "date.parseGetTime": "scr_date_parse",
   "date.utc": "scr_date_utc",
   "date.newLocal": "scr_date_new_local",

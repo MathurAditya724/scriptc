@@ -28,6 +28,7 @@ import * as ts from "../ts7/adapter.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
+import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
 import { lowerConstructorReturn } from "./constructor-returns.js";
 import type { Lowerer } from "./lowerer.js";
@@ -63,6 +64,7 @@ import {
   BOOL,
   BYTES_U8,
   CAUGHT,
+  DATE_T,
   DYN,
   F64,
   type IrExpr,
@@ -5232,6 +5234,16 @@ export function lowerVarDecl(
   {
     const alias = lowerTupleAliasDecl(lowerer, decl);
     if (alias) return alias;
+  }
+
+  // A Date local whose identity no use observes stores its time value.
+  if (isTimeValueDateDeclaration(lowerer, decl)) {
+    const loc = locOf(decl);
+    const date = lowerer.lowerExprExpecting(decl.initializer!, DATE_T);
+    const local = lowerer.declareLocal(decl.name, decl.name.text, F64, isLet);
+    lowerer.timeValueDateLocals.add(local);
+    const init: IrExpr = { kind: "libCall", fn: "date.getTime", args: [date], type: F64, loc };
+    return { kind: "varDecl", localId: local.id, init, loc };
   }
 
   // A NULLISH generic binding (`const i: I<A & B> = null as any` — the
