@@ -27,7 +27,8 @@
   A `Duplex.from` body function may take the `{ signal }` argument, which is aborted with the error the Duplex is destroyed with.
   `stream.compose` accepts streams and async generator functions in any position, an async function as the last stage, and an array, a string, or a generator as the first stage; one stage is `Duplex.from` of it.
   A web `ReadableStream` is read as an async iterable by `Readable.from` and as the first stage of `compose` or `pipeline`, and through its reader by `Readable.fromWeb` (with `objectMode`, `highWaterMark`, `encoding`, and `signal` in an options object literal) and `Duplex.from`.
-  A web stream in a later compose stage, `Readable.toWeb`, and web `WritableStream` and `TransformStream` interop are unsupported.
+  `new TransformStream()` without arguments builds the identity transform: its readable side is a web `ReadableStream`, its writable side supports `getWriter`, `abort`, `close`, and `locked`, and the writer supports `write`, `close`, `abort`, `releaseLock`, `ready`, `closed`, and `desiredSize`, with Node's backpressure (a write completes when the readable side reads its chunk).
+  A web stream in a later compose stage, `Readable.toWeb`, a `TransformStream` with a transformer or queuing strategies, the `WritableStream` constructor, `pipeTo`, and `pipeThrough` are unsupported.
   The `ERR_INVALID_ARG_VALUE` message for a stream that is no longer readable or writable names the stream's class instead of printing the stream.
   `readable.compose(stage, { signal })` is `stream.compose(readable, stage)` with the signal added; the options are an object literal whose `signal` is a variable or a property read.
   `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.

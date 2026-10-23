@@ -1106,6 +1106,34 @@ declare var ReadableStream: {
   from(iterable: string): ReadableStream<string>;
   readonly prototype: ReadableStream<unknown>;
 };
+/* The writable side of a TransformStream and its writer. The
+ * WritableStream constructor has no native lowering; writable streams come
+ * from `new TransformStream()`. */
+interface WritableStreamDefaultWriter<W = unknown> {
+  readonly closed: Promise<void>;
+  readonly desiredSize: number | null;
+  readonly ready: Promise<void>;
+  abort(reason?: unknown): Promise<void>;
+  close(): Promise<void>;
+  releaseLock(): void;
+  write(chunk?: W): Promise<void>;
+}
+interface WritableStream<W = unknown> {
+  readonly locked: boolean;
+  abort(reason?: unknown): Promise<void>;
+  close(): Promise<void>;
+  getWriter(): WritableStreamDefaultWriter<W>;
+}
+/* The identity transform: chunks written to `writable` are read from
+ * `readable`, and a write completes when its chunk is read. */
+interface TransformStream<I = unknown, O = unknown> {
+  readonly readable: ReadableStream<O>;
+  readonly writable: WritableStream<I>;
+}
+declare var TransformStream: {
+  new <I = unknown, O = I>(): TransformStream<I, O>;
+  readonly prototype: TransformStream<unknown, unknown>;
+};
 
 /* fetch, typed as the native JSON + readable-stream slice: one URL, an
  * optional init with the members CLI requests carry, and a Response

@@ -163,6 +163,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fetch.abortNow": { argTypes: [DYN], result: DYN },
   "fetch.abortAny": { argTypes: [DYN], result: DYN },
   "fetch.streamNew": { argTypes: [DYN], result: DYN },
+  "fetch.transformNew": { argTypes: [], result: DYN },
   // Program-dependent iterable: typed arrays/bytes/string stay intact so
   // the native stream can pull lazily; checked-dynamic values are the
   // fallback. The libCall validator in validate.ts checks the closed set.
@@ -272,6 +273,28 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Throws Node's TypeError for a class field initializer on a
    * non-extensible instance: the field name. */
   "class.throwNotExtensible": { argTypes: [STRING], result: VOID },
+  /** Object.freeze of a record whose shape is freezable (frozen-records.ts):
+   * sets the frozen bit in its rc word (scr_record_freeze). The receiver is
+   * any record type. */
+  "record.freeze": { argTypes: [null], result: VOID },
+  /** Whether a record is frozen: its rc word's frozen bit, set by
+   * record.freeze and dyn.freeze of a capsule. Emitted inline. The receiver
+   * is any record type. */
+  "record.isFrozen": { argTypes: [null], result: BOOL },
+  /** Throws Node's TypeError for a write to a frozen record: the key, the
+   * object's text in the message ("#<Object>") and the operation (0 assign,
+   * 1 add, 2 delete). */
+  "record.throwFrozen": { argTypes: [STRING, STRING, F64], result: VOID },
+  /** Object.freeze of an array (scr_arr_freeze): sets its frozen bit, which
+   * the write guards of IrModule.freezableArrays test, and isFrozen reads.
+   * The receiver is any array type. */
+  "array.freeze": { argTypes: [null], result: VOID },
+  "array.isFrozen": { argTypes: [null], result: BOOL },
+  /** Object.freeze, seal or preventExtensions of a Map or Set
+   * (scr_map_prevent_extensions), which only makes it not extensible: its
+   * entries stay writable. The receiver is any map or set type. */
+  "collection.preventExtensions": { argTypes: [null], result: VOID },
+  "collection.isExtensible": { argTypes: [null], result: BOOL },
   "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
   "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },

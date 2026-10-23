@@ -214,6 +214,9 @@ typedef enum {
   X(WEB_CONTROLLER, 11) /* native ReadableStreamDefaultController */ \
   X(WEB_READER, 10) /* native ReadableStreamDefaultReader */ \
   X(WEB_STREAM, 9) /* native WHATWG ReadableStream */ \
+  X(WEB_TRANSFORM, 73) /* native identity TransformStream (scr_fetch.c) */ \
+  X(WEB_WRITABLE, 74) /* a TransformStream's WritableStream (scr_fetch.c) */ \
+  X(WEB_WRITER, 75) /* WritableStreamDefaultWriter (scr_fetch.c) */ \
   X(WORKER, 35)
 
 typedef enum {
@@ -1052,6 +1055,13 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
+/* Object.freeze of a record a program may freeze: sets SCR_RC_FROZEN in its
+ * rc word (immortal records are left as they are). */
+void scr_record_freeze(void *record);
+/* Node's TypeError for a write to a frozen record: operation 0 assigns the
+ * existing property `key`, 1 adds it, 2 deletes it. `owner` is the object's
+ * text in the message ("#<Object>"). */
+void scr_record_throw_frozen(ScrStr *key, ScrStr *owner, double operation);
 /* The commit of a live record view converts the view into a new record
  * `from`, whose conversion keeps the view's undeclared properties, then
  * moves its fields into `to`: this moves the kept properties to `to` too,

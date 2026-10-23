@@ -1499,6 +1499,25 @@ export function lowerPropertyAccessExpr(
   ) {
     return afterReceiver(recvLowered, dynUndefinedExpr(loc), loc);
   }
+  // A typed array under a checker `any` (a JS binding its own initializer's
+  // inference refers to: hono's etag digest `nextChunk`) reads through its
+  // box, as the method-call twin dispatches. The box shares the native
+  // storage, so it needs no fresh-result restriction.
+  if (
+    recvLowered.type.kind === "bytes" &&
+    (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0
+  ) {
+    return lowerer.maybeNarrow(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      expr,
+    );
+  }
   lowerer.unsupported(
     "SC1090",
     expr,
