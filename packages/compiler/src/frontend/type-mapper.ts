@@ -183,6 +183,7 @@ export const CRYPTO_KEY_OPTION_DYN_TYPES: ReadonlySet<string> = new Set([
   "PrivateKeyInput",
   "PublicKeyInput",
   "RSAKeyPairKeyObjectOptions",
+  "X25519KeyPairOptions",
   "RSAKeyPairOptions",
   "SignKeyObjectInput",
   "SignPrivateKeyInput",

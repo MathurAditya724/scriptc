@@ -1563,6 +1563,7 @@ export const BUILTIN_MODULE_FNS: Record<
     generateKeyPair: { fn: "crypto.generateKeyPairCb", params: [], result: VOID },
     sign: { fn: "crypto.signOneshot", params: [], result: DYN },
     verify: { fn: "crypto.verifyOneshot", params: [], result: DYN },
+    diffieHellman: { fn: "crypto.diffieHellman", params: [], result: DYN },
     pbkdf2Sync: {
       fn: "crypto.pbkdf2",
       params: [BYTES_U8, BYTES_U8, F64, F64, STRING],
@@ -3101,9 +3102,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
           "createSign, createVerify, createECDH, and createDiffieHellman",
       ]),
     ),
-    diffieHellman:
-      "crypto.diffieHellman takes DH, EC or X25519 KeyObjects and has no lowering; " +
-      "the objects of createDiffieHellman, getDiffieHellman and createECDH compute shared secrets",
     setFips:
       "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
       "in a non-FIPS build — getFips() answers 0 here",

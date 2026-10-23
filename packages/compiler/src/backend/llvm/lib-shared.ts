@@ -1070,6 +1070,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.generateKeyPairSync": "scr_crypto_generate_key_pair_sync",
   "crypto.generateKeyPairCb": "scr_crypto_generate_key_pair_async",
   "crypto.signOneshot": "scr_crypto_sign_oneshot",
+  "crypto.diffieHellman": "scr_crypto_diffie_hellman",
   "crypto.verifyOneshot": "scr_crypto_verify_oneshot",
   "crypto.createSign": "scr_crypto_create_sign",
   "crypto.createVerify": "scr_crypto_create_verify",
@@ -1654,6 +1655,7 @@ export function mockTimerSym(
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "crypto.generateKeyPairCb",
+  "crypto.diffieHellman",
   "crypto.checkPrimeCb",
   "crypto.generatePrimeCb",
   "process.emitWarning",
