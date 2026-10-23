@@ -1020,6 +1020,12 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
+/* A literal that starts with `...src` creates src's keys first, in src's
+ * order: when src kept a source, the fresh record `dst` (whose shape's
+ * declared names are `names`) keeps one listing the keys it declares in
+ * that order. Undeclared keys are not copied, as the literal copies none. */
+void scr_record_source_spread(void *dst, const void *src, const char *const *names,
+                              const size_t *lens, size_t count);
 /* The commit of a live record view converts the view into a new record
  * `from`, whose conversion keeps the view's undeclared properties, then
  * moves its fields into `to`: this moves the kept properties to `to` too,
