@@ -568,6 +568,9 @@ static _Atomic(uintptr_t) scr_sa_heap_page; /* the page size, read with the mode
  * a glibc malloc call: plain loads on x86-64, LDAR (or LDAPR) on arm64. */
 
 #if defined(SCR_WORKERS) && !defined(SCR_LIB)
+#if defined(__aarch64__)
+#include <sys/prctl.h>
+#endif
 /* glibc's per-thread heaps (worker executables; library archives run on
  * their embedder's threads and leave its heaps alone). glibc serves a thread's
  * blocks from a heap of its own: a 64 MiB mapping, aligned to its size,
@@ -588,8 +591,11 @@ static _Atomic(uintptr_t) scr_sa_heap_page; /* the page size, read with the mode
  * policy is off unless THP is in madvise mode, when the glibc.malloc.hugetlb
  * tunable is set (glibc then advises its heaps itself, or sizes them by
  * hugetlbfs pages), when the system forbids overcommit (making a heap
- * accessible would commit all of it), and when malloc is not glibc's (a
- * sanitizer or a preloaded allocator: blocks have no glibc chunk header).
+ * accessible would commit all of it), when malloc is not glibc's (a
+ * sanitizer or a preloaded allocator: blocks have no glibc chunk header),
+ * and when memory tagging is on (arm64 MTE, the glibc.mem.tagging tunable):
+ * a chunk header then carries another tag than the block's pointer, and
+ * reading it through that pointer faults.
  * A heap is only advised when /proc/self/maps shows the anonymous mappings
  * of exactly its range. */
 #define SCR_SA_GLIBC_HEAP ((uintptr_t)64 << 20) /* glibc's heap size and alignment */
@@ -600,6 +606,20 @@ static _Thread_local size_t scr_sa_thread_large_bytes;
 static _Thread_local uintptr_t scr_sa_thread_heap; /* the heap this thread advised last */
 static _Atomic(int) scr_sa_thread_heaps; /* 0 undecided, 1 advised, 2 off */
 extern void *__libc_malloc(size_t);
+
+/* Whether glibc tags heap memory: the glibc.mem.tagging tunable is set to a
+ * nonzero value, or (arm64) the kernel checks tags for this process. */
+static bool scr_sa_mem_tagging(const char *tunables) {
+  const char *t = tunables ? strstr(tunables, "glibc.mem.tagging=") : NULL;
+  if (t && t[sizeof "glibc.mem.tagging=" - 1] != '0') return true;
+#if defined(__aarch64__)
+  /* PR_GET_TAGGED_ADDR_CTRL (56); PR_MTE_TCF_MASK is bits 1-2. A kernel
+   * without the call returns -1: no tag checks. */
+  long ctrl = prctl(56, 0, 0, 0, 0);
+  if (ctrl > 0 && (ctrl & (3L << 1))) return true;
+#endif
+  return false;
+}
 
 /* Whether [heap, heap + SCR_SA_GLIBC_HEAP) is covered exactly by anonymous
  * mappings, as a glibc heap is (its accessible part and the rest). */
@@ -638,7 +658,7 @@ static void scr_sa_thread_heap_note(void *p, size_t n) {
     void *(*volatile used)(size_t) = malloc, *(*volatile own)(size_t) = __libc_malloc;
     bool glibc_malloc = used == own;
     mode = glibc_malloc && scr_sa_thp_mode() == 'm' && !(tunables && strstr(tunables, "glibc.malloc.hugetlb")) &&
-                   overcommit != '2'
+                   overcommit != '2' && !scr_sa_mem_tagging(tunables)
                ? 1
                : 2;
     if (atomic_compare_exchange_strong(&scr_sa_thread_heaps, &undecided, mode) && mode == 1 &&

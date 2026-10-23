@@ -388,7 +388,11 @@ static void check_thread_heap_huge_pages(void) {
   glibc_malloc = false;
 #endif
 #endif
-  if (glibc_malloc && strstr(mode, "[madvise]") && !getenv("GLIBC_TUNABLES") && overcommit != '2')
+  /* With glibc's memory tagging tunable set the heap is left alone: under
+   * arm64 MTE, reading its chunk headers through block pointers faults. */
+  const char *tunables = getenv("GLIBC_TUNABLES");
+  if (tunables && strstr(tunables, "glibc.mem.tagging=3")) assert(!strstr(heap_flags, " hg"));
+  else if (glibc_malloc && strstr(mode, "[madvise]") && !tunables && overcommit != '2')
     assert(strstr(heap_flags, " hg"));
 }
 #endif
