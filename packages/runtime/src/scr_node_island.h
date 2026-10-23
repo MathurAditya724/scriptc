@@ -102,6 +102,9 @@ bool scr_ni_is_function(const ScrDyn *value); /* an island handle that is callab
 ScrStr *scr_ni_inspect(const ScrDyn *value, double recurse, double depth);
 ScrDyn *scr_ni_own_keys(ScrDyn *obj, int mode); /* 0 Object.keys, 1 Reflect.ownKeys */
 ScrPromise *scr_ni_await(ScrDyn *value);
+/* Island arrays as copies for results typed as arrays of copied values. */
+ScrDyn *scr_node_island_copy_arrays(ScrDyn *value);
+ScrPromise *scr_node_island_await_copy(ScrDyn *value);
 uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
 /* Between the two island units. */
