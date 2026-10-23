@@ -2491,11 +2491,44 @@ static bool sf_headers_sorted_entry(SfHeaders *h, size_t index,
   return found;
 }
 
+/* One step of a live Headers iterator (entries, keys or values): the
+ * `*index`th entry of the current sorted list, as Node's iterator re-reads
+ * the list on every step. The result is { value, done }. */
+static ScrDyn *sf_headers_step(void *ptr, double *index, unsigned selection) {
+  ScrStr *name = NULL;
+  ScrStr *value = NULL;
+  bool found = sf_headers_sorted_entry(ptr, (size_t)*index, &name, &value);
+  ScrDyn *item;
+  if (found) {
+    (*index)++;
+    if (selection == 2) {
+      item = scr_dyn_new_arr();
+      scr_dyn_arr_push(item, scr_dyn_new_str(name));
+      scr_dyn_arr_push(item, scr_dyn_new_str(value));
+    } else {
+      item = scr_dyn_new_str(selection == 1 ? name : value);
+    }
+    scr_str_release(name);
+    scr_str_release(value);
+  } else {
+    item = scr_dyn_retain(scr_dyn_undefined());
+  }
+  ScrDyn *result = scr_dyn_new_obj();
+  scr_dyn_obj_set(result, "value", 5, item);
+  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(!found));
+  return result;
+}
+
 static ScrDyn *sf_headers_invoke(void *ptr, ScrDyn *self,
                                  const char *method,
                                  ScrDyn *const *args, size_t argc,
                                  const char *what) {
   SfHeaders *h = ptr;
+  if (strcmp(method, "entries") == 0 || strcmp(method, "keys") == 0 ||
+      strcmp(method, "values") == 0) {
+    return scr_dyn_native_handle_iterator(
+        self, strcmp(method, "entries") == 0 ? 2 : strcmp(method, "keys") == 0 ? 1 : 0);
+  }
   if (strcmp(method, "get") == 0 || strcmp(method, "has") == 0) {
     if (argc < 1) {
       sf_type_error("Headers.get/has requires a header name");
@@ -5487,7 +5520,8 @@ static const ScrDynHandleOps sf_response_ops = {
     &sf_response_invoke, &sf_response_get, &sf_no_set, NULL};
 static const ScrDynHandleOps sf_headers_ops = {
     "Headers", &sf_headers_retain_v, &sf_headers_release_v,
-    &sf_headers_invoke, &sf_headers_get, &sf_no_set, NULL};
+    &sf_headers_invoke, &sf_headers_get, &sf_no_set, NULL, NULL,
+    &sf_headers_step};
 
 static void sf_teardown(void) {
   while (sf_live) {
