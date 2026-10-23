@@ -1,6 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { allBytesArms, indexedUnionArms, lowerIndexedUnionMethod } from "../indexed-unions.js";
-import { boolLit, dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
+import { boolLit, dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { BUF_NUM_METHODS } from "./buffer-numeric-methods.js";
 import * as ts from "../../ts7/adapter.js";
 import {
@@ -904,6 +904,126 @@ function lowerDataViewNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   return lowerArrayBufferView(lowerer, args, "dv", locOf(expr));
 }
 
+/** `receiver.set(src, offset?)` on a lowered typed-array receiver. */
+function bytesSetIntrinsic(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  argNodes: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr {
+  const src = lowerer.lowerExpr(argNodes[0]!);
+  const method = src.type.kind === "bytes" ? "setFrom" : "setFromDyn";
+  const args = [src.type.kind === "bytes" ? src : lowerer.coerceInto(argNodes[0]!, src, DYN)];
+  if (argNodes.length === 2)
+    args.push(
+      lowerOptionalArgument(lowerer, argNodes[1]!, F64, {
+        kind: "numLit",
+        value: 0,
+        type: F64,
+        loc,
+      }),
+    );
+  return { kind: "bytesIntrinsic", method, receiver, args, type: VOID, loc };
+}
+
+/** `Uint8Array.prototype.set.call(target, src, offset?)`, through any typed
+ * array constructor's prototype (they share %TypedArray%.prototype.set). A
+ * target the checker types as a typed array or Buffer lowers like
+ * `target.set(src, offset)`. Any other target, a DataView included, is
+ * checked at run time: a typed array calls its `set`, and
+ * anything else throws Node's TypeError "this is not a typed array.",
+ * after every argument is evaluated. */
+export function lowerBytesPrototypeSetCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (
+    call.questionDotToken ||
+    access.questionDotToken ||
+    access.name.text !== "call" ||
+    !ts.isPropertyAccessExpression(access.expression)
+  )
+    return null;
+  const method = access.expression;
+  const proto = method.expression;
+  if (
+    method.questionDotToken ||
+    method.name.text !== "set" ||
+    !ts.isPropertyAccessExpression(proto) ||
+    proto.questionDotToken ||
+    proto.name.text !== "prototype" ||
+    !ts.isIdentifier(proto.expression) ||
+    !lowerer.isStdlibMember(method)
+  )
+    return null;
+  const ctor = lowerer.resolveValueSymbol(proto.expression);
+  if (!ctor || !lowerer.isStdlibSymbol(ctor) || !own(BYTES_CTORS, ts.symbolName(ctor))) return null;
+  const argNodes = call.arguments.nodes;
+  if (argNodes.length < 2 || argNodes.length > 3 || argNodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  const target = lowerer.lowerExpr(argNodes[0]!);
+  // A DataView lowers to the same bytes type, so the checker type decides:
+  // only a typed array (or a Buffer) takes the method's path.
+  const targetSymbol = lowerer.typeOf(argNodes[0]!).getSymbol();
+  if (
+    target.type.kind === "bytes" &&
+    targetSymbol !== undefined &&
+    lowerer.isStdlibSymbol(targetSymbol) &&
+    (own(BYTES_CTORS, ts.symbolName(targetSymbol)) !== undefined ||
+      ts.symbolName(targetSymbol) === "Buffer")
+  )
+    return bytesSetIntrinsic(lowerer, target, argNodes.slice(1), loc);
+  const slot = (value: IrExpr): { decl: IrStmt; read: IrExpr } => {
+    const local = lowerer.declareHiddenLocal("%setArg", DYN);
+    return {
+      decl: { kind: "varDecl", localId: local.id, init: value, loc },
+      read: varRef(local.id, DYN, loc),
+    };
+  };
+  const slots = [
+    slot(lowerer.coerceInto(argNodes[0]!, target, DYN)),
+    ...argNodes.slice(1).map((arg) => slot(lowerer.lowerExprExpecting(arg, DYN))),
+  ];
+  const isTypedArray: IrExpr = {
+    kind: "libCall",
+    fn: "util.typeIs",
+    args: [slots[0]!.read, { kind: "strLit", value: "isTypedArray", type: STRING, loc }],
+    type: BOOL,
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts: [
+      ...slots.map((s) => s.decl),
+      {
+        kind: "if",
+        cond: { kind: "unary", op: "!", operand: isTypedArray, type: BOOL, loc },
+        then: [
+          {
+            kind: "exprStmt",
+            expr: nodeThrowExpr(1, "", "this is not a typed array.", VOID, loc),
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+    ],
+    result: {
+      kind: "dynInvoke",
+      recv: slots[0]!.read,
+      method: "set",
+      calleeName: ts.getTextOfNode(method),
+      args: slots.slice(1).map((s) => s.read),
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+}
+
 /** Method calls on typed-array/Buffer receivers: slice (copy), subarray
  * (shared view), toReversed, copyWithin, set(src,
  * offset?), and the u8-only Buffer surface: toString(enc?) plus the
@@ -1237,21 +1357,7 @@ export function lowerBytesMethodCall(
       lowerer.noLowering(`.set with ${nArgs} arguments on typed arrays`, call);
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
-    const src = lowerer.lowerExpr(call.arguments.nodes[0]!);
-    const method = src.type.kind === "bytes" ? "setFrom" : "setFromDyn";
-    const args = [
-      src.type.kind === "bytes" ? src : lowerer.coerceInto(call.arguments.nodes[0]!, src, DYN),
-    ];
-    if (nArgs === 2)
-      args.push(
-        lowerOptionalArgument(lowerer, call.arguments.nodes[1]!, F64, {
-          kind: "numLit",
-          value: 0,
-          type: F64,
-          loc,
-        }),
-      );
-    return { kind: "bytesIntrinsic", method, receiver, args, type: VOID, loc };
+    return bytesSetIntrinsic(lowerer, receiver, call.arguments.nodes, loc);
   }
   if (name === "toString") {
     // Buffer's toString(encoding?) — utf8 by default. A 0-arg toString

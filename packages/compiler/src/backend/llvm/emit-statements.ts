@@ -64,6 +64,7 @@ import {
   emitPairedLoopSafety,
 } from "./counted-loops.js";
 import { emitBytesLoopVersionGuard, type BytesLoopVersion } from "./bytes-loop-versions.js";
+import { bytesHeaderAlias } from "./bytes-alias.js";
 import { mangleLocal } from "../mangle.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlValue } from "./expr-context.js";
@@ -1050,15 +1051,17 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               LOOPS.of(emitter).unaliasedArrays,
             )
           : countedLoop;
-      const version = versionable ? emitter.matchBytesLoopVersion(s, versionCounted) : null;
+      const version = versionable
+        ? emitter.matchBytesLoopVersion(s, versionCounted, versionCounted ? null : pairedLoop)
+        : null;
       if (version) {
         emitVersionedLoop(emitter, s, version);
         break;
       }
       let countedJoin: string | null = null;
       if (
-        (countedLoop?.guarded && !LOOPS.of(emitter).provenCountedGuards.has(s)) ||
-        pairedLoop?.guarded
+        (countedLoop?.guarded || pairedLoop?.guarded) &&
+        !LOOPS.of(emitter).provenCountedGuards.has(s)
       ) {
         const safe = countedLoop
           ? emitCountedLoopSafety(emitter, countedLoop)
@@ -1229,10 +1232,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
             }
             B.line(`${inBounds} = icmp ult i32 ${narrow}, ${len}`);
           } else {
-            emitter.markMemoryPointer(lenPtr, "bytes:header");
-            B.line(
-              `${len} = load ${emitter.sizeType}, ptr ${lenPtr}${emitter.fieldAliasAttachment(lenPtr)}`,
-            );
+            B.line(`${len} = load ${emitter.sizeType}, ptr ${lenPtr}${bytesHeaderAlias(emitter)}`);
             B.line(`${inBounds} = icmp ult ${emitter.sizeType} ${index}, ${len}`);
           }
           B.condBr(inBounds, lb, exit);
@@ -2096,7 +2096,8 @@ function emitVersionedLoop(
     if (version.owned.size > 0) emitter.bytesOwned = new Set([...originalOwned, ...version.owned]);
     if (version.ranges.size > 0)
       emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
-    if (version.counted?.guarded) LOOPS.of(emitter).provenCountedGuards.add(s);
+    if (version.counted?.guarded || version.paired?.loop.guarded)
+      LOOPS.of(emitter).provenCountedGuards.add(s);
     emitter.emitStmt(s);
     B.br(done);
   } finally {

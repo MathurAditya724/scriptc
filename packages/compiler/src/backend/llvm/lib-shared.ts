@@ -333,6 +333,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.parse": "scr_date_parse",
   "date.getTime": "scr_date_get_time",
   "date.valueOf": "scr_date_get_time",
+  "date.fromTime": "scr_date_get_time",
   "date.parseGetTime": "scr_date_parse",
   "date.utc": "scr_date_utc",
   "date.newLocal": "scr_date_new_local",
@@ -560,6 +561,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "text.decoderEncoding": "scr_text_decoder_encoding",
   "text.decoderName": "scr_text_decoder_name",
   "text.encodeInto": "scr_text_encode_into",
+  "text.codecIs": "scr_text_codec_is",
   "buffer.isAscii": "scr_buffer_is_ascii",
   "buffer.isUtf8": "scr_buffer_is_utf8",
   "buffer.transcode": "scr_buffer_transcode",
@@ -678,6 +680,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  "record.sourceSpread": "scr_record_source_spread",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).
@@ -959,6 +962,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.streamIs": "scr_fetch_stream_is",
   "zlib.streamIs": "scr_zlib_stream_is",
   "fetch.streamNew": "scr_fetch_stream_new",
+  "fetch.transformNew": "scr_fetch_transform_new",
   "fetch.streamFrom": "scr_fetch_stream_from",
   "fetch.readerRead": "scr_fetch_reader_read",
   "json.parse": "scr_json_parse",
@@ -1020,6 +1024,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "class.descriptorHasValue": "scr_class_descriptor_has_value",
   "class.throwReadOnly": "scr_class_throw_read_only",
   "class.throwNotExtensible": "scr_class_throw_not_extensible",
+  "record.freeze": "scr_record_freeze",
+  "record.throwFrozen": "scr_record_throw_frozen",
+  "array.freeze": "scr_arr_freeze",
+  "array.isFrozen": "scr_arr_is_frozen",
+  "collection.preventExtensions": "scr_map_prevent_extensions",
+  "collection.isExtensible": "scr_map_is_extensible",
   "dyn.nativeSetNew": "scr_dyn_native_set_new",
   "dyn.nativeSetIs": "scr_dyn_native_set_is",
   "dyn.nativeMapIs": "scr_dyn_native_map_is",
@@ -1479,6 +1489,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "als.exitRun": "scr_als_exit_run",
   "als.enterWith": "scr_als_enter_with",
   "als.disable": "scr_als_disable",
+  "als.newOptions": "scr_als_new_options",
+  "als.name": "scr_als_name",
+  "als.bindCallbackDyn": "scr_als_bind_dyn",
+  "als.snapshot": "scr_als_snapshot",
   "dc.chanBindStore": "scr_dc_chan_bind_store",
   "dc.chanUnbindStore": "scr_dc_chan_unbind_store",
   "dc.chanRunStores": "scr_dc_chan_run_stores",
@@ -1692,6 +1706,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "fetch.abortAny",
   "fetch.streamNew",
   "fetch.streamFrom",
+  "fetch.transformNew",
   "readable.new",
   // fs.ReadStream / fs.WriteStream open, read and write on the worker pool.
   "fs.createReadStream",
