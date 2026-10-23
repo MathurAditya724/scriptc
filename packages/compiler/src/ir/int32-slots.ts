@@ -449,6 +449,8 @@ const DYN_READ_ONLY = new Set<string>([
   "error.new",
   "error.newOptions",
   "fs.utimesSync",
+  // Buffer.prototype members read as values: a lookup by key.
+  "buffer.prototypeMember",
   "insp.dyn",
   "insp.dynS",
   // The dynamic-tier operators run their dyn twins (scr_js_value.c); the

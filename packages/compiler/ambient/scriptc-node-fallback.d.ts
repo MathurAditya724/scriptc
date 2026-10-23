@@ -917,6 +917,14 @@ interface Buffer<
   readBigUint64LE(offset?: number): bigint;
 }
 interface BufferConstructor {
+  /** @deprecated since v10.0.0 - Use `Buffer.from(string[, encoding])` instead. */
+  new (str: string, encoding?: BufferEncoding): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.alloc()` instead. */
+  new (size: number): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.from(array)` instead. */
+  new (array: ArrayLike<number>): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.from(arrayBuffer[, byteOffset[, length]])` instead. */
+  new (arrayBuffer: ArrayBuffer | SharedArrayBuffer): Buffer;
   from(data: string, encoding?: BufferEncoding): Buffer;
   /* The ArrayBuffer form is the VIEW construction: x.buffer with an
    * optional byte offset/length shares x's storage (the subarray rule). */

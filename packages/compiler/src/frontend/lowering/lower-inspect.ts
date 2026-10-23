@@ -14,7 +14,7 @@ import { InternalCompilerError } from "../../errors.js";
 
 import * as ts from "../ts7/adapter.js";
 import { unsignedHex } from "../../format-integer.js";
-import type { Lowerer } from "./lowerer.js";
+import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
 import {
   BOOL,
@@ -2416,6 +2416,12 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
   }
   const decl = sym.declarations[0];
   if (!decl) return null;
+  // A JavaScript function can hold own properties (`f.x = 1`, computed
+  // keys), which the runtime walk prints after its name.
+  if (isJsSourceFile(node.getSourceFile())) {
+    const type = lowerer.mapTypeOf(lowerer.typeOf(node));
+    if (type?.kind === "func" && lowerer.dynConvertible(type)) return null;
+  }
   if (ts.isFunctionDeclaration(decl) && decl.name) {
     return strLit(`[Function: ${decl.name.text}]`, loc);
   }
@@ -2476,7 +2482,17 @@ export function lowerInspectValue(
       loc,
     );
   }
-  const value = lowerer.lowerExpr(valueNode);
+  let value = lowerer.lowerExpr(valueNode);
+  // A JavaScript function renders through the runtime walk, which prints
+  // its own properties after its name.
+  if (
+    value.type.kind === "func" &&
+    isJsSourceFile(valueNode.getSourceFile()) &&
+    lowerer.dynConvertible(value.type)
+  ) {
+    const name = jsFuncNameOf(valueNode);
+    value = { kind: "dynFrom", value, type: DYN, ...(name !== null ? { fnName: name } : {}), loc };
+  }
   if (value.type.kind === "bytes") {
     // One runtime representation serves Buffer AND Uint8Array; their
     // renderings differ (<Buffer aa> vs Uint8Array(1) [ 170 ]), so the
