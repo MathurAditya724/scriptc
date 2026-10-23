@@ -143,6 +143,20 @@ bag["3"] = view;
 console.log(items.findIndex((item) => weigh(item) > 1));
 `);
   expect(signature(record, "weigh")).toBe("weigh(Item): f64");
+  // An unknown[] that only holds the array its declaration creates is never
+  // a view, so stores past its end leave the viewed arrays alone.
+  const fresh = await lower(`${ITEM}
+class Slots {
+  readonly states: unknown[] = [];
+}
+const slots = new Slots();
+const items: Item[] = [new Item(1)];
+const view: unknown = items;
+const states = slots.states;
+states[3] = view;
+console.log(items.findIndex((item) => weigh(item) > 1));
+`);
+  expect(signature(fresh, "weigh")).toBe("weigh(Item): f64");
 });
 
 test("holes that only their owning slot can observe stay out of callbacks", async () => {

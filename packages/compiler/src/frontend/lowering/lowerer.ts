@@ -6432,10 +6432,54 @@ export class Lowerer {
         element !== undefined && (element.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
       );
     };
+    // A binding that only ever holds the array its declaration creates (a
+    // const variable, or a readonly property with an initializer) is never
+    // a view of a native array, even when its elements are dynamic.
+    const freshDynamicStorage = (node: ts.Expression, depth: number): boolean => {
+      const e = peel(node);
+      if (ts.isArrayLiteralExpression(e)) return true;
+      if (ts.isNewExpression(e) || ts.isCallExpression(e)) {
+        const callee = peel(e.expression);
+        if (ts.isIdentifier(callee)) return this.isStdlibGlobal(callee, "Array");
+        return (
+          ts.isPropertyAccessExpression(callee) &&
+          (callee.name.text === "of" || callee.name.text === "from") &&
+          this.isStdlibGlobal(callee.expression, "Array")
+        );
+      }
+      if (depth > 4 || (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e))) return false;
+      // A typed array along the way is the array a view shows.
+      const type = typeOrNull(e);
+      if (type === null || !dynamicType(type)) return false;
+      const symbol = panicSafe(
+        () => this.checker.getSymbolAtLocation(ts.isIdentifier(e) ? e : e.name),
+        undefined,
+      );
+      const declaration = symbol?.valueDeclaration;
+      if (!declaration) return false;
+      if (ts.isVariableDeclaration(declaration)) {
+        const list = declaration.parent;
+        return (
+          ts.isVariableDeclarationList(list) &&
+          (list.flags & ts.NodeFlags.Const) !== 0 &&
+          declaration.initializer !== undefined &&
+          freshDynamicStorage(declaration.initializer, depth + 1)
+        );
+      }
+      return (
+        ts.isPropertyDeclaration(declaration) &&
+        declaration.initializer !== undefined &&
+        (declaration.modifiers?.nodes.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
+        ) ??
+          false) &&
+        freshDynamicStorage(declaration.initializer, depth + 1)
+      );
+    };
     const elementStates = new ArrayElementStates({
       isDynamicArray: (node) => {
         const type = typeOrNull(node);
-        return type === null || dynamicType(type);
+        return (type === null || dynamicType(type)) && !freshDynamicStorage(node, 0);
       },
       nativeViewKeys: collectNativeViews,
       elementAdmitsUndefined: (key) => {
