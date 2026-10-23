@@ -394,6 +394,38 @@ export function classInstanceOf(
   };
 }
 
+/** `value` is the parameter itself, possibly through js.fromDyn. */
+function returnsParam(value: IrExpr, param: string): boolean {
+  if (value.kind === "varRef") return value.localId === param;
+  return (
+    value.kind === "libCall" &&
+    value.fn === "js.fromDyn" &&
+    value.args.length === 1 &&
+    value.args[0]!.kind === "varRef" &&
+    value.args[0]!.localId === param
+  );
+}
+
+/** The kind a class-table branch requires of `param`: a capsule-key test
+ * (alone or guarding a conjunction) needs a capsule, a class-key test a
+ * function value; null for any other condition. */
+function branchKind(cond: IrExpr, param: string): "classCapsule" | "funcKind" | null {
+  if (
+    cond.kind === "libCall" &&
+    (cond.fn === "dyn.typedRefIs" || cond.fn === "dyn.typedRefKeyIs" || cond.fn === "dyn.classIs") &&
+    cond.args[0]?.kind === "varRef" &&
+    cond.args[0].localId === param
+  ) {
+    if (cond.fn === "dyn.classIs") return "funcKind";
+    const key = cond.args[1];
+    return key?.kind === "strLit" && key.value.startsWith("object:") ? "classCapsule" : null;
+  }
+  if (cond.kind === "ternary" && cond.else_.kind === "boolLit" && cond.else_.value === false)
+    return branchKind(cond.cond, param);
+  if (cond.kind === "logical" && cond.op === "&&") return branchKind(cond.left, param);
+  return null;
+}
+
 const READ_PROPERTIES = "%dyn.class.readProperties";
 const READ_PROPERTIES_OR_EMPTY = "%dyn.class.readPropertiesOrEmpty";
 
@@ -4698,6 +4730,7 @@ export class ClassDynamicDispatch {
         fn.name === READ_PROPERTIES_OR_EMPTY,
       );
     }
+    if (lowerer) this.guardClassTables(lowerer);
   }
 
   /** Each tracked class's bag initializer over a typed receiver (`this`),
@@ -4712,6 +4745,63 @@ export class ClassDynamicDispatch {
       if (mentionsLocal(value, "p.0")) continue;
       // Lowerer stand-ins in unit tests may not carry the table.
       lowerer.classBagInitializers?.set(className, value);
+    }
+  }
+
+  /** Fast exits for the generated class tables: every class branch of
+   * the property-bag, normalization and static-bag helpers tests the
+   * value's capsule key (or class key), so a value of another kind (a
+   * plain object, the common case in untyped code) skips straight to the
+   * table's fallthrough instead of testing every class in the program. */
+  private guardClassTables(lowerer: Lowerer): void {
+    const names = new Set([
+      "%dyn.class.properties",
+      READ_PROPERTIES,
+      READ_PROPERTIES_OR_EMPTY,
+      "%dyn.class.normalize",
+      "%dyn.class.staticProperties",
+    ]);
+    for (const fn of lowerer.liftedFns) {
+      if (!names.has(fn.name) || fn.body.length < 2) continue;
+      const param = fn.params[0]?.localId;
+      if (param === undefined) continue;
+      const last = fn.body[fn.body.length - 1]!;
+      if (last.kind !== "return" || last.value === null || !returnsParam(last.value, param)) continue;
+      let test: "classCapsule" | "funcKind" | null = null;
+      let ok = true;
+      for (const stmt of fn.body.slice(0, -1)) {
+        if (
+          stmt.kind === "assign" &&
+          stmt.localId === param &&
+          stmt.value.kind === "call" &&
+          stmt.value.callee === "%dyn.class.normalize"
+        )
+          continue;
+        const kind = stmt.kind === "if" && stmt.else_ === null ? branchKind(stmt.cond, param) : null;
+        if (kind === null || (test !== null && kind !== test)) {
+          ok = false;
+          break;
+        }
+        test = kind;
+      }
+      if (!ok || test === null) continue;
+      const first = fn.body[0]!;
+      if (first.kind === "if" && first.cond.kind === "dynTest" && first.cond.test === test) continue;
+      const loc = fn.loc;
+      fn.body.unshift({
+        kind: "if",
+        cond: {
+          kind: "dynTest",
+          test,
+          negated: true,
+          value: varRef(param, DYN, loc),
+          type: BOOL,
+          loc,
+        },
+        then: [structuredClone(last)],
+        else_: null,
+        loc,
+      });
     }
   }
 
@@ -4786,10 +4876,17 @@ export class ClassDynamicDispatch {
       this.normalizationKey = key;
       const loc = this.normalization.loc;
       const value = varRef("value", DYN, loc);
-      this.normalization.body = entries.map(({ capsule, children }): IrStmt => {
+      // The checked receiver is unboxed once per capsule branch, not once
+      // per subclass test.
+      this.normalization.locals = this.normalization.locals.filter(
+        (local) => !local.id.startsWith("%normalized."),
+      );
+      this.normalization.body = entries.map(({ capsule, children }, index): IrStmt => {
         const type: IrType = { kind: "object", className: capsule.def.name };
-        const receiver: IrExpr = { kind: "dynCheck", value, type, loc };
-        return {
+        const id = `%normalized.${index}`;
+        this.normalization!.locals.push({ id, name: id, type, mutable: false });
+        const receiver: IrExpr = varRef(id, type, loc);
+        const branch: IrStmt = {
           kind: "if",
           cond: {
             kind: "libCall",
@@ -4830,6 +4927,15 @@ export class ClassDynamicDispatch {
           else_: null,
           loc,
         };
+        // The capsule test stays the branch condition; its body unboxes.
+        if (branch.kind === "if")
+          branch.then.unshift({
+            kind: "varDecl",
+            localId: id,
+            init: { kind: "dynCheck", value, type, loc },
+            loc,
+          });
+        return branch;
       });
       this.normalization.body.push({ kind: "return", value, loc });
     }

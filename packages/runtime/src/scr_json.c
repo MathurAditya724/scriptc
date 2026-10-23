@@ -16125,3 +16125,12 @@ bool scr_dyn_bag_create_field(ScrDyn *bag, const ScrStr *key) {
   scr_dyn_obj_set(bag, key->data, key->len, scr_dyn_retain(scr_dyn_undefined()));
   return true;
 }
+
+/* Whether a value is a capsule of a compiled class instance (its type key
+ * names an object type): the class tables' fast exit for every other value,
+ * including record and array capsules. Calls only libc. */
+bool scr_dyn_is_class_capsule(const ScrDyn *d);
+bool scr_dyn_is_class_capsule(const ScrDyn *d) {
+  return d && d->kind == SCR_DYN_TYPED_REF && d->v.typed_ref.type_key_len > 7 &&
+         memcmp(d->v.typed_ref.type_key, "object:", 7) == 0;
+}
