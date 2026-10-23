@@ -62,6 +62,12 @@ const VIEW_HOLES = "%view";
 /** The fact name of values stored through dynamic views. */
 const VIEW_VALUES = "%view-values";
 
+/** Element keys whose arrays store a value written through a dynamic view
+ * that the element type cannot hold, as a foreign element: `number[]` and
+ * `string[]`. Arrays of other element types reject such a write with the
+ * checked conversion's TypeError. */
+const FOREIGN_ELEMENT_KEYS: ReadonlySet<string> = new Set(["f64", "string"]);
+
 /** What an array value can contain besides present values. */
 interface Contents {
   undefined: boolean;
@@ -373,7 +379,7 @@ export class ArrayElementStates {
   /** Values of any type stored through a dynamic view can be in arrays of
    * this key. */
   private viewedValues(key: string): boolean {
-    return this.viewValues && this.isViewed(key);
+    return this.viewValues && FOREIGN_ELEMENT_KEYS.has(key) && this.isViewed(key);
   }
 
   private isViewed(key: string): boolean {
@@ -382,11 +388,11 @@ export class ArrayElementStates {
   }
 
   /** Element keys whose arrays can hold elements outside their element
-   * type, stored through dynamic views; "*" for every array. Final once
-   * the fixed point is reached. */
+   * type, stored through dynamic views (of FOREIGN_ELEMENT_KEYS). Final
+   * once the fixed point is reached. */
   foreignKeys(): ReadonlySet<string> {
     if (!this.viewValues) return new Set();
-    return (this.viewKeys ??= this.host.nativeViewKeys());
+    return new Set([...FOREIGN_ELEMENT_KEYS].filter((key) => this.isViewed(key)));
   }
 
   /** A store through `receiver`, which has no native element key, can

@@ -269,6 +269,25 @@ static uint64_t scr_elem_retain_slot(const ScrArr *a, uint64_t slot) {
   return scr_elem_retain_with(a->elem, scr_arr_ops(a), slot);
 }
 
+/* ToNumber and ToString of a foreign element. Both can run user code and
+ * pull in the dynamic tier, so they are reached through this table, which
+ * scr_arr_set_foreign installs: every foreign element is stored by it, and
+ * a program that never stores one links neither conversion. */
+typedef struct ScrArrForeignConversions {
+  double (*to_number)(const ScrDyn *);
+  ScrStr *(*to_string)(const ScrDyn *);
+} ScrArrForeignConversions;
+
+static const ScrArrForeignConversions scr_arr_dyn_conversions = {
+  scr_dyn_number_coerce,
+  scr_dyn_string_coerce_js,
+};
+static const ScrArrForeignConversions *scr_arr_conversions;
+
+static const ScrArrForeignConversions *scr_arr_foreign_conversions(void) {
+  return __atomic_load_n(&scr_arr_conversions, __ATOMIC_RELAXED);
+}
+
 /* The array may hold SCR_ARR_FOREIGN elements (ScrArrExt.foreign). Such
  * an array always has states. */
 static inline bool scr_arr_may_hold_foreign(const ScrArr *a) {
@@ -2056,7 +2075,7 @@ static double *scr_arr_coerced_numbers(const ScrArr *a) {
     uint64_t slot;
     uint8_t state = scr_arr_f64_state_at(a, i, &slot);
     if (state == SCR_ARR_FOREIGN) {
-      out[i] = scr_dyn_number_coerce(scr_slot_to_ptr(slot));
+      out[i] = scr_arr_foreign_conversions()->to_number(scr_slot_to_ptr(slot));
       if (scr_exc_pending()) {
         free(out);
         return NULL;
@@ -2252,7 +2271,7 @@ double scr_arr_get_number(const ScrArr *a, double i) {
   } else if (!scr_arr_prop_get_state(a, i, &slot, &state)) {
     return NAN;
   }
-  if (state == SCR_ARR_FOREIGN) return scr_dyn_number_coerce(scr_slot_to_ptr(slot));
+  if (state == SCR_ARR_FOREIGN) return scr_arr_foreign_conversions()->to_number(scr_slot_to_ptr(slot));
   return state == SCR_ARR_VALUE ? scr_slot_to_f64(slot) : NAN;
 }
 
@@ -2368,6 +2387,7 @@ bool scr_arr_set_foreign(ScrArr *a, double i, ScrDyn *v) {
    * doubles first, and 1-byte and compact slots cannot hold one. */
   if (a->elem == SCR_ELEM_I32) scr_arr_widen_i32(a);
   if (scr_arr_slot_width(a) != sizeof(uint64_t)) return false;
+  __atomic_store_n(&scr_arr_conversions, &scr_arr_dyn_conversions, __ATOMIC_RELAXED);
   scr_dyn_retain(v);
   scr_arr_need_states(a);
   if (idx >= a->len) a->len = idx + 1;
@@ -3411,7 +3431,7 @@ static ScrArr *scr_arr_sort_foreign(ScrArr *a, bool copy) {
     if (state != SCR_ARR_VALUE && state != SCR_ARR_FOREIGN) continue;
     ScrStr *key;
     if (state == SCR_ARR_FOREIGN) {
-      key = scr_dyn_string_coerce_js(scr_slot_to_ptr(slot));
+      key = scr_arr_foreign_conversions()->to_string(scr_slot_to_ptr(slot));
       if (!key) failed = true;
     } else if (a->elem == SCR_ELEM_STR) {
       key = scr_str_retain(scr_slot_to_ptr(slot));
@@ -5372,7 +5392,7 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
       /* join converts every element but undefined and null with ToString. */
       const ScrDyn *value = scr_slot_to_ptr(slot);
       if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) continue;
-      ScrStr *text = scr_dyn_string_coerce_js(value);
+      ScrStr *text = scr_arr_foreign_conversions()->to_string(value);
       if (!text) continue;
       scr_join_append(&out, text->data, text->len);
       scr_str_release(text);

@@ -1,8 +1,8 @@
-// A typed array seen as `unknown[]` holds the values written through the
-// view that its element type cannot hold, as in Node. The view and the typed
-// array are the same array: length, the view's reads and iteration,
-// printing, JSON, join, searches, copies, Math over a spread, sorting and
-// truncation see the written values.
+// A number[] or string[] seen as `unknown[]` holds the values written
+// through the view that its element type cannot hold, as in Node. The view
+// and the typed array are the same array: length, the view's reads and
+// iteration, printing, JSON, join, searches, copies, Math over a spread,
+// sorting and truncation see the written values.
 
 const numbers: number[] = [1, 2];
 const numbersView: unknown[] = numbers;
@@ -49,19 +49,8 @@ truncated.length = 1;
 truncated.length = 3;
 console.log(truncated, truncatedView.length);
 
-// string[] and class arrays hold values of other types the same way.
+// string[] holds values of other types the same way.
 const words: string[] = ["a"];
 const wordsView: unknown[] = words;
 wordsView.push(1, false);
 console.log(words, words.join("-"), words.length, typeof wordsView[1]);
-
-class Item {
-  id: string;
-  constructor(id: string) {
-    this.id = id;
-  }
-}
-const items: Item[] = [new Item("a")];
-const itemsView: unknown[] = items;
-itemsView.push({ id: "plain" });
-console.log(items, items.length, items[0]!.id, itemsView[1] instanceof Item);
