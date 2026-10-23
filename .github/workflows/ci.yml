@@ -216,9 +216,16 @@ jobs:
       # Start the corpus immediately beside a serial side queue. One shared
       # worker budget covers both processes; file and case shard axes stay
       # separate so every fixture still runs exactly once in each lane.
+      # The tests run in a transient scope capped below the runner's 16 GB:
+      # past 13 GB the kernel kills the scope's largest process, so the job
+      # log names the test instead of the runner itself running out of memory.
       - name: Tests (corpus and integration suites)
         run: |
           ulimit -c 0
+          if [ -d /run/systemd/system ]; then
+            exec sudo --preserve-env systemd-run --scope --quiet -p MemoryMax=13G -p MemorySwapMax=0 \
+              --uid="$(id -u)" --gid="$(id -g)" -- env PATH="$PATH" HOME="$HOME" node scripts/ci-test.mjs
+          fi
           node scripts/ci-test.mjs
 
   tests_macos:
