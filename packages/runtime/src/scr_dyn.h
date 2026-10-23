@@ -540,6 +540,10 @@ _Static_assert(offsetof(ScrDyn, null_proto) == sizeof(size_t) + sizeof(ScrDynKin
                "dyn-to-record conversions read null_proto at byte 13 (9 on wasm32)");
 _Static_assert(offsetof(ScrDyn, v.typed_ref.type_key) == 16 + 3 * sizeof(void *),
                "typed_ref.type_key offset");
+/* Emitted brand probes read type_key_len as the low 27 bits of the 32-bit
+ * word after `casts` (native 88, wasm32 52). */
+_Static_assert(offsetof(ScrDyn, v.typed_ref.casts) == 16 + 8 * sizeof(void *),
+               "typed_ref.casts offset");
 /* The region links ride in payload space the capsule variant already
  * reserves, so dyn nodes keep their size (and allocation size class). */
 _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref) &&

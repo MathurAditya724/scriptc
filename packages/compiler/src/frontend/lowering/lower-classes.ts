@@ -175,7 +175,12 @@ import { hasLexicalPrivateReference, hasStaticThis, rejectStaticThis } from "./s
 import { lowerUrlNew } from "./lower-url.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
-import { construction, constructionPrefix } from "./js-class-fields.js";
+import {
+  accessorInterceptsBase,
+  accessorNames,
+  construction,
+  constructionPrefix,
+} from "./js-class-fields.js";
 import { lowerObjectFactoryNew } from "./object-factory-new.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
@@ -4112,7 +4117,7 @@ export function collectClassShapeInner(
       // A subclass field created before anything can observe the instance
       // keeps its type: super() cannot run code that reads it earlier.
       const baseConstruction =
-        base && ![...methods.keys()].some((m) => m.startsWith("get:") || m.startsWith("set:"))
+        base && !accessorInterceptsBase(accessorNames(methods.keys()), base)
           ? construction(base)
           : null;
       const sealedPrefix = baseConstruction
