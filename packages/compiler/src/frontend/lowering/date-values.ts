@@ -40,8 +40,8 @@ const RELATIONAL = new Set([
 ]);
 
 /** True when a local `const` (or a `let` that is never assigned again)
- * holding a Date can keep the Date's time value instead of a Date object:
- * no use observes the Date's identity. Every use reads the time value as
+ * initialized with `new Date(...)` can keep the Date's time value instead
+ * of a Date object: no use observes the Date's identity. Every use reads the time value as
  * a Date method receiver, a String() or template operand, a relational or
  * string `+` operand, or `new Date(d)`'s argument, inside the declaring
  * function, or inside the block or loop that scopes a module-level
@@ -60,6 +60,9 @@ export function isTimeValueDateDeclaration(
 
 function decideTimeValueDate(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
   if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return false;
+  // Only a Date the declaration creates: another reference to an existing
+  // Date can mutate it (`const d = a; a.setTime(0)`), and d must see that.
+  if (!createsDate(lowerer, decl.initializer)) return false;
   const sf = decl.getSourceFile();
   if (sf.isDeclarationFile || /\.[cm]?jsx?$/.test(sf.fileName)) return false;
   const list = decl.parent;
@@ -103,6 +106,21 @@ function decideTimeValueDate(lowerer: Lowerer, decl: ts.VariableDeclaration): bo
   };
   visit(scope);
   return ok;
+}
+
+/** True for `new Date(...)` of the standard Date, through parentheses and
+ * type-only wrappers: a Date no other reference can reach. */
+function createsDate(lowerer: Lowerer, init: ts.Expression): boolean {
+  let e = init;
+  while (
+    ts.isParenthesizedExpression(e) ||
+    ts.isAsExpression(e) ||
+    ts.isSatisfiesExpression(e) ||
+    ts.isTypeAssertion(e) ||
+    ts.isNonNullExpression(e)
+  )
+    e = e.expression;
+  return ts.isNewExpression(e) && lowerer.isStdlibGlobal(e.expression, "Date");
 }
 
 /** The block or for statement that scopes a module-level binding which is
