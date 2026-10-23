@@ -1207,6 +1207,19 @@ static bool insp_tag_names_class(const char *tag, const char *cls) {
          memcmp(tag + tag_len - cls_len, cls, cls_len) == 0;
 }
 
+/* The Symbol.toStringTag a class instance inherits from its class's
+ * getter (+1), which Node brackets after the class name when it is a
+ * nonempty string other than the name. An own tag field is listed with
+ * the fields instead. */
+static ScrStr *insp_inherited_tag(const ScrDyn *instance, const ScrStr *name) {
+  ScrStr *tag = scr_dyn_typed_ref_class_tag(instance);
+  if (tag && (tag->len == 0 || (tag->len == name->len && memcmp(tag->data, name->data, name->len) == 0))) {
+    scr_str_release(tag);
+    return NULL;
+  }
+  return tag;
+}
+
 /* A native Set or Map held as a checked-dynamic value: `Set(n) { a, b }`,
  * `Map(n) { k => v }`, at most 100 entries like Node's maxArrayLength. */
 /* Node's formatWeakCollection: the entries of a WeakMap or WeakSet are not
@@ -1725,10 +1738,23 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         free(cls);
       } else if (name && materialized->kind == SCR_DYN_OBJ &&
           scr_dyn_obj_get(materialized, "%error", 6) == NULL) {
-        char *cls = malloc(name->len + 1);
+        ScrStr *tag = insp_inherited_tag(d, name);
+        if (scr_exc_pending()) {
+          scr_dyn_release(materialized);
+          return scr_str_new("", 0);
+        }
+        size_t tag_len = tag ? tag->len + 3 : 0;
+        char *cls = malloc(name->len + tag_len + 1);
         if (!cls) scr_trap("scriptc: out of memory\n");
         memcpy(cls, name->data, name->len);
-        cls[name->len] = '\0';
+        if (tag) {
+          /* Node's `Name [tag]` prefix. */
+          memcpy(cls + name->len, " [", 2);
+          memcpy(cls + name->len + 2, tag->data, tag->len);
+          cls[name->len + tag_len - 1] = ']';
+          scr_str_release(tag);
+        }
+        cls[name->len + tag_len] = '\0';
         size_t nseen = g_nseen;
         g_pending_seen = instance;
         out = scr_insp_obj(materialized, recurse, depth, cls);
