@@ -50,8 +50,8 @@
  *                           no-teachings default is pinned by K5/K7 over
  *                           the teachings-free traps profile
  *   K13 npm-posture         bare npm specifiers are static-or-refuse: an
- *                           eligible package (own .d.ts, unminified JS,
- *                           no transform markers) compiles statically
+ *                           eligible package (own .d.ts, no transform
+ *                           markers) compiles statically
  *                           into the library graph, its own npm deps
  *                           judged by the same bar; every ineligible one
  *                           refuses SC4020 naming the failed bar — never
@@ -363,6 +363,17 @@ globals: undefined fenced
     expect(run.stdout).toBe(SESSION + SESSION + SESSION);
   });
 
+  test("K4: untyped property caches start empty in every session", async () => {
+    // The shapes a session's cache entries name are freed when it ends;
+    // the next session's sites must not find those entries.
+    const { archive, outDir } = await buildLibrary("js-ic-sessions", emission);
+    const probe = buildProbe("js-ic-sessions", archive, outDir);
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("run: 20000\n".repeat(3));
+  });
+
   /* ── K5/K6/K7: the trap channel ──────────────────────────────────────── */
 
   test("K5: a trap delivers to the sink exactly once, host survives", async () => {
@@ -582,6 +593,15 @@ survived, sink_calls=1
     expect(run.stdout).toBe(SESSION + SESSION + SESSION);
   });
 
+  platformTest("K10: property caches across sessions under ASan", async () => {
+    const { archive, outDir } = await buildLibrary("js-ic-sessions", emission, { sanitize: true });
+    const probe = buildProbe("js-ic-sessions", archive, outDir, { sanitize: true });
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("run: 20000\n".repeat(3));
+  });
+
   platformTest("K10: K5/K7 under ASan", async () => {
     const { archive, outDir } = await buildLibrary("traps", emission, { sanitize: true });
     const probe = buildProbe("traps", archive, outDir, { sanitize: true });
@@ -746,11 +766,11 @@ describe("K9: library-mode refusals", () => {
  * synthesized per test like K9's. Emission never engages — SC4020 is a
  * frontend verdict — so one lane suffices. */
 let npmRefusalCounter = 0;
-async function npmRefusal(
+async function compileNpmFixture(
   entryFile: string,
   exports: unknown[],
   profilePatch: Record<string, unknown> = {},
-): Promise<{ code: string; message: string; hint?: string; note?: string; file: string }[]> {
+): Promise<Awaited<ReturnType<typeof compileLibrary>>> {
   const outDir = join(cacheDir, `npm-refusal-${npmRefusalCounter++}`);
   mkdirSync(outDir, { recursive: true });
   const profile = {
@@ -770,7 +790,15 @@ async function npmRefusal(
   };
   const profilePath = join(outDir, "profile.json");
   writeFileSync(profilePath, JSON.stringify(profile));
-  const result = await compileLibrary({ profilePath, outDir });
+  return compileLibrary({ profilePath, outDir });
+}
+
+async function npmRefusal(
+  entryFile: string,
+  exports: unknown[],
+  profilePatch: Record<string, unknown> = {},
+): Promise<{ code: string; message: string; hint?: string; note?: string; file: string }[]> {
+  const result = await compileNpmFixture(entryFile, exports, profilePatch);
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("unreachable");
   return result.diagnostics.map((d) => ({
@@ -795,13 +823,11 @@ describe("K13: library-mode npm refusals (SC4020, static-or-refuse)", () => {
     expect(diags[0]!.file.endsWith("lib-markers.ts")).toBe(true);
   });
 
-  test("minified shipped JS refuses", async () => {
-    const diags = await npmRefusal("lib-minified.ts", [
+  test("minified shipped JS compiles", async () => {
+    const result = await compileNpmFixture("lib-minified.ts", [
       { export: "f", symbol: "kx_f", params: ["f64", "f64"], returns: "f64" },
     ]);
-    expect(diags.map((d) => d.code)).toEqual(["SC4020"]);
-    expect(diags[0]!.message).toContain("'slimmed'");
-    expect(diags[0]!.message).toContain("looks minified");
+    expect(result.ok ? [] : result.diagnostics.map((d) => d.message)).toEqual([]);
   });
 
   test("no own .d.ts refuses by name — never the generic import fence", async () => {
