@@ -273,6 +273,9 @@ export function matchDenseArrayLoop(
   const missing = missingElementStores(loop.body);
   // The element reads behind the guarded present-undefined stores.
   const guards: ElementRead[] = [];
+  // The arrays of the other present-undefined stores. The fast copy runs
+  // them, and the slot each one writes leaves the hole-free prefix.
+  const undefinedStores: IrExpr[] = [];
   const expr = (e: IrExpr): boolean => {
     if (++nodes > MAX_LOOP_NODES) return false;
     if (e.kind === "assignExpr" || e.kind === "incDec") disturbed.add(e.localId);
@@ -302,7 +305,7 @@ export function matchDenseArrayLoop(
       // there, so the store never runs in it.
       const read = missing.get(s);
       if (read === undefined || s.index.kind !== "varRef" || !isCounter(s.index.localId)) {
-        if (s.arr.kind === "varRef") disturbed.add(s.arr.localId);
+        undefinedStores.push(s.arr);
       } else {
         access(s.arr, s.index);
         guards.push(read);
@@ -322,6 +325,15 @@ export function matchDenseArrayLoop(
     )
   )
     return null;
+  // A store through another name, such as `const b = a` or a field, lands
+  // in `a` unless one of the two bindings is a local array no other binding
+  // holds.
+  const mayStoreUndefined = (id: string): boolean =>
+    undefinedStores.some((arr) =>
+      arr.kind === "varRef"
+        ? arr.localId === id || (!unaliased.has(id) && !unaliased.has(arr.localId))
+        : !unaliased.has(id),
+    );
   const arrays = new Map<string, IrExpr & { kind: "varRef" }>();
   for (const [id, ref] of candidates) {
     const local = locals.get(id);
@@ -331,6 +343,7 @@ export function matchDenseArrayLoop(
       local.boxed ||
       local.tdz ||
       disturbed.has(id) ||
+      mayStoreUndefined(id) ||
       (id !== length?.localId && !initialized.has(id))
     )
       continue;

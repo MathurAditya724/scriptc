@@ -280,10 +280,16 @@ test("a present-undefined store is covered only where it stores a covered read's
   // A read of an array the entry test does not cover may miss in the fast
   // copy, and its undefined store would run there.
   expect(matchStores(guarded("b"), ["a", "c"])).toBeNull();
-  // A present undefined stored on its own leaves its array out.
-  const alone = matchStores(
-    [{ kind: "exprStmt", expr: read("b"), loc }, undefinedStore],
-    ["a", "b", "c"],
+  // A present undefined stored on its own leaves out its array and every
+  // array the other name may hold.
+  const alone: IrStmt[] = [{ kind: "exprStmt", expr: read("b"), loc }, undefinedStore];
+  expect(matchStores(alone, ["a", "b", "c"])).toBeNull();
+  const separate = matchDenseArrayLoop(
+    loop(alone),
+    shape,
+    withV,
+    new Set(["c"]),
+    new Set(["a", "b", "c"]),
   );
-  expect([...alone!.arrays.keys()]).toEqual(["b"]);
+  expect([...separate!.arrays.keys()]).toEqual(["b"]);
 });
