@@ -18,6 +18,7 @@ import type {
 } from "./ir.js";
 import {
   arrayOf,
+  iterableArmsElem,
   BYTES_ELEMENT_NAME,
   BOOL,
   BYTES_U8,
@@ -60,7 +61,8 @@ import { DYN_CLASS_PROPERTIES, callSiteReturnType, classValueConstructor } from 
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
-import { LIB_FN_SIGS } from "./builtin-signatures.js";
+import { LIB_FN_SIGS, pipelinePumpedRuns } from "./builtin-signatures.js";
+import { ALWAYS_THROW_LIB_FNS } from "./builtin-effects.js";
 
 /** The promisified crypto calls' value kinds besides checked-dynamic. */
 const CRYPTO_PROMISE_VALUES: Readonly<Record<string, "buffer" | "view" | "number" | "dyn">> = {
@@ -800,7 +802,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         arm.kind === "union" ||
         arm.kind === "dyn" ||
         arm.kind === "date" ||
-        arm.kind === "generator"
+        (arm.kind === "generator" && iterableArmsElem(u.arms) === null)
       ) {
         errors.push({ message: `union ${u.id}: arm ${i} is ${arm.kind}`, loc: noLoc });
       }
@@ -4101,14 +4103,17 @@ function validateFunction(
       e.fn === "stream.pipelineDyn" ||
       e.fn === "stream.compose" ||
       e.fn === "stream.pipelineStages" ||
+      e.fn === "stream.composeStages" ||
       e.fn === "stream.pipelineStagesDyn" ||
       e.fn === "sp.pipelineStages" ||
+      e.fn === "sp.pipelineStagesOpts" ||
       e.fn === "sp.pipeline" ||
       e.fn === "sp.pipelineOpts" ||
       e.fn === "sp.pipelineOptsSignal" ||
       e.fn === "writable.write" ||
       e.fn === "writable.writeStr" ||
       e.fn === "writable.writeU" ||
+      e.fn === "writable.writeEnc" ||
       e.fn === "writable.end" ||
       e.fn === "readable.unpipe" ||
       e.fn === "rl.create" ||
@@ -4287,6 +4292,22 @@ function validateFunction(
       if (!ok) {
         err(`libCall fetch.streamFrom arg 0: expected a supported iterable, got ${t?.kind}`, e.loc);
       }
+      return true;
+    }
+    if (e.fn === "fetch.readableFromWeb") {
+      // Readable.fromWeb: (stream, objectMode, highWaterMark, encoding) → a Readable.
+      if (
+        e.args.length !== 4 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "bool" ||
+        e.args[2]?.type.kind !== "f64" ||
+        e.args[3]?.type.kind !== "string" ||
+        e.type.kind !== "object"
+      )
+        err(
+          `libCall ${e.fn} must take (stream, objectMode, highWaterMark, encoding) and return a Readable`,
+          e.loc,
+        );
       return true;
     }
     if (e.fn === "fetch.readerRead") {
@@ -5348,32 +5369,8 @@ function validateFunction(
       const callback = e.args[e.args.length - 1]?.type;
       if (callback?.kind !== "func") err(`libCall ${e.fn} callback must be a function`, e.loc);
     }
-    if (e.fn === "global.undefRead") {
-      // Always throws — the result type is whatever the declared type
-      // of the undefined global mapped to (never materialized).
-      return true;
-    }
-    if (
-      e.fn === "error.nodeThrow" ||
-      e.fn === "error.argTypeThrow" ||
-      e.fn === "error.propTypeThrow" ||
-      e.fn === "fs.mkdtempChk" ||
-      e.fn === "fs.readFileChk" ||
-      e.fn === "fs.opendirChk" ||
-      e.fn === "fs.watchFileChk" ||
-      e.fn === "fs.lchmodChk" ||
-      e.fn === "fs.readChk" ||
-      e.fn === "fs.streamOptsChk" ||
-      e.fn === "net.connectOptsChk" ||
-      e.fn === "tls.caCertsChk"
-    ) {
-      // Always throws — the result type is the replaced expression's
-      // own (never materialized; the global.undefRead pattern). The
-      // fs Chk ladders qualify: every validation failure throws
-      // Node's typed error, and a full pass throws the trailing
-      // compiler-rendered fence.
-      return true;
-    }
+    // Always throws: the result type is never materialized.
+    if (ALWAYS_THROW_LIB_FNS.has(e.fn)) return true;
     if (e.fn === "error.new" || e.fn === "error.newOptions") {
       // Which builtin the runtime constructs is named by the result type.
       if (!isBuiltinErrorObject(e.type)) {
@@ -5496,6 +5493,20 @@ function validateFunction(
       e.fn.startsWith("passthrough.") ||
       e.fn === "stream.destroy" ||
       e.fn === "stream.destroyErr" ||
+      e.fn === "stream.objectMode" ||
+      e.fn === "stream.decodeStrings" ||
+      e.fn === "stream.duplexFromGen" ||
+      e.fn === "stream.duplexFromDyn" ||
+      e.fn === "stream.duplexifyReadable" ||
+      e.fn === "stream.duplexifyWritable" ||
+      e.fn === "stream.duplexifyPair" ||
+      e.fn === "stream.duplexFromPromise" ||
+      e.fn === "stream.duplexFromAsyncFn" ||
+      e.fn === "stream.duplexFromGenSignal" ||
+      e.fn === "stream.duplexFromAsyncFnSignal" ||
+      e.fn === "stream.setConstruct" ||
+      e.fn === "stream.setWritev" ||
+      e.fn === "stream.setWritevDefault" ||
       e.fn === "stream.iteratorClose" ||
       e.fn === "stream.prop" ||
       e.fn === "stream.errored" ||
@@ -5505,8 +5516,10 @@ function validateFunction(
       e.fn === "stream.pipelineDyn" ||
       e.fn === "stream.compose" ||
       e.fn === "stream.pipelineStages" ||
+      e.fn === "stream.composeStages" ||
       e.fn === "stream.pipelineStagesDyn" ||
       e.fn === "sp.pipelineStages" ||
+      e.fn === "sp.pipelineStagesOpts" ||
       e.fn === "stream.addAbortSignal" ||
       e.fn === "stream.addAbortSignalFn" ||
       e.fn === "stream.finishedOpts" ||
@@ -5543,6 +5556,38 @@ function validateFunction(
           if (e.args[i]!.type.kind !== "func") {
             err(`libCall ${e.fn} option callback ${i} must be a func`, e.loc);
           }
+        }
+        return true;
+      }
+      if (e.fn === "stream.duplexFromPromise") {
+        // Duplex.from(promise): (promise, box) → a Duplex.
+        if (e.args[0]?.type.kind !== "promise" || e.args[1]?.type.kind !== "func")
+          err(`libCall ${e.fn} takes a promise and its box helper`, e.loc);
+        if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream class`, e.loc);
+        return true;
+      }
+      if (
+        e.fn === "stream.duplexifyReadable" ||
+        e.fn === "stream.duplexifyWritable" ||
+        e.fn === "stream.duplexifyPair"
+      ) {
+        // Duplex.from over streams: (r), (w) or (r, w) → a Duplex.
+        const want = e.fn === "stream.duplexifyPair" ? 2 : 1;
+        if (e.args.length !== want || !e.args.every((a) => isStreamObject(a.type)))
+          err(`libCall ${e.fn} takes ${want} stream argument(s)`, e.loc);
+        if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream class`, e.loc);
+        return true;
+      }
+      if (
+        e.fn === "stream.duplexFromGen" ||
+        e.fn === "stream.duplexFromDyn" ||
+        e.fn === "stream.duplexFromAsyncFn" ||
+        e.fn === "stream.duplexFromGenSignal" ||
+        e.fn === "stream.duplexFromAsyncFnSignal"
+      ) {
+        // Duplex.from: (stage, source, helpers...) or (body) → a Duplex.
+        if (!isStreamObject(e.type)) {
+          err(`libCall ${e.fn} must return a stream class, got ${e.type.kind}`, e.loc);
         }
         return true;
       }
@@ -5616,25 +5661,44 @@ function validateFunction(
       if (
         e.fn === "stream.pipelineStages" ||
         e.fn === "stream.pipelineStagesDyn" ||
-        e.fn === "sp.pipelineStages"
+        e.fn === "sp.pipelineStages" ||
+        e.fn === "sp.pipelineStagesOpts" ||
+        e.fn === "stream.composeStages"
       ) {
-        // (n, at, k, flags, mask, s1..sn, stage1..stagek, (next, read,
-        // return)?, box?, (signal, abort)?[, cb]): flags bit 0 a source
-        // function, bits 1-2 the destination, bits 3/4/5 the groups.
-        const [n, at, k, flags] = e.args
+        // (n, k, positions, flags, mask, s1..sn, stage1..stagek,
+        // helpers..., box?, (signal, abort)?[, cb | end, signal?]):
+        // positions bit j marks stage j a function, flags bits 1-2 the
+        // destination, bit 5 the signal group, bit 6 the options' signal;
+        // helpers are three per pumped function run.
+        const [n, k, positions, flags] = e.args
           .slice(0, 4)
           .map((a) => (a?.kind === "numLit" ? a.value : -1));
-        const source = (flags! & 1) !== 0;
+        const total = n! + k!;
         const destKind = (flags! >> 1) & 3;
-        const groups = (flags! & 8 ? 3 : 0) + (flags! & 16 ? 1 : 0) + (flags! & 32 ? 2 : 0);
-        const cbArgs = e.fn === "sp.pipelineStages" ? 0 : 1;
+        let functions = 0;
+        for (let j = 0; j < total && j < 53; j++) {
+          if (Math.floor(positions! / 2 ** j) % 2 === 1) functions++;
+        }
+        const lastIsFunction = Math.floor(positions! / 2 ** (total - 1)) % 2 === 1;
+        const helperCount = 3 * pipelinePumpedRuns(total, positions!, flags!);
+        const groups = helperCount + (destKind === 2 ? 1 : 0) + (flags! & 32 ? 2 : 0);
+        const cbArgs =
+          e.fn === "sp.pipelineStagesOpts"
+            ? 1 + (flags! & 64 ? 1 : 0)
+            : e.fn === "sp.pipelineStages" || e.fn === "stream.composeStages"
+              ? 0
+              : 1;
         if (
           flags! < 0 ||
           n! < 0 ||
           k! < 1 ||
-          (source ? at !== 0 : at! < 1) ||
-          (destKind === 0 ? at! + 0 >= n! : at! !== n!) ||
-          n! + k! < 2 ||
+          positions! < 1 ||
+          total > 52 ||
+          positions! >= 2 ** total ||
+          functions !== k ||
+          destKind === 3 ||
+          (destKind !== 0) !== lastIsFunction ||
+          total < 2 ||
           e.args.length !== 5 + n! + k! + groups + cbArgs
         ) {
           err(`libCall ${e.fn} count/arity mismatch`, e.loc);
@@ -5651,7 +5715,7 @@ function validateFunction(
             err(`libCall ${e.fn} stage function ${i} must be a func`, e.loc);
         }
         at2 += k!;
-        const helpers = (flags! & 8 ? 3 : 0) + (flags! & 16 ? 1 : 0);
+        const helpers = helperCount + (destKind === 2 ? 1 : 0);
         for (let i = at2; i < at2 + helpers; i++) {
           if (e.args[i]?.type.kind !== "func")
             err(`libCall ${e.fn} helper ${i} must be a func`, e.loc);
@@ -5661,11 +5725,18 @@ function validateFunction(
           if (e.args[at2]?.type.kind !== "dyn" || e.args[at2 + 1]?.type.kind !== "func")
             err(`libCall ${e.fn} signal and abort must be a dyn and a func`, e.loc);
         }
-        if (cbArgs) {
+        if (e.fn === "sp.pipelineStagesOpts") {
+          const tail = e.args.slice(e.args.length - cbArgs);
+          if (tail[0]?.type.kind !== "bool" || (cbArgs > 1 && tail[1]?.type.kind !== "dyn"))
+            err(`libCall ${e.fn} end and signal must be a bool and a dyn`, e.loc);
+          if (e.type.kind !== "promise") err(`libCall ${e.fn} must return a promise`, e.loc);
+        } else if (cbArgs) {
           const cbK = e.args[e.args.length - 1]?.type.kind;
           if (e.fn === "stream.pipelineStages" ? cbK !== "func" : cbK !== "dyn") {
             err(`libCall ${e.fn} callback has the wrong kind`, e.loc);
           }
+          if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream`, e.loc);
+        } else if (e.fn === "stream.composeStages") {
           if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream`, e.loc);
         } else if (e.type.kind !== "promise") {
           err(`libCall ${e.fn} must return a promise`, e.loc);
@@ -5701,6 +5772,8 @@ function validateFunction(
         e.fn === "readable.opMap" ||
         e.fn === "readable.opFilter" ||
         e.fn === "readable.opFlatMap" ||
+        e.fn === "readable.opFlatMapAsyncGen" ||
+        e.fn === "readable.opFlatMapSyncGen" ||
         e.fn === "readable.opDrop" ||
         e.fn === "readable.opTake"
       ) {
@@ -5709,13 +5782,30 @@ function validateFunction(
         }
         return true;
       }
-      if (e.fn === "readable.opReduce") {
+      if (e.fn === "readable.opReduce" || e.fn === "readable.opReduceSignal") {
         const inner = e.type.kind === "promise" ? e.type.inner : null;
         const kind = e.args[5]?.kind === "numLit" ? e.args[5].value : -1;
         const want = [DYN, F64, BOOL, STRING][kind];
         if (!isStreamObject(e.args[0]?.type) || !inner || !want || !typeEquals(inner, want)) {
           err(`libCall readable.opReduce must return the promise its kind names`, e.loc);
         }
+        if (e.fn === "readable.opReduceSignal" && e.args[6]?.type.kind !== "func")
+          err(`libCall ${e.fn} takes ac.abort() as a closure`, e.loc);
+        return true;
+      }
+      if (e.fn === "readable.opOnceOptions") {
+        if (e.args.length !== 0 || e.type.kind !== "dyn")
+          err(`libCall ${e.fn} takes no arguments`, e.loc);
+        return true;
+      }
+      if (
+        e.fn === "readable.opSignalList" ||
+        e.fn === "readable.opSignalOpts" ||
+        e.fn === "readable.opSignalOf"
+      ) {
+        // The operator callbacks' { signal }: (dyn) → dyn.
+        if (e.args.length !== 1 || e.args[0]?.type.kind !== "dyn" || e.type.kind !== "dyn")
+          err(`libCall ${e.fn} takes and returns a checked-dynamic value`, e.loc);
         return true;
       }
       if (e.fn === "readable.fromDone") {
@@ -5775,6 +5865,10 @@ function validateFunction(
         e.fn === "writable.end" ||
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
+        e.fn === "stream.objectMode" ||
+        e.fn === "stream.decodeStrings" ||
+        e.fn === "writable.writeEncoding" ||
+        e.fn === "writable.setDefaultEncoding" ||
         e.fn === "stream.destroy" ||
         e.fn === "stream.destroyErr" ||
         e.fn === "stream.iteratorClose"
@@ -5891,8 +5985,10 @@ function validateFunction(
         const chunkT = e.args[2]?.type;
         const ok =
           chunkT !== undefined &&
-          ((chunkT.kind === "bytes" && chunkT.elem === "u8") || chunkT.kind === "string");
-        if (!ok) err(`libCall emitter.emitData chunk must be bytes<u8> or string`, e.loc);
+          ((chunkT.kind === "bytes" && chunkT.elem === "u8") ||
+            chunkT.kind === "string" ||
+            chunkT.kind === "dyn");
+        if (!ok) err(`libCall emitter.emitData chunk must be bytes<u8>, string or dyn`, e.loc);
         if (e.type.kind !== "bool") err(`libCall emitter.emitData must be bool`, e.loc);
         return true;
       }

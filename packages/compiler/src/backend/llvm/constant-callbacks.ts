@@ -29,12 +29,16 @@ export function findConstantCallbacks(
     mod.functions
       .filter(
         (fn) =>
-          // Authored declarations, plus the frontend's synthetic array
-          // HOF loops (`%arr.<method>.<n>`): those are plain direct-call
-          // functions, and a literal callback gets a helper of its own.
+          // Authored declarations, plus the frontend's synthetic array and
+          // typed-array HOF loops (`%arr.<method>.<n>`, `%bytes.<method>.<n>`):
+          // those are plain direct-call functions, and a literal callback
+          // gets a helper of its own.
           // Generator declarations are entered through their spawn wrapper,
           // which moves the same arguments into the generator's frame.
-          (fn.ownsPrototype || fn.name.startsWith("%arr.") || fn.generator !== undefined) &&
+          (fn.ownsPrototype ||
+            fn.name.startsWith("%arr.") ||
+            fn.name.startsWith("%bytes.") ||
+            fn.generator !== undefined) &&
           (!fn.async || fn.generator !== undefined) &&
           !fn.captures &&
           !fn.classCaptures &&
@@ -248,11 +252,13 @@ export function findConstantCallbacks(
   // entries actually used as indirect callees in each body. A module-wide
   // global/function cross product would dominate large-source emission.
   const globalTargets = new Map<string, string>();
+  const result = new Map<string, Map<string, string>>();
+  // Only indirect callees get targets: without one, nothing resolves.
+  if (![...indirectCallees.values()].some((callees) => callees.size > 0)) return result;
   for (const [id, value] of globals) {
     const target = resolve(null, value);
     if (target) globalTargets.set(id, target);
   }
-  const result = new Map<string, Map<string, string>>();
   for (const fn of mod.functions) {
     const needed = indirectCallees.get(fn.name)!;
     if (!needed.size) continue;

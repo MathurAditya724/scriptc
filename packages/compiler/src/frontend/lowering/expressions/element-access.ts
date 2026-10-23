@@ -616,9 +616,25 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       // An indexed string property is absent for non-integer and missing
       // indexes. charAt has different coercion and out-of-range semantics.
       const recv = lowerer.lowerExpr(expr.expression);
+      const rawIndex = lowerer.lowerExpr(expr.argumentExpression);
+      // A checked-dynamic index (an untyped JavaScript parameter, a parsed
+      // value) reads the property its key names, as JavaScript does: a code
+      // unit for an integer index, the length for "length", else undefined.
+      // The checker's string type does not describe those results, so the
+      // value stays checked-dynamic and consumers convert it.
+      if (rawIndex.type.kind === "dyn" && lowerer.dynConvertible(recv.type)) {
+        const key = lowerRecordPropertyKey(lowerer, rawIndex, expr.argumentExpression);
+        return {
+          kind: "dynKeyGet",
+          value: lowerer.coerceInto(expr.expression, recv, DYN),
+          key,
+          type: DYN,
+          loc: locOf(expr),
+        };
+      }
       const index = lowerOptionalNumber(
         lowerer,
-        lowerer.lowerExpr(expr.argumentExpression),
+        rawIndex,
         locOf(expr.argumentExpression),
         expr.argumentExpression,
       );
@@ -1305,6 +1321,15 @@ export function lowerRecordKeyRead(
     shape.fields.every((f) => typeEquals(f.type, shape.fields[0]!.type))
   ) {
     declared = shape.fields[0]!.type;
+  } else if (shape.fields.length > 0) {
+    // Fields of different types (`row[key]` with `key: keyof Row`): the
+    // checker types the read as the union of the field types the key can
+    // name. When every declared field surfaces in that union (an arm, or a
+    // union that widens into it), the per-field dispatch wraps each hit
+    // into its arm.
+    const read = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (read !== null && read.kind === "union" && recordKeyResultOk(lowerer, shape, read))
+      declared = read;
   }
   // Fields of different types answer a checked-dynamic value where nothing
   // typed the read: in JavaScript, and where the checker types it 'any'

@@ -1,4 +1,6 @@
+import { keyedHelperName } from "./stable-names.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
+import { lowerAwaitedUniformPromiseAll } from "./builtins/promises.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Expression lowering: the expression dispatch (lowerExpr), literals
@@ -574,6 +576,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // boundary for malformed/upstream ASTs.
       lowerer.unsupported("SC1090", expr, "top-level await (await outside async functions)");
     }
+    const uniformAll = lowerAwaitedUniformPromiseAll(lowerer, expr);
+    if (uniformAll) return uniformAll;
     const value = lowerer.lowerExpr(expr.expression);
     // A promise-or-absent union (`Promise<T> | undefined` values, calls
     // of `(...) => Promise<void> | void` callbacks): the await handles
@@ -2091,6 +2095,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "array":
     case "map":
     case "set":
+    case "generator":
     case "regex":
     case "bytes":
     case "url":
@@ -2274,7 +2279,11 @@ export function cjsAccessorSnapshotOf(
   if (!lexerVisibleAccessors(ts.getSourceFileOfNode(getter)).includes(getter)) return null;
   const call = cjsAccessorCall(lowerer, getter, locOf(getter));
   if (call === null) return null;
-  const snapshot = { id: `%g.cjsSnapshot.${lowerer.cjsAccessorSnapshots.size}`, type: call.type };
+  const at = locOf(getter);
+  const snapshot = {
+    id: keyedHelperName(lowerer, "%g.cjsSnapshot", `${at.file}:${at.start}:${at.end}`),
+    type: call.type,
+  };
   lowerer.globalsList.push({
     id: snapshot.id,
     name: "%cjsSnapshot",
@@ -2299,7 +2308,7 @@ export function cjsAccessorSnapshotStores(
   if (getters.length === 0) return [];
   let readyId = lowerer.cjsSnapshotReady.get(dep);
   if (readyId === undefined) {
-    readyId = `%g.cjsSnapshotReady.${lowerer.cjsSnapshotReady.size}`;
+    readyId = keyedHelperName(lowerer, "%g.cjsSnapshotReady", dep.fileName);
     lowerer.globalsList.push({ id: readyId, name: "%cjsSnapshotReady", type: BOOL, mutable: true });
     lowerer.cjsSnapshotReady.set(dep, readyId);
   }
@@ -3052,8 +3061,10 @@ export function lowerFieldCompound(
  * returns the zero-capture closure over it. Typed sources use the mapped
  * `(value: string) => primitive` signature; a recognized JavaScript
  * concise-arrow selector (`() => String`, the picocolors fallback) takes
- * dyn so its ordinary coercion signature survives inference residue. The
- * dyn bodies run exact ToString/ToNumber/ToBoolean, including object hooks.
+ * dyn so its ordinary coercion signature survives inference residue, and a
+ * boxed constructor value takes dyn too (coerceToExpected). The dyn bodies
+ * run what the constructors do for any argument: String() (a symbol's
+ * description form included), ToNumber and ToBoolean, with object hooks.
  * Interning makes every reference under one ABI the SAME immortal closure,
  * so `opt.type === String` compares like JS function identity. */
 export function primitiveCtorClosure(
@@ -3076,7 +3087,7 @@ export function primitiveCtorClosure(
       ? name === "BigInt"
         ? { kind: "libCall", fn: "dyn.bigintConstructor", args: [v], type: BIGINT_T, loc }
         : name === "String"
-          ? { kind: "libCall", fn: "dyn.toStringCoerce", args: [v], type: STRING, loc }
+          ? { kind: "libCall", fn: "dyn.stringConstructor", args: [v], type: STRING, loc }
           : name === "Number"
             ? { kind: "libCall", fn: "dyn.numberConstructor", args: [v], type: F64, loc }
             : { kind: "dynTest", test: "truthy", value: v, type: BOOL, loc }

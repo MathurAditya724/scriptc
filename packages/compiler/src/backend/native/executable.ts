@@ -114,6 +114,8 @@ interface RuntimeUnitContext {
   tlsCa: boolean;
   cipher: boolean;
   ecdh: boolean;
+  dh: boolean;
+  pki: boolean;
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
   tlsArchive: string | null;
@@ -279,6 +281,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // for await over checked-dynamic values that may hold native streams.
+  unit(
+    (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
+    "scr_dyn_for_await_stream.c",
+  ),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
@@ -297,6 +304,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.foreignFfi, "scr_ffi_queue.c"),
   unit((u) => u.opts.nodeTest, "scr_test.c"),
   unit((u) => u.opts.webcrypto, "scr_webcrypto.c"),
+  unit((u) => u.opts.webcrypto === true && u.opts.pki === true, "scr_webcrypto_pki.c"),
+  unit((u) => u.opts.pki === true && u.opts.ed25519 === true, "scr_ed25519.c"),
+  // The crypto global's object extends scr_async_dyn.c's.
+  unit((u) => u.opts.webcrypto && u.opts.dynAsync, "scr_webcrypto_object.c"),
   // The CA-store unit rides its own gate OR the tls one: scr_tls.c
   // references its default-set override unconditionally.
   unit((u) => u.tlsCa, "scr_tls_ca.c"),
@@ -308,6 +319,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           ...(u.tls ? [u.rt(join(u.rtDir, "scr_tls.c"))] : []),
           ...(u.cipher ? [u.rt(join(u.rtDir, "scr_cipher.c"))] : []),
           ...(u.ecdh ? [u.rt(join(u.rtDir, "scr_ecdh.c"))] : []),
+          ...(u.dh ? [u.rt(join(u.rtDir, "scr_dh.c"))] : []),
+          ...(u.pki ? [u.rt(join(u.rtDir, "scr_pki.c"))] : []),
+          ...(u.cipher && u.opts.webcrypto ? [u.rt(join(u.rtDir, "scr_webcrypto_aes.c"))] : []),
           u.tlsArchive,
           // mbedTLS's win32 entropy poll is BCryptGenRandom (bcrypt.h).
           // The unconditional win32 libs above do not carry it.
@@ -323,6 +337,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  // Readable.fromWeb reads a web ReadableStream through its reader.
+  unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -372,10 +388,13 @@ export async function compileCInternal(
   const http = (opts.http ?? false) || nativeFetch;
   const tls = (opts.tls ?? false) || nativeFetch;
   const tlsCa = (opts.tlsCa ?? false) || tls;
-  // Symmetric ciphers and ECDH link the same mbedTLS archive as TLS.
+  // Symmetric ciphers, ECDH and DiffieHellman link the same mbedTLS
+  // archive as TLS.
   const cipher = opts.cipher ?? false;
   const ecdh = opts.ecdh ?? false;
-  const mbedtls = tls || cipher || ecdh;
+  const dh = opts.dh ?? false;
+  const pki = opts.pki ?? false;
+  const mbedtls = tls || cipher || ecdh || dh || pki;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -481,7 +500,7 @@ export async function compileCInternal(
       const [compiler, runtimeHash, programBytes] = await Promise.all([
         resolvedTool(driver.argv[0] ?? "clang"),
         runtimeFingerprint(rtDir),
-        readFile(opts.cPath),
+        readFile(opts.cSourcePath ?? opts.cPath),
       ]);
       if (compiler !== null) {
         const effectiveCompiler =
@@ -733,6 +752,8 @@ export async function compileCInternal(
       tlsCa,
       cipher,
       ecdh,
+      dh,
+      pki,
       lreObjects,
       zlibObjects,
       tlsArchive,
@@ -861,7 +882,12 @@ export async function compileCInternal(
       );
     try {
       await materializeVendorPrerequisites(undefined, privateVendorRoot);
-      await buildExecutable((p) => p);
+      await buildExecutable(
+        (p) => p,
+        opts.cSourcePath === undefined
+          ? {}
+          : { programPath: opts.cSourcePath, compilerVisibleSource: opts.cPath },
+      );
     } finally {
       await rm(privateVendorRoot, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -896,7 +922,9 @@ export async function compileCInternal(
         localArtifact === null
           ? runtimeFingerprint(rtDir)
           : Promise.resolve(localArtifact.runtimeHash),
-        localArtifact === null ? readFile(opts.cPath) : Promise.resolve(localArtifact.programBytes),
+        localArtifact === null
+          ? readFile(opts.cSourcePath ?? opts.cPath)
+          : Promise.resolve(localArtifact.programBytes),
       ]);
       compileMetadataStamp =
         compileMetadataKey === null
@@ -965,7 +993,7 @@ export async function compileCInternal(
       Promise.all([
         ccVersion(driver.argv, toolchainEnv, true),
         runtimeFingerprint(rtDir),
-        readFile(opts.cPath),
+        readFile(opts.cSourcePath ?? opts.cPath),
       ]));
   } catch (error) {
     // A version/fingerprint probe is an optimization boundary. If the compiler

@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import { nodeThrowExpr, countedFor, strLit, varRef, dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
@@ -194,7 +195,30 @@ export function lowerSearchParamsNew(
     );
   }
   const arg = args[0];
-  if (arg === undefined || (ts.isIdentifier(arg) && arg.text === "undefined")) {
+  if (arg === undefined) {
+    return { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc };
+  }
+  return lowerSearchParamsInit(lowerer, arg, loc);
+}
+
+/** The URLSearchParams built from one init expression. A conditional
+ * init (`new URLSearchParams(c ? { a: "1" } : {})`) evaluates its
+ * condition first and builds from the arm it selects, so each arm may be
+ * any supported init shape. */
+function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc): IrExpr {
+  let inner = arg;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (ts.isConditionalExpression(inner)) {
+    return {
+      kind: "ternary",
+      cond: lowerer.lowerCondition(inner.condition),
+      then: lowerSearchParamsInit(lowerer, inner.whenTrue, loc),
+      else_: lowerSearchParamsInit(lowerer, inner.whenFalse, loc),
+      type: SEARCH_PARAMS_T,
+      loc,
+    };
+  }
+  if (ts.isIdentifier(arg) && arg.text === "undefined") {
     return { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc };
   }
   // The object-literal init: `{ a: "1", b: "2" }` appends pairs in
@@ -292,7 +316,7 @@ function searchParamsFromTuples(
   const key = `sp.fromTuples:${row.shapeId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%sp.fromTuples.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%sp.fromTuples", key);
     lowerer.valueHelpers.set(key, helper);
     const pairsT = init.type;
     const sp = (): IrExpr => varRef("sp.0", SEARCH_PARAMS_T, loc);
@@ -372,7 +396,7 @@ function lowerOptionalStringSearchParams(
   const key = `sp.optionalString:${init.type.unionId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%sp.optionalString.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%sp.optionalString", key);
     lowerer.valueHelpers.set(key, helper);
     const value = varRef("init.0", init.type, loc);
     lowerer.liftedFns.push({
@@ -678,7 +702,7 @@ function lowerSpForEachCall(
   const key = `${arity}:${typeKey(fnRet)}`;
   let helper = lowerer.spHofHelpers.get(key);
   if (!helper) {
-    helper = `%sp.forEach.${lowerer.spHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%sp.forEach", key);
     lowerer.spHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildSpForEachFn(helper, arity, fnRet, loc));
   }

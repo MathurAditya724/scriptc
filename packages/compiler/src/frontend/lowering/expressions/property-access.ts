@@ -1,11 +1,16 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
+import { keyedHelperName } from "../stable-names.js";
 import { staticallySelected } from "../static-typeof.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import { isThisParameter } from "../call-signatures.js";
-import { localPrivateBrandClass } from "../private-brands.js";
+import {
+  checkedPrivateValue,
+  localPrivateBrandClass,
+  privateNameClass,
+} from "../private-brands.js";
 import { type Lowerer, PoisonError, jsFuncNameOf, neverTaintedJsType, own } from "../lowerer.js";
 import {
   ARRAY_METHODS,
@@ -90,7 +95,7 @@ import {
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
 import { findGenericMethodOn, lowerStaticFieldRead } from "../lower-classes.js";
-import { lowerClassPrototypeData } from "../class-prototypes.js";
+import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
 import { lowerEnumAccess } from "../lower-enums.js";
 import {
   hasOptionalChainGuard,
@@ -131,6 +136,7 @@ import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerEventStaticProperty } from "../builtins/numbers.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
+import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
 import { iteratorResultValueRead } from "../lower-generators.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
@@ -162,6 +168,7 @@ import { lowerUnionFieldRead } from "./union-fields.js";
 import { errorPropertyRead } from "../error-methods.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/compression.js";
+import { isWebCryptoReceiver } from "../builtins/crypto.js";
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
 import { keyedFieldRead } from "./keyed-field-targets.js";
 import { promisePrototypeValue } from "../thenables.js";
@@ -281,6 +288,24 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // `value.#x` on a checked-dynamic value, or on a checked extraction of
+  // one: the field of the brand-checked receiver (checkedPrivateValue).
+  if (ts.isPrivateIdentifier(expr.name)) {
+    const owner = privateNameClass(lowerer, expr.name);
+    const field = owner?.fields.get(expr.name.text);
+    const probed = field ? tryLowerExpression(lowerer, expr.expression) : null;
+    if (owner && field && probed && checkedDynamicValue(probed)) {
+      const value = checkedDynamicValue(lowerer.lowerExpr(expr.expression))!;
+      return {
+        kind: "fieldGet",
+        obj: checkedPrivateValue(lowerer, owner, expr, value, loc),
+        className: owner.def.name,
+        field: expr.name.text,
+        type: field,
+        loc,
+      };
+    }
+  }
   if (!expr.questionDotToken) {
     const navigator = lowerNavigatorMember(lowerer, expr, NODE_COMPAT_VERSION);
     if (navigator) return navigator;
@@ -641,14 +666,20 @@ export function lowerPropertyAccessExpr(
       );
       if (fixedArity) {
         // A `this` parameter is type-only: callers never pass it.
-        return {
-          kind: "numLit",
-          value: (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
-            (p) => !isThisParameter(p),
-          ).length,
-          type: F64,
-          loc,
-        };
+        const declared = (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
+          (p) => !isThisParameter(p),
+        ).length;
+        const count = Math.max(declared, contextualArgumentCount(lowerer, fn) ?? 0);
+        // Calls through the expression's own name pass the declared count,
+        // calls through the wider slot pass more: no constant answers both.
+        if (count > declared && referencesOwnName(lowerer, fn)) {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            "'arguments.length' in a function expression that is called both through its own name and through a function type with more parameters (the count varies per call)",
+          );
+        }
+        return { kind: "numLit", value: count, type: F64, loc };
       }
       lowerer.unsupported(
         "SC1090",
@@ -842,8 +873,16 @@ export function lowerPropertyAccessExpr(
     if (runtimeOptionalClassField(lowerer, handled, expr)) return handled;
     return iteratorResultValueRead(lowerer, handled, expr) ?? lowerer.maybeNarrow(handled, expr);
   }
+  // `globalThis.crypto` is the WebCrypto object the bare `crypto` answers.
+  if (
+    !expr.questionDotToken &&
+    stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis" &&
+    stdlibGlobalNameOf(lowerer, expr) === "crypto"
+  ) {
+    return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+  }
   // `globalThis.<name>` that no lowering above claimed
-  // (globalThis.crypto, globalThis.SubtleCrypto, globalThis.localStorage
+  // (globalThis.SubtleCrypto, globalThis.localStorage
   // — the harness's capability-conditional knownGlobals adds): the
   // PROPERTY spelling of the identifier chokepoint's JS rule — a stdlib
   // global taken as a VALUE in a JavaScript source is the same opaque
@@ -1664,6 +1703,19 @@ export function lowerIntrinsicProperty(
     return { kind: "libCall", fn: "dyn.arrayPrototype", args: [], type: DYN, loc: locOf(expr) };
   if (lowerer.stdlibGlobalMember(expr, "Object") === "prototype")
     return { kind: "libCall", fn: "dyn.objectPrototype", args: [], type: DYN, loc: locOf(expr) };
+  // Error.prototype as a value (`F.prototype = Object.create(Error.prototype)`)
+  // and Error.captureStackTrace read as a function (`if
+  // (Error.captureStackTrace) ...`).
+  if (isErrorPrototypeValue(lowerer, expr))
+    return { kind: "libCall", fn: "dyn.errorPrototype", args: [], type: DYN, loc: locOf(expr) };
+  if (lowerer.stdlibGlobalMember(expr, "Error") === "captureStackTrace")
+    return {
+      kind: "libCall",
+      fn: "dyn.errorCaptureStackTraceFunction",
+      args: [],
+      type: DYN,
+      loc: locOf(expr),
+    };
   // Function.prototype as a VALUE (a prototype-chain link:
   // `Object.setPrototypeOf(F.prototype, Function.prototype)`): one
   // anonymous function answering undefined, length 0 — a zero-capture
@@ -2783,7 +2835,7 @@ export function lowerGroupsProjection(
   const key = `regexgroups:${shapeId}:${groups.map((g) => `${g.name}=${g.index}`).join(",")}:${recvKey}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%regex.groups.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%regex.groups", key);
     lowerer.valueHelpers.set(key, helper);
     const body: IrStmt[] = [];
     const locals: IrLocal[] = [{ id: "m.0", name: "m", type: recv.type, mutable: true }];
@@ -2959,6 +3011,9 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
     if (
       receiverIr?.kind !== "object" &&
       propSym &&
+      // The WebCrypto object's generic getRandomValues reads off its
+      // dynamic object.
+      !isWebCryptoReceiver(lowerer, expr.expression) &&
       isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(propSym), lowerer.checker) &&
       // CLASS members keep the class-path fences (a poisoned class's own
       // diagnostics, the bound-method fence above).
@@ -3533,6 +3588,13 @@ export function classFieldTarget(
  * known class instance OR a record, and the member is a field or (class
  * receivers) a declared accessor property. Returns the pieces of a
  * fieldSet/recordSet/accessor-call (minus value/kind) or null. */
+/** The checked-dynamic value `expr` reads: itself, or the value a checked
+ * extraction validates. Null for other expressions. */
+function checkedDynamicValue(expr: IrExpr): IrExpr | null {
+  if (expr.type.kind === "dyn") return expr;
+  return expr.kind === "dynCheck" && expr.value.type.kind === "dyn" ? expr.value : null;
+}
+
 export function fieldTarget(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
@@ -3567,6 +3629,30 @@ export function fieldTarget(
         className: owner.info.def.name,
       };
       return classFieldTarget(lowerer, access.expression, ownerType, access.name.text);
+    }
+  }
+  // `value.#x = v` on a checked-dynamic value: the field of the
+  // brand-checked receiver (checkedPrivateValue).
+  if (ts.isPrivateIdentifier(access.name)) {
+    const owner = privateNameClass(lowerer, access.name);
+    const probed = owner?.fields.has(access.name.text)
+      ? tryLowerExpression(lowerer, access.expression)
+      : null;
+    if (owner && probed && checkedDynamicValue(probed)) {
+      const receiver = checkedPrivateValue(
+        lowerer,
+        owner,
+        access,
+        checkedDynamicValue(lowerer.lowerExpr(access.expression))!,
+        locOf(access),
+      );
+      return classFieldTarget(
+        lowerer,
+        access.expression,
+        { kind: "object", className: owner.def.name },
+        access.name.text,
+        receiver,
+      );
     }
   }
   const stored = ts.isIdentifier(access.expression)
@@ -3994,6 +4080,8 @@ function lowerStreamObjectProperty(
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
+  const valueStream = lowerValueStreamProperty(lowerer, expr);
+  if (valueStream) return valueStream;
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (recvT?.kind !== "object") return null;
   const info = lowerer.classes.get(recvT.className);
@@ -4008,10 +4096,26 @@ function lowerStreamObjectProperty(
   return lowerStreamProperty(lowerer, expr, info);
 }
 
+/** The error constructors among GLOBAL_CONSTRUCTOR_VALUES. Their statics
+ * (`Error.stackTraceLimit`, `Error.captureStackTrace`) keep their own
+ * lowerings, so fenceBuiltinConstructorStaticRead leaves them alone. */
+const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+]);
+
 /** The builtin constructors JavaScript sources read as real function
  * values rather than identity tokens: the runtime interns one function per
  * constructor, and dynamic values answer `.constructor` with the same one,
- * so `o.constructor === Object` is an exact identity test. */
+ * so `o.constructor === Object` and `err.constructor === TypeError` are
+ * exact identity tests, and `err.constructor.name` is the constructor's
+ * name. */
 const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Object",
   "Function",
@@ -4022,6 +4126,8 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Promise",
   "WeakMap",
   "WeakSet",
+  "FinalizationRegistry",
+  ...ERROR_CONSTRUCTOR_VALUES,
 ]);
 
 /** The builtin global functions JavaScript sources read as interned
@@ -4072,8 +4178,18 @@ export function builtinGlobalValue(canonical: string, loc: SrcLoc, js = false): 
 const BUILTIN_VALUE_MEMBERS: ReadonlySet<string> = new Set(["name", "length", "constructor"]);
 
 /** The Object statics whose answers for an interned builtin function value
- * match Node's (identity, and the empty enumerable own-key lists). */
-const BUILTIN_VALUE_REFLECTION: ReadonlySet<string> = new Set(["is", "keys", "values", "entries"]);
+ * match Node's (identity, the empty enumerable own-key lists, and
+ * extensibility: freezing, sealing and preventExtensions are fenced, so the
+ * values stay extensible). */
+const BUILTIN_VALUE_REFLECTION: ReadonlySet<string> = new Set([
+  "is",
+  "keys",
+  "values",
+  "entries",
+  "isExtensible",
+  "isFrozen",
+  "isSealed",
+]);
 
 /** The value `builtinGlobalValue` gives the stdlib global `expr` read at its
  * use site: null when the use reads the global's members (they keep their
@@ -4164,6 +4280,7 @@ function fenceBuiltinConstructorStaticRead(
     symbol !== undefined &&
     ts.symbolName(symbol).endsWith("Constructor") &&
     GLOBAL_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
+    !ERROR_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
     lowerer.isStdlibSymbol(symbol)
   )
     lowerer.stdlibMemberFence(access);
@@ -4329,4 +4446,48 @@ function lowerPromiseConstructorRead(
         };
   }
   return null;
+}
+
+/** Whether a named function expression refers to itself by name in its
+ * body (a recursive call, or the function escaping under its own name). */
+function referencesOwnName(lowerer: Lowerer, fn: ts.Node): boolean {
+  if (!ts.isFunctionExpression(fn) || fn.name === undefined || fn.body === undefined) return false;
+  const self = lowerer.checker.getSymbolAtLocation(fn.name);
+  if (self === undefined) return false;
+  const name = fn.name.text;
+  let found = false;
+  ts.walkPreorder(fn.body, (node) => {
+    if (found) return "stop";
+    if (
+      ts.isIdentifier(node) &&
+      node.text === name &&
+      lowerer.checker.getSymbolAtLocation(node) === self
+    )
+      found = true;
+    return undefined;
+  });
+  return found;
+}
+
+/** The argument count every caller passes a function expression whose
+ * value flows into one fixed-arity function type, an array method's
+ * callback or an annotated slot: that type's parameter count. Null when
+ * there is no such type or its arity varies. */
+function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | null {
+  if (!ts.isFunctionExpression(fn)) return null;
+  const contextual = lowerer.checker.getContextualType(fn);
+  if (contextual === undefined) return null;
+  const signatures = lowerer.checker.getCallSignatures(
+    lowerer.checker.getNonNullableType(contextual),
+  );
+  if (signatures.length !== 1) return null;
+  const declaration = signatures[0]!.declaration;
+  if (declaration === undefined) return null;
+  let count = 0;
+  for (const parameter of (declaration.parameters?.nodes ?? []) as ts.ParameterDeclaration[]) {
+    if (isThisParameter(parameter)) continue;
+    if (parameter.questionToken || parameter.initializer || parameter.dotDotDotToken) return null;
+    count++;
+  }
+  return count;
 }
