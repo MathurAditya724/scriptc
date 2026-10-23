@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { nativeCodegenTarget } from "./targets.js";
 
 /** The x86-64 microarchitecture levels an executable may require
  * (`--target-cpu`). `baseline` is the x86-64 baseline every release build
@@ -110,7 +109,7 @@ export function targetCpuField(cpu: TargetCpu | undefined): { targetCpu?: Target
 export function targetCpuTargetRefusal(
   cpu: TargetCpu | undefined,
   platform: string,
-  architecture: string = nativeCodegenTarget()?.architecture ?? process.arch,
+  architecture: string,
 ): string | null {
   if (cpu === undefined || cpu === "baseline") return null;
   if (architecture !== "x64" || platform === "wasi")

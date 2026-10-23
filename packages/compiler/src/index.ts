@@ -807,6 +807,7 @@ async function prepareExecutableInput(
         lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
         ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
         ...inlineRcOption(opts.optimization, opts.sanitize === true),
+        ...targetCpuField(opts.targetCpu),
       });
     } catch (err) {
       if (!(err instanceof LlvmUnsupportedError)) throw err;
@@ -1446,7 +1447,11 @@ async function compileTracked(
       }
     }
   }
-  const targetCpuRefusal = targetCpuTargetRefusal(opts.targetCpu, buildPlatform);
+  const targetCpuRefusal = targetCpuTargetRefusal(
+    opts.targetCpu,
+    buildPlatform,
+    nativeCodegenTarget()?.architecture ?? process.arch,
+  );
   if (targetCpuRefusal !== null) {
     return {
       ok: false,

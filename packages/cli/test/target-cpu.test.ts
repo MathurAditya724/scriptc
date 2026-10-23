@@ -64,3 +64,37 @@ test.runIf(process.platform === "linux" && process.arch === "x64")(
   },
   240_000,
 );
+
+test("--target-cpu levels are refused for arm64 and WASI targets", async () => {
+  const dir = await mkdtemp(join("/tmp", "scriptc-target-cpu-refusal-"));
+  const entry = join(dir, "main.ts");
+  try {
+    await writeFile(entry, program);
+    for (const target of ["aarch64-unknown-linux-gnu", "wasm32-wasi"]) {
+      for (const kind of ["llvm", "asm", "obj", "exe"]) {
+        const build = execFileAsync(
+          process.execPath,
+          [
+            "--import",
+            tsxLoader,
+            cliEntry,
+            "build",
+            entry,
+            `--emit=${kind}`,
+            "-o",
+            join(dir, `out-${kind}`),
+            "--target-cpu=x86-64-v3",
+          ],
+          {
+            env: { ...process.env, SCRIPTC_TARGET: target, SCRIPTC_CACHE_DIR: join(dir, "cache") },
+          },
+        );
+        await expect(build, `${target} ${kind}`).rejects.toThrow(
+          /--target-cpu=x86-64-v3 requires an x86-64 target/,
+        );
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 240_000);

@@ -1,5 +1,5 @@
-import { targetCpuField } from "../backend/target-cpu.js";
-import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { targetCpuField, targetCpuTargetRefusal } from "../backend/target-cpu.js";
+import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { CompilationTiming } from "../timing.js";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -316,6 +316,17 @@ export function prepareNativeExecutable(
   timing: CompilationTiming = () => {},
 ): NativeExecutableInput | CompileFailure {
   const outputKind = options.outputKind ?? "exe";
+  const targetCpuRefusal = targetCpuTargetRefusal(
+    options.targetCpu,
+    toolchain.target.platform,
+    toolchain.target.architecture,
+  );
+  if (targetCpuRefusal !== null)
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag("SC3002", targetCpuRefusal, entry)],
+      sourceTexts: new Map(),
+    };
   const stem = basename(entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const outputPaths = [
     resolve(options.outPath),
