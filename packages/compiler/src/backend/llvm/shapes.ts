@@ -1687,6 +1687,17 @@ export function destroyDefinitions(
   ];
 }
 
+/** The frozen bit of a freezable record's rc word (scr_rc.h SCR_RC_FROZEN):
+ * bit 62 on 64-bit targets, bit 30 on 32-bit ones. */
+function recordFrozenBit(sizeType: RcCount): bigint {
+  return 1n << (sizeType === "i64" ? 62n : 30n);
+}
+
+/** `value` as a signed LLVM integer literal of `sizeType`. */
+function sizeLiteral(sizeType: RcCount, value: bigint): string {
+  return BigInt.asIntN(sizeType === "i64" ? 64 : 32, value).toString();
+}
+
 /** Common NULL/immortal/decrement skeleton for ordinary object releases.
  * `freeBody` owns the zero-ref teardown and must leave the current block at
  * its end; traced objects also get the possible-cycle-root branch.
@@ -1704,13 +1715,16 @@ export function releaseBody(
   immortal = false,
   chained = false,
   segmented = false,
+  frozen = false,
 ): string[] {
   const S = host.sizeType;
   if (bounded) host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
   const destroy = `${fnName}_destroy`;
+  // A freezable record's count is the word without its frozen bit.
+  const notFrozen = sizeLiteral(S, ~recordFrozenBit(S));
   const lines = [
     ...(bounded ? destroyDefinitions(destroy, freeBody, chained, segmented ? host : null) : []),
-    ...releaseFastPath(host, fnName, `${fnName}_slow`, traced, comment, immortal),
+    ...releaseFastPath(host, fnName, `${fnName}_slow`, traced, comment, immortal, S, frozen),
     `define internal void @${fnName}_slow(ptr %o) noinline ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
     `entry:`,
     `  %isnull = icmp eq ptr %o, null`,
@@ -1722,7 +1736,9 @@ export function releaseBody(
     `dec:`,
     `  %n = sub ${S} %rc, 1`,
     `  store ${S} %n, ptr %o`,
-    `  %dead = icmp eq ${S} %n, 0`,
+    ...(frozen
+      ? [`  %refs = and ${S} %n, ${notFrozen}`, `  %dead = icmp eq ${S} %refs, 0`]
+      : [`  %dead = icmp eq ${S} %n, 0`]),
     `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
     `free:`,
     ...(traced ? cycleDeadLines(host, "teardown") : []),
@@ -1752,9 +1768,14 @@ export function releaseFastPath(
   comment = "",
   immortal = false,
   count: RcCount = host.sizeType,
+  frozen = false,
 ): string[] {
   const S = count;
   if (immortal) return immortalRcBody(host, fnName, "void", comment);
+  // A freezable record compares its count without the frozen bit: an
+  // immortal word's count is then ~FROZEN, which the same compare sends to
+  // `slow`.
+  const notFrozen = ~recordFrozenBit(S);
   return [
     `define internal void @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment} (fast path)` : ""}`,
     `entry:`,
@@ -1762,8 +1783,13 @@ export function releaseFastPath(
     `  br i1 %isnull, label %done, label %check`,
     `check:`,
     `  %rc = load ${S}, ptr %o`,
-    `  %rcm2 = sub ${S} %rc, 2`,
-    `  %shared = icmp ult ${S} %rcm2, -3`,
+    ...(frozen
+      ? [
+          `  %refs = and ${S} %rc, ${sizeLiteral(S, notFrozen)}`,
+          `  %rcm2 = sub ${S} %refs, 2`,
+          `  %shared = icmp ult ${S} %rcm2, ${sizeLiteral(S, notFrozen - 2n)}`,
+        ]
+      : [`  %rcm2 = sub ${S} %rc, 2`, `  %shared = icmp ult ${S} %rcm2, -3`]),
     `  br i1 %shared, label %dec, label %slow`,
     `dec:`,
     `  %n = sub ${S} %rc, 1`,
@@ -2004,6 +2030,7 @@ export function emitRecordShapes(
         false,
         chained,
         segmented,
+        shape.freezable === true,
       ),
       ``,
     );

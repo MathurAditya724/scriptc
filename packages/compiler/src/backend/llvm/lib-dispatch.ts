@@ -840,6 +840,19 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     return { name: t, type: e.type };
   }
   if (e.fn === "bytes.absent") return host.own({ name: "null", type: e.type });
+  if (e.fn === "record.isFrozen") {
+    // The frozen bit of the record's rc word (scr_rc.h SCR_RC_FROZEN) is
+    // its second-highest bit; an immortal word sets the highest one too.
+    const value = host.emitReadReceiver(e.args[0]!);
+    const S = host.sizeType;
+    const rc = host.B.tmp(),
+      top = host.B.tmp(),
+      t = host.B.tmp();
+    host.B.line(`${rc} = load ${S}, ptr ${value.name}`);
+    host.B.line(`${top} = lshr ${S} ${rc}, ${S === "i64" ? 62 : 30}`);
+    host.B.line(`${t} = icmp eq ${S} ${top}, 1`);
+    return { name: t, type: e.type };
+  }
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
   // events.once builds typed listener adapters beside the emitter calls.
   if (e.fn === "events.once" || e.fn === "events.onceSignal")
@@ -948,6 +961,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "blob":
     case "wasm":
     case "array":
+    case "collection":
     case "record":
     case "disposable":
     case "punycode":
