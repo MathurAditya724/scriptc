@@ -212,6 +212,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "nodeIsland.share": { argTypes: [STRING, STRING, DYN], result: VOID },
   "nodeIsland.sharedTdz": { argTypes: [], result: DYN },
   "nodeIsland.classMethodsOf": { argTypes: [DYN, DYN, DYN], result: DYN },
+  /** Island arrays of copied values as copies (a result, or an awaited
+   * promise's value). */
+  "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },
+  "nodeIsland.awaitCopy": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
    * checked-dynamic object (args: receiver, key string, value — all
    * borrowed; the runtime copies the key and retains the value in). An
