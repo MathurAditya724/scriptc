@@ -54,3 +54,38 @@ const words: string[] = ["a"];
 const wordsView: unknown[] = words;
 wordsView.push(1, false);
 console.log(words, words.join("-"), words.length, typeof wordsView[1]);
+
+// A conversion that changes the array does not change the spread's values,
+// and toSorted reads holes as undefined.
+const grown: number[] = [3, 1];
+const grownView: unknown[] = grown;
+grownView.push({
+  valueOf: () => {
+    for (let i = 0; i < 64; i++) grown.push(i);
+    grown.length = 1;
+    return 2;
+  },
+});
+console.log(Math.max(...grown), Math.min(...grown), grown.length);
+const holey: string[] = ["c", "a"];
+const holeyView: unknown[] = holey;
+holeyView[4] = 7;
+holeyView[6] = undefined;
+console.log(holey.toSorted(), holey.length);
+holey.sort();
+console.log(holey, holey.length);
+
+// A conversion that removes the element it converts.
+const shrinking: number[] = [1];
+const shrinkingView: unknown[] = shrinking;
+shrinkingView.push({
+  toString: () => {
+    shrinking.length = 0;
+    return "gone";
+  },
+});
+console.log(shrinking.join("+"), shrinking.length);
+const cut: string[] = ["a", "b"];
+const cutView: unknown[] = cut;
+cutView.splice(1, 0, { toString: () => ((cut.length = 0), "x") });
+console.log(JSON.stringify(cut.join("-")), cut.length);

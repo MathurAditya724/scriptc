@@ -2066,33 +2066,47 @@ ScrArr *scr_arr_fill_undefined(ScrArr *a, double start, double end) {
  * the empty array yields the zero-argument constants. Borrows the array. */
 /* ToNumber of every element in order, as Math.max/min/hypot apply it to
  * their spread arguments before comparing; for arrays that may hold
- * foreign elements, whose conversion can call user code. NULL with the
- * exception pending when a conversion throws. +1 malloc'd buffer. */
-static double *scr_arr_coerced_numbers(const ScrArr *a) {
-  double *out = malloc((a->len ? a->len : 1) * sizeof(*out));
-  if (!out) scr_arr_oom();
-  for (size_t i = 0; i < a->len; i++) {
+ * foreign elements, whose conversion can call user code. As in the spread,
+ * the elements are taken first: the foreign values are retained before
+ * any conversion runs, so a conversion that changes the array changes
+ * neither the count (*count) nor the values. NULL with the exception
+ * pending when a conversion throws. +1 malloc'd buffer. */
+static double *scr_arr_coerced_numbers(const ScrArr *a, size_t *count) {
+  size_t n = a->len;
+  double *out = malloc((n ? n : 1) * sizeof(*out));
+  ScrDyn **held = calloc(n ? n : 1, sizeof(*held));
+  if (!out || !held) scr_arr_oom();
+  for (size_t i = 0; i < n; i++) {
     uint64_t slot;
     uint8_t state = scr_arr_f64_state_at(a, i, &slot);
-    if (state == SCR_ARR_FOREIGN) {
-      out[i] = scr_arr_foreign_conversions()->to_number(scr_slot_to_ptr(slot));
-      if (scr_exc_pending()) {
-        free(out);
-        return NULL;
-      }
-    } else {
-      out[i] = state == SCR_ARR_VALUE ? scr_slot_to_f64(slot) : NAN;
-    }
+    if (state == SCR_ARR_FOREIGN) held[i] = scr_dyn_retain(scr_slot_to_ptr(slot));
+    out[i] = state == SCR_ARR_VALUE ? scr_slot_to_f64(slot) : NAN;
   }
+  bool failed = false;
+  for (size_t i = 0; i < n; i++) {
+    if (!held[i]) continue;
+    if (!failed) {
+      out[i] = scr_arr_foreign_conversions()->to_number(held[i]);
+      failed = scr_exc_pending();
+    }
+    scr_dyn_release(held[i]);
+  }
+  free(held);
+  if (failed) {
+    free(out);
+    return NULL;
+  }
+  *count = n;
   return out;
 }
 
 static double scr_math_extreme_foreign(ScrArr *a, bool max) {
-  double *values = scr_arr_coerced_numbers(a);
+  size_t n;
+  double *values = scr_arr_coerced_numbers(a, &n);
   if (!values) return NAN;
   double best = max ? -INFINITY : INFINITY;
   bool nan = false;
-  for (size_t i = 0; i < a->len; i++) {
+  for (size_t i = 0; i < n; i++) {
     double v = values[i];
     if (isnan(v)) nan = true;
     else if (max ? (v > best || (v == 0.0 && best == 0.0 && !signbit(v)))
@@ -2135,8 +2149,9 @@ double scr_math_hypot_arr(ScrArr *a) {
   double scale = 0.0;
   bool has_nan = false;
   double *coerced = NULL;
-  if (scr_arr_may_hold_foreign(a) && !(coerced = scr_arr_coerced_numbers(a))) return NAN;
-  for (size_t i = 0; i < a->len; i++) {
+  size_t n = a->len;
+  if (scr_arr_may_hold_foreign(a) && !(coerced = scr_arr_coerced_numbers(a, &n))) return NAN;
+  for (size_t i = 0; i < n; i++) {
     uint64_t slot;
     double v;
     if (coerced) {
@@ -2160,7 +2175,7 @@ double scr_math_hypot_arr(ScrArr *a) {
   }
   double sum = 0.0;
   double correction = 0.0;
-  for (size_t i = 0; i < a->len; i++) {
+  for (size_t i = 0; i < n; i++) {
     uint64_t slot = 0;
     if (!coerced) (void)scr_arr_f64_state_at(a, i, &slot);
     double v = (coerced ? coerced[i] : scr_slot_to_f64(slot)) / scale;
@@ -2271,7 +2286,13 @@ double scr_arr_get_number(const ScrArr *a, double i) {
   } else if (!scr_arr_prop_get_state(a, i, &slot, &state)) {
     return NAN;
   }
-  if (state == SCR_ARR_FOREIGN) return scr_arr_foreign_conversions()->to_number(scr_slot_to_ptr(slot));
+  if (state == SCR_ARR_FOREIGN) {
+    /* The conversion can call user code that removes the element. */
+    ScrDyn *value = scr_dyn_retain(scr_slot_to_ptr(slot));
+    double number = scr_arr_foreign_conversions()->to_number(value);
+    scr_dyn_release(value);
+    return number;
+  }
   return state == SCR_ARR_VALUE ? scr_slot_to_f64(slot) : NAN;
 }
 
@@ -3404,20 +3425,21 @@ static void scr_arr_primitive_order(uint64_t *values, size_t count,
 }
 
 /* The default ordering of an array that may hold foreign elements: present
- * elements sort by their string conversions (which may call user code, so
- * they are computed first, and a throw leaves the array unchanged), then
- * present undefined values, then holes. */
+ * elements sort by their string conversions, then present undefined
+ * values, then holes (toSorted reads them as undefined). The conversions
+ * may call user code, so the elements are taken first, each retained, as
+ * the sort's element list is; a throw leaves the array unchanged. */
 static ScrArr *scr_arr_sort_foreign(ScrArr *a, bool copy) {
-  size_t cap = (a->len < a->cap ? a->len : a->cap) + SCR_AX(a)->sparse_len;
+  size_t length = a->len;
+  size_t dense = a->len < a->cap ? a->len : a->cap;
+  size_t cap = dense + SCR_AX(a)->sparse_len;
   uint64_t *slots = cap ? malloc(cap * sizeof(*slots)) : NULL;
   uint8_t *states = cap ? malloc(cap) : NULL;
   ScrStr **keys = cap ? malloc(cap * sizeof(*keys)) : NULL;
   uint64_t *order_of = cap ? malloc(cap * sizeof(*order_of)) : NULL;
   if (cap && (!slots || !states || !keys || !order_of)) scr_arr_oom();
   size_t count = 0, undefined_count = 0;
-  bool failed = false;
-  size_t dense = a->len < a->cap ? a->len : a->cap;
-  for (size_t at = 0; at < dense + SCR_AX(a)->sparse_len && !failed; at++) {
+  for (size_t at = 0; at < cap; at++) {
     uint64_t slot;
     uint8_t state;
     if (at < dense) {
@@ -3429,10 +3451,17 @@ static ScrArr *scr_arr_sort_foreign(ScrArr *a, bool copy) {
     }
     if (state == SCR_ARR_UNDEFINED) undefined_count++;
     if (state != SCR_ARR_VALUE && state != SCR_ARR_FOREIGN) continue;
+    slots[count] = scr_arr_retain_state_slot(a, slot, state);
+    states[count] = state;
+    count++;
+  }
+  bool failed = false;
+  size_t keyed = 0;
+  for (; keyed < count; keyed++) {
+    uint64_t slot = slots[keyed];
     ScrStr *key;
-    if (state == SCR_ARR_FOREIGN) {
+    if (states[keyed] == SCR_ARR_FOREIGN) {
       key = scr_arr_foreign_conversions()->to_string(scr_slot_to_ptr(slot));
-      if (!key) failed = true;
     } else if (a->elem == SCR_ELEM_STR) {
       key = scr_str_retain(scr_slot_to_ptr(slot));
     } else {
@@ -3440,37 +3469,48 @@ static ScrArr *scr_arr_sort_foreign(ScrArr *a, bool copy) {
       size_t n = scr_f64_to_str(scr_slot_to_f64(slot), text);
       key = scr_str_new(text, n);
     }
-    if (failed) break;
-    slots[count] = slot;
-    states[count] = state;
-    keys[count] = key;
-    order_of[count] = count;
-    count++;
+    if (!key) {
+      failed = true;
+      break;
+    }
+    keys[keyed] = key;
+    order_of[keyed] = keyed;
   }
-  ScrArr *out = NULL;
+  ScrArr *out = a;
   if (!failed) {
     ScrPrimitiveOrder order = {a->elem, NULL, keys};
     scr_arr_primitive_order(order_of, count, &order);
-    size_t length = a->len;
     if (copy) {
-      out = scr_arr_has_ops(a) ? scr_arr_new_ops(scr_arr_ops(a), count + undefined_count)
-                                    : scr_arr_new(a->elem, count + undefined_count);
+      /* The values, then present undefined for every other index. */
+      out = scr_arr_has_ops(a) ? scr_arr_new_ops(scr_arr_ops(a), length)
+                               : scr_arr_new(a->elem, length);
+      for (size_t i = 0; i < length; i++) {
+        if (i < count) scr_arr_store_state_owned(out, i, slots[order_of[i]], states[order_of[i]]);
+        else scr_arr_store_state_owned(out, i, 0, SCR_ARR_UNDEFINED);
+        out->len = (uint32_t)(i + 1);
+      }
     } else {
-      out = a;
+      /* The values, then the present undefined values; holes after them.
+       * The taken elements own their references; release the ones the
+       * array holds now, which a conversion may have changed. */
+      size_t now = a->len < a->cap ? a->len : a->cap;
+      for (size_t i = 0; i < now; i++)
+        scr_arr_release_state_slot(a, scr_arr_dense_get(a, i), scr_arr_dense_state(a, i));
+      for (size_t i = 0; i < SCR_AX(a)->sparse_len; i++)
+        scr_arr_release_state_slot(a, SCR_AX(a)->sparse[i].slot, SCR_AX(a)->sparse[i].state);
       ScrArrStorage old = scr_arr_take_storage(a);
       scr_arr_free_storage(&old);
+      a->len = (uint32_t)length;
+      for (size_t i = 0; i < count; i++)
+        scr_arr_store_state_owned(a, i, slots[order_of[i]], states[order_of[i]]);
+      for (size_t i = count; i < count + undefined_count; i++)
+        scr_arr_store_state_owned(a, i, 0, SCR_ARR_UNDEFINED);
     }
-    out->len = length;
-    for (size_t i = 0; i < count; i++) {
-      size_t k = order_of[i];
-      uint64_t slot = copy ? scr_arr_retain_state_slot(a, slots[k], states[k]) : slots[k];
-      scr_arr_store_state_owned(out, i, slot, states[k]);
-    }
-    for (size_t i = count; i < count + undefined_count; i++)
-      scr_arr_store_state_owned(out, i, 0, SCR_ARR_UNDEFINED);
     scr_arr_refill(out);
+  } else {
+    for (size_t i = 0; i < count; i++) scr_arr_release_state_slot(a, slots[i], states[i]);
   }
-  for (size_t i = 0; i < count; i++) scr_str_release(keys[i]);
+  for (size_t i = 0; i < keyed; i++) scr_str_release(keys[i]);
   free(slots);
   free(states);
   free(keys);
@@ -5384,16 +5424,24 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
    * across its seam; the finished string then needs fusing. */
   bool lone = scr_wtf8_any();
   bool lead_low = lone && a->len > 1 && scr_wtf8_low_at(sep->data);
-  for (size_t i = 0; i < a->len; i++) {
+  /* The length is read once: a conversion that shortens the array leaves
+   * the indices past its new end empty. */
+  size_t length = a->len;
+  for (size_t i = 0; i < length; i++) {
     if (i > 0) scr_join_append(&out, sep->data, sep->len);
+    if (i >= a->len) continue;
     uint64_t slot;
     uint8_t state = scr_arr_state_at(a, i, &slot);
     if (state == SCR_ARR_FOREIGN) {
-      /* join converts every element but undefined and null with ToString. */
-      const ScrDyn *value = scr_slot_to_ptr(slot);
+      /* join converts every element but undefined and null with ToString,
+       * which can call user code that removes the element; a throw ends
+       * the join with the exception pending. */
+      ScrDyn *value = scr_slot_to_ptr(slot);
       if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) continue;
+      scr_dyn_retain(value);
       ScrStr *text = scr_arr_foreign_conversions()->to_string(value);
-      if (!text) continue;
+      scr_dyn_release(value);
+      if (!text) break;
       scr_join_append(&out, text->data, text->len);
       scr_str_release(text);
       continue;
