@@ -730,7 +730,8 @@ static ScrDyn *sf_signal_get(void *ptr, const char *key, size_t len) {
                       : scr_dyn_retain(scr_dyn_undefined());
   }
   if (sf_name(key, len, "onabort")) return scr_et_handler_get(&s->core, "abort");
-  return NULL;
+  /* Inherited from EventTarget: the function every target shares. */
+  return scr_event_target_method_value(key, len);
 }
 
 static bool sf_signal_set(void *ptr, const char *key, size_t len,
@@ -5150,7 +5151,7 @@ static ScrDyn *sf_request_get(void *ptr, const char *key, size_t len) {
   if (default_value) { ScrStr *s = scr_str_new(default_value, strlen(default_value)); ScrDyn *v = scr_dyn_new_str(s); scr_str_release(s); return v; }
   if (sf_name(key, len, "keepalive") || sf_name(key, len, "isReloadNavigation") || sf_name(key, len, "isHistoryNavigation")) return scr_dyn_new_bool(false);
   if (sf_name(key, len, "body") || sf_name(key, len, "bodyUsed") || sf_name(key, len, "headers")) return sf_response_get(r->payload, key, len);
-  return scr_dyn_undefined();
+  return NULL;
 }
 static ScrDyn *sf_request_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc, const char *what) {
   SfRequest *r = ptr;
@@ -5655,33 +5656,70 @@ static bool sf_no_set(void *ptr, const char *key, size_t len,
   return false;
 }
 
+/* The members invoke answers, as values (ScrDynHandleMethod), with Node's
+ * lengths and the brand check each one runs on another receiver. The
+ * signal's EventTarget methods are EventTarget's own (sf_signal_get). */
+static const ScrDynHandleMethod sf_signal_methods[] = {
+    {"throwIfAborted", 0, false}, {NULL, 0, false}};
+static const ScrDynHandleMethod sf_stream_methods[] = {
+    {"cancel", 0, true}, {"getReader", 0, false}, {NULL, 0, false}};
+static const ScrDynHandleMethod sf_reader_methods[] = {
+    {"read", 0, true}, {"releaseLock", 0, false}, {"cancel", 0, true},
+    {NULL, 0, false}};
+static const ScrDynHandleMethod sf_body_methods[] = {
+    {"json", 0, true}, {"text", 0, true}, {"bytes", 0, true},
+    {"arrayBuffer", 0, true}, {NULL, 0, false}};
+static const ScrDynHandleMethod sf_headers_methods[] = {
+    {"append", 2, false}, {"delete", 1, false}, {"entries", 0, false},
+    {"forEach", 1, false}, {"get", 1, false}, {"getSetCookie", 0, false},
+    {"has", 1, false}, {"keys", 0, false}, {"set", 2, false},
+    {"values", 0, false}, {NULL, 0, false}};
+
+static ScrDyn *sf_rejected(void) {
+  ScrPromise *p = scr_promise_settled_ref(NULL, &scr_dyn_retain_v,
+                                          &scr_dyn_release_v, NULL);
+  ScrDyn *out = scr_dyn_new_promise(p);
+  scr_promise_release(p);
+  return out;
+}
+
 static const ScrDynHandleOps sf_signal_ops = {
     "AbortSignal", &sf_signal_retain_v, &sf_signal_release_v,
-    &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL};
+    &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL,
+    .methods = sf_signal_methods,
+    .invalid_this = "Value of \"this\" must be of type AbortSignal"};
 static const ScrDynHandleOps sf_abort_controller_ops = {
     "AbortController", &sf_signal_retain_v, &sf_signal_release_v,
     &sf_abort_controller_invoke, &sf_abort_controller_get, &sf_no_set, NULL};
 static const ScrDynHandleOps sf_stream_ops = {
     "ReadableStream", &sf_stream_retain_v, &sf_stream_release_v,
-    &sf_stream_invoke, &sf_stream_get, &sf_no_set, NULL};
+    &sf_stream_invoke, &sf_stream_get, &sf_no_set, NULL,
+    .methods = sf_stream_methods,
+    .invalid_this = "Value of \"this\" must be of type ReadableStream",
+    .rejected = &sf_rejected};
 static const ScrDynHandleOps sf_reader_ops = {
     "ReadableStreamDefaultReader", &sf_reader_handle_retain_v,
     &sf_reader_handle_release_v, &sf_reader_invoke, &sf_reader_get,
-    &sf_no_set, NULL};
+    &sf_no_set, NULL, .methods = sf_reader_methods,
+    .invalid_this =
+        "Value of \"this\" must be of type ReadableStreamDefaultReader",
+    .rejected = &sf_rejected};
 static const ScrDynHandleOps sf_controller_ops = {
     "ReadableStreamDefaultController", &sf_stream_retain_v,
     &sf_stream_release_v, &sf_controller_invoke, &sf_controller_get,
     &sf_no_set, NULL};
 static const ScrDynHandleOps sf_request_ops = {
     "Request", &sf_request_retain_v, &sf_request_release_v,
-    &sf_request_invoke, &sf_request_get, &sf_no_set, NULL};
+    &sf_request_invoke, &sf_request_get, &sf_no_set, NULL,
+    .methods = sf_body_methods, .rejected = &sf_rejected};
 static const ScrDynHandleOps sf_response_ops = {
     "Response", &sf_response_retain_v, &sf_response_release_v,
-    &sf_response_invoke, &sf_response_get, &sf_no_set, NULL};
+    &sf_response_invoke, &sf_response_get, &sf_no_set, NULL,
+    .methods = sf_body_methods, .rejected = &sf_rejected};
 static const ScrDynHandleOps sf_headers_ops = {
     "Headers", &sf_headers_retain_v, &sf_headers_release_v,
     &sf_headers_invoke, &sf_headers_get, &sf_no_set, NULL, NULL,
-    &sf_headers_step};
+    &sf_headers_step, .methods = sf_headers_methods};
 
 static void sf_teardown(void) {
   while (sf_live) {
@@ -5732,9 +5770,13 @@ static bool sf_no_set(void *ptr, const char *key, size_t len, const ScrDyn *valu
   (void)ptr; (void)key; (void)len; (void)value;
   return false;
 }
+static const ScrDynHandleMethod sf_signal_methods[] = {
+    {"throwIfAborted", 0, false}, {NULL, 0, false}};
 static const ScrDynHandleOps sf_signal_ops = {
   "AbortSignal", &sf_signal_retain_v, &sf_signal_release_v,
-  &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL };
+  &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL,
+  .methods = sf_signal_methods,
+  .invalid_this = "Value of \"this\" must be of type AbortSignal" };
 static const ScrDynHandleOps sf_abort_controller_ops = {
   "AbortController", &sf_signal_retain_v, &sf_signal_release_v,
   &sf_abort_controller_invoke, &sf_abort_controller_get, &sf_no_set, NULL };

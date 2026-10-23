@@ -5044,17 +5044,101 @@ ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k) {
   return method ? method : scr_dyn_retain(scr_dyn_undefined());
 }
 
+/* ── handle methods as values (ScrDynHandleMethod) ──────────────────
+ * One function per (tag, method), as Node's prototype methods are shared
+ * by every instance. The function calls invoke on its `this` when that is
+ * a handle of its tag, and otherwise raises the class's ERR_INVALID_THIS
+ * TypeError (or answers a promise rejected with it), as the WebIDL brand
+ * checks do. closure->fn holds the method entry, caps[0] the tag. */
+static SCR_TL ScrDyn **scr_dynh_method_values[SCR_DYNH_CAPACITY];
+static SCR_TL bool scr_dynh_method_values_registered;
+
+static void scr_dynh_method_values_cleanup(void) {
+  for (size_t tag = 0; tag < SCR_DYNH_CAPACITY; tag++) {
+    ScrDyn **values = scr_dynh_method_values[tag];
+    if (!values) continue;
+    scr_dynh_method_values[tag] = NULL;
+    const ScrDynHandleMethod *methods = scr_dynh_ops[tag]->methods;
+    for (size_t i = 0; methods[i].name; i++)
+      if (values[i]) scr_dyn_release(values[i]);
+    free(values);
+  }
+}
+
+static ScrDyn *scr_dynh_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  const ScrDynHandleMethod *method = closure->fn;
+  ScrDynHandleTag tag = (ScrDynHandleTag)scr_box_get_f64(closure->caps[0]);
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops(tag);
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *result;
+  if (self->kind == SCR_DYN_HANDLE && self->v.handle.tag == tag) {
+    result = ops->invoke(self->v.handle.ptr, self, method->name, args, argc, method->name);
+  } else {
+    const char *message = method->invalid_this ? method->invalid_this
+                          : ops->invalid_this  ? ops->invalid_this
+                                               : "Illegal invocation";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), "ERR_INVALID_THIS");
+    result = method->rejects && ops->rejected ? ops->rejected() : NULL;
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+/* The method `key` of the handle's class as a function value (+1), or NULL
+ * when the class has no such method. */
+static ScrDyn *scr_dynh_method_value(ScrDynHandleTag tag, const ScrDynHandleOps *ops, const char *key, size_t len) {
+  const ScrDynHandleMethod *methods = ops->methods;
+  if (!methods || !ops->invoke) return NULL;
+  for (size_t i = 0; methods[i].name; i++) {
+    if (strlen(methods[i].name) != len || memcmp(methods[i].name, key, len) != 0) continue;
+    if (!scr_dynh_method_values[tag]) {
+      size_t count = i + 1;
+      while (methods[count].name) count++;
+      scr_dynh_method_values[tag] = calloc(count, sizeof(ScrDyn *));
+      if (!scr_dynh_method_values[tag]) scr_trap("scriptc: out of memory\n");
+      if (!scr_dynh_method_values_registered) {
+        scr_dynh_method_values_registered = true;
+        scr_atexit(scr_dynh_method_values_cleanup);
+      }
+    }
+    ScrDyn **slot = &scr_dynh_method_values[tag][i];
+    if (!*slot) {
+      ScrClosure *closure = scr_closure_new((void *)&methods[i], 1);
+      closure->caps[0] = scr_box_new(SCR_BOX_F64);
+      scr_box_set_f64(closure->caps[0], (double)tag);
+      *slot = scr_dyn_new_func(closure, scr_dynh_method_call, methods[i].length, "", methods[i].name);
+    }
+    return scr_dyn_retain(*slot);
+  }
+  return NULL;
+}
+
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
-  const ScrDynHandleOps *ops = scr_dyn_handle_ops(d->v.handle.tag);
+  ScrDynHandleTag tag = d->v.handle.tag;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops(tag);
   ScrDyn *r = ops->get(d->v.handle.ptr, k->data, k->len);
   if (scr_exc_pending()) {
     scr_dyn_release(r);
     return NULL;
   }
+  if (!r) r = scr_dynh_method_value(tag, ops, k->data, k->len);
   /* Unmodeled names answer undefined — the checked-dynamic tree's own-property stance
    * (real-but-unmodeled members throw "not supported yet" inside ops->get instead;
    * SEMANTICS.md documents the remainder). */
   return r ? r : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* `key in handle`: the class's methods, and the properties its get models. */
+static bool scr_dyn_handle_in(const ScrDyn *d, const ScrStr *k) {
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops(d->v.handle.tag);
+  const ScrDynHandleMethod *methods = ops->invoke ? ops->methods : NULL;
+  for (size_t i = 0; methods && methods[i].name; i++)
+    if (strlen(methods[i].name) == k->len && memcmp(methods[i].name, k->data, k->len) == 0) return true;
+  if (!methods) return false;
+  ScrDyn *value = ops->get(d->v.handle.ptr, k->data, k->len);
+  if (!value) return scr_dyn_object_proto_name(k);
+  scr_dyn_release(value);
+  return true;
 }
 
 /* ── the ambient receiver (scr_runtime.h's design note) ───────────────
@@ -9267,6 +9351,7 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   }
   if (v->kind == SCR_DYN_PROXY) return scr_dyn_proxy_has(v, key);
   if (v->kind == SCR_DYN_BYTES) return scr_dyn_bytes_in(v, key);
+  if (v->kind == SCR_DYN_HANDLE) return scr_dyn_handle_in(v, key);
   if (scr_dyn_has_key(v, key)) return true;
   if (scr_exc_pending()) return false;
   if (v->kind == SCR_DYN_OBJ) return scr_dyn_builtin_inherited(v, key);
