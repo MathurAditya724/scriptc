@@ -2442,6 +2442,10 @@ static void sf_headers_append_pair(
       memcpy(joined_data + previous->len + 2, value->data, value->len);
       ScrStr *joined = scr_str_new(joined_data, joined_len);
       free(joined_data);
+      /* Appending an empty value leaves the separator's space at the end of
+       * the combined value, which a copy trims again: the pairs are no
+       * longer in their canonical, trimmed form. */
+      if (value->len == 0) h->canonical = false;
       scr_str_release(name);
       scr_str_release(value);
       scr_arr_set_ref(h->pairs, (double)(i + 1), joined);

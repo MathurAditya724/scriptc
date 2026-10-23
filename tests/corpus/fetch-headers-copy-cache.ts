@@ -83,3 +83,26 @@ try {
 } catch (error) {
   console.log((error as Error).name, (error as Error).message);
 }
+
+// Appending an empty value leaves the separator's space at the end of the
+// combined value; a copy trims it again, as Node's does. A leading
+// separator has no whitespace to trim.
+const spaced = new Headers();
+spaced.append("a", "x");
+spaced.append("a", "");
+spaced.append("b", "");
+spaced.append("b", "y");
+spaced.append("c", "");
+spaced.append("c", "");
+spaced.append("cookie", "k=v");
+spaced.append("cookie", "");
+const spacedList = (headers: Headers): string => {
+  const out: string[] = [];
+  headers.forEach((value, name) => out.push(`${name}=${JSON.stringify(value)}`));
+  return out.join(" ");
+};
+console.log(spacedList(spaced));
+console.log(spacedList(new Headers(spaced)));
+console.log(spacedList(new Headers(new Headers(spaced))));
+console.log(spacedList(new Response("", { headers: spaced }).headers));
+console.log(spacedList(new Request("http://example.test/", { headers: spaced }).headers));
