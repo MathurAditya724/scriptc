@@ -1,5 +1,6 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { keyedHelperName } from "../stable-names.js";
+import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
@@ -1105,11 +1106,18 @@ export function lowerPropertyAccessExpr(
       )
     ) {
       const fnName = jsFuncNameOf(expr.expression);
+      // A builtin function value whose length is not its adapter's
+      // parameter count (`Math.max.length` is 2).
+      const fnLength =
+        probed.kind === "closure"
+          ? lowerer.builtinCallableValueLengths.get(probed.fnName)
+          : undefined;
       const boxed: IrExpr = {
         kind: "dynFrom",
         value: probed,
         type: DYN,
         ...(fnName !== null ? { fnName } : {}),
+        ...(fnLength !== undefined ? { fnLength } : {}),
         loc,
       };
       const key: IrExpr = {
@@ -4218,6 +4226,10 @@ export function builtinGlobalValueAt(
   loc: SrcLoc,
   js: boolean,
 ): IrExpr | null {
+  // A namespace object models its own properties, so member reads and
+  // reflection read it like any object.
+  const namespace = js ? builtinNamespaceValue(lowerer, canonical, loc) : null;
+  if (namespace !== null) return namespace;
   if (readsBuiltinGlobalMembers(expr)) return null;
   const value = builtinGlobalValue(canonical, loc, js);
   if (value === null) return null;

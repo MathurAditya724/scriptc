@@ -2969,6 +2969,9 @@ export class Lowerer {
   readonly builtinCallableValueFns = new Map<string, string>();
   /** Each builtin function-value adapter's Node name, for boxed values. */
   readonly builtinCallableValueNames = new Map<string, string>();
+  /** Builtin function values whose `length` differs from their adapter's
+   * parameter count (BuiltinModuleFn.valueLength), by adapter name. */
+  readonly builtinCallableValueLengths = new Map<string, number>();
   /** Optional-chain lowering state. While a chain body lowers, the guarded
    * receiver NODE reads as a chainRecv (typed by the narrowed arm) instead
    * of re-lowering, its checker type reads non-nullish (typeOf), and the
@@ -9719,6 +9722,8 @@ export class Lowerer {
         // name Node's function carries (`[Function: randomUUID]`).
         const builtinName =
           expr.kind === "closure" ? this.builtinCallableValueNames.get(expr.fnName) : undefined;
+        const builtinLength =
+          expr.kind === "closure" ? this.builtinCallableValueLengths.get(expr.fnName) : undefined;
         return {
           kind: "dynFrom",
           value: expr,
@@ -9726,6 +9731,7 @@ export class Lowerer {
           loc: expr.loc,
           ...(liveRef ? { liveRef: true as const } : {}),
           ...(builtinName !== undefined ? { fnName: builtinName } : {}),
+          ...(builtinLength !== undefined ? { fnLength: builtinLength } : {}),
         };
       }
       return expr;
@@ -13901,6 +13907,8 @@ export class Lowerer {
       fnName = keyedHelperName(this, `%builtin.value.${fn.valueFn ?? fn.fn}`, key);
       this.builtinCallableValueFns.set(key, fnName);
       this.builtinCallableValueNames.set(fnName, display.slice(display.lastIndexOf(".") + 1));
+      if (fn.valueLength !== undefined)
+        this.builtinCallableValueLengths.set(fnName, fn.valueLength);
       const params = funcType.params.map((type, index) => ({
         localId: `arg.${index}`,
         name: `arg${index}`,

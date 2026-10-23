@@ -52,6 +52,14 @@ static bool scr_dyn_error_prototype_fence(const ScrDyn *value) {
 
 SCR_TL const ScrHandleStreamHooks *scr_handle_stream_hooks = NULL;
 
+/* Static member calls (`Math.abs(x)`) do not read the namespace objects,
+ * so replacing or deleting one of their function members would not reach
+ * those calls: the change throws instead. */
+static void scr_dyn_namespace_member_fence(void) {
+  static const char message[] = "Replacing or deleting a Math, JSON or Reflect member is not supported";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC1090");
+}
+
 /* Constructor capsules expose identity and name/length, but do not model
  * per-class static property tables yet. Never report a fabricated empty view. */
 static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
@@ -87,6 +95,7 @@ static void scr_json_oom(void) {
 static SCR_TL ScrDyn *scr_iterator_symbol;
 static SCR_TL ScrDyn *scr_async_iterator_symbol;
 static SCR_TL ScrDyn *scr_to_primitive_symbol;
+static SCR_TL ScrDyn *scr_to_string_tag_symbol;
 static bool scr_dyn_generator(const ScrDyn *value) {
   return value && value->kind == SCR_DYN_TYPED_REF &&
     (value->v.typed_ref.type_key[0] == 'g' || value->v.typed_ref.type_key[0] == 'a') &&
@@ -181,6 +190,17 @@ void scr_dyn_install_to_primitive_symbol(ScrDyn *key) {
   if (scr_to_primitive_symbol) return;
   scr_to_primitive_symbol = scr_dyn_retain(key);
   scr_atexit(scr_to_primitive_symbol_cleanup);
+}
+
+static void scr_to_string_tag_symbol_cleanup(void) {
+  scr_dyn_release(scr_to_string_tag_symbol);
+  scr_to_string_tag_symbol = NULL;
+}
+
+void scr_dyn_install_to_string_tag_symbol(ScrDyn *key) {
+  if (scr_to_string_tag_symbol) return;
+  scr_to_string_tag_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_to_string_tag_symbol_cleanup);
 }
 
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key) {
@@ -1728,6 +1748,11 @@ static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn
   ScrDynEntry *existing = obj->v.obj.index ? scr_dyn_find_entry(obj, key, key_len)
                                           : scr_dyn_find_linear_entry(obj, key, key_len);
   if (existing) {
+    if (existing->fenced) {
+      scr_dyn_release(value);
+      scr_dyn_namespace_member_fence();
+      return;
+    }
     if (existing->accessor || !existing->writable) {
       scr_dyn_release(value);
       static const char message[] = "Cannot assign to read only property";
@@ -1769,6 +1794,7 @@ static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn
   e->getter = NULL;
   e->setter = NULL;
   e->accessor = false;
+  e->fenced = false;
   e->writable = true;
   e->enumerable = true;
   e->configurable = true;
@@ -4426,6 +4452,15 @@ ScrDyn *scr_dyn_new_chunk(const ScrBytes *b) {
 
 /* A boxed static function value (the compiler's static→dyn converters).
  * Ownership of the closure MOVES in; sig/name are static literals. */
+void scr_dyn_function_set_length(ScrDyn *fn, uint32_t length) {
+  if (fn->kind == SCR_DYN_FUNC) fn->v.fn.arity = length;
+}
+
+void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key) {
+  ScrDynEntry *entry = scr_dyn_entry(object, key);
+  if (entry) entry->fenced = true;
+}
+
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name) {
   if (clo->function_kind & 8) {
     ScrDyn *original = scr_box_get_ref(clo->caps[0]);
@@ -5296,6 +5331,11 @@ void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrD
 void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value) {
   ScrDynEntry *existing = obj->v.obj.index ? scr_dyn_find_entry(obj, key, key_len)
                                            : scr_dyn_find_linear_entry(obj, key, key_len);
+  if (existing && existing->fenced) {
+    scr_dyn_release(value);
+    scr_dyn_namespace_member_fence();
+    return;
+  }
   if (existing && !existing->accessor) {
     scr_dyn_region_store(obj, value);
     ScrDyn *old = existing->value;
@@ -7294,6 +7334,13 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
     return NULL;
   }
+  if (prior && prior->fenced &&
+      (accessor || (value && !scr_dyn_property_same_value(prior->value, value)))) {
+    scr_dyn_descriptor_fields_drop(fields);
+    scr_str_release(name);
+    scr_dyn_namespace_member_fence();
+    return NULL;
+  }
   if (prior) {
     if (accessor != prior->accessor) {
       ScrDyn *old_value = prior->value, *old_getter = prior->getter, *old_setter = prior->setter;
@@ -7497,7 +7544,37 @@ void scr_dyn_throw(ScrDyn *d) {
                           scr_dyn_trace_v, scr_dyn_is_object(d));
 }
 
+/* Object.prototype.toString's tag from a string-valued Symbol.toStringTag
+ * data property of an object or its prototypes ("[object Math]"), or NULL
+ * when there is none. */
+static ScrStr *scr_dyn_own_string_tag(const ScrDyn *d) {
+  /* The symbol unit installs the key when the program creates it; without
+   * it no object can carry the property. */
+  const ScrDyn *key = scr_to_string_tag_symbol;
+  if (!key) return NULL;
+  ScrStr *out = NULL;
+  for (const ScrDyn *p = d; p; p = p->prototype) {
+    if (!p->symbol_properties) continue;
+    ScrDynEntry *entry = scr_dyn_own_symbol_entry(p, key);
+    if (!entry) continue;
+    if (!entry->accessor && entry->value && entry->value->kind == SCR_DYN_STR) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_write(&b, entry->value->v.str->data, entry->value->v.str->len);
+      scr_jb_putc(&b, ']');
+      out = scr_jb_finish(&b);
+    }
+    break;
+  }
+  return out;
+}
+
 ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
+  if (d->kind == SCR_DYN_OBJ) {
+    ScrStr *tag = scr_dyn_own_string_tag(d);
+    if (tag) return tag;
+  }
   if (d->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Symbol.toStringTag lookup");
     return NULL;
@@ -8739,7 +8816,9 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
           scr_error_release(error);
           return text;
         }
-        return scr_str_new("[object Object]", 15);
+        // Object.prototype.toString: "[object Object]", or the object's
+        // Symbol.toStringTag ("[object Math]").
+        return scr_dyn_object_tag(d);
       }
       if (!m || m->kind != SCR_DYN_FUNC) { scr_dyn_release(m); continue; }
       /* OrdinaryToPrimitive performs a method call, not a bare function
@@ -10477,6 +10556,7 @@ static void scr_dyn_obj_append_shared(ScrDyn *obj, char *key, size_t key_len, Sc
   e->getter = NULL;
   e->setter = NULL;
   e->accessor = false;
+  e->fenced = false;
   e->writable = true;
   e->enumerable = true;
   e->configurable = true;
@@ -11271,6 +11351,10 @@ static void scr_json_delete_member(ScrDyn *object, const ScrStr *key) {
   for (size_t i = 0; i < object->v.obj.len; i++) {
     ScrDynEntry *entry = &object->v.obj.entries[i];
     if (entry->key_len != key->len || memcmp(entry->key, key->data, key->len) != 0) continue;
+    if (entry->fenced) {
+      scr_dyn_namespace_member_fence();
+      return;
+    }
     ScrDynEntry removed = *entry;
     memmove(entry, entry + 1, (object->v.obj.len - i - 1) * sizeof *entry);
     object->v.obj.len--;
@@ -12866,7 +12950,9 @@ bool scr_dyn_reflect_define(ScrDyn *receiver, ScrDyn *raw_key, ScrDyn *value) {
     ScrDynEntry *entry = key->kind == SCR_DYN_SYMBOL ? (symbols ? scr_dyn_symbol_entry(symbols, key, true) : NULL)
       : receiver->kind == SCR_DYN_OBJ ? scr_dyn_entry(receiver, key->v.str)
       : receiver->kind == SCR_DYN_ARR && receiver->v.arr.properties ? scr_dyn_entry(receiver->v.arr.properties, key->v.str) : NULL;
-    if (!(entry && (entry->accessor || !entry->writable)) && !(receiver->non_extensible && !scr_dyn_has_own_computed(receiver, key))) {
+    if (entry && entry->fenced) {
+      scr_dyn_namespace_member_fence();
+    } else if (!(entry && (entry->accessor || !entry->writable)) && !(receiver->non_extensible && !scr_dyn_has_own_computed(receiver, key))) {
       if (entry) {
         ScrDyn *old = entry->value;
         entry->value = scr_dyn_retain(value);
