@@ -6759,11 +6759,16 @@ static bool scr_dyn_fn_property_fence(const ScrStr *key) {
 
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
   if (scr_dyn_error_prototype_fence(target)) return NULL;
-  if (target->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(target) && key->kind == SCR_DYN_STR) {
+  if (target->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(target) &&
+      (key->kind == SCR_DYN_STR || key->kind == SCR_DYN_NUM)) {
     /* A native array's numeric properties ("-1", "1.5") live in its
-     * property table, which holds values without attributes. */
-    double number;
-    if (scr_arr_numeric_key(key->v.str->data, key->v.str->len, &number)) {
+     * property table, which holds values without attributes. A number key
+     * names one unless it is an array index. */
+    double number = key->kind == SCR_DYN_NUM ? key->v.num : 0;
+    bool numeric = key->kind == SCR_DYN_NUM
+                       ? !(number >= 0 && number < 4294967295.0 && number == trunc(number))
+                       : scr_arr_numeric_key(key->v.str->data, key->v.str->len, &number);
+    if (numeric) {
       static const char message[] = "Object.defineProperty on a numeric property of a native array is not supported yet";
       scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
       return NULL;

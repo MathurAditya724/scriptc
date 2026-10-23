@@ -992,6 +992,15 @@ ScrStr *scr_insp_error(ScrError *e, double recurse, double depth) {
 
 /* Property-name rendering: bare when the key matches Node's keyStrRegExp
  * (/^[a-zA-Z_][a-zA-Z_0-9]*$/, '__proto__' excepted), quoted otherwise. */
+/* util.inspect's text for an accessor property: [Getter], [Setter] or
+ * [Getter/Setter], by which of the two are functions. +1. */
+static ScrStr *insp_accessor_tag(const ScrDynEntry *ent) {
+  bool get = ent->getter && ent->getter->kind == SCR_DYN_FUNC;
+  bool set = ent->setter && ent->setter->kind == SCR_DYN_FUNC;
+  const char *text = get && set ? "[Getter/Setter]" : get ? "[Getter]" : set ? "[Setter]" : "undefined";
+  return scr_str_new(text, strlen(text));
+}
+
 static void insp_key_into(InspBuf *b, const char *key, size_t len) {
   if (len == 9 && memcmp(key, "__proto__", 9) == 0) {
     ib_cstr(b, "['__proto__']");
@@ -1539,7 +1548,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       for (size_t k = 0; props && k < props->v.obj.len; k++) {
         const ScrDynEntry *ent = &props->v.obj.entries[k];
         if (!ent->enumerable) continue;
-        ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
+        ScrStr *val = ent->accessor ? insp_accessor_tag(ent) : scr_insp_dyn(ent->value, recurse + 1, depth);
         InspBuf eb = {0};
         insp_key_into(&eb, ent->key, ent->key_len);
         ib_cstr(&eb, ": ");

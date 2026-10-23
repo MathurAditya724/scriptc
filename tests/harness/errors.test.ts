@@ -2006,4 +2006,25 @@ console.log("unreachable");
       /^Uncaught Error: Object\.defineProperty on a numeric property of a native array is not supported yet\n$/,
     );
   });
+
+  test("a number key that is not an array index takes the same fence", async () => {
+    const r = await compileAndRun(
+      "array-numeric-define-property-number",
+      `const words: string[] = ["a"];
+for (const key of [-3, 1.5]) {
+  try {
+    Object.defineProperty(words as unknown as Record<number, unknown>, key, { value: "kept" });
+  } catch (e) {
+    console.log((e as Error).message);
+  }
+}
+console.log(words.length);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Object.defineProperty on a numeric property of a native array is not supported yet\n".repeat(2) +
+        "1\n",
+    );
+  });
 });

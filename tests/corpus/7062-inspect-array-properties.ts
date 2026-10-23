@@ -52,3 +52,10 @@ console.log(parsed);
 
 const plain: number[] = [1, 2, 3];
 console.log(plain, [] as number[]);
+
+const accessed: number[] = [1, 2];
+const accessedBag = accessed as unknown as Bag;
+Object.defineProperty(accessedBag, "both", { get: () => 1, set: (_v: unknown) => {}, enumerable: true });
+Object.defineProperty(accessedBag, "getter", { get: () => 2, enumerable: true });
+Object.defineProperty(accessedBag, "setter", { set: (_v: unknown) => {}, enumerable: true });
+console.log(accessed);
