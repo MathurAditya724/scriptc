@@ -4852,6 +4852,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "text.decoderEncoding": { argTypes: [DYN], result: F64 },
   "text.decoderName": { argTypes: [F64], result: STRING },
   "text.encodeInto": { argTypes: [DYN, DYN], result: DYN },
+  /** `value instanceof TextDecoder` (true) or `TextEncoder` (false) on a
+   * checked-dynamic value: a codec record's handle box (scr_text_codec_dyn.c).
+   * Borrowed; never throws. */
+  "text.codecIs": { argTypes: [DYN, BOOL], result: BOOL },
   "buffer.isAscii": { argTypes: [DYN], result: BOOL },
   "buffer.isUtf8": { argTypes: [DYN], result: BOOL },
   "buffer.transcode": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },

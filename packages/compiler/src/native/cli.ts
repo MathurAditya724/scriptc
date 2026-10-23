@@ -122,6 +122,7 @@ async function main(): Promise<number> {
               dgram: false,
               dnsPromises: false,
               dgramDyn: false,
+              textCodecDyn: false,
               watch: false,
               foreignFfi: false,
               nodeTest: false,

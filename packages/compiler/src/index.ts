@@ -623,6 +623,7 @@ async function compileExecutableNative(
     dgram: features.dgram,
     dnsPromises: features.dnsPromises,
     dgramDyn: features.dgramDyn,
+    textCodecDyn: features.textCodecDyn,
     watch: features.watch,
     foreignFfi: features.foreignFfi,
     ...(features.workers ? { workers: true } : {}),
