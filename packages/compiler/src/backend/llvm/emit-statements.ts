@@ -32,7 +32,7 @@ import { allocateLocalUnion, storeLocalUnion } from "./local-union-storage.js";
 import { boxAccess, boxNewCall, elemAccess } from "./shapes.js";
 import { dynHoleRead } from "./loop-array-borrows.js";
 import { endsWithJump, matchStringSelfConcat } from "../../ir/analysis.js";
-import { emitDiscardedSplice } from "./expr-containers.js";
+import { charAtUnitRead, emitDiscardedSplice } from "./expr-containers.js";
 import { InternalCompilerError } from "../../errors.js";
 import { emitDenseArrayGet, emitDenseArrayPop, emitDenseArraySet } from "./dense-array-access.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
@@ -1826,7 +1826,7 @@ export function emitTryCatch(emitter: LlEmitter, s: IrStmt & { kind: "tryCatch" 
  * case, refcounted/boxed case-body locals are NULL-reset up front and
  * the scope-exit releases rely on NULL tolerance. */
 export function emitSwitch(emitter: LlEmitter, s: IrStmt & { kind: "switch" }): void {
-  const unitSwitch = charAtUnitSwitch(s);
+  const unitSwitch = charAtUnitSwitch(emitter, s);
   if (unitSwitch !== null) return emitSwitch(emitter, unitSwitch);
   const B = emitter.B;
   const discKind = s.disc.type.kind;
@@ -2518,7 +2518,10 @@ function nullableStringSwitch(
  * one-unit string literals, as a switch on `s.charCodeAt(i)` with the units
  * as cases: no character string is built. An index out of range answers
  * NaN, which matches no case, as "" matches no one-unit literal. */
-function charAtUnitSwitch(s: IrStmt & { kind: "switch" }): (IrStmt & { kind: "switch" }) | null {
+function charAtUnitSwitch(
+  emitter: LlEmitter,
+  s: IrStmt & { kind: "switch" },
+): (IrStmt & { kind: "switch" }) | null {
   const disc = s.disc;
   if (disc.kind !== "strIntrinsic" || disc.method !== "charAt" || disc.args.length !== 1)
     return null;
@@ -2531,7 +2534,7 @@ function charAtUnitSwitch(s: IrStmt & { kind: "switch" }): (IrStmt & { kind: "sw
     return null;
   return {
     ...s,
-    disc: { ...disc, method: "charCodeAt", type: F64 },
+    disc: charAtUnitRead(emitter, disc),
     cases: s.cases.map((c) =>
       c.test?.kind === "strLit"
         ? {

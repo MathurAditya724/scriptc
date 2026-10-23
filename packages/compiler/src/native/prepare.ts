@@ -7,7 +7,11 @@ import type {
   CompileLibraryOptions,
   CompileRequestOptions,
 } from "../compile-types.js";
-import { emitLlvmModule, type ForkPrimitives, lowRegionTarget } from "../backend/llvm/emitter.js";
+import {
+  emitLlvmModuleParts,
+  type ForkPrimitives,
+  lowRegionTarget,
+} from "../backend/llvm/emitter.js";
 import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { executableLinkFeatures } from "../backend/executable-features.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
@@ -32,13 +36,15 @@ import type { LibraryProfile } from "../library/library-profile.js";
 import type { IrModule } from "../ir/ir.js";
 import { deserializeModuleBytes, serializeModuleParts } from "../ir/serialize.js";
 import { contentDigest, NATIVE_STRING_BYTES, type NativeCache } from "./cache.js";
-import { batchTextParts, textSlices } from "./text-file.js";
+import { batchTextParts, joinedParts, textSlices } from "./text-file.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { nativeFileIdentity } from "./file-identity.js";
 
 export interface NativeExecutableInput {
   ok: true;
-  llvm: string;
+  /** The module's LLVM text as parts that concatenate to it
+   * (emitLlvmModuleParts), never joined: a large program's is 150 MB. */
+  llvm: readonly string[];
   /** Compact serialized IR as bounded parts (`batchTextParts`): compiler-scale
    * modules exceed one native string. */
   ir: string[] | null;
@@ -74,7 +80,8 @@ function* frontendCacheParts(
     input: { ...input, llvm: "", ir: null },
   });
   yield metadata.slice(0, metadata.length - 1) + ',"llvm":"';
-  for (const slice of textSlices(input.llvm)) yield JSON.stringify(slice).slice(1, -1);
+  for (const part of joinedParts(input.llvm))
+    for (const slice of textSlices(part)) yield JSON.stringify(slice).slice(1, -1);
   yield '"';
   if (input.ir === null) yield ',"ir":null}';
   else {
@@ -127,7 +134,7 @@ function readFrontendCache(
   const cached: unknown = JSON.parse(bytes.toString("utf8"));
   if (!validCachedInput(cached)) return null;
   if (!frontendInputsStillMatch(cached.probes, exclusions)) return { stale: cached };
-  return { input: { ...cached.input, llvm: cached.llvm, ir: cached.ir } };
+  return { input: { ...cached.input, llvm: [cached.llvm], ir: cached.ir } };
 }
 
 /** The stale entry's input when every changed source is token-equivalent to
@@ -170,7 +177,7 @@ function equivalentFrontendInput(
   return {
     input: {
       ...stale.input,
-      llvm: stale.llvm,
+      llvm: [stale.llvm],
       ir: null,
       sources: stale.input.sources.map(([path, text]) => [
         path,
@@ -375,8 +382,8 @@ export function prepareNativeExecutable(
   timing("ir-serialize");
   const llvm =
     outputKind === "ir"
-      ? ""
-      : emitLlvmModule(prepared.mod, {
+      ? []
+      : emitLlvmModuleParts(prepared.mod, {
           targetTriple: toolchain.target.llvmTriple,
           pointerBits: toolchain.target.pointerBits,
           wasi: toolchain.target.platform === "wasi",
@@ -492,7 +499,7 @@ export function prepareNativeLibrary(
     );
   });
   if (!prepared.ok) return prepared;
-  const llvm = emitLlvmModule(prepared.mod, {
+  const llvm = emitLlvmModuleParts(prepared.mod, {
     targetTriple: toolchain.target.llvmTriple,
     pointerBits: toolchain.target.pointerBits,
     wasi: toolchain.target.platform === "wasi",

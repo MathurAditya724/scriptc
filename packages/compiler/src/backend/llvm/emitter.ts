@@ -90,6 +90,7 @@ import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
+import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
 import {
   findInt32Abis,
   INT32_ABI_SUFFIX,
@@ -482,7 +483,8 @@ function versionParameters(mod: IrModule): IrModule {
   return versionLoopBoundParameters(mod, mangleFunction);
 }
 
-export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
+/** The emitter for `input` after the module passes every emission runs. */
+function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
   const mod = unshareNodes(input);
@@ -497,7 +499,11 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
                   foldConstantGlobals(
                     copyStableCaptures(
                       resolveSelfCaptures(
-                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                        hoistFinalFieldReads(
+                          freezeInitOnlyGlobals(
+                            holdCharLocalsAsUnits(dropUnwrittenPropertyBags(mod)),
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -510,7 +516,19 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
         )
       : mod,
     options,
-  ).emit();
+  );
+}
+
+export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
+  return moduleEmitter(input, options).emit();
+}
+
+/** emitLlvmModule's text as parts that concatenate to it, without the copy
+ * that joining them makes: a large program's text is 150 MB. */
+export function emitLlvmModuleParts(input: IrModule, options: LlvmTargetOptions = {}): string[] {
+  return moduleEmitter(input, options)
+    .emitParts()
+    .flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
 }
 
 /** Keep large translation units below the host's single-string limit. */
@@ -520,31 +538,7 @@ export function emitLlvmModuleSource(
 ): string | readonly string[] {
   // IR validation, contracts and the frontend's disposal run after lowering without checks.
   relieveHeapPressure(true);
-  const mod = unshareNodes(input);
-  const parts = new LlEmitter(
-    options.debugSources === undefined
-      ? versionParameters(
-          addRecordResultEntries(
-            scalarizeNumericRecords(
-              specializeCallbackCalls(
-                specializeNumericCalls(
-                  foldConstantGlobals(
-                    copyStableCaptures(
-                      resolveSelfCaptures(
-                        hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
-                      ),
-                    ),
-                  ),
-                  mangleFunction,
-                ),
-                mangleFunction,
-              ),
-            ),
-          ),
-        )
-      : mod,
-    options,
-  ).emitParts();
+  const parts = moduleEmitter(input, options).emitParts();
   const length = parts.reduce((total, part) => total + part.length, Math.max(0, parts.length - 1));
   if (length <= 256 * 1024 * 1024) return parts.join("\n");
   return parts.flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
@@ -1192,6 +1186,10 @@ export class LlEmitter {
    * (findIntegerOrNaNLocals in wrapping-sums.ts). */
   integerOrNaNLocals: ReadonlyMap<string, IntegerRange> = new Map();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
+  /** The charCodeAt reads standing for charAt reads the emitter rewrote
+   * (one-unit tests and switches, charAtUnitRead), with the charAt each
+   * stands for: a loop version's proof for the charAt covers its read. */
+  readonly charAtUnitReads = new Map<IrExpr, IrExpr>();
   /** Worker programs: typed-array accesses whose views an enclosing version
    * guard proved thread-owned. */
   bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
@@ -1591,6 +1589,11 @@ export class LlEmitter {
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
       classRootOf: (name) => this.classMeta.get(name)?.root.def.name,
+      releasesNothing: (t) => {
+        if (t.kind !== "object" || (this.shapeHost.regions ?? null) !== null) return false;
+        const meta = this.classMeta.get(t.className);
+        return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
+      },
       classSubtypes: (name) => {
         const target = this.classMetaOf(name);
         const intervals = classMembershipIntervals(this.classMeta, target.def.name);

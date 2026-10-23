@@ -1,7 +1,7 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { F64, isRefCounted, type IrExpr, type IrType } from "../../ir/ir.js";
+import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -16,6 +16,7 @@ import {
   int32Number,
   integerNumber,
   narrowInteger,
+  wideArithmetic,
   widenInteger,
 } from "./integer-values.js";
 import {
@@ -25,7 +26,7 @@ import {
   withinInt32,
   withinUint32,
 } from "../../ir/integer-ranges.js";
-import { emitArrayValues } from "./expr-containers.js";
+import { charAtUnitRead, emitArrayValues } from "./expr-containers.js";
 import {
   constantDivisor,
   emitCheckedRemainder,
@@ -337,7 +338,14 @@ export function emitOperatorExpr(
         if (arith[e.op] !== undefined) {
           B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
           const uint32 = emitWrappingSum(host, e, l, r, li, ri);
-          if (uint32 !== undefined) return { name: t, type: e.type, uint32 };
+          // The exact integer beside the double, for index consumers.
+          const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
+          if (uint32 !== undefined || wideInteger) {
+            const value: LlValue = { name: t, type: e.type };
+            if (uint32 !== undefined) value.uint32 = uint32;
+            if (wideInteger) value.wideInteger = wideInteger;
+            return value;
+          }
         } else B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
       } else if (bit[e.op] !== undefined) {
         if (e.left.type.kind !== "f64" || e.right.type.kind !== "f64") {
@@ -567,11 +575,12 @@ export function regexLiteralTemplate(
   return `@${re.sym}`;
 }
 
-/** A string equality between `s.charAt(i)` and a literal of exactly one
- * UTF-16 code unit: the charAt call and the unit. */
+/** A string equality or comparison between `s.charAt(i)` and a literal of
+ * exactly one UTF-16 code unit: the charAt call, the unit, and whether the
+ * charAt is the left operand. */
 function charAtUnitTest(
-  e: ExprOf<"strEq">,
-): { charAt: ExprOf<"strIntrinsic">; code: number } | null {
+  e: ExprOf<"strEq" | "strCmp">,
+): { charAt: ExprOf<"strIntrinsic">; code: number; left: boolean } | null {
   let text: string;
   let other: IrExpr;
   if (e.right.kind === "strLit") {
@@ -586,7 +595,17 @@ function charAtUnitTest(
   if (text.length !== 1) return null;
   if (other.kind !== "strIntrinsic" || other.method !== "charAt" || other.args.length !== 1)
     return null;
-  return { charAt: other, code: text.charCodeAt(0) };
+  return { charAt: other, code: text.charCodeAt(0), left: other === e.left };
+}
+
+/** The fcmp predicate of `s.charAt(i) op "c"` on the code unit (or of
+ * `"c" op s.charAt(i)` when `charAtLeft` is false). A one-unit string
+ * compares as its unit; an index out of range reads "", which is below
+ * every one-unit literal, and its unit read is NaN, which the unordered
+ * predicates count as below. */
+function charAtUnitPredicate(op: IrStrCmpOp, charAtLeft: boolean): string {
+  const flipped = charAtLeft ? op : ({ "<": ">", "<=": ">=", ">": "<", ">=": "<=" } as const)[op];
+  return { "<": "ult", "<=": "ule", ">": "ogt", ">=": "oge" }[flipped];
 }
 
 export function emitStringExpr(
@@ -637,14 +656,7 @@ export function emitStringExpr(
       // equals no unit, as "" equals no one-unit literal.
       const unit = charAtUnitTest(e);
       if (unit !== null) {
-        const code = host.emitExpr({
-          kind: "strIntrinsic",
-          method: "charCodeAt",
-          receiver: unit.charAt.receiver,
-          args: unit.charAt.args,
-          type: F64,
-          loc: unit.charAt.loc,
-        });
+        const code = host.emitExpr(charAtUnitRead(host, unit.charAt));
         const t = B.tmp();
         B.line(
           `${t} = fcmp ${e.negated ? "une" : "oeq"} double ${code.name}, ${f64Lit(unit.code)}`,
@@ -674,6 +686,17 @@ export function emitStringExpr(
       return { name: t, type: e.type };
     }
     case "strCmp": {
+      // `s.charAt(i) < "c"` (and `s[i]`) for a one-unit literal compares
+      // the code unit, as the equality above does.
+      const unit = charAtUnitTest(e);
+      if (unit !== null) {
+        const code = host.emitExpr(charAtUnitRead(host, unit.charAt));
+        const t = B.tmp();
+        B.line(
+          `${t} = fcmp ${charAtUnitPredicate(e.op, unit.left)} double ${code.name}, ${f64Lit(unit.code)}`,
+        );
+        return { name: t, type: e.type };
+      }
       const [l, r] = emitStringInputs(host, [e.left, e.right]);
       const fn = "scr_str_cmp_u16";
       host.declare(`declare i32 @${fn}(ptr, ptr)`);

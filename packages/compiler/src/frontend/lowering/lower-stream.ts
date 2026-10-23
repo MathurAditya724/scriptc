@@ -4637,10 +4637,12 @@ function lowerOperatorCallback(
       "the callback's parameter and result types must cross the checked-dynamic boundary",
     );
   }
+  const fn: IrExpr = { kind: "dynFrom", value: v, type: DYN, loc };
   // flatMap over a compiled generator: the runtime steps it through the
   // helpers over its type
-  const gen = member === "flatMap" && v.type.ret.kind === "generator" ? v.type.ret : undefined;
-  return { fn: { kind: "dynFrom", value: v, type: DYN, loc }, takesOptions, ...(gen && { gen }) };
+  if (member === "flatMap" && v.type.ret.kind === "generator")
+    return { fn, takesOptions, gen: v.type.ret };
+  return { fn, takesOptions };
 }
 
 /** The operator callbacks' `{ signal }` (operators.js): map and the

@@ -4126,6 +4126,7 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Promise",
   "WeakMap",
   "WeakSet",
+  "FinalizationRegistry",
   ...ERROR_CONSTRUCTOR_VALUES,
 ]);
 

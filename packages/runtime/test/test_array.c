@@ -446,6 +446,44 @@ static void test_ref_elements(void) {
 #endif
 }
 
+/* Elements whose release does nothing (SCR_ARR_OPS_RELEASE_NOTHING): the
+ * last release of an array frees its storage without calling the element
+ * release. An array with out-of-line storage keeps the full teardown. */
+static int nothing_releases = 0;
+static void *nothing_retain(void *p) { return p; }
+static void nothing_release(void *p) {
+  (void)p;
+  nothing_releases++;
+}
+static ScrArrOps nothing_ops = { &nothing_retain, &nothing_release, NULL, 0,
+                                 SCR_ARR_OPS_RELEASE_NOTHING };
+
+static void test_release_nothing_ops(void) {
+#ifdef SCR_RC_AUDIT
+  long arrays0 = scr_arr_live_count();
+#endif
+  static MockRec kept[3];
+  ScrArr *a = scr_arr_new_ops(&nothing_ops, 0);
+  for (int i = 0; i < 3; i++) scr_arr_push_ref(a, &kept[i]);
+  ScrArr *shared = scr_arr_retain(a);
+  scr_arr_release(shared);
+  check_f64(scr_arr_len(a), 3, "release-nothing: a shared release keeps the array");
+  scr_arr_release(a);
+  check(nothing_releases == 0, "release-nothing: teardown calls no element release");
+  ScrArr *sparse = scr_arr_new_ops(&nothing_ops, 0);
+  scr_arr_push_ref(sparse, &kept[0]);
+  scr_arr_set_ref(sparse, 4000000000.0, &kept[1]); /* out-of-line sparse slot */
+  check(scr_arr_ext_of(sparse) != NULL, "release-nothing: a far index makes an ext");
+  scr_arr_release(sparse);
+  check(nothing_releases == 2, "release-nothing: an array with an ext keeps the full teardown");
+  ScrArr *nums = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(nums, 1);
+  scr_arr_release(nums);
+#ifdef SCR_RC_AUDIT
+  check(scr_arr_live_count() == arrays0, "release-nothing: no arrays leaked");
+#endif
+}
+
 /* Element ops past the registry's capacity: every descriptor still finds its
  * own retain and release, and the first ones keep their registry ids. */
 static void test_ops_overflow(void) {
@@ -2419,6 +2457,7 @@ int main(int argc, char **argv) {
   test_nested_rc();
   test_index_of_includes();
   test_ref_elements();
+  test_release_nothing_ops();
   test_ref_known_count_cycle(&mock_cyc_ops);
   test_ops_overflow();
   test_ref_known_count_cycle(&mock_cyc_ops_late);
