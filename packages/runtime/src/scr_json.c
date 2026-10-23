@@ -1911,7 +1911,10 @@ static ScrDyn *scr_error_ctor_call(ScrClosure *closure, ScrDyn *const *args, siz
 
 ScrDyn *scr_dyn_error_constructor(const char *name) {
   for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
-    if (!scr_error_ctor_names[i] || strcmp(scr_error_ctor_names[i], name) != 0) continue;
+    /* The first byte rules out most names without a call. */
+    if (!scr_error_ctor_names[i] || scr_error_ctor_names[i][0] != name[0] ||
+        strcmp(scr_error_ctor_names[i], name) != 0)
+      continue;
     if (!scr_error_ctors_registered) {
       scr_error_ctors_registered = true;
       scr_atexit(scr_error_ctors_cleanup);
