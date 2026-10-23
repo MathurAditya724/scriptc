@@ -1598,9 +1598,26 @@ static void *scr_win_self(void) {
 }
 #endif
 
+#ifdef SCR_NODE_ISLANDS
+/* The lowest frame of Node's stack that is still live while a fiber runs:
+ * where runtime code on Node's stack (a job or host callback, however deep
+ * it went) last switched to a fiber. A call into Node from that fiber runs
+ * on Node's stack below it (scr_node_island.c), never over those frames.
+ * 0: none. scr_node_stack_has (set when Node starts) tells Node's stack. */
+uintptr_t scr_node_stack_low = 0;
+bool (*scr_node_stack_has)(uintptr_t sp) = NULL;
+#endif
+
 static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #ifdef SCR_ASAN_FIBERS
   ScrFiber *from_fiber = scr_current;
+#endif
+#ifdef SCR_NODE_ISLANDS
+  uintptr_t node_low = scr_node_stack_low;
+  if (to_fiber != NULL && scr_node_stack_has != NULL) {
+    uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+    if (scr_node_stack_has(here)) scr_node_stack_low = here;
+  }
 #endif
   scr_current = to_fiber;
   scr_exc_swap_cell(to_fiber ? &to_fiber->exc : NULL);
@@ -1641,6 +1658,9 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #endif
 #if !defined(_WIN32) && !defined(__wasi__)
   SCR_STACK_GUARD_SET(guard);
+#endif
+#ifdef SCR_NODE_ISLANDS
+  scr_node_stack_low = node_low; /* back on the stack that switched away */
 #endif
 }
 
