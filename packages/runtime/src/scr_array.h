@@ -433,6 +433,9 @@ ScrArr *scr_arr_new_ops(const ScrArrOps *ops, size_t initial_cap);
  * array plus five 8-byte slots). Otherwise exactly scr_arr_new(elem, 0) and
  * scr_arr_new_ops(ops, 0). Returns +1. */
 ScrArr *scr_arr_new_small(ScrElemKind elem);
+/* An int32 array's storage as doubles, in place (SCR_ELEM_I32 to
+ * SCR_ELEM_F64); no-op for any other kind. */
+void scr_arr_widen_i32(ScrArr *a);
 ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops);
 /* scr_arr_new(elem, cap) for a known final length: the `cap` slots share
  * the array's own block (one allocation). With `states`, the array starts
@@ -457,9 +460,15 @@ void scr_arr_copy_metadata(ScrArr *a, struct ScrDyn *target);
  * properties of `target`, so neither is lost when the storage is swapped. */
 void scr_arr_adopt_view_properties(ScrArr *a, struct ScrDyn *view, ScrArr *target);
 /* True when `key` is the string spelling of a number that is not an array
- * index ("-1", "1.5", "NaN", "Infinity"), with the number in *out. Arrays
- * keep such properties in their noncanonical property table. */
+ * index ("-1", "1.5", "NaN", "Infinity"), or "undefined", with the number in
+ * *out (scr_arr_undefined_key for "undefined"). Arrays keep such properties
+ * in their noncanonical property table. */
 bool scr_arr_numeric_key(const char *key, size_t len, double *out);
+/* The number compiled code passes as the key of an element access whose
+ * index is undefined at run time: a NaN with its own payload, which the
+ * property table spells "undefined" (JavaScript names that property, not
+ * "NaN"). */
+double scr_arr_undefined_key(void);
 /* Whether the array still has the named or noncanonical numeric property
  * `key`: `for...in` skips a key deleted before its turn. Borrows both. */
 bool scr_arr_has_named_key(ScrArr *a, ScrStr *key);
@@ -467,6 +476,10 @@ bool scr_arr_has_named_key(ScrArr *a, ScrStr *key);
  * noncanonical numeric properties, then the named properties in insertion
  * order. +1. */
 ScrArr *scr_arr_named_keys(ScrArr *a);
+/* Whether the array has properties besides its elements (noncanonical
+ * numeric keys, match metadata, named properties): util.inspect lists
+ * them after the elements. */
+bool scr_arr_has_properties(const ScrArr *a);
 /* Installed by scr_regex.c when it records a pending match source; this
  * unit links without the regex runtime. Writes the pending metadata of
  * `a` into its dynamic copy or materializes it, answering whether it

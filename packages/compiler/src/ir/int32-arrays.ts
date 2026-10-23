@@ -1,8 +1,11 @@
 import { F64, type IrExpr, type IrFunction, type IrModule, type IrStmt } from "./ir.js";
+
+type SwitchCase = Extract<IrStmt, { kind: "switch" }>["cases"][number];
 import { reparseExpr } from "./serialize.js";
 import {
   everyExprChild,
   everyStmtChild,
+  everyStmtList,
   transformExpr,
   transformStmt,
   transformStmtList,
@@ -23,9 +26,12 @@ import {
  * Candidates are only proposed here. The int32 slot analysis
  * (int32-slots.ts) keeps the ones whose every stored element is a proven
  * int32 (never -0), assuming the candidates' own elements are int32s, at
- * a fixpoint, and the LLVM backend stores those as SCR_ELEM_I32. Their
- * element-reader helper calls are inlined first (rewriteCandidates), so
- * no shared helper ever receives an int32 array. */
+ * a fixpoint, and the LLVM backend stores those as SCR_ELEM_I32. It keeps
+ * the ones whose stores are exact integers but not all proven int32s as
+ * int32 arrays with checked stores: SCR_ELEM_I32 until a store that is not
+ * an int32 widens them to doubles in place. Their element-reader helper
+ * calls are inlined first (rewriteCandidates), so no shared helper ever
+ * receives an int32 array. */
 
 /** Array methods a candidate may be the receiver of: the runtime paths
  * behind them read and write int32 slots through the double-valued slot
@@ -85,6 +91,62 @@ function fillAllocation(e: IrExpr): (IrExpr & { kind: "arrIntrinsic" }) | null {
   )
     return null;
   return e;
+}
+
+/** Fill-form arrays shorter than this hold doubles even when they are int32
+ * arrays with checked stores: their doubles fit a typical 32 KiB L1 data
+ * cache, so 4-byte slots save no memory traffic. */
+export const CHECKED_INT32_MIN_LENGTH = 4096;
+
+/** The length `n` of `new Array(n).fill(v)`, or null for any other
+ * allocation. */
+export function fillAllocationLength(e: IrExpr): IrExpr | null {
+  const fill = fillAllocation(e);
+  if (!fill || fill.receiver.kind !== "seqExpr") return null;
+  const set = fill.receiver.stmts[1]!;
+  return set.kind === "arraySetLength" ? set.length : null;
+}
+
+/** A number expression whose evaluation has no effect: locals, literals and
+ * arithmetic. */
+function isPureLength(e: IrExpr): boolean {
+  if (e.type.kind !== "f64") return false;
+  switch (e.kind) {
+    case "numLit":
+    case "varRef":
+      return true;
+    case "bin":
+      return e.left.type.kind === "f64" && isPureLength(e.left) && isPureLength(e.right);
+    case "unary":
+      return isPureLength(e.operand);
+    default:
+      return false;
+  }
+}
+
+/** Whether the candidate `id` of `fn` may hold int32 slots with checked
+ * stores: every array it is assigned is the fill form, with a length that
+ * may reach CHECKED_INT32_MIN_LENGTH and evaluates without effects (the
+ * backend evaluates it once more to pick the new array's kind). */
+export function checkableInt32Allocations(fn: IrFunction, id: string): boolean {
+  let ok = true;
+  everyStmtList(fn.body, {
+    stmt: (s) => {
+      if ((s.kind === "varDecl" || s.kind === "assign") && s.localId === id) {
+        const value = s.kind === "varDecl" ? s.init : s.value;
+        const length = value ? fillAllocationLength(value) : null;
+        if (
+          length === null ||
+          !isPureLength(length) ||
+          (length.kind === "numLit" && length.value < CHECKED_INT32_MIN_LENGTH)
+        )
+          ok = false;
+      }
+      return ok;
+    },
+    expr: () => ok,
+  });
+  return ok;
 }
 
 /** A fresh number array: a literal without spreads, or the fill form. */
@@ -322,20 +384,26 @@ function rewriteCandidates(
       if (!call || simple(call.args[1]!)) return [s];
       const { decl, ref } = bind(call.args[1]!);
       const read: IrExpr = { ...call, args: [call.args[0]!, ref] };
-      return [decl, s.kind === "varDecl" ? { ...s, init: read } : { ...s, value: read }];
+      if (s.kind === "varDecl") return [decl, { ...s, init: read }];
+      return [decl, { ...s, value: read }];
     });
+  const hoistCase = (c: SwitchCase): SwitchCase => ({ ...c, body: hoist(c.body) });
   const lists = (s: IrStmt): IrStmt => {
     switch (s.kind) {
       case "if":
         return { ...s, then: hoist(s.then), else_: s.else_ === null ? null : hoist(s.else_) };
       case "block":
+        return { ...s, body: hoist(s.body) };
       case "while":
+        return { ...s, body: hoist(s.body) };
       case "doWhile":
+        return { ...s, body: hoist(s.body) };
       case "for":
+        return { ...s, body: hoist(s.body) };
       case "forOf":
         return { ...s, body: hoist(s.body) };
       case "switch":
-        return { ...s, cases: s.cases.map((c) => ({ ...c, body: hoist(c.body) })) };
+        return { ...s, cases: s.cases.map((c) => hoistCase(c)) };
       case "tryCatch":
         return {
           ...s,
@@ -365,7 +433,10 @@ function rewriteCandidates(
       };
     }
     const call = readerCall(e);
-    if (!call) return e.kind === "seqExpr" ? { ...e, stmts: hoist(e.stmts) } : e;
+    if (!call) {
+      if (e.kind === "seqExpr") return { ...e, stmts: hoist(e.stmts) };
+      return e;
+    }
     const helper = readers.get(call.callee)!;
     const array = call.args[0]!;
     const [arrayParam, indexParam] = helper.params;
@@ -388,7 +459,9 @@ function rewriteCandidates(
       },
       stmt: (x) => x,
     });
-    const typed: IrExpr = { ...body, loc: e.loc };
+    // The ternary is a fresh copy (reparseExpr): it takes the call's location.
+    const typed = body;
+    typed.loc = e.loc;
     return stmts.length === 0
       ? typed
       : { kind: "seqExpr", stmts, result: typed, type: typed.type, loc: e.loc };

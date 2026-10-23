@@ -1670,6 +1670,44 @@ static void test_i32_slots(void) {
   check(i32_layout_ok(k) && scr_arr_get_f64(k, 6) == 6 && scr_arr_get_f64(k, 0) == 0,
         "a known-count int32 array grows out of its block");
   scr_arr_release(k);
+
+  /* Widening: in place, to 8-byte double slots, keeping states. */
+  ScrArr *w = scr_arr_new(SCR_ELEM_I32, 3);
+  for (int i = 0; i < 3; i++) scr_arr_push_f64(w, i - 1);
+  check(inline_slots(w), "a three-element int32 construction keeps inline slots");
+  scr_arr_widen_i32(w);
+  check(w->elem == SCR_ELEM_F64 && !inline_slots(w) && scr_arr_len(w) == 3 && w->filled == 3 &&
+            scr_arr_get_f64(w, 0) == -1 && scr_arr_get_f64(w, 2) == 1,
+        "widening moves inline int32 slots out as doubles");
+  scr_arr_set_f64(w, 1, 2.5);
+  check(scr_arr_get_f64(w, 1) == 2.5, "a widened array stores fractions");
+  scr_arr_widen_i32(w);
+  check(w->elem == SCR_ELEM_F64 && scr_arr_get_f64(w, 1) == 2.5, "widening twice is a no-op");
+  scr_arr_release(w);
+
+  ScrArr *h = scr_arr_new_small(SCR_ELEM_I32);
+  for (int i = 0; i < 100; i++) scr_arr_push_f64(h, i * 3);
+  scr_arr_set_len(h, 120);
+  scr_arr_set_undefined(h, 5);
+  scr_arr_set_f64(h, 4000000, -7);
+  size_t cap = h->cap;
+  scr_arr_widen_i32(h);
+  bool widened = h->elem == SCR_ELEM_F64 && h->cap == cap && scr_arr_len(h) == 4000001 &&
+                 scr_arr_states_end(h) == (const uint8_t *)h->data + 9 * (size_t)h->cap;
+  for (int i = 0; i < 100; i++)
+    if (i != 5) widened &= scr_arr_get_f64(h, i) == i * 3;
+  check(widened && scr_arr_state(h, 5) == SCR_ARR_UNDEFINED && scr_arr_state(h, 110) == SCR_ARR_HOLE &&
+            scr_arr_get_f64(h, 4000000) == -7 && arr_sparse_len(h) == 1,
+        "widening keeps values, present undefined, holes and sparse entries");
+  scr_arr_push_f64(h, 0.5);
+  check(scr_arr_get_f64(h, 4000001) == 0.5, "a widened array keeps growing as doubles");
+  scr_arr_release(h);
+
+  ScrArr *e = scr_arr_new_small(SCR_ELEM_I32);
+  scr_arr_widen_i32(e);
+  scr_arr_push_f64(e, -0.0);
+  check(e->elem == SCR_ELEM_F64 && signbit(scr_arr_get_f64(e, 0)), "an empty int32 array widens too");
+  scr_arr_release(e);
 }
 
 static void test_inline_slots(void) {
