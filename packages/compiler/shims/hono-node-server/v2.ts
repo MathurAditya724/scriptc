@@ -185,7 +185,10 @@ function buildOutgoingHttpHeaders(
   return res;
 }
 
-type ReadResult = ReadableStreamReadResult<Uint8Array>;
+/* Spelled out rather than ReadableStreamReadResult<Uint8Array>, whose
+ * declaration depends on the program's lib and @types/node settings: the
+ * shim compiles inside every program that imports the package. */
+type ReadResult = { done: boolean; value?: Uint8Array };
 
 function readWithoutBlocking(read: Promise<ReadResult>): Promise<ReadResult | undefined> {
   return Promise.race([read, Promise.resolve().then(() => Promise.resolve(undefined))]);
@@ -220,7 +223,7 @@ async function pump(
         outgoing.end();
         return;
       }
-      outgoing.write(value);
+      outgoing.write(value!);
       read = reader.read();
     }
   } finally {
@@ -352,7 +355,7 @@ async function writeResponse(
   const body = res.body;
   const record = buildOutgoingHttpHeaders(res.headers, body !== null);
   if (body !== null) {
-    const reader = body.getReader();
+    const reader: ReadableStreamDefaultReader<Uint8Array> = body.getReader();
     const values: Uint8Array[] = [];
     let done = false;
     let pending: Promise<ReadResult> | undefined = undefined;
