@@ -3813,6 +3813,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // Whether the array (args[0]) still has the key (args[1]) from its
   // namedKeys list. Borrowed; never throws.
   "array.hasNamedKey": { argTypes: [null, STRING], result: BOOL },
+  // Whether an array (args[0], any element type) has properties besides its
+  // elements: noncanonical numeric keys, match metadata or named
+  // properties. Borrowed; never throws.
+  "array.hasProperties": { argTypes: [null], result: BOOL },
+  // The key of an element access whose index is undefined (the property
+  // named "undefined"; frontend/lowering/undefined-index.ts).
+  "array.undefinedKey": { argTypes: [], result: F64 },
   // node:events EventEmitter: receivers are emitter-hierarchy objects and
   // the chaining forms (on/off/removeAll/setMax) return the receiver's
   // own class — program-dependent object types, checked in the libCall

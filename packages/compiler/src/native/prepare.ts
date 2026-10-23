@@ -20,6 +20,7 @@ import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
 import {
   FrontendInputTracker,
+  frontendInputsSemanticallyMatch,
   frontendInputsStillMatch,
   validFrontendInputSnapshot,
   type FrontendInputSnapshot,
@@ -28,6 +29,8 @@ import {
 } from "../frontend/input-tracker.js";
 import { provenanceSources } from "../frontend/provenance-registry.js";
 import { processFork } from "../frontend/process-fork.js";
+import { tokenEquivalentSource } from "../frontend/token-equivalence.js";
+import { llvmBytes, wtf8Bytes } from "../backend/literals.js";
 import { prepareLibrary } from "../library/prepare.js";
 import type { LibraryProfile } from "../library/library-profile.js";
 import type { IrModule } from "../ir/ir.js";
@@ -118,18 +121,71 @@ function publishFrontendCache(
   );
 }
 
+/** The cached input when every frontend input still matches, else the
+ * entry the inputs no longer match, for reuse after equivalent edits. */
 function readFrontendCache(
   cache: NativeCache,
   key: string,
   exclusions: FrontendInputExclusions,
-): NativeExecutableInput | null {
+): { input: NativeExecutableInput } | { stale: FrontendCacheEntry } | null {
   // The entry is decoded as one string; larger entries are misses.
   const bytes = cache.read("frontend", key, NATIVE_STRING_BYTES);
   if (bytes === null) return null;
   const cached: unknown = JSON.parse(bytes.toString("utf8"));
-  if (!validCachedInput(cached) || !frontendInputsStillMatch(cached.probes, exclusions))
+  if (!validCachedInput(cached)) return null;
+  if (!frontendInputsStillMatch(cached.probes, exclusions)) return { stale: cached };
+  return { input: { ...cached.input, llvm: [cached.llvm], ir: cached.ir } };
+}
+
+/** The stale entry's input when every changed source is token-equivalent to
+ * the text the entry was built from (edits to whitespace and to comments
+ * that cannot affect compilation; see token-equivalence.ts). Equivalent
+ * sources lower to the same IR apart from source locations, which only dev
+ * builds' debug information and the serialized IR carry. Diagnostics carry
+ * locations too, so an entry that reported warnings is rebuilt. A changed
+ * source whose raw text or line positions the frontend read (call-site text
+ * in messages, comptime callbacks, test locations) is rebuilt as well:
+ * frontendInputsSemanticallyMatch refuses its `text` probe. */
+function equivalentFrontendInput(
+  stale: FrontendCacheEntry,
+  options: CompileRequestOptions,
+  exclusions: FrontendInputExclusions,
+): { input: NativeExecutableInput; probes: FrontendInputSnapshot } | null {
+  if (
+    options.optimization === "dev" ||
+    options.sanitize === true ||
+    options.emitIr === true ||
+    stale.ir !== null ||
+    (stale.input.warnings?.length ?? 0) > 0
+  )
     return null;
-  return { ...cached.input, llvm: [cached.llvm], ir: cached.ir };
+  const match = frontendInputsSemanticallyMatch(
+    stale.probes,
+    new Map(stale.input.sources),
+    tokenEquivalentSource,
+    exclusions,
+  );
+  if (match === null || match.changed.length === 0) return null;
+  // Runtime fences and unsupported-construct messages name their source as
+  // `[<code> at <file>:<line>]`, and an equivalent edit can move the line.
+  if (
+    match.changed.some(({ path }) =>
+      stale.llvm.includes(` at ${llvmBytes(wtf8Bytes(path), false)}:`),
+    )
+  )
+    return null;
+  return {
+    input: {
+      ...stale.input,
+      llvm: [stale.llvm],
+      ir: null,
+      sources: stale.input.sources.map(([path, text]) => [
+        path,
+        match.currentSources.get(path) ?? text,
+      ]),
+    },
+    probes: match.snapshot,
+  };
 }
 
 function implementationIdentity(toolchain: NativeToolchain): string {
@@ -291,10 +347,19 @@ export function prepareNativeExecutable(
             .sort(([a], [b]) => a.localeCompare(b)),
         }),
       );
-      const input = readFrontendCache(cache, key, exclusions);
-      if (input !== null) {
+      const cached = readFrontendCache(cache, key, exclusions);
+      if (cached !== null && "input" in cached) {
         timing("frontend-cache-hit");
-        return input;
+        return cached.input;
+      }
+      const equivalent =
+        cached === null || outputKind === "ir"
+          ? null
+          : equivalentFrontendInput(cached.stale, options, exclusions);
+      if (equivalent !== null) {
+        publishFrontendCache(cache, key, equivalent.probes, equivalent.input);
+        timing("frontend-cache-equivalent");
+        return equivalent.input;
       }
     } catch {
       key = null;
@@ -406,10 +471,10 @@ export function prepareNativeLibrary(
             .sort(([a], [b]) => a.localeCompare(b)),
         }),
       );
-      const input = readFrontendCache(cache, key, exclusions);
-      if (input !== null) {
+      const cached = readFrontendCache(cache, key, exclusions);
+      if (cached !== null && "input" in cached) {
         timing("frontend-cache-hit");
-        return input;
+        return cached.input;
       }
     } catch {
       key = null;
