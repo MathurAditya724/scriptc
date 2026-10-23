@@ -1431,9 +1431,19 @@ ScrBytes *scr_buffer_from_dyn_ref_pooled(const ScrDyn *value, const ScrStr *enco
 
 /* Buffer.from(value, second) over checked values whose second argument is
  * not a literal encoding name: an ArrayBuffer or SharedArrayBuffer takes it
- * as the byte offset (scr_buffer_from_storage); other values convert as
- * scr_buffer_from_dyn_ref_pooled with utf8. */
+ * as the byte offset (scr_buffer_from_storage); a string takes it as the
+ * encoding (Node's fromString: utf8 unless it is a non-empty string, which
+ * must name a Buffer encoding or throw ERR_UNKNOWN_ENCODING); other values
+ * convert as scr_buffer_from_dyn_ref_pooled with utf8. */
 ScrBytes *scr_buffer_from_dyn_offset_pooled(const ScrDyn *value, const ScrDyn *second) {
+  if (value->kind == SCR_DYN_STR) {
+    if (second->kind == SCR_DYN_STR && second->v.str->len > 0)
+      return scr_buffer_from_str_checked(value->v.str, second->v.str);
+    ScrStr *utf8 = scr_str_new("utf8", 4);
+    ScrBytes *out = scr_buffer_from_str(value->v.str, utf8);
+    scr_str_release(utf8);
+    return out;
+  }
   if (!scr_buffer_storage_is(value)) {
     ScrStr *utf8 = scr_str_new("utf8", 4);
     ScrBytes *out = scr_buffer_from_dyn_ref_pooled(value, utf8);

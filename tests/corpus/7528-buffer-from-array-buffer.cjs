@@ -29,3 +29,18 @@ for (const args of [[1], [1, 1], [0, 0], [3, 0], [2, 5], [-0.5, 2]]) {
     console.log(args.join(","), e.code, e.message);
   }
 }
+// A string's second argument is its encoding, with or without a third.
+const encoded = JSON.parse('"aGk="');
+console.log(
+  Buffer.from(encoded, "base64", 1).toString(),
+  Buffer.from(encoded, "latin1", 2).length,
+  Buffer.from(encoded, undefined, 3).toString(),
+  Buffer.from(encoded, "", 3).toString(),
+);
+for (const text of [encoded, JSON.parse('""')]) {
+  try {
+    console.log(Buffer.from(text, "bogus", 1));
+  } catch (e) {
+    console.log(e.code, e.message);
+  }
+}

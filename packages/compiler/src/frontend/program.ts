@@ -6442,7 +6442,7 @@ function analyzeEsmNamedImportLinks(
     const nextSeen = new Set(seenModules);
     nextSeen.add(dep);
     const module = checker.getSymbolAtLocation(dep);
-    const exported = module?.getExports().get(name as ts.__String);
+    const exported = module?.getExports().get(ts.escapedSymbolName(name));
     if (exported !== undefined) {
       let resolved = exported;
       const seenSymbols = new Set<ts.Symbol>();

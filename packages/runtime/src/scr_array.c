@@ -1689,6 +1689,126 @@ void scr_arr_release(ScrArr *a) {
 
 double scr_arr_len(ScrArr *a) { return SCR_ARR_LEN_F64(a->len); }
 
+/* ── frozen arrays ──────────────────────────────────────────────────────
+ * Node's TypeErrors for writes to a frozen array, shared by the emitted
+ * guards of published and frozen arrays and the checked-dynamic tier. */
+static void scr_frozen_throw(const char *before, double index, const char *after) {
+  char text[64];
+  size_t n = scr_f64_to_str(index, text);
+  ScrJsonBuf buffer;
+  scr_jb_init(&buffer);
+  scr_jb_puts(&buffer, before);
+  scr_jb_write(&buffer, text, n);
+  scr_jb_puts(&buffer, after);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+}
+
+/* A relative array index argument (fill, copyWithin, splice): ToIntegerOrInfinity
+ * of `value`, counted from the end when negative, clamped to [0, len]. */
+static size_t scr_frozen_relative_index(double value, size_t len) {
+  if (value != value) return 0;
+  double n = trunc(value);
+  if (n < 0) return n + (double)len <= 0 ? 0 : (size_t)(n + (double)len);
+  return n >= (double)len ? len : (size_t)n;
+}
+
+static void scr_frozen_read_only(double index) {
+  scr_frozen_throw("Cannot assign to read only property '", index, "' of object '[object Array]'");
+}
+
+static void scr_frozen_not_extensible(double index) {
+  scr_frozen_throw("Cannot add property ", index, ", object is not extensible");
+}
+
+static void scr_frozen_undeletable(double index) {
+  scr_frozen_throw("Cannot delete property '", index, "' of [object Array]");
+}
+
+/* Each case finds the operation's first write in the order the spec makes
+ * its writes. */
+bool scr_array_frozen_error(int op, size_t len, double x, double y, double z) {
+  switch (op) {
+  case 0:
+    if (x >= 0 && x < (double)len && x == (double)(size_t)x) scr_frozen_read_only(x);
+    else scr_frozen_not_extensible(x);
+    return true;
+  case 1:
+    if (y == 0) break;
+    scr_frozen_not_extensible((double)len);
+    return true;
+  case 2:
+  case 6:
+    if (len == 0) break;
+    if (op == 6 && len > 1) scr_frozen_read_only(0);
+    else scr_frozen_undeletable((double)(len - 1));
+    return true;
+  case 3: break;
+  case 4:
+    if (y == 0) break;
+    scr_frozen_not_extensible(len ? (double)len + y - 1 : 0);
+    return true;
+  case 5:
+    if (!(x >= 0 && x < (double)len && x == (double)(size_t)x)) return false;
+    scr_frozen_undeletable(x);
+    return true;
+  case 7:
+    if (len < 2) return false;
+    scr_frozen_read_only(0);
+    return true;
+  case 8: {
+    size_t k = scr_frozen_relative_index(x, len), final = scr_frozen_relative_index(y, len);
+    if (k >= final) return false;
+    scr_frozen_read_only((double)k);
+    return true;
+  }
+  case 9: {
+    size_t to = scr_frozen_relative_index(x, len), from = scr_frozen_relative_index(y, len);
+    size_t final = scr_frozen_relative_index(z, len);
+    if (final <= from || len <= to) return false;
+    size_t count = final - from < len - to ? final - from : len - to;
+    /* An overlapping copy toward the end writes its last index first. */
+    if (from < to && to < from + count) to += count - 1;
+    scr_frozen_read_only((double)to);
+    return true;
+  }
+  case 10: {
+    size_t start = scr_frozen_relative_index(x, len);
+    double count = y != y ? 0 : trunc(y);
+    size_t removed = count <= 0 ? 0 : count >= (double)(len - start) ? len - start : (size_t)count;
+    size_t items = (size_t)z;
+    if (items < removed) {
+      /* Elements after the removed ones move down, then the tail goes. */
+      if (start < len - removed) scr_frozen_read_only((double)(start + items));
+      else scr_frozen_undeletable((double)(len - 1));
+      return true;
+    }
+    if (items > removed) {
+      /* Elements after the removed ones move up, past the end first. */
+      if (len - removed > start) scr_frozen_not_extensible((double)(len - removed + items - 1));
+      else if (start < len) scr_frozen_read_only((double)start);
+      else scr_frozen_not_extensible((double)start);
+      return true;
+    }
+    if (items > 0) {
+      scr_frozen_read_only((double)start);
+      return true;
+    }
+    break;
+  }
+  default:
+    return false;
+  }
+  static const char length[] = "Cannot assign to read only property 'length' of object '[object Array]'";
+  scr_throw_error_msg(SCR_ERR_TYPE, length, sizeof length - 1);
+  return true;
+}
+
+void scr_arr_freeze(ScrArr *a) {
+  if (a->rc != SIZE_MAX) a->spare |= SCR_ARR_FROZEN;
+}
+
+bool scr_arr_is_frozen(const ScrArr *a) { return scr_arr_frozen(a); }
+
 bool scr_arr_has(const ScrArr *a, double i) {
   size_t idx;
   if (!scr_arr_valid_index(i, &idx)) return scr_arr_prop_get(a, i, NULL);
@@ -3108,10 +3228,12 @@ typedef struct {
 typedef struct {
   ScrElemKind kind;
   const ScrNumberSortKey *numbers;
+  ScrStr *const *texts; /* reference elements: each element's String() text */
 } ScrPrimitiveOrder;
 
 static int scr_arr_primitive_compare(uint64_t left, uint64_t right,
                                       const ScrPrimitiveOrder *order) {
+  if (order->texts) return scr_str_cmp_u16(order->texts[left], order->texts[right]);
   if (order->kind == SCR_ELEM_STR)
     return scr_str_cmp_u16(scr_slot_to_ptr(left), scr_slot_to_ptr(right));
   if (order->kind == SCR_ELEM_BOOL) return (left > right) - (left < right);
@@ -3199,10 +3321,28 @@ static void scr_arr_primitive_order(uint64_t *values, size_t count,
   if (runs != local_runs) free(runs);
 }
 
+static ScrArr *scr_arr_sort_default(ScrArr *a, bool copy, ScrStr *(*text)(void *));
+
+static ScrArr *scr_arr_new_like(const ScrArr *a, size_t cap) {
+  return a->elem == SCR_ELEM_REF ? scr_arr_new_ops(scr_arr_ops(a), cap) : scr_arr_new(a->elem, cap);
+}
+
 ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy) {
   if (a->elem != SCR_ELEM_STR && a->elem != SCR_ELEM_F64 && a->elem != SCR_ELEM_BOOL)
     scr_trap("scriptc: invalid primitive array ordering\n");
-  if (a->len == 0) return copy ? scr_arr_new(a->elem, 0) : scr_arr_retain(a);
+  return scr_arr_sort_default(a, copy, NULL);
+}
+
+/* The default ordering of an array of reference elements that cannot call
+ * user code while converting to strings (Dates): `text` answers each
+ * element's String() text (+1), computed once per element. */
+ScrArr *scr_arr_sort_by_text(ScrArr *a, bool copy, ScrStr *(*text)(void *)) {
+  if (a->elem != SCR_ELEM_REF) scr_trap("scriptc: invalid text array ordering\n");
+  return scr_arr_sort_default(a, copy, text);
+}
+
+static ScrArr *scr_arr_sort_default(ScrArr *a, bool copy, ScrStr *(*text)(void *)) {
+  if (a->len == 0) return copy ? scr_arr_new_like(a, 0) : scr_arr_retain(a);
   size_t dense = a->len < a->cap ? a->len : a->cap;
   size_t count = 0, undefined_count = 0;
   const uint8_t *states = scr_arr_scan_states(a);
@@ -3234,14 +3374,35 @@ ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy) {
       values[i] = i;
     }
   }
-  ScrPrimitiveOrder order = {a->elem, numbers};
+  ScrStr **texts = NULL;
+  uint64_t *originals = NULL;
+  if (text && count > 1) {
+    if (count > SIZE_MAX / sizeof(*texts)) scr_arr_oom();
+    texts = malloc(count * sizeof(*texts));
+    originals = malloc(count * sizeof(*originals));
+    if (!texts || !originals) scr_arr_oom();
+    for (size_t i = 0; i < count; i++) {
+      originals[i] = values[i];
+      texts[i] = text(scr_slot_to_ptr(values[i]));
+      values[i] = i;
+    }
+  }
+  ScrPrimitiveOrder order = {a->elem, numbers, texts};
   scr_arr_primitive_order(values, count, &order);
   if (numbers) {
     for (size_t i = 0; i < count; i++) values[i] = numbers[values[i]].value;
     free(numbers);
   }
+  if (texts) {
+    for (size_t i = 0; i < count; i++) {
+      values[i] = originals[values[i]];
+      scr_str_release(texts[i]);
+    }
+    free(texts);
+    free(originals);
+  }
   size_t present = copy ? a->len : count + undefined_count;
-  ScrArr *out = copy ? scr_arr_new(a->elem, present) : a;
+  ScrArr *out = copy ? scr_arr_new_like(a, present) : a;
   if (!copy && !states) {
     /* Values only, in place. */
     if (count) scr_arr_put_slots(a, 0, count, values);
@@ -4990,6 +5151,8 @@ bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned, in
   if (a->rc == SIZE_MAX || elem == SCR_ELEM_CREF || !scr_arr_dense_values(a)) return false;
   size_t n = a->len;
   if (n < 2) return true;
+  /* A frozen array takes the snapshot path, whose write-back throws. */
+  if (scr_arr_frozen(a)) return false;
   if (n > SIZE_MAX / 2 / sizeof(uint64_t)) scr_arr_oom();
   ScrSortCompare c = scr_sort_compare_for(a, f, arity, order, key);
   /* Nothing else can reach a private copy: its own storage is sorted, and
@@ -5012,15 +5175,12 @@ bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned, in
     free(src);
     return true;
   }
-  if (a->rc == SIZE_MAX) {
-    /* The comparator published the array: the first write fails as in Node
-     * (scr_throw_published_array's index write). */
+  if (a->rc == SIZE_MAX || scr_arr_frozen(a)) {
+    /* The comparator published or froze the array: the first write fails
+     * as in Node. */
     if (retained)
       for (size_t i = 0; i < n; i++) scr_elem_release_with(elem, ops, src[i]);
-    static const char assign[] = "Cannot assign to read only property '0' of object '[object Array]'";
-    static const char add[] = "Cannot add property 0, object is not extensible";
-    if (a->len > 0) scr_throw_error_msg(SCR_ERR_TYPE, assign, sizeof assign - 1);
-    else scr_throw_error_msg(SCR_ERR_TYPE, add, sizeof add - 1);
+    scr_array_frozen_error(0, a->len, 0, 0, 0);
   } else if (a->len >= n && a->cap >= n) {
     if (!retained) {
       memcpy(a->data, src, n * sizeof(*src));

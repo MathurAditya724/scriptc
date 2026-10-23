@@ -119,7 +119,11 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
-import { lowerBufferConstruct, lowerBytesStaticCall } from "./containers/bytes.js";
+import {
+  lowerBufferConstruct,
+  lowerBytesPrototypeSetCall,
+  lowerBytesStaticCall,
+} from "./containers/bytes.js";
 import {
   lowerRegexMethodCall,
   lowerStringIndexCall,
@@ -245,6 +249,7 @@ import {
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
 import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
 import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
+import { freezableRecordType, lowerNativeFreeze } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
@@ -1585,6 +1590,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.lowerTestMethodCall(expr, expr.expression) ??
       lowerer.lowerTimeoutMethodCall(expr, expr.expression) ??
       lowerArrayPrototypeBorrowCall(lowerer, expr, expr.expression) ??
+      lowerBytesPrototypeSetCall(lowerer, expr, expr.expression) ??
       lowerObjectOwnPrototypeCall(lowerer, expr, expr.expression) ??
       lowerObjectPrototypeCall(lowerer, expr, expr.expression) ??
       lowerStringPrototypeCall(lowerer, expr, expr.expression) ??
@@ -3762,6 +3768,14 @@ function lowerDynReceiverMethodCall(
   // 'unknown' slot does.
   if (checkerUntyped && DYN_HANDLE_KINDS.has(recv.type.kind))
     recv = lowerer.coerceToExpected(recv, DYN);
+  // A typed array whose checker type collapsed to `any` (a JS binding
+  // referenced in its own initializer's inference — hono's etag digest
+  // `const nextChunk = new Uint8Array(new ArrayBuffer(f(chunk)))` beside
+  // `chunk = nextChunk`) still lowered to its native bytes. The typed
+  // lowerings key on the checker type and decline it, so it boxes by
+  // reference (the box shares the native storage, so writes through the
+  // call stay visible) and the call dispatches on the runtime kind.
+  if (checkerUntyped && recv.type.kind === "bytes") recv = lowerer.coerceToExpected(recv, DYN);
   // The last-resort retry (boxTypedTemporary — every other lowering
   // already declined): a checker-`any` receiver whose value is a FRESH
   // typed result of an earlier step in the chain (`out.split("\n")`
@@ -7278,7 +7292,7 @@ export function recordKeysArrayCall(
  * (a key is own exactly when Object.keys would list it — the two share
  * the test), everything else true. Unmatched keys probe the overflow
  * map when present, so explicit undefined values remain own keys. */
-function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string {
+export function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string {
   const key = `obj.hasOwn:${shapeId}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
@@ -8493,6 +8507,22 @@ function lowerObjectStaticCall(
       locOf(call),
     );
     if (fnIntegrity) return fnIntegrity;
+    // A Map or Set has no own properties: freeze, seal and preventExtensions
+    // all only make it not extensible.
+    if (value.type.kind === "map" || value.type.kind === "set") {
+      if (member === "preventExtensions" || member === "seal")
+        return lowerNativeFreeze(lowerer, "collection.preventExtensions", value, locOf(call));
+      const extensible: IrExpr = {
+        kind: "libCall",
+        fn: "collection.isExtensible",
+        args: [value],
+        type: BOOL,
+        loc: locOf(call),
+      };
+      return member === "isExtensible"
+        ? extensible
+        : { kind: "unary", op: "!", operand: extensible, type: BOOL, loc: locOf(call) };
+    }
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
@@ -8527,10 +8557,44 @@ function lowerObjectStaticCall(
   // the argument — no alias exists, so the frozen bit is unobservable
   // (writes through the Readonly<T> result are compile errors, and no
   // other reference can write). Primitives pass through per ES2015.
-  // Aliased objects keep a fence: a later write through the original
-  // reference would need the runtime frozen bit (strict mode throws).
+  // Aliased records get the frozen bit of their rc word (frozen-records.ts);
+  // other aliased objects keep a fence: a later write through the original
+  // reference would need a runtime frozen bit (strict mode throws).
   if (member === "isFrozen" && call.arguments.nodes.length === 1) {
-    const value = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN);
+    const argNode = call.arguments.nodes[0]!;
+    const probedKind = tryLowerExpression(lowerer, argNode)?.type.kind;
+    if (
+      probedKind === "record" ||
+      probedKind === "array" ||
+      probedKind === "map" ||
+      probedKind === "set"
+    ) {
+      const native = lowerer.lowerExpr(argNode);
+      const loc = locOf(call);
+      if (native.type.kind === "record" || native.type.kind === "array")
+        return {
+          kind: "libCall",
+          fn: native.type.kind === "record" ? "record.isFrozen" : "array.isFrozen",
+          args: [native],
+          type: BOOL,
+          loc,
+        };
+      if (native.type.kind === "map" || native.type.kind === "set")
+        return {
+          kind: "unary",
+          op: "!",
+          operand: {
+            kind: "libCall",
+            fn: "collection.isExtensible",
+            args: [native],
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        };
+    }
+    const value = lowerer.lowerExprExpecting(argNode, DYN);
     return { kind: "libCall", fn: "dyn.isFrozen", args: [value], type: BOOL, loc: locOf(call) };
   }
   if (member === "freeze") {
@@ -8580,6 +8644,12 @@ function lowerObjectStaticCall(
     if (fnIntegrity) return fnIntegrity;
     const integrity = lowerClassIntegrity(lowerer, call, "freeze", value);
     if (integrity) return integrity;
+    if (freezableRecordType(lowerer, value.type))
+      return lowerNativeFreeze(lowerer, "record.freeze", value, locOf(call));
+    if (value.type.kind === "array")
+      return lowerNativeFreeze(lowerer, "array.freeze", value, locOf(call));
+    if (value.type.kind === "map" || value.type.kind === "set")
+      return lowerNativeFreeze(lowerer, "collection.preventExtensions", value, locOf(call));
     lowerer.noLowering(
       "Object.freeze of a possibly-aliased value",
       call,
@@ -8719,11 +8789,13 @@ function lowerObjectStaticCall(
       const moduleSymbol = source ? lowerer.checker.getSymbolAtLocation(source) : undefined;
       const names: string[] = [];
       moduleSymbol?.getExports().forEach((symbol, key) => {
+        // Internal names (`__export`) start with `__`; an exported name that
+        // does is keyed with an extra `_` (escapedSymbolName).
         const name = String(key);
-        if (name.startsWith("__") || name === "export=") return;
+        if ((name.startsWith("__") && !name.startsWith("___")) || name === "export=") return;
         const target =
           symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-        if (target.flags & ts.SymbolFlags.Value) names.push(name);
+        if (target.flags & ts.SymbolFlags.Value) names.push(ts.symbolName(symbol));
       });
       names.sort();
       const loc = locOf(call);
