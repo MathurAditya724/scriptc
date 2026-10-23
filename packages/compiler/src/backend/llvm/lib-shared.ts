@@ -585,6 +585,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.ecdhConvertKey": "scr_crypto_ecdh_convert_key",
   "crypto.dhNew": "scr_crypto_dh_new",
   "crypto.checkPrimeSync": "scr_crypto_check_prime_sync",
+  "crypto.getCipherInfo": "scr_crypto_get_cipher_info",
   "crypto.checkPrimeCb": "scr_crypto_check_prime_async",
   "crypto.generatePrimeSync": "scr_crypto_generate_prime_sync",
   "crypto.generatePrimeCb": "scr_crypto_generate_prime_async",
@@ -896,6 +897,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // ambient-this read never throw. The fs dyn read is the sync-fs story.
   "fetch.start": "scr_fetch_static",
   "fetch.responseNew": "scr_fetch_response_new",
+  "fetch.responseLight": "scr_fetch_response_light",
   "fetch.responseJsonStatic": "scr_fetch_response_json_static",
   "fetch.input": "scr_fetch_input",
   "abort.controllerNew": "scr_fetch_abort_controller_new",
@@ -1322,6 +1324,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqPipeClient": "scr_http_req_pipe_client",
   "http.reqPipeSock": "scr_http_req_pipe_sock",
   "http.reqResume": "scr_http_req_resume",
+  "http.reqPause": "scr_http_req_pause",
   "http.reqDestroy": "scr_http_req_destroy",
   "http.reqSetEncoding": "scr_http_req_set_encoding",
   "http.resSetHeader": "scr_http_res_set_header",
