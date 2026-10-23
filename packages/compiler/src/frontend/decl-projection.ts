@@ -99,6 +99,70 @@ function declaredInPackage(symbol: ts.Symbol | undefined): boolean {
   return symbol.declarations.some((d) => isPackageDeclarationFile(ts.getSourceFileOfNode(d)));
 }
 
+/** The parts of a call signature's declaration that pass-through detection
+ * reads, for the declaration kinds a resolved call signature has. */
+function signatureParts(node: ts.Node | undefined): {
+  typeParameters: readonly ts.TypeParameterDeclaration[];
+  parameters: readonly ts.ParameterDeclaration[];
+  type: ts.TypeNode | undefined;
+} | null {
+  if (node === undefined) return null;
+  if (ts.isFunctionTypeNode(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isFunctionDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isMethodDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isMethodSignatureDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isCallSignatureDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  return null;
+}
+
+/** A signature that returns one of its own type parameters which also types
+ * a parameter (`<T extends object>(obj: T) => T`) hands back the argument
+ * or something standing in for it, a proxy or a marked object, whose
+ * identity the package may track (Effect's `Equal.byReference`). Its result
+ * type comes from the caller's argument, not from data the package
+ * declares, so the boundary leaves it alone: converting it would build a
+ * separate native value. */
+function passesArgumentThrough(declaration: ts.Node | undefined): boolean {
+  const sig = signatureParts(declaration);
+  if (sig === null || sig.type === undefined || !ts.isTypeReferenceNode(sig.type)) return false;
+  const ret = sig.type;
+  if (!ts.isIdentifier(ret.typeName) || ret.typeArguments !== undefined) return false;
+  const name = ret.typeName.text;
+  if (!sig.typeParameters.some((tp) => tp.name.text === name)) return false;
+  return sig.parameters.some(
+    (param) =>
+      param.type !== undefined &&
+      ts.isTypeReferenceNode(param.type) &&
+      ts.isIdentifier(param.type.typeName) &&
+      param.type.typeName.text === name,
+  );
+}
+
 function declaredInUserFile(symbol: ts.Symbol | undefined): boolean {
   if (symbol === undefined) return false;
   const decls = symbol.declarations;
@@ -188,6 +252,16 @@ class TypePrinter {
     return props.length > 0 && props.every((p) => String(p.escapedName).startsWith("__@"));
   }
 
+  /** Whether an interface type and every type it extends are declared in
+   * user files. */
+  private userInterface(type: ts.Type, seen = new Set<ts.Type>()): boolean {
+    if (!declaredInUserFile(type.getSymbol())) return false;
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    if (target === undefined || !target.isClassOrInterface() || seen.has(target)) return true;
+    seen.add(target);
+    return this.checker.getBaseTypes(target).every((base) => this.userInterface(base, seen));
+  }
+
   private printObject(type: ts.Type, depth: number): string | null {
     const checker = this.checker;
     if (checker.isArrayType(type)) {
@@ -216,8 +290,11 @@ class TypePrinter {
       if (symbol.flags & (ts.SymbolFlags.Class | ts.SymbolFlags.Function | ts.SymbolFlags.Method))
         return null;
       // Interfaces: only user-declared ones describe plain data reliably
-      // (package and lib interfaces often describe class instances).
-      if (symbol.flags & ts.SymbolFlags.Interface && !declaredInUserFile(symbol)) return null;
+      // (package and lib interfaces often describe class instances), and
+      // only when every interface they extend is user-declared too: a user
+      // interface extending a package one (effect's Request.Request)
+      // inherits members the package's own constructors create.
+      if (symbol.flags & ts.SymbolFlags.Interface && !this.userInterface(type)) return null;
     }
     if (
       checker.getCallSignatures(type).length > 0 ||
@@ -511,16 +588,16 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       if (ts.isCallExpression(d) || ts.isNewExpression(d)) {
         const callee = d.expression;
         const target = ts.isPropertyAccessExpression(callee) ? callee.name : callee;
-        produced = declaredInPackage(declSymbol(target));
-        if (!produced) {
-          try {
-            const sig = declChecker.getResolvedSignature(d);
-            const decl = sig?.declaration;
-            produced = decl !== undefined && isPackageDeclarationFile(ts.getSourceFileOfNode(decl));
-          } catch {
-            produced = false;
-          }
+        let decl: ts.Node | undefined;
+        try {
+          decl = declChecker.getResolvedSignature(d)?.declaration;
+        } catch {
+          decl = undefined;
         }
+        produced =
+          (declaredInPackage(declSymbol(target)) ||
+            (decl !== undefined && isPackageDeclarationFile(ts.getSourceFileOfNode(decl)))) &&
+          !passesArgumentThrough(decl);
       } else if (ts.isTaggedTemplateExpression(d)) {
         produced = declaredInPackage(declSymbol(d.tag));
       } else if (ts.isPropertyAccessExpression(d) || ts.isElementAccessExpression(d)) {
