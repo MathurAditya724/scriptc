@@ -1404,6 +1404,10 @@ struct ScrChildStream {
   size_t n_data, cap_data;
   ScrChildStreamEndL *end_ls;
   size_t n_end, cap_end;
+  /* The AsyncLocalStorage context of the spawn() call that created the
+   * stream (+1, NULL outside a store): its events run in it, as Node's
+   * pipe handles run theirs. */
+  ScrAlsCtx *als;
   struct ScrChildStream *next; /* the service registry (+1) */
 };
 
@@ -1432,6 +1436,11 @@ struct ScrChildWriter {
   size_t n_finish, cap_finish;
   ScrChildErrEntry *err_ls;
   size_t n_write_err, cap_write_err;
+  /* AsyncLocalStorage contexts (+1 each, NULL outside a store): the
+   * latest write() call's, for 'drain' and 'error' (the spawn() call's
+   * until the first write), and the end() call's, for 'finish'. */
+  ScrAlsCtx *als;
+  ScrAlsCtx *end_als;
   struct ScrChildWriter *next; /* the service registry (+1) */
 };
 
@@ -1478,6 +1487,9 @@ struct ScrChild {
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
   ScrIpc *ipc;
+  /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
+   * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
+  ScrAlsCtx *als;
   struct ScrChild *next; /* the pending registry */
 };
 
@@ -1536,6 +1548,7 @@ void scr_child_release(ScrChild *c) {
     scr_child_stream_release(c->err_stream);
     scr_child_writer_release(c->in_stream);
     scr_ipc_release(c->ipc);
+    scr_als_ctx_release(c->als);
     if (c->proc != NULL) CloseHandle(c->proc);
     free(c);
   }
@@ -1568,6 +1581,7 @@ void scr_child_stream_release(ScrChildStream *s) {
     if (s->h != NULL) CloseHandle(s->h);
     scr_str_release(s->encoding);
     free(s->capture_data);
+    scr_als_ctx_release(s->als);
     free(s);
   }
 }
@@ -1587,6 +1601,7 @@ static ScrChildStream *scr_child_stream_new(HANDLE h) {
   ScrChildStream *s = calloc(1, sizeof *s);
   if (!s) scr_child_oom();
   s->rc = 1;
+  s->als = scr_als_capture();
   s->h = h;
   if (h == NULL) {
     s->eof = true;
@@ -1633,8 +1648,16 @@ static ScrStr *scr_child_stream_capture_value(ScrChildStream *s) {
       : scr_str_new((const char *)s->capture_data, s->capture_len);
 }
 
-static void scr_child_stream_emit(ScrChildStream *s, ScrBytes *bytes,
-                                  ScrStr *text) {
+static void scr_child_stream_emit_in(ScrChildStream *s, ScrBytes *bytes, ScrStr *text);
+
+/* 'data' runs in the spawn() call's context. */
+static void scr_child_stream_emit(ScrChildStream *s, ScrBytes *bytes, ScrStr *text) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(s->als);
+  scr_child_stream_emit_in(s, bytes, text);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_stream_emit_in(ScrChildStream *s, ScrBytes *bytes, ScrStr *text) {
   size_t nd = s->n_data;
   if (nd == 0) return;
   ScrChildStreamDataL *snap = malloc(nd * sizeof *snap);
@@ -1676,7 +1699,16 @@ static void scr_child_stream_emit(ScrChildStream *s, ScrBytes *bytes,
   free(snap);
 }
 
+static void scr_child_stream_finish_in(ScrChildStream *s, bool fire_end);
+
+/* A stream's 'end' runs in the spawn() call's context. */
 static void scr_child_stream_finish(ScrChildStream *s, bool fire_end) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(s->als);
+  scr_child_stream_finish_in(s, fire_end);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_stream_finish_in(ScrChildStream *s, bool fire_end) {
   if (fire_end && s->encoding != NULL && s->n_data > 0) {
     ScrStr *tail = scr_strdec_end(s->encoding, s->dec_pending);
     s->dec_pending = 0;
@@ -1907,6 +1939,8 @@ void scr_child_writer_release(ScrChildWriter *w) {
     free(w->buf);
     scr_str_release(w->err_msg);
     scr_child_writer_drop_listeners(w);
+    scr_als_ctx_release(w->als);
+    scr_als_ctx_release(w->end_als);
     free(w);
   }
 }
@@ -1922,6 +1956,7 @@ static ScrChildWriter *scr_child_writer_new(HANDLE h) {
   ScrChildWriter *w = calloc(1, sizeof *w);
   if (!w) scr_child_oom();
   w->rc = 1;
+  w->als = scr_als_capture();
   w->h = h;
   w->writable = h != NULL;
   w->destroyed = h == NULL;
@@ -2068,6 +2103,8 @@ static void scr_child_writer_pump(ScrChildWriter *w) {
 
 static bool scr_child_writer_write(ScrChildWriter *w, const void *data,
                                    size_t len) {
+  scr_als_ctx_release(w->als);
+  w->als = scr_als_capture();
   if (!w->writable) {
     scr_child_writer_fail(w, "write after end", "ERR_STREAM_WRITE_AFTER_END");
     return false;
@@ -2098,6 +2135,8 @@ bool scr_child_writer_write_bytes(ScrChildWriter *w, const ScrBytes *data) {
 
 void scr_child_writer_end(ScrChildWriter *w) {
   if (w->ending || w->finish_pending || w->finished || w->destroyed) return;
+  scr_als_ctx_release(w->end_als);
+  w->end_als = scr_als_capture();
   w->writable = false;
   w->ending = true;
   scr_child_writer_pump(w);
@@ -2165,7 +2204,16 @@ void scr_child_writer_on_error(ScrChildWriter *w, ScrClosure *cb /*moves*/,
   w->err_ls[w->n_write_err++] = (ScrChildErrEntry){cb, fn};
 }
 
+static void scr_child_writer_fire_drain_in(ScrChildWriter *w);
+
+/* 'drain' runs in the latest write() call's context. */
 static void scr_child_writer_fire_drain(ScrChildWriter *w) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(w->als);
+  scr_child_writer_fire_drain_in(w);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_writer_fire_drain_in(ScrChildWriter *w) {
   w->drain_pending = false;
   size_t n = w->n_drain;
   if (n == 0) return;
@@ -2192,7 +2240,16 @@ static void scr_child_writer_fire_drain(ScrChildWriter *w) {
   free(snap);
 }
 
+static void scr_child_writer_fire_finish_in(ScrChildWriter *w);
+
+/* 'finish' runs in the end() call's context. */
 static void scr_child_writer_fire_finish(ScrChildWriter *w) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(w->end_als);
+  scr_child_writer_fire_finish_in(w);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_writer_fire_finish_in(ScrChildWriter *w) {
   w->finish_pending = false;
   w->finished = true;
   w->destroyed = true;
@@ -2211,7 +2268,16 @@ static void scr_child_writer_fire_finish(ScrChildWriter *w) {
   scr_child_writer_drop_zero_listeners(w);
 }
 
+static void scr_child_writer_fire_error_in(ScrChildWriter *w);
+
+/* 'error' runs in the latest write() call's context. */
 static void scr_child_writer_fire_error(ScrChildWriter *w) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(w->als);
+  scr_child_writer_fire_error_in(w);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_writer_fire_error_in(ScrChildWriter *w) {
   w->error_pending = false;
   if (w->n_write_err == 0) {
     fflush(stdout);
@@ -2305,6 +2371,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   ScrChild *c = calloc(1, sizeof(ScrChild));
   if (!c) scr_child_oom();
   c->rc = 1;
+  c->als = scr_als_capture();
 
   /* Piped slots: the pipe NOW; a pipe failure degrades the slot to NUL
    * and the stream husk answers eof (fd exhaustion — nothing real). */
@@ -2703,7 +2770,16 @@ static bool scr_child_close_ready(const ScrChild *c) {
          scr_ipc_close_ready(c->ipc);
 }
 
+static void scr_child_fire_close_in(ScrChild *c);
+
+/* 'close' runs in the spawn() call's context. */
 static void scr_child_fire_close(ScrChild *c) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(c->als);
+  scr_child_fire_close_in(c);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_fire_close_in(ScrChild *c) {
   c->close_done = true;
   bool has_code = c->state == SCR_CHILD_SPAWN_FAILED ? true : c->has_code;
   double code = c->state == SCR_CHILD_SPAWN_FAILED
@@ -2767,7 +2843,16 @@ bool scr_children_wait(double max_wait_ms) {
 /* Fires one settled child's terminal event — the POSIX arm's settle,
  * verbatim (streams drain first so 'end' precedes 'exit'; spawn
  * failures fire 'error' or die unhandled). */
+static void scr_child_settle_in(ScrChild *c);
+
+/* A child's terminal events run in its spawn() call's context. */
 static void scr_child_settle(ScrChild *c) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(c->als);
+  scr_child_settle_in(c);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_settle_in(ScrChild *c) {
   if (c->reffed) {
     c->reffed = false;
     scr_children_reffed_n--;
@@ -3815,6 +3900,10 @@ struct ScrChildStream {
   size_t n_data, cap_data;
   ScrChildStreamEndL *end_ls;
   size_t n_end, cap_end;
+  /* The AsyncLocalStorage context of the spawn() call that created the
+   * stream (+1, NULL outside a store): its events run in it, as Node's
+   * pipe handles run theirs. */
+  ScrAlsCtx *als;
   struct ScrChildStream *next; /* the service registry (+1) */
 };
 
@@ -3839,6 +3928,11 @@ struct ScrChildWriter {
   size_t n_finish, cap_finish;
   ScrChildErrEntry *err_ls;
   size_t n_write_err, cap_write_err;
+  /* AsyncLocalStorage contexts (+1 each, NULL outside a store): the
+   * latest write() call's, for 'drain' and 'error' (the spawn() call's
+   * until the first write), and the end() call's, for 'finish'. */
+  ScrAlsCtx *als;
+  ScrAlsCtx *end_als;
   struct ScrChildWriter *next; /* the service registry (+1) */
 };
 
@@ -3889,6 +3983,9 @@ struct ScrChild {
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
   ScrIpc *ipc;
+  /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
+   * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
+  ScrAlsCtx *als;
   struct ScrChild *next; /* the pending registry */
 };
 
@@ -4085,6 +4182,7 @@ void scr_child_release(ScrChild *c) {
     scr_child_stream_release(c->err_stream);
     scr_child_writer_release(c->in_stream);
     scr_ipc_release(c->ipc);
+    scr_als_ctx_release(c->als);
     free(c);
   }
 }
@@ -4137,6 +4235,7 @@ void scr_child_stream_release(ScrChildStream *s) {
     if (s->fd >= 0) close(s->fd);
     scr_str_release(s->encoding);
     free(s->capture_data);
+    scr_als_ctx_release(s->als);
     free(s);
   }
 }
@@ -4159,6 +4258,7 @@ static ScrChildStream *scr_child_stream_new(int fd) {
   ScrChildStream *s = calloc(1, sizeof *s);
   if (!s) scr_child_oom();
   s->rc = 1;
+  s->als = scr_als_capture();
   s->fd = fd;
   if (fd < 0) {
     s->eof = true;
@@ -4213,8 +4313,16 @@ static ScrStr *scr_child_stream_capture_value(ScrChildStream *s) {
       : scr_str_new((const char *)s->capture_data, s->capture_len);
 }
 
-static void scr_child_stream_emit_posix(ScrChildStream *s, ScrBytes *bytes,
-                                        ScrStr *text) {
+static void scr_child_stream_emit_posix_in(ScrChildStream *s, ScrBytes *bytes, ScrStr *text);
+
+/* 'data' runs in the spawn() call's context. */
+static void scr_child_stream_emit_posix(ScrChildStream *s, ScrBytes *bytes, ScrStr *text) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(s->als);
+  scr_child_stream_emit_posix_in(s, bytes, text);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_stream_emit_posix_in(ScrChildStream *s, ScrBytes *bytes, ScrStr *text) {
   size_t nd = s->n_data;
   if (nd == 0) return;
   ScrChildStreamDataL *snap = malloc(nd * sizeof *snap);
@@ -4264,7 +4372,16 @@ static void scr_child_stream_emit_posix(ScrChildStream *s, ScrBytes *bytes,
 /* EOF/error tail: 'end' fires over a snapshot, everything drops, the fd
  * closes (deleting its kqueue filter), and the liveness/fallback counters
  * settle. The caller unlinks from the registry and releases its ref. */
+static void scr_child_stream_finish_in(ScrChildStream *s, bool fire_end);
+
+/* A stream's 'end' runs in the spawn() call's context. */
 static void scr_child_stream_finish(ScrChildStream *s, bool fire_end) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(s->als);
+  scr_child_stream_finish_in(s, fire_end);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_stream_finish_in(ScrChildStream *s, bool fire_end) {
   if (fire_end && s->encoding != NULL && s->n_data > 0) {
     ScrStr *tail = scr_strdec_end(s->encoding, s->dec_pending);
     s->dec_pending = 0;
@@ -4572,6 +4689,8 @@ void scr_child_writer_release(ScrChildWriter *w) {
     free(w->buf);
     scr_str_release(w->err_msg);
     scr_child_writer_drop_listeners(w);
+    scr_als_ctx_release(w->als);
+    scr_als_ctx_release(w->end_als);
     free(w);
   }
 }
@@ -4587,6 +4706,7 @@ static ScrChildWriter *scr_child_writer_new(int fd) {
   ScrChildWriter *w = calloc(1, sizeof *w);
   if (!w) scr_child_oom();
   w->rc = 1;
+  w->als = scr_als_capture();
   w->fd = fd;
   w->writable = fd >= 0;
   w->destroyed = fd < 0;
@@ -4720,6 +4840,8 @@ static void scr_child_writer_pump(ScrChildWriter *w) {
 
 static bool scr_child_writer_write(ScrChildWriter *w, const void *data,
                                    size_t len) {
+  scr_als_ctx_release(w->als);
+  w->als = scr_als_capture();
   if (!w->writable) {
     scr_child_writer_fail(w, "write after end", "ERR_STREAM_WRITE_AFTER_END");
     return false;
@@ -4756,6 +4878,8 @@ bool scr_child_writer_write_bytes(ScrChildWriter *w, const ScrBytes *data) {
 
 void scr_child_writer_end(ScrChildWriter *w) {
   if (w->ending || w->finish_pending || w->finished || w->destroyed) return;
+  scr_als_ctx_release(w->end_als);
+  w->end_als = scr_als_capture();
   w->writable = false;
   w->ending = true;
   scr_child_writer_pump(w);
@@ -4823,7 +4947,16 @@ void scr_child_writer_on_error(ScrChildWriter *w, ScrClosure *cb /*moves*/,
   w->err_ls[w->n_write_err++] = (ScrChildErrEntry){cb, fn};
 }
 
+static void scr_child_writer_fire_drain_in(ScrChildWriter *w);
+
+/* 'drain' runs in the latest write() call's context. */
 static void scr_child_writer_fire_drain(ScrChildWriter *w) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(w->als);
+  scr_child_writer_fire_drain_in(w);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_writer_fire_drain_in(ScrChildWriter *w) {
   w->drain_pending = false;
   size_t n = w->n_drain;
   if (n == 0) return;
@@ -4850,7 +4983,16 @@ static void scr_child_writer_fire_drain(ScrChildWriter *w) {
   free(snap);
 }
 
+static void scr_child_writer_fire_finish_in(ScrChildWriter *w);
+
+/* 'finish' runs in the end() call's context. */
 static void scr_child_writer_fire_finish(ScrChildWriter *w) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(w->end_als);
+  scr_child_writer_fire_finish_in(w);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_writer_fire_finish_in(ScrChildWriter *w) {
   w->finish_pending = false;
   w->finished = true;
   w->destroyed = true;
@@ -4869,7 +5011,16 @@ static void scr_child_writer_fire_finish(ScrChildWriter *w) {
   scr_child_writer_drop_zero_listeners(w);
 }
 
+static void scr_child_writer_fire_error_in(ScrChildWriter *w);
+
+/* 'error' runs in the latest write() call's context. */
 static void scr_child_writer_fire_error(ScrChildWriter *w) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(w->als);
+  scr_child_writer_fire_error_in(w);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_writer_fire_error_in(ScrChildWriter *w) {
   w->error_pending = false;
   if (w->n_write_err == 0) {
     fflush(stdout);
@@ -4973,6 +5124,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   ScrChild *c = calloc(1, sizeof(ScrChild));
   if (!c) scr_child_oom();
   c->rc = 1;
+  c->als = scr_als_capture();
 
   /* Piped slots: pipe(2) NOW, both ends cloexec (the file action's dup2
    * clears the flag on the child's copy — every other descriptor closes
@@ -5489,7 +5641,16 @@ static bool scr_child_close_ready(const ScrChild *c) {
          scr_ipc_close_ready(c->ipc);
 }
 
+static void scr_child_fire_close_in(ScrChild *c);
+
+/* 'close' runs in the spawn() call's context. */
 static void scr_child_fire_close(ScrChild *c) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(c->als);
+  scr_child_fire_close_in(c);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_fire_close_in(ScrChild *c) {
   c->close_done = true;
   bool has_code = c->state == SCR_CHILD_SPAWN_FAILED ? true : c->has_code;
   double code = c->state == SCR_CHILD_SPAWN_FAILED
@@ -5527,7 +5688,16 @@ static void scr_children_closing_poll(void) {
  * ordering runs first: consumer-owning piped streams drain to EOF/EAGAIN
  * so their 'end' events fire BEFORE 'exit' (Node-exact — verified: data*,
  * end, then exit for every output shape). */
+static void scr_child_settle_in(ScrChild *c);
+
+/* A child's terminal events run in its spawn() call's context. */
 static void scr_child_settle(ScrChild *c) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(c->als);
+  scr_child_settle_in(c);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_settle_in(ScrChild *c) {
   if (c->reffed) {
     c->reffed = false;
     scr_children_reffed_n--;
@@ -5695,7 +5865,16 @@ void scr_child_on_spawn(ScrChild *c, ScrClosure *cb) {
 /* Success is observable on the next loop pass, before any data or exit
  * event. Detaching the snapshot keeps listeners registered by a callback
  * from participating in an event that has already started. */
+static void scr_child_fire_spawn_in(ScrChild *c);
+
+/* 'spawn' runs in the spawn() call's context. */
 static void scr_child_fire_spawn(ScrChild *c) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(c->als);
+  scr_child_fire_spawn_in(c);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_child_fire_spawn_in(ScrChild *c) {
   c->spawn_done = true;
   ScrClosure **callbacks = c->spawn_cbs;
   size_t count = c->n_spawn;
@@ -5901,6 +6080,7 @@ typedef struct {
 typedef struct {
   ScrClosure *cb;
   ScrIpcSendFn fn;
+  ScrAlsCtx *ctx; /* the send() call's context (+1): the callback runs in it */
 } ScrIpcSendEntry;
 
 struct ScrIpc {
@@ -5928,6 +6108,9 @@ struct ScrIpc {
   ScrIpcSendEntry *send_cbs;
   size_t n_send, cap_send;
   ScrStr *send_error;
+  /* The context the channel was created in (+1): 'message' and
+   * 'disconnect' run in it. */
+  ScrAlsCtx *als;
   struct ScrIpc *next;
 };
 
@@ -5963,8 +6146,12 @@ static void scr_ipc_release(ScrIpc *ipc) {
   for (size_t i = 0; i < ipc->n_pending; i++) scr_dyn_release(ipc->pending[i]);
   for (size_t i = 0; i < ipc->n_message; i++) scr_closure_release(ipc->message_ls[i].cb);
   for (size_t i = 0; i < ipc->n_disconnect; i++) scr_closure_release(ipc->disconnect_ls[i].cb);
-  for (size_t i = 0; i < ipc->n_send; i++) scr_closure_release(ipc->send_cbs[i].cb);
+  for (size_t i = 0; i < ipc->n_send; i++) {
+    scr_closure_release(ipc->send_cbs[i].cb);
+    scr_als_ctx_release(ipc->send_cbs[i].ctx);
+  }
   scr_str_release(ipc->send_error);
+  scr_als_ctx_release(ipc->als);
   free(ipc->buffer);
   free(ipc->pending);
   free(ipc->message_ls);
@@ -6084,6 +6271,7 @@ static ScrIpc *scr_ipc_new(ScrChildStream *reader, ScrChildWriter *writer) {
   ScrIpc *ipc = calloc(1, sizeof(*ipc));
   if (!ipc) scr_trap("out of memory");
   ipc->rc = 1;
+  ipc->als = scr_als_capture();
   ipc->connected = true;
   ipc->reader = reader;
   ipc->writer = writer;
@@ -6114,7 +6302,7 @@ static void scr_ipc_add_send(ScrIpc *ipc, ScrClosure *cb, ScrIpcSendFn fn) {
     ipc->send_cbs = realloc(ipc->send_cbs, ipc->cap_send * sizeof(*ipc->send_cbs));
     if (!ipc->send_cbs) scr_trap("out of memory");
   }
-  ipc->send_cbs[ipc->n_send++] = (ScrIpcSendEntry){cb, fn};
+  ipc->send_cbs[ipc->n_send++] = (ScrIpcSendEntry){cb, fn, scr_als_capture()};
 }
 
 static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,
@@ -6198,7 +6386,16 @@ static void scr_ipc_remove_message_once(ScrIpc *ipc, ScrClosure *cb) {
   }
 }
 
+static void scr_ipc_fire_messages_in(ScrIpc *ipc);
+
+/* 'message' runs in the channel's creation context. */
 static void scr_ipc_fire_messages(ScrIpc *ipc) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(ipc->als);
+  scr_ipc_fire_messages_in(ipc);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_ipc_fire_messages_in(ScrIpc *ipc) {
   while (ipc->n_pending > 0 && ipc->n_message > 0 && !scr_exc_pending()) {
     ScrDyn *message = ipc->pending[0];
     memmove(ipc->pending, ipc->pending + 1,
@@ -6235,16 +6432,28 @@ static void scr_ipc_fire_send_callbacks(ScrIpc *ipc) {
       error = scr_error_new(0, ipc->send_error);
       scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
     }
+    ScrAlsCtx *prev = scr_als_dispatch_enter(snapshot[i].ctx);
     if (!scr_exc_pending()) snapshot[i].fn(snapshot[i].cb, error);
     else scr_error_release(error);
+    scr_als_dispatch_leave(prev);
     scr_closure_release(snapshot[i].cb);
+    scr_als_ctx_release(snapshot[i].ctx);
   }
   free(snapshot);
   scr_str_release(ipc->send_error);
   ipc->send_error = NULL;
 }
 
+static void scr_ipc_fire_disconnect_in(ScrIpc *ipc);
+
+/* 'disconnect' runs in the channel's creation context. */
 static void scr_ipc_fire_disconnect(ScrIpc *ipc) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(ipc->als);
+  scr_ipc_fire_disconnect_in(ipc);
+  scr_als_dispatch_leave(prev);
+}
+
+static void scr_ipc_fire_disconnect_in(ScrIpc *ipc) {
   if (!ipc->disconnect_pending || ipc->disconnect_emitted) return;
   ipc->disconnect_pending = false;
   ipc->disconnect_emitted = true;

@@ -1394,7 +1394,12 @@
           "tests/corpus/7119-als-net-event-context.mjs",
           "tests/corpus/7380-als-http-event-context.mjs",
           "tests/corpus/7383-als-stream-events.ts",
-          "tests/corpus/7384-als-stream-events.mjs"
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -1451,7 +1456,12 @@
           "tests/corpus/7119-als-net-event-context.mjs",
           "tests/corpus/7380-als-http-event-context.mjs",
           "tests/corpus/7383-als-stream-events.ts",
-          "tests/corpus/7384-als-stream-events.mjs"
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1531,7 +1541,12 @@
           "tests/corpus/7119-als-net-event-context.mjs",
           "tests/corpus/7380-als-http-event-context.mjs",
           "tests/corpus/7383-als-stream-events.ts",
-          "tests/corpus/7384-als-stream-events.mjs"
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1565,7 +1580,12 @@
           "tests/corpus/7119-als-net-event-context.mjs",
           "tests/corpus/7380-als-http-event-context.mjs",
           "tests/corpus/7383-als-stream-events.ts",
-          "tests/corpus/7384-als-stream-events.mjs"
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1599,7 +1619,12 @@
           "tests/corpus/7119-als-net-event-context.mjs",
           "tests/corpus/7380-als-http-event-context.mjs",
           "tests/corpus/7383-als-stream-events.ts",
-          "tests/corpus/7384-als-stream-events.mjs"
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1633,7 +1658,12 @@
           "tests/corpus/7119-als-net-event-context.mjs",
           "tests/corpus/7380-als-http-event-context.mjs",
           "tests/corpus/7383-als-stream-events.ts",
-          "tests/corpus/7384-als-stream-events.mjs"
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1667,7 +1697,12 @@
           "tests/corpus/7119-als-net-event-context.mjs",
           "tests/corpus/7380-als-http-event-context.mjs",
           "tests/corpus/7383-als-stream-events.ts",
-          "tests/corpus/7384-als-stream-events.mjs"
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -1978,6 +2013,11 @@
           "tests/corpus/7380-als-http-event-context.mjs",
           "tests/corpus/7383-als-stream-events.ts",
           "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -2547,7 +2587,12 @@
           "tests/corpus/7119-als-net-event-context.mjs",
           "tests/corpus/7380-als-http-event-context.mjs",
           "tests/corpus/7383-als-stream-events.ts",
-          "tests/corpus/7384-als-stream-events.mjs"
+          "tests/corpus/7384-als-stream-events.mjs",
+          "tests/corpus/7385-als-child-process-events.ts",
+          "tests/corpus/7386-als-child-fork-events/main.mjs",
+          "tests/corpus/7387-als-http2-events.mjs",
+          "tests/corpus/7388-als-http2-compat-events.mjs",
+          "tests/corpus/7389-als-http2-secure-events.mjs"
         ]
       },
       "anchorSource": "exact"
