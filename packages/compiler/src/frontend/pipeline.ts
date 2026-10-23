@@ -691,8 +691,8 @@ function loadFrontend(
           ...finalLoad.program.getImplementationSourceFiles().filter((sf) => !sf.isDeclarationFile),
         ].map((sf) => [sf.fileName, sf.text]),
       ),
-    lower: (opts) =>
-      lowerToIr(finalLoad.program, finalLoad.entry, finalLoad.moduleOrder, {
+    lower: (opts) => {
+      const lowered = lowerToIr(finalLoad.program, finalLoad.entry, finalLoad.moduleOrder, {
         ...opts,
         frontendServices: finalLoad.services,
         startupCrash: finalLoad.startupCrash ?? null,
@@ -701,7 +701,13 @@ function loadFrontend(
         projectCheckJs: finalLoad.typeWorld?.projectCheckJs ?? false,
         externalTypes: finalLoad.externalTypes,
         externalTypeSpecifiersByFile: finalLoad.externalTypeSpecifiersByFile,
-      }),
+      });
+      // The declaration-typed boundary's notes (SC6102) join the
+      // performance warnings; they never fail a build.
+      const notes = finalLoad.declBoundaryNotes;
+      if (notes === undefined) return lowered;
+      return { ...lowered, performance: [...notes, ...(lowered.performance ?? [])] };
+    },
     npmStatic: statuses,
     npmImportSites: npmSites,
     dispose: finalLoad.dispose,

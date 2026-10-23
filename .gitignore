@@ -39,6 +39,7 @@ output/
 /packages/libnode-*/manifest.json
 /packages/libnode-*/LICENSE
 !tests/fixtures/npm/node_modules/*/dist/
+!tests/fixtures/npm/node_modules/@*/*/dist/
 !tests/fixtures/npm/workspace/*/dist/
 !tests/fixtures/npm/cases/workspace-copied/members/*/dist/
 !tests/fixtures/npm/cases/workspace-copied/node_modules/*/dist/

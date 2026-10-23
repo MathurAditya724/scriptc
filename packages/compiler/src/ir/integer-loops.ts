@@ -333,7 +333,12 @@ export function matchIntegerCountedForLoop(
     )
       useful = true;
     // A string read at the counter indexes with the integer directly.
-    if (e.kind === "strIntrinsic" && e.method === "charCodeAt" && e.args[0] && counter(e.args[0]))
+    if (
+      e.kind === "strIntrinsic" &&
+      (e.method === "charCodeAt" || e.method === "charAt") &&
+      e.args[0] &&
+      counter(e.args[0])
+    )
       useful = true;
     // So does an array element read; only a loop that needs no versioned
     // copy takes the integer counter for it.
@@ -377,9 +382,9 @@ export function matchIntegerCountedForLoop(
  *
  * The first counter only grows and the second only shrinks, by positive
  * literal steps, the body writes neither, and the loop runs while the first
- * is below (or at most) the second. Every body entry therefore holds both
- * between the first start and the second start: exact integers when the
- * starts are. A start without a proven integer range is tested at run time
+ * is below (or at most) the second, written either way round (`hi > lo`).
+ * Every body entry therefore holds both between the first start and the
+ * second start: exact integers when the starts are. A start without a proven integer range is tested at run time
  * on a versioned loop, as a counted loop's is. */
 export interface IntegerPairedCounter {
   localId: string;
@@ -407,10 +412,13 @@ export function matchIntegerPairedForLoop(
     cond = stmt.cond;
   if (init?.kind !== "block" || init.body.length !== 2) return null;
   if (update?.kind !== "block" || update.body.length !== 2) return null;
-  if (cond?.kind !== "bin" || (cond.op !== "<" && cond.op !== "<=")) return null;
-  if (cond.left.kind !== "varRef" || cond.right.kind !== "varRef") return null;
-  const lowId = cond.left.localId,
-    highId = cond.right.localId;
+  if (cond?.kind !== "bin" || cond.left.kind !== "varRef" || cond.right.kind !== "varRef")
+    return null;
+  const below = cond.op === "<" || cond.op === "<=";
+  if (!below && cond.op !== ">" && cond.op !== ">=") return null;
+  // `hi > lo` is `lo < hi`.
+  const lowId = below ? cond.left.localId : cond.right.localId,
+    highId = below ? cond.right.localId : cond.left.localId;
   if (lowId === highId) return null;
   const counter = (id: string): IntegerPairedCounter | null => {
     const decl = init.body.find((d) => d.kind === "varDecl" && d.localId === id);
@@ -456,7 +464,12 @@ export function matchIntegerPairedForLoop(
       (isCounter(e.left) || isCounter(e.right)));
   const expr = (e: IrExpr): boolean => {
     if (e.kind === "arrayGet" && isCounter(e.index)) useful = true;
-    if (e.kind === "strIntrinsic" && e.method === "charCodeAt" && e.args[0] && isCounter(e.args[0]))
+    if (
+      e.kind === "strIntrinsic" &&
+      (e.method === "charCodeAt" || e.method === "charAt") &&
+      e.args[0] &&
+      isCounter(e.args[0])
+    )
       useful = true;
     if (e.kind === "bytesIntrinsic" && e.method === "get" && e.args[0] && isCounter(e.args[0]))
       useful = true;
@@ -475,7 +488,7 @@ export function matchIntegerPairedForLoop(
   return {
     low,
     high,
-    inclusive: cond.op === "<=",
+    inclusive: cond.op === "<=" || cond.op === ">=",
     guarded,
     // A loop whose starts already fail the condition never enters the body.
     range: {
