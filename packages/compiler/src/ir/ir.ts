@@ -1753,6 +1753,18 @@ export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "Tex
   return null;
 }
 
+/** The codec class of a TextEncoder or TextDecoder record type, else null.
+ * Such a record crosses an `unknown` slot as a native handle that holds the
+ * record itself (scr_text_codec_dyn.c), never as a copy or a field view. */
+export function textCodecRecordClass(
+  t: IrType,
+  getRecord: (shapeId: string) => IrRecordShape | undefined,
+): "TextEncoder" | "TextDecoder" | null {
+  if (t.kind !== "record") return null;
+  const shape = getRecord(t.shapeId);
+  return shape ? recordTextCodecClass(shape) : null;
+}
+
 /** Object-literal ACCESSOR properties (`{ get x() {...}, set x(v) {...} }`)
  * live on the shape as reserved '%'-fields holding closures: `%get:x` a
  * `() => T` invoked once per property READ (side effects and all — JS's
@@ -4281,6 +4293,7 @@ export function canConvertToDyn(
   visiting: Set<string> = new Set(),
 ): boolean {
   if (isJsonSafeType(t, getRecord, getUnion)) return true;
+  if (textCodecRecordClass(t, getRecord) !== null) return true;
   // numeric typed arrays and boxable functions are dyn kinds the walker boxes
   // ANYWHERE (bytes and functions held by identity), including nested
   // in records/arrays/unions. isJsonSafeType rejects them, but dynFrom
@@ -4327,6 +4340,7 @@ export function canConvertToDyn(
           // either its result or a promise of it.
           canBoxDynComposite(a, getRecord, getUnion, visiting) ||
           isDynTypedRefType(a) ||
+          textCodecRecordClass(a, getRecord) !== null ||
           a.kind === "classval" ||
           DYN_HANDLE_KINDS.has(a.kind) ||
           (a.kind === "func" && canBoxFuncIntoDyn(a, getRecord, getUnion, visiting)) ||
@@ -4406,7 +4420,8 @@ function canBoxDynCompositeAt(
     case "record": {
       const shape = getRecord(t.shapeId);
       if (!shape) return false;
-      if (recordTextCodecClass(shape) !== null) return false;
+      // A codec boxes as its own handle wherever it sits (toDynHelper).
+      if (recordTextCodecClass(shape) !== null) return true;
       // Recursive shapes answer coinductively, like isJsonSafeType.
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);
@@ -4507,6 +4522,8 @@ function canDynCheckToAt(
     visiting.delete(key);
     return result;
   }
+  // A codec handle unboxes to the record it holds.
+  if (textCodecRecordClass(t, getRecord) !== null) return true;
   if (t.kind === "record") {
     const key = typeKey(t);
     if (visiting.has(key)) return false;

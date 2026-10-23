@@ -560,6 +560,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "text.decoderEncoding": "scr_text_decoder_encoding",
   "text.decoderName": "scr_text_decoder_name",
   "text.encodeInto": "scr_text_encode_into",
+  "text.codecIs": "scr_text_codec_is",
   "buffer.isAscii": "scr_buffer_is_ascii",
   "buffer.isUtf8": "scr_buffer_is_utf8",
   "buffer.transcode": "scr_buffer_transcode",

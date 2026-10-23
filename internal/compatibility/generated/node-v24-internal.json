@@ -52195,6 +52195,7 @@
           "tests/corpus/6295-jose-hs256/main.mjs",
           "tests/corpus/6331-jose-root-entry/main.ts",
           "tests/corpus/7743-transform-stream-identity.ts",
+          "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -53347,7 +53348,8 @@
         "tests": [
           "tests/corpus/1423-text-codec.ts",
           "tests/corpus/text-codec-values/main.ts",
-          "tests/corpus/3133-text-decoder-streaming.ts"
+          "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/7747-text-codec-untyped-slot.js"
         ]
       },
       "anchorSource": "exact"
@@ -53398,7 +53400,8 @@
         "tests": [
           "tests/corpus/1423-text-codec.ts",
           "tests/corpus/text-codec-values/main.ts",
-          "tests/corpus/3133-text-decoder-streaming.ts"
+          "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/7747-text-codec-untyped-slot.js"
         ]
       },
       "anchorSource": "exact"
@@ -101281,6 +101284,7 @@
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/5884-inspect-layout-options.ts",
           "tests/corpus/6428-promisify-callback-functions.ts",
+          "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality.ts",
@@ -101809,7 +101813,8 @@
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/text-codecs.mts",
           "tests/harness/project-config.test.ts",
-          "tests/corpus/3133-text-decoder-streaming.ts"
+          "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/7747-text-codec-untyped-slot.js"
         ]
       },
       "anchorSource": "exact"
@@ -101930,7 +101935,8 @@
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/text-codecs.mts",
           "tests/harness/project-config.test.ts",
-          "tests/corpus/3133-text-decoder-streaming.ts"
+          "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/7747-text-codec-untyped-slot.js"
         ]
       },
       "anchorSource": "exact"
@@ -102040,7 +102046,8 @@
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/text-codecs.mts",
           "tests/harness/project-config.test.ts",
-          "tests/corpus/3133-text-decoder-streaming.ts"
+          "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/7747-text-codec-untyped-slot.js"
         ]
       },
       "anchorSource": "exact"
@@ -102069,7 +102076,8 @@
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/text-codecs.mts",
           "tests/harness/project-config.test.ts",
-          "tests/corpus/3133-text-decoder-streaming.ts"
+          "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/7747-text-codec-untyped-slot.js"
         ]
       },
       "anchorSource": "exact"
