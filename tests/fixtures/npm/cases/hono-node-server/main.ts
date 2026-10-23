@@ -2,7 +2,8 @@
 // serving a fetch handler: a raw HTTP client prints each exchange's status
 // line, wire-order headers (Date dropped) and body, covering buffered and
 // streamed bodies, header forms, cookies, request bodies, URL handling,
-// HEAD, empty statuses, and handler errors.
+// HEAD, empty statuses, handler errors, and a client that disconnects
+// during a streamed body.
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import { getRequestListener, RequestError, serve } from "@hono/node-server";
@@ -31,6 +32,27 @@ function readyStream(parts: string[]): ReadableStream<Uint8Array> {
     start(controller) {
       for (const part of parts) controller.enqueue(encoder.encode(part));
       controller.close();
+    },
+  });
+}
+
+// A stream that produces until it is cancelled (bounded, so a missed cancel
+// ends the program instead of hanging it).
+let reportCancel: (reason: string) => void = () => {};
+const endlessCancelled = new Promise<string>((resolve) => {
+  reportCancel = resolve;
+});
+function endlessStream(): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let pulls = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      await delay(5);
+      if (++pulls > 400) controller.close();
+      else controller.enqueue(encoder.encode("tick\n"));
+    },
+    cancel(reason) {
+      reportCancel(`cancelled with ${String(reason)}`);
     },
   });
 }
@@ -101,6 +123,12 @@ async function handler(request: Request): Promise<Response> {
       return new Response("rec", { status: 201, headers: { "X-Custom": "a", "Content-Type": "text/html" } });
     case "/light-json":
       return Response.json({ ok: true, n: [1, 2] });
+    case "/light-json-headers":
+      return Response.json({ ok: true }, { status: 201, headers: { "X-Test": "yes" } });
+    case "/light-json-typed":
+      return Response.json([1], { headers: { "Content-Type": "application/vnd.test+json" } });
+    case "/endless":
+      return new Response(endlessStream(), { headers: new Headers({ "content-type": "text/plain" }) });
     case "/light-touched": {
       const r = new Response("touched");
       r.headers.set("x-touched", "1");
@@ -184,6 +212,8 @@ const exchanges: Exchange[] = [
   { method: "GET", path: "/light-record" },
   { method: "HEAD", path: "/light-record" },
   { method: "GET", path: "/light-json" },
+  { method: "GET", path: "/light-json-headers" },
+  { method: "GET", path: "/light-json-typed" },
   { method: "GET", path: "/light-touched" },
   { method: "GET", path: "/light-record-touched" },
   { method: "GET", path: "/materialized" },
@@ -198,10 +228,30 @@ const exchanges: Exchange[] = [
   { method: "get", path: "/lower-method" },
 ];
 
+/** Reads the first chunk of /endless, then destroys the response: the
+ * server cancels the response's stream. */
+function disconnectMidStream(port: number): Promise<string> {
+  return new Promise<string>((resolve) => {
+    const req = http.request({ host: "127.0.0.1", port, method: "GET", path: "/endless" }, (res) => {
+      res.once("data", () => {
+        res.destroy();
+      });
+    });
+    req.end();
+    const timeout = new Promise<string>((done) => {
+      setTimeout(() => done("not cancelled"), 3000);
+    });
+    void Promise.race([endlessCancelled, timeout]).then((outcome) => {
+      resolve(`### disconnect GET /endless\n${outcome}\n`);
+    });
+  });
+}
+
 const server = serve({ fetch: handler, port: 0, hostname: "127.0.0.1" }, (info: AddressInfo) => {
   console.log("listening", info.family, info.address, typeof info.port);
   void (async () => {
     for (const ex of exchanges) console.log(await exchange(info.port, ex));
+    console.log(await disconnectMidStream(info.port));
     server.close(() => {
       console.log("closed");
       startSecond();

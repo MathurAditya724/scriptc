@@ -197,20 +197,34 @@ function nextTick(): Promise<void> {
   });
 }
 
+/** Writes the rest of a body stream. As in the package, a response that
+ * closes before the stream ends (the client disconnected) cancels the
+ * stream, so its producer stops; the pending read then answers done. A
+ * response that fails closes too, and its stream is cancelled the same way
+ * (the package passes the error as the reason). The listener stays attached
+ * and does nothing once the stream has ended. */
 async function pump(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   outgoing: ServerResponse,
   pending: Promise<ReadResult> | undefined,
 ): Promise<void> {
-  let read = pending ?? reader.read();
-  for (;;) {
-    const { done, value } = await read;
-    if (done) {
-      outgoing.end();
-      return;
+  let finished = false;
+  outgoing.on("close", () => {
+    if (!finished) reader.cancel().catch(() => {});
+  });
+  try {
+    let read = pending ?? reader.read();
+    for (;;) {
+      const { done, value } = await read;
+      if (done) {
+        outgoing.end();
+        return;
+      }
+      outgoing.write(value);
+      read = reader.read();
     }
-    outgoing.write(value);
-    read = reader.read();
+  } finally {
+    finished = true;
   }
 }
 

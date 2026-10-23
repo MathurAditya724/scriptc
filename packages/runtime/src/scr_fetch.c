@@ -4761,7 +4761,10 @@ static ScrDyn *sf_response_json_serialize(const ScrDyn *value) {
  * {"content-type": "application/json"} record is form 3), a Headers object
  * or pair list form 2, and a plain record form 3, whose names and values
  * *record receives in order (an array value contributes one entry per
- * element, as writeHead writes it). 0 for any other init. */
+ * element, as writeHead writes it). Response.json with init headers is
+ * form 2 whatever their shape: the package's Response.json passes them on
+ * as a Headers object, adding the JSON content type when they lack one.
+ * 0 for any other init. */
 static int8_t sf_light_header_form(const ScrDyn *headers, bool json_body,
                                    ScrArr **record) {
   if (!headers || headers->kind == SCR_DYN_UNDEF) {
@@ -4770,6 +4773,7 @@ static int8_t sf_light_header_form(const ScrDyn *headers, bool json_body,
     sf_push_header_text(*record, "content-type", "application/json", 16);
     return 3;
   }
+  if (json_body) return 2;
   if (headers->kind == SCR_DYN_ARR ||
       (headers->kind == SCR_DYN_HANDLE &&
        headers->v.handle.tag == SCR_DYNH_FETCH_HEADERS))
