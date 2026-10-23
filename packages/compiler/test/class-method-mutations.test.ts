@@ -135,3 +135,35 @@ test("a reflection call with a well-known symbol key keeps checked dispatch", as
   const callers = await callersOf(`${range}${write}`, "%Range.sym:iterator");
   expect(callers.filter((name) => !name.startsWith("%method.value:"))).toEqual([]);
 });
+
+const dictionaries = `
+class Counter {
+  n = 0;
+  add(): number { return ++this.n; }
+}
+interface Settings { groups: Record<string, Record<string, string>> }
+interface Tree { [key: string]: Tree }
+function addGroup(settings: Settings, name: string): void {
+  settings.groups[name] = {};
+}
+function grow(tree: Tree, name: string): void {
+  tree[name] = {};
+}
+const settings: Settings = { groups: {} };
+addGroup(settings, "colours");
+grow({}, "a");
+const counter = new Counter();
+console.log(counter.add(), Object.keys(settings.groups));
+`;
+
+test("a store into a dictionary of dictionaries leaves method calls direct", async () => {
+  expect(await callersOf(dictionaries, "%dyn.class.properties")).toEqual([]);
+});
+
+test("a store into a dictionary whose values can be functions keeps checked dispatch", async () => {
+  const source = dictionaries.replace(
+    "Record<string, Record<string, string>>",
+    "Record<string, Record<string, string> | (() => number)>",
+  );
+  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+});
