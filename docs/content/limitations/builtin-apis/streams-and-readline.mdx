@@ -18,7 +18,7 @@
   Stages may take the `{ signal }` argument.
   With a function destination, `pipeline()` returns an object-mode PassThrough that receives an async generator destination's values, or an async function destination's value unless it is `null` or `undefined`.
   `@types/node` types that result as `NodeJS.WritableStream`, so `for await` over it needs the `PassThrough` type (`pipeline(...) as PassThrough`, or a JSDoc `@type`).
-  In typed code, the callback of a pipeline with an async function destination receives `null` instead of `undefined` when there is no error.
+  In typed code, a pipeline callback with an async function or async generator destination receives `null` for no error when its error parameter cannot hold `undefined` (@types/node declares it `NodeJS.ErrnoException | null`), and `undefined` when it can, as in Node.
   `Readable.from` accepts `objectMode` and `highWaterMark` options.
   The `Readable` operators (`map`, `filter`, `forEach`, `toArray`, `some`, `find`, `every`, `flatMap`, `drop`, `take`, and `reduce`) accept `concurrency`, `highWaterMark`, and `signal` options.
   Their callbacks may take the `{ signal }` argument, `map` may return any value, and `flatMap` may return any iterable, async iterable, or stream.
@@ -43,7 +43,7 @@
   The output's `'resize'` event does not redraw the line.
   The cursor never stops between the two UTF-16 units of a supplementary character: where Node's Up or Down movement through a multiline line would, the cursor moves to the character's start or end.
   In JavaScript, a `'history'` listener receives a copy of the history; its changes are written back when the listener returns, but the copy is not `rl.history` itself.
-  `rl.history`, `historySize`, `historyIndex`, `crlfDelay`, `tabSize`, `escapeCodeTimeout`, `line`, `cursor`, and `terminal` read as in Node, except that `rl.cursor` of an interface that is not a terminal throws instead of answering `undefined`.
+  `rl.history`, `historySize`, `historyIndex`, `crlfDelay`, `tabSize`, `escapeCodeTimeout`, `line`, `cursor`, and `terminal` read as in Node; `rl.cursor` is `undefined` on an interface that is not a terminal.
   `rl[Symbol.dispose]()` closes the interface, and `instanceof` with `readline.Interface` or `readlinePromises.Interface` answers whether the interface came from that module, as in Node.
   In JavaScript, the input and output can be any expression that evaluates to a stream, such as a function's result or an object's member; a value that is not a stream is unsupported.
   In JavaScript, `question()` and `setPrompt()` accept a value that is not a string: when such a prompt is written, an interface that is not a terminal throws `ERR_INVALID_ARG_TYPE` as Node does (the `readline/promises` question rejects with it) and the question stays pending, and a terminal interface writes `String(value)`.

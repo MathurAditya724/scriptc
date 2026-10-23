@@ -2906,6 +2906,22 @@ class StreamArgTypeThrow extends Error {
   }
 }
 
+/** Whether a checked-dynamic pipeline callback can take undefined as its
+ * error: a callback that is already checked-dynamic, one without
+ * parameters, and one whose first parameter (or rest element) type holds
+ * undefined. */
+function callbackErrorAdmitsUndefined(lowerer: Lowerer, cb: IrExpr): boolean {
+  if (cb.kind !== "dynFrom" || cb.value.type.kind !== "func") return true;
+  const fnT = cb.value.type;
+  const first = fnT.params[0];
+  if (first === undefined) return true;
+  const p0 =
+    fnT.rest === true && fnT.params.length === 1 && first.kind === "array" ? first.elem : first;
+  if (p0.kind === "dyn" || p0.kind === "jsval" || p0.kind === "undefinedT") return true;
+  if (p0.kind !== "union") return false;
+  return lowerer.unions.get(p0.unionId)?.arms.some((a) => a.kind === "undefinedT") ?? false;
+}
+
 /** The finished/pipeline completion callback: an inline function lowers
  * through the option-callback machinery (leading `this`, an `Error |
  * null` prefix — Node binds the stream and passes the error); any other
@@ -3367,12 +3383,16 @@ export function lowerStreamModuleCall(
         // an async generator) reaches the callback through the
         // checked-dynamic path.
         const cb = lowerer.lowerExprExpecting(args[args.length - 1]!, DYN);
-        // SCR_PIPE_TYPED_CB: typed code's callback takes null for no error
+        // SCR_PIPE_TYPED_CB: a typed callback whose error parameter cannot
+        // hold undefined takes null for no error; others take undefined.
         const stagedArgs = [...staged.args];
         const flagsArg = stagedArgs[3]!;
         if (flagsArg.kind !== "numLit")
           throw new InternalCompilerError("pipeline flags not a literal");
-        if (!isJsSourceFile(ts.getSourceFileOfNode(call)))
+        if (
+          !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+          !callbackErrorAdmitsUndefined(lowerer, cb)
+        )
           stagedArgs[3] = numLit(flagsArg.value | 128, loc);
         return staged.wrap({
           kind: "libCall",
