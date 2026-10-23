@@ -112,6 +112,31 @@ paddedView[1] = {
 };
 padded.sort();
 console.log(padded.length, 3 in padded, 4 in padded, padded[5]);
+const spread: number[] = [4, 3];
+const spreadView: unknown[] = spread;
+let spreadCalls = 0;
+spreadView.push({
+  toString(): string {
+    if (spreadCalls++ === 0) {
+      spreadView[1000] = 1;
+      for (let i = 0; i < 64; i++) spread.push(i);
+    }
+    return "2";
+  },
+});
+console.log(spread.toSorted().length, spread.length);
+spread.sort();
+console.log(spread.length, spread[0], spread[1], spread[3], 999 in spread, spread[1000]);
+const grownMath: number[] = [1];
+const grownMathView: unknown[] = grownMath;
+grownMathView[10] = {
+  valueOf(): number {
+    grownMathView[5000] = 7;
+    for (let i = 0; i < 256; i++) grownMath.push(i);
+    return 3;
+  },
+};
+console.log(Math.max(...grownMath), grownMath.length);
 
 // A conversion that removes the element it converts.
 const shrinking: number[] = [1];

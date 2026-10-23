@@ -6338,6 +6338,20 @@ export class Lowerer {
     let dynamicViews: Set<string> | null = null;
     // Element ABIs of the native arrays that an `any` or `unknown` value is
     // converted to, including arrays nested in the converted value.
+    // Assignments, including the logical ones (`view ??= numbers`).
+    const assignmentOperators = new Set<ts.SyntaxKind>([
+      ts.SyntaxKind.EqualsToken,
+      ts.SyntaxKind.QuestionQuestionEqualsToken,
+      ts.SyntaxKind.BarBarEqualsToken,
+      ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+    ]);
+    // Initializers of class properties, parameter defaults and
+    // destructuring defaults, which convert to the binding's type.
+    const initializedBinding = (
+      node: ts.Node,
+    ): node is ts.PropertyDeclaration | ts.ParameterDeclaration | ts.BindingElement =>
+      (ts.isPropertyDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)) &&
+      node.initializer !== undefined;
     const collectDynamicViews = (): Set<string> => {
       const keys = new Set<string>();
       const dynamicValue = (node: ts.Expression): boolean => {
@@ -6388,13 +6402,17 @@ export class Lowerer {
           dynamicValue(node.initializer)
         )
           target(typeOrNull(node.name));
+        else if (initializedBinding(node) && dynamicValue(node.initializer!))
+          target(typeOrNull(node.name ?? node));
         else if (
           ts.isBinaryExpression(node) &&
-          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          assignmentOperators.has(node.operatorToken.kind) &&
           dynamicValue(node.right)
         )
           target(typeOrNull(node.left));
         else if (ts.isReturnStatement(node) && node.expression && dynamicValue(node.expression))
+          target(contextualOrNull(node.expression));
+        else if (ts.isYieldExpression(node) && node.expression && dynamicValue(node.expression))
           target(contextualOrNull(node.expression));
         else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           for (const arg of node.arguments?.nodes ?? [])
@@ -6427,26 +6445,45 @@ export class Lowerer {
     // Element ABIs of the native arrays a value converted to a dynamic type
     // can reach: the conversion keeps each such array as a live view, so
     // stores through the dynamic value write the native storage.
-    // A standard library function only reads an array argument it takes as
-    // `any` (console.log, JSON.stringify, String), except the reflective
-    // writes: Object.assign and defineProperty, Reflect.set and the like,
-    // and Array.prototype methods through call or apply.
-    const reflectiveWriters = new Set([
-      "assign",
-      "defineProperty",
-      "defineProperties",
-      "setPrototypeOf",
-      "set",
-      "apply",
-      "call",
+    // Standard library functions that only read the arguments they take as
+    // `any` or `unknown`: the console methods, String, Number, Boolean,
+    // Array.isArray, Object.is, JSON.stringify without a replacer function,
+    // and util's inspect and format. Any other function can keep an
+    // argument (Promise.resolve, Map.prototype.set, push onto an
+    // `unknown[]`) or pass it to a callback (a JSON.stringify replacer, an
+    // emitted event), which can write through it.
+    const readerGlobals = new Map<string, ReadonlySet<string> | null>([
+      ["console", null],
+      ["JSON", new Set(["stringify"])],
+      ["Array", new Set(["isArray"])],
+      ["Object", new Set(["is"])],
     ]);
+    const readerFunctions = new Set(["String", "Number", "Boolean"]);
+    const utilReaders = new Set(["inspect", "format"]);
     const standardLibraryReader = (node: ts.CallExpression | ts.NewExpression): boolean =>
       panicSafe(() => {
+        if (!ts.isCallExpression(node)) return false;
         const callee = peel(node.expression);
-        if (ts.isPropertyAccessExpression(callee) && reflectiveWriters.has(callee.name.text))
-          return false;
+        if (ts.isIdentifier(callee))
+          return [...readerFunctions].some((name) => this.isStdlibGlobal(callee, name));
+        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const member = callee.name.text;
+        for (const [global, members] of readerGlobals) {
+          if (!this.isStdlibGlobal(callee.expression, global)) continue;
+          if (members !== null && !members.has(member)) return false;
+          if (global !== "JSON") return true;
+          const replacer = node.arguments.nodes[1];
+          return (
+            replacer === undefined ||
+            ts.isArrayLiteralExpression(peel(replacer)) ||
+            peel(replacer).kind === ts.SyntaxKind.NullKeyword
+          );
+        }
+        if (!utilReaders.has(member)) return false;
         const declaration = this.checker.getResolvedSignature(node)?.declaration;
-        return declaration !== undefined && this.isStdlibFile(ts.getSourceFileOfNode(declaration));
+        if (declaration === undefined) return false;
+        const file = ts.getSourceFileOfNode(declaration);
+        return this.isStdlibFile(file) && /[\\/]util\.d\.ts$/.test(file.fileName);
       }, false);
     const collectNativeViews = (): Set<string> => {
       const keys = new Set<string>();
@@ -6504,13 +6541,15 @@ export class Lowerer {
           flow(node.expression, typeOrNull(node));
         else if (ts.isVariableDeclaration(node) && node.type && node.initializer)
           flow(node.initializer, typeOrNull(node.name));
-        else if (
-          ts.isBinaryExpression(node) &&
-          node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        )
+        else if (initializedBinding(node)) flow(node.initializer!, typeOrNull(node.name ?? node));
+        else if (ts.isBinaryExpression(node) && assignmentOperators.has(node.operatorToken.kind))
           flow(node.right, typeOrNull(node.left));
         else if (ts.isReturnStatement(node) && node.expression)
           flow(node.expression, contextualOrNull(node.expression));
+        else if (ts.isYieldExpression(node) && node.expression)
+          flow(node.expression, contextualOrNull(node.expression));
+        // A thrown value reaches a catch binding, which is dynamic.
+        else if (ts.isThrowStatement(node)) flow(node.expression, null);
         else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           if (!standardLibraryReader(node))
             for (const arg of node.arguments?.nodes ?? [])

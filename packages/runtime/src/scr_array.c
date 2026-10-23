@@ -2195,6 +2195,8 @@ ScrArr *scr_arr_fill_undefined(ScrArr *a, double start, double end) {
  * pending when a conversion throws. +1 malloc'd buffer. */
 static double *scr_arr_coerced_numbers(const ScrArr *a, size_t *count) {
   size_t n = a->len;
+  /* A sparse array's length can exceed what the buffers can count. */
+  if (n > SIZE_MAX / sizeof(double)) scr_arr_oom();
   double *out = malloc((n ? n : 1) * sizeof(*out));
   ScrDyn **held = calloc(n ? n : 1, sizeof(*held));
   if (!out || !held) scr_arr_oom();
@@ -3555,6 +3557,7 @@ static ScrArr *scr_arr_sort_foreign(ScrArr *a, bool copy) {
   size_t length = a->len;
   size_t dense = a->len < a->cap ? a->len : a->cap;
   size_t cap = dense + SCR_AX(a)->sparse_len;
+  if (cap > SIZE_MAX / sizeof(uint64_t)) scr_arr_oom();
   uint64_t *slots = cap ? malloc(cap * sizeof(*slots)) : NULL;
   uint8_t *states = cap ? malloc(cap) : NULL;
   ScrStr **keys = cap ? malloc(cap * sizeof(*keys)) : NULL;
