@@ -483,7 +483,8 @@ function versionParameters(mod: IrModule): IrModule {
   return versionLoopBoundParameters(mod, mangleFunction);
 }
 
-export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
+/** The emitter for `input` after the module passes every emission runs. */
+function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
   const mod = unshareNodes(input);
@@ -515,7 +516,19 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
         )
       : mod,
     options,
-  ).emit();
+  );
+}
+
+export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
+  return moduleEmitter(input, options).emit();
+}
+
+/** emitLlvmModule's text as parts that concatenate to it, without the copy
+ * that joining them makes: a large program's text is 150 MB. */
+export function emitLlvmModuleParts(input: IrModule, options: LlvmTargetOptions = {}): string[] {
+  return moduleEmitter(input, options)
+    .emitParts()
+    .flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
 }
 
 /** Keep large translation units below the host's single-string limit. */
@@ -525,35 +538,7 @@ export function emitLlvmModuleSource(
 ): string | readonly string[] {
   // IR validation, contracts and the frontend's disposal run after lowering without checks.
   relieveHeapPressure(true);
-  const mod = unshareNodes(input);
-  const parts = new LlEmitter(
-    options.debugSources === undefined
-      ? versionParameters(
-          addRecordResultEntries(
-            scalarizeNumericRecords(
-              specializeCallbackCalls(
-                specializeNumericCalls(
-                  foldConstantGlobals(
-                    copyStableCaptures(
-                      resolveSelfCaptures(
-                        hoistFinalFieldReads(
-                          freezeInitOnlyGlobals(
-                            holdCharLocalsAsUnits(dropUnwrittenPropertyBags(mod)),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  mangleFunction,
-                ),
-                mangleFunction,
-              ),
-            ),
-          ),
-        )
-      : mod,
-    options,
-  ).emitParts();
+  const parts = moduleEmitter(input, options).emitParts();
   const length = parts.reduce((total, part) => total + part.length, Math.max(0, parts.length - 1));
   if (length <= 256 * 1024 * 1024) return parts.join("\n");
   return parts.flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
