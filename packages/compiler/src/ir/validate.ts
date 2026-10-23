@@ -4267,7 +4267,11 @@ function validateFunction(
       if (!ok) err(`libCall dyn.objEntryPairs must return a [string, any] tuple array`, e.loc);
       return true;
     }
-    if (e.fn === "array.namedKeys" || e.fn === "array.hasNamedKey") {
+    if (
+      e.fn === "array.namedKeys" ||
+      e.fn === "array.hasNamedKey" ||
+      e.fn === "array.hasProperties"
+    ) {
       if (e.args[0]?.type.kind !== "array") {
         err(`libCall ${e.fn} arg 0: expected an array, got ${e.args[0]?.type.kind}`, e.loc);
       }

@@ -44,6 +44,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "weakSet.is": "scr_weak_set_is",
   "weakMap.new": "scr_weak_map_new",
   "weakSet.new": "scr_weak_set_new",
+  "finalizationRegistry.new": "scr_finalization_registry_new",
+  "finalizationRegistry.is": "scr_finalization_registry_is",
   "dyn.fromEntries": "scr_dyn_from_entries",
   "bytes.constructor": "scr_bytes_constructor",
   "bytes.construct": "scr_bytes_construct",
@@ -1598,6 +1600,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "regex.resultProp": "scr_regex_result_prop",
   "array.namedKeys": "scr_arr_named_keys",
   "array.hasNamedKey": "scr_arr_has_named_key",
+  "array.hasProperties": "scr_arr_has_properties",
+  "array.undefinedKey": "scr_arr_undefined_key",
   // queueMicrotask's checked-dynamic form (borrowed dyn; a non-function
   // throws synchronously), the minted setImmediate value, and the
   // timers/promises immediate — all mark the loop live.

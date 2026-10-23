@@ -3472,6 +3472,43 @@ ScrDyn *scr_dyn_class_view_unavailable(void *ptr) {
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
+void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry) {
+  ScrStr *key = scr_str_new(entry->key, entry->key_len);
+  if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
+    scr_dyn_key_set(target, key, entry->value);
+  } else {
+    /* Properties defined through a view keep their attributes. */
+    ScrDyn *name = scr_dyn_new_str(key);
+    ScrDyn *descriptor = scr_dyn_own_descriptor(source, key);
+    if (descriptor) scr_dyn_release(scr_dyn_define_property(target, name, descriptor));
+    scr_dyn_release(descriptor);
+    scr_dyn_release(name);
+  }
+  scr_str_release(key);
+}
+
+static ScrDyn *scr_typed_ref_numeric_property(const ScrDyn *d, double key);
+
+/* A live array's view lists the native numeric properties first, then the
+ * named properties the snapshot copied from the array's metadata. */
+static void scr_typed_ref_view_numeric_properties(const ScrDyn *capsule, ScrDyn *view) {
+  const ScrDynTypedArrayOps *ops = scr_dyn_typed_ref_array_ops(capsule);
+  ScrArr *arr = capsule->v.typed_ref.ptr;
+  const ScrArrExt *x = ops ? scr_arr_ext_of(arr) : NULL;
+  if (!x || x->prop_len == 0 || view->kind != SCR_DYN_ARR) return;
+  ScrDyn *named = view->v.arr.properties;
+  view->v.arr.properties = NULL;
+  for (size_t i = 0; i < x->prop_len; i++) {
+    double number;
+    if (!scr_arr_numeric_key(x->props[i].key, x->props[i].key_len, &number)) continue;
+    ScrDyn *value = scr_typed_ref_numeric_property(capsule, number);
+    if (value) scr_dyn_arr_named_put(view, x->props[i].key, x->props[i].key_len, value);
+  }
+  if (!named) return;
+  for (size_t i = 0; i < named->v.obj.len; i++) scr_dyn_copy_entry(view, named, &named->v.obj.entries[i]);
+  scr_dyn_release(named);
+}
+
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
   ScrDyn *capsule = (ScrDyn *)d;
   ScrDyn *fresh = capsule->v.typed_ref.materialize(capsule->v.typed_ref.ptr);
@@ -3479,6 +3516,7 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     scr_dyn_release(fresh);
     return scr_dyn_retain(scr_dyn_undefined());
   }
+  scr_typed_ref_view_numeric_properties(capsule, fresh);
   if (!capsule->v.typed_ref.materialized) {
     capsule->v.typed_ref.materialized = fresh;
   } else {
@@ -3715,6 +3753,16 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   return out;
 }
 
+/* A numeric property of a live array ("-1", "1.5"): +1, or NULL when the
+ * native array has none. */
+static ScrDyn *scr_typed_ref_numeric_property(const ScrDyn *d, double key) {
+  ScrArr *arr = d->v.typed_ref.ptr;
+  double state = scr_arr_state(arr, key);
+  if (state == (double)SCR_ARR_VALUE) return scr_dyn_typed_ref_array_ops(d)->get(arr, key);
+  if (state == (double)SCR_ARR_UNDEFINED) return scr_dyn_retain(scr_dyn_undefined());
+  return NULL;
+}
+
 /* An inherited Date method of an instance of a class declared `extends
  * Date`, when the instance's own members do not define `key`: +1, or
  * NULL. */
@@ -3739,6 +3787,8 @@ ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
   if (date_method) return date_method;
   if (!scr_dyn_typed_ref_array_ops(d)) return NULL;
   if (scr_typed_ref_is_length(key)) return scr_dyn_new_num((double)((ScrArr *)d->v.typed_ref.ptr)->len);
+  double number;
+  if (scr_arr_numeric_key(key->data, key->len, &number)) return scr_typed_ref_numeric_property(d, number);
   size_t index;
   if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return NULL;
   return scr_dyn_typed_ref_element(d, index);
@@ -3748,6 +3798,9 @@ ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
 static bool scr_typed_ref_array_has_own(const ScrDyn *d, const ScrStr *key) {
   if (!scr_dyn_typed_ref_array_ops(d)) return false;
   if (scr_typed_ref_is_length(key)) return true;
+  double number;
+  if (scr_arr_numeric_key(key->data, key->len, &number))
+    return scr_arr_state(d->v.typed_ref.ptr, number) != (double)SCR_ARR_HOLE;
   size_t index;
   if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return false;
   ScrArr *arr = d->v.typed_ref.ptr;
@@ -3760,6 +3813,22 @@ static bool scr_typed_ref_array_has_own(const ScrDyn *d, const ScrStr *key) {
 static bool scr_typed_ref_array_set(ScrDyn *d, const ScrStr *key, const ScrDyn *value) {
   const ScrDynTypedArrayOps *ops = scr_dyn_typed_ref_array_ops(d);
   if (!ops || !ops->set) return false;
+  /* Numeric properties live in the native array's property table, which
+   * holds values of the element type. */
+  double number;
+  if (scr_arr_numeric_key(key->data, key->len, &number)) {
+    if (ops->set(d->v.typed_ref.ptr, number, value)) return true;
+    ScrStr *kind = scr_dyn_typeof(value);
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_jb_puts(&message, "expected the array's element type at $[");
+    scr_jb_write(&message, key->data, key->len);
+    scr_jb_puts(&message, "], got ");
+    scr_jb_write(&message, kind->data, kind->len);
+    scr_str_release(kind);
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+    return true;
+  }
   size_t index;
   if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return false;
   ScrArr *arr = d->v.typed_ref.ptr;
@@ -3989,6 +4058,7 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
   static const struct { const char *name; int tag; } kinds[] = {
     {"Date", SCR_DYNH_DATE}, {"RegExp", SCR_DYNH_REGEXP}, {"Map", SCR_DYNH_MAP}, {"Set", SCR_DYNH_SET},
     {"WeakMap", SCR_DYNH_WEAK_MAP}, {"WeakSet", SCR_DYNH_WEAK_SET},
+    {"FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY},
   };
   if (strcmp(callee->v.fn.name, "Promise") == 0) return value->kind == SCR_DYN_PROMISE;
   for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
@@ -6707,6 +6777,21 @@ static bool scr_dyn_fn_property_fence(const ScrStr *key) {
 
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
   if (scr_dyn_error_prototype_fence(target)) return NULL;
+  if (target->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(target) &&
+      (key->kind == SCR_DYN_STR || key->kind == SCR_DYN_NUM)) {
+    /* A native array's numeric properties ("-1", "1.5") live in its
+     * property table, which holds values without attributes. A number key
+     * names one unless it is an array index. */
+    double number = key->kind == SCR_DYN_NUM ? key->v.num : 0;
+    bool numeric = key->kind == SCR_DYN_NUM
+                       ? !(number >= 0 && number < 4294967295.0 && number == trunc(number))
+                       : scr_arr_numeric_key(key->v.str->data, key->v.str->len, &number);
+    if (numeric) {
+      static const char message[] = "Object.defineProperty on a numeric property of a native array is not supported yet";
+      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+      return NULL;
+    }
+  }
   if (target->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(target);
     ScrDyn *defined = scr_exc_pending() ? NULL : scr_dyn_define_property(view, key, descriptor);
@@ -7089,6 +7174,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
+        d->v.handle.tag == SCR_DYNH_FINALIZATION_REGISTRY ||
         d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_REGEXP ||
         d->v.handle.tag == SCR_DYNH_DATE || d->v.handle.tag == SCR_DYNH_BLOB ||
         d->v.handle.tag == SCR_DYNH_FILE || d->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK) {
@@ -14572,7 +14658,8 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
     *kind = key->v.fn.class_obj ? 3 : 2; return 1;
   case SCR_DYN_HANDLE:
     if (key->v.handle.tag != SCR_DYNH_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_SHARED_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_WEAK_MAP &&
-        key->v.handle.tag != SCR_DYNH_WEAK_SET && key->v.handle.tag != SCR_DYNH_STDIO &&
+        key->v.handle.tag != SCR_DYNH_WEAK_SET && key->v.handle.tag != SCR_DYNH_FINALIZATION_REGISTRY &&
+        key->v.handle.tag != SCR_DYNH_STDIO &&
         key->v.handle.tag != SCR_DYNH_FETCH_REQUEST && key->v.handle.tag != SCR_DYNH_FETCH_RESPONSE &&
         key->v.handle.tag != SCR_DYNH_MAP && key->v.handle.tag != SCR_DYNH_SET &&
         key->v.handle.tag != SCR_DYNH_NET_SOCKET && key->v.handle.tag != SCR_DYNH_NET_SERVER) return -1;
@@ -14750,6 +14837,159 @@ bool scr_weak_set_is(const ScrDyn *value) {
 }
 ScrDyn *scr_weak_map_new(ScrDyn *seed) { return scr_weak_collection_new(seed, false); }
 ScrDyn *scr_weak_set_new(ScrDyn *seed) { return scr_weak_collection_new(seed, true); }
+
+/* FinalizationRegistry. register() and unregister() validate and keep their
+ * bookkeeping as Node does; the cleanup callback never runs, which
+ * ECMAScript allows (an implementation need not collect a target or call
+ * its cleanup), so the registry keeps neither the callback nor the held
+ * values. The unregister tokens are keys of an internal WeakMap counting
+ * each token's registrations, so the registry keeps no token alive. */
+typedef struct {
+  size_t rc;
+  ScrDyn *tokens; /* WeakMap: token -> registration count */
+} ScrFinalizationRegistry;
+
+static void *scr_finalization_registry_retain(void *ptr) {
+  ((ScrFinalizationRegistry *)ptr)->rc++;
+  return ptr;
+}
+
+static void scr_finalization_registry_release(void *ptr) {
+  ScrFinalizationRegistry *registry = ptr;
+  if (--registry->rc) return;
+  /* Weak collections keyed by the registry drop their entries. */
+  scr_weak_dispose(registry);
+  scr_dyn_release(registry->tokens);
+  free(registry);
+}
+
+static void scr_finalization_type_error(const char *message) {
+  scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+}
+
+/* The weak-key identity of a registration target or token, or false with
+ * the TypeError (or the SC2020 refusal) pending. */
+static bool scr_finalization_key(const ScrDyn *value, void **ptr, unsigned *kind,
+                                 const char *invalid) {
+  if (value->kind == SCR_DYN_SYMBOL) {
+    static const char message[] = "FinalizationRegistry with symbol targets or tokens is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+  int supported = scr_weak_key(value, ptr, kind);
+  if (supported < 0) {
+    static const char message[] = "FinalizationRegistry targets of this native reference type have no weak lifetime lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+  if (!supported) {
+    if (invalid) {
+      scr_finalization_type_error(invalid);
+    } else {
+      /* Node's unregister message quotes the token as String() renders it. */
+      ScrStr *text = scr_dyn_string_coerce(value);
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "Invalid unregisterToken ('");
+      if (text) scr_jb_write(&b, text->data, text->len);
+      scr_jb_puts(&b, "')");
+      scr_str_release(text);
+      ScrStr *message = scr_jb_finish(&b);
+      scr_throw_error_msg(SCR_ERR_TYPE, message->data, message->len);
+      scr_str_release(message);
+    }
+    return false;
+  }
+  return true;
+}
+
+static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const char *method,
+    ScrDyn *const *args, size_t argc, const char *what) {
+  (void)self;
+  ScrFinalizationRegistry *registry = ptr;
+  ScrWeakMap *tokens = registry->tokens->v.handle.ptr;
+  ScrDyn *first = argc > 0 ? args[0] : scr_dyn_undefined();
+  void *identity = NULL;
+  unsigned kind = 0;
+  if (strcmp(method, "register") == 0) {
+    ScrDyn *held = argc > 1 ? args[1] : scr_dyn_undefined();
+    ScrDyn *token = argc > 2 ? args[2] : scr_dyn_undefined();
+    if (!scr_finalization_key(first, &identity, &kind, "FinalizationRegistry.prototype.register: invalid target"))
+      return NULL;
+    if (scr_dyn_strict_eq(first, held)) {
+      scr_finalization_type_error("FinalizationRegistry.prototype.register: target and holdings must not be same");
+      return NULL;
+    }
+    if (token->kind != SCR_DYN_UNDEF) {
+      if (!scr_finalization_key(token, &identity, &kind, NULL)) return NULL;
+      ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
+      double count = entry && entry->value->kind == SCR_DYN_NUM ? entry->value->v.num : 0;
+      ScrDyn *next = scr_dyn_new_num(count + 1);
+      bool ok = scr_weak_set(tokens, token, next);
+      scr_dyn_release(next);
+      if (!ok) return NULL;
+    }
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (strcmp(method, "unregister") == 0) {
+    if (!scr_finalization_key(first, &identity, &kind, NULL)) return NULL;
+    ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
+    if (entry) scr_weak_remove(entry);
+    return scr_dyn_new_bool(entry != NULL);
+  }
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, what ? what : method);
+  scr_jb_puts(&b, " is not a function");
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg(SCR_ERR_TYPE, message->data, message->len);
+  scr_str_release(message);
+  return NULL;
+}
+
+/* A property read answers undefined for names the registry does not have.
+ * Its methods read as values (`const register = registry.register`) are
+ * refused, as a weak collection's are. */
+static ScrDyn *scr_finalization_registry_get(void *ptr, const char *key, size_t len) {
+  (void)ptr;
+  if ((len == 8 && memcmp(key, "register", 8) == 0) || (len == 10 && memcmp(key, "unregister", 10) == 0)) {
+    static const char message[] = "FinalizationRegistry method values have no native lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  }
+  return NULL;
+}
+
+static ScrDyn *scr_finalization_registry_view(void *ptr) {
+  (void)ptr;
+  return scr_dyn_new_obj();
+}
+
+ScrDyn *scr_finalization_registry_new(ScrDyn *cleanup) {
+  if (!scr_dyn_is_callable(cleanup)) {
+    scr_finalization_type_error("FinalizationRegistry: cleanup must be callable");
+    return NULL;
+  }
+  static const ScrDynHandleOps ops = {
+    .cls = "FinalizationRegistry",
+    .retain = &scr_finalization_registry_retain,
+    .release = &scr_finalization_registry_release,
+    .invoke = &scr_finalization_registry_invoke,
+    .get = &scr_finalization_registry_get,
+    .inspect_view = &scr_finalization_registry_view,
+    .inspect_view_empty = true,
+  };
+  scr_dyn_handle_install(SCR_DYNH_FINALIZATION_REGISTRY, &ops);
+  ScrFinalizationRegistry *registry = calloc(1, sizeof *registry);
+  if (!registry) scr_json_oom();
+  registry->tokens = scr_weak_collection_new(scr_dyn_undefined(), false);
+  if (!registry->tokens) { free(registry); return NULL; }
+  ScrDyn *result = scr_dyn_new_handle(registry, SCR_DYNH_FINALIZATION_REGISTRY);
+  return result;
+}
+
+bool scr_finalization_registry_is(const ScrDyn *value) {
+  return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_FINALIZATION_REGISTRY;
+}
 
 ScrDyn *scr_dyn_from_entries(ScrDyn *seed) {
   if (seed->kind == SCR_DYN_UNDEF || seed->kind == SCR_DYN_NULL) {

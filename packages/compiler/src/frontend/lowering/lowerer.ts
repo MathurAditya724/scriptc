@@ -614,6 +614,7 @@ import {
   lowerForStatement,
   matchGroupsPatternSource,
   isGuardedRecordRead,
+  holdsEvolvingArray,
 } from "./lower-stmts.js";
 import {
   type FieldTarget,
@@ -1922,6 +1923,9 @@ export class Lowerer {
   /** Identifiers by spelling, per file, for the generic bindings' use
    * ordering (runsAfterDeclaration). */
   readonly bindingIdentifiers = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
+  /** Per JavaScript file, the declarations of the bindings it assigns an
+   * own `toString` (jsAssignsOwnToString in lower-calls.ts). */
+  readonly ownToStringTargets = new Map<ts.SourceFile, Set<ts.Node>>();
   /** Per-symbol result of the never-reassigned file scan
    * (bindingNeverReassigned — object-literal generic-method receivers). */
   readonly neverReassignedCache = new Map<ts.Symbol, boolean>();
@@ -2184,6 +2188,9 @@ export class Lowerer {
    * and erased instances). */
   erasingDepth = 0;
   localClassInstantiations: { owner: ts.FunctionLikeDeclaration; name: string }[] = [];
+  /** The function-local classes of the program with an `extends` clause, whether lowering collected
+   * them yet or not (new-target.ts); found on first use. */
+  functionLocalSubclasses: ts.ClassLikeDeclaration[] | undefined = undefined;
   /** Instance types (by checker type id) of the local classes generic
    * factory calls return, and the per-instance class each names. */
   readonly localClassInstanceTypes = new Map<number, string>();
@@ -10652,7 +10659,8 @@ export class Lowerer {
           builtinOption("UrlObject") ||
           builtinOption("URLFormatOptions") ||
           !this.mapTypeOf(this.typeOf(x)) ||
-          this.excessJsContextualProperty(x, parts)
+          this.excessJsContextualProperty(x, parts) ||
+          holdsEvolvingArray(this, x)
         ) {
           return lowerDynObjectLiteral(this, x);
         }

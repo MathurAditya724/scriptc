@@ -3872,7 +3872,14 @@ function lowerDynReceiverMethodCall(
   }
   // The argument is a radix for bigint and an encoding for Buffer.
   // Preserve its runtime value so receiver dispatch can choose correctly.
-  if (access.name.text === "toString" && call.arguments.nodes.length <= 1) {
+  // An authored own `toString` member (zod's `errorUtil.toString`, which
+  // answers string | undefined) is an ordinary method call instead.
+  if (
+    access.name.text === "toString" &&
+    call.arguments.nodes.length <= 1 &&
+    !ownCallable &&
+    !(checkerUntyped && jsAssignsOwnToString(lowerer, access.expression))
+  ) {
     const argument = call.arguments.nodes[0];
     return {
       kind: "libCall",
@@ -3982,12 +3989,22 @@ function lowerDynReceiverMethodCall(
   // The same holds when only the MEMBER is checker-untyped: TypeScript
   // importing chalk's JavaScript source types the default export as a
   // plain function, so `chalk.bold` reads as `any` on a typed receiver.
+  const ownToString =
+    access.name.text === "toString" &&
+    checkerUntyped &&
+    jsAssignsOwnToString(lowerer, access.expression);
   const stringOnlyName =
     (checkerUntyped ||
       (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) &&
     !ownCallable &&
     DYN_STRING_PROTO_ONLY_NAMES.has(access.name.text);
-  if (DYN_PROTO_METHOD_NAMES.has(access.name.text) && !ownCallable && !stringOnlyName) return null;
+  if (
+    DYN_PROTO_METHOD_NAMES.has(access.name.text) &&
+    !ownCallable &&
+    !ownToString &&
+    !stringOnlyName
+  )
+    return null;
   // Optional forms (`obj.cb?.()`, `obj?.cb()`) belong to the chain
   // machinery's short-circuit semantics — not modeled here yet.
   if (call.questionDotToken || access.questionDotToken) return null;
@@ -4414,6 +4431,9 @@ const DYN_DISPATCH_METHODS = new Set([
   "additionalHeaders",
   "altsvc",
   "origin",
+  // FinalizationRegistry's methods (scr_finalization_registry_new).
+  "register",
+  "unregister",
   // Worker and MessagePort methods use the owning context's handle adapter.
   "postMessage",
   "terminate",
@@ -6286,7 +6306,21 @@ export function lowerPromiseMethodCall(
         `then handlers whose parameter is not the settled value's type (expected '${lowerer.fmt(inner)}', got '${lowerer.fmt(param)}')`,
       );
     }
-    const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+    let resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+    // JavaScript whose declared result type has no mapping (zod's
+    // `Promise.all(items).then((r) => ParseStatus.mergeArray(status, r))`,
+    // typed by a .d.ts union): the handler's value settles the promise as
+    // a checked-dynamic value, checked where it is used.
+    if (
+      resultT?.kind !== "promise" &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      cb.type.kind === "func" &&
+      cb.type.ret.kind !== "promise" &&
+      cb.type.ret.kind !== "void" &&
+      (cb.type.ret.kind === "dyn" || lowerer.dynConvertible(cb.type.ret))
+    ) {
+      resultT = { kind: "promise", inner: DYN };
+    }
     if (resultT?.kind !== "promise") {
       lowerer.noLowering(
         "then with this handler's result type",
@@ -8658,11 +8692,15 @@ function lowerObjectStaticCall(
       probed?.type.kind === "union" &&
       isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       lowerer.dynConvertible(probed.type);
+    // An array walks its live view: the present indices, then its numeric
+    // and named properties.
+    const isArray = probed?.type.kind === "array" && lowerer.dynConvertible(probed.type);
     if (
       isDyn ||
       isPrimitive ||
       isFunction ||
       isJsUnion ||
+      isArray ||
       (probed && isDynTypedRefType(probed.type))
     ) {
       const fn =
@@ -8672,7 +8710,14 @@ function lowerObjectStaticCall(
             ? "dyn.objValues"
             : "dyn.objEntries";
       let v = lowerer.lowerExpr(argNode);
-      if (v.type.kind !== "dyn") v = { kind: "dynFrom", value: v, type: DYN, loc: locOf(call) };
+      if (v.type.kind !== "dyn")
+        v = {
+          kind: "dynFrom",
+          value: v,
+          ...(isArray ? { liveRef: true as const } : {}),
+          type: DYN,
+          loc: locOf(call),
+        };
       // In TypeScript the keys come back as a native string[] and the
       // entries as a native [string, any][]: the checker keeps every later
       // write to the arrays well typed. JavaScript may store anything into
@@ -11055,6 +11100,93 @@ function fenceClassCopyIntoFreshObject(
     srcNode,
     `Object.assign copying a '${lowerer.fmt(rawSource.type)}' instance into a fresh object typed as the class (the copy is a plain object holding the instance's own fields, not an instance — build the object literal from the fields you need)`,
   );
+}
+
+/** True when an untyped JavaScript receiver names a binding whose declaring
+ * file assigns it an own `toString` (the TypeScript namespace downlevel
+ * `errorUtil.toString = (message) => ...` in zod): its calls answer what
+ * that function returns, not Object.prototype.toString's string. */
+function jsAssignsOwnToString(lowerer: Lowerer, receiver: ts.Expression): boolean {
+  if (!ts.isIdentifier(receiver)) return false;
+  const decl = bindingDeclaration(lowerer, receiver);
+  if (decl === undefined) return false;
+  const sf = ts.getSourceFileOfNode(decl);
+  if (!isJsSourceFile(sf)) return false;
+  let targets = lowerer.ownToStringTargets.get(sf);
+  if (targets === undefined) {
+    targets = ownToStringTargets(lowerer, sf);
+    lowerer.ownToStringTargets.set(sf, targets);
+  }
+  return targets.has(decl);
+}
+
+const unparenthesized = (e: ts.Expression): ts.Expression => {
+  let out = e;
+  while (ts.isParenthesizedExpression(out)) out = out.expression;
+  return out;
+};
+
+/** The declaration of the binding an identifier names, through imports. */
+function bindingDeclaration(lowerer: Lowerer, id: ts.Identifier): ts.Node | undefined {
+  let sym = lowerer.checker.getSymbolAtLocation(id);
+  if (sym !== undefined && (sym.flags & ts.SymbolFlags.Alias) !== 0)
+    sym = lowerer.checker.getAliasedSymbol(sym);
+  return sym?.valueDeclaration ?? sym?.declarations?.[0];
+}
+
+/** The declarations of the bindings a file's assignments `x.toString = ...`
+ * (or `x["toString"] = ...`) give an own `toString`. An assignment through
+ * the parameter of an immediately called function counts for the binding
+ * the call passes (`(function (ns) { ns.toString = f; })(ns || (ns = {}))`). */
+function ownToStringTargets(lowerer: Lowerer, sf: ts.SourceFile): Set<ts.Node> {
+  const targets = new Set<ts.Node>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const left = unparenthesized(node.left);
+      const named =
+        (ts.isPropertyAccessExpression(left) && left.name.text === "toString") ||
+        (ts.isElementAccessExpression(left) &&
+          ts.isStringLiteralLike(left.argumentExpression) &&
+          left.argumentExpression.text === "toString");
+      const target = named
+        ? unparenthesized(
+            (left as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression,
+          )
+        : undefined;
+      if (target !== undefined && ts.isIdentifier(target)) {
+        const decl = bindingDeclaration(lowerer, target);
+        if (decl !== undefined) {
+          targets.add(decl);
+          const passed = iifeArgumentDeclaration(lowerer, decl);
+          if (passed !== undefined) targets.add(passed);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return targets;
+}
+
+/** For a parameter of an immediately called function, the declaration of
+ * the binding its argument names: `x`, `x || (x = {})` or `(x = {})`. */
+function iifeArgumentDeclaration(lowerer: Lowerer, param: ts.Node): ts.Node | undefined {
+  if (!ts.isParameter(param)) return undefined;
+  const fn = param.parent;
+  if (!ts.isFunctionExpression(fn) && !ts.isArrowFunction(fn)) return undefined;
+  let callee: ts.Node = fn;
+  while (ts.isParenthesizedExpression(callee.parent)) callee = callee.parent;
+  const call = callee.parent;
+  if (!ts.isCallExpression(call) || call.expression !== callee) return undefined;
+  const index = fn.parameters.nodes.indexOf(param);
+  let arg = index < 0 ? undefined : call.arguments.nodes[index];
+  if (arg === undefined) return undefined;
+  arg = unparenthesized(arg);
+  if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    arg = unparenthesized(arg.left);
+  if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+    arg = unparenthesized(arg.left);
+  return ts.isIdentifier(arg) ? bindingDeclaration(lowerer, arg) : undefined;
 }
 
 /** The runtime calls package shims declare as bodiless functions. */

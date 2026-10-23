@@ -169,6 +169,7 @@ typedef enum {
   X(FETCH_RESPONSE, 12) /* native static-fetch Response */ \
   X(FILE, 42) /* ScrBlob with a name — new File() */ \
   X(FILE_HANDLE, 17) /* fs/promises.FileHandle */ \
+  X(FINALIZATION_REGISTRY, 72) /* FinalizationRegistry (bookkeeping only) */ \
   X(GLOBAL, 22) /* native global object identity */ \
   X(H2_SESSION, 4) /* ScrH2Session — Http2Session (client & server) */ \
   X(H2_STREAM, 5) /* ScrH2Stream — Http2Stream (client & server) */ \
@@ -623,6 +624,9 @@ static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDy
 ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
 /* Own-enumerable check on a SCR_DYN_OBJ. */
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len);
+/* Stores own property `entry` of `source` on `target` with its attributes:
+ * plain data properties by an ordinary write, others by their descriptor. */
+void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry);
 /* Literal discriminator tests used before selecting a typed record layout.
  * Missing fields and different primitive kinds never match. Borrowed args. */
 bool scr_dyn_field_eq_str(const ScrDyn *d, const ScrStr *key, const ScrStr *value);
@@ -1083,6 +1087,8 @@ ScrDyn *scr_dyn_map_seed_entry(const ScrDyn *entry);
 bool scr_weak_map_is(const ScrDyn *value);
 bool scr_weak_set_is(const ScrDyn *value);
 ScrDyn *scr_weak_map_new(ScrDyn *entries);
+ScrDyn *scr_finalization_registry_new(ScrDyn *cleanup);
+bool scr_finalization_registry_is(const ScrDyn *value);
 ScrDyn *scr_weak_set_new(ScrDyn *values);
 ScrDyn *scr_dyn_from_entries(ScrDyn *entries);
 ScrDyn *scr_dyn_mark_snapshot(ScrDyn *value); /* consumes and returns +1 */
