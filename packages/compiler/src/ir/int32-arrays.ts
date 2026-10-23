@@ -7,6 +7,8 @@ import {
   everyExprChild,
   everyStmtChild,
   everyStmtList,
+  mapExprChildren,
+  mapStmtChildren,
   transformExpr,
   transformStmt,
   transformStmtList,
@@ -629,16 +631,34 @@ export function int32ArrayStores(
   return stores;
 }
 
+const REPEATED_INDEX_OPS = new Set(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>"]);
+
+/** An index the inlined read may evaluate at each of its uses: a plain read,
+ * a literal, or integer arithmetic over them. Repeating it keeps the forms
+ * the backend derives from its operands at every use, such as the exact i64
+ * of an int32 product, where a bound local holds only the double. */
+function repeatableIndex(e: IrExpr): boolean {
+  if (e.kind === "varRef" || e.kind === "numLit") return true;
+  if (e.kind === "unary") return e.op === "-" && repeatableIndex(e.operand);
+  return (
+    e.kind === "bin" &&
+    REPEATED_INDEX_OPS.has(e.op) &&
+    repeatableIndex(e.left) &&
+    repeatableIndex(e.right)
+  );
+}
+
 /** Rewrite a function's candidates for the backend. A discarded pop uses
  * the candidate in place of its hidden local. An element-reader helper call
  * whose array is a candidate is inlined: the helper's returned ternary, with
  * the candidate for its array and the index for its index, so the read means
- * the same. An index that is not a plain read or literal is bound to a fresh
- * local first: in its own declaration just before the statement when the
- * call is the whole value of a declaration or assignment (the form lowering
- * gives `a[i]!`, and the one the backend reads without a box), otherwise in a
- * sequence around the ternary. Selection keeps out indexes that write the
- * array, so evaluating the index before the array read is unobservable. */
+ * the same. An index that is not repeatable (repeatableIndex) is bound to a
+ * fresh local first: in its own declaration just before the statement when
+ * the call is the whole value of a declaration or assignment (the form
+ * lowering gives `a[i]!`, and the one the backend reads without a box),
+ * otherwise in a sequence around the ternary. Selection keeps out indexes
+ * that write the array, so evaluating the index before the array read is
+ * unobservable. */
 function rewriteCandidates(
   fn: IrFunction,
   candidates: ReadonlySet<string>,
@@ -662,14 +682,13 @@ function rewriteCandidates(
     candidates.has(e.args[0]!.localId)
       ? e
       : null;
-  const simple = (e: IrExpr): boolean => e.kind === "varRef" || e.kind === "numLit";
   // The statements of a list, with complex read indexes declared first.
   const hoist = (list: IrStmt[]): IrStmt[] =>
     list.flatMap((s): IrStmt[] => {
       if (s.kind !== "varDecl" && s.kind !== "assign") return [s];
       const value = s.kind === "varDecl" ? s.init : s.value;
       const call = readerCall(value);
-      if (!call || simple(call.args[1]!)) return [s];
+      if (!call || repeatableIndex(call.args[1]!)) return [s];
       const { decl, ref } = bind(call.args[1]!);
       const read: IrExpr = { ...call, args: [call.args[0]!, ref] };
       if (s.kind === "varDecl") return [decl, { ...s, init: read }];
@@ -732,21 +751,23 @@ function rewriteCandidates(
     if (ret.kind !== "return" || !ret.value) return e;
     let index = call.args[1]!;
     const stmts: IrStmt[] = [];
-    if (!simple(index)) {
+    if (!repeatableIndex(index)) {
       const { decl, ref } = bind(index);
       stmts.push(decl);
       index = ref;
     }
     const operand = index;
-    const body = transformExpr(reparseExpr(ret.value), {
-      expr: (x) => {
-        if (x.kind !== "varRef") return x;
-        if (x.localId === arrayParam!.localId) return reparseExpr(array);
-        if (x.localId === indexParam!.localId) return reparseExpr(operand);
-        return x;
-      },
-      stmt: (x) => x,
-    });
+    // The arguments' copies are not searched again: an index may read a
+    // local that has the id of one of the helper's parameters.
+    const substituteExpr = (x: IrExpr): IrExpr => {
+      if (x.kind !== "varRef") return mapExprChildren(x, substituteExpr, substituteStmt);
+      if (x.localId === arrayParam!.localId) return reparseExpr(array);
+      if (x.localId === indexParam!.localId) return reparseExpr(operand);
+      return x;
+    };
+    const substituteStmt = (x: IrStmt): IrStmt =>
+      mapStmtChildren(x, substituteExpr, substituteStmt);
+    const body = substituteExpr(reparseExpr(ret.value));
     // The ternary is a fresh copy (reparseExpr): it takes the call's location.
     const typed = body;
     typed.loc = e.loc;
