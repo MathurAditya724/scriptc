@@ -6,6 +6,20 @@ function unparenthesized(e: ts.Expression): ts.Expression {
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   return e;
 }
+
+/** `e` without parentheses and type-only wrappers (as, satisfies, type
+ * assertions, non-null assertions), which change no runtime value. */
+function withoutTypeCasts(e: ts.Expression): ts.Expression {
+  while (
+    ts.isParenthesizedExpression(e) ||
+    ts.isAsExpression(e) ||
+    ts.isSatisfiesExpression(e) ||
+    ts.isTypeAssertion(e) ||
+    ts.isNonNullExpression(e)
+  )
+    e = e.expression;
+  return e;
+}
 import { UNSUPPORTED } from "../../diagnostics/diagnostic.js";
 import {
   BOOL,
@@ -3440,6 +3454,17 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     return ts.symbolName(resolved) === "global" ? "globalThis" : ts.symbolName(resolved);
   }
   if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
+    // A cast of the global object (`(globalThis as { Buffer?: B }).Buffer`,
+    // `(globalThis as any).Buffer`) changes only its static type: the
+    // member is the global object's own.
+    const uncast = withoutTypeCasts(expr.expression);
+    if (uncast !== unparenthesized(expr.expression)) {
+      if (!ts.isIdentifier(uncast) || stdlibGlobalNameOf(lowerer, uncast) !== "globalThis")
+        return null;
+      const member = lowerer.checker.getPropertyOfType(lowerer.typeOf(uncast), expr.name.text);
+      if (!member || !lowerer.isStdlibSymbol(member)) return null;
+      return ts.symbolName(member) === "global" ? "globalThis" : ts.symbolName(member);
+    }
     if (stdlibGlobalNameOf(lowerer, expr.expression) !== "globalThis") return null;
     // Through a detection chain the checker types the receiver as the
     // union of every arm; the selected arm (the global object) owns the
@@ -3572,6 +3597,13 @@ export function stdlibGlobalAliasDecl(
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
   if (!symbol) return false;
   lowerer.stdlibGlobalAliases.set(symbol, name);
+  const access = init !== undefined ? unparenthesized(init) : undefined;
+  if (
+    access !== undefined &&
+    ts.isPropertyAccessExpression(access) &&
+    withoutTypeCasts(access.expression) !== unparenthesized(access.expression)
+  )
+    lowerer.castGlobalAliases.add(symbol);
   return true;
 }
 

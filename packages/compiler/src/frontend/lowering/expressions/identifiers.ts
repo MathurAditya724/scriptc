@@ -744,6 +744,17 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
   const nativeAlias = stdlibGlobalNameOf(lowerer, expr);
   if (nativeAlias === "Buffer" && expr.text !== "Buffer") {
+    // An alias through a cast of globalThis carries the cast's static type,
+    // which the identity token below does not have.
+    const aliasSymbol = identifierReadSymbol(lowerer, expr);
+    if (aliasSymbol && lowerer.castGlobalAliases.has(aliasSymbol)) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "the Buffer constructor read through a cast of globalThis as a value",
+        "test it in a condition, read its typeof, or call its members",
+      );
+    }
     return { kind: "strLit", value: "[builtin Buffer]", type: STRING, loc };
   }
   if (lowerer.isStdlibGlobal(expr, "fetch")) {

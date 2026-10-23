@@ -8749,13 +8749,20 @@ function destrSpellingOf(rhs: ts.Expression): string | null {
     return base === null ? null : `${base}.${e.name.text}`;
   }
   // `table[key]` and `list[0]`; V8 prints a numeric key in its canonical
-  // number form (`o[1.50]` reads "o[1.5]").
+  // number form (`o[1.50]` reads "o[1.5]"), and a string key as a property
+  // name with its text decoded (`o["a.b"]` and `o[\`a.b\`]` read "o.a.b").
+  // The message is a C string, so a key holding NUL keeps the refusal.
   if (ts.isElementAccessExpression(e) && !e.questionDotToken) {
     const base = destrSpellingOf(e.expression);
     const key = e.argumentExpression;
     if (base === null) return null;
     if (ts.isIdentifier(key)) return `${base}[${key.text}]`;
     if (ts.isNumericLiteral(key)) return `${base}[${String(Number(key.text))}]`;
+    if (
+      (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
+      !key.text.includes("\0")
+    )
+      return `${base}.${key.text}`;
     return null;
   }
   if (ts.isCallExpression(e) && !e.questionDotToken) {
