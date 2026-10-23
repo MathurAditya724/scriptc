@@ -918,6 +918,11 @@ export class ClassDynamicDispatch {
     "dyn.getPrototype" | "dyn.getPrototypeForIdentity",
     { fn: IrFunction; classes: Set<string> }
   >();
+  /** `value instanceof Error` through Error.prototype: boxed instances of
+   * classes with a heritage evaluated at run time test their prototype
+   * data's chain. */
+  private errorPrototypeHelper: IrFunction | null = null;
+  private readonly errorPrototypeClasses = new Set<string>();
   private readonly instancePrototypes = new Map<string, { fn: IrFunction; classes: Set<string> }>();
   private readonly checkedCasts = new Map<string, { fn: IrFunction; classes: Set<string> }>();
   /** The for-in key helpers, by libCall (dyn and native string[] keys). */
@@ -1099,6 +1104,49 @@ export class ClassDynamicDispatch {
         changed = true;
       }
       if (
+        this.errorPrototypeHelper &&
+        !this.errorPrototypeClasses.has(className) &&
+        hasRuntimeHeritage(info)
+      ) {
+        this.errorPrototypeClasses.add(className);
+        const loc = this.errorPrototypeHelper.loc;
+        const type: IrType = { kind: "object", className };
+        const value = varRef("value", DYN, loc);
+        const prototype = classPrototypeData(lowerer, info, loc, {
+          kind: "dynCheck",
+          value,
+          type,
+          loc,
+        });
+        if (prototype)
+          this.errorPrototypeHelper.body.unshift({
+            kind: "if",
+            cond: {
+              kind: "libCall",
+              fn: "dyn.typedRefIs",
+              args: [value, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "return",
+                value: {
+                  kind: "libCall",
+                  fn: "dyn.inheritsErrorPrototype",
+                  args: [prototype],
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          });
+        changed = true;
+      }
+      if (
         this.serializesClasses &&
         !this.jsonPrototypes.has(className) &&
         info.decl &&
@@ -1188,17 +1236,20 @@ export class ClassDynamicDispatch {
         // share it (`Object.getPrototypeOf(a) === Object.getPrototypeOf(b)`),
         // other prototypes differ from it, and an instanceof walk (through
         // Object.prototype to null) answers false instead of reaching the
-        // reflection refusal.
+        // reflection refusal. A function-local class is a new class at
+        // each evaluation of its declaration, so its instances answer with
+        // the prototype of their own class value instead.
         const answer = (name: string): IrStmt[] | null => {
           const of = lowerer.classes.get(name)!;
-          const prototype = hasClassPrototypeData(of)
-            ? classPrototypeData(lowerer, of, loc, {
-                kind: "dynCheck",
-                value,
-                type: { kind: "object", className: name },
-                loc,
-              })
-            : null;
+          const prototype =
+            hasClassPrototypeData(of) || of.localClass
+              ? classPrototypeData(lowerer, of, loc, {
+                  kind: "dynCheck",
+                  value,
+                  type: { kind: "object", className: name },
+                  loc,
+                })
+              : null;
           if (prototype) return [{ kind: "return", value: prototype, loc }];
           return hasClassPrototypeData(of) ? null : this.prototypeStandIn(lowerer, name, loc);
         };
@@ -1347,6 +1398,11 @@ export class ClassDynamicDispatch {
               type: DYN,
               loc: existingInit.loc,
             };
+            // The initializer is a statement of the property bag helpers;
+            // their reused site summaries do not see an edit inside it.
+            if (this.propertyBag) this.sites.forget(this.propertyBag);
+            for (const fn of this.typedPropertyBags.values()) this.sites.forget(fn);
+            for (const fn of this.exactPropertyBags.values()) this.sites.forget(fn);
             changed = true;
           }
         }
@@ -1590,6 +1646,31 @@ export class ClassDynamicDispatch {
               changed = true;
             }
             return { kind: "call", callee: cast.fn.name, args: [expr.value], type, loc: expr.loc };
+          }
+          if (expr.kind === "libCall" && expr.fn === "dyn.inheritsErrorPrototype") {
+            if (!this.errorPrototypeHelper) {
+              const loc = expr.loc;
+              this.errorPrototypeHelper = {
+                name: "%dyn.class.inheritsErrorPrototype",
+                params: [{ localId: "value", name: "value", type: DYN }],
+                locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+                returnType: BOOL,
+                loc,
+                body: [
+                  { kind: "return", value: { ...expr, args: [varRef("value", DYN, loc)] }, loc },
+                ],
+              };
+              lowerer.liftedFns.push(this.errorPrototypeHelper);
+              this.generated.add(this.errorPrototypeHelper);
+              changed = true;
+            }
+            return {
+              kind: "call",
+              callee: this.errorPrototypeHelper.name,
+              args: expr.args,
+              type: BOOL,
+              loc: expr.loc,
+            };
           }
           if (
             expr.kind === "libCall" &&
@@ -6066,3 +6147,11 @@ const INHERITED_OBJECT_METHODS: ReadonlySet<string> = new Set([
   "hasOwnProperty",
   "propertyIsEnumerable",
 ]);
+
+/** Whether a class or one of its bases has a heritage evaluated at run
+ * time, whose prototype chain may reach Error.prototype. */
+function hasRuntimeHeritage(info: ClassInfo): boolean {
+  for (let current: ClassInfo | null = info; current; current = current.base)
+    if (current.callableBase) return true;
+  return false;
+}

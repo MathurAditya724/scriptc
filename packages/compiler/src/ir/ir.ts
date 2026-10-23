@@ -1044,6 +1044,10 @@ export interface IrModule {
   entry: string;
   /** Executable roots run in isolated native worker contexts. */
   workers?: boolean;
+  /** The program has declaration-typed boundary casts (decl-projection.ts):
+   * closures boxed for package code return records and arrays as live
+   * capsules, so a value that comes back keeps its identity. */
+  declBoundary?: true;
   /** The program constructs LifetimeRegion (@scriptc/experimental): every
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
@@ -1073,6 +1077,12 @@ export interface IrModule {
    * write in the program (ir/contract-check.ts). Backends may rely on them
    * unconditionally. Absent when the program writes no contract. */
   contracts?: IrContracts;
+  /** Local number arrays (`function\0local`) the backend may store as
+   * int32 slots, proposed by ir/int32-arrays.ts after their element-reader
+   * calls were inlined; the int32 slot analysis keeps the ones whose every
+   * stored element it proves an int32, and those whose stores are exact
+   * integers with checked stores. Absent when there is none. */
+  int32ArrayCandidates?: string[];
   /** The WebAssembly modules translated into this program (wasm/
    * translate.ts), present exactly when the program uses the WebAssembly
    * API (possibly empty). The backend appends each module's translation
@@ -2094,8 +2104,9 @@ export type IrStmt =
    * and whose `code` carries the SC diagnostic code; unwinds exactly like
    * `throw`.
    * TypeScript sources produce it only as the tsc-unreachable fallthrough
-   * trap (appendImplicitUndefinedReturn's SC9002) — their construct fences
-   * stay compile errors. */
+   * trap (appendImplicitUndefinedReturn's SC9002) and for a typed-array
+   * store through an element index that is undefined at run time
+   * (undefined-index.ts); their construct fences stay compile errors. */
   | { kind: "runtimeFence"; code: string; message: string; loc: SrcLoc }
   /** Rethrow of a catch binding (`throw e` where e is the binding):
    * re-raises the SAVED exception exactly — kind and payload preserved,
@@ -3879,10 +3890,19 @@ export type IrExpr =
   /** `exact`: the value is known to be a capsule this program boxed from
    * exactly the class `type` names (a `dyn.typedRefKeyIs` test guards the
    * expression), so the check is one load of the capsule's instance. */
+  /** `adopt`: the declaration-typed boundary's cast (decl-projection.ts).
+   * The conversion preserves identity: a source object or array that
+   * something else still references (reference count above one) is
+   * turned, after the whole check succeeded, into a live capsule of the
+   * value built from it, so every holder sees the same native value; an
+   * unshared source is simply consumed. Values must be plain data
+   * (ordinary objects and arrays without accessors, prototypes, symbols
+   * or frozen state), otherwise the cast throws the path TypeError. */
   | {
       kind: "dynCheck";
       value: IrExpr;
       preserveRefs?: true;
+      adopt?: true;
       exact?: true;
       type: IrType;
       loc: SrcLoc;

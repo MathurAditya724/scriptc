@@ -1,4 +1,12 @@
-import { BOOL, F64, type IrExpr, type IrFunction, type IrModule, type IrStmt } from "./ir.js";
+import {
+  BOOL,
+  F64,
+  type IrExpr,
+  type IrFunction,
+  type IrLocal,
+  type IrModule,
+  type IrStmt,
+} from "./ir.js";
 import { mapExprChildren, mapStmtChildren } from "./traverse.js";
 
 type CharAt = IrExpr & { kind: "strIntrinsic" };
@@ -140,14 +148,23 @@ function rewriteFunction(fn: IrFunction): IrFunction {
   return {
     ...fn,
     body: fn.body.map(rewriteStmt),
-    locals: fn.locals.map((l) => (held.has(l.id) ? { ...l, type: F64 } : l)),
+    locals: fn.locals.map((l) => (held.has(l.id) ? unitLocal(l) : l)),
   };
+}
+
+/** The local, holding the code unit instead of the one-character string. */
+function unitLocal(local: IrLocal): IrLocal {
+  return { ...local, type: F64 };
 }
 
 /** The local a node mentions in a form the rewrite handles: the
  * declaration from a one-argument charAt, a one-unit test, or a switch
  * over one-unit cases. */
 function understoodMention(node: Record<string, unknown>): string | null {
+  // count() visits every object in the body (types, locations, cases), so
+  // only the node kinds handled here are read as IR nodes
+  const kind = node.kind;
+  if (kind !== "varDecl" && kind !== "strEq" && kind !== "strCmp" && kind !== "switch") return null;
   const n = node as unknown as IrExpr | IrStmt;
   if (n.kind === "varDecl") return n.init && isCharAt(n.init) ? n.localId : null;
   if (n.kind === "strEq" || n.kind === "strCmp") return unitUse(n)?.id ?? null;

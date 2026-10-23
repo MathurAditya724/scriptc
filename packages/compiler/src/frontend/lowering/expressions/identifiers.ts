@@ -1,4 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
+import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
 import * as ts from "../../ts7/adapter.js";
@@ -801,8 +802,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",
         WeakRef:
           "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
-        FinalizationRegistry:
-          "finalization callbacks expose GC timing — genuinely dynamic; release resources explicitly instead",
         eval: "runtime code evaluation cannot be compiled ahead of time",
       };
       lowerer.noLowering(expr.text, expr, globalHints[expr.text], sym ?? undefined);
@@ -862,6 +861,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   {
     const sym = lowerer.resolveValueSymbol(expr);
     const classInfo = sym ? lowerer.classBySymbol.get(sym) : undefined;
+    // A local class referenced from a function hoisted above its statement:
+    // its TDZ box, holding the class as a checked-dynamic constructor.
+    if (!classInfo && sym && predeclareForwardClass(lowerer, sym)) {
+      const local = lowerer.resolveLocal(expr);
+      if (local) return { kind: "varRef", localId: local.id, type: local.type, loc };
+    }
     // A GENERIC class name whose CONTEXTUAL type pins one instantiation
     // (`const B: new (v: string) => Counter<string> = Counter`): the
     // value is that instantiation's class object — the generic-fn
