@@ -291,16 +291,22 @@ export function arrayValueStore(
     // JavaScript evaluates them first (`out[n++] = src[n]` reads src[1]), so
     // either may need its value held before the value runs.
     if (value.kind !== "varRef") {
-      const effects = valueEffects(lowerer, value);
-      const hold = (e: IrExpr, name: string): IrExpr => {
+      const valueFx = valueEffects(lowerer, value);
+      const hold = (e: IrExpr, name: string, effects: typeof valueFx): IrExpr => {
         if (unaffectedBy(e, effects) && !(effects.opaque && readsMutableLocal(lowerer, e)))
           return e;
         const temp = lowerer.declareHiddenLocal(name, e.type);
         prefix.push({ kind: "varDecl", localId: temp.id, init: e, loc });
         return varRef(temp.id, temp.type, loc);
       };
-      arr = hold(arr, "%arrayTarget");
-      index = hold(index, "%arrayIndex");
+      // The receiver runs before the index and the value, so the index's
+      // effects can change it too (`a[(a = b, 0)] = c[0]!`).
+      const indexFx = valueEffects(lowerer, index);
+      arr = hold(arr, "%arrayTarget", {
+        writes: new Set([...valueFx.writes, ...indexFx.writes]),
+        opaque: valueFx.opaque || indexFx.opaque,
+      });
+      index = hold(index, "%arrayIndex", valueFx);
     }
     if (value.kind !== "varRef") {
       const temp = lowerer.declareHiddenLocal("%arrayValue", value.type);

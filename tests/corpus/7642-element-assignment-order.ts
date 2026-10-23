@@ -35,3 +35,11 @@ function index(): number {
 const c: (number | undefined)[] = [0, 0];
 c[index()] = optional[1];
 console.log(c, reads);
+
+// The index assigns the receiver's binding: the store uses the receiver
+// evaluated before it.
+let receiver: (number | undefined)[] = [0, 0];
+const original = receiver;
+const replacement: (number | undefined)[] = [7, 7];
+receiver[((receiver = replacement), 1)] = optional[1];
+console.log(original, replacement, receiver === replacement);
