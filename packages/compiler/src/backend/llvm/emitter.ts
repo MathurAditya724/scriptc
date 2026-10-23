@@ -60,7 +60,7 @@ import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
 import { globalSlotAlias } from "./bytes-alias.js";
-import type { IntegerCountedForLoop } from "../../ir/integer-loops.js";
+import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
 import {
   materializeSplitPiece,
   type SplitSpan,
@@ -4263,6 +4263,7 @@ export class LlEmitter {
   matchBytesLoopVersion(
     s: IrStmt & { kind: "for" | "while" },
     counted: IntegerCountedForLoop | null,
+    paired: IntegerPairedForLoop | null = null,
   ): ReturnType<typeof matchBytesLoopVersion> {
     const fn = LOOPS.of(this).bytesLoopFunction;
     if (!fn) return null;
@@ -4272,17 +4273,22 @@ export class LlEmitter {
     const invariantGlobals = new Set(this.stableGlobals);
     for (const global of this.initializerBindings.get(fn.name) ?? [])
       invariantGlobals.add(global.id);
-    return matchBytesLoopVersion(s, counted, {
-      locals: this.currentLocals,
-      invariantGlobals,
-      captured: this.captureIds,
-      ranges: this.integerRanges,
-      initialized,
-      proven: this.bytesBounds,
-      workers: this.mod.workers === true,
-      owned: this.bytesOwned,
-      scalarStrings: new Set(this.stringSlices.keys()),
-    });
+    return matchBytesLoopVersion(
+      s,
+      counted,
+      {
+        locals: this.currentLocals,
+        invariantGlobals,
+        captured: this.captureIds,
+        ranges: this.integerRanges,
+        initialized,
+        proven: this.bytesBounds,
+        workers: this.mod.workers === true,
+        owned: this.bytesOwned,
+        scalarStrings: new Set(this.stringSlices.keys()),
+      },
+      paired,
+    );
   }
 
   /** The alias tag of a whole-slot load of a binding (module globals only). */
