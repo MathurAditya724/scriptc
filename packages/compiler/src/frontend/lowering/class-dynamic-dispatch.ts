@@ -350,7 +350,7 @@ export function classInstanceOf(
                 localId: "candidate",
                 value: {
                   kind: "libCall",
-                  fn: "dyn.getPrototype",
+                  fn: "dyn.getPrototypeForIdentity",
                   args: [candidate],
                   type: DYN,
                   loc,
@@ -862,6 +862,9 @@ export class ClassDynamicDispatch {
   private deletedNames: Set<string> | null | undefined;
   private readonly boxed = new Set<string>();
   private readonly boxedConstructors = new Set<string>();
+  /** Every class a boxed value was statically typed as, runtime error
+   * classes included: the value's capsule can be any of its subclasses. */
+  private readonly boxedStatic = new Set<string>();
   private readonly dispatches = new Map<string, Dispatch>();
   private readonly properties = new Map<string, PropertyDispatch>();
   private readonly computed = new Map<
@@ -906,8 +909,12 @@ export class ClassDynamicDispatch {
   private descriptorHelper: IrFunction | null = null;
   private prototypeHelper: IrFunction | null = null;
   private readonly prototypeClasses = new Set<string>();
-  private prototypeIdentityHelper: IrFunction | null = null;
-  private readonly prototypeIdentityClasses = new Set<string>();
+  /** The prototype reads of identity walks, by libCall, and the classes
+   * each one answers for boxed instances. */
+  private readonly prototypeIdentityHelpers = new Map<
+    "dyn.getPrototype" | "dyn.getPrototypeForIdentity",
+    { fn: IrFunction; classes: Set<string> }
+  >();
   private readonly instancePrototypes = new Map<string, { fn: IrFunction; classes: Set<string> }>();
   private readonly checkedCasts = new Map<string, { fn: IrFunction; classes: Set<string> }>();
   /** The for-in key helpers, by libCall (dyn and native string[] keys). */
@@ -956,6 +963,7 @@ export class ClassDynamicDispatch {
       if (seenTypes.has(key)) return;
       seenTypes.add(key);
       if (type.kind === "object") {
+        this.boxedStatic.add(type.className);
         if (isDynTypedRefType(type)) this.boxed.add(type.className);
       } else if (type.kind === "classval") this.boxedConstructors.add(type.className);
       else if (type.kind === "array") discover(type.elem);
@@ -1087,33 +1095,6 @@ export class ClassDynamicDispatch {
           });
         changed = true;
       }
-      if (this.prototypeIdentityHelper && !this.prototypeIdentityClasses.has(className)) {
-        this.prototypeIdentityClasses.add(className);
-        const loc = this.prototypeIdentityHelper.loc;
-        const type: IrType = { kind: "object", className };
-        const value = varRef("value", DYN, loc);
-        const prototype = classPrototypeData(lowerer, info, loc, {
-          kind: "dynCheck",
-          value,
-          type,
-          loc,
-        });
-        if (prototype)
-          this.prototypeIdentityHelper.body.unshift({
-            kind: "if",
-            cond: {
-              kind: "libCall",
-              fn: "dyn.typedRefIs",
-              args: [value, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
-              type: BOOL,
-              loc,
-            },
-            then: [{ kind: "return", value: prototype, loc }],
-            else_: null,
-            loc,
-          });
-        changed = true;
-      }
       if (
         this.serializesClasses &&
         !this.jsonPrototypes.has(className) &&
@@ -1181,6 +1162,53 @@ export class ClassDynamicDispatch {
         }
       }
     }
+    // The runtime boxes a class instance as its exact class, so a value
+    // boxed at a base (or Error) static type reaches the identity views as
+    // any subclass's capsule.
+    for (const helper of this.prototypeIdentityHelpers.values())
+      for (const [className, info] of lowerer.classes) {
+        if (helper.classes.has(className)) continue;
+        if (info.builtinEmitter || info.builtinStream || info.builtinError) continue;
+        if (!isDynTypedRefType({ kind: "object", className })) continue;
+        if (
+          !this.boxed.has(className) &&
+          ![...this.boxedStatic].some((base) => lowerer.isSubclassOf(className, base))
+        )
+          continue;
+        helper.classes.add(className);
+        const loc = helper.fn.loc;
+        const type: IrType = { kind: "object", className };
+        const value = varRef("value", DYN, loc);
+        // A class with no prototype data in its chain (one extending
+        // Error, or with no methods) has no prototype a program can name:
+        // a fresh object stands in, so an identity comparison or an
+        // instanceof walk (through Object.prototype to null) answers false
+        // instead of reaching the reflection refusal.
+        const standIn: IrExpr = { kind: "dynObjLit", fields: [], type: DYN, loc };
+        const prototype = hasClassPrototypeData(info)
+          ? classPrototypeData(lowerer, info, loc, {
+              kind: "dynCheck",
+              value,
+              type,
+              loc,
+            })
+          : standIn;
+        if (prototype)
+          helper.fn.body.unshift({
+            kind: "if",
+            cond: {
+              kind: "libCall",
+              fn: "dyn.typedRefIs",
+              args: [value, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
+              type: BOOL,
+              loc,
+            },
+            then: [{ kind: "return", value: prototype, loc }],
+            else_: null,
+            loc,
+          });
+        changed = true;
+      }
     for (const plan of this.propertyReceivers(lowerer, false, false)) {
       const info = plan.info;
       const className = info.def.name;
@@ -1518,29 +1546,41 @@ export class ClassDynamicDispatch {
           }
           if (
             expr.kind === "libCall" &&
-            expr.fn === "dyn.getPrototype" &&
+            (expr.fn === "dyn.getPrototype" || expr.fn === "dyn.getPrototypeForIdentity") &&
             expr.args[0]?.kind !== "dynObjLit"
           ) {
             if (expr.prototypeIdentityOnly) {
-              if (!this.prototypeIdentityHelper) {
+              let helper = this.prototypeIdentityHelpers.get(expr.fn);
+              if (!helper) {
                 const loc = expr.loc;
-                this.prototypeIdentityHelper = {
-                  name: "%dyn.class.prototypeIdentity",
-                  params: [{ localId: "value", name: "value", type: DYN }],
-                  locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
-                  returnType: DYN,
-                  loc,
-                  body: [
-                    { kind: "return", value: { ...expr, args: [varRef("value", DYN, loc)] }, loc },
-                  ],
+                helper = {
+                  fn: {
+                    name:
+                      expr.fn === "dyn.getPrototype"
+                        ? "%dyn.class.prototypeIdentity"
+                        : "%dyn.class.prototypeChainIdentity",
+                    params: [{ localId: "value", name: "value", type: DYN }],
+                    locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+                    returnType: DYN,
+                    loc,
+                    body: [
+                      {
+                        kind: "return",
+                        value: { ...expr, args: [varRef("value", DYN, loc)] },
+                        loc,
+                      },
+                    ],
+                  },
+                  classes: new Set(),
                 };
-                lowerer.liftedFns.push(this.prototypeIdentityHelper);
-                this.generated.add(this.prototypeIdentityHelper);
+                this.prototypeIdentityHelpers.set(expr.fn, helper);
+                lowerer.liftedFns.push(helper.fn);
+                this.generated.add(helper.fn);
                 changed = true;
               }
               return {
                 kind: "call",
-                callee: this.prototypeIdentityHelper.name,
+                callee: helper.fn.name,
                 args: expr.args,
                 type: DYN,
                 loc: expr.loc,

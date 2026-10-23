@@ -630,6 +630,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreate",
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
+  "dyn.getPrototypeForIdentity",
   "dyn.setPrototype",
   // Error.captureStackTrace: Node's TypeError for a primitive target, and
   // the error string conversion of name and message
