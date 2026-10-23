@@ -4257,16 +4257,72 @@ static int scr_bytes_ctor_elem(const ScrDyn *callee) {
   return -1;
 }
 
-bool scr_dyn_has_iterator_method(const ScrDyn *value) {
-  if (!scr_iterator_symbol || value->kind != SCR_DYN_OBJ) return false;
+ScrDyn *scr_dyn_iterator_method(const ScrDyn *value) {
+  if (!scr_iterator_symbol || value->kind != SCR_DYN_OBJ) return NULL;
   ScrDyn *method = scr_dyn_symbol_key_get(value, scr_iterator_symbol, true);
-  bool iterable = method && method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL;
-  scr_dyn_release(method);
-  return iterable;
+  if (method && (method->kind == SCR_DYN_UNDEF || method->kind == SCR_DYN_NULL)) {
+    scr_dyn_release(method);
+    return NULL;
+  }
+  return method;
 }
 
-static bool scr_dyn_from_iterable(const ScrDyn *source) {
-  return scr_builtin_iterable(source) || scr_dyn_has_iterator_method(source);
+ScrDyn *scr_dyn_iterate_with(const ScrDyn *source, ScrDyn *method) {
+  if (!scr_dyn_is_callable(method)) {
+    static const char message[] = "Symbol.iterator is not a function";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  scr_dyn_this_push_dyn(source);
+  ScrDyn *iterator = scr_dyn_call(method, NULL, 0, "[Symbol.iterator]");
+  scr_dyn_this_pop();
+  if (!iterator) return NULL;
+  if (!scr_iterator_object(iterator)) {
+    scr_dyn_release(iterator);
+    static const char message[] = "Result of the Symbol.iterator method is not an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  /* A generator or native iterator drains through its own iteration. */
+  if (scr_builtin_iterable(iterator)) {
+    ScrDyn *drained = scr_dyn_destructure_rest(iterator, NULL);
+    scr_dyn_release(iterator);
+    return drained;
+  }
+  ScrDyn *next = scr_dyn_iterator_result_get(iterator, "next", 4);
+  ScrDyn *values = next ? scr_dyn_new_arr() : NULL;
+  while (values) {
+    scr_dyn_this_push_dyn(iterator);
+    ScrDyn *result = scr_dyn_call(next, NULL, 0, "next");
+    scr_dyn_this_pop();
+    ScrDyn *checked = result ? scr_dyn_iterator_result(result) : NULL;
+    scr_dyn_release(result);
+    if (!checked) { scr_dyn_release(values); values = NULL; break; }
+    ScrDyn *done = scr_dyn_iterator_result_get(checked, "done", 4);
+    bool finished = done && scr_dyn_truthy(done);
+    scr_dyn_release(done);
+    ScrDyn *value = !scr_exc_pending() && !finished ? scr_dyn_iterator_result_get(checked, "value", 5) : NULL;
+    scr_dyn_release(checked);
+    if (scr_exc_pending()) { scr_dyn_release(value); scr_dyn_release(values); values = NULL; break; }
+    if (finished) break;
+    scr_dyn_arr_push(values, value);
+  }
+  scr_dyn_release(next);
+  scr_dyn_release(iterator);
+  return values;
+}
+
+/* The values of `source` when it is iterable (+1): a builtin iterable's
+ * own iteration, or an object's Symbol.iterator method, read once. NULL
+ * for an array-like source, or with the exception pending. */
+static ScrDyn *scr_dyn_from_iterated(const ScrDyn *source, bool *iterable) {
+  *iterable = true;
+  if (scr_builtin_iterable(source)) return scr_dyn_destructure_rest(source, NULL);
+  ScrDyn *method = scr_dyn_iterator_method(source);
+  if (!method) { *iterable = false; return NULL; }
+  ScrDyn *values = scr_dyn_iterate_with(source, method);
+  scr_dyn_release(method);
+  return values;
 }
 
 /* TypedArrayCreate(C, [n]) for TypedArray.from and TypedArray.of: a typed
@@ -4348,8 +4404,9 @@ static ScrDyn *scr_bytes_from_call(ScrClosure *closure, ScrDyn *const *args, siz
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     goto done;
   }
-  if (scr_dyn_from_iterable(source)) {
-    values = scr_dyn_destructure_rest(source, NULL);
+  bool iterable;
+  values = scr_dyn_from_iterated(source, &iterable);
+  if (iterable) {
     if (!values) goto done;
     size_t n = values->v.arr.len;
     result = scr_bytes_static_create(constructor, n);
@@ -4722,7 +4779,10 @@ static bool dyn_bytes_less_eq(ScrDyn *cmp, double x, double y, bool *ok) {
   if (cmp->kind != SCR_DYN_UNDEF) {
     ScrDyn *a = scr_dyn_new_num(x), *b = scr_dyn_new_num(y);
     ScrDyn *cbargs[2] = { a, b };
+    /* The comparator is called with an undefined `this`. */
+    scr_dyn_this_push_dyn(scr_dyn_undefined());
     ScrDyn *r = scr_dyn_call(cmp, cbargs, 2, "comparefn");
+    scr_dyn_this_pop();
     scr_dyn_release(a);
     scr_dyn_release(b);
     double v = 0;
@@ -4939,7 +4999,10 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
       size_t k = backward ? len - 1 - step : step;
       ScrDyn *item = dyn_bytes_item(bytes, k), *index = scr_dyn_new_num((double)k);
       ScrDyn *cbargs[4] = { acc, item, index, recv };
+      /* The reducer is called with an undefined `this`. */
+      scr_dyn_this_push_dyn(scr_dyn_undefined());
       ScrDyn *next = scr_dyn_call(args[0], cbargs, 4, "callback");
+      scr_dyn_this_pop();
       scr_dyn_release(index);
       scr_dyn_release(item);
       scr_dyn_release(acc);

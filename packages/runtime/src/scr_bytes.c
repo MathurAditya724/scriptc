@@ -875,8 +875,10 @@ ScrBytes *scr_bytes_from_dyn(ScrBytesElem elem, const ScrDyn *value, bool from) 
   // fast path reads ordinary array elements during conversion instead. Strings
   // supplied to .from iterate by code point (set reads UTF-16 code units).
   // An object with a Symbol.iterator method iterates; others are array-like.
-  if (scr_dyn_has_iterator_method(value)) {
-    ScrDyn *items = scr_dyn_destructure_rest(value, NULL);
+  ScrDyn *method = scr_dyn_iterator_method(value);
+  if (method) {
+    ScrDyn *items = scr_dyn_iterate_with(value, method);
+    scr_dyn_release(method);
     if (!items) return NULL;
     ScrBytes *out = scr_bytes_new(elem, (double)items->v.arr.len);
     if (out && !scr_bytes_copy_array_like(out, items, 0, out->len)) {

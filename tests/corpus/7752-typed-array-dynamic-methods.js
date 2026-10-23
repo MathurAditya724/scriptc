@@ -88,3 +88,38 @@ function customs(TA) {
   console.log(order.join(" "));
 }
 customs(Int32Array);
+
+// Reducers and comparators run with an undefined this, also through method
+// values; a Symbol.iterator getter is read once.
+function review(TA) {
+  "use strict";
+  const ta = new TA([3, 1, 2]);
+  const seen = [];
+  const reduce = ta.reduce, reduceRight = ta.reduceRight, sort = ta.sort, toSorted = ta.toSorted;
+  reduce.call(ta, function (a, b) { seen.push(this === undefined); return a + b; });
+  reduceRight.call(ta, function (a, b) { seen.push(this === undefined); return a + b; }, 0);
+  sort.call(ta.slice(), function (x, y) { seen.push(this === undefined); return x - y; });
+  toSorted.call(ta, function (x, y) { seen.push(this === undefined); return y - x; });
+  console.log(seen.every((v) => v), seen.length > 0);
+  let gets = 0;
+  const source = {};
+  Object.defineProperty(source, Symbol.iterator, { get() { gets++; return function* () { yield 4; yield 5; }; } });
+  console.log(new TA(source), gets);
+  console.log(TA.from(source), gets);
+}
+review(Uint8Array);
+function plainIterator(TA) {
+  let gets = 0, nexts = 0;
+  const source = {};
+  Object.defineProperty(source, Symbol.iterator, {
+    get() {
+      gets++;
+      return function () {
+        let i = 0;
+        return { next() { nexts++; return i < 2 ? { value: 10 + i++, done: false } : { value: undefined, done: true }; } };
+      };
+    },
+  });
+  console.log(new TA(source), TA.from(source, (v) => v * 2), gets, nexts);
+}
+plainIterator(Int16Array);
