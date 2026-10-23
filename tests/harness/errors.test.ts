@@ -1731,9 +1731,10 @@ describe("builtin constructor values (JS lane)", () => {
   test("members without a lowering stay refused instead of reading undefined", async () => {
     // Builtin constructors read as interned function values that model only
     // name, length and constructor. Every other static member or prototype
-    // read (direct, bracketed, `in`, through an alias or globalThis), and
+    // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
+    // `key in Ctor` answers from the constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -1751,7 +1752,6 @@ describe("builtin constructor values (JS lane)", () => {
       ],
       ["isExtensible(Date.prototype)", "Object.isExtensible(Date.prototype)"],
       ["Map['prototype']", 'Map["prototype"]'],
-      ["'prototype' in Map", '"prototype" in Map'],
       ["globalThis.Map.prototype", "globalThis.Map.prototype"],
       ["Map alias prototype", "MapAlias.prototype"],
       ["Date alias prototype", "DateAlias.prototype"],
@@ -1774,6 +1774,7 @@ console.log(Date.length, RegExp.length, Promise.length, Object.length, Map.lengt
 console.log(Date.name, Map.name, Map.constructor === Function, Object.constructor === Function);
 const promisePrototype = Promise.prototype;
 console.log(typeof promisePrototype, typeof promisePrototype.then, promisePrototype.constructor === Promise);
+console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, "nope" in Map);
 `;
     const r = await compileAndRun("builtin-constructor-members", source, "cjs");
     expect(r.stderr).toBe("");
@@ -1788,11 +1789,13 @@ console.log(typeof promisePrototype, typeof promisePrototype.then, promiseProtot
         ),
       ),
     );
-    // Promise.prototype reads as an object holding the runtime's methods.
+    // Promise.prototype reads as an object holding the runtime's methods,
+    // and `in` on a builtin constructor answers from its fixed keys.
     expect(lines.slice(reads.length)).toEqual([
       "7 2 1 1 0 0",
       "Date Map true true",
       "object function true",
+      "true true true false",
     ]);
   });
 });
