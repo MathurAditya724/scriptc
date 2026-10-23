@@ -60,6 +60,20 @@ function nearLimit(start: number): string {
   return seen.join(" ");
 }
 
+function atLimit(start: number, end: number): string {
+  // A counter of integer locals only, up to 2^53 - 1: `i + 2` may be
+  // 2^53 + 1, whose double is 2^53, so `i + 1 === i + 2` holds at the end.
+  let same = 0;
+  let above = 0;
+  let mixed = 0;
+  for (let i = start; i <= end; i++) {
+    if (i + 1 === i + 2) same++;
+    if (i + 2 > 9007199254740992) above++;
+    mixed += (i * 2) % 3;
+  }
+  return `${same} ${above} ${mixed}`;
+}
+
 console.log(heapSort(new Int32Array([5, -3, 9, 0, 9, 2147483647, -2147483648, 7, 1])));
 console.log(heapSort(new Int32Array([])), heapSort(new Int32Array([4])));
 console.log(neighbors(new Float64Array([1, 2, 3, 4])));
@@ -67,3 +81,5 @@ const sorted = new Int32Array([-5, -1, 0, 0, 3, 8, 8, 13]);
 console.log([-6, -1, 0, 1, 8, 13, 14].map((v) => lowerBound(sorted, v)).join());
 console.log(nearLimit(9007199254740988));
 console.log(nearLimit(-9007199254740991));
+console.log(atLimit(9007199254740988, 9007199254740991));
+console.log(atLimit(-9007199254740991, -9007199254740988));
