@@ -45,9 +45,8 @@ console.log(words.join(","));
 // Calls to the comparison runtime: `call`/`callq` on x86-64 and `bl` on
 // AArch64, with Mach-O's leading underscore on macOS.
 const compareCalls = (asm: string): number =>
-  asm.match(
-    /\b(?:call[a-z]*|bl)\s+_?(?:sc_str_cmp_u16|scr_str_cmp_u16_bytes|scr_str_cmp)\b/g,
-  )?.length ?? 0;
+  asm.match(/\b(?:call[a-z]*|bl)\s+_?(?:sc_str_cmp_u16|scr_str_cmp_u16_bytes|scr_str_cmp)\b/g)
+    ?.length ?? 0;
 
 // The host's assembly, and two other targets' so that every host checks the
 // x86-64, AArch64 and Mach-O spellings.
