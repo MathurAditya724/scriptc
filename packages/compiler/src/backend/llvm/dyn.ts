@@ -193,6 +193,11 @@ function builtinStreamKind(className: string): number | null {
   return kinds[className] ?? null;
 }
 
+/** Unions whose discriminant has fewer string literals keep one literal test
+ * per arm (dispatchValues): one runtime lookup costs about what a few
+ * literal tests do. */
+const DISCRIMINANT_DISPATCH_VALUES = 4;
+
 export class LlDyn {
   private readonly dynMatchers = new Map<string, string>();
   private readonly dynBuilders = new Map<string, string>();
@@ -413,6 +418,86 @@ export class LlDyn {
     return order;
   }
 
+  /** The string literals of `def`'s discriminant when its arms are chosen
+   * by reading the discriminant once (unionArmsByDiscriminant), or null
+   * when the union keeps one literal test per arm: some literal is not a
+   * string, or there are fewer than DISCRIMINANT_DISPATCH_VALUES. */
+  private dispatchValues(def: IrUnionDef): string[] | null {
+    const values: string[] = [];
+    for (const guard of def.discriminant?.cases ?? []) {
+      if (guard.values.length === 0) return null;
+      for (const value of guard.values) {
+        if (typeof value !== "string") return null;
+        if (!values.includes(value)) values.push(value);
+      }
+    }
+    return values.length < DISCRIMINANT_DISPATCH_VALUES ? null : values;
+  }
+
+  /** Branches to `hits[tag]` for the first arm in `order` that `%d` matches
+   * (unionArmMatch), or to `none` when no arm does, for
+   * a union whose discriminant literals are `values` (dispatchValues). The
+   * discriminant is read once (scr_dyn_discriminant_case, against the
+   * constant `table`), and only the arms whose literal it holds and the arms
+   * without a literal are tested, in `order`: every other arm's literal test
+   * fails. A value the runtime cannot classify that way (a typed capsule, an
+   * accessor, an inherited discriminant) takes the tests arm by arm. */
+  private unionArmsByDiscriminant(
+    B: BlockBuilder,
+    def: IrUnionDef,
+    values: readonly string[],
+    order: readonly number[],
+    hits: readonly string[],
+    none: string,
+    preserveRefs: boolean,
+    table: string,
+  ): void {
+    const discriminant = def.discriminant!;
+    const literalsOf = (tag: number): readonly (string | number | boolean)[] | null =>
+      discriminant.cases.find((candidate) => candidate.tag === tag)?.values ?? null;
+    const tryArms = (tags: readonly number[], literal: boolean): void => {
+      if (tags.length === 0) {
+        B.br(none);
+        return;
+      }
+      tags.forEach((tag, index) => {
+        const next = index === tags.length - 1 ? none : B.newLabel("du.c.n");
+        if (literal) this.unionArmMatch(B, def, tag, hits[tag]!, next, preserveRefs);
+        else this.unionArmStructure(B, def, tag, hits[tag]!, next, preserveRefs);
+        if (next !== none) B.startBlock(next);
+      });
+    };
+    const armsFor = (value: string | null): number[] =>
+      order.filter((tag) => {
+        const literals = literalsOf(tag);
+        return literals === null || (value !== null && literals.includes(value));
+      });
+    const host = this.host;
+    this.defs.push(
+      `${table} = private unnamed_addr constant [${values.length} x ptr] [${values.map((value) => `ptr ${host.internLiteral(value)}`).join(", ")}]`,
+      ``,
+    );
+    host.declare(`declare i32 @scr_dyn_discriminant_case(ptr, ptr, ptr, ${host.sizeType})`);
+    const index = B.tmp();
+    B.line(
+      `${index} = call i32 @scr_dyn_discriminant_case(ptr %d, ptr ${host.internLiteral(discriminant.field)}, ptr ${table}, ${host.sizeType} ${values.length})`,
+    );
+    const tests = B.newLabel("du.tests");
+    const unmatched = B.newLabel("du.none");
+    const cases = values.map(() => B.newLabel("du.case"));
+    B.terminate(
+      `switch i32 ${index}, label %${tests} [ i32 -1, label %${unmatched} ${cases.map((label, k) => `i32 ${k}, label %${label}`).join(" ")} ]`,
+    );
+    values.forEach((value, k) => {
+      B.startBlock(cases[k]!);
+      tryArms(armsFor(value), false);
+    });
+    B.startBlock(unmatched);
+    tryArms(armsFor(null), false);
+    B.startBlock(tests);
+    tryArms(order, true);
+  }
+
   /** Branch to a variant only after its literal discriminator and complete
    * structure match. Use the same path for predicates and builders. */
   private unionArmMatch(
@@ -450,6 +535,18 @@ export class LlDyn {
       });
       B.startBlock(structure);
     }
+    this.unionArmStructure(B, def, tag, yes, no, preserveRefs);
+  }
+
+  /** The part of unionArmMatch past the arm's literal test. */
+  private unionArmStructure(
+    B: BlockBuilder,
+    def: IrUnionDef,
+    tag: number,
+    yes: string,
+    no: string,
+    preserveRefs: boolean,
+  ): void {
     const matches = B.tmp();
     B.line(
       `${matches} = call zeroext i1 @${this.dynMatchHelper(def.arms[tag]!, preserveRefs)}(ptr %d)`,
@@ -1275,11 +1372,26 @@ export class LlDyn {
           );
         // Arms in canonical order; any full match answers true.
         const yes = B.newLabel("dm.y");
-        for (let tag = 0; tag < def.arms.length; tag++) {
-          const ln = B.newLabel("dm.n");
-          this.unionArmMatch(B, def, tag, yes, ln, preserveRefs);
-          B.startBlock(ln);
-        }
+        const values = this.dispatchValues(def);
+        if (values !== null) {
+          const no = B.newLabel("dm.n");
+          this.unionArmsByDiscriminant(
+            B,
+            def,
+            values,
+            def.arms.map((_, tag) => tag),
+            def.arms.map(() => yes),
+            no,
+            preserveRefs,
+            `@${name}.cases`,
+          );
+          B.startBlock(no);
+        } else
+          for (let tag = 0; tag < def.arms.length; tag++) {
+            const ln = B.newLabel("dm.n");
+            this.unionArmMatch(B, def, tag, yes, ln, preserveRefs);
+            B.startBlock(ln);
+          }
         B.terminate(`ret i1 false`);
         B.startBlock(yes);
         B.terminate(`ret i1 true`);
@@ -2459,12 +2571,8 @@ export class LlDyn {
           );
         // Arms in unionArmOrder, first FULL match wins. The matched arm's
         // builder can no longer fail.
-        for (const i of this.unionArmOrder(def)) {
+        const build = (i: number): void => {
           const arm = def.arms[i]!;
-          const lHit = B.newLabel("dcu.h");
-          const lNext = B.newLabel("dcu.n");
-          this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs);
-          B.startBlock(lHit);
           if (arm.kind === "undefinedT" || arm.kind === "nullT") {
             // A matched unit arm builds nothing: THE interned immortal
             // instance (rc == SIZE_MAX — no retain owed).
@@ -2503,8 +2611,36 @@ export class LlDyn {
             );
             B.terminate(`ret ptr ${u}`);
           }
-          B.startBlock(lNext);
-        }
+        };
+        const order = this.unionArmOrder(def);
+        const values = this.dispatchValues(def);
+        if (values !== null) {
+          const hits = def.arms.map(() => B.newLabel("dcu.h"));
+          const unmatched = B.newLabel("dcu.n");
+          this.unionArmsByDiscriminant(
+            B,
+            def,
+            values,
+            order,
+            hits,
+            unmatched,
+            preserveRefs,
+            `@${name}.cases`,
+          );
+          for (const i of order) {
+            B.startBlock(hits[i]!);
+            build(i);
+          }
+          B.startBlock(unmatched);
+        } else
+          for (const i of order) {
+            const lHit = B.newLabel("dcu.h");
+            const lNext = B.newLabel("dcu.n");
+            this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs);
+            B.startBlock(lHit);
+            build(i);
+            B.startBlock(lNext);
+          }
         if (preserveRefs) {
           B.line(
             `call void @scr_dyn_check_fail(ptr %path, ptr ${host.cstr("reference with its original layout")}, ptr %d)`,

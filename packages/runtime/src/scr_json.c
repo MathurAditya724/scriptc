@@ -1422,6 +1422,24 @@ bool scr_dyn_field_eq_num(const ScrDyn *d, const ScrStr *key, double value) {
   return matches;
 }
 
+int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *const *values,
+                                  size_t count) {
+  if (!d) return -1;
+  if (d->kind == SCR_DYN_TYPED_REF) return -2;
+  if (d->kind != SCR_DYN_OBJ) return -1;
+  for (size_t i = 0; i < d->v.obj.len; i++) {
+    const ScrDynEntry *entry = &d->v.obj.entries[i];
+    if (entry->key_len != key->len || memcmp(entry->key, key->data, key->len) != 0) continue;
+    if (entry->accessor) return -2;
+    const ScrDyn *member = entry->value;
+    if (!member || member->kind != SCR_DYN_STR) return -1;
+    for (size_t k = 0; k < count; k++)
+      if (scr_str_eq(member->v.str, values[k])) return (int32_t)k;
+    return -1;
+  }
+  return -2;
+}
+
 bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value) {
   ScrDyn *member = scr_dyn_discriminant(d, key);
   bool matches = member && member->kind == SCR_DYN_BOOL && member->v.b == value;

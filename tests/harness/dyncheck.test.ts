@@ -396,6 +396,54 @@ console.log("unreachable", s.kind);
     expect(r.stderr).toContain("Uncaught TypeError: expected object | object at $, got object");
   });
 
+  test("a union read by its discriminant fails with every arm named, as arm-by-arm tests do", async () => {
+    // Five record arms with six literals, plus string and number arms: the
+    // check reads `kind` once and tests only the arm it names and the
+    // arms that are not records.
+    const r = await compileAndRun(
+      "union-discriminant-dispatch",
+      `type Expr =
+  | { kind: "num"; value: number }
+  | { kind: "str"; text: string }
+  | { kind: "neg"; operand: Expr }
+  | { kind: "add" | "mul"; left: Expr; right: Expr }
+  | { items: Expr[]; kind: "list" }
+  | string
+  | number;
+const inputs = [
+  '{"kind":"num"}',
+  '{"kind":"nope","value":1}',
+  '{"kind":7,"value":1}',
+  '{"value":1}',
+  '{"kind":"neg","operand":{"kind":"add","left":{"kind":"num","value":1},"right":{"kind":"str","text":5}}}',
+  'true',
+  '{"items":["a",3,{"kind":"mul","left":"x","right":2}],"kind":"list"}',
+];
+for (const input of inputs) {
+  try {
+    console.log(JSON.stringify(JSON.parse(input) as Expr));
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+`,
+    );
+    const any = "number | object | object | object | object | object | string";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got boolean`,
+        '{"items":["a",3,{"kind":"mul","left":"x","right":2}],"kind":"list"}',
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("nested paths point at the offending element", async () => {
     const r = await compileAndRun(
       "nested-path",
