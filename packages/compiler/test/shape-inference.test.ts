@@ -49,6 +49,59 @@ export const str = () => new Str({ checks: [] });
 export const obj = (shape) => new Obj({ shape });
 export function leak(value) { globalThis.leaked = value; return value; }
 export function reflect() { const o = { a: 1 }; delete o.a; return o; }
+class Box {}
+function tag(strings, ...values) { leak(values[0]); return strings.raw.length; }
+export function arrayProp() { const list = []; list.meta = { listed: 1 }; return leak(list.meta); }
+export function computedField(k) {
+  const box = new Box();
+  box[k] = { boxed: 1 };
+  Box[k] = { onClass: 1 };
+  const fn = function () {};
+  fn[k] = { onFunction: 1 };
+  return [leak(box.held), leak(Box.held), leak(fn.held)];
+}
+export function revive(text) {
+  const seen = { revived: 1 };
+  return JSON.parse(text, function (k, v) { globalThis.revived = seen; return v; });
+}
+class Doc {
+  constructor() { this.body = { doc: 1 }; }
+  toJSON() { return leak(this.body); }
+}
+export function stringified() {
+  const own = { owned: 1 };
+  return [
+    JSON.stringify({ inner: { replaced: 1 } }, (k, x) => leak(x)),
+    JSON.stringify(new Doc()),
+    JSON.stringify({ toJSON() { return leak(own); } }),
+  ];
+}
+export function proxied() { return new Proxy({ proxied: 1 }, {}); }
+export function reflectDelete() { const o = { gone: 1 }; Reflect.deleteProperty(o, "gone"); return o; }
+export function tagged() { return tag\`a\${{ part: 1 }}b\`; }
+export function arrayComputed(k) { const l = []; l[k] = { arrayComputed: 1 }; return leak(l.meta); }
+export function shadowed(k) {
+  const fn = function () {};
+  fn[k] = { onPrototype: 1 };
+  const box = new Box();
+  box[k] = { onConstructor: 1 };
+  return [leak(fn.prototype), leak(box.constructor)];
+}
+export function jsonCallbacks(k) {
+  const inArray = { inArray: 1 };
+  const list = [];
+  list.toJSON = function () { globalThis.inArray = inArray; return 1; };
+  const inFunction = { inFunction: 1 };
+  const fn = function () {};
+  fn.toJSON = function () { globalThis.inFunction = inFunction; return 1; };
+  const underKey = { underKey: 1 };
+  const o = {};
+  o[k] = function () { globalThis.underKey = underKey; return 1; };
+  return JSON.stringify([list, { fn }, o]);
+}
+export function revivedResult(text) { const r = { fromReviver: 1 }; return leak(JSON.parse(text, function () { return r; })); }
+export function constructedProxy() { return Reflect.construct(Proxy, [{ constructedProxy: 1 }, {}]); }
+export function globalProxy() { return new globalThis.Proxy({ globalProxy: 1 }, {}); }
 `;
 
 const packageTypes = `
@@ -59,14 +112,61 @@ export declare const str: () => Str;
 export declare const obj: (shape: Record<string, Base>) => Obj;
 export declare function leak<T>(value: T): T;
 export declare function reflect(): object;
+export declare function arrayProp(): unknown;
+export declare function computedField(k: string): unknown;
+export declare function revive(text: string): unknown;
+export declare function stringified(): unknown;
+export declare function proxied(): unknown;
+export declare function reflectDelete(): unknown;
+export declare function tagged(): unknown;
+export declare function arrayComputed(k: string): unknown;
+export declare function shadowed(k: string): unknown;
+export declare function jsonCallbacks(k: string): unknown;
+export declare function revivedResult(text: string): unknown;
+export declare function constructedProxy(): unknown;
+export declare function globalProxy(): unknown;
 `;
 
 const mainSource = `
-import { leak, obj, reflect, str } from "shapes-fixture";
+import {
+  arrayComputed,
+  arrayProp,
+  computedField,
+  constructedProxy,
+  globalProxy,
+  jsonCallbacks,
+  leak,
+  obj,
+  proxied,
+  reflect,
+  reflectDelete,
+  revive,
+  revivedResult,
+  shadowed,
+  str,
+  stringified,
+  tagged,
+} from "shapes-fixture";
 const schema = obj({ a: str(), b: str() });
 const input: unknown = JSON.parse('{"a":"x","b":"y"}');
 console.log(JSON.stringify(schema.parse(input)));
 console.log(JSON.stringify(leak({ kept: 1 })), JSON.stringify(reflect()));
+const more = [
+  arrayProp(),
+  computedField("held"),
+  revive("{}"),
+  stringified(),
+  proxied(),
+  reflectDelete(),
+  tagged(),
+  arrayComputed("meta"),
+  shadowed("prototype"),
+  jsonCallbacks("toJSON"),
+  revivedResult("{}"),
+  constructedProxy(),
+  globalProxy(),
+];
+console.log(more.length);
 `;
 
 let dir: string;
@@ -150,6 +250,42 @@ test("S1 report: per-field temporaries are provable records, dynamic objects sta
     /parent: \{common,data,parent\}@shapes-fixture\/index\.js:12;/,
   );
   expect(lines.find((l) => l.startsWith("class Str"))).toMatch(/_def: \{checks\}@/);
+});
+
+test("S1 report follows values through array properties, unknown keys, callbacks and reflection", async () => {
+  const lines = await report();
+  // a named property of an array, read back and leaked
+  expect(site(lines, /^site \{listed\}@/)).toMatch(/: P-escaping/);
+  // computed writes to an instance, a class and a function, read by name
+  expect(site(lines, /^site \{boxed\}@/)).toMatch(/: P-escaping/);
+  expect(site(lines, /^site \{onClass\}@/)).toMatch(/: P-escaping/);
+  expect(site(lines, /^site \{onFunction\}@/)).toMatch(/: P-escaping/);
+  // a JSON.parse reviver, a JSON.stringify replacer, and toJSON methods
+  expect(site(lines, /^site \{revived\}@/)).toMatch(/: P-escaping — escapes: stored into ⊤/);
+  expect(site(lines, /^site \{replaced\}@/)).toMatch(/: P-escaping/);
+  expect(site(lines, /^site \{doc\}@/)).toMatch(/: P-escaping/);
+  expect(site(lines, /^site \{owned\}@/)).toMatch(/: P-escaping/);
+  // a Proxy target and Reflect.deleteProperty
+  expect(site(lines, /^site \{proxied\}@/)).toMatch(/: G — proxy at/);
+  expect(site(lines, /^site \{gone\}@/)).toMatch(/: G — delete at/);
+  // a tagged template's substitution, passed to its tag
+  expect(site(lines, /^site \{part\}@/)).toMatch(/: P-escaping/);
+  // a named load of an array property written under an unknown key
+  expect(site(lines, /^site \{arrayComputed\}@/)).toMatch(/: P-escaping/);
+  // own fields written under unknown keys shadow a function's prototype and an instance's constructor
+  expect(site(lines, /^site \{onPrototype\}@/)).toMatch(/: P-escaping/);
+  expect(site(lines, /^site \{onConstructor\}@/)).toMatch(/: P-escaping/);
+  // toJSON on an array, on a function, and stored under an unknown key
+  expect(site(lines, /^site \{inArray\}@/)).toMatch(/: P-escaping/);
+  expect(site(lines, /^site \{inFunction\}@/)).toMatch(/: P-escaping/);
+  expect(site(lines, /^site \{underKey\}@/)).toMatch(/: P-escaping/);
+  // what a JSON.parse reviver returns is in the result
+  expect(site(lines, /^site \{fromReviver\}@/)).toMatch(/: P-escaping/);
+  // a proxy constructed through Reflect.construct and globalThis
+  expect(site(lines, /^site \{constructedProxy\}@/)).toMatch(/: G — proxy at/);
+  expect(site(lines, /^site \{globalProxy\}@/)).toMatch(/: G — proxy at/);
+  // the existing verdicts hold
+  expect(site(lines, /^site \{kept\}@main\.ts/)).toMatch(/: P-escaping — escapes: stored into ⊤/);
 });
 
 test("S1 report is off by default and changes nothing", async () => {

@@ -96,6 +96,8 @@ const NO_CLASS_INSTANCE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
   "nullT",
 ]);
 
+const PRIMITIVE_WRAPPERS = ["Boolean", "Number", "String", "BigInt", "Symbol"] as const;
+
 /** `x instanceof C` for a program-declared class C. When x's static
  * class and C are both in extends-hierarchies the test is dynamic — the
  * O(1) preorder-interval check against the vtable (`instanceOf` node).
@@ -183,6 +185,20 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       kind: "libCall",
       fn: lowerer.isStdlibGlobal(expr.right, "WeakMap") ? "weakMap.is" : "weakSet.is",
       args: [value],
+      type: BOOL,
+      loc,
+    };
+  }
+  // The primitive wrapper constructors: a compiled program never creates a
+  // boxed primitive (`new Boolean(...)` and friends have no lowering), and
+  // a primitive is never an instance, so the test is false for every value
+  // (typebox's IsBoolean/IsNumber/IsString guards). The operand still runs.
+  if (PRIMITIVE_WRAPPERS.some((name) => lowerer.isStdlibGlobal(expr.right, name))) {
+    const value = lowerer.lowerExpr(expr.left);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result: { kind: "boolLit", value: false, type: BOOL, loc },
       type: BOOL,
       loc,
     };
@@ -1902,6 +1918,30 @@ export function lowerInExpression(
           };
     }
   }
+  // A child process has `send`, `disconnect` and `channel` only when it was
+  // created with an IPC channel (fork, or an "ipc" stdio entry), and keeps
+  // them after the channel closes: the runtime answers from the child.
+  if (recv.type.kind === "child" && CHILD_CHANNEL_MEMBERS.has(key))
+    return { kind: "libCall", fn: "child.hasChannel", args: [recv], type: BOOL, loc };
+  // A native Node handle (an http.Server, a socket, a child process...):
+  // a member Node's declarations give the class is on its prototype, so
+  // `"closeAllConnections" in server` answers true. Undeclared names can
+  // still be real (internal `_`-prefixed fields), so they keep the fence.
+  if (
+    NATIVE_HANDLE_KINDS.has(recv.type.kind) &&
+    nodeDeclaredMember(lowerer, lowerer.typeOf(expr.right), key)
+  ) {
+    const answer: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+    return isSafeToDiscard(recv)
+      ? answer
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: recv, loc }],
+          result: answer,
+          type: BOOL,
+          loc,
+        };
+  }
   if (recv.type.kind !== "record") {
     lowerer.unsupported(
       "SC1090",
@@ -2198,4 +2238,36 @@ function dynInstanceOfRefusal(lowerer: Lowerer, expr: ts.BinaryExpression): stri
   const sf = ts.getSourceFileOfNode(expr);
   const line = ts.getLineAndCharacterOfPosition(sf, diag.loc.start).line + 1;
   return `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`;
+}
+
+/** IR kinds of native Node handles whose members come from Node's own
+ * declarations. */
+const NATIVE_HANDLE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "netServer",
+  "netSocket",
+  "httpReq",
+  "httpRes",
+  "httpClientReq",
+  "child",
+  "dgramSocket",
+  "fsWatcher",
+  "http2Session",
+  "http2Stream",
+]);
+
+/** Child process members that exist only on a child with an IPC channel. */
+const CHILD_CHANNEL_MEMBERS: ReadonlySet<string> = new Set(["send", "disconnect", "channel"]);
+
+/** Whether every constituent of `t` declares a required member `key` in
+ * a declaration file (Node's @types/node). */
+function nodeDeclaredMember(lowerer: Lowerer, t: ts.Type, key: string): boolean {
+  const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
+  return parts.every((part) => {
+    const prop = lowerer.checker.getPropertyOfType(part, key);
+    if (prop === undefined || (prop.flags & ts.SymbolFlags.Optional) !== 0) return false;
+    return (
+      prop.declarations.length > 0 &&
+      prop.declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile)
+    );
+  });
 }

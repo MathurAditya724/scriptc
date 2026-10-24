@@ -475,6 +475,12 @@ class Analyzer {
       id = this.newNode();
       m.set(name, id);
       if (this.traceTop) this.nodeLabel.set(id, `${atom.label}.${name}`);
+      const byName = this.fieldReaders.get(atom);
+      const readers = byName?.get(name);
+      if (readers !== undefined) {
+        for (const dst of readers) this.edge(id, dst);
+        byName!.delete(name);
+      }
       const reason = this.escaped.get(atom);
       if (reason !== undefined) {
         this.sink(id, reason);
@@ -1332,6 +1338,17 @@ class Analyzer {
     }
     if (ts.isPropertyAccessExpression(e)) {
       this.noteSite(e);
+      // `globalThis.Proxy` and the like are the modeled globals.
+      const object = unparen(e.expression);
+      if (
+        ts.isIdentifier(object) &&
+        object.text === "globalThis" &&
+        MODELED_GLOBALS.has(e.name.text)
+      ) {
+        const d = this.resolve(object);
+        if (d === undefined || d.getSourceFile().isDeclarationFile)
+          return this.globalNode(e.name.text);
+      }
       const recv = this.expr(e.expression);
       const name = e.name.text;
       const dst = this.newNode();
@@ -1400,10 +1417,7 @@ class Analyzer {
       return this.constNode(this.prim("number"));
     }
     if (ts.isSpreadElement(e)) return this.expr(e.expression);
-    if (ts.isTaggedTemplateExpression(e)) {
-      this.expr(e.tag);
-      return this.constNode(this.top);
-    }
+    if (ts.isTaggedTemplateExpression(e)) return this.taggedTemplate(e);
     if (ts.isYieldExpression(e)) {
       if (e.expression !== undefined)
         this.sink(this.expr(e.expression), `yielded at ${locLabel(e)}`);
@@ -1741,6 +1755,35 @@ class Analyzer {
     return this.field(atom, "*");
   }
 
+  /** Loads waiting for an atom's first write of a field, by field name. */
+  private readonly fieldReaders = new Map<Atom, Map<string, number[]>>();
+
+  /** dst ⊇ the values written to field `name` of `atom`, now and later,
+   * without creating the field for atoms that have none. */
+  fieldInto(atom: Atom, name: string, dst: number): void {
+    const id = this.fields.get(atom)?.get(name);
+    if (id !== undefined) {
+      this.edge(id, dst);
+      return;
+    }
+    let byName = this.fieldReaders.get(atom);
+    if (byName === undefined) {
+      byName = new Map();
+      this.fieldReaders.set(atom, byName);
+    }
+    let readers = byName.get(name);
+    if (readers === undefined) {
+      readers = [];
+      byName.set(name, readers);
+    }
+    readers.push(dst);
+  }
+
+  /** dst ⊇ the values written to `atom` under unknown keys, now and later. */
+  unknownKeysInto(atom: Atom, dst: number): void {
+    this.fieldInto(atom, "*", dst);
+  }
+
   copyFields(src: number, dstAtom: Atom, site: Node): void {
     this.on(src, (a) => {
       if (a.kind === "top") {
@@ -1773,6 +1816,72 @@ class Analyzer {
 
   /** Field copies re-run after solving rounds (fields created later). */
   private readonly lateCopies: (() => void)[] = [];
+
+  /** node ⊇ the own field and element values of every value in it, now and
+   * later: the values JSON.stringify serializes. */
+  childrenInto(node: number): void {
+    this.on(node, (a) => {
+      if (
+        a.kind !== "object" &&
+        a.kind !== "array" &&
+        a.kind !== "instance" &&
+        a.kind !== "dictionary"
+      )
+        return;
+      const seen = new Set<string>();
+      const copy = (): void => {
+        for (const [name, id] of this.fields.get(a) ?? new Map<string, number>()) {
+          if (seen.has(name) || name.startsWith("#")) continue;
+          seen.add(name);
+          this.edge(id, node);
+        }
+        const el = this.elements.get(a);
+        if (el !== undefined && !seen.has("[]")) {
+          seen.add("[]");
+          this.edge(el, node);
+        }
+      };
+      copy();
+      this.lateCopies.push(copy);
+    });
+  }
+
+  /** JSON.stringify's call of `value.toJSON(key)` on an object, array or function that may
+   * have one (a class member, an own field, or a write under an unknown key, once it exists);
+   * the result goes to `out`. */
+  callToJSON(
+    value: Atom,
+    key: number,
+    out: number,
+    site: ts.CallExpression | ts.TaggedTemplateExpression,
+  ): void {
+    if (
+      value.kind !== "object" &&
+      value.kind !== "instance" &&
+      value.kind !== "dictionary" &&
+      value.kind !== "array" &&
+      value.kind !== "function" &&
+      value.kind !== "class"
+    )
+      return;
+    let called = false;
+    const call = (): void => {
+      if (called) return;
+      const fields = this.fields.get(value);
+      const has =
+        fields?.has("toJSON") === true ||
+        fields?.has("*") === true ||
+        ((value.kind === "instance" || value.kind === "class") &&
+          this.lookupMember(value.node!, "toJSON", value.kind === "class") !== null);
+      if (!has) return;
+      called = true;
+      const fn = this.newNode();
+      this.loadAtom(value, "toJSON", fn, site);
+      this.invoke(fn, this.constNode(value), [key], false, out, site);
+    };
+    call();
+    if (!called) this.lateCopies.push(call);
+  }
 
   arrayLiteral(e: ts.ArrayLiteralExpression): number {
     const atom = this.atoms.intern(`arr:${this.nodeKey(e)}`, () => ({
@@ -1974,7 +2083,10 @@ class Analyzer {
       case "instance": {
         const decl = a.node!;
         if (name === "constructor") {
+          // An own `constructor` field, written by name or under an unknown key, shadows the class.
           this.add(dst, this.classAtoms(decl).cls);
+          this.fieldInto(a, name, dst);
+          this.unknownKeysInto(a, dst);
           return;
         }
         const member = this.lookupMember(decl, name, false);
@@ -1994,16 +2106,15 @@ class Analyzer {
         if (this.classChain(decl).some((c) => this.baseClass(c) === undefined))
           this.add(dst, this.top);
         this.edge(this.field(a, name), dst);
+        this.unknownKeysInto(a, dst);
         return;
       }
       case "class": {
         const decl = a.node!;
-        if (name === "prototype") {
-          this.add(dst, this.top);
-          return;
-        }
-        if (name === "name") {
-          this.add(dst, this.prim("string"));
+        if (name === "prototype" || name === "name") {
+          this.add(dst, name === "prototype" ? this.top : this.prim("string"));
+          this.fieldInto(a, name, dst);
+          this.unknownKeysInto(a, dst);
           return;
         }
         const member = this.lookupMember(decl, name, true);
@@ -2023,10 +2134,12 @@ class Analyzer {
         for (const c of this.classChain(decl)) {
           const cls = this.classAtoms(c).cls;
           this.edge(this.field(cls, name), dst);
+          this.unknownKeysInto(cls, dst);
         }
         return;
       }
       case "function":
+        // An own field, written by name or under an unknown key, shadows a builtin member.
         if (name === "call" || name === "apply" || name === "bind")
           this.add(dst, this.builtin(`function.${name}`, a));
         else if (name === "prototype") {
@@ -2035,13 +2148,25 @@ class Analyzer {
           this.edge(this.field(a, "prototype"), dst);
         } else if (name === "name") this.add(dst, this.prim("string"));
         else if (name === "length") this.add(dst, this.prim("number"));
-        else this.edge(this.field(a, name), dst);
+        else {
+          this.edge(this.field(a, name), dst);
+          this.unknownKeysInto(a, dst);
+          return;
+        }
+        this.fieldInto(a, name, dst);
+        this.unknownKeysInto(a, dst);
         return;
       case "array":
         if (name === "length") this.add(dst, this.prim("number"));
         else if (/^\d+$/.test(name)) this.edge(this.element(a), dst);
-        else if (ARRAY_METHODS.has(name)) this.add(dst, this.builtin(`array.${name}`, a));
-        else this.edge(this.field(a, name), dst);
+        else {
+          // A named property, written by name or under an unknown key; an own field shadows a method.
+          if (ARRAY_METHODS.has(name)) {
+            this.add(dst, this.builtin(`array.${name}`, a));
+            this.fieldInto(a, name, dst);
+          } else this.edge(this.field(a, name), dst);
+          this.unknownKeysInto(a, dst);
+        }
         return;
       case "object": {
         this.edge(this.field(a, name), dst);
@@ -2146,6 +2271,7 @@ class Analyzer {
           return;
         case "array":
           if (/^\d+$/.test(name)) this.edge(value, this.element(a));
+          else if (name !== "length") this.edge(value, this.field(a, name));
           return;
         case "prim":
           return;
@@ -2202,17 +2328,58 @@ class Analyzer {
           this.sink(value, `stored into ⊤[k] at ${locLabel(site)}`);
           return;
         case "array":
+          // An index, or a named property under an unknown key.
           this.edge(value, this.element(a));
+          this.edge(value, this.anyField(a));
           return;
         case "prim":
           return;
-        default:
+        case "object":
+        case "dictionary":
+        case "instance":
+        case "class":
+        case "function":
           this.edge(value, this.anyField(a));
+          return;
+        default:
+          // As a store under a name: a builtin, promise or collection keeps it where it isn't tracked.
+          this.sink(value, `stored into ${a.label}[k] at ${locLabel(site)}`);
       }
     });
   }
 
   // ---- calls ---------------------------------------------------------------------------
+
+  /** tag`…${x}…`: a call of the tag with the template's strings array (an
+   * array of strings with a `raw` array of strings) and each substitution. */
+  taggedTemplate(e: ts.TaggedTemplateExpression): number {
+    this.noteSite(e);
+    const tag = unparen(e.tag);
+    const recv =
+      ts.isPropertyAccessExpression(tag) && tag.expression.kind !== ts.SyntaxKind.SuperKeyword
+        ? this.expr(tag.expression)
+        : null;
+    const callee = recv === null ? this.expr(tag) : null;
+    const strings = this.syntheticArray(e, "template");
+    const raw = this.syntheticArray(e.template, "raw");
+    this.add(this.element(strings), this.prim("string"));
+    this.add(this.element(raw), this.prim("string"));
+    this.add(this.field(strings, "raw"), raw);
+    const args = [this.constNode(strings)];
+    if (ts.isTemplateExpression(e.template))
+      for (const span of list(e.template.templateSpans)) args.push(this.expr(span.expression));
+    const dst = this.newNode();
+    if (recv !== null && ts.isPropertyAccessExpression(tag)) {
+      const name = tag.name.text;
+      this.ops.push({ kind: "read", recv, name, node: tag });
+      this.on(recv, (a) => {
+        const fn = this.newNode();
+        this.loadAtom(a, name, fn, tag);
+        this.invoke(fn, this.constNode(a), args, false, dst, e);
+      });
+    } else this.invoke(callee!, null, args, false, dst, e);
+    return dst;
+  }
 
   args(e: ts.CallExpression | ts.NewExpression): { args: number[]; spread: boolean } {
     const out: number[] = [];
@@ -2331,7 +2498,7 @@ class Analyzer {
     args: number[],
     spread: boolean,
     dst: number,
-    site: ts.CallExpression,
+    site: ts.CallExpression | ts.TaggedTemplateExpression,
   ): void {
     const undefNode = recv === null ? this.constNode(this.prim("undefined")) : recv;
     this.on(callee, (a) => {
@@ -2445,6 +2612,13 @@ class Analyzer {
         this.add(dst, this.syntheticArray(site, "Array"));
         return;
       }
+      case "Proxy":
+        // The handler's traps run on every operation with the target.
+        if (args[0] !== undefined)
+          this.ops.push({ kind: "proxy", recv: args[0], name: null, node: site });
+        for (const x of args) this.sink(x, `argument of new Proxy at ${locLabel(site)}`);
+        this.add(dst, this.top);
+        return;
       default:
         for (const x of args) this.sink(x, `argument of new ${path} at ${locLabel(site)}`);
         this.add(dst, this.top);
@@ -2457,7 +2631,7 @@ class Analyzer {
     args: number[],
     spread: boolean,
     dst: number,
-    site: ts.CallExpression,
+    site: ts.CallExpression | ts.TaggedTemplateExpression,
     recvNode: number | null,
   ): void {
     const path = a.path ?? "";
@@ -2854,13 +3028,83 @@ class Analyzer {
         this.add(dst, out);
         return;
       }
-      case "JSON.parse":
-        this.add(dst, this.top);
+      case "JSON.parse": {
+        // A reviver runs on every parsed value with its key, the holder as `this`, innermost first:
+        // what it returns replaces the value, in its holder (which later calls receive) and in the
+        // result.
+        const revived = this.newNode();
+        this.add(revived, this.top);
+        if (args[1] !== undefined)
+          this.on(args[1], (f) => {
+            if (f.kind === "function")
+              this.callFunction(
+                this.infoOfAtom(f)!,
+                revived,
+                [this.constNode(this.prim("string")), revived],
+                false,
+                revived,
+                site,
+              );
+            else if (f.kind === "top")
+              this.sink(revived, `JSON.parse reviver at ${locLabel(site)}`);
+          });
+        this.edge(revived, dst);
         return;
-      case "JSON.stringify":
+      }
+      case "JSON.stringify": {
+        // Every value it serializes: toJSON methods run on them, and a
+        // replacer function with each key and value, the holder as `this`.
+        // Their results are serialized in turn.
+        const serialized = this.newNode();
+        this.childrenInto(serialized);
+        this.edge(arg(0), serialized);
+        const key = this.constNode(this.prim("string"));
+        this.on(serialized, (v) => this.callToJSON(v, key, serialized, site));
+        if (args[1] !== undefined)
+          this.on(args[1], (f) => {
+            if (f.kind === "function")
+              this.callFunction(
+                this.infoOfAtom(f)!,
+                serialized,
+                [key, serialized],
+                false,
+                serialized,
+                site,
+              );
+            else if (f.kind === "top")
+              this.sink(serialized, `JSON.stringify replacer at ${locLabel(site)}`);
+          });
         prim("string");
         prim("undefined");
         return;
+      }
+      case "Reflect.deleteProperty": {
+        const key = ts.isCallExpression(site) ? unparen(list(site.arguments)[1]!) : undefined;
+        const name =
+          key !== undefined && (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key))
+            ? key.text
+            : null;
+        this.ops.push({ kind: "delete", recv: arg(0), name, node: site });
+        prim("boolean");
+        return;
+      }
+      case "Proxy.revocable":
+        this.ops.push({ kind: "proxy", recv: arg(0), name: null, node: site });
+        escapeAll();
+        return;
+      case "Reflect.construct": {
+        // Reflect.construct(Proxy, [target, handler]) is `new Proxy(target, handler)`: the arguments
+        // are the list's elements.
+        const listed = this.newNode();
+        if (args[1] !== undefined) this.iterateInto(args[1], listed, site);
+        this.on(arg(0), (c) => {
+          if (c.kind === "builtin" && c.path === "Proxy")
+            this.ops.push({ kind: "proxy", recv: listed, name: null, node: site });
+        });
+        this.sink(listed, `argument of ${path} at ${locLabel(site)}`);
+        escapeAll();
+        return;
+      }
       case "String":
       case "encodeURIComponent":
       case "decodeURIComponent":
