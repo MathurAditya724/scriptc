@@ -541,10 +541,12 @@ double scr_bytes_index_of_num(const ScrBytes *b, double v, double off, bool fwd)
 /* TypedArray indexOf (last false) and lastIndexOf (last true) over any
  * element kind, with strict equality: NaN is never found and -0 matches 0.
  * `from` is the fromIndex argument (ToIntegerOrInfinity applies); the
- * caller passes 0, or +Infinity for lastIndexOf, when it is omitted. */
+ * caller passes 0, or +Infinity for lastIndexOf, when it is omitted. A
+ * Buffer (a Uint8Array receiver can be one) searches as Buffer's
+ * indexOf and lastIndexOf do. */
 double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool last);
 /* TypedArray includes: indexOf's search from `from` with SameValueZero,
- * so NaN is found. */
+ * so NaN is found. A Buffer searches as Buffer's includes does. */
 bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from);
 ScrBytes *scr_bytes_fill(ScrBytes *b, const ScrBytes *pattern, double nargs, double offset, double end);
 ScrBytes *scr_bytes_fill_num(ScrBytes *b, double v, double nargs, double offset, double end);

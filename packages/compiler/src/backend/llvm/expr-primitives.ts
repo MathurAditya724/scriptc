@@ -47,6 +47,7 @@ import {
   type ArrayAccess,
 } from "./dense-array-access.js";
 import { emitWrappingSum, integerOrNaNRange, markWrappingOperands } from "./wrapping-sums.js";
+import { emitPowerOfTwoQuotient, isPowerOfTwoCall } from "./lib-filesystem.js";
 
 /** The signed integer predicates of the number compares. */
 const INTEGER_COMPARES: Record<string, string> = {
@@ -406,6 +407,8 @@ export function emitOperatorExpr(
               : emitCheckedRemainder(host, l, r, li, ri);
           if (checked) return checked;
         }
+        if (e.op === "/" && isPowerOfTwoCall(e.right))
+          return { name: emitPowerOfTwoQuotient(host, l.name, r.name), type: e.type };
         if (arith[e.op] !== undefined) {
           B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
           const uint32 = emitWrappingSum(host, e, l, r, li, ri);

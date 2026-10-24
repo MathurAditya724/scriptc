@@ -4406,6 +4406,14 @@ export function collectClassShapeInner(
         // INSTANTIATION prints its family's name — JS has one `Box`.
         jsName: jsNameOverride ?? decl.name?.text ?? "",
         ...(base ? { base: base.def.name } : {}),
+        ...(decl.members.nodes.some(
+          (member) =>
+            ts.isPropertyDeclaration(member) &&
+            !ts.isPrivateIdentifier(member.name) &&
+            member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword),
+        )
+          ? { ownStaticFields: true as const }
+          : {}),
         jsLength:
           ctor?.parameters?.nodes.findIndex(
             (parameter) => parameter.initializer || parameter.dotDotDotToken,

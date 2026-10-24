@@ -1924,6 +1924,9 @@ static ScrDyn *dyn_global_ctor(const char *name) {
       dyn_global_ctors[i] = scr_dyn_new_func(scr_closure_new((void *)dyn_global_ctor_names[i], 0),
                                              dyn_global_ctor_call, length, dyn_s6,
                                              dyn_global_ctor_names[i]);
+      /* `o.constructor.prototype` of a plain object is Object.prototype
+       * (zod's isPlainObject). The other prototypes are not modeled. */
+      if (i == 0) scr_dyn_fn_seed_prototype(dyn_global_ctors[i], scr_dyn_object_prototype());
     }
     return scr_dyn_retain(dyn_global_ctors[i]);
   }

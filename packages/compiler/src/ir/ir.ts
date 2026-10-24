@@ -1485,6 +1485,10 @@ export interface IrClassDef {
   jsName?: string;
   /** JavaScript constructor arity, ending before the first default or rest parameter. */
   jsLength?: number;
+  /** The class declares public static fields. util.inspect prints them
+   * after the class tag; a class object reached through `unknown` does
+   * not carry them unless the runtime holds its static table. */
+  ownStaticFields?: true;
   /** Zero-argument native helper returning the shared prototype data object.
    * Used when materializing an instance's own-property view. */
   prototypeDataHelper?: string;
@@ -1499,6 +1503,10 @@ export interface IrClassDef {
    * class of the chain sets `name` during construction, and then an own
    * `name` follows every other own property. */
   errorNameAfter?: string | null;
+  /** JavaScript Error subclasses with a property bag: a view committed by a
+   * dynamic write keeps `name` and `message` where the bag recorded them
+   * (scr_error_dyn_follow_bag). */
+  errorBagOrder?: boolean;
   /** Stable module symbol identities for public instance layout fields. */
   symbolFields?: { field: string; globalId: string }[];
   /** RUNTIME-PROVIDED class (the builtin Error hierarchy): the struct, RC
