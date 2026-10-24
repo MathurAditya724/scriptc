@@ -14,6 +14,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { sameTermination, termination } from "./verdict.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../..");
@@ -33,9 +34,9 @@ if (!values.node || !values.pattern || !["minimal", "node"].includes(values.comm
   );
   process.exit(2);
 }
-const nodeTest = existsSync(join(values.node, "test", "parallel"))
-  ? join(values.node, "test")
-  : values.node;
+// Absolute, so the minimal lane's fixtures symlink resolves from the tree.
+const nodeRoot = resolve(values.node);
+const nodeTest = existsSync(join(nodeRoot, "test", "parallel")) ? join(nodeRoot, "test") : nodeRoot;
 const pattern = new RegExp(values.pattern);
 const out = resolve(values.out);
 mkdirSync(out, { recursive: true });
@@ -96,15 +97,15 @@ async function one(file) {
     cwd: dir,
     timeout: 900_000,
   });
-  const result = { file, flags: flags.join(" "), nodeExit: node.code };
+  const result = { file, flags: flags.join(" "), nodeExit: termination(node) };
   if (build.code !== 0) {
     result.verdict = "refused";
     result.cause = firstCause(build.stdout + build.stderr);
     return result;
   }
   const native = await run(exe, [], { cwd: dir, timeout: 120_000 });
-  result.exit = native.code ?? native.signal;
-  result.verdict = native.code === node.code ? "pass" : "fail";
+  result.exit = termination(native);
+  result.verdict = sameTermination(node, native) ? "pass" : "fail";
   if (result.verdict !== "pass") result.cause = firstCause(native.stderr + native.stdout);
   return result;
 }
