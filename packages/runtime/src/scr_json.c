@@ -9,10 +9,10 @@
  *   arrays, objects (later duplicate keys win, like JS), and the
  *   four JSON whitespace characters. Syntax errors THROW catchable
  *   SyntaxError instances (the depth cap a RangeError, like V8's) whose
- *   messages are shaped like Node's V8 texts ("Unexpected end of JSON
- *   input", "Unexpected token 'x', \"...\" is not valid JSON") —
- *   APPROXIMATE message fidelity by design (SEMANTICS.md; e.name is exact,
- *   e.message is ours), pinned by the runtime C tests.
+ *   messages are Node's V8 texts ("Unexpected end of JSON input",
+ *   "Unexpected token 'x', \"...\" is not valid JSON", "... in JSON at
+ *   position <utf-16 offset> (line <l> column <c>)"), reported where V8
+ *   reports them.
  * - scr_dyn_check_fail is the shared failure path of the compiler-emitted
  *   dynCheck builders: a TypeError instance carrying "expected <want> at
  *   <path>, got <kind>", thrown through the exception cell.
@@ -11115,26 +11115,142 @@ static void scr_json_throw(const ScrJsonP *p, const char *msg) {
   scr_throw_error_msg(SCR_ERR_SYNTAX, msg, strlen(msg));
 }
 
+/* V8's location of a JSON error at byte `pos`: the UTF-16 offset (the
+ * text is WTF-8; a four-byte sequence is two units), and the 1-based line
+ * and column, where \r, \n and \r\n end a line. */
+static void scr_json_location(const ScrJsonP *p, size_t pos, size_t *unit, size_t *line,
+                              size_t *column) {
+  const unsigned char *s = (const unsigned char *)p->s;
+  size_t units = 0, ln = 1, line_start = 0;
+  for (size_t i = 0; i < pos; i++) {
+    unsigned char c = s[i];
+    if ((c & 0xC0) == 0x80) continue;
+    if (c == '\r' && i + 1 < pos && s[i + 1] == '\n') {
+      i++;
+      units++;
+      c = '\n';
+    }
+    units += c >= 0xF0 ? 2 : 1;
+    if (c == '\r' || c == '\n') {
+      ln++;
+      line_start = units;
+    }
+  }
+  *unit = units;
+  *line = ln;
+  *column = 1 + units - line_start;
+}
+
 /* Errors stay out of line so the scanners that report them keep their
- * registers for the common path. */
-static __attribute__((noinline, cold)) void scr_json_throw_pos(const ScrJsonP *p, const char *what,
-                                                               size_t pos) {
+ * registers for the common path. V8's positional messages:
+ * "<what> in JSON at position <unit> (line <l> column <c>)". */
+static __attribute__((noinline, cold)) void scr_json_throw_located(const ScrJsonP *p,
+                                                                   const char *what,
+                                                                   const char *where, size_t pos) {
   if (p->quiet) return;
-  char buf[128];
-  int n = snprintf(buf, sizeof buf, "%s in JSON at position %zu", what, pos);
+  size_t unit, line, column;
+  scr_json_location(p, pos, &unit, &line, &column);
+  char buf[192];
+  int n = snprintf(buf, sizeof buf, "%s%s at position %zu (line %zu column %zu)", what, where, unit,
+                   line, column);
   scr_throw_error_msg(SCR_ERR_SYNTAX, buf, (size_t)n);
 }
 
-/* V8-flavored bad-token message with a short snippet of the input around
- * the offending character. Approximate fidelity (documented). */
-static void scr_json_throw_token(const ScrJsonP *p) {
+static __attribute__((noinline, cold)) void scr_json_throw_pos(const ScrJsonP *p, const char *what,
+                                                               size_t pos) {
+  scr_json_throw_located(p, what, " in JSON", pos);
+}
+
+/* Appends the text's UTF-16 units [from, to) as WTF-8: a surrogate pair the
+ * range cuts contributes its half as a lone surrogate, as V8's substring. */
+static size_t scr_json_unit_slice(const ScrJsonP *p, size_t from, size_t to, char *out) {
+  const unsigned char *s = (const unsigned char *)p->s;
+  size_t n = 0, unit = 0, i = 0;
+  while (i < p->len && unit < to) {
+    unsigned char c = s[i];
+    size_t width = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+    if (i + width > p->len) width = p->len - i;
+    if (width == 4) {
+      uint32_t cp = ((uint32_t)(c & 0x07) << 18) | ((uint32_t)(s[i + 1] & 0x3F) << 12) |
+                    ((uint32_t)(s[i + 2] & 0x3F) << 6) | (uint32_t)(s[i + 3] & 0x3F);
+      bool high = unit >= from && unit < to, low = unit + 1 >= from && unit + 1 < to;
+      if (high && low) {
+        memcpy(out + n, s + i, 4);
+        n += 4;
+      } else if (high) {
+        n += scr_wtf8_put(out + n, 0xD800 + ((cp - 0x10000) >> 10));
+      } else if (low) {
+        n += scr_wtf8_put(out + n, 0xDC00 + ((cp - 0x10000) & 0x3FF));
+      }
+      unit += 2;
+    } else {
+      if (unit >= from) {
+        memcpy(out + n, s + i, width);
+        n += width;
+      }
+      unit++;
+    }
+    i += width;
+  }
+  return n;
+}
+
+/* V8's report of an unexpected token at byte `pos`: the end of the input,
+ * a string or a number, or any other character, named with the source (a
+ * short one whole, a longer one as up to ten units on each side), except
+ * that the sources "NaN", "Infinity", "undefined" and "[object Object]"
+ * name only themselves. */
+static __attribute__((noinline, cold)) void scr_json_throw_unexpected(const ScrJsonP *p,
+                                                                      size_t pos) {
   if (p->quiet) return;
-  size_t start = p->pos > 8 ? p->pos - 8 : 0;
-  size_t take = p->len - start < 16 ? p->len - start : 16;
-  char buf[192];
-  int n = snprintf(buf, sizeof buf, "Unexpected token '%c', %s\"%.*s\"%s is not valid JSON",
-                   p->s[p->pos], start > 0 ? "..." : "", (int)take, p->s + start,
-                   start + take < p->len ? "..." : "");
+  if (pos >= p->len) {
+    scr_json_throw(p, "Unexpected end of JSON input");
+    return;
+  }
+  char c = p->s[pos];
+  if (c == '"') {
+    scr_json_throw_pos(p, "Unexpected string", pos);
+    return;
+  }
+  if (c == '-' || (c >= '0' && c <= '9')) {
+    scr_json_throw_pos(p, "Unexpected number", pos);
+    return;
+  }
+  static const char *const special[] = {"NaN", "Infinity", "undefined", "[object Object]"};
+  char buf[256];
+  int n;
+  for (size_t k = 0; k < sizeof special / sizeof special[0]; k++) {
+    if (p->len == strlen(special[k]) && memcmp(p->s, special[k], p->len) == 0) {
+      n = snprintf(buf, sizeof buf, "\"%s\" is not valid JSON", special[k]);
+      scr_throw_error_msg(SCR_ERR_SYNTAX, buf, (size_t)n);
+      return;
+    }
+  }
+  size_t unit, line, column, total;
+  scr_json_location(p, pos, &unit, &line, &column);
+  scr_json_location(p, p->len, &total, &line, &column);
+  char token[8];
+  size_t token_len = scr_json_unit_slice(p, unit, unit + 1, token);
+  enum { CONTEXT = 10 };
+  size_t from = 0, to = total;
+  const char *before = "", *after = "";
+  if (total >= 2 * CONTEXT + 1) {
+    if (unit < CONTEXT) {
+      to = unit + CONTEXT;
+      after = "...";
+    } else if (unit < total - CONTEXT) {
+      from = unit - CONTEXT;
+      to = unit + CONTEXT;
+      before = after = "...";
+    } else {
+      from = unit - CONTEXT;
+      before = "...";
+    }
+  }
+  char source[4 * 2 * CONTEXT + 8];
+  size_t source_len = scr_json_unit_slice(p, from, to, source);
+  n = snprintf(buf, sizeof buf, "Unexpected token '%.*s', %s\"%.*s\"%s is not valid JSON",
+               (int)token_len, token, before, (int)source_len, source, after);
   scr_throw_error_msg(SCR_ERR_SYNTAX, buf, (size_t)n);
 }
 
@@ -11159,12 +11275,13 @@ static void scr_json_put_cp(ScrJsonBuf *b, uint32_t cp) {
 
 /* Four hex digits at pos, or -1 (throws). */
 static int32_t scr_json_hex4(ScrJsonP *p) {
-  if (p->len - p->pos < 4) {
-    scr_json_throw(p, "Unexpected end of JSON input");
-    return -1;
-  }
   uint32_t v = 0;
   for (int i = 0; i < 4; i++) {
+    if (p->pos + (size_t)i >= p->len) {
+      /* V8 reports the escape at the end of the input. */
+      scr_json_throw_pos(p, "Bad Unicode escape", p->len);
+      return -1;
+    }
     char c = p->s[p->pos + (size_t)i];
     uint32_t digit;
     if (c >= '0' && c <= '9') digit = (uint32_t)(c - '0');
@@ -11205,7 +11322,7 @@ static int scr_json_string_span(ScrJsonP *p, const char **span,
       return -1;
     }
   }
-  scr_json_throw_pos(p, "Unterminated string", p->pos);
+  scr_json_throw_pos(p, "Unterminated string", p->len);
   return -1;
 }
 
@@ -11221,7 +11338,7 @@ static ScrStr *scr_json_string_slow(ScrJsonP *p, size_t prefix) {
   for (;;) {
     if (p->pos >= p->len) {
       scr_jb_dispose(&b);
-      scr_json_throw_pos(p, "Unterminated string", open);
+      scr_json_throw_pos(p, "Unterminated string", p->len);
       return NULL;
     }
     unsigned char c = (unsigned char)p->s[p->pos];
@@ -11325,6 +11442,12 @@ static bool scr_json_number_value(ScrJsonP *p, double *out) {
   }
   if (s[pos] == '0') {
     pos++;
+    /* A leading zero followed by a digit: V8's unexpected number there. */
+    if (pos < len && s[pos] >= '0' && s[pos] <= '9') {
+      p->pos = pos;
+      scr_json_throw_pos(p, "Unexpected number", pos);
+      return false;
+    }
   } else {
     while (pos < len && s[pos] >= '0' && s[pos] <= '9') {
       if (ndig < 15) {
@@ -11405,7 +11528,10 @@ static bool scr_json_lit(ScrJsonP *p, const char *word, size_t n) {
     p->pos += n;
     return true;
   }
-  scr_json_throw_token(p);
+  /* V8 names the first character that differs, or the end of the input. */
+  size_t i = 1;
+  while (p->pos + i < p->len && i < n && p->s[p->pos + i] == word[i]) i++;
+  scr_json_throw_unexpected(p, p->pos + i);
   return false;
 }
 
@@ -11465,7 +11591,7 @@ static ScrDyn *scr_json_array(ScrJsonP *p) {
     scr_json_ws(p);
     if (p->pos >= p->len) {
       scr_dyn_release(arr);
-      scr_json_throw(p, "Unexpected end of JSON input");
+      scr_json_throw_pos(p, "Expected ',' or ']' after array element", p->pos);
       return NULL;
     }
     if (p->s[p->pos] == ',') {
@@ -11595,18 +11721,20 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
   }
   uint32_t shape = 0; /* the empty layout */
   bool shaped = true;  /* obj holds exactly the keys on shape's path */
+  bool first = true;
   for (;;) {
     scr_json_ws(p);
-    if (p->pos >= p->len) {
+    if (p->pos >= p->len || p->s[p->pos] != '"') {
+      /* V8: the first member may also close the object; after a comma
+       * only a property name may follow. */
       scr_dyn_release(obj);
-      scr_json_throw(p, "Unexpected end of JSON input");
+      scr_json_throw_pos(p,
+                         first ? "Expected property name or '}'"
+                               : "Expected double-quoted property name",
+                         p->pos);
       return NULL;
     }
-    if (p->s[p->pos] != '"') {
-      scr_dyn_release(obj);
-      scr_json_throw_pos(p, "Expected property name or '}'", p->pos);
-      return NULL;
-    }
+    first = false;
     /* Keep the key borrowed until insertion determines whether it already
      * exists or can reuse a recycled slot. Escaped keys own their decoded
      * string until the value has been parsed and inserted. */
@@ -11644,8 +11772,7 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
     if (p->pos >= p->len || p->s[p->pos] != ':') {
       scr_str_release(decoded_key);
       scr_dyn_release(obj);
-      if (p->pos >= p->len) scr_json_throw(p, "Unexpected end of JSON input");
-      else scr_json_throw_pos(p, "Expected ':' after property name", p->pos);
+      scr_json_throw_pos(p, "Expected ':' after property name", p->pos);
       return NULL;
     }
     p->pos++; /* ':' */
@@ -11672,7 +11799,7 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
     scr_json_ws(p);
     if (p->pos >= p->len) {
       scr_dyn_release(obj);
-      scr_json_throw(p, "Unexpected end of JSON input");
+      scr_json_throw_pos(p, "Expected ',' or '}' after property value", p->pos);
       return NULL;
     }
     if (p->s[p->pos] == ',') {
@@ -11730,7 +11857,7 @@ static ScrDyn *scr_json_value(ScrJsonP *p) {
     return scr_dyn_new_null();
   }
   if (c == '-' || (c >= '0' && c <= '9')) return scr_json_number(p);
-  scr_json_throw_token(p);
+  scr_json_throw_unexpected(p, p->pos);
   return NULL;
 }
 
@@ -11750,10 +11877,7 @@ ScrDyn *scr_json_parse(ScrStr *text) {
   scr_json_ws(&p);
   if (p.pos < p.len) {
     scr_dyn_release(d);
-    char buf[96];
-    int n = snprintf(buf, sizeof buf,
-                     "Unexpected non-whitespace character after JSON at position %zu", p.pos);
-    scr_throw_error_msg(SCR_ERR_SYNTAX, buf, (size_t)n);
+    scr_json_throw_located(&p, "Unexpected non-whitespace character after JSON", "", p.pos);
     return NULL;
   }
   return d;

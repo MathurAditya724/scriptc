@@ -23,8 +23,8 @@
  * Ownership: the checked-dynamic tree owns its children (strings, items, entry keys+values);
  * releasing the root releases the tree recursively. scr_json_parse borrows
  * the text and returns +1 — or THROWS a catchable string shaped like Node's
- * V8 messages ("Unexpected end of JSON input"; approximate fidelity, see
- * SEMANTICS.md) and returns NULL. scr_dyn_obj_get returns a BORROWED
+ * V8 messages ("Unexpected end of JSON input", "... in JSON at position
+ * <n> (line <l> column <c>)") and returns NULL. scr_dyn_obj_get returns a BORROWED
  * member (the compiler's builders retain what they extract themselves).
  */
 
