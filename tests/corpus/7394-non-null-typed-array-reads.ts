@@ -57,3 +57,24 @@ line("slots", [optional, listed[0], listed[1], listed.length]);
 let total = 0;
 for (let i = 0; i <= int32.length; i++) total += int32[i]!;
 line("sum", [total]);
+
+// Arrays that store an asserted read past the end hold undefined, which
+// their callbacks see.
+const pushed: number[] = [];
+pushed.push(int32[7]!);
+pushed.push(uint8[1]!);
+const literal = [float64[5]!, float64[0]!];
+const assigned: number[] = [1, 2];
+assigned[0] = uint8[9]!;
+let visited = 0;
+pushed.forEach((v) => {
+  visited += v;
+});
+line("callbacks", [
+  pushed.map((v) => v * 2).join(","),
+  visited,
+  literal.map((v) => typeof v).join(","),
+  literal.filter((v) => v === undefined).length,
+  assigned.map((v) => v + 1).join(","),
+  assigned.some((v) => v === undefined),
+]);
