@@ -8,6 +8,7 @@ import {
   finishRuntimeCall,
   nullableReference,
   ptr,
+  caBytes,
   rawBytes,
   requestHandler,
 } from "./lib-abi.js";
@@ -184,7 +185,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
             );
       return finishRuntimeCall(host, e, "scr_https_request_agent", [
         ...a.slice(0, 8),
-        ...rawBytes(host, args[8]!),
+        ...caBytes(host, args[8]!),
         a[9]!,
         ...handler,
       ]);
@@ -204,7 +205,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
               ["ptr", "ptr"],
             );
       // Evaluate arguments once before selecting which transport consumes the callback.
-      const pem = rawBytes(host, args[9]!);
+      const pem = caBytes(host, args[9]!);
       const B = host.B,
         tls = B.newLabel("request.tls"),
         plain = B.newLabel("request.plain"),

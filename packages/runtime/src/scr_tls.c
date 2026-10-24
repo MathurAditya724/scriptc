@@ -253,7 +253,10 @@ struct ScrSecureCtx {
   mbedtls_x509_crt cert;
   mbedtls_pk_context pk;
   /* the ca option: a socket created from this context (a TLSSocket's
-   * secureContext) sends the chain it completes */
+   * secureContext) sends the chain it completes, and a server that serves
+   * the context verifies client certificates against it. has_ca tells an
+   * empty ca (an empty trust store) from none (the default store). */
+  bool has_ca;
   mbedtls_x509_crt ca;
 };
 
@@ -573,6 +576,9 @@ static void scr_tls_srv_client_auth(ScrTlsSrv *s, const ScrTlsClientAuth *auth) 
 
 typedef struct ScrTlsCli {
   mbedtls_ssl_config conf;
+  /* the ca option, which replaces the default store; has_ca tells an
+   * empty ca (an empty trust store) from none */
+  bool has_ca;
   mbedtls_x509_crt ca;
   char *hostname;    /* the SNI name; NULL sends none (an IP literal, servername: "") */
   char *verify_name; /* the name the leaf is checked against; NULL fails the check */
@@ -696,6 +702,7 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
   mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
   c->verify_recorded = reject_unauthorized || verify_optional;
   c->reject = reject_unauthorized;
+  c->has_ca = ca != NULL;
   if (ca_len > 0) {
     int r = scr_tls_parse_crt(&c->ca, ca, ca_len);
     if (r != 0) scr_tls_bad_material("ca certificate", r);
@@ -705,7 +712,7 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
   } else {
     mbedtls_ssl_conf_authmode(&c->conf, reject_unauthorized ? MBEDTLS_SSL_VERIFY_REQUIRED
                                                             : MBEDTLS_SSL_VERIFY_OPTIONAL);
-    mbedtls_ssl_conf_ca_chain(&c->conf, ca_len > 0 ? &c->ca : scr_tls_system_ca(), NULL);
+    mbedtls_ssl_conf_ca_chain(&c->conf, c->has_ca ? &c->ca : scr_tls_system_ca(), NULL);
   }
   /* The host is the verified name; it is also the SNI name unless it is
    * an IP literal. */
@@ -799,6 +806,9 @@ typedef struct ScrTlsSock {
   unsigned char *hello; /* the raw ClientHello flight, replayed at DONE */
   size_t hello_len, hello_cap;
   ScrSecureCtx *sni_ctx; /* owned; the answer (NULL = default cert) */
+  /* scr_tls_f_cert verified client certificates against sni_ctx's ca
+   * (or the default store without one), not the server's */
+  bool ctx_verifies;
   /* new tls.TLSSocket(socket, { isServer: true }): the program holds this
    * socket before the handshake, so a failed handshake is its 'error'
    * (tls.createServer's sockets fail without one) */
@@ -1889,8 +1899,8 @@ static ScrStr *scr_tls_pool_key(ScrStr *host, bool reject_unauthorized, const ch
   uint64_t h = 1469598103934665603ull;
   for (size_t i = 0; i < ca_len; i++) h = (h ^ (unsigned char)ca[i]) * 1099511628211ull;
   char buf[64];
-  int n = snprintf(buf, sizeof buf, "%d:%zu:%016llx:", reject_unauthorized ? 1 : 0, ca_len,
-                   (unsigned long long)h);
+  int n = snprintf(buf, sizeof buf, "%d:%s%zu:%016llx:", reject_unauthorized ? 1 : 0,
+                   ca != NULL ? "" : "-", ca_len, (unsigned long long)h);
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_jb_write(&b, buf, (size_t)n);
@@ -2148,7 +2158,7 @@ ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                      ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                      double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                      bool auto_end, bool reject_unauthorized,
-                                     const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
+                                     const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                      ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
   ScrStr *servername = scr_https_take_servername();
   ScrTlsCli *cli = scr_tls_cli_for(host, reject_unauthorized, ca, ca_len, servername);
@@ -2189,7 +2199,7 @@ ScrHttpClientReq *scr_https_request_agent(ScrStr *host /*borrowed*/, double port
                                            ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                            double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                            bool auto_end, bool reject_unauthorized,
-                                           const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
+                                           const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                            const ScrDyn *agent /*borrowed*/,
                                            ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn) {
   ScrStr *servername = scr_https_take_servername();
@@ -2242,6 +2252,14 @@ static bool scr_tls_dyn_truthy(const ScrDyn *v) {
  * the exception pending. `what` names the fence ("a tls.createServer
  * 'cert' option"). */
 static ScrBytes *scr_tls_pem_dyn(const ScrDyn *v, const char *what, bool concat) {
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    /* a typed array (an array literal in a typed record): its entries */
+    ScrDyn *plain = scr_dyn_typed_ref_materialize(v);
+    if (plain == NULL) return NULL;
+    ScrBytes *b = scr_tls_pem_dyn(plain, what, concat);
+    scr_dyn_release(plain);
+    return b;
+  }
   if (v->kind == SCR_DYN_STR) {
     ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)v->v.str->len);
     memcpy(b->data, v->v.str->data, v->v.str->len);
@@ -2292,6 +2310,33 @@ static ScrBytes *scr_tls_pem_dyn(const ScrDyn *v, const char *what, bool concat)
   return NULL;
 }
 
+/* A `ca` option from a runtime value: NULL for none (an empty string,
+ * which Node reads as no ca), empty bytes for an empty Buffer or array
+ * (an empty trust store), else the PEM bundle (+1). False with the
+ * exception pending. */
+static bool scr_tls_ca_dyn(const ScrDyn *v, const char *what, ScrBytes **out) {
+  *out = NULL;
+  ScrDyn *plain = v->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(v) : NULL;
+  if (v->kind == SCR_DYN_TYPED_REF && plain == NULL) return false;
+  const ScrDyn *ca = plain != NULL ? plain : v;
+  bool ok = true;
+  if (ca->kind == SCR_DYN_ARR && ca->v.arr.len == 0) {
+    *out = scr_bytes_new(SCR_BYTES_U8, 0);
+  } else if (ca->kind != SCR_DYN_STR || ca->v.str->len > 0) {
+    *out = scr_tls_pem_dyn(ca, what, true);
+    ok = *out != NULL;
+  }
+  scr_dyn_release(plain);
+  return ok;
+}
+
+/* A client's ca for scr_tls_cli_new2: NULL for none, and never NULL for a
+ * given ca, even an empty one. */
+static const char *scr_tls_ca_data(const ScrBytes *ca) {
+  if (ca == NULL) return NULL;
+  return ca->data != NULL ? (const char *)ca->data : "";
+}
+
 /* https.request/get with a runtime options record: the http walk, then
  * the TLS options the literal https path lowers (rejectUnauthorized, ca,
  * servername) and a client certificate (cert and key). Other tls.connect
@@ -2330,8 +2375,7 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
     if (r != NULL && r->kind == SCR_DYN_BOOL && !r->v.b) reject = false;
     const ScrDyn *c = ok ? scr_dyn_obj_get(rec, "ca", 2) : NULL;
     if (c != NULL && c->kind != SCR_DYN_UNDEF && c->kind != SCR_DYN_NULL) {
-      ca = scr_tls_pem_dyn(c, "an https.request 'ca' option", true);
-      if (ca == NULL) ok = false;
+      ok = scr_tls_ca_dyn(c, "an https.request 'ca' option", &ca);
     }
     const ScrDyn *oc = ok ? scr_dyn_obj_get(rec, "cert", 4) : NULL;
     if (oc != NULL && oc->kind != SCR_DYN_UNDEF && oc->kind != SCR_DYN_NULL) {
@@ -2366,7 +2410,7 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
     if (cb) scr_closure_release(cb);
     return NULL;
   }
-  const char *ca_data = ca ? (const char *)ca->data : NULL;
+  const char *ca_data = scr_tls_ca_data(ca);
   size_t ca_len = ca ? ca->len : 0;
   ScrTlsCli *cli = scr_tls_cli_for(o.host, reject, ca_data, ca_len, servername);
   ScrStr *key = scr_tls_pool_key(o.host, reject, ca_data, ca_len, servername);
@@ -2397,13 +2441,17 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
 
 /* The literal path's runtime-valued cert/key extraction (the compiler's
  * tls.pemDyn libCall): `what` arrives precomposed. undefined throws — the
- * literal walk required the member's presence. */
+ * literal walk required the member's presence — and so does an empty
+ * string, which Node reads as no material while empty bytes here are an
+ * empty ca. */
 ScrBytes *scr_tls_pem_from_dyn(const ScrDyn *v, const char *what) {
-  if (v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL) {
+  bool empty = v->kind == SCR_DYN_STR && v->v.str->len == 0;
+  if (v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL || empty) {
     ScrJsonBuf b;
     scr_jb_init(&b);
     scr_jb_puts(&b, what);
-    scr_jb_puts(&b, " holding undefined has no static lowering — pass PEM material (a string or a Buffer)");
+    scr_jb_puts(&b, empty ? " holding an empty string" : " holding undefined");
+    scr_jb_puts(&b, " has no static lowering — pass PEM material (a string or a Buffer)");
     scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
     return NULL;
   }
@@ -2565,14 +2613,7 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
         char what[96];
         snprintf(what, sizeof what, "a %s 'ca' option", api);
         scr_bytes_release(auth->ca);
-        /* An empty string is no ca, as Node reads it; an empty Buffer is
-         * an empty trust store. */
-        if (v->kind == SCR_DYN_STR && v->v.str->len == 0) {
-          auth->ca = NULL;
-        } else {
-          auth->ca = scr_tls_pem_dyn(v, what, true);
-          if (auth->ca == NULL) ok = false;
-        }
+        if (!scr_tls_ca_dyn(v, what, &auth->ca)) ok = false;
       }
       continue;
     }
@@ -2658,6 +2699,7 @@ ScrSecureCtx *scr_tls_create_secure_context_dyn(const ScrDyn *opts /*borrowed*/)
       int r = scr_tls_parse_crt(&c->ca, (const char *)auth.ca->data, auth.ca->len);
       if (r != 0) scr_tls_bad_material("ca certificate", r);
     }
+    c->has_ca = true;
     scr_bytes_release(auth.ca);
   }
   scr_bytes_release(cert);
@@ -2810,8 +2852,10 @@ static int scr_tls_f_cert(mbedtls_ssl_context *ssl) {
     scr_tls_chained_copy(&t->served_chain, &pick->cert, store);
     own = &t->served_chain;
   }
-  if (s->request_cert)
-    mbedtls_ssl_set_hs_ca_chain(ssl, pick->ca.raw.len > 0 ? &pick->ca : scr_tls_system_ca(), NULL);
+  if (s->request_cert) {
+    t->ctx_verifies = true;
+    mbedtls_ssl_set_hs_ca_chain(ssl, pick->has_ca ? &pick->ca : scr_tls_system_ca(), NULL);
+  }
   return mbedtls_ssl_set_hs_own_cert(ssl, own, &pick->pk);
 }
 
@@ -3261,8 +3305,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
       }
       if (strcmp(e->key, "ca") == 0) {
         scr_bytes_release(ca);
-        ca = scr_tls_pem_dyn(v, "a tls.connect 'ca' option", true);
-        if (ca == NULL) ok = false;
+        if (!scr_tls_ca_dyn(v, "a tls.connect 'ca' option", &ca)) ok = false;
         continue;
       }
       if (strcmp(e->key, "cert") == 0 || strcmp(e->key, "key") == 0) {
@@ -3386,8 +3429,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
     if (dial_addr) scr_str_release(dial_addr);
   }
   ScrTlsCli *cli = scr_tls_cli_new2(verify_host, reject,
-                                     ca != NULL ? (const char *)ca->data : NULL,
-                                     ca != NULL ? ca->len : 0, !reject);
+                                     scr_tls_ca_data(ca), ca != NULL ? ca->len : 0, !reject);
   if (servername != NULL) scr_tls_cli_set_servername(cli, servername);
   if (own_cert != NULL) scr_tls_cli_set_own(cli, own_cert, own_key);
   scr_bytes_release(own_cert);
@@ -3441,7 +3483,7 @@ void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len,
 
 /* The h2-over-TLS CLIENT wrap (http2.connect with an https authority):
  * a client transport offering ALPN ["h2"] — SNI/verification against
- * the authority host; `ca` replaces the trust anchors ("" = none) and
+ * the authority host; `ca` replaces the trust anchors (NULL = none) and
  * reject_unauthorized false records like tls.connect's. The session's
  * preface/SETTINGS ride the socket's write buffer until establishment. */
 void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/,
@@ -3595,7 +3637,8 @@ void scr_tls_sock_each_trusted(ScrNetSocket *s, bool (*visit)(void *ctx, const u
                                void *ctx) {
   ScrTlsSock *t = scr_tls_sock_of(s);
   if (t == NULL || (t->cli == NULL && t->srv == NULL)) return;
-  const mbedtls_x509_crt *c = t->cli != NULL ? (t->cli->ca.raw.len > 0 ? &t->cli->ca : scr_tls_system_ca())
+  const mbedtls_x509_crt *c = t->cli != NULL ? (t->cli->has_ca ? &t->cli->ca : scr_tls_system_ca())
+                              : t->ctx_verifies ? (t->sni_ctx->has_ca ? &t->sni_ctx->ca : scr_tls_system_ca())
                               : t->srv->has_ca ? &t->srv->ca
                                                : scr_tls_system_ca();
   for (; c != NULL && c->raw.len > 0; c = c->next)

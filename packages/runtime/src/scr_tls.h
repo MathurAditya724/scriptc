@@ -85,7 +85,7 @@ void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once
  * every http2-using binary links the TLS unit (the moduleUsesTls
  * switch), so no registration indirection is needed. */
 void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len, const char *key, size_t key_len, ScrNetNativeConnFn h2_conn, void *h2_ctx /*moves*/, void (*h2_ctx_free)(void *), ScrClosure *sni_cb /*moves, nullable*/, void *sni_answer_fn);
-void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/, bool reject_unauthorized, const char *ca /*borrowed, len 0 = none*/, size_t ca_len);
+void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/, bool reject_unauthorized, const char *ca /*borrowed, NULL = none*/, size_t ca_len);
 
 /* ── tls.SecureContext + the SNI callback (scr_tls.c) ─────────────────
  * A SecureContext is an opaque refcounted parsed cert/key pair
