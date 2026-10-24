@@ -11,7 +11,7 @@ import {
 import { runNativeTool } from "../backend/native-tools.js";
 import type { NativeRuntimeSelection } from "../backend/runtime-pack-native.js";
 import type { NativeToolchain } from "./toolchain.js";
-import { contentDigest, NativeCache, partsDigest } from "./cache.js";
+import { contentDigest, NativeCache } from "./cache.js";
 
 interface InputIdentity {
   path: string;
@@ -48,9 +48,22 @@ function identity(path: string): InputIdentity {
   };
 }
 
+function sameIdentity(a: InputIdentity, b: InputIdentity): boolean {
+  return (
+    a.path === b.path &&
+    a.canonical === b.canonical &&
+    a.kind === b.kind &&
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtime === b.mtime &&
+    a.ctime === b.ctime
+  );
+}
+
 function stillMatches(inputs: InputIdentity[]): boolean {
   try {
-    return inputs.every((input) => JSON.stringify(identity(input.path)) === JSON.stringify(input));
+    return inputs.every((input) => sameIdentity(identity(input.path), input));
   } catch {
     return false;
   }
@@ -165,6 +178,8 @@ function stageSymbols(bytes: Buffer, binary: string): void {
 export class NativeExecutableCache {
   private inputs: InputIdentity[];
   private traced = false;
+  /** Linux: no entry exists and the key was never linked before. */
+  private readonly firstLink: boolean;
 
   constructor(
     private readonly cache: NativeCache,
@@ -172,23 +187,28 @@ export class NativeExecutableCache {
     private readonly linker: string,
     private readonly debug: boolean,
     paths: string[],
+    /** Linux: trace with one verbose link, from a key's second link on. */
+    private readonly linux = false,
   ) {
-    this.inputs = [...new Set(paths)].sort().map(identity);
+    this.firstLink = linux && !cache.has("executable", key) && !cache.has("linked", key);
+    // A first link neither restores nor traces, so it needs no identities.
+    this.inputs = this.firstLink ? [] : [...new Set(paths)].sort().map(identity);
   }
 
   restore(output: string): boolean {
+    if (this.firstLink) return false;
     try {
       const metadata = this.cache.read("executable", this.key);
       if (metadata === null) return false;
       const entry: unknown = JSON.parse(metadata.toString("utf8"));
       if (!validEntry(entry) || !stillMatches(entry.inputs) || !stillMatches(this.inputs))
         return false;
+      const saved = new Map(entry.inputs.map((input) => [input.path, input]));
       if (
-        !this.inputs.every((input) =>
-          entry.inputs.some(
-            (saved) => saved.path === input.path && JSON.stringify(saved) === JSON.stringify(input),
-          ),
-        )
+        !this.inputs.every((input) => {
+          const recorded = saved.get(input.path);
+          return recorded !== undefined && sameIdentity(recorded, input);
+        })
       )
         return false;
       if (this.debug !== (entry.symbols !== null)) return false;
@@ -209,14 +229,24 @@ export class NativeExecutableCache {
    * Directories from the driver's search line detect a newly added candidate.
    * Private build inputs already belong to the LLVM/runtime cache identity.
    * A true result means the requested output was linked successfully and its
-   * inputs remained stable. The caller can publish that output directly. */
+   * inputs remained stable. The caller can publish that output directly. On
+   * false, the caller links the output itself. */
   trace(args: string[], stage: string): boolean {
     this.traced = false;
     try {
+      // On Linux a key's first link only records that it was linked; a later
+      // link of the same key traces, so a build that runs once traces nothing.
+      if (this.firstLink) {
+        this.cache.mark("linked", this.key);
+        return false;
+      }
       const roots = [resolve(stage), realpathSync(stage)];
-      const dry = toolOutput(this.linker, [...args, "-###"]);
-      const driverInputs = tracePaths(dry, true, roots).map(identity);
-      const linked = toolOutput(this.linker, [...args, "-Wl,-t"]);
+      let driverInputs = this.linux
+        ? []
+        : tracePaths(toolOutput(this.linker, [...args, "-###"]), true, roots).map(identity);
+      // On Linux, -v prints the jobs that -### would, while the link runs.
+      const linked = toolOutput(this.linker, [...args, ...(this.linux ? ["-v"] : []), "-Wl,-t"]);
+      if (this.linux) driverInputs = tracePaths(linked, true, roots).map(identity);
       const paths = tracePaths(linked, false, roots);
       if (paths.length === 0 || !stillMatches(this.inputs) || !stillMatches(driverInputs))
         return false;
@@ -233,10 +263,8 @@ export class NativeExecutableCache {
       if (!this.traced || !stillMatches(this.inputs)) return;
       const binary = readFileSync(output);
       const symbols = this.debug ? readSymbols(output) : null;
-      const binaryKey = contentDigest(binary);
-      const symbolsKey = symbols === null ? null : contentDigest(symbols);
-      this.cache.write("binary", binaryKey, binary);
-      if (symbols !== null && symbolsKey !== null) this.cache.write("dsym", symbolsKey, symbols);
+      const binaryKey = this.cache.writeContent("binary", binary);
+      const symbolsKey = symbols === null ? null : this.cache.writeContent("dsym", symbols);
       if (!stillMatches(this.inputs)) return;
       const entry: ExecutableEntry = {
         schema: "scriptc.native-executable.v1",
@@ -254,16 +282,18 @@ export class NativeExecutableCache {
 export function openNativeExecutableCache(
   cache: NativeCache | null,
   toolchain: NativeToolchain,
-  llvm: readonly string[],
+  llvmDigest: () => string,
   options: CompileRequestOptions,
   ffi: FfiProfile | null,
   pack: NativeRuntimeSelection,
 ): NativeExecutableCache | null {
-  // Match the established complete-cache contract: default Apple driver,
-  // known runtime inputs, and no wrapper or caller-supplied library searches.
+  // Match the established complete-cache contract: the default Apple driver
+  // or a Linux clang driver, known runtime inputs, and no wrapper or
+  // caller-supplied library searches.
+  const platform = toolchain.target.platform;
   if (
     cache === null ||
-    toolchain.target.platform !== "darwin" ||
+    (platform !== "darwin" && platform !== "linux") ||
     options.sanitize ||
     // The key names a profile by path, not by its bytes.
     options.profileGenerate !== undefined ||
@@ -277,9 +307,23 @@ export function openNativeExecutableCache(
     return null;
   try {
     const linker = commandPath(toolchain.linker);
-    if (realpathSync(linker) !== "/usr/bin/clang") return null;
-    const effective = commandPath(runNativeTool(linker, ["-print-prog-name=clang"]).trim());
-    const debug = options.optimization === "dev" && !options.strip;
+    // Apple's driver at /usr/bin/clang, or a clang driver on Linux. Both
+    // name every input of a link in their -### and -Wl,-t traces.
+    if (
+      platform === "darwin"
+        ? realpathSync(linker) !== "/usr/bin/clang"
+        : !/^clang(-\d+)?$/.test(basename(realpathSync(linker)))
+    )
+      return null;
+    // Apple's /usr/bin/clang is a shim for the active developer directory's
+    // driver; a Linux clang driver is itself the driver.
+    const effective =
+      platform === "darwin"
+        ? commandPath(runNativeTool(linker, ["-print-prog-name=clang"]).trim())
+        : linker;
+    // Linux keeps debug information in the executable; darwin keeps it in a
+    // separate dSYM, which the cache stores beside the executable.
+    const debug = platform === "darwin" && options.optimization === "dev" && !options.strip;
     const paths = [
       linker,
       effective,
@@ -291,6 +335,7 @@ export function openNativeExecutableCache(
         (artifact) => join(pack.root, artifact.path),
       ),
     ];
+    if (platform === "linux") paths.push(join(pack.root, "runtime-pack.json"));
     if (debug) {
       const dsymutil = commandPath(toolchain.dsymutil);
       if (realpathSync(dsymutil) !== "/usr/bin/dsymutil") return null;
@@ -299,11 +344,16 @@ export function openNativeExecutableCache(
     const key = contentDigest(
       JSON.stringify({
         schema: 1,
-        llvm: partsDigest(llvm),
+        llvm: llvmDigest(),
         options,
         toolchain,
         runtimeIdentity: pack.packageText,
-        runtimeManifest: pack.manifestText,
+        // On Linux the manifest's identity names it: restore checks that
+        // identity again, as it does every other input.
+        runtimeManifest:
+          platform === "darwin"
+            ? pack.manifestText
+            : identity(join(pack.root, "runtime-pack.json")),
         linker: identity(linker),
         effective: identity(effective),
         environment: toolchainEnvironmentFingerprint(),
@@ -311,7 +361,7 @@ export function openNativeExecutableCache(
         path: process.env["PATH"] ?? null,
       }),
     );
-    return new NativeExecutableCache(cache, key, linker, debug, paths);
+    return new NativeExecutableCache(cache, key, linker, debug, paths, platform === "linux");
   } catch {
     return null;
   }

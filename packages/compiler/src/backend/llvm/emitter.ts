@@ -1,3 +1,4 @@
+import type { TargetCpu } from "../target-cpu.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
@@ -60,7 +61,7 @@ import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
 import { globalSlotAlias } from "./bytes-alias.js";
-import type { IntegerCountedForLoop } from "../../ir/integer-loops.js";
+import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
 import {
   materializeSplitPiece,
   type SplitSpan,
@@ -68,7 +69,7 @@ import {
   type StringSplit,
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
-import { addRecordResultEntries } from "./record-results.js";
+import { addRecordResultEntries, resultEntryName } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import {
   type ChunkResult,
@@ -82,6 +83,7 @@ import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
+  int32ArrayKey,
   selectInt32Arrays,
 } from "../../ir/int32-arrays.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
@@ -185,7 +187,7 @@ import {
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
 import { StackCaptures } from "./stack-captures.js";
-import { emitFieldAbsentTest, f64Lit, SCR_ARR_FIELD } from "./common.js";
+import { emitFieldAbsentTest, f64Lit, SCR_ARR_FIELD, SCR_ARR_FROZEN } from "./common.js";
 import { ffiExtendsNarrowIntegers } from "../targets.js";
 import {
   emitLiteralExpr,
@@ -481,6 +483,10 @@ export interface LlvmTargetOptions {
    * store the instance's address over 8 in 32 bits (classes.ts
    * compactRefLoadLines). Elsewhere they keep 8-byte pointers. */
   lowRegion?: boolean;
+  /** The x86-64 level the program's code may require (`--target-cpu`):
+   * every emitted function carries it as its `target-cpu`. Unset, code
+   * runs on any x86-64 CPU. */
+  targetCpu?: TargetCpu;
 }
 
 /** LlvmTargetOptions.lowRegion for an executable: Linux targets without
@@ -508,6 +514,15 @@ function provenInt32Arrays(mod: IrModule): ReadonlySet<string> {
     initializerBindings: findInitializerBindings(mod),
   });
   return new Set([...slots.int32Arrays, ...slots.checkedInt32Arrays]);
+}
+
+/** The functions whose calls the backend may emit as calls of their
+ * result-slot entries (record-results.ts). */
+function resultEntryTargets(mod: IrModule): ReadonlySet<string> {
+  const names = new Set(mod.functions.map((fn) => fn.name));
+  const targets = new Set<string>();
+  for (const name of names) if (names.has(resultEntryName(name))) targets.add(name);
+  return targets;
 }
 
 /** The emitter for `input` after the module passes every emission runs. */
@@ -545,6 +560,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
             ),
           ),
           provenInt32Arrays,
+          resultEntryTargets,
         )
       : mod,
     options,
@@ -781,7 +797,7 @@ export class LlEmitter {
     everyStmtList(fn.body, {
       stmt: (s) => {
         if (s.kind !== "varDecl" && s.kind !== "assign") return true;
-        const key = `${fn.name}\0${s.localId}`;
+        const key = int32ArrayKey(fn.name, s.localId);
         const checked = checkedInt32Arrays.has(key);
         if (!checked && !int32Arrays.has(key)) return true;
         const value = s.kind === "varDecl" ? s.init : s.value;
@@ -799,15 +815,16 @@ export class LlEmitter {
     });
   }
 
-  /** Whether `arr` is one of the current function's int32 arrays
-   * (ir/int32-arrays.ts, kept by the int32 slot analysis). */
+  /** Whether `arr` reads one of the int32 arrays (ir/int32-arrays.ts, kept
+   * by the int32 slot analysis): a local or parameter of the current
+   * function, or a module global. */
   int32Array(arr: IrExpr): boolean {
     if (arr.kind !== "varRef") return false;
     if (this.int32KindArray(arr)) return true;
     if (this.int32Slots.int32Arrays.size === 0) return false;
     return (
       this.int32ArrayTemps.has(arr.localId) ||
-      this.int32Slots.int32Arrays.has(`${this.currentFunctionName}\0${arr.localId}`)
+      this.int32Slots.int32Arrays.has(int32ArrayKey(this.currentFunctionName, arr.localId))
     );
   }
 
@@ -974,8 +991,8 @@ export class LlEmitter {
   }
 
   /** Whether an element access at `index` of `arr` lies in the hole-free
-   * prefix: the counter of a dense array loop's fast copy indexing one of
-   * the arrays its entry test covered. */
+   * prefix: a counter of a dense array loop's fast copy indexing one of the
+   * arrays its entry test covered. */
   provenDenseIndex(arr: IrExpr, index: IrExpr): boolean {
     const loop = LOOPS.of(this).denseLoop;
     return (
@@ -983,8 +1000,8 @@ export class LlEmitter {
       arr.kind === "varRef" &&
       loop.arrays.has(arr.localId) &&
       index.kind === "varRef" &&
-      index.localId === loop.counter &&
-      this.integerLoopBindings.has(loop.counter)
+      (index.localId === loop.counter || index.localId === loop.pair?.high) &&
+      this.integerLoopBindings.has(index.localId)
     );
   }
 
@@ -1036,6 +1053,7 @@ export class LlEmitter {
   readonly emitLibraryIdentity: boolean;
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
+  readonly targetCpu: TargetCpu | undefined;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -1313,7 +1331,7 @@ export class LlEmitter {
   /** Class objects (classes as first-class values): className → the
    * interned .name literal ref — registered during body emission, the
    * statics and construct thunks assemble around the bodies. */
-  readonly classObjs = new Map<string, { nameSym: string }>();
+  readonly classObjs = new Map<string, { nameSym: string; baseNameSym: string | null }>();
   private readonly unionFieldReadGroups = new Map<string, number[][]>();
   /** Preorder intervals of the runtime error classes under THIS module's
    * class-forest numbering (main() stamps scr_error_vts with them, exactly
@@ -1618,6 +1636,7 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
+    this.targetCpu = options.targetCpu;
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
@@ -1762,6 +1781,7 @@ export class LlEmitter {
         const shape = this.recordsById.get(shapeId);
         return shape !== undefined && !recordDynKeepsIdentity(shape);
       },
+      (wrap) => this.borrowableNullableWrap(wrap) === "ref",
     );
     this.lentStringParameters =
       this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
@@ -2032,7 +2052,6 @@ export class LlEmitter {
     if (POINTER_KINDS.has(t.kind)) return "ptr";
     switch (t.kind) {
       case "f64":
-      case "date":
         return "double";
       case "bool":
         return "i1";
@@ -2165,7 +2184,6 @@ export class LlEmitter {
         this.declare(`declare void @scr_promise_fulfill_void(ptr)`);
         return [`  call void @scr_promise_fulfill_void(ptr ${promise})`];
       case "f64":
-      case "date":
         this.declare(`declare void @scr_promise_fulfill_f64(ptr, double)`);
         return [`  call void @scr_promise_fulfill_f64(ptr ${promise}, double %r)`];
       case "bool":
@@ -2395,7 +2413,7 @@ export class LlEmitter {
       return { name: "", type };
     }
     const t = B.tmp();
-    if (type.kind === "f64" || type.kind === "date") {
+    if (type.kind === "f64") {
       this.declare(`declare double @scr_coro_direct_f64(ptr)`);
       B.line(`${t} = call double @scr_coro_direct_f64(ptr ${record})`);
     } else if (type.kind === "bool") {
@@ -3791,8 +3809,17 @@ export class LlEmitter {
 
   /** A union value's tag (i32): the box's tag word, or the NULL test of a
    * nullable union's pointer. */
+  /** A box's tag and payload words are written only where the box is
+   * built (runtime constructors and untagged stack stores), so their loads
+   * carry their own alias tags: element and field stores cannot change
+   * them, and loops keep them hoisted. */
   unionTag(uName: string, unionId: string): string {
-    return emitUnionTag(this.B, this.nullableUnions.get(unionId), uName);
+    return emitUnionTag(
+      this.B,
+      this.nullableUnions.get(unionId),
+      uName,
+      this.memoryAliasAttachment("union.tag"),
+    );
   }
 
   /** Guard for helpers that build or read a union's `%ScrUnion` box
@@ -3808,7 +3835,12 @@ export class LlEmitter {
   /** The BORROWED payload pointer of a ref arm (scr_union_peek inlined —
    * the runtime's is a static inline); a nullable union is its payload. */
   unionPeek(uName: string, unionId: string): string {
-    return emitUnionPeek(this.B, this.nullableUnions.get(unionId), uName);
+    return emitUnionPeek(
+      this.B,
+      this.nullableUnions.get(unionId),
+      uName,
+      this.memoryAliasAttachment("union.payload"),
+    );
   }
 
   /** Emits `switch` over a union's tag with one block per arm; each arm
@@ -4037,7 +4069,12 @@ export class LlEmitter {
   classObjSym(className: string): string {
     if (!this.classObjs.has(className)) {
       const meta = this.classMetaOf(className);
-      this.classObjs.set(className, { nameSym: this.internLiteral(classJsName(meta.def)) });
+      // util.inspect prints `[class C extends B]` with the base's name.
+      const baseName = meta.base ? classJsName(meta.base.def) : "";
+      this.classObjs.set(className, {
+        nameSym: this.internLiteral(classJsName(meta.def)),
+        baseNameSym: baseName ? this.internLiteral(baseName) : null,
+      });
     }
     this.journal?.entry("classObj", className, this.classObjs.get(className));
     return mangleClassObj(className);
@@ -4251,6 +4288,7 @@ export class LlEmitter {
   matchBytesLoopVersion(
     s: IrStmt & { kind: "for" | "while" },
     counted: IntegerCountedForLoop | null,
+    paired: IntegerPairedForLoop | null = null,
   ): ReturnType<typeof matchBytesLoopVersion> {
     const fn = LOOPS.of(this).bytesLoopFunction;
     if (!fn) return null;
@@ -4260,17 +4298,22 @@ export class LlEmitter {
     const invariantGlobals = new Set(this.stableGlobals);
     for (const global of this.initializerBindings.get(fn.name) ?? [])
       invariantGlobals.add(global.id);
-    return matchBytesLoopVersion(s, counted, {
-      locals: this.currentLocals,
-      invariantGlobals,
-      captured: this.captureIds,
-      ranges: this.integerRanges,
-      initialized,
-      proven: this.bytesBounds,
-      workers: this.mod.workers === true,
-      owned: this.bytesOwned,
-      scalarStrings: new Set(this.stringSlices.keys()),
-    });
+    return matchBytesLoopVersion(
+      s,
+      counted,
+      {
+        locals: this.currentLocals,
+        invariantGlobals,
+        captured: this.captureIds,
+        ranges: this.integerRanges,
+        initialized,
+        proven: this.bytesBounds,
+        workers: this.mod.workers === true,
+        owned: this.bytesOwned,
+        scalarStrings: new Set(this.stringSlices.keys()),
+      },
+      paired,
+    );
   }
 
   /** The alias tag of a whole-slot load of a binding (module globals only). */
@@ -4897,7 +4940,7 @@ export class LlEmitter {
         return;
       }
       case "classObj":
-        addEntry(this.classObjs, key, value as { nameSym: string });
+        addEntry(this.classObjs, key, value as { nameSym: string; baseNameSym: string | null });
         return;
       case "retainWrapper":
         addEntry(this.nullableUnions.retainWrappers, key, value as string);
@@ -6279,6 +6322,41 @@ export class LlEmitter {
     return ok;
   }
 
+  /** Branches on "the array `arr` is frozen" (SCR_ARR_FROZEN in its storage
+   * flags, scr_array.h), or published too when `published`; like
+   * emitPublishedTest, leaves the builder in the cold block and answers the
+   * continuation label. */
+  private emitFrozenArrayTest(arr: string, published: boolean): string {
+    const B = this.B;
+    const sparep = B.tmp(),
+      spare = B.tmp(),
+      bit = B.tmp();
+    let frozen = B.tmp();
+    B.line(
+      `${sparep} = getelementptr inbounds %ScrArr, ptr ${arr}, i32 0, i32 ${SCR_ARR_FIELD.spare}`,
+    );
+    B.line(`${spare} = load i16, ptr ${sparep}`);
+    B.line(`${bit} = and i16 ${spare}, ${SCR_ARR_FROZEN}`);
+    B.line(`${frozen} = icmp ne i16 ${bit}, 0`);
+    if (published) {
+      const rc = B.tmp(),
+        immortal = B.tmp(),
+        either = B.tmp();
+      B.line(`${rc} = load ${this.sizeType}, ptr ${arr}`);
+      B.line(`${immortal} = icmp eq ${this.sizeType} ${rc}, -1`);
+      B.line(`${either} = or i1 ${frozen}, ${immortal}`);
+      frozen = either;
+    }
+    this.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
+    const expected = B.tmp();
+    B.line(`${expected} = call i1 @llvm.expect.i1(i1 ${frozen}, i1 false)`);
+    const cold = B.newLabel("arr.frozen"),
+      ok = B.newLabel("arr.ok");
+    B.condBr(expected, cold, ok);
+    B.startBlock(cold);
+    return ok;
+  }
+
   private publishedNamesSym: string | null = null;
 
   /** The class-name table the hierarchy field guards index by preorder. */
@@ -6343,15 +6421,29 @@ export class LlEmitter {
     op: number,
     index = f64Lit(0),
     count = f64Lit(0),
+    third: string | null = null,
   ): void {
-    if (this.publishedTypes?.containerGuarded(arrType) !== true) return;
+    const published = this.publishedTypes;
+    if (published?.containerGuarded(arrType) !== true) return;
     const B = this.B;
-    const ok = this.emitPublishedTest(arr);
-    this.declare(`declare zeroext i1 @scr_throw_published_array(i32, ptr, double, double)`);
+    const guards = published.arrayGuards(arrType);
+    const ok = guards.frozen
+      ? this.emitFrozenArrayTest(arr, guards.published)
+      : this.emitPublishedTest(arr);
     const threw = B.tmp();
-    B.line(
-      `${threw} = call zeroext i1 @scr_throw_published_array(i32 ${op}, ptr ${arr}, double ${index}, double ${count})`,
-    );
+    if (third === null) {
+      this.declare(`declare zeroext i1 @scr_throw_published_array(i32, ptr, double, double)`);
+      B.line(
+        `${threw} = call zeroext i1 @scr_throw_published_array(i32 ${op}, ptr ${arr}, double ${index}, double ${count})`,
+      );
+    } else {
+      this.declare(
+        `declare zeroext i1 @scr_throw_published_array_range(i32, ptr, double, double, double)`,
+      );
+      B.line(
+        `${threw} = call zeroext i1 @scr_throw_published_array_range(i32 ${op}, ptr ${arr}, double ${index}, double ${count}, double ${third})`,
+      );
+    }
     const unwind = B.newLabel("pub.throw");
     B.condBr(threw, unwind, ok);
     B.startBlock(unwind);

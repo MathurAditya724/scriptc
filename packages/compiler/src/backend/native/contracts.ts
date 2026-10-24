@@ -85,6 +85,9 @@ export interface CcOptions {
    * compares round-trips and fixed-blob inflation, never raw deflate
    * output. */
   zlib?: boolean;
+  /** The program uses node:zlib's Brotli forms (with zlib): compiles
+   * scr_brotli.c and links the vendored brotli archive. */
+  brotli?: boolean;
   /** The program uses node:assert (index.ts detects assert.* libCalls on
    * the IR): compiles scr_assert.c — the zlib gating precedent, so
    * assert-free binaries keep their exact size class. scr_regex.c calls
@@ -220,6 +223,10 @@ export interface CcOptions {
    * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
    * their exact link line. */
   dgramDyn?: boolean;
+  /** A TextEncoder or TextDecoder record converts to or from an untyped
+   * value: compiles scr_text_codec_dyn.c, so typed codec binaries keep
+   * their exact link line. */
+  textCodecDyn?: boolean;
 
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free
