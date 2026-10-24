@@ -225,6 +225,11 @@ function classConversion(
       plan.method === "sym:toPrimitive" ? [{ kind: "strLit", value: hint, type: STRING, loc }] : [];
     return finish(accessorCall(lowerer, cls.def.name, plan.method, object, args, plan.ret, loc));
   };
+  // "[object Object]" reads nothing of the instance, but the receiver
+  // expression still runs, once.
+  const own = plans.get(info)!;
+  if (tops.length === 0 && own.method === null && !own.date && !own.tag && !isSafeToRepeat(value))
+    prefix.push({ kind: "exprStmt", expr: value, loc });
   let result = convert(info, receiver);
   for (let i = tops.length - 1; i >= 0; i--) {
     const top = tops[i]!;

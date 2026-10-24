@@ -18,6 +18,7 @@ import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
 import {
   BOOL,
+  CAUGHT,
   DYN,
   F64,
   type IrExpr,
@@ -1876,7 +1877,8 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       const visible = info.def.fields.filter((f) => isClassOwnEnumerableFieldName(f.name));
       // A Symbol.toStringTag getter (an own tag field is listed instead)
       // brackets the tag after the name, `Name [tag] {`, when it is a
-      // nonempty string other than the name.
+      // nonempty string other than the name. A getter that throws shows
+      // no tag, as in Node.
       const tagGetter = info.fields.has(TO_STRING_TAG_FIELD)
         ? null
         : findMethodOn(lowerer, info, "get:sym:toStringTag");
@@ -1884,21 +1886,36 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         strLit(plain, loc);
       if (tagGetter?.sig.ret.kind === "string") {
         const owner = tagGetter.declarer.def.name;
-        locals.push({ id: "tag.0", name: "tag", type: STRING, mutable: false });
-        body.push({
-          kind: "varDecl",
-          localId: "tag.0",
-          init: accessorCall(
-            lowerer,
-            owner,
-            "get:sym:toStringTag",
-            lowerer.upcastTo(v(), owner),
-            [],
-            STRING,
+        locals.push(
+          { id: "tag.0", name: "tag", type: STRING, mutable: true },
+          { id: "tagError.0", name: "tagError", type: CAUGHT, mutable: false },
+        );
+        body.push(
+          { kind: "varDecl", localId: "tag.0", init: strLit("", loc), loc },
+          {
+            kind: "tryCatch",
+            tryBody: [
+              {
+                kind: "assign",
+                localId: "tag.0",
+                value: accessorCall(
+                  lowerer,
+                  owner,
+                  "get:sym:toStringTag",
+                  lowerer.upcastTo(v(), owner),
+                  [],
+                  STRING,
+                  loc,
+                ),
+                loc,
+              },
+            ],
+            catchBody: [],
+            catchLocalId: "tagError.0",
+            finallyBody: null,
             loc,
-          ),
-          loc,
-        });
+          },
+        );
         const tag = (): IrExpr => varRef("tag.0", STRING, loc);
         const shown: IrExpr = {
           kind: "logical",

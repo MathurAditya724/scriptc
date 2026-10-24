@@ -74,3 +74,42 @@ console.log(values);
 
 const literal: unknown = { [Symbol.toStringTag]: "Literal", a: 1 };
 console.log(Object.prototype.toString.call(literal), String(literal), `${literal}`);
+
+// util.inspect ignores a Symbol.toStringTag getter that throws, typed or
+// held as an untyped value.
+class Throwing {
+  get [Symbol.toStringTag](): string {
+    throw new Error("tag");
+  }
+}
+const throwing: unknown = new Throwing();
+console.log(new Throwing(), [new Throwing()], throwing, [throwing]);
+
+// A conversion to "[object Object]" still evaluates its receiver.
+let made = 0;
+function make(): Plain {
+  made++;
+  return new Plain();
+}
+function fail(): Plain {
+  throw new Error("receiver");
+}
+console.log(Object.prototype.toString.call(make()), String(make()), made);
+try {
+  console.log(Object.prototype.toString.call(fail()));
+} catch (error) {
+  console.log((error as Error).message);
+}
+
+// ToString of a class with valueOf and no toString reads its tag; the
+// default hint calls valueOf.
+class Valued {
+  valueOf(): number {
+    return 1;
+  }
+  get [Symbol.toStringTag](): string {
+    return "Valued";
+  }
+}
+const valued: unknown = new Valued();
+console.log(String(valued), `${valued}`, [valued].join(), valued + "", Object.prototype.toString.call(valued));

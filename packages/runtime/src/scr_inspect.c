@@ -1210,9 +1210,10 @@ static bool insp_tag_names_class(const char *tag, const char *cls) {
 /* The Symbol.toStringTag a class instance inherits from its class's
  * getter (+1), which Node brackets after the class name when it is a
  * nonempty string other than the name. An own tag field is listed with
- * the fields instead. */
+ * the fields instead. A getter that throws shows no tag, as in Node. */
 static ScrStr *insp_inherited_tag(const ScrDyn *instance, const ScrStr *name) {
   ScrStr *tag = scr_dyn_typed_ref_class_tag(instance);
+  if (!tag && scr_exc_pending()) scr_exc_clear();
   if (tag && (tag->len == 0 || (tag->len == name->len && memcmp(tag->data, name->data, name->len) == 0))) {
     scr_str_release(tag);
     return NULL;

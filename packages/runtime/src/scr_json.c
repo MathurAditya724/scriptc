@@ -4034,6 +4034,9 @@ ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index) {
   return scr_dyn_typed_ref_element(d, i);
 }
 
+static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d);
+static ScrStr *scr_dyn_tag_string(const ScrStr *tag);
+
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   /* An instance of a class declared `extends Date` converts through its
    * toString, declared or inherited. With an exception pending the view is
@@ -4045,6 +4048,16 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
     ScrStr *empty = scr_str_new("", 0);
     ScrDyn *out = scr_dyn_new_str(empty);
     scr_str_release(empty);
+    return out;
+  }
+  /* A class instance converting through Object.prototype.toString shows
+   * its Symbol.toStringTag getter's string. */
+  ScrStr *class_tag = scr_dyn_typed_ref_conversion_tag(d);
+  if (class_tag || scr_exc_pending()) {
+    ScrStr *text = class_tag ? scr_dyn_tag_string(class_tag) : scr_str_new("", 0);
+    scr_str_release(class_tag);
+    ScrDyn *out = scr_dyn_new_str(text);
+    scr_str_release(text);
     return out;
   }
   ScrDyn *view = scr_dyn_typed_ref_materialize(d);
@@ -8333,6 +8346,27 @@ static ScrStr *scr_dyn_tag_string(const ScrStr *tag) {
   return scr_jb_finish(&b);
 }
 
+/* The Symbol.toStringTag getter's string of a class instance whose
+ * ToString is Object.prototype.toString (its class has no toString; the
+ * string hint never reaches valueOf, since that answers a string): +1, or
+ * NULL otherwise or with the getter's exception pending. */
+static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d) {
+  ScrStr *to_string_key = scr_str_new("toString", 8);
+  bool own_conversion = scr_dyn_typed_ref_class_has(d, to_string_key);
+  scr_str_release(to_string_key);
+  return own_conversion ? NULL : scr_dyn_typed_ref_class_tag(d);
+}
+
+bool scr_dyn_typed_ref_put_tag(ScrJsonBuf *b, const ScrDyn *d) {
+  ScrStr *tag = scr_dyn_typed_ref_conversion_tag(d);
+  if (!tag) return scr_exc_pending();
+  scr_jb_puts(b, "[object ");
+  scr_jb_write(b, tag->data, tag->len);
+  scr_jb_putc(b, ']');
+  scr_str_release(tag);
+  return true;
+}
+
 /* Object.prototype.toString of an object whose own or inherited
  * @@toStringTag is a string (+1), NULL otherwise or with a pending
  * exception from its getter. */
@@ -9676,22 +9710,13 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
     return NULL;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
-    /* A class instance without its own conversion methods converts with
-     * Object.prototype.toString, which reads its toStringTag getter. */
-    ScrStr *to_string_key = scr_str_new("toString", 8), *value_of_key = scr_str_new("valueOf", 7);
-    bool own_conversion = scr_dyn_typed_ref_class_has(d, to_string_key) ||
-                          scr_dyn_typed_ref_class_has(d, value_of_key);
-    scr_str_release(to_string_key);
-    scr_str_release(value_of_key);
-    if (!own_conversion) {
-      ScrStr *tag = scr_dyn_typed_ref_class_tag(d);
-      if (tag) {
-        ScrStr *out = scr_dyn_tag_string(tag);
-        scr_str_release(tag);
-        return out;
-      }
-      if (scr_exc_pending()) return NULL;
+    ScrStr *tag = scr_dyn_typed_ref_conversion_tag(d);
+    if (tag) {
+      ScrStr *out = scr_dyn_tag_string(tag);
+      scr_str_release(tag);
+      return out;
     }
+    if (scr_exc_pending()) return NULL;
     ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);
     ScrStr *out = scr_dyn_string_coerce_js(materialized);
     scr_dyn_release(materialized);
