@@ -298,6 +298,9 @@ ScrDyn *scr_crypto_generate_key_pair_sync(ScrDyn *type, ScrDyn *options);
 void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *callback);
 ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key);
 ScrDyn *scr_crypto_verify_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature);
+/* crypto.diffieHellman(options[, callback]): the shared secret, or undefined
+ * with the callback, which receives it in a later macrotask. */
+ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback);
 ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm);
 ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm);
 bool scr_crypto_is_asymmetric_key(const ScrDyn *value);

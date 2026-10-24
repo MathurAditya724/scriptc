@@ -611,7 +611,6 @@ export function checkDefaultParamBodyType(
   if (
     bodyType.kind === "void" ||
     bodyType.kind === "regex" ||
-    bodyType.kind === "date" ||
     bodyType.kind === "dyn" ||
     isUnitType(bodyType)
   ) {

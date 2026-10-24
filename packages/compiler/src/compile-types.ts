@@ -1,3 +1,4 @@
+import type { TargetCpu } from "./backend/target-cpu.js";
 import type { WindowsSubsystem } from "./backend/targets.js";
 import type { NativeLinkInfo } from "./backend/native-link-info.js";
 import type { NativeOptimization } from "./backend/optimization.js";
@@ -37,6 +38,12 @@ export interface CompileBaseOptions {
    * executable mapped and the memory charged for up to ~100 ms after exit.
    * Executables only; no effect on other platforms. */
   detachedExit?: boolean;
+  /** The x86-64 microarchitecture level the executable's code may require
+   * (`x86-64-v2` to `x86-64-v4`). The program's functions are compiled for
+   * that level, and the executable then runs only on CPUs that support it.
+   * Unset or `baseline`, the code runs on any x86-64 CPU. x86-64 targets
+   * only; the runtime pack keeps its baseline code. */
+  targetCpu?: TargetCpu;
   /** Instrument the executable for profile-guided optimization. Each run
    * writes a raw profile to this path pattern (`%p` expands to the process
    * id; `LLVM_PROFILE_FILE` overrides the pattern at run time). Linux

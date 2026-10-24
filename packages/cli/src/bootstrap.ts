@@ -70,6 +70,8 @@ async function tryFastPath(): Promise<number | null> {
     values["profile-generate"] !== undefined ||
     values["profile-use"] !== undefined ||
     values.sparse ||
+    // The full compiler resolves `native` against the build host.
+    values["target-cpu"] !== undefined ||
     (values["external-types"] ?? []).length > 0 ||
     // The full CLI validates the Node island policy flags.
     hasNodeIslandFlags(values)
@@ -217,6 +219,7 @@ async function coverageFastPath(
     values.emit !== undefined ||
     values.strip ||
     values["detached-exit"] ||
+    values["target-cpu"] !== undefined ||
     values.lib ||
     values.profile !== undefined ||
     values.ffi !== undefined ||

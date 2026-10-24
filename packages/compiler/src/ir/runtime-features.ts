@@ -2,6 +2,7 @@ import type { IrClassDef, IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } 
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   isDirentShape,
+  recordTextCodecClass,
   RUNTIME_EMITTER_CLASS,
   RUNTIME_EVENT_CLASS,
   RUNTIME_EVENT_TARGET_CLASS,
@@ -99,6 +100,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.setDeprecationFlag",
   "process.setEmitWarning",
   "punycode.warn",
+  // DEP0005 for the deprecated Buffer constructor.
+  "buffer.deprecation",
   "timers.immediatePromise",
   // The performance timeline (scr_perf.c, linked with this unit for its
   // MaxPerformanceEntryBufferExceededWarning).
@@ -116,12 +119,16 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.measure",
   // Blob and File (scr_blob.c, linked with this unit, which boxes their
   // reads as dyn promises).
+  "als.bindCallbackDyn",
   "als.disable",
   "als.enterWith",
   "als.exitRun",
   "als.get",
+  "als.name",
   "als.new",
+  "als.newOptions",
   "als.run",
+  "als.snapshot",
   "blob.arrayBuffer",
   "blob.bytes",
   "blob.fileNew",
@@ -361,6 +368,10 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.usingDispose",
   "dyn.usingMethod",
   "util.isDeepStrictEqual",
+  // The Buffer function value's Symbol(kIsEncodingSymbol) member
+  "buffer.constructor",
+  "buffer.staticValue",
+  "buffer.prototypeMember",
 ]);
 
 /** Entry points that link the querystring unit. */
@@ -415,7 +426,10 @@ interface TypeTables {
   unions: Map<string, IrUnionDef>;
   classes: Map<string, IrClassDef>;
   /** mentionsDgramSocket's carriers, computed on first use. */
-  dgramCarriers?: DgramCarriers;
+  dgramCarriers?: TypeCarriers;
+  /** mentionsTextCodec's and mentionsTextDecoder's carriers. */
+  textCodecCarriers?: TypeCarriers;
+  textDecoderCarriers?: TypeCarriers;
 }
 
 /** Whether boxing a value of type `t` as dyn boxes a promise, which goes
@@ -479,30 +493,42 @@ function boxesPromise(t: IrType, tables: TypeTables, seen: Set<string>): boolean
   }
 }
 
-/** The record shapes, unions and classes whose values carry a dgram socket
- * (directly or through other members), computed once per module. */
-interface DgramCarriers {
+/** The record shapes, unions and classes whose values carry a leaf type
+ * (directly or through other members), computed once per module and leaf. */
+interface TypeCarriers {
   records: Set<string>;
   unions: Set<string>;
   anyClass: boolean;
 }
 
-/** Whether `t` carries a dgram socket, given the carrier sets so far:
- * structural through functions (parameters and result), promises and
- * collections; named records, unions and class instances by the sets. */
-function carriesDgram(t: IrType, carriers: DgramCarriers): boolean {
+/** The leaf a carrier set tracks: a dgram socket, a codec record. */
+type CarrierLeaf = (t: IrType, tables: TypeTables) => boolean;
+
+/** Whether `t` carries a leaf, given the carrier sets so far: structural
+ * through functions (parameters and result), promises and collections;
+ * named records, unions and class instances by the sets. */
+function carriesLeaf(
+  t: IrType,
+  carriers: TypeCarriers,
+  leaf: CarrierLeaf,
+  tables: TypeTables,
+): boolean {
+  if (leaf(t, tables)) return true;
   switch (t.kind) {
-    case "dgramSocket":
-      return true;
     case "func":
-      return t.params.some((p) => carriesDgram(p, carriers)) || carriesDgram(t.ret, carriers);
+      return (
+        t.params.some((p) => carriesLeaf(p, carriers, leaf, tables)) ||
+        carriesLeaf(t.ret, carriers, leaf, tables)
+      );
     case "promise":
-      return carriesDgram(t.inner, carriers);
+      return carriesLeaf(t.inner, carriers, leaf, tables);
     case "array":
     case "set":
-      return carriesDgram(t.elem, carriers);
+      return carriesLeaf(t.elem, carriers, leaf, tables);
     case "map":
-      return carriesDgram(t.key, carriers) || carriesDgram(t.value, carriers);
+      return (
+        carriesLeaf(t.key, carriers, leaf, tables) || carriesLeaf(t.value, carriers, leaf, tables)
+      );
     case "record":
       return carriers.records.has(t.shapeId);
     case "union":
@@ -515,25 +541,29 @@ function carriesDgram(t: IrType, carriers: DgramCarriers): boolean {
   }
 }
 
-/** The module's dgram carriers: a fixpoint over its records, unions and
+/** The module's carriers of `leaf`: a fixpoint over its records, unions and
  * class fields. */
-function dgramCarriers(tables: TypeTables): DgramCarriers {
-  const carriers: DgramCarriers = { records: new Set(), unions: new Set(), anyClass: false };
+function leafCarriers(tables: TypeTables, leaf: CarrierLeaf): TypeCarriers {
+  const carriers: TypeCarriers = { records: new Set(), unions: new Set(), anyClass: false };
+  const carries = (t: IrType): boolean => carriesLeaf(t, carriers, leaf, tables);
   for (let changed = true; changed;) {
     changed = false;
     for (const [id, shape] of tables.records)
-      if (!carriers.records.has(id) && shape.fields.some((f) => carriesDgram(f.type, carriers))) {
+      if (
+        !carriers.records.has(id) &&
+        (leaf({ kind: "record", shapeId: id }, tables) || shape.fields.some((f) => carries(f.type)))
+      ) {
         carriers.records.add(id);
         changed = true;
       }
     for (const [id, def] of tables.unions)
-      if (!carriers.unions.has(id) && def.arms.some((a) => carriesDgram(a, carriers))) {
+      if (!carriers.unions.has(id) && def.arms.some(carries)) {
         carriers.unions.add(id);
         changed = true;
       }
     if (
       !carriers.anyClass &&
-      [...tables.classes.values()].some((c) => c.fields.some((f) => carriesDgram(f.type, carriers)))
+      [...tables.classes.values()].some((c) => c.fields.some((f) => carries(f.type)))
     ) {
       carriers.anyClass = true;
       changed = true;
@@ -542,13 +572,42 @@ function dgramCarriers(tables: TypeTables): DgramCarriers {
   return carriers;
 }
 
+const dgramLeaf: CarrierLeaf = (t) => t.kind === "dgramSocket";
+
 /** Whether converting a value of type `t` to or from dyn converts a dgram
  * socket, which goes through scr_dgram_dyn.c: the socket itself, or a
  * function, collection, record, union, promise or class instance that
  * carries one (boxed functions convert their parameters too). */
 function mentionsDgramSocket(t: IrType, tables: TypeTables): boolean {
-  tables.dgramCarriers ??= dgramCarriers(tables);
-  return carriesDgram(t, tables.dgramCarriers);
+  tables.dgramCarriers ??= leafCarriers(tables, dgramLeaf);
+  return carriesLeaf(t, tables.dgramCarriers, dgramLeaf, tables);
+}
+
+const textCodecLeaf: CarrierLeaf = (t, tables) => {
+  if (t.kind !== "record") return false;
+  const shape = tables.records.get(t.shapeId);
+  return shape !== undefined && recordTextCodecClass(shape) !== null;
+};
+
+const textDecoderLeaf: CarrierLeaf = (t, tables) => {
+  if (t.kind !== "record") return false;
+  const shape = tables.records.get(t.shapeId);
+  return shape !== undefined && recordTextCodecClass(shape) === "TextDecoder";
+};
+
+/** Whether converting a value of type `t` to or from dyn converts a
+ * TextEncoder or TextDecoder record, which boxes it as a handle of
+ * scr_text_codec_dyn.c (the same carrier walk as dgram sockets). */
+function mentionsTextCodec(t: IrType, tables: TypeTables): boolean {
+  tables.textCodecCarriers ??= leafCarriers(tables, textCodecLeaf);
+  return carriesLeaf(t, tables.textCodecCarriers, textCodecLeaf, tables);
+}
+
+/** The TextDecoder half: its boxed decode runs scr_text_decode_stream,
+ * which reaches the legacy decoders. */
+function mentionsTextDecoder(t: IrType, tables: TypeTables): boolean {
+  tables.textDecoderCarriers ??= leafCarriers(tables, textDecoderLeaf);
+  return carriesLeaf(t, tables.textDecoderCarriers, textDecoderLeaf, tables);
 }
 
 /** The libCall fns served by the OPTIONAL events unit (scr_events.c):
@@ -679,6 +738,7 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.diffieHellman",
 ]);
 
 /** The WebCrypto algorithms scr_webcrypto_pki.c implements over the pki
@@ -794,6 +854,15 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "dynFrom" && mentionsDgramSocket(node.value.type, tables())) ||
       (node.kind === "dynCheck" && mentionsDgramSocket(node.type, tables())),
   }),
+  /** A TextEncoder or TextDecoder record converts to or from an untyped
+   * value (its handle box, or a boxed function, record or collection that
+   * carries one): scr_text_codec_dyn.c. */
+  textCodecDyn: rule({
+    fns: ["text.codecIs"],
+    expr: (node, tables) =>
+      (node.kind === "dynFrom" && mentionsTextCodec(node.value.type, tables())) ||
+      (node.kind === "dynCheck" && mentionsTextCodec(node.type, tables())),
+  }),
   /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
   dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
   dynAsync: rule({
@@ -844,6 +913,7 @@ const RUNTIME_FEATURE_RULES = {
       ...UTIL_CALLABLE_LIB_FNS,
       ...BUILTIN_CLASS_LIB_FNS,
       "util.promisifyDyn",
+      "buffer.prototypeMember",
     ],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.
@@ -872,10 +942,22 @@ const RUNTIME_FEATURE_RULES = {
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
+    // Buffer.prototype members read as values dispatch to the same entries.
+    fns: ["buffer.prototypeMember"],
     expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_METHODS.has(node.method),
   }),
   /** Builtin functions read as values (scr_builtin_values.c). */
-  builtinValues: rule({ fns: ["buffer.byteLenValue", "buffer.allocValue", "fs.realpathValue"] }),
+  builtinValues: rule({
+    fns: [
+      "buffer.byteLenValue",
+      "buffer.allocValue",
+      "fs.realpathValue",
+      "buffer.constructor",
+      "buffer.installValue",
+      "buffer.staticValue",
+      "buffer.prototypeMember",
+    ],
+  }),
   /** The stream unit emits through the emitter unit, also when the
    * program constructs no stream (a pipeline of functions). */
   /** scr_ecdh.c over the mbedTLS archive; DEP0031 reports through the
@@ -942,7 +1024,12 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: ["insp.", "console.", "test."],
     libCall: (node) => node.fn === "rl.terminal" && !isDynUndefined(node.args[3]!),
   }),
-  legacyTextDecoder: rule({ fns: [...LEGACY_TEXT_DECODER_LIB_FNS] }),
+  legacyTextDecoder: rule({
+    fns: [...LEGACY_TEXT_DECODER_LIB_FNS],
+    expr: (node, tables) =>
+      (node.kind === "dynFrom" && mentionsTextDecoder(node.value.type, tables())) ||
+      (node.kind === "dynCheck" && mentionsTextDecoder(node.type, tables())),
+  }),
   /** The program calls mock.timers members: its timer calls go through
    * scr_test.c's mock-aware entry points. */
   mockTimers: rule({ prefixes: ["test.mockTimers", "test.ctxMockTimers"] }),
@@ -1034,6 +1121,9 @@ const RUNTIME_FEATURE_RULES = {
    * scr_webcrypto.c. */
   webcrypto: rule({ prefixes: ["webcrypto."] }),
   zlib: rule({ prefixes: ["zlib."] }),
+  /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
+   * the program uses Brotli (scr_brotli.c). */
+  brotli: rule({ fns: ["zlib.brotliInstall"] }),
 };
 
 type RuntimeFeatureName = keyof typeof RUNTIME_FEATURE_RULES;
@@ -1056,6 +1146,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dc: false,
     dgram: false,
     dgramDyn: false,
+    textCodecDyn: false,
     dnsPromises: false,
     dynAsync: false,
     dynBuiltinClass: false,
@@ -1102,6 +1193,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     wasm: false,
     webcrypto: false,
     zlib: false,
+    brotli: false,
   };
 }
 
