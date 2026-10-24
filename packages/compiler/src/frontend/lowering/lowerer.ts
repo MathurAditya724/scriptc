@@ -1,6 +1,6 @@
 import { isDeclBoundaryFile } from "../decl-projection.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
-import { moduleNamespaceObject } from "./module-namespace-elements.js";
+import { moduleNamespaceObject, moduleNamespaceValue } from "./module-namespace-elements.js";
 import { keyedHelperName } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import { onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
@@ -270,6 +270,9 @@ import {
   type StartupCrash,
   cjsExportAssignmentOf,
   cjsExportDiscardReason,
+  cjsExportsAssignedInFunctions,
+  cjsReexportedModules,
+  cjsNamespaceExportNames,
   fallbackDtsPath,
   isCheckedJsSourceFile,
   isCjsExportTableLiteral,
@@ -4019,6 +4022,42 @@ export class Lowerer {
       }
     }
     return null;
+  }
+
+  /** For each CommonJS module read through a JavaScript namespace import:
+   * the property names of Node's namespace object
+   * (cjsNamespaceExportNames), and the exports the module assigns inside
+   * functions, which the namespace does not see
+   * (cjsExportsAssignedInFunctions). */
+  private readonly cjsNamespaces = new Map<
+    ts.SourceFile,
+    { names: ReadonlySet<string>; assignedLater: ReadonlySet<string> | "all" }
+  >();
+
+  cjsNamespaceOf(dep: ts.SourceFile): {
+    names: ReadonlySet<string>;
+    assignedLater: ReadonlySet<string> | "all";
+  } {
+    let namespace = this.cjsNamespaces.get(dep);
+    if (namespace === undefined) {
+      // A re-exported name reads the module that assigns it, so the writes
+      // after evaluation of every re-exported module count too.
+      let assignedLater: Set<string> | "all" = new Set();
+      for (const mod of cjsReexportedModules(this.program, dep)) {
+        const later = cjsExportsAssignedInFunctions(mod);
+        if (later === "all") {
+          assignedLater = "all";
+          break;
+        }
+        for (const name of later) assignedLater.add(name);
+      }
+      namespace = {
+        names: cjsNamespaceExportNames(this.program, dep),
+        assignedLater,
+      };
+      this.cjsNamespaces.set(dep, namespace);
+    }
+    return namespace;
   }
 
   sourceFileOfModuleNamespace(type: IrType): ts.SourceFile | null {
@@ -9819,10 +9858,8 @@ export class Lowerer {
       // so its module binding is too (`ReleaseEmitter = EventEmitter` over
       // `const EventEmitter = require("events")`).
       if (expr.type.kind === "moduleNs" && isJsSourceFileName(expr.loc.file)) {
-        const object = moduleNamespaceObject(
-          this,
-          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
-        );
+        const ns = expr as IrExpr & { type: IrType & { kind: "moduleNs" } };
+        const object = moduleNamespaceObject(this, ns) ?? moduleNamespaceValue(this, ns);
         if (object) return object;
       }
       if (
