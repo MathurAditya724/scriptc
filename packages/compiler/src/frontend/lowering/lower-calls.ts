@@ -260,6 +260,7 @@ import {
   completeArgs,
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
+import { dynamicOverloadChoice } from "./overload-choice.js";
 import { lowerStringIteratorValue } from "./iterator-adapters.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import { maybePromiseReturnStmt, promiseArmedUnionOf } from "./maybe-promise.js";
@@ -5506,6 +5507,9 @@ function reconcileOverloadReturn(
   expr: ts.CallExpression | ts.TaggedTemplateExpression,
   call: IrExpr,
 ): IrExpr {
+  // The checker's overload is a guess for a checked-dynamic argument
+  // another overload accepts: the implementation's value stands.
+  if (ts.isCallExpression(expr) && dynamicOverloadChoice(lowerer, expr)) return call;
   const rsig = lowerer.checker.getResolvedSignature(expr);
   const rdecl = rsig ? rsig.declaration : undefined;
   // Nominal covariant overrides share the base's return ABI, but retain

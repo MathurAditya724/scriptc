@@ -434,6 +434,7 @@ import {
   collectSignatureInner,
   lambdaSignature,
 } from "./call-signatures.js";
+import { dynamicOverloadChoice, guessedOverloadIdentifier } from "./overload-choice.js";
 import {
   implicitAnyParamSymbolsOf,
   implicitLocalFnNodeOf,
@@ -2845,6 +2846,8 @@ export class Lowerer {
   /** Parameters read as `any` in the error-path copy of an error-first
    * callback. */
   readonly anySymbols = new Set<ts.Symbol>();
+  /** overload-choice's answers per call, binding and function. */
+  readonly dynamicOverloadAnswers = new Map<ts.Node, boolean>();
   /** Error parameters of an error-first callback with a known value in
    * the copy being lowered: true while it holds an Error, false while it
    * holds null (staticCondition folds conditions on them). */
@@ -9037,6 +9040,20 @@ export class Lowerer {
 
   typeOf(node: ts.Node): ts.Type {
     if (this.anySymbols.size > 0 && this.readsAnySymbol(node)) return this.checker.getAnyType();
+    // A checked-dynamic argument that another overload could take at run
+    // time leaves the resolved overload's return a guess, and JS bindings
+    // initialized with that result hold whatever it was.
+    if (
+      (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
+      dynamicOverloadChoice(this, node)
+    )
+      return this.checker.getAnyType();
+    if (
+      ts.isIdentifier(node) &&
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+      guessedOverloadIdentifier(this, node)
+    )
+      return this.checker.getAnyType();
     if (ts.isPropertyAccessExpression(node) && isJsSourceFile(ts.getSourceFileOfNode(node))) {
       const receiver =
         node.expression.kind === ts.SyntaxKind.ThisKeyword && this.fnStack.length > 0
