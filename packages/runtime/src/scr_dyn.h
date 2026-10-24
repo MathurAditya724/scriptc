@@ -398,6 +398,10 @@ typedef struct ScrDynTypedClassOps {
   size_t count;
   ScrStr *const *names; /* immortal member-name strings */
   ScrStr *class_name;   /* immortal constructor name; NULL for an anonymous class */
+  /* The string an inherited Symbol.toStringTag getter answers for the
+   * instance (+1), or NULL with a pending exception from the getter;
+   * NULL when the class has no such getter. */
+  ScrStr *(*string_tag)(void *instance);
 } ScrDynTypedClassOps;
 
 /* A compiled JavaScript class whose instances record their own properties
@@ -677,6 +681,14 @@ void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry 
 bool scr_dyn_field_eq_str(const ScrDyn *d, const ScrStr *key, const ScrStr *value);
 bool scr_dyn_field_eq_num(const ScrDyn *d, const ScrStr *key, double value);
 bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value);
+/* The case a union's checked match takes from its string discriminant: the
+ * index in `values` of the string `d`'s own data property `key` holds, or
+ * -1 when every literal test above fails (`d` is not an object, or its own
+ * data property `key` holds no string among `values`), or -2 when only the
+ * tests themselves can tell (a typed capsule, an accessor, or a property
+ * `d` does not own). Borrowed args. */
+int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *const *values,
+                                  size_t count);
 
 /* Object.keys/values/entries over the checked-dynamic tree: JS own-key order (array-index
  * keys ascending first), dyn-array results (+1); values/entries RETAIN
@@ -921,6 +933,7 @@ void scr_dyn_install_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_has_instance_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
+void scr_dyn_install_to_string_tag_symbol(ScrDyn *key);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
@@ -1084,6 +1097,9 @@ ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec);
 /* Attach the prototype member names of a class instance capsule
  * (idempotent), so `in` sees its methods and accessors. */
 void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);
+/* A class instance capsule's inherited Symbol.toStringTag string from its
+ * class's getter (+1); NULL when it has none or the getter threw. */
+ScrStr *scr_dyn_typed_ref_class_tag(const ScrDyn *d);
 /* Attach the bag and prototype hooks of a capsule of a bag-tracked class
  * instance (idempotent). */
 void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *ops);
@@ -1619,6 +1635,12 @@ typedef struct ScrDynHandleOps {
   /* Past the depth limit util.inspect prints `[cls]` (the class's
    * inspector returns `this`) instead of the bare class name. */
   bool inspect_bracketed_past_depth;
+  /* The class's inspector formats its view with a new util.inspect call
+   * (URL's does): the view renders from the top level with the caller's
+   * depth, and its lines take the caller's indentation. Past the depth
+   * limit the inspector returns the instance, which has no own
+   * properties, so util.inspect prints `cls {}`. */
+  bool inspect_view_nested;
   /* The @@toStringTag when it differs from cls: String() answers
    * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`, or
    * `<tag> <view>` when the tag ends with "." and cls, as Node does. */

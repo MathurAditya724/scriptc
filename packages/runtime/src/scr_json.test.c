@@ -391,6 +391,30 @@ static bool buffered_after_read(ScrDyn *d) {
   return buffered(d);
 }
 
+/* A collector pass can buffer a number or string box that it reached
+ * through an owner that traces it: scr_xg_release, settling an edge a
+ * restricted pass skipped, calls scr_cyc_on_release on the target. The
+ * box's last release must take it out of its candidate buffer before its
+ * block returns to the free list, which hands it to the next box. */
+static void buffered_leaf_release(void) {
+  for (uint16_t gen = SCR_CYC_NURSERY; gen < SCR_CYC_NGENS; gen++) {
+    ScrStr *text = scr_str_new("buffered", 8);
+    ScrDyn *leaves[2] = {scr_dyn_new_str(text), scr_dyn_new_num(0.5)};
+    scr_str_release(text);
+    for (int i = 0; i < 2; i++) {
+      scr_cyc_set_gen(scr_cyc_hdr(leaves[i]), gen);
+      scr_cyc_on_release(leaves[i]);
+      scr_dyn_release(leaves[i]);
+    }
+    ScrDyn *fresh[2] = {scr_dyn_new_num(1.5), scr_dyn_new_num(2.5)};
+    assert(!buffered(fresh[0]) && !buffered(fresh[1]));
+    scr_collect_cycles();
+    assert(fresh[0]->v.num == 1.5 && fresh[1]->v.num == 2.5);
+    scr_dyn_release(fresh[0]);
+    scr_dyn_release(fresh[1]);
+  }
+}
+
 static ScrDyn *parse_text(const char *text) {
   ScrStr *input = scr_str_new(text, strlen(text));
   ScrDyn *parsed = scr_json_parse(input);
@@ -823,6 +847,7 @@ int main(void) {
   shared_property_keys();
   checked_leaf_cycles();
   checked_number_storage();
+  buffered_leaf_release();
   json_intact_regions();
   json_schema_parse();
   json_schema_special_names();

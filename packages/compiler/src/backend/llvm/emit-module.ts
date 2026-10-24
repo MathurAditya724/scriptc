@@ -344,6 +344,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
+  // URL programs give the host parser the IDNA unit's ToASCII.
+  const usesUrlIdna = runtimeFeatures.urlIdna;
   const snapshotsTlsCa = runtimeFeatures.tls || runtimeFeatures.tlsCa;
   // The process verdict has the same precedence as the C reference
   // emitter: node:test owns the final status when present; otherwise an
@@ -396,6 +398,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
+  if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
@@ -646,7 +649,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // class-object shape { rc, pre, post, ctor, name } — field reads on
     // builtin errors and classval loads GEP through these.
     `%ScrError = type { ${emitter.sizeType}, ptr, ptr, ptr, ptr, ptr, i8, i8, i8, i8, i8, ptr, ptr }`,
-    `%ScrClassObj = type { ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr }`,
+    `%ScrClassObj = type { ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ptr, ${emitter.sizeType} }`,
     // The runtime emitter prefix { rc, vt, reg, cls } — user subclasses
     // embed it (classes.ts), and bare-emitter GEPs address through it.
     `%ScrEmitter = type { ${emitter.sizeType}, ptr, ptr, ptr }`,
@@ -1027,6 +1030,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
+    ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
