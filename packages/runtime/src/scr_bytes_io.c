@@ -635,7 +635,8 @@ void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *bu
 #endif
 }
 
-static bool scr_fs_read_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *);
+static bool scr_fs_read_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *,
+                                 double *);
 static bool scr_fs_encoding_chk(const ScrDyn *);
 static bool scr_fs_int_range_chk(const ScrDyn *, const char *, double, double, const char *);
 static bool scr_fs_length_int32(const ScrDyn *, double *);
@@ -904,7 +905,12 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     }
     if (!scr_fs_cb_chk(callback, "cb")) return NULL;
   }
-  if (!strcmp(op, "read") && count >= 4 && !scr_fs_read_validate(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) return NULL;
+  /* The read length after `length |= 0`, converted once (a valueOf call
+   * runs once, as in Node). */
+  double readLength = 0;
+  if (!strcmp(op, "read") && count >= 4 &&
+      !scr_fs_read_validate(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), &readLength))
+    return NULL;
   /* write checks its fd first, then the buffer form's callback, offset and
    * length (validateOffsetLengthWrite), or the string form's data and
    * callback. */
@@ -1121,7 +1127,7 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       double offset = ownedBuffer ? scr_fs_cb_option_number(options, "offset", 0) : scr_fs_cb_number(ARG(2), "offset", 0);
       double length = bytes->len - offset;
       if (ownedBuffer) length = scr_fs_cb_option_number(options, "length", length);
-      else if (readOp && count >= 4) scr_fs_length_int32(ARG(3), &length);
+      else if (readOp && count >= 4) length = readLength;
       else length = scr_fs_cb_number(ARG(3), "length", length);
       double position = ownedBuffer ? scr_fs_cb_option_number(options, "position", -1) : scr_fs_cb_number(ARG(4), "position", -1);
       if (!scr_exc_pending()) result = scr_dyn_new_num(readOp ? scr_fs_read_sync(fd, bytes, offset, length, position) : scr_fs_write_sync(fd, bytes, offset, length, position));
@@ -1973,9 +1979,10 @@ static bool scr_fs_bigint_position_chk(ScrBigInt *position, double length) {
  * Node's order: the fd, the buffer, the offset (an integer >= 0), the
  * length as `length |= 0`, the position (validatePosition, against that
  * length), then for a non-empty read the empty-buffer and
- * validateOffsetLengthRead checks. */
+ * validateOffsetLengthRead checks. The converted length goes to
+ * *length_out when it is not NULL, so the read does not convert again. */
 static bool scr_fs_read_validate(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
-                                 const ScrDyn *length, const ScrDyn *position) {
+                                 const ScrDyn *length, const ScrDyn *position, double *length_out) {
   if (fd->kind != SCR_DYN_NUM) {
     scr_dyn_arg_type_fail("fd", "of type number", fd);
     return false;
@@ -1995,6 +2002,7 @@ static bool scr_fs_read_validate(const ScrDyn *fd, const ScrDyn *buffer, const S
   }
   double count = 0;
   if (!scr_fs_length_int32(length, &count)) return false;
+  if (length_out) *length_out = count;
   if (!scr_fs_dyn_absent(position)) {
     if (position->kind == SCR_DYN_BIGINT) {
       if (!scr_fs_bigint_position_chk(position->v.bigint, count)) return false;
@@ -2034,7 +2042,7 @@ static bool scr_fs_read_validate(const ScrDyn *fd, const ScrDyn *buffer, const S
 
 void scr_fs_read_chk(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
                      const ScrDyn *length, const ScrDyn *position, const ScrStr *fence) {
-  if (scr_fs_read_validate(fd, buffer, offset, length, position)) scr_throw_lowering_fence(fence);
+  if (scr_fs_read_validate(fd, buffer, offset, length, position, NULL)) scr_throw_lowering_fence(fence);
 }
 
 /* createReadStream/createWriteStream(path, options?): getOptions'
@@ -2090,9 +2098,8 @@ double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn
     scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", buffer);
     return 0;
   }
-  if (!scr_fs_read_validate(fd, buffer, offset, length, position)) return 0;
   double count = 0;
-  if (!scr_fs_length_int32(length, &count)) return 0;
+  if (!scr_fs_read_validate(fd, buffer, offset, length, position, &count)) return 0;
   if (count == 0) return 0;
   double at = scr_fs_dyn_absent(position)                ? -1
               : position->kind == SCR_DYN_BIGINT ? scr_bigint_to_f64(position->v.bigint)

@@ -1,7 +1,8 @@
 'use strict';
 // fs.read, fs.readSync and fs.write check their arguments in Node's order
 // and with Node's errors: the fd, the buffer, the offset, `length |= 0`,
-// number and bigint positions, and the buffer window.
+// number and bigint positions, and the buffer window. A length with a
+// valueOf method is converted once.
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -48,6 +49,11 @@ attempt('readSync offset 4', () => fs.readSync(fd, Buffer.alloc(3), 4, 1, 0));
 attempt('readSync buffer number', () => fs.readSync(fd, 3, 0, 1, 0));
 attempt('readSync fd null', () => fs.readSync(null, Buffer.alloc(3), 0, 1, 0));
 console.log(fs.readSync(fd, Buffer.alloc(3), 0, 0.5, 0), fs.readSync(fd, Buffer.alloc(3), 0, 2.5, 0));
+let syncCalls = 0;
+const syncLength = { valueOf: () => (++syncCalls === 1 ? 2 : 3) };
+const syncTarget = Buffer.alloc(3);
+const syncCount = fs.readSync(fd, syncTarget, 0, syncLength, 0);
+console.log('readSync valueOf', syncCount, syncCalls, syncTarget.toString('utf8', 0, syncCount));
 
 attempt('write fd null', () => fs.write(null, Buffer.alloc(1), 0, 1, noop));
 attempt('write fd "1"', () => fs.write('1', 'x', noop));
@@ -63,7 +69,12 @@ fs.read(fd, Buffer.alloc(2), 0, 2, 2n, (error, count, buffer) => {
   console.log('read 2n', error, count, buffer.toString());
   fs.write(fd, Buffer.from('XY'), 0, 2, 0, (error2, written) => {
     console.log('wrote', error2, written, fs.readFileSync(file, 'utf8'));
-    fs.closeSync(fd);
-    fs.rmSync(dir, { recursive: true });
+    let calls = 0;
+    const length = { valueOf: () => (++calls === 1 ? 1 : 3) };
+    fs.read(fd, Buffer.alloc(3), 0, length, 0, (error3, count3, buffer3) => {
+      console.log('read valueOf', error3, count3, calls, buffer3.toString('utf8', 0, count3));
+      fs.closeSync(fd);
+      fs.rmSync(dir, { recursive: true });
+    });
   });
 });
