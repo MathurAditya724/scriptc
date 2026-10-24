@@ -18,8 +18,11 @@ import {
   superIntoResultSlot,
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
-import { lowerReadlineUiNew } from "./builtins/readline.js";
-import { builtinMemberRequireDecl } from "./builtins/module-bindings.js";
+import { lowerReadlineInterfaceNew, lowerReadlineUiNew } from "./builtins/readline.js";
+import {
+  builtinMemberBindingTarget,
+  builtinMemberRequireDecl,
+} from "./builtins/module-bindings.js";
 import { checkedClassUnionAssertion } from "./class-assertions.js";
 import { collectClassMethodMutations } from "./class-method-mutations.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -116,6 +119,7 @@ import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./low
 import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
+import { initializedCollectionType } from "./js-collection-types.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
 import { knownBufEncoding, lowerBufferConstruct } from "./containers/bytes.js";
@@ -484,6 +488,10 @@ export interface ClassInfo {
   localPrototypeData?: true;
   prototypeMethodValues?: Map<string, IrExpr>;
   prototypeReflectionReady?: true;
+  /** The global that records at run time that the prototype view was
+   * populated by reflection, so it holds its own `constructor` until the
+   * program deletes it (prototypeReflectedFlag). */
+  prototypeReflectedFlag?: string;
   prototypeObservedMethodsReady?: true;
   /** The globals holding each observed method's original prototype value
    * (set when the prototype data is built), by method name. A typed call
@@ -9822,7 +9830,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   }
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
-  const readlineUi = lowerReadlineUiNew(lowerer, expr);
+  const readlineUi = lowerReadlineUiNew(lowerer, expr) ?? lowerReadlineInterfaceNew(lowerer, expr);
   if (readlineUi) return readlineUi;
   const channel = lowerMessageChannelNew(lowerer, expr) ?? lowerBroadcastChannelNew(lowerer, expr);
   if (channel) return channel;
@@ -10134,6 +10142,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // locals and the composed member reads all flow. The data argument
   // feeds THREE field computations, so construction goes through an
   // interned helper whose parameter evaluates it exactly once.
+  // It runs before the standard-library constructor fence below, which
+  // also sees `const X = require("crypto").X509Certificate` as the
+  // builtin class.
   {
     const callee = expr.expression;
     const isX509 =
@@ -10181,7 +10192,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // (a no-op for every non-import= binding).
     if (ts.isIdentifier(expr.expression)) fenceEarlyAliasUse(lowerer, expr.expression, expr);
     const identifier = ts.isIdentifier(expr.expression) ? expr.expression : expr.expression.name;
-    const symbol = ts.isIdentifier(identifier) ? lowerer.resolveValueSymbol(identifier) : null;
+    // `const SD = require("string_decoder").StringDecoder; new SD()`
+    // constructs the member, as a named import of it does.
+    const symbol = builtinMemberBindingTarget(
+      lowerer,
+      ts.isIdentifier(identifier) ? lowerer.resolveValueSymbol(identifier) : null,
+    );
     if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Array")) {
       return lowerArrayConstructor(lowerer, expr, expr.arguments?.nodes ?? []);
     }
@@ -10486,6 +10502,29 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         const time: IrExpr = { kind: "libCall", fn: "date.getTime", args: [arg], type: F64, loc };
         return { kind: "libCall", fn: "date.newMs", args: [time], type: DATE_T, loc };
       }
+      // A union (`Date | string | number`) or checked-dynamic value: the
+      // runtime's constructor reads a Date's time value, parses a string
+      // and converts anything else to a primitive and a number.
+      if (
+        (arg.type.kind === "union" || arg.type.kind === "dyn") &&
+        lowerer.dynConvertible(arg.type)
+      ) {
+        const value: IrExpr = {
+          kind: "libCall",
+          fn: "date.nativeNewValue",
+          args: [
+            {
+              kind: "dynArrLit",
+              elems: [lowerer.coerceToExpected(arg, DYN)],
+              type: DYN,
+              loc,
+            },
+          ],
+          type: DYN,
+          loc,
+        };
+        return { kind: "libCall", fn: "date.checkedValue", args: [value], type: DATE_T, loc };
+      }
       lowerer.noLowering(
         `new Date of '${lowerer.fmt(arg.type)}' values`,
         args[0]!,
@@ -10617,7 +10656,11 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       // expression). The CONTEXTUAL type carries the annotation — adopt
       // it when it is a supported map. TS type arguments keep winning:
       // their expression type already maps.
-      if (mapped?.kind !== "map" || contextualSeed) {
+      const inferred = initializedCollectionType(lowerer, expr);
+      if (inferred) {
+        tsType = inferred;
+        mapped = lowerer.mapTypeOf(inferred);
+      } else if (mapped?.kind !== "map" || contextualSeed) {
         const ctx = lowerer.checker.getContextualType(expr);
         const ctxMapped = ctx ? lowerer.mapTypeOf(ctx) : null;
         if (ctx && ctxMapped?.kind === "map") {
@@ -10757,7 +10800,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // `new Set<T>()`: construct + bulk add from supported values,
     // including live collection cursors. Duplicates collapse in insertion order.
     if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Set")) {
-      const tsType = lowerer.typeOf(expr);
+      const inferred = initializedCollectionType(lowerer, expr);
+      const tsType = inferred ?? lowerer.typeOf(expr);
       let mapped = lowerer.mapTypeOf(tsType);
       const fieldType = assignedThisFieldType(lowerer, expr);
       if (mapped?.kind !== "set" && fieldType?.kind === "set") mapped = fieldType;

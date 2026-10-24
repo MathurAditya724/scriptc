@@ -994,7 +994,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         LOOPS.of(emitter).denseLoopsEnabled = false;
         try {
           B.startBlock(slow);
-          emitter.emitStmt(s);
+          emitSlowCopy(emitter, s);
           B.br(done);
           B.startBlock(fast);
           LOOPS.of(emitter).denseLoop = dense;
@@ -1018,7 +1018,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         LOOPS.of(emitter).byteWindowsEnabled = false;
         try {
           B.startBlock(slow);
-          emitter.emitStmt(s);
+          emitSlowCopy(emitter, s);
           B.br(done);
           B.startBlock(fast);
           emitter.integerRanges = window.ranges;
@@ -1072,7 +1072,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.condBr(safe, fast, slow);
         B.startBlock(slow);
         LOOPS.of(emitter).countedLoopsEnabled = false;
-        emitter.emitStmt(s);
+        emitSlowCopy(emitter, s);
         LOOPS.of(emitter).countedLoopsEnabled = true;
         B.br(countedJoin);
         B.startBlock(fast);
@@ -2049,7 +2049,7 @@ function emitCallbackVersionedLoop(
   emitter.callbackVersioning.add(s);
   try {
     B.startBlock(slow);
-    emitter.emitStmt(s);
+    emitSlowCopy(emitter, s);
     B.br(done);
     B.startBlock(fast);
     for (const { ref } of bindings) emitter.knownCallbacks.add(ref.localId);
@@ -2060,6 +2060,20 @@ function emitCallbackVersionedLoop(
     emitter.callbackVersioning.delete(s);
   }
   B.startBlock(done);
+}
+
+/** The copy of a versioned loop that runs when its guard fails. Its loops
+ * get no speculative or int32 kind copies, which would emit each loop again
+ * for a path that rarely runs. Proven integer loops, which emit one copy,
+ * are kept. */
+function emitSlowCopy(emitter: LlEmitter, s: IrStmt): void {
+  const copies = emitter.loopCopiesEnabled;
+  emitter.loopCopiesEnabled = false;
+  try {
+    emitter.emitStmt(s);
+  } finally {
+    emitter.loopCopiesEnabled = copies;
+  }
 }
 
 /** Entries in a row whose fast copy bailed before a speculative loop site
@@ -2082,28 +2096,56 @@ function emitVersionedLoop(
   const fast = B.newLabel("bytes.version.fast"),
     slow = B.newLabel("bytes.version.slow"),
     done = B.newLabel("bytes.version.done");
-  emitBytesLoopVersionGuard(emitter, version, fast, slow);
+  const unitsFast =
+    version.unitsReceiver !== null ? B.newLabel("bytes.version.fast.units") : undefined;
+  const guard = emitBytesLoopVersionGuard(emitter, version, fast, slow, unitsFast);
+  const units = guard?.units ?? null;
   const originalBounds = emitter.bytesBounds,
     originalOwned = emitter.bytesOwned,
-    originalRanges = emitter.integerRanges;
+    originalRanges = emitter.integerRanges,
+    originalUnitReads = emitter.stringUnitReads,
+    originalLengthReads = emitter.stringLengthReads;
   LOOPS.of(emitter).bytesLoopVersioning.add(s);
   try {
     B.startBlock(slow);
-    emitter.emitStmt(s);
+    emitSlowCopy(emitter, s);
     B.br(done);
-    B.startBlock(fast);
-    emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
     if (version.owned.size > 0) emitter.bytesOwned = new Set([...originalOwned, ...version.owned]);
     if (version.ranges.size > 0)
       emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
     if (version.counted?.guarded || version.paired?.loop.guarded)
       LOOPS.of(emitter).provenCountedGuards.add(s);
+    B.startBlock(fast);
+    emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
+    // Both fast copies read the string's length the guard took.
+    const length = guard?.length;
+    if (length != null && version.unitLengths.size > 0)
+      emitter.stringLengthReads = new Map([
+        ...originalLengthReads,
+        ...[...version.unitLengths].map((node) => [node, length] as const),
+      ]);
     emitter.emitStmt(s);
     B.br(done);
+    if (unitsFast !== undefined && units !== null) {
+      // The string reads take the receiver's UTF-16 units.
+      B.startBlock(unitsFast);
+      emitter.bytesBounds = new Set([
+        ...originalBounds,
+        ...[...version.bounds].filter((node) => !version.stringReads.has(node)),
+      ]);
+      emitter.stringUnitReads = new Map([
+        ...originalUnitReads,
+        ...[...version.stringReads].map((node) => [node, units] as const),
+      ]);
+      emitter.emitStmt(s);
+      B.br(done);
+    }
   } finally {
     emitter.bytesBounds = originalBounds;
     emitter.bytesOwned = originalOwned;
     emitter.integerRanges = originalRanges;
+    emitter.stringUnitReads = originalUnitReads;
+    emitter.stringLengthReads = originalLengthReads;
     LOOPS.of(emitter).provenCountedGuards.delete(s);
     LOOPS.of(emitter).bytesLoopVersioning.delete(s);
   }
@@ -2120,6 +2162,7 @@ export function emitLoopCopies(
   const plan =
     allowed &&
     emitter.speculativeLoopsEnabled &&
+    emitter.loopCopiesEnabled &&
     emitter.speculation === null &&
     emitter.speculationResume === null
       ? planSpeculativeLoop(
@@ -2147,6 +2190,7 @@ export function emitLoopCopies(
     const kinds =
       allowed &&
       emitter.speculativeLoopsEnabled &&
+      emitter.loopCopiesEnabled &&
       emitter.int32Slots.checkedInt32Arrays.size > 0 &&
       emitter.int32Kinds === null &&
       emitter.speculation === null &&
@@ -2437,7 +2481,7 @@ function planProvenLoop(
   loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" }>,
 ): ProvenLoopPlan | null {
   if (
-    loop.kind !== "for" ||
+    loop.kind === "doWhile" ||
     !emitter.speculativeLoopsEnabled ||
     emitter.speculation !== null ||
     emitter.speculationResume !== null ||

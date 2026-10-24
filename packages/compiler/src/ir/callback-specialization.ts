@@ -130,10 +130,7 @@ export function specializeCallbackCalls(
   const { written, closureWritten } = rebindings(mod);
   const copies = new Map<string, IrFunction>();
   const candidates = new Map<string, Candidate>();
-  let totalNodes = 0;
   for (const fn of mod.functions) {
-    const nodes = countNodes(fn);
-    totalNodes += nodes;
     if (
       !(fn.ownsPrototype || fn.name.startsWith("%arr.")) ||
       fn.name === mod.entry ||
@@ -142,10 +139,11 @@ export function specializeCallbackCalls(
       fn.captures !== undefined ||
       fn.classCaptures?.length ||
       fn.fastRead !== undefined ||
-      fn.speculativeDispatch ||
-      nodes > MAX_FUNCTION_NODES
+      fn.speculativeDispatch
     )
       continue;
+    const nodes = countNodes(fn);
+    if (nodes > MAX_FUNCTION_NODES) continue;
     const rebound = written.get(fn.name)!;
     const slots: number[] = [];
     fn.params.forEach((param, index) => {
@@ -165,19 +163,30 @@ export function specializeCallbackCalls(
   const definitions = new Map<string, Map<string, IrExpr>>();
   const globalIds = new Set(mod.globals?.map((global) => global.id));
   const globalWrites = new Map<string, IrExpr[]>();
+  // The sum of countNodes over every function, counted by the walk below.
+  let totalNodes = 0;
   for (const fn of mod.functions) {
+    let nodes = 0;
     const values = new Map<string, IrExpr[]>();
     const counts = new Map<string, number>();
     const record = (id: string, value: IrExpr | null, weight: number): void => {
       counts.set(id, (counts.get(id) ?? 0) + weight);
-      if (value) values.set(id, [...(values.get(id) ?? []), value]);
+      if (value) {
+        const list = values.get(id);
+        if (list === undefined) values.set(id, [value]);
+        else list.push(value);
+      }
     };
     everyStmtList(fn.body, {
       stmt: (stmt) => {
+        nodes++;
         if (stmt.kind === "varDecl") record(stmt.localId, stmt.init, stmt.init ? 1 : 0);
         if (stmt.kind === "assign") {
-          if (globalIds.has(stmt.localId))
-            globalWrites.set(stmt.localId, [...(globalWrites.get(stmt.localId) ?? []), stmt.value]);
+          if (globalIds.has(stmt.localId)) {
+            const list = globalWrites.get(stmt.localId);
+            if (list === undefined) globalWrites.set(stmt.localId, [stmt.value]);
+            else list.push(stmt.value);
+          }
           record(stmt.localId, stmt.value, 1);
         }
         if (stmt.kind === "forOf") record(stmt.localId, null, 2);
@@ -186,6 +195,7 @@ export function specializeCallbackCalls(
         return true;
       },
       expr: (expr) => {
+        nodes++;
         if (expr.kind === "assignExpr" || expr.kind === "incDec") {
           record(expr.localId, null, 2);
           if (globalIds.has(expr.localId)) globalWrites.set(expr.localId, []);
@@ -208,6 +218,7 @@ export function specializeCallbackCalls(
       )
         single.set(id, list[0]!);
     definitions.set(fn.name, single);
+    totalNodes += Math.min(nodes, MAX_FUNCTION_NODES + 1);
   }
   const globalDefinitions = new Map<string, IrExpr>();
   for (const global of mod.globals ?? [])

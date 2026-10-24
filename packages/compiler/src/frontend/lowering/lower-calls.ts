@@ -1,5 +1,7 @@
+import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
+import { lowerDateToPrimitiveCall } from "./builtins/dates.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerDynStreamMemberCall } from "./dyn-streams.js";
@@ -1053,6 +1055,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
     const bi = lowerer.builtinImportOf(expr.expression);
     if (bi) return lowerBuiltinCall(lowerer, expr, bi, loc);
+    // A constant bound to an assert method (`const ok = assert.ok`) called
+    // directly is that assertion, with the message Node quotes the call for.
+    {
+      const alias = assertFunctionAliasOf(lowerer, expr.expression);
+      const served = alias ? lowerer.lowerAssertModuleCall(expr, alias, loc) : null;
+      if (served) return served;
+    }
     // The assert module binding called DIRECTLY (`assert(x)` — a default
     // import or the CJS `const assert = require("assert")`): Node's
     // module object IS assert.ok; namespace-import bindings fence inside
@@ -1817,6 +1826,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // The element spelling of an unsupported native Web method must fence
   // before lowering the callee into a checked-dynamic keyed read.
   if (ts.isElementAccessExpression(expr.expression)) {
+    const datePrimitive = lowerDateToPrimitiveCall(lowerer, expr, expr.expression);
+    if (datePrimitive) return datePrimitive;
     const timersDispose = lowerMockTimersElementCall(lowerer, expr, expr.expression);
     if (timersDispose) return timersDispose;
     const symbolMethod = lowerClassSymbolMethodCall(lowerer, expr);
@@ -2457,6 +2468,9 @@ function lowerNumberConstructorValue(
     };
   const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
   if (optionalNumber) return optionalNumber;
+  // A Date's number hint answers its time value.
+  if (arg.type.kind === "date")
+    return { kind: "libCall", fn: "date.valueOf", args: [arg], type: F64, loc };
   // A program class instance converts through its own methods.
   const classNumber = classToNumberConversion(lowerer, arg, argNode);
   if (classNumber) return classNumber;
@@ -8705,7 +8719,12 @@ function lowerObjectStaticCall(
       (probed && isDynTypedRefType(probed.type)) ||
       (probed?.type.kind === "object" && lowerer.errorHierarchyClassOf(probed.type.className)) ||
       (probed && constructor && (constructor.callableBase || hasRuntimeStatics(constructor))) ||
-      (probed?.type.kind === "func" && lowerer.dynConvertible(probed.type))
+      (probed?.type.kind === "func" && lowerer.dynConvertible(probed.type)) ||
+      // null, undefined and unions of untyped JavaScript values: the same
+      // probe, whose ToObject throws Node's TypeError on nullish.
+      (probed &&
+        (isUnitType(probed.type) || probed.type.kind === "union") &&
+        lowerer.dynConvertible(probed.type))
     ) {
       const loc = locOf(call);
       const receiver = lowerer.coerceToExpected(probed, DYN);
