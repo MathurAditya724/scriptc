@@ -40,6 +40,11 @@ function fixture(debug = false) {
   const library = join(sdk, "libSystem.tbd");
   writeFileSync(runtime, "runtime");
   writeFileSync(library, "system library");
+  // A directory's identity is its stat. Where the file system stamps times
+  // at the kernel tick, a file added within the tick of the last write
+  // leaves the directory's times unchanged; an old time makes every later
+  // change to the SDK directory visible.
+  utimesSync(sdk, 0, 0);
   const cache = new NativeCache(join(root, "cache"));
   const key = contentDigest("llvm and options");
   const open = () => new NativeExecutableCache(cache, key, "clang", debug, [runtime]);
