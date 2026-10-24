@@ -1739,6 +1739,21 @@ ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i) {
   return result;
 }
 
+ScrDyn *scr_dyn_arr_custom_member(const ScrDyn *d, const char *key, size_t key_len) {
+  if (d->v.arr.properties && scr_dyn_obj_get(d->v.arr.properties, key, key_len))
+    return scr_dyn_obj_read_receiver(d->v.arr.properties, key, key_len, d);
+  for (const ScrDyn *link = d->prototype; link && link != scr_builtin_array_prototype;
+       link = link->prototype) {
+    const ScrDyn *table = link->kind == SCR_DYN_OBJ ? link
+                          : link->kind == SCR_DYN_ARR ? link->v.arr.properties
+                                                      : NULL;
+    if (table && scr_dyn_obj_get(table, key, key_len))
+      return scr_dyn_obj_read_receiver(table, key, key_len, d);
+    if (link->kind != SCR_DYN_OBJ && link->kind != SCR_DYN_ARR) break;
+  }
+  return NULL;
+}
+
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key) {
   if (d->v.arr.properties && scr_dyn_obj_get(d->v.arr.properties, key->data, key->len))
     return scr_dyn_obj_read_receiver(d->v.arr.properties, key->data, key->len, d);
