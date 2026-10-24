@@ -296,6 +296,7 @@ std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
 
 // Owns the analysis managers a pipeline needs for one module.
 struct Pipeline {
+  PassInstrumentationCallbacks Callbacks;
   LoopAnalysisManager LAM;
   FunctionAnalysisManager FAM;
   CGSCCAnalysisManager CGAM;
@@ -304,12 +305,25 @@ struct Pipeline {
 
   Pipeline(TargetMachine &Machine, OptimizationLevel Level,
            std::optional<PGOOptions> Profile = std::nullopt)
-      : PB(&Machine, tuningFor(Level), std::move(Profile)) {
+      : PB(&Machine, tuningFor(Level), std::move(Profile), &Callbacks) {
     PB.registerModuleAnalyses(MAM);
     PB.registerCGSCCAnalyses(CGAM);
     PB.registerFunctionAnalyses(FAM);
     PB.registerLoopAnalyses(LAM);
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+  }
+
+  // Adds to Count the functions the profile annotation gave counts to, as
+  // soon as that pass has run: inlining and dead code elimination later in
+  // the pipeline delete annotated functions.
+  void countAnnotated(std::atomic<uint64_t> &Count) {
+    Callbacks.registerAfterPassCallback(
+        [&Count](StringRef PassID, Any IR, const PreservedAnalyses &) {
+          if (PassID != "PGOInstrumentationUse")
+            return;
+          if (const auto *M = llvm::any_cast<const Module *>(&IR))
+            Count += annotatedFunctions(**M);
+        });
   }
 };
 
@@ -499,9 +513,9 @@ emitModule(Module &M, TargetMachine &Machine, OptimizationLevel Level,
     M.getContext().setDiagnosticHandler(
         std::make_unique<ProfileMatchHandler>(Match));
   Pipeline P(Machine, Level, std::move(Profile));
-  P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
   if (Annotating)
-    Match.Annotated += annotatedFunctions(M);
+    P.countAnnotated(Match.Annotated);
+  P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
   if (std::optional<EmitFailure> Failure =
           verify(M, "post_optimization_verification_failed"))
     return Failure;
@@ -716,6 +730,8 @@ compileOptimizedPartitions(const EmitOptions &Options,
       // Profile instrumentation or annotation happens here, before the thin
       // link; the post-link optimization reads the annotated weights.
       Pipeline P(*Machine, Level, profileOptions(Options));
+      if (Annotating)
+        P.countAnnotated(PartitionMatch.Annotated);
       ModulePassManager MPM = P.PB.buildThinLTOPreLinkDefaultPipeline(Level);
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,
                                     /*EmitSummaryIndex=*/true,
@@ -723,7 +739,6 @@ compileOptimizedPartitions(const EmitOptions &Options,
       MPM.run(Mod, P.MAM);
     }
     if (Annotating) {
-      PartitionMatch.Annotated += annotatedFunctions(Mod);
       Match.add(PartitionMatch);
       // Stored before the summary, so a reused summary finds its counts.
       Cache.store(Key, "match", PartitionMatch.serialize());
