@@ -692,34 +692,32 @@ export function limitInlineReleases(
   parts: readonly string[],
   mode: InlineRcMode | undefined,
 ): string[] {
-  const dyn = limitInlineReleaseFamily(parts, "dyn", INLINE_DYN_RELEASES_PER_FUNCTION);
-  return mode === "release"
-    ? limitInlineReleaseFamily(dyn, "str", INLINE_STR_RELEASES_PER_FUNCTION)
-    : dyn;
-}
-
-function limitInlineReleaseFamily(
-  parts: readonly string[],
-  family: "dyn" | "str",
-  max: number,
-): string[] {
-  const call = `call void @${inlineRcName(family, "release")}(`;
-  const runtime = `call void @${INLINE_RC_FAMILIES[family]!.release}(`;
+  const families: readonly ("dyn" | "str")[] = mode === "release" ? ["dyn", "str"] : ["dyn"];
+  const limits = families.map((family) =>
+    family === "dyn" ? INLINE_DYN_RELEASES_PER_FUNCTION : INLINE_STR_RELEASES_PER_FUNCTION,
+  );
+  const calls = families.map((family) => `${inlineRcName(family, "release")}(`);
+  const runtimes = families.map((family) => `call void @${INLINE_RC_FAMILIES[family]!.release}(`);
+  const head = "call void @";
+  const prefix = `${head}${inlineRcName("", "release")}`;
   // The function each release site belongs to: the last `define` line
-  // before it, counted over the joined text.
+  // before it, counted over the joined text. One walk over each part finds
+  // the sites of every family.
   const sites = (
     part: string,
-    each: (offset: number, fn: number) => void,
+    each: (offset: number, family: number, fn: number) => void,
     first: number,
   ): number => {
     let fn = first;
     let define = part.startsWith("define ") ? 0 : part.indexOf("\ndefine ");
-    for (let at = part.indexOf(call); at >= 0; at = part.indexOf(call, at + call.length)) {
+    for (let at = part.indexOf(prefix); at >= 0; at = part.indexOf(prefix, at + prefix.length)) {
+      const family = calls.findIndex((call) => part.startsWith(call, at + head.length));
+      if (family < 0) continue;
       while (define >= 0 && define < at) {
         fn++;
         define = part.indexOf("\ndefine ", define + 1);
       }
-      each(at, fn);
+      each(at, family, fn);
     }
     while (define >= 0) {
       fn++;
@@ -727,29 +725,47 @@ function limitInlineReleaseFamily(
     }
     return fn;
   };
-  const counts = new Map<number, number>();
+  const counts = families.map(() => new Map<number, number>());
+  // The functions each part's sites can belong to.
+  const spans: number[] = [];
   let fn = 0;
-  for (const part of parts) fn = sites(part, (_, f) => counts.set(f, (counts.get(f) ?? 0) + 1), fn);
-  const over = new Set([...counts].filter(([, n]) => n > max).map(([f]) => f));
-  if (over.size === 0) return [...parts];
-  fn = 0;
-  return parts.map((part) => {
-    const cuts: number[] = [];
+  for (const part of parts) {
+    spans.push(fn);
     fn = sites(
       part,
-      (at, f) => {
-        if (over.has(f)) cuts.push(at);
-      },
+      (_, family, f) => counts[family]!.set(f, (counts[family]!.get(f) ?? 0) + 1),
       fn,
+    );
+    spans.push(fn);
+  }
+  const over = counts.map(
+    (count, family) => new Set([...count].filter(([, n]) => n > limits[family]!).map(([f]) => f)),
+  );
+  if (over.every((set) => set.size === 0)) return [...parts];
+  const anyOver = new Set(over.flatMap((set) => [...set]));
+  const touches = (from: number, to: number): boolean => {
+    for (let f = from; f <= to; f++) if (anyOver.has(f)) return true;
+    return false;
+  };
+  return parts.map((part, index) => {
+    const from = spans[2 * index]!;
+    if (!touches(from, spans[2 * index + 1]!)) return part;
+    const cuts: { at: number; family: number }[] = [];
+    sites(
+      part,
+      (at, family, f) => {
+        if (over[family]!.has(f)) cuts.push({ at, family });
+      },
+      from,
     );
     if (cuts.length === 0) return part;
     let out = "";
-    let from = 0;
-    for (const at of cuts) {
-      out += part.slice(from, at) + runtime;
-      from = at + call.length;
+    let next = 0;
+    for (const cut of cuts) {
+      out += part.slice(next, cut.at) + runtimes[cut.family]!;
+      next = cut.at + head.length + calls[cut.family]!.length;
     }
-    return out + part.slice(from);
+    return out + part.slice(next);
   });
 }
 
