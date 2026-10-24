@@ -16,13 +16,14 @@ import {
 } from "../../../ir/ir.js";
 import { everyStmtList } from "../../../ir/traverse.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
-import { X509_PUBLIC_KEY_FIELD } from "../../type-mapper.js";
+import { X509_DER_FIELD, X509_PUBLIC_KEY_FIELD } from "../../type-mapper.js";
 import { keyedHelperName } from "../stable-names.js";
 import { x509RecordCall } from "../lower-classes.js";
 
 /* node:crypto's X509Certificate members beyond its fields: the methods
  * and the publicKey getter. A certificate is the Dirent-style record
- * (type-mapper.ts), and each member reads its raw DER. checkHost,
+ * (type-mapper.ts), and each member reads the record's hidden copy of its
+ * DER, which writes into the `raw` Buffer leave alone, as in Node. checkHost,
  * checkEmail, checkIP, checkIssued, toLegacyObject and the PEM of
  * toString/toJSON run in scr_x509.c;
  * publicKey, verify and checkPrivateKey read keys in scr_pki.c. The first
@@ -110,7 +111,7 @@ export function refuseX509DynValues(lowerer: Lowerer, functions: readonly IrFunc
 /** String(x509), `${x509}` and x509 + "": the certificate's toString(),
  * its PEM. */
 export function x509ToString(record: IrExpr, loc: SrcLoc): IrExpr {
-  return { kind: "libCall", fn: "crypto.x509Pem", args: [rawOf(record, loc)], type: STRING, loc };
+  return { kind: "libCall", fn: "crypto.x509Pem", args: [derOf(record, loc)], type: STRING, loc };
 }
 
 /** Node keeps a certificate's fields as prototype getters, so own-key
@@ -131,13 +132,13 @@ export function fenceX509KeyWalk(
   );
 }
 
-function rawOf(record: IrExpr, loc: SrcLoc): IrExpr {
+function derOf(record: IrExpr, loc: SrcLoc): IrExpr {
   if (record.type.kind !== "record") return record;
   return {
     kind: "recordGet",
     obj: record,
     shapeId: record.type.shapeId,
-    field: "raw",
+    field: X509_DER_FIELD,
     type: BYTES_U8,
     loc,
   };
@@ -254,7 +255,7 @@ export function lowerX509PublicKey(
               value: {
                 kind: "libCall",
                 fn: "crypto.x509PublicKey",
-                args: [rawOf(c, loc)],
+                args: [derOf(c, loc)],
                 type: DYN,
                 loc,
               },
@@ -310,7 +311,7 @@ export function lowerX509Call(lowerer: Lowerer, call: ts.CallExpression): IrExpr
       `the supported form is ${method.form}`,
     );
   }
-  const raw = rawOf(lowerer.lowerExpr(access.expression), loc);
+  const raw = derOf(lowerer.lowerExpr(access.expression), loc);
   if (method.fn === "crypto.x509LegacyObject") {
     return { kind: "libCall", fn: method.fn, args: [raw], type: DYN, loc };
   }
@@ -337,7 +338,7 @@ export function lowerX509Call(lowerer: Lowerer, call: ts.CallExpression): IrExpr
         loc,
       };
     }
-    const other = rawOf(lowerer.lowerExpr(args[0]!), loc);
+    const other = derOf(lowerer.lowerExpr(args[0]!), loc);
     return { kind: "libCall", fn: method.fn, args: [raw, other], type: BOOL, loc };
   }
   const first = lowerer.lowerExprExpecting(args[0]!, DYN);

@@ -6715,8 +6715,14 @@ function boundVoidReturnType(p: ts.Type, resolveTypeParam?: TypeParamResolver): 
  * filled on the first read (builtins/x509.ts). */
 export const X509_PUBLIC_KEY_FIELD = "%publicKey";
 
+/** The X509Certificate record's hidden copy of its DER, which its methods
+ * read: a program can write into the Buffer `raw` answers, and in Node
+ * that changes neither the certificate's checks nor its PEM. */
+export const X509_DER_FIELD = "%der";
+
 /** The X509Certificate record's fields in @types/node's declaration order
- * ("string?" is string | undefined), then the hidden publicKey slot. */
+ * ("string?" is string | undefined), then the hidden publicKey and DER
+ * slots. */
 export const X509_FIELDS: readonly (readonly [string, IrType | "string?"])[] = [
   ["ca", BOOL],
   ["fingerprint", STRING],
@@ -6735,6 +6741,7 @@ export const X509_FIELDS: readonly (readonly [string, IrType | "string?"])[] = [
   ["validTo", STRING],
   ["validToDate", DATE_T],
   [X509_PUBLIC_KEY_FIELD, DYN],
+  [X509_DER_FIELD, { kind: "bytes", elem: "u8" }],
 ];
 
 export function withUndefinedArm(t: IrType, unions: UnionRegistry): IrType | null {

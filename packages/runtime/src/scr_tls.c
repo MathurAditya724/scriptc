@@ -2232,8 +2232,8 @@ static void scr_tls_opt_fence(const char *api, const char *key, const char *hint
   scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
 }
 
-/* JS truthiness over the dyn kinds — Node reads requestCert /
- * rejectUnauthorized through `if (options.x)`. */
+/* JS truthiness over the dyn kinds — Node reads requestCert (and a
+ * standalone TLSSocket's rejectUnauthorized) through `if (options.x)`. */
 static bool scr_tls_dyn_truthy(const ScrDyn *v) {
   switch (v->kind) {
   case SCR_DYN_UNDEF:
@@ -2243,6 +2243,12 @@ static bool scr_tls_dyn_truthy(const ScrDyn *v) {
   case SCR_DYN_STR: return v->v.str->len > 0;
   default: return true; /* objects, arrays, functions, handles, bytes */
   }
+}
+
+/* tls.Server and tls.connect read rejectUnauthorized as
+ * `options.rejectUnauthorized !== false`: null, 0 and "" keep it on. */
+static bool scr_tls_dyn_not_false(const ScrDyn *v) {
+  return v->kind != SCR_DYN_BOOL || v->v.b;
 }
 
 /* PEM material from a runtime option value: a string, a Buffer/Uint8Array,
@@ -2630,7 +2636,7 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
       continue;
     }
     if (strcmp(e->key, "rejectUnauthorized") == 0) {
-      if (auth != NULL) auth->reject = scr_tls_dyn_truthy(v);
+      if (auth != NULL) auth->reject = scr_tls_dyn_not_false(v);
       continue; /* without client certificates it has no effect */
     }
     if (server_ok && (strcmp(e->key, "ALPNProtocols") == 0 || strcmp(e->key, "minVersion") == 0 ||
@@ -3300,7 +3306,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         continue;
       }
       if (strcmp(e->key, "rejectUnauthorized") == 0) {
-        reject = scr_tls_dyn_truthy(v);
+        reject = scr_tls_dyn_not_false(v);
         continue;
       }
       if (strcmp(e->key, "ca") == 0) {

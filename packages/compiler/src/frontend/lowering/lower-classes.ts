@@ -100,6 +100,7 @@ import {
   jsOpenObjectType,
   typeKey,
   withUnitArm,
+  X509_DER_FIELD,
   X509_PUBLIC_KEY_FIELD,
 } from "../type-mapper.js";
 import {
@@ -11313,6 +11314,8 @@ function x509RecordHelper(
       type: DYN,
       loc,
     }),
+    // A copy: writes into `raw` must not reach the methods.
+    [X509_DER_FIELD]: () => call("crypto.x509RawDer", BYTES_U8),
   };
   /** A string | undefined field: the runtime's text, or undefined for "". */
   function optionalText(local: string, fn: IrLibFn, type: IrType): IrExpr {
