@@ -1100,6 +1100,7 @@ export function arrNewCall(
     elem.kind === "stats" || // fs.Stats snapshots: scr_stats_* adapters, no trace
     elem.kind === "dyn" || // native collection seeds/drains: traced REF
     elem.kind === "regex" || // RegExp values: scr_regex_* adapters, no trace (no refs inside)
+    elem.kind === "date" || // Date objects: scr_date_* adapters, no trace (no refs inside)
     (elem.kind === "array" && traceAdapter(host, elem) !== null);
   if (!useRef) {
     if (small) {
@@ -1163,7 +1164,6 @@ const SCR_ARR_OPS_RELEASE_NOTHING = 2;
 export function boxNewCall(host: ShapeHost, t: IrType): string {
   const plain: Partial<Record<IrType["kind"], number>> = {
     f64: 0,
-    date: 0,
     procStream: 0,
     bool: 1,
     string: 2,
@@ -1188,11 +1188,7 @@ export function boxNewCall(host: ShapeHost, t: IrType): string {
 
 /** Box accessor suffix (boxAccess): scalars unboxed, ref kinds pointers. */
 export function boxAccess(t: IrType): "f64" | "bool" | "ref" {
-  return t.kind === "f64" || t.kind === "date" || t.kind === "procStream"
-    ? "f64"
-    : t.kind === "bool"
-      ? "bool"
-      : "ref";
+  return t.kind === "f64" || t.kind === "procStream" ? "f64" : t.kind === "bool" ? "bool" : "ref";
 }
 
 /* ── record shapes ────────────────────────────────────────────────────── */
@@ -1208,7 +1204,6 @@ export function llFieldType(
   if (POINTER_KINDS.has(t.kind)) return "ptr";
   switch (t.kind) {
     case "f64":
-    case "date":
     case "procStream":
       return "double";
     case "bool":

@@ -269,6 +269,10 @@ void scr_process_set_emit_warning(ScrDyn *fn);
  * made from node_modules) — at once for a static ES import, which Node
  * links before any module evaluates, otherwise on the next tick. */
 void scr_punycode_warn(bool immediate, bool report);
+/* The deprecated Buffer() and new Buffer() called outside node_modules
+ * (scr_async_dyn.c): DEP0005 on the next tick, once, within Node's
+ * 10000-call check (scr_buffer_deprecation_count). */
+void scr_buffer_deprecation(void);
 /* scr_emit_warning once a 'warning' listener exists (scr_lib.c; set by the
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */
@@ -386,6 +390,8 @@ void scr_promise_all_store_f64(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_bool(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_str(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_ref(ScrArr *a, double i, ScrPromise *src);
+/* Stores the fulfilled entry promise itself (+1), for Promise.all's tuple form. */
+void scr_promise_all_store_promise(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_adapt_copy(ScrPromise *dst, ScrPromise *src);
 double scr_promise_payload_f64(ScrPromise *p);
 bool scr_promise_payload_bool(ScrPromise *p);

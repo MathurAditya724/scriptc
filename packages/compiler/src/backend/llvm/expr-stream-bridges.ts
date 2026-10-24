@@ -122,12 +122,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   if (inner.kind === "void") {
     host.declare(`declare void @scr_promise_fulfill_void(ptr)`);
     B.line(`call void @scr_promise_fulfill_void(ptr %dst)`);
-  } else if (
-    inner.kind === "f64" ||
-    inner.kind === "date" ||
-    inner.kind === "procStream" ||
-    inner.kind === "bool"
-  ) {
+  } else if (inner.kind === "f64" || inner.kind === "procStream" || inner.kind === "bool") {
     const fn = inner.kind !== "bool" ? "scr_promise_fulfill_f64" : "scr_promise_fulfill_bool";
     host.declare(
       `declare void @${fn}(ptr, ${host.llType(inner)}${inner.kind === "bool" ? " zeroext" : ""})`,
@@ -996,6 +991,28 @@ export function streamTypedRefMaterializeAdapter(
         nameAfter === undefined
           ? `call void @scr_error_dyn_place_name(ptr ${out}, ptr null, ${host.sizeType} 0)`
           : `call void @scr_error_dyn_place_name(ptr ${out}, ptr ${host.cstr(nameAfter)}, ${host.sizeType} ${Buffer.byteLength(nameAfter, "utf8")})`,
+      );
+    }
+    // A JavaScript Error subclass's property bag records, once a dynamic
+    // write has committed the view, where `name` and `message` were created
+    // (zod's error factory assigns `name` before it defines `message`); the
+    // slots hold their values. A `name` the class's construction sets is
+    // already where errorNameAfter places it among the fields.
+    if (
+      meta.def.errorBagOrder &&
+      meta.root.def.name === "%Error" &&
+      meta.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES)
+    ) {
+      host.declare(`declare void @scr_error_dyn_follow_bag(ptr, ptr, ptr, i1)`);
+      const { index } = classFieldIndex(meta, DYN_CLASS_PROPERTIES);
+      const slot = B.tmp(),
+        bag = B.tmp();
+      B.line(
+        `${slot} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${index}`,
+      );
+      B.line(`${bag} = load ptr, ptr ${slot}`);
+      B.line(
+        `call void @scr_error_dyn_follow_bag(ptr ${out}, ptr ${bag}, ptr %p, i1 ${nameAfter === undefined ? "false" : "true"})`,
       );
     }
     // A frozen, sealed or non-extensible instance's view says so.

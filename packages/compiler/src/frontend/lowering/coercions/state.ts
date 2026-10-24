@@ -1,4 +1,5 @@
 import type { IrType } from "../../../ir/ir.js";
+import type * as ts from "../../ts7/adapter.js";
 
 /** Per-compilation conversion state. Recursive plans are scoped to the
  * active planning stack; only fully validated copy routes are memoized. */
@@ -22,4 +23,7 @@ export class CoercionState {
   /** Unions widenReducedReturn produced: only these read through the
    * width-converting extraction (widthNarrowHelper). */
   readonly widenedReturns = new Set<string>();
+  /** widenReducedReturn's results by declaration and inferred return type,
+   * for the results computed without cutting a recursive widening. */
+  readonly widenedReturnTypes = new Map<ts.Node, Map<ts.Type, IrType>>();
 }

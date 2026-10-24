@@ -64,104 +64,79 @@ stdlib-fence.ts:25:1 - error SC2020: 'Date.prototype.setUTCFullYear with argumen
   24 | const mutableDate = new Date(0);
   25 | mutableDate.setUTCFullYear(2024); // mutation is outside the read-only Date slice
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  26 | const sameDate = mutableDate === mutableDate; // scalar storage must not fake object identity
+  26 | const wr = new WeakRef({});
 
   hint: getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale formatters have no lowering
 
-stdlib-fence.ts:26:18 - error SC1043: comparing non-number, non-string values are not supported yet
+stdlib-fence.ts:26:7 - error SC2020: 'WeakRef<{}>' is part of the standard library types but has no scriptc lowering yet
 
   25 | mutableDate.setUTCFullYear(2024); // mutation is outside the read-only Date slice
-  26 | const sameDate = mutableDate === mutableDate; // scalar storage must not fake object identity
-     |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~
-  27 | const wr = new WeakRef({});
-
-stdlib-fence.ts:27:7 - error SC2020: 'WeakRef<{}>' is part of the standard library types but has no scriptc lowering yet
-
-  26 | const sameDate = mutableDate === mutableDate; // scalar storage must not fake object identity
-  27 | const wr = new WeakRef({});
+  26 | const wr = new WeakRef({});
      |       ^~
-  28 | const px = new Proxy({ a: 1 }, {});
+  27 | const px = new Proxy({ a: 1 }, {});
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-stdlib-fence.ts:27:12 - error SC2020: 'new WeakRef' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:26:12 - error SC2020: 'new WeakRef' is part of the standard library types but has no scriptc lowering yet
 
-  26 | const sameDate = mutableDate === mutableDate; // scalar storage must not fake object identity
-  27 | const wr = new WeakRef({});
+  25 | mutableDate.setUTCFullYear(2024); // mutation is outside the read-only Date slice
+  26 | const wr = new WeakRef({});
      |            ^~~~~~~~~~~~~~~
-  28 | const px = new Proxy({ a: 1 }, {});
+  27 | const px = new Proxy({ a: 1 }, {});
 
   hint: deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead
 
-stdlib-fence.ts:42:31 - error SC1090: '.split()' on a 'RegExp | string' separator (pass a string, or a regex literal) is not supported yet
+stdlib-fence.ts:41:31 - error SC1090: '.split()' on a 'RegExp | string' separator (pass a string, or a regex literal) is not supported yet
 
-  41 | const norm = "abc".normalize();
-  42 | const limited = "a,b,c".split(Math.random() ? "," : /,/, 2); // union separators stay fenced; limits lower
+  40 | const norm = "abc".normalize();
+  41 | const limited = "a,b,c".split(Math.random() ? "," : /,/, 2); // union separators stay fenced; limits lower
      |                               ^~~~~~~~~~~~~~~~~~~~~~~~~
-  43 | const fixed = (1.5).toFixed(); // digit-free toFixed lowers now (the static ties-up integer)
+  42 | const fixed = (1.5).toFixed(); // digit-free toFixed lowers now (the static ties-up integer)
 
-stdlib-fence.ts:44:19 - error SC2020: 'Number.prototype.toLocaleString without a locale' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:43:19 - error SC2020: 'Number.prototype.toLocaleString without a locale' is part of the standard library types but has no scriptc lowering yet
 
-  43 | const fixed = (1.5).toFixed(); // digit-free toFixed lowers now (the static ties-up integer)
-  44 | const localized = (1234.5).toLocaleString();
+  42 | const fixed = (1.5).toFixed(); // digit-free toFixed lowers now (the static ties-up integer)
+  43 | const localized = (1234.5).toLocaleString();
      |                   ^~~~~~~~~~~~~~~~~~~~~~~~~
-  45 | // Unlowered call FORMS of lowered members. (push is fully variadic now —
+  44 | // Unlowered call FORMS of lowered members. (push is fully variadic now —
 
   hint: the default locale is the host environment's, which a compiled binary cannot carry — pass it explicitly: x.toLocaleString("en-US")
 
-stdlib-fence.ts:50:1 - error SC2020: '.forEach with 2 arguments' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:49:1 - error SC2020: '.forEach with 2 arguments' is part of the standard library types but has no scriptc lowering yet
 
-  49 | const joined = nums.join(); // the omitted separator lowers
-  50 | nums.forEach((x) => console.log(x), { unused: true }); // thisArg stays fenced
+  48 | const joined = nums.join(); // the omitted separator lowers
+  49 | nums.forEach((x) => console.log(x), { unused: true }); // thisArg stays fenced
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  51 | const pos = "abc".includes("b", 1); // the position form lowers now (indexOf's clamp)
+  50 | const pos = "abc".includes("b", 1); // the position form lowers now (indexOf's clamp)
 
   hint: the thisArg parameter has no lowering — use an arrow function
 
-stdlib-fence.ts:80:23 - error SC2009: values of type 'Date | undefined' cannot be compiled: the union shape is supported, but 'Date' arms have no home in a compiled union yet (no runtime narrowing test exists against sibling arms)
+stdlib-fence.ts:77:9 - error SC1090: throwing Date values (catch bindings cannot preserve Date's object kind; throw an Error or primitive instead) are not supported yet
 
-  79 | // scalar/ref mismatch.
-  80 | function optionalDate(value: Date | undefined): number {
-     |                       ^~~~~
-  81 |   return value === undefined ? -1 : value.getTime();
+  76 | function throwDate(): void {
+  77 |   throw new Date(0); // the exception cell cannot preserve Date's object kind
+     |         ^~~~~~~~~~~
+  78 | }
 
-  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
-
-stdlib-fence.ts:83:1 - error SC2004: uses of 'optionalDate' inherit the blocker on its declaration
+stdlib-fence.ts:83:23 - error SC1090: .throw() with a Date value (the exception channel cannot preserve Date's object kind; throw an Error or primitive instead) is not supported yet
 
   82 | }
-  83 | optionalDate(undefined);
-     | ^~~~~~~~~~~~
-  84 | function throwDate(): void {
-
-  hint: the declaration of 'optionalDate' did not compile — fix the diagnostic reported there and these sites clear with it
-
-stdlib-fence.ts:85:9 - error SC1090: throwing Date values (catch bindings cannot preserve Date's object kind; throw an Error or primitive instead) are not supported yet
-
-  84 | function throwDate(): void {
-  85 |   throw new Date(0); // the exception cell cannot preserve Date's object kind
-     |         ^~~~~~~~~~~
-  86 | }
-
-stdlib-fence.ts:91:23 - error SC1090: .throw() with a Date value (the exception channel cannot preserve Date's object kind; throw an Error or primitive instead) is not supported yet
-
-  90 | }
-  91 | dateGenerator().throw(new Date(0));
+  83 | dateGenerator().throw(new Date(0));
      |                       ^~~~~~~~~~~
-  92 | // Related classes may store one object under different union tags. A
+  84 | // Related classes may store one object under different union tags. A
 
-stdlib-fence.ts:102:10 - error SC1090: comparisons of related class values beside structural union members (narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) are not supported yet
+stdlib-fence.ts:94:10 - error SC1090: comparisons of related class values beside structural union members (narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) are not supported yet
 
-  101 | function relatedStrict(a: FenceValue, b: FenceValue): boolean {
-  102 |   return a === b;
-      |          ^~~~~~~
-  103 | }
+  93 | function relatedStrict(a: FenceValue, b: FenceValue): boolean {
+  94 |   return a === b;
+     |          ^~~~~~~
+  95 | }
 
-stdlib-fence.ts:105:10 - error SC2020: 'Object.is over related class values beside structural union members' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:97:10 - error SC2020: 'Object.is over related class values beside structural union members' is part of the standard library types but has no scriptc lowering yet
 
-  104 | function relatedSameValue(a: FenceValue, b: FenceSub): boolean {
-  105 |   return Object.is(a, b);
-      |          ^~~~~~~~~~~~~~~
-  106 | }
+  96 | function relatedSameValue(a: FenceValue, b: FenceSub): boolean {
+  97 |   return Object.is(a, b);
+     |          ^~~~~~~~~~~~~~~
+  98 | }
 
   hint: narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms

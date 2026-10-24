@@ -19,6 +19,7 @@ import { functionCanReturnUndefined } from "../function-completion.js";
 import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
 import type { FnCtx } from "./function-context.js";
 import { constituentTypes } from "../ts7/checker.js";
+import { returnsGuessedOverloadValue } from "./overload-choice.js";
 
 /** Keep the conservative completion rule shared by return construction
  * and inference. Nested control flow may still make completion unreachable. */
@@ -256,6 +257,22 @@ export function declaredReturnType(
     mappedReturn.kind !== "dyn" &&
     !(mappedReturn.kind === "promise" && mappedReturn.inner.kind === "dyn") &&
     returnsOpenJsBinding(lowerer, decl)
+  )
+    return decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
+  // A JS function returning a value whose type rests on an undecided
+  // overload (guessedOverloadValue): the inferred result is the first
+  // overload's, which the returned value need not have.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !decl.type &&
+    !decl.asteriskToken &&
+    !hasExplicitJsDocReturn(decl) &&
+    mappedReturn !== null &&
+    mappedReturn.kind !== "dyn" &&
+    !(mappedReturn.kind === "promise" && mappedReturn.inner.kind === "dyn") &&
+    returnsGuessedOverloadValue(lowerer, decl)
   )
     return decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
       ? { kind: "promise", inner: DYN }
@@ -528,6 +545,10 @@ export function blockBodyOf(decl: ts.FunctionLikeDeclaration): ts.Block | null {
 }
 
 const widening = new Set<ts.Node>();
+/** How many times widenReducedReturn answered a declaration it was still
+ * widening with its unwidened type. A result computed while that happened
+ * may lack arms, so it is not kept. */
+let wideningCuts = 0;
 
 /** An inferred return type is the checker's SUBTYPE-REDUCED union of the
  * returned values' types: `return aborted` (`{ status }`) beside `return
@@ -557,7 +578,36 @@ function widenReducedReturn(
   const arms =
     mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
   const recordArms = arms.filter((a) => a.kind === "record");
-  if (recordArms.length === 0 || widening.has(decl)) return mapped;
+  if (recordArms.length === 0) return mapped;
+  if (widening.has(decl)) {
+    wideningCuts++;
+    return mapped;
+  }
+  // Functions that forward to the same callees along several return
+  // branches read each callee's widened type once.
+  const known = lowerer.coercions.widenedReturnTypes.get(decl)?.get(retTsType);
+  if (known !== undefined) return known;
+  const cutsBefore = wideningCuts;
+  const widened = widenReturnArms(lowerer, decl, retTsType, mapped, arms, recordArms);
+  if (wideningCuts === cutsBefore) {
+    let byType = lowerer.coercions.widenedReturnTypes.get(decl);
+    if (byType === undefined) lowerer.coercions.widenedReturnTypes.set(decl, (byType = new Map()));
+    byType.set(retTsType, widened);
+  }
+  return widened;
+}
+
+/** widenReducedReturn's scan of the returned values, for a declaration not
+ * already being widened. */
+function widenReturnArms(
+  lowerer: Lowerer,
+  decl: ts.SignatureDeclaration,
+  retTsType: ts.Type,
+  mapped: IrType,
+  arms: readonly IrType[],
+  recordArms: readonly IrType[],
+): IrType {
+  const body = (decl as { body?: ts.Node }).body!;
   const checkerArms = new Set<ts.Type>(
     retTsType.flags & ts.TypeFlags.Union ? constituentTypes(retTsType) : [retTsType],
   );
