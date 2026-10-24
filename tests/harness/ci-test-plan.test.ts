@@ -298,7 +298,7 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   // runner, and directly elsewhere.
   const linuxRun = linux.steps.at(-1)!.run as string;
   expect(linuxRun.startsWith("ulimit -c 0\n")).toBe(true);
-  expect(linuxRun).toContain("systemd-run --scope --quiet -p MemoryMax=14G -p OOMPolicy=continue");
+  expect(linuxRun).toContain("systemd-run --scope --quiet -p MemoryMax=15G -p OOMPolicy=continue");
   expect(linuxRun).toMatch(
     /-- env PATH="\$PATH" HOME="\$HOME" NODE_OPTIONS="--max-old-space-size=4096" node scripts\/ci-test\.mjs\n/,
   );
