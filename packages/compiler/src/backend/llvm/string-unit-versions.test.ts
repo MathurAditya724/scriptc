@@ -84,3 +84,43 @@ console.log(words("ab c"), pairs("ab", "cd"), both("ab", "cd"), concatenates("a 
   expect(unitSafeLoop(loopOf(mod, "both"), param("both"), safe)).toBeNull();
   expect(unitSafeLoop(loopOf(mod, "concatenates"), param("concatenates"), safe)).toBeNull();
 });
+
+test("loops that sort with a comparator or copy an untyped source get no units copy", async () => {
+  // Either can run program code that indexes other strings, which evicts
+  // the receiver's units while the loop reads them.
+  const mod = await lower(`
+function sorts(s: string, values: Float64Array, compare: (a: number, b: number) => number): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    n += s.charCodeAt(i);
+    if (i === 3) values.sort(compare);
+  }
+  return n;
+}
+function copies(s: string, values: Float64Array, source: any): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    n += s.charCodeAt(i);
+    if (i === 3) values.set(source);
+  }
+  return n;
+}
+function sortsNumbers(s: string, values: Float64Array): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    n += s.charCodeAt(i);
+    if (i === 3) values.sort();
+  }
+  return n;
+}
+const values = new Float64Array([2, 1]);
+console.log(sorts("abcdef", values, (a, b) => a - b), copies("abcdef", values, [4, 3]), sortsNumbers("abcdef", values));
+`);
+  const safe = unitSafeFunctions(mod);
+  const param = (fn: string): string =>
+    mod.functions.find((f) => f.name === fn)!.params[0]!.localId;
+  expect(unitSafeLoop(loopOf(mod, "sorts"), param("sorts"), safe)).toBeNull();
+  expect(unitSafeLoop(loopOf(mod, "copies"), param("copies"), safe)).toBeNull();
+  // A numeric sort calls no program code.
+  expect(unitSafeLoop(loopOf(mod, "sortsNumbers"), param("sortsNumbers"), safe)).not.toBeNull();
+});

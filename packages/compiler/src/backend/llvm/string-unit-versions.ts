@@ -1,4 +1,4 @@
-import type { IrExpr, IrModule, IrStmt } from "../../ir/ir.js";
+import type { IrBytesIntrinsicMethod, IrExpr, IrModule, IrStmt } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 
 /* Loop versions over the UTF-16 units of a string that is not ASCII.
@@ -14,6 +14,68 @@ import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
  * (`unitSafeFunctions`). */
 
 const ARRAY_METHODS = new Set(["push", "pop", "length"]);
+
+/* The typed-array and Buffer methods a units copy may run: those that
+ * call no program code and read no checked-dynamic value or string. A
+ * comparator sort (sortCompare) calls back into the program, and a copy
+ * from a checked-dynamic source (setFromDyn) reads its elements through
+ * getters; either can index another string, which evicts the receiver's
+ * units while the loop reads them. */
+const UNIT_SAFE_BYTES_METHODS: ReadonlySet<IrBytesIntrinsicMethod> = new Set([
+  "buffer",
+  "length",
+  "byteLength",
+  "byteOffset",
+  "get",
+  "slice",
+  "subarray",
+  "copyWithin",
+  "sortNumeric",
+  "toReversed",
+  "with",
+  "toArray",
+  "setFrom",
+  "readNum",
+  "writeNum",
+  "readNumVar",
+  "writeNumVar",
+  "equals",
+  "compareBuf",
+  "indexOfNum",
+  "lastIndexOfNum",
+  "includesNum",
+  "indexOfElem",
+  "lastIndexOfElem",
+  "includesElem",
+  "fill",
+  "fillNum",
+  "fillElem",
+  "copy",
+  "swap16",
+  "swap32",
+  "swap64",
+  "dataViewNew",
+  "dvGetUint8",
+  "dvGetInt8",
+  "dvGetUint16",
+  "dvGetInt16",
+  "dvGetUint32",
+  "dvGetInt32",
+  "dvGetFloat16",
+  "dvGetFloat32",
+  "dvGetFloat64",
+  "dvGetBigUint64Number",
+  "dvGetBigInt64Number",
+  "dvSetUint8",
+  "dvSetInt8",
+  "dvSetUint16",
+  "dvSetInt16",
+  "dvSetUint32",
+  "dvSetInt32",
+  "dvSetFloat16",
+  "dvSetFloat32",
+  "dvSetFloat64",
+]);
 
 /** Whether `e` (or statement `s`) uses only operations that index no
  * string: numbers, booleans, locals, records and class fields, typed
@@ -39,7 +101,9 @@ function unitSafe(
       case "incDec":
       case "recordGet":
       case "fieldGet":
+        break;
       case "bytesIntrinsic":
+        if (!UNIT_SAFE_BYTES_METHODS.has(e.method)) return false;
         break;
       case "arrayGet":
         if (e.type.kind !== "f64" && e.type.kind !== "bool") return false;
