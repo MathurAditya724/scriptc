@@ -1,5 +1,4 @@
-- **URL:** Hosts of special URLs that hold non-ASCII text, or percent-escapes that decode to it, throw `ERR_INVALID_URL`, and `xn--` labels are kept without Punycode validation.
-  Absolute inputs and relative inputs with runtime string or URL bases, including optional bases, compile.
+- **URL:** Absolute inputs and relative inputs with runtime string or URL bases, including optional bases, compile.
   `URL.canParse`, `URL.parse`, `toString()`, and `toJSON()` compile; the factories use the same parser as construction, returning `false` or `null` for rejected inputs while preserving conversion errors.
   `href`, `protocol`, `username`, `password`, `host`, `hostname`, `port`, `pathname`, `search`, and `hash` support assignment in native code.
   Invalid component writes are ignored except for invalid `href` values, which throw; credentials are percent-encoded and ports accept valid leading digits.

@@ -717,6 +717,10 @@ interface RuntimeFeatureRule {
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
+/* The node:url and WHATWG URL entry points: every URL value comes from
+ * one, and parsing one can reach the UTS #46 host processing. */
+const URL_PREFIXES: readonly string[] = ["url."];
+
 /* The HTTP, HTTPS, HTTP/2 and TLS surfaces, which link the net unit. */
 const NET_PREFIXES: readonly string[] = ["net.", "http.", "tls.", "https.", "http2."];
 
@@ -1065,9 +1069,10 @@ const RUNTIME_FEATURE_RULES = {
   /** scr_url_legacy.c parses and stringifies queries. */
   qs: rule({ fns: [...QS_LIB_FNS, ...LEGACY_URL_LIB_FNS] }),
   /** scr_url_legacy.c lowercases and normalizes hostnames with the regex
-   * unit's libunicode, NODE_DEBUG matching in scr_util_callable.c and
-   * readline's terminal unit use the regex unit, and locale case mapping
-   * runs its default conversion. */
+   * unit's libunicode, the WHATWG URL host parser runs UTS #46 through
+   * scr_idna.c (which links with the regex unit), NODE_DEBUG matching in
+   * scr_util_callable.c and readline's terminal unit use the regex unit,
+   * and locale case mapping runs its default conversion. */
   regex: rule({
     fns: [
       ...REGEX_LIB_FNS,
@@ -1076,13 +1081,17 @@ const RUNTIME_FEATURE_RULES = {
       "rl.terminal",
       "str.localeCase",
     ],
+    prefixes: URL_PREFIXES,
     expr: (node, _tables) =>
       node.kind === "regexLit" ||
       node.kind === "regexIntrinsic" ||
       (node.kind === "strIntrinsic" && CASE_MAPPING_STR_METHODS.has(node.method)),
-    types: ["regex"],
+    types: ["regex", "url"],
   }),
   searchParams: rule({ fns: ["url.searchParams"], prefixes: ["sp."], types: ["searchParams"] }),
+  /** URL programs install the IDNA unit's ToASCII for the WHATWG host
+   * parser (scr_url_idna_install). */
+  urlIdna: rule({ prefixes: URL_PREFIXES, types: ["url"] }),
   /** stdin setEncoding / string data listeners / stdio 'resize' events. A
    * typed string 'data' listener takes setEncoding-decoded chunks; the
    * process stream object's setEncoding and 'resize' members are reached
@@ -1179,6 +1188,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     qs: false,
     regex: false,
     searchParams: false,
+    urlIdna: false,
     stdioExtended: false,
     stream: false,
     streamDyn: false,
