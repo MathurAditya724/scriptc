@@ -1024,13 +1024,14 @@ function assertionOperand(
     )
   )
     return null;
-  // Array and typed-array element reads keep their own handling of a
-  // missing element.
+  // Array element reads keep their own handling of a missing element. A
+  // typed-array read is optional here only where its use tells undefined
+  // from NaN (assertedReadObservesUndefined).
   let operand: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
   if (ts.isElementAccessExpression(operand)) {
     const kind = lowerer.mapTypeOf(lowerer.typeOf(operand.expression))?.kind;
-    if (kind === "array" || kind === "bytes") return null;
+    if (kind === "array") return null;
   }
   const use = convertingUseOf(lowerer, expr);
   if (use === null) return null;
@@ -1047,6 +1048,7 @@ function convertingUseOf(lowerer: Lowerer, expr: ts.NonNullExpression): "number"
   while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
   const parent = outer.parent;
   if (ts.isTemplateSpan(parent)) return parent.expression === outer ? "value" : null;
+  if (ts.isTypeOfExpression(parent)) return "value";
   if (ts.isPrefixUnaryExpression(parent)) {
     if (parent.operator === ts.SyntaxKind.ExclamationToken) return "value";
     return parent.operator === ts.SyntaxKind.MinusToken ||
@@ -1142,6 +1144,23 @@ const NUMERIC_COMPOUNDS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
   ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
 ]);
+
+/** Whether the use of `t[i]!` tells undefined from NaN: a converting use
+ * that takes the value itself (see convertingUseOf), or a destination that
+ * holds a missing element (see assertedElementKeepsUndefined) other than a
+ * return, whose slot has the function's number type. */
+export function assertedReadObservesUndefined(
+  lowerer: Lowerer,
+  node: ts.NonNullExpression,
+): boolean {
+  if (convertingUseOf(lowerer, node) === "value") return true;
+  let outer: ts.Expression = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  if (ts.isReturnStatement(parent) || (ts.isArrowFunction(parent) && parent.body === outer))
+    return false;
+  return assertedElementKeepsUndefined(lowerer, node);
+}
 
 export function runtimeOptionalAssertionErases(
   lowerer: Lowerer,

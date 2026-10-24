@@ -1,4 +1,5 @@
 import { primitiveConstructorOr } from "./lower-exprs.js";
+import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js";
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { constructedValue } from "./constructor-returns.js";
@@ -26,6 +27,7 @@ import {
   isUnitType,
   typeEquals,
   typeKey,
+  type IrClassDef,
   type IrExpr,
   type IrFunction,
   type IrParam,
@@ -153,6 +155,41 @@ const STREAM_NUM_PROPERTIES = new Set([
 ]);
 const streamProperty = (name: string): boolean =>
   STREAM_BOOL_PROPERTIES.has(name) || STREAM_NUM_PROPERTIES.has(name);
+
+/** `(instance) => string`, the string a class's inherited
+ * Symbol.toStringTag getter answers, which the runtime reads for
+ * Object.prototype.toString and util.inspect of an instance seen as
+ * `unknown`. None for a class without a string getter, or whose own tag
+ * field shadows it. */
+function stringTagHelper(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): IrFunction | null {
+  if (info.fields.has(TO_STRING_TAG_FIELD)) return null;
+  const getter = findMethodOn(lowerer, info, "get:sym:toStringTag");
+  if (getter?.sig.ret.kind !== "string") return null;
+  const type: IrType = { kind: "object", className: info.def.name };
+  const owner = getter.declarer.def.name;
+  return {
+    name: `%class.stringTag:${info.def.name}`,
+    params: [{ localId: "this", name: "this", type }],
+    locals: [{ id: "this", name: "this", type, mutable: false }],
+    returnType: STRING,
+    body: [
+      {
+        kind: "return",
+        value: accessorCall(
+          lowerer,
+          owner,
+          "get:sym:toStringTag",
+          lowerer.upcastTo(varRef("this", type, loc), owner),
+          [],
+          STRING,
+          loc,
+        ),
+        loc,
+      },
+    ],
+    loc,
+  };
+}
 
 function symbolMemberKey(
   lowerer: Lowerer,
@@ -1376,10 +1413,27 @@ export class ClassDynamicDispatch {
       const info = lowerer.classes.get(className);
       if (!info || info.builtinEmitter || info.builtinStream || info.builtinError) continue;
       if (info.symbolFields && info.def.symbolFields === undefined) {
-        info.def.symbolFields = [...info.symbolFields].flatMap(([symbol, field]) => {
-          const global = lowerer.globalsBySymbol.get(symbol);
-          return global?.type.kind === "symbol" ? [{ field, globalId: global.id }] : [];
-        });
+        info.def.symbolFields = [...info.symbolFields].flatMap(
+          ([symbol, field]): NonNullable<IrClassDef["symbolFields"]> => {
+            const global = lowerer.globalsBySymbol.get(symbol);
+            if (global?.type.kind === "symbol") return [{ field, globalId: global.id }];
+            const wellKnown = wellKnownSymbolOfField(field);
+            return wellKnown === null ? [] : [{ field, wellKnown }];
+          },
+        );
+      }
+      const tagged = (current: ClassInfo): ClassInfo[] => [
+        current,
+        ...current.subclasses.flatMap(tagged),
+      ];
+      for (const current of tagged(info)) {
+        if (current.def.stringTagHelper !== undefined) continue;
+        const fn = stringTagHelper(lowerer, current, functions[0]!.loc);
+        if (!fn) continue;
+        current.def.stringTagHelper = fn.name;
+        this.generated.add(fn);
+        lowerer.liftedFns.push(fn);
+        changed = true;
       }
       if (this.prototypeHelper && !this.prototypeClasses.has(className)) {
         this.prototypeClasses.add(className);
@@ -3663,10 +3717,29 @@ export class ClassDynamicDispatch {
                   name,
                   lowerer.coerceToExpected(varRef(global.id, global.type, loc), DYN),
                 );
+            } else if (wellKnownSymbolOfField(name) !== null) {
+              // A field keyed by a well-known symbol (Symbol.toStringTag).
+              symbols.set(name, {
+                kind: "dynFrom",
+                type: DYN,
+                loc,
+                value: {
+                  kind: "libCall",
+                  fn: "sym.wellKnown",
+                  args: [
+                    { kind: "strLit", value: wellKnownSymbolOfField(name)!, type: STRING, loc },
+                  ],
+                  type: SYMBOL_T,
+                  loc,
+                },
+              });
             }
           }
           for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
-            for (const name of [...owner.methods.keys()])
+            for (const method of [...owner.methods.keys()]) {
+              // Accessors key by the property they define (`get [Symbol.toStringTag]`).
+              const name =
+                method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
               if (name.startsWith("sym:")) {
                 symbols.set(name, {
                   kind: "dynFrom",
@@ -3681,6 +3754,7 @@ export class ClassDynamicDispatch {
                   },
                 });
               }
+            }
           }
           const branches: IrStmt[] = [];
           if (!dispatch.write && !dispatch.reflect && !info.def.tracksOwnFields) {
