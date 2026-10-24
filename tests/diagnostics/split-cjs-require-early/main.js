@@ -9,6 +9,11 @@ let lib;
 console.log('boot', helper());
 lib = require('./lib.js');
 
+// The same with the require parenthesized.
+let wrapped;
+console.log('peek', wrapped === undefined);
+wrapped = (require('./lib.js'));
+
 function helper() {
   return lib === undefined ? 'not loaded' : lib.greet('late');
 }

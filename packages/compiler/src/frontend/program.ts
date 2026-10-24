@@ -1563,6 +1563,14 @@ function splitRequireOfStatement7(
   return null;
 }
 
+/** The top-level statement of a split require binding's assignment, from
+ * its require call (`m = require("./x")` or `m = (require("./x"))`). */
+function splitRequireStatementOf7(call: ts.CallExpression): ts.Node | undefined {
+  let node: ts.Node = call;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  return node.parent?.parent;
+}
+
 /** The require call of a split require binding's declaration, or null. */
 function splitRequireCallOf7(
   program: ts.Program,
@@ -1877,7 +1885,7 @@ function requireEarlyReference7(
   const sf = ts.getSourceFileOfNode(decl);
   // A split require binding is bound at its assignment statement.
   const splitCall = splitRequireCallOf7(program, decl);
-  const stmt = splitCall !== null ? splitCall.parent?.parent : decl.parent?.parent;
+  const stmt = splitCall !== null ? splitRequireStatementOf7(splitCall) : decl.parent?.parent;
   if (
     stmt !== undefined &&
     (ts.isVariableStatement(stmt) || splitCall !== null) &&
@@ -6184,15 +6192,12 @@ function preflight7(load: LoadResult): {
       // counts, and targets outside the compiled graph add nothing here:
       // their use sites keep their existing lowering fences.
       if (jsRequireFile && !isNodeEsmFile7(sf, program)) {
+        // A split require binding's assignment is a statement-level require
+        // edge (requiresOf7 above), parenthesized or not.
+        const splitCalls = new Set(splitRequireBindings7(program, sf).values());
         for (const call of inlineRequiresOf7(sf)) {
           if (requireCallBindingKind7(program, call) !== "ambient") continue;
-          // A split require binding's assignment is a statement-level
-          // require edge (requiresOf7 above).
-          if (
-            call.parent?.parent !== undefined &&
-            splitRequireOfStatement7(program, call.parent.parent as ts.Statement) !== null
-          )
-            continue;
+          if (splitCalls.has(call)) continue;
           const spec = requireSpecOf7(call)!;
           if (load.externalTypes.has(spec) || canonicalBuiltinModule(spec) !== null) continue;
           const lazy = inDeferredPosition7(call);

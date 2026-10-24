@@ -8,5 +8,5 @@ exports.isOdd = function (n) {
 exports.calls = function () {
   return calls;
 };
-even = require("./even.cjs");
+even = (require("./even.cjs"));
 console.log("odd: loaded");
