@@ -222,3 +222,61 @@ test("a failed or empty link trace cannot publish a completed executable", () =>
   });
   expect(entry.trace([], f.stage)).toBe(false);
 });
+
+test.each(["ld", "crt", "libc"] as const)(
+  "a Linux key's second link records the linker, startup objects and libc; replacing the %s misses",
+  (input) => {
+    const f = fixture();
+    const lib = join(f.root, "lib");
+    mkdirSync(lib);
+    const paths = {
+      ld: join(f.root, "ld"),
+      crt: join(lib, "Scrt1.o"),
+      libc: join(lib, "libc.so.6"),
+    };
+    writeFileSync(paths.ld, "linker");
+    writeFileSync(paths.crt, "startup object");
+    writeFileSync(paths.libc, "c library");
+    const nonshared = join(lib, "libc_nonshared.a");
+    writeFileSync(nonshared, "archive");
+    const program = join(f.stage, "program.o");
+    writeFileSync(program, "program");
+    // With -v, clang prints the linker job it runs, as -### would; GNU ld's
+    // -t names each file it loads, and an archive member as archive(member).
+    const job = ` "${paths.ld}" "-pie" "-o" "${f.output}" "${paths.crt}" "-L${lib}" "${program}" "-lc"`;
+    const loaded = [paths.crt, program, paths.libc, `${nonshared}(atexit.oS)`].join("\n");
+    vi.mocked(spawnSync).mockImplementation((_command, args) => {
+      const verbose = (args as string[]).includes("-v");
+      return {
+        pid: 1,
+        status: 0,
+        signal: null,
+        output: [],
+        stdout: verbose ? loaded + "\n" : "",
+        stderr: verbose ? job + "\n" : "",
+      };
+    });
+    const open = () => new NativeExecutableCache(f.cache, f.key, "clang", false, [f.runtime], true);
+    // A key's first link is not traced; the caller links the output itself.
+    expect(open().trace(["-o", f.output], f.stage)).toBe(false);
+    expect(spawnSync).not.toHaveBeenCalled();
+    expect(open().restore(f.destination)).toBe(false);
+    // Its next link traces both the driver and the linker in one run.
+    const entry = open();
+    expect(entry.trace(["-o", f.output], f.stage)).toBe(true);
+    expect(spawnSync).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawnSync).mock.calls[0]![1]).toEqual(["-o", f.output, "-v", "-Wl,-t"]);
+    entry.publish(f.output);
+    const recorded = (
+      JSON.parse(f.cache.read("executable", f.key)!.toString()) as { inputs: { path: string }[] }
+    ).inputs.map((saved) => saved.path);
+    expect(recorded).toEqual(expect.arrayContaining([...Object.values(paths), nonshared, lib]));
+    expect(recorded).not.toContain(program);
+    expect(open().restore(f.destination)).toBe(true);
+    const before = statSync(paths[input]);
+    writeFileSync(paths[input] + ".new", "x".repeat(before.size));
+    utimesSync(paths[input] + ".new", before.atime, before.mtime);
+    renameSync(paths[input] + ".new", paths[input]);
+    expect(open().restore(f.destination)).toBe(false);
+  },
+);

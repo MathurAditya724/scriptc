@@ -709,7 +709,8 @@ export class Int32ElementContracts {
     const findChainsIn = (st: IrStmt): boolean => everyStmtChild(st, findChains, findChainsIn);
     for (const st of fn.body) findChainsIn(st);
     // Parameters whose callers are not all visible hold opaque arrays.
-    if (this.valueEscaped.has(fn.name) || this.runtimeVirtual(fn.name))
+    const runtimeVirtual = this.runtimeVirtual;
+    if (this.valueEscaped.has(fn.name) || runtimeVirtual(fn.name))
       for (const p of fn.params)
         if (this.holds(p.type)) {
           const why = this.valueEscaped.has(fn.name)

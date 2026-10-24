@@ -3193,6 +3193,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * the +1 %Transform stream. flush takes the kind value, params the level
    * and strategy values; the Cb forms move their () => void callback. The
    * receivers are borrowed. */
+  /** Connects scr_brotli.c to the zlib engine (%main, before any module). */
+  "zlib.brotliInstall": { argTypes: [], result: VOID },
   "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
   "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
   /** `stream instanceof zlib.Gzip`: the borrowed stream and the class's
