@@ -53,7 +53,13 @@ export function lowerDateCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // An optional chain lowers the call again once it has narrowed the
+  // receiver (Lowerer.chainHandled).
+  if (
+    (call.questionDotToken && !lowerer.chainHandled.has(call)) ||
+    (access.questionDotToken && !lowerer.chainHandled.has(access))
+  )
+    return null;
   const loc = locOf(call);
   const member = lowerer.stdlibGlobalMember(access, "Date");
   if (member === "now" || member === "parse" || member === "UTC")

@@ -3016,6 +3016,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** poolFromDyn that also copies an array crossing by reference. */
   "buffer.poolFromDynRef": { argTypes: [DYN, STRING], result: BYTES_U8 },
   "buffer.poolFromDynOffset": { argTypes: [DYN, DYN], result: BYTES_U8 },
+  /** Buffer.from(value, byteOffset, length): an ArrayBuffer's range with
+   * Node's fromArrayBuffer checks; other values as poolFromDynOffset. */
+  "buffer.poolFromDynRange": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
   "buffer.poolSize": { argTypes: [], result: F64 },
   "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
@@ -3050,6 +3053,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * always throws Node's ERR_INVALID_ARG_TYPE ("The \"string\" argument
    * must be of type string. Received ..."). Borrowed dyn; may-throw. */
   "buffer.newStringFail": { argTypes: [DYN], result: BYTES_U8 },
+  "buffer.deprecation": { argTypes: [], result: VOID },
+  "buffer.deprecationCount": { argTypes: [], result: VOID },
+  "buffer.constructor": { argTypes: [], result: DYN },
+  "buffer.installValue": { argTypes: [], result: VOID },
+  "buffer.staticValue": { argTypes: [STRING], result: DYN },
+  "buffer.prototypeMember": { argTypes: [DYN], result: DYN },
   /** fs._toUnixTimestamp(time) over a dyn value: numeric strings and
    * finite numbers coerce (negatives answer now/1000, Node's shape);
    * everything else throws Node's ERR_INVALID_ARG_TYPE. May-throw. */
@@ -3194,6 +3203,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // or an optional Error | null slot (same success shape as fs.rename).
   "process.stdoutWriteBytesCb": { argTypes: [BYTES_U8, STRING, null], result: BOOL },
   "process.stderrWriteBytesCb": { argTypes: [BYTES_U8, STRING, null], result: BOOL },
+  /** The value of a FULFILLED promise, read without a microtask turn (+1
+   * for references): the tuple form of Promise.all reads its entries this
+   * way once the combinator fulfills, each entry widened to Promise<void>
+   * and read at the type it was built with (program-dependent). */
+  "promise.fulfilledValue": { argTypes: [null], result: VOID },
+  /** Promise.all's tuple form as a value: the entries (each widened to
+   * Promise<void>) join the runtime combinator, and when it fulfills the
+   * function reads the fulfilled entries into the tuple inside that
+   * settlement, so the result settles on the combinator's turn; a
+   * rejection settles it the same way. The result is the tuple's promise
+   * (program-dependent). */
+  "promise.allTuple": { argTypes: [null, null], result: VOID },
   "fsp.readFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: STRING } },
   "fsp.writeFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
   /** fs.promises.writeFile(path, data, { mode }): the settled-promise
@@ -4470,6 +4491,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.customText": { argTypes: [STRING], result: STRING },
   "insp.customIsSelf": { argTypes: [DYN, DYN], result: BOOL },
   "insp.customResult": { argTypes: [DYN, F64, F64], result: STRING },
+  /** Around the method's call: the inspect and format calls it makes run
+   * in a fresh inspect context with the default options. */
+  "insp.customCallBegin": { argTypes: [], result: VOID },
+  "insp.customCallEnd": { argTypes: [], result: VOID },
   /** Whether a runtime format string has a '%' before its last character. */
   "insp.formatSpecifies": { argTypes: [STRING], result: BOOL },
   "insp.formatSpecifiesDyn": { argTypes: [DYN], result: BOOL },
@@ -4858,6 +4883,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.getMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getUTCMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getTimezoneOffset": { argTypes: [DATE_T], result: F64 },
+  /** A Date object for a time value a local holds (date-values.ts): a
+   * lib-call argument passes the time value itself, and any other use
+   * creates the Date. */
+  "date.fromTime": { argTypes: [F64], result: DATE_T },
   /** Date.prototype.toString / toDateString / toTimeString and String(date):
    * V8's local-time formats with the host zone's long name, "Invalid Date"
    * for an invalid date. Owned (+1) string; never throws. */
@@ -4910,6 +4939,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
   "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
   "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
+  "crypto.diffieHellman": { argTypes: [DYN, DYN], result: DYN },
   "crypto.verifyOneshot": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
   "crypto.createSign": { argTypes: [DYN], result: DYN },
   "crypto.createVerify": { argTypes: [DYN], result: DYN },

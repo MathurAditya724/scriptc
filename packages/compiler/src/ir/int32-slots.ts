@@ -449,6 +449,8 @@ const DYN_READ_ONLY = new Set<string>([
   "error.new",
   "error.newOptions",
   "fs.utimesSync",
+  // Buffer.prototype members read as values: a lookup by key.
+  "buffer.prototypeMember",
   "insp.dyn",
   "insp.dynS",
   // util.format and util.inspect over checked values: the inspect walk and

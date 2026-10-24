@@ -155,6 +155,7 @@ import {
   lowerStringCodesValue,
 } from "../lower-builtin-values.js";
 import { lowerArrayFromValue } from "../containers/array-construction.js";
+import { lowerBufferPrototypeMember } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
 import { arrayValueRead, arrayValueType } from "../array-values.js";
@@ -321,6 +322,10 @@ export function lowerPropertyAccessExpr(
       type: SYMBOL_T,
       loc,
     };
+  }
+  {
+    const member = lowerBufferPrototypeMember(lowerer, expr);
+    if (member) return member;
   }
   // A dgram socket's method read as a value in JavaScript (`emit:
   // socket.emit.bind(socket)`): the socket crosses as its checked-dynamic
@@ -1802,6 +1807,28 @@ export function lowerIntrinsicProperty(
     return lowerNumberParserValue(lowerer, numberMember, locOf(expr));
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "poolSize")
     return { kind: "libCall", fn: "buffer.poolSize", args: [], type: F64, loc: locOf(expr) };
+  {
+    const member = lowerer.stdlibGlobalMember(expr, "Buffer");
+    if (member === "name")
+      return { kind: "strLit", value: "Buffer", type: STRING, loc: locOf(expr) };
+    if (member === "length") return numLit(3, locOf(expr));
+    // JavaScript reads the statics from the Buffer function's value, so
+    // each has one identity and Node's name and length.
+    if (
+      member !== null &&
+      BUFFER_VALUE_STATICS.has(member) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr))
+    ) {
+      const loc = locOf(expr);
+      return {
+        kind: "libCall",
+        fn: "buffer.staticValue",
+        args: [{ kind: "strLit", value: member, type: STRING, loc }],
+        type: DYN,
+        loc,
+      };
+    }
+  }
   const netAddressStatic = lowerNetAddressStaticRead(lowerer, expr);
   if (netAddressStatic) return netAddressStatic;
   if (lowerer.stdlibGlobalMember(expr, "Buffer") === "isBuffer")
@@ -4206,6 +4233,8 @@ export function builtinFunctionValue(name: string, loc: SrcLoc): IrExpr {
  * null when it stays an identity token (JavaScript) or fenced. */
 export function builtinGlobalValue(canonical: string, loc: SrcLoc, js = false): IrExpr | null {
   if (js && GLOBAL_FUNCTION_VALUES.has(canonical)) return builtinFunctionValue(canonical, loc);
+  if (js && canonical === "Buffer")
+    return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
   if (GLOBAL_CONSTRUCTOR_VALUES.has(canonical)) {
     return {
       kind: "libCall",
@@ -4332,6 +4361,22 @@ function fenceBuiltinConstructorStaticRead(
     lowerer.stdlibMemberFence(access);
   return null;
 }
+
+/** The Buffer statics the Buffer function's value holds
+ * (scr_buffer_constructor_value). */
+const BUFFER_VALUE_STATICS: ReadonlySet<string> = new Set([
+  "from",
+  "copyBytesFrom",
+  "of",
+  "alloc",
+  "allocUnsafe",
+  "allocUnsafeSlow",
+  "isBuffer",
+  "compare",
+  "isEncoding",
+  "concat",
+  "byteLength",
+]);
 
 /** Object.prototype members a plain record inherits, read as values. */
 const OBJECT_PROTOTYPE_VALUE_READS: ReadonlySet<string> = new Set([

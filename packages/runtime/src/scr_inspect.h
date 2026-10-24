@@ -126,6 +126,11 @@ void scr_insp_nested_restore(void);
 /* ctx.customInspect for the renders that follow; answers the previous
  * value for the caller to restore. */
 bool scr_insp_custom_inspect(bool enabled);
+/* Around a custom inspect function's call: begin gives the calls it makes
+ * a fresh inspect context with the default options; end restores the
+ * caller's. */
+void scr_insp_custom_call_begin(void);
+void scr_insp_custom_call_end(void);
 /* How the unbounded depth of the renders that follow was given, for custom
  * inspect functions: 0 Infinity, 1 null, 2 undefined. Answers the
  * previous kind for the caller to restore. */

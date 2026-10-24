@@ -122,12 +122,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   if (inner.kind === "void") {
     host.declare(`declare void @scr_promise_fulfill_void(ptr)`);
     B.line(`call void @scr_promise_fulfill_void(ptr %dst)`);
-  } else if (
-    inner.kind === "f64" ||
-    inner.kind === "date" ||
-    inner.kind === "procStream" ||
-    inner.kind === "bool"
-  ) {
+  } else if (inner.kind === "f64" || inner.kind === "procStream" || inner.kind === "bool") {
     const fn = inner.kind !== "bool" ? "scr_promise_fulfill_f64" : "scr_promise_fulfill_bool";
     host.declare(
       `declare void @${fn}(ptr, ${host.llType(inner)}${inner.kind === "bool" ? " zeroext" : ""})`,

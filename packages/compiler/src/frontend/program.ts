@@ -1378,6 +1378,11 @@ function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
   if (JS_ANY_OPERATOR_CODES.has(d.code)) {
     return ts.flattenDiagnosticMessageText(d, "\n").includes("'any'");
   }
+  // The deprecated Buffer(...) call without `new`, which Node's Buffer
+  // function accepts (containers/bytes.ts lowers it).
+  if (d.code === 2348) {
+    return ts.flattenDiagnosticMessageText(d, "\n").includes("'BufferConstructor'");
+  }
   return false;
 }
 

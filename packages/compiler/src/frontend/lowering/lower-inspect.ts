@@ -14,7 +14,7 @@ import { InternalCompilerError } from "../../errors.js";
 
 import * as ts from "../ts7/adapter.js";
 import { unsignedHex } from "../../format-integer.js";
-import type { Lowerer } from "./lowerer.js";
+import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { noLoweringDiag } from "../../diagnostics/diagnostic.js";
 import {
@@ -1261,24 +1261,43 @@ function customInspectHelper(
     { kind: "libCall", fn: "insp.customOptions", args: [d()], type: DYN, loc },
     { kind: "libCall", fn: "insp.inspectFunction", args: [], type: DYN, loc },
   ];
-  const args = found.sig.params.map((param, i) =>
-    lowerer.coerceToExpected(runtimeArgs[i]!, param.type),
-  );
-  const resultT = found.sig.ret;
-  const call = accessorCall(lowerer, t.className, INSPECT_CUSTOM_MEMBER, v(), args, resultT, loc);
   const locals: IrLocal[] = [
     { id: "v.0", name: "v", type: t, mutable: false },
     { id: "r.0", name: "r", type: F64, mutable: false },
     { id: "d.0", name: "d", type: F64, mutable: false },
   ];
-  const render: IrStmt[] = [];
-  if (resultT.kind === "string") {
-    render.push(ret({ kind: "libCall", fn: "insp.customText", args: [call], type: STRING, loc }));
-  } else if (resultT.kind === "dyn") {
-    locals.push({ id: "res.0", name: "res", type: DYN, mutable: false });
-    const res = (): IrExpr => varRef("res.0", DYN, loc);
+  // The arguments read the walk's depth and options, so they evaluate
+  // before the method's own context begins.
+  const argDecls: IrStmt[] = found.sig.params.map((param, i) => {
+    locals.push({ id: `arg${i}.0`, name: `arg${i}`, type: param.type, mutable: false });
+    const init = lowerer.coerceToExpected(runtimeArgs[i]!, param.type);
+    return { kind: "varDecl", localId: `arg${i}.0`, init, loc };
+  });
+  const args = found.sig.params.map((param, i) => varRef(`arg${i}.0`, param.type, loc));
+  const resultT = found.sig.ret;
+  const call = accessorCall(lowerer, t.className, INSPECT_CUSTOM_MEMBER, v(), args, resultT, loc);
+  // The method runs in a fresh inspect context (insp.customCallBegin); the
+  // walk's own context returns before the result renders.
+  const callStmt = (fn: "insp.customCallBegin" | "insp.customCallEnd"): IrStmt => ({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn, args: [], type: VOID, loc },
+    loc,
+  });
+  const render: IrStmt[] = [...argDecls, callStmt("insp.customCallBegin")];
+  if (resultT.kind === "void") {
+    render.push({ kind: "exprStmt", expr: call, loc }, callStmt("insp.customCallEnd"));
+  } else {
+    locals.push({ id: "res.0", name: "res", type: resultT, mutable: false });
     render.push(
       { kind: "varDecl", localId: "res.0", init: call, loc },
+      callStmt("insp.customCallEnd"),
+    );
+  }
+  const res = (): IrExpr => varRef("res.0", resultT, loc);
+  if (resultT.kind === "string") {
+    render.push(ret({ kind: "libCall", fn: "insp.customText", args: [res()], type: STRING, loc }));
+  } else if (resultT.kind === "dyn") {
+    render.push(
       {
         kind: "if",
         cond: {
@@ -1295,9 +1314,9 @@ function customInspectHelper(
       ret({ kind: "libCall", fn: "insp.customResult", args: [res(), r(), d()], type: STRING, loc }),
     );
   } else if (resultT.kind === "void") {
-    render.push({ kind: "exprStmt", expr: call, loc }, ret(strLit("undefined", loc)));
+    render.push(ret(strLit("undefined", loc)));
   } else {
-    render.push(ret(inspectExpr(lowerer, resultT, call, r(), d(), loc)));
+    render.push(ret(inspectExpr(lowerer, resultT, res(), r(), d(), loc)));
   }
   lowerer.liftedFns.push({
     name,
@@ -2753,6 +2772,12 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
   }
   const decl = sym.declarations[0];
   if (!decl) return null;
+  // A JavaScript function can hold own properties (`f.x = 1`, computed
+  // keys), which the runtime walk prints after its name.
+  if (isJsSourceFile(node.getSourceFile())) {
+    const type = lowerer.mapTypeOf(lowerer.typeOf(node));
+    if (type?.kind === "func" && lowerer.dynConvertible(type)) return null;
+  }
   if (ts.isFunctionDeclaration(decl) && decl.name) {
     return strLit(`[Function: ${decl.name.text}]`, loc);
   }
@@ -2883,7 +2908,17 @@ export function lowerInspectValue(
       loc,
     );
   }
-  const value = lowerer.lowerExpr(valueNode);
+  let value = lowerer.lowerExpr(valueNode);
+  // A JavaScript function renders through the runtime walk, which prints
+  // its own properties after its name.
+  if (
+    value.type.kind === "func" &&
+    isJsSourceFile(valueNode.getSourceFile()) &&
+    lowerer.dynConvertible(value.type)
+  ) {
+    const name = jsFuncNameOf(valueNode);
+    value = { kind: "dynFrom", value, type: DYN, ...(name !== null ? { fnName: name } : {}), loc };
+  }
   if (value.type.kind === "bytes") {
     // One runtime representation serves Buffer AND Uint8Array; their
     // renderings differ (<Buffer aa> vs Uint8Array(1) [ 170 ]), so the

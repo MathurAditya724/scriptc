@@ -1695,6 +1695,72 @@ bool scr_insp_custom_inspect(bool enabled) {
   return previous;
 }
 
+/* The walk's options while a custom inspect function runs. */
+typedef struct {
+  bool colors;
+  bool custom_inspect;
+  bool sorted;
+  bool no_break;
+  int depth_kind;
+  double depth_number;
+  double break_length;
+  double compact;
+  const ScrDyn *user_options;
+} InspCallSaved;
+
+static SCR_TL InspCallSaved *g_call_saved;
+static SCR_TL size_t g_ncall_saved;
+static SCR_TL size_t g_call_saved_cap;
+
+static void insp_call_saved_cleanup(void) {
+  free(g_call_saved);
+  g_call_saved = NULL;
+  g_ncall_saved = g_call_saved_cap = 0;
+}
+
+/* A custom inspect function's call: Node gives each util.inspect and
+ * util.format call its own ctx, so the calls the function makes start
+ * with no indentation, no seen objects, no colors and the default layout
+ * and options. end restores the walk's context. */
+void scr_insp_custom_call_begin(void) {
+  scr_insp_nested_begin();
+  if (g_ncall_saved == g_call_saved_cap) {
+    if (g_call_saved_cap == 0) scr_atexit(insp_call_saved_cleanup);
+    g_call_saved_cap = g_call_saved_cap ? g_call_saved_cap * 2 : 4;
+    g_call_saved = realloc(g_call_saved, g_call_saved_cap * sizeof(InspCallSaved));
+    if (!g_call_saved) insp_oom();
+  }
+  InspCallSaved *sv = &g_call_saved[g_ncall_saved++];
+  sv->colors = g_colors;
+  sv->custom_inspect = g_custom_inspect;
+  sv->sorted = g_sorted;
+  sv->no_break = g_no_break;
+  sv->depth_kind = g_depth_kind;
+  sv->depth_number = g_depth_number;
+  sv->break_length = g_break_length;
+  sv->compact = g_compact;
+  sv->user_options = g_user_options;
+  g_colors = false;
+  g_custom_inspect = true;
+  g_no_break = false;
+  g_depth_kind = 1;
+  g_depth_number = 0;
+  g_user_options = NULL;
+  scr_insp_layout(80, 3, false);
+}
+
+void scr_insp_custom_call_end(void) {
+  InspCallSaved *sv = &g_call_saved[--g_ncall_saved];
+  g_colors = sv->colors;
+  g_custom_inspect = sv->custom_inspect;
+  g_no_break = sv->no_break;
+  g_depth_kind = sv->depth_kind;
+  g_depth_number = sv->depth_number;
+  g_user_options = sv->user_options;
+  scr_insp_layout(sv->break_length, sv->compact, sv->sorted);
+  scr_insp_nested_restore();
+}
+
 /* The style inspect.styles maps a styleType to, as [open, close] codes:
  * the styles above plus regexp (red) and module (underline). false when
  * the type has no style. */
@@ -1958,6 +2024,7 @@ static ScrStr *insp_custom(ScrDyn *d, double recurse, double depth, bool *thrown
   }
   args[2] = insp_inspect_value();
   ScrDyn *ret;
+  scr_insp_custom_call_begin();
   if (compiled) {
     ScrDyn *call[4] = {d, args[0], args[1], args[2]};
     ret = scr_dyn_call(fn, call, 4, "[nodejs.util.inspect.custom]");
@@ -1966,6 +2033,7 @@ static ScrStr *insp_custom(ScrDyn *d, double recurse, double depth, bool *thrown
     ret = scr_dyn_call(fn, args, 3, "[nodejs.util.inspect.custom]");
     scr_dyn_this_pop();
   }
+  scr_insp_custom_call_end();
   for (size_t i = 0; i < 3; i++) scr_dyn_release(args[i]);
   scr_dyn_release(fn);
   if (!ret) {
@@ -2146,7 +2214,45 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       } else {
         ib_cstr(&out, "[Function (anonymous)]");
       }
-      return insp_styled(ib_take(&out), INSP_SPECIAL);
+      /* A function's own enumerable properties follow its base, as for an
+       * object (`[Function: f] { x: 1 }`), and past the depth limit it is
+       * `[Function]` (formatRaw). Classes keep the base. */
+      ScrDyn *table = d->v.fn.class_obj ? NULL : scr_dyn_function_properties_existing(d);
+      bool shown = false;
+      for (size_t i = 0; table && i < table->v.obj.len && !shown; i++) shown = table->v.obj.entries[i].enumerable;
+      for (size_t i = 0; table && !shown && table->symbol_keys && i < table->symbol_keys->v.arr.len; i++)
+        shown = scr_insp_symbol_entry(table, i) != NULL;
+      if (!shown) {
+        scr_dyn_release(table);
+        return insp_styled(ib_take(&out), INSP_SPECIAL);
+      }
+      /* Every value of one function shares its table: the table is the
+       * function's identity for the circular checks. */
+      double circular = scr_insp_circ_check(table);
+      if (circular != 0) {
+        scr_dyn_release(table);
+        free(out.data);
+        return scr_insp_circular(circular);
+      }
+      if (recurse > depth) {
+        scr_dyn_release(table);
+        free(out.data);
+        return insp_styled_lit("[Function]", 10, INSP_SPECIAL);
+      }
+      ScrStr *base = insp_styled(ib_take(&out), INSP_SPECIAL);
+      char *cls = malloc(base->len + 1);
+      if (!cls) scr_trap("scriptc: out of memory\n");
+      memcpy(cls, base->data, base->len);
+      cls[base->len] = '\0';
+      scr_str_release(base);
+      size_t nseen = g_nseen;
+      g_pending_seen = table;
+      ScrStr *rendered = scr_insp_obj(table, recurse, depth, cls);
+      g_pending_seen = NULL;
+      if (g_nseen > nseen) g_nseen = nseen;
+      free(cls);
+      scr_dyn_release(table);
+      return rendered;
     }
     case SCR_DYN_HANDLE: {
       if (g_colors && d->v.handle.tag != SCR_DYNH_SET && d->v.handle.tag != SCR_DYNH_MAP &&
