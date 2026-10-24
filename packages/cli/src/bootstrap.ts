@@ -73,6 +73,8 @@ async function tryFastPath(): Promise<number | null> {
     // A --libnode=beside build places the pack and the island modules next
     // to the executable, which a routed hit does not do.
     values.libnode === "beside" ||
+    // The full compiler resolves `native` against the build host.
+    values["target-cpu"] !== undefined ||
     (values["external-types"] ?? []).length > 0
   )
     return null;
@@ -205,6 +207,7 @@ async function coverageFastPath(
     values.emit !== undefined ||
     values.strip ||
     values["detached-exit"] ||
+    values["target-cpu"] !== undefined ||
     values.lib ||
     values.profile !== undefined ||
     values.ffi !== undefined ||

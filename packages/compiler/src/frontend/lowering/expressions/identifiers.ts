@@ -25,6 +25,11 @@ import {
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
+import {
+  splitRequireBindingOfIdent,
+  wholeExportSymbolOfModule,
+  wholeExportValue,
+} from "../cjs-inline-require.js";
 import { captureContextArguments } from "../function-context.js";
 import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
 import {
@@ -776,6 +781,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "test it in a condition, read its typeof, or call its members",
       );
     }
+    // JavaScript reads the Buffer function's value (builtinGlobalValue).
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr)))
+      return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
     return { kind: "strLit", value: "[builtin Buffer]", type: STRING, loc };
   }
   if (lowerer.isStdlibGlobal(expr, "fetch")) {
@@ -990,6 +998,27 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // Client`): the member holds that binding's value.
   const memberAlias = cjsMemberAliasValueOf(lowerer, expr);
   if (memberAlias !== null) return lowerer.lowerExpr(memberAlias);
+  // `var m; m = require("./x")` as a bare value: a whole-export target is
+  // the exported value; a table target has no first-class module object.
+  {
+    const split = splitRequireBindingOfIdent(lowerer, expr);
+    if (split !== null) {
+      if (wholeExportSymbolOfModule(lowerer, split.dep) !== null) {
+        const value = wholeExportValue(lowerer, split.dep, expr);
+        if (value !== null) return value;
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `the whole export of '${split.spec}' as a value (its 'module.exports =' value has no static representation)`,
+        );
+      }
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `the exports object of '${split.spec}' as a value (its exports compile to a static table: read require(${JSON.stringify(split.spec)}).member directly)`,
+      );
+    }
+  }
   // Preflight guarantees no unresolved identifiers; anything else here
   // is a blocked declaration's binding (the SC2004 cascade) or a
   // binding form we don't model yet.
