@@ -10,6 +10,13 @@
 #include <string.h>
 #include <unwind.h>
 
+/* Weak, so the runtime unit alone does not link the unwinder into every
+ * program: programs that raise reference the personality routine from
+ * their landing pads, and its unit references the unwinder's entry points,
+ * which link it in. */
+#pragma weak _Unwind_ForcedUnwind
+#pragma weak _Unwind_GetCFA
+
 #if defined(__SANITIZE_ADDRESS__)
 #define SCR_UNWIND_ASAN 1
 #elif defined(__has_feature)
@@ -69,7 +76,7 @@ void scr_unwind_raise(void) {
 #ifdef SCR_UNWIND_ASAN
   scr_unwind_low = (uintptr_t)__builtin_frame_address(0);
 #endif
-  _Unwind_ForcedUnwind(exc, scr_unwind_stop, NULL);
+  if (_Unwind_ForcedUnwind != NULL) _Unwind_ForcedUnwind(exc, scr_unwind_stop, NULL);
   fputs("scriptc: the native unwinder could not raise an exception\n", stderr);
   abort();
 }
