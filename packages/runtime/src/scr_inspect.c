@@ -1706,6 +1706,8 @@ typedef struct {
   double break_length;
   double compact;
   const ScrDyn *user_options;
+  size_t nsaved;  /* the nested-context stack's depth before the call */
+  size_t nframes; /* the frame stack's depth before the call */
 } InspCallSaved;
 
 static SCR_TL InspCallSaved *g_call_saved;
@@ -1721,8 +1723,13 @@ static void insp_call_saved_cleanup(void) {
 /* A custom inspect function's call: Node gives each util.inspect and
  * util.format call its own ctx, so the calls the function makes start
  * with no indentation, no seen objects, no colors and the default layout
- * and options. end restores the walk's context. */
-void scr_insp_custom_call_begin(void) {
+ * and options. begin answers a token; end(token) restores the walk's
+ * context as it was at that begin. A call that threw skips its end, and
+ * an enclosing custom function's end (or the walk's, when the function
+ * caught the error) discards what the throw left: the contexts of calls
+ * that never ended and the frames of renders that never finished. */
+double scr_insp_custom_call_begin(void) {
+  size_t nsaved = g_nsaved;
   scr_insp_nested_begin();
   if (g_ncall_saved == g_call_saved_cap) {
     if (g_call_saved_cap == 0) scr_atexit(insp_call_saved_cleanup);
@@ -1730,7 +1737,10 @@ void scr_insp_custom_call_begin(void) {
     g_call_saved = realloc(g_call_saved, g_call_saved_cap * sizeof(InspCallSaved));
     if (!g_call_saved) insp_oom();
   }
+  double token = (double)g_ncall_saved;
   InspCallSaved *sv = &g_call_saved[g_ncall_saved++];
+  sv->nsaved = nsaved;
+  sv->nframes = g_nframes;
   sv->colors = g_colors;
   sv->custom_inspect = g_custom_inspect;
   sv->sorted = g_sorted;
@@ -1747,10 +1757,20 @@ void scr_insp_custom_call_begin(void) {
   g_depth_number = 0;
   g_user_options = NULL;
   scr_insp_layout(80, 3, false);
+  return token;
 }
 
-void scr_insp_custom_call_end(void) {
-  InspCallSaved *sv = &g_call_saved[--g_ncall_saved];
+void scr_insp_custom_call_end(double token) {
+  size_t depth = (size_t)token;
+  if (depth >= g_ncall_saved) return; /* an enclosing end already restored it */
+  InspCallSaved *sv = &g_call_saved[depth];
+  g_ncall_saved = depth;
+  while (g_nframes > sv->nframes) {
+    InspFrame *f = &g_frames[--g_nframes];
+    for (size_t i = 0; i < f->len; i++) scr_str_release(f->items[i]);
+    free(f->items);
+  }
+  g_pending_seen = NULL;
   g_colors = sv->colors;
   g_custom_inspect = sv->custom_inspect;
   g_no_break = sv->no_break;
@@ -1758,7 +1778,7 @@ void scr_insp_custom_call_end(void) {
   g_depth_number = sv->depth_number;
   g_user_options = sv->user_options;
   scr_insp_layout(sv->break_length, sv->compact, sv->sorted);
-  scr_insp_nested_restore();
+  while (g_nsaved > sv->nsaved) scr_insp_nested_restore();
 }
 
 /* The style inspect.styles maps a styleType to, as [open, close] codes:
@@ -2024,7 +2044,7 @@ static ScrStr *insp_custom(ScrDyn *d, double recurse, double depth, bool *thrown
   }
   args[2] = insp_inspect_value();
   ScrDyn *ret;
-  scr_insp_custom_call_begin();
+  double token = scr_insp_custom_call_begin();
   if (compiled) {
     ScrDyn *call[4] = {d, args[0], args[1], args[2]};
     ret = scr_dyn_call(fn, call, 4, "[nodejs.util.inspect.custom]");
@@ -2033,7 +2053,7 @@ static ScrStr *insp_custom(ScrDyn *d, double recurse, double depth, bool *thrown
     ret = scr_dyn_call(fn, args, 3, "[nodejs.util.inspect.custom]");
     scr_dyn_this_pop();
   }
-  scr_insp_custom_call_end();
+  scr_insp_custom_call_end(token);
   for (size_t i = 0; i < 3; i++) scr_dyn_release(args[i]);
   scr_dyn_release(fn);
   if (!ret) {

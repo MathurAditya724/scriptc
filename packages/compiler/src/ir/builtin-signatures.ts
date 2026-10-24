@@ -4492,9 +4492,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.customIsSelf": { argTypes: [DYN, DYN], result: BOOL },
   "insp.customResult": { argTypes: [DYN, F64, F64], result: STRING },
   /** Around the method's call: the inspect and format calls it makes run
-   * in a fresh inspect context with the default options. */
-  "insp.customCallBegin": { argTypes: [], result: VOID },
-  "insp.customCallEnd": { argTypes: [], result: VOID },
+   * in a fresh inspect context with the default options. begin answers the
+   * token end takes; end also discards what a call that threw left. */
+  "insp.customCallBegin": { argTypes: [], result: F64 },
+  "insp.customCallEnd": { argTypes: [F64], result: VOID },
   /** Whether a runtime format string has a '%' before its last character. */
   "insp.formatSpecifies": { argTypes: [STRING], result: BOOL },
   "insp.formatSpecifiesDyn": { argTypes: [DYN], result: BOOL },

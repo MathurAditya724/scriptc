@@ -127,10 +127,10 @@ void scr_insp_nested_restore(void);
  * value for the caller to restore. */
 bool scr_insp_custom_inspect(bool enabled);
 /* Around a custom inspect function's call: begin gives the calls it makes
- * a fresh inspect context with the default options; end restores the
- * caller's. */
-void scr_insp_custom_call_begin(void);
-void scr_insp_custom_call_end(void);
+ * a fresh inspect context with the default options and answers a token;
+ * end(token) restores the caller's, also after calls that threw. */
+double scr_insp_custom_call_begin(void);
+void scr_insp_custom_call_end(double token);
 /* How the unbounded depth of the renders that follow was given, for custom
  * inspect functions: 0 Infinity, 1 null, 2 undefined. Answers the
  * previous kind for the caller to restore. */

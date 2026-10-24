@@ -1277,21 +1277,34 @@ function customInspectHelper(
   const resultT = found.sig.ret;
   const call = accessorCall(lowerer, t.className, INSPECT_CUSTOM_MEMBER, v(), args, resultT, loc);
   // The method runs in a fresh inspect context (insp.customCallBegin); the
-  // walk's own context returns before the result renders.
-  const callStmt = (fn: "insp.customCallBegin" | "insp.customCallEnd"): IrStmt => ({
+  // walk's own context returns before the result renders. The token lets
+  // an enclosing end restore this walk's context when the method throws.
+  locals.push({ id: "tok.0", name: "tok", type: F64, mutable: false });
+  const end: IrStmt = {
     kind: "exprStmt",
-    expr: { kind: "libCall", fn, args: [], type: VOID, loc },
+    expr: {
+      kind: "libCall",
+      fn: "insp.customCallEnd",
+      args: [varRef("tok.0", F64, loc)],
+      type: VOID,
+      loc,
+    },
     loc,
-  });
-  const render: IrStmt[] = [...argDecls, callStmt("insp.customCallBegin")];
+  };
+  const render: IrStmt[] = [
+    ...argDecls,
+    {
+      kind: "varDecl",
+      localId: "tok.0",
+      init: { kind: "libCall", fn: "insp.customCallBegin", args: [], type: F64, loc },
+      loc,
+    },
+  ];
   if (resultT.kind === "void") {
-    render.push({ kind: "exprStmt", expr: call, loc }, callStmt("insp.customCallEnd"));
+    render.push({ kind: "exprStmt", expr: call, loc }, end);
   } else {
     locals.push({ id: "res.0", name: "res", type: resultT, mutable: false });
-    render.push(
-      { kind: "varDecl", localId: "res.0", init: call, loc },
-      callStmt("insp.customCallEnd"),
-    );
+    render.push({ kind: "varDecl", localId: "res.0", init: call, loc }, end);
   }
   const res = (): IrExpr => varRef("res.0", resultT, loc);
   if (resultT.kind === "string") {
