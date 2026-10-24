@@ -451,6 +451,7 @@ export async function compile(
     );
     return withCompileWarnings(result, warnings);
   } finally {
+    setLibDiagnosticsStore(null);
     frontendProcess?.release();
   }
 }
@@ -624,6 +625,7 @@ async function compileExecutableNative(
     dgram: features.dgram,
     dnsPromises: features.dnsPromises,
     dgramDyn: features.dgramDyn,
+    textCodecDyn: features.textCodecDyn,
     watch: features.watch,
     foreignFfi: features.foreignFfi,
     ...(features.workers ? { workers: true } : {}),
@@ -1163,19 +1165,21 @@ async function prepareExecutableInputInChild(
  * text, to `resultPath`.
  */
 /** Has the build reuse the diagnostics of the declaration files scriptc
- * supplies (lib-diagnostics.ts) through the build cache, when there is one and
- * the checker is tsc-ts. */
-async function configureLibDiagnostics(): Promise<void> {
+ * supplies (lib-diagnostics.ts) through the build cache at `root`, when the
+ * build uses one (executables; source outputs create no cache) and the
+ * checker is tsc-ts. */
+function configureLibDiagnostics(root: string | null): void {
   let checker: string | undefined;
   try {
-    checker = checkerCacheIdentity();
+    checker = root === null ? undefined : checkerCacheIdentity();
   } catch {
     // A missing checker fails where the build starts it.
     checker = undefined;
   }
-  const root = checker === undefined ? null : await prepareBuildCacheRoot(buildCacheRoot());
   setLibDiagnosticsStore(
-    root === null ? null : fileVerdictStore(join(root, "lib-diagnostics-v1")),
+    root === null || checker === undefined
+      ? null
+      : fileVerdictStore(join(root, "lib-diagnostics-v1")),
     checker ?? "",
   );
 }
@@ -1183,8 +1187,13 @@ async function configureLibDiagnostics(): Promise<void> {
 export async function runFrontendProcess(requestPath: string, resultPath: string): Promise<void> {
   const request = JSON.parse(await readFile(requestPath, "utf8")) as FrontendProcessRequest;
   clearCompileSessionCaches();
-  await configureLibDiagnostics();
   setProvenanceSources(request.provenance);
+  // The compile that started this process prepared the cache root.
+  configureLibDiagnostics(
+    (request.opts.outputKind ?? "exe") === "exe" && provenanceSources() === null
+      ? await prepareBuildCacheRoot(buildCacheRoot())
+      : null,
+  );
   const frontendInputs = new FrontendInputTracker();
   const warnings: CompileWarningSink = { warnings: [], sourceTexts: null };
   let result: FrontendProcessResult = { kind: "failed" };
@@ -1232,6 +1241,8 @@ export async function runFrontendProcess(requestPath: string, resultPath: string
     }
   } catch {
     result = { kind: "failed" };
+  } finally {
+    setLibDiagnosticsStore(null);
   }
   await writeFile(resultPath, JSON.stringify(result), { mode: 0o600 });
 }
@@ -1246,7 +1257,6 @@ async function compileTracked(
   const timing = compilationTiming();
   const timingStart = Date.now();
   entryPath = resolve(entryPath);
-  await configureLibDiagnostics();
   const outputKind = opts.outputKind ?? "exe";
   if (
     (opts.backend !== undefined && opts.backend !== "llvm") ||
@@ -1470,6 +1480,7 @@ async function compileTracked(
     outputKind === "exe" && provenanceSources() === null
       ? await prepareBuildCacheRoot(buildCacheRoot())
       : null;
+  configureLibDiagnostics(cacheRoot);
   let earlyCacheOptions: EarlyExecutableCacheOptions | null = null;
   if (outputKind === "exe") {
     const helperObjectRoute =

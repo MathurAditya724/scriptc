@@ -71,6 +71,7 @@ import { isClassCallback } from "../class-callbacks.js";
 import { isKeyedFieldAccess } from "./keyed-field-targets.js";
 import { lowerFieldCompoundValue } from "./updates.js";
 import { readsHeldEvolvingArray } from "../lower-stmts.js";
+import { lowerBufferPrototypeMember } from "../containers/bytes.js";
 
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
@@ -104,6 +105,8 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     const en = lowerEnumAccess(lowerer, expr);
     if (en) return en;
   }
+  const bufferMember = lowerBufferPrototypeMember(lowerer, expr);
+  if (bufferMember) return bufferMember;
   const cachedModule = lowerRequireCacheElement(lowerer, expr);
   if (cachedModule) return cachedModule;
   const namespaceElement = lowerModuleNamespaceElement(lowerer, expr);
@@ -1028,7 +1031,7 @@ function lowerGuardedRecordWrite(
   const value = stabilized(lowerer, lowerer.lowerExpr(expr.right), "%recordValue", receiver.stmts);
   const write = lowerer.withExpressionOverride(target.expression, receiver.present, () =>
     lowerer.withExpressionOverride(target.argumentExpression, key, () =>
-      lowerer.withExpressionOverride(expr.right, value, () => lowerElementWrite(lowerer, expr)),
+      lowerer.withExpressionOverride(expr.right, value, () => lowerer.lowerElementWrite(expr)),
     ),
   );
   return {
