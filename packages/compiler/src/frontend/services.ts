@@ -61,7 +61,9 @@ export class FrontendServices {
     // Called as a plain function: the instance is not its receiver.
     const createApi = this.createApi;
     return (this.parser ??= new Ts7SourceParser(
-      (options) => createApi({ ...options, collectTiming: false }),
+      // The parser reads no libraries, so it gains nothing from the shared
+      // checker server, and leaves it to the program's checker.
+      (options) => createApi({ ...options, collectTiming: false, shared: false }),
       this.cwd,
     ));
   }
