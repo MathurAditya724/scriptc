@@ -979,7 +979,10 @@ export class LlDyn {
       const lPlain = B.newLabel("dm.tr.plain");
       B.condBr(capsule, lCapsule, lPlain);
       B.startBlock(lCapsule);
-      if (preserveRefs) {
+      // A class target matches only capsules of that class (tested above):
+      // a materialized view is a plain object, which never carries a class
+      // brand, so materializing one cannot change the answer.
+      if (preserveRefs || (t.kind === "object" && t.className !== "%Error")) {
         B.terminate(`ret i1 false`);
       } else {
         const materialized = B.tmp();
