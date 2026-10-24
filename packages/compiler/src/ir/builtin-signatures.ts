@@ -2570,6 +2570,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: CHILD_T,
   },
   "child.connected": { argTypes: [CHILD_T], result: BOOL },
+  "child.hasChannel": { argTypes: [CHILD_T], result: BOOL },
   "child.send": { argTypes: [CHILD_T, STRING], result: BOOL },
   "child.sendCb": { argTypes: [CHILD_T, STRING, null], result: BOOL },
   "child.disconnect": { argTypes: [CHILD_T], result: VOID },

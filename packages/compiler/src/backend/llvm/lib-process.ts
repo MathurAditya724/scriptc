@@ -118,6 +118,13 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.line(`call void @scr_child_on_error(ptr ${child.name}, ptr ${cb.name}, ptr @${adapter})`);
     return { name: "", type: e.type };
   }
+  if (e.fn === "child.hasChannel") {
+    const child = host.emitExpr(e.args[0]!);
+    host.declare(`declare zeroext i1 @scr_child_ipc_present(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call i1 @scr_child_ipc_present(ptr ${child.name})`);
+    return { name: out, type: e.type };
+  }
   if (e.fn === "child.connected") {
     const child = host.emitExpr(e.args[0]!);
     host.declare(`declare zeroext i1 @scr_child_ipc_connected(ptr)`);

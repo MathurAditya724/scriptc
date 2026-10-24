@@ -1762,6 +1762,11 @@ export function lowerInExpression(
           };
     }
   }
+  // A child process has `send`, `disconnect` and `channel` only when it was
+  // created with an IPC channel (fork, or an "ipc" stdio entry), and keeps
+  // them after the channel closes: the runtime answers from the child.
+  if (recv.type.kind === "child" && CHILD_CHANNEL_MEMBERS.has(key))
+    return { kind: "libCall", fn: "child.hasChannel", args: [recv], type: BOOL, loc };
   // A native Node handle (an http.Server, a socket, a child process...):
   // a member Node's declarations give the class is on its prototype, so
   // `"closeAllConnections" in server` answers true. Undeclared names can
@@ -2093,6 +2098,9 @@ const NATIVE_HANDLE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
   "http2Session",
   "http2Stream",
 ]);
+
+/** Child process members that exist only on a child with an IPC channel. */
+const CHILD_CHANNEL_MEMBERS: ReadonlySet<string> = new Set(["send", "disconnect", "channel"]);
 
 /** Whether every constituent of `t` declares a required member `key` in
  * a declaration file (Node's @types/node). */
