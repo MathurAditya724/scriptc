@@ -124,6 +124,7 @@ const TIMEOUTS: Record<string, number> = {
   undici5: 600_000,
   undici7: 600_000,
   "zod4-boundary": 900_000,
+  "zod4-record": 900_000,
   zod3: 600_000,
   "zod3-adoption": 600_000,
   "zod3-boundary": 600_000,

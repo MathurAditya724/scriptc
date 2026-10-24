@@ -177,14 +177,32 @@ export function collectClassMethodMutations(
   // A string index whose values cannot be functions excludes callable
   // method slots. Class instances have no implicit index signature, so such
   // a dictionary is only a class view when the class declares that index
-  // signature, and then every method must be assignable to its value type.
-  const functionFreeDictionary = (value: ts.Expression): boolean =>
-    lowerer.checker
-      .getIndexInfosOfType(lowerer.typeOf(value))
+  // signature, and then every method must be assignable to its value type,
+  // or when the dictionary keeps checked identity: it then holds the
+  // existing objects it receives, class instances included.
+  // A string-keyed dictionary that keeps checked identity holds the
+  // existing objects it receives, class instances included, so any write
+  // through it can replace a method.
+  const dictionaryView = (value: ts.Expression): boolean => {
+    const type = lowerer.typeOf(value);
+    return (
+      lowerer.checker.getPropertiesOfType(type).length === 0 &&
+      lowerer.checker
+        .getIndexInfosOfType(type)
+        .some((index) => (index.keyType.flags & ts.TypeFlags.StringLike) !== 0) &&
+      lowerer.classImplementedProtocol(type)
+    );
+  };
+  const functionFreeDictionary = (value: ts.Expression): boolean => {
+    const type = lowerer.typeOf(value);
+    if (lowerer.classImplementedProtocol(type)) return false;
+    return lowerer.checker
+      .getIndexInfosOfType(type)
       .some(
         (index) =>
           (index.keyType.flags & ts.TypeFlags.StringLike) !== 0 && functionFree(index.type),
       );
+  };
   const literalLoopKeys = (key: ts.Expression): (string | number)[] | null => {
     if (!ts.isIdentifier(key)) return null;
     const symbol = lowerer.checker.getSymbolAtLocation(key);
@@ -585,7 +603,10 @@ export function collectClassMethodMutations(
   );
   for (const { target, site } of propertyWrites) {
     const name = target.name.text;
-    if (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(target.expression, name))
+    if (
+      !dictionaryView(target.expression) &&
+      (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(target.expression, name))
+    )
       continue;
     if (lowerer.prototypeMethodAccesses.has(name)) lowerer.noteMethodSite(name, site);
     else lowerer.noteMethodAccess(name, site);
