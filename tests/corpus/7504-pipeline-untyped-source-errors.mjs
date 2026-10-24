@@ -30,7 +30,7 @@ await new Promise((resolve) => {
   });
   pipeline(pick(counted("f", 5)), dst, (err) => {
     console.log("fail done", err && err.message);
-    resolve();
+    resolve(undefined);
   });
 });
 
@@ -45,7 +45,7 @@ await new Promise((resolve) => {
   });
   pipeline(pick(counted("b", 3)), dst, (err) => {
     console.log("slow done", err);
-    resolve();
+    resolve(undefined);
   });
 });
 
@@ -85,6 +85,6 @@ await new Promise((resolve) => {
   pipeline(
     pick(new Map([["k", 1]])),
     new Writable({ objectMode: true, write(c, _e, cb) { console.log("map write", JSON.stringify(c)); cb(); } }),
-    (err) => { console.log("map done", err); resolve(); },
+    (err) => { console.log("map done", err); resolve(undefined); },
   );
 });

@@ -58,7 +58,7 @@ async function run(name) {
     queueMicrotask(() => log.push(`${name} microtask`));
     pipeline(src, sink(name, objectMode), (err) => {
       log.push(`${name} done ${err ? err.code ?? err.message : err}`);
-      resolve();
+      resolve(undefined);
     });
     log.push(`${name} after call`);
   });
@@ -72,7 +72,7 @@ await new Promise((resolve) =>
     src2,
     new Transform({ transform(c, _e, cb) { cb(null, c.toString().toUpperCase()); } }),
     sink("transform"),
-    (err) => { log.push(`transform done ${err}`); resolve(); },
+    (err) => { log.push(`transform done ${err}`); resolve(undefined); },
   ),
 );
 const src3 = new Set(["f1", "f2"]);
@@ -81,7 +81,7 @@ await new Promise((resolve) =>
     src3,
     async function* (source) { for await (const c of source) yield c + "!"; },
     sink("fnstage"),
-    (err) => { log.push(`fnstage done ${err}`); resolve(); },
+    (err) => { log.push(`fnstage done ${err}`); resolve(undefined); },
   ),
 );
 // promises form
@@ -92,11 +92,11 @@ log.push("promises resolved");
 function* bad() { yield "ok"; throw new Error("source failed"); }
 const src5 = bad();
 await new Promise((resolve) =>
-  pipeline(src5, sink("bad"), (err) => { log.push(`bad done ${err && err.message}`); resolve(); }),
+  pipeline(src5, sink("bad"), (err) => { log.push(`bad done ${err && err.message}`); resolve(undefined); }),
 );
 // a source of non-string values into a byte-mode writable
 const src6 = [1, 2];
 await new Promise((resolve) =>
-  pipeline(src6, sink("numbers"), (err) => { log.push(`numbers done ${err && err.code}`); resolve(); }),
+  pipeline(src6, sink("numbers"), (err) => { log.push(`numbers done ${err && err.code}`); resolve(undefined); }),
 );
 console.log(log.join("\n"));
