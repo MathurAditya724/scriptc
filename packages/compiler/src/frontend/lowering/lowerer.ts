@@ -3910,7 +3910,8 @@ export class Lowerer {
   /** Declared class fields may store a DYN value only when its static type
    * is `unknown` or `object` (also with `null` or `undefined`, or an array
    * of those), names checked protocol identity, is an owned runtime
-   * handle (a Worker or MessagePort, a fetch Headers/Request/Response, or
+   * handle (a Worker or MessagePort, a fetch Headers/Request/Response or
+   * AbortController/AbortSignal, or
    * a node:crypto ECDH, DiffieHellman or DiffieHellmanGroup), or is a
    * WeakMap/WeakSet (native weak collections live in checked-dynamic
    * storage, as locals of those types do); `any` fields stay refused. */

@@ -1747,9 +1747,17 @@ export function mapAsyncGeneratorAnnotation(type: ts.Type, ctx: TypeMapperCtx): 
   return { kind: "generator", async: true, ...channels };
 }
 
-/** The native fetch handles (Headers, Request, Response), optionally in
- * arrays or with null/undefined: checked-dynamic handles wherever they are
- * stored, like the worker handles above. */
+const FETCH_HANDLE_NAMES: ReadonlySet<string> = new Set([
+  "Headers",
+  "Request",
+  "Response",
+  "AbortController",
+  "AbortSignal",
+]);
+
+/** The native fetch handles (Headers, Request, Response, AbortController,
+ * AbortSignal), optionally in arrays or with null/undefined: checked-dynamic
+ * handles wherever they are stored, like the worker handles above. */
 export function isFetchHandleType(
   type: ts.Type,
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
@@ -1765,9 +1773,7 @@ export function isFetchHandleType(
       const symbol = member.getSymbol();
       if (
         !symbol ||
-        (ts.symbolName(symbol) !== "Headers" &&
-          ts.symbolName(symbol) !== "Request" &&
-          ts.symbolName(symbol) !== "Response") ||
+        !FETCH_HANDLE_NAMES.has(ts.symbolName(symbol)) ||
         !symbol.declarations.some(
           (d) =>
             (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
