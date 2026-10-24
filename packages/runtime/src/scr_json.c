@@ -16157,16 +16157,19 @@ typedef struct { void *key; ScrWeakEntry *head; } ScrWeakKeySlot;
 static SCR_TL ScrWeakKeySlot *scr_weak_keys;
 static SCR_TL size_t scr_weak_keys_mask, scr_weak_keys_used;
 
-static inline size_t scr_weak_mix(uintptr_t bits) {
+/* Mixed in 64 bits on every target: uintptr_t is 32 bits on wasm32, where
+ * these shifts would exceed its width. */
+static inline size_t scr_weak_mix(uint64_t bits) {
   bits ^= bits >> 33;
-  bits *= 0xff51afd7ed558ccdull;
+  bits *= UINT64_C(0xff51afd7ed558ccd);
   bits ^= bits >> 29;
   return (size_t)bits;
 }
 static inline size_t scr_weak_entry_hash(const ScrWeakMap *owner, const void *key, unsigned kind) {
-  return scr_weak_mix((uintptr_t)key ^ ((uintptr_t)owner * 0x9E3779B97F4A7C15ull) ^ ((uintptr_t)kind << 56));
+  return scr_weak_mix((uint64_t)(uintptr_t)key ^ ((uint64_t)(uintptr_t)owner * UINT64_C(0x9E3779B97F4A7C15)) ^
+                      ((uint64_t)kind << 56));
 }
-static inline size_t scr_weak_key_hash(const void *key) { return scr_weak_mix((uintptr_t)key); }
+static inline size_t scr_weak_key_hash(const void *key) { return scr_weak_mix((uint64_t)(uintptr_t)key); }
 
 static void scr_weak_index_put(ScrWeakEntry *entry) {
   size_t j = scr_weak_entry_hash(entry->owner, entry->key, entry->kind) & scr_weak_index_mask;
