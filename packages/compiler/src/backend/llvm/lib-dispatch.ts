@@ -9,7 +9,7 @@ import { emitTestLibCall } from "./lib-test.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
-import type { IrExpr, IrType } from "../../ir/ir.js";
+import { F64, type IrExpr, type IrType } from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
@@ -24,6 +24,9 @@ import { DYN_KIND } from "./dyn.js";
 import { rawBytes } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
+
+/** ScrDyn.v.typed_ref.type_key_len: the low 27 bits of its bit-field word. */
+const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -236,6 +239,15 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return output;
   }
+  if (e.fn === "record.sourceSpread") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const value = host.emitReadReceiver(e.args[1]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceSpread of a non-record");
+    host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
   if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
     const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
     if (e.fn === "dyn.typedRefKeyIs" && literal === null)
@@ -281,6 +293,38 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         B.line(`store i1 true, ptr ${slot}`);
         B.condBr(same, done, compare);
         B.startBlock(compare);
+        // A capsule with another key pointer usually belongs to another
+        // class: reject it on its key length and last eight bytes before
+        // the out-of-line name comparison, so a class table's chain of
+        // probes costs a few instructions per class it skips.
+        B.line(`store i1 false, ptr ${slot}`);
+        const bytes = Buffer.from(literal, "utf8");
+        const lenSlot = B.tmp(),
+          lenWord = B.tmp(),
+          len = B.tmp(),
+          lenEq = B.tmp();
+        B.line(
+          `${lenSlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(88, 52)} ; ->v.typed_ref.type_key_len`,
+        );
+        B.line(`${lenWord} = load i32, ptr ${lenSlot}`);
+        B.line(`${len} = and i32 ${lenWord}, ${TYPE_KEY_LEN_MASK}`);
+        B.line(`${lenEq} = icmp eq i32 ${len}, ${bytes.length}`);
+        const full = B.newLabel("brand.full");
+        if (bytes.length >= 8) {
+          const tail = B.newLabel("brand.tail");
+          B.condBr(lenEq, tail, done);
+          B.startBlock(tail);
+          const tailPtr = B.tmp(),
+            word = B.tmp(),
+            wordEq = B.tmp();
+          B.line(`${tailPtr} = getelementptr inbounds i8, ptr ${keyPtr}, i64 ${bytes.length - 8}`);
+          B.line(`${word} = load i64, ptr ${tailPtr}, align 1`);
+          B.line(`${wordEq} = icmp eq i64 ${word}, ${bytes.readBigInt64LE(bytes.length - 8)}`);
+          B.condBr(wordEq, full, done);
+        } else {
+          B.condBr(lenEq, full, done);
+        }
+        B.startBlock(full);
       }
     }
     if (e.fn === "dyn.typedRefIs") {
@@ -594,16 +638,66 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
           ? "scr_stream_dyn_async_iterator_open"
           : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
+  // The runtime's Date functions take and answer time values: a Date
+  // operand passes its time value, read at once from the borrowed object,
+  // and a Date result is a new Date object.
   const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
     ? emitBorrowedInputs(host, e.args)
     : e.args.map((a) =>
-        borrowsJsonInputs(e.fn) || borrowsIteratorInputs(e.fn)
-          ? emitBorrowedInput(host, a)
-          : host.emitExpr(a),
+        a.type.kind === "date"
+          ? { name: emitDateTimeArg(host, a), type: F64 }
+          : borrowsJsonInputs(e.fn) || borrowsIteratorInputs(e.fn)
+            ? emitBorrowedInput(host, a)
+            : host.emitExpr(a),
       );
+  // getTime and valueOf answer the time value the argument already is.
+  if ((e.fn === "date.getTime" || e.fn === "date.valueOf") && e.args[0]?.type.kind === "date")
+    return { name: args[0]!.name, type: e.type };
   // The deep comparisons' number test: computed here, with no runtime call.
   if (e.fn === "assert.sameValue")
     return { name: emitSameValueF64(host, args[0]!.name, args[1]!.name), type: e.type };
+  const callArgs = args;
+  if (e.type.kind === "date") {
+    const ms = emitSymbolLibCall(host, { ...e, type: F64 }, sym, callArgs);
+    host.declare(`declare ptr @scr_date_new(double)`);
+    const date = B.tmp();
+    B.line(`${date} = call ptr @scr_date_new(double ${ms.name})`);
+    return host.own({ name: date, type: e.type });
+  }
+  return emitSymbolLibCall(host, e, sym, callArgs);
+}
+
+/** The time value of a Date argument. A Date that a runtime Date function
+ * produces for this argument alone (`new Date(ms).getTime()`, a
+ * time-value local's read) passes the function's time value and creates
+ * no Date object. */
+function emitDateTimeArg(host: LlvmEmitterContext, date: IrExpr): string {
+  // A time-value local's read is its time value itself.
+  if (date.kind === "libCall" && date.fn === "date.fromTime")
+    return host.emitExpr(date.args[0]!).name;
+  if (date.kind === "libCall" && date.fn.startsWith("date."))
+    return emitGenericLibCall(host, { ...date, type: F64 }).name;
+  return emitDateTime(host, emitBorrowedInput(host, date).name);
+}
+
+/** A Date object's time value (ScrDate.ms). */
+function emitDateTime(host: LlvmEmitterContext, date: string): string {
+  const B = host.B;
+  const field = B.tmp();
+  const ms = B.tmp();
+  B.line(`${field} = getelementptr inbounds i8, ptr ${date}, i64 8 ; ->ms`);
+  B.line(`${ms} = load double, ptr ${field}`);
+  return ms;
+}
+
+/** The call of runtime function `sym` with evaluated arguments. */
+function emitSymbolLibCall(
+  host: LlvmEmitterContext,
+  e: LibCallExpr,
+  sym: string,
+  args: readonly LlValue[],
+): LlValue {
+  const B = host.B;
   const argDecls = args.map((a) => {
     const ty = host.llType(a.type);
     return ty === "i1" ? "i1 zeroext" : ty;
@@ -805,6 +899,19 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     return { name: t, type: e.type };
   }
   if (e.fn === "bytes.absent") return host.own({ name: "null", type: e.type });
+  if (e.fn === "record.isFrozen") {
+    // The frozen bit of the record's rc word (scr_rc.h SCR_RC_FROZEN) is
+    // its second-highest bit; an immortal word sets the highest one too.
+    const value = host.emitReadReceiver(e.args[0]!);
+    const S = host.sizeType;
+    const rc = host.B.tmp(),
+      top = host.B.tmp(),
+      t = host.B.tmp();
+    host.B.line(`${rc} = load ${S}, ptr ${value.name}`);
+    host.B.line(`${top} = lshr ${S} ${rc}, ${S === "i64" ? 62 : 30}`);
+    host.B.line(`${t} = icmp eq ${S} ${top}, 1`);
+    return { name: t, type: e.type };
+  }
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
   // events.once builds typed listener adapters beside the emitter calls.
   if (e.fn === "events.once" || e.fn === "events.onceSignal")
@@ -913,6 +1020,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "blob":
     case "wasm":
     case "array":
+    case "collection":
     case "record":
     case "disposable":
     case "punycode":

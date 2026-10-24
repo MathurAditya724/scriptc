@@ -1087,6 +1087,10 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     lowerer.isStdlibGlobal(e.expression, "Object")
   )
     return { kind: "boolLit", value: true, type: BOOL, loc: locOf(e) };
+  // `if (runtimeBuffer)` over an alias of the Buffer global (a
+  // capability probe): Node always defines Buffer.
+  if (lowerer.isStdlibGlobal(e, "Buffer"))
+    return { kind: "boolLit", value: true, type: BOOL, loc: locOf(e) };
   if (ts.isPropertyAccessExpression(e)) {
     const presence = lowerPromiseThenPresence(lowerer, e, {
       kind: "boolLit",

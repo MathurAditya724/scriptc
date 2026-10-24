@@ -46,6 +46,13 @@ export function collectClassMethodMutations(
   const typedClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
   const symbolMethods = new Set<string>();
   let unknownKey: ts.Node | undefined;
+  /** Every write with an unknown key: each may install a replacement of any
+   * method name, and the key-order witness asks what each one installs. */
+  const unknownKeySites: ts.Node[] = [];
+  const markUnknownKey = (site: ts.Node): void => {
+    unknownKey = site;
+    unknownKeySites.push(site);
+  };
   let numericKey: ts.Node | undefined;
   let unknownOwnField = false;
   // `sym:iterator` for `Symbol.iterator`: the name a class method declared
@@ -83,7 +90,7 @@ export function collectClassMethodMutations(
   for (const key of computedMethods)
     for (const name of literalValues(lowerer.typeOf(key)) ?? []) methods.add(String(name));
   const markName = (name: string, site: ts.Node, arrow = false): void => {
-    if (name === "prototype" || name === "__proto__") unknownKey = site;
+    if (name === "prototype" || name === "__proto__") markUnknownKey(site);
     if (methods.has(name)) lowerer.noteMethodAccess(name, site);
     if (!arrow) receiverFields.add(name);
   };
@@ -125,11 +132,13 @@ export function collectClassMethodMutations(
   };
   // Whether no function value can inhabit `type`. Primitives qualify, and so
   // do non-callable object types a function is not assignable to: one that
-  // requires a property functions lack, or a weak (all-optional) type that
+  // requires a property functions lack, a weak (all-optional) type that
   // shares no property with functions (TypeScript's weak-type rule rejects
-  // callable sources too).
-  const functionFree = (type: ts.Type): boolean => {
-    if (type.isUnionType()) return ts.constituentTypes(type).every(functionFree);
+  // callable sources too), or a dictionary with no properties whose index
+  // signatures hold function-free values (functions have no index
+  // signature). `seen` stops recursive dictionary types.
+  const functionFree = (type: ts.Type, seen: Set<ts.Type> = new Set()): boolean => {
+    if (type.isUnionType()) return ts.constituentTypes(type).every((t) => functionFree(t, seen));
     if (
       (type.flags &
         (ts.TypeFlags.StringLike |
@@ -149,7 +158,12 @@ export function collectClassMethodMutations(
     )
       return false;
     const properties = lowerer.checker.getPropertiesOfType(type);
-    if (properties.length === 0) return false;
+    if (properties.length === 0) {
+      if (seen.has(type)) return true;
+      seen.add(type);
+      const indexes = lowerer.checker.getIndexInfosOfType(type);
+      return indexes.length > 0 && indexes.every((index) => functionFree(index.type, seen));
+    }
     const required = properties.filter(
       (property) => (property.flags & ts.SymbolFlags.Optional) === 0,
     );
@@ -442,11 +456,12 @@ export function collectClassMethodMutations(
       (lowerer.isStdlibGlobal(node, "Object") || lowerer.isStdlibGlobal(node, "Reflect")) &&
       (!ts.isPropertyAccessExpression(node.parent) || node.parent.expression !== node)
     )
-      unknownKey = node;
+      markUnknownKey(node);
   for (const node of reflection) {
     const objectMethod = lowerer.stdlibGlobalMember(node, "Object");
     const reflectMethod = lowerer.stdlibGlobalMember(node, "Reflect");
-    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf") unknownKey = node;
+    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf")
+      markUnknownKey(node);
     const single =
       objectMethod === "defineProperty" ||
       reflectMethod === "defineProperty" ||
@@ -456,7 +471,7 @@ export function collectClassMethodMutations(
     if (!single && !multiple) continue;
     const call = node.parent;
     if (!ts.isCallExpression(call) || call.expression !== node) {
-      unknownKey = node;
+      markUnknownKey(node);
       continue;
     }
     const receiver = call.arguments.nodes[0];
@@ -611,7 +626,7 @@ export function collectClassMethodMutations(
       // Numeric writes can replace numeric names but not ordinary names.
       numericKey = site;
     } else if (!(flags & ts.TypeFlags.ESSymbolLike)) {
-      unknownKey = site;
+      markUnknownKey(site);
     }
   }
   if (numericKey) {
@@ -620,7 +635,10 @@ export function collectClassMethodMutations(
     }
   }
   if (unknownKey) {
-    for (const method of methods) lowerer.noteMethodAccess(method, unknownKey);
+    for (const method of methods) {
+      lowerer.prototypeMethodAccesses.set(method, unknownKey);
+      for (const site of unknownKeySites) lowerer.noteMethodSite(method, site);
+    }
     for (const method of symbolMethods) lowerer.replacedSymbolMethods.add(method);
   }
   if (!unknownKey && !unknownOwnField)

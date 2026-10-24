@@ -1106,6 +1106,34 @@ declare var ReadableStream: {
   from(iterable: string): ReadableStream<string>;
   readonly prototype: ReadableStream<unknown>;
 };
+/* The writable side of a TransformStream and its writer. The
+ * WritableStream constructor has no native lowering; writable streams come
+ * from `new TransformStream()`. */
+interface WritableStreamDefaultWriter<W = unknown> {
+  readonly closed: Promise<void>;
+  readonly desiredSize: number | null;
+  readonly ready: Promise<void>;
+  abort(reason?: unknown): Promise<void>;
+  close(): Promise<void>;
+  releaseLock(): void;
+  write(chunk?: W): Promise<void>;
+}
+interface WritableStream<W = unknown> {
+  readonly locked: boolean;
+  abort(reason?: unknown): Promise<void>;
+  close(): Promise<void>;
+  getWriter(): WritableStreamDefaultWriter<W>;
+}
+/* The identity transform: chunks written to `writable` are read from
+ * `readable`, and a write completes when its chunk is read. */
+interface TransformStream<I = unknown, O = unknown> {
+  readonly readable: ReadableStream<O>;
+  readonly writable: WritableStream<I>;
+}
+declare var TransformStream: {
+  new <I = unknown, O = I>(): TransformStream<I, O>;
+  readonly prototype: TransformStream<unknown, unknown>;
+};
 
 /* fetch, typed as the native JSON + readable-stream slice: one URL, an
  * optional init with the members CLI requests carry, and a Response
@@ -2964,6 +2992,24 @@ declare module "crypto" {
     options: ED25519KeyPairOptions<"der", "der">,
   ): KeyPairSyncResult<Buffer, Buffer>;
   export function generateKeyPairSync(type: "ed25519", options?: {}): KeyPairKeyObjectResult;
+  export interface X25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    publicKeyEncoding: { type: "spki"; format: PubF };
+    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+  }
+  export function generateKeyPairSync(
+    type: "x25519",
+    options: X25519KeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "x25519",
+    options: X25519KeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(type: "x25519", options?: {}): KeyPairKeyObjectResult;
+  export function generateKeyPair(
+    type: "x25519",
+    options: {} | undefined,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
   export function generateKeyPair(
     type: "ed25519",
     options: {} | undefined,
@@ -2992,6 +3038,11 @@ declare module "crypto" {
   export interface VerifyKeyObjectInput extends SigningOptions {
     key: KeyObject;
   }
+  export function diffieHellman(options: { privateKey: KeyObject; publicKey: KeyObject }): Buffer;
+  export function diffieHellman(
+    options: { privateKey: KeyObject; publicKey: KeyObject },
+    callback: (err: Error | null, secret: Buffer) => void,
+  ): void;
   export function sign(
     algorithm: string | null | undefined,
     data: ArrayBufferView,
@@ -7207,9 +7258,18 @@ declare module "node:tty" {
 declare module "async_hooks" {
   /* AsyncLocalStorage: fiber-carried context snapshots — run/getStore/
    * exit/enterWith/disable lower onto the runtime's active-slot machinery
-   * (als.* libCalls); values cross as dyn values. */
+   * (als.* libCalls); values cross as dyn values. bind and snapshot bind
+   * functions to the active context; the options carry the store's
+   * default value and name. */
+  export interface AsyncLocalStorageOptions {
+    defaultValue?: any;
+    name?: string | undefined;
+  }
   export class AsyncLocalStorage<T = any> {
-    constructor();
+    constructor(options?: AsyncLocalStorageOptions);
+    static bind<Func extends (...args: any[]) => any>(fn: Func): Func;
+    static snapshot(): <R, TArgs extends any[]>(fn: (...args: TArgs) => R, ...args: TArgs) => R;
+    readonly name: string;
     run<R>(store: T, callback: (...args: any[]) => R, ...args: any[]): R;
     exit<R>(callback: (...args: any[]) => R, ...args: any[]): R;
     getStore(): T | undefined;

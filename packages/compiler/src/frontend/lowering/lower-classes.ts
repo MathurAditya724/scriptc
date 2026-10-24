@@ -1,3 +1,4 @@
+import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
 import {
   DATE_TIME_FIELD,
   dateRootOf,
@@ -177,7 +178,12 @@ import { hasLexicalPrivateReference, hasStaticThis, rejectStaticThis } from "./s
 import { lowerUrlNew } from "./lower-url.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
-import { construction, constructionPrefix } from "./js-class-fields.js";
+import {
+  accessorInterceptsBase,
+  accessorNames,
+  construction,
+  constructionPrefix,
+} from "./js-class-fields.js";
 import { lowerObjectFactoryNew } from "./object-factory-new.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
@@ -1420,7 +1426,7 @@ function undefArmedFieldType(lowerer: Lowerer, p: ts.Symbol): IrType | null {
   const arms =
     mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
   for (const a of arms) {
-    if (a.kind === "map" || a.kind === "regex" || a.kind === "date" || a.kind === "generator") {
+    if (a.kind === "map" || a.kind === "regex" || a.kind === "generator") {
       return null;
     }
     byKey.set(typeKey(a), a);
@@ -3977,7 +3983,6 @@ export function collectClassShapeInner(
           declared.kind !== "union" &&
           declared.kind !== "dyn" &&
           declared.kind !== "map" &&
-          declared.kind !== "date" &&
           declared.kind !== "generator" &&
           declared.kind !== "void" &&
           declared.kind !== "caught";
@@ -4114,7 +4119,7 @@ export function collectClassShapeInner(
       // A subclass field created before anything can observe the instance
       // keeps its type: super() cannot run code that reads it earlier.
       const baseConstruction =
-        base && ![...methods.keys()].some((m) => m.startsWith("get:") || m.startsWith("set:"))
+        base && !accessorInterceptsBase(accessorNames(methods.keys()), base)
           ? construction(base)
           : null;
       const sealedPrefix = baseConstruction
@@ -10418,8 +10423,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       if (arg.type.kind === "string") {
         return { kind: "libCall", fn: "date.newString", args: [arg], type: DATE_T, loc };
       }
+      // new Date(date): a new Date object with the same time value.
       if (arg.type.kind === "date") {
-        return arg;
+        const time: IrExpr = { kind: "libCall", fn: "date.getTime", args: [arg], type: F64, loc };
+        return { kind: "libCall", fn: "date.newMs", args: [time], type: DATE_T, loc };
       }
       lowerer.noLowering(
         `new Date of '${lowerer.fmt(arg.type)}' values`,
@@ -10622,7 +10629,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           expr,
           `Map values of type '${lowerer.checker.typeToString(targs[1])}' ` +
             `(Map values must be number, string, boolean, records, class instances, functions, ` +
-            `typed arrays, arrays, promises, Maps, Sets, or supported unions and checked values)`,
+            `typed arrays, arrays, promises, Dates, Maps, Sets, or supported unions and checked values)`,
         );
       }
       lowerer.badType(expr, tsType);
@@ -10766,21 +10773,23 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       lowerer.badType(expr, tsType);
     }
     // `new AsyncLocalStorage()` (node:async_hooks): a fresh store id —
-    // an f64 handle (type-mapper.ts), the Channel story. Construction options
-    // ({ defaultValue, name }) have no lowering yet.
+    // an f64 handle (type-mapper.ts), the Channel story. The options form
+    // ({ defaultValue, name }) passes the options object as a dyn value.
     if (
       symbol !== null &&
       ts.symbolName(symbol) === "AsyncLocalStorage" &&
       lowerer.isStdlibSymbol(symbol)
     ) {
-      if ((expr.arguments?.nodes.length ?? 0) > 0) {
-        lowerer.noLowering(
-          "new AsyncLocalStorage(options)",
-          expr,
-          "the zero-argument constructor is the supported form (defaultValue/name options have no lowering yet)",
-        );
-      }
-      return { kind: "libCall", fn: "als.new", args: [], type: F64, loc };
+      const options = expr.arguments?.nodes[0];
+      if (options === undefined)
+        return { kind: "libCall", fn: "als.new", args: [], type: F64, loc };
+      return {
+        kind: "libCall",
+        fn: "als.newOptions",
+        args: [lowerAsyncLocalStorageOptions(lowerer, options)],
+        type: F64,
+        loc,
+      };
     }
     // `new Promise<T>((resolve) => ...)`: the ambient Promise constructor.
     if (symbol !== null && ts.symbolName(symbol) === "Promise" && lowerer.isStdlibSymbol(symbol)) {
