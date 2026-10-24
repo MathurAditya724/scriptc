@@ -914,6 +914,12 @@ export function emitArrIntrinsic(
         B.line(`${t} = call ptr @${helper}(ptr ${r.name}, ptr ${sep.name})`);
         return host.own({ name: t, type: e.type });
       }
+      if (elem.kind === "date") {
+        host.declare(`declare ptr @scr_date_arr_join(ptr, ptr)`);
+        const t = B.tmp();
+        B.line(`${t} = call ptr @scr_date_arr_join(ptr ${r.name}, ptr ${sep.name})`);
+        return host.own({ name: t, type: e.type });
+      }
       host.declare(`declare ptr @scr_arr_join(ptr, ptr)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_arr_join(ptr ${r.name}, ptr ${sep.name})`);
@@ -938,6 +944,16 @@ export function emitArrIntrinsic(
     case "sortPrimitive":
     case "toSortedPrimitive": {
       if (e.method === "sortPrimitive") host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      if (elem.kind === "date") {
+        // Dates order by their toString() text.
+        host.declare(`declare ptr @scr_arr_sort_by_text(ptr, i1 zeroext, ptr)`);
+        host.declare(`declare ptr @scr_date_object_to_string(ptr)`);
+        const sorted = B.tmp();
+        B.line(
+          `${sorted} = call ptr @scr_arr_sort_by_text(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0}, ptr @scr_date_object_to_string)`,
+        );
+        return host.own({ name: sorted, type: e.type });
+      }
       host.declare(`declare ptr @scr_arr_sort_primitive(ptr, i1 zeroext)`);
       const result = B.tmp();
       B.line(

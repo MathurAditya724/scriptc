@@ -2049,7 +2049,6 @@ export class LlEmitter {
     if (POINTER_KINDS.has(t.kind)) return "ptr";
     switch (t.kind) {
       case "f64":
-      case "date":
         return "double";
       case "bool":
         return "i1";
@@ -2182,7 +2181,6 @@ export class LlEmitter {
         this.declare(`declare void @scr_promise_fulfill_void(ptr)`);
         return [`  call void @scr_promise_fulfill_void(ptr ${promise})`];
       case "f64":
-      case "date":
         this.declare(`declare void @scr_promise_fulfill_f64(ptr, double)`);
         return [`  call void @scr_promise_fulfill_f64(ptr ${promise}, double %r)`];
       case "bool":
@@ -2412,7 +2410,7 @@ export class LlEmitter {
       return { name: "", type };
     }
     const t = B.tmp();
-    if (type.kind === "f64" || type.kind === "date") {
+    if (type.kind === "f64") {
       this.declare(`declare double @scr_coro_direct_f64(ptr)`);
       B.line(`${t} = call double @scr_coro_direct_f64(ptr ${record})`);
     } else if (type.kind === "bool") {

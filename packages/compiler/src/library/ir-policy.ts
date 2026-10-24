@@ -63,6 +63,7 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["crypto.generateKeyPair", "asymmetric KeyObjects, generateKeyPair, sign and verify"],
   ["crypto.signOneshot", "asymmetric KeyObjects, generateKeyPair, sign and verify"],
   ["crypto.verifyOneshot", "asymmetric KeyObjects, generateKeyPair, sign and verify"],
+  ["crypto.diffieHellman", "crypto.diffieHellman"],
   ["webcrypto.", "WebCrypto (crypto.subtle)"],
   ["fs.watch", "fs.watch"],
   ["watcher.", "fs.watch"],

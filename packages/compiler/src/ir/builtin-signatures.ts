@@ -4467,6 +4467,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * (inspect, Object.keys/values/entries) then answer through its live
    * checked view. The receiver is any such record type. Never throws. */
   "record.sourceHas": { argTypes: [null], result: BOOL },
+  /** `record.sourceSpread(built, value)`: the record a literal starting
+   * with `...value` just built keeps the order of value's kept source
+   * (key-order-witness.ts ordered spreads). Both are record types. Never
+   * throws. */
+  "record.sourceSpread": { argTypes: [null, null], result: VOID },
   "insp.key": { argTypes: [STRING], result: STRING },
   "insp.moreItems": { argTypes: [F64], result: STRING },
   "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },
@@ -4757,6 +4762,20 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "als.exitRun": { argTypes: [F64, DYN, DYN], result: DYN },
   "als.enterWith": { argTypes: [F64, DYN], result: VOID },
   "als.disable": { argTypes: [F64], result: VOID },
+  /** new AsyncLocalStorage(options) (Node's object check throws; MAY
+   * THROW) and the store's name option (dyn; "" without one). */
+  "als.newOptions": { argTypes: [DYN], result: F64 },
+  "als.name": { argTypes: [F64], result: DYN },
+  /** A function bound to the active context: the completion callbacks of
+   * callback-style APIs (always false: an empty context leaves the
+   * callback unbound) and AsyncLocalStorage.bind (always true). The typed
+   * form answers its closure argument's type; the dyn form throws Node's
+   * ERR_INVALID_ARG_TYPE for a non-function when always (MAY THROW). */
+  "als.bindCallback": { argTypes: [null, BOOL], result: VOID },
+  "als.bindCallbackDyn": { argTypes: [DYN, BOOL], result: DYN },
+  /** AsyncLocalStorage.snapshot(): a dyn function (cb, ...args) that runs
+   * cb in the context active at the snapshot. */
+  "als.snapshot": { argTypes: [], result: DYN },
   /** Channel.bindStore/unbindStore/runStores (scr_dc.c): the
    * AsyncLocalStorage integration — set-semantics bindings per store,
    * runStores entering every bound store with transform(data) around the
@@ -4812,6 +4831,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.getMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getUTCMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getTimezoneOffset": { argTypes: [DATE_T], result: F64 },
+  /** A Date object for a time value a local holds (date-values.ts): a
+   * lib-call argument passes the time value itself, and any other use
+   * creates the Date. */
+  "date.fromTime": { argTypes: [F64], result: DATE_T },
   /** Date.prototype.toString / toDateString / toTimeString and String(date):
    * V8's local-time formats with the host zone's long name, "Invalid Date"
    * for an invalid date. Owned (+1) string; never throws. */
@@ -4864,6 +4887,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
   "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
   "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
+  "crypto.diffieHellman": { argTypes: [DYN, DYN], result: DYN },
   "crypto.verifyOneshot": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
   "crypto.createSign": { argTypes: [DYN], result: DYN },
   "crypto.createVerify": { argTypes: [DYN], result: DYN },
@@ -4884,6 +4908,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "text.decoderEncoding": { argTypes: [DYN], result: F64 },
   "text.decoderName": { argTypes: [F64], result: STRING },
   "text.encodeInto": { argTypes: [DYN, DYN], result: DYN },
+  /** `value instanceof TextDecoder` (true) or `TextEncoder` (false) on a
+   * checked-dynamic value: a codec record's handle box (scr_text_codec_dyn.c).
+   * Borrowed; never throws. */
+  "text.codecIs": { argTypes: [DYN, BOOL], result: BOOL },
   "buffer.isAscii": { argTypes: [DYN], result: BOOL },
   "buffer.isUtf8": { argTypes: [DYN], result: BOOL },
   "buffer.transcode": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },

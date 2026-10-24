@@ -183,6 +183,7 @@ export const CRYPTO_KEY_OPTION_DYN_TYPES: ReadonlySet<string> = new Set([
   "PrivateKeyInput",
   "PublicKeyInput",
   "RSAKeyPairKeyObjectOptions",
+  "X25519KeyPairOptions",
   "RSAKeyPairOptions",
   "SignKeyObjectInput",
   "SignPrivateKeyInput",
@@ -1393,9 +1394,17 @@ function genChannels(
   if (!nextT || nextT.kind === "void" || nextT.kind === "nullT") return null;
   const ownChannel = (t: IrType): boolean =>
     t.kind === "f64" || t.kind === "bool" || t.kind === "string";
+  // A record yield channel keeps its type beside a dyn return (an
+  // `IterableIterator<Row>`). A record return channel beside a dyn yield
+  // does not: the value a delegating `yield*` answers (Effect.gen's
+  // generators) is often an object whose methods a record would drop.
   const dynMix =
     (yieldT.kind === "dyn" && retT.kind !== "dyn" && retT.kind !== "void" && !ownChannel(retT)) ||
-    (retT.kind === "dyn" && yieldT.kind !== "dyn" && yieldT.kind !== "void" && !ownChannel(yieldT));
+    (retT.kind === "dyn" &&
+      yieldT.kind !== "dyn" &&
+      yieldT.kind !== "void" &&
+      !ownChannel(yieldT) &&
+      yieldT.kind !== "record");
   if (dynMix) return { yieldT: DYN, retT: DYN, nextT };
   return { yieldT, retT, nextT };
 }
@@ -3222,10 +3231,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   const collectionView = mapCollectionView(widened, ctx);
   if (collectionView) return collectionView;
-  // Date: a TimeClip'd epoch-millisecond scalar in the static runtime.
-  // This supports stored/passed values and the read-only getter slice;
-  // identity and mutation stay fenced because the scalar deliberately
-  // carries no object identity.
+  // Date: a refcounted object holding its TimeClip'd time value (ScrDate),
+  // shared with the checked-dynamic Date handle, so it keeps its identity
+  // through every slot and through `unknown`. Setters stay fenced.
   if (isStdlibInterface("Date")) return DATE_T;
   // RegExp: a reference to the lib RegExp interface — provenance, not the
   // name (a user's own `interface RegExp` maps as a record). Regex values
@@ -3958,8 +3966,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Mixed dyn/concrete value channels share checked storage, so either
   // branch of the result record has the same representation. A number,
   // boolean or string channel keeps its own type beside a dyn one (the
-  // `Generator<number>` defaults): its values ride OUT typed and box only
-  // when the result record is built.
+  // `Generator<number>` default), and so does a record yield channel beside
+  // a dyn return (`IterableIterator<Row>`): its values ride OUT typed and box
+  // only when the result record is built, so for-of and spread read them
+  // back unchecked.
   if (
     isStdlibInterface("Generator") ||
     isStdlibInterface("AsyncGenerator") ||
@@ -4758,6 +4768,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (hybrid) return hybrid;
   }
   const callSigs = checker.getCallSignatures(widened);
+  // AsyncLocalStorage.snapshot()'s generic runner is a dyn function value
+  // (als.snapshot), called through the dyn call path.
+  if (callSigs.length === 1 && isAsyncLocalStorageSnapshot(callSigs[0]!, ctx)) return DYN;
   if (callSigs.length === 1) return mapCallSignature(callSigs[0]!, ctx);
   // Records: object types whose members are all data properties (shorthand
   // methods in type position count — they're func-typed fields) with
@@ -5054,7 +5067,6 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           (a) =>
             a.kind === "void" ||
             a.kind === "union" ||
-            a.kind === "date" ||
             a.kind === "dyn" ||
             // A generator arm only comes from an Iterable<T> (an optional
             // one keeps its unit arms beside the iterable union's).
@@ -5090,6 +5102,26 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
 /** One non-overloaded call signature's func type (mapTypeInner's
  * single-signature rule; erasedOverloadMemberType maps each overload of a
  * member through it). */
+/** Whether `sig` is the function type AsyncLocalStorage.snapshot() returns:
+ * declared as that static method's return type in the async_hooks module
+ * of the standard library declarations. */
+function isAsyncLocalStorageSnapshot(sig: ts.Signature, ctx: TypeMapperCtx): boolean {
+  const decl = sig.declaration;
+  if (decl === undefined || !ts.isFunctionTypeNode(decl)) return false;
+  const method = decl.parent;
+  return (
+    method !== undefined &&
+    ts.isMethodDeclaration(method) &&
+    ts.isIdentifier(method.name) &&
+    method.name.text === "snapshot" &&
+    method.parent !== undefined &&
+    ts.isClassDeclaration(method.parent) &&
+    method.parent.name?.text === "AsyncLocalStorage" &&
+    ctx.isStdlibFile(ts.getSourceFileOfNode(decl)) &&
+    isDeclaredInAmbientModule(decl, "async_hooks")
+  );
+}
+
 function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null {
   const { checker } = ctx;
   if (sig.getTypeParameters().length && ctx.erasingSignature !== sig) return null;
@@ -6587,7 +6619,7 @@ export function genResultRecord(
         for (const a of unions.get(t.unionId)?.arms ?? []) byKey.set(typeKey(a), a);
         return true;
       }
-      if (t.kind === "regex" || t.kind === "date" || t.kind === "generator") {
+      if (t.kind === "regex" || t.kind === "generator") {
         return false; // no legal union arm exists for these kinds
       }
       byKey.set(typeKey(t), t);
@@ -6676,15 +6708,15 @@ export function withUnitArm(
   if (t.kind === "union") {
     const def = unions.get(t.unionId);
     if (!def) return null;
-    if (def.arms.some((a) => a.kind === "date")) return null;
     if (def.arms.some((a) => a.kind === kind)) return t;
     const arms = [...def.arms, unit];
+    // Date and Promise arms beside other data arms have no union home.
+    if (!unionContainerArmsOk(arms)) return null;
     arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
     return { kind: "union", unionId: unions.transform(def, arms) };
   }
   if (
     t.kind === "void" ||
-    t.kind === "date" ||
     t.kind === "dyn" ||
     // A bare unit field type cannot occur (units live only inside unions),
     // but guard against constructing a single-arm union from one.
@@ -8274,7 +8306,6 @@ function armHasUnionHome(arm: IrType): boolean {
     case "void":
     case "union":
     case "regex":
-    case "date":
     case "generator":
     case "dyn":
       return false;
