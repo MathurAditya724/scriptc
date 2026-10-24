@@ -1454,6 +1454,7 @@ function lowerPkiCall(
     ],
     sign: ["crypto.signOneshot", 3, 3, "sign(algorithm, data, key)"],
     verify: ["crypto.verifyOneshot", 4, 4, "verify(algorithm, data, key, signature)"],
+    diffieHellman: ["crypto.diffieHellman", 1, 2, "diffieHellman(options[, callback])"],
     createSign: ["crypto.createSign", 1, 1, "createSign(algorithm)"],
     createVerify: ["crypto.createVerify", 1, 1, "createVerify(algorithm)"],
   };
@@ -1474,6 +1475,7 @@ function lowerPkiCall(
     return { kind: "libCall", fn, args: values, type: VOID, loc };
   const call: IrExpr = { kind: "libCall", fn, args: values, type: DYN, loc };
   const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
-  if (result === null || result.kind === "dyn") return call;
+  // diffieHellman's callback form answers undefined.
+  if (result === null || result.kind === "dyn" || result.kind === "void") return call;
   return lowerer.coerceInto(expr, call, result);
 }

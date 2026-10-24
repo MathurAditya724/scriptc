@@ -119,13 +119,26 @@ function stableLoopValue(
         stableLoopValue(value.receiver, locals, body, invariant, counter)
       );
     case "bytesIntrinsic":
-    case "arrIntrinsic":
+    case "arrIntrinsic": {
+      // The receiver may be one arm of a union binding (indexed-unions.ts).
+      const receiver =
+        value.receiver.kind === "unionNarrow" ? value.receiver.value : value.receiver;
       return (
         (value.method === "length" ||
           (value.kind === "bytesIntrinsic" && value.method === "byteLength")) &&
-        value.receiver.kind === "varRef" &&
-        (value.kind === "bytesIntrinsic" || !invariant || stableLength(value.receiver.localId)) &&
-        stableLoopValue(value.receiver, locals, body, invariant, counter)
+        receiver.kind === "varRef" &&
+        (value.kind === "bytesIntrinsic" || !invariant || stableLength(receiver.localId)) &&
+        stableLoopValue(receiver, locals, body, invariant, counter)
+      );
+    }
+    // A union binding dispatched on its tag (indexed-unions.ts): stable
+    // when the binding is and every arm is.
+    case "ternary":
+      return (
+        value.cond.kind === "unionIsTag" &&
+        stableLoopValue(value.cond.value, locals, body, invariant, counter) &&
+        stableLoopValue(value.then, locals, body, invariant, counter, stableLength) &&
+        stableLoopValue(value.else_, locals, body, invariant, counter, stableLength)
       );
     default:
       return false;

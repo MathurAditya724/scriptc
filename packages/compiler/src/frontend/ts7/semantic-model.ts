@@ -64,7 +64,9 @@ export interface SemanticQuery {
 export class SemanticProgram {
   constructor(private readonly sourceFile: (path: string) => AstNode | undefined) {}
   getSourceFile(path: string): AstNode | undefined {
-    return this.sourceFile(path);
+    // Called as a plain function: the instance is not its receiver.
+    const sourceFile = this.sourceFile;
+    return sourceFile(path);
   }
 }
 
@@ -452,6 +454,12 @@ export class SemanticSymbol {
 export function symbolName(symbol: SemanticSymbol): string {
   const name: string = symbol.escapedName;
   return name.startsWith("___") ? name.slice(1) : name;
+}
+
+/** The key of the name `name` in a symbol table (`getExports()`, `getMembers()`): the name, with
+ * an extra `_` when it starts with `__`. The inverse of `symbolName`. */
+export function escapedSymbolName(name: string): __String {
+  return (name.startsWith("__") ? `_${name}` : name) as __String;
 }
 
 /** `symbolName(symbol)`, or undefined without a symbol. */

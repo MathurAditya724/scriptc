@@ -11,6 +11,8 @@ import {
   caseShardedSideFiles,
   isolatedFiles,
   leakSuppressions,
+  memoryHeavyFiles,
+  sideOwners,
   testCosts,
 } from "../../scripts/ci-test-plan.mjs";
 import { runCiTestPlan } from "../../scripts/ci-test.mjs";
@@ -40,20 +42,27 @@ test.for([1, 3, 5, 10, 20])(
           file,
         ).toHaveLength(everyShard ? count : 1);
       }
-      // Each measured file runs on exactly one shard, outside vitest's file shard.
+      // Each measured or memory-heavy file runs on exactly one shard, outside
+      // vitest's file shard.
       const isolated = new Set(isolatedFiles.map(([, file]) => file));
       const balanced = plans.flatMap((plan) =>
         plan.side
           .filter((task) => task.name === "cost-balanced tests")
           .flatMap((task) => task.args.slice(2)),
       );
-      const measured = Object.keys(testCosts[flavor]).filter((file) => !isolated.has(file));
+      const measured = [
+        ...new Set([...Object.keys(testCosts[flavor]), ...Object.keys(memoryHeavyFiles)]),
+      ].filter((file) => !isolated.has(file));
       expect(measured.length).toBeGreaterThan(0);
       expect(balanced.toSorted()).toEqual(measured.toSorted());
       for (const plan of plans) {
         expect(plan.corpus.args).toEqual(["test", ...corpusFiles]);
         expect(plan.side[0]!.args).toContain(`--shard=${plan.corpus.env.SCRIPTC_TEST_SHARD}`);
-        for (const file of [...fileExclusions, ...Object.keys(testCosts[flavor])])
+        for (const file of [
+          ...fileExclusions,
+          ...Object.keys(testCosts[flavor]),
+          ...Object.keys(memoryHeavyFiles),
+        ])
           expect(plan.side[0]!.args).toContain(`--exclude=${file}`);
         const cache = plan.side.find((task) => task.name === "native-cache correctness");
         expect(Boolean(cache)).toBe(flavor === "plain");
@@ -100,6 +109,26 @@ test("the side queue balances measured files across the twenty Linux shards", ()
     // corpus and three.js cases, which balance from the first.
     const longest = [...owned].sort((a, b) => (costs[b] ?? 0) - (costs[a] ?? 0))[0]!;
     expect(shards[19]!.files).toContain(longest);
+  }
+});
+
+test("memory-heavy side files run whole in the cost-balanced task, on shards of their own", () => {
+  for (const flavor of ["plain", "san"] as const) {
+    const owners = sideOwners(flavor, 20);
+    const heavy = Object.keys(memoryHeavyFiles);
+    const shards = heavy.map((file) => owners.get(file));
+    expect(shards.every((shard) => shard !== undefined)).toBe(true);
+    expect(new Set(shards).size).toBe(Math.min(heavy.length, 20));
+    for (const file of heavy) {
+      const plan = ciTestPlan({ shard: `${owners.get(file)}/20`, flavor });
+      const balanced = plan.side.find((task) => task.name === "cost-balanced tests")!;
+      expect(balanced.args).toContain(file);
+      // The file-sharded task leaves it out on every shard.
+      for (let shard = 1; shard <= 20; shard++)
+        expect(ciTestPlan({ shard: `${shard}/20`, flavor }).side[0]!.args).toContain(
+          `--exclude=${file}`,
+        );
+    }
   }
 });
 
@@ -265,7 +294,15 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   );
   expect(coreStep).toBeGreaterThan(-1);
   expect(coreStep).toBeLessThan(linux.steps.length - 1);
-  expect(linux.steps.at(-1)!.run).toBe("ulimit -c 0\nnode scripts/ci-test.mjs\n");
+  // Linux runs the suites in a memory-capped scope where systemd manages the
+  // runner, and directly elsewhere.
+  const linuxRun = linux.steps.at(-1)!.run as string;
+  expect(linuxRun.startsWith("ulimit -c 0\n")).toBe(true);
+  expect(linuxRun).toContain("systemd-run --scope --quiet -p MemoryMax=15G -p OOMPolicy=continue");
+  expect(linuxRun).toMatch(
+    /-- env PATH="\$PATH" HOME="\$HOME" NODE_OPTIONS="--max-old-space-size=4096" node scripts\/ci-test\.mjs\n/,
+  );
+  expect(linuxRun.endsWith("fi\nnode scripts/ci-test.mjs\n")).toBe(true);
   expect(macos.steps.at(-1)!.run).toBe("node scripts/ci-test.mjs");
   for (const job of [linux, macos]) expect(job.strategy.matrix.flavor).toEqual(["plain", "san"]);
 });

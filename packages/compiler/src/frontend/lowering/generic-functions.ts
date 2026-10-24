@@ -645,8 +645,7 @@ function extendsParameter(
   info: GenericFnInfo,
 ): boolean {
   const params = new Set<ts.Symbol>();
-  const fn = info.decl as { parameters?: { nodes: readonly ts.ParameterDeclaration[] } };
-  for (const param of fn.parameters?.nodes ?? []) {
+  for (const param of info.decl.parameters.nodes) {
     const symbol = ts.isIdentifier(param.name)
       ? lowerer.checker.getSymbolAtLocation(param.name)
       : undefined;
@@ -672,8 +671,7 @@ function declaredInside(node: ts.Node, owner: ts.Node): boolean {
  * return gives anything else (or nothing). Nested functions and classes keep
  * their own returns. */
 function returnedLocalClass(lowerer: Lowerer, info: GenericFnInfo): ts.ClassLikeDeclaration | null {
-  const fn = info.decl as ts.Node & { body?: ts.Node };
-  const body = fn.body;
+  const body = info.decl.body;
   if (!body) return null;
   const classOf = (node: ts.Expression): ts.ClassLikeDeclaration | null => {
     let expr = node;
