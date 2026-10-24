@@ -119,6 +119,11 @@ _Static_assert(offsetof(ScrJsonBuf, data) == 0 && offsetof(ScrJsonBuf, len) == s
                "LLVM backend expects ScrJsonBuf to start with { data, len, cap }");
 
 void scr_jb_init(ScrJsonBuf *b);
+/* String conversion of a class instance whose ToString is
+ * Object.prototype.toString and whose class has a Symbol.toStringTag
+ * getter: appends "[object Tag]" and answers true, also with the getter's
+ * exception pending; false when the ordinary conversion applies. */
+bool scr_dyn_typed_ref_put_tag(ScrJsonBuf *b, const ScrDyn *d);
 /* Release a buffer's text without finishing it (error paths). */
 void scr_jb_abandon(ScrJsonBuf *b);
 /* Append a borrowed byte span verbatim, including embedded NUL bytes. */

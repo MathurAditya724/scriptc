@@ -52,8 +52,10 @@ export class FrontendServices {
   }
   private sourceParser(): Ts7SourceParser {
     this.ensureOpen();
+    // Called as a plain function: the instance is not its receiver.
+    const createApi = this.createApi;
     return (this.parser ??= new Ts7SourceParser(
-      (options) => this.createApi({ ...options, collectTiming: false }),
+      (options) => createApi({ ...options, collectTiming: false }),
       this.cwd,
     ));
   }
@@ -62,9 +64,10 @@ export class FrontendServices {
   }
   evaluateComptime(source: string, timeoutMs: number): unknown {
     this.ensureOpen();
-    if (this.comptimeEvaluator === undefined)
+    const evaluate = this.comptimeEvaluator;
+    if (evaluate === undefined)
       throw new Error("this compiler host does not provide compile-time evaluation");
-    return this.comptimeEvaluator(source, timeoutMs);
+    return evaluate(source, timeoutMs);
   }
   createProgramHost(options?: Ts7HostOptions): Ts7Host {
     this.ensureOpen();
