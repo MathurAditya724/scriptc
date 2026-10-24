@@ -1,5 +1,5 @@
 import type { IrExpr, IrFunction, IrStmt } from "../../ir/ir.js";
-import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
+import { everyExpr, everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { InternalCompilerError } from "../../errors.js";
 import { f64Lit } from "./common.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
@@ -219,6 +219,15 @@ function isSpeculativeByteRead(e: IrExpr): boolean {
   );
 }
 
+/** Whether evaluating `e` assigns no binding: no `++`/`--`, no assignment
+ * expression, and no statement inside it. */
+function writesNoLocal(e: IrExpr): boolean {
+  return everyExpr(e, {
+    expr: (node) => node.kind !== "incDec" && node.kind !== "assignExpr",
+    stmt: () => false,
+  });
+}
+
 /** Rewrite a write's value that isSpeculableValue refuses into one it can
  * speculate (SpeculativeValue), or null. Expansion and the new operations
  * (`Math.pow(2, n)`, `Math.floor(a / 2^n)`, byte reads) evaluate nothing
@@ -295,6 +304,10 @@ export function rewriteSpeculable(
     // length, a Map read) are cheap where they stand, and would turn every
     // loop that adds one into a second copy.
     if (context.leafId === undefined || e.kind !== "call") return null;
+    // Hoisting runs the arguments before the rest of the write: one that
+    // assigns a local would move that write ahead of the write's earlier
+    // reads of it.
+    if (!e.args.every(writesNoLocal)) return null;
     const ref: IrExpr = { kind: "varRef", localId: context.leafId(), type: e.type, loc: e.loc };
     leaves.push({ localId: (ref as { localId: string }).localId, expr: e, ref });
     return ref;

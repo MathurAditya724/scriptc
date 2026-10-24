@@ -382,6 +382,11 @@ test("other leaves are hoisted only when no call can change the write's locals",
   const hoisted = rewriteSpeculable(value, { unaliased: () => true, leafId })!;
   expect(hoisted.leaves.map((leaf) => leaf.expr)).toEqual([call("noisy", [ref("i")])]);
   expect(rewriteSpeculable(value, { unaliased: (id) => id !== "acc", leafId })).toBeNull();
+  // A call whose argument writes a local stays where it is.
+  const bump: IrExpr = { kind: "incDec", localId: "i", op: "+", prefix: false, type: F64, loc };
+  expect(
+    rewriteSpeculable(bin("+", ref("i"), call("noisy", [bump])), { unaliased: () => true, leafId }),
+  ).toBeNull();
   // Without leaf ids nothing is hoisted.
   expect(rewriteSpeculable(value, { unaliased: () => true })).toBeNull();
   const write = assign("acc", value);

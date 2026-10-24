@@ -97,6 +97,15 @@ function effectfulHelper(n: number): number {
   return acc;
 }
 
+// A call whose argument assigns a local the write also reads stays where it
+// is: `i` is read before `i++` runs.
+function stepped(n: number): number {
+  let acc = 1;
+  let i = 0;
+  while (i < n) acc = (acc * 3 + i + tally(i++)) % 1000003;
+  return acc;
+}
+
 const codes = new Uint8Array(5000);
 let seed = 7;
 for (let i = 0; i < codes.length; i++) {
@@ -112,3 +121,4 @@ calls = 0;
 console.log(chained(34), chained(60), calls);
 console.log(nearPowers(4503599627370496, 3), nearPowers(9007199254740991, 2));
 console.log(effectfulHelper(10), level);
+console.log(stepped(40));
