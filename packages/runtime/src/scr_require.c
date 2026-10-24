@@ -138,6 +138,13 @@ static ScrDyn *req_read_package(ScrRequire *r, ScrStr *pjson) {
     if (scr_exc_pending()) scr_exc_clear();
     return NULL;
   }
+  /* Node's reader skips a leading UTF-8 byte order mark. */
+  if (text->len >= 3 && (unsigned char)text->data[0] == 0xEF &&
+      (unsigned char)text->data[1] == 0xBB && (unsigned char)text->data[2] == 0xBF) {
+    ScrStr *body = scr_str_new(text->data + 3, text->len - 3);
+    scr_str_release(text);
+    text = body;
+  }
   ScrDyn *pkg = scr_json_parse(text);
   scr_str_release(text);
   if (pkg == NULL) {
