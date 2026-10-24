@@ -557,7 +557,7 @@ static void scr_stream_dispatch_one(void);
 
 static void scr_st_tick(ScrStream *s, ScrStreamTickOp op, ScrError *err /*moves*/,
                         ScrClosure *cb /*moves*/) {
-  ScrStreamTick *t = calloc(1, sizeof *t);
+  ScrStreamTick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_stream_oom();
   t->s = scr_stream_retain(s);
   t->op = op;
@@ -580,15 +580,57 @@ static bool scr_stream_ticks_pending(void) { return scr_st_head != NULL; }
 
 /* ── emit helpers ─────────────────────────────────────────────────────── */
 
+/* The event names the stream unit emits, as immortal strings (the layout
+ * of an emitted string literal), so an emit allocates no name. */
+#define SCR_STREAM_EVENT_NAME(name)                                                     \
+  static const struct {                                                                 \
+    size_t rc;                                                                          \
+    size_t len;                                                                         \
+    size_t cap;                                                                         \
+    char data[sizeof #name];                                                            \
+  } scr_stream_lit_##name = {SIZE_MAX, sizeof #name - 1,                                \
+                             SCR_STR_CAP_WORD(sizeof #name - 1, 0, 1), #name}
+SCR_STREAM_EVENT_NAME(data);
+SCR_STREAM_EVENT_NAME(error);
+SCR_STREAM_EVENT_NAME(close);
+SCR_STREAM_EVENT_NAME(drain);
+SCR_STREAM_EVENT_NAME(end);
+SCR_STREAM_EVENT_NAME(finish);
+SCR_STREAM_EVENT_NAME(pause);
+SCR_STREAM_EVENT_NAME(prefinish);
+SCR_STREAM_EVENT_NAME(readable);
+SCR_STREAM_EVENT_NAME(resume);
+SCR_STREAM_EVENT_NAME(pipe);
+SCR_STREAM_EVENT_NAME(unpipe);
+#undef SCR_STREAM_EVENT_NAME
+
+static ScrStr *const scr_stream_event_names[] = {
+    (ScrStr *)&scr_stream_lit_data,      (ScrStr *)&scr_stream_lit_error,
+    (ScrStr *)&scr_stream_lit_close,     (ScrStr *)&scr_stream_lit_drain,
+    (ScrStr *)&scr_stream_lit_end,       (ScrStr *)&scr_stream_lit_finish,
+    (ScrStr *)&scr_stream_lit_pause,     (ScrStr *)&scr_stream_lit_prefinish,
+    (ScrStr *)&scr_stream_lit_readable,  (ScrStr *)&scr_stream_lit_resume,
+    (ScrStr *)&scr_stream_lit_pipe,      (ScrStr *)&scr_stream_lit_unpipe,
+};
+
+/* The event name as a string: an immortal one for the names above, else a
+ * new string (+1 either way; releasing an immortal string does nothing). */
+static ScrStr *scr_stream_event_name(const char *name) {
+  for (size_t i = 0; i < sizeof scr_stream_event_names / sizeof *scr_stream_event_names; i++) {
+    if (strcmp(scr_stream_event_names[i]->data, name) == 0) return scr_stream_event_names[i];
+  }
+  return scr_str_new(name, strlen(name));
+}
+
 static bool scr_stream_emit0(ScrStream *s, const char *name) {
-  ScrStr *n = scr_str_new(name, strlen(name));
+  ScrStr *n = scr_stream_event_name(name);
   bool had = scr_emitter_emit((ScrEmitter *)s, n);
   scr_str_release(n);
   return had;
 }
 
 static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *payload) {
-  ScrStr *n = scr_str_new(name, strlen(name));
+  ScrStr *n = scr_stream_event_name(name);
   scr_emitter_emit((ScrEmitter *)s, n, payload);
   scr_str_release(n);
 }
@@ -596,7 +638,7 @@ static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *pa
 /* 'error': unhandled throws the payload (Node's crash), via the emitter's
  * error contract. Borrows err. */
 static void scr_stream_emit_error(ScrStream *s, ScrError *err) {
-  ScrStr *n = scr_str_new("error", 5);
+  ScrStr *n = (ScrStr *)&scr_stream_lit_error;
   scr_emitter_emit_error((ScrEmitter *)s, n, err);
   scr_str_release(n);
 }
@@ -765,7 +807,7 @@ static void scr_stream_emit_data(ScrStream *s, void *chunk, ScrEntryKind kind) {
   } else {
     b = chunk;
   }
-  ScrStr *n = scr_str_new("data", 4);
+  ScrStr *n = (ScrStr *)&scr_stream_lit_data;
   scr_emitter_emit((ScrEmitter *)s, n, b, str, value);
   scr_str_release(n);
   if (scr_exc_pending()) return;
@@ -7860,7 +7902,7 @@ static void scr_stream_tick_free(ScrStreamTick *t) {
   if (t->err) scr_error_release(t->err);
   if (t->cb) scr_closure_release(t->cb);
   scr_als_ctx_release(t->ctx);
-  free(t);
+  scr_mem_free(t);
 }
 
 /* One tick-marker's dispatch: the queue's FIFO head (markers and entries
