@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +29,10 @@ import { MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 vi.mock("node:crypto", async (original) => {
   const crypto = await original<typeof import("node:crypto")>();
   return { ...crypto, createHash: vi.fn(crypto.createHash) };
+});
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs, readFileSync: vi.fn(fs.readFileSync) };
 });
 
 const dirs: string[] = [];
@@ -192,3 +205,38 @@ test("staging does not hash an unchanged artifact again", async () => {
   expect(hashes() - start).toBe(firstStage - 1);
   expect(readFileSync(staged.runtimeObjects[0]!, "utf8")).toBe("base object");
 });
+
+test.skipIf(process.platform === "win32")(
+  "staging reads an artifact's bytes from the file whose identity it checks",
+  async () => {
+    const f = await packFixture();
+    // The artifact path is a symbolic link to the verified file.
+    const real = f.object + ".real";
+    renameSync(f.object, real);
+    symlinkSync(real, f.object);
+    const selection = f.select();
+    f.stage(selection);
+    // During the next read the link names another file of the same size,
+    // and it names the verified file again before the read ends.
+    const other = f.object + ".other";
+    writeFileSync(other, "x".repeat(statSync(real).size));
+    const read = vi.mocked(readFileSync);
+    const original = read.getMockImplementation()!;
+    read.mockImplementation(((source: Parameters<typeof readFileSync>[0], ...rest: unknown[]) => {
+      if (typeof source === "string" && !source.endsWith("base.o"))
+        return (original as (...args: unknown[]) => unknown)(source, ...rest);
+      read.mockImplementation(original);
+      unlinkSync(f.object);
+      symlinkSync(other, f.object);
+      try {
+        return (original as (...args: unknown[]) => unknown)(source, ...rest);
+      } finally {
+        unlinkSync(f.object);
+        symlinkSync(real, f.object);
+      }
+    }) as typeof readFileSync);
+    const staged = f.stage(selection);
+    expect(read.getMockImplementation()).toBe(original);
+    expect(readFileSync(staged.runtimeObjects[0]!, "utf8")).toBe("base object");
+  },
+);

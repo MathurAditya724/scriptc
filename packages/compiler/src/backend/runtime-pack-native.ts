@@ -9,11 +9,13 @@ import {
   closeSync,
   constants,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   statSync,
   writeSync,
+  type Stats,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import type { NativeLinkFeatures } from "./native-link-info.js";
@@ -62,7 +64,10 @@ interface FileIdentity {
 }
 
 function fileIdentity(path: string): FileIdentity {
-  const info = statSync(path);
+  return statsIdentity(statSync(path));
+}
+
+function statsIdentity(info: Stats): FileIdentity {
   return {
     dev: info.dev,
     ino: info.ino,
@@ -256,9 +261,16 @@ function stageArtifact(
   let before: FileIdentity;
   let after: FileIdentity;
   try {
-    before = fileIdentity(source);
-    bytes = readFileSync(source);
-    after = fileIdentity(source);
+    // The identities are those of the open file the bytes come from, also
+    // when the path is a symbolic link that changes during the read.
+    const input = openSync(source, constants.O_RDONLY);
+    try {
+      before = statsIdentity(fstatSync(input));
+      bytes = readFileSync(input);
+      after = statsIdentity(fstatSync(input));
+    } finally {
+      closeSync(input);
+    }
   } catch {
     throw new RuntimePackError(`runtime pack artifact is missing: ${artifact.path}`, "invalid");
   }
