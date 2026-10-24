@@ -3947,11 +3947,13 @@ function lowerDynIterableSource(
     const syncId = frame.local("sync", BOOL, false);
     const nextId = frame.local("next", DYN, false);
     const stepId = frame.local("step", DYN, true);
+    const valueId = frame.local("value", DYN, true);
     const activeId = frame.local("active", BOOL, true);
     const closeId = frame.local("close", DYN, false);
     const it = (): IrExpr => varRef(itId, DYN, loc);
     const sync = (): IrExpr => varRef(syncId, BOOL, loc);
     const step = (): IrExpr => varRef(stepId, DYN, loc);
+    const value = (): IrExpr => varRef(valueId, DYN, loc);
     const get = (obj: IrExpr, name: string): IrExpr => ({
       kind: "dynKeyGet",
       value: obj,
@@ -4011,6 +4013,7 @@ function lowerDynIterableSource(
       },
       { kind: "varDecl", localId: nextId, init: get(it(), "next"), loc },
       { kind: "varDecl", localId: stepId, init: dynUndefinedExpr(loc), loc },
+      { kind: "varDecl", localId: valueId, init: dynUndefinedExpr(loc), loc },
       { kind: "varDecl", localId: activeId, init: boolLit(false, loc), loc },
       {
         kind: "tryCatch",
@@ -4055,9 +4058,48 @@ function lowerDynIterableSource(
                 loc,
               },
               setActive(true),
+              { kind: "assign", localId: valueId, value: get(step(), "value"), loc },
+              // for await over a sync iterator awaits each value
+              // (CreateAsyncFromSyncIterator): a promise or a thenable
+              // passes on its result, and a rejection closes the iterator
+              {
+                kind: "if",
+                cond: {
+                  kind: "logical",
+                  op: "&&",
+                  left: sync(),
+                  right: {
+                    kind: "logical",
+                    op: "||",
+                    left: { kind: "dynTest", test: "promise", value: value(), type: BOOL, loc },
+                    right: {
+                      kind: "logical",
+                      op: "&&",
+                      left: {
+                        kind: "dynTest",
+                        test: "nullish",
+                        negated: true,
+                        value: value(),
+                        type: BOOL,
+                        loc,
+                      },
+                      right: { kind: "dynTest", test: "object", value: value(), type: BOOL, loc },
+                      type: BOOL,
+                      loc,
+                    },
+                    type: BOOL,
+                    loc,
+                  },
+                  type: BOOL,
+                  loc,
+                },
+                then: [{ kind: "assign", localId: valueId, value: awaitDyn(value()), loc }],
+                else_: null,
+                loc,
+              },
               {
                 kind: "exprStmt",
-                expr: { kind: "yieldExpr", value: get(step(), "value"), type: VOID, loc },
+                expr: { kind: "yieldExpr", value: value(), type: VOID, loc },
                 loc,
               },
             ],

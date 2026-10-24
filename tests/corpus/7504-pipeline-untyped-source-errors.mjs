@@ -1,6 +1,7 @@
 // pipeline() over untyped iterable sources: a destination that fails closes
 // the source, backpressure waits for drain, an abort signal stops the pump,
-// and async generator and Map sources reach object-mode destinations.
+// async generator and Map sources reach object-mode destinations, and a
+// sync source's promise values are awaited.
 import { pipeline, Writable, PassThrough } from "node:stream";
 import { pipeline as pipelineP } from "node:stream/promises";
 
@@ -88,3 +89,27 @@ await new Promise((resolve) => {
     (err) => { console.log("map done", err); resolve(undefined); },
   );
 });
+
+// sync sources whose values are promises: each value is awaited, as
+// for await over a sync iterator does, and a rejection closes the source
+await pipelineP(
+  pick([Promise.resolve("p1"), "p2", new Promise((r) => setTimeout(() => r("p3"), 1))]),
+  new Writable({ write(c, _e, cb) { console.log("byte write", String(c)); cb(); } }),
+);
+function* promised() {
+  try {
+    yield Promise.resolve({ n: 1 });
+    yield Promise.reject(new Error("value rejected"));
+    yield "never";
+  } finally {
+    console.log("promised finally");
+  }
+}
+try {
+  await pipelineP(
+    pick(promised()),
+    new Writable({ objectMode: true, write(c, _e, cb) { console.log("object write", JSON.stringify(c)); cb(); } }),
+  );
+} catch (err) {
+  console.log("promised rejected", err.message);
+}
