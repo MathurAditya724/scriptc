@@ -170,33 +170,18 @@ void limitProfileImports() {
   (void)Limited;
 }
 
-// ThinLTO renames the locals it promotes so that the code other partitions
-// import can refer to them: switch tables, constants and the other private
-// symbols optimization creates. By default the new name carries a hash of
-// the defining partition's whole bitcode, so an edit anywhere in a partition
-// renames them in every partition that imports from it, and those partitions
-// miss the object cache although their own code is unchanged. Named after
-// the partition instead (PartitionSourceName), they keep their names while
-// the partition changes. The option is process-wide; the helper sets it once.
-void stablePromotedNames() {
-  static const bool Set = [] {
-    StringRef Name = "use-source-filename-for-promoted-locals";
-    if (cl::Option *Option = cl::getRegisteredOptions().lookup(Name))
-      Option->addOccurrence(0, Name, "true");
-    return true;
-  }();
-  (void)Set;
-}
-
-// Gives a partition's module its own source file name, which the names of
-// the locals ThinLTO promotes derive from (stablePromotedNames). It runs
-// after the pre-link optimization, so profile annotation still matches the
-// program's local functions under their source path.
-struct PartitionSourceName : PassInfoMixin<PartitionSourceName> {
-  explicit PartitionSourceName(std::string Name) : Name(std::move(Name)) {}
-  std::string Name;
+// Drops the names of a partition's struct types before its summary is
+// written. Every partition declares the program's types under the same
+// names, and a thin link loads the importing partition and the partitions
+// it imports from into one context, which tells same-named types apart by
+// appending a counter that runs across the whole link. An edit that adds a
+// type anywhere shifts the counter, so the module after importing, the
+// object cache key, changed in partitions whose code had not. Unnamed types
+// carry no such suffix; importing still matches them by their bodies.
+struct UnnameStructTypes : PassInfoMixin<UnnameStructTypes> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
-    M.setSourceFileName(Name);
+    for (StructType *Type : M.getIdentifiedStructTypes())
+      Type->setName("");
     return PreservedAnalyses::all();
   }
   static bool isRequired() { return true; }
@@ -591,12 +576,8 @@ compileOptimizedPartitions(const EmitOptions &Options,
   size_t Count = Plan.Modules.size();
   std::vector<std::unique_ptr<MemoryBuffer>> Summaries(Count);
   SharedFailure Failures;
-  stablePromotedNames();
   forEachPartition(Count, [&](size_t I) {
-    // The partition's index names its promoted locals, so it keys the
-    // summary with the partition's source.
-    std::string Key =
-        hashParts({Salt, "summary", std::to_string(I), Plan.Modules[I]});
+    std::string Key = hashParts({Salt, "summary", Plan.Modules[I]});
     if ((Summaries[I] = Cache.lookup(Key, "bc")))
       return;
     std::string LookupError;
@@ -629,7 +610,7 @@ compileOptimizedPartitions(const EmitOptions &Options,
       // link; the post-link optimization reads the annotated weights.
       Pipeline P(*Machine, Level, profileOptions(Options));
       ModulePassManager MPM = P.PB.buildThinLTOPreLinkDefaultPipeline(Level);
-      MPM.addPass(PartitionSourceName("scriptc-partition-" + std::to_string(I)));
+      MPM.addPass(UnnameStructTypes());
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,
                                     /*EmitSummaryIndex=*/true,
                                     /*EmitModuleHash=*/true));
