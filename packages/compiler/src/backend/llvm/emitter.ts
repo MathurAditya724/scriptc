@@ -1,3 +1,4 @@
+import type { TargetCpu } from "../target-cpu.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
@@ -482,6 +483,10 @@ export interface LlvmTargetOptions {
    * store the instance's address over 8 in 32 bits (classes.ts
    * compactRefLoadLines). Elsewhere they keep 8-byte pointers. */
   lowRegion?: boolean;
+  /** The x86-64 level the program's code may require (`--target-cpu`):
+   * every emitted function carries it as its `target-cpu`. Unset, code
+   * runs on any x86-64 CPU. */
+  targetCpu?: TargetCpu;
 }
 
 /** LlvmTargetOptions.lowRegion for an executable: Linux targets without
@@ -1048,6 +1053,7 @@ export class LlEmitter {
   readonly emitLibraryIdentity: boolean;
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
+  readonly targetCpu: TargetCpu | undefined;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -1630,6 +1636,7 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
+    this.targetCpu = options.targetCpu;
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
