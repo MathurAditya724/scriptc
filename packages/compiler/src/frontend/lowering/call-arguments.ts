@@ -421,12 +421,16 @@ export function completeArgs(
     ) {
       const stmts: IrStmt[] = [];
       const values = restNodes.map((a): IrExpr => {
+        // A tuple field is read where its spread appears: a later
+        // argument may write the tuple.
+        let value: IrExpr;
         if (isIr(a)) {
-          if (a.ir.kind !== "seqExpr") return a.ir;
-          stmts.push(...a.ir.stmts);
-          return a.ir.result;
-        }
-        const value = lowerer.lowerExpr(a as ts.Expression);
+          value = a.ir;
+          if (value.kind === "seqExpr") {
+            stmts.push(...value.stmts);
+            value = value.result;
+          }
+        } else value = lowerer.lowerExpr(a as ts.Expression);
         const saved = lowerer.declareHiddenLocal("%callArg", value.type);
         stmts.push({ kind: "varDecl", localId: saved.id, init: value, loc: value.loc });
         return { kind: "varRef", localId: saved.id, type: value.type, loc: value.loc };

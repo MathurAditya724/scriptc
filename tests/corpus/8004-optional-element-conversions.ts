@@ -33,6 +33,22 @@ function label(first: string, ...rest: (string | undefined)[]): string {
 }
 const words: [string, string | undefined, string | undefined] = ["a", undefined, "c"];
 console.log(label(...words), label("b", undefined));
+// Spread tuple fields are read before later arguments run.
+const changing: [boolean, boolean | undefined] = [true, undefined];
+function flip(pair: [boolean, boolean | undefined], second: boolean | undefined): boolean {
+  pair[0] = !pair[0];
+  pair[1] = second;
+  return pair[0];
+}
+console.log(flags(...changing, flip(changing, true)));
+console.log(flags(...changing, flip(changing, undefined), ...changing));
+const swapped: [string, string | undefined] = ["x", "y"];
+function swap(pair: [string, string | undefined]): string {
+  pair[0] = "w";
+  pair[1] = undefined;
+  return "v";
+}
+console.log(label("z", ...swapped, swap(swapped), ...swapped));
 
 function pick(start: (number | undefined)[] | string[], other: (number | undefined)[] | string[]): string {
   let a = start;
