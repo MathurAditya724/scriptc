@@ -21,7 +21,7 @@ const server = tls.createServer({ cert, key }, (socket) => {
 server.on("tlsClientError", (err) => serverEvents.push(`tlsClientError ${err.code} ${als.getStore()}`));
 await als.run("listen", () => new Promise((resolve) => server.listen(0, "127.0.0.1", () => {
   serverEvents.push(`listening ${als.getStore()}`);
-  resolve();
+  resolve(undefined);
 })));
 const { port } = server.address();
 await als.run("client", () => new Promise((resolve) => {
@@ -32,7 +32,7 @@ await als.run("client", () => new Promise((resolve) => {
   client.on("data", () => clientEvents.push(`data ${als.getStore()}`));
   client.on("close", () => {
     clientEvents.push(`close ${als.getStore()}`);
-    resolve();
+    resolve(undefined);
   });
 }));
 await als.run("untrusted", () => new Promise((resolve) => {
