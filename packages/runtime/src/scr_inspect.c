@@ -1609,9 +1609,11 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
     return tag;
   }
   /* A function already on the traversal stack renders as [Circular *N],
-   * keyed by the closure every box of the function shares, even past the
-   * depth limit. */
-  double circular = scr_insp_circ_check(owner);
+   * even past the depth limit. Its identity is the class object for a class
+   * (each dynamic box of a class may carry its own closure) and the closure
+   * every box of a function shares otherwise. */
+  const void *identity = cls ? (const void *)cls : (const void *)owner;
+  double circular = scr_insp_circ_check(identity);
   if (circular > 0) {
     scr_dyn_release(table);
     scr_str_release(tag);
@@ -1628,7 +1630,7 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
   prefix[tag->len] = '\0';
   scr_str_release(tag);
   size_t nseen = g_nseen;
-  g_pending_seen = owner;
+  g_pending_seen = identity;
   ScrStr *rendered = scr_insp_obj(table, recurse, depth, prefix);
   g_pending_seen = NULL;
   if (g_nseen > nseen) g_nseen = nseen;

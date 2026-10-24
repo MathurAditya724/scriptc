@@ -34,3 +34,29 @@ shallow(S);
 shallow(A);
 console.log(util.inspect(g, { depth: 0 }));
 shallow(g);
+
+// A class that reaches itself through its static properties is one cycle,
+// whichever dynamic box of it the inspection meets.
+class Loop {
+  static get hidden() {
+    return 1;
+  }
+}
+Loop.self = Loop;
+Loop.label = 'loop';
+class Left {
+  static get hidden() {
+    return 2;
+  }
+}
+class Right {
+  static get hidden() {
+    return 3;
+  }
+}
+Left.other = Right;
+Right.other = Left;
+show(Loop);
+show(Left);
+show([Loop, Loop]);
+show({ a: Left, b: Right });
