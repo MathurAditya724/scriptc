@@ -202,6 +202,19 @@ void scr_dyn_install_has_instance_symbol(ScrDyn *key) {
   scr_atexit(scr_has_instance_symbol_cleanup);
 }
 
+/* Symbol.toStringTag, installed when the program first evaluates it: no
+ * object holds the key before then. */
+static SCR_TL ScrDyn *scr_to_string_tag_symbol;
+static void scr_to_string_tag_symbol_cleanup(void) {
+  scr_dyn_release(scr_to_string_tag_symbol);
+  scr_to_string_tag_symbol = NULL;
+}
+void scr_dyn_install_to_string_tag_symbol(ScrDyn *key) {
+  if (scr_to_string_tag_symbol) return;
+  scr_to_string_tag_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_to_string_tag_symbol_cleanup);
+}
+
 void scr_dyn_install_iterator_symbol(ScrDyn *key) {
   if (scr_iterator_symbol) return;
   scr_iterator_symbol = scr_dyn_retain(key);
@@ -3932,6 +3945,12 @@ static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t
   return false;
 }
 
+ScrStr *scr_dyn_typed_ref_class_tag(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
+  return ops && ops->string_tag ? ops->string_tag(d->v.typed_ref.ptr) : NULL;
+}
+
 bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key) {
   if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return false;
   const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
@@ -4020,6 +4039,9 @@ ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index) {
   return scr_dyn_typed_ref_element(d, i);
 }
 
+static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d);
+static ScrStr *scr_dyn_tag_string(const ScrStr *tag);
+
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   /* An instance of a class declared `extends Date` converts through its
    * toString, declared or inherited. With an exception pending the view is
@@ -4031,6 +4053,16 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
     ScrStr *empty = scr_str_new("", 0);
     ScrDyn *out = scr_dyn_new_str(empty);
     scr_str_release(empty);
+    return out;
+  }
+  /* A class instance converting through Object.prototype.toString shows
+   * its Symbol.toStringTag getter's string. */
+  ScrStr *class_tag = scr_dyn_typed_ref_conversion_tag(d);
+  if (class_tag || scr_exc_pending()) {
+    ScrStr *text = class_tag ? scr_dyn_tag_string(class_tag) : scr_str_new("", 0);
+    scr_str_release(class_tag);
+    ScrDyn *out = scr_dyn_new_str(text);
+    scr_str_release(text);
     return out;
   }
   ScrDyn *view = scr_dyn_typed_ref_materialize(d);
@@ -8321,10 +8353,65 @@ void scr_dyn_throw(ScrDyn *d) {
                           scr_dyn_trace_v, scr_dyn_is_object(d));
 }
 
+static ScrStr *scr_dyn_tag_string(const ScrStr *tag) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "[object ");
+  scr_jb_write(&b, tag->data, tag->len);
+  scr_jb_putc(&b, ']');
+  return scr_jb_finish(&b);
+}
+
+/* The Symbol.toStringTag getter's string of a class instance whose
+ * ToString is Object.prototype.toString (its class has no toString; the
+ * string hint never reaches valueOf, since that answers a string): +1, or
+ * NULL otherwise or with the getter's exception pending. */
+static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d) {
+  ScrStr *to_string_key = scr_str_new("toString", 8);
+  bool own_conversion = scr_dyn_typed_ref_class_has(d, to_string_key);
+  scr_str_release(to_string_key);
+  return own_conversion ? NULL : scr_dyn_typed_ref_class_tag(d);
+}
+
+bool scr_dyn_typed_ref_put_tag(ScrJsonBuf *b, const ScrDyn *d) {
+  ScrStr *tag = scr_dyn_typed_ref_conversion_tag(d);
+  if (!tag) return scr_exc_pending();
+  scr_jb_puts(b, "[object ");
+  scr_jb_write(b, tag->data, tag->len);
+  scr_jb_putc(b, ']');
+  scr_str_release(tag);
+  return true;
+}
+
+/* Object.prototype.toString of an object whose own or inherited
+ * @@toStringTag is a string (+1), NULL otherwise or with a pending
+ * exception from its getter. */
+static ScrStr *scr_dyn_string_tag(const ScrDyn *d) {
+  ScrStr *getter_tag = scr_dyn_typed_ref_class_tag(d);
+  if (getter_tag) {
+    ScrStr *out = scr_dyn_tag_string(getter_tag);
+    scr_str_release(getter_tag);
+    return out;
+  }
+  if (scr_exc_pending() || !scr_to_string_tag_symbol) return NULL;
+  ScrDyn *tag = scr_dyn_symbol_key_get(d, scr_to_string_tag_symbol, true);
+  if (!tag) return NULL;
+  ScrStr *out = tag->kind == SCR_DYN_STR ? scr_dyn_tag_string(tag->v.str) : NULL;
+  scr_dyn_release(tag);
+  return out;
+}
+
 ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   if (d->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Symbol.toStringTag lookup");
     return NULL;
+  }
+  /* Object.prototype.toString answers a string @@toStringTag over the
+   * builtin tag of a plain object or a class instance. */
+  if ((d->kind == SCR_DYN_OBJ || (d->kind == SCR_DYN_TYPED_REF && !scr_dyn_ref_is_error(d) &&
+                                  !scr_dyn_generator(d)))) {
+    ScrStr *tag = scr_dyn_string_tag(d);
+    if (tag || scr_exc_pending()) return tag;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
     if (scr_dyn_ref_is_error(d)) return scr_str_new("[object Error]", 14);
@@ -9668,6 +9755,13 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
     return NULL;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
+    ScrStr *tag = scr_dyn_typed_ref_conversion_tag(d);
+    if (tag) {
+      ScrStr *out = scr_dyn_tag_string(tag);
+      scr_str_release(tag);
+      return out;
+    }
+    if (scr_exc_pending()) return NULL;
     ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);
     ScrStr *out = scr_dyn_string_coerce_js(materialized);
     scr_dyn_release(materialized);
@@ -9688,7 +9782,7 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
           scr_error_release(error);
           return text;
         }
-        return scr_str_new("[object Object]", 15);
+        return scr_dyn_object_tag(d);
       }
       if (!m || m->kind != SCR_DYN_FUNC) { scr_dyn_release(m); continue; }
       /* OrdinaryToPrimitive performs a method call, not a bare function
