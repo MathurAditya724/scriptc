@@ -400,6 +400,13 @@ ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc);
  * slab. A slab lives while any of its views does. All return +1 Buffers. */
 double scr_buffer_pool_size(void);
 void scr_buffer_set_pool_size(double size);
+/* The setting without publishing it (scr_buffer_pool_refresh_hook). */
+void scr_buffer_pool_apply(double size);
+/* Set while a Buffer function value exists (scr_builtin_values.c): its
+ * poolSize property is the setting, which the refresh hook reads before
+ * each pool decision and the publish hook receives from static writes. */
+extern SCR_TL void (*scr_buffer_pool_refresh_hook)(void);
+extern SCR_TL void (*scr_buffer_pool_publish_hook)(double size);
 ScrBytes *scr_buffer_alloc(double size);             /* zeroed, never pooled */
 ScrBytes *scr_buffer_alloc_unsafe(double size);      /* pooled */
 ScrBytes *scr_buffer_alloc_unsafe_slow(double size); /* never pooled */
@@ -410,6 +417,15 @@ ScrBytes *scr_buffer_from_arr(const ScrArr *arr);     /* number[] */
 ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding);
 ScrBytes *scr_buffer_from_dyn_ref_pooled(const ScrDyn *value, const ScrStr *encoding);
 ScrBytes *scr_buffer_from_dyn_offset_pooled(const ScrDyn *value, const ScrDyn *second);
+/* Buffer.from(value, byteOffset, length): an ArrayBuffer's view with
+ * Node's fromArrayBuffer checks; other values as the two-argument form. */
+ScrBytes *scr_buffer_from_dyn_range_pooled(const ScrDyn *value, const ScrDyn *second,
+                                           const ScrDyn *third);
+/* The deprecated Buffer constructor's DEP0005 state (scr_bytes_io.c): a
+ * call from node_modules counts toward Node's 10000-call check. */
+extern SCR_TL bool scr_buffer_ctor_warned;
+extern SCR_TL uint64_t scr_buffer_ctor_checks;
+void scr_buffer_deprecation_count(void);
 ScrBytes *scr_buffer_concat(const ScrArr *list);
 ScrBytes *scr_buffer_concat_len(const ScrArr *list, double total);
 /* The untyped-list forms: Node's ERR_INVALID_ARG_TYPE checks on the list
@@ -418,6 +434,17 @@ ScrBytes *scr_buffer_concat_dyn(const struct ScrDyn *list);
 ScrBytes *scr_buffer_alloc_value(const struct ScrDyn *size, const struct ScrDyn *fill,
                                  const struct ScrDyn *encoding);
 struct ScrDyn *scr_fs_realpath_value(const struct ScrDyn *path, const struct ScrDyn *options, bool native);
+/* The Buffer function as a value (scr_builtin_values.c), one per thread. +1. */
+struct ScrDyn *scr_buffer_constructor_value(void);
+/* Installs that function as a Buffer's `.constructor` (the program's
+ * %main calls it when it reads the value): scr_bytes_buffer_constructor_fn. */
+void scr_buffer_install_value(void);
+extern struct ScrDyn *(*scr_bytes_buffer_constructor_fn)(void);
+/* A static of that value by name (`Buffer.alloc` read as a value). +1. */
+struct ScrDyn *scr_buffer_static_value(const ScrStr *name);
+/* `Buffer.prototype[key]` (scr_bytes_dyn.c). +1, or NULL with the
+ * exception pending. */
+struct ScrDyn *scr_buffer_prototype_member(const struct ScrDyn *key);
 ScrBytes *scr_buffer_concat_len_dyn(const struct ScrDyn *list, double total);
 /* Drops the pool's slab reference and restores Buffer.poolSize (process
  * exit audits and library session resets). */
@@ -511,6 +538,16 @@ ScrEmitter *scr_emitter_set_max_chk(ScrEmitter *em, const ScrDyn *n);
 void scr_emitter_set_default_max_chk(const ScrDyn *n, const ScrStr *name);
 double scr_bytes_index_of(const ScrBytes *b, const ScrBytes *needle, double off, double align, bool fwd);
 double scr_bytes_index_of_num(const ScrBytes *b, double v, double off, bool fwd);
+/* TypedArray indexOf (last false) and lastIndexOf (last true) over any
+ * element kind, with strict equality: NaN is never found and -0 matches 0.
+ * `from` is the fromIndex argument (ToIntegerOrInfinity applies); the
+ * caller passes 0, or +Infinity for lastIndexOf, when it is omitted. A
+ * Buffer (a Uint8Array receiver can be one) searches as Buffer's
+ * indexOf and lastIndexOf do. */
+double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool last);
+/* TypedArray includes: indexOf's search from `from` with SameValueZero,
+ * so NaN is found. A Buffer searches as Buffer's includes does. */
+bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from);
 ScrBytes *scr_bytes_fill(ScrBytes *b, const ScrBytes *pattern, double nargs, double offset, double end);
 ScrBytes *scr_bytes_fill_num(ScrBytes *b, double v, double nargs, double offset, double end);
 ScrBytes *scr_bytes_fill_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,

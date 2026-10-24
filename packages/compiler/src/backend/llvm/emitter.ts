@@ -1,3 +1,4 @@
+import type { TargetCpu } from "../target-cpu.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
@@ -482,6 +483,10 @@ export interface LlvmTargetOptions {
    * store the instance's address over 8 in 32 bits (classes.ts
    * compactRefLoadLines). Elsewhere they keep 8-byte pointers. */
   lowRegion?: boolean;
+  /** The x86-64 level the program's code may require (`--target-cpu`):
+   * every emitted function carries it as its `target-cpu`. Unset, code
+   * runs on any x86-64 CPU. */
+  targetCpu?: TargetCpu;
 }
 
 /** LlvmTargetOptions.lowRegion for an executable: Linux targets without
@@ -1048,6 +1053,7 @@ export class LlEmitter {
   readonly emitLibraryIdentity: boolean;
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
+  readonly targetCpu: TargetCpu | undefined;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -1630,6 +1636,7 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
+    this.targetCpu = options.targetCpu;
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
@@ -2044,7 +2051,6 @@ export class LlEmitter {
     if (POINTER_KINDS.has(t.kind)) return "ptr";
     switch (t.kind) {
       case "f64":
-      case "date":
         return "double";
       case "bool":
         return "i1";
@@ -2177,7 +2183,6 @@ export class LlEmitter {
         this.declare(`declare void @scr_promise_fulfill_void(ptr)`);
         return [`  call void @scr_promise_fulfill_void(ptr ${promise})`];
       case "f64":
-      case "date":
         this.declare(`declare void @scr_promise_fulfill_f64(ptr, double)`);
         return [`  call void @scr_promise_fulfill_f64(ptr ${promise}, double %r)`];
       case "bool":
@@ -2407,7 +2412,7 @@ export class LlEmitter {
       return { name: "", type };
     }
     const t = B.tmp();
-    if (type.kind === "f64" || type.kind === "date") {
+    if (type.kind === "f64") {
       this.declare(`declare double @scr_coro_direct_f64(ptr)`);
       B.line(`${t} = call double @scr_coro_direct_f64(ptr ${record})`);
     } else if (type.kind === "bool") {
@@ -3803,8 +3808,17 @@ export class LlEmitter {
 
   /** A union value's tag (i32): the box's tag word, or the NULL test of a
    * nullable union's pointer. */
+  /** A box's tag and payload words are written only where the box is
+   * built (runtime constructors and untagged stack stores), so their loads
+   * carry their own alias tags: element and field stores cannot change
+   * them, and loops keep them hoisted. */
   unionTag(uName: string, unionId: string): string {
-    return emitUnionTag(this.B, this.nullableUnions.get(unionId), uName);
+    return emitUnionTag(
+      this.B,
+      this.nullableUnions.get(unionId),
+      uName,
+      this.memoryAliasAttachment("union.tag"),
+    );
   }
 
   /** Guard for helpers that build or read a union's `%ScrUnion` box
@@ -3820,7 +3834,12 @@ export class LlEmitter {
   /** The BORROWED payload pointer of a ref arm (scr_union_peek inlined —
    * the runtime's is a static inline); a nullable union is its payload. */
   unionPeek(uName: string, unionId: string): string {
-    return emitUnionPeek(this.B, this.nullableUnions.get(unionId), uName);
+    return emitUnionPeek(
+      this.B,
+      this.nullableUnions.get(unionId),
+      uName,
+      this.memoryAliasAttachment("union.payload"),
+    );
   }
 
   /** Emits `switch` over a union's tag with one block per arm; each arm

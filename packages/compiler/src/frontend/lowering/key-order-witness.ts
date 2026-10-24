@@ -41,6 +41,12 @@
  *  - a literal that starts by spreading a value of its own shape copies
  *    that value's order. While no checked conversion builds the shape,
  *    every value has the one chosen order, so the copy adds no witness;
+ *  - a literal that starts by spreading a value of a shape checked
+ *    conversions build (an ordered spread) gives the record it builds the
+ *    value's record source, when the value has one (record.sourceSpread).
+ *    Every value of a shape enumerates in its table or in the order its
+ *    record source holds, so the copy has the value's order either way,
+ *    and the literal resolves as if the value were in its table's order;
  *  - a write to an optional key that may be absent appends it in Node. A
  *    key no construction creates ("late-only") goes after every key a
  *    construction can create; any other moving write goes after every key.
@@ -61,6 +67,7 @@ import {
   shapeHasAccessorSlots,
   typeEquals,
   UNDEFINED_T,
+  VOID,
 } from "../../ir/ir.js";
 import {
   everyExprChild,
@@ -71,6 +78,7 @@ import {
 import type { Lowerer } from "./lowerer.js";
 import * as ts from "../ts7/adapter.js";
 import { ALWAYS_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
+import { recordMayKeepSource } from "./record-sources.js";
 
 /** The statements a key-order helper runs for record `ref`: `walks[0]`,
  * its walk over the shape's table, or, for a shape with orderVariants, a
@@ -218,6 +226,14 @@ interface ShapeFacts {
 
 type Resolved = { order: string[] } | "unknown";
 
+/** A literal that starts with `...value`: the sequence that evaluates the
+ * value into its binding and then builds the literal, and its function. */
+interface LeadingSpread {
+  wrapper: IrExpr & { kind: "seqExpr" };
+  literal: IrExpr & { kind: "recordLit" };
+  fn: IrFunction;
+}
+
 /** `structuredClone(v)` checked back into v's own type: the copy is built
  * from v's dyn view, so it creates exactly v's keys in v's order. */
 function orderPreservingClone(node: IrExpr & { kind: "dynCheck" }): boolean {
@@ -273,6 +289,17 @@ function replacesWithoutRecords(lowerer: Lowerer, site: ts.Node): boolean {
     signatures.every((signature) =>
       primitiveOnly(lowerer.checker.getReturnTypeOfSignature(signature)),
     )
+  );
+}
+
+/** A compiler helper that boxes a class's own state for JavaScript's reads:
+ * its prototype data and the property and method dispatch over boxed
+ * instances. */
+function boxesOwnState(fnName: string): boolean {
+  return (
+    fnName.startsWith("%prototype.data.") ||
+    fnName.startsWith("%dyn.class.") ||
+    fnName.startsWith("%class.")
   );
 }
 
@@ -341,8 +368,18 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
    * its checked field setters, each a witness of its own. A checked
    * function's parameters receive native values: a record parameter is
    * passed out, never built, though a callback among them receives values
-   * built from JavaScript again. */
-  const shapesIn = (type: IrType, out: Set<string>, seen: Set<string>, produced = false): void => {
+   * built from JavaScript again. `built` false starts the walk at a value
+   * passed out (a native value boxed for JavaScript); `writes` false leaves
+   * out what JavaScript could write into the containers passed out, so the
+   * walk counts only what the functions among them receive. */
+  const shapesIn = (
+    type: IrType,
+    out: Set<string>,
+    seen: Set<string>,
+    produced = false,
+    built = true,
+    writes = true,
+  ): void => {
     const visit = (t: IrType, built: boolean): boolean => {
       const mark = built ? "" : "-";
       // A container JavaScript builds converts into fresh native storage, so
@@ -351,7 +388,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       // such as callbacks whose parameters it then builds (children passed
       // out). Those children count in both directions.
       const child = (type: IrType): boolean => {
-        visit(type, true);
+        if (built || writes) visit(type, true);
         if (!built) visit(type, false);
         return true;
       };
@@ -385,7 +422,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       }
       return everyTypeChild(t, child);
     };
-    visit(type, true);
+    visit(type, built);
   };
   const opaqueShapes = new Set<string>();
   const opaqueSeen = new Set<string>();
@@ -396,6 +433,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
    * declaration's order, the order their table holds. */
   const declaredShapes = new Set<string>();
   const declaredSeen = new Set<string>();
+  const boxedSeen = new Set<string>();
   /** The checked result of a replaceable method call while every site that
    * can replace the method installs functions that return no record. */
   const unchangedMethodResult = (node: IrExpr): boolean => {
@@ -412,6 +450,12 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   // ── collection ──────────────────────────────────────────────────────
   let pos = 0;
   let fnName = "";
+  let currentFn: IrFunction | null = null;
+  /** Literals that start by spreading a binding, by their witness: where
+   * each one is built. A literal's notes are shared by its rebuilt copies,
+   * so `literalSites` counts every literal of each witness. */
+  const leadingSpreads = new Map<KeyOrderSegment[], LeadingSpread[]>();
+  const literalSites = new Map<KeyOrderSegment[], number>();
   const loops: number[] = [];
   let loopIds = 0;
   const loopKey = (): string => loops.join("/");
@@ -463,8 +507,10 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         }
         const segments = notes.literalOf(e);
         const copy = notes.copyOf(e);
-        if (segments !== undefined) f.literals.push(segments);
-        else if (copy !== undefined) f.copies.push({ source: copy, keys: presentKeys });
+        if (segments !== undefined) {
+          f.literals.push(segments);
+          literalSites.set(segments, (literalSites.get(segments) ?? 0) + 1);
+        } else if (copy !== undefined) f.copies.push({ source: copy, keys: presentKeys });
         else f.pinned = true;
         return;
       }
@@ -479,9 +525,31 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       case "assignExpr":
         noteInit(e.localId, e.value);
         return;
+      case "seqExpr": {
+        // A spread literal evaluates its sources into bindings first.
+        const literal = e.result;
+        if (literal.kind !== "recordLit" || currentFn === null) return;
+        const segments = notes.literalOf(literal);
+        const first = segments?.[0];
+        if (segments === undefined || first?.kind !== "spread" || first.value === undefined) return;
+        const list = leadingSpreads.get(segments) ?? [];
+        list.push({ wrapper: e, literal, fn: currentFn });
+        leadingSpreads.set(segments, list);
+        return;
+      }
       case "jsonStringify":
       case "dynFrom":
         observedRoots.push(e.value.type);
+        // A native value the program hands to JavaScript: the callbacks it
+        // holds (itself, a field, an element) receive records JavaScript
+        // builds. The helpers that box the program's own state for
+        // JavaScript's reads (a class's prototype slots and property
+        // dispatch) hand out the class's methods, whose arguments the
+        // program's own calls pass as native values, as a replaceable
+        // method's result above. Writes through the boxed value are left
+        // out: reading a boxed value creates no record.
+        if (!boxesOwnState(fnName))
+          shapesIn(e.value.type, runtimeShapes, boxedSeen, true, false, false);
         return;
       case "recordKeyGet":
         observedRoots.push(e.obj.type);
@@ -582,6 +650,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   };
   for (const fn of fns) {
     fnName = fn.name;
+    currentFn = fn;
     for (const st of fn.body) stmt(st);
   }
   for (const id of opaqueShapes) {
@@ -698,6 +767,61 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     return edges;
   };
 
+  // ── ordered spreads ─────────────────────────────────────────────────
+  // A value a checked conversion builds keeps its source's key order in
+  // its record source when that order is not the table's (record-
+  // sources.ts), so every value of a shape enumerates in the table's order
+  // or in the order its record source holds. A literal that starts with
+  // `...value` creates the value's keys first, in the value's order. When
+  // the value's shape is one checked conversions build, the literal
+  // carries that order over: after it builds the record it gives the
+  // record a source holding the value's order (record.sourceSpread), and
+  // the keys the value lacks follow in the table's order, which every
+  // literal sequence of the shape agrees with. Such a literal resolves as
+  // if its source were in the source's table order, and its own shape
+  // counts as built at run time too, since its values may now carry a
+  // source. It qualifies when every value of the source has all of the
+  // source's keys, both shapes can keep a source, and every later spread
+  // whose values may carry a source only overwrites the source's keys
+  // (its own order cannot move them).
+  const orderedSpreads = new Set<readonly KeyOrderSegment[]>();
+  const keepsSource = (shapeId: string): boolean =>
+    recordMayKeepSource(lowerer, { kind: "record", shapeId });
+  const userKeys = (shapeId: string): string[] =>
+    (shapes.get(shapeId)?.fields ?? []).map((x) => x.name).filter((k) => !k.startsWith("%"));
+  const ordersSpread = (segments: KeyOrderSegment[], sites: readonly LeadingSpread[]): boolean => {
+    const first = segments[0];
+    if (first?.kind !== "spread" || first.maybeAbsent || first.value === undefined) return false;
+    const sourceId = first.shapeId;
+    if (facts.get(sourceId)?.runtime !== true || sites.length !== literalSites.get(segments))
+      return false;
+    const target = sites[0]!.literal.type;
+    if (target.kind !== "record" || !keepsSource(sourceId) || !keepsSource(target.shapeId))
+      return false;
+    const localId = first.value.localId;
+    const bound = ({ wrapper, literal }: LeadingSpread): boolean =>
+      typeEquals(literal.type, target) &&
+      wrapper.stmts.some(
+        (st) =>
+          st.kind === "varDecl" &&
+          st.localId === localId &&
+          st.init !== null &&
+          st.init.type.kind === "record" &&
+          st.init.type.shapeId === sourceId,
+      );
+    if (!sites.every(bound)) return false;
+    const sourceKeys = new Set(userKeys(sourceId));
+    if ([...sourceKeys].some((k) => maybeAbsent(sourceId, k))) return false;
+    return segments
+      .slice(1)
+      .every(
+        (s) =>
+          s.kind === "key" ||
+          (s.kind === "spread" &&
+            (facts.get(s.shapeId)?.runtime !== true ||
+              userKeys(s.shapeId).every((k) => sourceKeys.has(k)))),
+      );
+  };
   // ── witness sequences ───────────────────────────────────────────────
   /** The key sequences one literal can create, or null when a spread
    * source's order is unknown. A key sits at its first occurrence that
@@ -707,15 +831,19 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     segments: readonly KeyOrderSegment[],
     keySet: ReadonlySet<string>,
     resolved: (id: string) => Resolved,
+    raw: (id: string) => Resolved,
   ): string[][] | null => {
     const occurrences: { key: string; definite: boolean }[] = [];
+    const ordered = orderedSpreads.has(segments);
     for (const s of segments) {
       if (s.kind === "opaque") return null;
       if (s.kind === "key") {
         if (keySet.has(s.name)) occurrences.push({ key: s.name, definite: s.definite });
         continue;
       }
-      const source = resolved(s.shapeId);
+      // An ordered spread's values without a source enumerate in the
+      // source's table; the others carry their order over.
+      const source = ordered && s === segments[0] ? raw(s.shapeId) : resolved(s.shapeId);
       if (source === "unknown") return null;
       for (const k of source.order) {
         if (keySet.has(k))
@@ -809,13 +937,17 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       first.kind === "spread" &&
       first.shapeId === id &&
       !first.maybeAbsent &&
-      !f.runtime &&
+      (!f.runtime || orderedSpreads.has(segments)) &&
       segments.every((s) => s.kind !== "opaque") &&
       table.every((k) => !maybeAbsent(id, k))
     );
   };
   /** One shape's order given its sources' current orders. */
-  const resolveOne = (id: string, current: (source: string) => Resolved): Resolved => {
+  const resolveOne = (
+    id: string,
+    current: (source: string) => Resolved,
+    raw: (source: string) => Resolved,
+  ): Resolved => {
     const shape = shapes.get(id);
     if (!inScope(shape)) return "unknown";
     const table = tableOf(shape);
@@ -832,7 +964,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     if (f.pinned) chain(table, edges);
     for (const segments of f.literals) {
       if (copiesItself(id, f, table, segments)) continue;
-      const sequences = literalSequences(segments, keySet, current);
+      const sequences = literalSequences(segments, keySet, current, raw);
       if (sequences === null) return "unknown";
       for (const seq of sequences) chain(seq, edges);
     }
@@ -891,32 +1023,57 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const known = result.get(id);
     return known === undefined ? "unknown" : asSource(id, known);
   };
-  for (const scc of sccs) {
-    const members = new Set(scc);
-    const guess = new Map<string, Resolved>();
-    for (const id of scc) {
-      const shape = shapes.get(id);
-      guess.set(id, inScope(shape) ? { order: tableOf(shape) } : "unknown");
-    }
-    const lookup = (id: string): Resolved =>
-      members.has(id) ? asSource(id, guess.get(id)!) : external(id);
-    let stable = false;
-    for (let round = 0; round < scc.length + 3 && !stable; round++) {
-      stable = true;
+  const resolveAll = (): void => {
+    result.clear();
+    late.clear();
+    for (const scc of sccs) {
+      const members = new Set(scc);
+      const guess = new Map<string, Resolved>();
       for (const id of scc) {
-        const next = resolveOne(id, lookup);
-        const prev = guess.get(id)!;
-        const same =
-          next === "unknown"
-            ? prev === "unknown"
-            : prev !== "unknown" && prev.order.join("\0") === next.order.join("\0");
-        if (!same) {
-          stable = false;
-          guess.set(id, next);
+        const shape = shapes.get(id);
+        guess.set(id, inScope(shape) ? { order: tableOf(shape) } : "unknown");
+      }
+      const lookup = (id: string): Resolved =>
+        members.has(id) ? asSource(id, guess.get(id)!) : external(id);
+      const rawLookup = (id: string): Resolved =>
+        members.has(id) ? guess.get(id)! : (result.get(id) ?? "unknown");
+      let stable = false;
+      for (let round = 0; round < scc.length + 3 && !stable; round++) {
+        stable = true;
+        for (const id of scc) {
+          const next = resolveOne(id, lookup, rawLookup);
+          const prev = guess.get(id)!;
+          const same =
+            next === "unknown"
+              ? prev === "unknown"
+              : prev !== "unknown" && prev.order.join("\0") === next.order.join("\0");
+          if (!same) {
+            stable = false;
+            guess.set(id, next);
+          }
         }
       }
+      for (const id of scc) result.set(id, stable ? guess.get(id)! : "unknown");
     }
-    for (const id of scc) result.set(id, stable ? guess.get(id)! : "unknown");
+  };
+  // Ordered spreads join once their source resolves; each one can let its
+  // own shape resolve, which a later spread of it needs.
+  resolveAll();
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [segments, sites] of leadingSpreads) {
+      const first = segments[0];
+      if (first?.kind !== "spread" || orderedSpreads.has(segments)) continue;
+      // A self copy resolves with its own shape.
+      const target = sites[0]!.literal.type;
+      const source = result.get(first.shapeId) ?? "unknown";
+      const self = target.kind === "record" && target.shapeId === first.shapeId;
+      if ((source === "unknown" && !self) || !ordersSpread(segments, sites)) continue;
+      orderedSpreads.add(segments);
+      if (target.kind === "record") factsOf(target.shapeId).runtime = true;
+      grew = true;
+    }
+    if (grew) resolveAll();
   }
 
   // ── observation ─────────────────────────────────────────────────────
@@ -925,6 +1082,19 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   for (const id of notes.observed)
     shapesIn({ kind: "record", shapeId: id }, observed, observedSeen);
   for (const root of observedRoots) shapesIn(root, observed, observedSeen);
+  // An ordered spread's copies of values without a source take the source's
+  // order from its table, which must then hold the resolved order.
+  const orderedTarget = (sites: readonly LeadingSpread[]): string | null => {
+    const target = sites[0]!.literal.type;
+    return target.kind === "record" && (result.get(target.shapeId) ?? "unknown") !== "unknown"
+      ? target.shapeId
+      : null;
+  };
+  for (const [segments, sites] of leadingSpreads) {
+    const first = segments[0];
+    if (orderedSpreads.has(segments) && first?.kind === "spread" && orderedTarget(sites) !== null)
+      observed.add(first.shapeId);
+  }
 
   // ── apply ───────────────────────────────────────────────────────────
   for (const [id, resolved] of result) {
@@ -935,6 +1105,46 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     if (resolved.order.join("\0") === table.join("\0")) continue;
     shape.declaredOrder = [...shape.declaredOrder!.filter(isArrayIndex), ...resolved.order];
     notes.changed.add(id);
+  }
+
+  // Ordered spreads carry their source's order over (see above).
+  let orderedResults = 0;
+  const rewritten = new Set<IrExpr>();
+  for (const [segments, sites] of leadingSpreads) {
+    const first = segments[0];
+    if (!orderedSpreads.has(segments) || first?.kind !== "spread" || first.value === undefined)
+      continue;
+    // A shape that did not resolve keeps today's table for every value.
+    if (orderedTarget(sites) === null) continue;
+    for (const { wrapper, literal, fn } of sites) {
+      if (rewritten.has(wrapper)) continue;
+      rewritten.add(wrapper);
+      const loc = literal.loc;
+      const localId = `%orderedSpread.${orderedResults++}`;
+      fn.locals.push({ id: localId, name: "%orderedSpread", type: literal.type, mutable: false });
+      const built: IrExpr = { kind: "varRef", localId, type: literal.type, loc };
+      const source: IrExpr = {
+        kind: "varRef",
+        localId: first.value.localId,
+        type: { kind: "record", shapeId: first.shapeId },
+        loc,
+      };
+      wrapper.stmts.push(
+        { kind: "varDecl", localId, init: literal, loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "record.sourceSpread",
+            args: [built, source],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      );
+      wrapper.result = { kind: "varRef", localId, type: literal.type, loc };
+    }
   }
 
   // ── per-instance orders ─────────────────────────────────────────────

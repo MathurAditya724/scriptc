@@ -119,7 +119,11 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
-import { lowerBytesStaticCall } from "./containers/bytes.js";
+import {
+  lowerBufferConstruct,
+  lowerBytesPrototypeSetCall,
+  lowerBytesStaticCall,
+} from "./containers/bytes.js";
 import {
   lowerRegexMethodCall,
   lowerStringIndexCall,
@@ -256,6 +260,7 @@ import {
   completeArgs,
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
+import { dynamicOverloadChoice } from "./overload-choice.js";
 import { lowerStringIteratorValue } from "./iterator-adapters.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import { maybePromiseReturnStmt, promiseArmedUnionOf } from "./maybe-promise.js";
@@ -362,6 +367,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   {
     const codeGeneration = codeGenerationCalleeOf(lowerer, expr.expression);
     if (codeGeneration !== null) return lowerCodeGenerationCall(lowerer, expr, codeGeneration);
+  }
+  // The deprecated Buffer(...) call (containers/bytes.ts). The checker
+  // types it `any`, so the bytes cross as a checked-dynamic value, which
+  // keeps the Buffer brand for inspection.
+  {
+    const buffer = lowerBufferConstruct(lowerer, expr);
+    if (buffer) return { kind: "dynFrom", value: buffer, type: DYN, loc };
   }
   // A package shim's runtime intrinsic (a bodiless `declare function`
   // named scriptcUnixDgram* in a shipped shim): a direct runtime call.
@@ -1579,6 +1591,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.lowerTestMethodCall(expr, expr.expression) ??
       lowerer.lowerTimeoutMethodCall(expr, expr.expression) ??
       lowerArrayPrototypeBorrowCall(lowerer, expr, expr.expression) ??
+      lowerBytesPrototypeSetCall(lowerer, expr, expr.expression) ??
       lowerObjectOwnPrototypeCall(lowerer, expr, expr.expression) ??
       lowerObjectPrototypeCall(lowerer, expr, expr.expression) ??
       lowerStringPrototypeCall(lowerer, expr, expr.expression) ??
@@ -5498,6 +5511,9 @@ function reconcileOverloadReturn(
   expr: ts.CallExpression | ts.TaggedTemplateExpression,
   call: IrExpr,
 ): IrExpr {
+  // The checker's overload is a guess for a checked-dynamic argument
+  // another overload accepts: the implementation's value stands.
+  if (ts.isCallExpression(expr) && dynamicOverloadChoice(lowerer, expr)) return call;
   const rsig = lowerer.checker.getResolvedSignature(expr);
   const rdecl = rsig ? rsig.declaration : undefined;
   // Nominal covariant overrides share the base's return ABI, but retain

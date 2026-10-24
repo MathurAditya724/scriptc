@@ -55,6 +55,7 @@ import {
   typeEquals,
   typeKey,
   maybePromiseUnionArmsOk,
+  unionContainerArmsOk,
   VOID,
 } from "./ir.js";
 import { DYN_CLASS_PROPERTIES, callSiteReturnType, classValueConstructor } from "./ir.js";
@@ -822,7 +823,6 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         arm.kind === "void" ||
         arm.kind === "union" ||
         arm.kind === "dyn" ||
-        arm.kind === "date" ||
         (arm.kind === "generator" && iterableArmsElem(u.arms) === null)
       ) {
         errors.push({ message: `union ${u.id}: arm ${i} is ${arm.kind}`, loc: noLoc });
@@ -832,6 +832,9 @@ export function validateModule(mod: IrModule): IrValidationError[] {
           message: `union ${u.id}: ${arm.kind} arm ${i} beside another promise arm`,
           loc: noLoc,
         });
+      }
+      if (arm.kind === "date" && !unionContainerArmsOk(u.arms)) {
+        errors.push({ message: `union ${u.id}: date arm ${i} beside non-unit arms`, loc: noLoc });
       }
       if (arm.kind === "record" && !recordsById.has(arm.shapeId)) {
         errors.push({
@@ -1526,6 +1529,7 @@ function validateFunction(
             e.left.type.kind === "map" ||
             e.left.type.kind === "set" ||
             e.left.type.kind === "regex" ||
+            e.left.type.kind === "date" ||
             e.left.type.kind === "url" ||
             e.left.type.kind === "object" ||
             e.left.type.kind === "record" ||
@@ -2211,6 +2215,9 @@ function validateFunction(
           indexOfNum: { argTypes: [F64, F64], minArgs: 1, result: F64 },
           lastIndexOfNum: { argTypes: [F64, F64], minArgs: 1, result: F64 },
           includesNum: { argTypes: [F64, F64], minArgs: 1, result: BOOL },
+          indexOfElem: { argTypes: [F64, F64], minArgs: 2, result: F64 },
+          lastIndexOfElem: { argTypes: [F64, F64], minArgs: 2, result: F64 },
+          includesElem: { argTypes: [F64, F64], minArgs: 2, result: BOOL },
           fill: { argTypes: [BYTES_U8, F64, F64], minArgs: 1, result: BYTES_U8 },
           fillNum: { argTypes: [F64, F64, F64], minArgs: 1, result: BYTES_U8 },
           // Per-element TypedArray fill (any elem — the non-u8 fill path).
@@ -2391,9 +2398,13 @@ function validateFunction(
           (e.method === "sortPrimitive" || e.method === "toSortedPrimitive") &&
           elem.kind !== "string" &&
           elem.kind !== "f64" &&
-          elem.kind !== "bool"
+          elem.kind !== "bool" &&
+          elem.kind !== "date"
         ) {
-          err(`arrIntrinsic ${e.method} requires primitive elements, got ${elem.kind}`, e.loc);
+          err(
+            `arrIntrinsic ${e.method} requires primitive or Date elements, got ${elem.kind}`,
+            e.loc,
+          );
         }
         if (e.method === "sortValues" || e.method === "sortDense") {
           const arms = elem.kind === "union" ? unions.get(elem.unionId)?.arms : undefined;
@@ -2475,13 +2486,18 @@ function validateFunction(
           elem.kind !== "f64" &&
           elem.kind !== "string" &&
           elem.kind !== "bool" &&
+          elem.kind !== "date" &&
           !(
             elem.kind === "union" &&
             (unions
               .get(elem.unionId)
               ?.arms.every(
                 (a) =>
-                  a.kind === "f64" || a.kind === "string" || a.kind === "bool" || isUnitType(a),
+                  a.kind === "f64" ||
+                  a.kind === "string" ||
+                  a.kind === "bool" ||
+                  a.kind === "date" ||
+                  isUnitType(a),
               ) ??
               false)
           )
@@ -5358,6 +5374,32 @@ function validateFunction(
   }
 
   function checkLibSpecialCall(e: IrExpr & { kind: "libCall" }): boolean {
+    if (e.fn === "promise.fulfilledValue") {
+      const promise = e.args[0]?.type;
+      if (
+        promise?.kind !== "promise" ||
+        e.type.kind === "void" ||
+        isUnitType(e.type) ||
+        promise.inner.kind !== "void"
+      )
+        err(`libCall ${e.fn} must read a Promise<void> entry at a non-void type`, e.loc);
+      return true;
+    }
+    if (e.fn === "promise.allTuple") {
+      const [entries, build] = e.args;
+      if (
+        entries?.type.kind !== "array" ||
+        entries.type.elem.kind !== "promise" ||
+        entries.type.elem.inner.kind !== "void" ||
+        build?.kind !== "closure" ||
+        build.captures.length > 0 ||
+        build.type.kind !== "func" ||
+        e.type.kind !== "promise" ||
+        !typeEquals(build.type.ret, e.type.inner)
+      )
+        err(`libCall ${e.fn} must join Promise<void> entries into its builder's tuple`, e.loc);
+      return true;
+    }
     if (e.fn === "als.bindCallback") {
       // The bound function, at its closure argument's own type.
       const fn = e.args[0]?.type;

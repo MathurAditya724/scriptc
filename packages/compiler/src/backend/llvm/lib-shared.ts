@@ -333,6 +333,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.parse": "scr_date_parse",
   "date.getTime": "scr_date_get_time",
   "date.valueOf": "scr_date_get_time",
+  "date.fromTime": "scr_date_get_time",
   "date.parseGetTime": "scr_date_parse",
   "date.utc": "scr_date_utc",
   "date.newLocal": "scr_date_new_local",
@@ -454,6 +455,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.poolFromDyn": "scr_buffer_from_dyn_pooled",
   "buffer.poolFromDynRef": "scr_buffer_from_dyn_ref_pooled",
   "buffer.poolFromDynOffset": "scr_buffer_from_dyn_offset_pooled",
+  "buffer.poolFromDynRange": "scr_buffer_from_dyn_range_pooled",
   "buffer.poolSize": "scr_buffer_pool_size",
   "buffer.setPoolSize": "scr_buffer_set_pool_size",
   "buffer.byteLenDyn": "scr_buffer_byte_length_dyn",
@@ -479,6 +481,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "bytes.equalsChk": "scr_bytes_equals_chk",
   "bytes.compareChk": "scr_bytes_compare_chk",
   "buffer.newStringFail": "scr_buffer_new_string_fail",
+  "buffer.deprecation": "scr_buffer_deprecation",
+  "buffer.deprecationCount": "scr_buffer_deprecation_count",
+  "buffer.constructor": "scr_buffer_constructor_value",
+  "buffer.installValue": "scr_buffer_install_value",
+  "buffer.staticValue": "scr_buffer_static_value",
+  "buffer.prototypeMember": "scr_buffer_prototype_member",
   "fs.toUnixTimestamp": "scr_fs_to_unix_timestamp",
   "fs.existsChk": "scr_fs_exists_async",
   "fs.mkdtempSyncChk": "scr_fs_mkdtemp_sync_chk",
@@ -650,6 +658,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.stderrWriteBytes": "scr_process_stderr_write_bytes",
   "insp.buffer": "scr_insp_buffer",
   "insp.typedArray": "scr_insp_typed_array",
+  "insp.bytes": "scr_insp_bytes",
   // util.inspect (scr_inspect.c): all args borrowed; string results +1;
   // the begin/entry/key/moreItems/end accumulator drives the emitted
   // container walks. None of these throw.
@@ -678,6 +687,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  "record.sourceSpread": "scr_record_source_spread",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).
@@ -702,6 +712,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "url.hash": "scr_url_hash",
   "url.searchParams": "scr_url_search_params",
   "url.fileURLToPathUrl": "scr_url_to_path",
+  "url.fileURLToPathValue": "scr_url_to_path_value",
+  "fs.checkPath": "scr_fs_check_path",
+  "fs.checkReadEncoding": "scr_fs_check_read_encoding",
   "url.fileURLToPathChecked": "scr_url_checked_to_path",
   "url.fileURLToPathOptions": "scr_url_checked_to_path_options",
   "url.fileURLToPathBuffer": "scr_url_checked_to_path_buffer",
@@ -1069,6 +1082,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.generateKeyPairSync": "scr_crypto_generate_key_pair_sync",
   "crypto.generateKeyPairCb": "scr_crypto_generate_key_pair_async",
   "crypto.signOneshot": "scr_crypto_sign_oneshot",
+  "crypto.diffieHellman": "scr_crypto_diffie_hellman",
   "crypto.verifyOneshot": "scr_crypto_verify_oneshot",
   "crypto.createSign": "scr_crypto_create_sign",
   "crypto.createVerify": "scr_crypto_create_verify",
@@ -1653,6 +1667,7 @@ export function mockTimerSym(
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "crypto.generateKeyPairCb",
+  "crypto.diffieHellman",
   "crypto.checkPrimeCb",
   "crypto.generatePrimeCb",
   "process.emitWarning",
@@ -1678,6 +1693,8 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "url.legacyParse",
   "url.legacyFormat",
   "url.legacyResolve",
+  // The deprecated Buffer constructor reports DEP0005 on the next tick.
+  "buffer.deprecation",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
   "util.callbackify",

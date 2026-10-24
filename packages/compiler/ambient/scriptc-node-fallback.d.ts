@@ -917,6 +917,14 @@ interface Buffer<
   readBigUint64LE(offset?: number): bigint;
 }
 interface BufferConstructor {
+  /** @deprecated since v10.0.0 - Use `Buffer.from(string[, encoding])` instead. */
+  new (str: string, encoding?: BufferEncoding): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.alloc()` instead. */
+  new (size: number): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.from(array)` instead. */
+  new (array: ArrayLike<number>): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.from(arrayBuffer[, byteOffset[, length]])` instead. */
+  new (arrayBuffer: ArrayBuffer | SharedArrayBuffer): Buffer;
   from(data: string, encoding?: BufferEncoding): Buffer;
   /* The ArrayBuffer form is the VIEW construction: x.buffer with an
    * optional byte offset/length shares x's storage (the subarray rule). */
@@ -1582,7 +1590,7 @@ declare module "node:fs" {
   export function writeFileSync(path: string | URL, data: string, encoding: "utf8" | "utf-8"): void;
   export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
-  export function existsSync(path: string): boolean;
+  export function existsSync(path: string | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(
     path: string | URL,
@@ -2223,7 +2231,7 @@ declare module "fs/promises" {
     stat(): Promise<import("node:fs").Stats>;
     [Symbol.asyncDispose](): Promise<void>;
   }
-  export function open(path: string, flags?: string, mode?: number): Promise<FileHandle>;
+  export function open(path: string | URL, flags?: string, mode?: number): Promise<FileHandle>;
   export function link(
     existingPath: string | Uint8Array | URL,
     newPath: string | Uint8Array | URL,
@@ -2260,14 +2268,14 @@ declare module "fs/promises" {
     atime: number | string | Date,
     mtime: number | string | Date,
   ): Promise<void>;
-  export function readFile(path: string, encoding: "utf8" | "utf-8"): Promise<string>;
+  export function readFile(path: string | URL, encoding: "utf8" | "utf-8"): Promise<string>;
   export function readFile(
-    path: string,
+    path: string | URL,
     options: BufferEncoding | { encoding: BufferEncoding },
   ): Promise<string>;
-  export function readFile(path: string): Promise<Buffer>;
+  export function readFile(path: string | URL): Promise<Buffer>;
   export function writeFile(
-    path: string,
+    path: string | URL,
     data: string,
     options?: {
       mode?: number;
@@ -2276,14 +2284,18 @@ declare module "fs/promises" {
       [option: string]: unknown;
     },
   ): Promise<void>;
-  export function writeFile(path: string, data: string, encoding: "utf8" | "utf-8"): Promise<void>;
+  export function writeFile(
+    path: string | URL,
+    data: string,
+    encoding: "utf8" | "utf-8",
+  ): Promise<void>;
   export function mkdir(
-    path: string,
+    path: string | URL,
     options?: { recursive?: boolean; mode?: number },
   ): Promise<void>;
-  export function readdir(path: string): Promise<string[]>;
+  export function readdir(path: string | URL): Promise<string[]>;
   export function readdir(
-    path: string,
+    path: string | URL,
     options: {
       encoding?: "utf8" | "utf-8";
       withFileTypes: true;
@@ -2300,12 +2312,12 @@ declare module "fs/promises" {
     pattern: string | readonly string[],
     options: import("node:fs").GlobOptionsWithFileTypes,
   ): AsyncIterableIterator<import("node:fs").Dirent>;
-  export function rm(path: string): Promise<void>;
+  export function rm(path: string | URL): Promise<void>;
   export function rm(
-    path: string,
+    path: string | URL,
     options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
   ): Promise<void>;
-  export function stat(path: string): Promise<import("node:fs").Stats>;
+  export function stat(path: string | URL): Promise<import("node:fs").Stats>;
   export function statfs(
     path: string | Uint8Array | URL,
     options?: import("node:fs").StatFsOptions & { bigint?: false },
@@ -2318,21 +2330,21 @@ declare module "fs/promises" {
     path: string | Uint8Array | URL,
     options?: import("node:fs").StatFsOptions,
   ): Promise<import("node:fs").StatsFs | import("node:fs").BigIntStatsFs>;
-  export function realpath(path: string): Promise<string>;
-  export function lstat(path: string): Promise<import("node:fs").Stats>;
-  export function unlink(path: string): Promise<void>;
-  export function chmod(path: string, mode: number): Promise<void>;
-  export function chown(path: string, uid: number, gid: number): Promise<void>;
-  export function lchown(path: string, uid: number, gid: number): Promise<void>;
-  export function access(path: string, mode?: number): Promise<void>;
-  export function truncate(path: string, len?: number): Promise<void>;
-  export function appendFile(path: string, data: string | Uint8Array): Promise<void>;
-  export function copyFile(src: string, dest: string): Promise<void>;
-  export function mkdtemp(prefix: string): Promise<string>;
-  export function rmdir(path: string): Promise<void>;
-  export function rename(oldPath: string, newPath: string): Promise<void>;
+  export function realpath(path: string | URL): Promise<string>;
+  export function lstat(path: string | URL): Promise<import("node:fs").Stats>;
+  export function unlink(path: string | URL): Promise<void>;
+  export function chmod(path: string | URL, mode: number): Promise<void>;
+  export function chown(path: string | URL, uid: number, gid: number): Promise<void>;
+  export function lchown(path: string | URL, uid: number, gid: number): Promise<void>;
+  export function access(path: string | URL, mode?: number): Promise<void>;
+  export function truncate(path: string | URL, len?: number): Promise<void>;
+  export function appendFile(path: string | URL, data: string | Uint8Array): Promise<void>;
+  export function copyFile(src: string | URL, dest: string | URL): Promise<void>;
+  export function mkdtemp(prefix: string | URL): Promise<string>;
+  export function rmdir(path: string | URL): Promise<void>;
+  export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;
   export function opendir(
-    path: string,
+    path: string | URL,
     options?: import("node:fs").OpenDirOptions,
   ): Promise<import("node:fs").Dir>;
 }
@@ -2992,6 +3004,24 @@ declare module "crypto" {
     options: ED25519KeyPairOptions<"der", "der">,
   ): KeyPairSyncResult<Buffer, Buffer>;
   export function generateKeyPairSync(type: "ed25519", options?: {}): KeyPairKeyObjectResult;
+  export interface X25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    publicKeyEncoding: { type: "spki"; format: PubF };
+    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+  }
+  export function generateKeyPairSync(
+    type: "x25519",
+    options: X25519KeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "x25519",
+    options: X25519KeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(type: "x25519", options?: {}): KeyPairKeyObjectResult;
+  export function generateKeyPair(
+    type: "x25519",
+    options: {} | undefined,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
   export function generateKeyPair(
     type: "ed25519",
     options: {} | undefined,
@@ -3020,6 +3050,11 @@ declare module "crypto" {
   export interface VerifyKeyObjectInput extends SigningOptions {
     key: KeyObject;
   }
+  export function diffieHellman(options: { privateKey: KeyObject; publicKey: KeyObject }): Buffer;
+  export function diffieHellman(
+    options: { privateKey: KeyObject; publicKey: KeyObject },
+    callback: (err: Error | null, secret: Buffer) => void,
+  ): void;
   export function sign(
     algorithm: string | null | undefined,
     data: ArrayBufferView,

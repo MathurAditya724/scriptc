@@ -385,7 +385,10 @@ test("while loop counters below a bound version their accesses", () => {
   ]);
   const declared = (loop: IrStmt): IrFunction =>
     fn([{ kind: "varDecl", localId: "i", init: ref("k"), loc }, loop]);
-  const versionOf = (loop: IrStmt & { kind: "while" }): BytesLoopVersion | null => {
+  const versionOf = (
+    loop: IrStmt & { kind: "while" },
+    workers = false,
+  ): BytesLoopVersion | null => {
     const f = declared(loop);
     const ranges = analyzeIntegerRanges(f);
     return matchBytesLoopVersion(loop, null, {
@@ -396,7 +399,7 @@ test("while loop counters below a bound version their accesses", () => {
       initialized: findInitializedByteLoopBindings(f).get(loop) ?? new Set(),
       proven: new Set(),
       scalarStrings: new Set(),
-      workers: false,
+      workers,
       owned: new Set(),
     });
   };
@@ -413,6 +416,11 @@ test("while loop counters below a bound version their accesses", () => {
   // An access after the counter advances in the same pass stays checked.
   const advanced = whileLoop([step, set(ref("out", f64s), ref("i"), num(0))]);
   expect(versionOf(advanced)).toBeNull();
+  // In a worker program, a while loop versions for its counter's accesses,
+  // and not for thread-owned receivers alone.
+  expect(versionOf(copy, true)!.ownedReceivers).toHaveLength(2);
+  const job = whileLoop([set(ref("out", f64s), ref("k"), get(ref("src", f64s), ref("k"))), step]);
+  expect(versionOf(job, true)).toBeNull();
   const mod: IrModule = {
     irVersion: 17,
     sourceFile: loc.file,

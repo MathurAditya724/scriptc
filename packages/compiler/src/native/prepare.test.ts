@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { nativeCodegenTarget } from "../backend/targets.js";
+import {
+  LINUX_ARM64_GNU_TARGET,
+  nativeCodegenTarget,
+  WASM32_WASI_TARGET,
+} from "../backend/targets.js";
 import { runFrontend, type FrontendFactory } from "../frontend/pipeline.js";
 import { loadProgram } from "../frontend/program-node.js";
 import { ts7Executable } from "../frontend/ts7/rpc-api.js";
@@ -176,8 +180,31 @@ test("serialized IR travels as bounded parts through the frontend cache", () => 
   const key = readdirSync(family).find((name) => /^[0-9a-f]{64}$/.test(name))!;
   const payload = JSON.parse(readFileSync(join(family, key), "utf8"));
   expect(payload.schema).toBe("scriptc.native-frontend.v3");
-  expect(payload.input.llvm).toBe("");
+  // The placeholders keep NativeExecutableInput's member types: the native
+  // compiler checks the parsed entry against them when it reads it back.
+  expect(payload.input.llvm).toEqual([]);
   expect(payload.input.ir).toBeNull();
   expect(payload.llvm).toBe(first.llvm.join(""));
   expect(payload.ir).toEqual(first.ir);
+});
+
+test("an x86-64 level is refused for targets that are not x86-64 before the frontend runs", () => {
+  const f = fixture();
+  for (const target of [LINUX_ARM64_GNU_TARGET, WASM32_WASI_TARGET]) {
+    const result = prepareNativeExecutable(
+      f.entry,
+      { ...f.options, targetCpu: "x86-64-v3" },
+      null,
+      { ...fixtureToolchain(), target },
+      () => {
+        throw new Error("the frontend ran");
+      },
+      null,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) continue;
+    expect(result.diagnostics.map((d) => [d.code, d.message])).toEqual([
+      ["SC3002", "--target-cpu=x86-64-v3 requires an x86-64 target"],
+    ]);
+  }
 });

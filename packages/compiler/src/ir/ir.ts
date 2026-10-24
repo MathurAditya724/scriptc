@@ -440,6 +440,7 @@ const POINTER_KIND_LIST = [
   "url",
   "searchParams",
   "symbol",
+  "date",
   ...POINTER_HANDLE_KINDS,
   "func",
   "object",
@@ -463,7 +464,7 @@ export const POINTER_KINDS = irKindSet(POINTER_KIND_LIST);
 export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   f64: "",
   bigint: "scr_bigint",
-  date: "",
+  date: "scr_date",
   string: "scr_str",
   bool: "",
   array: "scr_arr",
@@ -645,6 +646,7 @@ export function isSupportedArrayElem(t: IrType): boolean {
     case "func":
     case "promise":
     case "regex":
+    case "date":
     case "child":
     case "netServer":
     // fs.Stats snapshots (`await Promise.all(paths.map(stat))`): immutable
@@ -689,7 +691,8 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // functions intern one immortal closure, inner closures allocate once
     // per evaluation), so pointer identity is JS function identity.
     // Closures are cycle-headered and traced like records.
-    t.kind === "func"
+    t.kind === "func" ||
+    t.kind === "date"
   );
 }
 
@@ -797,6 +800,9 @@ export function isSupportedMapValue(t: IrType): boolean {
     // the pre-settle closures.
     case "secureCtx":
       return true;
+    // A Date object: immutable, holds no references.
+    case "date":
+      return true;
     // A promise (Map<string, Promise<SecureContext>> — the SNI callback's
     // in-flight dedupe map): refcounted, with trace/cycle support already
     // in place (scr_promise_trace_v — the race machinery's refcounting).
@@ -849,8 +855,9 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
  * promises nullable-only; declared maybe-promise unions are admitted by
  * maybePromiseUnionArmsOk. */
 export function unionContainerArmsOk(arms: IrType[]): boolean {
-  return arms.every(
-    (a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b)),
+  return (
+    arms.every((a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b))) &&
+    dateUnionArmsOk(arms)
   );
 }
 
@@ -861,7 +868,13 @@ export function unionContainerArmsOk(arms: IrType[]): boolean {
  * non-thenable path). Data arms must not be thenable; the type mapper
  * checks that against the checker types before minting such a union. */
 export function maybePromiseUnionArmsOk(arms: IrType[]): boolean {
-  return arms.filter((a) => a.kind === "promise").length <= 1;
+  return arms.filter((a) => a.kind === "promise").length <= 1 && dateUnionArmsOk(arms);
+}
+
+/** A Date arm has a union home beside undefined and null arms only: no
+ * narrowing contract tells it from other data arms yet. */
+function dateUnionArmsOk(arms: IrType[]): boolean {
+  return arms.every((a, i) => a.kind !== "date" || arms.every((b, j) => j === i || isUnitType(b)));
 }
 
 /** Canonical, injective text form of an IrType — the building block of
@@ -1489,6 +1502,10 @@ export interface IrClassDef {
    * class of the chain sets `name` during construction, and then an own
    * `name` follows every other own property. */
   errorNameAfter?: string | null;
+  /** JavaScript Error subclasses with a property bag: a view committed by a
+   * dynamic write keeps `name` and `message` where the bag recorded them
+   * (scr_error_dyn_follow_bag). */
+  errorBagOrder?: boolean;
   /** Stable symbol identities for public instance layout fields: the
    * module global holding the key, or the name of the well-known symbol
    * (`toStringTag` for `Symbol.toStringTag`). */
@@ -2499,6 +2516,14 @@ export type IrBytesIntrinsicMethod =
   | "indexOfNum"
   | "lastIndexOfNum"
   | "includesNum"
+  /** TypedArray.prototype.indexOf / lastIndexOf / includes on any element
+   * kind: [f64 needle, f64 fromIndex]. indexOf and lastIndexOf compare
+   * with strict equality (NaN is never found, -0 matches 0), includes with
+   * SameValueZero (NaN is found). An omitted fromIndex is 0, or +Infinity
+   * for lastIndexOf (which clamps to the last index). */
+  | "indexOfElem"
+  | "lastIndexOfElem"
+  | "includesElem"
   | "fill"
   | "fillNum"
   | "fillStr"
@@ -4044,6 +4069,9 @@ function isJsonSafeAt(
     case "string":
     case "bool":
       return true;
+    // JSON.stringify writes a Date's toJSON(); JSON text never parses to one.
+    case "date":
+      return stringify;
     case "array":
       return isJsonSafeAt(
         t.elem,
@@ -4142,7 +4170,6 @@ function isJsonSafeAt(
     // Maps are not JSON (JSON.stringify(new Map()) is "{}" in Node — an
     // empty-object husk nobody wants; stringify/dynCheck reject instead).
     case "map":
-    case "date":
     // URLSearchParams stringifies as the same "{}" husk — rejected; use
     // sp.toString() instead.
     case "searchParams":

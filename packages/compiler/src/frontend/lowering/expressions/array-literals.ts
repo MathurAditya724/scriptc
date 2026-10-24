@@ -1,4 +1,5 @@
 /* Array literals. */
+import { indexedUnionArms, lowerIndexedUnionToArray } from "../indexed-unions.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, neverTaintedJsType } from "../lowerer.js";
 import { notIterableSpelling } from "../iterable-spelling.js";
@@ -504,6 +505,10 @@ export function lowerArrayLiteral(
           loc: locOf(el),
         };
       }
+      // A union of typed arrays and number arrays (indexed-unions.ts):
+      // each arm's elements as a number[].
+      const indexedArms = indexedUnionArms(lowerer, src.type);
+      if (indexedArms) src = lowerIndexedUnionToArray(lowerer, src, indexedArms, locOf(el));
       // `[...obj]` over a class whose [Symbol.iterator] is a generator
       // method spreads the generator that method returns.
       src = classGeneratorIterable(lowerer, src) ?? src;

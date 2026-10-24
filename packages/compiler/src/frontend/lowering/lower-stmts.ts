@@ -1,4 +1,11 @@
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
+import {
+  allBytesArms,
+  indexedUnionArms,
+  lowerIndexedUnionMember,
+  lowerIndexedUnionNumberRead,
+  lowerIndexedUnionRead,
+} from "./indexed-unions.js";
 import { declaredMemberOf, isPromisePrototypeRead } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
@@ -29,6 +36,7 @@ import { lowerOptionalIndex } from "./undefined-index.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
+import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
 import { lowerConstructorReturn } from "./constructor-returns.js";
 import type { Lowerer } from "./lowerer.js";
@@ -38,6 +46,11 @@ import {
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   requireNestedPatternsOf,
+  splitRequireAssignmentOf,
+  splitRequireBindingOf,
+  splitRequireBindingOfIdent,
+  splitRequireEarlyReadOf,
+  wholeExportSymbolOfModule,
 } from "./cjs-inline-require.js";
 import {
   cjsExportMemberWriteGlobalOf,
@@ -64,6 +77,7 @@ import {
   BOOL,
   BYTES_U8,
   CAUGHT,
+  DATE_T,
   DYN,
   F64,
   type IrExpr,
@@ -1932,6 +1946,23 @@ function lowerVarDeclarator(
   isConst: boolean,
   isLet: boolean,
 ): IrStmt[] {
+  // `var m; m = require("./x")`: the declaration is alias plumbing; the
+  // assignment owns the module's run-once %init (cjs-inline-require.ts).
+  // A read that code before the assignment can reach keeps Node's hoisted
+  // `undefined` divergence visible at build time, like a var require
+  // declaration below runnable code.
+  const split = splitRequireBindingOf(lowerer, decl);
+  if (split !== null) {
+    const early = splitRequireEarlyReadOf(lowerer, split);
+    if (early !== null) {
+      lowerer.unsupported(
+        "SC1013",
+        early,
+        `var require() binding '${(decl.name as ts.Identifier).text}' below code that can reach it (Node reads undefined before the require runs, which is not modeled — assign the require above the code that can run first)`,
+      );
+    }
+    return [];
+  }
   // The canonical ESM bridge to a compiled program module. Like a
   // top-level CommonJS require declaration, the binding is alias
   // plumbing while the dependency evaluates at this statement's
@@ -5415,6 +5446,16 @@ export function lowerVarDecl(
     if (alias) return alias;
   }
 
+  // A Date local whose identity no use observes stores its time value.
+  if (isTimeValueDateDeclaration(lowerer, decl)) {
+    const loc = locOf(decl);
+    const date = lowerer.lowerExprExpecting(decl.initializer!, DATE_T);
+    const local = lowerer.declareLocal(decl.name, decl.name.text, F64, isLet);
+    lowerer.timeValueDateLocals.add(local);
+    const init: IrExpr = { kind: "libCall", fn: "date.getTime", args: [date], type: F64, loc };
+    return { kind: "varDecl", localId: local.id, init, loc };
+  }
+
   // A NULLISH generic binding (`const i: I<A & B> = null as any` — the
   // declared type has no mapping, the value is provably null/undefined
   // forever): no storage exists; reads know the value (member reads and
@@ -6885,7 +6926,7 @@ function lowerDynSwitch(
         loc: locOf(expression),
       };
     }
-    if (test.type.kind === "date" || !lowerer.dynConvertible(test.type)) {
+    if (!lowerer.dynConvertible(test.type)) {
       lowerer.unsupported(
         "SC1100",
         expression,
@@ -7525,6 +7566,26 @@ function lowerCjsSingleValueExport(
       return lowerer.requireInitStmt(req.spec, req.call) ?? { kind: "block", body: [], loc };
   }
   if (ts.isIdentifier(rhs)) {
+    const split = splitRequireBindingOfIdent(lowerer, rhs);
+    if (split !== null) {
+      if (wholeExportSymbolOfModule(lowerer, split.dep) === null) {
+        lowerer.unsupported(
+          "SC1090",
+          rhs,
+          `the exports object of '${split.spec}' as a value (its exports compile to a static table: read require(${JSON.stringify(split.spec)}).member directly)`,
+        );
+      }
+      const root = lowerer.globalsByDeclNode.get(expr);
+      if (root !== undefined) {
+        return {
+          kind: "assign",
+          localId: root.id,
+          value: lowerer.lowerExprExpecting(rhs, root.type),
+          loc: locOf(rhs),
+        };
+      }
+      return { kind: "block", body: [], loc };
+    }
     const sym = lowerer.resolveValueSymbol(rhs);
     if (!sym) return null;
     if (
@@ -8435,6 +8496,16 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       if (!ts.isIdentifier(expr.left)) {
         lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");
       }
+      const splitAssign = splitRequireAssignmentOf(lowerer, expr);
+      if (splitAssign !== null) {
+        return (
+          lowerer.requireInitStmt(splitAssign.spec, splitAssign.call) ?? {
+            kind: "block",
+            body: [],
+            loc: locOf(expr),
+          }
+        );
+      }
       const target = lowerer.resolveWritable(expr.left);
       if (!target)
         lowerer.rejectUnresolved(
@@ -8749,13 +8820,20 @@ function destrSpellingOf(rhs: ts.Expression): string | null {
     return base === null ? null : `${base}.${e.name.text}`;
   }
   // `table[key]` and `list[0]`; V8 prints a numeric key in its canonical
-  // number form (`o[1.50]` reads "o[1.5]").
+  // number form (`o[1.50]` reads "o[1.5]"), and a string key as a property
+  // name with its text decoded (`o["a.b"]` and `o[\`a.b\`]` read "o.a.b").
+  // The message is a C string, so a key holding NUL keeps the refusal.
   if (ts.isElementAccessExpression(e) && !e.questionDotToken) {
     const base = destrSpellingOf(e.expression);
     const key = e.argumentExpression;
     if (base === null) return null;
     if (ts.isIdentifier(key)) return `${base}[${key.text}]`;
     if (ts.isNumericLiteral(key)) return `${base}[${String(Number(key.text))}]`;
+    if (
+      (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
+      !key.text.includes("\0")
+    )
+      return `${base}.${key.text}`;
     return null;
   }
   if (ts.isCallExpression(e) && !e.questionDotToken) {
@@ -10142,13 +10220,8 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         loc: locOf(iterSrc),
       };
   }
-  if (iterable.type.kind === "bytes") {
-    return lowerForOfBytes(
-      lowerer,
-      stmt,
-      iterable as IrExpr & { type: IrType & { kind: "bytes" } },
-      labels,
-    );
+  if (iterable.type.kind === "bytes" || indexedUnionArms(lowerer, iterable.type)) {
+    return lowerForOfBytes(lowerer, stmt, iterable, labels);
   }
   if (iterable.type.kind !== "array") {
     // The lib types strings as iterable too, so those for-ofs typecheck;
@@ -10706,7 +10779,7 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
 function lowerForOfBytes(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
-  iterable: IrExpr & { type: IrType & { kind: "bytes" } },
+  iterable: IrExpr,
   labels?: string[],
 ): IrStmt {
   const loc = locOf(stmt);
@@ -10800,7 +10873,16 @@ function lowerForOfStoredNumericIterator(
 
   const loc = locOf(stmt);
   const sourceT = state.sourceType;
-  if (!((sourceT.kind === "array" && sourceT.elem.kind === "f64") || sourceT.kind === "bytes")) {
+  // A union of typed arrays and number arrays (indexed-unions.ts) reads
+  // through its arms' own length and element reads.
+  const unionArms = indexedUnionArms(lowerer, sourceT);
+  if (
+    !(
+      (sourceT.kind === "array" && sourceT.elem.kind === "f64") ||
+      sourceT.kind === "bytes" ||
+      unionArms
+    )
+  ) {
     throw new InternalCompilerError("internal: retained numeric iterator has a non-numeric source");
   }
 
@@ -10808,35 +10890,44 @@ function lowerForOfStoredNumericIterator(
   const doneRef = (): IrExpr => varRef(state.doneLocalId, BOOL, loc);
   const sourceRef = (): IrExpr => varRef(state.sourceLocalId, sourceT, loc);
   const sourceLength = (): IrExpr =>
-    sourceT.kind === "array"
-      ? {
-          kind: "arrIntrinsic",
-          method: "length",
-          receiver: sourceRef(),
-          args: [],
-          type: F64,
-          loc,
-        }
-      : {
-          kind: "bytesIntrinsic",
-          method: "length",
-          receiver: sourceRef(),
-          args: [],
-          type: F64,
-          loc,
-        };
-  const valueT = sourceT.kind === "array" ? arrayValueType(lowerer, F64) : F64;
+    unionArms
+      ? lowerIndexedUnionMember(lowerer, sourceRef(), unionArms, "length", loc)!
+      : sourceT.kind === "array"
+        ? {
+            kind: "arrIntrinsic",
+            method: "length",
+            receiver: sourceRef(),
+            args: [],
+            type: F64,
+            loc,
+          }
+        : {
+            kind: "bytesIntrinsic",
+            method: "length",
+            receiver: sourceRef(),
+            args: [],
+            type: F64,
+            loc,
+          };
+  const valueT =
+    sourceT.kind === "array" || (unionArms && !allBytesArms(unionArms))
+      ? arrayValueType(lowerer, F64)
+      : F64;
   const sourceValue = (): IrExpr =>
-    sourceT.kind === "array"
-      ? arrayValueRead(lowerer, sourceRef(), indexRef(), F64, loc)
-      : {
-          kind: "bytesIntrinsic",
-          method: "get",
-          receiver: sourceRef(),
-          args: [indexRef()],
-          type: F64,
-          loc,
-        };
+    unionArms
+      ? allBytesArms(unionArms)
+        ? lowerIndexedUnionNumberRead(lowerer, sourceRef(), unionArms, indexRef(), loc)
+        : lowerIndexedUnionRead(lowerer, sourceRef(), unionArms, indexRef(), loc)
+      : sourceT.kind === "array"
+        ? arrayValueRead(lowerer, sourceRef(), indexRef(), F64, loc)
+        : {
+            kind: "bytesIntrinsic",
+            method: "get",
+            receiver: sourceRef(),
+            args: [indexRef()],
+            type: F64,
+            loc,
+          };
   const one: IrExpr = { kind: "numLit", value: 1, type: F64, loc };
 
   lowerer.scopes.push(new Map());

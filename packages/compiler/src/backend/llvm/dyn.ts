@@ -469,7 +469,7 @@ export class LlDyn {
 
   /** The value LLVM type of a dynCheck result / toDyn operand for `t`. */
   private valTy(t: IrType): string {
-    return t.kind === "f64" || t.kind === "date" || t.kind === "procStream"
+    return t.kind === "f64" || t.kind === "procStream"
       ? "double"
       : t.kind === "bool"
         ? "i1"
@@ -1563,6 +1563,19 @@ export class LlDyn {
     return descriptor;
   }
 
+  /** `record.sourceSpread(built, value)`: the built record keeps value's
+   * kept-source order over its own declared names. */
+  emitRecordSourceSpread(B: BlockBuilder, built: string, value: string, shapeId: string): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId)!;
+    this.keepsRecordSources = true;
+    const names = this.recordNameTable(shapeId, shape);
+    host.declare(`declare void @scr_record_source_spread(ptr, ptr, ptr, ptr, ${host.sizeType})`);
+    B.line(
+      `call void @scr_record_source_spread(ptr ${built}, ptr ${value}, ptr ${names.names}, ptr ${names.lens}, ${host.sizeType} ${shape.fields.length})`,
+    );
+  }
+
   /** The declared-name tables scr_record_source_note scans: parallel
    * constant arrays of field-name bytes and byte lengths in declaration
    * order (the order the record serializes), interned per shape. Internal
@@ -1941,10 +1954,10 @@ export class LlDyn {
     };
     switch (t.kind) {
       case "date": {
-        host.declare(`declare double @scr_dyn_native_date_value(ptr)`);
+        host.declare(`declare ptr @scr_dyn_native_date_check(ptr, ptr)`);
         const r = B.tmp();
-        B.line(`${r} = call double @scr_dyn_native_date_value(ptr %d)`);
-        B.terminate(`ret double ${r}`);
+        B.line(`${r} = call ptr @scr_dyn_native_date_check(ptr %d, ptr %path)`);
+        B.terminate(`ret ptr ${r}`);
         break;
       }
       case "url":
@@ -2805,11 +2818,10 @@ export class LlDyn {
     let sourceAccessor: { name: string; release: string } | null = null;
     switch (t.kind) {
       case "date": {
-        // A Date handle holding the same time value; native Dates are
-        // immutable values, and so is the handle.
-        host.declare(`declare ptr @scr_dyn_native_date_from_ms(double)`);
+        // A Date handle holding the same Date object.
+        host.declare(`declare ptr @scr_dyn_native_date(ptr)`);
         const r = B.tmp();
-        B.line(`${r} = call ptr @scr_dyn_native_date_from_ms(double %v)`);
+        B.line(`${r} = call ptr @scr_dyn_native_date(ptr %v)`);
         B.terminate(`ret ptr ${r}`);
         break;
       }
