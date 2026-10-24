@@ -176,7 +176,7 @@ import { type MapEntryFusion } from "./map-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import { findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
-import { IrNodeIndex } from "../../ir/node-index.js";
+import { eachNodeOfKinds, IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
 import { lastUseRead } from "./local-extents.js";
 import { findReboundParameters } from "./rebound-parameters.js";
 import { ReferenceEffects } from "./reference-effects.js";
@@ -620,6 +620,11 @@ export function llStrBytes(text: string): string {
 }
 
 const NO_BORROWED: ReadonlySet<number> = new Set();
+
+/** The nodes that write a binding by its id (numberGlobalWriters). */
+const GLOBAL_WRITE_KINDS: readonly IrNodeKind[] = ["assign", "varDecl", "assignExpr", "incDec"];
+/** Runtime library calls (readsLoopMetrics). */
+const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
 
 /** [A-Za-z0-9_] */
 function isIdentifierByte(code: number): boolean {
@@ -1842,9 +1847,9 @@ export class LlEmitter {
           )
         : NO_INTEGER_CLONES;
     this.stackCallbacks = new StackCallbacks(this.fnByName);
-    this.receiverReaders = new AmbientReceiverReaders(this.fnByName);
+    this.receiverReaders = new AmbientReceiverReaders(this.fnByName, this.nodeIndex);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
-    this.lazyCaptures = new LazyCaptures(this.fnByName);
+    this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
     const traced = computeTraced(mod, dynamicStores, cycleMutability);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
@@ -3621,15 +3626,14 @@ export class LlEmitter {
           set.add(fn.name);
           writers.set(localId, set);
         };
-        everyStmtList(fn.body, {
-          stmt: (s) => {
-            if (s.kind === "assign" || s.kind === "varDecl") note(s.localId);
-            return true;
-          },
-          expr: (e) => {
-            if (e.kind === "assignExpr" || e.kind === "incDec") note(e.localId);
-            return true;
-          },
+        eachNodeOfKinds(fn, this.nodeIndex.scan(GLOBAL_WRITE_KINDS), (node) => {
+          if (
+            node.kind === "assign" ||
+            node.kind === "varDecl" ||
+            node.kind === "assignExpr" ||
+            node.kind === "incDec"
+          )
+            note(node.localId);
         });
       }
       this.globalWriters = writers;
@@ -5409,13 +5413,21 @@ export class LlEmitter {
   private loopMetricsRead: boolean | undefined;
   readsLoopMetrics(): boolean {
     if (this.loopMetricsRead !== undefined) return this.loopMetricsRead;
-    const visitor = {
-      expr: (e: IrExpr): boolean =>
-        !(e.kind === "libCall" && (e.fn === "perf.loopStart" || e.fn === "perf.idleTime")),
-      stmt: (): boolean => true,
-    };
-    this.loopMetricsRead = !this.mod.functions.every((fn) => everyStmtList(fn.body, visitor));
-    return this.loopMetricsRead;
+    let found = false;
+    const scan = this.nodeIndex.scan(LIB_CALL_KINDS);
+    for (const fn of this.mod.functions) {
+      eachNodeOfKinds(fn, scan, (node) => {
+        if (
+          node.kind === "libCall" &&
+          (node.fn === "perf.loopStart" || node.fn === "perf.idleTime")
+        )
+          found = true;
+        return !found;
+      });
+      if (found) break;
+    }
+    this.loopMetricsRead = found;
+    return found;
   }
 
   private lastUseMovesAllowed(): boolean {

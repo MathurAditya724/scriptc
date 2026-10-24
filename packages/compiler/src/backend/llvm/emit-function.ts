@@ -159,6 +159,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           emitter.optionalArrayReads,
           emitter.referenceWrites,
           emitter.fnByName,
+          emitter.nodeIndex,
         )
       : new Set();
   emitter.localArrayReads = findLocalArrayReads(
@@ -324,7 +325,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
 
   const paramIds = new Set(fn.params.map((p) => p.localId));
   if (emitter.debug === null) {
-    for (const id of findIntegerViews(numericFn)) {
+    for (const id of findIntegerViews(numericFn, emitter.nodeIndex)) {
       // An i32 slot is its own view.
       if (emitter.int32Locals.has(id)) continue;
       const slot = B.slot();
