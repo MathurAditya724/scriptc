@@ -1,0 +1,62 @@
+/* The shape overlay (shape-inference/overlay.ts): with SCRIPTC_SHAPE_OVERLAY=1
+ * the zod3-boundary npm case compiles zod's JavaScript with analysis-proven JSDoc
+ * types, reports what it typed and checks (SC6103), and prints what Node
+ * prints; the shapeOverlay: false option (the CLI's --no-shape-overlay)
+ * turns it off. */
+import { execFile } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
+import { expect, test } from "vitest";
+import { compile } from "@scriptc/compiler";
+
+const execFileAsync = promisify(execFile);
+const repoRoot = join(import.meta.dirname, "../..");
+const entry = join(repoRoot, "tests/fixtures/npm/cases/zod3-boundary/main.ts");
+const outDir = join(repoRoot, "node_modules/.cache/scriptc-tests/shape-overlay");
+const sanitize = process.env["SCRIPTC_SAN"] === "1";
+
+async function withOverlay<T>(run: () => Promise<T>): Promise<T> {
+  const saved = process.env["SCRIPTC_SHAPE_OVERLAY"];
+  process.env["SCRIPTC_SHAPE_OVERLAY"] = "1";
+  try {
+    return await run();
+  } finally {
+    if (saved === undefined) delete process.env["SCRIPTC_SHAPE_OVERLAY"];
+    else process.env["SCRIPTC_SHAPE_OVERLAY"] = saved;
+  }
+}
+
+test(
+  "the overlay types zod's JavaScript and keeps Node's output",
+  { timeout: 900_000 },
+  async () => {
+    mkdirSync(outDir, { recursive: true });
+    const result = await withOverlay(() =>
+      compile(entry, { outPath: join(outDir, "on"), outDir, sanitize }),
+    );
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const report = (result.warnings ?? []).find((w) => w.code === "SC6103");
+    expect(report?.message).toMatch(
+      /shape inference typed \d+ declarations in \d+ files? of 1 package \(zod\)/,
+    );
+    const run = execFileAsync(result.binaryPath, [], { cwd: dirname(entry), encoding: "utf8" });
+    run.child.stdin?.end();
+    const node = await execFileAsync(process.execPath, [entry], {
+      cwd: dirname(entry),
+      encoding: "utf8",
+    });
+    expect((await run).stdout).toBe(node.stdout);
+  },
+);
+
+test("shapeOverlay: false compiles without the overlay", { timeout: 900_000 }, async () => {
+  mkdirSync(outDir, { recursive: true });
+  const result = await withOverlay(() =>
+    compile(entry, { outPath: join(outDir, "off"), outDir, sanitize, shapeOverlay: false }),
+  );
+  if (!result.ok)
+    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  expect((result.warnings ?? []).some((w) => w.code === "SC6103")).toBe(false);
+});

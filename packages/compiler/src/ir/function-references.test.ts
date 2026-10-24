@@ -100,6 +100,7 @@ const EXPR_FIELDS: Classified<IrExpr> = {
   unionIsTag: { unionId: "other" },
   unionEq: { unionId: "other" },
   jsonStringify: { indent: "other" },
+  dynCheck: { inferredSite: "other" },
 };
 
 const STMT_FIELDS: Classified<IrStmt> = {
@@ -222,6 +223,8 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "wasmUntranslated[].reason": "other",
   "threadSlotKeys[]": "other",
   "freezableArrays[]": "other",
+  "inferredFactFiles[].file": "other",
+  "inferredFactFiles[].pkg": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };

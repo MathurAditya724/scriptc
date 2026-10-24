@@ -202,6 +202,7 @@ let unloadedPackages: ReadonlySet<string> = new Set();
  * map of the entry's nearest package.json. Called once per program load. */
 export function configurePackageShims(entryPath: string): void {
   const packages = new Set<string>();
+  const noShapes = new Set<string>();
   for (let dir = dirname(resolve(entryPath)); ;) {
     const text = trackedReadFile(join(dir, "package.json"));
     if (text !== null) {
@@ -222,6 +223,14 @@ export function configurePackageShims(entryPath: string): void {
       if (map !== null && typeof map === "object") {
         for (const [name, kind] of Object.entries(map as Record<string, unknown>)) {
           if (kind === "unloaded") packages.add(name);
+          // `{ "shapes": false }`: compile the package without shape
+          // inference's typed overlay.
+          if (
+            kind !== null &&
+            typeof kind === "object" &&
+            (kind as Record<string, unknown>)["shapes"] === false
+          )
+            noShapes.add(name);
         }
       }
       break;
@@ -231,6 +240,15 @@ export function configurePackageShims(entryPath: string): void {
     dir = parent;
   }
   unloadedPackages = packages;
+  shapelessPackages = noShapes;
+}
+
+let shapelessPackages: ReadonlySet<string> = new Set();
+
+/** Packages the project compiles without shape inference's overlay
+ * (`"scriptc": { "packages": { "<name>": { "shapes": false } } }`). */
+export function isShapelessPackage(name: string): boolean {
+  return shapelessPackages.has(name);
 }
 
 /** True for a package name the registry implements or the project marks

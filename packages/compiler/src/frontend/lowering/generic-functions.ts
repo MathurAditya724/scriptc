@@ -1,3 +1,5 @@
+import { shapeOverlayAnnotated } from "../shape-inference/index.js";
+import { documentedParameter } from "./call-signatures.js";
 import { staticNameBindings } from "./static-function-names.js";
 import { positionTag } from "./structural-positions.js";
 import { keyedHelperName } from "./stable-names.js";
@@ -1855,10 +1857,14 @@ export function implicitAnyParamSymbolsOf(
   // The variadic-`arguments` form keeps its dynRest story whole.
   if (bodyReadsArguments(decl)) return null;
   let hasImplicitParams = false;
+  const overlayTyped = shapeOverlayAnnotated(decl);
   const out = decl.parameters.nodes.map((param): ts.Symbol | null => {
     if (!ts.isIdentifier(param.name)) return null;
     if (param.dotDotDotToken || param.questionToken || param.initializer) return null;
     if (param.name.text === "this") return null;
+    // A parameter typed by shape inference's overlay is a proven type,
+    // not an implicit type parameter.
+    if (overlayTyped && documentedParameter(param)) return null;
     const t = lowerer.typeOf(param.name);
     const broadFunction = lowerer.checker.typeToString(t) === "Function";
     const broadArray = lowerer.checkerAnyArrayType(t);

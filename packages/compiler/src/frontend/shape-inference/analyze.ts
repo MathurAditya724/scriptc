@@ -70,6 +70,8 @@ export interface LiteralSite {
   readonly kind: "object" | "array";
   /** Static keys in creation order; null when a spread or computed key makes them unknown. */
   readonly keys: string[] | null;
+  /** The literal's own static keys (without spread contributions). */
+  readonly ownKeys: string[];
   readonly hasAccessor: boolean;
   readonly hasProto: boolean;
   readonly hasComputedKey: boolean;
@@ -129,6 +131,15 @@ export interface ShapeAnalysis {
   readonly escapedFunctions: ReadonlySet<FunctionInfo>;
   /** ES5 constructors: each function's default prototype object. */
   readonly protoOf: ReadonlyMap<Atom, Atom>;
+  /** Every value a declaration (parameter, variable, binding element) holds,
+   * merged over the analysis contexts it was analyzed in. */
+  declValues(decl: Node): Set<Atom>;
+  /** The classes a class declaration's chain contains, base last. */
+  classChain(decl: Node): Node[];
+  /** `if` statements in walked code whose condition is known: the branch
+   * whose condition values never allowed it is absent from `walkedBranches`. */
+  readonly branchIfs: ReadonlySet<ts.IfStatement>;
+  readonly walkedBranches: ReadonlySet<Node>;
 }
 
 /** Array.prototype members: other names on an array are own properties. */
@@ -358,6 +369,10 @@ class Analyzer {
       nodeLabel: this.nodeLabel,
       escapedFunctions: this.escapedFunctionCalls,
       protoOf: this.protoOf,
+      declValues: (decl) => this.declValues(decl),
+      classChain: (decl) => this.classChain(decl),
+      branchIfs: this.branchIfs,
+      walkedBranches: this.walkedBranches,
     };
   }
 
@@ -448,6 +463,78 @@ class Analyzer {
       if (this.escaped.has(fn)) this.escape(p, `via ${fn.label}`);
     }
     return p;
+  }
+
+  /** A boolean literal: labeled `boolean` like any boolean, but its
+   * truthiness is known, so `if` statements on it walk one branch. */
+  boolLiteral(value: boolean): Atom {
+    return this.atoms.intern(`prim:boolean:${value}`, () => ({
+      kind: "prim",
+      label: "boolean",
+      literal: value,
+    }));
+  }
+
+  /** The analysis environment a deferred walk restores. */
+  private env(): WalkEnv {
+    return {
+      ctx: this.ctx,
+      ctxRoot: this.ctxRoot,
+      currentFn: this.currentFn,
+      loopDepth: this.loopDepth,
+    };
+  }
+
+  private inEnv(env: WalkEnv, walk: () => void): void {
+    const saved = this.env();
+    this.ctx = env.ctx;
+    this.ctxRoot = env.ctxRoot;
+    this.currentFn = env.currentFn;
+    this.loopDepth = env.loopDepth;
+    try {
+      walk();
+    } finally {
+      this.ctx = saved.ctx;
+      this.ctxRoot = saved.ctxRoot;
+      this.currentFn = saved.currentFn;
+      this.loopDepth = saved.loopDepth;
+    }
+  }
+
+  readonly branchIfs = new Set<ts.IfStatement>();
+  readonly walkedBranches = new Set<Node>();
+  /** Ifs whose branches wait for condition values; at the fixpoint, an
+   * `if` whose condition node stayed empty walks every waiting branch. */
+  private readonly pendingIfs: PendingIf[] = [];
+
+  /** An `if` walks a branch once a condition value allows it: the then
+   * branch on a value that may be truthy, the else branch on one that may
+   * be falsy. A branch no value allows is never walked, so its effects
+   * (returns, calls, writes) stay out of the facts; the overlay turns it
+   * into a checked internal error. */
+  private ifStatement(s: ts.IfStatement): void {
+    const cond = this.expr(s.expression);
+    this.branchIfs.add(s);
+    const pending: PendingIf = {
+      s,
+      cond,
+      env: this.env(),
+      thenDone: false,
+      elseDone: s.elseStatement === undefined,
+    };
+    this.pendingIfs.push(pending);
+    this.on(cond, (a) => {
+      if (!pending.thenDone && mayBeTruthy(a)) this.walkBranch(pending, "then");
+      if (!pending.elseDone && mayBeFalsy(a)) this.walkBranch(pending, "else");
+    });
+  }
+
+  private walkBranch(pending: PendingIf, which: "then" | "else"): void {
+    const branch = which === "then" ? pending.s.thenStatement : pending.s.elseStatement!;
+    if (which === "then") pending.thenDone = true;
+    else pending.elseDone = true;
+    this.walkedBranches.add(branch);
+    this.inEnv(pending.env, () => this.stmt(branch));
   }
 
   builtin(path: string, receiver?: Atom): Atom {
@@ -716,6 +803,24 @@ class Analyzer {
       node.pos >= root.pos &&
       node.end <= root.end;
     return `${inside ? this.ctx : ""}|${this.nodeKey(node)}`;
+  }
+
+  private declIndex: Map<number, number[]> | null = null;
+  declValues(decl: Node): Set<Atom> {
+    if (this.declIndex === null) {
+      this.declIndex = new Map();
+      for (const [key, id] of this.bindings) {
+        const k = Number(key.slice(key.lastIndexOf("|") + 1));
+        let l = this.declIndex.get(k);
+        if (l === undefined) this.declIndex.set(k, (l = []));
+        l.push(id);
+      }
+    }
+    const out = new Set<Atom>();
+    const k = this.nodeKeys.get(decl);
+    if (k === undefined) return out;
+    for (const id of this.declIndex.get(k) ?? []) for (const a of this.nodes[id]!.atoms) out.add(a);
+    return out;
   }
 
   receiverCtx(atom: Atom): string {
@@ -1223,6 +1328,10 @@ class Analyzer {
       this.expr(s.expression);
       return;
     }
+    if (ts.isIfStatement(s) && this.currentFn !== null) {
+      this.ifStatement(s);
+      return;
+    }
     // Blocks, ifs, switches, labels: walk children, evaluating expressions.
     ts.forEachChild(s, (child) => {
       if (ts.isExpression(child)) this.expr(child);
@@ -1317,8 +1426,9 @@ class Analyzer {
       case ts.SyntaxKind.BigIntLiteral:
         return this.constNode(this.prim("bigint"));
       case ts.SyntaxKind.TrueKeyword:
+        return this.constNode(this.boolLiteral(true));
       case ts.SyntaxKind.FalseKeyword:
-        return this.constNode(this.prim("boolean"));
+        return this.constNode(this.boolLiteral(false));
       case ts.SyntaxKind.NullKeyword:
         return this.constNode(this.prim("null"));
       case ts.SyntaxKind.RegularExpressionLiteral:
@@ -1750,6 +1860,7 @@ class Analyzer {
         node: e,
         kind: "object",
         keys: keysKnown ? keys : null,
+        ownKeys: keys,
         hasAccessor,
         hasProto,
         hasComputedKey,
@@ -1916,6 +2027,7 @@ class Analyzer {
         node: e,
         kind: "array",
         keys: null,
+        ownKeys: [],
         hasAccessor: false,
         hasProto: hasHole,
         hasComputedKey: false,
@@ -3202,6 +3314,21 @@ class Analyzer {
       const before = this.steps;
       for (const c of this.lateCopies) c();
       this.solve();
+      // A condition with no values at the fixpoint is one the analysis
+      // could not evaluate: walk both of its branches.
+      let walked = false;
+      for (const p of this.pendingIfs) {
+        if (this.nodes[p.cond]!.atoms.size > 0) continue;
+        if (!p.thenDone) {
+          this.walkBranch(p, "then");
+          walked = true;
+        }
+        if (!p.elseDone) {
+          this.walkBranch(p, "else");
+          walked = true;
+        }
+      }
+      if (walked) continue;
       if (this.steps === before || this.budgetExceeded) return;
     }
   }
@@ -3223,4 +3350,35 @@ function cjsExportName(decl: Node): string | null {
   )
     return decl.left.name.text;
   return null;
+  }
+
+interface WalkEnv {
+  readonly ctx: string;
+  readonly ctxRoot: Node | null;
+  readonly currentFn: FunctionInfo | null;
+  readonly loopDepth: number;
+}
+
+interface PendingIf {
+  readonly s: ts.IfStatement;
+  readonly cond: number;
+  readonly env: WalkEnv;
+  thenDone: boolean;
+  elseDone: boolean;
+}
+
+/** Whether a value of the atom may be truthy (only `null`, `undefined` and
+ * the literal `false` never are; ⊤ may be anything). */
+function mayBeTruthy(a: Atom): boolean {
+  if (a.kind !== "prim") return true;
+  if (a.label === "null" || a.label === "undefined") return false;
+  return a.literal !== false;
+}
+
+/** Whether a value of the atom may be falsy (objects, arrays, functions,
+ * classes, promises and collections never are). */
+function mayBeFalsy(a: Atom): boolean {
+  if (a.kind === "top") return true;
+  if (a.kind !== "prim") return false;
+  return a.literal !== true;
 }

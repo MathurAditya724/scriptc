@@ -394,12 +394,24 @@ export function emitSerializationExpr(
       }
       const dynV = emitBorrowedInput(host, e.value);
       const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs);
-      if (isDynTypedRefType(e.type)) return emitClassCheck(host, e.type, dynV.name, helper);
+      // A check of an analysis-proven fact (shape inference's overlay)
+      // names its site, so a failure reports a compiler bug.
+      const site = e.inferredSite !== undefined ? host.cstr(e.inferredSite) : null;
+      if (site !== null) {
+        host.declare(`declare void @scr_dyn_inferred_site(ptr)`);
+        B.line(`call void @scr_dyn_inferred_site(ptr ${site})`);
+      }
+      if (isDynTypedRefType(e.type)) {
+        const checked = emitClassCheck(host, e.type, dynV.name, helper);
+        if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);
+        return checked;
+      }
       const ty = host.llType(e.type);
       const t = B.tmp();
       B.line(
         `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${dynV.name}, ptr null)`,
       );
+      if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck();
       return out;

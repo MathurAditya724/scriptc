@@ -10782,7 +10782,53 @@ static const char *scr_dyn_kind_name(const ScrDyn *d) {
   return "unknown";
 }
 
+/* Shape inference's overlay (compiler frontend/shape-inference): a checked
+ * conversion of an analysis-proven fact names its site ("<package>
+ * <file>:<line>") while it runs. A failure there is a compiler analysis
+ * bug, so it reports itself as one instead of as a type error. */
+static SCR_TL const char *scr_dyn_inferred_site_name;
+
+void scr_dyn_inferred_site(const char *site) { scr_dyn_inferred_site_name = site; }
+
+static void scr_dyn_inferred_fact_fail(const char *site, const ScrDynPath *path, const char *want,
+                                       const ScrDyn *got) {
+  const char *space = strchr(site, ' ');
+  size_t pkg_len = space ? (size_t)(space - site) : 0;
+  const char *where = space ? space + 1 : site;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "scriptc internal error: an inferred type was contradicted at ");
+  scr_jb_puts(&b, where);
+  scr_jb_puts(&b, " (expected ");
+  scr_jb_puts(&b, want);
+  scr_jb_puts(&b, " at ");
+  scr_dyn_path_render(&b, path);
+  scr_jb_puts(&b, ", got ");
+  scr_jb_puts(&b, scr_dyn_kind_name(got));
+  scr_jb_puts(&b, "). This is a bug in scriptc's shape analysis, not in the program's data. "
+                  "Rebuild with --no-shape-overlay, or set \"scriptc\": {\"packages\": {\"");
+  for (size_t i = 0; i < pkg_len; i++) scr_jb_putc(&b, site[i]);
+  scr_jb_puts(&b, "\": {\"shapes\": false}}} in package.json, to compile the package without it.");
+  /* Validation mode: every hit is logged, also when the program catches it. */
+  const char *log = getenv("SCRIPTC_SHAPE_CHECK_LOG");
+  if (log && *log) {
+    FILE *f = fopen(log, "a");
+    if (f) {
+      fwrite(b.data, 1, b.len, f);
+      fputc('\n', f);
+      fclose(f);
+    }
+  }
+  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+}
+
 void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *got) {
+  const char *site = scr_dyn_inferred_site_name;
+  if (site) {
+    scr_dyn_inferred_site_name = NULL;
+    scr_dyn_inferred_fact_fail(site, path, want, got);
+    return;
+  }
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_jb_puts(&b, "expected ");

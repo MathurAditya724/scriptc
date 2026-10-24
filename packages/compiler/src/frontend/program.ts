@@ -140,7 +140,12 @@ import {
 } from "./type-only-imports.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { planDeclProjection, type DeclProjection } from "./decl-projection.js";
-import { reportShapes } from "./shape-inference/index.js";
+import {
+  reportShapes,
+  resetShapeOverlay,
+  shapeOverlayEnabled,
+  shapeOverlayer,
+} from "./shape-inference/index.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
   containsJsx,
@@ -857,6 +862,9 @@ function loadProgram7(
   /** The declaration-typed boundary's projection (decl-projection.ts):
    * answers rewritten user files for the lowering world, or null. */
   projector?: (program: ts.Program) => DeclProjection | null,
+  /** Shape inference's typed overlay (shape-inference/overlay.ts):
+   * rewritten package JavaScript for the lowering world, or null. */
+  overlayer?: (program: ts.Program) => ReadonlyMap<string, string> | null,
 ): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
   const configuredPaths = config.options["paths"];
@@ -996,6 +1004,22 @@ function loadProgram7(
             declWorldFallback: true,
           };
         }
+      }
+    }
+    // Shape inference's overlay: package files typed from proven facts. The
+    // tsc gate keeps reading the files as written.
+    // A load without the overlay must not see an earlier load's overlay
+    // files (the registry is per process).
+    resetShapeOverlay();
+    if (overlayer !== undefined && jsx.refusal === null) {
+      const overlay = overlayer(program);
+      if (overlay !== null && overlay.size > 0) {
+        const before = program;
+        for (const [file, text] of overlay) host.addVirtualFile(file, text);
+        program = host.createProgram([...programRoots, overridesDtsPath()], options);
+        if (tscWorld === undefined)
+          tscWorld = { program: before, diagnostics: ts.getPreEmitDiagnostics(before), projectWorld: null };
+        else if (tscWorld.program !== before) before.dispose();
       }
     }
     const entry = program.getSourceFile(entryPath);
@@ -1260,6 +1284,7 @@ export function loadProgram(
       externalTypes,
       npmStaticPackages.length > 0,
       projector,
+      npmStaticPackages.length > 0 && shapeOverlayEnabled() ? shapeOverlayer : undefined,
     );
     // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
     const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];
