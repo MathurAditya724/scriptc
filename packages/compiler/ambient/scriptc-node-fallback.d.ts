@@ -2796,8 +2796,9 @@ declare var URLSearchParams: {
  * slashes, non-empty host); pathToFileURL resolves the path and percent-
  * encodes it into a file: URL. The legacy API: parse() answers a Url
  * object, format() serializes a Url-shaped object, a string, or a URL,
- * resolve() resolves one URL string against another, and the domain pair
- * converts a hostname to and from its Punycode form. */
+ * resolve() resolves one URL string against another, the domain pair
+ * converts a hostname to and from its Punycode form, and urlToHttpOptions
+ * builds http.request options from a URL. */
 declare module "url" {
   export type URL = globalThis.URL;
   export type URLSearchParams = globalThis.URLSearchParams;
@@ -2865,6 +2866,19 @@ declare module "url" {
   export function resolve(from: string, to: string): string;
   export function domainToASCII(domain: string): string;
   export function domainToUnicode(domain: string): string;
+  /** urlToHttpOptions's null-prototype request options. */
+  export interface UrlHttpOptions {
+    protocol: string;
+    hostname: string;
+    hash: string;
+    search: string;
+    pathname: string;
+    path: string;
+    href: string;
+    port?: number;
+    auth?: string;
+  }
+  export function urlToHttpOptions(url: URL): UrlHttpOptions;
 }
 declare module "node:url" {
   export * from "url";

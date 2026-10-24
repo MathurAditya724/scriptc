@@ -1681,6 +1681,7 @@ export const BUILTIN_MODULE_FNS: Record<
     resolve: { fn: "url.legacyResolve", params: [DYN, DYN], result: STRING },
     domainToASCII: { fn: "url.domainToASCII", params: [DYN], result: STRING },
     domainToUnicode: { fn: "url.domainToUnicode", params: [DYN], result: STRING },
+    urlToHttpOptions: { fn: "url.toHttpOptions", params: [DYN], result: DYN },
   },
   child_process: {
     // spawnSync's and spawn's call completions are entirely special-cased
