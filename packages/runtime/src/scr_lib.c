@@ -1078,6 +1078,10 @@ bool scr_fs_path_ok(const ScrStr *path, const char *name) {
   return false;
 }
 
+void scr_fs_check_path(ScrStr *path, ScrStr *name) {
+  (void)scr_fs_path_ok(path, name->data);
+}
+
 void scr_process_load_env_file(const ScrDyn *value) {
   ScrStr *path;
   if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) path = scr_str_new("./.env", 6);
@@ -11656,6 +11660,56 @@ double scr_date_new_local(double y, double mo, double d,
   return scr_date_from_local(scr_date_v8_make_day(y, mo, d), scr_date_v8_make_time(h, mi, s, ms));
 }
 
+/* Date.prototype's setters over a time value, as V8's builtins-date.cc
+ * computes them: the fields of `t` (local fields for the local setters)
+ * with the first `argc` of them replaced, in the order the setter names
+ * them, by `a`..`d`, through MakeDay/MakeTime/MakeDate, then UTC(t) for
+ * the local setters and TimeClip. An invalid `t` stays invalid, except
+ * that setFullYear and setUTCFullYear start from +0: January 1 of the
+ * epoch year at midnight (local midnight for setFullYear). Returns the new
+ * time value; the caller stores it into the Date. Never throws. */
+double scr_date_set_fields(double t, double setter_code, double argc_count,
+                           double a, double b, double c, double d) {
+  int32_t setter = (int32_t)setter_code, argc = (int32_t)argc_count;
+  bool utc = (setter & SCR_DATE_SET_UTC) != 0;
+  int32_t field = setter & ~SCR_DATE_SET_UTC;
+  ScrDateParts p;
+  if (isnan(t)) {
+    if (field != SCR_DATE_SET_FULL_YEAR) return NAN;
+    p = (ScrDateParts){1970, 0, 1, 4, 0, 0, 0, 0, 0};
+  } else if (utc) {
+    if (!scr_date_utc_parts(t, &p)) return NAN;
+  } else if (!scr_date_local_parts(t, &p)) {
+    return NAN;
+  }
+  double y = (double)p.year, mo = p.month, dt = p.date;
+  double h = p.hours, mi = p.minutes, s = p.seconds, ms = p.milliseconds;
+  double args[4] = {a, b, c, d};
+  double *slots[7] = {&y, &mo, &dt, &h, &mi, &s, &ms};
+  /* The first field each setter names, in slots' order. */
+  int first;
+  switch (field) {
+  case SCR_DATE_SET_MILLISECONDS: first = 6; break;
+  case SCR_DATE_SET_SECONDS: first = 5; break;
+  case SCR_DATE_SET_MINUTES: first = 4; break;
+  case SCR_DATE_SET_HOURS: first = 3; break;
+  case SCR_DATE_SET_DATE: first = 2; break;
+  case SCR_DATE_SET_MONTH: first = 1; break;
+  case SCR_DATE_SET_FULL_YEAR: first = 0; break;
+  default: return NAN;
+  }
+  /* Each setter takes at most the fields from its own down to the next
+   * larger unit's end: setHours up to milliseconds, setMonth up to the
+   * date, setFullYear up to the date. */
+  int last = first <= 2 ? 2 : 6;
+  for (int i = 0; i < argc && first + i <= last && i < 4; i++) *slots[first + i] = args[i];
+  double day = scr_date_v8_make_day(y, mo, dt);
+  double time = scr_date_v8_make_time(h, mi, s, ms);
+  if (!utc) return scr_date_from_local(day, time);
+  if (!isfinite(day) || !isfinite(time)) return NAN;
+  return scr_date_new_ms(day * 86400000.0 + time);
+}
+
 /* ── V8's date-string parser, the fallback ─────────────────────────────
  * scr_date_parse answers the bounded grammars directly and asks
  * this parser only when they produce NaN. It follows V8's DateParser
@@ -12549,6 +12603,39 @@ static ScrStr *scr_date_text(double ms, int mode) {
 }
 
 ScrStr *scr_date_to_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_FULL); }
+
+/* JSON.stringify of a Date object: its toJSON(), the quoted
+ * toISOString() text, or null for an invalid date. */
+void scr_jb_put_date(ScrJsonBuf *b, const ScrDate *date) {
+  if (isnan(date->ms)) {
+    scr_jb_puts(b, "null");
+    return;
+  }
+  ScrStr *iso = scr_date_to_iso(date->ms);
+  scr_jb_put_json_str(b, iso);
+  scr_str_release(iso);
+}
+
+/* String(date) of a Date object: Date arrays' default ordering key. +1. */
+ScrStr *scr_date_object_to_string(void *date) {
+  return scr_date_text(((ScrDate *)date)->ms, SCR_DATE_TEXT_FULL);
+}
+
+/* Array.prototype.join over Date objects: each element's String() text,
+ * holes empty. Both borrowed; +1. */
+ScrStr *scr_date_arr_join(ScrArr *dates, const ScrStr *sep) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  double len = scr_arr_len(dates);
+  for (double i = 0; i < len; i++) {
+    if (i > 0) scr_jb_put_str(&b, sep);
+    if (scr_arr_state(dates, i) != 1) continue;
+    ScrStr *text = scr_date_object_to_string(scr_arr_peek_ref(dates, i));
+    scr_jb_put_str(&b, text);
+    scr_str_release(text);
+  }
+  return scr_jb_finish(&b);
+}
 ScrStr *scr_date_to_date_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_DATE); }
 ScrStr *scr_date_to_time_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_TIME); }
 
@@ -13009,11 +13096,29 @@ ScrArr *scr_set_to_arr_ref(const ScrMap *s, const ScrArrOps *ops) {
   return out;
 }
 
-/* JS Date storage owns an identity; the typed read-only Date ABI continues
- * to use milliseconds and explicitly extracts them for native getters. */
-typedef struct { size_t rc; double milliseconds; } ScrNativeDate;
-static void *scr_native_date_retain(void *ptr) { ((ScrNativeDate *)ptr)->rc++; return ptr; }
-static void scr_native_date_release(void *ptr) { if (--((ScrNativeDate *)ptr)->rc == 0) free(ptr); }
+/* A Date object: one time value, and its identity. Compiled code and
+ * checked-dynamic Date handles share these objects, so a Date keeps its
+ * identity across `unknown` conversions. */
+ScrDate *scr_date_new(double ms) {
+  ScrDate *date = malloc(sizeof *date);
+  if (!date) scr_trap("scriptc: out of memory\n");
+  date->rc = 1;
+  date->ms = ms;
+  return date;
+}
+
+ScrDate *scr_date_retain(ScrDate *date) {
+  if (date->rc != SIZE_MAX) date->rc++;
+  return date;
+}
+
+void scr_date_release(ScrDate *date) {
+  if (!date || date->rc == SIZE_MAX) return;
+  if (--date->rc == 0) free(date);
+}
+
+void *scr_date_retain_v(void *p) { return scr_date_retain(p); }
+void scr_date_release_v(void *p) { scr_date_release(p); }
 
 bool scr_dyn_native_date_is(const ScrDyn *value) {
   return value && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE;
@@ -13124,11 +13229,23 @@ static ScrStr *scr_date_class_name(const ScrDyn *value) {
 }
 
 double scr_dyn_native_date_value(const ScrDyn *value) {
-  if (scr_dyn_native_date_is(value)) return ((ScrNativeDate *)value->v.handle.ptr)->milliseconds;
+  if (scr_dyn_native_date_is(value)) return ((ScrDate *)value->v.handle.ptr)->ms;
   double time;
   if (scr_dyn_date_class_time(value, &time)) return time;
   scr_dyn_check_fail(NULL, "Date", value);
   return NAN;
+}
+
+/* The Date object a checked-dynamic Date value holds, +1: the Date itself,
+ * or a new Date with the time value of an instance of a class declared
+ * `extends Date`. NULL with the check failure pending for any other
+ * value. */
+ScrDate *scr_dyn_native_date_check(const ScrDyn *value, const ScrDynPath *path) {
+  if (scr_dyn_native_date_is(value)) return scr_date_retain(value->v.handle.ptr);
+  double time;
+  if (scr_dyn_date_class_time(value, &time)) return scr_date_new(time);
+  scr_dyn_check_fail(path, "Date", value);
+  return NULL;
 }
 
 /* Method names without another use in this file, in named arrays (see
@@ -13136,10 +13253,31 @@ double scr_dyn_native_date_value(const ScrDyn *value) {
 static const char scr_date_to_date_string_name[] = "toDateString";
 static const char scr_date_to_time_string_name[] = "toTimeString";
 
+/* The field setters a checked-dynamic Date answers (scr_date_set_fields). */
+static const struct {
+  const char *name;
+  int code, max;
+} scr_native_date_setters[] = {
+  {"setMilliseconds", SCR_DATE_SET_MILLISECONDS, 1},
+  {"setSeconds", SCR_DATE_SET_SECONDS, 2},
+  {"setMinutes", SCR_DATE_SET_MINUTES, 3},
+  {"setHours", SCR_DATE_SET_HOURS, 4},
+  {"setDate", SCR_DATE_SET_DATE, 1},
+  {"setMonth", SCR_DATE_SET_MONTH, 2},
+  {"setFullYear", SCR_DATE_SET_FULL_YEAR, 3},
+  {"setUTCMilliseconds", SCR_DATE_SET_UTC | SCR_DATE_SET_MILLISECONDS, 1},
+  {"setUTCSeconds", SCR_DATE_SET_UTC | SCR_DATE_SET_SECONDS, 2},
+  {"setUTCMinutes", SCR_DATE_SET_UTC | SCR_DATE_SET_MINUTES, 3},
+  {"setUTCHours", SCR_DATE_SET_UTC | SCR_DATE_SET_HOURS, 4},
+  {"setUTCDate", SCR_DATE_SET_UTC | SCR_DATE_SET_DATE, 1},
+  {"setUTCMonth", SCR_DATE_SET_UTC | SCR_DATE_SET_MONTH, 2},
+  {"setUTCFullYear", SCR_DATE_SET_UTC | SCR_DATE_SET_FULL_YEAR, 3},
+};
+
 static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *method,
     ScrDyn *const *args, size_t argc, const char *what) {
   (void)self; (void)what;
-  double ms = ((ScrNativeDate *)ptr)->milliseconds;
+  double ms = ((ScrDate *)ptr)->ms;
   if (!strcmp(method, "getTime") || !strcmp(method, "valueOf")) return scr_dyn_new_num(ms);
   if (!strcmp(method, "toString") || !strcmp(method, scr_date_to_date_string_name) ||
       !strcmp(method, scr_date_to_time_string_name) || !strcmp(method, "toUTCString")) {
@@ -13162,8 +13300,27 @@ static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *metho
   if (!strcmp(method, "setTime")) {
     double time = NAN;
     if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &time)) return NULL;
-    ((ScrNativeDate *)ptr)->milliseconds = scr_date_new_ms(time);
-    return scr_dyn_new_num(((ScrNativeDate *)ptr)->milliseconds);
+    ((ScrDate *)ptr)->ms = scr_date_new_ms(time);
+    return scr_dyn_new_num(((ScrDate *)ptr)->ms);
+  }
+  for (size_t i = 0; i < sizeof scr_native_date_setters / sizeof *scr_native_date_setters; i++) {
+    if (strcmp(method, scr_native_date_setters[i].name)) continue;
+    /* V8's order: ToNumber of the first argument, then the time value,
+     * then (unless the date is invalid) ToNumber of the optional ones the
+     * setter takes. */
+    int code = scr_native_date_setters[i].code, max = scr_native_date_setters[i].max;
+    double values[4] = {NAN, 0, 0, 0};
+    if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &values[0])) return NULL;
+    double t = ((ScrDate *)ptr)->ms;
+    int used = argc < (size_t)max ? (int)argc : max;
+    if (used < 1) used = 1;
+    if (!isnan(t) || (code & ~SCR_DATE_SET_UTC) == SCR_DATE_SET_FULL_YEAR) {
+      for (int k = 1; k < used; k++)
+        if (!scr_dyn_number_coerce_js(args[k], &values[k])) return NULL;
+    }
+    double next = scr_date_set_fields(t, code, used, values[0], values[1], values[2], values[3]);
+    ((ScrDate *)ptr)->ms = next;
+    return scr_dyn_new_num(next);
   }
 #define DATE_GET(name, fn) if (!strcmp(method, name)) return scr_dyn_new_num(fn(ms))
   DATE_GET("getFullYear", scr_date_get_full_year_local);
@@ -13209,7 +13366,7 @@ double scr_dyn_date_arguments_time(const ScrDyn *arguments) {
   ScrDyn *date = arguments->v.arr.len > 1 ? scr_dyn_native_date_new_fields(arguments)
                                           : scr_dyn_native_date_new_value(arguments);
   if (!date) return NAN;
-  double time = ((ScrNativeDate *)date->v.handle.ptr)->milliseconds;
+  double time = ((ScrDate *)date->v.handle.ptr)->ms;
   scr_dyn_release(date);
   return time;
 }
@@ -13244,7 +13401,9 @@ static const char *const scr_native_date_methods[] = {
   "getFullYear", "getUTCFullYear", "getMonth",
   "getUTCMonth", "getDate", "getUTCDate", "getDay", "getUTCDay", "getHours", "getUTCHours",
   "getMinutes", "getUTCMinutes", "getSeconds", "getUTCSeconds", "getMilliseconds",
-  "getUTCMilliseconds", "getTimezoneOffset", "setTime",
+  "getUTCMilliseconds", "getTimezoneOffset", "setTime", "setMilliseconds", "setSeconds",
+  "setMinutes", "setHours", "setDate", "setMonth", "setFullYear", "setUTCMilliseconds",
+  "setUTCSeconds", "setUTCMinutes", "setUTCHours", "setUTCDate", "setUTCMonth", "setUTCFullYear",
 };
 #define SCR_NATIVE_DATE_METHODS (sizeof scr_native_date_methods / sizeof scr_native_date_methods[0])
 static SCR_TL ScrDyn *scr_native_date_method_values[SCR_NATIVE_DATE_METHODS];
@@ -13274,10 +13433,10 @@ static ScrDyn *scr_native_date_method_call(ScrClosure *closure, ScrDyn *const *a
       result = isfinite(time) ? scr_date_class_call(SCR_DATE_CLASS_TO_ISO_STRING, self, NULL)
                               : scr_dyn_new_null();
     } else {
-      ScrNativeDate date = { 1, time };
+      ScrDate date = { 1, time };
       result = scr_native_date_invoke(&date, self, method, args, argc, method);
-      if (result && date.milliseconds != time && !(isnan(date.milliseconds) && isnan(time))) {
-        ScrDyn *stored = scr_dyn_new_num(date.milliseconds);
+      if (result && date.ms != time && !(isnan(date.ms) && isnan(time))) {
+        ScrDyn *stored = scr_dyn_new_num(date.ms);
         ScrDyn *set = scr_date_class_call(SCR_DATE_CLASS_SET_TIME, self, stored);
         scr_dyn_release(stored);
         if (!set) {
@@ -13330,19 +13489,50 @@ static ScrDyn *scr_native_date_get(void *ptr, const char *key, size_t key_len) {
   return NULL;
 }
 
-/* A Date handle holding the time value `ms` (already TimeClip'd). */
-ScrDyn *scr_dyn_native_date_from_ms(double ms) {
+/* structuredClone of a Date: a new Date with the same time value. */
+static ScrDyn *scr_native_date_clone(void *h) {
+  return scr_dyn_native_date_from_ms(((ScrDate *)h)->ms);
+}
+
+/* A Date crossing threads (postMessage, workerData) carries its time value
+ * in a plain allocation any thread may read and free. */
+static void *scr_native_date_share(void *h) {
+  double *ms = malloc(sizeof *ms);
+  if (!ms) scr_trap("scriptc: out of memory\n");
+  *ms = ((ScrDate *)h)->ms;
+  return ms;
+}
+
+static ScrDyn *scr_native_date_adopt(void *payload) {
+  return scr_dyn_native_date_from_ms(*(double *)payload);
+}
+
+static void scr_native_date_drop(void *payload) { free(payload); }
+
+static const ScrDynHandleTransfer scr_native_date_transfer = {
+  .share = scr_native_date_share, .adopt = scr_native_date_adopt, .drop = scr_native_date_drop};
+
+/* A checked-dynamic handle for the Date object `date` (borrowed; the
+ * handle retains it), so the value stays the same object. */
+ScrDyn *scr_dyn_native_date(ScrDate *date) {
   static const ScrDynHandleOps ops = {
-    "Date", &scr_native_date_retain, &scr_native_date_release, &scr_native_date_invoke,
-    &scr_native_date_get, NULL, NULL, NULL,
+    .cls = "Date",
+    .retain = &scr_date_retain_v,
+    .release = &scr_date_release_v,
+    .invoke = &scr_native_date_invoke,
+    .get = &scr_native_date_get,
+    .clone = &scr_native_date_clone,
+    .transfer = &scr_native_date_transfer,
   };
   scr_dyn_handle_install(SCR_DYNH_DATE, &ops);
-  ScrNativeDate *date = malloc(sizeof *date);
-  if (!date) scr_trap("scriptc: out of memory\n");
-  date->rc = 1;
-  date->milliseconds = ms;
-  ScrDyn *result = scr_dyn_new_handle(date, SCR_DYNH_DATE);
-  scr_native_date_release(date);
+  return scr_dyn_new_handle(date, SCR_DYNH_DATE);
+}
+
+/* A Date handle holding the time value `ms` (already TimeClip'd). */
+ScrDyn *scr_dyn_native_date_from_ms(double ms) {
+  ScrDate *date = scr_date_new(ms);
+  ScrDyn *result = scr_dyn_native_date(date);
+  scr_date_release(date);
   return result;
 }
 

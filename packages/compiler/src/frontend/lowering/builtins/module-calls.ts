@@ -25,7 +25,7 @@ import {
   lowerFsWriteOptionsCall,
   lowerFsReadPathCall,
 } from "./filesystem-calls.js";
-import { checkFsUrlPaths, isFsPathParam, lowerFsPath } from "./fs-paths.js";
+import { checkFsUrlPaths, isFsPathParam, lowerFallibleFsUrlCall, lowerFsPath } from "./fs-paths.js";
 import { lowerBufferEncodingCall } from "./text-codecs.js";
 import { lowerUtilTypeCall } from "./util-types.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -59,6 +59,10 @@ export function lowerBuiltinModuleCall(
   loc: SrcLoc,
 ): IrExpr {
   const name = ts.getTextOfNode(expr.expression);
+  const fallible = lowerFallibleFsUrlCall(lowerer, expr, bi, () =>
+    lowerBuiltinModuleCall(lowerer, expr, bi, fn, loc),
+  );
+  if (fallible) return fallible;
   checkFsUrlPaths(lowerer, expr, bi);
   if (bi.module === "util/types") {
     return lowerUtilTypeCall(lowerer, expr, bi, loc, name);
@@ -258,7 +262,7 @@ export function lowerBuiltinModuleCall(
     bi.member === "readFile" &&
     expr.arguments.nodes.length === 1
   ) {
-    const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+    const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
     return {
       kind: "libCall",
       fn: "fsp.readFileBytes",
@@ -473,7 +477,7 @@ export function lowerBuiltinModuleCall(
     args = lowerer.completeArgs(expr.arguments.nodes, shapes, loc, expr);
   } else {
     args = expr.arguments.nodes.map((a, i) =>
-      bi.module === "fs" && isFsPathParam(bi.member, i)
+      isFsPathParam(bi.module, bi.member, i)
         ? lowerFsPath(lowerer, a)
         : lowerer.lowerExprExpecting(a, fn.params[i]),
     );

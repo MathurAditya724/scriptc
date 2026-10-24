@@ -707,11 +707,17 @@ function rewriteFunction(
  * unchecked. */
 export function refuseUncheckedCycleReads(
   lowerer: Lowerer,
-  classes: readonly { baseValueGlobal?: string; symbolFields?: { globalId: string }[] }[],
+  classes: readonly {
+    baseValueGlobal?: string;
+    symbolFields?: readonly ({ globalId: string } | { wellKnown: string })[];
+  }[],
 ): void {
   if (lowerer.cycleInitFlags.size === 0) return;
   for (const cls of classes) {
-    const ids = [cls.baseValueGlobal, ...(cls.symbolFields ?? []).map((f) => f.globalId)];
+    const ids = [
+      cls.baseValueGlobal,
+      ...(cls.symbolFields ?? []).map((f) => ("globalId" in f ? f.globalId : undefined)),
+    ];
     for (const id of ids) {
       const flag = id === undefined ? undefined : lowerer.cycleInitFlags.get(id);
       if (flag === undefined) continue;

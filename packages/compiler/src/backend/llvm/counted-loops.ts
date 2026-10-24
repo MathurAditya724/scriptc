@@ -50,8 +50,8 @@ export function emitCountedLoopLimit(
 }
 
 /** The run-time test of a guarded counted loop: an unproven limit is within
- * the integer form's finite range and an unproven start is an exact safe
- * integer. Returns `true` when nothing needs testing. */
+ * the integer form's finite range and an unproven start is an exact integer
+ * within the loop's start bound. Returns `true` when nothing needs testing. */
 export function emitCountedLoopSafety(
   host: LlvmEmitterContext,
   loop: IntegerCountedForLoop,
@@ -65,7 +65,11 @@ export function emitCountedLoopSafety(
       `${safe} = fcmp ${loop.step > 0 ? "ole" : "oge"} double ${bound.name}, ${f64Lit(loop.guardLimit)}`,
     );
   }
-  if (loop.startGuarded) safe = andSafe(host, safe, emitExactStart(host, loop.start));
+  if (loop.startGuarded) {
+    const start = host.emitExpr(loop.start);
+    const bound = loop.startBound;
+    safe = andSafe(host, safe, emitExactIntegerTest(host, start.name, -bound, bound).ok);
+  }
   for (const follower of loop.followers) {
     if (follower.startGuarded) safe = andSafe(host, safe, emitExactStart(host, follower.start));
     if (follower.tripGuarded) safe = andSafe(host, safe, emitFollowerReach(host, loop, follower));
@@ -150,4 +154,37 @@ function emitExactStart(host: LlvmEmitterContext, expr: IrExpr): string {
   B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
   B.line(`${ok} = and i1 ${inRange}, ${exact}`);
   return ok;
+}
+
+/** Tests that a double is an exact integer within [min, max] (not -0; NaN
+ * fails the ordered comparisons) and gives its i64. The integer is frozen,
+ * so it is a fixed value even when the test fails. */
+export function emitExactIntegerTest(
+  host: LlvmEmitterContext,
+  value: string,
+  min: number,
+  max: number,
+): { ok: string; integer: string } {
+  const B = host.B;
+  const low = B.tmp(),
+    high = B.tmp(),
+    inRange = B.tmp(),
+    raw = B.tmp(),
+    integer = B.tmp(),
+    back = B.tmp(),
+    bits = B.tmp(),
+    backBits = B.tmp(),
+    exact = B.tmp(),
+    ok = B.tmp();
+  B.line(`${low} = fcmp oge double ${value}, ${f64Lit(min)}`);
+  B.line(`${high} = fcmp ole double ${value}, ${f64Lit(max)}`);
+  B.line(`${inRange} = and i1 ${low}, ${high}`);
+  B.line(`${raw} = fptosi double ${value} to i64`);
+  B.line(`${integer} = freeze i64 ${raw}`);
+  B.line(`${back} = sitofp i64 ${integer} to double`);
+  B.line(`${bits} = bitcast double ${value} to i64`);
+  B.line(`${backBits} = bitcast double ${back} to i64`);
+  B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
+  B.line(`${ok} = and i1 ${inRange}, ${exact}`);
+  return { ok, integer };
 }

@@ -31,7 +31,9 @@ import {
 } from "../backend/native-tools.js";
 import {
   selectNativeRuntimePack,
+  runtimePackManifest,
   stageNativeRuntimeSelection,
+  type RuntimePackStore,
 } from "../backend/runtime-pack-native.js";
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
 import {
@@ -56,7 +58,7 @@ import { clearFenceEvalCaches } from "../library/fence-eval.js";
 import { archiveNativeLibrary, localizeNativeLibrary, linkNativeWasmLibrary } from "./library.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { evaluateNativeComptime } from "./comptime.js";
-import { contentDigest, fileDigest, type NativeCache } from "./cache.js";
+import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cache.js";
 import {
   nativeProfileKey,
   nativeProfileRefusal,
@@ -65,6 +67,7 @@ import {
 import { splitLlvmLibraryProgram } from "../backend/llvm/split.js";
 import { prepareNativeExecutable, prepareNativeLibrary } from "./prepare.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
+import { lldLinkerArgs } from "../backend/lld.js";
 import { openNativeExecutableCache } from "./executable-cache.js";
 import { nativeFileIdentity } from "./file-identity.js";
 
@@ -160,6 +163,17 @@ export class NativeCompiler {
     return result;
   }
 
+  /** Runtime pack selections and verified artifact identities, kept in the
+   * cache. */
+  private runtimePackStore(): RuntimePackStore | undefined {
+    const cache = this.cache;
+    if (cache === null) return undefined;
+    return {
+      read: (key) => cache.read("runtime-pack", key)?.toString("utf8") ?? null,
+      write: (key, text) => cache.write("runtime-pack", key, text),
+    };
+  }
+
   private emitObject(
     input: string,
     output: string,
@@ -168,6 +182,7 @@ export class NativeCompiler {
     outputKind: "obj" | "asm",
     partitions = 1,
     profile?: NativeProfileOptions,
+    llvmDigest: () => string = () => fileDigest(input),
   ): string[] {
     const toolchain = this.toolchain;
     const outputs = nativePartitionPaths(output, partitions);
@@ -186,7 +201,7 @@ export class NativeCompiler {
         key = contentDigest(
           JSON.stringify({
             schema: 1,
-            llvm: fileDigest(input),
+            llvm: llvmDigest(),
             outputKind,
             optimization,
             source,
@@ -253,6 +268,7 @@ export class NativeCompiler {
     stage: string,
     library: boolean,
     profile?: NativeProfileOptions,
+    llvmDigest?: () => string,
   ): string[] {
     // Library archives merge dev shards relocatably; executables link the
     // helper's program partitions directly.
@@ -263,7 +279,16 @@ export class NativeCompiler {
     const split = llvm === null ? null : splitLlvmLibraryProgram(llvm);
     if (split === null) {
       const partitions = library ? 1 : nativeProgramPartitions(statSync(input).size);
-      return this.emitObject(input, output, source, optimization, "obj", partitions, profile);
+      return this.emitObject(
+        input,
+        output,
+        source,
+        optimization,
+        "obj",
+        partitions,
+        profile,
+        llvmDigest,
+      );
     }
     const objects: string[] = [];
     for (const [index, shard] of split.shards.entries()) {
@@ -358,6 +383,9 @@ export class NativeCompiler {
         return { ok: true, artifact: { kind: "ir", path: output } };
       }
       const { llvm, features } = prepared;
+      // The executable and object caches key the same LLVM text.
+      let llvmDigest: string | undefined;
+      const digestLlvm = (): string => (llvmDigest ??= partsDigest(llvm));
       const inputDirectory = join(stage, "input");
       mkdirSync(inputDirectory);
       const llvmInput = outputKind === "llvm" ? stagedOutput : join(inputDirectory, "program.ll");
@@ -380,13 +408,24 @@ export class NativeCompiler {
               toolchain.compilerVersion,
               features,
               optimization,
+              "executable",
+              this.runtimePackStore(),
             )
           : null;
       const executableCache =
         executablePack === null
           ? null
-          : openNativeExecutableCache(this.cache, toolchain, llvm, options, ffi, executablePack);
-      const restored = executableCache?.restore(stagedOutput) ?? false;
+          : openNativeExecutableCache(
+              this.cache,
+              toolchain,
+              digestLlvm,
+              options,
+              ffi,
+              executablePack,
+            );
+      // An unchanged rebuild keeps the executable the last build left.
+      const kept = executableCache?.keep(output) ?? false;
+      const restored = kept || (executableCache?.restore(stagedOutput) ?? false);
       timing(restored ? "executable-cache-hit" : "executable-cache-miss");
       if (!restored) {
         let programObjects = [object];
@@ -408,6 +447,7 @@ export class NativeCompiler {
             stage,
             false,
             profile,
+            digestLlvm,
           );
         else
           this.emitObject(
@@ -427,16 +467,24 @@ export class NativeCompiler {
                   toolchain.compilerVersion,
                   features,
                   optimization,
+                  "executable",
+                  this.runtimePackStore(),
                 )
               : null;
-          if (pack !== null) stageNativeRuntimeSelection(pack, join(stage, "runtime"));
+          if (pack !== null)
+            stageNativeRuntimeSelection(pack, join(stage, "runtime"), this.runtimePackStore());
           const info =
             pack === null
               ? undefined
               : formatNativeLinkInfo(
                   { programObject: output, target, ffi },
                   toolchain.compilerVersion,
-                  pack,
+                  {
+                    root: pack.root,
+                    manifest: runtimePackManifest(pack),
+                    selected: pack.selected,
+                    flavor: pack.flavor,
+                  },
                 );
           renameSync(stagedOutput, output);
           return {
@@ -451,7 +499,7 @@ export class NativeCompiler {
         const pack = executablePack!;
         const runtime = options.sanitize
           ? buildSanitizedRuntime(toolchain, pack, join(stage, "runtime"), "executable", this.cache)
-          : stageNativeRuntimeSelection(pack, join(stage, "runtime"));
+          : stageNativeRuntimeSelection(pack, join(stage, "runtime"), this.runtimePackStore());
         timing("runtime-stage");
         const plan = executableLinkInputs({
           target,
@@ -470,8 +518,11 @@ export class NativeCompiler {
             : { windowsSubsystem: options.windowsSubsystem }),
           ...(profile?.generate === undefined ? {} : { profileGenerate: true }),
         });
+        // Linux links with lld when the driver finds it.
+        const lld = options.sanitize ? [] : lldLinkerArgs(target.platform, toolchain.linker);
         const linkArgs = [
           ...(options.sanitize ? ["-fsanitize=address"] : toolchain.linkerArgs),
+          ...lld,
           ...plan.driverFlags,
           ...plan.inputs,
           ...plan.systemLibraries.map((name) => `-l${name}`),
@@ -482,8 +533,20 @@ export class NativeCompiler {
         timing("link-inputs");
         // A successful dependency trace already produced this executable.
         // Keep its verified output instead of asking the linker to repeat it.
-        if (!cacheable)
-          runNativeTool(options.sanitize ? sanitizerDriver(toolchain) : toolchain.linker, linkArgs);
+        if (!cacheable) {
+          const driver = options.sanitize ? sanitizerDriver(toolchain) : toolchain.linker;
+          try {
+            runNativeTool(driver, linkArgs);
+          } catch (error) {
+            // A failed link with lld runs again with the driver's default
+            // linker, whose error (if any) is the one reported.
+            if (lld.length === 0) throw error;
+            runNativeTool(
+              driver,
+              linkArgs.filter((arg) => !lld.includes(arg)),
+            );
+          }
+        }
         timing("native-link");
         requireNativeArtifact(stagedOutput);
         if (target.platform === "darwin" && optimization === "dev" && !options.strip) {
@@ -502,7 +565,10 @@ export class NativeCompiler {
         irPath = join(options.outDir, `${stem}.ir.json`);
         writeTextPartsSync(irPath, prepared.ir!);
       }
-      renameSync(stagedOutput, output);
+      if (!kept) {
+        renameSync(stagedOutput, output);
+        executableCache?.recordOutput(output);
+      }
       if (target.platform === "darwin" && (optimization !== "dev" || options.strip))
         rmSync(output + ".dSYM", { recursive: true, force: true });
       return {
@@ -595,6 +661,7 @@ export class NativeCompiler {
         features,
         profile.optimization,
         profile.instancePerThread ? "library-thread" : "library",
+        this.runtimePackStore(),
       );
       const runtime = options.sanitize
         ? buildSanitizedRuntime(
@@ -604,7 +671,7 @@ export class NativeCompiler {
             profile.instancePerThread ? "library-thread" : "library",
             this.cache,
           )
-        : stageNativeRuntimeSelection(pack, join(stage, "runtime"));
+        : stageNativeRuntimeSelection(pack, join(stage, "runtime"), this.runtimePackStore());
       timing("runtime-stage");
       const stagedArchive = join(stage, wasm ? "output.wasm" : "output.a");
       const localizeSymbols = libraryLocalizeSymbols(profile);

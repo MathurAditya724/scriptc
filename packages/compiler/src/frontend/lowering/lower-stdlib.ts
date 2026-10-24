@@ -1630,16 +1630,22 @@ export function lowerStaticAbortControllerCall(
   call: ts.CallExpression,
 ): IrExpr | null {
   const access = call.expression;
+  // An optional chain (`controller?.abort()`) lowers the call again once it
+  // has narrowed the receiver (Lowerer.chainHandled).
   if (
-    call.questionDotToken ||
+    (call.questionDotToken && !lowerer.chainHandled.has(call)) ||
     call.arguments.nodes.some((argument) => ts.isSpreadElement(argument)) ||
     (!ts.isPropertyAccessExpression(access) && !ts.isElementAccessExpression(access)) ||
-    access.questionDotToken ||
+    (access.questionDotToken && !lowerer.chainHandled.has(access)) ||
     staticResponseMemberName(lowerer, access) !== "abort"
   ) {
     return null;
   }
-  const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
+  const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(
+    access.questionDotToken
+      ? lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression))
+      : lowerer.typeOf(access.expression),
+  );
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
     symbol === undefined ||
@@ -1943,6 +1949,19 @@ export function lowerStaticReadableStreamNew(
     type: DYN,
     loc,
   };
+}
+
+/** `new TransformStream()`: the identity transform, a native handle whose
+ * readable side is a native ReadableStream and whose writable side is the
+ * runtime's WritableStream. A transformer or queuing strategies have no
+ * native lowering yet and keep the SC2020 refusal. */
+export function lowerStaticTransformStreamNew(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+): IrExpr | null {
+  if (stdlibGlobalNameOf(lowerer, expr.expression) !== "TransformStream") return null;
+  if ((expr.arguments?.nodes.length ?? 0) > 0) return null;
+  return { kind: "libCall", fn: "fetch.transformNew", args: [], type: DYN, loc: locOf(expr) };
 }
 
 /** Native Request and Headers values share the fetch runtime's handles. */

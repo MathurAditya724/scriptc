@@ -36,6 +36,10 @@ typedef struct {
 } ScrNetLs;
 
 void scr_net_ls_add(ScrNetLs *l, ScrClosure *cb, void *fn, bool once);
+/* The AsyncLocalStorage context a socket's events run in from now on
+ * (borrowed; scr_net.c keeps the creation context otherwise). */
+struct ScrAlsCtx;
+void scr_net_sock_set_context(ScrNetSocket *s, struct ScrAlsCtx *ctx);
 ScrNetOnce *scr_net_once_new(void); /* +1 */
 ScrNetOnce *scr_net_once_retain(ScrNetOnce *once); /* +1 */
 void scr_net_once_release(ScrNetOnce *once);
@@ -232,6 +236,7 @@ void scr_net_sock_destroy(ScrNetSocket *s);
  * counters/flags the compat surface reads. */
 ScrNetSocket *scr_net_sock_pause(ScrNetSocket *s);            /* +1: chaining */
 ScrNetSocket *scr_net_sock_resume(ScrNetSocket *s);           /* +1: chaining */
+void scr_net_sock_hold(ScrNetSocket *s, bool hold); /* protocol read hold (not pause) */
 ScrNetSocket *scr_net_sock_set_nodelay(ScrNetSocket *s, bool enable); /* +1: chaining */
 void scr_net_sock_set_keepalive(ScrNetSocket *s, bool enable, double delay_ms);
 void scr_net_sock_destroy_soon(ScrNetSocket *s);

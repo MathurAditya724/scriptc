@@ -4,7 +4,7 @@ import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrBytesElem, type IrExpr } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { F64_INF, exactIndexLines, f64Lit, sizeToDouble } from "./common.js";
-import { exactInteger, widenInteger } from "./integer-values.js";
+import { alwaysExactInteger, exactInteger } from "./integer-values.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { emitByteNumber } from "./byte-numbers.js";
 import { integerOrNaNIndex, integerOrNaNRange } from "./wrapping-sums.js";
@@ -86,17 +86,18 @@ export function emitBytesIndex(
 ): string {
   const B = host.B;
   const index = value.name;
-  const integer = exactInteger(host, value, expr);
-  if (inBounds && integer) {
-    const wide = widenInteger(host, integer);
-    if (host.sizeType === "i64") return wide;
+  // The exact integer, or a wide view that always equals the double (such
+  // as `i + 1` of a speculated counter).
+  const exact = alwaysExactInteger(host, value, exactInteger(host, value, expr));
+  if (inBounds && exact !== null) {
+    if (host.sizeType === "i64") return exact;
     const narrow = B.tmp();
-    B.line(`${narrow} = trunc i64 ${wide} to ${host.sizeType}`);
+    B.line(`${narrow} = trunc i64 ${exact} to ${host.sizeType}`);
     return narrow;
   }
   const len = emitBytesHeaderLength(host, receiver);
-  if (integer) {
-    const wideIndex = widenInteger(host, integer);
+  if (exact !== null) {
+    const wideIndex = exact;
     const wideLength = host.sizeType === "i64" ? len : B.tmp();
     if (host.sizeType !== "i64") B.line(`${wideLength} = zext ${host.sizeType} ${len} to i64`);
     const inRange = B.tmp();
@@ -936,6 +937,23 @@ export function emitBytesIntrinsic(
       B.line(`${t} = fcmp one double ${idx.name}, ${f64Lit(-1)}`);
       return { name: t, type: e.type };
     }
+    case "indexOfElem":
+    case "lastIndexOfElem":
+      return call(
+        "scr_bytes_index_of_elem",
+        "double (ptr, double, double, i1 zeroext)",
+        `ptr ${r.name}, double ${args[0]!.name}, double ${args[1]!.name}, i1 ${method === "lastIndexOfElem"}`,
+        false,
+        false,
+      );
+    case "includesElem":
+      return call(
+        "scr_bytes_includes_elem",
+        "zeroext i1 (ptr, double, double)",
+        `ptr ${r.name}, double ${args[0]!.name}, double ${args[1]!.name}`,
+        false,
+        false,
+      );
     case "fillElem":
       // Per-element TypedArray fill (non-u8): slice-style index
       // defaults, never throws; the receiver comes back +1.

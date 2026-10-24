@@ -43,6 +43,8 @@ import {
   isDynTypedRefType,
   isRefCounted,
   isUnitType,
+  recordHandleCodecClass,
+  textCodecRecordClass,
   typeKey,
 } from "../../ir/ir.js";
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
@@ -93,6 +95,19 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   cryptoHash: 52,
   cryptoHmac: 53,
 };
+
+/** The handle tags of TextEncoder and TextDecoder records boxed as dyn
+ * (scr_dyn.h; scr_text_codec_dyn.c boxes and unboxes them). */
+export const TEXT_CODEC_TAG_NUM: Record<"TextEncoder" | "TextDecoder" | "StringDecoder", number> = {
+  TextDecoder: 76,
+  TextEncoder: 77,
+  StringDecoder: 78,
+};
+
+/** The decoder record fields scr_text_decoder_to_dyn reads, in its
+ * parameter order. */
+const TEXT_DECODER_FIELDS = ["%TextDecoder", "%fatal", "%ignoreBOM", "%state"] as const;
+const STRING_DECODER_FIELDS = ["%enc", "%pending"] as const;
 
 /** Handle kinds whose runtime unit boxes them through its own function,
  * which installs the tag's ops on first use (scr_crypto.h). Programs that
@@ -179,6 +194,11 @@ function builtinStreamKind(className: string): number | null {
   };
   return kinds[className] ?? null;
 }
+
+/** Unions whose discriminant has fewer string literals keep one literal test
+ * per arm (dispatchValues): one runtime lookup costs about what a few
+ * literal tests do. */
+const DISCRIMINANT_DISPATCH_VALUES = 4;
 
 export class LlDyn {
   private readonly dynMatchers = new Map<string, string>();
@@ -370,6 +390,139 @@ export class LlDyn {
     B.line(`call void @scr_dyn_build_add(ptr %d, ptr @${name}, ptr ${value})`);
   }
 
+  /** The order a dyn value tries a union's arms in: the canonical order,
+   * except that among the record arms, those with more required fields go
+   * first, then those with more fields. Records are width-tolerant, so an
+   * arm with fewer fields (`{}`, or one whose fields are all optional,
+   * matches every object) would otherwise take an object that a wider arm
+   * also matches and drop the fields only the wider arm has. */
+  private unionArmOrder(def: IrUnionDef): number[] {
+    const width = (i: number): [number, number] | null => {
+      const arm = def.arms[i]!;
+      if (arm.kind !== "record") return null;
+      const shape = this.host.recordsById.get(arm.shapeId);
+      if (!shape || shape.tuple) return null;
+      const required = shape.fields.filter(
+        (field) =>
+          field.type.kind !== "union" ||
+          !this.host.unionsById.get(field.type.unionId)?.arms.some((x) => x.kind === "undefinedT"),
+      ).length;
+      return [required, shape.fields.length];
+    };
+    const order = def.arms.map((_, i) => i);
+    const records = order.filter((i) => width(i) !== null);
+    const widest = [...records].sort((x, y) => {
+      const [rx, fx] = width(x)!;
+      const [ry, fy] = width(y)!;
+      return ry - rx || fy - fx || x - y;
+    });
+    records.forEach((slot, k) => (order[slot] = widest[k]!));
+    return order;
+  }
+
+  /** The string literals of `def`'s discriminant when its arms are chosen
+   * by reading the discriminant once (unionArmsByDiscriminant), or null
+   * when the union keeps one literal test per arm: some literal is not a
+   * string, or there are fewer than DISCRIMINANT_DISPATCH_VALUES. */
+  private dispatchValues(def: IrUnionDef): string[] | null {
+    const values: string[] = [];
+    for (const guard of def.discriminant?.cases ?? []) {
+      if (guard.values.length === 0) return null;
+      for (const value of guard.values) {
+        if (typeof value !== "string") return null;
+        if (!values.includes(value)) values.push(value);
+      }
+    }
+    return values.length < DISCRIMINANT_DISPATCH_VALUES ? null : values;
+  }
+
+  /** Branches to `hits[tag]` for the first arm in `order` that `%d` matches
+   * (unionArmMatch), or to `none` when no arm does, for
+   * a union whose discriminant literals are `values` (dispatchValues). The
+   * discriminant is read once (scr_dyn_discriminant_case, against the
+   * constant `table`), and only the arms whose literal it holds and the arms
+   * without a literal are tested, in `order`: every other arm's literal test
+   * fails. An arm's failed check can run a getter that changes the
+   * discriminant, so it is read again after each one; when its case
+   * changed, the tests continue arm by arm after the failed arm, as they
+   * would have run from the first arm. A value the runtime cannot classify
+   * that way (a typed capsule, an accessor, an inherited discriminant) takes
+   * the tests arm by arm. */
+  private unionArmsByDiscriminant(
+    B: BlockBuilder,
+    def: IrUnionDef,
+    values: readonly string[],
+    order: readonly number[],
+    hits: readonly string[],
+    none: string,
+    preserveRefs: boolean,
+    table: string,
+  ): void {
+    const discriminant = def.discriminant!;
+    const literalsOf = (tag: number): readonly (string | number | boolean)[] | null =>
+      discriminant.cases.find((candidate) => candidate.tag === tag)?.values ?? null;
+    const host = this.host;
+    this.defs.push(
+      `${table} = private unnamed_addr constant [${values.length} x ptr] [${values.map((value) => `ptr ${host.internLiteral(value)}`).join(", ")}]`,
+      ``,
+    );
+    host.declare(`declare i32 @scr_dyn_discriminant_case(ptr, ptr, ptr, ${host.sizeType})`);
+    const classify = (): string => {
+      const index = B.tmp();
+      B.line(
+        `${index} = call i32 @scr_dyn_discriminant_case(ptr %d, ptr ${host.internLiteral(discriminant.field)}, ptr ${table}, ${host.sizeType} ${values.length})`,
+      );
+      return index;
+    };
+    // The arm-by-arm tests, entered at any arm (`from[i]` tests order[i]
+    // and the arms after it).
+    const tests = B.newLabel("du.tests");
+    const from = order.map((_, i) => (i === 0 ? tests : B.newLabel("du.t")));
+    const after = (position: number): string =>
+      position + 1 < order.length ? from[position + 1]! : none;
+    // Tests the arms a value in case `k` (-1: no literal) can match.
+    const tryCase = (k: number): void => {
+      const value = k < 0 ? null : values[k]!;
+      const positions = order
+        .map((_, position) => position)
+        .filter((position) => {
+          const literals = literalsOf(order[position]!);
+          return literals === null || (value !== null && literals.includes(value));
+        });
+      if (positions.length === 0) {
+        B.br(none);
+        return;
+      }
+      positions.forEach((position, index) => {
+        const tag = order[position]!;
+        const failed = B.newLabel("du.c.f");
+        this.unionArmStructure(B, def, tag, hits[tag]!, failed, preserveRefs);
+        B.startBlock(failed);
+        const next = index === positions.length - 1 ? none : B.newLabel("du.c.n");
+        const same = B.tmp();
+        B.line(`${same} = icmp eq i32 ${classify()}, ${k}`);
+        B.condBr(same, next, after(position));
+        if (next !== none) B.startBlock(next);
+      });
+    };
+    const index = classify();
+    const unmatched = B.newLabel("du.none");
+    const cases = values.map(() => B.newLabel("du.case"));
+    B.terminate(
+      `switch i32 ${index}, label %${tests} [ i32 -1, label %${unmatched} ${cases.map((label, k) => `i32 ${k}, label %${label}`).join(" ")} ]`,
+    );
+    values.forEach((_, k) => {
+      B.startBlock(cases[k]!);
+      tryCase(k);
+    });
+    B.startBlock(unmatched);
+    tryCase(-1);
+    order.forEach((tag, position) => {
+      B.startBlock(from[position]!);
+      this.unionArmMatch(B, def, tag, hits[tag]!, after(position), preserveRefs);
+    });
+  }
+
   /** Branch to a variant only after its literal discriminator and complete
    * structure match. Use the same path for predicates and builders. */
   private unionArmMatch(
@@ -407,6 +560,18 @@ export class LlDyn {
       });
       B.startBlock(structure);
     }
+    this.unionArmStructure(B, def, tag, yes, no, preserveRefs);
+  }
+
+  /** The part of unionArmMatch past the arm's literal test. */
+  private unionArmStructure(
+    B: BlockBuilder,
+    def: IrUnionDef,
+    tag: number,
+    yes: string,
+    no: string,
+    preserveRefs: boolean,
+  ): void {
     const matches = B.tmp();
     B.line(
       `${matches} = call zeroext i1 @${this.dynMatchHelper(def.arms[tag]!, preserveRefs)}(ptr %d)`,
@@ -426,7 +591,7 @@ export class LlDyn {
 
   /** The value LLVM type of a dynCheck result / toDyn operand for `t`. */
   private valTy(t: IrType): string {
-    return t.kind === "f64" || t.kind === "date" || t.kind === "procStream"
+    return t.kind === "f64" || t.kind === "procStream"
       ? "double"
       : t.kind === "bool"
         ? "i1"
@@ -897,6 +1062,21 @@ export class LlDyn {
     const name = `sc_dm_${this.dynMatchers.size}`;
     this.dynMatchers.set(matcherKey, name);
     this.host.journalAllocated?.(name, "dyn.dynMatchHelper", [t, preserveRefs]);
+    const codec = textCodecRecordClass(t, (id) => this.host.recordsById.get(id));
+    if (codec !== null) {
+      // A codec matches only its own handle box.
+      const B = new BlockBuilder();
+      const matched = this.handleTagMatches(B, TEXT_CODEC_TAG_NUM[codec]);
+      B.terminate(`ret i1 ${matched}`);
+      this.defs.push(
+        `define internal zeroext i1 @${name}(ptr %d) ${FN_ATTRS} { ; matches ${key}`,
+        B.render(),
+        `}`,
+        ``,
+      );
+      this.host.journalBuilt?.();
+      return name;
+    }
     const recursive = this.isRecursiveShape(t);
     const wrapped = recursive || this.holdsRecursiveShape(t);
     const B = new BlockBuilder();
@@ -921,7 +1101,10 @@ export class LlDyn {
       const lPlain = B.newLabel("dm.tr.plain");
       B.condBr(capsule, lCapsule, lPlain);
       B.startBlock(lCapsule);
-      if (preserveRefs) {
+      // A class target matches only capsules of that class (tested above):
+      // a materialized view is a plain object, which never carries a class
+      // brand, so materializing one cannot change the answer.
+      if (preserveRefs || (t.kind === "object" && t.className !== "%Error")) {
         B.terminate(`ret i1 false`);
       } else {
         const materialized = B.tmp();
@@ -1217,11 +1400,26 @@ export class LlDyn {
           );
         // Arms in canonical order; any full match answers true.
         const yes = B.newLabel("dm.y");
-        for (let tag = 0; tag < def.arms.length; tag++) {
-          const ln = B.newLabel("dm.n");
-          this.unionArmMatch(B, def, tag, yes, ln, preserveRefs);
-          B.startBlock(ln);
-        }
+        const values = this.dispatchValues(def);
+        if (values !== null) {
+          const no = B.newLabel("dm.n");
+          this.unionArmsByDiscriminant(
+            B,
+            def,
+            values,
+            def.arms.map((_, tag) => tag),
+            def.arms.map(() => yes),
+            no,
+            preserveRefs,
+            `@${name}.cases`,
+          );
+          B.startBlock(no);
+        } else
+          for (let tag = 0; tag < def.arms.length; tag++) {
+            const ln = B.newLabel("dm.n");
+            this.unionArmMatch(B, def, tag, yes, ln, preserveRefs);
+            B.startBlock(ln);
+          }
         B.terminate(`ret i1 false`);
         B.startBlock(yes);
         B.terminate(`ret i1 true`);
@@ -1505,6 +1703,19 @@ export class LlDyn {
     return descriptor;
   }
 
+  /** `record.sourceSpread(built, value)`: the built record keeps value's
+   * kept-source order over its own declared names. */
+  emitRecordSourceSpread(B: BlockBuilder, built: string, value: string, shapeId: string): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId)!;
+    this.keepsRecordSources = true;
+    const names = this.recordNameTable(shapeId, shape);
+    host.declare(`declare void @scr_record_source_spread(ptr, ptr, ptr, ptr, ${host.sizeType})`);
+    B.line(
+      `call void @scr_record_source_spread(ptr ${built}, ptr ${value}, ptr ${names.names}, ptr ${names.lens}, ${host.sizeType} ${shape.fields.length})`,
+    );
+  }
+
   /** The declared-name tables scr_record_source_note scans: parallel
    * constant arrays of field-name bytes and byte lengths in declaration
    * order (the order the record serializes), interned per shape. Internal
@@ -1603,6 +1814,31 @@ export class LlDyn {
       B.line(
         `${checked} = call ptr @scr_dyn_class_check(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,
       );
+      B.terminate(`ret ptr ${checked}`);
+      this.defs.push(
+        `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} {`,
+        B.render(),
+        `}`,
+        ``,
+      );
+      this.host.journalBuilt?.();
+      return name;
+    }
+    const codec = textCodecRecordClass(t, (id) => host.recordsById.get(id));
+    if (codec !== null) {
+      // The record the codec's handle box holds (+1), or the path TypeError.
+      const checked = B.tmp();
+      if (codec === "StringDecoder") {
+        host.declare(`declare ptr @scr_string_decoder_from_dyn(ptr, ptr, ptr)`);
+        B.line(
+          `${checked} = call ptr @scr_string_decoder_from_dyn(ptr %d, ptr %path, ptr ${want})`,
+        );
+      } else {
+        host.declare(`declare ptr @scr_text_codec_from_dyn(ptr, i1 zeroext, ptr, ptr)`);
+        B.line(
+          `${checked} = call ptr @scr_text_codec_from_dyn(ptr %d, i1 ${codec === "TextDecoder"}, ptr %path, ptr ${want})`,
+        );
+      }
       B.terminate(`ret ptr ${checked}`);
       this.defs.push(
         `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} {`,
@@ -1865,10 +2101,10 @@ export class LlDyn {
     };
     switch (t.kind) {
       case "date": {
-        host.declare(`declare double @scr_dyn_native_date_value(ptr)`);
+        host.declare(`declare ptr @scr_dyn_native_date_check(ptr, ptr)`);
         const r = B.tmp();
-        B.line(`${r} = call double @scr_dyn_native_date_value(ptr %d)`);
-        B.terminate(`ret double ${r}`);
+        B.line(`${r} = call ptr @scr_dyn_native_date_check(ptr %d, ptr %path)`);
+        B.terminate(`ret ptr ${r}`);
         break;
       }
       case "url":
@@ -2368,13 +2604,10 @@ export class LlDyn {
           throw new InternalCompilerError(
             `llvm emitter bug: dynCheck of unknown union ${t.unionId}`,
           );
-        // Arms in CANONICAL order, first FULL match wins. The matched
-        // arm's builder can no longer fail.
-        def.arms.forEach((arm, i) => {
-          const lHit = B.newLabel("dcu.h");
-          const lNext = B.newLabel("dcu.n");
-          this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs);
-          B.startBlock(lHit);
+        // Arms in unionArmOrder, first FULL match wins. The matched arm's
+        // builder can no longer fail.
+        const build = (i: number): void => {
+          const arm = def.arms[i]!;
           if (arm.kind === "undefinedT" || arm.kind === "nullT") {
             // A matched unit arm builds nothing: THE interned immortal
             // instance (rc == SIZE_MAX — no retain owed).
@@ -2413,8 +2646,36 @@ export class LlDyn {
             );
             B.terminate(`ret ptr ${u}`);
           }
-          B.startBlock(lNext);
-        });
+        };
+        const order = this.unionArmOrder(def);
+        const values = this.dispatchValues(def);
+        if (values !== null) {
+          const hits = def.arms.map(() => B.newLabel("dcu.h"));
+          const unmatched = B.newLabel("dcu.n");
+          this.unionArmsByDiscriminant(
+            B,
+            def,
+            values,
+            order,
+            hits,
+            unmatched,
+            preserveRefs,
+            `@${name}.cases`,
+          );
+          for (const i of order) {
+            B.startBlock(hits[i]!);
+            build(i);
+          }
+          B.startBlock(unmatched);
+        } else
+          for (const i of order) {
+            const lHit = B.newLabel("dcu.h");
+            const lNext = B.newLabel("dcu.n");
+            this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs);
+            B.startBlock(lHit);
+            build(i);
+            B.startBlock(lNext);
+          }
         if (preserveRefs) {
           B.line(
             `call void @scr_dyn_check_fail(ptr %path, ptr ${host.cstr("reference with its original layout")}, ptr %d)`,
@@ -2640,6 +2901,79 @@ export class LlDyn {
     return name;
   }
 
+  /** `i1`: %d is a handle box with tag `tag`. */
+  private handleTagMatches(B: BlockBuilder, tag: number): string {
+    const kd = this.kindOf(B, "%d");
+    const isHandle = B.tmp();
+    B.line(`${isHandle} = icmp eq i32 ${kd}, ${DYN_KIND.HANDLE}`);
+    const lHandle = B.newLabel("dm.handle");
+    const lDone = B.newLabel("dm.handle.done");
+    const entry = B.currentLabel();
+    B.condBr(isHandle, lHandle, lDone);
+    B.startBlock(lHandle);
+    const tagPtr = B.tmp();
+    const loaded = B.tmp();
+    B.line(
+      `${tagPtr} = getelementptr inbounds i8, ptr %d, i64 ${this.abiOffset(24, 20)} ; ->v.handle.tag`,
+    );
+    B.line(`${loaded} = load i32, ptr ${tagPtr}`);
+    const same = B.tmp();
+    B.line(`${same} = icmp eq i32 ${loaded}, ${tag}`);
+    B.br(lDone);
+    B.startBlock(lDone);
+    const matched = B.tmp();
+    B.line(`${matched} = phi i1 [ false, %${entry} ], [ ${same}, %${lHandle} ]`);
+    return matched;
+  }
+
+  /** A TextEncoder, TextDecoder or StringDecoder record boxes as its
+   * handle (+1), which holds the record by reference. The decoders pass
+   * the byte offsets of the fields their boxed methods read. */
+  private textCodecToDyn(
+    B: BlockBuilder,
+    t: IrType & { kind: "record" },
+    shape: IrRecordShape,
+    codec: "TextEncoder" | "TextDecoder" | "StringDecoder",
+  ): void {
+    const host = this.host;
+    const rc = vAdapters(host, t);
+    const r = B.tmp();
+    if (codec === "TextEncoder") {
+      host.declare(`declare ptr @scr_text_encoder_to_dyn(ptr, ptr, ptr)`);
+      B.line(
+        `${r} = call ptr @scr_text_encoder_to_dyn(ptr %v, ptr ${rc.retain}, ptr ${rc.release})`,
+      );
+    } else {
+      const struct = mangleRecordStruct(t.shapeId);
+      const base = host.nullableUnions.fieldBase(t.shapeId);
+      const start = B.tmp();
+      B.line(`${start} = ptrtoint ptr %v to ${this.S}`);
+      const fields: readonly string[] =
+        codec === "StringDecoder" ? STRING_DECODER_FIELDS : TEXT_DECODER_FIELDS;
+      const offsets = fields.map((field) => {
+        const index = shape.fields.findIndex((f) => f.name === field);
+        if (index < 0)
+          throw new InternalCompilerError(`llvm emitter bug: ${codec} record lacks ${field}`);
+        const p = B.tmp();
+        const at = B.tmp();
+        const offset = B.tmp();
+        B.line(
+          `${p} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 ${index + base} ; .${llvmCommentText(field)}`,
+        );
+        B.line(`${at} = ptrtoint ptr ${p} to ${this.S}`);
+        B.line(`${offset} = sub ${this.S} ${at}, ${start}`);
+        return `${this.S} ${offset}`;
+      });
+      const fn =
+        codec === "StringDecoder" ? "scr_string_decoder_to_dyn" : "scr_text_decoder_to_dyn";
+      host.declare(`declare ptr @${fn}(ptr, ptr, ptr, ${fields.map(() => this.S).join(", ")})`);
+      B.line(
+        `${r} = call ptr @${fn}(ptr %v, ptr ${rc.retain}, ptr ${rc.release}, ${offsets.join(", ")})`,
+      );
+    }
+    B.terminate(`ret ptr ${r}`);
+  }
+
   /* ── toDynHelper (walkers.ts, ported) ─────────────────────────── */
 
   /** `sc_td_<n>(<T> v) -> ptr` — build a fresh dyn value from a
@@ -2657,11 +2991,10 @@ export class LlDyn {
     let sourceAccessor: { name: string; release: string } | null = null;
     switch (t.kind) {
       case "date": {
-        // A Date handle holding the same time value; native Dates are
-        // immutable values, and so is the handle.
-        host.declare(`declare ptr @scr_dyn_native_date_from_ms(double)`);
+        // A Date handle holding the same Date object.
+        host.declare(`declare ptr @scr_dyn_native_date(ptr)`);
         const r = B.tmp();
-        B.line(`${r} = call ptr @scr_dyn_native_date_from_ms(double %v)`);
+        B.line(`${r} = call ptr @scr_dyn_native_date(ptr %v)`);
         B.terminate(`ret ptr ${r}`);
         break;
       }
@@ -2815,6 +3148,11 @@ export class LlDyn {
         const shape = host.recordsById.get(t.shapeId);
         if (!shape)
           throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
+        const codec = recordHandleCodecClass(shape);
+        if (codec !== null) {
+          this.textCodecToDyn(B, t, shape, codec);
+          break;
+        }
         const struct = mangleRecordStruct(t.shapeId);
         const base = host.nullableUnions.fieldBase(t.shapeId);
         const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + base]));

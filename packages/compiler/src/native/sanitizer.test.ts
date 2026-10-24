@@ -64,6 +64,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
         {
           root: directory,
           manifest,
+          licenses: manifest.licenses,
           packageText: "",
           manifestText: "",
           flavor: "dev",
@@ -86,6 +87,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
               builtinValues: false,
               warningReplace: false,
               stdioExtended: false,
+              brotli: false,
               regex: true,
               copying: false,
               textDecoderLegacy: false,
@@ -114,6 +116,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
               dgram: false,
               dnsPromises: false,
               dgramDyn: false,
+              textCodecDyn: false,
               watch: false,
               foreignFfi: false,
               nodeTest: false,
