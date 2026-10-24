@@ -7015,6 +7015,43 @@ function immutableSourceType(type: ts.Type, ctx: TypeMapperCtx): ts.Type | null 
   return null;
 }
 
+/** A mapped type reached through a type alias whose arguments mention no
+ * type parameter (`Record<never, number>`, `Catalog<typeof data, "image">`,
+ * a module-level alias without arguments):
+ * the checker computed its members from concrete inputs, so an empty
+ * result really is the empty object type, unlike `Partial<T>` inside a
+ * generic body. */
+function resolvedMappedAlias(t: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (!isMappedShape(t) || t.getAliasSymbol() === undefined) return false;
+  const args = t.getAliasTypeArguments();
+  const seen = new Set<ts.Type>();
+  const concrete = (part: ts.Type): boolean => {
+    if (part.flags & (ts.TypeFlags.TypeParameter | ts.TypeFlags.Index)) return false;
+    if (part.flags & (ts.TypeFlags.IndexedAccess | ts.TypeFlags.Conditional)) return false;
+    if (seen.has(part)) return true;
+    seen.add(part);
+    if (part.isUnionType() || part.isIntersectionType())
+      return ts.constituentTypes(part).every(concrete);
+    if (!part.getAliasTypeArguments().every(concrete)) return false;
+    return (
+      (part.flags & ts.TypeFlags.Object) === 0 ||
+      ((part as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) === 0 ||
+      ctx.checker.getTypeArguments(part as ts.TypeReference).every(concrete)
+    );
+  };
+  // An alias without type arguments is concrete when it is declared at
+  // module level (a function body's alias may mention that function's type
+  // parameters).
+  if (args.length === 0)
+    return t
+      .getAliasSymbol()!
+      .declarations.every(
+        (d) =>
+          ts.isTypeAliasDeclaration(d) && (ts.isSourceFile(d.parent) || ts.isModuleBlock(d.parent)),
+      );
+  return args.every(concrete);
+}
+
 /** True for MAPPED-type results — `Partial<Config>`, `Record<"a", n>`,
  * whatever `Pick`/`Omit` reduce to. Their shape is computed by the checker,
  * not declared anywhere: the only declaration behind them is the utility
@@ -7969,8 +8006,12 @@ function mapRecordTypeInner(
     // still unknown there) — interning `{}` would give a wrong type. The
     // degenerate empties (`Partial<{}>`, `Omit<C, keyof C>`) go with it.
     // An INDEX-SIGNATURE shape is exempt: `Record<string, T>` legitimately
-    // has zero declared members — the signature is the shape.
-    if (computed && props.length === 0 && !indexValue) return null;
+    // has zero declared members — the signature is the shape. So is a mapped
+    // alias instantiated over concrete arguments (`Record<never, T>`, a
+    // catalog type whose key filter keeps no key): the checker resolved it,
+    // and it is the empty object type below.
+    if (computed && props.length === 0 && !indexValue && !resolvedMappedAlias(widened, ctx))
+      return null;
     // An empty object type — `{}` (spelled, the checker's shared
     // intrinsic, or inferred from an empty object literal), `interface
     // Empty {}` — is tsc's TOP type over non-nullish values: every number,
