@@ -4235,25 +4235,35 @@ export class ClassDynamicDispatch {
    * (prototypeReflectedFlag, set when the view initializes): then the
    * program deleted the property, and the read continues to the base
    * class's prototype and past the last one to Object.prototype, as in
-   * Node. */
+   * Node. A prototype's own `constructor` is read with the instance
+   * `receiver` as `this`, so an accessor's getter runs on the instance. */
   private inheritedConstructor(
     lowerer: Lowerer,
     info: ClassInfo,
     key: IrExpr,
+    receiver: IrExpr,
     loc: SrcLoc,
   ): IrExpr {
     const cls = lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl!), DYN);
     const prototype = hasClassPrototypeData(info) ? classPrototypeData(lowerer, info, loc) : null;
     if (!prototype) return cls;
     const base = info.base;
+    const read = (): IrExpr => ({
+      kind: "libCall",
+      fn: "dyn.reflectGet",
+      args: [prototype, lowerer.coerceToExpected(key, DYN), receiver],
+      type: DYN,
+      loc,
+    });
+    // Past the last class prototype, the read continues to Object.prototype's data property.
     const next: IrExpr =
       base && !base.builtinError && base.decl && !base.generic && !base.localClass
-        ? this.inheritedConstructor(lowerer, base, key, loc)
+        ? this.inheritedConstructor(lowerer, base, key, receiver, loc)
         : { kind: "dynKeyGet", value: prototype, key, type: DYN, loc };
     return {
       kind: "ternary",
       cond: { kind: "libCall", fn: "dyn.hasOwn", args: [prototype, key], type: BOOL, loc },
-      then: { kind: "dynKeyGet", value: prototype, key, type: DYN, loc },
+      then: read(),
       else_: {
         kind: "ternary",
         cond: varRef(prototypeReflectedFlag(lowerer, info), BOOL, loc),
@@ -6045,7 +6055,13 @@ export class ClassDynamicDispatch {
                 type: DYN,
                 loc,
               },
-              else_: this.inheritedConstructor(lowerer, info, key, loc),
+              else_: this.inheritedConstructor(
+                lowerer,
+                info,
+                key,
+                lowerer.coerceToExpected(receiver, DYN),
+                loc,
+              ),
               type: DYN,
               loc,
             },

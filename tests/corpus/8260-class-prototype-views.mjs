@@ -153,3 +153,26 @@ delete Object.getPrototypeOf(new Root()).constructor;
 console.log(constructorNames(), new Middle().constructor === Object);
 Middle.prototype.constructor = function Named() {};
 console.log(constructorNames());
+
+// A reflected prototype whose constructor is an accessor: an instance's read runs the getter with the
+// instance as `this`, also where the instance's class inherits it.
+class Facet {
+  constructor(tag) {
+    this.tag = tag;
+  }
+}
+class Tile extends Facet {}
+class Brick extends Tile {}
+const facets = [new Tile("s"), new Brick("c"), new Facet("p")];
+const facetTags = () =>
+  facets.map((facet) => (typeof facet.constructor === "string" ? facet.constructor : facet.constructor.name)).join(",");
+Object.defineProperty(Tile.prototype, "constructor", {
+  get() {
+    return "on " + this.tag;
+  },
+  configurable: true,
+});
+delete Object.getPrototypeOf(new Brick("x")).constructor;
+console.log(facetTags());
+delete Object.getPrototypeOf(new Tile("x")).constructor;
+console.log(facetTags());
