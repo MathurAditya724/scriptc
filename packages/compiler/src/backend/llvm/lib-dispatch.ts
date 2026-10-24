@@ -277,6 +277,35 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
     return { name: "", type: e.type };
   }
+  if (e.fn === "array.speciesCreate") {
+    // The receiver is borrowed; the call answers a new reference.
+    const receiver = emitBorrowedInput(host, e.args[0]!);
+    const length = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_arr_species_create(ptr, double)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_create(ptr ${receiver.name}, double ${length.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "array.speciesFinish") {
+    // The instance is borrowed; the method's result moves into the call,
+    // which answers it or the instance that holds its elements.
+    const instance = emitBorrowedInput(host, e.args[0]!);
+    const result = host.emitExpr(e.args[1]!);
+    host.toHeap(result);
+    const setLength = host.emitExpr(e.args[2]!);
+    host.declare(`declare ptr @scr_arr_species_finish(ptr, ptr, i1 zeroext)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_finish(ptr ${instance.name}, ptr ${result.name}, i1 zeroext ${setLength.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
   if (e.fn === "array.speciesAdopt") {
     // The receiver is borrowed; the method's result moves into the call,
     // which answers it or the species instance that replaces it.

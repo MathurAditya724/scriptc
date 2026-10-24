@@ -658,6 +658,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.stderrWriteBytes": "scr_process_stderr_write_bytes",
   "insp.buffer": "scr_insp_buffer",
   "insp.typedArray": "scr_insp_typed_array",
+  "insp.bytes": "scr_insp_bytes",
   // util.inspect (scr_inspect.c): all args borrowed; string results +1;
   // the begin/entry/key/moreItems/end accumulator drives the emitted
   // container walks. None of these throw.
@@ -1351,6 +1352,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "array.subclassConstruct": "scr_arr_subclass_construct",
   "array.subclassConstructDyn": "scr_arr_subclass_construct_dyn",
   "array.speciesAdopt": "scr_arr_species_adopt",
+  "array.speciesCreate": "scr_arr_species_create",
+  "array.speciesFinish": "scr_arr_species_finish",
   "array.classConstructAdopt": "scr_arr_class_construct_adopt",
   "array.dynIsClass": "scr_dyn_is_array_class",
   "http.reqDestroy": "scr_http_req_destroy",

@@ -736,11 +736,7 @@ function inspectSupport(
     case "array":
       return inspectSupport(lowerer, t.elem, visiting, out);
     case "bytes":
-      // A Uint8Array and a Buffer share the u8 representation and print
-      // differently; the other element kinds are never Buffers.
-      return t.elem === "u8"
-        ? "Uint8Array and Buffer values inside composites have no inspect lowering yet (Buffer's <Buffer ..> form vs Uint8Array's is not recorded in the static type here)"
-        : null;
+      return null;
     case "record": {
       if (visiting.has(t.shapeId)) {
         out.recursive = true;
@@ -950,7 +946,15 @@ export function inspectExpr(
           loc,
         };
       }
-      return { kind: "libCall", fn: "insp.buffer", args: [value], type: STRING, loc };
+      // A Uint8Array, a Buffer and a DataView share the u8 representation
+      // and print differently: the view's own flags pick.
+      return {
+        kind: "libCall",
+        fn: "insp.bytes",
+        args: [value, recurse, depth],
+        type: STRING,
+        loc,
+      };
     case "dyn":
       return { kind: "libCall", fn: "insp.dyn", args: [value, recurse, depth], type: STRING, loc };
     case "generator":
@@ -2181,15 +2185,17 @@ export function lowerConsoleInspectArg(
       );
     }
     if (!isBufferTypeName(tname)) {
+      // A u8 value the checker types as a Uint8Array may still hold a
+      // Buffer, which Node prints as one: the view's flags pick.
       return {
         kind: "libCall",
-        fn: "insp.typedArray",
+        fn: t.elem === "u8" ? "insp.bytes" : "insp.typedArray",
         args: [value, numLit(0, loc), numLit(2, loc)],
         type: STRING,
         loc,
       };
     }
-    return inspectExpr(lowerer, t, value, numLit(0, loc), numLit(2, loc), loc);
+    return { kind: "libCall", fn: "insp.buffer", args: [value], type: STRING, loc };
   }
   if (t.kind === "void") {
     // Node prints "undefined" for a void call's result; a void expression
@@ -2526,7 +2532,10 @@ export function lowerInspectValue(
         value,
         (input) => ({
           kind: "libCall",
-          fn: "insp.typedArray",
+          fn:
+            value.type.kind === "bytes" && value.type.elem === "u8"
+              ? "insp.bytes"
+              : "insp.typedArray",
           args: [input, numLit(0, loc), numLit(options.depth, loc)],
           type: STRING,
           loc,
@@ -2535,7 +2544,7 @@ export function lowerInspectValue(
       );
     }
     // Buffers render fully at any depth and on one line (custom inspect).
-    return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(2, loc), loc);
+    return { kind: "libCall", fn: "insp.buffer", args: [value], type: STRING, loc };
   }
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, value.type, new Set(), walk);

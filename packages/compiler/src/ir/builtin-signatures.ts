@@ -3901,6 +3901,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * argument (-1: the result's length) and whether to set the length. The
    * result has the second argument's type. */
   "array.speciesAdopt": { argTypes: [null, null, F64, BOOL], result: VOID },
+  /** ArraySpeciesCreate ahead of a method that calls back into the program
+   * (map, filter, flatMap): the receiver (borrowed) and the species
+   * constructor's length argument. The result has the receiver's type: the
+   * instance, or the receiver itself when it is a plain array. */
+  "array.speciesCreate": { argTypes: [null, F64], result: VOID },
+  /** The method's plain result (moved) defined on the instance
+   * array.speciesCreate answered (borrowed), and whether to set the length.
+   * The result has the second argument's type. */
+  "array.speciesFinish": { argTypes: [null, null, BOOL], result: VOID },
   /** Array.of / Array.from on a class declared `extends Array`: the class
    * (its name, a literal), the plain result (moved) and the constructor's
    * length argument (negative: no argument). */
@@ -4477,6 +4486,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.buffer": { argTypes: [BYTES_U8], result: STRING },
   /** A numeric typed array that is not a Buffer (any element kind). */
   "insp.typedArray": { argTypes: [null, F64, F64], result: STRING },
+  /** A u8 byte view in a union arm, element or field: a DataView, Buffer
+   * or Uint8Array by its own flags. */
+  "insp.bytes": { argTypes: [null, F64, F64], result: STRING },
   "insp.error": { argTypes: [null, F64, F64], result: STRING },
   "insp.errorHasCause": { argTypes: [null], result: BOOL },
   "insp.errorBagHasProperties": { argTypes: [DYN], result: BOOL },

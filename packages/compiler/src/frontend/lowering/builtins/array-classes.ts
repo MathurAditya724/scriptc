@@ -468,19 +468,22 @@ export function programDeclaresArrayClass(lowerer: Lowerer): boolean {
 
 /** The Array methods that create their result through ArraySpeciesCreate:
  * whether the species constructor receives the result's length (map,
- * slice, splice; the others pass 0) and whether the length is set after
- * the elements are defined (slice, splice, concat). */
-const SPECIES_METHODS: ReadonlyMap<string, { resultLength: boolean; setLength: boolean }> = new Map(
-  [
-    ["map", { resultLength: true, setLength: false }],
-    ["filter", { resultLength: false, setLength: false }],
-    ["slice", { resultLength: true, setLength: true }],
-    ["splice", { resultLength: true, setLength: true }],
-    ["concat", { resultLength: false, setLength: true }],
-    ["flat", { resultLength: false, setLength: false }],
-    ["flatMap", { resultLength: false, setLength: false }],
-  ],
-);
+ * slice, splice; the others pass 0), whether the length is set after the
+ * elements are defined (slice, splice, concat), and whether the method
+ * calls back into the program (map, filter, flatMap), which it does after
+ * the species constructor ran. */
+const SPECIES_METHODS: ReadonlyMap<
+  string,
+  { resultLength: boolean; setLength: boolean; callback: boolean }
+> = new Map([
+  ["map", { resultLength: true, setLength: false, callback: true }],
+  ["filter", { resultLength: false, setLength: false, callback: true }],
+  ["slice", { resultLength: true, setLength: true, callback: false }],
+  ["splice", { resultLength: true, setLength: true, callback: false }],
+  ["concat", { resultLength: false, setLength: true, callback: false }],
+  ["flat", { resultLength: false, setLength: false, callback: false }],
+  ["flatMap", { resultLength: false, setLength: false, callback: true }],
+]);
 
 /** An Array method call whose result an Array subclass instance creates
  * through its species (scr_arr_species_adopt): the receiver is evaluated
@@ -511,6 +514,63 @@ export function lowerWithArraySpecies(
     lowerer.stagedArguments.delete(key);
   }
   if (result === null || result.type.kind !== "array") return result;
+  const receiverRef: IrExpr = { kind: "varRef", localId: local.id, type: receiver.type, loc };
+  if (mode.callback) {
+    // The species constructor runs before the first callback: the
+    // arguments are evaluated in order, then the instance is created (with
+    // the receiver's length for map, 0 otherwise), then the method runs and
+    // its elements move into the instance.
+    if (
+      result.kind !== "call" ||
+      result.args[0]?.kind !== "varRef" ||
+      result.args[0].localId !== local.id
+    )
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `'${access.name.text}' in this form when the program declares a class that extends Array`,
+      );
+    const stmts: IrStmt[] = [{ kind: "varDecl", localId: local.id, init: receiver, loc }];
+    const args: IrExpr[] = [receiverRef];
+    for (const arg of result.args.slice(1)) {
+      const held = lowerer.declareHiddenLocal("%speciesArgument", arg.type);
+      stmts.push({ kind: "varDecl", localId: held.id, init: arg, loc });
+      args.push({ kind: "varRef", localId: held.id, type: arg.type, loc });
+    }
+    const instance = lowerer.declareHiddenLocal("%speciesInstance", receiver.type);
+    const length: IrExpr = mode.resultLength
+      ? { kind: "arrIntrinsic", method: "length", receiver: receiverRef, args: [], type: F64, loc }
+      : { kind: "numLit", value: 0, type: F64, loc };
+    stmts.push({
+      kind: "varDecl",
+      localId: instance.id,
+      init: {
+        kind: "libCall",
+        fn: "array.speciesCreate",
+        args: [receiverRef, length],
+        type: receiver.type,
+        loc,
+      },
+      loc,
+    });
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: {
+        kind: "libCall",
+        fn: "array.speciesFinish",
+        args: [
+          { kind: "varRef", localId: instance.id, type: receiver.type, loc },
+          { ...result, args },
+          { kind: "boolLit", value: mode.setLength, type: BOOL, loc },
+        ],
+        type: result.type,
+        loc,
+      },
+      type: result.type,
+      loc,
+    };
+  }
   return {
     kind: "seqExpr",
     stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
@@ -518,7 +578,7 @@ export function lowerWithArraySpecies(
       kind: "libCall",
       fn: "array.speciesAdopt",
       args: [
-        { kind: "varRef", localId: local.id, type: receiver.type, loc },
+        receiverRef,
         result,
         { kind: "numLit", value: mode.resultLength ? -1 : 0, type: F64, loc },
         { kind: "boolLit", value: mode.setLength, type: BOOL, loc },

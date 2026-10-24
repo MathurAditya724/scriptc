@@ -1743,6 +1743,7 @@ static void scr_arr_set_slot(ScrArr *a, double i, uint64_t slot);
 
 static ScrArr *scr_arr_species_fill(const ScrArrClass *cls, ScrArr *result, double ctor_length,
                                     bool with_length, bool set_length);
+static ScrArr *scr_arr_species_move(ScrArr *species, ScrArr *result, bool set_length);
 
 /* Gives an Array subclass instance holding no elements (only holes) another
  * element type: its storage is dropped and its length kept. */
@@ -1769,6 +1770,28 @@ ScrArr *scr_arr_species_adopt(ScrArr *recv, ScrArr *result, double ctor_length, 
   return scr_arr_species_fill(cls, result, ctor_length, true, set_length);
 }
 
+ScrArr *scr_arr_species_create(ScrArr *recv, double ctor_length) {
+  const ScrArrClass *cls = scr_arr_class_of(recv);
+  if (cls == NULL) return scr_arr_retain(recv);
+  if (cls->species == NULL) {
+    static const char msg[] =
+        "this Array subclass's constructor cannot construct a species result (Symbol.species)";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return scr_arr_retain(recv);
+  }
+  ScrArr *species = cls->species(ctor_length, true);
+  if (scr_exc_pending()) {
+    scr_arr_release(species);
+    return scr_arr_retain(recv);
+  }
+  return species;
+}
+
+ScrArr *scr_arr_species_finish(ScrArr *species, ScrArr *result, bool set_length) {
+  if (scr_arr_class_of(species) == NULL) return result;
+  return scr_arr_species_move(scr_arr_retain(species), result, set_length);
+}
+
 ScrArr *scr_arr_class_construct_adopt(const ScrArrClass *cls, ScrArr *result, double ctor_length) {
   return scr_arr_species_fill(cls, result, ctor_length < 0 ? 0 : ctor_length, ctor_length >= 0, true);
 }
@@ -1786,6 +1809,13 @@ static ScrArr *scr_arr_species_fill(const ScrArrClass *cls, ScrArr *result, doub
     scr_arr_release(species);
     return result;
   }
+  return scr_arr_species_move(species, result, set_length);
+}
+
+/* Defines the present elements of `result` (owned) on the species instance
+ * `species` (owned) and answers the instance, or the result with an error
+ * pending when the instance cannot take them. */
+static ScrArr *scr_arr_species_move(ScrArr *species, ScrArr *result, bool set_length) {
   if (species->elem != result->elem || scr_arr_ops(species) != scr_arr_ops(result)) {
     /* A result of another element type (map, flatMap): an instance the
      * constructor left without elements takes the result's element type;

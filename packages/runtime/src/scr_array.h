@@ -517,6 +517,16 @@ void scr_arr_subclass_construct_dyn(ScrArr *a, const struct ScrDyn *args, bool d
  * filter, flat and flatMap do not). A negative `ctor_length` passes the
  * result's length. Result owned. */
 ScrArr *scr_arr_species_adopt(ScrArr *recv, ScrArr *result, double ctor_length, bool set_length);
+/* ArraySpeciesCreate ahead of an Array method that calls back into the
+ * program (map, filter, flatMap), so the species constructor runs before
+ * the first callback: a subclass instance `recv` (borrowed) answers
+ * `new C(ctor_length)`, a plain receiver itself. Result owned. */
+ScrArr *scr_arr_species_create(ScrArr *recv, double ctor_length);
+/* The present elements of the method's result `result` (owned) defined on
+ * the instance scr_arr_species_create answered (`species`, borrowed), and
+ * its length set to the result's when `set_length`; a plain receiver's
+ * result as it is. Result owned. */
+ScrArr *scr_arr_species_finish(ScrArr *species, ScrArr *result, bool set_length);
 /* Array.of / Array.from called on an Array subclass: `new C(ctor_length)`
  * (`new C()` when ctor_length is negative), then the elements of `result`
  * (owned) and its length, as scr_arr_species_adopt. */

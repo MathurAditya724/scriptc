@@ -1489,6 +1489,12 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
   return out;
 }
 
+ScrStr *scr_insp_bytes(ScrBytes *b, double recurse, double depth) {
+  if (b->is_data_view) return scr_insp_data_view(b, recurse, depth);
+  if (b->is_buffer) return scr_insp_buffer(b);
+  return scr_insp_typed_array(b, recurse, depth);
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
   switch (d->kind) {
