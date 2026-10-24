@@ -46,6 +46,10 @@ void scr_url_set_checked(ScrUrl *u, ScrStr *field, const ScrDyn *value); /* borr
  * null and has no lowering for an object that is not a URL. Borrowed; +1,
  * or NULL with the error pending. */
 ScrDyn *scr_url_to_http_options(ScrUrl *u);
+/* UTS #46 ToASCII for the host parser: NULL until scr_url_idna_install
+ * (scr_idna.c, emitted at startup by programs that use URLs) sets it. */
+extern ScrStr *(*scr_url_host_to_ascii)(const char *p, size_t n);
+void scr_url_idna_install(void);
 ScrDyn *scr_url_to_http_options_dyn(const ScrDyn *value);
 /* node:url's legacy surface (scr_url_legacy.c — linked with the regex,
  * querystring and dyn-async units). url.parse() answers a checked-dynamic

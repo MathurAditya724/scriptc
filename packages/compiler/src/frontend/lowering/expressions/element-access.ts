@@ -45,6 +45,7 @@ import {
   lowerDynMemberAssignment,
   lowerOptionalArrayIndexRead,
   lowerOptionalNumber,
+  assertedReadObservesUndefined,
   recordKeyResultOk,
   representedClassFieldTarget,
   runtimeOptionalElementKey,
@@ -381,13 +382,18 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     if (index.type.kind !== "f64") {
       lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
     }
-    // `t[i]!` asserts presence: the numeric element read (NaN when
-    // invalid). Every other read answers undefined for an invalid index,
-    // like Node.
+    // `t[i]!` performs no runtime check, but its static type is a number:
+    // it takes the numeric element read (NaN when invalid), except where
+    // the value reaches a use that tells undefined from NaN (an equality, a
+    // string conversion, `typeof`, an array element), which reads undefined
+    // for an invalid index like `t[i]`. Every other read answers undefined
+    // for an invalid index, like Node.
     // A read whose every consumer treats undefined like NaN (see
     // nan-coded-reads.ts) is the same plain numeric read.
     if (
-      (ts.isNonNullExpression(expr.parent) && expr.parent.expression === expr) ||
+      (ts.isNonNullExpression(expr.parent) &&
+        expr.parent.expression === expr &&
+        !assertedReadObservesUndefined(lowerer, expr.parent)) ||
       lowerer.nanCodedReads?.isNumericRead(expr) === true
     ) {
       return {

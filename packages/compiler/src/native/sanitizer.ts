@@ -94,6 +94,7 @@ export function buildSanitizedRuntime(
   const quickjs = join(vendor, "quickjs-ng");
   const zlib = join(vendor, "zlib");
   const mbedtls = join(vendor, "mbedtls");
+  const brotli = join(vendor, "brotli", "c");
   const cacheIdentity = contentDigest(
     JSON.stringify({
       schema: 1,
@@ -137,6 +138,8 @@ export function buildSanitizedRuntime(
     zlib,
     "-I",
     join(mbedtls, "include"),
+    "-I",
+    join(brotli, "include"),
     ...(toolchain.target.platform === "linux" ? ["-ffunction-sections", "-fdata-sections"] : []),
   ];
   const runtimeObjects: string[] = [];
@@ -173,9 +176,23 @@ export function buildSanitizedRuntime(
         .filter((file) => file.endsWith(".c") && !file.startsWith("."))
         .sort();
       args = ["-std=c11", "-I", join(mbedtls, "include"), "-I", directory];
+    } else if (name === "brotli") {
+      directory = brotli;
+      sources = ["common", "dec", "enc"]
+        .flatMap((dir) =>
+          readdirSync(join(brotli, dir))
+            .filter((file) => file.endsWith(".c") && !file.startsWith("."))
+            .map((file) => `${dir}/${file}`),
+        )
+        .sort();
+      args = ["-std=c11", "-I", join(brotli, "include")];
     } else throw new NativeCodegenError("SC3003", `unsupported runtime vendor archive: ${name}`);
     const objects = sources.map((source) =>
-      compile(join(directory, source), name + "-" + source.replace(/\.c$/, ".o"), args),
+      compile(
+        join(directory, source),
+        name + "-" + source.replaceAll("/", "-").replace(/\.c$/, ".o"),
+        args,
+      ),
     );
     const output = join(stage, "libscriptc-" + name + ".a");
     runNativeTool(

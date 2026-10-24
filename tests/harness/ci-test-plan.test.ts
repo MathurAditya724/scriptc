@@ -298,8 +298,10 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   // runner, and directly elsewhere.
   const linuxRun = linux.steps.at(-1)!.run as string;
   expect(linuxRun.startsWith("ulimit -c 0\n")).toBe(true);
-  expect(linuxRun).toContain("systemd-run --scope --quiet -p MemoryMax=14G -p OOMPolicy=continue");
-  expect(linuxRun).toMatch(/-- env PATH="\$PATH" HOME="\$HOME" node scripts\/ci-test\.mjs\n/);
+  expect(linuxRun).toContain("systemd-run --scope --quiet -p MemoryMax=15G -p OOMPolicy=continue");
+  expect(linuxRun).toMatch(
+    /-- env PATH="\$PATH" HOME="\$HOME" NODE_OPTIONS="--max-old-space-size=4096" node scripts\/ci-test\.mjs\n/,
+  );
   expect(linuxRun.endsWith("fi\nnode scripts/ci-test.mjs\n")).toBe(true);
   expect(macos.steps.at(-1)!.run).toBe("node scripts/ci-test.mjs");
   for (const job of [linux, macos]) expect(job.strategy.matrix.flavor).toEqual(["plain", "san"]);

@@ -3962,10 +3962,14 @@ function exactCycleRefusal7(
       if (ts.isExportAssignment(stmt) && !stmt.isExportEquals) {
         return `the default export expression at ${lineOf(stmt)} has no initialization state inside the cycle`;
       }
+      // `export * from` binds each name to the declaring member's own
+      // binding, like a named re-export, so only `export * as ns` (a
+      // namespace object of a member) has state of its own.
       if (
         ts.isExportDeclaration(stmt) &&
         !stmt.isTypeOnly &&
-        (stmt.exportClause === undefined || ts.isNamespaceExport(stmt.exportClause))
+        stmt.exportClause !== undefined &&
+        ts.isNamespaceExport(stmt.exportClause)
       ) {
         const dep = targetOf(stmt);
         if (dep !== null && members.has(dep)) {

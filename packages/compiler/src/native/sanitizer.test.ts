@@ -87,6 +87,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
               computedRequire: false,
               warningReplace: false,
               stdioExtended: false,
+              brotli: false,
               regex: true,
               copying: false,
               textDecoderLegacy: false,
