@@ -7445,7 +7445,7 @@ function lowerCjsExportStatement(
   const fenceMutable = (nameNode: ts.Identifier): void => {
     const sym = lowerer.resolveValueSymbol(nameNode);
     const g = sym ? lowerer.globalsBySymbol.get(sym) : undefined;
-    if (g?.mutable) {
+    if (g?.mutable && !(sym && settledBeforeExport(lowerer, sym, cjs.expr))) {
       lowerer.unsupported(
         "SC1090",
         nameNode,
@@ -7605,7 +7605,7 @@ function lowerCjsSingleValueExport(
     }
     const g = lowerer.globalsBySymbol.get(sym);
     if (g) {
-      if (g.mutable) {
+      if (g.mutable && !settledBeforeExport(lowerer, sym, rhs)) {
         lowerer.unsupported(
           "SC1090",
           rhs,
@@ -12706,4 +12706,20 @@ function isAssertionInitializer(node: ts.Expression): boolean {
   let e = node;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   return ts.isAsExpression(e) || ts.isTypeAssertion(e);
+}
+
+/** A `var` (or `let`) whose initialized declaration precedes the export
+ * statement in the module's top-level statements and that nothing ever
+ * reassigns: exporting it by reference reads the value Node copies. The
+ * legacy `var ns = ns || {}; …; module.exports = { ns }` shape. */
+function settledBeforeExport(lowerer: Lowerer, sym: ts.Symbol, exportNode: ts.Node): boolean {
+  const decl = sym.valueDeclaration;
+  if (!decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) return false;
+  const stmt = decl.parent?.parent;
+  if (!stmt || !ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent)) return false;
+  let exportStmt: ts.Node = exportNode;
+  while (exportStmt.parent !== undefined && !ts.isSourceFile(exportStmt.parent))
+    exportStmt = exportStmt.parent;
+  if (exportStmt.parent !== stmt.parent || stmt.end > exportStmt.pos) return false;
+  return bindingNeverReassigned(lowerer, sym, decl);
 }
