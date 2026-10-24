@@ -295,13 +295,16 @@ static void stop_process(Ts7Process *p) {
   close(p->socket);
   int status;
   pid_t pid = (pid_t)p->pid;
-  for (int attempt = 0; attempt < 5; attempt++) {
+  // A server exits within a fraction of a millisecond of reading EOF, so the
+  // checks start 0.1 ms apart and double: 51.1 ms in all before the kill.
+  for (int attempt = 0; attempt < 10; attempt++) {
     pid_t result;
     do { result = waitpid(pid, &status, WNOHANG); } while (result < 0 && errno == EINTR);
     // ECHILD also means the PID no longer belongs to us. Never signal a
     // potentially recycled PID after somebody else has reaped the child.
     if (result == pid || (result < 0 && errno == ECHILD)) return;
-    struct timespec delay = {0, 10000000};
+    if (attempt == 9) break;
+    struct timespec delay = {0, 100000L << attempt};
     while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {}
   }
   (void)kill(pid, SIGKILL);
