@@ -1,8 +1,10 @@
 "use strict";
-// Error subclasses with a class field, which their instances create before
-// an own `name`, and a property bag that a later dynamic definition or
-// write commits. Object.keys and JSON list the field before `name`, and a
-// `message` that Error's constructor created before both.
+// Error subclasses with a property bag that a later dynamic definition or
+// write commits. Object.keys and JSON keep the order in which an instance
+// created its properties: a class field before an own `name` that is
+// assigned after construction, a `name` a constructor assigns before a
+// later property, and a `message` that Error's constructor created before
+// all of them.
 
 const messageDescriptor = {
   get() {
@@ -51,3 +53,26 @@ function redefine(instance) {
 }
 const direct = redefine(new Direct());
 console.log(Object.keys(direct).join(","), JSON.stringify(direct), direct.name);
+
+// Constructors that assign `name` and then another property, which their
+// instances create in that order, with and without a message passed to
+// Error, before the message is redefined.
+class Named extends Error {
+  constructor() {
+    super();
+    this.name = "Named";
+    this.detail = "named";
+  }
+}
+const named = redefine(new Named());
+console.log(Object.keys(named).join(","), JSON.stringify(named), named.name);
+
+class NamedMessage extends Error {
+  constructor() {
+    super("constructed");
+    this.name = "NamedMessage";
+    this.detail = "named";
+  }
+}
+const namedMessage = redefine(new NamedMessage());
+console.log(Object.keys(namedMessage).join(","), JSON.stringify(namedMessage), namedMessage.name);
