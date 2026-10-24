@@ -6403,6 +6403,25 @@ function lexWithAccessorNames(sf: ts.SourceFile): ReturnType<typeof cjsLexedExpo
  * `dep`: the names its lexer detects, CommonJS re-exports included (the
  * rule of the named-import link check), plus `default` and
  * `module.exports`. */
+/** `dep` and every CommonJS module it re-exports, transitively (the modules
+ * whose exports its namespace object shows). */
+export function cjsReexportedModules(program: ts.Program, dep: ts.SourceFile): ts.SourceFile[] {
+  const resolveDep = cjsReexportDep7(program);
+  const seen = new Set<ts.SourceFile>([dep]);
+  const order = [dep];
+  for (let i = 0; i < order.length; i++) {
+    const mod = order[i]!;
+    for (const spec of lexWithAccessorNames(mod).reexports) {
+      const next = resolveDep(mod, spec);
+      if (next !== null && !seen.has(next)) {
+        seen.add(next);
+        order.push(next);
+      }
+    }
+  }
+  return order;
+}
+
 export function cjsNamespaceExportNames(program: ts.Program, dep: ts.SourceFile): Set<string> {
   const names = cjsVisibleNames(dep, lexWithAccessorNames, cjsReexportDep7(program), new Map());
   return new Set([...names, "default", "module.exports"]);
@@ -6504,10 +6523,12 @@ function cjsNamedImportLinkCheck(
   };
   const resolveCjsDep = cjsReexportDep7(program);
   const visible = (dep: ts.SourceFile, name: string): boolean =>
-    // `default` is the module.exports binding itself — always provided.
-    // The program already owns native source ASTs; reuse them without
-    // starting another syntax session or reparsing their source text.
+    // `default` and `module.exports` are the module.exports binding itself
+    // — always provided. The program already owns native source ASTs;
+    // reuse them without starting another syntax session or reparsing
+    // their source text.
     name === "default" ||
+    name === "module.exports" ||
     cjsVisibleNames(dep, lexWithAccessorNames, resolveCjsDep, lexMemo).has(name);
 
   /** The statement's resolved LOCAL CommonJS dependency, when it is an

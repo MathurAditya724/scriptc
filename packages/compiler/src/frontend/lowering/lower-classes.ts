@@ -9950,23 +9950,30 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     const options = args[1];
     let granularity = "grapheme";
     if (options && !undefinedArg(options)) {
-      const properties = ts.isObjectLiteralExpression(options) ? options.properties.nodes : null;
-      const property = properties?.length === 1 ? properties[0] : undefined;
-      if (
-        property === undefined ||
-        !ts.isPropertyAssignment(property) ||
-        !(ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) ||
-        property.name.text !== "granularity" ||
-        !ts.isStringLiteral(property.initializer) ||
-        !granularities.includes(property.initializer.text)
-      ) {
+      // An object literal of `granularity` entries (none: the default; a
+      // repeated key: the last one, as in JavaScript).
+      if (!ts.isObjectLiteralExpression(options))
         lowerer.noLowering(
           "Intl.Segmenter options",
           options,
           'the native segmenter supports default options and { granularity: "grapheme" }; word and sentence segmentation remain unsupported',
         );
+      for (const property of options.properties.nodes) {
+        if (
+          !ts.isPropertyAssignment(property) ||
+          !(ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) ||
+          property.name.text !== "granularity" ||
+          !ts.isStringLiteral(property.initializer) ||
+          !granularities.includes(property.initializer.text)
+        ) {
+          lowerer.noLowering(
+            "Intl.Segmenter options",
+            options,
+            'the native segmenter supports default options and { granularity: "grapheme" }; word and sentence segmentation remain unsupported',
+          );
+        }
+        granularity = property.initializer.text;
       }
-      granularity = property.initializer.text;
     }
     // Explicit undefined expressions can carry effects; retain argument order.
     const stmts: IrStmt[] = args.map((arg) => {

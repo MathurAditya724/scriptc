@@ -270,6 +270,7 @@ import {
   cjsExportAssignmentOf,
   cjsExportDiscardReason,
   cjsExportsAssignedInFunctions,
+  cjsReexportedModules,
   cjsNamespaceExportNames,
   fallbackDtsPath,
   isCheckedJsSourceFile,
@@ -4016,9 +4017,20 @@ export class Lowerer {
   } {
     let namespace = this.cjsNamespaces.get(dep);
     if (namespace === undefined) {
+      // A re-exported name reads the module that assigns it, so the writes
+      // after evaluation of every re-exported module count too.
+      let assignedLater: Set<string> | "all" = new Set();
+      for (const mod of cjsReexportedModules(this.program, dep)) {
+        const later = cjsExportsAssignedInFunctions(mod);
+        if (later === "all") {
+          assignedLater = "all";
+          break;
+        }
+        for (const name of later) assignedLater.add(name);
+      }
       namespace = {
         names: cjsNamespaceExportNames(this.program, dep),
-        assignedLater: cjsExportsAssignedInFunctions(dep),
+        assignedLater,
       };
       this.cjsNamespaces.set(dep, namespace);
     }

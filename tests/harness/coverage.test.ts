@@ -553,6 +553,22 @@ test("CommonJS var and let exports that can change after the export keep their r
   expect(refused).toEqual(["counter", "tab", "twice"]);
 });
 
+test("CommonJS namespace reads of exports a re-exported module assigns later keep their refusal", () => {
+  // wrapper.cjs re-exports impl.cjs, whose set() assigns `current` after
+  // evaluation; `version` never changes.
+  const { coverage } = analyze(fixture("cjs-namespace-reexports/main.mjs"));
+  const refused = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
+    .map(
+      (d) =>
+        /reads of '(\w+)' through namespace imports of CommonJS modules whose functions assign exports/.exec(
+          d.message,
+        )?.[1],
+    )
+    .filter((name) => name !== undefined)
+    .sort();
+  expect(refused).toEqual(["current"]);
+});
+
 test("inferred JavaScript compiles natively", async () => {
   // The js-gap fixture turns noImplicitAny off. Its inferred parameter
   // uses checked native values alongside the JSDoc-typed neighbor.
