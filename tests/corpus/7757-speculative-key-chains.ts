@@ -54,6 +54,49 @@ function hoisted(n: number): number {
   return acc;
 }
 
+// A check that fails before a write with a hoisted call: that write still
+// makes its call on the iteration that bails.
+function tally(x: number): number {
+  calls++;
+  return x * 2 + 1;
+}
+function chained(n: number): number {
+  let a = 1;
+  let b = 1;
+  for (let i = 0; i < n; i++) {
+    a = a * 3 + i;
+    b = (b * 7 + tally(i) + (a % 11)) % 1000003;
+  }
+  return b;
+}
+
+// A divisor next to a power of two is not one: 2^52 + 1 divides as itself.
+function nearPowers(start: number, steps: number): number[] {
+  const out: number[] = [];
+  let v = start;
+  for (let i = 0; i < steps; i++) {
+    v = Math.floor(v / 4503599627370497) * 4 + Math.floor(v / 4503599627370496) + i;
+    out.push(v);
+  }
+  return out;
+}
+
+// A helper that calls a function with effects is not expanded: its
+// argument is read before the call runs.
+let level = 0;
+function raise(): number {
+  level += 100;
+  return 1;
+}
+function lifted(x: number): number {
+  return raise() + x;
+}
+function effectfulHelper(n: number): number {
+  let acc = 0;
+  for (let i = 0; i < n; i++) acc = (acc * 3 + lifted(level)) % 1000003;
+  return acc;
+}
+
 const codes = new Uint8Array(5000);
 let seed = 7;
 for (let i = 0; i < codes.length; i++) {
@@ -65,3 +108,7 @@ console.log(shifts(1000, 3, 6), shifts(-1000, 2, 6), shifts(5, 53, 3), shifts(7.
 console.log(hoisted(20), calls);
 const short = codes.subarray(0, 3);
 console.log(chain(short, 2), chain(new Uint8Array(0), 2));
+calls = 0;
+console.log(chained(34), chained(60), calls);
+console.log(nearPowers(4503599627370496, 3), nearPowers(9007199254740991, 2));
+console.log(effectfulHelper(10), level);

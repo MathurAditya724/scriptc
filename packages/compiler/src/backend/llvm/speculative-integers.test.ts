@@ -339,6 +339,36 @@ test("Math.floor needs a power-of-two divisor, and expansion pure arguments", ()
     body: [{ kind: "exprStmt", expr: call("log", []), loc }],
   };
   expect(inlinableNumberFunction(effectful as never)).toBeUndefined();
+  // A divisor next to a power of two is not one, though Math.log2 rounds it to 52.
+  const near = (d: number): IrExpr => libCall("math.floor", [bin("/", ref("a"), num(d))]);
+  expect(rewriteSpeculable(near(2 ** 52), {})).not.toBeNull();
+  expect(rewriteSpeculable(near(2 ** 52 + 1), {})).toBeNull();
+  expect(rewriteSpeculable(near(2 ** 53), {})).toBeNull();
+  expect(rewriteSpeculable(near(0.5), {})).toBeNull();
+});
+
+test("a helper's own calls must be of helpers that expand too", () => {
+  // `function outer(v, n) { return trim(v, n) + other(v); }`
+  const outer = {
+    ...(trim as object),
+    name: "outer",
+    body: [
+      {
+        kind: "return",
+        value: bin("+", call("trim", [ref("v"), ref("n")]), call("other", [ref("v")])),
+        loc,
+      },
+    ],
+  };
+  const helpers = (callee: string) =>
+    callee === "trim" ? inlinableNumberFunction(trim) : undefined;
+  expect(inlinableNumberFunction(outer as never)).toBeUndefined();
+  expect(inlinableNumberFunction(outer as never, helpers)).toBeUndefined();
+  const pure = {
+    ...(outer as object),
+    body: [{ kind: "return", value: bin("*", call("trim", [ref("v"), ref("n")]), num(2)), loc }],
+  };
+  expect(inlinableNumberFunction(pure as never, helpers)).toBeDefined();
 });
 
 test("other leaves are hoisted only when no call can change the write's locals", () => {

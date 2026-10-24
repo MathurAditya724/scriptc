@@ -86,8 +86,12 @@ const MAX_INLINE_NODES = 64;
 /** A function that only returns arithmetic over its number parameters:
  * `function trim(v, n) { return v - Math.floor(v / Math.pow(2, n)) * Math.pow(2, n); }`.
  * Its call evaluates nothing but its arguments, so a speculated write may
- * expand it in place. */
-export function inlinableNumberFunction(fn: IrFunction): InlinableFunction | undefined {
+ * expand it in place. A call in its body must be of another such function
+ * (`resolve`): any other call could change what the expansion reads. */
+export function inlinableNumberFunction(
+  fn: IrFunction,
+  resolve?: (callee: string) => InlinableFunction | undefined,
+): InlinableFunction | undefined {
   if (
     fn.async ||
     fn.generator ||
@@ -126,7 +130,7 @@ export function inlinableNumberFunction(fn: IrFunction): InlinableFunction | und
       case "libCall":
         return (e.fn === "math.floor" || e.fn === "math.pow") && e.args.every(pure);
       case "call":
-        return e.args.every(pure);
+        return resolve?.(e.callee) !== undefined && e.args.every(pure);
       default:
         return false;
     }
@@ -175,13 +179,18 @@ function substitute(e: IrExpr, args: ReadonlyMap<string, IrExpr>): IrExpr {
   }
 }
 
+/** k when `value` is exactly 2^k with k in [0, 52], else null.
+ * Math.log2 rounds: 2^52 + 1 gives 52, so the power is compared back. */
+function exactPowerOfTwo(value: number): number | null {
+  if (!(value >= 1)) return null;
+  const k = Math.round(Math.log2(value));
+  return k >= 0 && k <= 52 && 2 ** k === value ? k : null;
+}
+
 /** Whether `e` is a power of two speculation can shift by:
  * `Math.pow(2, n)` or a literal 2^k with k in [0, 52]. */
 function powerOfTwo(e: IrExpr): boolean {
-  if (e.kind === "numLit") {
-    const k = Math.log2(e.value);
-    return Number.isInteger(k) && k >= 0 && k <= 52;
-  }
+  if (e.kind === "numLit") return exactPowerOfTwo(e.value) !== null;
   return (
     e.kind === "libCall" &&
     e.fn === "math.pow" &&
@@ -1022,7 +1031,11 @@ function exponentOf(
   reads: ReadonlyMap<IrExpr, LlValue>,
   integral: boolean,
 ): string {
-  if (e.kind === "numLit") return String(Math.log2(e.value));
+  if (e.kind === "numLit") {
+    const k = exactPowerOfTwo(e.value);
+    if (k === null) throw new InternalCompilerError("llvm emitter bug: speculative power of two");
+    return String(k);
+  }
   if (e.kind !== "libCall")
     throw new InternalCompilerError("llvm emitter bug: speculative power of two");
   const n = emitSpeculativeInteger(host, e.args[1]!, bail, reads, integral);

@@ -1457,14 +1457,20 @@ export class LlEmitter {
 
   /** What speculative loop planning may assume here (SpeculationContext). */
   speculationContext(): SpeculationContext {
+    const inlinable = (callee: string): InlinableFunction | undefined => {
+      if (!this.inlinableFunctions.has(callee)) {
+        // Unset while its body is checked: a recursive helper is not inlinable.
+        this.inlinableFunctions.set(callee, undefined);
+        const fn = this.fnByName.get(callee);
+        this.inlinableFunctions.set(
+          callee,
+          fn ? inlinableNumberFunction(fn, inlinable) : undefined,
+        );
+      }
+      return this.inlinableFunctions.get(callee);
+    };
     return {
-      inlinable: (callee) => {
-        if (!this.inlinableFunctions.has(callee)) {
-          const fn = this.fnByName.get(callee);
-          this.inlinableFunctions.set(callee, fn ? inlinableNumberFunction(fn) : undefined);
-        }
-        return this.inlinableFunctions.get(callee);
-      },
+      inlinable,
       unaliased: (id) => {
         const local = this.currentLocals.get(id);
         return (
@@ -5626,15 +5632,24 @@ export class LlEmitter {
     if (resume && !resume.placed && !this.B.isTerminated()) {
       // The fast copy's failed checks re-execute this statement here.
       resume.placed = true;
-      this.B.br(resume.label);
-      this.B.startBlock(resume.label);
-      // A write with hoisted leaves re-executes its arithmetic over the
-      // leaves' stored doubles: each leaf ran once, in the fast copy.
+      // A write with hoisted leaves resumed from its own failed check
+      // re-executes its arithmetic over the leaves' stored doubles: each
+      // leaf ran once, in the fast copy. Reached from an earlier statement
+      // of this copy (a failed check before it), its leaves never ran, so
+      // it runs as written.
       const rewritten = this.speculationResumeValues?.get(s);
       if (rewritten !== undefined && rewritten.leaves.length > 0) {
+        const join = this.B.newLabel("spec.resume.join");
+        this.emitStmt(s);
+        if (!this.B.isTerminated()) this.B.br(join);
+        this.B.startBlock(resume.label);
         this.emitStmt(withSpeculativeValue(s, rewritten.value));
+        if (!this.B.isTerminated()) this.B.br(join);
+        this.B.startBlock(join);
         return;
       }
+      this.B.br(resume.label);
+      this.B.startBlock(resume.label);
     }
     if (this.speculation?.writes.has(s)) {
       this.emitSpeculativeWrite(s, this.speculation.resume.get(s));
