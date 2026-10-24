@@ -10122,6 +10122,102 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     const agent = lowerHttpAgentNew(lowerer, expr);
     if (agent) return agent;
   }
+  // `new crypto.X509Certificate(data)` — the Dirent-style data record:
+  // the certificate's lowered members (fingerprint — the SHA-1 of the
+  // DER, uppercase colon-separated — plus the validFrom/validTo
+  // validity window in Node's ASN1_TIME_print shape) compute AT
+  // CONSTRUCTION, when Node parses too, so unparseable input throws
+  // Node's exact PEM error here (ERR_OSSL_PEM_NO_START_LINE) and the
+  // handle never exists. Both import forms (`crypto.X509Certificate`
+  // through the namespace, named `X509Certificate`); Buffer input only
+  // — the readFileSync idiom. mapType interns the matching record, so
+  // locals and the composed member reads all flow. The data argument
+  // feeds THREE field computations, so construction goes through an
+  // interned helper whose parameter evaluates it exactly once.
+  // It runs before the standard-library constructor fence below, which
+  // also sees `const X = require("crypto").X509Certificate` as the
+  // builtin class.
+  {
+    const callee = expr.expression;
+    const isX509 =
+      (ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "X509Certificate" &&
+        lowerer.builtinNamespaceModuleOf(callee.expression) === "crypto") ||
+      (ts.isIdentifier(callee) &&
+        (() => {
+          const bi = lowerer.builtinImportOf(callee);
+          return bi?.module === "crypto" && bi.member === "X509Certificate";
+        })());
+    if (isX509) {
+      const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
+      if (args.length !== 1) {
+        lowerer.noLowering(
+          "X509Certificate with this argument shape",
+          expr,
+          "the supported form is new X509Certificate(readFileSync(path))",
+        );
+      }
+      const data = lowerer.lowerExpr(args[0]!);
+      const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
+      if (!isBytes && data.type.kind !== "string") {
+        lowerer.noLowering(
+          `X509Certificate over '${lowerer.fmt(data.type)}' data`,
+          args[0]!,
+          "pass the certificate Buffer or PEM string (an fs.readFileSync result)",
+        );
+      }
+      const t = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (t?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
+      const key = `x509.record:${isBytes ? "bytes" : "str"}`;
+      let helper = lowerer.valueHelpers.get(key);
+      if (!helper) {
+        helper = keyedHelperName(lowerer, "%x509.record", key);
+        lowerer.valueHelpers.set(key, helper);
+        const dataT = data.type;
+        const dRef: IrExpr = { kind: "varRef", localId: "d.0", type: dataT, loc };
+        const field = (
+          name: string,
+          fn:
+            | "crypto.x509Fingerprint"
+            | "crypto.x509FingerprintStr"
+            | "crypto.x509ValidFrom"
+            | "crypto.x509ValidFromStr"
+            | "crypto.x509ValidTo"
+            | "crypto.x509ValidToStr",
+        ): { name: string; value: IrExpr } => ({
+          name,
+          value: { kind: "libCall", fn, args: [dRef], type: STRING, loc },
+        });
+        lowerer.liftedFns.push({
+          name: helper,
+          params: [{ localId: "d.0", name: "d", type: dataT }],
+          returnType: t,
+          locals: [{ id: "d.0", name: "d", type: dataT, mutable: false }],
+          body: [
+            {
+              kind: "return",
+              value: {
+                kind: "recordLit",
+                fields: [
+                  field(
+                    "fingerprint",
+                    isBytes ? "crypto.x509Fingerprint" : "crypto.x509FingerprintStr",
+                  ),
+                  field("validFrom", isBytes ? "crypto.x509ValidFrom" : "crypto.x509ValidFromStr"),
+                  field("validTo", isBytes ? "crypto.x509ValidTo" : "crypto.x509ValidToStr"),
+                ],
+                type: t,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        });
+      }
+      return { kind: "call", callee: helper, args: [data], type: t, loc };
+    }
+  }
   if (
     ts.isIdentifier(expr.expression) ||
     (ts.isPropertyAccessExpression(expr.expression) &&
@@ -10905,99 +11001,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         ],
         symbol,
       );
-    }
-  }
-  // `new crypto.X509Certificate(data)` — the Dirent-style data record:
-  // the certificate's lowered members (fingerprint — the SHA-1 of the
-  // DER, uppercase colon-separated — plus the validFrom/validTo
-  // validity window in Node's ASN1_TIME_print shape) compute AT
-  // CONSTRUCTION, when Node parses too, so unparseable input throws
-  // Node's exact PEM error here (ERR_OSSL_PEM_NO_START_LINE) and the
-  // handle never exists. Both import forms (`crypto.X509Certificate`
-  // through the namespace, named `X509Certificate`); Buffer input only
-  // — the readFileSync idiom. mapType interns the matching record, so
-  // locals and the composed member reads all flow. The data argument
-  // feeds THREE field computations, so construction goes through an
-  // interned helper whose parameter evaluates it exactly once.
-  {
-    const callee = expr.expression;
-    const isX509 =
-      (ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "X509Certificate" &&
-        lowerer.builtinNamespaceModuleOf(callee.expression) === "crypto") ||
-      (ts.isIdentifier(callee) &&
-        (() => {
-          const bi = lowerer.builtinImportOf(callee);
-          return bi?.module === "crypto" && bi.member === "X509Certificate";
-        })());
-    if (isX509) {
-      const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
-      if (args.length !== 1) {
-        lowerer.noLowering(
-          "X509Certificate with this argument shape",
-          expr,
-          "the supported form is new X509Certificate(readFileSync(path))",
-        );
-      }
-      const data = lowerer.lowerExpr(args[0]!);
-      const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
-      if (!isBytes && data.type.kind !== "string") {
-        lowerer.noLowering(
-          `X509Certificate over '${lowerer.fmt(data.type)}' data`,
-          args[0]!,
-          "pass the certificate Buffer or PEM string (an fs.readFileSync result)",
-        );
-      }
-      const t = lowerer.mapTypeOf(lowerer.typeOf(expr));
-      if (t?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
-      const key = `x509.record:${isBytes ? "bytes" : "str"}`;
-      let helper = lowerer.valueHelpers.get(key);
-      if (!helper) {
-        helper = keyedHelperName(lowerer, "%x509.record", key);
-        lowerer.valueHelpers.set(key, helper);
-        const dataT = data.type;
-        const dRef: IrExpr = { kind: "varRef", localId: "d.0", type: dataT, loc };
-        const field = (
-          name: string,
-          fn:
-            | "crypto.x509Fingerprint"
-            | "crypto.x509FingerprintStr"
-            | "crypto.x509ValidFrom"
-            | "crypto.x509ValidFromStr"
-            | "crypto.x509ValidTo"
-            | "crypto.x509ValidToStr",
-        ): { name: string; value: IrExpr } => ({
-          name,
-          value: { kind: "libCall", fn, args: [dRef], type: STRING, loc },
-        });
-        lowerer.liftedFns.push({
-          name: helper,
-          params: [{ localId: "d.0", name: "d", type: dataT }],
-          returnType: t,
-          locals: [{ id: "d.0", name: "d", type: dataT, mutable: false }],
-          body: [
-            {
-              kind: "return",
-              value: {
-                kind: "recordLit",
-                fields: [
-                  field(
-                    "fingerprint",
-                    isBytes ? "crypto.x509Fingerprint" : "crypto.x509FingerprintStr",
-                  ),
-                  field("validFrom", isBytes ? "crypto.x509ValidFrom" : "crypto.x509ValidFromStr"),
-                  field("validTo", isBytes ? "crypto.x509ValidTo" : "crypto.x509ValidToStr"),
-                ],
-                type: t,
-                loc,
-              },
-              loc,
-            },
-          ],
-          loc,
-        });
-      }
-      return { kind: "call", callee: helper, args: [data], type: t, loc };
     }
   }
   // `new X(...)` through a class VALUE (a classval-typed binding, array
