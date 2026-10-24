@@ -154,3 +154,62 @@ console.log(a.length, b.length, limit);
 ${postlude}`);
   expect(helperCalls(init(mod))).toEqual(["%arr.filter", "%arr.map"]);
 });
+
+test("a lone call keeps its helper when a local class's method can assign a capture", async () => {
+  const mod = await lowerSource(`${prelude}
+let k = 1;
+class Bump {
+  go(): void { k = 10; }
+}
+const b = new Bump();
+const out = rows.map((r) => { if (r.id === 2) b.go(); return r.id * k; });
+console.log(out.join(","));
+${postlude}`);
+  expect(helperCalls(init(mod))).toEqual(["%arr.map"]);
+});
+
+test("a copied callback keeps its switch and for-of labels and bindings", async () => {
+  const mod = await lowerSource(`${prelude}
+const out = rows.map((r) => {
+  let n = 0;
+  outer: switch (r.id % 3) {
+    case 0:
+      n = 10;
+      break outer;
+    case 1:
+      inner: for (const v of [1, 2, 3]) {
+        n += v;
+        if (v === 2) break outer;
+        if (v === 3) continue inner;
+      }
+      break;
+    default:
+      n = r.value;
+  }
+  return n;
+});
+console.log(out.join(","));
+${postlude}`);
+  expect(helperCalls(init(mod))).toEqual(["%arr.loop"]);
+});
+
+test("a copied callback's switch-local records and known unions are rewritten in its cases", async () => {
+  const mod = await lowerSource(`${prelude}
+type Shape = { kind: "sq"; side: number } | { kind: "rect"; w: number; h: number };
+const out = rows.map((r) => {
+  switch (r.id % 3) {
+    case 0:
+      const p = { a: r.id, b: 2 };
+      return p.a + p.b;
+    case 1:
+      const sq = { kind: "sq" as const, side: r.value };
+      const s: Shape = sq;
+      return s.kind === "sq" ? s.side * 10 : 0;
+    default:
+      return r.value;
+  }
+});
+console.log(out.join(","));
+${postlude}`);
+  expect(helperCalls(init(mod))).toEqual(["%arr.loop"]);
+});

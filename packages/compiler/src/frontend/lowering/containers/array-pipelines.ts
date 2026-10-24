@@ -1,3 +1,5 @@
+import * as ts from "../../ts7/adapter.js";
+import { CONTRACT_TYPES_MODULE } from "../../contract-types.js";
 import { keyedHelperName } from "../stable-names.js";
 import { writtenLocals } from "../../../ir/callback-specialization.js";
 import { AmbientReceiverReaders } from "../../../ir/receiver-readers.js";
@@ -6,6 +8,7 @@ import {
   BOOL,
   F64,
   VOID,
+  type IrBindingSource,
   type IrExpr,
   type IrFunction,
   type IrGlobal,
@@ -667,6 +670,10 @@ class PipelineFusion {
   /** Bindings each function, or a closure it creates, writes after their
    * declaration. */
   private readonly written: Map<string, Set<string>>;
+  /** classCaptured's answers by function name. */
+  private readonly classCaptures = new Map<string, ReadonlySet<string>>();
+  /** Whether a module imports or re-exports the contract types. */
+  private readonly contractTypes: boolean;
   /** Bindings of the function being fused that inlined callbacks captured. */
   private inlinedCaptures = new Set<string>();
   /** The helper calls each callback with an undefined receiver; a copied
@@ -680,6 +687,15 @@ class PipelineFusion {
     this.effects = new CallbackEffects(functions, lowerer.globalsList);
     this.written = writtenLocals({ functions });
     this.receivers = new AmbientReceiverReaders(new Map(functions.map((fn) => [fn.name, fn])));
+    this.contractTypes = lowerer.moduleOrder.some((sf) =>
+      sf.statements.nodes.some(
+        (st) =>
+          (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) &&
+          st.moduleSpecifier !== undefined &&
+          ts.isStringLiteral(st.moduleSpecifier) &&
+          st.moduleSpecifier.text === CONTRACT_TYPES_MODULE,
+      ),
+    );
   }
 
   run(fn: IrFunction): void {
@@ -933,19 +949,22 @@ class PipelineFusion {
   /** inlineTarget for a callback created in `fn` whose captured bindings
    * nothing assigns after their declaration: `fn`'s own locals and
    * parameters, written neither by `fn` nor by any closure that shares
-   * them, and not by the callback body. The callback must not observe the
-   * ambient receiver (AmbientReceiverReaders). */
+   * them, and not by the callback body. A binding a local class captures
+   * counts as written, since its methods may assign it. The callback must
+   * not observe the ambient receiver (AmbientReceiverReaders). */
   private stableTarget(fn: IrFunction): InlineTarget {
     const locals = new Map(fn.locals.map((l) => [l.id, l]));
     const inherited = new Set((fn.captures ?? []).map((c) => c.localId));
     const written = this.written.get(fn.name);
+    const classCaptured = this.classCaptured(fn);
     return (arg) => {
       const target = this.closureTarget(arg);
       if (!target || !written || arg.kind !== "closure") return null;
       if (!this.receivers.ignores(target)) return null;
       for (const id of arg.captures) {
         const local = locals.get(id);
-        if (!local || local.tdz || inherited.has(id) || written.has(id)) return null;
+        if (!local || local.tdz || inherited.has(id) || written.has(id) || classCaptured.has(id))
+          return null;
       }
       const captures = new Set((target.captures ?? []).map((c) => c.localId));
       const assigns = !everyStmtList(target.body, {
@@ -955,6 +974,22 @@ class PipelineFusion {
       });
       return !assigns && inlinableBody(target, captures) ? target : null;
     };
+  }
+
+  /** The bindings of `fn` that a local class it creates captures. */
+  private classCaptured(fn: IrFunction): ReadonlySet<string> {
+    const known = this.classCaptures.get(fn.name);
+    if (known) return known;
+    const ids = new Set<string>();
+    everyStmtList(fn.body, {
+      expr: (e) => {
+        if (e.kind === "classRef") for (const id of e.captures ?? []) ids.add(id);
+        return true;
+      },
+      stmt: () => true,
+    });
+    this.classCaptures.set(fn.name, ids);
+    return ids;
   }
 
   /** The function behind a closure-literal callback the loop can inline. */
@@ -967,7 +1002,12 @@ class PipelineFusion {
   }
 
   private emit(plan: Plan): IrExpr | null {
-    const built = new FusedLoop(this.lowerer, plan.chain, plan.inline ?? this.inlineTarget).build();
+    const built = new FusedLoop(
+      this.lowerer,
+      plan.chain,
+      plan.inline ?? this.inlineTarget,
+      this.contractTypes,
+    ).build();
     if (!built) return null;
     for (const id of built.inlinedCaptures) this.inlinedCaptures.add(id);
     let name = this.helpers.get(built.key);
@@ -1153,10 +1193,13 @@ class FusedLoop {
   private next = 0;
   private failed = false;
 
+  /** `contractTypes`: the program writes contract types, which the
+   * contract checker binds to source bindings. */
   constructor(
     private readonly lowerer: Lowerer,
     private readonly chain: Chain,
     private readonly inlineTarget: InlineTarget,
+    private readonly contractTypes: boolean,
   ) {
     this.loc = chain.loc;
   }
@@ -1165,9 +1208,9 @@ class FusedLoop {
     return `${name}.${this.next++}`;
   }
 
-  private local(name: string, type: IrType, mutable = false): string {
+  private local(name: string, type: IrType, mutable = false, source?: IrBindingSource): string {
     const id = this.fresh(name);
-    this.locals.push({ id, name, type, mutable });
+    this.locals.push(source ? { id, name, type, mutable, source } : { id, name, type, mutable });
     return id;
   }
 
@@ -1234,17 +1277,27 @@ class FusedLoop {
         return true;
       },
     });
+    // Copies keep their source bindings, so contract types written on
+    // them are checked against what the loop stores. In a program that
+    // writes contract types, a parameter with a source binding keeps its
+    // own local for the same reason.
+    const sources = new Map(fn.locals.map((l) => [l.id, l.source]));
     const aliased = new Set<string>();
     fn.params.forEach((p, index) => {
       const arg = args[index]!;
-      if (arg.kind === "varRef" && !assigned.has(p.localId) && typeEquals(arg.type, p.type)) {
+      if (
+        arg.kind === "varRef" &&
+        !assigned.has(p.localId) &&
+        typeEquals(arg.type, p.type) &&
+        !(this.contractTypes && sources.get(p.localId) !== undefined)
+      ) {
         renamed.set(p.localId, arg.localId);
         aliased.add(p.localId);
       }
     });
     for (const l of fn.locals) {
       if (renamed.has(l.id)) continue;
-      const id = this.local(l.name, l.type, true);
+      const id = this.local(l.name, l.type, true, l.source);
       renamed.set(l.id, id);
     }
     const rename = (id: string): string => renamed.get(id) ?? id;
@@ -1258,11 +1311,15 @@ class FusedLoop {
           return e;
       }
     };
-    const bind: IrStmt[] = fn.params.flatMap((p, index): IrStmt[] =>
-      aliased.has(p.localId)
-        ? []
-        : [{ kind: "varDecl", localId: rename(p.localId), init: args[index]!, loc }],
-    );
+    // A bound parameter's value is an element or index with no source text
+    // of its own; it is located at the parameter, without a span.
+    const bind: IrStmt[] = fn.params.flatMap((p, index): IrStmt[] => {
+      if (aliased.has(p.localId)) return [];
+      const source = sources.get(p.localId);
+      const arg = args[index]!;
+      const init = source ? { ...arg, loc: { ...source.loc, end: source.loc.start } } : arg;
+      return [{ kind: "varDecl", localId: rename(p.localId), init, loc }];
+    });
     const labels = new Map<string, string>();
     const label = (name: string): string => {
       let id = labels.get(name);
@@ -1281,9 +1338,14 @@ class FusedLoop {
         case "break":
         case "continue":
           return st.label ? { ...st, label: label(st.label) } : st;
+        case "forOf": {
+          const renamedFor = { ...st, localId: rename(st.localId) };
+          return st.labels ? { ...renamedFor, labels: st.labels.map(label) } : renamedFor;
+        }
         case "while":
         case "doWhile":
         case "for":
+        case "switch":
         case "block":
           return st.labels ? { ...st, labels: st.labels.map(label) } : st;
         default:
@@ -1946,8 +2008,11 @@ function foldKnownUnions(fn: Omit<IrFunction, "name">): void {
             case "for":
             case "while":
             case "doWhile":
+            case "forOf":
             case "block":
               return { ...s, body: prune(s.body) };
+            case "switch":
+              return { ...s, cases: s.cases.map((c) => ({ ...c, body: prune(c.body) })) };
             default:
               return s;
           }
@@ -2133,6 +2198,19 @@ function scalarizeRecordTemporaries(lowerer: Lowerer, fn: Omit<IrFunction, "name
             cond: s.cond === null ? null : rewriteExpr(s.cond),
             update: s.update === null ? null : (rewriteStmt(s.update)[0] ?? null),
             body: rewriteList(s.body),
+          },
+        ];
+      case "forOf":
+        return [{ ...s, iterable: rewriteExpr(s.iterable), body: rewriteList(s.body) }];
+      case "switch":
+        return [
+          {
+            ...s,
+            disc: rewriteExpr(s.disc),
+            cases: s.cases.map((c) => ({
+              test: c.test === null ? null : rewriteExpr(c.test),
+              body: rewriteList(c.body),
+            })),
           },
         ];
       case "block":
