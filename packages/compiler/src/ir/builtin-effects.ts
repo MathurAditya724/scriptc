@@ -760,6 +760,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.legacyResolve",
   "url.domainToASCII",
   "url.domainToUnicode",
+  // ERR_INVALID_ARG_TYPE and the credentials' URIError.
+  "url.toHttpOptions",
   // The win32-target flavor of pathToFileURL (same runtime entry point —
   // the bridge dispatches by the binary's platform): Node's win32 arm
   // raises ERR_INVALID_ARG_VALUE TypeErrors for malformed UNC inputs, so

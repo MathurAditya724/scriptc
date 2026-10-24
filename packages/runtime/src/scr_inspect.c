@@ -1663,6 +1663,54 @@ ScrStr *scr_insp_bytes(ScrBytes *b, double recurse, double depth) {
   return scr_insp_typed_array(b, recurse, depth);
 }
 
+/* Node's URLSearchParams inspector: [Object] past the depth limit, and
+ * otherwise each pair as `name => value` with both strings inspected, on
+ * one line, or one pair per line when the pairs' text is longer than
+ * breakLength (the closing brace stays on the last pair's line). The lines
+ * take the caller's indentation, as a custom inspector's text does. */
+static ScrStr *scr_insp_search_params(ScrSearchParams *sp, double recurse, double depth) {
+  if (recurse > depth) return scr_str_new("[Object]", 8);
+  size_t n = (size_t)scr_sp_size(sp);
+  if (n == 0) return scr_str_new("URLSearchParams {}", 18);
+  ScrStr **items = malloc(n * sizeof *items);
+  if (!items) insp_oom();
+  double length = -2;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *name = scr_sp_key_at(sp, (double)i);
+    ScrStr *value = scr_sp_val_at(sp, (double)i);
+    ScrStr *name_text = scr_insp_str(name);
+    ScrStr *value_text = scr_insp_str(value);
+    InspBuf item = {0};
+    ib_str(&item, name_text);
+    ib_cstr(&item, " => ");
+    ib_str(&item, value_text);
+    items[i] = ib_take(&item);
+    length += (double)insp_utf16_len(items[i]->data, items[i]->len) + 2;
+    scr_str_release(name);
+    scr_str_release(value);
+    scr_str_release(name_text);
+    scr_str_release(value_text);
+  }
+  bool multiline = length > g_break_length;
+  InspBuf out = {0};
+  ib_cstr(&out, multiline ? "URLSearchParams {\n  " : "URLSearchParams { ");
+  for (size_t i = 0; i < n; i++) {
+    if (i) ib_cstr(&out, multiline ? ",\n  " : ", ");
+    ib_str(&out, items[i]);
+    scr_str_release(items[i]);
+  }
+  free(items);
+  ib_cstr(&out, " }");
+  ScrStr *text = ib_take(&out);
+  InspBuf indented = {0};
+  for (size_t k = 0; k < text->len; k++) {
+    ib_char(&indented, text->data[k]);
+    if (text->data[k] == '\n') ib_spaces(&indented, g_indent);
+  }
+  scr_str_release(text);
+  return ib_take(&indented);
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
   const char *refused = g_show_hidden ? insp_hidden_refusal(d) : NULL;
@@ -1799,6 +1847,8 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         return scr_insp_weak_collection(d->v.handle.tag == SCR_DYNH_WEAK_MAP ? "WeakMap" : "WeakSet",
                                         recurse, depth);
       if (d->v.handle.tag == SCR_DYNH_DATE) return scr_insp_date(scr_dyn_native_date_value(d));
+      if (d->v.handle.tag == SCR_DYNH_SEARCH_PARAMS)
+        return scr_insp_search_params(d->v.handle.ptr, recurse, depth);
       if (d->v.handle.tag == SCR_DYNH_ITERATOR) {
         ScrStr *iterator = scr_insp_native_iterator(d, recurse, depth);
         if (iterator) return iterator;
@@ -1809,6 +1859,14 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
          * depth limit (`depth < 0`); the ones that return `this` there
          * print util.inspect's `[cls]`. */
         if (recurse > depth && !ops->inspect_view_empty) {
+          /* A nested-view inspector returns the instance itself there,
+           * which has no own properties: `URL {}`. */
+          if (ops->inspect_view_nested) {
+            InspBuf out = {0};
+            ib_cstr(&out, ops->cls);
+            ib_cstr(&out, " {}");
+            return ib_take(&out);
+          }
           if (!ops->inspect_bracketed_past_depth) return scr_str_new(ops->cls, strlen(ops->cls));
           InspBuf out = {0};
           ib_char(&out, '[');
@@ -1817,6 +1875,16 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           return ib_take(&out);
         }
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
+        if (ops->inspect_view_nested) {
+          scr_insp_nested_begin();
+          ScrStr *inner = scr_insp_dyn(view, 0, depth);
+          scr_dyn_release(view);
+          ScrStr *prefix = scr_str_new(ops->cls, strlen(ops->cls));
+          ScrStr *rendered = scr_insp_nested_end(prefix, inner);
+          scr_str_release(prefix);
+          scr_str_release(inner);
+          return rendered;
+        }
         ScrStr *body = scr_insp_dyn(view, recurse, depth);
         scr_dyn_release(view);
         InspBuf out = {0};

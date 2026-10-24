@@ -2470,6 +2470,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.url.urlToHttpOptions",
+      "kind": "node-builtin",
+      "name": "url.urlToHttpOptions",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util",
       "kind": "node-builtin",
       "name": "util",

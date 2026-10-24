@@ -857,7 +857,10 @@ function inspectSupport(
     }
     // Generator objects print through their checked capsule: Node's
     // `Object [Generator] {}`, or the tag of the iterator they implement.
+    // URLs and URLSearchParams print through their handles.
     case "generator":
+    case "url":
+    case "searchParams":
       return null;
     default:
       return `'${lowerer.fmt(t)}' values have no inspect lowering`;
@@ -1068,6 +1071,18 @@ function inspectExprBody(
       };
     case "dyn":
       return { kind: "libCall", fn: "insp.dyn", args: [value, recurse, depth], type: STRING, loc };
+    // URLs and URLSearchParams render through their checked-dynamic
+    // handles: Node's `URL { href: ..., hash: ... }` and
+    // `URLSearchParams { 'a' => '1' }`.
+    case "url":
+    case "searchParams":
+      return {
+        kind: "libCall",
+        fn: "insp.dyn",
+        args: [lowerer.coerceToExpected(value, DYN), recurse, depth],
+        type: STRING,
+        loc,
+      };
     case "generator":
       return {
         kind: "libCall",

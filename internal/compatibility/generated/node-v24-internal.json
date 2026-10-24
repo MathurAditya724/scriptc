@@ -99483,6 +99483,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "packages/runtime/test/url-legacy.test.ts",
+          "tests/corpus/1794-searchparams-url-live.ts",
           "tests/corpus/5220-url-parse-warnings.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
@@ -100741,8 +100742,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:url"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.url.urlToHttpOptions",
+        "tests": [
+          "tests/corpus/1794-searchparams-url-live.ts"
+        ]
       },
       "anchorSource": "exact"
     },

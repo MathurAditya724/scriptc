@@ -1028,6 +1028,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
   "url.domainToASCII": { argTypes: [DYN, BOOL], result: STRING },
   "url.domainToUnicode": { argTypes: [DYN, BOOL], result: STRING },
+  /** url.urlToHttpOptions over a checked-dynamic argument: a URL answers
+   * Node's null-prototype options object; a primitive or null throws
+   * ERR_INVALID_ARG_TYPE. */
+  "url.toHttpOptions": { argTypes: [DYN], result: DYN },
   /** node:punycode (scr_url.c): punycode.js 2.1.0's string conversions;
    * decode/toUnicode (and, past 32-bit deltas, encode/toASCII) throw the
    * module's RangeErrors, ucs2Encode String.fromCodePoint's. warn marks the
