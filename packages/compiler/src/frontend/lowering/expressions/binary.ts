@@ -1600,6 +1600,19 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       }
+      // A Date against an untyped value: the same Date object, whose
+      // checked-dynamic handle the untyped value would hold.
+      if (dynSide.type.kind === "dyn" && scalarSide.type.kind === "date") {
+        const boxed = lowerer.coerceToExpected(scalarSide, DYN);
+        return {
+          kind: "dynScalarEq",
+          left: scalarSide === left ? boxed : left,
+          right: scalarSide === right ? boxed : right,
+          ...(negated ? { negated: true as const } : {}),
+          type: BOOL,
+          loc,
+        };
+      }
       if (
         dynSide.type.kind === "dyn" &&
         (scalarSide.type.kind === "f64" ||
