@@ -177,3 +177,26 @@ holderView.push({
   },
 });
 console.log(JSON.stringify(holder), JSON.stringify(holder));
+
+// toSorted keeps the full length and reads holes as undefined; indexOf,
+// lastIndexOf and includes skip the undefined and foreign elements.
+const searched: string[] = ["b", "a"];
+const searchedView: unknown[] = searched;
+searchedView[9] = 4;
+searchedView[5] = undefined;
+console.log(searched.indexOf("b"), searched.lastIndexOf("b"), searched.lastIndexOf("a", 8));
+console.log(searched.includes("a"), searched.lastIndexOf("z"));
+const searchedSorted = searched.toSorted();
+console.log(searchedSorted.length, searchedSorted.slice(0, 4), searchedSorted.lastIndexOf("b"));
+console.log(searchedSorted.indexOf("a"), searchedSorted.includes("b"));
+const counts: number[] = [3, 1];
+const countsView: unknown[] = counts;
+countsView[6] = "x";
+countsView[4] = 2;
+const countsSorted = counts.toSorted();
+console.log(countsSorted.length, countsSorted, countsSorted.lastIndexOf(3), counts.lastIndexOf(2));
+const far: number[] = [5];
+const farView: unknown[] = far;
+farView[70000] = "z";
+const farSorted = far.toSorted();
+console.log(farSorted.length, farSorted.slice(0, 3), farSorted.slice(69999), farSorted.lastIndexOf(5));
