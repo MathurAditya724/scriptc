@@ -55,6 +55,8 @@ const MAP_LOOKUPS = new Set(["get", "has", "delete"]);
 const SET_LOOKUPS = new Set(["has", "delete"]);
 const ARRAY_READS = new Set(["pop", "shift"]);
 const ARRAY_SEARCHES = new Set(["includes", "indexOf"]);
+/** The expression lowering refuses deeper nesting (SC1090). */
+const MAX_DEPTH = 200;
 
 /** The inferred type of the binding a `new Map()` or `new Set()` initializes,
  * which the construction adopts. */
@@ -153,9 +155,8 @@ function inferFile(lowerer: Lowerer, file: ts.SourceFile): Candidate[] {
           value: undefined,
         });
     }
-    ts.forEachChild(node, declarations);
   };
-  declarations(file);
+  ts.walkPreorder(file, declarations);
   if (directEval || candidates.size === 0) return [];
 
   const names = new Set(
@@ -171,9 +172,8 @@ function inferFile(lowerer: Lowerer, file: ts.SourceFile): Candidate[] {
         else refused.add(symbol);
       }
     }
-    ts.forEachChild(node, references);
   };
-  references(file);
+  ts.walkPreorder(file, references);
   for (const symbol of refused) candidates.delete(symbol);
   const proven = [...candidates.values()].filter(
     (c) => c.valueWrites.length > 0 || c.keyWrites.length > 0,
@@ -381,16 +381,20 @@ function checkerPrimitive(type: ts.Type): Primitive | null {
 /** The primitive type `e` always evaluates to, or null. The checker answers
  * where it knows; where it types `e` as `any`, the value's structure does:
  * a read of a decided candidate, arithmetic and comparisons over such
- * values, and constants defined from them. */
+ * values, and constants defined from them. An expression nested deeper than
+ * the lowering's nesting limit answers null. */
 function primitiveOf(
   lowerer: Lowerer,
   bySymbol: Map<ts.Symbol, Candidate>,
   e: ts.Expression,
   visiting: Set<ts.Node>,
+  depth = 0,
 ): Primitive | null {
+  if (depth > MAX_DEPTH) return null;
   const type = lowerer.checker.getTypeAtLocation(e);
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0) return checkerPrimitive(type);
-  const of = (x: ts.Expression): Primitive | null => primitiveOf(lowerer, bySymbol, x, visiting);
+  const of = (x: ts.Expression): Primitive | null =>
+    primitiveOf(lowerer, bySymbol, x, visiting, depth + 1);
   if (ts.isParenthesizedExpression(e)) return of(e.expression);
   if (ts.isPrefixUnaryExpression(e)) {
     if (e.operator === ts.SyntaxKind.ExclamationToken) return "boolean";
@@ -461,7 +465,7 @@ function primitiveOf(
       (declaration.parent.flags & ts.NodeFlags.Const) !== 0
     ) {
       visiting.add(e);
-      const p = primitiveOf(lowerer, bySymbol, declaration.initializer, visiting);
+      const p = primitiveOf(lowerer, bySymbol, declaration.initializer, visiting, depth + 1);
       visiting.delete(e);
       return p;
     }
