@@ -8101,10 +8101,25 @@ static ScrDyn *scr_stream_dyn_push(ScrStream *stream, ScrDyn *const *args, size_
   return scr_exc_pending() ? NULL : scr_dyn_new_bool(more);
 }
 
-/* unshift(chunk): whether the stream takes more data afterwards, Node's
- * canPushMore. */
-static ScrDyn *scr_stream_dyn_unshift(ScrStream *stream, const ScrDyn *chunk) {
-  scr_stream_unshift_dyn(stream, chunk);
+/* unshift(chunk[, encoding]): a byte-mode stream takes a string chunk with
+ * an encoding as the bytes Buffer.from(chunk, encoding) holds, as Node's
+ * readableAddChunkUnshift converts it; an unknown encoding throws
+ * ERR_UNKNOWN_ENCODING. Answers whether the stream takes more data
+ * afterwards, Node's canPushMore. */
+static ScrDyn *scr_stream_dyn_unshift(ScrStream *stream, ScrDyn *const *args, size_t argc) {
+  ScrDyn *chunk = argc ? args[0] : scr_dyn_undefined();
+  ScrDyn *encoding = argc > 1 ? args[1] : scr_dyn_undefined();
+  if (chunk->kind == SCR_DYN_STR && encoding->kind == SCR_DYN_STR &&
+      !(stream->st->has_r && stream->st->r.object_entries)) {
+    ScrStr *canonical = scr_bytes_normalize_encoding(encoding->v.str);
+    if (!canonical) return NULL;
+    ScrBytes *b = scr_stream_buffer(scr_bytes_from_str(chunk->v.str, canonical));
+    scr_str_release(canonical);
+    scr_stream_unshift(stream, b);
+    scr_bytes_release(b);
+  } else {
+    scr_stream_unshift_dyn(stream, chunk);
+  }
   if (scr_exc_pending()) return NULL;
   ScrStreamState *st = stream->st;
   bool more = chunk->kind != SCR_DYN_NULL && st->has_r && !st->destroyed && !st->errored &&
@@ -8169,7 +8184,7 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
     }
   } else if (!strcmp(method, "eventNames")) result = scr_stream_dyn_event_names(stream);
   else if (!strcmp(method, "push")) result = scr_stream_dyn_push(stream, args, argc);
-  else if (!strcmp(method, "unshift")) result = scr_stream_dyn_unshift(stream, first);
+  else if (!strcmp(method, "unshift")) result = scr_stream_dyn_unshift(stream, args, argc);
   else if (!strcmp(method, "setDefaultEncoding")) {
     ScrStream *returned = scr_stream_set_default_encoding(stream, first);
     if (returned) scr_stream_release(returned);

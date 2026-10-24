@@ -54,3 +54,27 @@ const w = new Writable({
 });
 w.on("finish", () => console.log("finish"));
 drain(w);
+
+// unshift(string, encoding) puts the decoded bytes at the front; an
+// unknown encoding throws.
+const bytes = new Readable({ read() {} });
+const parts = [];
+bytes.on("data", (c) => parts.push(c.toString("hex")));
+bytes.on("end", () => console.log("unshift bytes", parts.join("|")));
+(function (s) {
+  console.log(s.unshift("e9", "hex"), s.unshift("aGk=", "base64"), s.unshift("é", "latin1"), s.unshift("x", "utf8"));
+  try {
+    s.unshift("x", "bogus");
+  } catch (e) {
+    console.log(e.code, e.message);
+  }
+  s.push(null);
+})(bytes);
+const text = new Readable({ read() {} });
+text.setEncoding("utf8");
+text.on("data", (c) => console.log("unshift text", JSON.stringify(c)));
+(function (s) {
+  s.unshift("c3a9", "hex");
+  s.unshift("41", "hex");
+  s.push(null);
+})(text);
