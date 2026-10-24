@@ -3066,8 +3066,18 @@ static ScrDyn *scr_av_fail(ScrClosure *c, ScrDyn *const *args, size_t argc) {
   return scr_av_done(msg);
 }
 
+/* The comparison methods take both operands: Node's ERR_MISSING_ARGS
+ * TypeError otherwise. False with it pending. */
+static bool scr_av_operands(size_t argc) {
+  if (argc >= 2) return true;
+  static const char text[] = "The \"actual\" and \"expected\" arguments must be specified";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_MISSING_ARGS");
+  return false;
+}
+
 /* equal / notEqual: Node's loose comparison, NaN equal to NaN. */
 static ScrDyn *scr_av_loose(ScrDyn *const *args, size_t argc, bool negated) {
+  if (!scr_av_operands(argc)) return NULL;
   const ScrDyn *a = scr_av_arg(args, argc, 0), *b = scr_av_arg(args, argc, 1);
   bool nan = a->kind == SCR_DYN_NUM && b->kind == SCR_DYN_NUM && isnan(a->v.num) && isnan(b->v.num);
   bool equal = nan || scr_dyn_abstract_eq(a, b);
@@ -3097,6 +3107,7 @@ static ScrDyn *scr_av_not_equal(ScrClosure *c, ScrDyn *const *a, size_t n) {
 enum { SCR_AV_STRICT, SCR_AV_DEEP_STRICT, SCR_AV_DEEP, SCR_AV_PARTIAL };
 
 static ScrDyn *scr_av_compare(ScrDyn *const *args, size_t argc, int form, bool negated) {
+  if (!scr_av_operands(argc)) return NULL;
   ScrDyn *a = (ScrDyn *)scr_av_arg(args, argc, 0), *b = (ScrDyn *)scr_av_arg(args, argc, 1);
   ScrStr *msg;
   bool has;

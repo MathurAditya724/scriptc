@@ -28,3 +28,18 @@ const checks = [assert.ok, assert.fail, assert.strictEqual];
 checks.forEach((check, i) => console.log(i, typeof check, check === checks[i], check.name));
 [1, 'x', true].forEach((value) => assert.ok(value));
 console.log('done');
+
+// The comparison methods need both operands, as Node's ERR_MISSING_ARGS
+// TypeError says, also through function values.
+const comparisons = [assert.equal, assert.notEqual, assert.strictEqual, assert.notStrictEqual,
+  assert.deepEqual, assert.notDeepEqual, assert.deepStrictEqual, assert.notDeepStrictEqual];
+for (const compare of comparisons) {
+  for (const args of [[], [1]]) {
+    try {
+      compare(...args);
+      console.log(compare.name, args.length, 'passed');
+    } catch (e) {
+      console.log(compare.name, args.length, e.name, e.code, e.message);
+    }
+  }
+}

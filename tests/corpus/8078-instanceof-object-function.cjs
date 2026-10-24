@@ -53,3 +53,25 @@ function describe(value) {
   return value instanceof Function ? 'function' : 'object';
 }
 console.log([nullProto, {}, describe, 0].map(describe).join(', '));
+
+// Prototype chains through functions and objects, and Object.prototype
+// itself, whose own prototype is null.
+const base = function base() {};
+const fromFunction = {};
+Object.setPrototypeOf(fromFunction, base);
+const throughObject = {};
+Object.setPrototypeOf(throughObject, fromFunction);
+const nullRooted = function nullRooted() {};
+Object.setPrototypeOf(nullRooted, null);
+const reparented = function reparented() {};
+Object.setPrototypeOf(reparented, fromFunction);
+const chains = {
+  objectPrototype: Object.getPrototypeOf({}),
+  fromFunction,
+  throughObject,
+  nullRooted,
+  reparented,
+};
+for (const [label, value] of Object.entries(chains)) {
+  console.log(`${label}: Object ${value instanceof Object}, Function ${value instanceof Function}`);
+}

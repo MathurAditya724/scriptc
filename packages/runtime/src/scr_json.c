@@ -4684,11 +4684,17 @@ static bool scr_dyn_instanceof_object(const ScrDyn *value) {
   default:
     break;
   }
+  /* Object.prototype is on the chain from the value's own prototype on:
+   * Object.prototype itself has a null prototype, so it is not an Object. */
   ScrDyn *current = scr_dyn_retain((ScrDyn *)value);
-  for (;;) {
-    if (current == scr_builtin_object_prototype) {
+  for (bool first = true;; first = false) {
+    if (!first && current == scr_builtin_object_prototype) {
       scr_dyn_release(current);
       return true;
+    }
+    if (current == scr_builtin_object_prototype) {
+      scr_dyn_release(current);
+      return false;
     }
     ScrDyn *next = NULL;
     if (current->kind == SCR_DYN_FUNC) {
@@ -4719,15 +4725,53 @@ static bool scr_dyn_instanceof_object(const ScrDyn *value) {
   }
 }
 
-/* `value instanceof Function`: every function, unless the program set its
- * prototype to null or to a non-function. */
+/* `value instanceof Function`: whether a function is on the value's
+ * prototype chain. A function's own prototype is Function.prototype unless
+ * the program set it, so the walk ends true at the first function that
+ * kept its prototype; it follows set prototypes through functions and
+ * objects alike (`Object.create(function () {})` is a Function instance),
+ * and ends false at null or at a value without a chain the runtime walks.
+ * False with the exception pending when a prototype read throws. */
 static bool scr_dyn_instanceof_function(const ScrDyn *value) {
-  if (value->kind != SCR_DYN_FUNC) return false;
-  if (!scr_closure_identity(value->v.fn.clo)->props) return true;
-  ScrDyn *table = scr_dyn_fn_properties((ScrDyn *)value);
-  bool result = table->prototype ? scr_dyn_instanceof_function(table->prototype) : !table->null_proto;
-  scr_dyn_release(table);
-  return result;
+  ScrDyn *current = NULL;
+  if (value->kind == SCR_DYN_FUNC) {
+    if (!scr_closure_identity(value->v.fn.clo)->props) return true;
+    ScrDyn *table = scr_dyn_fn_properties((ScrDyn *)value);
+    current = table->prototype ? scr_dyn_retain(table->prototype) : NULL;
+    bool unset = !table->prototype && !table->null_proto;
+    scr_dyn_release(table);
+    if (unset) return true;
+  } else if (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR) {
+    current = scr_dyn_get_prototype((ScrDyn *)value);
+    if (!current) return false; /* the read threw: pending */
+  }
+  while (current && current->kind != SCR_DYN_NULL) {
+    ScrDyn *next = NULL;
+    if (current->kind == SCR_DYN_FUNC) {
+      if (!scr_closure_identity(current->v.fn.clo)->props) {
+        scr_dyn_release(current);
+        return true;
+      }
+      ScrDyn *table = scr_dyn_fn_properties(current);
+      bool unset = !table->prototype && !table->null_proto;
+      next = table->prototype ? scr_dyn_retain(table->prototype) : NULL;
+      scr_dyn_release(table);
+      if (unset) {
+        scr_dyn_release(current);
+        return true;
+      }
+    } else if (current->kind == SCR_DYN_OBJ || current->kind == SCR_DYN_ARR) {
+      next = scr_dyn_get_prototype(current);
+      if (!next) {
+        scr_dyn_release(current);
+        return false; /* the read threw: pending */
+      }
+    }
+    scr_dyn_release(current);
+    current = next;
+  }
+  if (current) scr_dyn_release(current);
+  return false;
 }
 
 bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal) {
