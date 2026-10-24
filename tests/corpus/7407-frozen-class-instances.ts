@@ -136,8 +136,46 @@ function added(): void {
   console.log((p as any).extra, JSON.stringify(p));
 }
 
+const tag = Symbol("tag");
+
+class Tagged {
+  [tag] = 1;
+  name = "n";
+  bump(): void {
+    this[tag] += 1;
+  }
+}
+
+class Subtagged extends Tagged {
+  extra = 0;
+}
+
+function symbols(): void {
+  const t = new Tagged();
+  freezeUnknown(t);
+  console.log(integrity(t), Object.getOwnPropertyDescriptor(t, tag)?.writable);
+  try { t[tag] = 5; } catch (e) { report(e); }
+  try { t.bump(); } catch (e) { report(e); }
+  console.log(t[tag]);
+
+  const s = new Subtagged();
+  sealUnknown(s);
+  s[tag] = 3;
+  console.log(integrity(s), s[tag], Object.getOwnPropertyDescriptor(s, tag)?.configurable);
+  freezeUnknown(s);
+  try { s[tag] = 4; } catch (e) { report(e); }
+  console.log(integrity(s), s[tag]);
+
+  const u = new Tagged();
+  Object.freeze(u);
+  console.log(integrity(u));
+  try { u[tag] = 9; } catch (e) { report(e); }
+  console.log(u[tag]);
+}
+
 frozen();
 sealed();
 notExtensible();
 untouched();
 added();
+symbols();

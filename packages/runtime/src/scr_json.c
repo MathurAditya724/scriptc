@@ -2415,10 +2415,14 @@ double scr_dyn_class_view_integrity(const ScrDyn *view, double bits, ScrDyn *bag
   state |= SCR_CLASS_NOT_EXTENSIBLE;
   if (bag && bag->kind == SCR_DYN_OBJ) bag->non_extensible = true;
   bool sealed = true, frozen = true;
-  for (size_t i = 0; i < view->v.obj.len; i++) {
-    const ScrDynEntry *entry = &view->v.obj.entries[i];
-    if (entry->configurable) sealed = false;
-    if (!entry->accessor && entry->writable) frozen = false;
+  /* The string-keyed entries, then the symbol-keyed ones. */
+  for (const ScrDyn *table = view; table; table = table == view ? view->symbol_properties : NULL) {
+    if (table->kind != SCR_DYN_OBJ) continue;
+    for (size_t i = 0; i < table->v.obj.len; i++) {
+      const ScrDynEntry *entry = &table->v.obj.entries[i];
+      if (entry->configurable) sealed = false;
+      if (!entry->accessor && entry->writable) frozen = false;
+    }
   }
   if (sealed) state |= SCR_CLASS_SEALED;
   if (sealed && frozen) state |= SCR_CLASS_FROZEN;
@@ -7968,6 +7972,22 @@ static bool scr_dyn_key_probe_computed(const ScrDyn *value, const ScrDyn *raw_ke
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 0); }
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 1); }
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 2); }
+
+static void scr_json_delete_member(ScrDyn *object, const ScrStr *key);
+
+void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol) {
+  if (obj->kind != SCR_DYN_OBJ || !obj->symbol_properties) return;
+  ScrStr *name = scr_dyn_symbol_storage_key(symbol);
+  scr_json_delete_member(obj->symbol_properties, name);
+  scr_str_release(name);
+  for (size_t i = 0; obj->symbol_keys && i < obj->symbol_keys->v.arr.len; i++) {
+    if (!scr_dyn_strict_eq(obj->symbol_keys->v.arr.items[i], symbol)) continue;
+    scr_dyn_release(obj->symbol_keys->v.arr.items[i]);
+    size_t remaining = --obj->symbol_keys->v.arr.len - i;
+    memmove(&obj->symbol_keys->v.arr.items[i], &obj->symbol_keys->v.arr.items[i + 1], remaining * sizeof(ScrDyn *));
+    break;
+  }
+}
 
 void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *raw_key, bool strict) {
   ScrDyn *key = scr_dyn_property_key_value(raw_key);
@@ -16914,15 +16934,25 @@ void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits) {
   if (b & SCR_FIELD_NOT_CONFIGURABLE) entry->configurable = false;
 }
 
-void scr_dyn_class_view_attributes(ScrDyn *view, double bits) {
-  unsigned b = (unsigned)bits;
-  if (b == 0 || view->kind != SCR_DYN_OBJ) return;
-  view->non_extensible = true;
-  for (size_t i = 0; i < view->v.obj.len; i++) {
-    ScrDynEntry *entry = &view->v.obj.entries[i];
+/* The integrity state `b` on the entries of `table`: a view, or the table
+ * of its symbol-keyed properties. */
+static void scr_dyn_class_table_attributes(ScrDyn *table, unsigned b) {
+  table->non_extensible = true;
+  for (size_t i = 0; i < table->v.obj.len; i++) {
+    ScrDynEntry *entry = &table->v.obj.entries[i];
     if (b & (SCR_CLASS_SEALED | SCR_CLASS_FROZEN)) entry->configurable = false;
     if ((b & SCR_CLASS_FROZEN) && !entry->accessor) entry->writable = false;
   }
+}
+
+void scr_dyn_class_view_attributes(ScrDyn *view, double bits) {
+  unsigned b = (unsigned)bits;
+  if (b == 0 || view->kind != SCR_DYN_OBJ) return;
+  scr_dyn_class_table_attributes(view, b);
+  /* Symbol-keyed fields, and symbol-keyed properties added to the
+   * instance, take the same state. */
+  if (view->symbol_properties && view->symbol_properties->kind == SCR_DYN_OBJ)
+    scr_dyn_class_table_attributes(view->symbol_properties, b);
 }
 
 /* Object.defineProperty on a declared class field. The descriptor applies to

@@ -1220,6 +1220,9 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict);
 /* Removes the own property `key` of an ordinary object whatever its
  * attributes, as scr_dyn_obj_set_field replaces values. */
 void scr_dyn_obj_delete_field(ScrDyn *obj, const ScrStr *key);
+/* The same for the own symbol-keyed property `symbol` of an ordinary
+ * object. */
+void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol);
 /* This thread's global object box (borrowed). Every spelling of the global
  * object answers it; its symbol-keyed properties are the global object's
  * (scr_node_builtin.c). */

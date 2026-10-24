@@ -303,6 +303,32 @@ export function lowerClassFieldDefine(
   };
 }
 
+/** The property key of `field` when it is the storage of a symbol-keyed
+ * field of `info`, as the read-only TypeError names it: the symbol's
+ * String() form ("Symbol(tag)"), read from the module global that holds
+ * the symbol. Null for other fields. */
+function symbolFieldKey(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  field: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (info.symbolFields === undefined) return null;
+  for (const [symbol, name] of info.symbolFields) {
+    if (name !== field) continue;
+    const global = lowerer.globalsBySymbol.get(symbol);
+    if (global?.type.kind !== "symbol") return null;
+    return {
+      kind: "libCall",
+      fn: "sym.toString",
+      args: [varRef(global.id, global.type, loc)],
+      type: STRING,
+      loc,
+    };
+  }
+  return null;
+}
+
 function classDisplayName(info: ClassInfo): string {
   return info.def.jsName ?? info.decl?.name?.text ?? info.def.name.replace(/^%/, "");
 }
@@ -367,12 +393,15 @@ export function guardClassAttributeWrites(lowerer: Lowerer, functions: IrFunctio
         if (
           statement.kind !== "fieldSet" ||
           statement.attributesChecked ||
-          !guarded.has(statement.className) ||
-          !isClassOwnEnumerableFieldName(statement.field)
+          !guarded.has(statement.className)
         )
           return statement;
         const info = lowerer.classes.get(statement.className)!;
         const loc = statement.loc;
+        // A symbol-keyed field is an own property under its symbol.
+        const symbolKey = symbolFieldKey(lowerer, info, statement.field, loc);
+        if (!symbolKey && !isClassOwnEnumerableFieldName(statement.field)) return statement;
+        const key = (): IrExpr => symbolKey ?? strLit(statement.field, loc);
         const receiver = local(statement.obj.type, loc);
         const value = local(statement.value.type, loc);
         const masked = (field: string, bit: number): IrExpr => ({
@@ -405,7 +434,7 @@ export function guardClassAttributeWrites(lowerer: Lowerer, functions: IrFunctio
                 expr: {
                   kind: "libCall",
                   fn: "class.throwNotExtensible",
-                  args: [strLit(statement.field, loc)],
+                  args: [key()],
                   type: VOID,
                   loc,
                 },
@@ -420,10 +449,7 @@ export function guardClassAttributeWrites(lowerer: Lowerer, functions: IrFunctio
                   expr: {
                     kind: "libCall",
                     fn: "class.throwReadOnly",
-                    args: [
-                      strLit(statement.field, loc),
-                      instanceClassName(lowerer, info, receiver, helpers, loc),
-                    ],
+                    args: [key(), instanceClassName(lowerer, info, receiver, helpers, loc)],
                     type: VOID,
                     loc,
                   },

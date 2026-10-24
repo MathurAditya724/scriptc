@@ -498,7 +498,9 @@ export function streamTypedRefCommitAdapter(
         host.declare(
           meta.def.tracksOwnFields
             ? `declare void @scr_dyn_symbol_key_placeholder(ptr, ptr)`
-            : `declare void @scr_dyn_key_delete_computed(ptr, ptr, i1 zeroext)`,
+            : withAttributes
+              ? `declare void @scr_dyn_obj_delete_symbol_field(ptr, ptr)`
+              : `declare void @scr_dyn_key_delete_computed(ptr, ptr, i1 zeroext)`,
         );
       [...symbols.values()].forEach((globalId, index) =>
         lines.push(
@@ -506,7 +508,9 @@ export function streamTypedRefCommitAdapter(
           `  %bag_sym${index} = call ptr @${host.dyn.toDynHelper(SYMBOL_T)}(ptr %bag_symraw${index})`,
           meta.def.tracksOwnFields
             ? `  call void @scr_dyn_symbol_key_placeholder(ptr %bag, ptr %bag_sym${index})`
-            : `  call void @scr_dyn_key_delete_computed(ptr %bag, ptr %bag_sym${index}, i1 zeroext false)`,
+            : withAttributes
+              ? `  call void @scr_dyn_obj_delete_symbol_field(ptr %bag, ptr %bag_sym${index})`
+              : `  call void @scr_dyn_key_delete_computed(ptr %bag, ptr %bag_sym${index}, i1 zeroext false)`,
           `  call void @scr_dyn_release_v(ptr %bag_sym${index})`,
         ),
       );
