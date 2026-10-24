@@ -584,15 +584,30 @@ function widenReducedReturn(
     return mapped;
   }
   // Functions that forward to the same callees along several return
-  // branches read each callee's widened type once.
+  // branches read each callee's widened type once. A nested function
+  // lowered under other type-parameter bindings maps its returns again.
   const known = lowerer.coercions.widenedReturnTypes.get(decl)?.get(retTsType);
-  if (known !== undefined) return known;
+  const erasing = lowerer.erasingDepth > 0;
+  if (
+    known !== undefined &&
+    known.bindings === lowerer.typeParamBindings &&
+    known.tsBindings === lowerer.typeParamTsBindings &&
+    known.implicit === lowerer.implicitParamTypes &&
+    known.erasing === erasing
+  )
+    return known.type;
   const cutsBefore = wideningCuts;
   const widened = widenReturnArms(lowerer, decl, retTsType, mapped, arms, recordArms);
   if (wideningCuts === cutsBefore) {
     let byType = lowerer.coercions.widenedReturnTypes.get(decl);
     if (byType === undefined) lowerer.coercions.widenedReturnTypes.set(decl, (byType = new Map()));
-    byType.set(retTsType, widened);
+    byType.set(retTsType, {
+      type: widened,
+      bindings: lowerer.typeParamBindings,
+      tsBindings: lowerer.typeParamTsBindings,
+      implicit: lowerer.implicitParamTypes,
+      erasing,
+    });
   }
   return widened;
 }
@@ -638,6 +653,10 @@ function widenReturnArms(
       (callee as { body?: ts.Node }).body !== undefined &&
       callee.type === undefined
     ) {
+      // A call of the function itself returns its own type, whose arms
+      // add nothing. Reading it would cut the widening and keep this
+      // result from being reused.
+      if (callee === decl) return;
       let t: IrType | null = null;
       widening.add(decl);
       try {
