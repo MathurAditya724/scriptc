@@ -13,7 +13,7 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { locOf } from "../program.js";
+import { isJsSourceFile, locOf } from "../program.js";
 import {
   classMemberNameOf,
   classValueRef,
@@ -503,6 +503,69 @@ export function isErrorPrototypeValue(
   );
 }
 
+/** Whether a bare `C.prototype` read becomes the prototype of another object
+ * or is only compared or inspected: the argument of `Object.create` or
+ * `Object.getPrototypeOf` / `Reflect.getPrototypeOf`, the prototype argument
+ * of `Object.setPrototypeOf` / `Reflect.setPrototypeOf`, or an operand of
+ * `===` / `!==`. In these positions the complete view of the
+ * prototype (reflectClassPrototype) answers. Objects that inherit from it
+ * run the class's methods with themselves as the receiver, which the
+ * methods' receiver-independent lowering (reflectedClassMethodValue)
+ * supports. Other positions, such as `Object.setPrototypeOf(C.prototype, X)`,
+ * which would relink the class, keep the diagnostic. */
+function prototypeViewPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  let node: ts.Node = expr;
+  let parent = node.parent;
+  while (parent && ts.isParenthesizedExpression(parent)) {
+    node = parent;
+    parent = parent.parent;
+  }
+  if (!parent) return false;
+  if (ts.isCallExpression(parent) && ts.isPropertyAccessExpression(parent.expression)) {
+    const args = parent.arguments.nodes;
+    const objectMethod = lowerer.stdlibGlobalMember(parent.expression, "Object");
+    const reflectMethod = lowerer.stdlibGlobalMember(parent.expression, "Reflect");
+    if (
+      objectMethod === "create" ||
+      objectMethod === "getPrototypeOf" ||
+      reflectMethod === "getPrototypeOf"
+    )
+      return args[0] === node;
+    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf")
+      return args[1] === node;
+    return false;
+  }
+  return (
+    ts.isBinaryExpression(parent) &&
+    (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken)
+  );
+}
+
+/** A module-level JavaScript class named directly (not a class value that
+ * may hold a subclass at run time): its prototype has a complete view whose
+ * methods accept any receiver. */
+function viewableClass(lowerer: Lowerer, info: ClassInfo, receiver: ts.Expression): boolean {
+  return (
+    info.decl !== null &&
+    info.localClass === undefined &&
+    isJsSourceFile(ts.getSourceFileOfNode(info.decl)) &&
+    exactClassOfReceiver(lowerer, receiver) === info
+  );
+}
+
+/** The complete prototype view of the class `node` names, when it is a
+ * viewable class (util.inherits's superCtor); null otherwise. */
+export function classPrototypeView(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const info = exactClassOfReceiver(lowerer, node);
+  if (!info || !viewableClass(lowerer, info, node)) return null;
+  return reflectClassPrototype(lowerer, info, loc, classValueRef(lowerer, info, node));
+}
+
 /** Named data and method slots have native descriptors. Bare reflection and
  * accessor replacement still require a complete view of the prototype. */
 export function lowerClassPrototypeData(
@@ -566,6 +629,12 @@ export function lowerClassPrototypeData(
     });
     return reflectClassPrototype(lowerer, info, locOf(expr), receiver);
   }
+  if (
+    name === null &&
+    prototypeViewPosition(lowerer, expr) &&
+    viewableClass(lowerer, info, expr.expression)
+  )
+    return reflectClassPrototype(lowerer, info, locOf(expr), classValueRef(lowerer, info, expr));
   if (name === null || (isCompiledPrototypeMember(lowerer, info, name) && !method)) {
     lowerer.unsupported(
       "SC1090",
