@@ -176,12 +176,14 @@ export function emitWrappingSum(
 }
 
 /** Whether every product of a value in `left` and one in `right` is an
- * integer of magnitude at most 2^53, which the double product holds
- * exactly. */
+ * integer of magnitude below 2^53, which the double product holds exactly.
+ * The bound's own product is computed in a double: a bound of at least
+ * 2^53 never rounds below 2^53, while 2^53 + 1 (3 * 3002399751580331)
+ * rounds to 2^53, so the test is strict. */
 function exactProduct(left: IntegerRange, right: IntegerRange): boolean {
   const magnitude = (range: IntegerRange): number =>
     Math.max(Math.abs(range.min), Math.abs(range.max));
-  return magnitude(left) * magnitude(right) <= 2 ** 53;
+  return magnitude(left) * magnitude(right) < 2 ** 53;
 }
 
 /** The number locals of `fn` that only hold exact integers (never -0) or NaN, with the range of
