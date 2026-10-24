@@ -717,6 +717,105 @@ export function classForInHasKey(
   return { kind: "call", callee: name, args: [value, key], type: BOOL, loc };
 }
 
+/** Box class instances at their exact class. `%dyn.class.normalize` turns a
+ * capsule of a class with subclasses into a capsule of the instance's own
+ * class before any member table reads it, so every such box was followed
+ * by a second capsule. Each conversion of a value whose static class has a
+ * normalization branch now selects the exact class at the conversion, with
+ * the same tests in the same order (%dyn.class.boxExact:C), and the
+ * normalization of the resulting capsule falls through. Only JavaScript
+ * class hierarchies, whose instances live in untyped code, take the exact
+ * box. */
+export function boxClassInstancesExactly(lowerer: Lowerer, functions: IrFunction[]): void {
+  const normalize = lowerer.liftedFnNamed("%dyn.class.normalize");
+  if (!normalize) return;
+  // Static class → its constructible descendants in normalization order.
+  const branches = new Map<string, string[]>();
+  for (const stmt of normalize.body) {
+    if (stmt.kind !== "if" || stmt.cond.kind !== "libCall" || stmt.cond.fn !== "dyn.typedRefIs")
+      continue;
+    const key = stmt.cond.args[1];
+    if (key?.kind !== "strLit" || !key.value.startsWith("object:")) continue;
+    const children: string[] = [];
+    for (const inner of stmt.then) {
+      if (inner.kind !== "if" || inner.cond.kind !== "instanceOf") continue;
+      children.push(inner.cond.className);
+    }
+    // TypeScript hierarchies keep their static-class capsules: their boxes
+    // are rarer, and an exact box would emit each subclass's checked view.
+    const className = key.value.slice("object:".length);
+    const decl = lowerer.classes.get(className)?.decl;
+    if (!decl || !isJsSourceFile(ts.getSourceFileOfNode(decl))) continue;
+    if (children.length) branches.set(className, children);
+  }
+  if (branches.size === 0) return;
+  const loc = normalize.loc;
+  const helpers = new Map<string, string>();
+  const helperFor = (className: string): string => {
+    const known = helpers.get(className);
+    if (known !== undefined) return known;
+    const name = `%dyn.class.boxExact:${className}`;
+    helpers.set(className, name);
+    const type: IrType = { kind: "object", className };
+    const value = varRef("value", type, loc);
+    functions.push({
+      name,
+      params: [{ localId: "value", name: "value", type }],
+      returnType: DYN,
+      locals: [{ id: "value", name: "value", type, mutable: false }],
+      body: [
+        ...branches.get(className)!.map((child): IrStmt => ({
+          kind: "if",
+          cond: { kind: "instanceOf", value, className: child, type: BOOL, loc },
+          then: [
+            {
+              kind: "return",
+              value: {
+                kind: "dynFrom",
+                value: {
+                  kind: "downcast",
+                  value,
+                  type: { kind: "object", className: child },
+                  loc,
+                },
+                type: DYN,
+                loc,
+              },
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        })),
+        { kind: "return", value: { kind: "dynFrom", value, type: DYN, loc }, loc },
+      ],
+      loc,
+    });
+    return name;
+  };
+  const rewrite = (fn: IrFunction): void => {
+    fn.body = transformStmtList(fn.body, {
+      stmt: (statement) => statement,
+      expr: (expression) =>
+        expression.kind === "dynFrom" &&
+        expression.value.type.kind === "object" &&
+        branches.has(expression.value.type.className)
+          ? {
+              kind: "call",
+              callee: helperFor(expression.value.type.className),
+              args: [expression.value],
+              type: DYN,
+              loc: expression.loc,
+            }
+          : expression,
+    });
+  };
+  for (const fn of [...functions]) {
+    if (fn === normalize || fn.name.startsWith("%dyn.class.boxExact:")) continue;
+    rewrite(fn);
+  }
+}
+
 /** Record field creation after the dispatch worklist closes, including writes
  * in generated member tables. Native values stay in their slots; the bag
  * owns only their property presence, attributes, and insertion position. */
@@ -1634,6 +1733,15 @@ export class ClassDynamicDispatch {
         if (this.deletedNames === undefined)
           this.deletedNames = deletedPropertyNames(lowerer.moduleOrder);
         if (!root.base?.def.runtime && !fixedFieldFamily(root, this.deletedNames)) track(root);
+        // An Error family's bag records where `name` and `message` were
+        // created, which the error slots do not.
+        if (root.base?.def.name === "%Error") {
+          const order = (current: ClassInfo): void => {
+            current.def.errorBagOrder = true;
+            current.subclasses.forEach(order);
+          };
+          order(info);
+        }
       }
       const loc = this.propertyBag.loc;
       const { receiver, condition } = this.propertyReceiver(plan, loc);

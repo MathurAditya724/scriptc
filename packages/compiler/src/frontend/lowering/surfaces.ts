@@ -2085,7 +2085,16 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.readFdEncoded",
       "fs.readFdSync",
       "fs.readFdSyncBytes",
+      // The runtime encoding's check before a URL path converts
+      // (fs-paths.ts).
+      "fs.checkReadEncoding",
     ],
+    // The string source's check before a URL destination converts
+    // (fs-paths.ts).
+    copyFileSync: ["fs.checkPath"],
+    renameSync: ["fs.checkPath"],
+    copyFile: ["fs.checkPath"],
+    rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
     // The bytes-data form and the { mode } options form.
     writeFileSync: ["fs.writeFileSyncBytes", "fs.writeFileModeSync"],

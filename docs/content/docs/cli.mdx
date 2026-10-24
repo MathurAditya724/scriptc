@@ -135,6 +135,9 @@ With `--sparse`, the profile leaves out the functions the runs never reached. Th
   <dt><code>--detached-exit</code></dt>
   <dd>On Linux, when the program calls <code>process.exit()</code>, hand the release of its memory to a helper process so the parent sees the exit sooner. The kernel otherwise frees the whole address space before the exit is reported, which takes tens of milliseconds per gigabyte. Opt in only where the trade-offs are acceptable: for up to about 100 ms after the exit, the helper keeps the executable mapped (overwriting the binary in place fails with "text file busy"), its memory stays charged to the cgroup, and the teardown CPU time no longer appears in the parent's resource usage. Valid only for executable builds; it has no effect on other platforms.</dd>
 
+  <dt><code>--target-cpu &lt;baseline|x86-64-v2|x86-64-v3|x86-64-v4|native&gt;</code></dt>
+  <dd>On x86-64 targets, compile the program's code for an x86-64 microarchitecture level. The default, <code>baseline</code>, runs on any x86-64 CPU. A higher level lets LLVM use more instructions, and the executable then runs only on CPUs that support that level. <code>native</code> uses the highest level the build machine supports. Valid for executable, assembly, and object output on x86-64 targets. See <a href="#target-cpu">Target CPU</a>.</dd>
+
   <dt><code>--profile-generate &lt;pattern&gt;</code></dt>
   <dd>On Linux, build an instrumented executable for profile-guided optimization. Each run writes a raw profile to the path pattern, where <code>%p</code> expands to the process ID; the <code>LLVM_PROFILE_FILE</code> environment variable overrides the pattern at run time. A relative pattern resolves from the current working directory. Instrumented programs run slower. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
 
@@ -227,6 +230,43 @@ $ scriptc build app.ts --optimization=speed --profile-use app.profdata
 ```
 
 Train on workloads like the ones the program will run: code the training never reached is optimized as without a profile. The profile can be committed and reused as the program changes. Functions whose control flow changed since the profile was collected lose their profile, and the rest keep theirs, so regenerate it when much of the program has changed. [Build parallelism](/docs/how-it-works#build-parallelism) describes what a profile adds to build time.
+
+## Target CPU
+
+By default, x86-64 executables run on any x86-64 CPU, so the compiler uses only the baseline instruction set (SSE2). `--target-cpu` compiles the program's code for a higher x86-64 microarchitecture level. Each level includes the ones below it:
+
+<table>
+  <thead>
+    <tr>
+      <th>Level</th>
+      <th>Adds</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>x86-64-v2</code></td>
+      <td>SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT</td>
+    </tr>
+    <tr>
+      <td><code>x86-64-v3</code></td>
+      <td>AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT, MOVBE</td>
+    </tr>
+    <tr>
+      <td><code>x86-64-v4</code></td>
+      <td>AVX-512 (F, BW, CD, DQ, VL)</td>
+    </tr>
+  </tbody>
+</table>
+
+```console
+$ scriptc build app.ts --target-cpu=x86-64-v3 -o app
+```
+
+Loops over typed arrays and numbers gain the most, because LLVM vectorizes them with wider registers. Some loops run slower at a higher level, so measure the program on the machines it will run on.
+
+An executable built for a level runs only on CPUs that support that level. On an older CPU, it crashes with an illegal-instruction signal (`SIGILL`) when it reaches an instruction the CPU lacks. A named level is portable to every machine of that level. `native` selects the highest level the build machine supports, so use it only for executables that run on the machine that built them or on identical machines.
+
+The level applies to the program's own code. The runtime pack keeps its baseline code. Builds for different levels never share cached artifacts, and `baseline` builds are the same as builds without the option.
 
 ## LLVM backend
 

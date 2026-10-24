@@ -64,6 +64,7 @@ import { literalEqualityDefinition } from "./string-literal-equality.js";
 import { STRING_READ_HELPERS, stringScanDecl } from "./string-reads.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import { InternalCompilerError } from "../../errors.js";
+import { targetCpuAttribute } from "../target-cpu.js";
 
 /** The function bodies emitted in `chunks` contiguous ranges, each by its
  * own emitter (LlEmitter.chunkEmitter), then merged in function order: the
@@ -189,6 +190,20 @@ function readRange(dir: string, range: number): { result: ChunkResult; texts: st
   } catch {
     return null;
   }
+}
+
+/** The attribute groups of the emitted functions: #0 for every function,
+ * #1 for coroutine bodies and #2 for out-of-line record clones. Each carries
+ * the build's `--target-cpu` level. */
+function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean): string[] {
+  const cpu = targetCpuAttribute(emitter.targetCpu);
+  return [
+    `attributes #0 = { sanitize_address${cpu} }`,
+    ...(emitter.usesCoroutines
+      ? [`attributes #1 = { sanitize_address presplitcoroutine${cpu} }`]
+      : []),
+    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address${cpu} }`] : []),
+  ];
 }
 
 export function emitModuleParts(emitter: LlEmitter): string[] {
@@ -972,9 +987,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // symbols specified by the library IR instead.
     for (const line of emitter.emitLibDefs(globals, globalReleaseLines, stamps)) out.push(line);
     out.push(...emitter.inlineRcTail(flushedDecls));
-    out.push(`attributes #0 = { sanitize_address }`);
-    if (emitter.usesCoroutines) out.push(`attributes #1 = { sanitize_address presplitcoroutine }`);
-    if (hasNoInlineRecordClone) out.push(`attributes #2 = { noinline sanitize_address }`);
+    out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
     out.push(``);
     out.push(...emitter.fieldAliasMetadata());
     if (emitter.debug !== null) out.push(emitter.debug.render());
@@ -1122,9 +1135,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // sanitize_address is inert under the plain pipeline; the sanitized
     // lane's -fsanitize=address link activates instrumentation over the
     // emitted functions too (the runtime TUs get theirs from clang).
-    `attributes #0 = { sanitize_address }`,
-    ...(emitter.usesCoroutines ? [`attributes #1 = { sanitize_address presplitcoroutine }`] : []),
-    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address }`] : []),
+    ...functionAttributes(emitter, hasNoInlineRecordClone),
     ``,
   );
   if (emitter.mod.workers) {
