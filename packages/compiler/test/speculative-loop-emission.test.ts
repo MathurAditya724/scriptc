@@ -47,9 +47,8 @@ test("a failed check finishes its iteration outside the ordinary copy", async ()
   const llvm = await emitLlvm(source);
   const fn = /^define internal double @sc_bf_scaled\([^]*?^}/m.exec(llvm)?.[0] ?? "";
   const order = labels(fn);
-  // The loop may have several speculative sites (one in each copy of a
-  // dense-array loop). Each site emits its ordinary copy, its third copy
-  // and its fast copy in that order.
+  // Each speculative site emits its ordinary copy, its third copy and its
+  // fast copy in that order.
   const slows = order.flatMap((l, i) => (l.startsWith("spec.slow") ? [i] : []));
   expect(slows.length).toBeGreaterThan(0);
   let resumes = 0;
@@ -90,4 +89,43 @@ test("a loop site stops entering its fast copy after repeated bails", async () =
   );
   expect(fn).toMatch(new RegExp(`call i8 @llvm\\.uadd\\.sat\\.i8\\(i8 %\\S+, i8 1\\)`));
   expect(fn).toContain(`store atomic i8 0, ptr ${site} unordered, align 1`);
+});
+
+test("the slow copy of a dense-array loop has no speculative copy", async () => {
+  const llvm = await emitLlvm(source);
+  const fn = /^define internal double @sc_bf_scaled\([^]*?^}/m.exec(llvm)?.[0] ?? "";
+  const order = labels(fn);
+  const slow = order.findIndex((l) => l.startsWith("dense.loop.slow"));
+  const fast = order.findIndex((l) => l.startsWith("dense.loop.fast"));
+  expect(slow).toBeGreaterThanOrEqual(0);
+  expect(fast).toBeGreaterThan(slow);
+  // The slow copy runs when the guard fails; only the fast copy speculates.
+  expect(order.slice(slow, fast).filter((l) => l.startsWith("spec."))).toEqual([]);
+  expect(order.slice(fast).some((l) => l.startsWith("spec.fast"))).toBe(true);
+  expect(llvm.match(/^@sc_spec_bails_\d+ = /gm)).toHaveLength(1);
+});
+
+test("the slow copy of a typed-array version keeps its proven integer loop", async () => {
+  // The program can start a worker, so typed-array loops are versioned on
+  // thread ownership.
+  const llvm = await emitLlvm(`
+import { Worker, isMainThread } from "node:worker_threads";
+function count(bytes: Uint8Array): number {
+  let lines = 0;
+  for (let i = 0; i < bytes.length; i++) if (bytes[i] === 10) lines++;
+  return lines;
+}
+if (isMainThread) {
+  if (process.argv[2] === "spawn") new Worker(new URL(import.meta.url));
+  console.log(count(new Uint8Array([10, 1, 10])));
+}
+`);
+  const fn = /^define internal double @sc_bf_\w*count\([^]*?^}/m.exec(llvm)?.[0] ?? "";
+  const order = labels(fn);
+  const slow = order.findIndex((l) => l.startsWith("bytes.version.slow"));
+  const fast = order.findIndex((l) => l.startsWith("bytes.version.fast"));
+  expect(slow).toBeGreaterThanOrEqual(0);
+  expect(fast).toBeGreaterThan(slow);
+  expect(order.slice(slow, fast).some((l) => l.startsWith("integer.leave"))).toBe(true);
+  expect(order.slice(fast).some((l) => l.startsWith("integer.leave"))).toBe(true);
 });
