@@ -2359,10 +2359,11 @@ function reduceHelper(
  * the left element first. Undefined values sink without reaching the user
  * comparator. The callback sequence differs from V8's TimSort, so exact
  * order and count parity are not claimed; results agree for consistent
- * comparators. Without a comparator, string, number and boolean arrays use
- * native stable ordering: their String conversions cannot call user code.
- * Strings compare UTF-16 units; numbers compare their decimal spellings
- * ([10, 9, 1] → [1, 10, 9]). Other element types still need a comparator. */
+ * comparators. Without a comparator, string, number, boolean and Date
+ * arrays use native stable ordering: their String conversions cannot call
+ * user code. Strings compare UTF-16 units; numbers compare their decimal
+ * spellings ([10, 9, 1] → [1, 10, 9]); Dates compare their toString() text.
+ * Other element types still need a comparator. */
 export function lowerArraySortCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -2375,7 +2376,7 @@ export function lowerArraySortCall(
   const copyFirst = method === "toSorted";
   if (
     call.arguments.nodes.length === 0 &&
-    (elem.kind === "string" || elem.kind === "f64" || elem.kind === "bool")
+    (elem.kind === "string" || elem.kind === "f64" || elem.kind === "bool" || elem.kind === "date")
   ) {
     return {
       kind: "arrIntrinsic",
@@ -2390,7 +2391,7 @@ export function lowerArraySortCall(
     lowerer.noLowering(
       `.${method} with ${call.arguments.nodes.length} arguments`,
       call,
-      "default ordering supports string[], number[] and boolean[]; other element types need a comparator",
+      "default ordering supports string[], number[], boolean[] and Date[]; other element types need a comparator",
     );
   }
   const receiver = lowerer.lowerExpr(access.expression);

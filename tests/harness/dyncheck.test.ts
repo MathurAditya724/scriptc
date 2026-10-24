@@ -396,6 +396,95 @@ console.log("unreachable", s.kind);
     expect(r.stderr).toContain("Uncaught TypeError: expected object | object at $, got object");
   });
 
+  test("a union read by its discriminant fails with every arm named, as arm-by-arm tests do", async () => {
+    // Five record arms with six literals, plus string and number arms: the
+    // check reads `kind` once and tests only the arm it names and the
+    // arms that are not records.
+    const r = await compileAndRun(
+      "union-discriminant-dispatch",
+      `type Expr =
+  | { kind: "num"; value: number }
+  | { kind: "str"; text: string }
+  | { kind: "neg"; operand: Expr }
+  | { kind: "add" | "mul"; left: Expr; right: Expr }
+  | { items: Expr[]; kind: "list" }
+  | string
+  | number;
+const inputs = [
+  '{"kind":"num"}',
+  '{"kind":"nope","value":1}',
+  '{"kind":7,"value":1}',
+  '{"value":1}',
+  '{"kind":"neg","operand":{"kind":"add","left":{"kind":"num","value":1},"right":{"kind":"str","text":5}}}',
+  'true',
+  '{"items":["a",3,{"kind":"mul","left":"x","right":2}],"kind":"list"}',
+];
+for (const input of inputs) {
+  try {
+    console.log(JSON.stringify(JSON.parse(input) as Expr));
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+`,
+    );
+    const any = "number | object | object | object | object | object | string";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got boolean`,
+        '{"items":["a",3,{"kind":"mul","left":"x","right":2}],"kind":"list"}',
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a getter that changes the discriminant during an arm's check continues with the later arms", async () => {
+    // Each getter sets `kind` and fails its arm's check: to a later arm's
+    // literal (that arm matches), to an earlier arm's literal (arm-by-arm
+    // tests do not go back), and to a literal no arm holds.
+    const r = await compileAndRun(
+      "union-discriminant-getter",
+      `type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "square"; side: number }
+  | { kind: "rect"; height: number; width: number }
+  | { kind: "tri"; a: number; b: number; c: number };
+const flip = (value: any, to: string): string => {
+  value.kind = to;
+  return "none";
+};
+const later: any = { kind: "circle", get radius() { return flip(later, "square"); }, side: 3 };
+const earlier: any = { kind: "square", radius: 2, get side() { return flip(earlier, "circle"); } };
+const unknown: any = { kind: "square", get side() { return flip(unknown, "hexagon"); } };
+const inputs = [later, earlier, unknown];
+for (const input of inputs) {
+  try {
+    const shape = input as Shape;
+    console.log("matched", shape.kind);
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+`,
+    );
+    const any = "object | object | object | object";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "matched square",
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("nested paths point at the offending element", async () => {
     const r = await compileAndRun(
       "nested-path",
@@ -1277,5 +1366,194 @@ console.log("done", caught);
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("done 100\n");
+  });
+
+  test("an inspection refusal throws before console.log writes", async () => {
+    // A promise reached through `unknown` has no dynamic rendering; the
+    // refusal must stop the call, not print a partial line and continue.
+    const r = await compileAndRun(
+      "inspect-refusal-unwind",
+      `import { inspect } from "node:util";
+const p: unknown = Promise.resolve(3);
+function attempt(label: string, f: () => void): void {
+  try {
+    f();
+    console.log(label, "returned");
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+attempt("log", () => console.log("x", p));
+attempt("inspect", () => console.log(inspect(p).length));
+attempt("record", () => console.log({ a: p }));
+attempt("array", () => console.log([p]));
+console.log("before");
+console.log(p);
+console.log("after");
+`,
+    );
+    const refusal = "util.inspect of a promise value is not supported yet";
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(
+      ["log", "inspect", "record", "array"].map((l) => `${l} ${refusal}\n`).join("") + "before\n",
+    );
+    expect(r.stderr).toContain(`Uncaught Error: ${refusal}`);
+  });
+
+  test("a refusal in a record's kept source properties closes the inspector's frames", async () => {
+    // A record converted from an object with undeclared properties renders
+    // them through its checked view; a refusal there, inside an enclosing
+    // record or array, must not leave that render's frames open.
+    const r = await compileAndRun(
+      "inspect-refusal-kept-source",
+      `import { inspect } from "node:util";
+type P = { a: number };
+const src = JSON.parse('{"a":1}');
+src.p = Promise.resolve(3);
+const r: P = src;
+function attempt(label: string, f: () => void): void {
+  try {
+    f();
+    console.log(label, "returned");
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+attempt("record", () => console.log(inspect({ outer: r, n: [1, 2] })));
+console.log(inspect({ b: [1, { c: 2 }], long: "x".repeat(70) }));
+attempt("array", () => console.log(inspect([r, r])));
+console.log([3, 4], { d: 5 });
+`,
+    );
+    const refusal = "util.inspect of a promise value is not supported yet";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      `record ${refusal}\n` +
+        `{\n  b: [ 1, { c: 2 } ],\n  long: '${"x".repeat(70)}'\n}\n` +
+        `array ${refusal}\n` +
+        "[ 3, 4 ] { d: 5 }\n",
+    );
+  });
+
+  test("accessors reached through unknown render as Node's accessor tags", async () => {
+    const r = await compileAndRun(
+      "inspect-accessor-tags",
+      `import { format } from "node:util";
+const o: unknown = JSON.parse('{"x":1}');
+Object.defineProperty(o, "g", { get: () => 2, enumerable: true });
+Object.defineProperty(o, "h", { get: () => 3, enumerable: false });
+Object.defineProperty(o, "gs", { get: () => 4, set: (_v: number) => {}, enumerable: false });
+Object.defineProperty(o, "s", { set: (_v: number) => {}, enumerable: true });
+console.log(o);
+console.log(format("%o", o));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "{ x: 1, g: [Getter], s: [Setter] }",
+        "{",
+        "  x: 1,",
+        "  g: [Getter],",
+        "  [h]: [Getter],",
+        "  [gs]: [Getter/Setter],",
+        "  s: [Setter]",
+        "}",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a refused inspection leaves later renders at the default layout", async () => {
+    // The refusal's Error skips the call site's layout restore and the
+    // render's own exits; later renders must not keep the custom layout,
+    // the indentation, showHidden or open frames of the abandoned one.
+    const r = await compileAndRun(
+      "inspect-refusal-state",
+      `import { format, inspect } from "node:util";
+const p: unknown = Promise.resolve(1);
+const rec: unknown = { a: [1], b: p };
+try {
+  inspect({ a: [1, 2, 3, 4, 5, 6, 7, 8], b: p }, { breakLength: 20 });
+} catch {}
+try {
+  format("%o", rec);
+} catch {}
+const long: unknown = JSON.parse(JSON.stringify(Array.from({ length: 12 }, (_, i) => "item" + i)));
+console.log(long);
+console.log(format("%O", [1]));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "[",
+        "  'item0',  'item1',",
+        "  'item2',  'item3',",
+        "  'item4',  'item5',",
+        "  'item6',  'item7',",
+        "  'item8',  'item9',",
+        "  'item10', 'item11'",
+        "]",
+        "[ 1 ]",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("inspecting a compiled class with static fields through unknown refuses", async () => {
+    // Node prints `[class S] { count: 3 }`; the class object does not
+    // carry compiled static fields, so the inspector refuses rather than
+    // print `[class S]`. A class without static fields still prints.
+    const r = await compileAndRun(
+      "inspect-class-statics",
+      `class Plain {}
+class S extends Plain {
+  static count = 3;
+}
+const plain: unknown = Plain;
+const s: unknown = S;
+console.log(plain);
+try {
+  console.log(s);
+} catch (e) {
+  console.log((e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "[class Plain]\nutil.inspect of a class with static fields through unknown is not supported yet\n",
+    );
+  });
+
+  test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {
+    // Node's showHidden adds a function's length/name/prototype, an
+    // error's stack and a typed array's byte fields; %o throws the 'not
+    // supported yet' Error for them instead of printing without them.
+    const r = await compileAndRun(
+      "format-o-hidden-refusals",
+      `import { format } from "node:util";
+function f(): void {}
+const values: [string, unknown][] = [["fn", f], ["err", new Error("e")], ["u8", new Uint8Array(1)], ["arr", [1]]];
+for (const [label, value] of values) {
+  try {
+    console.log(label, format("%o", value));
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "fn util.format %o of function values is not supported yet",
+        "err util.format %o of Error values is not supported yet",
+        "u8 util.format %o of typed array values is not supported yet",
+        "arr [ 1, [length]: 1 ]",
+        "",
+      ].join("\n"),
+    );
   });
 });

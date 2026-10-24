@@ -333,7 +333,7 @@ export function stepDrivable(genT: GenType): boolean {
 
 /** Whether a yield channel's values have an OUT-slot form `value` reads. */
 function hasOutSlot(yt: IrType): boolean {
-  return yt.kind === "f64" || yt.kind === "date" || yt.kind === "bool" || isRefCounted(yt);
+  return yt.kind === "f64" || yt.kind === "bool" || isRefCounted(yt);
 }
 
 /** `step` and `value` resumes of a generator-typed borrowed read. */

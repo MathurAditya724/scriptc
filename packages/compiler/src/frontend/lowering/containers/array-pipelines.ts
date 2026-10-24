@@ -1184,7 +1184,9 @@ class FusedLoop {
   private callee(arg: IrExpr & { type: FuncType }): Callee {
     const known = this.callees.find((c) => c.arg === arg);
     if (known) return known;
-    const target = this.inlineTarget(arg);
+    // Called as a plain function: the loop is not the target's receiver.
+    const inlineTarget = this.inlineTarget;
+    const target = inlineTarget(arg);
     let callee: Callee;
     if (target && arg.kind === "closure") {
       const captures = new Map<string, string>();

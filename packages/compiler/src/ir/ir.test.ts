@@ -57,7 +57,8 @@ describe("IR kind sets", () => {
 
   test("distinguishes pointer values from object-like scalars", () => {
     expect(POINTER_KINDS.has("record")).toBe(true);
-    expect(POINTER_KINDS.has("date")).toBe(false);
+    expect(POINTER_KINDS.has("date")).toBe(true);
+    expect(POINTER_KINDS.has("procStream")).toBe(false);
   });
 
   test("distinguishes typed-rest closure ABIs", () => {
