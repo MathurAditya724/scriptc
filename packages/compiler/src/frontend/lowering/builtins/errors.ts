@@ -2,6 +2,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
+import { isSafeToDiscard, isSafeToRepeat } from "../expressions/evaluation-safety.js";
 import {
   BOOL,
   CAUGHT,
@@ -439,9 +440,9 @@ function enclosingConstructorClass(node: ts.Node): ts.ClassLikeDeclaration | und
  * `new.target` or the class's own name inside a class constructor leave the
  * frames from the code that ran `new`, which are the current frames
  * (constructors have no frames of their own). Other targets are refused,
- * and so are other constructorOpt values in TypeScript; JavaScript keeps all
- * frames for them. Null when the callee is not the
- * standard library's Error.captureStackTrace. */
+ * and so are other constructorOpt values in TypeScript; JavaScript evaluates
+ * them and keeps all frames. Null when the callee is not the standard
+ * library's Error.captureStackTrace. */
 export function lowerErrorCaptureStackTraceCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -477,6 +478,11 @@ export function lowerErrorCaptureStackTraceCall(
   }
   let through = "";
   let skip = false;
+  // A JavaScript constructorOpt that is not a recognized form still
+  // evaluates, after the target and before the capture, as V8 evaluates
+  // the call's arguments: its getters and calls run and its exceptions
+  // propagate.
+  let evaluated: IrExpr | null = null;
   const ctor = args[1];
   if (ctor !== undefined) {
     let node: ts.Expression = ctor;
@@ -506,6 +512,8 @@ export function lowerErrorCaptureStackTraceCall(
       // JavaScript (undici's `captureStackTrace(err, module.exports.fetch)`)
       // keeps every frame: the same frames V8 keeps, and the ones above them.
       skip = false;
+      const value = lowerer.lowerExpr(ctor);
+      if (!isSafeToDiscard(value)) evaluated = value;
     } else {
       lowerer.noLowering(
         "Error.captureStackTrace with this constructor argument",
@@ -514,20 +522,31 @@ export function lowerErrorCaptureStackTraceCall(
       );
     }
   }
+  const stmts: IrStmt[] = [];
+  let receiver = lowerer.coerceToExpected(target, DYN);
+  if (evaluated !== null) {
+    if (!isSafeToRepeat(receiver)) {
+      const local = lowerer.declareHiddenLocal("%captureTarget", DYN);
+      stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
+      receiver = { kind: "varRef", localId: local.id, type: DYN, loc };
+    }
+    stmts.push({ kind: "exprStmt", expr: evaluated, loc });
+  }
   const capture: IrExpr = {
     kind: "libCall",
     fn: "error.captureStackTrace",
     args: [
-      lowerer.coerceToExpected(target, DYN),
+      receiver,
       { kind: "strLit", value: through, type: STRING, loc },
       { kind: "boolLit", value: skip, type: BOOL, loc },
     ],
     type: VOID,
     loc,
   };
+  stmts.push({ kind: "exprStmt", expr: capture, loc });
   return {
     kind: "seqExpr",
-    stmts: [{ kind: "exprStmt", expr: capture, loc }],
+    stmts,
     result: dynUndefinedExpr(loc),
     type: DYN,
     loc,

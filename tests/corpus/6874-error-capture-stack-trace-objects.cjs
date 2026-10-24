@@ -2,7 +2,8 @@
 // non-enumerable, configurable `stack` accessor giving the object's heading
 // (its name and message when first read, through Error.prototype.toString's
 // rules, "Error" by default) and the frames from the caller; TypeErrors for a
-// primitive and a non-extensible target.
+// primitive and a non-extensible target; and a constructorOpt getter or call
+// that runs after the target and before the capture.
 'use strict';
 function frames(stack) {
   const lines = String(stack).split('\n');
@@ -89,4 +90,34 @@ try {
   captureFn(7);
 } catch (error) {
   console.log('function value primitive', error.name, error.message);
+}
+const order = [];
+const holder = {
+  get ctor() {
+    order.push('getter');
+    return inner;
+  },
+};
+function pick() {
+  order.push('call');
+  return inner;
+}
+function note(label, value) {
+  order.push(label);
+  return value;
+}
+Error.captureStackTrace(note('target', {}), holder.ctor);
+Error.captureStackTrace(note('target', {}), pick());
+console.log('constructorOpt evaluated', order.join(','));
+const throwing = {
+  get ctor() {
+    throw new RangeError('from constructorOpt');
+  },
+};
+const untouched = {};
+try {
+  Error.captureStackTrace(untouched, throwing.ctor);
+  console.log('throwing constructorOpt', 'no error');
+} catch (caught) {
+  console.log('throwing constructorOpt', caught.name, caught.message, 'stack' in untouched);
 }

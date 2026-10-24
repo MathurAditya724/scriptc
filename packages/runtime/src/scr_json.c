@@ -16050,8 +16050,9 @@ static ScrDyn *scr_captured_stack_set_call(ScrClosure *closure, ScrDyn *const *a
  * whose text is `through` are left out (none remain when `through` is NULL or
  * not on the stack). An error keeps the frames as its own; another object
  * gets an own non-enumerable, configurable `stack` accessor. A primitive
- * target throws `TypeError: invalid_argument` and a non-extensible object
- * V8's define-property TypeError. */
+ * target throws `TypeError: invalid_argument`. A non-extensible target (an
+ * error or another object), and an error whose `stack` is non-configurable,
+ * throw V8's define-property TypeErrors and keep their stack. */
 void scr_error_capture_stack_trace(ScrDyn *target, const char *through, bool skip) {
   switch (target->kind) {
   case SCR_DYN_UNDEF:
@@ -16071,6 +16072,22 @@ void scr_error_capture_stack_trace(ScrDyn *target, const char *through, bool ski
   ScrStr *frames = !skip ? scr_stack_capture() : through ? scr_stack_capture_after(through) : NULL;
   ScrError *error = scr_errdyn_err_of(target);
   if (error) {
+    /* V8 defines the error's own `stack`, so a frozen, sealed or
+     * non-extensible error throws, and so does one whose `stack` was made
+     * non-configurable; the saved stack stays. */
+    bool extensible = scr_dyn_is_extensible(target);
+    const ScrDynEntry *own = target->kind == SCR_DYN_OBJ ? scr_dyn_find_entry(target, "stack", 5) : NULL;
+    if (scr_exc_pending() || !extensible || (own && !own->configurable)) {
+      static const char not_extensible[] = "Cannot define property stack, object is not extensible";
+      static const char redefine[] = "Cannot redefine property: stack";
+      if (!scr_exc_pending() && !extensible)
+        scr_throw_error_msg(SCR_ERR_TYPE, not_extensible, sizeof not_extensible - 1);
+      else if (!scr_exc_pending())
+        scr_throw_error_msg(SCR_ERR_TYPE, redefine, sizeof redefine - 1);
+      scr_str_release(frames);
+      scr_error_release(error);
+      return;
+    }
     scr_str_release(error->stack_frames);
     error->stack_frames = frames;
     scr_str_release(error->stack);
