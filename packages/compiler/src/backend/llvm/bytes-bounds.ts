@@ -300,10 +300,18 @@ export function findBytesBounds(fn: IrFunction, ranges: IntegerRanges): Readonly
     const receiver = length.receiver;
     const comparison = lengthComparison(cond, { receiver, counter, offset: 0, minimum });
     if (comparison?.op !== "<" && comparison?.op !== "<=") return null;
+    // An increment is a statement of the body: one inside an expression
+    // (a comma expression's statements) would run where flow does not
+    // follow it.
     const writesOk = everyStmtList(s.body, {
       expr: (e) =>
-        (e.kind !== "assignExpr" && e.kind !== "incDec") ||
-        (e.localId !== counter && e.localId !== receiver),
+        ((e.kind !== "assignExpr" && e.kind !== "incDec") ||
+          (e.localId !== counter && e.localId !== receiver)) &&
+        everyExprChild(
+          e,
+          () => true,
+          (child) => !writes(child, counter),
+        ),
       stmt: (child) => {
         if (child.kind === "assign" && child.localId === counter)
           return increment(child, counter) !== null;

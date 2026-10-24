@@ -119,13 +119,27 @@ function nested(line: Uint8Array): number {
   }
   return total;
 }
+function comma(line: Uint8Array): number {
+  const len = line.length;
+  let i = 0;
+  let total = 0;
+  while (i < len) {
+    if ((i++, i > 0)) total += line[len - 1 - i]!;
+    total += line[len - 1 - i]!;
+  }
+  return total;
+}
 console.log(
+  comma(new Uint8Array(2)),
   inclusive(new Uint8Array(2)),
   unguarded(new Uint8Array(2)),
   ahead(new Uint16Array(3)),
   nested(new Uint8Array(3)),
 );
 `);
+  // The increment in the comma expression is not a statement of the
+  // body, so the loop has no bound and both reads keep their checks.
+  expect(checks(ll, "comma")).toBe(2);
   expect(checks(ll, "inclusive")).toBe(1);
   // The read before the increment is in bounds; the one after it is not.
   expect(checks(ll, "unguarded")).toBe(1);

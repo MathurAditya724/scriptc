@@ -166,3 +166,18 @@ function throwing(line: Uint8Array): string {
   return String(total);
 }
 console.log(throwing(new Uint8Array([4, 0, 2, 3])), throwing(new Uint8Array([1, 2])));
+
+// An increment inside an if condition's comma expression: both reads are
+// at index -1 on the last pass.
+function commaIncrement(line: Uint8Array): string {
+  const len = line.length;
+  let i = 0;
+  const out: (number | undefined)[] = [];
+  while (i < len) {
+    if ((i++, i > 0)) out.push(line[len - 1 - i]);
+    const v = line[len - 1 - i]!;
+    out.push(v);
+  }
+  return JSON.stringify(out);
+}
+console.log(commaIncrement(new Uint8Array([1, 2, 3])), commaIncrement(new Uint8Array(0)));
