@@ -5730,6 +5730,10 @@ export class LlEmitter {
       });
       return;
     }
+    if (e.kind === "dynInvoke" && e.calleeNameValue === undefined) {
+      emitDynamicExpr(this, e, true);
+      return;
+    }
     this.emitExpr(e);
   }
 
