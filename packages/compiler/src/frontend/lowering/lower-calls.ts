@@ -119,7 +119,11 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
-import { lowerBytesStaticCall } from "./containers/bytes.js";
+import {
+  lowerBufferConstruct,
+  lowerBytesPrototypeSetCall,
+  lowerBytesStaticCall,
+} from "./containers/bytes.js";
 import {
   lowerRegexMethodCall,
   lowerStringIndexCall,
@@ -362,6 +366,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   {
     const codeGeneration = codeGenerationCalleeOf(lowerer, expr.expression);
     if (codeGeneration !== null) return lowerCodeGenerationCall(lowerer, expr, codeGeneration);
+  }
+  // The deprecated Buffer(...) call (containers/bytes.ts). The checker
+  // types it `any`, so the bytes cross as a checked-dynamic value, which
+  // keeps the Buffer brand for inspection.
+  {
+    const buffer = lowerBufferConstruct(lowerer, expr);
+    if (buffer) return { kind: "dynFrom", value: buffer, type: DYN, loc };
   }
   // A package shim's runtime intrinsic (a bodiless `declare function`
   // named scriptcUnixDgram* in a shipped shim): a direct runtime call.
@@ -1579,6 +1590,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.lowerTestMethodCall(expr, expr.expression) ??
       lowerer.lowerTimeoutMethodCall(expr, expr.expression) ??
       lowerArrayPrototypeBorrowCall(lowerer, expr, expr.expression) ??
+      lowerBytesPrototypeSetCall(lowerer, expr, expr.expression) ??
       lowerObjectOwnPrototypeCall(lowerer, expr, expr.expression) ??
       lowerObjectPrototypeCall(lowerer, expr, expr.expression) ??
       lowerStringPrototypeCall(lowerer, expr, expr.expression) ??
@@ -8777,11 +8789,13 @@ function lowerObjectStaticCall(
       const moduleSymbol = source ? lowerer.checker.getSymbolAtLocation(source) : undefined;
       const names: string[] = [];
       moduleSymbol?.getExports().forEach((symbol, key) => {
+        // Internal names (`__export`) start with `__`; an exported name that
+        // does is keyed with an extra `_` (escapedSymbolName).
         const name = String(key);
-        if (name.startsWith("__") || name === "export=") return;
+        if ((name.startsWith("__") && !name.startsWith("___")) || name === "export=") return;
         const target =
           symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-        if (target.flags & ts.SymbolFlags.Value) names.push(name);
+        if (target.flags & ts.SymbolFlags.Value) names.push(ts.symbolName(symbol));
       });
       names.sort();
       const loc = locOf(call);

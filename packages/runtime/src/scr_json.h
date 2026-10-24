@@ -165,6 +165,10 @@ void scr_jb_put_number(ScrJsonBuf *b, double v);
  * as \u00XX, lone surrogates as \udXXX, everything else (UTF-8 included)
  * verbatim — exactly the JS JSON.stringify escape set. */
 void scr_jb_put_json_str(ScrJsonBuf *b, const ScrStr *s);
+/* JSON.stringify of a Date object: toJSON()'s ISO text, null if invalid
+ * (scr_lib.c). */
+typedef struct ScrDate ScrDate;
+void scr_jb_put_date(ScrJsonBuf *b, const ScrDate *date);
 
 /* JSON-serialize a dyn value into the buffer — the sc_jw_* walker for the
  * dyn leaves the compiler cannot type: undefined prints null (an array

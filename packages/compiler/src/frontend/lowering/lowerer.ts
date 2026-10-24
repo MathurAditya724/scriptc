@@ -31,6 +31,7 @@ import {
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
+import { bindCompletionCallbacks } from "./completion-callbacks.js";
 import { isJsonRequireDecl, type JsonRequireModule } from "./json-require.js";
 import {
   checkRequireBindingAccesses,
@@ -146,12 +147,14 @@ import {
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
 import { InternalCompilerError } from "../../errors.js";
+import type { FsPathPlan } from "./builtins/fs-paths.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
 import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
 import { guardClassAttributeWrites } from "./class-attributes.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
+import { installBufferValue } from "./containers/bytes.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
@@ -2339,6 +2342,10 @@ export class Lowerer {
   readonly runtimeOptionalFields = new Set<string>();
   /** Bindings initialized by a Date's `toJSON()` (analyzeDateJsonResults). */
   readonly dateJsonBindings = new Set<ts.Symbol>();
+  /** isTimeValueDateDeclaration's answers, and the locals that hold a
+   * Date's time value instead of a Date object (date-values.ts). */
+  readonly timeValueDateDecisions = new Map<ts.Node, boolean>();
+  readonly timeValueDateLocals = new Set<IrLocal>();
   /** Record bindings whose flow class reaches storage outside the class:
    * they keep the declared layout, so an initializer from unchecked reads
    * converts once instead of the binding adopting the widened variant. */
@@ -2942,6 +2949,10 @@ export class Lowerer {
    * checks resolve through this map (stdlibGlobalNameOf), declarations
    * emit nothing. */
   readonly stdlibGlobalAliases = new Map<ts.Symbol, string>();
+  /** The stdlibGlobalAliases bound through a cast of the global object
+   * (`(globalThis as { Buffer?: B }).Buffer`). Their static type is the
+   * cast's, so their value reads are refused (identifiers.ts). */
+  readonly castGlobalAliases = new Set<ts.Symbol>();
   /** CJS export-table ACCESSORS (`module.exports = { get path() {...} }`),
    * lifted lazily as module-level functions and interned per accessor
    * declaration: member reads call the getter (lower-exprs). */
@@ -3028,6 +3039,23 @@ export class Lowerer {
   /** Named method slots observed before class collection need a callable
    * ABI and shared prototype descriptors instead of call-site specialization. */
   readonly prototypeMethodAccesses = new Map<string, ts.Node>();
+  /** Every site the census found for a name in prototypeMethodAccesses (which
+   * keeps one): reads of the method and writes that may replace it. The
+   * key-order witness asks which replacements can return records. */
+  readonly methodAccessSites = new Map<string, ts.Node[]>();
+
+  /** Marks `name` as a method the program may read or replace at `site`. */
+  noteMethodAccess(name: string, site: ts.Node): void {
+    this.prototypeMethodAccesses.set(name, site);
+    this.noteMethodSite(name, site);
+  }
+
+  /** Records a site for `name` without changing its prototypeMethodAccesses entry. */
+  noteMethodSite(name: string, site: ts.Node): void {
+    const sites = this.methodAccessSites.get(name);
+    if (sites === undefined) this.methodAccessSites.set(name, [site]);
+    else sites.push(site);
+  }
   /** Whether the program reads `Error.prototype`, the checked-dynamic
    * object an ES5 constructor function can inherit from, or has a class
    * whose heritage is evaluated at run time (`extends (Base ?? Error)`):
@@ -3123,8 +3151,13 @@ export class Lowerer {
    * (builtins/fs-paths.ts): each lowers to the hidden local that holds its
    * value, which is null until the path's lowering has saved it. */
   readonly stagedArguments = new Map<ts.Expression, { localId: string; type: IrType } | null>();
-  /** The staged arguments that follow each such URL path, in order. */
-  readonly stagedAfterPath = new Map<ts.Expression, ts.Expression[]>();
+  /** What each fs path argument of a URL-path call lowers to (the plans
+   * of builtins/fs-paths.ts). */
+  readonly fsPathPlans = new Map<ts.Expression, FsPathPlan>();
+  /** The existsSync/fs.promises calls whose converted URL paths are being
+   * lowered into the call itself (lowerFallibleFsUrlCall). A call may be
+   * lowered more than once, and each lowering converts again. */
+  readonly fallibleFsCalls = new Set<ts.CallExpression>();
   readonly moduleNsParamOverrides = new Map<
     ts.ParameterDeclaration,
     IrType & { kind: "moduleNs" }
@@ -4224,7 +4257,7 @@ export class Lowerer {
     // exact mappings, while star exports resolve to the mapped declaration
     // owner through externalTypeSpecifiersByFile.
     const moduleSymbol = this.checker.getSymbolAtLocation(sf);
-    const exported = moduleSymbol?.getExports().get(exportName as ts.__String);
+    const exported = moduleSymbol?.getExports().get(ts.escapedSymbolName(exportName));
     return this.externalTypeSpecifierOfSymbol(exported, seenSymbols, seenExports);
   }
 
@@ -4367,7 +4400,7 @@ export class Lowerer {
   cjsModuleExportSymbol(sf: ts.SourceFile, name: string): ts.Symbol | undefined {
     const moduleSym = this.checker.getSymbolAtLocation(sf);
     const exports = moduleSym?.getExports();
-    const direct = exports?.get(name as ts.__String);
+    const direct = exports?.get(ts.escapedSymbolName(name));
     if (direct) return direct;
     // tsgo represents `module.exports = { ... }` as one `export=` symbol
     // and does not duplicate the object literal's properties into the
@@ -7968,6 +8001,7 @@ export class Lowerer {
     guardClassAttributeWrites(this, functions);
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
+    installBufferValue(functions);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the
@@ -8086,6 +8120,7 @@ export class Lowerer {
           };
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     if (module) checkCycleBindingAccesses(this, module);
+    if (module) bindCompletionCallbacks(module);
     // Execution tiers from the final bodies (ir/tiers.ts). Assigned with or
     // without a module: coverage reports the dynamic tier of programs that
     // still have blockers.
@@ -14147,6 +14182,9 @@ export class Lowerer {
         loc,
       };
     }
+    // The buffer module's Buffer is the global constructor's value.
+    if (bi.module === "buffer" && bi.member === "Buffer")
+      return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
     if (bi.module === "fs" && (bi.member === "realpathSync" || bi.member === "realpathSync.native"))
       return fsRealpathValue(this, bi.member === "realpathSync.native", loc);
     const fn = builtinModuleFnOf(this, bi.module, bi.member);

@@ -207,6 +207,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "async.awaitDyn",
   "als.run",
   "als.exitRun",
+  "als.newOptions",
+  "als.bindCallbackDyn",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
@@ -737,6 +739,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.set",
   "url.setChecked",
   "url.fileURLToPathUrl",
+  "fs.checkPath",
+  "fs.checkReadEncoding",
   "url.fileURLToPathChecked",
   "url.fileURLToPathOptions",
   "url.fileURLToPathBuffer",
@@ -833,12 +837,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromDyn",
   "buffer.poolFromDynRef",
   "buffer.poolFromDynOffset",
+  "buffer.poolFromDynRange",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",
   "bytes.equalsChk",
   "bytes.compareChk",
   "buffer.newStringFail",
+  // Inherited and symbol-keyed Buffer.prototype members throw SC2020.
+  "buffer.prototypeMember",
   "fs.toUnixTimestamp",
   "fs.existsChk",
   "fs.mkdtempChk",
@@ -1030,6 +1037,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairCb",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.diffieHellman",
   "crypto.createSign",
   "crypto.createVerify",
 ]);

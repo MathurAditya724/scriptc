@@ -64,6 +64,9 @@ ScrStr *scr_punycode_to_unicode(const ScrStr *input);
 ScrArr *scr_punycode_ucs2_decode(const ScrStr *input);
 ScrStr *scr_url_domain_to_unicode(const ScrDyn *domain, bool missing);
 ScrStr *scr_url_to_path(ScrUrl *u);      /* +1, or throws */
+/* scr_url_to_path as a value: the path string, or the error it would throw
+ * (+1 dyn, never throws). */
+ScrDyn *scr_url_to_path_value(ScrUrl *u);
 ScrStr *scr_url_str_to_path(ScrStr *s);  /* +1, or throws */
 ScrUrl *scr_url_from_path(ScrStr *path); /* +1; throws on win32 UNC malformations only */
 ScrUrl *scr_url_from_path_platform(ScrStr *path, bool windows); /* +1; explicit options.windows */

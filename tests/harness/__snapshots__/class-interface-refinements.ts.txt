@@ -39,7 +39,7 @@ class-interface-refinements.ts:17:13 - error SC2004: uses of 'changed' inherit t
 
   hint: the declaration of 'changed' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-interface-refinements.ts:20:18 - error SC2006: values of type 'Indexed' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Promises, or 'unknown')
+class-interface-refinements.ts:20:18 - error SC2006: values of type 'Indexed' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Dates, Promises, or 'unknown')
 
   19 | type Indexed = Box & { [name: string]: number };
   20 | function indexed(view: Indexed, key: string): number { return view[key]!; }
