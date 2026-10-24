@@ -195,3 +195,19 @@ console.log(counter.tick());
   // The method has a slot the write can replace, which calls consult.
   expect(await callersOf(source, "%Counter.tick")).toContain("%method.value:%Counter.tick");
 });
+
+test("a dot store into a dictionary view of a class instance keeps checked dispatch", async () => {
+  const source = `
+class Lamp {
+  on = false;
+  toggle(): boolean { this.on = !this.on; return this.on; }
+}
+const lamp = new Lamp();
+const view: {} = lamp;
+const slots: Record<string, string> = view;
+slots.toggle = "replaced";
+console.log(lamp.toggle());
+`;
+  // The method has a slot the write can replace, which calls consult.
+  expect(await callersOf(source, "%Lamp.toggle")).toContain("%method.value:%Lamp.toggle");
+});

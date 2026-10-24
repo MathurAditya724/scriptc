@@ -173,6 +173,19 @@ export function collectClassMethodMutations(
   // signature, and then every method must be assignable to its value type,
   // or when the dictionary keeps checked identity: it then holds the
   // existing objects it receives, class instances included.
+  // A string-keyed dictionary that keeps checked identity holds the
+  // existing objects it receives, class instances included, so any write
+  // through it can replace a method.
+  const dictionaryView = (value: ts.Expression): boolean => {
+    const type = lowerer.typeOf(value);
+    return (
+      lowerer.checker.getPropertiesOfType(type).length === 0 &&
+      lowerer.checker
+        .getIndexInfosOfType(type)
+        .some((index) => (index.keyType.flags & ts.TypeFlags.StringLike) !== 0) &&
+      lowerer.classImplementedProtocol(type)
+    );
+  };
   const functionFreeDictionary = (value: ts.Expression): boolean => {
     const type = lowerer.typeOf(value);
     if (lowerer.classImplementedProtocol(type)) return false;
@@ -582,7 +595,10 @@ export function collectClassMethodMutations(
   );
   for (const { target, site } of propertyWrites) {
     const name = target.name.text;
-    if (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(target.expression, name))
+    if (
+      !dictionaryView(target.expression) &&
+      (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(target.expression, name))
+    )
       continue;
     if (lowerer.prototypeMethodAccesses.has(name)) lowerer.noteMethodSite(name, site);
     else lowerer.noteMethodAccess(name, site);
