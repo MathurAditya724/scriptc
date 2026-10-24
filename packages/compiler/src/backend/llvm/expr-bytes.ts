@@ -937,6 +937,23 @@ export function emitBytesIntrinsic(
       B.line(`${t} = fcmp one double ${idx.name}, ${f64Lit(-1)}`);
       return { name: t, type: e.type };
     }
+    case "indexOfElem":
+    case "lastIndexOfElem":
+      return call(
+        "scr_bytes_index_of_elem",
+        "double (ptr, double, double, i1 zeroext)",
+        `ptr ${r.name}, double ${args[0]!.name}, double ${args[1]!.name}, i1 ${method === "lastIndexOfElem"}`,
+        false,
+        false,
+      );
+    case "includesElem":
+      return call(
+        "scr_bytes_includes_elem",
+        "zeroext i1 (ptr, double, double)",
+        `ptr ${r.name}, double ${args[0]!.name}, double ${args[1]!.name}`,
+        false,
+        false,
+      );
     case "fillElem":
       // Per-element TypedArray fill (non-u8): slice-style index
       // defaults, never throws; the receiver comes back +1.

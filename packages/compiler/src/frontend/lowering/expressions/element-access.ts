@@ -71,6 +71,13 @@ import { isClassCallback } from "../class-callbacks.js";
 import { isKeyedFieldAccess } from "./keyed-field-targets.js";
 import { lowerFieldCompoundValue } from "./updates.js";
 import { readsHeldEvolvingArray } from "../lower-stmts.js";
+import {
+  type IndexedArm,
+  indexedUnionArms,
+  lowerIndexedUnionNumberRead,
+  lowerIndexedUnionRead,
+  lowerIndexedUnionWrite,
+} from "../indexed-unions.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
 
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
@@ -299,6 +306,31 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         { kind: "dynKeyGet", value: receiver, key, type: DYN, loc: locOf(expr) },
         expr,
       );
+    }
+  }
+
+  // An element read of a union of typed arrays and number arrays: each
+  // arm's own read, dispatched on the tag (indexed-unions.ts).
+  const indexedArms = receiverIr ? indexedUnionArms(lowerer, receiverIr) : null;
+  if (indexedArms && receiverIr && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    let recv = lowerer.lowerExpr(expr.expression);
+    if (recv.type.kind === "dyn") recv = lowerer.coerceInto(expr.expression, recv, receiverIr);
+    const arms = indexedUnionArms(lowerer, recv.type);
+    if (arms) {
+      const index = lowerOptionalNumber(
+        lowerer,
+        lowerer.lowerExpr(expr.argumentExpression),
+        locOf(expr.argumentExpression),
+        expr.argumentExpression,
+      );
+      if (index.type.kind !== "f64")
+        lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
+      if (
+        (ts.isNonNullExpression(expr.parent) && expr.parent.expression === expr) ||
+        lowerer.nanCodedReads?.isNumericRead(expr) === true
+      )
+        return lowerIndexedUnionNumberRead(lowerer, recv, arms, index, locOf(expr));
+      return lowerIndexedUnionRead(lowerer, recv, arms, index, locOf(expr));
     }
   }
 
@@ -1521,6 +1553,9 @@ export function lowerElementCompoundParts(
     });
     return { expr: { kind: "seqExpr", stmts, result: value, type: DYN, loc }, stmts: null };
   }
+  const indexedArms = indexedUnionArms(lowerer, checked.type);
+  if (indexedArms && !isJsSourceFile(ts.getSourceFileOfNode(expr)))
+    return lowerIndexedUnionCompound(lowerer, expr, op, checked, indexedArms);
   const receiverType =
     checked.type.kind === "array" || checked.type.kind === "bytes"
       ? checked.type
@@ -1699,6 +1734,54 @@ export function lowerElementCompoundParts(
       ],
       result: resultRef(),
       type: computed.type,
+      loc,
+    },
+    stmts: null,
+  };
+}
+
+/** `u[i] op= v` on a union of typed arrays and number arrays: the
+ * receiver and index evaluate once, the old element reads as a number (NaN
+ * for an invalid index, as in the typed-array form), and the result is
+ * stored through the union's element write. */
+function lowerIndexedUnionCompound(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  op: CompoundOp,
+  receiver: IrExpr,
+  arms: readonly IndexedArm[],
+): { expr: IrExpr | null; stmts: IrStmt[] | null } {
+  const target = expr.left as ts.ElementAccessExpression;
+  const loc = locOf(expr);
+  const index = lowerOptionalIndex(
+    lowerer,
+    lowerer.lowerExpr(target.argumentExpression),
+    locOf(target.argumentExpression),
+    target.argumentExpression,
+  );
+  if (index.type.kind !== "f64")
+    lowerer.unsupported("SC1090", target.argumentExpression, "indexing with non-number keys");
+  const receiverLocal = lowerer.declareHiddenLocal("%compoundArray", receiver.type);
+  const indexLocal = lowerer.declareHiddenLocal("%compoundIndex", F64);
+  const receiverRef = (): IrExpr => varRef(receiverLocal.id, receiver.type, loc);
+  const indexRef = (): IrExpr => varRef(indexLocal.id, F64, loc);
+  const oldValue = lowerIndexedUnionNumberRead(lowerer, receiverRef(), arms, indexRef(), loc);
+  const rhs = lowerOptionalNumber(lowerer, lowerer.lowerExpr(expr.right), loc);
+  if (rhs.type.kind !== "f64") compoundUnsupported(lowerer, expr, op, F64, rhs.type);
+  const computed: IrExpr = { kind: "bin", op, left: oldValue, right: rhs, type: F64, loc };
+  const resultLocal = lowerer.declareHiddenLocal("%compoundResult", F64);
+  const resultRef = (): IrExpr => varRef(resultLocal.id, F64, loc);
+  return {
+    expr: {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+        { kind: "varDecl", localId: resultLocal.id, init: computed, loc },
+        lowerIndexedUnionWrite(lowerer, receiverRef(), arms, indexRef(), resultRef(), loc),
+      ],
+      result: resultRef(),
+      type: F64,
       loc,
     },
     stmts: null,
@@ -2244,6 +2327,26 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         },
         loc,
       };
+    }
+  }
+  // An element write into a union of typed arrays and number arrays
+  // (indexed-unions.ts).
+  const indexedArms = receiverIr ? indexedUnionArms(lowerer, receiverIr) : null;
+  if (indexedArms && receiverIr && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    let recv = lowerer.lowerExpr(target.expression);
+    if (recv.type.kind === "dyn") recv = lowerer.coerceInto(target.expression, recv, receiverIr);
+    const arms = indexedUnionArms(lowerer, recv.type);
+    if (arms) {
+      const index = lowerOptionalNumber(
+        lowerer,
+        lowerer.lowerExpr(target.argumentExpression),
+        locOf(target.argumentExpression),
+        target.argumentExpression,
+      );
+      if (index.type.kind !== "f64")
+        lowerer.unsupported("SC1090", target.argumentExpression, "indexing with non-number keys");
+      const value = lowerer.lowerExprExpecting(expr.right, F64);
+      return lowerIndexedUnionWrite(lowerer, recv, arms, index, value, locOf(expr));
     }
   }
   if (receiverIr?.kind !== "array") {
