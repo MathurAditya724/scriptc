@@ -581,6 +581,11 @@ export function matchBytesLoopVersion(
     pairedKept.length === 0
   )
     return null;
+  // A while loop versions only for accesses at its counters. Its other
+  // checks (thread-owned receivers, static indices) save a test or two per
+  // pass, while a second copy of its body doubles the calls it makes, which
+  // can keep a worker's job loop from inlining the function that runs a job.
+  if (loop.kind === "while" && boundedKept.length === 0) return null;
   const bounds = new Set<Node>();
   const ownedNodes = new Set<Node>();
   const used = new Set<number>();
