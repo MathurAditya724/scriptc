@@ -114,3 +114,12 @@ console.log(unread.size, unread.get("none"));
 export const exported = new Map();
 exported.set("e", 1);
 console.log(exported.get("e"));
+// Exported through an export list, under its own name or another: an
+// importer sees an untyped Map.
+const listed = new Map();
+listed.set("l", 1);
+console.log(listed.get("l"));
+const renamed = new Map();
+renamed.set("r", 1);
+console.log(renamed.get("r"));
+export { listed, renamed as alias };

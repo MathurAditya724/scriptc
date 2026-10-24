@@ -54,6 +54,8 @@ test("untyped JavaScript collections take the types their uses prove, and only t
       "spread",
       "unread",
       "exported",
+      "listed",
+      "renamed",
     ])
       expect(typed(types.get(untyped)!), untyped).toBe(false);
   } finally {

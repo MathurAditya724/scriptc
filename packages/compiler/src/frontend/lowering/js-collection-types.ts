@@ -225,7 +225,17 @@ function referencedSymbol(lowerer: Lowerer, id: ts.Identifier): ts.Symbol | unde
   const parent = id.parent;
   if (parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === id)
     return lowerer.checker.getShorthandAssignmentValueSymbol(parent);
-  return lowerer.checker.getSymbolAtLocation(id);
+  const symbol = lowerer.checker.getSymbolAtLocation(id);
+  // `export { m }` names the export, an alias of the local binding.
+  if (
+    symbol !== undefined &&
+    parent !== undefined &&
+    ts.isExportSpecifier(parent) &&
+    parent.propertyName === undefined &&
+    (symbol.flags & ts.SymbolFlags.Alias) !== 0
+  )
+    return lowerer.checker.getAliasedSymbol(symbol);
+  return symbol;
 }
 
 /** Records a reference's use, or answers false when the reference is not
