@@ -386,6 +386,10 @@ async function build() {
               ? [
                   await archive("libregexp", lreSources, quickjs, [
                     ...vendorTarget,
+                    // Section elimination keeps only the libunicode tables a
+                    // program reaches: the URL host parser's NFC links the
+                    // normalization tables without the regex property ones.
+                    ...matrix.executable_section_elimination.compile_flags,
                     "-std=c11",
                     "-Os",
                     "-I",

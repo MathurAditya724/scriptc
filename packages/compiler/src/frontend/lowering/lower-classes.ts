@@ -8161,7 +8161,10 @@ export function classMemberNameOf(lowerer: Lowerer, name: ts.PropertyName): stri
       member === "asyncIterator" ||
       member === "dispose" ||
       member === "asyncDispose" ||
-      member === "toPrimitive"
+      member === "toPrimitive" ||
+      // A toStringTag field keeps its symbol field name; its accessor and
+      // method forms take the method slot name.
+      (member === "toStringTag" && !ts.isPropertyDeclaration(name.parent))
     ) {
       return `sym:${member}`;
     }

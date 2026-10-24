@@ -2437,7 +2437,7 @@ function planProvenLoop(
   loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" }>,
 ): ProvenLoopPlan | null {
   if (
-    loop.kind !== "for" ||
+    loop.kind === "doWhile" ||
     !emitter.speculativeLoopsEnabled ||
     emitter.speculation !== null ||
     emitter.speculationResume !== null ||

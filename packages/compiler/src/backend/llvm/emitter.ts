@@ -97,7 +97,12 @@ import { unshareNodes } from "../../ir/unshare.js";
 import { runPairedWhileLoopsAsFor } from "../../ir/paired-while-loops.js";
 import { copyStableCaptures } from "../../ir/capture-values.js";
 import { resolveSelfCaptures } from "../../ir/self-captures.js";
-import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
+import {
+  analyzeInt32Slots,
+  dynamicFieldStores,
+  type DynamicFieldStores,
+  type Int32Slots,
+} from "../../ir/int32-slots.js";
 import { analyzeFinalFields, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
@@ -171,7 +176,7 @@ import { type MapEntryFusion } from "./map-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import { findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
-import { IrNodeIndex } from "../../ir/node-index.js";
+import { eachNodeOfKinds, IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
 import { lastUseRead } from "./local-extents.js";
 import { findReboundParameters } from "./rebound-parameters.js";
 import { ReferenceEffects } from "./reference-effects.js";
@@ -509,14 +514,24 @@ function versionParameters(mod: IrModule): IrModule {
   return versionLoopBoundParameters(mod, mangleFunction);
 }
 
-/** The int32 arrays the int32 slot analysis keeps in `mod` (proven and
- * checked), under the inputs LlEmitter gives it (selectInt32Arrays). */
-function provenInt32Arrays(mod: IrModule): ReadonlySet<string> {
-  const slots = analyzeInt32Slots(mod, {
-    dynamicStores: dynamicFieldStores(mod),
-    initializerBindings: findInitializerBindings(mod),
-  });
-  return new Set([...slots.int32Arrays, ...slots.checkedInt32Arrays]);
+/** The int32 slot analysis of one module and the inputs it read: the
+ * constructor's own analyses of that module, which LlEmitter takes over
+ * instead of repeating them when it emits the same module. */
+export interface Int32SlotAnalysis {
+  readonly mod: IrModule;
+  readonly nodeIndex: IrNodeIndex;
+  readonly initializerBindings: ReturnType<typeof findInitializerBindings>;
+  readonly dynamicStores: DynamicFieldStores;
+  readonly slots: Int32Slots;
+}
+
+/** The int32 slot analysis of `mod`, with the inputs LlEmitter gives it. */
+function analyzeModuleInt32Slots(mod: IrModule): Int32SlotAnalysis {
+  const nodeIndex = new IrNodeIndex(mod);
+  const initializerBindings = findInitializerBindings(mod, nodeIndex);
+  const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
+  const slots = analyzeInt32Slots(mod, { dynamicStores, initializerBindings, nodes: nodeIndex });
+  return { mod, nodeIndex, initializerBindings, dynamicStores, slots };
 }
 
 /** The functions whose calls the backend may emit as calls of their
@@ -533,8 +548,16 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
   const mod = unshareNodes(input);
+  // Each round of selectInt32Arrays analyzes the module it marks; the
+  // emitter of the module it returns reuses that round's analysis.
+  const rounds: { last: Int32SlotAnalysis | null } = { last: null };
+  const proven = (marked: IrModule): ReadonlySet<string> => {
+    const analysis = analyzeModuleInt32Slots(marked);
+    rounds.last = analysis;
+    return new Set([...analysis.slots.int32Arrays, ...analysis.slots.checkedInt32Arrays]);
+  };
   // Keep source storage intact for debugger inspection in dev builds.
-  return new LlEmitter(
+  const emitted =
     options.debugSources === undefined
       ? selectInt32Arrays(
           versionParameters(
@@ -562,12 +585,12 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
               ),
             ),
           ),
-          provenInt32Arrays,
+          proven,
           resultEntryTargets,
         )
-      : mod,
-    options,
-  );
+      : mod;
+  const prepared = rounds.last;
+  return new LlEmitter(emitted, options, null, prepared?.mod === emitted ? prepared : null);
 }
 
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
@@ -600,6 +623,21 @@ export function llStrBytes(text: string): string {
 }
 
 const NO_BORROWED: ReadonlySet<number> = new Set();
+
+/** The nodes that write a binding by its id (numberGlobalWriters). */
+const GLOBAL_WRITE_KINDS: readonly IrNodeKind[] = ["assign", "varDecl", "assignExpr", "incDec"];
+/** Runtime library calls (readsLoopMetrics). */
+const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
+
+/** [A-Za-z0-9_] */
+function isIdentifierByte(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 95
+  );
+}
 
 /** Runtime entry points (and await-call entries) that may park the running
  * execution context, as they appear in emitted function text. */
@@ -1566,6 +1604,7 @@ export class LlEmitter {
     readonly mod: IrModule,
     options: LlvmTargetOptions,
     journal: EmitJournal | null = null,
+    int32Analysis: Int32SlotAnalysis | null = null,
   ) {
     this.targetOptions = options;
     this.journal = journal;
@@ -1576,7 +1615,7 @@ export class LlEmitter {
         options.debugSources === undefined);
     // One walk of every body, which the analyses below read instead of
     // walking the bodies themselves.
-    this.nodeIndex = new IrNodeIndex(mod);
+    this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod);
     this.stackTraces = observesStacks(mod, this.nodeIndex);
     this.nullableUnions = new NullableUnions(
       mod,
@@ -1595,14 +1634,18 @@ export class LlEmitter {
             this.nullableUnions.armTypes(),
           );
     this.constantNumericTables = findConstantNumericTables(mod);
-    this.initializerBindings = findInitializerBindings(mod, this.nodeIndex);
+    this.initializerBindings =
+      int32Analysis?.initializerBindings ?? findInitializerBindings(mod, this.nodeIndex);
     // One walk finds the dynamic field stores every analysis below consults.
-    const dynamicStores = dynamicFieldStores(mod, undefined, undefined, this.nodeIndex);
-    this.int32Slots = analyzeInt32Slots(mod, {
-      dynamicStores,
-      initializerBindings: this.initializerBindings,
-      nodes: this.nodeIndex,
-    });
+    const dynamicStores =
+      int32Analysis?.dynamicStores ?? dynamicFieldStores(mod, undefined, undefined, this.nodeIndex);
+    this.int32Slots =
+      int32Analysis?.slots ??
+      analyzeInt32Slots(mod, {
+        dynamicStores,
+        initializerBindings: this.initializerBindings,
+        nodes: this.nodeIndex,
+      });
     this.liveViewsReadOnly =
       mod.lib === undefined && !dynamicStores.all && dynamicStores.names.size === 0;
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
@@ -1786,6 +1829,7 @@ export class LlEmitter {
         const shape = this.recordsById.get(shapeId);
         return shape !== undefined && !recordDynKeepsIdentity(shape);
       },
+      (wrap) => this.borrowableNullableWrap(wrap) === "ref",
     );
     this.lentStringParameters =
       this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
@@ -1808,9 +1852,9 @@ export class LlEmitter {
           )
         : NO_INTEGER_CLONES;
     this.stackCallbacks = new StackCallbacks(this.fnByName);
-    this.receiverReaders = new AmbientReceiverReaders(this.fnByName);
+    this.receiverReaders = new AmbientReceiverReaders(this.fnByName, this.nodeIndex);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
-    this.lazyCaptures = new LazyCaptures(this.fnByName);
+    this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
     const traced = computeTraced(mod, dynamicStores, cycleMutability);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
@@ -2239,9 +2283,23 @@ export class LlEmitter {
         this.mangledFunctions.set(mangleBorrowedFunction(fn.name), fn.name);
       }
     }
-    for (const match of text.matchAll(/@(sc_b?f_[A-Za-z0-9_]+)/g)) {
-      const callee = this.mangledFunctions.get(match[1]!);
+    // The names `@(sc_b?f_[A-Za-z0-9_]+)` matches, found with indexOf.
+    for (let at = text.indexOf("@sc_"); at >= 0;) {
+      let start = at + 4;
+      if (text.charCodeAt(start) === 98 /* b */) start++;
+      if (text.charCodeAt(start) !== 102 /* f */ || text.charCodeAt(start + 1) !== 95 /* _ */) {
+        at = text.indexOf("@sc_", at + 1);
+        continue;
+      }
+      let end = start + 2;
+      while (end < text.length && isIdentifierByte(text.charCodeAt(end))) end++;
+      if (end === start + 2) {
+        at = text.indexOf("@sc_", at + 1);
+        continue;
+      }
+      const callee = this.mangledFunctions.get(text.slice(at + 1, end));
       if (callee !== undefined) yield callee;
+      at = text.indexOf("@sc_", end);
     }
   }
 
@@ -3573,15 +3631,14 @@ export class LlEmitter {
           set.add(fn.name);
           writers.set(localId, set);
         };
-        everyStmtList(fn.body, {
-          stmt: (s) => {
-            if (s.kind === "assign" || s.kind === "varDecl") note(s.localId);
-            return true;
-          },
-          expr: (e) => {
-            if (e.kind === "assignExpr" || e.kind === "incDec") note(e.localId);
-            return true;
-          },
+        eachNodeOfKinds(fn, this.nodeIndex.scan(GLOBAL_WRITE_KINDS), (node) => {
+          if (
+            node.kind === "assign" ||
+            node.kind === "varDecl" ||
+            node.kind === "assignExpr" ||
+            node.kind === "incDec"
+          )
+            note(node.localId);
         });
       }
       this.globalWriters = writers;
@@ -5361,13 +5418,21 @@ export class LlEmitter {
   private loopMetricsRead: boolean | undefined;
   readsLoopMetrics(): boolean {
     if (this.loopMetricsRead !== undefined) return this.loopMetricsRead;
-    const visitor = {
-      expr: (e: IrExpr): boolean =>
-        !(e.kind === "libCall" && (e.fn === "perf.loopStart" || e.fn === "perf.idleTime")),
-      stmt: (): boolean => true,
-    };
-    this.loopMetricsRead = !this.mod.functions.every((fn) => everyStmtList(fn.body, visitor));
-    return this.loopMetricsRead;
+    let found = false;
+    const scan = this.nodeIndex.scan(LIB_CALL_KINDS);
+    for (const fn of this.mod.functions) {
+      eachNodeOfKinds(fn, scan, (node) => {
+        if (
+          node.kind === "libCall" &&
+          (node.fn === "perf.loopStart" || node.fn === "perf.idleTime")
+        )
+          found = true;
+        return !found;
+      });
+      if (found) break;
+    }
+    this.loopMetricsRead = found;
+    return found;
   }
 
   private lastUseMovesAllowed(): boolean {
@@ -5733,6 +5798,10 @@ export class LlEmitter {
       this.emitSequence(() => {
         for (const s of e.stmts) this.emitStmt(s);
       });
+      return;
+    }
+    if (e.kind === "dynInvoke" && e.calleeNameValue === undefined) {
+      emitDynamicExpr(this, e, true);
       return;
     }
     this.emitExpr(e);

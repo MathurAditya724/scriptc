@@ -64,7 +64,9 @@ export interface SemanticQuery {
 export class SemanticProgram {
   constructor(private readonly sourceFile: (path: string) => AstNode | undefined) {}
   getSourceFile(path: string): AstNode | undefined {
-    return this.sourceFile(path);
+    // Called as a plain function: the instance is not its receiver.
+    const sourceFile = this.sourceFile;
+    return sourceFile(path);
   }
 }
 
