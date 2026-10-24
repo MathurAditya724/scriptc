@@ -1,7 +1,8 @@
 // Map.get results held in locals across the operations that can and cannot
 // release the entry's value: an update on the absent branch, a write, delete
 // or clear before a later read, a call that may change the map, loops,
-// string keys, and values that are stored, returned or compared.
+// string keys, values that are stored, returned or compared, a local declared
+// from the read, and a read from a temporary map.
 class Counter {
   num: number;
   label: string;
@@ -128,3 +129,27 @@ function loopWrites(m: Map<number, Counter>): number {
   return total;
 }
 console.log("loop", loopWrites(new Map([[0, new Counter(1, "a")], [1, new Counter(2, "b")]])));
+
+// A local declared from the read is read after a write that replaces the
+// entry; it reads the value the map held when the local was declared.
+function aliasThenWrite(m: Map<number, Counter>): string {
+  const held = m.get(1);
+  const copy = held;
+  m.set(1, new Counter(10, "ten"));
+  m.delete(1);
+  const filler = [new Counter(11, "filler"), new Counter(12, "filler")];
+  return copy === undefined ? "none" : `${copy.num}:${copy.label}:${filler.length}`;
+}
+console.log("alias", aliasThenWrite(new Map([[1, new Counter(1, "one")]])));
+
+// A read from a map that no local holds: the map is released after the
+// declaration, and the value stays readable.
+function freshMap(): Map<number, Counter> {
+  return new Map([[1, new Counter(5, "five")]]);
+}
+function fromTemporary(): string {
+  const held = freshMap().get(1);
+  const filler = [new Counter(6, "filler"), new Counter(7, "filler")];
+  return held === undefined ? "none" : `${held.num}:${held.label}:${filler.length}`;
+}
+console.log("temporary", fromTemporary());

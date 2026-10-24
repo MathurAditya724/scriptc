@@ -166,6 +166,17 @@ export function findMapReadLifetimes(
   return result;
 }
 
+/** Whether a map read's receiver keeps the map past its own statement: a
+ * local or a field of one. Changing either is an edge change the borrow
+ * proof sees. A temporary map (a call's result, `new Map()`) is released at
+ * the end of the declaration, and its entries with it. */
+function heldReceiver(expr: IrExpr): boolean {
+  if (expr.kind === "varRef") return true;
+  if (expr.kind === "fieldGet" || expr.kind === "recordGet") return heldReceiver(expr.obj);
+  if (expr.kind === "unionNarrow" || expr.kind === "downcast") return heldReceiver(expr.value);
+  return false;
+}
+
 /** The locals, declared by statements `candidate` accepts, that can hold a
  * map entry's own reference instead of a +1 copy. The statements after the
  * declaration run in order, and every one that names the local must
@@ -174,7 +185,9 @@ export function findMapReadLifetimes(
  * while the local is read. An `if` passes its condition's state to both
  * branches and joins them; any other statement that names the local is
  * judged whole. A later pass of an enclosing loop declares the local again,
- * so only the rest of its own statement list matters. An update such as
+ * so only the rest of its own statement list matters. The map must be held
+ * by a local or a field (heldReceiver), and locals declared from the local
+ * count as its uses. An update such as
  * `const c = m.get(k); if (c === undefined) m.set(k, v); else c.n++` keeps
  * the borrow: the write runs only on the branch that does not read `c`. */
 export function findMapReadBorrows(
@@ -184,12 +197,14 @@ export function findMapReadBorrows(
 ): Set<string> {
   const result = new Set<string>();
   if (fn.async || fn.generator) return result;
-  const names = (node: IrStmt | IrExpr, id: string, isStmt: boolean): boolean => {
+  // `ids` holds the local and the locals declared from it: a stable alias
+  // (`const d = c`) reads the same entry without a reference of its own.
+  const names = (node: IrStmt | IrExpr, ids: ReadonlySet<string>, isStmt: boolean): boolean => {
     let found = false;
     const visitor = {
       stmt: () => !found,
       expr: (expr: IrExpr) => {
-        if (expr.kind === "varRef" && expr.localId === id) found = true;
+        if (expr.kind === "varRef" && ids.has(expr.localId)) found = true;
         return !found;
       },
     };
@@ -197,28 +212,48 @@ export function findMapReadBorrows(
     else everyExpr(node as IrExpr, visitor);
     return found;
   };
+  // Adds the reference locals that `stmt` declares from one in `ids`, at any
+  // depth: a `var` inside a loop or a try stays in scope after it.
+  const alias = (stmt: IrStmt, ids: Set<string>): void => {
+    everyStmt(stmt, {
+      stmt: (node) => {
+        if (
+          node.kind === "varDecl" &&
+          node.init !== null &&
+          isRefCounted(node.init.type) &&
+          names(node.init, ids, false)
+        )
+          ids.add(node.localId);
+        return true;
+      },
+      expr: () => true,
+    });
+  };
   // Whether an edge may have changed after `list`, or null when a statement
   // names the local after such a change (or changes edges itself).
-  const walk = (list: readonly IrStmt[], id: string, changed: boolean): boolean | null => {
+  const walk = (list: readonly IrStmt[], ids: Set<string>, changed: boolean): boolean | null => {
     for (const stmt of list) {
       if (stmt.kind === "if") {
         const preserving = effects.preserves(stmt.cond);
-        if (names(stmt.cond, id, false) && (changed || !preserving)) return null;
+        if (names(stmt.cond, ids, false) && (changed || !preserving)) return null;
         const condition = changed || !preserving;
-        const then = walk(stmt.then, id, condition);
-        const otherwise = stmt.else_ === null ? condition : walk(stmt.else_, id, condition);
+        const then = walk(stmt.then, ids, condition);
+        const otherwise = stmt.else_ === null ? condition : walk(stmt.else_, ids, condition);
         if (then === null || otherwise === null) return null;
         changed = then || otherwise;
         continue;
       }
       if (stmt.kind === "block") {
-        const inner = walk(stmt.body, id, changed);
+        const inner = walk(stmt.body, ids, changed);
         if (inner === null) return null;
         changed = inner;
         continue;
       }
       const preserving = effects.preservesScope([stmt]);
-      if (names(stmt, id, true) && (changed || !preserving)) return null;
+      if (names(stmt, ids, true)) {
+        if (changed || !preserving) return null;
+        alias(stmt, ids);
+      }
       changed ||= !preserving;
     }
     return changed;
@@ -227,8 +262,10 @@ export function findMapReadBorrows(
     list.forEach((stmt, index) => {
       if (
         stmt.kind === "varDecl" &&
+        stmt.init?.kind === "mapIntrinsic" &&
+        heldReceiver(stmt.init.receiver) &&
         candidate(stmt) &&
-        walk(list.slice(index + 1), stmt.localId, false) !== null
+        walk(list.slice(index + 1), new Set([stmt.localId]), false) !== null
       )
         result.add(stmt.localId);
       for (const nested of nestedStmtLists(stmt)) visit(nested);

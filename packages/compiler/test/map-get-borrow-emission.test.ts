@@ -32,9 +32,26 @@ function replaced(m: Map<number, Counter>): number {
   m.set(1, new Counter());
   return old === undefined ? 0 : old.num;
 }
+function aliased(m: Map<number, Counter>): number {
+  const held = m.get(1);
+  const copy = held;
+  m.set(1, new Counter());
+  return copy === undefined ? 0 : copy.num;
+}
+function fresh(): Map<number, Counter> {
+  return new Map([[1, new Counter()]]);
+}
+function temporary(keys: number[]): number {
+  let total = 0;
+  for (const key of keys) {
+    const held = fresh().get(key);
+    if (held !== undefined) total += held.num;
+  }
+  return total;
+}
 const numbers = new Map<number, Counter>();
 count(numbers, [1, 2, 1]);
-console.log(named(new Map([["a", new Counter()]]), "a"), replaced(numbers));
+console.log(named(new Map([["a", new Counter()]]), "a"), replaced(numbers), aliased(numbers), temporary([1, 2]));
 `,
     );
     const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
@@ -50,8 +67,11 @@ console.log(named(new Map([["a", new Counter()]]), "a"), replaced(numbers));
       expect(fn(name)).not.toContain("@sc_retain_Counter");
       expect(fn(name)).not.toContain("@sc_release_Counter");
     }
-    // A write between the read and its use keeps the read's own reference.
-    expect(fn("replaced")).toContain("@sc_retain_Counter");
+    // A write between the read and its use keeps the read's own reference,
+    // also when the use goes through a local declared from the read, and so
+    // does a read from a map that is released after the declaration.
+    for (const name of ["replaced", "aliased", "temporary"])
+      expect(fn(name)).toContain("@sc_retain_Counter");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
