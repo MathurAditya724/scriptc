@@ -12,7 +12,8 @@ import { observeSourceText } from "./ts7/ast-node.js";
  * behind an old resolution answer.
  */
 export type FrontendInputProbe =
-  | { op: "file"; path: string; digest: string }
+  /** `identity` (fileIdentity) lets a later check skip hashing the file. */
+  | { op: "file"; path: string; digest: string; identity?: string }
   /** A read of the file's raw bytes (files that need not be text). */
   | { op: "bytes"; path: string; digest: string }
   | { op: "read-error"; path: string }
@@ -53,6 +54,36 @@ export interface FrontendInputExclusions {
 
 function frontendSourceDigest(text: string): string {
   return createHash("sha256").update(text).digest("hex");
+}
+
+/** How long a file must have been unchanged before a read for its identity
+ * to stand for its content: a later write then gets a newer change time
+ * even on file systems whose timestamps tick once a second or every two. */
+const IDENTITY_SETTLE_MS = 2000;
+
+/** The device, inode, size, modification time and change time of `path`. A
+ * write changes the change time, which no tool can set back, so an equal
+ * identity means the content is the one hashed with it. */
+function fileIdentity(path: string): string | null {
+  try {
+    const info = statSync(path);
+    return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  } catch {
+    return null;
+  }
+}
+
+/** The text of `path` with its identity when the identity was the same before
+ * and after the read and the file had been unchanged for IDENTITY_SETTLE_MS. */
+function readWithIdentity(path: string): { text: string; identity: string | null } {
+  const readAt = Date.now();
+  const before = statSync(path);
+  const text = readFileSync(path, "utf8");
+  const after = fileIdentity(path);
+  const identity = `${before.dev}:${before.ino}:${before.size}:${before.mtimeMs}:${before.ctimeMs}`;
+  const settled =
+    before.mtimeMs <= readAt - IDENTITY_SETTLE_MS && before.ctimeMs <= readAt - IDENTITY_SETTLE_MS;
+  return { text, identity: settled && after === identity ? identity : null };
 }
 
 function pathKind(path: string): Extract<FrontendInputProbe, { op: "kind" }>["kind"] {
@@ -201,8 +232,11 @@ export function trackedReadFile(path: string): string | null {
   const virtual = virtualSources.get(path);
   if (virtual !== undefined) return virtual;
   try {
-    const text = readFileSync(path, "utf8");
-    record({ op: "file", path, digest: frontendSourceDigest(text) });
+    const { text, identity } = readWithIdentity(path);
+    const digest = frontendSourceDigest(text);
+    record(
+      identity === null ? { op: "file", path, digest } : { op: "file", path, digest, identity },
+    );
     return text;
   } catch {
     record({ op: "read-error", path });
@@ -354,6 +388,9 @@ export function frontendInputsStillMatch(
     }
     switch (probe.op) {
       case "file": {
+        // An unchanged identity stands for the content hashed with it.
+        if (probe.identity !== undefined && fileIdentity(probe.path) === probe.identity)
+          return true;
         try {
           return frontendSourceDigest(readFileSync(probe.path, "utf8")) === probe.digest;
         } catch {
@@ -469,6 +506,11 @@ export function frontendInputsSemanticallyMatch(
       probes.push(probe);
       continue;
     }
+    if (probe.identity !== undefined && fileIdentity(probe.path) === probe.identity) {
+      currentSources.set(probe.path, previous);
+      probes.push(probe);
+      continue;
+    }
     let current: string;
     try {
       current = readFileSync(probe.path, "utf8");
@@ -486,7 +528,7 @@ export function frontendInputsSemanticallyMatch(
     if (rawText.has(probe.path) || !isSemanticEquivalent(probe.path, previous, current))
       return null;
     changed.push({ path: probe.path, previous, current });
-    probes.push({ ...probe, digest: currentDigest });
+    probes.push({ op: "file", path: probe.path, digest: currentDigest });
   }
   const adjusted: FrontendInputSnapshot = { ...snapshot, probes };
   if (!frontendInputsStillMatch(adjusted, exclusions)) return null;
@@ -514,6 +556,11 @@ export function validFrontendInputSnapshot(snapshot: unknown): snapshot is Front
     if (typeof value.path !== "string" || typeof value.op !== "string") return false;
     switch (value.op) {
       case "file":
+        return (
+          typeof value.digest === "string" &&
+          /^[0-9a-f]{64}$/.test(value.digest) &&
+          (value.identity === undefined || typeof value.identity === "string")
+        );
       case "bytes":
         return typeof value.digest === "string" && /^[0-9a-f]{64}$/.test(value.digest);
       case "read-error":

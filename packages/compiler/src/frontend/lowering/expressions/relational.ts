@@ -96,6 +96,8 @@ const NO_CLASS_INSTANCE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
   "nullT",
 ]);
 
+const PRIMITIVE_WRAPPERS = ["Boolean", "Number", "String", "BigInt", "Symbol"] as const;
+
 /** `x instanceof C` for a program-declared class C. When x's static
  * class and C are both in extends-hierarchies the test is dynamic — the
  * O(1) preorder-interval check against the vtable (`instanceOf` node).
@@ -183,6 +185,20 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       kind: "libCall",
       fn: lowerer.isStdlibGlobal(expr.right, "WeakMap") ? "weakMap.is" : "weakSet.is",
       args: [value],
+      type: BOOL,
+      loc,
+    };
+  }
+  // The primitive wrapper constructors: a compiled program never creates a
+  // boxed primitive (`new Boolean(...)` and friends have no lowering), and
+  // a primitive is never an instance, so the test is false for every value
+  // (typebox's IsBoolean/IsNumber/IsString guards). The operand still runs.
+  if (PRIMITIVE_WRAPPERS.some((name) => lowerer.isStdlibGlobal(expr.right, name))) {
+    const value = lowerer.lowerExpr(expr.left);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result: { kind: "boolLit", value: false, type: BOOL, loc },
       type: BOOL,
       loc,
     };
