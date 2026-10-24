@@ -145,6 +145,10 @@ const LENDING_LIB_FNS: ReadonlySet<string> = new Set([
   "num.parseFloat",
 ]);
 
+/** Searches of string arrays compare the needle with the elements during
+ * the call. */
+const LENDING_ARRAY_SEARCHES: ReadonlySet<string> = new Set(["includes", "indexOf", "lastIndexOf"]);
+
 /** Typed string-keyed collection operations: reads probe with the key, and
  * an insertion stores scr_str_scratch_keep's copy (scr_map_append). */
 const LENDING_KEY_METHODS: ReadonlySet<string> = new Set(["get", "has", "set", "add", "delete"]);
@@ -176,6 +180,12 @@ function lentOperands(value: IrExpr, parameters: LentStringParameters): readonly
       return LENDING_KEY_METHODS.has(value.method) && stringKeyed(value)
         ? value.args.slice(0, 1)
         : [];
+    case "arrIntrinsic":
+      return LENDING_ARRAY_SEARCHES.has(value.method) &&
+        value.receiver.type.kind === "array" &&
+        value.receiver.type.elem.kind === "string"
+        ? value.args.slice(0, 1)
+        : [];
     case "call": {
       const lent = parameters.get(value.callee);
       return lent ? value.args.filter((_, index) => lent.has(index)) : [];
@@ -185,41 +195,123 @@ function lentOperands(value: IrExpr, parameters: LentStringParameters): readonly
   }
 }
 
+/** Record parameters, by function and index, that the body only projects:
+ * it reads their fields and passes them only to such parameters. The set
+ * lists the string fields some read keeps (reads outside a lending
+ * position); every other string field is lent (findLentRecordFields). */
+export type LentRecordFields = ReadonlyMap<string, ReadonlyMap<number, ReadonlySet<string>>>;
+
+/** Functions whose body only returns a record literal that stores some
+ * parameters, each read once, directly as fields: by function, parameter
+ * index to field (findRecordFieldProducers). A call stores those arguments
+ * in the fields of its result and keeps them nowhere else. */
+export type RecordFieldProducers = ReadonlyMap<string, ReadonlyMap<number, string>>;
+
+/** What lends a string: lent string parameters, lent record fields and
+ * record field producers. */
+export interface LendingFacts {
+  strings: LentStringParameters;
+  records: LentRecordFields;
+  producers: RecordFieldProducers;
+}
+
+const NO_LENDING_FACTS: LendingFacts = {
+  strings: new Map(),
+  records: new Map(),
+  producers: new Map(),
+};
+
 interface LendingScan {
   /** Slice operands of lending consumers, excluding any node also reached
    * in an owning position. */
   scratch: Set<IrExpr>;
   /** Candidates read anywhere other than a lending position. */
   invalid: Set<string>;
-  /** Direct callees, for the parameter fixpoint. */
+  /** Record candidates read other than by a field read or a lent record
+   * argument. */
+  invalidRecords: Set<string>;
+  /** String fields of record candidates read outside a lending position. */
+  keptFields: Map<string, Set<string>>;
+  /** Direct callees, for the parameter fixpoints. */
   callees: Set<string>;
 }
 
 /** One pass over `fn`: which candidate bindings only lending consumers read
  * (a slice initializer of a candidate local is not itself a read), and
  * which slice operands those consumers lend. A switch discriminant is only
- * compared with the case tests. */
+ * compared with the case tests. Record candidates (`records`) may only be
+ * projected: their field reads are checked as reads of the field, and they
+ * may be passed to lent record parameters. A record `container`
+ * declaration stores candidates in fields of a record candidate; those
+ * stores are not reads. */
 function scanLending(
   fn: IrFunction,
   candidates: ReadonlySet<string>,
   initializers: ReadonlyMap<string, Slice>,
-  parameters: LentStringParameters,
+  facts: LendingFacts,
+  records: ReadonlySet<string> = new Set(),
+  containers: ReadonlyMap<string, RecordContainer> = new Map(),
 ): LendingScan {
-  const scan: LendingScan = { scratch: new Set(), invalid: new Set(), callees: new Set() };
+  const scan: LendingScan = {
+    scratch: new Set(),
+    invalid: new Set(),
+    invalidRecords: new Set(),
+    keptFields: new Map(),
+    callees: new Set(),
+  };
   const owned = new Set<IrExpr>();
+  const keep = (record: string, field: string): void => {
+    let fields = scan.keptFields.get(record);
+    if (!fields) scan.keptFields.set(record, (fields = new Set()));
+    fields.add(field);
+  };
+  const projected = (value: IrExpr): value is IrExpr & { kind: "recordGet" } =>
+    value.kind === "recordGet" && value.obj.kind === "varRef" && records.has(value.obj.localId);
   function lent(value: IrExpr): boolean {
     if (value.kind === "varRef" && candidates.has(value.localId)) return true;
+    if (projected(value)) return true;
     if (!isSlice(value)) return expr(value);
     scan.scratch.add(value);
     return everyExprChild(value, expr, stmt);
   }
+  /** A call's arguments: lent string parameters lend, lent record
+   * parameters project their record, and `stored` arguments (a producer's
+   * fields in a container declaration) are not reads. */
+  function callArgs(value: IrExpr & { kind: "call" }, stored: ReadonlySet<number> | null): void {
+    scan.callees.add(value.callee);
+    const strings = facts.strings.get(value.callee);
+    const recordParams = facts.records.get(value.callee);
+    value.args.forEach((arg, index) => {
+      if (stored !== null && stored.has(index)) return;
+      const kept = recordParams?.get(index);
+      if (kept && arg.kind === "varRef" && records.has(arg.localId)) {
+        for (const field of kept) keep(arg.localId, field);
+        return;
+      }
+      if (strings?.has(index)) lent(arg);
+      else expr(arg);
+    });
+  }
   function expr(value: IrExpr): boolean {
     if (isSlice(value)) owned.add(value);
+    if (projected(value)) {
+      if (value.type.kind === "string")
+        keep((value.obj as { localId: string }).localId, value.field);
+      return true;
+    }
     if (value.kind === "varRef" && candidates.has(value.localId)) scan.invalid.add(value.localId);
+    if (value.kind === "varRef" && records.has(value.localId))
+      scan.invalidRecords.add(value.localId);
     if (value.kind === "closure" || value.kind === "classRef")
-      for (const id of value.captures ?? []) scan.invalid.add(id);
-    if (value.kind === "call") scan.callees.add(value.callee);
-    const operands = lentOperands(value, parameters);
+      for (const id of value.captures ?? []) {
+        scan.invalid.add(id);
+        scan.invalidRecords.add(id);
+      }
+    if (value.kind === "call") {
+      callArgs(value, null);
+      return true;
+    }
+    const operands = lentOperands(value, facts.strings);
     if (operands.length === 0) return everyExprChild(value, expr, stmt);
     return everyExprChild(
       value,
@@ -231,6 +323,20 @@ function scanLending(
     // A candidate's single declaration initializes it with its slice.
     if (value.kind === "varDecl" && value.init !== null && initializers.has(value.localId))
       return everyExprChild(value.init, expr, stmt);
+    const container = value.kind === "varDecl" ? containers.get(value.localId) : undefined;
+    if (container && value.kind === "varDecl" && value.init !== null) {
+      const init = value.init;
+      if (init.kind === "recordLit")
+        for (const field of init.fields) {
+          if (!container.stored.has(field.value)) expr(field.value);
+        }
+      else if (init.kind === "call")
+        callArgs(
+          init,
+          new Set(init.args.flatMap((arg, i) => (container.stored.has(arg) ? [i] : []))),
+        );
+      return true;
+    }
     if (value.kind === "switch" && value.disc.type.kind === "string") {
       lent(value.disc);
       for (const entry of value.cases) {
@@ -276,7 +382,7 @@ export function findLentStringParameters(
     const fn = functions.get(name);
     if (!indexes || !fn) continue;
     const ids = new Set([...indexes].map((index) => fn.params[index]!.localId));
-    const scan = scanLending(fn, ids, new Map(), lent);
+    const scan = scanLending(fn, ids, new Map(), { ...NO_LENDING_FACTS, strings: lent });
     for (const callee of scan.callees) {
       let set = callers.get(callee);
       if (!set) callers.set(callee, (set = new Set()));
@@ -296,6 +402,148 @@ export function findLentStringParameters(
   return lent;
 }
 
+/** Functions whose whole body is `return { ... }`, a record literal storing
+ * some parameters, each read nowhere else, directly as fields (a factory
+ * such as `token(kind, text, pos)`). A synchronous body only: the result
+ * then holds those arguments, and nothing else does. */
+export function findRecordFieldProducers(
+  functions: ReadonlyMap<string, IrFunction>,
+): Map<string, Map<number, string>> {
+  const producers = new Map<string, Map<number, string>>();
+  for (const fn of functions.values()) {
+    if (fn.async || fn.generator || fn.body.length !== 1) continue;
+    const only = fn.body[0]!;
+    if (only.kind !== "return" || only.value?.kind !== "recordLit") continue;
+    const literal = only.value;
+    const reads = new Map<string, number>();
+    everyStmtList(fn.body, {
+      expr: (value) => {
+        if (value.kind === "varRef") reads.set(value.localId, (reads.get(value.localId) ?? 0) + 1);
+        return true;
+      },
+      stmt: () => true,
+    });
+    const fields = new Map<number, string>();
+    fn.params.forEach((param, index) => {
+      if (param.type.kind !== "string" || reads.get(param.localId) !== 1) return;
+      const field = literal.fields.find(
+        (entry) =>
+          !entry.overflow && entry.value.kind === "varRef" && entry.value.localId === param.localId,
+      );
+      if (field) fields.set(index, field.name);
+    });
+    if (fields.size > 0) producers.set(fn.name, fields);
+  }
+  return producers;
+}
+
+/** Record parameters that every body only projects (LentRecordFields), with
+ * the string fields some read keeps. Start from every borrowed record
+ * parameter of a synchronous function, keeping no field, and grow the kept
+ * fields and drop escaping parameters until nothing changes; a record passed
+ * to another lent record parameter keeps what that parameter keeps. */
+export function findLentRecordFields(
+  functions: ReadonlyMap<string, IrFunction>,
+  lifetimes: CallLifetimes,
+  strings: LentStringParameters,
+): Map<string, Map<number, Set<string>>> {
+  const lent = new Map<string, Map<number, Set<string>>>();
+  for (const fn of functions.values()) {
+    if (fn.async || fn.generator) continue;
+    const stable = lifetimes.borrowed.get(fn.name);
+    const indexes = new Map<number, Set<string>>();
+    fn.params.forEach((param, index) => {
+      if (param.type.kind === "record" && stable?.has(index)) indexes.set(index, new Set());
+    });
+    if (indexes.size > 0) lent.set(fn.name, indexes);
+  }
+  const callers = new Map<string, Set<string>>();
+  const pending = new Set(lent.keys());
+  while (pending.size > 0) {
+    const name = pending.values().next().value as string;
+    pending.delete(name);
+    const indexes = lent.get(name);
+    const fn = functions.get(name);
+    if (!indexes || !fn) continue;
+    const ids = new Set([...indexes.keys()].map((index) => fn.params[index]!.localId));
+    const scan = scanLending(
+      fn,
+      new Set(),
+      new Map(),
+      { strings, records: lent, producers: new Map() },
+      ids,
+    );
+    for (const callee of scan.callees) {
+      let set = callers.get(callee);
+      if (!set) callers.set(callee, (set = new Set()));
+      set.add(name);
+    }
+    let changed = false;
+    for (const [index, kept] of [...indexes]) {
+      const id = fn.params[index]!.localId;
+      if (scan.invalidRecords.has(id)) {
+        indexes.delete(index);
+        changed = true;
+        continue;
+      }
+      const fields = scan.keptFields.get(id);
+      if (fields)
+        for (const field of fields) {
+          if (kept.has(field)) continue;
+          kept.add(field);
+          changed = true;
+        }
+    }
+    if (!changed) continue;
+    if (indexes.size === 0) lent.delete(name);
+    const affected = callers.get(name);
+    if (affected) for (const caller of affected) if (lent.has(caller)) pending.add(caller);
+  }
+  return lent;
+}
+
+/** A record local whose declaration stores slice locals directly in some of
+ * its fields: a record literal, or a call to a record field producer. */
+interface RecordContainer {
+  /** The stored candidate reads of the declaration, by field. */
+  stored: Map<IrExpr, { field: string; slice: string }>;
+}
+
+/** Record locals declared with slice locals in their fields. */
+function findRecordContainers(
+  fn: IrFunction,
+  bindings: ReadonlySet<string> | undefined,
+  slices: ReadonlySet<string>,
+  producers: RecordFieldProducers,
+): Map<string, RecordContainer> {
+  const containers = new Map<string, RecordContainer>();
+  everyStmtList(fn.body, {
+    expr: () => true,
+    stmt: (stmt) => {
+      if (stmt.kind !== "varDecl" || stmt.init === null || !bindings?.has(stmt.localId))
+        return true;
+      if (stmt.init.type.kind !== "record") return true;
+      const stored = new Map<IrExpr, { field: string; slice: string }>();
+      const init = stmt.init;
+      if (init.kind === "recordLit") {
+        for (const field of init.fields)
+          if (!field.overflow && field.value.kind === "varRef" && slices.has(field.value.localId))
+            stored.set(field.value, { field: field.name, slice: field.value.localId });
+      } else if (init.kind === "call") {
+        const fields = producers.get(init.callee);
+        init.args.forEach((arg, index) => {
+          const field = fields?.get(index);
+          if (field !== undefined && arg.kind === "varRef" && slices.has(arg.localId))
+            stored.set(arg, { field, slice: arg.localId });
+        });
+      }
+      if (stored.size > 0) containers.set(stmt.localId, { stored });
+      return true;
+    },
+  });
+  return containers;
+}
+
 /** Slices whose every reader borrows them are written into a stack buffer
  * instead of a heap allocation (scr_str_slice_scratch): a slice operand of
  * a lending consumer, and the initializer of a stable local read only by
@@ -304,12 +552,18 @@ export function findLentStringParameters(
  * non-ASCII results keep the ordinary owned string. Each site owns its
  * buffer: a site runs again only after its previous value is dead, since
  * nothing can keep it. Coroutine frames do not keep stack buffers across a
- * suspension, so they are left alone. */
+ * suspension, so they are left alone.
+ *
+ * A slice local may also be stored in a field of a stable record local
+ * declared with it (a record literal, or a record field producer's result):
+ * the record is then only projected, and every read of that field lends.
+ * The record is declared after the slice in its scope and is never kept, so
+ * it is dead before the slice's site runs again. */
 export function findScratchStringSlices(
   fn: IrFunction,
   lifetimes: CallLifetimes,
   scalar: ReadonlyMap<string, Slice>,
-  parameters: LentStringParameters = new Map(),
+  facts: LendingFacts = NO_LENDING_FACTS,
 ): Set<IrExpr> {
   if (fn.async || fn.generator) return new Set();
   const bindings = lifetimes.bindings.get(fn.name);
@@ -328,7 +582,19 @@ export function findScratchStringSlices(
       return true;
     },
   });
-  const scan = scanLending(fn, new Set(locals.keys()), locals, parameters);
+  const containers = findRecordContainers(fn, bindings, new Set(locals.keys()), facts.producers);
+  const scan = scanLending(
+    fn,
+    new Set(locals.keys()),
+    locals,
+    facts,
+    new Set(containers.keys()),
+    containers,
+  );
+  for (const [record, container] of containers)
+    for (const { field, slice } of container.stored.values())
+      if (scan.invalidRecords.has(record) || scan.keptFields.get(record)?.has(field))
+        scan.invalid.add(slice);
   for (const [id, init] of locals) if (!scan.invalid.has(id)) scan.scratch.add(init);
   return scan.scratch;
 }

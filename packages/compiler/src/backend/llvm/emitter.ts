@@ -200,8 +200,10 @@ import { StackCallbacks } from "./stack-callbacks.js";
 import { findAppendedArrayLiterals } from "./appended-array-literals.js";
 import { AmbientReceiverReaders, findConstantCallbacks } from "./constant-callbacks.js";
 import {
+  findLentRecordFields,
   findLentStringParameters,
-  type LentStringParameters,
+  findRecordFieldProducers,
+  type LendingFacts,
   type StringSliceSnapshot,
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
@@ -792,8 +794,9 @@ export class LlEmitter {
   readonly stringSlices = new Map<string, StringSliceSnapshot>();
   /** Slices written into stack buffers (findScratchStringSlices). */
   scratchStringSlices: ReadonlySet<IrExpr> = new Set();
-  /** String parameters a caller may lend scratch slices to. */
-  lentStringParameters: LentStringParameters = new Map();
+  /** String parameters, record fields and record producers a caller may
+   * lend scratch slices to. */
+  lendingFacts: LendingFacts = { strings: new Map(), records: new Map(), producers: new Map() };
   localStackUnions = new Map<string, IrExpr & { kind: "unionWrap" }>();
   localStackObjects = new Map<string, StackObjectSource>();
   reassignedStackObjects = new Set<string>();
@@ -1893,8 +1896,14 @@ export class LlEmitter {
       },
       (wrap) => this.borrowableNullableWrap(wrap) === "ref",
     );
-    this.lentStringParameters =
-      this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
+    if (this.debug === null) {
+      const strings = findLentStringParameters(this.fnByName, this.callLifetimes);
+      this.lendingFacts = {
+        strings,
+        records: findLentRecordFields(this.fnByName, this.callLifetimes, strings),
+        producers: findRecordFieldProducers(this.fnByName),
+      };
+    }
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes, this.nodeIndex);
     // Integer clones signal a stack overflow through their result, which
     // needs the single-threaded guard; worker programs also poll for
