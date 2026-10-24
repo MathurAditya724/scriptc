@@ -8960,6 +8960,102 @@ void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len)
   view->v.obj.index = NULL;
 }
 
+static size_t scr_dyn_entry_index(const ScrDyn *object, const char *key, size_t key_len) {
+  for (size_t i = 0; i < object->v.obj.len; i++) {
+    const ScrDynEntry *entry = &object->v.obj.entries[i];
+    if (entry->key_len == key_len && memcmp(entry->key, key, key_len) == 0) return i;
+  }
+  return SIZE_MAX;
+}
+
+/* Whether bag entry b is one of the entries Error's constructor creates
+ * before the instance's class fields: `stack`, a hidden entry (a key
+ * starting with '%'), and a `message` that directly follows them. */
+static bool scr_error_bag_constructed(const ScrDyn *bag, size_t b) {
+  for (size_t i = 0; i <= b; i++) {
+    const ScrDynEntry *entry = &bag->v.obj.entries[i];
+    bool constructed = (entry->key_len == 5 && memcmp(entry->key, "stack", 5) == 0) ||
+                       (entry->key_len > 0 && entry->key[0] == '%') ||
+                       (entry->key_len == 7 && memcmp(entry->key, "message", 7) == 0);
+    if (!constructed) return false;
+  }
+  return true;
+}
+
+/* The view index at which bag entry b, now at `from`, belongs: after the
+ * nearest earlier bag property the view has. An entry created after
+ * construction (any `name` placed here, since no constructor of the class
+ * sets it, and a `message` that is not one of Error's constructor entries)
+ * also follows the class fields, which live in slots and not in the bag: it
+ * passes over the constructor's entries and over a `name` the construction
+ * set, and without another earlier property goes before the nearest later
+ * one the view has, or stays where the view put it. A `message` Error's
+ * constructor created follows the nearest earlier entry, or goes first. */
+static size_t scr_error_bag_place(const ScrDyn *view, const ScrDyn *bag, size_t b, bool name,
+                                  bool name_placed, size_t from) {
+  bool late = name || !scr_error_bag_constructed(bag, b);
+  for (size_t p = b; p-- > 0;) {
+    const ScrDynEntry *anchor = &bag->v.obj.entries[p];
+    if (late && scr_error_bag_constructed(bag, p)) break;
+    if (late && name_placed && anchor->key_len == 4 && memcmp(anchor->key, "name", 4) == 0) continue;
+    size_t after = scr_dyn_entry_index(view, anchor->key, anchor->key_len);
+    if (after != SIZE_MAX) return after < from ? after + 1 : after;
+  }
+  if (!late) return 0;
+  for (size_t p = b + 1; p < bag->v.obj.len; p++) {
+    size_t before = scr_dyn_entry_index(view, bag->v.obj.entries[p].key, bag->v.obj.entries[p].key_len);
+    if (before != SIZE_MAX) return before > from ? before - 1 : before;
+  }
+  return from;
+}
+
+/* The bag holds the view as it was last committed, in the order its
+ * properties were created: zod's error factory assigns `name` and then
+ * defines `message`, and Node lists them in that order. The slots rebuild
+ * both at fixed positions (scr_error_dyn_fields, scr_error_dyn_place_name),
+ * so each one present in the bag moves to follow the property it follows
+ * there. A typed write to `name` or `message` reaches only the slot, so a
+ * data property takes the slot's value. */
+void scr_error_dyn_follow_bag(ScrDyn *view, const ScrDyn *bag, const ScrError *e, bool name_placed) {
+  if (!bag || bag->kind != SCR_DYN_OBJ || view->kind != SCR_DYN_OBJ) return;
+  static const struct { const char *key; size_t len; } slots[] = {{"name", 4}, {"message", 7}};
+  for (size_t s = 0; s < 2; s++) {
+    bool name = s == 0;
+    if (!(name ? e->name_present : e->message_present)) continue;
+    size_t at = scr_dyn_entry_index(view, slots[s].key, slots[s].len);
+    if (at == SIZE_MAX || view->v.obj.entries[at].accessor) continue;
+    ScrDyn *value = scr_dyn_new_str(name ? e->name : e->message);
+    scr_dyn_region_store(view, value);
+    ScrDyn *old = view->v.obj.entries[at].value;
+    view->v.obj.entries[at].value = value;
+    scr_dyn_release(old);
+  }
+  bool moved = false;
+  for (size_t b = 0; b < bag->v.obj.len; b++) {
+    const ScrDynEntry *bag_entry = &bag->v.obj.entries[b];
+    bool slot = (bag_entry->key_len == 4 && memcmp(bag_entry->key, "name", 4) == 0) ||
+                (bag_entry->key_len == 7 && memcmp(bag_entry->key, "message", 7) == 0);
+    bool name = bag_entry->key_len == 4;
+    /* A `name` the class's construction sets is in place already. */
+    if (!slot || (name && name_placed)) continue;
+    size_t from = scr_dyn_entry_index(view, bag_entry->key, bag_entry->key_len);
+    if (from == SIZE_MAX) continue;
+    size_t to = scr_error_bag_place(view, bag, b, name, name_placed, from);
+    if (to == from) continue;
+    ScrDynEntry *entries = view->v.obj.entries;
+    ScrDynEntry entry = entries[from];
+    if (to < from) memmove(&entries[to + 1], &entries[to], (from - to) * sizeof *entries);
+    else memmove(&entries[from], &entries[from + 1], (to - from) * sizeof *entries);
+    entries[to] = entry;
+    moved = true;
+  }
+  if (moved) {
+    SCR_JS_SHAPE_RESET(view);
+    free(view->v.obj.index);
+    view->v.obj.index = NULL;
+  }
+}
+
 ScrDyn *scr_dyn_from_error(const ScrError *e) {
   size_t hit = scr_errdyn_find(e, true);
   if (hit != SIZE_MAX) return scr_dyn_retain(scr_errdyn_cache[hit].dyn);
