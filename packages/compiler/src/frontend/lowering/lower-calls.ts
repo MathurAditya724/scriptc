@@ -249,7 +249,7 @@ import {
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
 import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
 import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
-import { freezableRecordType, lowerNativeFreeze } from "./frozen-records.js";
+import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
@@ -8544,6 +8544,7 @@ function lowerObjectStaticCall(
         isSealed: "dyn.isSealed",
       } as const;
       const fn = operation[member as keyof typeof operation];
+      if (!member.startsWith("is")) noteUntypedIntegrity(lowerer, call.arguments.nodes[0]!);
       return {
         kind: "libCall",
         fn,
@@ -8610,8 +8611,10 @@ function lowerObjectStaticCall(
       (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner))
         ? lowerer.lowerExprExpecting(argNode, DYN)
         : lowerer.lowerExpr(argNode);
-    if (value.type.kind === "dyn")
+    if (value.type.kind === "dyn") {
+      noteUntypedIntegrity(lowerer, argNode);
       return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
+    }
     if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
       return value; // fresh — freeze is identity here, honestly
     }

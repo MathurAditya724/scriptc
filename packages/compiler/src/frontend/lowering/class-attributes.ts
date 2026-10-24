@@ -39,8 +39,14 @@ import { runtimeRooted } from "./class-descriptors.js";
 type ClassObjectType = Extract<IrType, { kind: "object" }>;
 
 function attributeClass(lowerer: Lowerer, target: IrExpr): ClassInfo | null {
-  if (!isDynTypedRefType(target.type)) return null;
-  const info = lowerer.classes.get(target.type.className);
+  return isDynTypedRefType(target.type)
+    ? attributeClassNamed(lowerer, target.type.className)
+    : null;
+}
+
+/** The compiled class `className`, when its instances can carry attributes. */
+function attributeClassNamed(lowerer: Lowerer, className: string): ClassInfo | null {
+  const info = lowerer.classes.get(className);
   if (!info || runtimeRooted(info) || info.decl == null) return null;
   return info;
 }
@@ -60,6 +66,20 @@ function addHiddenField(info: ClassInfo, name: string): void {
     current.subclasses.forEach(add);
   };
   add(root);
+}
+
+/** In a program that freezes, seals or prevents extensions of untyped
+ * values, gives every hierarchy whose instances can be held there the
+ * integrity word. The runtime applies the operation to the instance's
+ * checked view, whose commit stores the view's integrity state in the word
+ * (backend streamTypedRefCommitAdapter), and the write checks below read
+ * it. */
+export function addUntypedIntegrityWords(lowerer: Lowerer): void {
+  if (!lowerer.untypedIntegrity) return;
+  for (const [className, info] of lowerer.classes) {
+    if (isDynTypedRefType({ kind: "object", className }) && attributeClassNamed(lowerer, className))
+      addHiddenField(info, CLASS_ATTRIBUTES);
+  }
 }
 
 function hiddenFieldGet(receiver: IrExpr, className: string, field: string, loc: SrcLoc): IrExpr {
