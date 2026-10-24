@@ -102,7 +102,7 @@ function decideTimeValueDate(lowerer: Lowerer, decl: ts.VariableDeclaration): bo
     if (!ok) return;
     if (ts.isIdentifier(node) && node !== decl.name && node.text === decl.name.text) {
       if (lowerer.checker.getSymbolAtLocation(node) === symbol) {
-        const use = enclosingFunction(node) === fn ? timeValueUse(lowerer, node) : null;
+        const use = enclosingFunction(node) === fn ? timeValueUse(lowerer, node, symbol) : null;
         if (use === null) ok = false;
         else if (use === "set") sets = true;
       }
@@ -174,7 +174,11 @@ function enclosingFunction(node: ts.Node): ts.FunctionLikeDeclaration | null {
 /** How a use of the binding uses its time value: "read" for a use that
  * reads only the time value, "set" for a setter call that replaces it, or
  * null for any other use. */
-function timeValueUse(lowerer: Lowerer, id: ts.Identifier): "read" | "set" | null {
+function timeValueUse(
+  lowerer: Lowerer,
+  id: ts.Identifier,
+  symbol: ts.Symbol,
+): "read" | "set" | null {
   let node: ts.Node = id;
   while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
   const parent = node.parent;
@@ -192,12 +196,34 @@ function timeValueUse(lowerer: Lowerer, id: ts.Identifier): "read" | "set" | nul
     if (isDateSetter(parent.name.text)) return "set";
     return TIME_VALUE_METHODS.has(parent.name.text) ? "read" : null;
   }
-  return readsTimeValue(lowerer, node, parent) ? "read" : null;
+  return readsTimeValue(lowerer, node, parent, symbol) ? "read" : null;
+}
+
+/** True when `node` calls a setter on the binding `symbol` names. */
+function callsSetterOf(lowerer: Lowerer, node: ts.Node, symbol: ts.Symbol): boolean {
+  if (
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    isDateSetter(node.expression.name.text)
+  ) {
+    let receiver = node.expression.expression;
+    while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+    if (ts.isIdentifier(receiver) && lowerer.checker.getSymbolAtLocation(receiver) === symbol)
+      return true;
+  }
+  return (
+    ts.forEachChild(node, (child) => callsSetterOf(lowerer, child, symbol) || undefined) ?? false
+  );
 }
 
 /** A use of the binding, other than a method call, that reads only its
  * time value. */
-function readsTimeValue(lowerer: Lowerer, node: ts.Node, parent: ts.Node): boolean {
+function readsTimeValue(
+  lowerer: Lowerer,
+  node: ts.Node,
+  parent: ts.Node,
+  symbol: ts.Symbol,
+): boolean {
   if (ts.isTemplateSpan(parent)) return parent.expression === node;
   // Unary + and -, the number hint.
   if (ts.isPrefixUnaryExpression(parent))
@@ -222,6 +248,9 @@ function readsTimeValue(lowerer: Lowerer, node: ts.Node, parent: ts.Node): boole
     );
   }
   if (ts.isBinaryExpression(parent)) {
+    // A left operand converts after the right one is evaluated: a setter
+    // there changes the time value the comparison or concatenation reads.
+    if (parent.left === node && callsSetterOf(lowerer, parent.right, symbol)) return false;
     const other = parent.left === node ? parent.right : parent.left;
     const otherKind = lowerer.mapTypeOf(lowerer.typeOf(other))?.kind;
     if (RELATIONAL.has(parent.operatorToken.kind)) return otherKind === "date";

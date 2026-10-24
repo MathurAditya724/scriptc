@@ -342,9 +342,9 @@ function lowerDateSetter(
 /** The new time value of setter `name` called with `call`'s arguments on a
  * Date whose time value `time` reads: the arguments evaluate into
  * temporaries appended to `stmts` (ToNumber of each, an undefined one is
- * NaN), and the result reads `time` after them. Missing optional arguments
- * keep their fields; arguments past a setter's last one are evaluated and
- * ignored. */
+ * NaN), and the result reads `time` after them. A missing first argument
+ * is NaN; missing optional arguments keep their fields; arguments past a
+ * setter's last one are evaluated and ignored. */
 export function dateSetterTime(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -374,7 +374,8 @@ export function dateSetterTime(
       loc,
     };
   const setter = DATE_FIELD_SETTERS.get(name)!;
-  const used = args.slice(0, setter.max);
+  // The first argument is required: a missing one is undefined, so NaN.
+  const used = args.length === 0 ? [number(Number.NaN)] : args.slice(0, setter.max);
   const operands = [...used];
   while (operands.length < 4) operands.push(number(0));
   return {
