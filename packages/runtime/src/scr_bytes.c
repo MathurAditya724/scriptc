@@ -3341,6 +3341,9 @@ static bool scr_bytes_search_start(size_t len, double from, size_t *start) {
 }
 
 double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool last) {
+  /* A Buffer viewed as a Uint8Array keeps Buffer's own search: the needle
+   * is taken as a byte, and a NaN byteOffset searches the whole buffer. */
+  if (scr_bytes_is_buffer(b)) return scr_bytes_index_of_num(b, x, from, !last);
   SCR_BYTES_SNAPSHOT(b);
   size_t len = b->len;
   size_t size = scr_bytes_elem_size(b->elem);
@@ -3361,6 +3364,7 @@ double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool la
 }
 
 bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from) {
+  if (scr_bytes_is_buffer(b)) return scr_bytes_index_of_num(b, x, from, true) >= 0;
   SCR_BYTES_SNAPSHOT(b);
   size_t len = b->len;
   size_t size = scr_bytes_elem_size(b->elem);
