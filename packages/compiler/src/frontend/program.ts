@@ -143,6 +143,7 @@ import { planDeclProjection, type DeclProjection } from "./decl-projection.js";
 import {
   reportShapes,
   resetShapeOverlay,
+  shapeOverlayDone,
   shapeOverlayEnabled,
   shapeOverlayer,
 } from "./shape-inference/index.js";
@@ -864,7 +865,7 @@ function loadProgram7(
   projector?: (program: ts.Program) => DeclProjection | null,
   /** Shape inference's typed overlay (shape-inference/overlay.ts):
    * rewritten package JavaScript for the lowering world, or null. */
-  overlayer?: (program: ts.Program) => ReadonlyMap<string, string> | null,
+  overlayer?: (program: ts.Program, round: number) => ReadonlyMap<string, string> | null,
 ): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
   const configuredPaths = config.options["paths"];
@@ -1012,14 +1013,22 @@ function loadProgram7(
     // files (the registry is per process).
     resetShapeOverlay();
     if (overlayer !== undefined && jsx.refusal === null) {
-      const overlay = overlayer(program);
-      if (overlay !== null && overlay.size > 0) {
+      // Rounds: structural rewrites, then the typed overlay of the rebuilt
+      // program (shape-inference/index.ts).
+      for (let round = 0; round < 3; round++) {
+        const overlay = overlayer(program, round);
+        if (overlay === null || overlay.size === 0) break;
         const before = program;
         for (const [file, text] of overlay) host.addVirtualFile(file, text);
         program = host.createProgram([...programRoots, overridesDtsPath()], options);
         if (tscWorld === undefined)
-          tscWorld = { program: before, diagnostics: ts.getPreEmitDiagnostics(before), projectWorld: null };
+          tscWorld = {
+            program: before,
+            diagnostics: ts.getPreEmitDiagnostics(before),
+            projectWorld: null,
+          };
         else if (tscWorld.program !== before) before.dispose();
+        if (shapeOverlayDone()) break;
       }
     }
     const entry = program.getSourceFile(entryPath);

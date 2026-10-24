@@ -6818,8 +6818,17 @@ export function lowerSwitch(lowerer: Lowerer, stmt: ts.SwitchStatement): IrStmt 
       if (dk === "dyn") return lowerDynSwitch(lowerer, stmt, disc, labels);
       if (dk === "union") return lowerUnionSwitch(lowerer, stmt, disc, labels);
       // Objects, arrays, functions and other references match their cases
-      // with ===, which compares them by identity.
-      if (dk !== "f64" && dk !== "string" && dk !== "bool")
+      // with ===, which compares them by identity. In JavaScript, a case
+      // test of another type (a namespace enum member read through an
+      // untyped object) compares with === too.
+      const mixedJsCases =
+        isJsSourceFile(ts.getSourceFileOfNode(stmt)) &&
+        stmt.caseBlock.clauses.nodes.some(
+          (clause) =>
+            ts.isCaseClause(clause) &&
+            tryLowerExpression(lowerer, clause.expression)?.type.kind !== dk,
+        );
+      if ((dk !== "f64" && dk !== "string" && dk !== "bool") || mixedJsCases)
         return lowerBranchSwitch(lowerer, stmt, disc, labels, (stableDisc, test, expression) =>
           lowerStrictEquality(
             lowerer,

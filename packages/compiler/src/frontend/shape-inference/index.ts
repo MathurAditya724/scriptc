@@ -8,6 +8,8 @@ import { npmStaticPackageOfPath } from "../npm-static.js";
 import { isShapelessPackage } from "../package-shims.js";
 import { analyzeShapes, isPackageJsFile } from "./analyze.js";
 import { OVERLAY_MARK, planShapeOverlay } from "./overlay.js";
+import { planStaticObjectRewrites } from "./static-objects.js";
+import { isJsSourceFile } from "../program.js";
 import { buildShapeReport } from "./report.js";
 import { computeConstantGraphs, constantGraphReport } from "./constant-graphs.js";
 
@@ -56,6 +58,8 @@ export function shapeOverlayAnnotationCount(): number {
 }
 
 export function resetShapeOverlay(): void {
+  staticObjectStats = { classes: 0, functions: 0, directCalls: 0 };
+  overlayDone = false;
   overlayFiles = new Set();
   overlayAnnotations = 0;
   overlayDeadBranches = 0;
@@ -70,17 +74,40 @@ export function shapeOverlayEnabled(): boolean {
 }
 
 /** loadProgram7's overlayer: analyze, plan, and register the overlay files. */
-export function shapeOverlayer(program: ts.Program): ReadonlyMap<string, string> | null {
-  resetShapeOverlay();
+export function shapeOverlayer(
+  program: ts.Program,
+  round: number,
+): ReadonlyMap<string, string> | null {
+  if (round === 0) resetShapeOverlay();
   const analysis = analyzeShapes(program, program.getTypeChecker());
   if (analysis.budgetExceeded) return null;
-  const report = buildShapeReport(analysis, "1");
-  const packageFiles = analysis.files.filter((sf) => {
-    if (!isPackageJsFile(sf)) return false;
+  // Package JavaScript of packages that keep shapes on, and the program's
+  // own JavaScript files.
+  const jsFiles = analysis.files.filter((sf) => {
+    if (sf.isDeclarationFile || !isJsSourceFile(sf)) return false;
+    if (!isPackageJsFile(sf)) return !sf.fileName.includes("/node_modules/");
     const pkg = npmStaticPackageOfPath(sf.fileName);
     return pkg === null || !isShapelessPackage(pkg);
   });
-  const overlay = planShapeOverlay(analysis, report.sites, packageFiles);
+  // Round 0: the structural rewrites (static-objects.ts); the program is
+  // rebuilt from them and analyzed again before the typed overlay.
+  if (round === 0 && process.env["SCRIPTC_SHAPE_STATIC_OBJECTS"] !== "0") {
+    const rewrites = planStaticObjectRewrites(analysis, jsFiles);
+    staticObjectStats = {
+      classes: rewrites.classes,
+      functions: rewrites.functions,
+      directCalls: rewrites.directCalls,
+    };
+    if (process.env["SCRIPTC_DEBUG_SHAPE_OVERLAY"] !== undefined) {
+      for (const k of rewrites.kept) process.stderr.write(`[static-objects] kept ${k}\n`);
+      for (const [file, text] of rewrites.files)
+        process.stderr.write(`[static-objects] ${file}\n${text}\n`);
+    }
+    if (rewrites.files.size > 0) return rewrites.files;
+  }
+  if (round > 1) return null;
+  const report = buildShapeReport(analysis, "1");
+  const overlay = planShapeOverlay(analysis, report.sites, jsFiles);
   overlayFiles = new Set(overlay.files.keys());
   overlayAnnotations = overlay.annotations;
   overlayDeadBranches = overlay.deadBranches;
@@ -88,7 +115,17 @@ export function shapeOverlayer(program: ts.Program): ReadonlyMap<string, string>
     for (const [file, text] of overlay.files)
       process.stderr.write(`[shape-overlay] ${file}\n${text}\n`);
   }
-  return overlay.files;
+  // The typed overlay is the last round.
+  overlayDone = true;
+  return overlay.files.size > 0 ? overlay.files : null;
+}
+
+let staticObjectStats = { classes: 0, functions: 0, directCalls: 0 };
+let overlayDone = false;
+
+/** Whether the overlay has written its last round for this load. */
+export function shapeOverlayDone(): boolean {
+  return overlayDone;
 }
 
 /** Marks the checked conversions lowered in overlay files: each checks an
@@ -143,8 +180,11 @@ export function shapeInferredFactCheckCount(): number {
 /** SC6103, the overlay's build report: what the overlay typed and how many
  * checks of inferred facts the build inserted. A note, never a failure. */
 export function shapeOverlayReport(entryFile: string): ScrDiagnostic[] {
-  if (overlayFiles.size === 0) return [];
-  const packages = new Set([...overlayFiles].map((f) => npmStaticPackageOfPath(f) ?? f));
+  const { classes, functions, directCalls } = staticObjectStats;
+  if (overlayFiles.size === 0 && classes + functions === 0) return [];
+  const packages = new Set(
+    [...overlayFiles].map((f) => npmStaticPackageOfPath(f) ?? "the program"),
+  );
   return [
     {
       code: "SC6103",
@@ -154,6 +194,9 @@ export function shapeOverlayReport(entryFile: string): ScrDiagnostic[] {
         `${inferredFactChecks} inferred fact${inferredFactChecks === 1 ? "" : "s"} at run time` +
         (overlayDeadBranches > 0
           ? ` and replaces ${overlayDeadBranches} branch${overlayDeadBranches === 1 ? "" : "es"} it proved unreachable with checks`
+          : "") +
+        (classes + functions > 0
+          ? `; it compiled ${classes} constructor function${classes === 1 ? "" : "s"} as classes and ${functions} namespace function${functions === 1 ? "" : "s"} as direct functions (${directCalls} direct call${directCalls === 1 ? "" : "s"})`
           : ""),
       loc: { file: entryFile, start: 0, end: 0 },
       hint: "a failing check reports a scriptc analysis bug; --no-shape-overlay compiles without the overlay",

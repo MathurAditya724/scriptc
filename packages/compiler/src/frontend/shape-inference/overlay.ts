@@ -76,6 +76,8 @@ export function planShapeOverlay(
     pSites.set(v.site.atom, v);
   }
   const files = new Map<string, string>();
+  const overlaid = new Set<ts.SourceFile>(packageFiles);
+  const exportedClasses = new Map<ts.SourceFile, Set<string>>();
   let annotations = 0;
   let deadBranches = 0;
   debugIndex = 0;
@@ -99,8 +101,25 @@ export function planShapeOverlay(
     const edits: Edit[] = [];
 
     const className = (decl: ts.Node): string | null => {
-      if (decl.getSourceFile() !== sf) return null;
       const own = (decl as ts.ClassLikeDeclaration).name;
+      // A top-level class of another overlaid file: named through the type
+      // alias the overlay exports from that file.
+      if (decl.getSourceFile() !== sf) {
+        const other = decl.getSourceFile();
+        if (
+          process.env["SCRIPTC_SHAPE_CROSS_FILE"] !== "1" ||
+          own === undefined ||
+          !ts.isClassDeclaration(decl) ||
+          decl.parent !== other ||
+          !overlaid.has(other)
+        )
+          return null;
+        const alias = `__shape_class_${own.text}`;
+        let names = exportedClasses.get(other);
+        if (names === undefined) exportedClasses.set(other, (names = new Set()));
+        names.add(own.text);
+        return `import(${JSON.stringify(other.fileName)}).${alias}`;
+      }
       if (own !== undefined && ts.isClassDeclaration(decl) && decl.parent === sf) return own.text;
       const p = decl.parent;
       if (
@@ -418,7 +437,13 @@ export function planShapeOverlay(
       if (
         ts.isMethodDeclaration(node) ||
         ts.isConstructorDeclaration(node) ||
-        ts.isFunctionDeclaration(node)
+        ts.isFunctionDeclaration(node) ||
+        // Functions stored as object members (`run: function (…) {…}`).
+        (process.env["SCRIPTC_SHAPE_MEMBER_FUNCTIONS"] === "1" &&
+          ts.isFunctionExpression(node) &&
+          node.parent !== undefined &&
+          ts.isPropertyAssignment(node.parent) &&
+          node.parent.initializer === node)
       ) {
         if (node.body !== undefined) {
           const tags = paramTags(node);
@@ -534,6 +559,17 @@ export function planShapeOverlay(
     }
     if (edits.length === 0) continue;
     files.set(sf.fileName, neutralizeDocTags(applyEdits(sf.text, edits)) + typedefText.join(""));
+  }
+  // Type aliases other files name these files' classes through.
+  for (const [other, names] of exportedClasses) {
+    const aliases = [...names]
+      .sort()
+      .map((n) => `/** @typedef {${n}} __shape_class_${n} ${MARK} */`)
+      .join("");
+    files.set(
+      other.fileName,
+      (files.get(other.fileName) ?? neutralizeDocTags(other.text)) + "\n" + aliases,
+    );
   }
   return { files, annotations, deadBranches };
 }

@@ -3350,7 +3350,7 @@ function cjsExportName(decl: Node): string | null {
   )
     return decl.left.name.text;
   return null;
-  }
+}
 
 interface WalkEnv {
   readonly ctx: string;
