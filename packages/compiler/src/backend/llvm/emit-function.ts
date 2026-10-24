@@ -1307,8 +1307,10 @@ export function emitArgPackAndTrampolinePrologue(
  * code. */
 export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
   if (emitter.wasi || emitter.mod.workers === true) return null;
-  for (const decl of emitter.decls) if (/@scr_test_sub\b/.test(decl)) return null;
-  for (const text of emitter.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return null;
+  const testSub = (text: string): boolean =>
+    text.includes("@scr_test_sub") && /@scr_test_sub\b/.test(text);
+  for (const decl of emitter.decls) if (testSub(decl)) return null;
+  for (const text of emitter.fnDefText.values()) if (testSub(text)) return null;
   // Reverse mention edges, then propagate "may park" to every mentioner.
   const mentionedBy = new Map<string, Set<string>>();
   const parks = new Set<string>();

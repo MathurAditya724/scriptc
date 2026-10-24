@@ -621,6 +621,16 @@ export function llStrBytes(text: string): string {
 
 const NO_BORROWED: ReadonlySet<number> = new Set();
 
+/** [A-Za-z0-9_] */
+function isIdentifierByte(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 95
+  );
+}
+
 /** Runtime entry points (and await-call entries) that may park the running
  * execution context, as they appear in emitted function text. */
 export const SUSPENDS =
@@ -2263,9 +2273,23 @@ export class LlEmitter {
         this.mangledFunctions.set(mangleBorrowedFunction(fn.name), fn.name);
       }
     }
-    for (const match of text.matchAll(/@(sc_b?f_[A-Za-z0-9_]+)/g)) {
-      const callee = this.mangledFunctions.get(match[1]!);
+    // The names `@(sc_b?f_[A-Za-z0-9_]+)` matches, found with indexOf.
+    for (let at = text.indexOf("@sc_"); at >= 0;) {
+      let start = at + 4;
+      if (text.charCodeAt(start) === 98 /* b */) start++;
+      if (text.charCodeAt(start) !== 102 /* f */ || text.charCodeAt(start + 1) !== 95 /* _ */) {
+        at = text.indexOf("@sc_", at + 1);
+        continue;
+      }
+      let end = start + 2;
+      while (end < text.length && isIdentifierByte(text.charCodeAt(end))) end++;
+      if (end === start + 2) {
+        at = text.indexOf("@sc_", at + 1);
+        continue;
+      }
+      const callee = this.mangledFunctions.get(text.slice(at + 1, end));
       if (callee !== undefined) yield callee;
+      at = text.indexOf("@sc_", end);
     }
   }
 

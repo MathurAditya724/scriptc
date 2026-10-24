@@ -280,6 +280,22 @@ describe("inline release budgets", () => {
     );
   });
 
+  test("each family's budget applies to its own sites in a function that has both", () => {
+    const strings = body("mixed", INLINE_STR_RELEASES_PER_FUNCTION + 1, "str");
+    // One function: string sites over their budget, dyn sites within theirs.
+    const mixed = strings.replace(
+      "  ret void",
+      `  call void @sc_rc_release_dyn(ptr %v)\n  call void @sc_rc_release_other(ptr %v)\n  ret void`,
+    );
+    const other = body("other", 2, "str");
+    const limited = limitInlineReleases([mixed, other], "release").join("\n");
+    const out = limited.slice(0, limited.indexOf("@other("));
+    expect(out).not.toContain("@sc_rc_release_str(");
+    expect(out).toContain("call void @sc_rc_release_dyn(ptr %v)");
+    expect(out).toContain("call void @sc_rc_release_other(ptr %v)");
+    expect(limited).toContain(other);
+  });
+
   test("a function over the string budget calls the runtime string release at every site", () => {
     const small = body("small", INLINE_STR_RELEASES_PER_FUNCTION, "str");
     const large = body("large", INLINE_STR_RELEASES_PER_FUNCTION + 1, "str");
