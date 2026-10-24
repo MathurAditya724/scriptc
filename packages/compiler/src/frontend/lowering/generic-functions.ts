@@ -342,10 +342,15 @@ export function genericCallInstance(
   const local = localClassResultInstance(lowerer, expr, info, rsig, params, retTs);
   if (local) return local;
   // A result instantiated at `any` (a type argument inferred from an
-  // untyped value, such as an untyped forwarding call) is checked-dynamic.
+  // untyped value, such as an untyped forwarding call) is checked-dynamic,
+  // and so is a JavaScript result whose JSDoc names a type the file never
+  // declares or imports (`@returns {MiddlewareHandler<E>}` in a published
+  // bundle): the checker's error type is documentation it could not
+  // resolve, not a contract.
   const mappedReturn =
     lowerer.mapTypeOf(retTs) ??
-    ((retTs.flags & ts.TypeFlags.Any) !== 0 && !isJsSourceFile(ts.getSourceFileOfNode(info.decl))
+    ((retTs.flags & ts.TypeFlags.Any) !== 0 &&
+    (!isJsSourceFile(ts.getSourceFileOfNode(info.decl)) || retTs.isErrorType())
       ? DYN
       : null);
   if (!mappedReturn) {
@@ -640,8 +645,7 @@ function extendsParameter(
   info: GenericFnInfo,
 ): boolean {
   const params = new Set<ts.Symbol>();
-  const fn = info.decl as { parameters?: { nodes: readonly ts.ParameterDeclaration[] } };
-  for (const param of fn.parameters?.nodes ?? []) {
+  for (const param of info.decl.parameters.nodes) {
     const symbol = ts.isIdentifier(param.name)
       ? lowerer.checker.getSymbolAtLocation(param.name)
       : undefined;
@@ -667,8 +671,7 @@ function declaredInside(node: ts.Node, owner: ts.Node): boolean {
  * return gives anything else (or nothing). Nested functions and classes keep
  * their own returns. */
 function returnedLocalClass(lowerer: Lowerer, info: GenericFnInfo): ts.ClassLikeDeclaration | null {
-  const fn = info.decl as ts.Node & { body?: ts.Node };
-  const body = fn.body;
+  const body = info.decl.body;
   if (!body) return null;
   const classOf = (node: ts.Expression): ts.ClassLikeDeclaration | null => {
     let expr = node;

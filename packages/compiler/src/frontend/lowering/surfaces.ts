@@ -6,6 +6,20 @@ function unparenthesized(e: ts.Expression): ts.Expression {
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   return e;
 }
+
+/** `e` without parentheses and type-only wrappers (as, satisfies, type
+ * assertions, non-null assertions), which change no runtime value. */
+function withoutTypeCasts(e: ts.Expression): ts.Expression {
+  while (
+    ts.isParenthesizedExpression(e) ||
+    ts.isAsExpression(e) ||
+    ts.isSatisfiesExpression(e) ||
+    ts.isTypeAssertion(e) ||
+    ts.isNonNullExpression(e)
+  )
+    e = e.expression;
+  return e;
+}
 import { UNSUPPORTED } from "../../diagnostics/diagnostic.js";
 import {
   BOOL,
@@ -1563,6 +1577,7 @@ export const BUILTIN_MODULE_FNS: Record<
     generateKeyPair: { fn: "crypto.generateKeyPairCb", params: [], result: VOID },
     sign: { fn: "crypto.signOneshot", params: [], result: DYN },
     verify: { fn: "crypto.verifyOneshot", params: [], result: DYN },
+    diffieHellman: { fn: "crypto.diffieHellman", params: [], result: DYN },
     pbkdf2Sync: {
       fn: "crypto.pbkdf2",
       params: [BYTES_U8, BYTES_U8, F64, F64, STRING],
@@ -1593,6 +1608,9 @@ export const BUILTIN_MODULE_FNS: Record<
     // Prime checks and generation (lowerPrimeCall): checked-dynamic
     // arguments, results converted to the call site's type.
     checkPrimeSync: { fn: "crypto.checkPrimeSync", params: [], result: DYN },
+    // Checked-dynamic arguments, the result converted to the call site's
+    // type (lowerPrimeCall).
+    getCipherInfo: { fn: "crypto.getCipherInfo", params: [], result: DYN },
     checkPrime: { fn: "crypto.checkPrimeCb", params: [], result: VOID },
     generatePrimeSync: { fn: "crypto.generatePrimeSync", params: [], result: DYN },
     generatePrime: { fn: "crypto.generatePrimeCb", params: [], result: VOID },
@@ -1617,6 +1635,12 @@ export const BUILTIN_MODULE_FNS: Record<
     unzip: { fn: "zlib.unzipCb", params: [], result: VOID },
     unzipSync: { fn: "zlib.unzipSync", params: [BYTES_U8], result: BYTES_U8 },
     crc32: { fn: "zlib.crc32", params: [], result: F64 },
+    // Brotli (special-cased in lowerZlibModuleCall): every form takes the
+    // options entries with Node's BROTLI_ENCODE or BROTLI_DECODE mode.
+    brotliCompress: { fn: "zlib.cbOpts", params: [], result: VOID },
+    brotliCompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
+    brotliDecompress: { fn: "zlib.cbOpts", params: [], result: VOID },
+    brotliDecompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
     // The stream factories (special-cased in lowerZlibModuleCall): each
     // answers a runtime Transform stream over the zlib engine.
     createDeflate: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
@@ -1626,6 +1650,8 @@ export const BUILTIN_MODULE_FNS: Record<
     createDeflateRaw: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
     createInflateRaw: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
     createUnzip: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createBrotliCompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createBrotliDecompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
   },
   url: {
     fileURLToPath: {
@@ -1663,6 +1689,7 @@ export const BUILTIN_MODULE_FNS: Record<
     resolve: { fn: "url.legacyResolve", params: [DYN, DYN], result: STRING },
     domainToASCII: { fn: "url.domainToASCII", params: [DYN], result: STRING },
     domainToUnicode: { fn: "url.domainToUnicode", params: [DYN], result: STRING },
+    urlToHttpOptions: { fn: "url.toHttpOptions", params: [DYN], result: DYN },
   },
   child_process: {
     // spawnSync's and spawn's call completions are entirely special-cased
@@ -2067,7 +2094,16 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.readFdEncoded",
       "fs.readFdSync",
       "fs.readFdSyncBytes",
+      // The runtime encoding's check before a URL path converts
+      // (fs-paths.ts).
+      "fs.checkReadEncoding",
     ],
+    // The string source's check before a URL destination converts
+    // (fs-paths.ts).
+    copyFileSync: ["fs.checkPath"],
+    renameSync: ["fs.checkPath"],
+    copyFile: ["fs.checkPath"],
+    rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
     // The bytes-data form and the { mode } options form.
     writeFileSync: ["fs.writeFileSyncBytes", "fs.writeFileModeSync"],
@@ -3030,17 +3066,6 @@ export function builtinModulesArrayLit(loc: { file: string; start: number; end: 
   };
 }
 
-/** Member-specific hints for RECOGNIZED builtin modules whose member has
- * no lowering. The default-options one-shot zlib/deflate-raw/gzip codecs
- * lower for strings and Buffers; the remaining surface points at them. */
-const ZLIB_HINT =
-  "the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, " +
-  "and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface";
-/** Brotli has no codec in the static runtime (zlib is the only vendored
- * compression library). */
-const BROTLI_HINT =
-  "Brotli needs a Brotli codec, which the static runtime does not vendor — " + ZLIB_HINT;
-
 const ASSERT_MODULE_HINTS: Record<string, string | undefined> = {
   ifError:
     "test explicitly instead: assert.strictEqual(err, null) / " +
@@ -3098,30 +3123,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
           "createSign, createVerify, createECDH, and createDiffieHellman",
       ]),
     ),
-    diffieHellman:
-      "crypto.diffieHellman takes DH, EC or X25519 KeyObjects and has no lowering; " +
-      "the objects of createDiffieHellman, getDiffieHellman and createECDH compute shared secrets",
-    ...Object.fromEntries(
-      ["getCipherInfo"].map((m) => [
-        m,
-        "cipher metadata has no lowering — createCipheriv and createDecipheriv support " +
-          "aes-128/192/256 in cbc, ctr, gcm, ecb, cfb, cfb8, cfb1, and ofb modes, des-ede3 and " +
-          "des-ede, chacha20, and chacha20-poly1305",
-      ]),
-    ),
     setFips:
       "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
       "in a non-FIPS build — getFips() answers 0 here",
-  },
-  zlib: {
-    brotliCompressSync: BROTLI_HINT,
-    brotliDecompressSync: BROTLI_HINT,
-    brotliCompress: BROTLI_HINT,
-    brotliDecompress: BROTLI_HINT,
-    createBrotliCompress: BROTLI_HINT,
-    createBrotliDecompress: BROTLI_HINT,
-    BrotliCompress: BROTLI_HINT,
-    BrotliDecompress: BROTLI_HINT,
   },
   http2: {
     connect:
@@ -3375,6 +3379,17 @@ export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined):
  *     tamper-guard prologue) registered in stdlibGlobalAliases;
  *   - a const binding of the Map or Set constructor (`const M = Map`,
  *     builtinClassAliasOf). */
+/** The symbol an identifier reads. A shorthand property's name (`{ Date }`)
+ * reads the binding of the same name, not the property it declares. */
+export function identifierReadSymbol(lowerer: Lowerer, expr: ts.Identifier): ts.Symbol | undefined {
+  if (expr.parent && ts.isShorthandPropertyAssignment(expr.parent) && expr.parent.name === expr)
+    return (
+      lowerer.checker.getShorthandAssignmentValueSymbol(expr.parent) ??
+      lowerer.checker.getSymbolAtLocation(expr)
+    );
+  return lowerer.checker.getSymbolAtLocation(expr);
+}
+
 export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
   if (ts.isParenthesizedExpression(expr)) return stdlibGlobalNameOf(lowerer, expr.expression);
   // The global-object detection chain (`typeof global < "u" ? global :
@@ -3386,7 +3401,7 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     return stdlibGlobalNameOf(lowerer, taken ? expr.whenTrue : expr.whenFalse);
   }
   if (ts.isIdentifier(expr)) {
-    const symbol = lowerer.checker.getSymbolAtLocation(expr);
+    const symbol = identifierReadSymbol(lowerer, expr);
     // `globalThis` itself: a reserved intrinsic — tsc rejects user
     // global bindings, but local parameters can shadow it. Its special
     // symbol has no ordinary declarations for the provenance check.
@@ -3434,6 +3449,20 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     return ts.symbolName(resolved) === "global" ? "globalThis" : ts.symbolName(resolved);
   }
   if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
+    // The buffer module's Buffer (`require("buffer").Buffer`, `buffer_1.Buffer`)
+    // is the global constructor.
+    if (bufferNamespaceMember(lowerer, expr)) return "Buffer";
+    // A cast of the global object (`(globalThis as { Buffer?: B }).Buffer`,
+    // `(globalThis as any).Buffer`) changes only its static type: the
+    // member is the global object's own.
+    const uncast = withoutTypeCasts(expr.expression);
+    if (uncast !== unparenthesized(expr.expression)) {
+      if (!ts.isIdentifier(uncast) || stdlibGlobalNameOf(lowerer, uncast) !== "globalThis")
+        return null;
+      const member = lowerer.checker.getPropertyOfType(lowerer.typeOf(uncast), expr.name.text);
+      if (!member || !lowerer.isStdlibSymbol(member)) return null;
+      return ts.symbolName(member) === "global" ? "globalThis" : ts.symbolName(member);
+    }
     if (stdlibGlobalNameOf(lowerer, expr.expression) !== "globalThis") return null;
     // Through a detection chain the checker types the receiver as the
     // union of every arm; the selected arm (the global object) owns the
@@ -3566,7 +3595,26 @@ export function stdlibGlobalAliasDecl(
   const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
   if (!symbol) return false;
   lowerer.stdlibGlobalAliases.set(symbol, name);
+  if (init !== undefined && castGlobalAliasSource(lowerer, init))
+    lowerer.castGlobalAliases.add(symbol);
   return true;
+}
+
+/** True when an alias initializer reads its global through a cast of the
+ * global object (`(globalThis as { Buffer?: B }).Buffer`), directly or as
+ * the left operand of `||` (stdlibGlobalAliasNameOf's guard), or copies an
+ * alias made that way. Such an alias carries the cast's static type. */
+function castGlobalAliasSource(lowerer: Lowerer, init: ts.Expression): boolean {
+  let source = unparenthesized(init);
+  if (ts.isBinaryExpression(source) && source.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    source = unparenthesized(source.left);
+  if (ts.isPropertyAccessExpression(source))
+    return withoutTypeCasts(source.expression) !== unparenthesized(source.expression);
+  if (ts.isIdentifier(source)) {
+    const symbol = lowerer.checker.getSymbolAtLocation(source);
+    return symbol !== undefined && lowerer.castGlobalAliases.has(symbol);
+  }
+  return false;
 }
 
 /** True iff the symbol is declared ONLY by the adopted @types/node

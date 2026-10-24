@@ -1,4 +1,5 @@
 /* Array literals. */
+import { indexedUnionArms, lowerIndexedUnionToArray } from "../indexed-unions.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, neverTaintedJsType } from "../lowerer.js";
 import { notIterableSpelling } from "../iterable-spelling.js";
@@ -56,6 +57,25 @@ export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean
           jsHoldsDynObject(lowerer, property.name)),
     );
   return false;
+}
+
+/** The literal is the source of an array destructuring: an assignment's
+ * right side or a declaration's initializer under an array pattern. */
+function isPatternSource(expr: ts.ArrayLiteralExpression): boolean {
+  let node: ts.Node = expr;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (ts.isBinaryExpression(parent))
+    return (
+      parent.right === node &&
+      parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isArrayLiteralExpression(parent.left)
+    );
+  return (
+    ts.isVariableDeclaration(parent) &&
+    parent.initializer === node &&
+    ts.isArrayBindingPattern(parent.name)
+  );
 }
 
 /** An empty TypeScript literal whose own type is `never[]`: tsc's type for
@@ -124,6 +144,22 @@ export function lowerArrayLiteral(
       (inferred?.kind === "record" && lowerer.shapes.get(inferred.shapeId)?.tuple)
     )
       mapped = inferred;
+  }
+  // A destructuring pattern's implied type ends in a rest element
+  // (`[h, ...t] = [1, 2, 3]` supplies `[number, ...number[]]`), which maps
+  // to an array. The literal keeps its own fixed tuple layout, read by
+  // position like any tuple source.
+  if (
+    expected === undefined &&
+    ctxType &&
+    isPatternSource(expr) &&
+    lowerer.checker.isTupleType(ctxType) &&
+    (
+      (ctxType as ts.TupleTypeReference).getTarget() as ts.TupleType | undefined
+    )?.elementFlags?.some((flag) => (flag & ts.ElementFlags.Rest) !== 0)
+  ) {
+    const own = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (own?.kind === "record" && lowerer.shapes.get(own.shapeId)?.tuple) mapped = own;
   }
   // A JS literal whose OWN inferred type is never-tainted
   // (neverTaintedJsType — the evolving `const gb = []`, the mixed
@@ -469,6 +505,10 @@ export function lowerArrayLiteral(
           loc: locOf(el),
         };
       }
+      // A union of typed arrays and number arrays (indexed-unions.ts):
+      // each arm's elements as a number[].
+      const indexedArms = indexedUnionArms(lowerer, src.type);
+      if (indexedArms) src = lowerIndexedUnionToArray(lowerer, src, indexedArms, locOf(el));
       // `[...obj]` over a class whose [Symbol.iterator] is a generator
       // method spreads the generator that method returns.
       src = classGeneratorIterable(lowerer, src) ?? src;

@@ -2,6 +2,10 @@
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { emitWasmModules } from "./wasm-modules.js";
 import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
+import { type ChunkResult, EmitJournal } from "./emit-journal.js";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { JS_IC_WORDS } from "./js-ic.js";
 import {
   mangleAsyncSpawn,
@@ -24,7 +28,7 @@ import {
 } from "../../ir/ir.js";
 import {
   FN_ATTRS,
-  limitInlineDynReleases,
+  limitInlineReleases,
   releaseSym,
   typedRefConstructor,
   vAdapters,
@@ -60,17 +64,166 @@ import { literalEqualityDefinition } from "./string-literal-equality.js";
 import { STRING_READ_HELPERS, stringScanDecl } from "./string-reads.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import { InternalCompilerError } from "../../errors.js";
+import { targetCpuAttribute } from "../target-cpu.js";
+
+/** The function bodies emitted in `chunks` contiguous ranges, each by its
+ * own emitter (LlEmitter.chunkEmitter), then merged in function order: the
+ * text one emitter gives. */
+function emitFunctionsInChunks(emitter: LlEmitter, chunks: number): string[] {
+  const functions = emitter.mod.functions;
+  const size = Math.ceil(functions.length / chunks);
+  const ranges: { chunk: LlEmitter; texts: string[] }[] = [];
+  for (let start = 0; start < functions.length; start += size) {
+    const chunk = emitter.chunkEmitter();
+    const texts = functions.slice(start, start + size).map((fn) => {
+      const text = chunk.emitFunction(fn);
+      if (chunk.journal!.overclosed)
+        throw new Error(`llvm emitter bug: journal definition closed twice in ${fn.name}`);
+      if (chunk.journal!.unclosed.length > 0)
+        throw new Error(
+          `llvm emitter bug: unclosed journal definitions after ${fn.name}: ${chunk.journal!.unclosed.join(", ")}`,
+        );
+      return text;
+    });
+    ranges.push({ chunk, texts });
+  }
+  const fnDefs: string[] = [];
+  for (const { chunk, texts } of ranges) {
+    // The plain-data result a worker process would write, round-tripped.
+    const result = JSON.parse(JSON.stringify(chunk.chunkResult())) as ChunkResult;
+    const rename = emitter.mergeChunk(result);
+    for (const text of texts) {
+      const def = rename(text);
+      emitter.fnDefText.set(functions[fnDefs.length]!.name, def);
+      fnDefs.push(def);
+    }
+  }
+  return fnDefs;
+}
+
+/** Modules with fewer functions emit in one process: forking and merging
+ * would cost more than the workers save (SCRIPTC_EMIT_WORKER_FUNCTIONS
+ * lowers it, for tests). */
+function workerMinFunctions(): number {
+  const value = Number(process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] ?? "2000");
+  return Number.isFinite(value) && value > 0 ? value : 2000;
+}
+
+/** The function bodies emitted on forked worker processes, `workers` at a
+ * time: the function list splits into contiguous ranges, each emitted in
+ * its own process, which inherits this emitter as it is at the fork and
+ * records a journal (emit-journal.ts). Ranges merge in function order, so
+ * the text is the serial text. A range whose worker fails is emitted here
+ * when its turn comes. Null without fork primitives (Node, Windows, inside
+ * a worker) or when the module is small. */
+function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] | null {
+  const fork = emitter.targetOptions.forkPrimitives;
+  const functions = emitter.mod.functions;
+  if (fork === undefined || workers < 2) return null;
+  if (functions.length < workerMinFunctions()) return null;
+  // More ranges than workers: a range's merge overlaps the later ranges'
+  // emission, and a slow range holds back less.
+  const count = Math.min(functions.length, workers * 3);
+  const size = Math.ceil(functions.length / count);
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-emit-"));
+  const pids: number[] = [];
+  const start = (range: number): void => {
+    const pid = fork.fork();
+    if (pid === 0) {
+      let code = 1;
+      try {
+        emitter.journal = new EmitJournal();
+        const texts: string[] = [];
+        for (const fn of functions.slice(range * size, (range + 1) * size)) {
+          texts.push(emitter.emitFunction(fn));
+          relieveHeapPressure();
+        }
+        writeFileSync(join(dir, `${range}.json`), JSON.stringify(emitter.chunkResult()));
+        // Function text never holds NUL, so it separates the functions.
+        writeFileSync(join(dir, `${range}.ll`), texts.join("\0"));
+        code = 0;
+      } catch {
+        // The parent emits the range itself.
+      }
+      fork.exit(code);
+    }
+    pids.push(pid);
+  };
+  const fnDefs: string[] = [];
+  try {
+    for (let range = 0; range < Math.min(workers, count); range++) start(range);
+    for (let range = 0; range < count; range++) {
+      const pid = pids[range]!;
+      const status = pid > 0 ? fork.wait(pid) : -1;
+      // The next worker starts from this emitter as merged so far, which
+      // the journal allows: it records requests, not table contents.
+      const merged = status === 0 ? readRange(dir, range) : null;
+      const slice = functions.slice(range * size, (range + 1) * size);
+      if (merged !== null && merged.texts.length === slice.length) {
+        const rename = emitter.mergeChunk(merged.result);
+        slice.forEach((fn, index) => {
+          const def = rename(merged.texts[index]!);
+          emitter.fnDefText.set(fn.name, def);
+          fnDefs.push(def);
+        });
+      } else
+        for (const fn of slice) {
+          const def = emitter.emitFunction(fn);
+          emitter.fnDefText.set(fn.name, def);
+          fnDefs.push(def);
+          relieveHeapPressure();
+        }
+      if (pids.length < count) start(pids.length);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return fnDefs;
+}
+
+/** A worker's range result, or null when its files are missing. */
+function readRange(dir: string, range: number): { result: ChunkResult; texts: string[] } | null {
+  try {
+    const result = JSON.parse(readFileSync(join(dir, `${range}.json`), "utf8")) as ChunkResult;
+    const texts = readFileSync(join(dir, `${range}.ll`), "utf8").split("\0");
+    return { result, texts };
+  } catch {
+    return null;
+  }
+}
+
+/** The attribute groups of the emitted functions: #0 for every function,
+ * #1 for coroutine bodies and #2 for out-of-line record clones. Each carries
+ * the build's `--target-cpu` level. */
+function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean): string[] {
+  const cpu = targetCpuAttribute(emitter.targetCpu);
+  return [
+    `attributes #0 = { sanitize_address${cpu} }`,
+    ...(emitter.usesCoroutines
+      ? [`attributes #1 = { sanitize_address presplitcoroutine${cpu} }`]
+      : []),
+    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address${cpu} }`] : []),
+  ];
+}
 
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
-  const fnDefs: string[] = [];
-  for (const fn of emitter.mod.functions) {
-    const def = emitter.emitFunction(fn);
-    fnDefs.push(def);
-    emitter.fnDefText.set(fn.name, def);
-    relieveHeapPressure();
-  }
+  // Debug metadata is numbered per emitter and not journaled, so a debug
+  // build emits every body here.
+  const ranges = emitter.debug === null;
+  const chunks = emitter.targetOptions.functionChunks ?? 1;
+  const fnDefs =
+    (ranges && chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
+    (ranges ? emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) : null) ??
+    [];
+  if (fnDefs.length === 0)
+    for (const fn of emitter.mod.functions) {
+      const def = emitter.emitFunction(fn);
+      fnDefs.push(def);
+      emitter.fnDefText.set(fn.name, def);
+      relieveHeapPressure();
+    }
   emitter.selectStacklessAsync(fnDefs);
   const errorViews: string[] = [];
   for (const property of ["name", "message"])
@@ -191,6 +344,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
+  // URL programs give the host parser the IDNA unit's ToASCII.
+  const usesUrlIdna = runtimeFeatures.urlIdna;
   const snapshotsTlsCa = runtimeFeatures.tls || runtimeFeatures.tlsCa;
   // The process verdict has the same precedence as the C reference
   // emitter: node:test owns the final status when present; otherwise an
@@ -243,6 +398,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
+  if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
@@ -493,7 +649,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // class-object shape { rc, pre, post, ctor, name } — field reads on
     // builtin errors and classval loads GEP through these.
     `%ScrError = type { ${emitter.sizeType}, ptr, ptr, ptr, ptr, ptr, i8, i8, i8, i8, i8, ptr, ptr }`,
-    `%ScrClassObj = type { ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr }`,
+    `%ScrClassObj = type { ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ptr, ${emitter.sizeType} }`,
     // The runtime emitter prefix { rc, vt, reg, cls } — user subclasses
     // embed it (classes.ts), and bare-emitter GEPs address through it.
     `%ScrEmitter = type { ${emitter.sizeType}, ptr, ptr, ptr }`,
@@ -709,21 +865,19 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   for (const code of regexMatchers.values()) out.push(...code.lines, ``);
   for (const [, inst] of emitter.templateStringsInstances) {
     // One immortal ScrArr per tagged-template site: a data global of
-    // interned cooked-string literals followed by their states (the
-    // runtime finds them before data + cap * 9), and the ScrArr header over
-    // it (rc == SIZE_MAX, len == cap == filled, SCR_ELEM_STR = 2, no REF
-    // entry points). Every dense slot is present; reads retain immortal
-    // strings — a no-op. Slots are 8 bytes on every target: on 32-bit
-    // targets each holds the pointer in its low half and zero in its high
-    // half, so the states start where the runtime looks for them.
+    // interned cooked-string literals, and the ScrArr header over it
+    // (rc == SIZE_MAX, len == cap == filled, SCR_ELEM_STR = 2, no REF entry
+    // points, no state bytes: every dense slot is present). Reads retain
+    // immortal strings — a no-op. Slots are 8 bytes on every target: on
+    // 32-bit targets each holds the pointer in its low half and zero in its
+    // high half.
     const n = inst.slots.length;
-    const present = n === 0 ? "zeroinitializer" : `[ ${inst.slots.map(() => "i8 1").join(", ")} ]`;
     const wide = emitter.sizeType === "i64";
     const slot = wide ? "ptr" : "<{ ptr, i32 }>";
     const slotValue = (s: string): string =>
       wide ? `ptr ${s}` : `<{ ptr, i32 }> <{ ptr ${s}, i32 0 }>`;
     out.push(
-      `@${inst.sym}_data = internal constant <{ [${n} x ${slot}], [${n} x i8] }> <{ [${n} x ${slot}] [ ${inst.slots.map(slotValue).join(", ")} ], [${n} x i8] ${present} }>, align 8`,
+      `@${inst.sym}_data = internal constant [${n} x ${slot}] [ ${inst.slots.map(slotValue).join(", ")} ], align 8`,
       `@${inst.sym} = internal global %ScrArr { ${emitter.sizeType} -1, i32 ${n}, i32 ${n}, i8 2, i8 0, i16 0, i32 ${n}, ptr @${inst.sym}_data }`,
     );
   }
@@ -737,6 +891,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     out.push(`@${sym} = internal constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr } { ${body} }`);
   }
   if (emitter.mapOpsConsts.size > 0) out.push(``);
+  for (const sym of emitter.methodIdSlots.values()) out.push(`@${sym} = internal global i32 -1`);
+  if (emitter.methodIdSlots.size > 0) out.push(``);
 
   for (const line of ffiCallbacks.globals) out.push(line);
   if (ffiCallbacks.globals.length > 0) out.push(``);
@@ -834,9 +990,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // symbols specified by the library IR instead.
     for (const line of emitter.emitLibDefs(globals, globalReleaseLines, stamps)) out.push(line);
     out.push(...emitter.inlineRcTail(flushedDecls));
-    out.push(`attributes #0 = { sanitize_address }`);
-    if (emitter.usesCoroutines) out.push(`attributes #1 = { sanitize_address presplitcoroutine }`);
-    if (hasNoInlineRecordClone) out.push(`attributes #2 = { noinline sanitize_address }`);
+    out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
     out.push(``);
     out.push(...emitter.fieldAliasMetadata());
     if (emitter.debug !== null) out.push(emitter.debug.render());
@@ -876,6 +1030,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
+    ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
@@ -984,9 +1139,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // sanitize_address is inert under the plain pipeline; the sanitized
     // lane's -fsanitize=address link activates instrumentation over the
     // emitted functions too (the runtime TUs get theirs from clang).
-    `attributes #0 = { sanitize_address }`,
-    ...(emitter.usesCoroutines ? [`attributes #1 = { sanitize_address presplitcoroutine }`] : []),
-    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address }`] : []),
+    ...functionAttributes(emitter, hasNoInlineRecordClone),
     ``,
   );
   if (emitter.mod.workers) {
@@ -2333,7 +2486,7 @@ export function emitFfiCallbackDefs(emitter: LlEmitter): { globals: string[]; de
 
 export function emitParts(emitter: LlEmitter): string[] {
   const parts = [
-    ...limitInlineDynReleases(emitter.emitModuleParts()),
+    ...limitInlineReleases(emitter.emitModuleParts(), emitter.shapeHost.rcMode),
     ...emitter.disposeObserverGates(),
   ];
   if (!emitter.executableTls) return parts;

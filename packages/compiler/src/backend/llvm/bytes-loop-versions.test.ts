@@ -11,7 +11,7 @@ import {
   type IrType,
 } from "../../ir/ir.js";
 import { analyzeIntegerRanges } from "../../ir/integer-ranges.js";
-import { matchIntegerCountedForLoop } from "../../ir/integer-loops.js";
+import { matchIntegerCountedForLoop, matchIntegerPairedForLoop } from "../../ir/integer-loops.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion, type BytesLoopVersion } from "./bytes-loop-versions.js";
 import { emitLlvmModule } from "./emitter.js";
@@ -99,6 +99,7 @@ function match(
   f: IrFunction,
   loop: IrStmt & { kind: "for" },
   captured: string[] = [],
+  scalarStrings: string[] = [],
 ): BytesLoopVersion | null {
   const ranges = analyzeIntegerRanges(f);
   const locals = new Map(f.locals.map((l) => [l.id, l]));
@@ -111,6 +112,7 @@ function match(
     proven: new Set(),
     workers: false,
     owned: new Set(),
+    scalarStrings: new Set(scalarStrings),
   });
 }
 
@@ -247,6 +249,11 @@ test("emitted loops version the body and tag typed-array memory", () => {
   const elements = /store double [^\n]*!tbaa !(\d+)/.exec(body)![1];
   const header = /load ptr, ptr [^\n]*!tbaa !(\d+)/.exec(body)![1];
   expect(elements).not.toBe(header);
+  // Header loads are invariant for the view's lifetime; element accesses
+  // are not.
+  expect(body).toMatch(/load ptr, ptr [^\n]*, !tbaa !\d+, !invariant\.load !\{\}$/m);
+  expect(body).toMatch(/load i64, ptr [^\n]*, !tbaa !\d+, !invariant\.load !\{\}$/m);
+  expect(body).not.toMatch(/(load double|store double)[^\n]*invariant\.load/);
 });
 
 test("loops to a typed array's length version the other typed arrays they index", () => {
@@ -378,7 +385,10 @@ test("while loop counters below a bound version their accesses", () => {
   ]);
   const declared = (loop: IrStmt): IrFunction =>
     fn([{ kind: "varDecl", localId: "i", init: ref("k"), loc }, loop]);
-  const versionOf = (loop: IrStmt & { kind: "while" }): BytesLoopVersion | null => {
+  const versionOf = (
+    loop: IrStmt & { kind: "while" },
+    workers = false,
+  ): BytesLoopVersion | null => {
     const f = declared(loop);
     const ranges = analyzeIntegerRanges(f);
     return matchBytesLoopVersion(loop, null, {
@@ -388,7 +398,8 @@ test("while loop counters below a bound version their accesses", () => {
       ranges,
       initialized: findInitializedByteLoopBindings(f).get(loop) ?? new Set(),
       proven: new Set(),
-      workers: false,
+      scalarStrings: new Set(),
+      workers,
       owned: new Set(),
     });
   };
@@ -405,6 +416,11 @@ test("while loop counters below a bound version their accesses", () => {
   // An access after the counter advances in the same pass stays checked.
   const advanced = whileLoop([step, set(ref("out", f64s), ref("i"), num(0))]);
   expect(versionOf(advanced)).toBeNull();
+  // In a worker program, a while loop versions for its counter's accesses,
+  // and not for thread-owned receivers alone.
+  expect(versionOf(copy, true)!.ownedReceivers).toHaveLength(2);
+  const job = whileLoop([set(ref("out", f64s), ref("k"), get(ref("src", f64s), ref("k"))), step]);
+  expect(versionOf(job, true)).toBeNull();
   const mod: IrModule = {
     irVersion: 17,
     sourceFile: loc.file,
@@ -486,4 +502,207 @@ test("bodies compiled without optimization keep one checked loop", () => {
   expect(body.split("\n", 1)[0]).toContain("optnone");
   expect(body).not.toContain("bytes.version");
   expect(body).toContain("bytes.index.invalid");
+});
+
+const STR: IrType = { kind: "string" };
+const charCode = (receiver: IrExpr, index: IrExpr): IrExpr => ({
+  kind: "strIntrinsic",
+  method: "charCodeAt",
+  receiver,
+  args: [index],
+  type: F64,
+  loc,
+});
+
+/** The kernel with a string parameter `text`. */
+function textKernel(body: IrStmt[], mutable = false): IrFunction {
+  const kernel = fn(body, [local("text", STR, mutable)]);
+  kernel.params.push({ localId: "text", name: "text", type: STR });
+  return kernel;
+}
+
+test("charCodeAt reads of a string binding version with the typed-array reads", () => {
+  const read = charCode(ref("text", STR), bin("+", ref("i"), num(1)));
+  const loop = counted([set(ref("out", f64s), ref("i"), read)]);
+  const version = match(textKernel([loop]), loop)!;
+  expect(version.bounds.has(read)).toBe(true);
+  expect(
+    version.receivers.map((r) => [r.ref.kind === "varRef" && r.ref.localId, r.string]),
+  ).toEqual([
+    ["out", false],
+    ["text", true],
+  ]);
+  expect(version.affine.map((c) => [c.receiver, c.minOffset, c.maxEnd])).toEqual([
+    [0, 0, 0],
+    [1, 1, 1],
+  ]);
+  // A string the loop rebinds keeps its checked reads.
+  const rebinding = counted([
+    set(ref("out", f64s), ref("i"), charCode(ref("text", STR), ref("i"))),
+    { kind: "assign", localId: "text", value: ref("text", STR), loc },
+  ]);
+  const rebound = match(textKernel([rebinding], true), rebinding)!;
+  expect(rebound.receivers.map((r) => r.string)).toEqual([false]);
+  // A string held as a slice of another string has no header to test.
+  const sliced = match(textKernel([loop]), loop, [], ["text"])!;
+  expect(sliced.receivers.map((r) => r.string)).toEqual([false]);
+  expect(sliced.bounds.has(read)).toBe(false);
+});
+
+test("charAt reads of a string binding version as one-unit reads", () => {
+  const read: IrExpr = {
+    kind: "strIntrinsic",
+    method: "charAt",
+    receiver: ref("text", STR),
+    args: [bin("-", ref("i"), num(1))],
+    type: STR,
+    loc,
+  };
+  const loop = counted([{ kind: "exprStmt", expr: read, loc }]);
+  const version = match(textKernel([loop]), loop)!;
+  expect(version.bounds.has(read)).toBe(true);
+  expect(version.receivers.map((r) => r.string)).toEqual([true]);
+  expect(version.affine.map((c) => [c.receiver, c.minOffset, c.maxEnd])).toEqual([[0, -1, -1]]);
+});
+
+test("the guard tests a string's ASCII bit and the fast copy reads bytes", () => {
+  const loop = counted([set(ref("out", f64s), ref("i"), charCode(ref("text", STR), ref("i")))]);
+  const kernel = textKernel([loop]);
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "__main",
+    functions: [
+      { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+      kernel,
+    ],
+  };
+  const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  const guard = body.slice(0, body.search(/^bytes\.version\.slow\d*:/m));
+  expect(guard).toMatch(/load i32, ptr %\S+\n\s+%\S+ = icmp slt i32 %\S+, 0/);
+  const fast = body.slice(body.lastIndexOf("bytes.version.fast"));
+  expect(fast).toMatch(/load i8, ptr %\S+\n\s+%\S+ = uitofp i8/);
+  expect(fast).not.toContain("@sc_str_char_code_at_int");
+  // The checked copy keeps the inline helper and its fallback.
+  expect(body).toContain("@sc_str_char_code_at_int");
+});
+
+test("while loop counters below a string's length version its reads", () => {
+  // while (i < text.length && text.charCodeAt(i) === 32) i = i + 1
+  const text = ref("text", STR);
+  const read = charCode(text, ref("i"));
+  const length: IrExpr = {
+    kind: "strIntrinsic",
+    method: "length",
+    receiver: text,
+    args: [],
+    type: F64,
+    loc,
+  };
+  const loop: IrStmt & { kind: "while" } = {
+    kind: "while",
+    cond: {
+      kind: "logical",
+      op: "&&",
+      left: { kind: "bin", op: "<", left: ref("i"), right: length, type: BOOL, loc },
+      right: { kind: "bin", op: "===", left: read, right: num(32), type: BOOL, loc },
+      type: BOOL,
+      loc,
+    },
+    body: [{ kind: "assign", localId: "i", value: bin("+", ref("i"), num(1)), loc }],
+    loc,
+  };
+  const f = textKernel([{ kind: "varDecl", localId: "i", init: ref("k"), loc }, loop]);
+  const version = matchBytesLoopVersion(loop, null, {
+    locals: new Map(f.locals.map((l) => [l.id, l])),
+    invariantGlobals: new Set(),
+    captured: new Set(),
+    ranges: analyzeIntegerRanges(f),
+    initialized: findInitializedByteLoopBindings(f).get(loop) ?? new Set(),
+    proven: new Set(),
+    scalarStrings: new Set(),
+    workers: false,
+    owned: new Set(),
+  })!;
+  // The read is bounded by the counter's test against the length, not by
+  // a static range the guard could not meet.
+  expect(version.bounds.has(read)).toBe(true);
+  expect(version.receivers.map((r) => r.string)).toEqual([true]);
+  expect(version.bounded.map((c) => c.slack)).toEqual([0]);
+  expect(version.fixed).toEqual([]);
+});
+
+test("a two-counter loop versions the typed arrays it indexes at either counter", () => {
+  // for (let i = 0, j = k; i < j; i++, j--) { const t = out[i]; out[i] = out[j]; out[j] = t; }
+  const loop: IrStmt & { kind: "for" } = {
+    kind: "for",
+    init: {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: "i", init: num(0), loc },
+        { kind: "varDecl", localId: "j", init: ref("k"), loc },
+      ],
+      loc,
+    },
+    cond: { kind: "bin", op: "<", left: ref("i"), right: ref("j"), type: BOOL, loc },
+    update: {
+      kind: "block",
+      body: [
+        { kind: "assign", localId: "i", value: bin("+", ref("i"), num(1)), loc },
+        { kind: "assign", localId: "j", value: bin("-", ref("j"), num(1)), loc },
+      ],
+      loc,
+    },
+    body: [
+      { kind: "varDecl", localId: "t", init: get(ref("out", f64s), ref("i")), loc },
+      set(ref("out", f64s), ref("i"), get(ref("out", f64s), ref("j"))),
+      set(ref("out", f64s), ref("j"), ref("t")),
+      // Another index stays checked.
+      set(ref("src", f64s), bin("+", ref("i"), num(1)), num(0)),
+    ],
+    loc,
+  };
+  const kernel = fn([loop], [local("t", F64)]);
+  const ranges = analyzeIntegerRanges(kernel);
+  const locals = new Map(kernel.locals.map((l) => [l.id, l]));
+  const paired = matchIntegerPairedForLoop(loop, locals, ranges)!;
+  expect(paired).not.toBeNull();
+  const version = matchBytesLoopVersion(
+    loop,
+    null,
+    {
+      locals,
+      invariantGlobals: new Set(),
+      captured: new Set(),
+      ranges,
+      initialized: findInitializedByteLoopBindings(kernel).get(loop) ?? new Set(),
+      proven: new Set(),
+      workers: false,
+      owned: new Set(),
+      scalarStrings: new Set(),
+    },
+    paired,
+  )!;
+  expect(version.paired?.loop).toBe(paired);
+  expect(version.paired?.receivers.map((r) => version.receivers[r]!.ref)).toEqual([
+    ref("out", f64s),
+  ]);
+  expect(version.bounds.size).toBe(4);
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "__main",
+    functions: [
+      { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+      kernel,
+    ],
+  };
+  const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  const guard = body.slice(0, body.search(/^bytes\.version\.(fast|slow)\d+:$/m));
+  expect(guard).toMatch(/icmp sge i64 %\S+, 0/);
+  expect(guard).toMatch(/icmp slt i64 %\S+, %\S+/);
+  const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(body)![0];
+  // The fast copy keeps only the `src[i + 1]` check, and no second guard.
+  expect(fast.match(/bytes\.index\.invalid\d+:/g)).toHaveLength(1);
+  expect(fast).not.toContain("counted.fast");
 });

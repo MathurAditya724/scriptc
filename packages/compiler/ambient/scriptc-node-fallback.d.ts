@@ -917,6 +917,14 @@ interface Buffer<
   readBigUint64LE(offset?: number): bigint;
 }
 interface BufferConstructor {
+  /** @deprecated since v10.0.0 - Use `Buffer.from(string[, encoding])` instead. */
+  new (str: string, encoding?: BufferEncoding): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.alloc()` instead. */
+  new (size: number): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.from(array)` instead. */
+  new (array: ArrayLike<number>): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.from(arrayBuffer[, byteOffset[, length]])` instead. */
+  new (arrayBuffer: ArrayBuffer | SharedArrayBuffer): Buffer;
   from(data: string, encoding?: BufferEncoding): Buffer;
   /* The ArrayBuffer form is the VIEW construction: x.buffer with an
    * optional byte offset/length shares x's storage (the subarray rule). */
@@ -1105,6 +1113,34 @@ declare var ReadableStream: {
   from(iterable: Uint8Array): ReadableStream<number>;
   from(iterable: string): ReadableStream<string>;
   readonly prototype: ReadableStream<unknown>;
+};
+/* The writable side of a TransformStream and its writer. The
+ * WritableStream constructor has no native lowering; writable streams come
+ * from `new TransformStream()`. */
+interface WritableStreamDefaultWriter<W = unknown> {
+  readonly closed: Promise<void>;
+  readonly desiredSize: number | null;
+  readonly ready: Promise<void>;
+  abort(reason?: unknown): Promise<void>;
+  close(): Promise<void>;
+  releaseLock(): void;
+  write(chunk?: W): Promise<void>;
+}
+interface WritableStream<W = unknown> {
+  readonly locked: boolean;
+  abort(reason?: unknown): Promise<void>;
+  close(): Promise<void>;
+  getWriter(): WritableStreamDefaultWriter<W>;
+}
+/* The identity transform: chunks written to `writable` are read from
+ * `readable`, and a write completes when its chunk is read. */
+interface TransformStream<I = unknown, O = unknown> {
+  readonly readable: ReadableStream<O>;
+  readonly writable: WritableStream<I>;
+}
+declare var TransformStream: {
+  new <I = unknown, O = I>(): TransformStream<I, O>;
+  readonly prototype: TransformStream<unknown, unknown>;
 };
 
 /* fetch, typed as the native JSON + readable-stream slice: one URL, an
@@ -1554,7 +1590,7 @@ declare module "node:fs" {
   export function writeFileSync(path: string | URL, data: string, encoding: "utf8" | "utf-8"): void;
   export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
-  export function existsSync(path: string): boolean;
+  export function existsSync(path: string | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(
     path: string | URL,
@@ -2195,7 +2231,7 @@ declare module "fs/promises" {
     stat(): Promise<import("node:fs").Stats>;
     [Symbol.asyncDispose](): Promise<void>;
   }
-  export function open(path: string, flags?: string, mode?: number): Promise<FileHandle>;
+  export function open(path: string | URL, flags?: string, mode?: number): Promise<FileHandle>;
   export function link(
     existingPath: string | Uint8Array | URL,
     newPath: string | Uint8Array | URL,
@@ -2232,14 +2268,14 @@ declare module "fs/promises" {
     atime: number | string | Date,
     mtime: number | string | Date,
   ): Promise<void>;
-  export function readFile(path: string, encoding: "utf8" | "utf-8"): Promise<string>;
+  export function readFile(path: string | URL, encoding: "utf8" | "utf-8"): Promise<string>;
   export function readFile(
-    path: string,
+    path: string | URL,
     options: BufferEncoding | { encoding: BufferEncoding },
   ): Promise<string>;
-  export function readFile(path: string): Promise<Buffer>;
+  export function readFile(path: string | URL): Promise<Buffer>;
   export function writeFile(
-    path: string,
+    path: string | URL,
     data: string,
     options?: {
       mode?: number;
@@ -2248,14 +2284,18 @@ declare module "fs/promises" {
       [option: string]: unknown;
     },
   ): Promise<void>;
-  export function writeFile(path: string, data: string, encoding: "utf8" | "utf-8"): Promise<void>;
+  export function writeFile(
+    path: string | URL,
+    data: string,
+    encoding: "utf8" | "utf-8",
+  ): Promise<void>;
   export function mkdir(
-    path: string,
+    path: string | URL,
     options?: { recursive?: boolean; mode?: number },
   ): Promise<void>;
-  export function readdir(path: string): Promise<string[]>;
+  export function readdir(path: string | URL): Promise<string[]>;
   export function readdir(
-    path: string,
+    path: string | URL,
     options: {
       encoding?: "utf8" | "utf-8";
       withFileTypes: true;
@@ -2272,12 +2312,12 @@ declare module "fs/promises" {
     pattern: string | readonly string[],
     options: import("node:fs").GlobOptionsWithFileTypes,
   ): AsyncIterableIterator<import("node:fs").Dirent>;
-  export function rm(path: string): Promise<void>;
+  export function rm(path: string | URL): Promise<void>;
   export function rm(
-    path: string,
+    path: string | URL,
     options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
   ): Promise<void>;
-  export function stat(path: string): Promise<import("node:fs").Stats>;
+  export function stat(path: string | URL): Promise<import("node:fs").Stats>;
   export function statfs(
     path: string | Uint8Array | URL,
     options?: import("node:fs").StatFsOptions & { bigint?: false },
@@ -2290,21 +2330,21 @@ declare module "fs/promises" {
     path: string | Uint8Array | URL,
     options?: import("node:fs").StatFsOptions,
   ): Promise<import("node:fs").StatsFs | import("node:fs").BigIntStatsFs>;
-  export function realpath(path: string): Promise<string>;
-  export function lstat(path: string): Promise<import("node:fs").Stats>;
-  export function unlink(path: string): Promise<void>;
-  export function chmod(path: string, mode: number): Promise<void>;
-  export function chown(path: string, uid: number, gid: number): Promise<void>;
-  export function lchown(path: string, uid: number, gid: number): Promise<void>;
-  export function access(path: string, mode?: number): Promise<void>;
-  export function truncate(path: string, len?: number): Promise<void>;
-  export function appendFile(path: string, data: string | Uint8Array): Promise<void>;
-  export function copyFile(src: string, dest: string): Promise<void>;
-  export function mkdtemp(prefix: string): Promise<string>;
-  export function rmdir(path: string): Promise<void>;
-  export function rename(oldPath: string, newPath: string): Promise<void>;
+  export function realpath(path: string | URL): Promise<string>;
+  export function lstat(path: string | URL): Promise<import("node:fs").Stats>;
+  export function unlink(path: string | URL): Promise<void>;
+  export function chmod(path: string | URL, mode: number): Promise<void>;
+  export function chown(path: string | URL, uid: number, gid: number): Promise<void>;
+  export function lchown(path: string | URL, uid: number, gid: number): Promise<void>;
+  export function access(path: string | URL, mode?: number): Promise<void>;
+  export function truncate(path: string | URL, len?: number): Promise<void>;
+  export function appendFile(path: string | URL, data: string | Uint8Array): Promise<void>;
+  export function copyFile(src: string | URL, dest: string | URL): Promise<void>;
+  export function mkdtemp(prefix: string | URL): Promise<string>;
+  export function rmdir(path: string | URL): Promise<void>;
+  export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;
   export function opendir(
-    path: string,
+    path: string | URL,
     options?: import("node:fs").OpenDirOptions,
   ): Promise<import("node:fs").Dir>;
 }
@@ -2756,8 +2796,9 @@ declare var URLSearchParams: {
  * slashes, non-empty host); pathToFileURL resolves the path and percent-
  * encodes it into a file: URL. The legacy API: parse() answers a Url
  * object, format() serializes a Url-shaped object, a string, or a URL,
- * resolve() resolves one URL string against another, and the domain pair
- * converts a hostname to and from its Punycode form. */
+ * resolve() resolves one URL string against another, the domain pair
+ * converts a hostname to and from its Punycode form, and urlToHttpOptions
+ * builds http.request options from a URL. */
 declare module "url" {
   export type URL = globalThis.URL;
   export type URLSearchParams = globalThis.URLSearchParams;
@@ -2825,6 +2866,19 @@ declare module "url" {
   export function resolve(from: string, to: string): string;
   export function domainToASCII(domain: string): string;
   export function domainToUnicode(domain: string): string;
+  /** urlToHttpOptions's null-prototype request options. */
+  export interface UrlHttpOptions {
+    protocol: string;
+    hostname: string;
+    hash: string;
+    search: string;
+    pathname: string;
+    path: string;
+    href: string;
+    port?: number;
+    auth?: string;
+  }
+  export function urlToHttpOptions(url: URL): UrlHttpOptions;
 }
 declare module "node:url" {
   export * from "url";
@@ -2964,6 +3018,24 @@ declare module "crypto" {
     options: ED25519KeyPairOptions<"der", "der">,
   ): KeyPairSyncResult<Buffer, Buffer>;
   export function generateKeyPairSync(type: "ed25519", options?: {}): KeyPairKeyObjectResult;
+  export interface X25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    publicKeyEncoding: { type: "spki"; format: PubF };
+    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+  }
+  export function generateKeyPairSync(
+    type: "x25519",
+    options: X25519KeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "x25519",
+    options: X25519KeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(type: "x25519", options?: {}): KeyPairKeyObjectResult;
+  export function generateKeyPair(
+    type: "x25519",
+    options: {} | undefined,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
   export function generateKeyPair(
     type: "ed25519",
     options: {} | undefined,
@@ -2992,6 +3064,11 @@ declare module "crypto" {
   export interface VerifyKeyObjectInput extends SigningOptions {
     key: KeyObject;
   }
+  export function diffieHellman(options: { privateKey: KeyObject; publicKey: KeyObject }): Buffer;
+  export function diffieHellman(
+    options: { privateKey: KeyObject; publicKey: KeyObject },
+    callback: (err: Error | null, secret: Buffer) => void,
+  ): void;
   export function sign(
     algorithm: string | null | undefined,
     data: ArrayBufferView,
@@ -3171,13 +3248,17 @@ declare module "crypto" {
     callback: (error: Error | null, buffer: Buffer) => void,
   ): void;
   export type BinaryLike = string | ArrayBuffer | ArrayBufferView;
-  /* Cipheriv/Decipheriv: aes-128/192/256 in cbc, ctr, gcm, ecb, cfb, cfb8,
-   * cfb1, and ofb modes, des-ede3 and des-ede, chacha20, and
-   * chacha20-poly1305. Both are Transforms: written chunks go through
-   * update(), and the end pushes final(). */
+  /* Cipheriv/Decipheriv: aes-128/192/256 in cbc, ctr, gcm, ccm, ecb, cfb,
+   * cfb8, cfb1, and ofb modes and their key wraps, des-ede3 and des-ede,
+   * chacha20, and chacha20-poly1305. Both are Transforms: written chunks go
+   * through update(), and the end pushes final(). */
+  export type CipherCCMTypes = "aes-128-ccm" | "aes-192-ccm" | "aes-256-ccm";
   export type CipherGCMTypes = "aes-128-gcm" | "aes-192-gcm" | "aes-256-gcm";
   export type CipherChaCha20Poly1305Types = "chacha20-poly1305";
   export type CipherKey = BinaryLike | KeyObject;
+  export interface CipherCCMOptions {
+    authTagLength: number;
+  }
   export interface CipherGCMOptions {
     authTagLength?: number;
   }
@@ -3196,6 +3277,10 @@ declare module "crypto" {
     final(): Buffer;
     final(outputEncoding: BufferEncoding): string;
     setAutoPadding(autoPadding?: boolean): this;
+  }
+  export interface CipherCCM extends Cipheriv {
+    setAAD(buffer: ArrayBufferView, options: { plaintextLength: number }): this;
+    getAuthTag(): Buffer;
   }
   export interface CipherGCM extends Cipheriv {
     setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
@@ -3218,6 +3303,10 @@ declare module "crypto" {
     final(outputEncoding: BufferEncoding): string;
     setAutoPadding(autoPadding?: boolean): this;
   }
+  export interface DecipherCCM extends Decipheriv {
+    setAuthTag(buffer: ArrayBufferView): this;
+    setAAD(buffer: ArrayBufferView, options: { plaintextLength: number }): this;
+  }
   export interface DecipherGCM extends Decipheriv {
     setAuthTag(buffer: ArrayBufferView): this;
     setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
@@ -3226,6 +3315,12 @@ declare module "crypto" {
     setAuthTag(buffer: ArrayBufferView): this;
     setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
   }
+  export function createCipheriv(
+    algorithm: CipherCCMTypes,
+    key: CipherKey,
+    iv: BinaryLike,
+    options: CipherCCMOptions,
+  ): CipherCCM;
   export function createCipheriv(
     algorithm: CipherGCMTypes,
     key: CipherKey,
@@ -3244,6 +3339,12 @@ declare module "crypto" {
     iv: BinaryLike | null,
     options?: { authTagLength?: number },
   ): Cipheriv;
+  export function createDecipheriv(
+    algorithm: CipherCCMTypes,
+    key: CipherKey,
+    iv: BinaryLike,
+    options: CipherCCMOptions,
+  ): DecipherCCM;
   export function createDecipheriv(
     algorithm: CipherGCMTypes,
     key: CipherKey,
@@ -3468,6 +3569,34 @@ declare module "crypto" {
    * per member like http2.constants. */
   export function getFips(): 1 | 0;
   export function getCiphers(): string[];
+  export type CipherMode =
+    | "cbc"
+    | "ccm"
+    | "cfb"
+    | "ctr"
+    | "ecb"
+    | "gcm"
+    | "ocb"
+    | "ofb"
+    | "stream"
+    | "wrap"
+    | "xts";
+  export interface CipherInfoOptions {
+    keyLength?: number | undefined;
+    ivLength?: number | undefined;
+  }
+  export interface CipherInfo {
+    name: string;
+    nid: number;
+    blockSize?: number | undefined;
+    ivLength?: number | undefined;
+    keyLength: number;
+    mode: CipherMode;
+  }
+  export function getCipherInfo(
+    nameOrNid: string | number,
+    options?: CipherInfoOptions,
+  ): CipherInfo | undefined;
   export function getHashes(): string[];
   export function getCurves(): string[];
   /* Node v24 crypto.constants, literal-typed (the Http2Constants
@@ -3568,7 +3697,8 @@ declare module "child_process" {
    * killSignal at the deadline and the result carries error: ETIMEDOUT +
    * the signal, never a throw), killSignal (a signal NAME literal),
    * stdio ("ignore"/"inherit"/"pipe" or a 3-tuple of those — captures
-   * read "" for non-piped streams), and windowsHide (a POSIX no-op). */
+   * read "" for non-piped streams), env (replaces the child's
+   * environment), and windowsHide (a POSIX no-op). */
   export function spawnSync(
     command: string,
     args?: string[],
@@ -3577,6 +3707,7 @@ declare module "child_process" {
       timeout?: number;
       killSignal?: string;
       stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
+      env?: { [k: string]: string | undefined };
       windowsHide?: boolean;
     },
   ): SpawnSyncReturns;
@@ -3610,20 +3741,20 @@ declare module "child_process" {
 
   export interface ChildProcess extends Disposable {
     ref(): void;
-    on(event: "spawn", listener: () => void): void;
-    once(event: "spawn", listener: () => void): void;
+    on(event: "spawn", listener: () => void): this;
+    once(event: "spawn", listener: () => void): this;
     /* The exit listener may also take Node's second parameter — the
      * terminating signal's name, null for a normal exit. */
-    on(event: "exit", listener: (code: number | null, signal: string | null) => void): void;
-    on(event: "close", listener: (code: number | null, signal: string | null) => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
-    once(event: "exit", listener: (code: number | null, signal: string | null) => void): void;
-    once(event: "close", listener: (code: number | null, signal: string | null) => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
-    on(event: "message", listener: (message: any) => void): void;
-    on(event: "disconnect", listener: () => void): void;
-    once(event: "message", listener: (message: any) => void): void;
-    once(event: "disconnect", listener: () => void): void;
+    on(event: "exit", listener: (code: number | null, signal: string | null) => void): this;
+    on(event: "close", listener: (code: number | null, signal: string | null) => void): this;
+    on(event: "error", listener: (err: Error) => void): this;
+    once(event: "exit", listener: (code: number | null, signal: string | null) => void): this;
+    once(event: "close", listener: (code: number | null, signal: string | null) => void): this;
+    once(event: "error", listener: (err: Error) => void): this;
+    on(event: "message", listener: (message: any) => void): this;
+    on(event: "disconnect", listener: () => void): this;
+    once(event: "message", listener: (message: any) => void): this;
+    once(event: "disconnect", listener: () => void): this;
     /* The lifecycle members, Node's exact shapes: pid is undefined exactly
      * when the spawn failed; exitCode is null while running, the code
      * after a normal exit, null for a signal death, and -errno once a
@@ -3836,9 +3967,8 @@ declare module "util" {
   export type TextDecoder = globalThis.TextDecoder;
   export var TextEncoder: typeof globalThis.TextEncoder;
   export var TextDecoder: typeof globalThis.TextDecoder;
-  /* stream.pipeline's (...streams: unknown[]) => unknown is assignable to
-   * every other target's parameter type, so its overload comes first; no
-   * other target is assignable to it. */
+  /* stream.pipeline's overload comes first: its __promisify__ member keeps
+   * every other target out of it. */
   export function promisify(
     fn: typeof import("node:stream").pipeline,
   ): typeof import("node:stream/promises").pipeline;
@@ -4742,9 +4872,9 @@ declare module "node:readline/promises" {
  * inputs with Node's default options; libz links only into zlib-using
  * binaries. Callback forms use the executable worker pool. Options stay
  * declared so reached uses receive a named SC2020 refusal. The Deflate,
- * Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw and Unzip streams are
- * runtime Transform streams; Brotli and Zstd remain outside the lowered
- * surface. */
+ * Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, Unzip, BrotliCompress
+ * and BrotliDecompress streams are runtime Transform streams; Zstd remains
+ * outside the lowered surface. */
 declare module "zlib" {
   import { Transform } from "stream";
   export interface ZlibOptions {
@@ -4801,50 +4931,66 @@ declare module "zlib" {
   ): void;
   export function unzipSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
   export function crc32(data: string | Uint8Array, value?: number): number;
-  export function brotliCompressSync(data: string | Uint8Array): Buffer;
-  export function brotliDecompressSync(data: Uint8Array): Buffer;
-  /* Brotli needs a codec the static runtime does not vendor: these are
-   * declared so their uses receive the named refusal. */
+  /* Brotli over the vendored brotli 1.2.0 (scr_brotli.c): `params` keys
+   * are the numeric BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* constants. */
+  export interface BrotliOptions {
+    [option: string]: unknown;
+  }
   export function brotliCompress(data: string | Uint8Array, callback: ZlibCallback): void;
-  export function brotliDecompress(data: Uint8Array, callback: ZlibCallback): void;
-  export function createBrotliCompress(options?: ZlibOptions): Transform;
-  export function createBrotliDecompress(options?: ZlibOptions): Transform;
-  export class BrotliCompress extends Transform {
-    constructor(options?: ZlibOptions);
-  }
-  export class BrotliDecompress extends Transform {
-    constructor(options?: ZlibOptions);
-  }
+  export function brotliCompress(
+    data: string | Uint8Array,
+    options: BrotliOptions,
+    callback: ZlibCallback,
+  ): void;
+  export function brotliCompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
+  export function brotliDecompress(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function brotliDecompress(
+    data: string | Uint8Array,
+    options: BrotliOptions,
+    callback: ZlibCallback,
+  ): void;
+  export function brotliDecompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
   /* The stream classes: runtime Transform streams over the zlib engine
    * (scr_zlib_stream.c). createGzip(options) and new Gzip(options) build
-   * the same stream; options are validated at runtime with Node's rules. */
+   * the same stream; options are validated at runtime with Node's rules.
+   * Brotli streams have no params(), as in Node. */
   class ZlibBase extends Transform {
     readonly bytesWritten: number;
     flush(kind?: number, callback?: () => void): void;
     flush(callback: () => void): void;
-    params(level: number, strategy: number, callback?: () => void): void;
     close(callback?: () => void): void;
     reset(): void;
   }
-  export class Deflate extends ZlibBase {
+  class Zlib extends ZlibBase {
+    params(level: number, strategy: number, callback?: () => void): void;
+  }
+  export class BrotliCompress extends ZlibBase {
+    constructor(options?: BrotliOptions);
+  }
+  export class BrotliDecompress extends ZlibBase {
+    constructor(options?: BrotliOptions);
+  }
+  export function createBrotliCompress(options?: BrotliOptions): BrotliCompress;
+  export function createBrotliDecompress(options?: BrotliOptions): BrotliDecompress;
+  export class Deflate extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Inflate extends ZlibBase {
+  export class Inflate extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Gzip extends ZlibBase {
+  export class Gzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Gunzip extends ZlibBase {
+  export class Gunzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class DeflateRaw extends ZlibBase {
+  export class DeflateRaw extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class InflateRaw extends ZlibBase {
+  export class InflateRaw extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Unzip extends ZlibBase {
+  export class Unzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
   export function createDeflate(options?: ZlibOptions): Deflate;
@@ -5560,6 +5706,7 @@ declare module "http" {
     readonly trailersDistinct: { [name: string]: string[] | undefined };
     readonly rawTrailers: string[];
     resume(): void;
+    pause(): void;
     destroy(): void;
     setTimeout(msecs: number, callback?: () => void): this;
     /* setEncoding('utf8'): 'data' delivers strings (other real encodings
@@ -5985,6 +6132,7 @@ declare module "http2" {
   export interface Http2Stream {
     on(event: "error" | "close", listener: (err: Error) => void): void;
     once(event: "error" | "close", listener: (err: Error) => void): void;
+    addListener(event: "error" | "close", listener: (err: Error) => void): void;
     destroy(): void;
   }
   export interface Http2ServerRequest {
@@ -6085,11 +6233,6 @@ declare module "http2" {
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
     ): void;
     on(event: "session", listener: (session: ServerHttp2Session) => void): void;
-    once(
-      event: "stream",
-      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
-    ): void;
-    once(event: "session", listener: (session: ServerHttp2Session) => void): void;
     /* HTTP CONNECT (and, in Node, the h2 extended CONNECT — which the
      * allowHTTP1 lowering never sees): the second argument is the raw
      * socket on HTTP/1.1 connections; narrow with instanceof. */
@@ -6107,6 +6250,42 @@ declare module "http2" {
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close", listener: () => void): void;
+    once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    once(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    once(event: "session", listener: (session: ServerHttp2Session) => void): void;
+    once(
+      event: "connect",
+      listener: (
+        req: Http2ServerRequest | import("http").IncomingMessage,
+        resOrSocket: Http2ServerResponse | Socket,
+      ) => void,
+    ): void;
+    addListener(event: "connection", listener: (socket: Socket) => void): void;
+    addListener(
+      event: "request",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(event: "close", listener: () => void): void;
+    addListener(
+      event: "sessionError",
+      listener: (err: Error, session: ServerHttp2Session) => void,
+    ): void;
+    addListener(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(event: "session", listener: (session: ServerHttp2Session) => void): void;
+    addListener(
+      event: "connect",
+      listener: (
+        req: Http2ServerRequest | import("http").IncomingMessage,
+        resOrSocket: Http2ServerResponse | Socket,
+      ) => void,
+    ): void;
   }
   export interface SecureServerOptions {
     allowHTTP1?: boolean;
@@ -6448,6 +6627,28 @@ declare module "http2" {
       listener: (errorCode: number, lastStreamID: number, opaqueData?: Uint8Array) => void,
     ): void;
     once(event: "localSettings" | "remoteSettings", listener: (settings: any) => void): void;
+    once(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
+    once(event: "ping", listener: (payload: Uint8Array) => void): void;
+    addListener(event: "close" | "timeout", listener: () => void): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(
+      event: "connect",
+      listener: (session: Http2Session, socket: import("net").Socket) => void,
+    ): void;
+    addListener(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(
+      event: "goaway",
+      listener: (errorCode: number, lastStreamID: number, opaqueData?: Uint8Array) => void,
+    ): void;
+    addListener(event: "localSettings" | "remoteSettings", listener: (settings: any) => void): void;
+    addListener(
+      event: "frameError",
+      listener: (type: number, code: number, id: number) => void,
+    ): void;
+    addListener(event: "ping", listener: (payload: Uint8Array) => void): void;
   }
 
   export interface ClientHttp2Session extends Http2Session {
@@ -6525,7 +6726,30 @@ declare module "http2" {
       listener: () => void,
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
     once(event: "trailers", listener: (trailers: IncomingHttpHeaders, flags: number) => void): void;
+    addListener(event: "data", listener: (chunk: any) => void): void;
+    addListener(
+      event:
+        | "end"
+        | "close"
+        | "aborted"
+        | "ready"
+        | "timeout"
+        | "drain"
+        | "finish"
+        | "wantTrailers",
+      listener: () => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(
+      event: "frameError",
+      listener: (type: number, code: number, id: number) => void,
+    ): void;
+    addListener(
+      event: "trailers",
+      listener: (trailers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
     respond(
       headers?: OutgoingHttpHeaders,
       options?: { endStream?: boolean; waitForTrailers?: boolean },
@@ -6575,6 +6799,7 @@ declare module "http2" {
     on(event: "trailers", listener: (trailers: IncomingHttpHeaders, flags: number) => void): void;
     once(event: "response", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
     once(event: "push", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
+    once(event: "headers", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
     once(event: "data", listener: (chunk: any) => void): void;
     once(
       event:
@@ -6589,6 +6814,42 @@ declare module "http2" {
       listener: () => void,
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
+    once(event: "trailers", listener: (trailers: IncomingHttpHeaders, flags: number) => void): void;
+    addListener(
+      event: "response",
+      listener: (headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(
+      event: "push",
+      listener: (headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(
+      event: "headers",
+      listener: (headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(event: "data", listener: (chunk: any) => void): void;
+    addListener(
+      event:
+        | "end"
+        | "close"
+        | "aborted"
+        | "ready"
+        | "timeout"
+        | "drain"
+        | "finish"
+        | "wantTrailers",
+      listener: () => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(
+      event: "frameError",
+      listener: (type: number, code: number, id: number) => void,
+    ): void;
+    addListener(
+      event: "trailers",
+      listener: (trailers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
   }
 
   export interface Http2Server {
@@ -6623,6 +6884,24 @@ declare module "http2" {
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close" | "listening" | "timeout", listener: () => void): void;
+    once(event: "connection", listener: (socket: import("net").Socket) => void): void;
+    once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    addListener(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(event: "session", listener: (session: ServerHttp2Session) => void): void;
+    addListener(
+      event: "request",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(event: "close" | "listening" | "timeout", listener: () => void): void;
+    addListener(event: "connection", listener: (socket: import("net").Socket) => void): void;
+    addListener(
+      event: "sessionError",
+      listener: (err: Error, session: ServerHttp2Session) => void,
+    ): void;
   }
 
   export interface ServerOptions {
@@ -7021,9 +7300,18 @@ declare module "node:tty" {
 declare module "async_hooks" {
   /* AsyncLocalStorage: fiber-carried context snapshots — run/getStore/
    * exit/enterWith/disable lower onto the runtime's active-slot machinery
-   * (als.* libCalls); values cross as dyn values. */
+   * (als.* libCalls); values cross as dyn values. bind and snapshot bind
+   * functions to the active context; the options carry the store's
+   * default value and name. */
+  export interface AsyncLocalStorageOptions {
+    defaultValue?: any;
+    name?: string | undefined;
+  }
   export class AsyncLocalStorage<T = any> {
-    constructor();
+    constructor(options?: AsyncLocalStorageOptions);
+    static bind<Func extends (...args: any[]) => any>(fn: Func): Func;
+    static snapshot(): <R, TArgs extends any[]>(fn: (...args: TArgs) => R, ...args: TArgs) => R;
+    readonly name: string;
     run<R>(store: T, callback: (...args: any[]) => R, ...args: any[]): R;
     exit<R>(callback: (...args: any[]) => R, ...args: any[]): R;
     getStore(): T | undefined;
@@ -7146,7 +7434,11 @@ declare module "stream" {
       encoding: string,
       callback: (error?: Error | null) => void,
     ): void;
-    writev?(this: Writable, chunks: unknown[], callback: (error?: Error | null) => void): void;
+    writev?(
+      this: Writable,
+      chunks: Array<{ chunk: any; encoding: string }>,
+      callback: (error?: Error | null) => void,
+    ): void;
     final?(this: Writable, callback: (error?: Error | null) => void): void;
     destroy?(this: Writable, error: Error | null, callback: (error?: Error | null) => void): void;
     construct?(this: Writable, callback: (error?: Error | null) => void): void;
@@ -7181,7 +7473,11 @@ declare module "stream" {
     readable?: boolean;
     writable?: boolean;
     defaultEncoding?: string;
-    writev?(this: Duplex, chunks: unknown[], callback: (error?: Error | null) => void): void;
+    writev?(
+      this: Duplex,
+      chunks: Array<{ chunk: any; encoding: string }>,
+      callback: (error?: Error | null) => void,
+    ): void;
     signal?: AbortSignal;
   }
   interface TransformOptions {
@@ -7266,6 +7562,36 @@ declare module "stream" {
     ): void;
   } & ObjectModeFlag;
 
+  /* decodeStrings: false — a string write reaches write/transform as the
+   * string with its encoding (Buffers keep 'buffer'). */
+  interface StringWritableOptions extends Omit<WritableOptions, "decodeStrings" | "write"> {
+    decodeStrings: false;
+    write?(
+      this: Writable,
+      chunk: string | Buffer,
+      encoding: string,
+      callback: (error?: Error | null) => void,
+    ): void;
+  }
+  type StringDuplexOptions = Omit<DuplexOptions, "decodeStrings" | "write"> & {
+    decodeStrings: false;
+    write?(
+      this: Duplex,
+      chunk: string | Buffer,
+      encoding: string,
+      callback: (error?: Error | null) => void,
+    ): void;
+  };
+  type StringTransformOptions = Omit<TransformOptions, "decodeStrings" | "transform"> & {
+    decodeStrings: false;
+    transform?(
+      this: Transform,
+      chunk: string | Buffer,
+      encoding: string,
+      callback: (error?: Error | null, data?: Buffer | string) => void,
+    ): void;
+  };
+
   /* The operators' options: concurrency and highWaterMark bound map's
    * in-flight callbacks and queued results. */
   interface ArrayOptions {
@@ -7284,12 +7610,16 @@ declare module "stream" {
     _destroy(error: Error | null, callback: (error?: Error | null) => void): void;
     [Symbol.asyncIterator](): AsyncIterableIterator<any>;
     iterator(options?: { destroyOnReturn?: boolean }): AsyncIterableIterator<any>;
+    /* compose(this, stage), destroyed when options.signal aborts. */
+    compose(stage: ComposeStage, options?: { signal: AbortSignal }): Duplex;
     push(chunk: Buffer | string | null, encoding?: string): boolean;
     /* An object-mode stream's values. */
     push(chunk: any, encoding?: string): boolean;
     unshift(chunk: Buffer | string, encoding?: string): void;
     unshift(chunk: any, encoding?: string): void;
-    read(size?: number): Buffer | null;
+    /* A Buffer, a string once encoded, an object-mode value, or null (as
+     * @types/node types it). */
+    read(size?: number): any;
     pause(): this;
     resume(): this;
     isPaused(): boolean;
@@ -7307,6 +7637,16 @@ declare module "stream" {
     readonly destroyed: boolean;
     readonly errored: Error | null;
     static from(iterable: unknown, options?: ReadableOptions): Readable;
+    /* A Readable over a web ReadableStream's reader. */
+    static fromWeb(
+      readableStream: globalThis.ReadableStream,
+      options?: {
+        encoding?: string;
+        highWaterMark?: number;
+        objectMode?: boolean;
+        signal?: AbortSignal;
+      },
+    ): Readable;
     /* The Readable operators: chunks are strings or Buffers, map and
      * flatMap callbacks return strings or Buffers (flatMap: arrays of
      * them, or strings), and callbacks that declare the options argument
@@ -7396,6 +7736,7 @@ declare module "stream" {
 
   class Writable extends EventEmitter {
     constructor(opts: ObjectWritableOptions);
+    constructor(opts: StringWritableOptions);
     constructor(opts?: WritableOptions);
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
@@ -7473,7 +7814,11 @@ declare module "stream" {
    * mirrors @types/node: extends Readable, the writable half declared
    * again. The lowering treats both halves as first-class. */
   class Duplex extends Readable {
+    /* Duplex.from: an async generator function, an iterable, a string or
+     * a stream (duplexify.js). */
+    static from(body: unknown): Duplex;
     constructor(opts: ObjectDuplexOptions);
+    constructor(opts: StringDuplexOptions);
     constructor(opts?: DuplexOptions);
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
@@ -7573,6 +7918,7 @@ declare module "stream" {
 
   class Transform extends Duplex {
     constructor(opts: ObjectTransformOptions);
+    constructor(opts: StringTransformOptions);
     constructor(opts?: TransformOptions);
     /* The underscore-method surface (see Readable). */
     _transform(
@@ -7584,17 +7930,43 @@ declare module "stream" {
   }
   class PassThrough extends Transform {
     constructor(opts: ObjectTransformOptions);
+    constructor(opts: StringTransformOptions);
     constructor(opts?: TransformOptions);
   }
 
   /* addAbortSignal(signal, stream): the stream, destroyed with an
    * AbortError (cause: signal.reason) when the signal aborts. */
   function addAbortSignal<T extends Readable | Writable>(signal: AbortSignal, stream: T): T;
-  /* Declared so requires typecheck; each fences at its use site. */
-  function pipeline(...streams: unknown[]): unknown;
-  /* compose(...streams): a Duplex that writes to the first stream and
-   * reads from the last, with the streams running as a pipeline. */
-  function compose(...streams: Array<Readable | Writable>): Duplex;
+  /* pipeline(...stages, callback): the last stream, or the object-mode
+   * PassThrough that a function destination feeds. */
+  type PipelineResult<T extends unknown[]> = T extends [
+    ...unknown[],
+    infer D,
+    (...args: any[]) => unknown,
+  ]
+    ? D extends (...args: any[]) => unknown
+      ? PassThrough
+      : D
+    : unknown;
+  function pipeline<T extends unknown[]>(...streams: T): PipelineResult<T>;
+  /* util.promisify's pipeline overload matches only pipeline itself: a
+   * generic signature alone admits every function. */
+  namespace pipeline {
+    const __promisify__: typeof promises.pipeline;
+  }
+  /* A compose stage: a stream, an async generator function over the
+   * previous stage, or (first) an iterable, async iterable or web
+   * ReadableStream. */
+  type ComposeStage =
+    | Readable
+    | Writable
+    | Iterable<unknown>
+    | AsyncIterable<unknown>
+    | globalThis.ReadableStream
+    | ((source: any, options?: { signal: AbortSignal }) => unknown);
+  /* compose(...streams): a Duplex that writes to the first stage and
+   * reads from the last, with the stages running as a pipeline. */
+  function compose(...streams: ComposeStage[]): Duplex;
   /* finished's options: readable/writable choose which ends count,
    * error: false ignores 'error' events, signal aborts the wait. */
   interface FinishedOptions {
@@ -7613,13 +7985,20 @@ declare module "stream" {
    * else 65536 — Node's own state.js split); literal argument only. */
   function getDefaultHighWaterMark(objectMode: boolean): number;
   /* The promise pipeline's result: a last stage that is an async
-   * function resolves the promise with its value. */
+   * function resolves the promise with its value (before the options
+   * argument, when one follows). */
   type PipelinePromise<T extends unknown[]> = T extends [
     ...unknown[],
     (...args: any[]) => Promise<infer P>,
   ]
     ? Promise<P>
-    : Promise<void>;
+    : T extends [
+          ...unknown[],
+          (...args: any[]) => Promise<infer P>,
+          { signal?: AbortSignal; end?: boolean },
+        ]
+      ? Promise<P>
+      : Promise<void>;
   namespace promises {
     function pipeline<T extends unknown[]>(...streams: T): PipelinePromise<T>;
     function finished(
@@ -7649,6 +8028,7 @@ declare module "stream" {
     DuplexOptions,
     TransformOptions,
     FinishedOptions,
+    PipelinePromise,
   };
 }
 declare module "node:stream" {
@@ -7663,9 +8043,7 @@ declare module "stream/promises" {
    * pipeline's trailing { signal, end } object and finished's options
    * (readable, writable, error, cleanup, signal) are supported. A last
    * stage that is an async function resolves the promise with its value. */
-  function pipeline<T extends unknown[]>(
-    ...streams: T
-  ): T extends [...unknown[], (...args: any[]) => Promise<infer P>] ? Promise<P> : Promise<void>;
+  function pipeline<T extends unknown[]>(...streams: T): import("stream").PipelinePromise<T>;
   function finished(
     stream: unknown,
     options?: {

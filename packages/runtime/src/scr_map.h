@@ -116,6 +116,10 @@ typedef struct ScrMapOps {
  * whose object has a null prototype (Object.groupBy results). Compiled
  * code sets and tests the byte; the runtime never copies it. */
 #define SCR_MAP_NULL_PROTO 1u
+/* Object.freeze, Object.seal or Object.preventExtensions of a Map or Set:
+ * it has no own properties, so it is then frozen, sealed and not
+ * extensible at once. Its entries stay writable, as in Node. */
+#define SCR_MAP_NOT_EXTENSIBLE 2u
 
 typedef struct ScrMap {
   size_t rc; /* SIZE_MAX = immortal (unused for maps; kept per convention) */
@@ -243,8 +247,10 @@ void *scr_map_get_span_ref(const ScrMap *m, const char *bytes, size_t length);
  * adapters); NULL keeps the source's descriptor. */
 ScrMap *scr_map_clone(const ScrMap *source, bool keys_only, const ScrMapOps *ops);
 ScrMap *scr_map_clone_dyn(const ScrMap *source, bool keys_only);
-/* The descriptor of a Set of checked values (SCR_MAP_KEY_DYN keys). */
+/* The descriptors of a Set and a Map of checked values (SCR_MAP_KEY_DYN
+ * keys; the Map's values are checked values too). */
 extern const ScrMapOps scr_map_dyn_set_ops;
+extern const ScrMapOps scr_map_dyn_map_ops;
 void scr_map_values_into(ScrMap *set, const ScrMap *source, bool checked);
 
 void scr_map_dyn_attach(ScrMap *map, const ScrMapDynOps *ops);
@@ -270,6 +276,10 @@ void scr_map_release_v(void *m);
 void scr_map_trace_v(void *m, ScrTraceVisit visit, void *ctx);
 
 double scr_map_size(const ScrMap *m); /* live entries (Map.size) */
+/* Object.freeze, seal and preventExtensions of a Map or Set
+ * (SCR_MAP_NOT_EXTENSIBLE); immortal maps are left as they are. */
+void scr_map_prevent_extensions(ScrMap *m);
+bool scr_map_is_extensible(const ScrMap *m);
 void scr_map_clear(ScrMap *m);
 
 bool scr_map_has_f64(const ScrMap *m, double key);

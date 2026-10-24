@@ -16,6 +16,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's prime, generator, size, encoding and group-name errors.
   "crypto.dhNew",
   "crypto.dhGroupNew",
+  // Node's nameOrNid and options errors.
+  "crypto.getCipherInfo",
   // Node's candidate, size, options, add and rem errors, and OpenSSL's
   // generation errors.
   "crypto.checkPrimeSync",
@@ -94,6 +96,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.unpipeDyn",
   "weakMap.new",
   "weakSet.new",
+  // Node's "cleanup must be callable" TypeError.
+  "finalizationRegistry.new",
   "dyn.fromEntries",
   "bytes.constructor",
   "bytes.instanceOf",
@@ -180,6 +184,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  // A checked-dynamic value the inspector does not render (a promise, a
+  // URL, a RegExp) throws the 'not supported yet' Error.
+  "insp.dyn",
+  "insp.dynS",
+  // %o's showHidden walk refuses the kinds whose hidden entries it cannot
+  // render.
+  "insp.dynHidden",
   // diagnostics_channel: publish runs subscribers synchronously (a throw
   // propagates — the documented divergence from triggerUncaughtException);
   // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
@@ -203,6 +214,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "async.awaitDyn",
   "als.run",
   "als.exitRun",
+  "als.newOptions",
+  "als.bindCallbackDyn",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
@@ -346,7 +359,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "sp.finished",
   "sp.pipeline",
   "sp.pipelineStages",
+  "sp.pipelineStagesOpts",
   "stream.pipelineStages",
+  "stream.composeStages",
   "stream.pipelineStagesDyn",
   "sc.text",
   "sc.json",
@@ -358,6 +373,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "transform.newDyn",
   "passthrough.newDyn",
   "readable.initDyn",
+  "stream.checkEncodingOption",
   "writable.initDyn",
   "duplex.initDyn",
   "transform.initDyn",
@@ -385,6 +401,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "writable.writeEnc",
   "writable.end",
   "writable.uncork",
+  "writable.setDefaultEncoding",
+  "stream.duplexFromGen",
+  "stream.duplexFromDyn",
+  "stream.duplexFromPromise",
+  "stream.duplexFromAsyncFn",
+  "stream.duplexFromGenSignal",
+  "stream.duplexFromAsyncFnSignal",
+  "fetch.readableFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -434,6 +458,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "global.undefRead",
   // The compiler-resolved Node-parity throw: always throws, catchably.
   "error.nodeThrow",
+  // An accessor over an error's own name or message runs user code.
+  "error.accessorGet",
+  "error.accessorSet",
   // USVString coercion runs user toString/valueOf — throws propagate.
   "dyn.toStringCoerce",
   "dyn.stringConstructor",
@@ -519,6 +546,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "readable.opMap",
   "readable.opFilter",
   "readable.opFlatMap",
+  "readable.opFlatMapAsyncGen",
+  "readable.opFlatMapSyncGen",
   "readable.opDrop",
   "readable.opTake",
   "rl.createSignal",
@@ -596,6 +625,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // fence; the zero-argument form always throws ERR_MISSING_ARGS. The
   // DOMException clone shares the option validation.
   "dyn.structuredClone",
+  "dyn.declAdopt",
   "dyn.cloneMissing",
   "dyn.cloneTransferFail",
   "dyn.cloneTransferFailWith",
@@ -618,6 +648,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreate",
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
+  "dyn.getPrototypeForIdentity",
   "dyn.setPrototype",
   // Error.captureStackTrace: Node's TypeError for a primitive target, and
   // the error string conversion of name and message
@@ -657,6 +688,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
   "dyn.iterPack",
+  // ToNumber of each element can run valueOf
+  "dyn.mathFold",
   "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",
@@ -670,6 +703,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.defineField",
   "class.throwReadOnly",
   "class.throwNotExtensible",
+  "record.throwFrozen",
   "dyn.toString",
   "dyn.valueOf",
   "string.fromCodePoint",
@@ -712,6 +746,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.set",
   "url.setChecked",
   "url.fileURLToPathUrl",
+  "fs.checkPath",
+  "fs.checkReadEncoding",
   "url.fileURLToPathChecked",
   "url.fileURLToPathOptions",
   "url.fileURLToPathBuffer",
@@ -724,6 +760,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.legacyResolve",
   "url.domainToASCII",
   "url.domainToUnicode",
+  // ERR_INVALID_ARG_TYPE and the credentials' URIError.
+  "url.toHttpOptions",
   // The win32-target flavor of pathToFileURL (same runtime entry point —
   // the bridge dispatches by the binary's platform): Node's win32 arm
   // raises ERR_INVALID_ARG_VALUE TypeErrors for malformed UNC inputs, so
@@ -808,12 +846,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromDyn",
   "buffer.poolFromDynRef",
   "buffer.poolFromDynOffset",
+  "buffer.poolFromDynRange",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",
   "bytes.equalsChk",
   "bytes.compareChk",
   "buffer.newStringFail",
+  // Inherited and symbol-keyed Buffer.prototype members throw SC2020.
+  "buffer.prototypeMember",
   "fs.toUnixTimestamp",
   "fs.existsChk",
   "fs.mkdtempChk",
@@ -1004,6 +1045,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairCb",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.diffieHellman",
   "crypto.createSign",
   "crypto.createVerify",
 ]);

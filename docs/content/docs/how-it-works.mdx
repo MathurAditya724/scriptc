@@ -42,17 +42,16 @@ Parsing, type checking, lowering, and LLVM IR generation run one after another o
 
 ### Partitions
 
-The LLVM helper divides an executable's LLVM IR into partitions by its size: one partition per 4 MiB of LLVM text, rounded up to a power of two, and at most 64. `--emit=llvm` writes this text, so its file size shows how many partitions a program gets.
+The LLVM helper divides an executable's LLVM IR into partitions by its size. Up to 1 MiB of LLVM text is one partition, and up to 2 MiB is four. Larger programs get one partition per 4 MiB of LLVM text, rounded up to a power of two, and at least 8 and at most 64. `--emit=llvm` writes this text, so its file size shows how many partitions a program gets.
 
 <table>
   <thead>
     <tr><th>LLVM text</th><th>Partitions</th></tr>
   </thead>
   <tbody>
-    <tr><td>Up to 4 MiB</td><td>1</td></tr>
-    <tr><td>Over 4 MiB, up to 8 MiB</td><td>2</td></tr>
-    <tr><td>Over 8 MiB, up to 16 MiB</td><td>4</td></tr>
-    <tr><td>Over 16 MiB, up to 32 MiB</td><td>8</td></tr>
+    <tr><td>Up to 1 MiB</td><td>1</td></tr>
+    <tr><td>Over 1 MiB, up to 2 MiB</td><td>4</td></tr>
+    <tr><td>Over 2 MiB, up to 32 MiB</td><td>8</td></tr>
     <tr><td>Over 32 MiB, up to 64 MiB</td><td>16</td></tr>
     <tr><td>Over 64 MiB, up to 128 MiB</td><td>32</td></tr>
     <tr><td>Over 128 MiB</td><td>64</td></tr>
@@ -63,7 +62,7 @@ The count depends only on the size of the LLVM text, so a program has the same p
 
 These builds are not divided into partitions and compile on one thread: `--emit=asm`, `--emit=obj`, and `--print=native-link-info` output, library builds (`--lib`; `dev` library builds are compiled in pieces, one after another), and `--sanitize` builds, which compile the LLVM IR with the C compiler.
 
-The helper compiles partitions on a pool with one thread per hardware thread of the host, so an executable with two partitions uses at most two cores in the backend. A program of one partition is optimized and compiled on one thread.
+The helper compiles partitions on a pool with one thread per hardware thread of the host, so an executable with four partitions uses at most four cores in the backend. A program of one partition is optimized and compiled on one thread.
 
 How partitions are compiled depends on `--optimization`:
 

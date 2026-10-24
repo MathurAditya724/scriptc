@@ -56,7 +56,7 @@ import { clearFenceEvalCaches } from "../library/fence-eval.js";
 import { archiveNativeLibrary, localizeNativeLibrary, linkNativeWasmLibrary } from "./library.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { evaluateNativeComptime } from "./comptime.js";
-import { contentDigest, type NativeCache } from "./cache.js";
+import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cache.js";
 import {
   nativeProfileKey,
   nativeProfileRefusal,
@@ -168,6 +168,7 @@ export class NativeCompiler {
     outputKind: "obj" | "asm",
     partitions = 1,
     profile?: NativeProfileOptions,
+    llvmDigest: () => string = () => fileDigest(input),
   ): string[] {
     const toolchain = this.toolchain;
     const outputs = nativePartitionPaths(output, partitions);
@@ -186,7 +187,7 @@ export class NativeCompiler {
         key = contentDigest(
           JSON.stringify({
             schema: 1,
-            llvm: contentDigest(readFileSync(input)),
+            llvm: llvmDigest(),
             outputKind,
             optimization,
             source,
@@ -253,6 +254,7 @@ export class NativeCompiler {
     stage: string,
     library: boolean,
     profile?: NativeProfileOptions,
+    llvmDigest?: () => string,
   ): string[] {
     // Library archives merge dev shards relocatably; executables link the
     // helper's program partitions directly.
@@ -263,7 +265,16 @@ export class NativeCompiler {
     const split = llvm === null ? null : splitLlvmLibraryProgram(llvm);
     if (split === null) {
       const partitions = library ? 1 : nativeProgramPartitions(statSync(input).size);
-      return this.emitObject(input, output, source, optimization, "obj", partitions, profile);
+      return this.emitObject(
+        input,
+        output,
+        source,
+        optimization,
+        "obj",
+        partitions,
+        profile,
+        llvmDigest,
+      );
     }
     const objects: string[] = [];
     for (const [index, shard] of split.shards.entries()) {
@@ -358,10 +369,14 @@ export class NativeCompiler {
         return { ok: true, artifact: { kind: "ir", path: output } };
       }
       const { llvm, features } = prepared;
+      // The executable and object caches key the same LLVM text.
+      let llvmDigest: string | undefined;
+      const digestLlvm = (): string => (llvmDigest ??= partsDigest(llvm));
       const inputDirectory = join(stage, "input");
       mkdirSync(inputDirectory);
       const llvmInput = outputKind === "llvm" ? stagedOutput : join(inputDirectory, "program.ll");
-      writeFileSync(llvmInput, llvm);
+      // In slices: the module text is never encoded whole.
+      writeTextPartsSync(llvmInput, llvm);
       timing("llvm-write");
       if (outputKind === "llvm") {
         renameSync(stagedOutput, output);
@@ -384,7 +399,14 @@ export class NativeCompiler {
       const executableCache =
         executablePack === null
           ? null
-          : openNativeExecutableCache(this.cache, toolchain, llvm, options, ffi, executablePack);
+          : openNativeExecutableCache(
+              this.cache,
+              toolchain,
+              digestLlvm,
+              options,
+              ffi,
+              executablePack,
+            );
       const restored = executableCache?.restore(stagedOutput) ?? false;
       timing(restored ? "executable-cache-hit" : "executable-cache-miss");
       if (!restored) {
@@ -407,6 +429,7 @@ export class NativeCompiler {
             stage,
             false,
             profile,
+            digestLlvm,
           );
         else
           this.emitObject(
@@ -495,7 +518,7 @@ export class NativeCompiler {
         renameSync(stagedOutput + ".dSYM", output + ".dSYM");
       }
       mkdirSync(options.outDir, { recursive: true });
-      writeFileSync(llvmPath, llvm);
+      writeTextPartsSync(llvmPath, llvm);
       let irPath: string | undefined;
       if (options.emitIr) {
         irPath = join(options.outDir, `${stem}.ir.json`);
@@ -583,7 +606,8 @@ export class NativeCompiler {
       stage = mkdtempSync(join(dirname(archivePath), ".scriptc-library-"));
       const llvm = prepared.llvm;
       const llvmInput = join(stage, "program.ll");
-      writeFileSync(llvmInput, llvm);
+      // In slices: the module text is never encoded whole.
+      writeTextPartsSync(llvmInput, llvm);
       timing("llvm-write");
       const features = prepared.features;
       const pack = selectNativeRuntimePack(
@@ -646,7 +670,7 @@ export class NativeCompiler {
         });
       }
       timing("native-archive");
-      writeFileSync(llvmPath, llvm);
+      writeTextPartsSync(llvmPath, llvm);
       let irPath: string | undefined;
       if (options.emitIr) {
         irPath = join(options.outDir, `${stem}.lib.ir.json`);

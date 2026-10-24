@@ -1,4 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
+import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
 import * as ts from "../../ts7/adapter.js";
@@ -8,6 +9,7 @@ import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
+  DATE_T,
   DYN,
   F64,
   type IrExpr,
@@ -23,6 +25,11 @@ import {
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
+import {
+  splitRequireBindingOfIdent,
+  wholeExportSymbolOfModule,
+  wholeExportValue,
+} from "../cjs-inline-require.js";
 import { captureContextArguments } from "../function-context.js";
 import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
 import {
@@ -41,6 +48,7 @@ import {
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { runtimeOptionalReceiverRead } from "./narrowing.js";
+import { iterableUnionOf } from "../iterable-values.js";
 import { builtinGlobalValueAt } from "./property-access.js";
 import { varRef } from "../../../ir/build.js";
 import {
@@ -69,6 +77,7 @@ import {
   builtinModuleConstOf,
   builtinModuleFnOf,
   builtinModulesArrayLit,
+  identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
 import { builtinConstantsObject } from "../lower-builtin-values.js";
@@ -168,6 +177,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // when the checker types this USE as a single arm, maybeNarrow
   // bridges the tagged representation with a unionNarrow.
   const local = lowerer.resolveLocal(expr);
+  // A Date local holding its time value reads as that Date: only uses
+  // that read the time value reach here (date-values.ts).
+  if (local && lowerer.timeValueDateLocals.has(local)) {
+    const time: IrExpr = { kind: "varRef", localId: local.id, type: F64, loc };
+    return { kind: "libCall", fn: "date.fromTime", args: [time], type: DATE_T, loc };
+  }
   if (local) {
     // A switch can dispatch past a lexical declaration. Keep this
     // previously refused codec form out until switch-scope TDZ boxes
@@ -321,6 +336,16 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // value arm before routing the member/element operation so dynamic
       // keys and builtin record walkers do not see a union receiver.
       const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      // An optional Iterable proven present re-tags into the Iterable.
+      if (
+        g.type.kind === "union" &&
+        narrowed?.kind === "union" &&
+        narrowed.unionId !== g.type.unionId &&
+        iterableUnionOf(lowerer, narrowed)
+      ) {
+        const helper = lowerer.narrowedRetagHelper(expr, g.type.unionId, narrowed.unionId, loc);
+        if (helper) return { kind: "call", callee: helper, args: [ref], type: narrowed, loc };
+      }
       const arithmeticUnion =
         g.type.kind === "union" &&
         lowerer.unions.get(g.type.unionId)?.arms.length === 2 &&
@@ -731,6 +756,20 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
   const nativeAlias = stdlibGlobalNameOf(lowerer, expr);
   if (nativeAlias === "Buffer" && expr.text !== "Buffer") {
+    // An alias through a cast of globalThis carries the cast's static type,
+    // which the identity token below does not have.
+    const aliasSymbol = identifierReadSymbol(lowerer, expr);
+    if (aliasSymbol && lowerer.castGlobalAliases.has(aliasSymbol)) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "the Buffer constructor read through a cast of globalThis as a value",
+        "test it in a condition, read its typeof, or call its members",
+      );
+    }
+    // JavaScript reads the Buffer function's value (builtinGlobalValue).
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr)))
+      return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
     return { kind: "strLit", value: "[builtin Buffer]", type: STRING, loc };
   }
   if (lowerer.isStdlibGlobal(expr, "fetch")) {
@@ -753,7 +792,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return lowerGlobalValue(lowerer, expr);
   }
   {
-    const sym = lowerer.checker.getSymbolAtLocation(expr);
+    const sym = identifierReadSymbol(lowerer, expr);
     // The temporal global is typed (TS 7's lib slice) but Node 24 does
     // not define it: the read throws Node's ReferenceError.
     if (isTemporalGlobalRoot(lowerer, expr, sym)) {
@@ -789,8 +828,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",
         WeakRef:
           "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
-        FinalizationRegistry:
-          "finalization callbacks expose GC timing — genuinely dynamic; release resources explicitly instead",
         eval: "runtime code evaluation cannot be compiled ahead of time",
       };
       lowerer.noLowering(expr.text, expr, globalHints[expr.text], sym ?? undefined);
@@ -849,7 +886,27 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // reach here — their hooks claim the property/new forms first).
   {
     const sym = lowerer.resolveValueSymbol(expr);
-    const classInfo = sym ? lowerer.classBySymbol.get(sym) : undefined;
+    let classInfo = sym ? lowerer.classBySymbol.get(sym) : undefined;
+    // A class local to a function lowered once per instantiation
+    // (`$constructor` called with different argument types) registers per
+    // instance under the same symbol: a hoisted function of a later
+    // instance, lowered before its own class statement, must not reach the
+    // class an earlier instance collected.
+    const declaration = sym?.valueDeclaration;
+    if (
+      classInfo &&
+      lowerer.localClassInstantiations.length > 0 &&
+      declaration &&
+      ts.isClassDeclaration(declaration) &&
+      lowerer.classNamer(declaration) !== classInfo.def.name
+    )
+      classInfo = undefined;
+    // A local class referenced from a function hoisted above its statement:
+    // its TDZ box, holding the class as a checked-dynamic constructor.
+    if (!classInfo && sym && predeclareForwardClass(lowerer, sym)) {
+      const local = lowerer.resolveLocal(expr);
+      if (local) return { kind: "varRef", localId: local.id, type: local.type, loc };
+    }
     // A GENERIC class name whose CONTEXTUAL type pins one instantiation
     // (`const B: new (v: string) => Counter<string> = Counter`): the
     // value is that instantiation's class object — the generic-fn
@@ -927,6 +984,27 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // Client`): the member holds that binding's value.
   const memberAlias = cjsMemberAliasValueOf(lowerer, expr);
   if (memberAlias !== null) return lowerer.lowerExpr(memberAlias);
+  // `var m; m = require("./x")` as a bare value: a whole-export target is
+  // the exported value; a table target has no first-class module object.
+  {
+    const split = splitRequireBindingOfIdent(lowerer, expr);
+    if (split !== null) {
+      if (wholeExportSymbolOfModule(lowerer, split.dep) !== null) {
+        const value = wholeExportValue(lowerer, split.dep, expr);
+        if (value !== null) return value;
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `the whole export of '${split.spec}' as a value (its 'module.exports =' value has no static representation)`,
+        );
+      }
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `the exports object of '${split.spec}' as a value (its exports compile to a static table: read require(${JSON.stringify(split.spec)}).member directly)`,
+      );
+    }
+  }
   // Preflight guarantees no unresolved identifiers; anything else here
   // is a blocked declaration's binding (the SC2004 cascade) or a
   // binding form we don't model yet.

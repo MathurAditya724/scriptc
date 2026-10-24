@@ -82,15 +82,18 @@ import {
   currentVendorCacheBuildIdentity,
   vendorBuildCacheRoot,
   tlsArchivePath,
+  brotliArchivePath,
   lreObjectPaths,
   zlibObjectPaths,
   stageVendorInputs,
   ensureTlsArchive,
+  ensureBrotliArchive,
   ensureLreObjects,
   ensureZlibObjects,
   vendorEngineDir,
   vendorZlibDir,
   vendorTlsDir,
+  vendorBrotliDir,
 } from "./vendor.js";
 import { execFileAsync, subprocessFailureDetail, CcCompileError } from "./process.js";
 import { implicitLinkerFingerprint } from "./linker-fingerprint.js";
@@ -119,6 +122,7 @@ interface RuntimeUnitContext {
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
   tlsArchive: string | null;
+  brotliArchive: string | null;
 }
 
 /** An optional runtime input: runtime sources compiled when `when` holds,
@@ -222,6 +226,18 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           : []
         : [],
   ),
+  // Brotli (scr_brotli.c) plugs into the zlib engine and links the
+  // vendored brotli archive.
+  unitArgs((u) =>
+    u.brotliArchive
+      ? [
+          "-I",
+          join(vendorBrotliDir(), "include"),
+          u.rt(join(u.rtDir, "scr_brotli.c")),
+          u.brotliArchive,
+        ]
+      : [],
+  ),
   unit((u) => u.opts.events, "scr_events.c", "scr_readline.c"),
   // readline's terminal mode: rl.terminal sets the regex unit it
   // measures with.
@@ -279,8 +295,15 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
   // Own properties JavaScript adds to children.
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
+  // The declaration-typed boundary's adoption.
+  unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // for await over checked-dynamic values that may hold native streams.
+  unit(
+    (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
+    "scr_dyn_for_await_stream.c",
+  ),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
@@ -295,6 +318,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dgram, "scr_dgram.c"),
   unit((u) => u.opts.dgram && u.opts.dnsPromises, "scr_dns_promises.c"),
   unit((u) => u.opts.dgram && u.opts.dgramDyn, "scr_dgram_dyn.c"),
+  unit((u) => u.opts.textCodecDyn, "scr_text_codec_dyn.c"),
   unit((u) => u.opts.watch, "scr_watch.c"),
   unit((u) => u.opts.foreignFfi, "scr_ffi_queue.c"),
   unit((u) => u.opts.nodeTest, "scr_test.c"),
@@ -332,6 +356,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  // Readable.fromWeb reads a web ReadableStream through its reader.
+  unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -388,6 +414,7 @@ export async function compileCInternal(
   const dh = opts.dh ?? false;
   const pki = opts.pki ?? false;
   const mbedtls = tls || cipher || ecdh || dh || pki;
+  const brotli = (opts.zlib ?? false) && opts.brotli === true;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -627,6 +654,9 @@ export async function compileCInternal(
   let tlsArchive = mbedtls
     ? tlsArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
+  let brotliArchive = brotli
+    ? brotliArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : null;
 
   // ours would collide; see scr_regex.c) — the standalone objects are for
   // static builds only.
@@ -663,6 +693,23 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "tls"));
       tlsArchive = paths[0]!;
+    }
+    if (brotli) {
+      const cachedArchive = brotliArchivePath(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      );
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureBrotliArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
+      ];
+      const paths =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "brotli"));
+      brotliArchive = paths[0]!;
     }
     if (regex) {
       for (const object of lreObjectPaths(
@@ -750,6 +797,7 @@ export async function compileCInternal(
       lreObjects,
       zlibObjects,
       tlsArchive,
+      brotliArchive,
     }),
     // A .ll program TU (the LLVM backend) deliberately carries no target
     // triple (byte-stable output; clang supplies the host/SCRIPTC_TARGET

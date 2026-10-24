@@ -1,3 +1,4 @@
+import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
 import {
   DATE_TIME_FIELD,
   dateRootOf,
@@ -5,6 +6,7 @@ import {
   isDatePrototypeMethod,
   lowerDateSuperMethodCall,
 } from "./builtins/date-classes.js";
+import { predeclareForwardClass } from "./lower-stmts.js";
 import { lowerDateStaticCall } from "./builtins/dates.js";
 import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
@@ -45,7 +47,6 @@ import {
   DATE_T,
   DYN,
   F64,
-  bytesOf,
   type IrClassDef,
   type IrExpr,
   type IrFunction,
@@ -114,8 +115,7 @@ import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
-import { knownBufEncoding, lowerNodeModulesBufferConstruct } from "./containers/bytes.js";
-import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
+import { knownBufEncoding, lowerBufferConstruct } from "./containers/bytes.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
 import {
@@ -133,6 +133,7 @@ import {
   STREAM_PROP_MEMBERS,
   STREAM_COMPLETION_CALLBACK_INDEX,
   UNDERSCORE_METHODS,
+  streamExtraCallbacks,
   lowerStreamNew,
   lowerStreamSuperCall,
   streamCtorShape,
@@ -175,7 +176,12 @@ import { hasLexicalPrivateReference, hasStaticThis, rejectStaticThis } from "./s
 import { lowerUrlNew } from "./lower-url.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
-import { construction, constructionPrefix } from "./js-class-fields.js";
+import {
+  accessorInterceptsBase,
+  accessorNames,
+  construction,
+  constructionPrefix,
+} from "./js-class-fields.js";
 import { lowerObjectFactoryNew } from "./object-factory-new.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
@@ -184,6 +190,7 @@ import { constructionEscape } from "./construction-escapes.js";
 import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
 import { initializeRuntimeStatics, hasRuntimeStatics } from "./class-runtime-statics.js";
 import { reflectedClassStaticMethodValue } from "./class-method-values.js";
+import { identifierReadSymbol } from "./surfaces.js";
 
 export function returnsOnlyThis(member: ts.MethodDeclaration): boolean {
   const body = member.body;
@@ -236,7 +243,7 @@ export function returnsOnlyThisValue(member: ts.MethodDeclaration): boolean {
   return valid;
 }
 
-function functionLocalClass(decl: ts.ClassLikeDeclaration): boolean {
+export function functionLocalClass(decl: ts.ClassLikeDeclaration): boolean {
   for (
     let parent: ts.Node | undefined = decl.parent;
     parent && !ts.isSourceFile(parent);
@@ -475,6 +482,10 @@ export interface ClassInfo {
   prototypeMethodValues?: Map<string, IrExpr>;
   prototypeReflectionReady?: true;
   prototypeObservedMethodsReady?: true;
+  /** The globals holding each observed method's original prototype value
+   * (set when the prototype data is built), by method name. A typed call
+   * whose slot still holds that value calls the method natively. */
+  prototypeOriginals?: Map<string, string>;
   prototypeReflectionRefusal?: string;
   localClass?: {
     context: FnCtx | null;
@@ -1413,7 +1424,7 @@ function undefArmedFieldType(lowerer: Lowerer, p: ts.Symbol): IrType | null {
   const arms =
     mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
   for (const a of arms) {
-    if (a.kind === "map" || a.kind === "regex" || a.kind === "date" || a.kind === "generator") {
+    if (a.kind === "map" || a.kind === "regex" || a.kind === "generator") {
       return null;
     }
     byKey.set(typeKey(a), a);
@@ -2353,6 +2364,7 @@ export function collectClassShapeInner(
     const checkedStatics =
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       ((base && hasRuntimeStatics(base)) ||
+        definedThroughReflection(lowerer, decl) ||
         decl.members.nodes.some(
           (member) =>
             ts.isAccessor(member) &&
@@ -2730,8 +2742,8 @@ export function collectClassShapeInner(
       // state, so an override or shadowing field would split-brain.
       // Underscore methods are the SUPPORTED override form — but only
       // the ones the class's own base consumes (a `_read` on a
-      // Transform, or `_writev`/`_construct` anywhere, would be consumed
-      // by Node machinery that has no lowering here).
+      // Transform, or `_writev` on a Readable, would be consumed by Node
+      // machinery that has no lowering here).
       if (memberName && ts.isIdentifier(memberName)) {
         const streamBase = (() => {
           for (let c = base; c; c = c.base) if (c.builtinStream) return c;
@@ -2746,11 +2758,11 @@ export function collectClassShapeInner(
               `overriding the stream member '${name}' (the runtime owns the stream surface)`,
             );
           }
-          if (name === "_writev" || name === "_construct") {
+          if (name === "_writev" && !streamExtraCallbacks(streamBase.def.name).includes("writev")) {
             lowerer.unsupported(
               "SC1090",
               memberName,
-              `declaring '${name}' on a stream subclass (${name === "_writev" ? "batched writes are" : "deferred construction is"} not lowered — writes deliver one chunk at a time)`,
+              `declaring '_writev' on a ${streamBase.def.name.slice(1)} subclass (a Readable has no writable side)`,
             );
           }
           const accepted = streamCtorShape(streamBase.def.name).accepted;
@@ -3969,7 +3981,6 @@ export function collectClassShapeInner(
           declared.kind !== "union" &&
           declared.kind !== "dyn" &&
           declared.kind !== "map" &&
-          declared.kind !== "date" &&
           declared.kind !== "generator" &&
           declared.kind !== "void" &&
           declared.kind !== "caught";
@@ -4106,7 +4117,7 @@ export function collectClassShapeInner(
       // A subclass field created before anything can observe the instance
       // keeps its type: super() cannot run code that reads it earlier.
       const baseConstruction =
-        base && ![...methods.keys()].some((m) => m.startsWith("get:") || m.startsWith("set:"))
+        base && !accessorInterceptsBase(accessorNames(methods.keys()), base)
           ? construction(base)
           : null;
       const sealedPrefix = baseConstruction
@@ -4139,7 +4150,7 @@ export function collectClassShapeInner(
               // An own JS callable shadows its prototype declaration.
               // Keep the method in the prototype and store the assigned
               // value in the instance property bag.
-              lowerer.prototypeMethodAccesses.set(name, assign);
+              lowerer.noteMethodAccess(name, assign);
               continue;
             }
             const sym = lowerer.checker.getSymbolAtLocation(assign);
@@ -4221,7 +4232,7 @@ export function collectClassShapeInner(
             }
             if (!key && (fields.has(fieldName) || hasAccessor(fieldName))) continue;
             if (!key && (methods.has(fieldName) || lowerer.findMethodOn(base, fieldName))) {
-              lowerer.prototypeMethodAccesses.set(fieldName, lhs);
+              lowerer.noteMethodAccess(fieldName, lhs);
               continue;
             }
             // A key already declared (own or inherited) makes later
@@ -4395,6 +4406,14 @@ export function collectClassShapeInner(
         // INSTANTIATION prints its family's name — JS has one `Box`.
         jsName: jsNameOverride ?? decl.name?.text ?? "",
         ...(base ? { base: base.def.name } : {}),
+        ...(decl.members.nodes.some(
+          (member) =>
+            ts.isPropertyDeclaration(member) &&
+            !ts.isPrivateIdentifier(member.name) &&
+            member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword),
+        )
+          ? { ownStaticFields: true as const }
+          : {}),
         jsLength:
           ctor?.parameters?.nodes.findIndex(
             (parameter) => parameter.initializer || parameter.dotDotDotToken,
@@ -5474,7 +5493,12 @@ export function classValueRef(lowerer: Lowerer, info: ClassInfo, blame: ts.Node)
   const display = info.def.name.replace(/^%|^%m\d+\./, "");
   fenceDecorationThrows(lowerer, info, blame);
   if (info.localClass && ts.isIdentifier(blame)) {
-    const stored = lowerer.resolveLocal(blame);
+    let stored = lowerer.resolveLocal(blame);
+    // A reference from a function hoisted above the class statement.
+    if (!stored) {
+      const symbol = lowerer.resolveValueSymbol(blame);
+      if (symbol && predeclareForwardClass(lowerer, symbol)) stored = lowerer.resolveLocal(blame);
+    }
     if (stored)
       return lowerer.coerceToExpected(
         { kind: "varRef", localId: stored.id, type: stored.type, loc: locOf(blame) },
@@ -6034,6 +6058,28 @@ export function lowerClassExpressionInfo(
   return info;
 }
 
+/** True when a named class expression's body refers to the class value by
+ * its own name (`class Box { static of() { return new Box(); } }`, a
+ * shorthand property `{ Box }` included); type annotations naming it
+ * (`again(): Box`) do not count. */
+function classExpressionNamesItself(lowerer: Lowerer, expr: ts.ClassExpression): boolean {
+  const name = expr.name;
+  if (!name) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(name);
+  if (!symbol) return false;
+  let found = false;
+  for (const member of expr.members.nodes) {
+    ts.walkPreorder(member, (n) => {
+      if (found || ts.isTypeNode(n)) return "skip";
+      if (ts.isIdentifier(n) && n.text === name.text && identifierReadSymbol(lowerer, n) === symbol)
+        found = true;
+      return undefined;
+    });
+    if (found) return true;
+  }
+  return false;
+}
+
 /** `class {…}` in expression position: a class definition bound to no
  * statement — once the static side is a value, the expression IS the
  * definition plus a classRef over it. A DECORATED class expression
@@ -6041,8 +6087,16 @@ export function lowerClassExpressionInfo(
  * mints a class at all: evaluating the expression IS the
  * ReferenceError, so it lowers to exactly that read — every evaluation
  * throws identically, which is why the once-evaluated restriction and
- * the member fences don't apply. */
-export function lowerClassExpression(lowerer: Lowerer, expr: ts.ClassLikeDeclaration): IrExpr {
+ * the member fences don't apply.
+ *
+ * `binding` is the local of a function-local class declaration's name,
+ * declared without a value; the class value assigns it before the class's
+ * static members are defined (see initializeRuntimeStatics). */
+export function lowerClassExpression(
+  lowerer: Lowerer,
+  expr: ts.ClassLikeDeclaration,
+  binding?: IrLocal,
+): IrExpr {
   if (
     decoratorNodesOf(expr).length > 0 ||
     expr.members.nodes.some((m) => decoratorNodesOf(m).length > 0)
@@ -6058,6 +6112,41 @@ export function lowerClassExpression(lowerer: Lowerer, expr: ts.ClassLikeDeclara
     }
   }
   const info = lowerClassExpressionInfo(lowerer, expr);
+  // A function-local class expression's own name is a binding of its body:
+  // declared before the members lower, so their references to the name
+  // resolve to it. The class value captures it before it is assigned, as
+  // it captures a class declaration's binding.
+  if (
+    !binding &&
+    info.localClass &&
+    ts.isClassExpression(expr) &&
+    expr.name &&
+    classExpressionNamesItself(lowerer, expr)
+  ) {
+    const own = lowerer.declareLocal(
+      expr.name,
+      expr.name.text,
+      { kind: "classval", className: info.def.name },
+      true,
+    );
+    const value = lowerClassValue(lowerer, expr, info, own);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: own.id, init: null, loc: value.loc }],
+      result: value,
+      type: value.type,
+      loc: value.loc,
+    };
+  }
+  return lowerClassValue(lowerer, expr, info, binding);
+}
+
+function lowerClassValue(
+  lowerer: Lowerer,
+  expr: ts.ClassLikeDeclaration,
+  info: ClassInfo,
+  binding: IrLocal | undefined,
+): IrExpr {
   if (
     !info.localClass &&
     !info.expressionInitializationEmitted &&
@@ -6104,7 +6193,7 @@ export function lowerClassExpression(lowerer: Lowerer, expr: ts.ClassLikeDeclara
     const clsRef: IrExpr = { kind: "varRef", localId: clsLocal.id, type: value.type, loc };
     const boxed: IrExpr = { kind: "dynFrom", value: clsRef, type: DYN, loc };
     info.localPrototypeData = true;
-    return initializeRuntimeStatics(lowerer, info, {
+    const built: IrExpr = {
       kind: "seqExpr",
       stmts: [
         { kind: "varDecl", localId: baseLocal.id, init: base, loc },
@@ -6137,7 +6226,8 @@ export function lowerClassExpression(lowerer: Lowerer, expr: ts.ClassLikeDeclara
       result: clsRef,
       type: value.type,
       loc,
-    });
+    };
+    return initializeRuntimeStatics(lowerer, info, built, binding);
   }
   if (info.localClass?.baseExpression && info.base && value.kind === "classRef") {
     const loc = locOf(expr);
@@ -6152,7 +6242,7 @@ export function lowerClassExpression(lowerer: Lowerer, expr: ts.ClassLikeDeclara
     const clsRef: IrExpr = { kind: "varRef", localId: clsLocal.id, type: value.type, loc };
     const basePrototype = classPrototypeData(lowerer, info.base, loc, baseRef)!;
     info.localPrototypeData = true;
-    return initializeRuntimeStatics(lowerer, info, {
+    const built: IrExpr = {
       kind: "seqExpr",
       stmts: [
         { kind: "varDecl", localId: baseLocal.id, init: base, loc },
@@ -6191,13 +6281,15 @@ export function lowerClassExpression(lowerer: Lowerer, expr: ts.ClassLikeDeclara
       result: clsRef,
       type: value.type,
       loc,
-    });
+    };
+    return initializeRuntimeStatics(lowerer, info, built, binding);
   }
   if (!info.localClass) return value;
   const classValue = initializeRuntimeStatics(
     lowerer,
     info,
     value.kind === "classRef" ? { ...value, captures: info.localClass.captureSources } : value,
+    binding,
   );
   // The base resolves statically here, but Node still evaluates the
   // heritage expression each time the class definition runs, first.
@@ -6568,7 +6660,7 @@ function staticCallOn(
     // functions, called directly as `%C.static:m%n` — with the same
     // through-a-VALUE shadowing fence as plain statics.
     const gfound = findGenericStaticOn(lowerer, info, access.name.text);
-    if (!gfound) return null;
+    if (!gfound) return classConstructorCall(lowerer, call, access, info);
     if (throughValue && staticShadowBelow(info, access.name.text)) {
       lowerer.unsupported(
         "SC1090",
@@ -6659,6 +6751,89 @@ function staticCallOn(
   lowerer.noteEdge(fnName);
   const args = lowerer.completeArgs(call.arguments.nodes, found.method.params, loc, call);
   return { kind: "call", callee: fnName, args, type: found.method.ret, loc };
+}
+
+/** `C.call(thisArg, ...)` / `C.apply(thisArg, args)` on a program class that
+ * declares no such static: Function.prototype.call/apply invoke the class
+ * constructor without `new`, which throws Node's TypeError "Class
+ * constructor C cannot be invoked without 'new'" after the arguments are
+ * evaluated (and, for apply, after the argument list is read). The boxed
+ * class value's call path throws exactly that. Neither expando statics nor
+ * writes through untyped values can give a class an own `call` or `apply`.
+ * A receiver that may hold a subclass at run time (a class value, `this` in
+ * a static method) needs every subclass to lack such a static too. The
+ * receiver must be one the caller does not evaluate again (a name, `this`,
+ * or a namespace member). Null otherwise. */
+function classConstructorCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  info: ClassInfo,
+): IrExpr | null {
+  const name = access.name.text;
+  const receiver = access.expression;
+  if (
+    (name !== "call" && name !== "apply") ||
+    !info.decl ||
+    info.def.runtime ||
+    info.builtinError ||
+    info.builtinEmitter ||
+    info.builtinStream ||
+    info.builtinEventTarget ||
+    info.runtimeStatics?.length ||
+    declaresStaticAbove(info, name) ||
+    (exactClassOfReceiver(lowerer, receiver) !== info &&
+      info.subclasses.some((subclass) => declaresStaticBelow(subclass, name))) ||
+    call.arguments.nodes.some(ts.isSpreadElement) ||
+    !(
+      ts.isIdentifier(receiver) ||
+      receiver.kind === ts.SyntaxKind.ThisKeyword ||
+      (ts.isPropertyAccessExpression(receiver) && nsMemberIdentOf(lowerer, receiver) !== null)
+    )
+  )
+    return null;
+  return {
+    kind: "dynInvoke",
+    recv: lowerer.lowerExprExpecting(receiver, DYN),
+    method: name,
+    calleeName: ts.getTextOfNode(access),
+    args: call.arguments.nodes.map((argument) => lowerer.lowerExprExpecting(argument, DYN)),
+    type: DYN,
+    loc: locOf(call),
+  };
+}
+
+/** Whether `info`'s declaration has a static member that may be named `name`
+ * (a method, field or accessor of that name, or a computed name), or `info`
+ * has no declaration to tell. */
+function declaresStatic(info: ClassInfo, name: string): boolean {
+  if (!info.decl) return true;
+  return info.decl.members.nodes.some(
+    (member) =>
+      member.name !== undefined &&
+      ts.canHaveModifiers(member) &&
+      ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ===
+        true &&
+      (ts.isComputedPropertyName(member.name) ||
+        ((ts.isIdentifier(member.name) || ts.isStringLiteral(member.name)) &&
+          member.name.text === name)),
+  );
+}
+
+/** declaresStatic over `info` and its bases, which it inherits statics from. */
+function declaresStaticAbove(info: ClassInfo, name: string): boolean {
+  for (let c: ClassInfo | null = info; c; c = c.base) if (declaresStatic(c, name)) return true;
+  return false;
+}
+
+/** declaresStatic over `info` and its subclasses, or runtime statics, which a
+ * function-local JavaScript class defines at run time. */
+function declaresStaticBelow(info: ClassInfo, name: string): boolean {
+  return (
+    declaresStatic(info, name) ||
+    !!info.runtimeStatics?.length ||
+    info.subclasses.some((subclass) => declaresStaticBelow(subclass, name))
+  );
 }
 
 /** `C.m(...)` where `m` is a static method that a function-local
@@ -7124,10 +7299,100 @@ export function inHierarchy(lowerer: Lowerer, info: ClassInfo): boolean {
  * dynamically. Abstract re-declarations don't count (they carry no
  * implementation; the concrete ones below them do, via the recursion). */
 export function overrideBelow(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
+  if (info.decl !== null && localOverrideBelow(lowerer, info.decl, name)) return true;
   return info.subclasses.some((s) => {
     const m = s.methods.get(name);
     return (m !== undefined && m.abstract !== true) || lowerer.overrideBelow(s, name);
   });
+}
+
+/** The class node an `extends` clause names: a class declaration, or the
+ * class expression a variable is initialized with. */
+function extendedClassNode(lowerer: Lowerer, decl: ts.ClassLikeDeclaration): ts.Node | null {
+  const heritage = decl.heritageClauses?.nodes.find(
+    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+  )?.types?.nodes[0]?.expression;
+  if (!heritage || !ts.isIdentifier(heritage)) return null;
+  let symbol = lowerer.checker.getSymbolAtLocation(heritage);
+  if (symbol && symbol.flags & ts.SymbolFlags.Alias)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  const target = symbol?.valueDeclaration;
+  if (!target) return null;
+  if (ts.isClassDeclaration(target) || ts.isClassExpression(target)) return target;
+  if (ts.isVariableDeclaration(target) && target.initializer) {
+    let init: ts.Expression = target.initializer;
+    while (ts.isParenthesizedExpression(init)) init = init.expression;
+    if (ts.isClassExpression(init)) return init;
+  }
+  return null;
+}
+
+/** The function-local classes that extend the class node `base`. Function
+ * bodies lower on demand, after code that may already call methods of a
+ * class their local classes extend, so such a subclass is not yet in its
+ * base's `subclasses` when those calls lower. */
+function localSubclassesOf(lowerer: Lowerer, base: ts.Node): readonly ts.ClassLikeDeclaration[] {
+  let index = lowerer.localSubclassIndex;
+  if (index === null) {
+    index = new Map();
+    const files = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
+    for (const sf of files) {
+      if (!sf.text.includes("extends")) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (
+          (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
+          node.heritageClauses !== undefined &&
+          functionLocalClass(node)
+        ) {
+          const extended = extendedClassNode(lowerer, node);
+          if (extended) {
+            const list = index!.get(extended);
+            if (list) list.push(node);
+            else index!.set(extended, [node]);
+          }
+        }
+        return undefined;
+      });
+    }
+    lowerer.localSubclassIndex = index;
+  }
+  return index.get(base) ?? [];
+}
+
+/** True when a function-local class below the class node `base` declares
+ * a concrete instance method or accessor `name` (accessors are keyed
+ * `get:x` and `set:x`). A call on `base`'s class then dispatches on the
+ * receiver; devirtualization turns it back into a direct call when no such
+ * override is reachable. */
+function localOverrideBelow(
+  lowerer: Lowerer,
+  base: ts.Node,
+  name: string,
+  visited?: Set<ts.Node>,
+): boolean {
+  const subclasses = localSubclassesOf(lowerer, base);
+  if (subclasses.length === 0) return false;
+  visited ??= new Set();
+  if (visited.has(base)) return false;
+  visited.add(base);
+  const accessor = name.startsWith("get:") ? "get" : name.startsWith("set:") ? "set" : null;
+  const member = accessor ? name.slice(4) : name;
+  return subclasses.some(
+    (sub) =>
+      sub.members.nodes.some(
+        (m) =>
+          (accessor === null
+            ? ts.isMethodDeclaration(m)
+            : accessor === "get"
+              ? ts.isGetAccessorDeclaration(m)
+              : ts.isSetAccessorDeclaration(m)) &&
+          m.body !== undefined &&
+          m.name !== undefined &&
+          (ts.isIdentifier(m.name) || ts.isStringLiteral(m.name)) &&
+          m.name.text === member &&
+          !ts.getModifiers(m)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword),
+      ) || localOverrideBelow(lowerer, sub, name, visited),
+  );
 }
 
 /** The nearest GENERIC-method declaration of `name` at/above `info` —
@@ -7896,7 +8161,10 @@ export function classMemberNameOf(lowerer: Lowerer, name: ts.PropertyName): stri
       member === "asyncIterator" ||
       member === "dispose" ||
       member === "asyncDispose" ||
-      member === "toPrimitive"
+      member === "toPrimitive" ||
+      // A toStringTag field keeps its symbol field name; its accessor and
+      // method forms take the method slot name.
+      (member === "toStringTag" && !ts.isPropertyDeclaration(name.parent))
     ) {
       return `sym:${member}`;
     }
@@ -8987,8 +9255,9 @@ export function superCallStmt(
     // The SYNTHESIZED constructor of a ctor-less stream subclass:
     // super() with default options (underscore methods still bind; a
     // construction passing options requires a declared constructor —
-    // lowerNew fences that). Zero options ⇒ exactly one init stmt.
-    return lowerStreamSuperCall(
+    // lowerNew fences that). Zero options ⇒ the init stmt, then the
+    // class's _writev/_construct follow-ups.
+    const stmts = lowerStreamSuperCall(
       lowerer,
       info,
       base,
@@ -8996,7 +9265,8 @@ export function superCallStmt(
       thisLocal,
       loc,
       info.decl ?? info.ctor!,
-    )[0]!;
+    );
+    return stmts.length === 1 ? stmts[0]! : { kind: "block", body: stmts, loc };
   }
   lowerer.noteSuperConstructorEdge(`%${base.def.name}.constructor`);
   const call: IrStmt = {
@@ -9520,9 +9790,9 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
 
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
-  // A dependency's deprecated `new Buffer(...)` fallback (containers/bytes.ts).
+  // The deprecated `new Buffer(...)` (containers/bytes.ts).
   {
-    const buffer = lowerNodeModulesBufferConstruct(lowerer, expr);
+    const buffer = lowerBufferConstruct(lowerer, expr);
     if (buffer) return buffer;
   }
   // new Function(...): Node's EvalError under
@@ -10162,8 +10432,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       if (arg.type.kind === "string") {
         return { kind: "libCall", fn: "date.newString", args: [arg], type: DATE_T, loc };
       }
+      // new Date(date): a new Date object with the same time value.
       if (arg.type.kind === "date") {
-        return arg;
+        const time: IrExpr = { kind: "libCall", fn: "date.getTime", args: [arg], type: F64, loc };
+        return { kind: "libCall", fn: "date.newMs", args: [time], type: DATE_T, loc };
       }
       lowerer.noLowering(
         `new Date of '${lowerer.fmt(arg.type)}' values`,
@@ -10366,7 +10638,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           expr,
           `Map values of type '${lowerer.checker.typeToString(targs[1])}' ` +
             `(Map values must be number, string, boolean, records, class instances, functions, ` +
-            `typed arrays, arrays, promises, Maps, Sets, or supported unions and checked values)`,
+            `typed arrays, arrays, promises, Dates, Maps, Sets, or supported unions and checked values)`,
         );
       }
       lowerer.badType(expr, tsType);
@@ -10390,6 +10662,45 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         kind: "libCall",
         fn: ts.symbolName(symbol) === "WeakMap" ? "weakMap.new" : "weakSet.new",
         args: [args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc)],
+        type: DYN,
+        loc,
+      };
+    }
+    // A FinalizationRegistry construction: register and unregister keep
+    // their bookkeeping, and the cleanup callback never runs, which
+    // ECMAScript allows (scr_finalization_registry_new).
+    if (
+      symbol !== null &&
+      ts.symbolName(symbol) === "FinalizationRegistry" &&
+      lowerer.isStdlibSymbol(symbol)
+    ) {
+      const args = expr.arguments?.nodes ?? [];
+      if (args.some(ts.isSpreadElement)) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "FinalizationRegistry construction with spread arguments",
+        );
+      }
+      const cleanup = args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc);
+      const surplus = args.slice(1).map((arg) => lowerer.lowerExpr(arg));
+      const created: IrExpr = {
+        kind: "libCall",
+        fn: "finalizationRegistry.new",
+        args: [cleanup],
+        type: DYN,
+        loc,
+      };
+      if (surplus.length === 0) return created;
+      // Surplus arguments evaluate after the cleanup argument and are ignored.
+      const local = lowerer.declareHiddenLocal("%finalizationCleanup", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: local.id, init: cleanup, loc },
+          ...surplus.map((value): IrStmt => ({ kind: "exprStmt", expr: value, loc })),
+        ],
+        result: { ...created, args: [varRef(local.id, DYN, loc)] },
         type: DYN,
         loc,
       };
@@ -10471,21 +10782,23 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       lowerer.badType(expr, tsType);
     }
     // `new AsyncLocalStorage()` (node:async_hooks): a fresh store id —
-    // an f64 handle (type-mapper.ts), the Channel story. Construction options
-    // ({ defaultValue, name }) have no lowering yet.
+    // an f64 handle (type-mapper.ts), the Channel story. The options form
+    // ({ defaultValue, name }) passes the options object as a dyn value.
     if (
       symbol !== null &&
       ts.symbolName(symbol) === "AsyncLocalStorage" &&
       lowerer.isStdlibSymbol(symbol)
     ) {
-      if ((expr.arguments?.nodes.length ?? 0) > 0) {
-        lowerer.noLowering(
-          "new AsyncLocalStorage(options)",
-          expr,
-          "the zero-argument constructor is the supported form (defaultValue/name options have no lowering yet)",
-        );
-      }
-      return { kind: "libCall", fn: "als.new", args: [], type: F64, loc };
+      const options = expr.arguments?.nodes[0];
+      if (options === undefined)
+        return { kind: "libCall", fn: "als.new", args: [], type: F64, loc };
+      return {
+        kind: "libCall",
+        fn: "als.newOptions",
+        args: [lowerAsyncLocalStorageOptions(lowerer, options)],
+        type: F64,
+        loc,
+      };
     }
     // `new Promise<T>((resolve) => ...)`: the ambient Promise constructor.
     if (symbol !== null && ts.symbolName(symbol) === "Promise" && lowerer.isStdlibSymbol(symbol)) {
@@ -10560,43 +10873,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // families carry pointed hints: each states WHY no honest static
     // lowering exists (or what to use instead).
     if (lowerer.isStdlibSymbol(symbol ?? undefined)) {
-      // The deprecated `new Buffer(string, encoding?)` ctor's string arm
-      // with a NON-STRING first argument and a string second: Node
-      // throws ERR_INVALID_ARG_TYPE synchronously (and DEP0005 never
-      // fires on this throwing path, so the compiled silence matches).
-      // Every other new Buffer form keeps the fence below — the
-      // constructing forms would owe the deprecation warning.
-      if (
-        expr.expression.text === "Buffer" &&
-        expr.arguments?.nodes.length === 2 &&
-        !expr.arguments.nodes.some(ts.isSpreadElement) &&
-        lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[0]!))?.kind !== "string" &&
-        lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "string"
-      ) {
-        const first = lowerer.lowerExpr(expr.arguments.nodes[0]!);
-        if (
-          first.kind === "unitLit" ||
-          first.type.kind === "dyn" ||
-          lowerer.dynConvertible(first.type)
-        ) {
-          const got: IrExpr =
-            first.type.kind === "dyn" ? first : { kind: "dynFrom", value: first, type: DYN, loc };
-          // The encoding argument still evaluates in Node before the
-          // throw only via the ctor body's later reads — it does NOT
-          // observe it before throwing, so dropping it is exact for
-          // effect-free operands; effectful ones keep the fence.
-          const enc = lowerer.lowerExpr(expr.arguments.nodes[1]!);
-          if (enc.kind === "strLit" || isSafeToRepeat(enc)) {
-            return {
-              kind: "libCall",
-              fn: "buffer.newStringFail",
-              args: [got],
-              type: bytesOf("u8"),
-              loc,
-            };
-          }
-        }
-      }
       const ctorHints: Record<string, string | undefined> = {
         RegExp: "use a regex literal (/pattern/flags) — constructed regexes have no lowering",
         String:
@@ -10605,8 +10881,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         Boolean: "boxed wrapper objects have no lowering — use the boolean primitive",
         WeakRef:
           "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
-        FinalizationRegistry:
-          "finalization callbacks expose GC timing — genuinely dynamic; release resources explicitly instead",
         SharedArrayBuffer:
           "no shared-memory threads exist in a compiled program — Uint8Array is the byte storage",
         ArrayBuffer:
@@ -11080,4 +11354,38 @@ function genericFieldFnNodeOf(
     return init;
   }
   return null;
+}
+
+/** Whether a JavaScript class's own binding is the target of
+ * `Object.defineProperty`/`defineProperties` in its file
+ * (`Object.defineProperty(Definition, "name", { value })`): its constructor
+ * then needs a live own-property table. */
+function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaration): boolean {
+  const name = decl.name;
+  const sf = ts.getSourceFileOfNode(decl);
+  if (name === undefined || !sf.text.includes("definePropert")) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(name);
+  if (symbol === undefined) return false;
+  let found = false;
+  ts.walkPreorder(sf, (node) => {
+    if (found) return "stop";
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      (node.expression.name.text === "defineProperty" ||
+        node.expression.name.text === "defineProperties") &&
+      lowerer.stdlibGlobalMember(node.expression, "Object") !== null
+    ) {
+      const target = node.arguments.nodes[0];
+      if (
+        target !== undefined &&
+        ts.isIdentifier(target) &&
+        target.text === name.text &&
+        lowerer.checker.getSymbolAtLocation(target) === symbol
+      )
+        found = true;
+    }
+    return undefined;
+  });
+  return found;
 }

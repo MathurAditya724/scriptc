@@ -77,6 +77,65 @@ test("leaf layouts keep direct teardown while recursive layouts share the depth 
   }
 });
 
+test("teardowns of types with children of their own type free their blocks as one segment", () => {
+  const linked = { kind: "object" as const, className: "Linked" };
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [{ name: "main", params: [], returnType: VOID, locals: [], body: [], loc }],
+    classes: [
+      {
+        name: "Linked",
+        fields: [
+          { name: "next", type: linked },
+          { name: "other", type: linked },
+        ],
+        methods: [],
+        loc,
+      },
+    ],
+    records: [{ id: "branch", fields: [{ name: "next", type: linked }] }],
+  };
+  const define = (llvm: string, name: string): string =>
+    new RegExp(`^define internal [^@]*@${name}\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
+  const linkedDestroy = `${mangleClassRelease("Linked")}_destroy`;
+  const branchDestroy = `${mangleRecordRelease("branch")}_destroy`;
+  for (const workers of [false, true]) {
+    const llvm = emitLlvmModule({ ...mod, workers }, { pointerBits: 64 });
+    // Linked's teardown keeps its block and its children's in a segment: it
+    // releases its own block first and places it by address against its
+    // first child, a child torn down directly appends to the segment, one
+    // past the direct chain appends through the runtime, and the chain's
+    // first teardown frees the segment onto the free list in one step.
+    const seg = define(llvm, `${linkedDestroy}_s`);
+    expect(seg.startsWith("define internal ptr"), "segment form").toBe(true);
+    expect(seg).toMatch(
+      /store ptr %(?:sf\.blk|o), ptr %sg\.own[^]*call ptr @sc_release_Linked_destroy_s\(/,
+    );
+    // The children's releases have a copy for each place of the own block.
+    for (const copy of ["ta", "tb"])
+      expect(seg).toContain(
+        `call ptr @scr_rc_destroy_seg(ptr %v0, ptr @${linkedDestroy}_sc, ptr @${linkedDestroy}, ptr %${copy}0.bt)`,
+      );
+    expect(seg).not.toContain("call void @scr_rc_destroy(");
+    expect(seg).toContain("icmp ult ptr %sg.o, %sg.r1");
+    const first = define(llvm, `${linkedDestroy}_d`);
+    expect(first).toContain(`call ptr @${linkedDestroy}_s(ptr %o, i32 %d, ptr %head)`);
+    expect(first).toContain("store ptr %first, ptr %sgf.fp");
+    expect(first.includes("llvm.threadlocal.address"), "thread-local state").toBe(workers);
+    expect(define(llvm, linkedDestroy)).toContain(`call void @${linkedDestroy}_d(ptr %o, i32 0)`);
+    // A record whose child is another type frees its own block as before.
+    expect(define(llvm, `${branchDestroy}_s`)).toBe("");
+    expect(define(llvm, branchDestroy)).toContain(`call void @${mangleClassRelease("Linked")}(`);
+  }
+  // Without the inline allocation paths (32-bit targets) a teardown frees
+  // through the runtime, block by block.
+  const llvm32 = emitLlvmModule(mod, { pointerBits: 32 });
+  expect(define(llvm32, `${linkedDestroy}_s`)).toBe("");
+  expect(define(llvm32, `${linkedDestroy}_d`)).toContain(`call void @${linkedDestroy}_d(`);
+});
+
 test("releases split into an inlinable fast path and an out-of-line remainder", () => {
   // An array of the class itself makes the hierarchy cycle-capable.
   const kids = { kind: "array" as const, elem: { kind: "object" as const, className: "Node" } };
@@ -166,6 +225,43 @@ test("ProgramLifetime hierarchies are never freed and take no reference counts",
   expect(body(mangleClassNew("Owner"))).toContain("store i64 1, ptr %o");
   expect(body(mangleClassNew("Owner"))).toContain("scr_cyc_alloc");
   expect(body(mangleClassRelease("Owner"))).toContain("load i32, ptr %bufp");
+});
+
+test("arrays of ProgramLifetime instances tell the runtime their teardown releases nothing", () => {
+  const kids = { kind: "array" as const, elem: { kind: "object" as const, className: "Node" } };
+  const owners = { kind: "array" as const, elem: { kind: "object" as const, className: "Owner" } };
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [
+      {
+        name: "main",
+        params: [],
+        returnType: VOID,
+        locals: [],
+        body: [
+          { kind: "exprStmt", expr: { kind: "arrayLit", elems: [], type: kids, loc }, loc },
+          { kind: "exprStmt", expr: { kind: "arrayLit", elems: [], type: owners, loc }, loc },
+        ],
+        loc,
+      },
+    ],
+    classes: [
+      { name: "Node", fields: [], methods: [], loc },
+      { name: "Owner", fields: [{ name: "nodes", type: kids }], methods: [], loc },
+    ],
+    contracts: { programLifetime: ["Node"] },
+  };
+  const llvm = emitLlvmModule(mod, { pointerBits: 64 });
+  const ops = (cls: string): string =>
+    new RegExp(`^@sc_arrops\\.[^\\n]*${mangleClassRelease(cls)}[^\\n]*$`, "m").exec(llvm)?.[0] ??
+    "";
+  // SCR_ARR_OPS_RELEASE_NOTHING for Node; Owner's elements are released.
+  expect(ops("Node")).toMatch(
+    /= internal global \{ ptr, ptr, ptr, i32, i32 \} .*, i32 0, i32 2 \}$/,
+  );
+  expect(ops("Owner")).toMatch(/= internal global %ScrArrOps .*, i32 0 \}$/);
 });
 
 test("classes whose trace visits nothing start acyclic in a traced hierarchy", () => {

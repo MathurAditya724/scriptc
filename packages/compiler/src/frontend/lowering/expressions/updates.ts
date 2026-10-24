@@ -1,5 +1,15 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
+import {
+  indexedUnionArms,
+  lowerIndexedUnionNumberRead,
+  lowerIndexedUnionWrite,
+} from "../indexed-unions.js";
 import * as ts from "../../ts7/adapter.js";
+import {
+  lowerOptionalIndex,
+  splitUndefinedIndex,
+  undefinedTypedArrayKeyFence,
+} from "../undefined-index.js";
 import { isStrictCode } from "../strict-mode.js";
 import { isPrivateWriteReceiver } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
@@ -186,6 +196,10 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       operatorUnsupported(lowerer, expr, "+", [raw.type]);
     }
     case ts.SyntaxKind.ExclamationToken: {
+      // `!runtimeBuffer` over an alias of the Buffer global: Node always
+      // defines Buffer (the condition twin is lowerCondition's).
+      if (lowerer.isStdlibGlobal(expr.operand, "Buffer"))
+        return { kind: "boolLit", value: false, type: BOOL, loc };
       // `!x` is ToBoolean-then-negate: f64/string operands go through toBool.
       const operand = lowerer.ensureBool(
         deferredSlotOr(
@@ -311,12 +325,27 @@ export function lowerIncDec(
       (raw.type.kind === "array" || raw.type.kind === "bytes")
     ) {
       const receiver = save(raw, "%incrementArray");
-      const rawIndex = lowerOptionalNumber(
-        lowerer,
-        lowerer.lowerExpr(access.argumentExpression),
-        locOf(access.argumentExpression),
-        access.argumentExpression,
-      );
+      // An undefined index names the "undefined" property
+      // (undefined-index.ts), which a typed array cannot hold.
+      const loweredIndex = lowerer.lowerExpr(access.argumentExpression);
+      const split =
+        raw.type.kind === "bytes"
+          ? splitUndefinedIndex(
+              lowerer,
+              loweredIndex,
+              access.argumentExpression,
+              locOf(access.argumentExpression),
+            )
+          : null;
+      if (split) stmts.push(...split.stmts);
+      const rawIndex =
+        split?.index ??
+        lowerOptionalIndex(
+          lowerer,
+          loweredIndex,
+          locOf(access.argumentExpression),
+          access.argumentExpression,
+        );
       const index = save(
         rawIndex.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))
           ? { kind: "libCall", fn: "dyn.toNumberCoerce", args: [rawIndex], type: F64, loc }
@@ -340,7 +369,7 @@ export function lowerIncDec(
               loc,
               invalidNaN: true,
             };
-      return finish(read, (value) =>
+      const store = (value: IrExpr): IrStmt =>
         type.kind === "array"
           ? arrayValueStore(
               lowerer,
@@ -356,7 +385,47 @@ export function lowerIncDec(
               index,
               value: lowerer.coerceInto(access, value, F64),
               loc,
-            },
+            };
+      if (!split) return finish(read, store);
+      return finish(read, (value) => ({
+        kind: "if",
+        cond: split.isUndefined,
+        then: [undefinedTypedArrayKeyFence(lowerer, access, loc)],
+        else_: [store(value)],
+        loc,
+      }));
+    }
+    // A union of typed arrays and number arrays (indexed-unions.ts): the
+    // element read as a number and the union's element write.
+    const indexedArms = indexedUnionArms(lowerer, raw.type);
+    if (
+      ts.isElementAccessExpression(access) &&
+      indexedArms &&
+      !isJsSourceFile(ts.getSourceFileOfNode(expr))
+    ) {
+      const receiver = save(raw, "%incrementArray");
+      const index = save(
+        lowerOptionalIndex(
+          lowerer,
+          lowerer.lowerExpr(access.argumentExpression),
+          locOf(access.argumentExpression),
+          access.argumentExpression,
+        ),
+        "%incrementIndex",
+      );
+      if (index.type.kind !== "f64")
+        lowerer.unsupported("SC1090", access, "incrementing non-number array keys");
+      return finish(
+        lowerIndexedUnionNumberRead(lowerer, receiver, indexedArms, index, loc),
+        (value) =>
+          lowerIndexedUnionWrite(
+            lowerer,
+            receiver,
+            indexedArms,
+            index,
+            lowerer.coerceInto(access, value, F64),
+            loc,
+          ),
       );
     }
     // A TS member statically typed number on a checked-dynamic receiver (a

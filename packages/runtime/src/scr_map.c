@@ -988,6 +988,12 @@ double scr_map_size(const ScrMap *m) { return (double)m->nlive; }
  *    table. Regrowth is amortized against the insertions that need it.
  * A map without entries has empty tables already: clearing it does no
  * work and keeps its storage for the next fill. */
+void scr_map_prevent_extensions(ScrMap *m) {
+  if (m->rc != SIZE_MAX) m->flags |= SCR_MAP_NOT_EXTENSIBLE;
+}
+
+bool scr_map_is_extensible(const ScrMap *m) { return (m->flags & SCR_MAP_NOT_EXTENSIBLE) == 0; }
+
 void scr_map_clear(ScrMap *m) {
   size_t walked = m->nentries;
   if (walked == 0) return;
@@ -1706,7 +1712,7 @@ ScrMap *scr_map_clone(const ScrMap *source, bool keys_only, const ScrMapOps *ops
 const ScrMapOps scr_map_dyn_set_ops = {
   scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v, NULL, NULL, NULL, NULL
 };
-static const ScrMapOps scr_map_dyn_map_ops = {
+const ScrMapOps scr_map_dyn_map_ops = {
   scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v,
   scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v, NULL
 };
@@ -1779,7 +1785,7 @@ void scr_set_add_all(ScrMap *set, ScrArr *values) {
     /* Packed values stay owned by the seed array throughout construction.
      * Avoid taking a temporary owner only to release it after insertion.
      * Sparse/missing positions retain the existing accessor semantics. */
-    if (i < values->cap && *scr_arr_state_ptr(values, i) == SCR_ARR_VALUE) {
+    if (i < values->cap && scr_arr_dense_state(values, i) == SCR_ARR_VALUE) {
       uint64_t key = scr_arr_dense_get(values, i);
       if (set->key_kind == SCR_MAP_KEY_F64) key = scr_map_f64_bits(scr_map_slot_to_f64(key));
       scr_map_set(set, scr_map_hash_key(set, key), key, 0);

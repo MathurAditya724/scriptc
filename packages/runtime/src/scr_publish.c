@@ -204,7 +204,7 @@ static void scr_pub_slot(ScrPub *ctx, uint64_t slot, ScrPubFn fn) {
 static __attribute__((noinline)) void scr_pub_cref_elems(ScrArr *a, ScrPub *ctx, ScrPubFn fn) {
   size_t dense = a->len < a->cap ? a->len : a->cap;
   const uint32_t *refs = (const uint32_t *)a->data;
-  const uint8_t *states = scr_arr_states_end_w(a, sizeof(uint32_t));
+  const uint8_t *states = scr_arr_has_states(a) ? scr_arr_states_end_w(a, sizeof(uint32_t)) : NULL;
   for (size_t i = 0; i < dense; i++)
     if (!states || *scr_arr_state_in(states, i)) scr_pub_slot(ctx, scr_cref_decode(refs[i]), fn);
   if (scr_arr_ext_of(a))
@@ -227,7 +227,7 @@ void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem) {
   if (!fn) return;
   /* String and reference elements have 8-byte slots. */
   size_t dense = a->len < a->cap ? a->len : a->cap;
-  const uint8_t *states = scr_arr_states_end_w(a, sizeof(uint64_t));
+  const uint8_t *states = scr_arr_scan_states(a);
   for (size_t i = 0; i < dense; i++)
     if (!states || *scr_arr_state_in(states, i)) scr_pub_slot(ctx, a->data[i], fn);
   if (scr_arr_ext_of(a))
@@ -527,62 +527,12 @@ void scr_throw_published_field(const char *prop, const char *owner) {
   scr_pub_throw("Cannot assign to read only property '%s' of object '#<%s>'", prop, owner);
 }
 
-static void scr_pub_index_text(double index, char *out, size_t size) {
-  char buf[64];
-  size_t n = scr_f64_to_str(index, buf);
-  if (n > size - 1) n = size - 1;
-  memcpy(out, buf, n);
-  out[n] = 0;
+bool scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
+  return scr_array_frozen_error(op, a->len, index, n, 0);
 }
 
-/* op: 0 index write, 1 push (n = argument count), 2 pop, 3 length write,
- * 4 unshift (n = argument count), 5 delete, 6 shift, 7 other in-place
- * rewrites (splice, reverse, fill, copyWithin, sort). Returns false when
- * Node's operation would not write the frozen array at all (it then is not
- * an error: e.g. reversing an empty array). */
-bool scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
-  static const char length[] = "Cannot assign to read only property 'length' of object '[object Array]'";
-  char text[64];
-  size_t len = a->len;
-  switch (op) {
-  case 0:
-    scr_pub_index_text(index, text, sizeof text);
-    if (index >= 0 && index < (double)len && index == (double)(size_t)index)
-      scr_pub_throw("Cannot assign to read only property '%s' of object '[object Array]'%s", text, "");
-    else scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 1:
-    if (n == 0) break;
-    scr_pub_index_text((double)len, text, sizeof text);
-    scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 2:
-  case 6:
-    if (len == 0) break;
-    if (op == 6 && len > 1) {
-      scr_pub_throw("Cannot assign to read only property '0' of object '[object Array]'%s%s", "", "");
-      return true;
-    }
-    scr_pub_index_text((double)(len - 1), text, sizeof text);
-    scr_pub_throw("Cannot delete property '%s' of [object Array]%s", text, "");
-    return true;
-  case 3: break;
-  case 4:
-    if (n == 0) break;
-    scr_pub_index_text(len ? (double)len + n - 1 : 0, text, sizeof text);
-    scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 5:
-    scr_pub_index_text(index, text, sizeof text);
-    scr_pub_throw("Cannot delete property '%s' of [object Array]%s", text, "");
-    return true;
-  default:
-    if (len == 0) return false;
-    scr_pub_throw("Cannot assign to read only property '0' of object '[object Array]'%s%s", "", "");
-    return true;
-  }
-  scr_throw_error_msg(SCR_ERR_TYPE, length, sizeof length - 1);
-  return true;
+bool scr_throw_published_array_range(int op, const ScrArr *a, double x, double y, double z) {
+  return scr_array_frozen_error(op, a->len, x, y, z);
 }
 
 void scr_throw_published_collection(bool set) {

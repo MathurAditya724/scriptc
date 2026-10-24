@@ -11,6 +11,7 @@ import {
   type IrExpr,
   type IrFunction,
   classValueConstructor,
+  type IrType,
 } from "../../ir/ir.js";
 import { liveRefView } from "./expr-stream-bridges.js";
 import { typedRefConstructor, vAdapters } from "./shapes.js";
@@ -43,6 +44,7 @@ import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { f64Lit, ffiNativeTypeLl, ffiNativeParamLl, ffiNativeReturnLl } from "./common.js";
 import { canStackUnion, emitStackUnion } from "./stack-unions.js";
+import { emitStackRecordKeyGet, scalarRecordKeyGet } from "./expr-records.js";
 import { emitCallArrayRead } from "./local-array-reads.js";
 import { emitScalarOptional, isScalarOptionalSource } from "./local-union-storage.js";
 import { emitStackMapRead } from "./map-read-lifetimes.js";
@@ -55,6 +57,7 @@ import {
 import type { Writes } from "./reference-writes.js";
 import { emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
 import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
+import { registerReplay } from "./emit-journal.js";
 
 export function emitCallExpr(
   host: LlvmEmitterContext,
@@ -164,6 +167,9 @@ export function emitCallExpr(
               return { name: host.emitOwnedNullableStack(a).box, type: a.type };
             // An inline union field read copies its tag and bits.
             if (host.inlineFieldGet(a)) return host.emitReadReceiver(a);
+            // A scalar keyed record read writes its tag and bits.
+            if (a.kind === "recordKeyGet" && scalarRecordKeyGet(host, a))
+              return { name: emitStackRecordKeyGet(host, a), type: a.type };
           }
           if (inputs[index]) return host.emitReadReceiver(a);
         }
@@ -815,22 +821,7 @@ export function emitCallExpr(
       const pushReceiver = (): void => {
         if (lazyReceiver) {
           const t = lazyReceiver.type;
-          const key = typeKey(t);
-          let recipe = host.typedRefRecipes.get(key);
-          if (recipe === undefined) {
-            const adapter = host.liveDynRefAdapter(t);
-            const rc = vAdapters(host.shapeHost, t);
-            const ctor = typedRefConstructor(host.shapeHost, t);
-            const kind = ctor.endsWith("_traced") ? 2 : ctor.endsWith("_observed") ? 1 : 0;
-            // The box binds the same live view eager boxing attaches, so
-            // `in`, for-in and Object.keys see the class members.
-            const view = liveRefView(adapter);
-            recipe = `@sc_trr_${host.typedRefRecipes.size}`;
-            host.typedRefRecipes.set(key, recipe);
-            host.resolveThunkDefs.push(
-              `${recipe} = internal constant { ptr, ptr, ptr, ${host.sizeType}, ptr, ptr, i32, i32, ptr } { ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit}, i32 ${kind}, i32 ${view?.code ?? 0}, ptr ${view?.ops ?? "null"} }`,
-            );
-          }
+          const recipe = typedRefRecipe(host, t);
           host.declare("declare void @scr_dyn_this_push_typed(ptr, ptr)");
           B.line(`call void @scr_dyn_this_push_typed(ptr ${lazyReceiver.name}, ptr ${recipe})`);
           return;
@@ -1493,3 +1484,28 @@ function emitNumericIndexRead(
   B.line(`${result} = phi ptr [ ${fast}, %${fastLabel} ], [ ${read.name}, %${slowLabel} ]`);
   return host.own({ name: result, type: e.type });
 }
+
+/** The recipe a lazily boxed receiver of type `t` is built from: its RC
+ * adapters, type key and live view, one per type. */
+function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
+  const key = typeKey(t);
+  let recipe = host.typedRefRecipes.get(key);
+  if (recipe !== undefined) return recipe;
+  const adapter = host.liveDynRefAdapter(t);
+  const rc = vAdapters(host.shapeHost, t);
+  const ctor = typedRefConstructor(host.shapeHost, t);
+  const kind = ctor.endsWith("_traced") ? 2 : ctor.endsWith("_observed") ? 1 : 0;
+  // The box binds the same live view eager boxing attaches, so `in`,
+  // for-in and Object.keys see the class members.
+  const view = liveRefView(adapter);
+  recipe = `@sc_trr_${host.typedRefRecipes.size}`;
+  host.typedRefRecipes.set(key, recipe);
+  host.journal?.allocated(recipe, "typedRefRecipe", [t]);
+  host.resolveThunkDefs.push(
+    `${recipe} = internal constant { ptr, ptr, ptr, ${host.sizeType}, ptr, ptr, i32, i32, ptr } { ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit}, i32 ${kind}, i32 ${view?.code ?? 0}, ptr ${view?.ops ?? "null"} }`,
+  );
+  host.journal?.built();
+  return recipe;
+}
+
+registerReplay("typedRefRecipe", (host, args) => typedRefRecipe(host, args[0] as IrType));

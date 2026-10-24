@@ -2,13 +2,14 @@ import { keyedHelperName } from "../stable-names.js";
 import { checkedPromiseAll, thenReader } from "../checked-promise-all.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
-import { newFnCtx, type Lowerer } from "../lowerer.js";
+import type { Lowerer } from "../lowerer.js";
 import { varRef } from "../../../ir/build.js";
 import { maybePromiseResolve, maybePromiseUnionOf } from "../maybe-promise.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
   BOOL,
   DYN,
+  F64,
   type IrExpr,
   type IrFunction,
   type IrStmt,
@@ -16,31 +17,23 @@ import {
   UNDEFINED_T,
   VOID,
   arrayOf,
+  funcOf,
   isUnitType,
   typeEquals,
   typeKey,
 } from "../../../ir/ir.js";
 
 /** `Promise.all([p, q, r])` over DIFFERENT promise types — the checker's
- * tuple overload, `Promise<[A, B, C]>`. One interned async helper per
- * entry/result signature takes the entries as arguments, awaits the
- * runtime combinator over the same promises (each widened to
- * Promise<void>, a type-only view), so settlement is Node's exactly: the
- * first rejection in settlement order wins and every later one counts as
- * handled; then it reads each (now fulfilled) entry and returns the
- * tuple. Entries keep their identity — no value converts through the
- * checked-dynamic tree. Non-promise entries (numbers, strings, booleans,
- * unit values — never thenable) pass straight into their slot; a
- * checked-dynamic entry (a JavaScript function's result) joins through
- * PromiseResolve: the promise it holds, a promise that adopts a thenable,
- * or a promise fulfilled with its plain value. The tuple
- * fulfills one microtask turn after the combinator does. Null when the
- * result type or an entry has no typed home here. */
-function lowerTuplePromiseAll(
+ * tuple overload, `Promise<[A, B, C]>`: the result type and tuple shape,
+ * or null when the result type or an entry has no typed home here.
+ * Entries are promises, checked-dynamic values (a JavaScript function's
+ * result) and plain numbers, strings, booleans and unit values, which are
+ * never thenable. */
+function tuplePromiseAllShape(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  elems: IrExpr[],
-): IrExpr | null {
+  elems: readonly IrExpr[],
+): { resultT: IrType & { kind: "promise" }; tuple: IrType & { kind: "record" } } | null {
   const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
   if (resultT?.kind !== "promise" || resultT.inner.kind !== "record") return null;
   const shape = lowerer.shapes.get(resultT.inner.shapeId);
@@ -52,135 +45,159 @@ function lowerTuplePromiseAll(
   const settles = (t: IrType): boolean => t.kind === "promise" || t.kind === "dyn";
   if (!elems.some((e) => settles(e.type))) return null;
   if (!elems.every((e) => settles(e.type) || plainValue(e.type))) return null;
+  return { resultT, tuple: resultT.inner };
+}
+
+/** `Promise.all([p, q, r])` over different promise types. Each entry
+ * becomes a promise in input order (a plain value through Promise.resolve,
+ * a checked-dynamic one through its PromiseResolve view: the promise it
+ * holds, a promise that adopts a thenable, or a promise fulfilled with the
+ * value), widened to Promise<void>, a type-only view. The runtime
+ * combinator over them gives Node's settlement: the first rejection in
+ * settlement order wins and every later one counts as handled. The
+ * result settles inside the combinator's own settlement, so it and its
+ * awaits land on Node's microtask turns; a fulfillment runs one interned
+ * function per entry/result signature that reads the fulfilled entries
+ * into the tuple. Entries keep their identity: no value converts through
+ * the checked-dynamic tree. */
+function lowerTuplePromiseAll(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  elems: IrExpr[],
+): IrExpr | null {
+  const plan = tuplePromiseAllShape(lowerer, call, elems);
+  if (!plan) return null;
+  const { resultT, tuple } = plan;
   const loc = locOf(call);
-  const key = `${elems.map((e) => typeKey(e.type)).join(",")}->${typeKey(resultT.inner)}`;
+  const voidPromise: IrType & { kind: "promise" } = { kind: "promise", inner: VOID };
+  const entriesT = arrayOf(voidPromise);
+  const dynPromise: IrType = { kind: "promise", inner: DYN };
+  // A checked-dynamic entry's PromiseResolve can run a `then` getter, which
+  // Node runs after the whole array literal evaluated. With such an entry,
+  // every entry evaluates into a hidden local first.
+  const staged: IrStmt[] = [];
+  const values = !elems.some((e) => e.type.kind === "dyn")
+    ? elems
+    : elems.map((e): IrExpr => {
+        if (e.kind === "unitLit") return e;
+        if (isUnitType(e.type)) {
+          staged.push({ kind: "exprStmt", expr: e, loc });
+          return {
+            kind: "unitLit",
+            unit: e.type.kind === "nullT" ? "null" : "undefined",
+            type: e.type,
+            loc,
+          };
+        }
+        const local = lowerer.declareHiddenLocal("%allValue", e.type);
+        staged.push({ kind: "varDecl", localId: local.id, init: e, loc });
+        return varRef(local.id, e.type, loc);
+      });
+  const entries = values.map((e): IrExpr => {
+    let promise: IrExpr;
+    if (e.type.kind === "promise") promise = e;
+    else if (e.type.kind === "dyn")
+      promise = {
+        kind: "libCall",
+        fn: "dyn.promiseResolve",
+        args: [e, thenReader(lowerer, loc)],
+        type: dynPromise,
+        loc,
+      };
+    else if (isUnitType(e.type)) {
+      // A unit entry's value is its type's one value; the promise only
+      // takes its place in the combinator.
+      const resolved: IrExpr = {
+        kind: "intrinsic",
+        name: "promise.resolve",
+        args: [],
+        type: voidPromise,
+        loc,
+      };
+      promise =
+        e.kind === "unitLit"
+          ? resolved
+          : {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: e, loc }],
+              result: resolved,
+              type: voidPromise,
+              loc,
+            };
+    } else
+      promise = {
+        kind: "intrinsic",
+        name: "promise.resolve",
+        args: [e],
+        type: { kind: "promise", inner: e.type },
+        loc,
+      };
+    return promise.type.kind === "promise" && promise.type.inner.kind === "void"
+      ? promise
+      : { kind: "promiseVoidWiden", value: promise, type: voidPromise, loc };
+  });
+  const key = `${elems.map((e) => typeKey(e.type)).join(",")}->${typeKey(tuple)}`;
   let name = lowerer.arrHofHelpers.get(`promise.allTuple:${key}`);
   if (name === undefined) {
     name = keyedHelperName(lowerer, "%promise.allTuple", `promise.allTuple:${key}`);
     lowerer.arrHofHelpers.set(`promise.allTuple:${key}`, name);
-    const ctx = newFnCtx(false, null, null, resultT.inner);
-    ctx.isAsync = true;
-    lowerer.fnStack.push(ctx);
-    try {
-      const params = elems.map((e, i) => ({
-        localId: `entry.${i}`,
-        name: `entry${i}`,
-        type: e.type,
-      }));
-      const ref = (i: number): IrExpr => varRef(`entry.${i}`, elems[i]!.type, loc);
-      const dynPromise: IrType = { kind: "promise", inner: DYN };
-      const body: IrStmt[] = [];
-      // Each dyn entry's promise view, in entry order: the promise it
-      // holds, a promise that adopts a thenable's settlement, or a promise
-      // fulfilled with the plain value (PromiseResolve's rule).
-      const views = new Map<number, IrExpr>();
-      elems.forEach((e, i) => {
-        if (e.type.kind !== "dyn") return;
-        const view = lowerer.declareHiddenLocal("%allEntry", dynPromise);
-        body.push({
-          kind: "varDecl",
-          localId: view.id,
-          init: {
-            kind: "libCall",
-            fn: "dyn.promiseResolve",
-            args: [ref(i), thenReader(lowerer, loc)],
-            type: dynPromise,
-            loc,
-          },
-          loc,
-        });
-        views.set(i, varRef(view.id, dynPromise, loc));
-      });
-      const widened: IrExpr[] = [];
-      elems.forEach((e, i) => {
-        const view = views.get(i);
-        if (view !== undefined) {
-          widened.push({
-            kind: "promiseVoidWiden",
-            value: view,
-            type: { kind: "promise", inner: VOID },
-            loc,
-          });
-          return;
-        }
-        if (e.type.kind !== "promise") return;
-        widened.push(
-          e.type.inner.kind === "void"
-            ? ref(i)
-            : {
-                kind: "promiseVoidWiden",
-                value: ref(i),
-                type: { kind: "promise", inner: VOID },
+    const shape = lowerer.shapes.get(tuple.shapeId)!;
+    const entriesRef = varRef("entries.0", entriesT, loc);
+    // Shape fields are sorted by name ("10" before "2"); a tuple field's
+    // name is its position.
+    const fields = shape.fields.map((field) => {
+      const i = Number(field.name);
+      const type = elems[i]!.type;
+      const inner = type.kind === "promise" ? type.inner : type;
+      const value: IrExpr =
+        inner.kind === "void"
+          ? { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc }
+          : isUnitType(inner)
+            ? {
+                kind: "unitLit",
+                unit: inner.kind === "nullT" ? "null" : "undefined",
+                type: inner,
                 loc,
-              },
-        );
-      });
-      const settled: IrExpr = {
-        kind: "awaitExpr",
-        value: {
-          kind: "intrinsic",
-          name: "promise.all",
-          args: [
-            {
-              kind: "arrayLit",
-              elems: widened,
-              type: arrayOf({ kind: "promise", inner: VOID }),
-              loc,
-            },
-          ],
-          type: { kind: "promise", inner: VOID },
-          loc,
-        },
-        type: VOID,
-        loc,
-      };
-      // Shape fields are sorted by name ("10" before "2"); a tuple field's
-      // name is its position.
-      const fields = shape.fields.map((field) => {
-        const i = Number(field.name);
-        const entry = elems[i]!;
-        let value: IrExpr;
-        const view = views.get(i);
-        if (view !== undefined) {
-          value = { kind: "awaitExpr", value: view, type: DYN, loc };
-        } else if (entry.type.kind === "promise") {
-          value =
-            entry.type.inner.kind === "void"
-              ? { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc }
-              : { kind: "awaitExpr", value: ref(i), type: entry.type.inner, loc };
-        } else {
-          value = ref(i);
-        }
-        return { name: field.name, value: lowerer.coerceToExpected(value, field.type) };
-      });
-      body.push(
-        { kind: "exprStmt", expr: settled, loc },
-        {
-          kind: "return",
-          value: { kind: "recordLit", fields, type: resultT.inner, loc },
-          loc,
-        },
-      );
-      lowerer.liftedFns.push({
-        name,
-        params,
-        returnType: resultT.inner,
-        locals: [
-          ...params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
-          ...lowerer.ctx.locals,
-        ],
-        body,
-        async: true,
-        loc,
-      });
-    } catch (e) {
-      lowerer.arrHofHelpers.delete(`promise.allTuple:${key}`);
-      throw e;
-    } finally {
-      lowerer.fnStack.pop();
-    }
+              }
+            : {
+                kind: "libCall",
+                fn: "promise.fulfilledValue",
+                args: [
+                  {
+                    kind: "arrayGet",
+                    arr: entriesRef,
+                    index: { kind: "numLit", value: i, type: F64, loc },
+                    type: voidPromise,
+                    loc,
+                  },
+                ],
+                type: inner,
+                loc,
+              };
+      return { name: field.name, value: lowerer.coerceToExpected(value, field.type) };
+    });
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "entries.0", name: "entries", type: entriesT }],
+      returnType: tuple,
+      locals: [{ id: "entries.0", name: "entries", type: entriesT, mutable: false }],
+      body: [{ kind: "return", value: { kind: "recordLit", fields, type: tuple, loc }, loc }],
+      loc,
+    });
   }
-  return { kind: "call", callee: name, args: elems, type: resultT, loc };
+  const all: IrExpr = {
+    kind: "libCall",
+    fn: "promise.allTuple",
+    args: [
+      { kind: "arrayLit", elems: entries, type: entriesT, loc },
+      { kind: "closure", fnName: name, captures: [], type: funcOf([entriesT], tuple), loc },
+    ],
+    type: resultT,
+    loc,
+  };
+  return staged.length === 0
+    ? all
+    : { kind: "seqExpr", stmts: staged, result: all, type: resultT, loc };
 }
 
 /** `Promise.race([...])` on THE Promise global: the entries lower
@@ -376,8 +393,14 @@ export function lowerPromiseStaticCall(
       );
     }
     const entries = lowerer.lowerExpr(argNode);
-    if (isJsSourceFile(ts.getSourceFileOfNode(call)) && entries.type.kind === "dyn")
-      return checkedPromiseAll(lowerer, entries, loc);
+    if (entries.type.kind === "dyn") return checkedPromiseAll(lowerer, entries, loc);
+    // An 'any'-typed argument that holds a typed value (`const xs: any =
+    // []`): the combinator reads it as the runtime value it is.
+    if (
+      (lowerer.typeOf(argNode).flags & ts.TypeFlags.Any) !== 0 &&
+      lowerer.dynConvertible(entries.type)
+    )
+      return checkedPromiseAll(lowerer, lowerer.coerceToExpected(entries, DYN), loc);
 
     // loadPlugin(p)))` — the loadPlugins shape, where the checker
     // spells `any[]`): the ENGINE's own Promise.all runs over the
@@ -844,4 +867,90 @@ function lowerTypedSettledCombinator(
     );
   }
   return { kind: "intrinsic", name: "promise.allSettled", args: [entries], type: resultT, loc };
+}
+
+/** `const pair = await Promise.all([p, q])` where every entry is the same
+ * Promise<T> and the binding's type is the checker's tuple `[T, T]`: the
+ * uniform entries settle through one runtime combinator into a T[] (the
+ * same combinator and turn as the array form), and the binding receives
+ * the tuple of its elements. Null for every other await. */
+export function lowerAwaitedUniformPromiseAll(
+  lowerer: Lowerer,
+  expr: ts.AwaitExpression,
+): IrExpr | null {
+  let operand: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (
+    !ts.isCallExpression(operand) ||
+    operand.questionDotToken ||
+    !ts.isPropertyAccessExpression(operand.expression) ||
+    operand.arguments.nodes.length !== 1 ||
+    isJsSourceFile(ts.getSourceFileOfNode(expr))
+  )
+    return null;
+  const argNode = operand.arguments.nodes[0]!;
+  if (
+    !ts.isArrayLiteralExpression(argNode) ||
+    argNode.elements.nodes.length === 0 ||
+    argNode.elements.nodes.some(ts.isSpreadElement)
+  )
+    return null;
+  let user: ts.Node = expr;
+  while (ts.isParenthesizedExpression(user.parent)) user = user.parent;
+  const decl = user.parent;
+  if (!ts.isVariableDeclaration(decl) || decl.initializer !== user || !ts.isIdentifier(decl.name))
+    return null;
+  if (lowerer.stdlibGlobalMember(operand.expression, "Promise") !== "all") return null;
+  const tuple = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+  if (tuple?.kind !== "record") return null;
+  const shape = lowerer.shapes.get(tuple.shapeId);
+  if (!shape?.tuple || shape.fields.length !== argNode.elements.nodes.length) return null;
+  const elems = argNode.elements.nodes.map((el) => lowerer.lowerExpr(el));
+  const first = elems[0]!.type;
+  if (
+    first.kind !== "promise" ||
+    first.inner.kind === "void" ||
+    !elems.every((e) => typeEquals(e.type, first)) ||
+    !shape.fields.every((f) => typeEquals(f.type, first.inner))
+  )
+    return null;
+  const loc = locOf(expr);
+  const values = arrayOf(first.inner);
+  const local = lowerer.declareHiddenLocal("%allValues", values);
+  const all: IrExpr = {
+    kind: "intrinsic",
+    name: "promise.all",
+    args: [{ kind: "arrayLit", elems, type: arrayOf(first), loc }],
+    type: { kind: "promise", inner: values },
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: local.id,
+        init: { kind: "awaitExpr", value: all, type: values, loc },
+        loc,
+      },
+    ],
+    // Shape fields are sorted by name; a tuple field's name is its position.
+    result: {
+      kind: "recordLit",
+      fields: shape.fields.map((f) => ({
+        name: f.name,
+        value: {
+          kind: "arrayGet",
+          arr: varRef(local.id, values, loc),
+          index: { kind: "numLit", value: Number(f.name), type: F64, loc },
+          type: f.type,
+          loc,
+        },
+      })),
+      type: tuple,
+      loc,
+    },
+    type: tuple,
+    loc,
+  };
 }

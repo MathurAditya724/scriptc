@@ -1019,7 +1019,9 @@ class FusedLoop {
   private callee(arg: IrExpr & { type: FuncType }): Callee {
     const known = this.callees.find((c) => c.arg === arg);
     if (known) return known;
-    const target = this.inlineTarget(arg);
+    // Called as a plain function: the loop is not the target's receiver.
+    const inlineTarget = this.inlineTarget;
+    const target = inlineTarget(arg);
     let callee: Callee;
     if (target && arg.kind === "closure") {
       const captures = new Map<string, string>();
@@ -1263,17 +1265,28 @@ class FusedLoop {
         loc,
       });
       if (holes) {
+        // The result keeps the source's holes: storage for its length is
+        // reserved first and the length is set after the loop, so a result
+        // without holes is filled by appends and gets no state bytes.
+        const length = (): IrExpr => ({
+          kind: "ternary",
+          cond: { kind: "bin", op: "<", left: lo, right: hi, type: BOOL, loc },
+          then: { kind: "bin", op: "-", left: hi, right: lo, type: F64, loc },
+          else_: numLit(0, loc),
+          type: F64,
+          loc,
+        });
         stateDecls.push({
           kind: "arraySetLength",
           arr: varRef(out, resultT, loc),
-          length: {
-            kind: "ternary",
-            cond: { kind: "bin", op: "<", left: lo, right: hi, type: BOOL, loc },
-            then: { kind: "bin", op: "-", left: hi, right: lo, type: F64, loc },
-            else_: numLit(0, loc),
-            type: F64,
-            loc,
-          },
+          length: length(),
+          loc,
+          reserve: true,
+        });
+        epilogue.push({
+          kind: "arraySetLength",
+          arr: varRef(out, resultT, loc),
+          length: length(),
           loc,
         });
       }
