@@ -2189,8 +2189,11 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
   return object;
 }
 
+static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
+
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
+  if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
   if (scr_dyn_class_reflection_fence(object)) return NULL;
   if (object->kind == SCR_DYN_TYPED_REF && strncmp(object->v.typed_ref.type_key, "object:", 7)) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
@@ -8839,6 +8842,26 @@ static void scr_error_dyn_add_stack(ScrDyn *d) {
   entry->getter = scr_dyn_retain(scr_error_stack_accessors[0]);
   entry->setter = scr_dyn_retain(scr_error_stack_accessors[1]);
   entry->enumerable = false;
+}
+
+/* Whether `object` is the view of an error built as an Error (not a
+ * subclass or another error kind) whose prototype is still the one its view
+ * starts with: none, or the holder of its default `name` and `message`
+ * (scr_error_dyn_fields). Such an error's prototype is Error.prototype. */
+static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object) {
+  const ScrDyn *holder = object->prototype;
+  if (object->null_proto) return false;
+  if (holder) {
+    if (holder->kind != SCR_DYN_OBJ || holder->prototype || holder->null_proto || holder->v.obj.len > 2) return false;
+    for (size_t i = 0; i < holder->v.obj.len; i++) {
+      const ScrDynEntry *entry = &holder->v.obj.entries[i];
+      bool known = (entry->key_len == 4 && memcmp(entry->key, "name", 4) == 0) ||
+                   (entry->key_len == 7 && memcmp(entry->key, "message", 7) == 0);
+      if (!known || entry->enumerable || entry->accessor) return false;
+    }
+  }
+  size_t hit = scr_errdyn_find(object, false);
+  return hit != SIZE_MAX && scr_errdyn_cache[hit].err->vt == &scr_error_vts[SCR_ERR_ERROR];
 }
 
 ScrDyn *scr_error_dyn_fields(const ScrError *e) {
