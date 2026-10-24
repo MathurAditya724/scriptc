@@ -317,8 +317,10 @@ function pairRows(
     loc,
   };
   // Both bounds are int32, so `row < end - 1` is `row + 1 < end`, and the
-  // start is at most the end. Rows are independent when the written array
-  // shares no byte with an array the term reads.
+  // nest has at least two rows. The overlap tests run only then, so they never
+  // read an array the program assigns only when there are rows. Rows are
+  // independent when the written array shares no byte with an array the
+  // term reads; an array that is not there answers false.
   const int32 = (e: IrExpr): IrExpr => ({
     kind: "bin",
     op: "===",
@@ -330,7 +332,14 @@ function pairRows(
   const tests: IrExpr[] = [
     int32(match.start),
     int32(match.end),
-    { kind: "bin", op: "<=", left: again(match.start), right: again(match.end), type: BOOL, loc },
+    {
+      kind: "bin",
+      op: "<",
+      left: bin("+", again(match.start), num(1), loc),
+      right: again(match.end),
+      type: BOOL,
+      loc,
+    },
     ...match.reads.map((read): IrExpr => ({
       kind: "libCall",
       fn: "bytes.disjoint",
@@ -400,7 +409,7 @@ function pairRows(
  * expression of `row + 1`. The term only reads numbers, the counters and
  * typed-array elements, so it runs no other code and cannot throw. The
  * nest runs paired when both row bounds are int32 (so `row < end - 1` is
- * `row + 1 < end`), the start is at most the end, and the array the rows
+ * `row + 1 < end`), there are at least two rows, and the array the rows
  * store into shares no byte with any array the term reads, so no row reads
  * another row's result. An odd row count runs its last row as written.
  * Otherwise the nest runs as written. Two independent sums take turns in

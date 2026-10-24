@@ -70,3 +70,21 @@ weighted(f, w, out, 0, n);
 show("weighted", out);
 weighted(f, w, out, 1, n - 1);
 show("weighted inner", out);
+
+// Arrays a program assigns only when the row range is nonempty: an empty or
+// one-row range never reads them, and the paired copy does not either.
+function lazyRows(n: number, start: number, end: number): number {
+  let u!: Float64Array;
+  let v!: Float64Array;
+  if (end > start) {
+    u = new Float64Array(n).fill(1);
+    v = new Float64Array(end);
+  }
+  for (let i = start; i < end; i++) {
+    let t = 0;
+    for (let j = 0; j < n; j++) t += u[j]! / (i + j + 1);
+    v[i] = t;
+  }
+  return end > start ? v[end - 1]! : -1;
+}
+console.log("lazy", lazyRows(4, 3, 3), lazyRows(4, 2, 3), lazyRows(4, 0, 5), lazyRows(0, 5, 5));
