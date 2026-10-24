@@ -1461,6 +1461,7 @@ export function emitMapLikeIntrinsic(
               : emitStringMapGetScalar(host, r.name, stringKey!);
           found = scalar.found;
           if (stringKey !== null) rememberMapEntry(host, e, r.name, stringKey, scalar.entry);
+          else rememberMapEntry(host, e, r.name, numberKey!, scalar.entry, "double");
           readHit = () => {
             const hit = B.tmp();
             B.line(
@@ -1532,7 +1533,13 @@ export function emitMapLikeIntrinsic(
       const vAcc = elemAccess(receiverType.value);
       if (vAcc === "ref") host.toHeap(v);
       const ordinary = (): void => host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
-      if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
+      if (
+        (kAcc === "str" || kAcc === "f64") &&
+        vAcc !== "ref" &&
+        emitFusedMapSet(host, e, r.name, k.name, { name: v.name, access: vAcc }, ordinary)
+      ) {
+        // Written through the read's entry, or inserted.
+      } else if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
         const bits = B.tmp();
         B.line(
           vAcc === "f64"
@@ -1540,12 +1547,7 @@ export function emitMapLikeIntrinsic(
             : `${bits} = zext i1 ${v.name} to i64`,
         );
         emitNumberMapSetScalar(host, r.name, k.name, bits, ordinary);
-      } else if (
-        kAcc !== "str" ||
-        vAcc === "ref" ||
-        !emitFusedMapSet(host, e, r.name, k.name, { name: v.name, access: vAcc }, ordinary)
-      )
-        ordinary();
+      } else ordinary();
       return { name: "", type: e.type };
     }
     case "add": {
