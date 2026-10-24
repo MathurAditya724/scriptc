@@ -421,10 +421,24 @@ function rewriteFunction(fn: IrFunction): IrFunction {
       const read = optionalCharRead(operand)!;
       if (read.plain || !optional.twice) {
         changed = true;
-        return optional.test(() => unitRead(read, operand.loc));
+        const rewritten = rewriteRead(read);
+        return optional.test(() => unitRead(rewritten, operand.loc));
       }
     }
     return mapExprChildren(e, rewriteExpr, rewriteStmt);
+  };
+  // A read's receiver and index may test other held locals.
+  const rewriteRead = (read: OptionalCharRead): OptionalCharRead => {
+    const [str, idx] = read.temps;
+    return {
+      ...read,
+      temps: [
+        { ...str, init: rewriteExpr(str.init!) },
+        { ...idx, init: rewriteExpr(idx.init!) },
+      ],
+      receiver: rewriteExpr(read.receiver),
+      index: rewriteExpr(read.index),
+    };
   };
   const rewriteStmt = (s: IrStmt): IrStmt => {
     if (s.kind === "varDecl" && held.has(s.localId) && s.init) {
@@ -432,7 +446,7 @@ function rewriteFunction(fn: IrFunction): IrFunction {
       const source = copyOf.get(s.localId);
       if (source !== undefined) return { ...s, init: unitRef(source, s.init.loc) };
       const read = reads.get(s.localId);
-      if (read) return { ...s, init: unitRead(read, s.init.loc) };
+      if (read) return { ...s, init: unitRead(rewriteRead(read), s.init.loc) };
       if (s.init.kind === "strIntrinsic")
         return {
           ...s,

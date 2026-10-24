@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../index.js";
 import { holdCharLocalsAsUnits } from "./char-unit-locals.js";
+import { validateModule } from "./validate.js";
 import type { IrFunction, IrModule } from "./ir.js";
 import { everyStmtList } from "./traverse.js";
 
@@ -165,4 +166,29 @@ console.log(kept("a b", 1), kept("ab", 0), kept("", 3), longer("ab", 0), twice("
   }
   // The local's own test still reads it as a union.
   expect(unionTests(fn(after, "kept"))).toContain("unionEq");
+});
+
+test("a held local tested inside another read's index or receiver becomes its unit", async () => {
+  const mod = holdCharLocalsAsUnits(
+    await lower(`
+function count(src: string, other: string): number {
+  let n = 0;
+  for (let pos = 0; pos <= src.length; pos += 1.5) {
+    const c = src[pos];
+    if (src[c === "a" ? pos + 1 : pos] === "b") n++;
+    if ((c === "x" ? other : src)[pos] === "y") n += 2;
+    const d = src[c === "c" ? pos - 1 : pos];
+    if (d === "c") n += 10;
+  }
+  return n;
+}
+console.log(count("abcab", "xyz"), count("cab", "yy"), count("", ""));
+`),
+  );
+  const count = fn(mod, "count");
+  expect(validateModule(mod)).toEqual([]);
+  expect(count.locals.find((l) => l.name === "c")!.type).toEqual({ kind: "f64" });
+  expect(count.locals.find((l) => l.name === "d")!.type).toEqual({ kind: "f64" });
+  // No test of either local reads it as a union.
+  expect(unionTests(count)).not.toContain("unionEq");
 });

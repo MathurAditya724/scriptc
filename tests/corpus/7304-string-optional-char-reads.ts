@@ -119,3 +119,17 @@ for (const p of programs) console.log(JSON.stringify(p), JSON.stringify(new Lexe
 let text = "";
 for (let k = 0; k < 30; k++) text += (k % 4 === 0 ? "==" : "w" + k) + " ";
 console.log(new Lexer(text).tokens().length, new Lexer(text).tokens().slice(0, 6).join(","));
+
+// A character local tested inside another read's index or receiver.
+function nested(src: string, other: string): number {
+  let n = 0;
+  for (let pos = 0; pos <= src.length; pos += 1.5) {
+    const c = src[pos];
+    if (src[c === "a" ? pos + 1 : pos] === "b") n++;
+    if ((c === "x" ? other : src)[pos] === "y") n += 2;
+    const d = src[c === "c" ? pos - 1 : pos];
+    if (d === "c") n += 10;
+  }
+  return n;
+}
+console.log(nested("abcab", "xyz"), nested("cab", "yy"), nested("xyxy", "yyyy"), nested("", ""));
