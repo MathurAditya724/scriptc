@@ -79,6 +79,29 @@ export function stringified() {
 export function proxied() { return new Proxy({ proxied: 1 }, {}); }
 export function reflectDelete() { const o = { gone: 1 }; Reflect.deleteProperty(o, "gone"); return o; }
 export function tagged() { return tag\`a\${{ part: 1 }}b\`; }
+export function arrayComputed(k) { const l = []; l[k] = { arrayComputed: 1 }; return leak(l.meta); }
+export function shadowed(k) {
+  const fn = function () {};
+  fn[k] = { onPrototype: 1 };
+  const box = new Box();
+  box[k] = { onConstructor: 1 };
+  return [leak(fn.prototype), leak(box.constructor)];
+}
+export function jsonCallbacks(k) {
+  const inArray = { inArray: 1 };
+  const list = [];
+  list.toJSON = function () { globalThis.inArray = inArray; return 1; };
+  const inFunction = { inFunction: 1 };
+  const fn = function () {};
+  fn.toJSON = function () { globalThis.inFunction = inFunction; return 1; };
+  const underKey = { underKey: 1 };
+  const o = {};
+  o[k] = function () { globalThis.underKey = underKey; return 1; };
+  return JSON.stringify([list, { fn }, o]);
+}
+export function revivedResult(text) { const r = { fromReviver: 1 }; return leak(JSON.parse(text, function () { return r; })); }
+export function constructedProxy() { return Reflect.construct(Proxy, [{ constructedProxy: 1 }, {}]); }
+export function globalProxy() { return new globalThis.Proxy({ globalProxy: 1 }, {}); }
 `;
 
 const packageTypes = `
@@ -96,18 +119,30 @@ export declare function stringified(): unknown;
 export declare function proxied(): unknown;
 export declare function reflectDelete(): unknown;
 export declare function tagged(): unknown;
+export declare function arrayComputed(k: string): unknown;
+export declare function shadowed(k: string): unknown;
+export declare function jsonCallbacks(k: string): unknown;
+export declare function revivedResult(text: string): unknown;
+export declare function constructedProxy(): unknown;
+export declare function globalProxy(): unknown;
 `;
 
 const mainSource = `
 import {
+  arrayComputed,
   arrayProp,
   computedField,
+  constructedProxy,
+  globalProxy,
+  jsonCallbacks,
   leak,
   obj,
   proxied,
   reflect,
   reflectDelete,
   revive,
+  revivedResult,
+  shadowed,
   str,
   stringified,
   tagged,
@@ -124,6 +159,12 @@ const more = [
   proxied(),
   reflectDelete(),
   tagged(),
+  arrayComputed("meta"),
+  shadowed("prototype"),
+  jsonCallbacks("toJSON"),
+  revivedResult("{}"),
+  constructedProxy(),
+  globalProxy(),
 ];
 console.log(more.length);
 `;
@@ -229,6 +270,20 @@ test("S1 report follows values through array properties, unknown keys, callbacks
   expect(site(lines, /^site \{gone\}@/)).toMatch(/: G — delete at/);
   // a tagged template's substitution, passed to its tag
   expect(site(lines, /^site \{part\}@/)).toMatch(/: P-escaping/);
+  // a named load of an array property written under an unknown key
+  expect(site(lines, /^site \{arrayComputed\}@/)).toMatch(/: P-escaping/);
+  // own fields written under unknown keys shadow a function's prototype and an instance's constructor
+  expect(site(lines, /^site \{onPrototype\}@/)).toMatch(/: P-escaping/);
+  expect(site(lines, /^site \{onConstructor\}@/)).toMatch(/: P-escaping/);
+  // toJSON on an array, on a function, and stored under an unknown key
+  expect(site(lines, /^site \{inArray\}@/)).toMatch(/: P-escaping/);
+  expect(site(lines, /^site \{inFunction\}@/)).toMatch(/: P-escaping/);
+  expect(site(lines, /^site \{underKey\}@/)).toMatch(/: P-escaping/);
+  // what a JSON.parse reviver returns is in the result
+  expect(site(lines, /^site \{fromReviver\}@/)).toMatch(/: P-escaping/);
+  // a proxy constructed through Reflect.construct and globalThis
+  expect(site(lines, /^site \{constructedProxy\}@/)).toMatch(/: G — proxy at/);
+  expect(site(lines, /^site \{globalProxy\}@/)).toMatch(/: G — proxy at/);
   // the existing verdicts hold
   expect(site(lines, /^site \{kept\}@main\.ts/)).toMatch(/: P-escaping — escapes: stored into ⊤/);
 });

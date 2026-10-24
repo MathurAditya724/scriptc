@@ -447,9 +447,11 @@ class Analyzer {
       id = this.newNode();
       m.set(name, id);
       if (this.traceTop) this.nodeLabel.set(id, `${atom.label}.${name}`);
-      if (name === "*") {
-        for (const dst of this.unknownKeyReaders.get(atom) ?? []) this.edge(id, dst);
-        this.unknownKeyReaders.delete(atom);
+      const byName = this.fieldReaders.get(atom);
+      const readers = byName?.get(name);
+      if (readers !== undefined) {
+        for (const dst of readers) this.edge(id, dst);
+        byName!.delete(name);
       }
       const reason = this.escaped.get(atom);
       if (reason !== undefined) {
@@ -1303,6 +1305,17 @@ class Analyzer {
     }
     if (ts.isPropertyAccessExpression(e)) {
       this.noteSite(e);
+      // `globalThis.Proxy` and the like are the modeled globals.
+      const object = unparen(e.expression);
+      if (
+        ts.isIdentifier(object) &&
+        object.text === "globalThis" &&
+        MODELED_GLOBALS.has(e.name.text)
+      ) {
+        const d = this.resolve(object);
+        if (d === undefined || d.getSourceFile().isDeclarationFile)
+          return this.globalNode(e.name.text);
+      }
       const recv = this.expr(e.expression);
       const name = e.name.text;
       const dst = this.newNode();
@@ -1696,23 +1709,33 @@ class Analyzer {
     return this.field(atom, "*");
   }
 
-  /** Loads waiting for an atom's first write under an unknown key. */
-  private readonly unknownKeyReaders = new Map<Atom, number[]>();
+  /** Loads waiting for an atom's first write of a field, by field name. */
+  private readonly fieldReaders = new Map<Atom, Map<string, number[]>>();
 
-  /** dst ⊇ the values written to `atom` under unknown keys, now and later,
+  /** dst ⊇ the values written to field `name` of `atom`, now and later,
    * without creating the field for atoms that have none. */
-  unknownKeysInto(atom: Atom, dst: number): void {
-    const id = this.fields.get(atom)?.get("*");
+  fieldInto(atom: Atom, name: string, dst: number): void {
+    const id = this.fields.get(atom)?.get(name);
     if (id !== undefined) {
       this.edge(id, dst);
       return;
     }
-    let readers = this.unknownKeyReaders.get(atom);
+    let byName = this.fieldReaders.get(atom);
+    if (byName === undefined) {
+      byName = new Map();
+      this.fieldReaders.set(atom, byName);
+    }
+    let readers = byName.get(name);
     if (readers === undefined) {
       readers = [];
-      this.unknownKeyReaders.set(atom, readers);
+      byName.set(name, readers);
     }
     readers.push(dst);
+  }
+
+  /** dst ⊇ the values written to `atom` under unknown keys, now and later. */
+  unknownKeysInto(atom: Atom, dst: number): void {
+    this.fieldInto(atom, "*", dst);
   }
 
   copyFields(src: number, dstAtom: Atom, site: Node): void {
@@ -1777,21 +1800,33 @@ class Analyzer {
     });
   }
 
-  /** JSON.stringify's call of `value.toJSON(key)` on a value that has one
-   * (a class member, or an own field once it exists); the result goes to `out`. */
+  /** JSON.stringify's call of `value.toJSON(key)` on an object, array or function that may
+   * have one (a class member, an own field, or a write under an unknown key, once it exists);
+   * the result goes to `out`. */
   callToJSON(
     value: Atom,
     key: number,
     out: number,
     site: ts.CallExpression | ts.TaggedTemplateExpression,
   ): void {
-    if (value.kind !== "object" && value.kind !== "instance" && value.kind !== "dictionary") return;
+    if (
+      value.kind !== "object" &&
+      value.kind !== "instance" &&
+      value.kind !== "dictionary" &&
+      value.kind !== "array" &&
+      value.kind !== "function" &&
+      value.kind !== "class"
+    )
+      return;
     let called = false;
     const call = (): void => {
       if (called) return;
+      const fields = this.fields.get(value);
       const has =
-        this.fields.get(value)?.has("toJSON") === true ||
-        (value.kind === "instance" && this.lookupMember(value.node!, "toJSON", false) !== null);
+        fields?.has("toJSON") === true ||
+        fields?.has("*") === true ||
+        ((value.kind === "instance" || value.kind === "class") &&
+          this.lookupMember(value.node!, "toJSON", value.kind === "class") !== null);
       if (!has) return;
       called = true;
       const fn = this.newNode();
@@ -2002,7 +2037,10 @@ class Analyzer {
       case "instance": {
         const decl = a.node!;
         if (name === "constructor") {
+          // An own `constructor` field, written by name or under an unknown key, shadows the class.
           this.add(dst, this.classAtoms(decl).cls);
+          this.fieldInto(a, name, dst);
+          this.unknownKeysInto(a, dst);
           return;
         }
         const member = this.lookupMember(decl, name, false);
@@ -2027,12 +2065,10 @@ class Analyzer {
       }
       case "class": {
         const decl = a.node!;
-        if (name === "prototype") {
-          this.add(dst, this.top);
-          return;
-        }
-        if (name === "name") {
-          this.add(dst, this.prim("string"));
+        if (name === "prototype" || name === "name") {
+          this.add(dst, name === "prototype" ? this.top : this.prim("string"));
+          this.fieldInto(a, name, dst);
+          this.unknownKeysInto(a, dst);
           return;
         }
         const member = this.lookupMember(decl, name, true);
@@ -2057,6 +2093,7 @@ class Analyzer {
         return;
       }
       case "function":
+        // An own field, written by name or under an unknown key, shadows a builtin member.
         if (name === "call" || name === "apply" || name === "bind")
           this.add(dst, this.builtin(`function.${name}`, a));
         else if (name === "prototype") this.add(dst, this.top);
@@ -2065,13 +2102,22 @@ class Analyzer {
         else {
           this.edge(this.field(a, name), dst);
           this.unknownKeysInto(a, dst);
+          return;
         }
+        this.fieldInto(a, name, dst);
+        this.unknownKeysInto(a, dst);
         return;
       case "array":
         if (name === "length") this.add(dst, this.prim("number"));
         else if (/^\d+$/.test(name)) this.edge(this.element(a), dst);
-        else if (ARRAY_METHODS.has(name)) this.add(dst, this.builtin(`array.${name}`, a));
-        else this.edge(this.field(a, name), dst);
+        else {
+          // A named property, written by name or under an unknown key; an own field shadows a method.
+          if (ARRAY_METHODS.has(name)) {
+            this.add(dst, this.builtin(`array.${name}`, a));
+            this.fieldInto(a, name, dst);
+          } else this.edge(this.field(a, name), dst);
+          this.unknownKeysInto(a, dst);
+        }
         return;
       case "object":
         this.edge(this.field(a, name), dst);
@@ -2217,12 +2263,22 @@ class Analyzer {
           this.sink(value, `stored into ⊤[k] at ${locLabel(site)}`);
           return;
         case "array":
+          // An index, or a named property under an unknown key.
           this.edge(value, this.element(a));
+          this.edge(value, this.anyField(a));
           return;
         case "prim":
           return;
-        default:
+        case "object":
+        case "dictionary":
+        case "instance":
+        case "class":
+        case "function":
           this.edge(value, this.anyField(a));
+          return;
+        default:
+          // As a store under a name: a builtin, promise or collection keeps it where it isn't tracked.
+          this.sink(value, `stored into ${a.label}[k] at ${locLabel(site)}`);
       }
     });
   }
@@ -2885,22 +2941,29 @@ class Analyzer {
         this.add(dst, out);
         return;
       }
-      case "JSON.parse":
-        // A reviver runs on every parsed value with its key, the holder as `this`.
+      case "JSON.parse": {
+        // A reviver runs on every parsed value with its key, the holder as `this`, innermost first:
+        // what it returns replaces the value, in its holder (which later calls receive) and in the
+        // result.
+        const revived = this.newNode();
+        this.add(revived, this.top);
         if (args[1] !== undefined)
           this.on(args[1], (f) => {
             if (f.kind === "function")
               this.callFunction(
                 this.infoOfAtom(f)!,
-                this.constNode(this.top),
-                [this.constNode(this.prim("string")), this.constNode(this.top)],
+                revived,
+                [this.constNode(this.prim("string")), revived],
                 false,
-                this.newNode(),
+                revived,
                 site,
               );
+            else if (f.kind === "top")
+              this.sink(revived, `JSON.parse reviver at ${locLabel(site)}`);
           });
-        this.add(dst, this.top);
+        this.edge(revived, dst);
         return;
+      }
       case "JSON.stringify": {
         // Every value it serializes: toJSON methods run on them, and a
         // replacer function with each key and value, the holder as `this`.
@@ -2942,6 +3005,19 @@ class Analyzer {
         this.ops.push({ kind: "proxy", recv: arg(0), name: null, node: site });
         escapeAll();
         return;
+      case "Reflect.construct": {
+        // Reflect.construct(Proxy, [target, handler]) is `new Proxy(target, handler)`: the arguments
+        // are the list's elements.
+        const listed = this.newNode();
+        if (args[1] !== undefined) this.iterateInto(args[1], listed, site);
+        this.on(arg(0), (c) => {
+          if (c.kind === "builtin" && c.path === "Proxy")
+            this.ops.push({ kind: "proxy", recv: listed, name: null, node: site });
+        });
+        this.sink(listed, `argument of ${path} at ${locLabel(site)}`);
+        escapeAll();
+        return;
+      }
       case "String":
       case "encodeURIComponent":
       case "decodeURIComponent":
