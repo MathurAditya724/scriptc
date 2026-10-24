@@ -32,7 +32,10 @@ import {
 import { compilerOwnedFileRoots } from "../frontend/dts-paths.js";
 import { provenanceSources } from "../frontend/provenance-registry.js";
 import { processFork } from "../frontend/process-fork.js";
-import { tokenEquivalentSource } from "../frontend/token-equivalence.js";
+import {
+  tokenEquivalentSource,
+  tokenPositionEquivalentSource,
+} from "../frontend/token-equivalence.js";
 import { llvmBytes, wtf8Bytes } from "../backend/literals.js";
 import { prepareLibrary } from "../library/prepare.js";
 import type { LibraryProfile } from "../library/library-profile.js";
@@ -143,9 +146,11 @@ function readFrontendCache(
 /** The stale entry's input when every changed source is token-equivalent to
  * the text the entry was built from (edits to whitespace and to comments
  * that cannot affect compilation; see token-equivalence.ts). Equivalent
- * sources lower to the same IR apart from source locations, which only dev
- * builds' debug information and the serialized IR carry. Diagnostics carry
- * locations too, so an entry that reported warnings is rebuilt. A changed
+ * sources lower to the same IR apart from source locations, which only the
+ * debug information of dev builds and the serialized IR carry. A build
+ * with debug information accepts only edits that keep every token's line
+ * and column, the positions the debug information records. Diagnostics
+ * carry locations too, so an entry that reported warnings is rebuilt. A changed
  * source whose raw text or line positions the frontend read (call-site text
  * in messages, comptime callbacks, test locations) is rebuilt as well:
  * frontendInputsSemanticallyMatch refuses its `text` probe. */
@@ -155,17 +160,17 @@ function equivalentFrontendInput(
   exclusions: FrontendInputExclusions,
 ): { input: NativeExecutableInput; probes: FrontendInputSnapshot } | null {
   if (
-    options.optimization === "dev" ||
     options.sanitize === true ||
     options.emitIr === true ||
     stale.ir !== null ||
     (stale.input.warnings?.length ?? 0) > 0
   )
     return null;
+  const debugInfo = options.optimization === "dev" && !options.strip;
   const match = frontendInputsSemanticallyMatch(
     stale.probes,
     new Map(stale.input.sources),
-    tokenEquivalentSource,
+    debugInfo ? tokenPositionEquivalentSource : tokenEquivalentSource,
     exclusions,
   );
   if (match === null || match.changed.length === 0) return null;
