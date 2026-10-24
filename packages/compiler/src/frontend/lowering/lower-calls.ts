@@ -187,7 +187,7 @@ import {
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerChildMethodValue, lowerChildPropertyCall } from "./handle-properties.js";
-import { classToNumberConversion } from "./class-to-primitive.js";
+import { classObjectTag, classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import { structuralReadType } from "./class-unions.js";
 import {
@@ -3119,6 +3119,10 @@ function lowerObjectPrototypeCall(
   const immediate = immediateObjectTagReceiver(lowerer, receiverNode);
   const receiver = immediate?.effect ?? lowerer.lowerExpr(receiverNode);
   const tag = immediate?.tag ?? objectToStringTag(lowerer, receiver.type);
+  if (tag === null && immediate === null && call.arguments.nodes.length === 1) {
+    const classTag = classObjectTag(lowerer, receiver, receiverNode);
+    if (classTag) return classTag;
+  }
   // A generator object answers its tag through its checked capsule.
   if (tag === null && receiver.type.kind !== "dyn" && receiver.type.kind !== "generator") {
     lowerer.noLowering(

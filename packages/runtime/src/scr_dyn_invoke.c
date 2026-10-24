@@ -144,6 +144,10 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
     return;
 
   case SCR_DYN_TYPED_REF: {
+    /* ToString of a class instance that converts through
+     * Object.prototype.toString shows its Symbol.toStringTag getter's
+     * string. */
+    if (to_string && scr_dyn_typed_ref_put_tag(b, d)) return;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     scr_dyn_display_buf(b, materialized, to_string);
     scr_dyn_release(materialized);

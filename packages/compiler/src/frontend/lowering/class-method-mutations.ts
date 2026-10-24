@@ -426,7 +426,19 @@ export function collectClassMethodMutations(
           (ts.isElementAccessExpression(base) &&
             ts.isStringLiteralLike(base.argumentExpression) &&
             base.argumentExpression.text === "prototype");
-        if (prototype) {
+        // `Object.prototype.toString.call(value)` calls the builtin and
+        // keeps no reference to it, so it replaces nothing.
+        const builtinCall =
+          ts.isPropertyAccessExpression(node) &&
+          ts.isPropertyAccessExpression(base) &&
+          ts.isIdentifier(unwrap(base.expression)) &&
+          lowerer.isStdlibGlobal(unwrap(base.expression) as ts.Identifier, "Object") &&
+          ts.isPropertyAccessExpression(node.parent) &&
+          node.parent.expression === node &&
+          (node.parent.name.text === "call" || node.parent.name.text === "apply") &&
+          ts.isCallExpression(node.parent.parent) &&
+          node.parent.parent.expression === node.parent;
+        if (prototype && !builtinCall) {
           if (ts.isPropertyAccessExpression(node)) lowerer.noteMethodAccess(node.name.text, node);
           else if (ts.isStringLiteralLike(node.argumentExpression))
             lowerer.noteMethodAccess(node.argumentExpression.text, node);
