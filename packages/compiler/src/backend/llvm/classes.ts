@@ -1481,13 +1481,11 @@ export function emitClassShapes(
       tracedFields.forEach((f, i) => {
         tr.push(...traceFieldVisitLines(struct, f.index, i, llvmCommentText(f.name)));
       });
-      // An Array subclass instance's elements, when they are cycle-capable.
-      const tracedElements =
-        cls.arrayElem !== undefined &&
-        traceAdapter(host, { kind: "array", elem: cls.arrayElem }) !== null;
-      if (tracedElements) {
-        host.declare(`declare void @scr_arr_trace_v(ptr, ptr, ptr)`);
-        tr.push(`  call void @scr_arr_trace_v(ptr %o, ptr %visit, ptr %ctx) ; the elements`);
+      // An Array subclass instance's elements, when its current element
+      // storage is cycle-capable (a species result can retype it).
+      if (cls.arrayElem !== undefined) {
+        host.declare(`declare void @scr_arr_subclass_trace(ptr, ptr, ptr)`);
+        tr.push(`  call void @scr_arr_subclass_trace(ptr %o, ptr %visit, ptr %ctx) ; the elements`);
       }
       tr.push(`  ret void`, `}`, ``);
       defs.push(...tr);
@@ -1508,9 +1506,9 @@ export function emitClassShapes(
       if (meta.threadSlot) gf.push(...slotForgetLines(host, struct, meta, "gfw"));
       if (cls.arrayElem !== undefined) {
         // The elements: traced ones are the collector's, the others are
-        // released with the storage.
-        host.declare(`declare void @scr_arr_subclass_gc_drop(ptr, i1 zeroext)`);
-        gf.push(`  call void @scr_arr_subclass_gc_drop(ptr %o, i1 ${tracedElements})`);
+        // released with the storage (the same test as the trace's).
+        host.declare(`declare void @scr_arr_subclass_gc_drop(ptr)`);
+        gf.push(`  call void @scr_arr_subclass_gc_drop(ptr %o)`);
       }
       gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
       defs.push(...gf);

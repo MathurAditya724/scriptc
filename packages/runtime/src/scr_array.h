@@ -185,7 +185,7 @@ typedef struct ScrArrClass {
   const char *name;
   /* Destroys an instance whose count reached zero: releases the class's own
    * fields, then scr_arr_subclass_drop, then frees the instance. */
-  void (*destroy)(ScrArr *a);
+  void (*destroy)(void *a);
   /* The class's own fields as a dyn object in declaration order (the array
    * is passed owned, +1), or NULL when the class declares none. util.inspect
    * and Object.keys list them after the elements. */
@@ -503,7 +503,10 @@ void scr_arr_subclass_init(ScrArr *a, uint8_t elem, const ScrArrOps *ops, const 
                            bool cyc);
 /* The collector's teardown of an Array subclass instance's storage: the
  * elements are released unless they are the collector's (`traced`). */
-void scr_arr_subclass_gc_drop(ScrArr *a, bool traced);
+void scr_arr_subclass_gc_drop(ScrArr *a);
+/* The collector trace of an Array subclass instance's elements: visits
+ * them when its current element ops trace them. */
+void scr_arr_subclass_trace(void *a, ScrTraceVisit visit, void *ctx);
 /* super(...args) in a class that extends Array (the Array constructor's
  * length-or-elements rule); `args` is borrowed. */
 void scr_arr_subclass_construct(ScrArr *a, ScrArr *args, bool dyn_elems);

@@ -12,6 +12,7 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { stripTypeWrappers } from "../typed-arguments.js";
 import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
 import { lowerArrayFromCall, lowerArrayOfCall } from "../containers/array-construction.js";
+import { boundedArrayHofHelper } from "../containers/array-callbacks.js";
 import { storedClassValueType, type ClassInfo } from "../lower-classes.js";
 import {
   BOOL,
@@ -34,6 +35,18 @@ export function arrayClassBase(
   lowerer: Lowerer,
   heritage: ts.ExpressionWithTypeArguments,
 ): { elem: IrType } {
+  const decl = heritage.parent?.parent;
+  const self =
+    decl && ts.isClassLikeDeclaration(decl)
+      ? lowerer.checker.getSymbolAtLocation(decl.name ?? decl)
+      : undefined;
+  const element = heritage.typeArguments?.nodes[0];
+  if (
+    self &&
+    element &&
+    mentionsClass(lowerer, lowerer.checker.getTypeAtLocation(element), self, new Set())
+  )
+    lowerer.unsupported("SC1090", heritage, "classes that extend an Array of their own instances");
   const mapped = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(heritage));
   // `extends Array` in JavaScript reads `any[]`: dyn elements.
   if (isJsSourceFile(ts.getSourceFileOfNode(heritage)) && mapped?.kind !== "array")
@@ -45,6 +58,26 @@ export function arrayClassBase(
       "extending Array with an element type that does not compile",
     );
   return { elem: mapped!.kind === "array" ? mapped!.elem : DYN };
+}
+
+/** Whether `type` is the class `self`'s instance type, or holds it through
+ * unions, intersections or type arguments (`Group | null`, `Group[]`,
+ * `Map<string, Group>`): the class's array type would contain itself.
+ * Another class's members do not count, its instances are references. */
+function mentionsClass(
+  lowerer: Lowerer,
+  type: ts.Type,
+  self: ts.Symbol,
+  seen: Set<ts.Type>,
+): boolean {
+  if (seen.has(type)) return false;
+  seen.add(type);
+  if (type.getSymbol() === self) return true;
+  if (type.isUnionType() || type.isIntersectionType())
+    return ts.constituentTypes(type).some((part) => mentionsClass(lowerer, part, self, seen));
+  return lowerer.checker
+    .getTypeArguments(type as ts.TypeReference)
+    .some((argument) => mentionsClass(lowerer, argument, self, seen));
 }
 
 /** The class declared `extends Array` at the root of `info`'s chain, or null. */
@@ -349,6 +382,15 @@ export function arrayClassFieldsFn(lowerer: Lowerer, info: ClassInfo): IrFunctio
  * take those arguments: they must be none, a forwarding rest (dyn or
  * number), or a number first parameter whose others may be omitted (whose
  * no-argument form throws). */
+/** A constructor parameter the species length argument can fill: a
+ * number, a checked-dynamic value, or a union with a number arm
+ * (`length?: number`). */
+function takesLength(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "f64" || type.kind === "dyn") return true;
+  if (type.kind !== "union") return false;
+  return lowerer.unions.get(type.unionId)?.arms.some((arm) => arm.kind === "f64") === true;
+}
+
 export function arrayClassSpeciesFn(lowerer: Lowerer, info: ClassInfo): IrFunction | null {
   const elem = arrayRootOf(info)!.extendsArray!.elem;
   const arrT = arrayOf(elem);
@@ -381,31 +423,35 @@ export function arrayClassSpeciesFn(lowerer: Lowerer, info: ClassInfo): IrFuncti
     withLength = [{ kind: "arrayLit", elems: [n()], type: params[0]!.type, loc } as IrExpr];
     without = [{ kind: "arrayLit", elems: [], type: params[0]!.type, loc } as IrExpr];
   } else if (
-    params[0]!.mode === "required" &&
-    (params[0]!.type.kind === "f64" || params[0]!.type.kind === "dyn") &&
+    (params[0]!.mode === "required" || params[0]!.mode === "omittable") &&
+    takesLength(lowerer, params[0]!.type) &&
     params.slice(1).every((p) => p.mode === "omittable")
   ) {
-    const rest = params
-      .slice(1)
-      .map((p) =>
-        lowerer.coerceToExpected(
-          { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc } as IrExpr,
-          p.type,
-        ),
-      );
-    // A dyn first parameter (a JavaScript `constructor(size)`) takes the
-    // length as a number, and undefined in the no-argument form.
-    if (params[0]!.type.kind === "dyn") without = [dynUndefinedExpr(loc), ...rest.map((e) => e)];
-    withLength = [
-      params[0]!.type.kind === "dyn" ? { kind: "dynFrom", value: n(), type: DYN, loc } : n(),
-      ...params
-        .slice(1)
-        .map((p) =>
-          lowerer.coerceToExpected(
+    // An omitted argument is what a call without it passes: the
+    // parameter's default, or undefined.
+    const blame = info.decl ?? null;
+    const omitted = (p: (typeof params)[number]): IrExpr =>
+      p.callDefault ??
+      (blame
+        ? lowerer.undefinedArgFor(p.type, loc, blame)
+        : lowerer.coerceToExpected(
             { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc } as IrExpr,
             p.type,
-          ),
-        ),
+          ));
+    const rest = params.slice(1).map(omitted);
+    // A dyn first parameter (a JavaScript `constructor(size)`) and an
+    // optional or defaulted one take the length as a number, and their
+    // omitted value in the no-argument form.
+    if (params[0]!.type.kind === "dyn" || params[0]!.mode === "omittable")
+      without = [
+        params[0]!.type.kind === "dyn" ? dynUndefinedExpr(loc) : omitted(params[0]!),
+        ...rest,
+      ];
+    withLength = [
+      params[0]!.type.kind === "dyn"
+        ? { kind: "dynFrom", value: n(), type: DYN, loc }
+        : lowerer.coerceToExpected(n(), params[0]!.type),
+      ...params.slice(1).map(omitted),
     ];
   }
   if (withLength === null) return null;
@@ -517,14 +563,17 @@ export function lowerWithArraySpecies(
   const receiverRef: IrExpr = { kind: "varRef", localId: local.id, type: receiver.type, loc };
   if (mode.callback) {
     // The species constructor runs before the first callback: the
-    // arguments are evaluated in order, then the instance is created (with
-    // the receiver's length for map, 0 otherwise), then the method runs and
-    // its elements move into the instance.
-    if (
-      result.kind !== "call" ||
-      result.args[0]?.kind !== "varRef" ||
-      result.args[0].localId !== local.id
-    )
+    // arguments are evaluated in order, the receiver's length is read, the
+    // instance is created (with that length for map, 0 otherwise), then
+    // the method runs to that length and its elements move into the
+    // instance.
+    const bounded =
+      result.kind === "call" &&
+      result.args[0]?.kind === "varRef" &&
+      result.args[0].localId === local.id
+        ? boundedArrayHofHelper(lowerer, result.callee)
+        : null;
+    if (bounded === null || result.kind !== "call")
       lowerer.unsupported(
         "SC1090",
         call,
@@ -537,9 +586,25 @@ export function lowerWithArraySpecies(
       stmts.push({ kind: "varDecl", localId: held.id, init: arg, loc });
       args.push({ kind: "varRef", localId: held.id, type: arg.type, loc });
     }
+    const bound = lowerer.declareHiddenLocal("%speciesLength", F64);
+    stmts.push({
+      kind: "varDecl",
+      localId: bound.id,
+      init: {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver: receiverRef,
+        args: [],
+        type: F64,
+        loc,
+      },
+      loc,
+    });
+    const boundRef: IrExpr = { kind: "varRef", localId: bound.id, type: F64, loc };
+    args.push(boundRef);
     const instance = lowerer.declareHiddenLocal("%speciesInstance", receiver.type);
     const length: IrExpr = mode.resultLength
-      ? { kind: "arrIntrinsic", method: "length", receiver: receiverRef, args: [], type: F64, loc }
+      ? boundRef
       : { kind: "numLit", value: 0, type: F64, loc };
     stmts.push({
       kind: "varDecl",
@@ -561,7 +626,7 @@ export function lowerWithArraySpecies(
         fn: "array.speciesFinish",
         args: [
           { kind: "varRef", localId: instance.id, type: receiver.type, loc },
-          { ...result, args },
+          { ...result, callee: bounded, args },
           { kind: "boolLit", value: mode.setLength, type: BOOL, loc },
         ],
         type: result.type,

@@ -1868,8 +1868,21 @@ const ScrArrClass *scr_arr_class_of(const ScrArr *a) {
   return scr_arr_ext_of((ScrArr *)a)->cls;
 }
 
-void scr_arr_subclass_gc_drop(ScrArr *a, bool traced) {
-  if (!traced) scr_arr_release_contents(a);
+/* Whether an Array subclass instance's elements are the collector's: its
+ * current element ops trace them. A species result can retype an empty
+ * instance's storage (scr_arr_species_move), so this follows the storage,
+ * not the element type the class declares. */
+static bool scr_arr_subclass_elements_traced(const ScrArr *a) {
+  const ScrArrOps *ops = scr_arr_ops(a);
+  return ops != NULL && ops->trace != NULL;
+}
+
+void scr_arr_subclass_trace(void *a, ScrTraceVisit visit, void *ctx) {
+  if (scr_arr_subclass_elements_traced((ScrArr *)a)) scr_arr_trace_v(a, visit, ctx);
+}
+
+void scr_arr_subclass_gc_drop(ScrArr *a) {
+  if (!scr_arr_subclass_elements_traced(a)) scr_arr_release_contents(a);
   scr_arr_free_parts(a);
   a->data = NULL;
   a->len = a->cap = a->filled = 0;
@@ -1906,7 +1919,7 @@ void scr_arr_release(ScrArr *a) {
     /* An Array subclass instance: its class tears it down. */
     if ((a->spare & SCR_ARR_HAS_EXT) && scr_arr_ext_of(a)->cls) {
       if (a->cyc) scr_cyc_dead(a);
-      scr_arr_ext_of(a)->cls->destroy(a);
+      scr_rc_destroy(a, scr_arr_ext_of(a)->cls->destroy);
       return;
     }
     /* Nothing to tear down: free the storage without scr_rc_destroy's
