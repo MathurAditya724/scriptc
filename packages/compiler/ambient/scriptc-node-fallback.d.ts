@@ -4872,9 +4872,9 @@ declare module "node:readline/promises" {
  * inputs with Node's default options; libz links only into zlib-using
  * binaries. Callback forms use the executable worker pool. Options stay
  * declared so reached uses receive a named SC2020 refusal. The Deflate,
- * Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw and Unzip streams are
- * runtime Transform streams; Brotli and Zstd remain outside the lowered
- * surface. */
+ * Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, Unzip, BrotliCompress
+ * and BrotliDecompress streams are runtime Transform streams; Zstd remains
+ * outside the lowered surface. */
 declare module "zlib" {
   import { Transform } from "stream";
   export interface ZlibOptions {
@@ -4931,50 +4931,66 @@ declare module "zlib" {
   ): void;
   export function unzipSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
   export function crc32(data: string | Uint8Array, value?: number): number;
-  export function brotliCompressSync(data: string | Uint8Array): Buffer;
-  export function brotliDecompressSync(data: Uint8Array): Buffer;
-  /* Brotli needs a codec the static runtime does not vendor: these are
-   * declared so their uses receive the named refusal. */
+  /* Brotli over the vendored brotli 1.2.0 (scr_brotli.c): `params` keys
+   * are the numeric BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* constants. */
+  export interface BrotliOptions {
+    [option: string]: unknown;
+  }
   export function brotliCompress(data: string | Uint8Array, callback: ZlibCallback): void;
-  export function brotliDecompress(data: Uint8Array, callback: ZlibCallback): void;
-  export function createBrotliCompress(options?: ZlibOptions): Transform;
-  export function createBrotliDecompress(options?: ZlibOptions): Transform;
-  export class BrotliCompress extends Transform {
-    constructor(options?: ZlibOptions);
-  }
-  export class BrotliDecompress extends Transform {
-    constructor(options?: ZlibOptions);
-  }
+  export function brotliCompress(
+    data: string | Uint8Array,
+    options: BrotliOptions,
+    callback: ZlibCallback,
+  ): void;
+  export function brotliCompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
+  export function brotliDecompress(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function brotliDecompress(
+    data: string | Uint8Array,
+    options: BrotliOptions,
+    callback: ZlibCallback,
+  ): void;
+  export function brotliDecompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
   /* The stream classes: runtime Transform streams over the zlib engine
    * (scr_zlib_stream.c). createGzip(options) and new Gzip(options) build
-   * the same stream; options are validated at runtime with Node's rules. */
+   * the same stream; options are validated at runtime with Node's rules.
+   * Brotli streams have no params(), as in Node. */
   class ZlibBase extends Transform {
     readonly bytesWritten: number;
     flush(kind?: number, callback?: () => void): void;
     flush(callback: () => void): void;
-    params(level: number, strategy: number, callback?: () => void): void;
     close(callback?: () => void): void;
     reset(): void;
   }
-  export class Deflate extends ZlibBase {
+  class Zlib extends ZlibBase {
+    params(level: number, strategy: number, callback?: () => void): void;
+  }
+  export class BrotliCompress extends ZlibBase {
+    constructor(options?: BrotliOptions);
+  }
+  export class BrotliDecompress extends ZlibBase {
+    constructor(options?: BrotliOptions);
+  }
+  export function createBrotliCompress(options?: BrotliOptions): BrotliCompress;
+  export function createBrotliDecompress(options?: BrotliOptions): BrotliDecompress;
+  export class Deflate extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Inflate extends ZlibBase {
+  export class Inflate extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Gzip extends ZlibBase {
+  export class Gzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Gunzip extends ZlibBase {
+  export class Gunzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class DeflateRaw extends ZlibBase {
+  export class DeflateRaw extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class InflateRaw extends ZlibBase {
+  export class InflateRaw extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Unzip extends ZlibBase {
+  export class Unzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
   export function createDeflate(options?: ZlibOptions): Deflate;
