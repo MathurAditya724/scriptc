@@ -216,9 +216,24 @@ jobs:
       # Start the corpus immediately beside a serial side queue. One shared
       # worker budget covers both processes; file and case shard axes stay
       # separate so every fixture still runs exactly once in each lane.
+      # The tests run in a transient scope capped below the runner's 16 GB, so
+      # the runner itself keeps memory: past 15 GB of RAM the scope swaps, as
+      # the whole runner did before, and when RAM and swap run out the kernel
+      # kills the scope's largest process. A sanitized shard peaks near 16 GB,
+      # and the sanitized self-hosting native-frontend build alone needs 15 GB
+      # (its clang compile of the frontend takes 10.5 GB).
+      # OOMPolicy=continue leaves the rest of the scope running, so vitest
+      # reports the killed worker and the job log names the test. Node sizes
+      # its default heap from the memory it may use, which the scope lowers
+      # below 4 GB; the workers keep the 4 GB heap they had on the bare
+      # runner.
       - name: Tests (corpus and integration suites)
         run: |
           ulimit -c 0
+          if [ -d /run/systemd/system ]; then
+            exec sudo --preserve-env systemd-run --scope --quiet -p MemoryMax=15G -p OOMPolicy=continue \
+              --uid="$(id -u)" --gid="$(id -g)" -- env PATH="$PATH" HOME="$HOME" NODE_OPTIONS="--max-old-space-size=4096" node scripts/ci-test.mjs
+          fi
           node scripts/ci-test.mjs
 
   tests_macos:

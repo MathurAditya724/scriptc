@@ -36,8 +36,7 @@ import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { loadArrCount, SCR_ARR_FIELD } from "./common.js";
-import { emitCountedLoopLimit } from "./counted-loops.js";
-import { f64Lit } from "./common.js";
+import { emitCountedLoopLimit, emitExactIntegerTest } from "./counted-loops.js";
 
 export const INT32_MAX = 2147483647;
 
@@ -453,28 +452,10 @@ function emitPairedDenseGuard(
   header: (array: string, field: number) => string,
 ): string {
   const B = host.B;
-  const integer = (expr: IrExpr, min: number, max: number): { value: string; ok: string } => {
-    const start = host.emitExpr(expr);
-    const low = B.tmp(),
-      high = B.tmp(),
-      raw = B.tmp(),
-      value = B.tmp(),
-      back = B.tmp(),
-      exact = B.tmp(),
-      inRange = B.tmp(),
-      ok = B.tmp();
-    B.line(`${low} = fcmp oge double ${start.name}, ${f64Lit(min)}`);
-    B.line(`${high} = fcmp ole double ${start.name}, ${f64Lit(max)}`);
-    B.line(`${inRange} = and i1 ${low}, ${high}`);
-    B.line(`${raw} = fptosi double ${start.name} to i64`);
-    B.line(`${value} = freeze i64 ${raw}`);
-    B.line(`${back} = sitofp i64 ${value} to double`);
-    B.line(`${exact} = fcmp oeq double ${back}, ${start.name}`);
-    B.line(`${ok} = and i1 ${inRange}, ${exact}`);
-    return { value, ok };
-  };
-  const low = integer(pair.lowStart, 0, INT32_MAX - 1);
-  const high = integer(pair.highStart, -1, INT32_MAX - 1);
+  const start = (expr: IrExpr, min: number, max: number) =>
+    emitExactIntegerTest(host, host.emitExpr(expr).name, min, max);
+  const low = start(pair.lowStart, 0, INT32_MAX - 1);
+  const high = start(pair.highStart, -1, INT32_MAX - 1);
   let valid = B.tmp();
   B.line(`${valid} = and i1 ${low.ok}, ${high.ok}`);
   for (const ref of loop.arrays.values()) {
@@ -486,7 +467,7 @@ function emitPairedDenseGuard(
       both = B.tmp();
     B.line(`${filled} = load i32, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
     B.line(`${wide} = zext i32 ${filled} to i64`);
-    B.line(`${covered} = icmp slt i64 ${high.value}, ${wide}`);
+    B.line(`${covered} = icmp slt i64 ${high.integer}, ${wide}`);
     B.line(`${both} = and i1 ${valid}, ${covered}`);
     valid = both;
   }

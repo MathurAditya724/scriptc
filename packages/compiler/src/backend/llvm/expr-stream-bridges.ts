@@ -16,9 +16,11 @@ import {
   KEY_ORDER_FIELD,
   shapeKeyOrders,
   isDynTypedRefType,
+  textCodecRecordClass,
   isRefCounted,
   shapeHasAccessorSlots,
   typeKey,
+  type IrClassDef,
 } from "../../ir/ir.js";
 import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
@@ -121,12 +123,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   if (inner.kind === "void") {
     host.declare(`declare void @scr_promise_fulfill_void(ptr)`);
     B.line(`call void @scr_promise_fulfill_void(ptr %dst)`);
-  } else if (
-    inner.kind === "f64" ||
-    inner.kind === "date" ||
-    inner.kind === "procStream" ||
-    inner.kind === "bool"
-  ) {
+  } else if (inner.kind === "f64" || inner.kind === "procStream" || inner.kind === "bool") {
     const fn = inner.kind !== "bool" ? "scr_promise_fulfill_f64" : "scr_promise_fulfill_bool";
     host.declare(
       `declare void @${fn}(ptr, ${host.llType(inner)}${inner.kind === "bool" ? " zeroext" : ""})`,
@@ -276,9 +273,7 @@ export function streamTypedRefCommitAdapter(
           );
         });
     }
-    const symbols = new Map(
-      (meta.def.symbolFields ?? []).map((symbol) => [symbol.field, symbol.globalId]),
-    );
+    const symbols = new Map((meta.def.symbolFields ?? []).map((symbol) => [symbol.field, symbol]));
     const fields = meta.def.fields.filter(
       (field) =>
         (isClassOwnEnumerableFieldName(field.name) || symbols.has(field.name)) &&
@@ -298,13 +293,15 @@ export function streamTypedRefCommitAdapter(
       const inline = host.inlineUnions.classField(t.className, field.name);
       const fieldTy = int32 ? "i32" : llFieldType(field.type, inline);
       const checkTy = host.llType(field.type);
-      const symbolGlobal = symbols.get(field.name);
-      if (symbolGlobal) {
+      const symbolKey = symbols.get(field.name);
+      if (symbolKey) {
         host.declare(`declare ptr @scr_dyn_symbol_key_get(ptr, ptr, i1 zeroext)`);
         host.declare(`declare void @scr_dyn_release_v(ptr)`);
+        const keyLines = symbolKeyLines(host, symbolKey, `f${index}_keyraw`);
         lines.push(
-          `  %f${index}_keyraw = load ptr, ptr @${mangleGlobal(symbolGlobal)}`,
+          ...keyLines.load,
           `  %f${index}_key = call ptr @${host.dyn.toDynHelper(SYMBOL_T)}(ptr %f${index}_keyraw)`,
+          ...keyLines.release,
         );
         if (field.type.kind === "symbol") {
           // A base constructor can mutate the instance before this
@@ -332,7 +329,7 @@ export function streamTypedRefCommitAdapter(
         lines.push(
           `  %${raw} = call ptr @scr_dyn_obj_get(ptr %d, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")})`,
         );
-      if (meta.def.tracksOwnFields && !symbolGlobal)
+      if (meta.def.tracksOwnFields && !symbolKey)
         lines.push(
           `  %f${index}_present = icmp ne ptr %${raw}, null`,
           `  br i1 %f${index}_present, label %f${index}_read, label %${after}`,
@@ -343,7 +340,7 @@ export function streamTypedRefCommitAdapter(
         `  %${undef} = call ptr @scr_dyn_undefined()`,
         `  %${input} = select i1 %${missing}, ptr %${undef}, ptr %${raw}`,
         `  %${next} = call ${field.type.kind === "bool" ? "zeroext " : ""}${checkTy} @${host.dyn.dynCheckHelper(field.type)}(ptr %${input}, ptr null)`,
-        ...(symbolGlobal ? [`  call void @scr_dyn_release_v(ptr %${raw})`] : []),
+        ...(symbolKey ? [`  call void @scr_dyn_release_v(ptr %${raw})`] : []),
         ...host.pendingTestLines(`%${pending}`),
         `  br i1 %${pending}, label %done, label %${store}`,
         `${store}:`,
@@ -498,16 +495,18 @@ export function streamTypedRefCommitAdapter(
             ? `declare void @scr_dyn_symbol_key_placeholder(ptr, ptr)`
             : `declare void @scr_dyn_key_delete_computed(ptr, ptr, i1 zeroext)`,
         );
-      [...symbols.values()].forEach((globalId, index) =>
+      [...symbols.values()].forEach((symbol, index) => {
+        const keyLines = symbolKeyLines(host, symbol, `bag_symraw${index}`);
         lines.push(
-          `  %bag_symraw${index} = load ptr, ptr @${mangleGlobal(globalId)}`,
+          ...keyLines.load,
           `  %bag_sym${index} = call ptr @${host.dyn.toDynHelper(SYMBOL_T)}(ptr %bag_symraw${index})`,
+          ...keyLines.release,
           meta.def.tracksOwnFields
             ? `  call void @scr_dyn_symbol_key_placeholder(ptr %bag, ptr %bag_sym${index})`
             : `  call void @scr_dyn_key_delete_computed(ptr %bag, ptr %bag_sym${index}, i1 zeroext false)`,
           `  call void @scr_dyn_release_v(ptr %bag_sym${index})`,
-        ),
-      );
+        );
+      });
       const { index } = classFieldIndex(meta, DYN_CLASS_PROPERTIES);
       lines.push(
         `  %bag_ptr = getelementptr inbounds %${classStructSym(t.className)}, ptr %target, i64 0, i32 ${index}`,
@@ -597,12 +596,21 @@ export function liveDynUnionRefAdapter(
   if (!union) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of unknown union ${t.unionId}`);
   }
+  // Codec records box as their own handles, by reference, through toDynHelper.
+  const codecArm = (arm: IrType): boolean =>
+    textCodecRecordClass(arm, (id) => host.recordsById.get(id)) !== null;
   const mutableArms = union.arms
     .map((arm, tag) => ({ arm, tag }))
     .filter(
-      ({ arm }) => arm.kind !== "bytes" && (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
+      ({ arm }) =>
+        arm.kind !== "bytes" &&
+        !codecArm(arm) &&
+        (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
     );
-  if (mutableArms.length === 0 && !union.arms.some((arm) => arm.kind === "bytes")) {
+  if (
+    mutableArms.length === 0 &&
+    !union.arms.some((arm) => arm.kind === "bytes" || codecArm(arm))
+  ) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of immutable union ${key}`);
   }
 
@@ -695,6 +703,27 @@ export function liveDynUnionRefAdapter(
   return sym;
 }
 
+/** The raw ScrSym of a class's symbol field key into `%name`: a module
+ * key is borrowed from its global, a well-known one comes from the
+ * runtime's registry (+1, released by the `release` lines once the key
+ * value holds it). */
+function symbolKeyLines(
+  host: LlvmEmitterContext,
+  symbol: NonNullable<IrClassDef["symbolFields"]>[number],
+  name: string,
+): { load: string[]; release: string[] } {
+  if ("globalId" in symbol)
+    return { load: [`  %${name} = load ptr, ptr @${mangleGlobal(symbol.globalId)}`], release: [] };
+  host.declare("declare ptr @scr_sym_well_known(ptr)");
+  host.declare("declare void @scr_sym_release(ptr)");
+  return {
+    load: [
+      `  %${name} = call ptr @scr_sym_well_known(ptr ${host.internLiteral(symbol.wellKnown)})`,
+    ],
+    release: [`  call void @scr_sym_release(ptr %${name})`],
+  };
+}
+
 export function streamTypedRefBoxValue(
   host: LlvmEmitterContext,
   B: BlockBuilder,
@@ -712,7 +741,13 @@ export function streamTypedRefBoxValue(
     B.line(`${boxed} = call ptr @${host.liveDynUnionRefAdapter(t)}(ptr ${value})`);
     return boxed;
   }
-  if (t.kind === "bytes" || (!streamTypedRefEligible(t) && !isDynTypedRefType(t))) {
+  // A codec record boxes as its own handle, by reference (toDynHelper), as
+  // it does outside a live view.
+  if (
+    t.kind === "bytes" ||
+    textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null ||
+    (!streamTypedRefEligible(t) && !isDynTypedRefType(t))
+  ) {
     const valueTy = host.llType(t);
     B.line(`${boxed} = call ptr @${host.dyn.toDynHelper(t)}(${valueTy} ${value})`);
     return boxed;
@@ -913,8 +948,10 @@ export function streamTypedRefMaterializeAdapter(
         B.line(`${fieldValue} = sitofp i32 ${raw} to double`);
       } else if (inline) fieldValue = loadStructField(B, host.sizeType, fieldPtr, field.type, true);
       else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
-      B.line(`${rawKey} = load ptr, ptr @${mangleGlobal(symbol.globalId)}`);
+      const keyLines = symbolKeyLines(host, symbol, rawKey.slice(1));
+      for (const line of keyLines.load) B.line(line.trim());
       const key = host.streamTypedRefBoxValue(B, SYMBOL_T, rawKey);
+      for (const line of keyLines.release) B.line(line.trim());
       const afterSymbol =
         meta.def.tracksOwnFields || field.type.kind === "symbol"
           ? B.newLabel("symbol.after")
@@ -980,6 +1017,28 @@ export function streamTypedRefMaterializeAdapter(
         nameAfter === undefined
           ? `call void @scr_error_dyn_place_name(ptr ${out}, ptr null, ${host.sizeType} 0)`
           : `call void @scr_error_dyn_place_name(ptr ${out}, ptr ${host.cstr(nameAfter)}, ${host.sizeType} ${Buffer.byteLength(nameAfter, "utf8")})`,
+      );
+    }
+    // A JavaScript Error subclass's property bag records, once a dynamic
+    // write has committed the view, where `name` and `message` were created
+    // (zod's error factory assigns `name` before it defines `message`); the
+    // slots hold their values. A `name` the class's construction sets is
+    // already where errorNameAfter places it among the fields.
+    if (
+      meta.def.errorBagOrder &&
+      meta.root.def.name === "%Error" &&
+      meta.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES)
+    ) {
+      host.declare(`declare void @scr_error_dyn_follow_bag(ptr, ptr, ptr, i1)`);
+      const { index } = classFieldIndex(meta, DYN_CLASS_PROPERTIES);
+      const slot = B.tmp(),
+        bag = B.tmp();
+      B.line(
+        `${slot} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${index}`,
+      );
+      B.line(`${bag} = load ptr, ptr ${slot}`);
+      B.line(
+        `call void @scr_error_dyn_follow_bag(ptr ${out}, ptr ${bag}, ptr %p, i1 ${nameAfter === undefined ? "false" : "true"})`,
       );
     }
     // A frozen, sealed or non-extensible instance's view says so.
@@ -1457,9 +1516,26 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
   // The constructor's name, as util.inspect prints before the fields.
   const jsName = meta.def.jsName ?? meta.def.name.replace(/^%/, "");
   const className = jsName === "" ? "null" : host.internLiteral(jsName);
+  // Its Symbol.toStringTag getter's string, for Object.prototype.toString
+  // and util.inspect.
+  let stringTag = "null";
+  if (meta.def.stringTagHelper) {
+    // The runtime lends the instance; the helper takes its own reference.
+    stringTag = `@${snapshot}_ctag`;
+    const retain = vAdapters(host.shapeHost, { kind: "object", className: meta.def.name }).retain;
+    host.resolveThunkDefs.push(
+      `define internal ptr ${stringTag}(ptr %p) ${FN_ATTRS} { ; Symbol.toStringTag of ${meta.def.name}`,
+      `entry:`,
+      `  %owned = call ptr ${retain}(ptr %p)`,
+      `  %tag = call ptr @${mangleFunction(meta.def.stringTagHelper)}(ptr %owned)`,
+      `  ret ptr %tag`,
+      `}`,
+      ``,
+    );
+  }
   host.resolveThunkDefs.push(
     `@${names} = internal constant [${members.length} x ptr] [${literals.join(", ")}]`,
-    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names}, ptr ${className} }`,
+    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr, ptr, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names}, ptr ${className}, ptr ${stringTag} }`,
     ``,
   );
 }

@@ -23,7 +23,6 @@ const fmt = new Intl.NumberFormat();
 const d = new Date(...([2024, 0] as const)); // spread field arguments stay fenced
 const mutableDate = new Date(0);
 mutableDate.setUTCFullYear(2024); // mutation is outside the read-only Date slice
-const sameDate = mutableDate === mutableDate; // scalar storage must not fake object identity
 const wr = new WeakRef({});
 const px = new Proxy({ a: 1 }, {});
 const buf = new ArrayBuffer(8);
@@ -74,13 +73,6 @@ function pick(a: string | number, b: number | boolean): boolean {
 }
 const picked = pick(1, 2);
 
-// Date values deliberately have no tagged-union payload yet. Nullable
-// Date positions must fence in the frontend instead of reaching a backend
-// scalar/ref mismatch.
-function optionalDate(value: Date | undefined): number {
-  return value === undefined ? -1 : value.getTime();
-}
-optionalDate(undefined);
 function throwDate(): void {
   throw new Date(0); // the exception cell cannot preserve Date's object kind
 }

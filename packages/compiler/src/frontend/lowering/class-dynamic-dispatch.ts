@@ -1,4 +1,5 @@
 import { primitiveConstructorOr } from "./lower-exprs.js";
+import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js";
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { constructedValue } from "./constructor-returns.js";
@@ -26,6 +27,7 @@ import {
   isUnitType,
   typeEquals,
   typeKey,
+  type IrClassDef,
   type IrExpr,
   type IrFunction,
   type IrParam,
@@ -152,6 +154,41 @@ const STREAM_NUM_PROPERTIES = new Set([
 ]);
 const streamProperty = (name: string): boolean =>
   STREAM_BOOL_PROPERTIES.has(name) || STREAM_NUM_PROPERTIES.has(name);
+
+/** `(instance) => string`, the string a class's inherited
+ * Symbol.toStringTag getter answers, which the runtime reads for
+ * Object.prototype.toString and util.inspect of an instance seen as
+ * `unknown`. None for a class without a string getter, or whose own tag
+ * field shadows it. */
+function stringTagHelper(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): IrFunction | null {
+  if (info.fields.has(TO_STRING_TAG_FIELD)) return null;
+  const getter = findMethodOn(lowerer, info, "get:sym:toStringTag");
+  if (getter?.sig.ret.kind !== "string") return null;
+  const type: IrType = { kind: "object", className: info.def.name };
+  const owner = getter.declarer.def.name;
+  return {
+    name: `%class.stringTag:${info.def.name}`,
+    params: [{ localId: "this", name: "this", type }],
+    locals: [{ id: "this", name: "this", type, mutable: false }],
+    returnType: STRING,
+    body: [
+      {
+        kind: "return",
+        value: accessorCall(
+          lowerer,
+          owner,
+          "get:sym:toStringTag",
+          lowerer.upcastTo(varRef("this", type, loc), owner),
+          [],
+          STRING,
+          loc,
+        ),
+        loc,
+      },
+    ],
+    loc,
+  };
+}
 
 function symbolMemberKey(
   lowerer: Lowerer,
@@ -717,6 +754,105 @@ export function classForInHasKey(
   return { kind: "call", callee: name, args: [value, key], type: BOOL, loc };
 }
 
+/** Box class instances at their exact class. `%dyn.class.normalize` turns a
+ * capsule of a class with subclasses into a capsule of the instance's own
+ * class before any member table reads it, so every such box was followed
+ * by a second capsule. Each conversion of a value whose static class has a
+ * normalization branch now selects the exact class at the conversion, with
+ * the same tests in the same order (%dyn.class.boxExact:C), and the
+ * normalization of the resulting capsule falls through. Only JavaScript
+ * class hierarchies, whose instances live in untyped code, take the exact
+ * box. */
+export function boxClassInstancesExactly(lowerer: Lowerer, functions: IrFunction[]): void {
+  const normalize = lowerer.liftedFnNamed("%dyn.class.normalize");
+  if (!normalize) return;
+  // Static class → its constructible descendants in normalization order.
+  const branches = new Map<string, string[]>();
+  for (const stmt of normalize.body) {
+    if (stmt.kind !== "if" || stmt.cond.kind !== "libCall" || stmt.cond.fn !== "dyn.typedRefIs")
+      continue;
+    const key = stmt.cond.args[1];
+    if (key?.kind !== "strLit" || !key.value.startsWith("object:")) continue;
+    const children: string[] = [];
+    for (const inner of stmt.then) {
+      if (inner.kind !== "if" || inner.cond.kind !== "instanceOf") continue;
+      children.push(inner.cond.className);
+    }
+    // TypeScript hierarchies keep their static-class capsules: their boxes
+    // are rarer, and an exact box would emit each subclass's checked view.
+    const className = key.value.slice("object:".length);
+    const decl = lowerer.classes.get(className)?.decl;
+    if (!decl || !isJsSourceFile(ts.getSourceFileOfNode(decl))) continue;
+    if (children.length) branches.set(className, children);
+  }
+  if (branches.size === 0) return;
+  const loc = normalize.loc;
+  const helpers = new Map<string, string>();
+  const helperFor = (className: string): string => {
+    const known = helpers.get(className);
+    if (known !== undefined) return known;
+    const name = `%dyn.class.boxExact:${className}`;
+    helpers.set(className, name);
+    const type: IrType = { kind: "object", className };
+    const value = varRef("value", type, loc);
+    functions.push({
+      name,
+      params: [{ localId: "value", name: "value", type }],
+      returnType: DYN,
+      locals: [{ id: "value", name: "value", type, mutable: false }],
+      body: [
+        ...branches.get(className)!.map((child): IrStmt => ({
+          kind: "if",
+          cond: { kind: "instanceOf", value, className: child, type: BOOL, loc },
+          then: [
+            {
+              kind: "return",
+              value: {
+                kind: "dynFrom",
+                value: {
+                  kind: "downcast",
+                  value,
+                  type: { kind: "object", className: child },
+                  loc,
+                },
+                type: DYN,
+                loc,
+              },
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        })),
+        { kind: "return", value: { kind: "dynFrom", value, type: DYN, loc }, loc },
+      ],
+      loc,
+    });
+    return name;
+  };
+  const rewrite = (fn: IrFunction): void => {
+    fn.body = transformStmtList(fn.body, {
+      stmt: (statement) => statement,
+      expr: (expression) =>
+        expression.kind === "dynFrom" &&
+        expression.value.type.kind === "object" &&
+        branches.has(expression.value.type.className)
+          ? {
+              kind: "call",
+              callee: helperFor(expression.value.type.className),
+              args: [expression.value],
+              type: DYN,
+              loc: expression.loc,
+            }
+          : expression,
+    });
+  };
+  for (const fn of [...functions]) {
+    if (fn === normalize || fn.name.startsWith("%dyn.class.boxExact:")) continue;
+    rewrite(fn);
+  }
+}
+
 /** Record field creation after the dispatch worklist closes, including writes
  * in generated member tables. Native values stay in their slots; the bag
  * owns only their property presence, attributes, and insertion position. */
@@ -1276,10 +1412,27 @@ export class ClassDynamicDispatch {
       const info = lowerer.classes.get(className);
       if (!info || info.builtinEmitter || info.builtinStream || info.builtinError) continue;
       if (info.symbolFields && info.def.symbolFields === undefined) {
-        info.def.symbolFields = [...info.symbolFields].flatMap(([symbol, field]) => {
-          const global = lowerer.globalsBySymbol.get(symbol);
-          return global?.type.kind === "symbol" ? [{ field, globalId: global.id }] : [];
-        });
+        info.def.symbolFields = [...info.symbolFields].flatMap(
+          ([symbol, field]): NonNullable<IrClassDef["symbolFields"]> => {
+            const global = lowerer.globalsBySymbol.get(symbol);
+            if (global?.type.kind === "symbol") return [{ field, globalId: global.id }];
+            const wellKnown = wellKnownSymbolOfField(field);
+            return wellKnown === null ? [] : [{ field, wellKnown }];
+          },
+        );
+      }
+      const tagged = (current: ClassInfo): ClassInfo[] => [
+        current,
+        ...current.subclasses.flatMap(tagged),
+      ];
+      for (const current of tagged(info)) {
+        if (current.def.stringTagHelper !== undefined) continue;
+        const fn = stringTagHelper(lowerer, current, functions[0]!.loc);
+        if (!fn) continue;
+        current.def.stringTagHelper = fn.name;
+        this.generated.add(fn);
+        lowerer.liftedFns.push(fn);
+        changed = true;
       }
       if (this.prototypeHelper && !this.prototypeClasses.has(className)) {
         this.prototypeClasses.add(className);
@@ -1634,6 +1787,15 @@ export class ClassDynamicDispatch {
         if (this.deletedNames === undefined)
           this.deletedNames = deletedPropertyNames(lowerer.moduleOrder);
         if (!root.base?.def.runtime && !fixedFieldFamily(root, this.deletedNames)) track(root);
+        // An Error family's bag records where `name` and `message` were
+        // created, which the error slots do not.
+        if (root.base?.def.name === "%Error") {
+          const order = (current: ClassInfo): void => {
+            current.def.errorBagOrder = true;
+            current.subclasses.forEach(order);
+          };
+          order(info);
+        }
       }
       const loc = this.propertyBag.loc;
       const { receiver, condition } = this.propertyReceiver(plan, loc);
@@ -3554,10 +3716,29 @@ export class ClassDynamicDispatch {
                   name,
                   lowerer.coerceToExpected(varRef(global.id, global.type, loc), DYN),
                 );
+            } else if (wellKnownSymbolOfField(name) !== null) {
+              // A field keyed by a well-known symbol (Symbol.toStringTag).
+              symbols.set(name, {
+                kind: "dynFrom",
+                type: DYN,
+                loc,
+                value: {
+                  kind: "libCall",
+                  fn: "sym.wellKnown",
+                  args: [
+                    { kind: "strLit", value: wellKnownSymbolOfField(name)!, type: STRING, loc },
+                  ],
+                  type: SYMBOL_T,
+                  loc,
+                },
+              });
             }
           }
           for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
-            for (const name of [...owner.methods.keys()])
+            for (const method of [...owner.methods.keys()]) {
+              // Accessors key by the property they define (`get [Symbol.toStringTag]`).
+              const name =
+                method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
               if (name.startsWith("sym:")) {
                 symbols.set(name, {
                   kind: "dynFrom",
@@ -3572,6 +3753,7 @@ export class ClassDynamicDispatch {
                   },
                 });
               }
+            }
           }
           const branches: IrStmt[] = [];
           if (!dispatch.write && !dispatch.reflect && !info.def.tracksOwnFields) {

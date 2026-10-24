@@ -57,6 +57,13 @@ export function collectClassMethodMutations(
   const typedClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
   const symbolMethods = new Set<string>();
   let unknownKey: ts.Node | undefined;
+  /** Every write with an unknown key: each may install a replacement of any
+   * method name, and the key-order witness asks what each one installs. */
+  const unknownKeySites: ts.Node[] = [];
+  const markUnknownKey = (site: ts.Node): void => {
+    unknownKey = site;
+    unknownKeySites.push(site);
+  };
   let numericKey: ts.Node | undefined;
   let unknownOwnField = false;
   // `sym:iterator` for `Symbol.iterator`: the name a class method declared
@@ -94,8 +101,8 @@ export function collectClassMethodMutations(
   for (const key of computedMethods)
     for (const name of literalValues(lowerer.typeOf(key)) ?? []) methods.add(String(name));
   const markName = (name: string, site: ts.Node, arrow = false): void => {
-    if (name === "prototype" || name === "__proto__") unknownKey = site;
-    if (methods.has(name)) lowerer.prototypeMethodAccesses.set(name, site);
+    if (name === "prototype" || name === "__proto__") markUnknownKey(site);
+    if (methods.has(name)) lowerer.noteMethodAccess(name, site);
     if (!arrow) receiverFields.add(name);
   };
   const unwrap = (value: ts.Expression): ts.Expression => {
@@ -136,11 +143,13 @@ export function collectClassMethodMutations(
   };
   // Whether no function value can inhabit `type`. Primitives qualify, and so
   // do non-callable object types a function is not assignable to: one that
-  // requires a property functions lack, or a weak (all-optional) type that
+  // requires a property functions lack, a weak (all-optional) type that
   // shares no property with functions (TypeScript's weak-type rule rejects
-  // callable sources too).
-  const functionFree = (type: ts.Type): boolean => {
-    if (type.isUnionType()) return ts.constituentTypes(type).every(functionFree);
+  // callable sources too), or a dictionary with no properties whose index
+  // signatures hold function-free values (functions have no index
+  // signature). `seen` stops recursive dictionary types.
+  const functionFree = (type: ts.Type, seen: Set<ts.Type> = new Set()): boolean => {
+    if (type.isUnionType()) return ts.constituentTypes(type).every((t) => functionFree(t, seen));
     if (
       (type.flags &
         (ts.TypeFlags.StringLike |
@@ -160,7 +169,12 @@ export function collectClassMethodMutations(
     )
       return false;
     const properties = lowerer.checker.getPropertiesOfType(type);
-    if (properties.length === 0) return false;
+    if (properties.length === 0) {
+      if (seen.has(type)) return true;
+      seen.add(type);
+      const indexes = lowerer.checker.getIndexInfosOfType(type);
+      return indexes.length > 0 && indexes.every((index) => functionFree(index.type, seen));
+    }
     const required = properties.filter(
       (property) => (property.flags & ts.SymbolFlags.Optional) === 0,
     );
@@ -174,14 +188,32 @@ export function collectClassMethodMutations(
   // A string index whose values cannot be functions excludes callable
   // method slots. Class instances have no implicit index signature, so such
   // a dictionary is only a class view when the class declares that index
-  // signature, and then every method must be assignable to its value type.
-  const functionFreeDictionary = (value: ts.Expression): boolean =>
-    lowerer.checker
-      .getIndexInfosOfType(lowerer.typeOf(value))
+  // signature, and then every method must be assignable to its value type,
+  // or when the dictionary keeps checked identity: it then holds the
+  // existing objects it receives, class instances included.
+  // A string-keyed dictionary that keeps checked identity holds the
+  // existing objects it receives, class instances included, so any write
+  // through it can replace a method.
+  const dictionaryView = (value: ts.Expression): boolean => {
+    const type = lowerer.typeOf(value);
+    return (
+      lowerer.checker.getPropertiesOfType(type).length === 0 &&
+      lowerer.checker
+        .getIndexInfosOfType(type)
+        .some((index) => (index.keyType.flags & ts.TypeFlags.StringLike) !== 0) &&
+      lowerer.classImplementedProtocol(type)
+    );
+  };
+  const functionFreeDictionary = (value: ts.Expression): boolean => {
+    const type = lowerer.typeOf(value);
+    if (lowerer.classImplementedProtocol(type)) return false;
+    return lowerer.checker
+      .getIndexInfosOfType(type)
       .some(
         (index) =>
           (index.keyType.flags & ts.TypeFlags.StringLike) !== 0 && functionFree(index.type),
       );
+  };
   const literalLoopKeys = (key: ts.Expression): (string | number)[] | null => {
     if (!ts.isIdentifier(key)) return null;
     const symbol = lowerer.checker.getSymbolAtLocation(key);
@@ -424,11 +456,22 @@ export function collectClassMethodMutations(
           (ts.isElementAccessExpression(base) &&
             ts.isStringLiteralLike(base.argumentExpression) &&
             base.argumentExpression.text === "prototype");
-        if (prototype) {
-          if (ts.isPropertyAccessExpression(node))
-            lowerer.prototypeMethodAccesses.set(node.name.text, node);
+        // `Object.prototype.toString.call(value)` calls the builtin and
+        // keeps no reference to it, so it replaces nothing.
+        const builtinCall =
+          ts.isPropertyAccessExpression(node) &&
+          ts.isPropertyAccessExpression(base) &&
+          ts.isIdentifier(unwrap(base.expression)) &&
+          lowerer.isStdlibGlobal(unwrap(base.expression) as ts.Identifier, "Object") &&
+          ts.isPropertyAccessExpression(node.parent) &&
+          node.parent.expression === node &&
+          (node.parent.name.text === "call" || node.parent.name.text === "apply") &&
+          ts.isCallExpression(node.parent.parent) &&
+          node.parent.parent.expression === node.parent;
+        if (prototype && !builtinCall) {
+          if (ts.isPropertyAccessExpression(node)) lowerer.noteMethodAccess(node.name.text, node);
           else if (ts.isStringLiteralLike(node.argumentExpression))
-            lowerer.prototypeMethodAccesses.set(node.argumentExpression.text, node);
+            lowerer.noteMethodAccess(node.argumentExpression.text, node);
           else markKey(node.argumentExpression, node);
         }
       }
@@ -465,7 +508,7 @@ export function collectClassMethodMutations(
       ? lowerer.checker.getSymbolAtLocation(access.name)
       : lowerer.checker.getPropertyOfType(lowerer.typeOf(access.expression), name);
     if (symbol && symbol.declarations.some(ts.isMethodDeclaration))
-      lowerer.prototypeMethodAccesses.set(name, access);
+      lowerer.noteMethodAccess(name, access);
   }
   lowerer.checker.prefetchSymbolRoots([...globals, ...reflection]);
   for (const node of globals)
@@ -473,11 +516,12 @@ export function collectClassMethodMutations(
       (lowerer.isStdlibGlobal(node, "Object") || lowerer.isStdlibGlobal(node, "Reflect")) &&
       (!ts.isPropertyAccessExpression(node.parent) || node.parent.expression !== node)
     )
-      unknownKey = node;
+      markUnknownKey(node);
   for (const node of reflection) {
     const objectMethod = lowerer.stdlibGlobalMember(node, "Object");
     const reflectMethod = lowerer.stdlibGlobalMember(node, "Reflect");
-    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf") unknownKey = node;
+    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf")
+      markUnknownKey(node);
     const single =
       objectMethod === "defineProperty" ||
       reflectMethod === "defineProperty" ||
@@ -487,7 +531,7 @@ export function collectClassMethodMutations(
     if (!single && !multiple) continue;
     const call = node.parent;
     if (!ts.isCallExpression(call) || call.expression !== node) {
-      unknownKey = node;
+      markUnknownKey(node);
       continue;
     }
     const receiver = call.arguments.nodes[0];
@@ -601,9 +645,13 @@ export function collectClassMethodMutations(
   );
   for (const { target, site } of propertyWrites) {
     const name = target.name.text;
-    if (lowerer.prototypeMethodAccesses.has(name) || functionFree(lowerer.typeOf(target))) continue;
-    if (!methodOwnerCanInhabit(target.expression, name)) continue;
-    lowerer.prototypeMethodAccesses.set(name, site);
+    if (
+      !dictionaryView(target.expression) &&
+      (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(target.expression, name))
+    )
+      continue;
+    if (lowerer.prototypeMethodAccesses.has(name)) lowerer.noteMethodSite(name, site);
+    else lowerer.noteMethodAccess(name, site);
   }
   for (const { key, receiver, target, site } of computedWrites) {
     // A class method declared with a well-known symbol key is not a write;
@@ -641,7 +689,7 @@ export function collectClassMethodMutations(
       // Numeric writes can replace numeric names but not ordinary names.
       numericKey = site;
     } else if (!(flags & ts.TypeFlags.ESSymbolLike)) {
-      unknownKey = site;
+      markUnknownKey(site);
     }
   }
   lowerer.checker.prefetchClassCollection(
@@ -649,9 +697,13 @@ export function collectClassMethodMutations(
     [],
   );
   for (const { name, receiver, target, site } of keyedWrites) {
-    if (lowerer.prototypeMethodAccesses.has(name) || functionFree(lowerer.typeOf(target))) continue;
-    if (!methodOwnerCanInhabit(receiver, name)) continue;
-    lowerer.prototypeMethodAccesses.set(name, site);
+    if (
+      !dictionaryView(receiver) &&
+      (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(receiver, name))
+    )
+      continue;
+    if (lowerer.prototypeMethodAccesses.has(name)) lowerer.noteMethodSite(name, site);
+    else lowerer.noteMethodAccess(name, site);
   }
   if (numericKey) {
     for (const name of [...methods, ...arrowFields]) {
@@ -659,7 +711,10 @@ export function collectClassMethodMutations(
     }
   }
   if (unknownKey) {
-    for (const method of methods) lowerer.prototypeMethodAccesses.set(method, unknownKey);
+    for (const method of methods) {
+      lowerer.prototypeMethodAccesses.set(method, unknownKey);
+      for (const site of unknownKeySites) lowerer.noteMethodSite(method, site);
+    }
     for (const method of symbolMethods) lowerer.replacedSymbolMethods.add(method);
   }
   if (!unknownKey && !unknownOwnField)
