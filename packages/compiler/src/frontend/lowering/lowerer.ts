@@ -150,7 +150,11 @@ import { InternalCompilerError } from "../../errors.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
-import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
+import {
+  ClassDynamicDispatch,
+  boxClassInstancesExactly,
+  trackClassFieldCreation,
+} from "./class-dynamic-dispatch.js";
 import { guardClassAttributeWrites } from "./class-attributes.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
@@ -344,10 +348,13 @@ import {
 } from "./lower-modules.js";
 import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
 import {
+  type SplitRequireBinding,
   cjsNamespaceModule,
   cjsWholeExportValueOf,
   inlineNamespaceRequireOf,
   inlineProgramRequireOf,
+  splitRequireBindingOf,
+  splitWholeExportAliasTargetOf,
 } from "./cjs-inline-require.js";
 import { tscInteropModuleOf } from "./cjs-tsc-interop.js";
 import { usesCjsExportsIdentity } from "./cjs-exports-object.js";
@@ -2292,6 +2299,14 @@ export class Lowerer {
   /** Per CommonJS file using top-level `this`: the global holding the
    * object that stands for its original exports (lowerCjsTopLevelThis). */
   readonly cjsExportsThis = new Map<ts.SourceFile, IrGlobal>();
+  /** `var m; m = require("./x")` alias bindings (cjs-inline-require.ts).
+   * Null entries cache declarations that keep ordinary storage. */
+  readonly cjsSplitRequireBindings = new Map<ts.VariableDeclaration, SplitRequireBinding | null>();
+  /** Per-module whole-export symbol (cjs-inline-require.ts). Null means the
+   * module's exports are a table. */
+  readonly cjsWholeExportSymbols = new Map<ts.SourceFile, ts.Symbol | null>();
+  /** Per-module live member-export classification (cjs-inline-require.ts). */
+  readonly cjsLiveMemberExports = new Map<ts.SourceFile, boolean>();
   /** Inline program-module require calls whose %init the enclosing member
    * read or member call is already sequencing (cjs-inline-require.ts). */
   readonly inlineRequireInitDone = new Set<ts.CallExpression>();
@@ -2905,6 +2920,9 @@ export class Lowerer {
   /** util.inspect's per-type traversal helpers (%util.insp.N), interned
    * by typeKey — the assertHelpers pattern with its own namespace. */
   readonly inspectHelpers = new Map<string, string>();
+  /** Indexed-union safe-read helpers mapped to their numeric twins, for the
+   * fusion of an immediate ToNumber (tryLowerNumericIndexRead). */
+  readonly indexedUnionNumericTwins = new Map<string, string>();
   private readonly unionLiteralOwners = new Map<
     string,
     { owners: Map<string, number> | null; shapes: number; unions: number }
@@ -4136,6 +4154,11 @@ export class Lowerer {
     // registry (globals, fn signatures, classes) applies unchanged.
     const cjsValue = this.cjsExportValueSymbol(symbol);
     if (cjsValue) symbol = cjsValue;
+    // `var m; m = require("./x"); module.exports = m` over a whole-export
+    // target: TS types the wrapper's export= as `any`, so reconnect it to
+    // the target's value symbol explicitly.
+    const splitAlias = splitWholeExportAliasTargetOf(this, symbol);
+    if (splitAlias) symbol = splitAlias;
     this.flushDeferred(symbol);
     return symbol;
   }
@@ -4529,8 +4552,8 @@ export class Lowerer {
     const decl = decls.find(ts.isImportClause) ?? decls[0];
     if (!decl) return null;
     if (ts.isImportClause(decl)) return this.cjsDefaultImportDepOf(decl);
-    if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name) || !decl.initializer)
-      return null;
+    if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return null;
+    if (decl.initializer === undefined) return splitRequireBindingOf(this, decl)?.dep ?? null;
     {
       const interop = tscInteropModuleOf(this, expr);
       if (interop !== null) return cjsNamespaceModule(this, interop.dep) ? interop.dep : null;
@@ -4635,6 +4658,9 @@ export class Lowerer {
     // a binding (cjs-inline-require.ts sequences the module's %init).
     if (!ts.isIdentifier(expr)) return this.cjsModuleRefDepOf(expr) !== null;
     const sym = this.checker.getSymbolAtLocation(expr);
+    const splitDecl = sym?.declarations.find(ts.isVariableDeclaration);
+    const split = splitDecl === undefined ? null : splitRequireBindingOf(this, splitDecl);
+    if (split !== null) return cjsNamespaceModule(this, split.dep);
     if (this.localModuleBindingDepOf(expr) === null) return false;
     if (this.createRequireWholeExportSymbolOf(expr) !== null) return false;
     // SINGLE-VALUE exporters (`module.exports = Countdown` / `= double` /
@@ -4942,6 +4968,13 @@ export class Lowerer {
    * their external dependencies by name). Null for everything else
    * (builtins load nothing; the rest kept its preflight fence). */
   requireInitStmt(spec: string, node: ts.Node): IrStmt | null {
+    if (this.inlineRequireCycleCalls.has(node)) {
+      this.unsupported(
+        "SC1090",
+        node,
+        `require() of '${spec}' while it is still evaluating (a require cycle: Node answers its partial exports, which the static export table does not model)`,
+      );
+    }
     if (canonicalBuiltinModule(spec) === "punycode") return this.punycodeRequireWarning(node);
     // Project requires resolve within the program; another bare require can
     // be a program-module edge when it names an opted-in --npm-static package
@@ -7738,6 +7771,7 @@ export class Lowerer {
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
     trackClassFieldCreation(this, functions);
+    boxClassInstancesExactly(this, functions);
     guardClassAttributeWrites(this, functions);
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);

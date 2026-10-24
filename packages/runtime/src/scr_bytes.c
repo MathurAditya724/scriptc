@@ -3329,48 +3329,53 @@ double scr_bytes_index_of_num(const ScrBytes *b, double v, double off, bool fwd)
   return scr_bytes_index_of(b, &needle, off, 1, fwd);
 }
 
-/* TypedArray.prototype.indexOf and lastIndexOf (strict equality, so NaN
- * never matches) and includes (`same_value_zero`: NaN matches NaN). `from`
- * is the fromIndex argument when `has_from` (ToIntegerOrInfinity, negative
- * counts from the end), else the default: 0, or len - 1 searching
- * backwards. Returns the element index, or -1. Never throws. */
-double scr_bytes_ta_index_of(const ScrBytes *b, double v, double from, bool has_from, bool forward,
-                             bool same_value_zero) {
-  // A Buffer viewed as a Uint8Array keeps Buffer's own search methods, whose
-  // byte needle and byteOffset rules differ (an absent offset is NaN there).
-  if (scr_bytes_is_buffer(b)) return scr_bytes_index_of_num(b, v, has_from ? from : NAN, forward);
+/* The first index a TypedArray search from `from` starts at
+ * (ToIntegerOrInfinity, then relative to the end when negative), or false
+ * when it starts past the last element. */
+static bool scr_bytes_search_start(size_t len, double from, size_t *start) {
+  double n = from != from ? 0 : trunc(from);
+  if (n >= (double)len) return false;
+  if (n < 0) n = n + (double)len < 0 ? 0 : n + (double)len;
+  *start = (size_t)n;
+  return true;
+}
+
+double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool last) {
+  /* A Buffer viewed as a Uint8Array keeps Buffer's own search: the needle
+   * is taken as a byte, and a NaN byteOffset searches the whole buffer. */
+  if (scr_bytes_is_buffer(b)) return scr_bytes_index_of_num(b, x, from, !last);
+  SCR_BYTES_SNAPSHOT(b);
   size_t len = b->len;
-  if (len == 0) return -1;
-  double k = has_from ? (from != from ? 0 : trunc(from)) : forward ? 0 : (double)len - 1;
-  bool nan = v != v;
-  if (nan && !same_value_zero) return -1;
-  bool bytes = (b->elem == SCR_BYTES_U8 || b->elem == SCR_BYTES_U8C) && !b->shared;
-  if (forward) {
-    if (k >= (double)len) return -1;
-    if (k < 0) k = k + (double)len < 0 ? 0 : k + (double)len;
-    size_t start = (size_t)k;
-    if (bytes) {
-      if (!(v >= 0 && v <= 255 && v == trunc(v))) return -1;
-      const uint8_t *hit = memchr(b->data + start, (int)v, len - start);
-      return hit ? (double)(hit - b->data) : -1;
-    }
-    for (size_t i = start; i < len; i++) {
-      double e = scr_bytes_load(b, i);
-      if (e == v || (nan && e != e)) return (double)i;
-    }
+  size_t size = scr_bytes_elem_size(b->elem);
+  if (len == 0 || x != x) return -1;
+  if (!last) {
+    size_t k;
+    if (!scr_bytes_search_start(len, from, &k)) return -1;
+    for (; k < len; k++)
+      if (scr_bytes_decode(b->elem, b->data + k * size) == x) return (double)k;
     return -1;
   }
-  if (k < 0) {
-    k += (double)len;
-    if (k < 0) return -1;
-  } else if (k > (double)len - 1) {
-    k = (double)len - 1;
-  }
-  for (size_t i = (size_t)k + 1; i-- > 0;) {
-    double e = scr_bytes_load(b, i);
-    if (e == v || (nan && e != e)) return (double)i;
-  }
+  double n = from != from ? 0 : trunc(from);
+  double k = n >= 0 ? (n < (double)len - 1 ? n : (double)len - 1) : (double)len + n;
+  if (k < 0) return -1;
+  for (size_t i = (size_t)k + 1; i-- > 0;)
+    if (scr_bytes_decode(b->elem, b->data + i * size) == x) return (double)i;
   return -1;
+}
+
+bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from) {
+  if (scr_bytes_is_buffer(b)) return scr_bytes_index_of_num(b, x, from, true) >= 0;
+  SCR_BYTES_SNAPSHOT(b);
+  size_t len = b->len;
+  size_t size = scr_bytes_elem_size(b->elem);
+  size_t k;
+  if (len == 0 || !scr_bytes_search_start(len, from, &k)) return false;
+  bool nan = x != x;
+  for (; k < len; k++) {
+    double v = scr_bytes_decode(b->elem, b->data + k * size);
+    if (v == x || (nan && v != v)) return true;
+  }
+  return false;
 }
 
 /* fill's shared core over a normalized byte pattern. nargs counts the

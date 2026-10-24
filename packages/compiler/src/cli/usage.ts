@@ -54,6 +54,12 @@ Options:
                      a helper process so the parent sees the exit sooner. The
                      helper keeps the executable mapped and its memory charged
                      for up to ~100 ms after exit (opt in; --emit=exe only)
+      --target-cpu <baseline|x86-64-v2|x86-64-v3|x86-64-v4|native>
+                     x86-64: compile the program's code for a CPU level
+                     (default: baseline, which runs on any x86-64 CPU). The
+                     executable then requires that level: v3 adds AVX2, BMI2
+                     and FMA, v4 adds AVX-512. native uses the build host's
+                     level. The runtime keeps its baseline code
       --profile-generate <pattern>
                      Linux: instrument the executable for profile-guided
                      optimization. Each run writes a raw profile to the
@@ -123,6 +129,7 @@ export const CLI_OPTIONS = {
   strip: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
+  "target-cpu": { type: "string" },
   "profile-generate": { type: "string" },
   "profile-use": { type: "string" },
   sparse: { type: "boolean", default: false },

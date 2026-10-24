@@ -61,3 +61,10 @@ function searchView(view: Uint8Array): string {
   return [view.indexOf(97 + 256), view.lastIndexOf(98, NaN), view.includes(353), view.indexOf(98, -1)].join(",");
 }
 console.log(searchView(Buffer.from("abcab")), searchView(new Uint8Array([97, 98, 99, 97, 98])));
+
+// An explicit undefined fromIndex converts to NaN, which searches from 0:
+// lastIndexOf then looks at index 0 only.
+const values = new Int16Array([3, 1, 3, 2, 3]);
+const absent: number | undefined = process.argv.length > 99 ? 1 : undefined;
+console.log("undefined from", values.indexOf(3, undefined), values.lastIndexOf(3, undefined), values.lastIndexOf(1, undefined), values.includes(2, undefined));
+console.log("maybe undefined from", values.indexOf(3, absent), values.lastIndexOf(3, absent), values.includes(1, absent));

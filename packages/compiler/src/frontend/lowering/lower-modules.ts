@@ -43,10 +43,14 @@ import {
 } from "./cycle-initialization.js";
 import { markRequireEarlyBindings } from "./require-initialization.js";
 import {
+  cjsHasLiveMemberExports,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   nestedCjsExportAssignmentsOf,
   requireNestedPatternsOf,
+  splitRequireBindingOf,
+  splitRequireBindingOfIdent,
+  wholeExportSymbolOfModule,
 } from "./cjs-inline-require.js";
 import { isDeadTscHelperDecl, tscInteropBindingOfDecl } from "./cjs-tsc-interop.js";
 import { collectJsonRequires, isJsonRequireDecl } from "./json-require.js";
@@ -1597,14 +1601,26 @@ export function collectGlobals(
         // require() of a program module is not: the exporter re-exports
         // that module's exports, which requirers resolve through the
         // checker's alias (the statement lowers to the dep's %init).
+        // A split binding re-exported whole with later member writes needs
+        // a mutable root: `module.exports = m; module.exports.extra = 1`
+        // extends the SAME object Node exposes. Without later members the
+        // binder is pure alias plumbing (no storage).
+        const splitWholeBinding = ts.isIdentifier(rhs)
+          ? splitRequireBindingOfIdent(lowerer, rhs)
+          : null;
+        const hasMemberExports = cjsHasLiveMemberExports(lowerer, sf);
+        const splitWhole =
+          splitWholeBinding !== null &&
+          wholeExportSymbolOfModule(lowerer, splitWholeBinding.dep) !== null &&
+          hasMemberExports;
         const factoryValued =
-          !ts.isIdentifier(rhs) &&
+          (!ts.isIdentifier(rhs) || splitWhole) &&
           !ts.isClassExpression(rhs) &&
           !ts.isObjectLiteralExpression(rhs) &&
           !(
             requireSpecOf(rhs) !== null &&
             inlineProgramRequireOf(lowerer, rhs) !== null &&
-            !sf.statements.nodes.some((s) => cjsExportAssignmentOf(s)?.kind === "member")
+            !hasMemberExports
           ) &&
           cjsExportTargetLiteral(rhs, sf) === null;
         if (cjsScalarLiteral(rhs) || fnValued || factoryValued) {
@@ -1617,6 +1633,9 @@ export function collectGlobals(
             // A returned object remains the live CommonJS root; later
             // exports.member writes must update that same open object.
             if (factoryValued && t?.kind === "record" && lowerer.dynConvertible(t)) t = DYN;
+            // A split whole-export root is extended by later member writes;
+            // keep it checked-dynamic so those writes reach the same object.
+            if (splitWhole && t && t.kind !== "dyn") t = DYN;
             if (t && t.kind !== "void") {
               const g: IrGlobal = {
                 id: `%g.${tag}exports`,
@@ -2707,6 +2726,7 @@ function noteVarGlobalEntryInit(lowerer: Lowerer, sf: ts.SourceFile, g: IrGlobal
  * plumbing (lowerVarDeclarator): no storage, the reads resolve through to
  * the module. JSON documents and native FFI requires keep their storage. */
 function requireAliasDecl(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (splitRequireBindingOf(lowerer, decl) !== null) return true;
   return (
     decl.initializer !== undefined &&
     requireSpecOf(decl.initializer) !== null &&

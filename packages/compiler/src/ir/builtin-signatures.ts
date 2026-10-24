@@ -4460,6 +4460,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.buffer": { argTypes: [BYTES_U8], result: STRING },
   /** A numeric typed array that is not a Buffer (any element kind). */
   "insp.typedArray": { argTypes: [null, F64, F64], result: STRING },
+  /** A u8 byte view in a union arm, element or field: a DataView, Buffer
+   * or Uint8Array by its own flags. */
+  "insp.bytes": { argTypes: [null, F64, F64], result: STRING },
   "insp.error": { argTypes: [null, F64, F64], result: STRING },
   "insp.errorHasCause": { argTypes: [null], result: BOOL },
   "insp.errorBagHasProperties": { argTypes: [DYN], result: BOOL },
