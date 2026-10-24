@@ -161,10 +161,16 @@ static uint32_t scr_brotli_uint32(const ScrDyn *v) {
   return (uint32_t)m;
 }
 
+/* ERR_BROTLI_INVALID_PARAM: the whole key, then Node's text. */
 static void scr_brotli_invalid_param(const ScrStr *key) {
-  char message[160];
-  int n = snprintf(message, sizeof message, "%.*s is not a valid Brotli parameter", (int)key->len, key->data);
-  scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)n, "ERR_BROTLI_INVALID_PARAM");
+  static const char suffix[] = " is not a valid Brotli parameter";
+  size_t len = key->len + sizeof suffix - 1;
+  char *message = malloc(len);
+  if (!message) scr_brotli_oom();
+  memcpy(message, key->data, key->len);
+  memcpy(message + key->len, suffix, sizeof suffix - 1);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, message, len, "ERR_BROTLI_INVALID_PARAM");
+  free(message);
 }
 
 /* opts.params: each own key must name a parameter (0..8) once, and each
