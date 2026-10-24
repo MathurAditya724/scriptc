@@ -1,7 +1,8 @@
 // Date setters and evaluation order: a setter called without arguments
 // makes the Date invalid, an argument that calls setTime on the same
-// Date subclass instance is seen by the setter, and a comparison or
-// concatenation reads its left Date after the right side runs a setter.
+// Date subclass instance is seen by the setter, a comparison or
+// concatenation reads its left Date after the right side runs a setter,
+// and toJSON reads its Date after an argument runs a setter.
 export {};
 process.env.TZ = "UTC";
 
@@ -51,3 +52,15 @@ const s = new Date(Date.UTC(2026, 0, 1));
 console.log(s + (s.setUTCFullYear(1999), "!"));
 const n = new Date(Date.UTC(2026, 0, 1));
 console.log(+n === (n.setTime(5), 5), +n);
+
+// Locals a function keeps as their time value: a method reads the time
+// value after its arguments run a setter.
+function locals(): void {
+  const json = new Date(Date.UTC(2026, 0, 1));
+  console.log(json.toJSON(json.setUTCFullYear(1999)), json.toJSON());
+  const key = new Date(Date.UTC(2026, 0, 1));
+  console.log(key.toJSON(String(key.setTime(Date.UTC(2021, 5, 1)))));
+  const read = new Date(Date.UTC(2026, 0, 1));
+  console.log(read.toJSON(), read.getTime());
+}
+locals();

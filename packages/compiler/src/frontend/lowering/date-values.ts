@@ -43,7 +43,8 @@ const RELATIONAL = new Set([
 /** True when a local `const` (or a `let` that is never assigned again)
  * initialized with `new Date(...)` can keep the Date's time value instead
  * of a Date object: no use observes the Date's identity. Every use reads
- * the time value as a Date method receiver (a setter replaces it), a
+ * the time value as a Date method receiver (a setter replaces it; the
+ * arguments of a method that reads it call no setter on it), a
  * String(), Number() or template operand, a unary + or - operand, a
  * relational or string `+` operand, or `new Date(d)`'s argument, inside
  * the declaring function, or inside the block or loop that scopes a
@@ -194,6 +195,9 @@ function timeValueUse(
     )
       return null;
     if (isDateSetter(parent.name.text)) return "set";
+    // The method reads the time value after its arguments are evaluated:
+    // a setter there (`d.toJSON(d.setTime(0))`) changes what it reads.
+    if (call.arguments.nodes.some((arg) => callsSetterOf(lowerer, arg, symbol))) return null;
     return TIME_VALUE_METHODS.has(parent.name.text) ? "read" : null;
   }
   return readsTimeValue(lowerer, node, parent, symbol) ? "read" : null;
