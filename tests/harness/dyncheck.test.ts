@@ -650,6 +650,42 @@ console.log("getter calls", calls);
     ]);
   });
 
+  test("nested unions: a getter's value in a non-recursive union's build is matched in full", async () => {
+    // A union without recursion builds without a visit session. The getter
+    // still runs user code during the trusted build, so the nested union
+    // matches its second answer in full, and the failure names that union.
+    const r = await compileAndRun(
+      "flat-discriminated-getter",
+      `type Inner = { tag: "x"; n: number } | { tag: "y"; s: string };
+type Outer = { kind: "a"; inner: Inner } | { kind: "b"; other: number };
+const v = JSON.parse('{"kind":"a"}') as unknown;
+let calls = 0;
+Object.defineProperty(v, "inner", {
+  enumerable: true,
+  get() {
+    calls++;
+    return calls === 1 ? JSON.parse('{"tag":"x","n":1}') : JSON.parse('{"tag":"x","n":"bad"}');
+  },
+});
+try {
+  const o = v as Outer;
+  console.log("ok", JSON.stringify(o));
+} catch (err) {
+  console.log((err as Error).message);
+}
+console.log("getter calls", calls);
+const plain = JSON.parse('{"kind":"a","inner":{"tag":"y","s":"z"}}') as Outer;
+console.log(JSON.stringify(plain));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trimEnd().split("\n")).toEqual([
+      "expected object | object at $.inner, got object",
+      "getter calls 2",
+      '{"kind":"a","inner":{"tag":"y","s":"z"}}',
+    ]);
+  });
+
   test("array where a record is expected names the mismatch at the root", async () => {
     const r = await compileAndRun(
       "root-kind",

@@ -10824,9 +10824,10 @@ static SCR_TL const ScrDyn *scr_dyn_visit_held;
 /* Set while a union's builder builds the arm it matched in full
  * (scr_dyn_trust_enter). */
 static SCR_TL bool scr_dyn_trusted;
-/* Set once a getter or proxy trap has run during this session. Their code
- * can return a value the match never saw or change one it saw, so no build
- * in the rest of the session trusts an earlier match. */
+/* Set once a getter or proxy trap has run during this session, or during
+ * a trusted build outside any session. Their code can return a value the
+ * match never saw or change one it saw, so no build in the rest of the
+ * session, or of the outermost trusted build, trusts an earlier match. */
 static SCR_TL bool scr_dyn_session_ran_code;
 
 /* Tables up to this many slots stay allocated for the next session. */
@@ -10978,7 +10979,10 @@ static void scr_dyn_visit_resume(const ScrDynVisitState *saved) {
 
 /* Calls a getter for a member read, outside any visit session. */
 static ScrDyn *scr_dyn_visit_call_getter(ScrDyn *getter) {
-  if (scr_dyn_visit_depth == 0) return scr_dyn_call(getter, NULL, 0, "getter");
+  if (scr_dyn_visit_depth == 0) {
+    if (scr_dyn_trusted) scr_dyn_session_ran_code = true;
+    return scr_dyn_call(getter, NULL, 0, "getter");
+  }
   ScrDynVisitState saved;
   scr_dyn_visit_suspend(&saved);
   ScrDyn *result = scr_dyn_call(getter, NULL, 0, "getter");
@@ -10988,7 +10992,10 @@ static ScrDyn *scr_dyn_visit_call_getter(ScrDyn *getter) {
 
 /* A proxy's get trap for a member read, outside any visit session. */
 static ScrDyn *scr_dyn_visit_proxy_get(const ScrDyn *d, ScrStr *name) {
-  if (scr_dyn_visit_depth == 0) return scr_dyn_proxy_get(d, name);
+  if (scr_dyn_visit_depth == 0) {
+    if (scr_dyn_trusted) scr_dyn_session_ran_code = true;
+    return scr_dyn_proxy_get(d, name);
+  }
   ScrDynVisitState saved;
   scr_dyn_visit_suspend(&saved);
   ScrDyn *result = scr_dyn_proxy_get(d, name);
@@ -11002,7 +11009,12 @@ bool scr_dyn_trust_enter(void) {
   return previous;
 }
 
-void scr_dyn_trust_exit(bool previous) { scr_dyn_trusted = previous; }
+void scr_dyn_trust_exit(bool previous) {
+  scr_dyn_trusted = previous;
+  /* The outermost trusted build outside a session ends: later conversions
+   * may trust their own matches again. A session clears it on its exit. */
+  if (!previous && scr_dyn_visit_depth == 0) scr_dyn_session_ran_code = false;
+}
 
 bool scr_dyn_trusted_build(void) { return scr_dyn_trusted && !scr_dyn_session_ran_code; }
 
