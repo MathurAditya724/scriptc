@@ -221,13 +221,16 @@ jobs:
       # the whole runner did before (a sanitized shard peaks near 16 GB), and
       # when RAM and swap run out the kernel kills the scope's largest process.
       # OOMPolicy=continue leaves the rest of the scope running, so vitest
-      # reports the killed worker and the job log names the test.
+      # reports the killed worker and the job log names the test. Node sizes
+      # its default heap from the memory it may use, which the scope lowers
+      # to about 3.5 GB; the workers keep the 4 GB heap they had on the bare
+      # runner.
       - name: Tests (corpus and integration suites)
         run: |
           ulimit -c 0
           if [ -d /run/systemd/system ]; then
             exec sudo --preserve-env systemd-run --scope --quiet -p MemoryMax=14G -p OOMPolicy=continue \
-              --uid="$(id -u)" --gid="$(id -g)" -- env PATH="$PATH" HOME="$HOME" node scripts/ci-test.mjs
+              --uid="$(id -u)" --gid="$(id -g)" -- env PATH="$PATH" HOME="$HOME" NODE_OPTIONS="--max-old-space-size=4096" node scripts/ci-test.mjs
           fi
           node scripts/ci-test.mjs
 
