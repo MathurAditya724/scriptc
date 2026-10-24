@@ -314,6 +314,7 @@ export function emitStackMapRead(host: LlvmEmitterContext, read: LocalMapRead): 
       // Booleans are stored as 0/1, already the widened union payload.
       const scalar = emitNumberMapGetScalar(host, receiver.name, number);
       found = scalar.found;
+      rememberMapEntry(host, read.expr, receiver.name, number, scalar.entry, "double");
       B.line(`store i64 ${scalar.bits}, ptr ${payload}`);
     }
   } else if (string !== null && !isRefCounted(read.value)) {

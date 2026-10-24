@@ -15,6 +15,13 @@ import { buildEnvelope } from "../diagnostics/envelope.js";
 import { renderWarnings } from "../diagnostics/render.js";
 import { isPerformanceCode, renderPerformanceWarnings } from "../diagnostics/dynamic-tier.js";
 import { isNativeOptimization } from "../backend/optimization.js";
+import {
+  hostTargetCpu,
+  isTargetCpuOption,
+  TARGET_CPU_OPTIONS,
+  targetCpuField,
+  type TargetCpu,
+} from "../backend/target-cpu.js";
 import { setProvenanceSources } from "../frontend/provenance-registry.js";
 import type { CliHost, NativeCacheWarmProfile } from "./host.js";
 import { resolveOutputOptions } from "./output-options.js";
@@ -96,6 +103,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.strip ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["target-cpu"] !== undefined ||
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       values.sparse ||
@@ -154,6 +162,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.sanitize ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["target-cpu"] !== undefined ||
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
@@ -210,6 +219,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.ffi !== undefined ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["target-cpu"] !== undefined ||
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
@@ -218,7 +228,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["explain-dynamic"] !== undefined
     ) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--target-cpu/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
     }
     const profilePath = resolve(profileArg);
@@ -260,6 +270,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   if (command === "coverage" && values.strip) {
     fail(`--strip is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["target-cpu"] !== undefined) {
+    fail(`--target-cpu is a build/run option\n\n${USAGE}`);
   }
   if (command === "coverage" && values["detached-exit"]) {
     fail(`--detached-exit is a build/run option\n\n${USAGE}`);
@@ -376,6 +389,19 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   if (windowsSubsystem !== undefined && command === "coverage") {
     fail(`--windows-subsystem is only supported for executable builds\n\n${USAGE}`);
+  }
+  const targetCpuOption = values["target-cpu"];
+  if (targetCpuOption !== undefined && !isTargetCpuOption(targetCpuOption)) {
+    fail(
+      `unknown target CPU "${targetCpuOption}" (supported: ${TARGET_CPU_OPTIONS.join(", ")})\n\n${USAGE}`,
+    );
+  }
+  let targetCpu: TargetCpu | undefined = targetCpuOption === "native" ? undefined : targetCpuOption;
+  if (targetCpuOption === "native") {
+    const level = hostTargetCpu();
+    if (level === null)
+      fail(`--target-cpu=native needs an x86-64 Linux or macOS build host; name a level instead`);
+    targetCpu = level;
   }
   const output =
     command === "coverage"
@@ -506,6 +532,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
                 : resolve(values.libnode),
           }
         : {}),
+      ...targetCpuField(targetCpu),
       // The instrumented program resolves a relative pattern against its own
       // working directory; resolve it here, where the user wrote it.
       ...(values["profile-generate"] === undefined

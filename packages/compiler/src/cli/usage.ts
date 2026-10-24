@@ -59,6 +59,12 @@ Options:
                      load at run time, or beside to copy it next to the
                      executable (default: SCRIPTC_LIBNODE at build time;
                      SCRIPTC_LIBNODE overrides it at run time)
+      --target-cpu <baseline|x86-64-v2|x86-64-v3|x86-64-v4|native>
+                     x86-64: compile the program's code for a CPU level
+                     (default: baseline, which runs on any x86-64 CPU). The
+                     executable then requires that level: v3 adds AVX2, BMI2
+                     and FMA, v4 adds AVX-512. native uses the build host's
+                     level. The runtime keeps its baseline code
       --profile-generate <pattern>
                      Linux: instrument the executable for profile-guided
                      optimization. Each run writes a raw profile to the
@@ -82,9 +88,9 @@ Options:
       --npm-static <pkg[,pkg…]|auto>
                      compile the named npm packages' shipped JS statically as
                      program modules (repeatable; "auto" opts in every eligible
-                     direct import: own .d.ts, unminified JS, no build-transform
-                     markers; "pkg..." also names every package pkg depends
-                     on). Packages that fail preflight are refused with a
+                     direct import: own .d.ts, no build-transform markers;
+                     "pkg..." also names every package pkg depends on).
+                     Packages that fail preflight are refused with a
                      diagnostic. Eligible dependencies compile automatically.
       --provenance-sources
                      EXPERIMENTAL: compile npm dependencies from their
@@ -129,6 +135,7 @@ export const CLI_OPTIONS = {
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
   libnode: { type: "string" },
+  "target-cpu": { type: "string" },
   "profile-generate": { type: "string" },
   "profile-use": { type: "string" },
   sparse: { type: "boolean", default: false },

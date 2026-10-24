@@ -1,4 +1,5 @@
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
+import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
 import { prepareExecutableModule } from "./executable/prepare.js";
 import {
@@ -9,6 +10,7 @@ import {
 } from "./library/prepare.js";
 import { analyzeWithFrontend } from "./frontend/analysis.js";
 import { checkerCacheIdentity } from "./frontend/ts7/checker-backend.js";
+import { setLibDiagnosticsStore } from "./frontend/ts7/lib-diagnostics.js";
 import { analyzeWithVerdictCache, fileVerdictStore } from "./coverage/verdict-cache.js";
 import { coverageCompilerIdentity } from "./coverage/verdict-startup.js";
 import { commentOnlyReplay } from "./coverage/verdict-semantic.js";
@@ -111,9 +113,11 @@ import {
   iceDiag,
   nativeCodegenDiag,
   nodeIslandNodeDiag,
+  nodeIslandModuleDiag,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
 import { libnodeCacheKey, libnodeRecord } from "./node-islands/libnode.js";
+import { placeNodeIslandModules, readNodeIslandModules } from "./node-islands/modules.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
@@ -452,6 +456,7 @@ export async function compile(
     );
     return withCompileWarnings(result, warnings);
   } finally {
+    setLibDiagnosticsStore(null);
     frontendProcess?.release();
   }
 }
@@ -596,6 +601,7 @@ async function compileExecutableNative(
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     zlib: features.zlib,
+    ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,
@@ -626,6 +632,7 @@ async function compileExecutableNative(
     dgram: features.dgram,
     dnsPromises: features.dnsPromises,
     dgramDyn: features.dgramDyn,
+    textCodecDyn: features.textCodecDyn,
     watch: features.watch,
     foreignFfi: features.foreignFfi,
     ...(features.workers ? { workers: true } : {}),
@@ -785,7 +792,32 @@ async function prepareExecutableInput(
       const recorded = libnodeRecord(opts.libnode, opts.outPath);
       if (typeof recorded === "string")
         return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
-      mod.nodeIsland = recorded;
+      mod.nodeIsland = { ...mod.nodeIsland, ...recorded };
+    }
+  }
+  // The island module tree ships with the program: beside the executable
+  // with --libnode=beside, else inside it (node-islands/modules.ts).
+  let nodeIslandModuleData: Uint8Array | undefined;
+  const islandModules = mod.nodeIsland?.modules;
+  if (islandModules !== undefined && outputKind !== "ir") {
+    if (outputKind === "exe" && opts.libnode === "beside") {
+      const problem = placeNodeIslandModules(islandModules, `${opts.outPath}.libnode/modules`);
+      if (problem !== null)
+        return {
+          ok: false,
+          diagnostics: [nodeIslandModuleDiag(problem, { file: entryPath, start: 0, end: 0 })],
+          sourceTexts,
+        };
+      islandModules.location = `$ORIGIN/${basename(opts.outPath)}.libnode/modules`;
+    } else {
+      const data = readNodeIslandModules(islandModules);
+      if (typeof data === "string")
+        return {
+          ok: false,
+          diagnostics: [nodeIslandModuleDiag(data, { file: entryPath, start: 0, end: 0 })],
+          sourceTexts,
+        };
+      nodeIslandModuleData = data;
     }
   }
   if (warningSink !== undefined && prepared.warnings.length > 0) {
@@ -820,6 +852,8 @@ async function prepareExecutableInput(
         lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
         ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
         ...inlineRcOption(opts.optimization, opts.sanitize === true),
+        ...(nodeIslandModuleData === undefined ? {} : { nodeIslandModuleData }),
+        ...targetCpuField(opts.targetCpu),
       });
     } catch (err) {
       if (!(err instanceof LlvmUnsupportedError)) throw err;
@@ -890,6 +924,8 @@ async function prepareExecutableInput(
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
+      ...(nodeIslandModuleData === undefined ? {} : { nodeIslandModuleData }),
+      ...targetCpuField(opts.targetCpu),
     });
   } catch (err) {
     if (!(err instanceof LlvmUnsupportedError)) throw err;
@@ -1177,10 +1213,36 @@ async function prepareExecutableInputInChild(
  * `requestPath` as `compileTracked` would in-process, and writes what it prepared, without the LLVM
  * text, to `resultPath`.
  */
+/** Has the build reuse the diagnostics of the declaration files scriptc
+ * supplies (lib-diagnostics.ts) through the build cache at `root`, when the
+ * build uses one (executables; source outputs create no cache) and the
+ * checker is tsc-ts. */
+function configureLibDiagnostics(root: string | null): void {
+  let checker: string | undefined;
+  try {
+    checker = root === null ? undefined : checkerCacheIdentity();
+  } catch {
+    // A missing checker fails where the build starts it.
+    checker = undefined;
+  }
+  setLibDiagnosticsStore(
+    root === null || checker === undefined
+      ? null
+      : fileVerdictStore(join(root, "lib-diagnostics-v1")),
+    checker ?? "",
+  );
+}
+
 export async function runFrontendProcess(requestPath: string, resultPath: string): Promise<void> {
   const request = JSON.parse(await readFile(requestPath, "utf8")) as FrontendProcessRequest;
   clearCompileSessionCaches();
   setProvenanceSources(request.provenance);
+  // The compile that started this process prepared the cache root.
+  configureLibDiagnostics(
+    (request.opts.outputKind ?? "exe") === "exe" && provenanceSources() === null
+      ? await prepareBuildCacheRoot(buildCacheRoot())
+      : null,
+  );
   const frontendInputs = new FrontendInputTracker();
   const warnings: CompileWarningSink = { warnings: [], sourceTexts: null };
   let result: FrontendProcessResult = { kind: "failed" };
@@ -1228,6 +1290,8 @@ export async function runFrontendProcess(requestPath: string, resultPath: string
     }
   } catch {
     result = { kind: "failed" };
+  } finally {
+    setLibDiagnosticsStore(null);
   }
   await writeFile(resultPath, JSON.stringify(result), { mode: 0o600 });
 }
@@ -1430,6 +1494,18 @@ async function compileTracked(
       }
     }
   }
+  const targetCpuRefusal = targetCpuTargetRefusal(
+    opts.targetCpu,
+    buildPlatform,
+    nativeCodegenTarget()?.architecture ?? process.arch,
+  );
+  if (targetCpuRefusal !== null) {
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag("SC3002", targetCpuRefusal, entryPath)],
+      sourceTexts: new Map(),
+    };
+  }
   try {
     windowsSubsystemLinkerArgs(buildPlatform, opts.windowsSubsystem);
   } catch (err) {
@@ -1465,12 +1541,11 @@ async function compileTracked(
     outputKind === "exe" && provenanceSources() === null
       ? await prepareBuildCacheRoot(buildCacheRoot())
       : null;
+  configureLibDiagnostics(cacheRoot);
   let earlyCacheOptions: EarlyExecutableCacheOptions | null = null;
   if (outputKind === "exe") {
     const helperObjectRoute =
       opts.nativeProgramObject === true || usesPrecompiledRuntimePack(opts, "llvm");
-    // Calls into Node record the libnode pack, keyed by its manifest (node-islands/libnode.ts).
-    const libnodeKey = libnodeCacheKey(opts.libnode);
     const routeOptions: Omit<
       EarlyExecutableCacheOptions,
       "implementation" | "implementationDependencies" | "nativeEnvironment"
@@ -1485,7 +1560,10 @@ async function compileTracked(
       ...(opts.strip ? { strip: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
-      ...(libnodeKey === undefined ? {} : { libnode: libnodeKey }),
+      // Calls into Node record the libnode pack; their entries record its
+      // identity (node-islands/libnode.ts) and a hit requires it unchanged.
+      libnodeIdentity: () => libnodeCacheKey(opts.libnode),
+      ...targetCpuField(opts.targetCpu),
       ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
@@ -1531,25 +1609,21 @@ async function compileTracked(
       implementationDependencies: implementation.dependencies,
     };
   }
-  const earlyHit =
+  const cachedHit =
     earlyCacheOptions === null
       ? null
       : await readEarlyExecutableCache(cacheRoot, earlyCacheOptions);
+  // A --libnode=beside build that calls into Node places its island modules
+  // next to the executable from the lowered module, which a cache hit does
+  // not have: such builds take the full path.
+  const earlyHit =
+    cachedHit !== null && cachedHit.native.nodeIsland === true && opts.libnode === "beside"
+      ? null
+      : cachedHit;
   if (earlyHit !== null) {
     timing("executable-cache-hit");
     if (earlyCacheOptions === null) {
       throw new InternalCompilerError("executable cache hit without executable cache options");
-    }
-    // The pack a --libnode=beside build places next to the executable is an output of the
-    // build, like the executable: a restored executable that calls into Node gets it again.
-    if (earlyHit.native.nodeIsland === true && opts.libnode === "beside") {
-      const recorded = libnodeRecord(opts.libnode, opts.outPath);
-      if (typeof recorded === "string")
-        return {
-          ok: false,
-          diagnostics: [nodeIslandNodeDiag(recorded, entryPath)],
-          sourceTexts: new Map(),
-        };
     }
     // A cached build repeats its performance warning (SC6101): the code it
     // names is just as untyped as when it was built.

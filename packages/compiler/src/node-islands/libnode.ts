@@ -13,8 +13,17 @@
  * executable and its Node travel together; a recorded `$ORIGIN/` path is
  * also the hook for bundling Node into the executable itself later. */
 import { createHash } from "node:crypto";
-import { copyFileSync, linkSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import {
+  constants,
+  copyFileSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 
 /** The oldest Node.js release Node islands support: synchronous
  * module.registerHooks, which shared modules need, is a release candidate
@@ -22,7 +31,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 export const NODE_ISLAND_MIN_NODE = "24.13.1";
 
 /** The bridge ABI this compiler's runtime speaks (scr_node_bridge.h). */
-export const NODE_BRIDGE_ABI = 3;
+export const NODE_BRIDGE_ABI = 4;
 
 /** The prefix of a recorded path relative to the executable's directory. */
 export const ORIGIN = "$ORIGIN/";
@@ -67,22 +76,58 @@ function readManifest(dir: string): PackManifest | string {
   };
 }
 
-/** Copies the pack next to the executable (hard links where possible). */
-function placeBeside(source: string, manifest: PackManifest, target: string): void {
-  rmSync(target, { recursive: true, force: true });
-  mkdirSync(target, { recursive: true });
-  for (const name of ["manifest.json", "LICENSE", ...Object.keys(manifest.files)]) {
-    const from = join(source, name);
+/** Copies the pack next to the executable (hard links where possible), or
+ * returns why it cannot: the target would replace the pack itself, the
+ * manifest names a file outside the pack, or a pack file is not a regular
+ * file (a symbolic link could point anywhere). Every destination is checked
+ * to resolve inside the target directory. */
+function placeBeside(source: string, manifest: PackManifest, target: string): string | undefined {
+  const names = ["manifest.json", "LICENSE", ...Object.keys(manifest.files)];
+  const unsafe = names.find(
+    (name) =>
+      name === "" || name === "." || name === ".." || /[/\\\0]/.test(name) || isAbsolute(name),
+  );
+  if (unsafe !== undefined)
+    return `the libnode pack at ${source} lists a file outside the pack ('${unsafe}')`;
+  const from = realpathOr(source);
+  const to = realpathOr(target);
+  if (from === to || from.startsWith(to + sep) || to.startsWith(from + sep))
+    return `--libnode=beside would replace the libnode pack it copies (${source}); point SCRIPTC_LIBNODE at a pack outside ${target}`;
+  const present: string[] = [];
+  for (const name of names) {
+    let info;
     try {
-      statSync(from);
+      info = lstatSync(join(source, name));
     } catch {
       continue;
     }
+    if (!info.isFile())
+      return `the libnode pack at ${source} holds ${name} as a ${info.isSymbolicLink() ? "symbolic link" : "non-regular file"}; pack files must be regular files`;
+    present.push(name);
+  }
+  rmSync(target, { recursive: true, force: true });
+  mkdirSync(target, { recursive: true });
+  const inside = resolve(target) + sep;
+  for (const name of present) {
+    const destination = resolve(target, name);
+    if (!destination.startsWith(inside))
+      return `the libnode pack at ${source} lists a file outside the pack ('${name}')`;
+    const file = join(source, name);
     try {
-      linkSync(from, join(target, name));
+      linkSync(file, destination);
     } catch {
-      copyFileSync(from, join(target, name));
+      copyFileSync(file, destination, constants.COPYFILE_EXCL);
     }
+  }
+  return undefined;
+}
+
+/** The canonical path of `path`, or `path` resolved when it does not exist. */
+function realpathOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
   }
 }
 
@@ -107,15 +152,18 @@ export function libnodeRecord(
   if (typeof manifest === "string") return manifest;
   if (!beside) return { libnode: resolve(source), nodeVersion: manifest.nodeVersion };
   const name = `${basename(outPath)}.libnode`;
-  placeBeside(source, manifest, `${outPath}.libnode`);
+  const refused = placeBeside(source, manifest, `${outPath}.libnode`);
+  if (refused !== undefined) return refused;
   return { libnode: `${ORIGIN}${name}`, nodeVersion: manifest.nodeVersion };
 }
 
-/** The part of an executable's cache key that names its libnode pack, or
- * undefined when neither --libnode nor SCRIPTC_LIBNODE is set. It holds the
- * option, the pack directory and a digest of the pack's manifest.json, so
- * that a pack upgraded in place (another Node version, bridge ABI or file
- * list) gives cached executables a new key instead of their old record. */
+/** The identity of the libnode pack a build that calls into Node.js
+ * records, which the program's executable cache entry keeps
+ * (EarlyExecutableCacheOptions.libnodeIdentity), or undefined when neither
+ * --libnode nor SCRIPTC_LIBNODE is set. It holds the option, the pack
+ * directory and a digest of the pack's manifest.json, so that a pack
+ * upgraded in place (another Node version, bridge ABI or file list)
+ * invalidates the entry instead of restoring its old record. */
 export function libnodeCacheKey(
   option: string | undefined,
   env: NodeJS.ProcessEnv = process.env,

@@ -1,4 +1,5 @@
 import type {
+  CallExpression,
   ExportDeclaration,
   Identifier,
   SourceFile,
@@ -30,6 +31,13 @@ export class ProgramAnalysis {
   readonly requireEarlyReferences = new Map<VariableDeclaration, Identifier | null>();
   /** Per file: the first top-level statement that can run user code. */
   readonly requireFirstRunnable = new Map<SourceFile, number>();
+  /** Per file: split require bindings (`var m; m = require("./x")`), from
+   * declaration to the require call of their one assignment
+   * (splitRequireBindings7). */
+  readonly splitRequireBindings = new Map<
+    SourceFile,
+    ReadonlyMap<VariableDeclaration, CallExpression>
+  >();
 
   clear(): void {
     this.createRequireReasons.clear();
@@ -41,5 +49,6 @@ export class ProgramAnalysis {
     this.moduleEarlyBindings = null;
     this.requireEarlyReferences.clear();
     this.requireFirstRunnable.clear();
+    this.splitRequireBindings.clear();
   }
 }

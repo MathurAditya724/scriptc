@@ -43,6 +43,9 @@ import {
   destroyDefinitions,
   directChildReleaseLines,
   directDestroyTarget,
+  segmentPrologueLines,
+  segmentTeardownLines,
+  segmentedTeardown,
   usedDirectTargets,
   type DirectDestroy,
   type RegionHooks,
@@ -1082,25 +1085,62 @@ export function emitClassShapes(
       bounded &&
       (directTargets.has(`object:${cls.name}`) ||
         refFields.some((f) => directDestroyTarget(host, f.type, directTargets) !== null));
+    // The teardown's own symbol, and whether it keeps a segment (shapes.ts
+    // segmentedTeardown).
+    const destroy = `${meta.hierarchy ? mangleClassReleaseDirect(cls.name) : mangleClassRelease(cls.name)}_destroy`;
+    const segmented =
+      chained &&
+      !meta.compact &&
+      runtimePrefix === null &&
+      !isStreamRooted &&
+      !meta.threadSlot &&
+      segmentedTeardown(
+        host,
+        destroy,
+        refFields.map((f) => f.type),
+        directTargets,
+      );
     // The field-releasing teardown body shared by both release shapes
     // (the public one on standalone classes, the DIRECT one on hierarchy
     // members). Runs at rc == 0.
     const teardown = (lines: string[]): void => {
-      refFields.forEach((f, t) => {
-        lines.push(
-          `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
-          `  %v${t} = load ptr, ptr %f${t}`,
-        );
+      const release = (prefix: string, f: (typeof refFields)[number], t: number): string[] => {
         const direct = bounded ? directDestroyTarget(host, f.type, directTargets) : null;
-        if (direct)
-          lines.push(
-            ...directChildReleaseLines(host, `td${t}`, `%v${t}`, direct, llvmCommentText(f.name)),
-          );
-        else
-          lines.push(
+        if (direct === null)
+          return [
             `  call void ${releaseSym(host, f.type)}(ptr %v${t}) ; ${llvmCommentText(f.name)}`,
-          );
-      });
+          ];
+        const own = segmented && direct.destroy === destroy;
+        return directChildReleaseLines(
+          host,
+          `${prefix}${t}`,
+          `%v${t}`,
+          direct,
+          llvmCommentText(f.name),
+          own,
+        );
+      };
+      const loads = refFields.map((f, t) => [
+        `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
+        `  %v${t} = load ptr, ptr %f${t}`,
+      ]);
+      if (segmented) {
+        // A segmented teardown loads its fields, releases its own block, and
+        // then releases the fields (shapes.ts segmentTeardownLines).
+        const ownType = refFields.flatMap((f, t) =>
+          directDestroyTarget(host, f.type, directTargets)?.destroy === destroy ? [`%v${t}`] : [],
+        );
+        lines.push(
+          ...segmentPrologueLines(),
+          ...loads.flat(),
+          ...emitObjectFree(host, traced, "weak", "%sg.own"),
+          ...segmentTeardownLines(ownType, (prefix) =>
+            refFields.flatMap((f, t) => release(prefix, f, t)),
+          ),
+        );
+        return;
+      }
+      refFields.forEach((f, t) => lines.push(...loads[t]!, ...release("td", f, t)));
       if (runtimePrefix) lines.push(...regCall("td", runtimePrefix.drop, ""));
       if (isStreamRooted) lines.push(...stCall("tds", "scr_stream_st_release", ""));
       if (meta.threadSlot) lines.push(...slotForgetLines(host, struct, meta, "tdw"));
@@ -1182,10 +1222,12 @@ export function emitClassShapes(
         ];
         if (traced) reld.push(...cycleDeadLines(host, "teardown"));
         if (bounded) {
-          const destroy = `${mangleClassReleaseDirect(cls.name)}_destroy`;
           const destroyBody: string[] = [];
           teardown(destroyBody);
-          defs.push(...destroyDefinitions(destroy, destroyBody, chained), ``);
+          defs.push(
+            ...destroyDefinitions(destroy, destroyBody, chained, segmented ? host : null),
+            ``,
+          );
           host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
           reld.push(`  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`);
         } else teardown(reld);
@@ -1207,6 +1249,7 @@ export function emitClassShapes(
           bounded,
           lifetime,
           chained,
+          segmented,
         ),
         ``,
       );
@@ -1367,18 +1410,18 @@ export function emitClassShapes(
  * statics plus their construct thunks — allocate, run the constructor over
  * a +1 `this`, and hand the remaining +1 out. No pending check is needed:
  * in-tier constructors are throw-free by construction.
- * `classObjs` maps className → { nameSym } registered during body emission
- * (the literal interned while the table was open). */
+ * `classObjs` maps className → { nameSym, baseNameSym } registered during
+ * body emission (the literals interned while the table was open). */
 export function emitClassObjDefs(
   host: ClassHost,
   metaMap: Map<string, LlClassMeta>,
-  classObjs: Map<string, { nameSym: string }>,
+  classObjs: Map<string, { nameSym: string; baseNameSym: string | null }>,
   fnByName: Map<string, IrFunction>,
   llType: (t: IrType) => string,
   threadLocal = false,
 ): string[] {
   const out: string[] = [];
-  for (const [className, { nameSym }] of classObjs) {
+  for (const [className, { nameSym, baseNameSym }] of classObjs) {
     const meta = metaMap.get(className);
     if (!meta)
       throw new InternalCompilerError(
@@ -1404,7 +1447,7 @@ export function emitClassObjDefs(
     const ctorArgs = params.map((p, i) => `${llType(p.type)} %a${i}`);
     const classObj =
       `@${mangleClassObj(className)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClassObj ` +
-      `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? (meta.def.runtime ? 1 : 0)}, ptr null, ptr null } ; class ${className}`;
+      `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? (meta.def.runtime ? 1 : 0)}, ptr null, ptr null, ptr ${baseNameSym ?? "null"}, ${host.sizeType} ${meta.def.ownStaticFields ? 1 : 0} } ; class ${className}`;
     if (meta.def.runtime) {
       // A runtime-provided class: %C.construct allocates through the
       // runtime and returns the instance.
