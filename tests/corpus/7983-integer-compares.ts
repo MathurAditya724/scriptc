@@ -123,6 +123,21 @@ function scaled(i: number, end: number): string {
     .join("");
 }
 
+function roundedProducts(): string {
+  // 3 * (2^52 - 1) is 13510798882111485, which rounds to 13510798882111484 =
+  // 4 * 3377699720527871: the products' doubles are equal and the integers
+  // are not. A product by 4 never rounds.
+  let equal = 0;
+  let below = 0;
+  for (let i = 1; i <= 8; i++) {
+    for (let j = 3377699720527869; j <= 3377699720527873; j++) {
+      if (i * 4503599627370495 === j * 4) equal++;
+      if (i * 4503599627370495 < j * 4) below++;
+    }
+  }
+  return `${equal} ${below}`;
+}
+
 const a = new Int32Array([5, -3, 2147483647, -2147483648, 5, 0]);
 const b = new Uint8Array([0, 255, 7, 128, 5, 0]);
 const c = new Uint32Array([4294967295, 2147483648, 2147483647, 0, 1, 4294967295]);
@@ -148,3 +163,4 @@ console.log(descend(3, 100), descend(0, 1), descend(5, 0));
 for (const i of [0, 1, p52 / 2 - 1, p52 / 2, p52 / 1024, p52 / 2 + 1, p52, -p52]) {
   console.log(scaled(i, safe), scaled(i, safe - 1), scaled(i, 2 ** 51), scaled(i, 4));
 }
+console.log(roundedProducts());

@@ -143,7 +143,9 @@ export function wideArithmetic(
 function powerOfTwo(integer: LlInteger | null): boolean {
   if (integer === null || integer.range.min !== integer.range.max) return false;
   const value = Math.abs(integer.range.min);
-  return value >= 1 && value <= 2 ** 52 && Number.isInteger(Math.log2(value));
+  // Math.log2 can round to an integer for a value that is not a power of
+  // two (2^52 - 1), so the candidate power is compared with the value.
+  return value >= 1 && value <= 2 ** 52 && 2 ** Math.round(Math.log2(value)) === value;
 }
 
 /** The i64 operands of a number compare that gives the doubles' result:
