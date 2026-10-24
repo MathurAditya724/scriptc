@@ -357,6 +357,52 @@ test("an Error subclass constructor forwarding dynamic arguments stores no class
   expect(slots.isField("C", "a")).toBe(true);
 });
 
+test("Buffer.from over an ArrayBuffer range and Buffer as a value keep class fields int32", () => {
+  // `Buffer.from(view.buffer, offset, length)` passes its operands as
+  // checked values, and a program that reads the Buffer function's value
+  // installs it in %main; neither stores into a class instance.
+  const classes = [cls("C", ["a"])];
+  const view: IrExpr = { loc, kind: "dynFrom", value: ref("o", obj("C")), type: DYN };
+  const libCall = (fnName: string, args: IrExpr[], type: IrType = VOID): IrStmt =>
+    stmt({ loc, kind: "libCall", fn: fnName, args, type } as IrExpr);
+  const slots = analyzeInt32Slots(
+    mod(classes, [
+      fn(
+        "load",
+        [
+          { id: "o", type: obj("C") },
+          { id: "storage", type: DYN },
+        ],
+        [
+          set(ref("o", obj("C")), "C", "a", num(1)),
+          libCall("dyn.typedRefIs", [
+            view,
+            { loc, kind: "strLit", value: "object:C", type: STRING },
+          ]),
+          libCall("buffer.installValue", []),
+          libCall("buffer.constructor", [], DYN),
+          libCall(
+            "buffer.poolFromDynRange",
+            [ref("storage", DYN), num(2), num(4)].map((arg): IrExpr =>
+              arg.type.kind === "dyn" ? arg : { loc, kind: "dynFrom", value: arg, type: DYN },
+            ),
+          ),
+          libCall("buffer.poolFromDynOffset", [
+            ref("storage", DYN),
+            {
+              loc,
+              kind: "dynFrom",
+              value: num(2),
+              type: DYN,
+            },
+          ]),
+        ],
+      ),
+    ]),
+  );
+  expect(slots.isField("C", "a")).toBe(true);
+});
+
 test("captured bindings share one proof across the declaring function and its closures", () => {
   const closure: IrExpr = { loc, kind: "closure", fnName: "inner", captures: ["s"], type: DYN };
   const outer = (): IrFunction => ({
