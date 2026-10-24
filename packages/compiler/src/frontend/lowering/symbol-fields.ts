@@ -106,6 +106,8 @@ export function classSymbolKeyOf(lowerer: Lowerer, key: ts.Expression): ClassSym
     const sym = lowerer.checker.getSymbolAtLocation((e as ts.PropertyAccessExpression).name);
     return sym ? symbolKeyOf(lowerer, sym, true, INSPECT_CUSTOM_DESCRIPTION) : null;
   }
+  const wellKnown = wellKnownSymbolKeyOf(lowerer, key);
+  if (wellKnown !== undefined) return wellKnown;
   if (
     !ts.isIdentifier(key) &&
     (!ts.isPropertyAccessExpression(key) || key.questionDotToken || !ts.isIdentifier(key.name))
@@ -118,6 +120,53 @@ export function classSymbolKeyOf(lowerer: Lowerer, key: ts.Expression): ClassSym
   const sym = lowerer.resolveValueSymbol(id);
   return sym ? classSymbolKeyOfSymbol(lowerer, sym) : null;
 }
+
+/** Well-known symbols a class field may be keyed by: those no protocol
+ * consults on an instance, or whose protocol the lowering reads from the
+ * field (Symbol.toStringTag, by the class string conversions). A field
+ * keyed by any other well-known symbol (Symbol.iterator, toPrimitive,
+ * hasInstance, ...) would be skipped by its protocol, so it keeps the
+ * computed-key refusal. */
+const FIELD_WELL_KNOWN_SYMBOLS: ReadonlySet<string> = new Set(["toStringTag"]);
+
+/** The key of `Symbol.<name>` on the standard global: undefined when the
+ * expression is not one, null when it is a well-known symbol a field may
+ * not be keyed by. The identity is the lib's declaration of the property,
+ * one symbol for every program reference. */
+function wellKnownSymbolKeyOf(
+  lowerer: Lowerer,
+  key: ts.Expression,
+): ClassSymbolKey | null | undefined {
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (
+    !ts.isPropertyAccessExpression(key) ||
+    key.questionDotToken ||
+    !ts.isIdentifier(key.expression) ||
+    !ts.isIdentifier(key.name) ||
+    !lowerer.isStdlibGlobal(key.expression, "Symbol")
+  )
+    return undefined;
+  const name = key.name.text;
+  const sym = lowerer.checker.getSymbolAtLocation(key.name);
+  if (!sym || !(lowerer.typeOf(key).flags & ts.TypeFlags.UniqueESSymbol)) return undefined;
+  if (!FIELD_WELL_KNOWN_SYMBOLS.has(name)) return null;
+  return { sym, identity: sym, fieldName: wellKnownSymbolFieldName(name) };
+}
+
+/** The layout name of a field keyed by the well-known `Symbol.<name>`: a
+ * reserved symbol-field name, printed as Node spells the key. */
+export function wellKnownSymbolFieldName(name: string): string {
+  return `${FIELD_PREFIX}Symbol(Symbol.${name})`;
+}
+
+/** The well-known symbol a field name is keyed by (`toStringTag`), or null. */
+export function wellKnownSymbolOfField(field: string): string | null {
+  const match = /^%symbol:Symbol\(Symbol\.(\w+)\)$/.exec(field);
+  return match === null ? null : match[1]!;
+}
+
+/** The layout name of a `Symbol.toStringTag` field. */
+export const TO_STRING_TAG_FIELD = wellKnownSymbolFieldName("toStringTag");
 
 /** A literal Symbol()/Symbol.for() initialized once at module scope. The
  * whole-file proof also covers var declarations emitted by bundlers. Keys

@@ -45,6 +45,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth);
 /* A numeric typed array that is not a Buffer: `Uint8Array(n) [ ... ]`,
  * `[Uint8Array]` past the depth limit. Borrows b; +1. */
 ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth);
+/* A u8 byte view whose static type does not say which one it is (a union
+ * arm, an element or field): a DataView, a Buffer (<Buffer ..>) or a
+ * Uint8Array, by the view's own flags. */
+ScrStr *scr_insp_bytes(ScrBytes *b, double recurse, double depth);
 /* format's %s / rest-args twin: dyn strings pass verbatim. */
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth);
 /* util.format over checked-dynamic arguments (formatWithOptionsInternal):
@@ -93,6 +97,7 @@ ScrStr *scr_insp_inspect(ScrDyn *value, ScrDyn *options, ScrDyn *depth, ScrDyn *
  * strings whose substitutions can change the output. */
 bool scr_insp_format_specifies(ScrStr *first);
 bool scr_insp_format_specifies_dyn(ScrDyn *first);
+ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth); /* %o: showHidden */
 void scr_insp_begin(double recurse);
 /* util.inspect's breakLength, compact (-1 for false) and sorted for the
  * renders that follow; the call site restores the defaults (80, 3, false)
@@ -153,6 +158,10 @@ ScrDyn *scr_insp_custom_options(double depth);
 ScrDyn *scr_insp_inspect_function(void);
 bool scr_insp_custom_is_self(ScrDyn *result, ScrDyn *self);
 ScrStr *scr_insp_custom_result(ScrDyn *result, double recurse, double depth);
+/* Mark the inspector's state before a top-level render, and return to the
+ * mark when the render ends, normally or by an inspection refusal. */
+void scr_insp_mark(void);
+void scr_insp_unwind(void);
 
 /* The buf.read* / buf.write* numeric families on u8 bytes, Node-exact:
  * boundsError's ladder (non-integer offset → 'It must be an integer', a
@@ -193,6 +202,9 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path); /* +1 */
  * with the exception pending. */
 ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc);
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding);
+/* readFileSync's encoding check (ERR_INVALID_ARG_VALUE), on its own: the
+ * check Node runs before it converts a URL path. */
+void scr_fs_check_read_encoding(ScrStr *encoding);
 ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding);
 ScrDyn *scr_fs_callback_value(ScrStr *member);
 ScrDyn *scr_fs_callback_call(ScrStr *member, const ScrDyn *args);

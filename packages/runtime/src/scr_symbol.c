@@ -90,6 +90,11 @@ ScrSym *scr_sym_well_known(ScrStr *name) {
     scr_dyn_install_has_instance_symbol(key);
     scr_dyn_release(key);
   }
+  if (name->len == 11 && !memcmp(name->data, "toStringTag", 11)) {
+    ScrDyn *key = scr_dyn_new_symbol(symbol);
+    scr_dyn_install_to_string_tag_symbol(key);
+    scr_dyn_release(key);
+  }
   if (name->len == 13 && !memcmp(name->data, "asyncIterator", 13)) {
     ScrDyn *key = scr_dyn_new_symbol(symbol);
     scr_dyn_install_async_iterator_symbol(key);

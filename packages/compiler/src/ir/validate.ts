@@ -502,10 +502,29 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         });
       }
     }
-    for (const symbol of cls.symbolFields ?? []) {
-      const global = mod.globals?.find((global) => global.id === symbol.globalId);
+    if (cls.stringTagHelper !== undefined) {
+      const helper = functionsByName.get(cls.stringTagHelper);
+      const receiver = helper?.params[0]?.type;
       if (
-        global?.type.kind !== "symbol" ||
+        !helper ||
+        helper.params.length !== 1 ||
+        receiver?.kind !== "object" ||
+        receiver.className !== cls.name ||
+        helper.returnType.kind !== "string" ||
+        helper.captures !== undefined ||
+        helper.classCaptures !== undefined
+      ) {
+        errors.push({
+          message: `class ${cls.name}: string tag helper must be a noncapturing (instance) => string function`,
+          loc: cls.loc,
+        });
+      }
+    }
+    for (const symbol of cls.symbolFields ?? []) {
+      const global =
+        "globalId" in symbol ? mod.globals?.find((global) => global.id === symbol.globalId) : null;
+      if (
+        ("globalId" in symbol ? global?.type.kind !== "symbol" : symbol.wellKnown === "") ||
         !cls.fields.some((field) => field.name === symbol.field)
       ) {
         errors.push({ message: `class ${cls.name}: invalid symbol field metadata`, loc: cls.loc });
@@ -2196,6 +2215,9 @@ function validateFunction(
           indexOfNum: { argTypes: [F64, F64], minArgs: 1, result: F64 },
           lastIndexOfNum: { argTypes: [F64, F64], minArgs: 1, result: F64 },
           includesNum: { argTypes: [F64, F64], minArgs: 1, result: BOOL },
+          indexOfElem: { argTypes: [F64, F64], minArgs: 2, result: F64 },
+          lastIndexOfElem: { argTypes: [F64, F64], minArgs: 2, result: F64 },
+          includesElem: { argTypes: [F64, F64], minArgs: 2, result: BOOL },
           fill: { argTypes: [BYTES_U8, F64, F64], minArgs: 1, result: BYTES_U8 },
           fillNum: { argTypes: [F64, F64, F64], minArgs: 1, result: BYTES_U8 },
           // Per-element TypedArray fill (any elem — the non-u8 fill path).

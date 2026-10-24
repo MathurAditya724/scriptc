@@ -1,4 +1,5 @@
 import { keyedHelperName } from "../stable-names.js";
+import { indexedUnionArms, lowerIndexedUnionToArray } from "../indexed-unions.js";
 import { generatorDrain } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
 import { liftedFreshSpread } from "../coercions/fresh-spread.js";
@@ -1054,6 +1055,10 @@ export function lowerArrayFromCall(
         loc,
       };
     }
+    // A union of typed arrays and number arrays (indexed-unions.ts).
+    const indexedArms = indexedUnionArms(lowerer, src.type);
+    if (indexedArms && args.length === 1)
+      return lowerIndexedUnionToArray(lowerer, src, indexedArms, loc, true);
     if (src.type.kind === "set" && args.length === 1) {
       return {
         kind: "setIntrinsic",

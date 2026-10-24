@@ -20,6 +20,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     zlib: features.zlib,
+    ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,

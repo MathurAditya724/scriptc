@@ -144,6 +144,10 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
     return;
 
   case SCR_DYN_TYPED_REF: {
+    /* ToString of a class instance that converts through
+     * Object.prototype.toString shows its Symbol.toStringTag getter's
+     * string. */
+    if (to_string && scr_dyn_typed_ref_put_tag(b, d)) return;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     scr_dyn_display_buf(b, materialized, to_string);
     scr_dyn_release(materialized);
@@ -189,13 +193,6 @@ static double dyn_index_arg(ScrDyn *const *args, size_t argc, size_t i, double d
   double number;
   if (!scr_dyn_number_coerce_js(args[i], &number)) return 0;
   return isnan(number) ? 0 : trunc(number);
-}
-
-static double dyn_bytes_index_arg(ScrDyn *const *args, size_t argc, size_t index, double fallback) {
-  if (index >= argc || args[index]->kind == SCR_DYN_UNDEF) return fallback;
-  double value;
-  if (!scr_dyn_number_coerce_js(args[index], &value)) return 0;
-  return isnan(value) ? 0 : trunc(value);
 }
 
 /* JS relative-index normalization (slice's rule). */
@@ -716,7 +713,8 @@ static bool dyn_bytes_proto_real(int m) {
   case DYN_M_every: case DYN_M_find: case DYN_M_findIndex: case DYN_M_reverse: case DYN_M_fill:
   case DYN_M_set: case DYN_M_subarray: case DYN_M_sort: case DYN_M_keys: case DYN_M_values:
   case DYN_M_entries: case DYN_M_reduce: case DYN_M_reduceRight: case DYN_M_copyWithin:
-  case DYN_M_toString: case DYN_M_toLocaleString:
+  case DYN_M_toString: case DYN_M_toLocaleString: case DYN_M_findLast: case DYN_M_findLastIndex:
+  case DYN_M_toReversed: case DYN_M_toSorted: case DYN_M_with:
     return true;
   default:
     return false;
@@ -1660,63 +1658,9 @@ static ScrDyn *scr_dyn_invoke_impl(
       dyn_throw_not_fn(what);
       return NULL;
     }
-    size_t blen = bytes->len;
-    if ((mid == DYN_M_at)) {
-      double iD = dyn_bytes_index_arg(args, argc, 0, 0);
-      if (scr_exc_pending()) return NULL;
-      double idx = iD < 0 ? (double)blen + iD : iD;
-      if (idx < 0 || idx >= (double)blen) return scr_dyn_retain(scr_dyn_undefined());
-      return scr_dyn_new_num(scr_bytes_get(bytes, idx));
-    }
-    if ((mid == DYN_M_slice) || (mid == DYN_M_subarray)) {
-      /* subarray and Buffer.slice alias their source. TypedArray.slice
-       * owns an independent copy; all keep the receiver's Buffer flavor. */
-      double startD = dyn_bytes_index_arg(args, argc, 0, 0);
-      if (scr_exc_pending()) return NULL;
-      double endD = dyn_bytes_index_arg(args, argc, 1, (double)blen);
-      if (scr_exc_pending()) return NULL;
-      ScrBytes *out = recv->buffer || (mid == DYN_M_subarray)
-        ? scr_bytes_subarray(bytes, startD, endD) : scr_bytes_slice(bytes, startD, endD);
-      ScrDyn *d = recv->buffer ? scr_dyn_new_buffer(out) : scr_dyn_new_bytes(out);
-      scr_bytes_release(out);
-      return d;
-    }
-    if ((mid == DYN_M_set)) {
-      double offset = dyn_bytes_index_arg(args, argc, 1, 0);
-      if (scr_exc_pending()) return NULL;
-      scr_bytes_set_from_dyn(bytes, argc ? args[0] : scr_dyn_undefined(), offset);
-      return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
-    }
-    if ((mid == DYN_M_copyWithin)) {
-      double target = dyn_bytes_index_arg(args, argc, 0, 0);
-      if (scr_exc_pending()) return NULL;
-      double start = dyn_bytes_index_arg(args, argc, 1, 0);
-      if (scr_exc_pending()) return NULL;
-      double end = dyn_bytes_index_arg(args, argc, 2, (double)blen);
-      if (scr_exc_pending()) return NULL;
-      scr_bytes_release(scr_bytes_copy_within(bytes, target, start, end));
-      return scr_dyn_retain(recv);
-    }
-    if ((mid == DYN_M_fill) && !recv->buffer) {
-      double value;
-      if (!scr_dyn_number_coerce_js(argc ? args[0] : scr_dyn_undefined(), &value)) return NULL;
-      double start = dyn_bytes_index_arg(args, argc, 1, 0);
-      if (scr_exc_pending()) return NULL;
-      double end = dyn_bytes_index_arg(args, argc, 2, (double)blen);
-      if (scr_exc_pending()) return NULL;
-      scr_bytes_release(scr_bytes_fill_elem(bytes, value, start, end));
-      return scr_dyn_retain(recv);
-    }
-    if ((mid == DYN_M_join) || ((mid == DYN_M_toString) && !recv->buffer)) {
-      ScrStr *separator = (mid == DYN_M_join) && argc && args[0]->kind != SCR_DYN_UNDEF
-        ? scr_dyn_string_coerce_js(args[0]) : scr_str_new(",", 1);
-      if (scr_exc_pending()) { scr_str_release(separator); return NULL; }
-      ScrStr *joined = scr_bytes_join(bytes, separator);
-      scr_str_release(separator);
-      ScrDyn *out = scr_dyn_new_str(joined);
-      scr_str_release(joined);
-      return out;
-    }
+    bool handled;
+    ScrDyn *answer = scr_dyn_bytes_method(recv, method, args, argc, &handled);
+    if (handled) return answer;
     if (dyn_bytes_proto_real(mid)) {
       dyn_throw_unsupported(scr_bytes_elem_name(bytes->elem), method);
       return NULL;
@@ -1984,6 +1928,9 @@ static ScrDyn *dyn_global_ctor(const char *name) {
       dyn_global_ctors[i] = scr_dyn_new_func(scr_closure_new((void *)dyn_global_ctor_names[i], 0),
                                              dyn_global_ctor_call, length, dyn_s6,
                                              dyn_global_ctor_names[i]);
+      /* `o.constructor.prototype` of a plain object is Object.prototype
+       * (zod's isPlainObject). The other prototypes are not modeled. */
+      if (i == 0) scr_dyn_fn_seed_prototype(dyn_global_ctors[i], scr_dyn_object_prototype());
     }
     return scr_dyn_retain(dyn_global_ctors[i]);
   }

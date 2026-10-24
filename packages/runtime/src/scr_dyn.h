@@ -398,6 +398,10 @@ typedef struct ScrDynTypedClassOps {
   size_t count;
   ScrStr *const *names; /* immortal member-name strings */
   ScrStr *class_name;   /* immortal constructor name; NULL for an anonymous class */
+  /* The string an inherited Symbol.toStringTag getter answers for the
+   * instance (+1), or NULL with a pending exception from the getter;
+   * NULL when the class has no such getter. */
+  ScrStr *(*string_tag)(void *instance);
 } ScrDynTypedClassOps;
 
 /* A compiled JavaScript class whose instances record their own properties
@@ -872,6 +876,10 @@ ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*r
 ScrDyn *scr_dyn_new_str(ScrStr *s);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
+/* Gives a builtin constructor value (Object, Array, Error) its builtin
+ * `prototype`: non-writable, non-enumerable, non-configurable. Takes the
+ * prototype. */
+void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
@@ -921,6 +929,7 @@ ScrDyn *scr_dyn_inspect_custom_symbol(void);
 void scr_dyn_install_has_instance_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
+void scr_dyn_install_to_string_tag_symbol(ScrDyn *key);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
@@ -1084,6 +1093,9 @@ ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec);
 /* Attach the prototype member names of a class instance capsule
  * (idempotent), so `in` sees its methods and accessors. */
 void scr_dyn_typed_ref_bind_class(ScrDyn *d, const ScrDynTypedClassOps *ops);
+/* A class instance capsule's inherited Symbol.toStringTag string from its
+ * class's getter (+1); NULL when it has none or the getter threw. */
+ScrStr *scr_dyn_typed_ref_class_tag(const ScrDyn *d);
 /* Attach the bag and prototype hooks of a capsule of a bag-tracked class
  * instance (idempotent). */
 void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *ops);
@@ -1334,6 +1346,11 @@ ScrDyn *scr_dyn_from_error(const ScrError *e);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
 void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len);
+/* An Error subclass view of an instance whose class keeps a property bag:
+ * `name` and `message` take their committed positions, and data values
+ * from the slots (scr_json.c). `name_placed`: the class's construction sets
+ * `name`, and the view already has it in place. */
+void scr_error_dyn_follow_bag(ScrDyn *view, const ScrDyn *bag, const ScrError *e, bool name_placed);
 /* An accessor property of a fresh object: enumerable and configurable,
  * with the given getter and setter (either may be NULL). Moves both. */
 void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter);
@@ -1388,6 +1405,16 @@ ScrDyn *scr_dyn_invoke_buffer_to_string(ScrDyn *recv, ScrDyn *callee, const char
 ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* A %TypedArray%.prototype method called on a checked typed array (not a
+ * DataView): its answer (+1, or NULL with the exception pending), with
+ * *handled false for a name it does not implement. */
+ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, bool *handled);
+/* A plain object's Symbol.iterator method (+1), read once; NULL when it
+ * has none, or with the exception pending from its getter. */
+ScrDyn *scr_dyn_iterator_method(const ScrDyn *value);
+/* The values the iterator `method` gives for `source` (+1), or NULL with
+ * the exception pending. */
+ScrDyn *scr_dyn_iterate_with(const ScrDyn *source, ScrDyn *method);
 /* Keyed read on a FUNC node: the own-property table first (defineProperties
  * writes land there), then "name" (the box's best-effort static name; ""
  * for anonymous) and "length" (the boxed arity). Returns +1, or NULL when
@@ -1604,6 +1631,12 @@ typedef struct ScrDynHandleOps {
   /* Past the depth limit util.inspect prints `[cls]` (the class's
    * inspector returns `this`) instead of the bare class name. */
   bool inspect_bracketed_past_depth;
+  /* The class's inspector formats its view with a new util.inspect call
+   * (URL's does): the view renders from the top level with the caller's
+   * depth, and its lines take the caller's indentation. Past the depth
+   * limit the inspector returns the instance, which has no own
+   * properties, so util.inspect prints `cls {}`. */
+  bool inspect_view_nested;
   /* The @@toStringTag when it differs from cls: String() answers
    * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`, or
    * `<tag> <view>` when the tag ends with "." and cls, as Node does. */

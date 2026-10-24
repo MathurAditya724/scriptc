@@ -114,14 +114,17 @@ const cases = shardSelect(npmCases(fixturesRoot), (c) => c.name);
 /** Per-case timeouts past the default 120 s: the undici cases compile the
  * built-in undici implementation's module graph, the zod 3 cases (zod3,
  * zod3-adoption, zod3-boundary, zod3-infer) compile zod 3's 3,700-line
- * types module, and the zod 4 cases (zod4-boundary, hono-zod-validator)
+ * types module, and the zod 4 cases (zod4-boundary, zod4-record,
+ * hono-zod-validator, hono-zod-default-hook)
  * compile zod 4's core, classic API and locales. A sanitized build of any
  * of them takes minutes on a CI runner. */
 const TIMEOUTS: Record<string, number> = {
+  "hono-zod-default-hook": 900_000,
   "hono-zod-validator": 900_000,
   undici5: 600_000,
   undici7: 600_000,
   "zod4-boundary": 900_000,
+  "zod4-record": 900_000,
   zod3: 600_000,
   "zod3-adoption": 600_000,
   "zod3-boundary": 600_000,

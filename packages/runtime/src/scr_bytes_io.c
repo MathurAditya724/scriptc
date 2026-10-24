@@ -59,6 +59,10 @@ static bool scr_fs_read_utf8(ScrStr *encoding) {
   return encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding);
 }
 
+void scr_fs_check_read_encoding(ScrStr *encoding) {
+  (void)scr_fs_read_encoding_valid(encoding);
+}
+
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding) {
   if (!scr_fs_read_encoding_valid(encoding)) return NULL;
   if (scr_fs_read_utf8(encoding)) return scr_fs_read_file(path);

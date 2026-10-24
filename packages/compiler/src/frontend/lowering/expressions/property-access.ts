@@ -1,4 +1,5 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
+import { indexedUnionArms, lowerIndexedUnionMember } from "../indexed-unions.js";
 import { keyedHelperName } from "../stable-names.js";
 import { staticallySelected } from "../static-typeof.js";
 import * as ts from "../../ts7/adapter.js";
@@ -3404,6 +3405,13 @@ export function lowerUnionProperty(
       type: DYN,
       loc: locOf(expr),
     };
+  }
+  // A union of typed arrays and number arrays: each arm's own length
+  // (and, for typed arrays only, byteLength, byteOffset, BYTES_PER_ELEMENT).
+  const indexedArms = indexedUnionArms(lowerer, value.type);
+  if (indexedArms) {
+    const member = lowerIndexedUnionMember(lowerer, value, indexedArms, field, locOf(expr));
+    if (member) return member;
   }
   lowerer.unsupported(
     "SC1090",

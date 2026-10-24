@@ -409,6 +409,9 @@ void scr_fs_invalid_named_path(const ScrDyn *value, const ScrStr *path, const ch
 /* A string path argument: false after throwing Node's ERR_INVALID_ARG_VALUE
  * when it holds a null byte (`name` is the argument's name). */
 bool scr_fs_path_ok(const ScrStr *path, const char *name);
+/* scr_fs_path_ok as a statement: getValidatedPath's null-byte check on a
+ * path the call validates before converting a later URL path. */
+void scr_fs_check_path(ScrStr *path, ScrStr *name);
 void scr_fs_futimes(double fd, double atime, double mtime);
 void scr_fs_link(ScrStr *source, ScrStr *dest);
 void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind);
