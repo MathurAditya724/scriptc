@@ -263,6 +263,7 @@ const KEY_CALLS = new Map<string, "object" | "any" | "value">([
   ["dyn.propertyIsEnumerableComputed", "any"],
   ["dyn.hasOwnComputed", "value"],
   ["dyn.keyDeleteComputed", "value"],
+  ["dyn.reflectDeleteProperty", "object"],
   ["dyn.keySetComputed", "value"],
 ]);
 

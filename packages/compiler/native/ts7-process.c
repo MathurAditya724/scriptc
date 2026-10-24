@@ -310,13 +310,16 @@ static void stop_process(Ts7Process *p) {
   if (p->lock >= 0) { close(p->lock); return; }
   int status;
   pid_t pid = (pid_t)p->pid;
-  for (int attempt = 0; attempt < 5; attempt++) {
+  // A server exits within a fraction of a millisecond of reading EOF, so the
+  // checks start 0.1 ms apart and double: 51.1 ms in all before the kill.
+  for (int attempt = 0; attempt < 10; attempt++) {
     pid_t result;
     do { result = waitpid(pid, &status, WNOHANG); } while (result < 0 && errno == EINTR);
     // ECHILD also means the PID no longer belongs to us. Never signal a
     // potentially recycled PID after somebody else has reaped the child.
     if (result == pid || (result < 0 && errno == ECHILD)) return;
-    struct timespec delay = {0, 10000000};
+    if (attempt == 9) break;
+    struct timespec delay = {0, 100000L << attempt};
     while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {}
   }
   (void)kill(pid, SIGKILL);
@@ -592,4 +595,48 @@ void scriptc_ts7_close(uint32_t handle) {
 
 void scriptc_ts7_close_all(void) {
   while (processes != NULL) scriptc_ts7_close(processes->id);
+}
+
+static int json_space(uint8_t byte) {
+  return byte == ' ' || byte == '\n' || byte == '\r' || byte == '\t';
+}
+
+int32_t scriptc_ts7_json_value_end(const uint8_t *bytes, size_t size, uint32_t start) {
+  if (size > INT32_MAX) return -1;
+  size_t depth = 0;
+  size_t index = start;
+  while (index < size) {
+    uint8_t byte = bytes[index];
+    if (byte == '"') {
+      index++;
+      // The quote found stays the candidate end until an escape skips it, so
+      // every byte of the string is scanned once by each search.
+      const uint8_t *quote = index < size ? memchr(bytes + index, '"', size - index) : NULL;
+      for (;;) {
+        if (quote == NULL) return -1;
+        const uint8_t *escape = memchr(bytes + index, '\\', (size_t)(quote - (bytes + index)));
+        if (escape == NULL) {
+          index = (size_t)(quote - bytes);
+          break;
+        }
+        index = (size_t)(escape - bytes) + 2;
+        if (bytes + index > quote) quote = index < size ? memchr(bytes + index, '"', size - index) : NULL;
+      }
+      index++;
+      if (depth == 0) return (int32_t)index;
+      continue;
+    }
+    if (byte == '{' || byte == '[') {
+      depth++;
+    } else if (byte == '}' || byte == ']') {
+      if (depth == 0) return (int32_t)index;
+      depth--;
+      if (depth == 0) return (int32_t)(index + 1);
+    } else if (depth == 0 && (byte == ',' || json_space(byte))) {
+      return (int32_t)index;
+    }
+    index++;
+  }
+  if (depth != 0) return -1;
+  return (int32_t)index;
 }

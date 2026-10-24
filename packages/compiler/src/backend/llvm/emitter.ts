@@ -81,6 +81,7 @@ import {
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
+import { pairRowSums } from "../../ir/row-pairs.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
@@ -581,14 +582,16 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
               scalarizeNumericRecords(
                 specializeCallbackCalls(
                   specializeNumericCalls(
-                    inlineExpressionFunctions(
-                      foldConstantGlobals(
-                        copyStableCaptures(
-                          resolveSelfCaptures(
-                            hoistFinalFieldReads(
-                              freezeInitOnlyGlobals(
-                                holdCharLocalsAsUnits(
-                                  dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                    pairRowSums(
+                      inlineExpressionFunctions(
+                        foldConstantGlobals(
+                          copyStableCaptures(
+                            resolveSelfCaptures(
+                              hoistFinalFieldReads(
+                                freezeInitOnlyGlobals(
+                                  holdCharLocalsAsUnits(
+                                    dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                                  ),
                                 ),
                               ),
                             ),
