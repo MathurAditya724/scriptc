@@ -136,6 +136,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   beginFunctionLoops(emitter, fn, numericFn);
   emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
+  emitter.loopCopiesEnabled = true;
   emitter.speculativeFunction = fn.name;
   emitter.speculation = null;
   emitter.speculationResume = null;

@@ -994,7 +994,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         LOOPS.of(emitter).denseLoopsEnabled = false;
         try {
           B.startBlock(slow);
-          emitter.emitStmt(s);
+          emitSlowCopy(emitter, s);
           B.br(done);
           B.startBlock(fast);
           LOOPS.of(emitter).denseLoop = dense;
@@ -1018,7 +1018,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         LOOPS.of(emitter).byteWindowsEnabled = false;
         try {
           B.startBlock(slow);
-          emitter.emitStmt(s);
+          emitSlowCopy(emitter, s);
           B.br(done);
           B.startBlock(fast);
           emitter.integerRanges = window.ranges;
@@ -1072,7 +1072,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.condBr(safe, fast, slow);
         B.startBlock(slow);
         LOOPS.of(emitter).countedLoopsEnabled = false;
-        emitter.emitStmt(s);
+        emitSlowCopy(emitter, s);
         LOOPS.of(emitter).countedLoopsEnabled = true;
         B.br(countedJoin);
         B.startBlock(fast);
@@ -2049,7 +2049,7 @@ function emitCallbackVersionedLoop(
   emitter.callbackVersioning.add(s);
   try {
     B.startBlock(slow);
-    emitter.emitStmt(s);
+    emitSlowCopy(emitter, s);
     B.br(done);
     B.startBlock(fast);
     for (const { ref } of bindings) emitter.knownCallbacks.add(ref.localId);
@@ -2060,6 +2060,20 @@ function emitCallbackVersionedLoop(
     emitter.callbackVersioning.delete(s);
   }
   B.startBlock(done);
+}
+
+/** The copy of a versioned loop that runs when its guard fails. Its loops
+ * get no speculative or int32 kind copies, which would emit each loop again
+ * for a path that rarely runs. Proven integer loops, which emit one copy,
+ * are kept. */
+function emitSlowCopy(emitter: LlEmitter, s: IrStmt): void {
+  const copies = emitter.loopCopiesEnabled;
+  emitter.loopCopiesEnabled = false;
+  try {
+    emitter.emitStmt(s);
+  } finally {
+    emitter.loopCopiesEnabled = copies;
+  }
 }
 
 /** Entries in a row whose fast copy bailed before a speculative loop site
@@ -2089,7 +2103,7 @@ function emitVersionedLoop(
   LOOPS.of(emitter).bytesLoopVersioning.add(s);
   try {
     B.startBlock(slow);
-    emitter.emitStmt(s);
+    emitSlowCopy(emitter, s);
     B.br(done);
     B.startBlock(fast);
     emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
@@ -2120,6 +2134,7 @@ export function emitLoopCopies(
   const plan =
     allowed &&
     emitter.speculativeLoopsEnabled &&
+    emitter.loopCopiesEnabled &&
     emitter.speculation === null &&
     emitter.speculationResume === null
       ? planSpeculativeLoop(
@@ -2147,6 +2162,7 @@ export function emitLoopCopies(
     const kinds =
       allowed &&
       emitter.speculativeLoopsEnabled &&
+      emitter.loopCopiesEnabled &&
       emitter.int32Slots.checkedInt32Arrays.size > 0 &&
       emitter.int32Kinds === null &&
       emitter.speculation === null &&
