@@ -26,6 +26,7 @@ export function moduleFunctionReferences(mod: IrModule): string[] {
     if (cls.instancePrototypeHelper !== undefined) names.push(cls.instancePrototypeHelper);
     if (cls.arrayFields !== undefined) names.push(cls.arrayFields);
     if (cls.arraySpecies !== undefined) names.push(cls.arraySpecies);
+    if (cls.stringTagHelper !== undefined) names.push(cls.stringTagHelper);
   }
   return names;
 }

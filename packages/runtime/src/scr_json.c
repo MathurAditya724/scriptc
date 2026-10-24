@@ -202,6 +202,19 @@ void scr_dyn_install_has_instance_symbol(ScrDyn *key) {
   scr_atexit(scr_has_instance_symbol_cleanup);
 }
 
+/* Symbol.toStringTag, installed when the program first evaluates it: no
+ * object holds the key before then. */
+static SCR_TL ScrDyn *scr_to_string_tag_symbol;
+static void scr_to_string_tag_symbol_cleanup(void) {
+  scr_dyn_release(scr_to_string_tag_symbol);
+  scr_to_string_tag_symbol = NULL;
+}
+void scr_dyn_install_to_string_tag_symbol(ScrDyn *key) {
+  if (scr_to_string_tag_symbol) return;
+  scr_to_string_tag_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_to_string_tag_symbol_cleanup);
+}
+
 void scr_dyn_install_iterator_symbol(ScrDyn *key) {
   if (scr_iterator_symbol) return;
   scr_iterator_symbol = scr_dyn_retain(key);
@@ -1924,6 +1937,8 @@ ScrDyn *scr_dyn_error_constructor(const char *name) {
       scr_error_ctor_values[i] =
           scr_dyn_new_func(scr_closure_new((void *)scr_error_ctor_names[i], 0), scr_error_ctor_call, length,
                            "native:constructor", scr_error_ctor_names[i]);
+      /* Error.prototype is modeled; the other error prototypes are not. */
+      if (i == 0) scr_dyn_fn_seed_prototype(scr_error_ctor_values[i], scr_dyn_error_prototype());
     }
     return scr_dyn_retain(scr_error_ctor_values[i]);
   }
@@ -2189,8 +2204,11 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
   return object;
 }
 
+static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
+
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
+  if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
   if (scr_dyn_class_reflection_fence(object)) return NULL;
   if (object->kind == SCR_DYN_TYPED_REF && strncmp(object->v.typed_ref.type_key, "object:", 7)) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
@@ -3927,6 +3945,12 @@ static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t
   return false;
 }
 
+ScrStr *scr_dyn_typed_ref_class_tag(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
+  return ops && ops->string_tag ? ops->string_tag(d->v.typed_ref.ptr) : NULL;
+}
+
 bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key) {
   if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return false;
   const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
@@ -4015,6 +4039,9 @@ ScrDyn *scr_dyn_index_get(const ScrDyn *d, double index) {
   return scr_dyn_typed_ref_element(d, i);
 }
 
+static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d);
+static ScrStr *scr_dyn_tag_string(const ScrStr *tag);
+
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   /* An instance of a class declared `extends Date` converts through its
    * toString, declared or inherited. With an exception pending the view is
@@ -4026,6 +4053,16 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
     ScrStr *empty = scr_str_new("", 0);
     ScrDyn *out = scr_dyn_new_str(empty);
     scr_str_release(empty);
+    return out;
+  }
+  /* A class instance converting through Object.prototype.toString shows
+   * its Symbol.toStringTag getter's string. */
+  ScrStr *class_tag = scr_dyn_typed_ref_conversion_tag(d);
+  if (class_tag || scr_exc_pending()) {
+    ScrStr *text = class_tag ? scr_dyn_tag_string(class_tag) : scr_str_new("", 0);
+    scr_str_release(class_tag);
+    ScrDyn *out = scr_dyn_new_str(text);
+    scr_str_release(text);
     return out;
   }
   ScrDyn *view = scr_dyn_typed_ref_materialize(d);
@@ -4520,6 +4557,7 @@ static ScrDyn *scr_array_ctor_call(ScrClosure *closure, ScrDyn *const *args, siz
 ScrDyn *scr_dyn_array_constructor(void) {
   if (!scr_array_ctor) {
     scr_array_ctor = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_array_ctor_call, 1, "native:Array", "Array");
+    scr_dyn_fn_seed_prototype(scr_array_ctor, scr_dyn_array_prototype_base());
     scr_atexit(scr_array_ctor_cleanup);
   }
   return scr_dyn_retain(scr_array_ctor);
@@ -6144,6 +6182,16 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
     }
   }
   return (ScrDyn *)scr_box_get_ref(owner->props);
+}
+
+void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype) {
+  ScrDyn *table = scr_dyn_fn_properties(function);
+  scr_dyn_obj_set(table, "prototype", 9, prototype);
+  ScrDynEntry *entry = scr_dyn_find_entry(table, "prototype", 9);
+  entry->writable = false;
+  entry->enumerable = false;
+  entry->configurable = false;
+  scr_dyn_release(table);
 }
 
 ScrDyn *scr_dyn_function_properties(const ScrDyn *function) { return scr_dyn_fn_properties(function); }
@@ -8305,10 +8353,65 @@ void scr_dyn_throw(ScrDyn *d) {
                           scr_dyn_trace_v, scr_dyn_is_object(d));
 }
 
+static ScrStr *scr_dyn_tag_string(const ScrStr *tag) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "[object ");
+  scr_jb_write(&b, tag->data, tag->len);
+  scr_jb_putc(&b, ']');
+  return scr_jb_finish(&b);
+}
+
+/* The Symbol.toStringTag getter's string of a class instance whose
+ * ToString is Object.prototype.toString (its class has no toString; the
+ * string hint never reaches valueOf, since that answers a string): +1, or
+ * NULL otherwise or with the getter's exception pending. */
+static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d) {
+  ScrStr *to_string_key = scr_str_new("toString", 8);
+  bool own_conversion = scr_dyn_typed_ref_class_has(d, to_string_key);
+  scr_str_release(to_string_key);
+  return own_conversion ? NULL : scr_dyn_typed_ref_class_tag(d);
+}
+
+bool scr_dyn_typed_ref_put_tag(ScrJsonBuf *b, const ScrDyn *d) {
+  ScrStr *tag = scr_dyn_typed_ref_conversion_tag(d);
+  if (!tag) return scr_exc_pending();
+  scr_jb_puts(b, "[object ");
+  scr_jb_write(b, tag->data, tag->len);
+  scr_jb_putc(b, ']');
+  scr_str_release(tag);
+  return true;
+}
+
+/* Object.prototype.toString of an object whose own or inherited
+ * @@toStringTag is a string (+1), NULL otherwise or with a pending
+ * exception from its getter. */
+static ScrStr *scr_dyn_string_tag(const ScrDyn *d) {
+  ScrStr *getter_tag = scr_dyn_typed_ref_class_tag(d);
+  if (getter_tag) {
+    ScrStr *out = scr_dyn_tag_string(getter_tag);
+    scr_str_release(getter_tag);
+    return out;
+  }
+  if (scr_exc_pending() || !scr_to_string_tag_symbol) return NULL;
+  ScrDyn *tag = scr_dyn_symbol_key_get(d, scr_to_string_tag_symbol, true);
+  if (!tag) return NULL;
+  ScrStr *out = tag->kind == SCR_DYN_STR ? scr_dyn_tag_string(tag->v.str) : NULL;
+  scr_dyn_release(tag);
+  return out;
+}
+
 ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   if (d->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Symbol.toStringTag lookup");
     return NULL;
+  }
+  /* Object.prototype.toString answers a string @@toStringTag over the
+   * builtin tag of a plain object or a class instance. */
+  if ((d->kind == SCR_DYN_OBJ || (d->kind == SCR_DYN_TYPED_REF && !scr_dyn_ref_is_error(d) &&
+                                  !scr_dyn_generator(d)))) {
+    ScrStr *tag = scr_dyn_string_tag(d);
+    if (tag || scr_exc_pending()) return tag;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
     if (scr_dyn_ref_is_error(d)) return scr_str_new("[object Error]", 14);
@@ -8557,6 +8660,12 @@ typedef struct {
    * or NULL. The code slot holds only strings, and a subclass's typed view
    * rebuilds its properties from the slots on every read. */
   ScrDyn *code;
+  /* The prototype a view built from the error's fields starts with
+   * (scr_error_dyn_fields: the holder of its default name and message, or
+   * none), retained so that no later object takes its address. Only such a
+   * view sets `fields_view`. */
+  ScrDyn *view_prototype;
+  bool fields_view;
 } ScrErrDynEnt;
 
 static SCR_TL ScrErrDynEnt *scr_errdyn_cache = NULL;
@@ -8661,6 +8770,7 @@ static void scr_errdyn_sweep(void) {
     scr_error_release(dead[i].err);
     scr_errdyn_release_node(dead[i].dyn);
     scr_dyn_release(dead[i].code);
+    scr_dyn_release(dead[i].view_prototype);
   }
   free(dead);
 }
@@ -8682,6 +8792,8 @@ static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
   scr_errdyn_cache[scr_errdyn_n].err = scr_error_retain(e);
   scr_errdyn_cache[scr_errdyn_n].dyn = scr_dyn_retain(d);
   scr_errdyn_cache[scr_errdyn_n].code = NULL;
+  scr_errdyn_cache[scr_errdyn_n].view_prototype = NULL;
+  scr_errdyn_cache[scr_errdyn_n].fields_view = false;
   scr_errdyn_n++;
   if (scr_errdyn_n * 2 > scr_errdyn_slots) {
     free(scr_errdyn_by_err);
@@ -8738,6 +8850,7 @@ static void scr_errdyn_teardown(void) {
     scr_error_release(cache[i].err);
     scr_errdyn_release_node(cache[i].dyn);
     scr_dyn_release(cache[i].code);
+    scr_dyn_release(cache[i].view_prototype);
   }
   free(cache);
 }
@@ -8839,6 +8952,19 @@ static void scr_error_dyn_add_stack(ScrDyn *d) {
   entry->getter = scr_dyn_retain(scr_error_stack_accessors[0]);
   entry->setter = scr_dyn_retain(scr_error_stack_accessors[1]);
   entry->enumerable = false;
+}
+
+/* Whether `object` is the view scr_error_dyn_fields built for an error
+ * created as an Error (not a subclass or another error kind) and its
+ * prototype is still the one the view started with. Such an error's
+ * prototype is Error.prototype. */
+static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object) {
+  if (object->null_proto) return false;
+  size_t hit = scr_errdyn_find(object, false);
+  if (hit == SIZE_MAX) return false;
+  const ScrErrDynEnt *ent = &scr_errdyn_cache[hit];
+  return ent->fields_view && object->prototype == ent->view_prototype &&
+         ent->err->vt == &scr_error_vts[SCR_ERR_ERROR];
 }
 
 ScrDyn *scr_error_dyn_fields(const ScrError *e) {
@@ -8960,6 +9086,102 @@ void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len)
   view->v.obj.index = NULL;
 }
 
+static size_t scr_dyn_entry_index(const ScrDyn *object, const char *key, size_t key_len) {
+  for (size_t i = 0; i < object->v.obj.len; i++) {
+    const ScrDynEntry *entry = &object->v.obj.entries[i];
+    if (entry->key_len == key_len && memcmp(entry->key, key, key_len) == 0) return i;
+  }
+  return SIZE_MAX;
+}
+
+/* Whether bag entry b is one of the entries Error's constructor creates
+ * before the instance's class fields: `stack`, a hidden entry (a key
+ * starting with '%'), and a `message` that directly follows them. */
+static bool scr_error_bag_constructed(const ScrDyn *bag, size_t b) {
+  for (size_t i = 0; i <= b; i++) {
+    const ScrDynEntry *entry = &bag->v.obj.entries[i];
+    bool constructed = (entry->key_len == 5 && memcmp(entry->key, "stack", 5) == 0) ||
+                       (entry->key_len > 0 && entry->key[0] == '%') ||
+                       (entry->key_len == 7 && memcmp(entry->key, "message", 7) == 0);
+    if (!constructed) return false;
+  }
+  return true;
+}
+
+/* The view index at which bag entry b, now at `from`, belongs: after the
+ * nearest earlier bag property the view has. An entry created after
+ * construction (any `name` placed here, since no constructor of the class
+ * sets it, and a `message` that is not one of Error's constructor entries)
+ * also follows the class fields, which live in slots and not in the bag: it
+ * passes over the constructor's entries and over a `name` the construction
+ * set, and without another earlier property goes before the nearest later
+ * one the view has, or stays where the view put it. A `message` Error's
+ * constructor created follows the nearest earlier entry, or goes first. */
+static size_t scr_error_bag_place(const ScrDyn *view, const ScrDyn *bag, size_t b, bool name,
+                                  bool name_placed, size_t from) {
+  bool late = name || !scr_error_bag_constructed(bag, b);
+  for (size_t p = b; p-- > 0;) {
+    const ScrDynEntry *anchor = &bag->v.obj.entries[p];
+    if (late && scr_error_bag_constructed(bag, p)) break;
+    if (late && name_placed && anchor->key_len == 4 && memcmp(anchor->key, "name", 4) == 0) continue;
+    size_t after = scr_dyn_entry_index(view, anchor->key, anchor->key_len);
+    if (after != SIZE_MAX) return after < from ? after + 1 : after;
+  }
+  if (!late) return 0;
+  for (size_t p = b + 1; p < bag->v.obj.len; p++) {
+    size_t before = scr_dyn_entry_index(view, bag->v.obj.entries[p].key, bag->v.obj.entries[p].key_len);
+    if (before != SIZE_MAX) return before > from ? before - 1 : before;
+  }
+  return from;
+}
+
+/* The bag holds the view as it was last committed, in the order its
+ * properties were created: zod's error factory assigns `name` and then
+ * defines `message`, and Node lists them in that order. The slots rebuild
+ * both at fixed positions (scr_error_dyn_fields, scr_error_dyn_place_name),
+ * so each one present in the bag moves to follow the property it follows
+ * there. A typed write to `name` or `message` reaches only the slot, so a
+ * data property takes the slot's value. */
+void scr_error_dyn_follow_bag(ScrDyn *view, const ScrDyn *bag, const ScrError *e, bool name_placed) {
+  if (!bag || bag->kind != SCR_DYN_OBJ || view->kind != SCR_DYN_OBJ) return;
+  static const struct { const char *key; size_t len; } slots[] = {{"name", 4}, {"message", 7}};
+  for (size_t s = 0; s < 2; s++) {
+    bool name = s == 0;
+    if (!(name ? e->name_present : e->message_present)) continue;
+    size_t at = scr_dyn_entry_index(view, slots[s].key, slots[s].len);
+    if (at == SIZE_MAX || view->v.obj.entries[at].accessor) continue;
+    ScrDyn *value = scr_dyn_new_str(name ? e->name : e->message);
+    scr_dyn_region_store(view, value);
+    ScrDyn *old = view->v.obj.entries[at].value;
+    view->v.obj.entries[at].value = value;
+    scr_dyn_release(old);
+  }
+  bool moved = false;
+  for (size_t b = 0; b < bag->v.obj.len; b++) {
+    const ScrDynEntry *bag_entry = &bag->v.obj.entries[b];
+    bool slot = (bag_entry->key_len == 4 && memcmp(bag_entry->key, "name", 4) == 0) ||
+                (bag_entry->key_len == 7 && memcmp(bag_entry->key, "message", 7) == 0);
+    bool name = bag_entry->key_len == 4;
+    /* A `name` the class's construction sets is in place already. */
+    if (!slot || (name && name_placed)) continue;
+    size_t from = scr_dyn_entry_index(view, bag_entry->key, bag_entry->key_len);
+    if (from == SIZE_MAX) continue;
+    size_t to = scr_error_bag_place(view, bag, b, name, name_placed, from);
+    if (to == from) continue;
+    ScrDynEntry *entries = view->v.obj.entries;
+    ScrDynEntry entry = entries[from];
+    if (to < from) memmove(&entries[to + 1], &entries[to], (from - to) * sizeof *entries);
+    else memmove(&entries[from], &entries[from + 1], (to - from) * sizeof *entries);
+    entries[to] = entry;
+    moved = true;
+  }
+  if (moved) {
+    SCR_JS_SHAPE_RESET(view);
+    free(view->v.obj.index);
+    view->v.obj.index = NULL;
+  }
+}
+
 ScrDyn *scr_dyn_from_error(const ScrError *e) {
   size_t hit = scr_errdyn_find(e, true);
   if (hit != SIZE_MAX) return scr_dyn_retain(scr_errdyn_cache[hit].dyn);
@@ -8970,8 +9192,14 @@ ScrDyn *scr_dyn_from_error(const ScrError *e) {
       break;
     }
   }
+  bool fields_view = d == NULL;
   if (!d) d = scr_error_dyn_fields(e);
   scr_errdyn_append((ScrError *)e, d);
+  if (fields_view) {
+    ScrErrDynEnt *ent = &scr_errdyn_cache[scr_errdyn_n - 1];
+    ent->fields_view = true;
+    ent->view_prototype = d->prototype ? scr_dyn_retain(d->prototype) : NULL;
+  }
   return d;
 }
 
@@ -9527,6 +9755,13 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
     return NULL;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
+    ScrStr *tag = scr_dyn_typed_ref_conversion_tag(d);
+    if (tag) {
+      ScrStr *out = scr_dyn_tag_string(tag);
+      scr_str_release(tag);
+      return out;
+    }
+    if (scr_exc_pending()) return NULL;
     ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);
     ScrStr *out = scr_dyn_string_coerce_js(materialized);
     scr_dyn_release(materialized);
@@ -9547,7 +9782,7 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
           scr_error_release(error);
           return text;
         }
-        return scr_str_new("[object Object]", 15);
+        return scr_dyn_object_tag(d);
       }
       if (!m || m->kind != SCR_DYN_FUNC) { scr_dyn_release(m); continue; }
       /* OrdinaryToPrimitive performs a method call, not a bare function
@@ -13095,6 +13330,13 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
   ScrClosure *owner = scr_closure_identity(d->v.fn.clo);
   if (d->v.fn.class_obj && d->v.fn.class_obj->static_data && !owner->props)
     owner->props = scr_box_retain(d->v.fn.class_obj->static_data);
+  if (d->v.fn.thunk == scr_function_constructor_call && key_len == 9 && !memcmp(key, "prototype", 9)) {
+    /* A function's `constructor.prototype`: Function.prototype has no value
+     * here, and undefined would be a wrong answer. */
+    static const char function_prototype[] = "Function.prototype through a constructor value is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, function_prototype, sizeof function_prototype - 1, "SC2020");
+    return NULL;
+  }
   if (!d->v.fn.class_obj && key_len == 9 && !memcmp(key, "prototype", 9) && !owner->props) {
     if (owner->function_kind & 1) {
       static const char message[] = "Native generator function prototypes have no lowering";
@@ -13871,6 +14113,20 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
   }
   if (value->kind == SCR_DYN_OBJ) {
     ScrDyn *keys = scr_dyn_obj_own_keys(value);
+    if (value == scr_builtin_object_prototype) {
+      /* Object.prototype's builtin members, in Node's order. */
+      static const char *const names[] = {
+        "constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty",
+        "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable",
+        "toString", "valueOf", "__proto__", "toLocaleString"
+      };
+      ScrDyn *all = scr_dyn_new_arr();
+      for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        scr_dyn_arr_push(all, scr_dyn_objwalk_key(names[i], strlen(names[i])));
+      for (size_t i = 0; i < keys->v.arr.len; i++) scr_dyn_arr_push(all, scr_dyn_retain(keys->v.arr.items[i]));
+      scr_dyn_release(keys);
+      return all;
+    }
     if (!scr_dyn_obj_get(value, "%error", 6)) return keys;
     /* The checked-dynamic tree's error marker is not a property. */
     ScrDyn *names = scr_dyn_new_arr();
@@ -13896,10 +14152,18 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
     }
     if (value->kind != SCR_DYN_BYTES)
       scr_dyn_arr_push(keys, scr_dyn_objwalk_key("length", 6));
+    bool array_prototype = value == scr_builtin_array_prototype;
+    if (array_prototype) scr_dyn_arr_push(keys, scr_dyn_objwalk_key("constructor", 11));
     if (value->kind == SCR_DYN_ARR && value->v.arr.properties) {
       ScrDyn *properties = scr_dyn_obj_own_keys(value->v.arr.properties);
-      for (size_t i = 0; i < properties->v.arr.len; i++)
-        scr_dyn_arr_push(keys, scr_dyn_retain(properties->v.arr.items[i]));
+      for (size_t i = 0; i < properties->v.arr.len; i++) {
+        ScrDyn *name = properties->v.arr.items[i];
+        /* A constructor stored on Array.prototype keeps the position above. */
+        if (array_prototype && name->kind == SCR_DYN_STR && name->v.str->len == 11 &&
+            memcmp(name->v.str->data, "constructor", 11) == 0)
+          continue;
+        scr_dyn_arr_push(keys, scr_dyn_retain(name));
+      }
       scr_dyn_release(properties);
     }
     return keys;
@@ -14982,10 +15246,16 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
 
 
   if (v->kind == SCR_DYN_OBJ) {
+    /* Object.prototype's builtin members are its own properties (zod's
+     * isPlainObject asks whether the prototype has its own isPrototypeOf). */
+    if (v == scr_builtin_object_prototype && scr_dyn_object_proto_name(key)) return true;
     return scr_dyn_obj_get(v, key->data, key->len) != NULL;
   }
   if (v->kind == SCR_DYN_ARR) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return true;
+    /* Array.prototype's own constructor (its methods are table entries). */
+    if (v == scr_builtin_array_prototype && key->len == 11 && memcmp(key->data, "constructor", 11) == 0)
+      return true;
     if (v->v.arr.properties && scr_dyn_obj_get(v->v.arr.properties, key->data, key->len)) return true;
     if (!scr_dyn_canonical_own_index(key, v->v.arr.len)) return false;
     size_t index = 0;

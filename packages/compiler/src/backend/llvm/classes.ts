@@ -1521,18 +1521,18 @@ export function emitClassShapes(
  * statics plus their construct thunks — allocate, run the constructor over
  * a +1 `this`, and hand the remaining +1 out. No pending check is needed:
  * in-tier constructors are throw-free by construction.
- * `classObjs` maps className → { nameSym } registered during body emission
- * (the literal interned while the table was open). */
+ * `classObjs` maps className → { nameSym, baseNameSym } registered during
+ * body emission (the literals interned while the table was open). */
 export function emitClassObjDefs(
   host: ClassHost,
   metaMap: Map<string, LlClassMeta>,
-  classObjs: Map<string, { nameSym: string }>,
+  classObjs: Map<string, { nameSym: string; baseNameSym: string | null }>,
   fnByName: Map<string, IrFunction>,
   llType: (t: IrType) => string,
   threadLocal = false,
 ): string[] {
   const out: string[] = [];
-  for (const [className, { nameSym }] of classObjs) {
+  for (const [className, { nameSym, baseNameSym }] of classObjs) {
     const meta = metaMap.get(className);
     if (!meta)
       throw new InternalCompilerError(
@@ -1558,7 +1558,7 @@ export function emitClassObjDefs(
     const ctorArgs = params.map((p, i) => `${llType(p.type)} %a${i}`);
     const classObj =
       `@${mangleClassObj(className)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClassObj ` +
-      `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? (meta.def.runtime ? 1 : 0)}, ptr null, ptr null } ; class ${className}`;
+      `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? (meta.def.runtime ? 1 : 0)}, ptr null, ptr null, ptr ${baseNameSym ?? "null"}, ${host.sizeType} ${meta.def.ownStaticFields ? 1 : 0} } ; class ${className}`;
     if (meta.def.runtime) {
       // A runtime-provided class: %C.construct allocates through the
       // runtime and returns the instance.

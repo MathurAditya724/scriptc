@@ -4432,6 +4432,14 @@ export function collectClassShapeInner(
         // INSTANTIATION prints its family's name — JS has one `Box`.
         jsName: jsNameOverride ?? decl.name?.text ?? "",
         ...(base ? { base: base.def.name } : {}),
+        ...(decl.members.nodes.some(
+          (member) =>
+            ts.isPropertyDeclaration(member) &&
+            !ts.isPrivateIdentifier(member.name) &&
+            member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword),
+        )
+          ? { ownStaticFields: true as const }
+          : {}),
         jsLength:
           ctor?.parameters?.nodes.findIndex(
             (parameter) => parameter.initializer || parameter.dotDotDotToken,
@@ -8197,7 +8205,10 @@ export function classMemberNameOf(lowerer: Lowerer, name: ts.PropertyName): stri
       member === "asyncIterator" ||
       member === "dispose" ||
       member === "asyncDispose" ||
-      member === "toPrimitive"
+      member === "toPrimitive" ||
+      // A toStringTag field keeps its symbol field name; its accessor and
+      // method forms take the method slot name.
+      (member === "toStringTag" && !ts.isPropertyDeclaration(name.parent))
     ) {
       return `sym:${member}`;
     }

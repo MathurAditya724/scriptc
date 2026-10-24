@@ -575,6 +575,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "zlib.deflateSync": "scr_zlib_deflate",
   "zlib.inflateSync": "scr_zlib_inflate",
   "zlib.crc32": "scr_zlib_crc32",
+  "zlib.brotliInstall": "scr_brotli_install",
   // The CA-store unit. get/set throw (an unknown type name, a
   // certificate-free set) and take the generic path's pending check.
   "tlsca.root": "scr_tls_ca_root",
@@ -677,6 +678,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.moreItems": "scr_insp_more_items",
   "insp.end": "scr_insp_end",
   "insp.nestedBegin": "scr_insp_nested_begin",
+  "insp.mark": "scr_insp_mark",
+  "insp.unwind": "scr_insp_unwind",
   "insp.nestedEnd": "scr_insp_nested_end",
   // Circular references over cycle-capable composites (Node's
   // seen/circular machinery — none of these throw; refWrap borrows its
@@ -732,6 +735,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "punycode.ucs2Encode": "scr_str_from_code_point",
   "punycode.warn": "scr_punycode_warn",
   "url.domainToUnicode": "scr_url_domain_to_unicode",
+  "url.toHttpOptions": "scr_url_to_http_options_dyn",
   "url.pathToFileURL": "scr_url_from_path",
   "url.pathToFileURLPlatform": "scr_url_from_path_platform",
   "url.pathToFileURLWin32": "scr_url_from_path",
@@ -1063,6 +1067,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.generatorThis": "scr_gen_receiver",
   "insp.dyn": "scr_insp_dyn",
   "insp.dynS": "scr_insp_dyn_s",
+  "insp.dynHidden": "scr_insp_dyn_hidden",
   "fs.readFileSyncDyn": "scr_fs_read_file_sync_dyn",
   "fs.readFileEncoded": "scr_fs_read_file_encoded",
   "fs.readFdEncoded": "scr_fs_read_fd_encoded",

@@ -46,6 +46,13 @@ export function collectClassMethodMutations(
   const typedClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
   const symbolMethods = new Set<string>();
   let unknownKey: ts.Node | undefined;
+  /** Every write with an unknown key: each may install a replacement of any
+   * method name, and the key-order witness asks what each one installs. */
+  const unknownKeySites: ts.Node[] = [];
+  const markUnknownKey = (site: ts.Node): void => {
+    unknownKey = site;
+    unknownKeySites.push(site);
+  };
   let numericKey: ts.Node | undefined;
   let unknownOwnField = false;
   // `sym:iterator` for `Symbol.iterator`: the name a class method declared
@@ -83,7 +90,7 @@ export function collectClassMethodMutations(
   for (const key of computedMethods)
     for (const name of literalValues(lowerer.typeOf(key)) ?? []) methods.add(String(name));
   const markName = (name: string, site: ts.Node, arrow = false): void => {
-    if (name === "prototype" || name === "__proto__") unknownKey = site;
+    if (name === "prototype" || name === "__proto__") markUnknownKey(site);
     if (methods.has(name)) lowerer.noteMethodAccess(name, site);
     if (!arrow) receiverFields.add(name);
   };
@@ -170,14 +177,32 @@ export function collectClassMethodMutations(
   // A string index whose values cannot be functions excludes callable
   // method slots. Class instances have no implicit index signature, so such
   // a dictionary is only a class view when the class declares that index
-  // signature, and then every method must be assignable to its value type.
-  const functionFreeDictionary = (value: ts.Expression): boolean =>
-    lowerer.checker
-      .getIndexInfosOfType(lowerer.typeOf(value))
+  // signature, and then every method must be assignable to its value type,
+  // or when the dictionary keeps checked identity: it then holds the
+  // existing objects it receives, class instances included.
+  // A string-keyed dictionary that keeps checked identity holds the
+  // existing objects it receives, class instances included, so any write
+  // through it can replace a method.
+  const dictionaryView = (value: ts.Expression): boolean => {
+    const type = lowerer.typeOf(value);
+    return (
+      lowerer.checker.getPropertiesOfType(type).length === 0 &&
+      lowerer.checker
+        .getIndexInfosOfType(type)
+        .some((index) => (index.keyType.flags & ts.TypeFlags.StringLike) !== 0) &&
+      lowerer.classImplementedProtocol(type)
+    );
+  };
+  const functionFreeDictionary = (value: ts.Expression): boolean => {
+    const type = lowerer.typeOf(value);
+    if (lowerer.classImplementedProtocol(type)) return false;
+    return lowerer.checker
+      .getIndexInfosOfType(type)
       .some(
         (index) =>
           (index.keyType.flags & ts.TypeFlags.StringLike) !== 0 && functionFree(index.type),
       );
+  };
   const literalLoopKeys = (key: ts.Expression): (string | number)[] | null => {
     if (!ts.isIdentifier(key)) return null;
     const symbol = lowerer.checker.getSymbolAtLocation(key);
@@ -401,7 +426,19 @@ export function collectClassMethodMutations(
           (ts.isElementAccessExpression(base) &&
             ts.isStringLiteralLike(base.argumentExpression) &&
             base.argumentExpression.text === "prototype");
-        if (prototype) {
+        // `Object.prototype.toString.call(value)` calls the builtin and
+        // keeps no reference to it, so it replaces nothing.
+        const builtinCall =
+          ts.isPropertyAccessExpression(node) &&
+          ts.isPropertyAccessExpression(base) &&
+          ts.isIdentifier(unwrap(base.expression)) &&
+          lowerer.isStdlibGlobal(unwrap(base.expression) as ts.Identifier, "Object") &&
+          ts.isPropertyAccessExpression(node.parent) &&
+          node.parent.expression === node &&
+          (node.parent.name.text === "call" || node.parent.name.text === "apply") &&
+          ts.isCallExpression(node.parent.parent) &&
+          node.parent.parent.expression === node.parent;
+        if (prototype && !builtinCall) {
           if (ts.isPropertyAccessExpression(node)) lowerer.noteMethodAccess(node.name.text, node);
           else if (ts.isStringLiteralLike(node.argumentExpression))
             lowerer.noteMethodAccess(node.argumentExpression.text, node);
@@ -449,11 +486,12 @@ export function collectClassMethodMutations(
       (lowerer.isStdlibGlobal(node, "Object") || lowerer.isStdlibGlobal(node, "Reflect")) &&
       (!ts.isPropertyAccessExpression(node.parent) || node.parent.expression !== node)
     )
-      unknownKey = node;
+      markUnknownKey(node);
   for (const node of reflection) {
     const objectMethod = lowerer.stdlibGlobalMember(node, "Object");
     const reflectMethod = lowerer.stdlibGlobalMember(node, "Reflect");
-    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf") unknownKey = node;
+    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf")
+      markUnknownKey(node);
     const single =
       objectMethod === "defineProperty" ||
       reflectMethod === "defineProperty" ||
@@ -463,7 +501,7 @@ export function collectClassMethodMutations(
     if (!single && !multiple) continue;
     const call = node.parent;
     if (!ts.isCallExpression(call) || call.expression !== node) {
-      unknownKey = node;
+      markUnknownKey(node);
       continue;
     }
     const receiver = call.arguments.nodes[0];
@@ -577,7 +615,10 @@ export function collectClassMethodMutations(
   );
   for (const { target, site } of propertyWrites) {
     const name = target.name.text;
-    if (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(target.expression, name))
+    if (
+      !dictionaryView(target.expression) &&
+      (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(target.expression, name))
+    )
       continue;
     if (lowerer.prototypeMethodAccesses.has(name)) lowerer.noteMethodSite(name, site);
     else lowerer.noteMethodAccess(name, site);
@@ -618,7 +659,7 @@ export function collectClassMethodMutations(
       // Numeric writes can replace numeric names but not ordinary names.
       numericKey = site;
     } else if (!(flags & ts.TypeFlags.ESSymbolLike)) {
-      unknownKey = site;
+      markUnknownKey(site);
     }
   }
   if (numericKey) {
@@ -627,7 +668,10 @@ export function collectClassMethodMutations(
     }
   }
   if (unknownKey) {
-    for (const method of methods) lowerer.noteMethodAccess(method, unknownKey);
+    for (const method of methods) {
+      lowerer.prototypeMethodAccesses.set(method, unknownKey);
+      for (const site of unknownKeySites) lowerer.noteMethodSite(method, site);
+    }
     for (const method of symbolMethods) lowerer.replacedSymbolMethods.add(method);
   }
   if (!unknownKey && !unknownOwnField)

@@ -159,10 +159,12 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "classes[].instancePrototypeHelper": "reference",
   "classes[].arrayFields": "reference",
   "classes[].arraySpecies": "reference",
+  "classes[].stringTagHelper": "reference",
   "classes[].localCaptures[].name": "other",
   "classes[].localCaptures[].localId": "other",
   "classes[].symbolFields[].field": "other",
   "classes[].symbolFields[].globalId": "other",
+  "classes[].symbolFields[].wellKnown": "other",
   "classes[].fields[].name": "other",
   "classes[].methods[]": "method",
   "classes[].prototypeNames[]": "other",
@@ -290,6 +292,10 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
   "classes[].arraySpecies": () => ({
     ...module(),
     classes: [{ name: "%m0.Row", fields: [], arrayElem: F64, arraySpecies: TARGET, loc }],
+  }),
+  "classes[].stringTagHelper": () => ({
+    ...module(),
+    classes: [{ name: "%m0.Cell", fields: [], stringTagHelper: TARGET, loc }],
   }),
   "lib.exports[].fnName": () => ({
     ...module(),
