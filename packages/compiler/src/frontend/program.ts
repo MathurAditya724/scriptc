@@ -488,43 +488,33 @@ function visitNpmStaticDeclarationClosure(
   visit(entryPath);
 }
 
-function npmStaticDeclarationOverloadsOf(
+/** The overloads and properties of the classes a package's declaration
+ * closure declares, read from one parse of each declaration file. */
+function npmStaticDeclarationMetadataOf(
   services: FrontendServices,
   entryPath: string,
-): NpmStaticDeclarationOverloads {
-  const classes = new Map<string, Map<string, readonly NpmStaticOverloadSignature[]>>();
+): { overloads: NpmStaticDeclarationOverloads; properties: NpmStaticDeclarationProperties } {
+  const overloads = new Map<string, Map<string, readonly NpmStaticOverloadSignature[]>>();
+  const properties = new Map<string, Map<string, string>>();
   visitNpmStaticDeclarationClosure(services, entryPath, (path, source) => {
-    for (const [className, methods] of parseNpmStaticDeclarationOverloads(
-      services.parse(path, source, "ts"),
-    )) {
+    const sourceFile = services.parse(path, source, "ts");
+    for (const [className, methods] of parseNpmStaticDeclarationOverloads(sourceFile)) {
       const target =
-        classes.get(className) ?? new Map<string, readonly NpmStaticOverloadSignature[]>();
-      classes.set(className, target);
+        overloads.get(className) ?? new Map<string, readonly NpmStaticOverloadSignature[]>();
+      overloads.set(className, target);
       for (const [methodName, signatures] of methods) {
         if (!target.has(methodName)) target.set(methodName, signatures);
       }
     }
-  });
-  return classes;
-}
-
-function npmStaticDeclarationPropertiesOf(
-  services: FrontendServices,
-  entryPath: string,
-): NpmStaticDeclarationProperties {
-  const classes = new Map<string, Map<string, string>>();
-  visitNpmStaticDeclarationClosure(services, entryPath, (path, source) => {
-    for (const [className, properties] of parseNpmStaticDeclarationProperties(
-      services.parse(path, source, "ts"),
-    )) {
-      const target = classes.get(className) ?? new Map<string, string>();
-      classes.set(className, target);
-      for (const [propertyName, type] of properties) {
+    for (const [className, fields] of parseNpmStaticDeclarationProperties(sourceFile)) {
+      const target = properties.get(className) ?? new Map<string, string>();
+      properties.set(className, target);
+      for (const [propertyName, type] of fields) {
         if (!target.has(propertyName)) target.set(propertyName, type);
       }
     }
   });
-  return classes;
+  return { overloads, properties };
 }
 
 /** See LoadResult.startupCrash: Node's exact error message, the IR error
@@ -1096,8 +1086,7 @@ export function loadProgram(
     ) {
       continue;
     }
-    const overloads = npmStaticDeclarationOverloadsOf(services, resolved.typesFile);
-    const properties = npmStaticDeclarationPropertiesOf(services, resolved.typesFile);
+    const { overloads, properties } = npmStaticDeclarationMetadataOf(services, resolved.typesFile);
     const classNames = new Set([...overloads.keys(), ...properties.keys()]);
     if (classNames.size === 0) continue;
     const runtime = resolveBareModule(entryPath, pkg, "js-only");
