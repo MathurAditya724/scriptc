@@ -104,3 +104,40 @@ test("constant graphs: namespaces, revealing modules and prototypes, with near m
   // A factory called from two init sites: one object per call site.
   expect(text).toMatch(/near miss ns-fixture\/index\.js:20: init-factory \(.*2 call sites\)/);
 });
+
+// Functions that one call site runs repeatedly: an ES5 constructor and an
+// apply call in a loop, and builtin callbacks that run once per element,
+// match or parsed value.
+const repeatedSource = `
+var lib = {};
+lib.newState = { v: 0 };
+function bumpNew() { lib.newState.v++; }
+bumpNew();
+lib.applyState = { v: 0 };
+function bumpApply() { lib.applyState.v++; }
+bumpApply();
+lib.repeat = function () { for (var i = 0; i < 3; i++) { new bumpNew(); bumpApply.apply(null, []); } };
+lib.seen = { match: null, pair: null, mapped: null, key: null };
+lib.replaced = "a-b".replace(/\\\\w/g, function (m) { lib.seen.match = { m: m }; return m; });
+lib.sorted = [3, 1, 2].toSorted(function (a, b) { lib.seen.pair = { a: a }; return a - b; });
+lib.mapped = Array.from([1, 2], function (x) { lib.seen.mapped = { x: x }; return x; });
+lib.revived = JSON.parse('{"a":{"b":1}}', function (k, v) { lib.seen.key = { k: k }; return v; });
+module.exports = { lib };
+`;
+
+test("constant graphs: constructors, apply calls and callbacks that one site runs repeatedly", async () => {
+  await writeFile(join(dir, "node_modules", "ns-fixture", "index.js"), repeatedSource);
+  await writeFile(
+    join(dir, "main.cjs"),
+    'const { lib } = require("ns-fixture");\nlib.repeat();\nconsole.log(lib.newState.v, lib.applyState.v, lib.replaced, lib.sorted, lib.mapped, lib.revived);\n',
+  );
+  const text = (await report()).join("\n");
+  // `new bumpNew()` and `bumpApply.apply(...)` in a loop write after init.
+  expect(text).toMatch(/near miss ns-fixture\/index\.js:3 \.v: written-after-init/);
+  expect(text).toMatch(/near miss ns-fixture\/index\.js:6 \.v: written-after-init/);
+  // Each callback runs once per match, comparison, element or parsed value.
+  for (const field of ["match", "pair", "mapped", "key"])
+    expect(text).toMatch(
+      new RegExp(`near miss ns-fixture/index\\.js:10 \\.${field}: written-after-init`),
+    );
+});

@@ -252,6 +252,10 @@ const LOOP_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   "reduceRight",
   "flatMap",
   "sort",
+  "toSorted",
+  "from",
+  "replace",
+  "replaceAll",
 ]);
 
 export function analyzeShapes(program: ts.Program, checker: ts.TypeChecker): ShapeAnalysis {
@@ -298,12 +302,17 @@ class Analyzer {
       this.siteCtx.set(site, { caller: this.currentFn, inLoop: this.loopDepth > 0 });
   }
 
+  /** Builtin calls that invoke their callbacks once per value
+   * (JSON.parse revivers, JSON.stringify replacers and toJSON methods),
+   * which may run after the call's own handling. */
+  private readonly repeatingSites = new Set<Node>();
+
   edgeFor(site: Node, callee: FunctionInfo): void {
     const ctx = this.siteCtx.get(site);
     this.calls.push({
       caller: ctx?.caller ?? null,
       callee,
-      inLoop: (ctx?.inLoop ?? false) || this.forceLoop,
+      inLoop: (ctx?.inLoop ?? false) || this.forceLoop || this.repeatingSites.has(site),
       site,
     });
   }
@@ -2547,6 +2556,7 @@ class Analyzer {
             this.add(info.thisNode, inst);
             this.bindArgs(info, args, spread);
             this.edge(info.ret, dst);
+            this.edgeFor(e, info);
           }
           return;
         }
@@ -2894,6 +2904,7 @@ class Analyzer {
           for (const p of info.params)
             if (args[1] !== undefined) this.iterateInto(args[1], p, site);
           this.edge(info.ret, dst);
+          this.edgeFor(site, info);
         }
         return;
       }
@@ -3034,6 +3045,7 @@ class Analyzer {
         // result.
         const revived = this.newNode();
         this.add(revived, this.top);
+        this.repeatingSites.add(site);
         if (args[1] !== undefined)
           this.on(args[1], (f) => {
             if (f.kind === "function")
@@ -3057,6 +3069,7 @@ class Analyzer {
         // Their results are serialized in turn.
         const serialized = this.newNode();
         this.childrenInto(serialized);
+        this.repeatingSites.add(site);
         this.edge(arg(0), serialized);
         const key = this.constNode(this.prim("string"));
         this.on(serialized, (v) => this.callToJSON(v, key, serialized, site));
