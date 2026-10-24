@@ -51,6 +51,7 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth);
 ScrStr *scr_insp_bytes(ScrBytes *b, double recurse, double depth);
 /* format's %s / rest-args twin: dyn strings pass verbatim. */
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth);
+ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth); /* %o: showHidden */
 void scr_insp_begin(double recurse);
 /* util.inspect's breakLength, compact (0 for false) and sorted for the
  * renders that follow; the call site restores the defaults (80, 3, false)
@@ -79,6 +80,10 @@ ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse,
  * caller's level (+1; borrows both). */
 void scr_insp_nested_begin(void);
 ScrStr *scr_insp_nested_end(ScrStr *prefix, ScrStr *inner);
+/* Mark the inspector's state before a top-level render, and return to the
+ * mark when the render ends, normally or by an inspection refusal. */
+void scr_insp_mark(void);
+void scr_insp_unwind(void);
 
 /* The buf.read* / buf.write* numeric families on u8 bytes, Node-exact:
  * boundsError's ladder (non-integer offset → 'It must be an integer', a

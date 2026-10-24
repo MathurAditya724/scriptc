@@ -451,8 +451,14 @@ const DYN_READ_ONLY = new Set<string>([
   "fs.utimesSync",
   // Buffer.prototype members read as values: a lookup by key.
   "buffer.prototypeMember",
+  // Buffer.from(value, offset[, length]) over checked values: an
+  // ArrayBuffer's view after Node's offset and length conversions, or a copy
+  // of a string, array-like or typed array's values.
+  "buffer.poolFromDynOffset",
+  "buffer.poolFromDynRange",
   "insp.dyn",
   "insp.dynS",
+  "insp.dynHidden",
   // The dynamic-tier operators run their dyn twins (scr_js_value.c); the
   // conversions move a value between dyn and jsval, and js.toF64 is
   // dynCheck's number check.

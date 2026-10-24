@@ -426,6 +426,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         return inner;
       const use = runtimeOptionalUseOf(expr);
       if (runtimeOptionalAssertionErases(lowerer, expr, inner, use)) return inner;
+      // A destination that holds null or undefined keeps the value, as `!`
+      // does in JavaScript (`return cache.get(key)!` from a function that
+      // returns `T | null`); the destination's own coercion re-tags it.
+      if (assertionDestinationHoldsNullish(lowerer, expr, inner.type)) return inner;
       const operand = assertionOperand(lowerer, expr, inner, target ?? null, loc);
       if (operand) return operand;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
@@ -935,6 +939,65 @@ export function assertedElementKeepsUndefined(
   );
 }
 
+/** Whether `node!` is a returned value, an arrow function's body or a call
+ * argument whose destination type (the return or parameter type) is `any`
+ * or `unknown` (as for `String(x!)` and `Number(x!)`) or holds null or
+ * undefined that the union `inner` holds and the assertion would remove.
+ * Bindings and assignments are left out: the checker narrows them to the
+ * asserted type for later reads. */
+function assertionDestinationHoldsNullish(
+  lowerer: Lowerer,
+  node: ts.NonNullExpression,
+  inner: IrType & { kind: "union" },
+): boolean {
+  const holdsNull = lowerer.armTag(inner.unionId, NULL_T) >= 0;
+  const holdsUndefined = lowerer.armTag(inner.unionId, UNDEFINED_T) >= 0;
+  if (!holdsNull && !holdsUndefined) return false;
+  let outer: ts.Expression = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  const destination =
+    (ts.isReturnStatement(parent) && parent.expression === outer) ||
+    (ts.isArrowFunction(parent) && parent.body === outer) ||
+    ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+      parent.arguments?.nodes.includes(outer) === true);
+  if (!destination) return false;
+  const contextual = lowerer.checker.getContextualType(outer);
+  if (!contextual) return false;
+  const nullish =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    (holdsNull ? ts.TypeFlags.Null : 0) |
+    (holdsUndefined && !optionalStdlibParameter(lowerer, parent, outer)
+      ? ts.TypeFlags.Undefined
+      : 0);
+  if ((contextual.flags & ts.TypeFlags.Union) === 0) return (contextual.flags & nullish) !== 0;
+  return constituentTypes(contextual).some((type) => (type.flags & nullish) !== 0);
+}
+
+/** Whether `argument` of `call` binds an optional parameter of a standard
+ * library declaration (`decoder.decode(input?)`). The undefined such a
+ * parameter's type holds comes from its optionality, and the builtin
+ * lowerings read the argument as the declared type, so `x!` keeps the
+ * checked narrowing there. */
+function optionalStdlibParameter(
+  lowerer: Lowerer,
+  call: ts.Node,
+  argument: ts.Expression,
+): boolean {
+  if (!ts.isCallExpression(call) && !ts.isNewExpression(call)) return false;
+  const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
+  if (declaration === undefined || !lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration)))
+    return false;
+  const index = call.arguments?.nodes.indexOf(argument) ?? -1;
+  const parameter = declaration.parameters?.nodes[index];
+  return (
+    parameter !== undefined &&
+    parameter.dotDotDotToken === undefined &&
+    (parameter.questionToken !== undefined || parameter.initializer !== undefined)
+  );
+}
+
 /** `x!` as the operand of an operator that converts its operands: an
  * arithmetic, bitwise, relational or equality operator, `+`, a compound
  * assignment, a unary `-`, `+`, `~` or `!`, a template span, or an argument
@@ -961,13 +1024,14 @@ function assertionOperand(
     )
   )
     return null;
-  // Array and typed-array element reads keep their own handling of a
-  // missing element.
+  // Array element reads keep their own handling of a missing element. A
+  // typed-array read is optional here only where its use tells undefined
+  // from NaN (assertedReadObservesUndefined).
   let operand: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
   if (ts.isElementAccessExpression(operand)) {
     const kind = lowerer.mapTypeOf(lowerer.typeOf(operand.expression))?.kind;
-    if (kind === "array" || kind === "bytes") return null;
+    if (kind === "array") return null;
   }
   const use = convertingUseOf(lowerer, expr);
   if (use === null) return null;
@@ -984,6 +1048,7 @@ function convertingUseOf(lowerer: Lowerer, expr: ts.NonNullExpression): "number"
   while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
   const parent = outer.parent;
   if (ts.isTemplateSpan(parent)) return parent.expression === outer ? "value" : null;
+  if (ts.isTypeOfExpression(parent)) return "value";
   if (ts.isPrefixUnaryExpression(parent)) {
     if (parent.operator === ts.SyntaxKind.ExclamationToken) return "value";
     return parent.operator === ts.SyntaxKind.MinusToken ||
@@ -1079,6 +1144,23 @@ const NUMERIC_COMPOUNDS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
   ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
 ]);
+
+/** Whether the use of `t[i]!` tells undefined from NaN: a converting use
+ * that takes the value itself (see convertingUseOf), or a destination that
+ * holds a missing element (see assertedElementKeepsUndefined) other than a
+ * return, whose slot has the function's number type. */
+export function assertedReadObservesUndefined(
+  lowerer: Lowerer,
+  node: ts.NonNullExpression,
+): boolean {
+  if (convertingUseOf(lowerer, node) === "value") return true;
+  let outer: ts.Expression = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  if (ts.isReturnStatement(parent) || (ts.isArrowFunction(parent) && parent.body === outer))
+    return false;
+  return assertedElementKeepsUndefined(lowerer, node);
+}
 
 export function runtimeOptionalAssertionErases(
   lowerer: Lowerer,

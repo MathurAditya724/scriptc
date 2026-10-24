@@ -1490,11 +1490,18 @@ export interface IrClassDef {
   jsName?: string;
   /** JavaScript constructor arity, ending before the first default or rest parameter. */
   jsLength?: number;
+  /** The class declares public static fields. util.inspect prints them
+   * after the class tag; a class object reached through `unknown` does
+   * not carry them unless the runtime holds its static table. */
+  ownStaticFields?: true;
   /** Zero-argument native helper returning the shared prototype data object.
    * Used when materializing an instance's own-property view. */
   prototypeDataHelper?: string;
   /** Native instance to its actual prototype, including factory captures and subclasses. */
   instancePrototypeHelper?: string;
+  /** Native instance to the string its inherited Symbol.toStringTag getter
+   * answers, read by the runtime for an instance seen as `unknown`. */
+  stringTagHelper?: string;
   /** Public JavaScript fields record their creation in the shared property
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
@@ -1504,8 +1511,14 @@ export interface IrClassDef {
    * class of the chain sets `name` during construction, and then an own
    * `name` follows every other own property. */
   errorNameAfter?: string | null;
-  /** Stable module symbol identities for public instance layout fields. */
-  symbolFields?: { field: string; globalId: string }[];
+  /** JavaScript Error subclasses with a property bag: a view committed by a
+   * dynamic write keeps `name` and `message` where the bag recorded them
+   * (scr_error_dyn_follow_bag). */
+  errorBagOrder?: boolean;
+  /** Stable symbol identities for public instance layout fields: the
+   * module global holding the key, or the name of the well-known symbol
+   * (`toStringTag` for `Symbol.toStringTag`). */
+  symbolFields?: ({ field: string } & ({ globalId: string } | { wellKnown: string }))[];
   /** RUNTIME-PROVIDED class (the builtin Error hierarchy): the struct, RC
    * helpers, and vtable live in the runtime (ScrError / scr_error_*), so
    * backends emit no definitions for it — only the preorder-interval
@@ -1678,6 +1691,8 @@ export const ZLIB_STREAM_MODES: ReadonlyMap<string, number> = new Map([
   ["DeflateRaw", 5],
   ["InflateRaw", 6],
   ["Unzip", 7],
+  ["BrotliDecompress", 8],
+  ["BrotliCompress", 9],
 ]);
 
 export interface IrRecordShape {

@@ -292,6 +292,17 @@ function replacesWithoutRecords(lowerer: Lowerer, site: ts.Node): boolean {
   );
 }
 
+/** A compiler helper that boxes a class's own state for JavaScript's reads:
+ * its prototype data and the property and method dispatch over boxed
+ * instances. */
+function boxesOwnState(fnName: string): boolean {
+  return (
+    fnName.startsWith("%prototype.data.") ||
+    fnName.startsWith("%dyn.class.") ||
+    fnName.startsWith("%class.")
+  );
+}
+
 /** A type whose values are primitives (or void): it holds no record. */
 function primitiveOnly(type: ts.Type): boolean {
   if (type.isUnionType()) return ts.constituentTypes(type).every(primitiveOnly);
@@ -357,8 +368,18 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
    * its checked field setters, each a witness of its own. A checked
    * function's parameters receive native values: a record parameter is
    * passed out, never built, though a callback among them receives values
-   * built from JavaScript again. */
-  const shapesIn = (type: IrType, out: Set<string>, seen: Set<string>, produced = false): void => {
+   * built from JavaScript again. `built` false starts the walk at a value
+   * passed out (a native value boxed for JavaScript); `writes` false leaves
+   * out what JavaScript could write into the containers passed out, so the
+   * walk counts only what the functions among them receive. */
+  const shapesIn = (
+    type: IrType,
+    out: Set<string>,
+    seen: Set<string>,
+    produced = false,
+    built = true,
+    writes = true,
+  ): void => {
     const visit = (t: IrType, built: boolean): boolean => {
       const mark = built ? "" : "-";
       // A container JavaScript builds converts into fresh native storage, so
@@ -367,7 +388,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       // such as callbacks whose parameters it then builds (children passed
       // out). Those children count in both directions.
       const child = (type: IrType): boolean => {
-        visit(type, true);
+        if (built || writes) visit(type, true);
         if (!built) visit(type, false);
         return true;
       };
@@ -401,7 +422,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       }
       return everyTypeChild(t, child);
     };
-    visit(type, true);
+    visit(type, built);
   };
   const opaqueShapes = new Set<string>();
   const opaqueSeen = new Set<string>();
@@ -412,6 +433,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
    * declaration's order, the order their table holds. */
   const declaredShapes = new Set<string>();
   const declaredSeen = new Set<string>();
+  const boxedSeen = new Set<string>();
   /** The checked result of a replaceable method call while every site that
    * can replace the method installs functions that return no record. */
   const unchangedMethodResult = (node: IrExpr): boolean => {
@@ -518,6 +540,16 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       case "jsonStringify":
       case "dynFrom":
         observedRoots.push(e.value.type);
+        // A native value the program hands to JavaScript: the callbacks it
+        // holds (itself, a field, an element) receive records JavaScript
+        // builds. The helpers that box the program's own state for
+        // JavaScript's reads (a class's prototype slots and property
+        // dispatch) hand out the class's methods, whose arguments the
+        // program's own calls pass as native values, as a replaceable
+        // method's result above. Writes through the boxed value are left
+        // out: reading a boxed value creates no record.
+        if (!boxesOwnState(fnName))
+          shapesIn(e.value.type, runtimeShapes, boxedSeen, true, false, false);
         return;
       case "recordKeyGet":
         observedRoots.push(e.obj.type);
