@@ -192,3 +192,26 @@ console.log(count("abcab", "xyz"), count("cab", "yy"), count("", ""));
   // No test of either local reads it as a union.
   expect(unionTests(count)).not.toContain("unionEq");
 });
+
+test("charAt tests in place compare charCodeAt", async () => {
+  const mod = holdCharLocalsAsUnits(
+    await lower(`
+function tests(s: string, i: number): number {
+  let n = 0;
+  if (s.charAt(i) === " ") n += 1;
+  if ("a" <= s.charAt(i) && s.charAt(i) < "n") n += 2;
+  if (s.charAt(i) === "ab") n += 4;
+  return n;
+}
+console.log(tests("a b", 1), tests("abc", 0), tests("", 2));
+`),
+  );
+  // The two-unit literal keeps its string comparison.
+  expect(reads(fn(mod, "tests"))).toEqual([
+    "charCodeAt",
+    "charCodeAt",
+    "charCodeAt",
+    "strEq",
+    "charAt",
+  ]);
+});

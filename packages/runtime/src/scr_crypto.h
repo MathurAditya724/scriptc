@@ -108,6 +108,9 @@ ScrDyn *scr_crypto_ecdh_convert_key(ScrDyn *key, ScrDyn *curve, ScrDyn *in_enc, 
  * Node's error pending. */
 ScrDyn *scr_crypto_dh_new(ScrDyn *size_or_key, ScrDyn *key_encoding, ScrDyn *generator, ScrDyn *generator_encoding);
 ScrDyn *scr_crypto_dh_group_new(ScrDyn *name);
+/* crypto.getCipherInfo(nameOrNid, options) (scr_cipher_info.c): the info
+ * object or undefined (+1), or NULL with Node's argument error pending. */
+ScrDyn *scr_crypto_get_cipher_info(ScrDyn *name_or_nid, ScrDyn *options);
 /* crypto.checkPrimeSync, checkPrime, generatePrimeSync and generatePrime
  * (scr_dh.c): checked-dynamic arguments, borrowed; the sync forms answer
  * +1 or NULL with the error pending. The callbacks receive undefined as
@@ -295,6 +298,9 @@ ScrDyn *scr_crypto_generate_key_pair_sync(ScrDyn *type, ScrDyn *options);
 void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *callback);
 ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key);
 ScrDyn *scr_crypto_verify_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature);
+/* crypto.diffieHellman(options[, callback]): the shared secret, or undefined
+ * with the callback, which receives it in a later macrotask. */
+ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback);
 ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm);
 ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm);
 bool scr_crypto_is_asymmetric_key(const ScrDyn *value);

@@ -39,6 +39,16 @@ The CROSS-target arm of node:zlib (see packages/runtime/src/scr_zlib.c): host bu
 
 The objects build lazily on the first zlib-using cross compile into the per-user build cache's `vendor/zlib-<version>-<flavor>-<target>-<toolchain>/` directory — one flavor per driver/target and compiler environment/identity (the lre-objects pattern). Zlib-free binaries never compile any of this; compressed OUTPUT bytes are zlib-version-dependent, which is why the corpus only compares round-trips and fixed-blob inflation.
 
+## brotli/
+
+- Project: https://github.com/google/brotli
+- Version: 1.2.0 (release tarball brotli-1.2.0.tar.gz, sha256 816c96e8e8f193b40151dad7e8ff37b1221d019dbcb9c35cd3fadbfe6477dfec), the version Node v24.22.0 bundles (`process.versions.brotli`)
+- License: MIT (see brotli/LICENSE)
+
+The codec behind node:zlib's Brotli functions and streams (see packages/runtime/src/scr_brotli.c). Only `c/common`, `c/dec`, `c/enc` and `c/include` are vendored, in upstream's layout (LICENSE beside `c/`); the C++ lazy static initializer (`c/enc/static_init_lazy.cc`), the tools, tests, bindings and build machinery are not. No vendored file is modified, and the files match the copy Node bundles in `deps/brotli`. Because the version is Node's, compressed bytes match Node's for the same parameters, so the corpus compares compressed output as well as round trips. To update, re-fetch the release tarball, copy the same directories, and bump `BROTLI_VERSION` in vendor-inputs.ts.
+
+The `dec/` and `enc/` directories share file names (`static_init.c`, `state.h`, `prefix.h`), so archive members are named after their directory (`dec-static_init.o`). Brotli-free binaries compile and link none of it.
+
 ## mbedtls/
 
 - Project: https://github.com/Mbed-TLS/mbedtls

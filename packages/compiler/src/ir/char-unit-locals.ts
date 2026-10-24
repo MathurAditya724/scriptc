@@ -31,7 +31,8 @@ const FLIPPED = { "<": ">", "<=": ">=", ">": "<", ">=": "<=" } as const;
  *
  * Only immutable unboxed string locals qualify, with one declaration whose
  * initializer is a one-argument charAt, and with no other mention of the
- * local.
+ * local. The same tests of `s.charAt(i)` in place compare
+ * `s.charCodeAt(i)`, so a loop version sees one kind of read.
  *
  * `s[i]` with an index not proven in bounds reads the character or
  * undefined (an optional read, see `optionalCharRead`). Its tests against
@@ -384,30 +385,20 @@ function rewriteFunction(fn: IrFunction): IrFunction {
       const use = unitUse(e);
       if (use && held.has(use.id)) {
         changed = true;
-        const code: IrExpr = { kind: "numLit", value: use.code, type: F64, loc: e.loc };
-        const c = unitRef(use.id, e.loc);
-        if (e.kind === "strEq")
-          return {
-            kind: "bin",
-            op: e.negated ? "!==" : "===",
-            left: c,
-            right: code,
-            type: BOOL,
-            loc: e.loc,
-          };
-        // The comparison with the local on the left.
-        const op = use.left ? e.op : FLIPPED[e.op];
-        if (op === ">" || op === ">=")
-          return { kind: "bin", op, left: c, right: code, type: BOOL, loc: e.loc };
-        const negation: IrExpr = {
-          kind: "bin",
-          op: op === "<" ? ">=" : ">",
-          left: c,
-          right: code,
-          type: BOOL,
-          loc: e.loc,
+        return charUnitTest(e, unitRef(use.id, e.loc), use.code, use.left);
+      }
+      // `s.charAt(i)` in place: its unit read, `s.charCodeAt(i)`.
+      const direct = charAtTest(e);
+      if (direct) {
+        changed = true;
+        const read: IrExpr = {
+          ...direct.charAt,
+          method: "charCodeAt",
+          receiver: rewriteExpr(direct.charAt.receiver),
+          args: direct.charAt.args.map(rewriteExpr),
+          type: F64,
         };
-        return { kind: "unary", op: "!", operand: negation, type: BOOL, loc: e.loc };
+        return charUnitTest(e, read, direct.code, direct.left);
       }
     }
     const optional = optionalUnitTest(e, operandTags);
@@ -534,6 +525,45 @@ function understoodMention(
   }
   const optional = optionalUnitTest(n as IrExpr, localTags);
   return optional?.operand.kind === "varRef" ? optional.operand.localId : null;
+}
+
+/** A one-unit test of a string that reads one character or "" (charAt),
+ * on its unit `unit`, which reads NaN for "": an equality, or an ordered
+ * comparison with the unit on the left when `unitLeft`. "" is below every
+ * one-unit literal, and NaN fails every ordered comparison, so `c < "x"`
+ * becomes `!(c >= 120)`. */
+function charUnitTest(e: UnitUse, unit: IrExpr, code: number, unitLeft: boolean): IrExpr {
+  const literal: IrExpr = { kind: "numLit", value: code, type: F64, loc: e.loc };
+  if (e.kind === "strEq")
+    return {
+      kind: "bin",
+      op: e.negated ? "!==" : "===",
+      left: unit,
+      right: literal,
+      type: BOOL,
+      loc: e.loc,
+    };
+  const op = unitLeft ? e.op : FLIPPED[e.op];
+  if (op === ">" || op === ">=")
+    return { kind: "bin", op, left: unit, right: literal, type: BOOL, loc: e.loc };
+  const negation: IrExpr = {
+    kind: "bin",
+    op: op === "<" ? ">=" : ">",
+    left: unit,
+    right: literal,
+    type: BOOL,
+    loc: e.loc,
+  };
+  return { kind: "unary", op: "!", operand: negation, type: BOOL, loc: e.loc };
+}
+
+/** A test between `s.charAt(i)` and a literal of one code unit. */
+function charAtTest(e: UnitUse): { charAt: CharAt; code: number; left: boolean } | null {
+  const literalRight = e.right.kind === "strLit";
+  const literal = literalRight ? e.right : e.left;
+  const other = literalRight ? e.left : e.right;
+  if (literal.kind !== "strLit" || literal.value.length !== 1 || !isCharAt(other)) return null;
+  return { charAt: other, code: literal.value.charCodeAt(0), left: literalRight };
 }
 
 function isCharAt(e: IrExpr): e is CharAt {

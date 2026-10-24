@@ -157,10 +157,12 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "classes[].errorNameAfter": "other",
   "classes[].prototypeDataHelper": "reference",
   "classes[].instancePrototypeHelper": "reference",
+  "classes[].stringTagHelper": "reference",
   "classes[].localCaptures[].name": "other",
   "classes[].localCaptures[].localId": "other",
   "classes[].symbolFields[].field": "other",
   "classes[].symbolFields[].globalId": "other",
+  "classes[].symbolFields[].wellKnown": "other",
   "classes[].fields[].name": "other",
   "classes[].methods[]": "method",
   "classes[].prototypeNames[]": "other",
@@ -172,6 +174,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "records[].fields[].name": "other",
   "records[].declaredOrder[]": "other",
   "records[].accessorOrder[]": "other",
+  "records[].orderVariants[][]": "other",
   "unions[].id": "other",
   "unions[].discriminant.field": "other",
   "unions[].discriminant.cases[].values[]": "other",
@@ -218,6 +221,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "wasmUntranslated[].sha256": "other",
   "wasmUntranslated[].reason": "other",
   "threadSlotKeys[]": "other",
+  "freezableArrays[]": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };
@@ -278,6 +282,10 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
   "classes[].instancePrototypeHelper": () => ({
     ...module(),
     classes: [{ name: "%m0.Cell", fields: [], instancePrototypeHelper: TARGET, loc }],
+  }),
+  "classes[].stringTagHelper": () => ({
+    ...module(),
+    classes: [{ name: "%m0.Cell", fields: [], stringTagHelper: TARGET, loc }],
   }),
   "lib.exports[].fnName": () => ({
     ...module(),
