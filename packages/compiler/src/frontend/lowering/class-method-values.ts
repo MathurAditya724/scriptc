@@ -383,12 +383,29 @@ function reflectedMethodValue(
   // base has a prototype object. Other uses of `super` keep the native
   // receiver.
   const superCalls = !staticMethod && info.base !== null && prototypeChainViewable(info.base);
+  // Over a dynamic receiver, private fields are brand-checked and read, and private methods
+  // brand-checked and called; a private accessor, or a private method read as a value, would become a
+  // lookup of its name.
+  const privateAccessors = new Set<string>();
+  const privateMethods = new Set<string>();
+  for (const other of declaration.members.nodes)
+    if (other.name !== undefined && ts.isPrivateIdentifier(other.name)) {
+      if (ts.isAccessor(other)) privateAccessors.add(other.name.text);
+      else if (ts.isMethodDeclaration(other)) privateMethods.add(other.name.text);
+    }
   ts.walkPreorder(member, (node) => {
     if (node.kind === ts.SyntaxKind.SuperKeyword && !(superCalls && isSuperMethodCallee(node)))
       needsNativeReceiver = true;
+    if (!ts.isPrivateIdentifier(node)) return;
     // Private members on a static method's receiver (the class value) keep
-    // the native receiver; prototype methods brand-check theirs.
-    if (staticMethod && ts.isPrivateIdentifier(node)) needsNativeReceiver = true;
+    // the native receiver; prototype methods brand-check theirs, except
+    // private accessors and private methods used other than by a call.
+    if (
+      staticMethod ||
+      privateAccessors.has(node.text) ||
+      (privateMethods.has(node.text) && !isPrivateMethodCallee(node))
+    )
+      needsNativeReceiver = true;
   });
   if (needsNativeReceiver) return null;
   // The method reads itself as a value inside its own body: it is the
@@ -477,6 +494,19 @@ function prototypeChainViewable(base: ClassInfo): boolean {
 }
 
 /** `super` as the receiver of a called member: `super.m(...)`. */
+/** Whether `node`, a private name, is the method a call calls (`x.#m(...)`). */
+function isPrivateMethodCallee(node: ts.Node): boolean {
+  const access = node.parent;
+  return (
+    access !== undefined &&
+    ts.isPropertyAccessExpression(access) &&
+    access.name === node &&
+    access.parent !== undefined &&
+    ts.isCallExpression(access.parent) &&
+    access.parent.expression === access
+  );
+}
+
 function isSuperMethodCallee(node: ts.Node): boolean {
   const access = node.parent;
   return (

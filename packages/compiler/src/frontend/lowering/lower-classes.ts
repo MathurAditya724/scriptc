@@ -9402,12 +9402,21 @@ export function lowerSuperMethodCall(
         type: DYN,
         loc,
       };
+      // Spread arguments are spread into the dynamic call, as in a dynamic method call.
+      const spreads: { arg: number; what: string }[] = [];
+      const args = call.arguments.nodes.map((arg, index) => {
+        if (!ts.isSpreadElement(arg)) return lowerer.lowerExprExpecting(arg, DYN);
+        const spelling = ts.getTextOfNode(arg.expression);
+        spreads.push({ arg: index, what: spelling });
+        return checkedIterableSpread(lowerer, lowerer.lowerExpr(arg.expression), spelling, loc);
+      });
       const value: IrExpr = {
         kind: "dynCall",
         callee,
         receiver: lowerer.coerceToExpected(thisRef, DYN),
         calleeName: ts.getTextOfNode(access),
-        args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        args,
+        ...(spreads.length > 0 ? { spreads } : {}),
         type: DYN,
         loc,
       };

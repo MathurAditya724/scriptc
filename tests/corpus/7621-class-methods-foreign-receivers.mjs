@@ -167,3 +167,52 @@ console.log(
   JSON.stringify(meshClone.geometry),
   typeof copyValue,
 );
+
+// Methods that use a private accessor or return a private method keep their own receiver, as values too.
+class Vault {
+  #v = 1;
+  get #value() {
+    return this.#v * 10;
+  }
+  set #value(x) {
+    this.#v = x;
+  }
+  #hidden() {
+    return "hidden " + this.#v;
+  }
+  read() {
+    return this.#value;
+  }
+  bump() {
+    this.#value = this.#v + 1;
+    return this.#v;
+  }
+  hiddenValue() {
+    return this.#hidden;
+  }
+}
+const vault = new Vault();
+const readVault = Vault.prototype.read;
+const bumpVault = Vault.prototype.bump;
+const hiddenOf = Vault.prototype.hiddenValue;
+console.log(readVault.call(vault), bumpVault.call(vault), readVault.call(vault), typeof hiddenOf.call(vault));
+console.log(hiddenOf.call(vault).call(vault));
+try {
+  readVault.call({});
+} catch (error) {
+  console.log(error.constructor.name);
+}
+
+// A method value whose body calls super with spread arguments.
+class Summer {
+  add(...xs) {
+    return xs.reduce((sum, x) => sum + x, 0);
+  }
+}
+class Doubler extends Summer {
+  add(...xs) {
+    return super.add(...xs) * 2;
+  }
+}
+const addValue = Doubler.prototype.add;
+console.log(addValue.call(new Doubler(), 1, 2, 3), addValue.apply(new Doubler(), [4, 5]));
