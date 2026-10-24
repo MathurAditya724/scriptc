@@ -229,7 +229,8 @@ function detectAutoPackages(
       } else if (mode === "lib" && !viaTransitive) {
         // CJS packages spell their dep edges as top-level requires; the
         // import-statement scan alone would miss every one of them.
-        for (const req of requiresOf(stmt)) edges.push({ spec: req.spec, loc: locOf(req.node) });
+        for (const req of requiresOf(stmt, load.program))
+          edges.push({ spec: req.spec, loc: locOf(req.node) });
       }
     }
     // Transitive selection counts every literal require() and import()

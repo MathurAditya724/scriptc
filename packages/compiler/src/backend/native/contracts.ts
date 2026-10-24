@@ -85,6 +85,9 @@ export interface CcOptions {
    * compares round-trips and fixed-blob inflation, never raw deflate
    * output. */
   zlib?: boolean;
+  /** The program uses node:zlib's Brotli forms (with zlib): compiles
+   * scr_brotli.c and links the vendored brotli archive. */
+  brotli?: boolean;
   /** The program uses node:assert (index.ts detects assert.* libCalls on
    * the IR): compiles scr_assert.c — the zlib gating precedent, so
    * assert-free binaries keep their exact size class. scr_regex.c calls

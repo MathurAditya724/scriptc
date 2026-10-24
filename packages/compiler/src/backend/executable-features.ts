@@ -21,6 +21,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     zlib: features.zlib,
+    ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,

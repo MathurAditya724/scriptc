@@ -1,4 +1,5 @@
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
+import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
 import { prepareExecutableModule } from "./executable/prepare.js";
 import {
@@ -600,6 +601,7 @@ async function compileExecutableNative(
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     zlib: features.zlib,
+    ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,
@@ -851,6 +853,7 @@ async function prepareExecutableInput(
         ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
         ...inlineRcOption(opts.optimization, opts.sanitize === true),
         ...(nodeIslandModuleData === undefined ? {} : { nodeIslandModuleData }),
+        ...targetCpuField(opts.targetCpu),
       });
     } catch (err) {
       if (!(err instanceof LlvmUnsupportedError)) throw err;
@@ -922,6 +925,7 @@ async function prepareExecutableInput(
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
       ...(nodeIslandModuleData === undefined ? {} : { nodeIslandModuleData }),
+      ...targetCpuField(opts.targetCpu),
     });
   } catch (err) {
     if (!(err instanceof LlvmUnsupportedError)) throw err;
@@ -1490,6 +1494,18 @@ async function compileTracked(
       }
     }
   }
+  const targetCpuRefusal = targetCpuTargetRefusal(
+    opts.targetCpu,
+    buildPlatform,
+    nativeCodegenTarget()?.architecture ?? process.arch,
+  );
+  if (targetCpuRefusal !== null) {
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag("SC3002", targetCpuRefusal, entryPath)],
+      sourceTexts: new Map(),
+    };
+  }
   try {
     windowsSubsystemLinkerArgs(buildPlatform, opts.windowsSubsystem);
   } catch (err) {
@@ -1547,6 +1563,7 @@ async function compileTracked(
       // Calls into Node record the libnode pack; their entries record its
       // identity (node-islands/libnode.ts) and a hit requires it unchanged.
       libnodeIdentity: () => libnodeCacheKey(opts.libnode),
+      ...targetCpuField(opts.targetCpu),
       ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),

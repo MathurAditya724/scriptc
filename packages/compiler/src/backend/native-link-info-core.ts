@@ -38,6 +38,8 @@ export interface NativeLinkFeatures {
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
   zlib: boolean;
+  /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
+  brotli?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;

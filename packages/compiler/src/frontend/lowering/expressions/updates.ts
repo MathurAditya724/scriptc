@@ -1,4 +1,9 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
+import {
+  indexedUnionArms,
+  lowerIndexedUnionNumberRead,
+  lowerIndexedUnionWrite,
+} from "../indexed-unions.js";
 import * as ts from "../../ts7/adapter.js";
 import {
   lowerOptionalIndex,
@@ -389,6 +394,39 @@ export function lowerIncDec(
         else_: [store(value)],
         loc,
       }));
+    }
+    // A union of typed arrays and number arrays (indexed-unions.ts): the
+    // element read as a number and the union's element write.
+    const indexedArms = indexedUnionArms(lowerer, raw.type);
+    if (
+      ts.isElementAccessExpression(access) &&
+      indexedArms &&
+      !isJsSourceFile(ts.getSourceFileOfNode(expr))
+    ) {
+      const receiver = save(raw, "%incrementArray");
+      const index = save(
+        lowerOptionalIndex(
+          lowerer,
+          lowerer.lowerExpr(access.argumentExpression),
+          locOf(access.argumentExpression),
+          access.argumentExpression,
+        ),
+        "%incrementIndex",
+      );
+      if (index.type.kind !== "f64")
+        lowerer.unsupported("SC1090", access, "incrementing non-number array keys");
+      return finish(
+        lowerIndexedUnionNumberRead(lowerer, receiver, indexedArms, index, loc),
+        (value) =>
+          lowerIndexedUnionWrite(
+            lowerer,
+            receiver,
+            indexedArms,
+            index,
+            lowerer.coerceInto(access, value, F64),
+            loc,
+          ),
+      );
     }
     // A TS member statically typed number on a checked-dynamic receiver (a
     // class-backed protocol view): the expanded form `o.v = o.v + 1`, its

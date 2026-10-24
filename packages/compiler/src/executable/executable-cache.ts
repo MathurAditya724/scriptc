@@ -18,6 +18,7 @@ import { compilerReleaseVersion } from "../library/sidecar.js";
 import { nativeArtifactDependenciesStillMatch } from "../backend/native/artifact-stamps.js";
 import { type NativeArtifactDependency } from "../backend/native/contracts.js";
 import { optimizationKeyParts } from "../backend/optimization.js";
+import { type TargetCpu, targetCpuKeyParts } from "../backend/target-cpu.js";
 import { privateSiblingPath } from "../backend/build-cache.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
@@ -63,6 +64,7 @@ export interface EarlyExecutableNativeFeatures {
   stdioExtended?: boolean;
   nodeIsland?: boolean;
   zlib: boolean;
+  brotli?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -149,6 +151,8 @@ export interface EarlyExecutableCacheOptions {
    * into Node records it, and a hit requires the same identity, so the pack
    * settings never change the key of a program that does not. */
   libnodeIdentity?: () => string | undefined;
+  /** Omitted for the x86-64 baseline (`--target-cpu`). */
+  targetCpu?: TargetCpu;
   /** Omitted without --profile-generate/--profile-use; otherwise the
    * pattern, or the digest of the profile's bytes. */
   profile?: string;
@@ -291,6 +295,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.strip ? ["strip"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...targetCpuKeyParts(options.targetCpu),
     ...(options.profile !== undefined ? [options.profile] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
@@ -333,6 +338,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.strip) hash.update("strip\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");

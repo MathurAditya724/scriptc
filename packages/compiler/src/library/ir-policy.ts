@@ -31,6 +31,7 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["zlib.cbOpts", "the async node:zlib callback surface"],
   ["zlib.promise", "the async node:zlib callback surface (util.promisify)"],
   ["zlib.stream", "the node:zlib stream classes"],
+  ["zlib.brotliInstall", "node:zlib's Brotli forms"],
   ["process.stdoutWriteBytesCb", "process.stdout.write completion callbacks"],
   ["process.stderrWriteBytesCb", "process.stderr.write completion callbacks"],
   ["timers.", "the timers surface (setTimeout family)"],

@@ -872,6 +872,10 @@ ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*r
 ScrDyn *scr_dyn_new_str(ScrStr *s);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
+/* Gives a builtin constructor value (Object, Array, Error) its builtin
+ * `prototype`: non-writable, non-enumerable, non-configurable. Takes the
+ * prototype. */
+void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
@@ -1330,6 +1334,11 @@ ScrDyn *scr_dyn_from_error(const ScrError *e);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
 void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len);
+/* An Error subclass view of an instance whose class keeps a property bag:
+ * `name` and `message` take their committed positions, and data values
+ * from the slots (scr_json.c). `name_placed`: the class's construction sets
+ * `name`, and the view already has it in place. */
+void scr_error_dyn_follow_bag(ScrDyn *view, const ScrDyn *bag, const ScrError *e, bool name_placed);
 /* An accessor property of a fresh object: enumerable and configurable,
  * with the given getter and setter (either may be NULL). Moves both. */
 void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter);
@@ -1384,11 +1393,25 @@ ScrDyn *scr_dyn_invoke_buffer_to_string(ScrDyn *recv, ScrDyn *callee, const char
 ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* A %TypedArray%.prototype method called on a checked typed array (not a
+ * DataView): its answer (+1, or NULL with the exception pending), with
+ * *handled false for a name it does not implement. */
+ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, bool *handled);
+/* A plain object's Symbol.iterator method (+1), read once; NULL when it
+ * has none, or with the exception pending from its getter. */
+ScrDyn *scr_dyn_iterator_method(const ScrDyn *value);
+/* The values the iterator `method` gives for `source` (+1), or NULL with
+ * the exception pending. */
+ScrDyn *scr_dyn_iterate_with(const ScrDyn *source, ScrDyn *method);
 /* Keyed read on a FUNC node: the own-property table first (defineProperties
  * writes land there), then "name" (the box's best-effort static name; ""
  * for anonymous) and "length" (the boxed arity). Returns +1, or NULL when
  * the key answers nothing (the caller's undefined). Never throws. */
 ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len);
+/* A function value's own property table, created on first use. +1. */
+ScrDyn *scr_dyn_function_properties(const ScrDyn *function);
+/* The table a function value already has. +1, or NULL. */
+ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
 /* Object.defineProperties over dyn values (targets: OBJ and FUNC): each
  * descriptor's `value` becomes an own data property. OBJ targets preserve
  * writable/enumerable/configurable; FUNC targets still use plain properties.
@@ -1596,6 +1619,12 @@ typedef struct ScrDynHandleOps {
   /* Past the depth limit util.inspect prints `[cls]` (the class's
    * inspector returns `this`) instead of the bare class name. */
   bool inspect_bracketed_past_depth;
+  /* The class's inspector formats its view with a new util.inspect call
+   * (URL's does): the view renders from the top level with the caller's
+   * depth, and its lines take the caller's indentation. Past the depth
+   * limit the inspector returns the instance, which has no own
+   * properties, so util.inspect prints `cls {}`. */
+  bool inspect_view_nested;
   /* The @@toStringTag when it differs from cls: String() answers
    * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`, or
    * `<tag> <view>` when the tag ends with "." and cls, as Node does. */
