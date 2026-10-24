@@ -110,10 +110,9 @@ describe("LLVM runtime RC symbols", () => {
     expect(releaseSym(host, { kind: "union", unionId: "u0" } as never)).toBe(
       "@sc_rc_release_union",
     );
-    // Array retains inline; array releases stay calls.
     const array = { kind: "array", elem: { kind: "string" } } as never;
     expect(retainSym(host, array)).toBe("@sc_rc_retain_arr");
-    expect(releaseSym(host, array)).toBe("@scr_arr_release");
+    expect(releaseSym(host, array)).toBe("@sc_rc_release_arr");
     expect(retainSym(host, { kind: "dyn" })).toBe("@sc_rc_retain_dyn");
     expect(releaseSym(host, { kind: "dyn" })).toBe("@sc_rc_release_dyn");
     // Unmirrored families and caught snapshots keep their runtime entry points.
@@ -125,6 +124,7 @@ describe("LLVM runtime RC symbols", () => {
     expect(declarations).toContain("declare void @scr_str_release(ptr)");
     expect(declarations).toContain("declare void @scr_cyc_on_release(ptr)");
     expect(inlineRcDecls(host).sort()).toEqual([
+      "declare void @scr_arr_release(ptr)",
       "declare void @scr_cyc_on_release(ptr)",
       "declare void @scr_dyn_release(ptr)",
       "declare void @scr_dyn_release_survivor(ptr)",
