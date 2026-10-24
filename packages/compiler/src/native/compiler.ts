@@ -65,6 +65,7 @@ import {
 import { splitLlvmLibraryProgram } from "../backend/llvm/split.js";
 import { prepareNativeExecutable, prepareNativeLibrary } from "./prepare.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
+import { lldLinkerArgs } from "../backend/lld.js";
 import { openNativeExecutableCache } from "./executable-cache.js";
 import { nativeFileIdentity } from "./file-identity.js";
 
@@ -494,8 +495,11 @@ export class NativeCompiler {
             : { windowsSubsystem: options.windowsSubsystem }),
           ...(profile?.generate === undefined ? {} : { profileGenerate: true }),
         });
+        // Linux links with lld when the driver finds it.
+        const lld = options.sanitize ? [] : lldLinkerArgs(target.platform, toolchain.linker);
         const linkArgs = [
           ...(options.sanitize ? ["-fsanitize=address"] : toolchain.linkerArgs),
+          ...lld,
           ...plan.driverFlags,
           ...plan.inputs,
           ...plan.systemLibraries.map((name) => `-l${name}`),
@@ -506,8 +510,20 @@ export class NativeCompiler {
         timing("link-inputs");
         // A successful dependency trace already produced this executable.
         // Keep its verified output instead of asking the linker to repeat it.
-        if (!cacheable)
-          runNativeTool(options.sanitize ? sanitizerDriver(toolchain) : toolchain.linker, linkArgs);
+        if (!cacheable) {
+          const driver = options.sanitize ? sanitizerDriver(toolchain) : toolchain.linker;
+          try {
+            runNativeTool(driver, linkArgs);
+          } catch (error) {
+            // A failed link with lld runs again with the driver's default
+            // linker, whose error (if any) is the one reported.
+            if (lld.length === 0) throw error;
+            runNativeTool(
+              driver,
+              linkArgs.filter((arg) => !lld.includes(arg)),
+            );
+          }
+        }
         timing("native-link");
         requireNativeArtifact(stagedOutput);
         if (target.platform === "darwin" && optimization === "dev" && !options.strip) {
