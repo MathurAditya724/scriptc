@@ -150,7 +150,11 @@ import { InternalCompilerError } from "../../errors.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
-import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
+import {
+  ClassDynamicDispatch,
+  boxClassInstancesExactly,
+  trackClassFieldCreation,
+} from "./class-dynamic-dispatch.js";
 import { guardClassAttributeWrites } from "./class-attributes.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
@@ -7767,6 +7771,7 @@ export class Lowerer {
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
     trackClassFieldCreation(this, functions);
+    boxClassInstancesExactly(this, functions);
     guardClassAttributeWrites(this, functions);
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
