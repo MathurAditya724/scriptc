@@ -191,13 +191,6 @@ static double dyn_index_arg(ScrDyn *const *args, size_t argc, size_t i, double d
   return isnan(number) ? 0 : trunc(number);
 }
 
-static double dyn_bytes_index_arg(ScrDyn *const *args, size_t argc, size_t index, double fallback) {
-  if (index >= argc || args[index]->kind == SCR_DYN_UNDEF) return fallback;
-  double value;
-  if (!scr_dyn_number_coerce_js(args[index], &value)) return 0;
-  return isnan(value) ? 0 : trunc(value);
-}
-
 /* JS relative-index normalization (slice's rule). */
 static size_t dyn_rel_index(double rel, size_t len) {
   if (rel < 0) {
@@ -716,7 +709,8 @@ static bool dyn_bytes_proto_real(int m) {
   case DYN_M_every: case DYN_M_find: case DYN_M_findIndex: case DYN_M_reverse: case DYN_M_fill:
   case DYN_M_set: case DYN_M_subarray: case DYN_M_sort: case DYN_M_keys: case DYN_M_values:
   case DYN_M_entries: case DYN_M_reduce: case DYN_M_reduceRight: case DYN_M_copyWithin:
-  case DYN_M_toString: case DYN_M_toLocaleString:
+  case DYN_M_toString: case DYN_M_toLocaleString: case DYN_M_findLast: case DYN_M_findLastIndex:
+  case DYN_M_toReversed: case DYN_M_toSorted: case DYN_M_with:
     return true;
   default:
     return false;
@@ -740,6 +734,8 @@ static ScrDyn *dyn_live_array_method(ScrDyn *recv, int mid, ScrDyn *const *args,
   if (!ops) return NULL;
   ScrArr *arr = recv->v.typed_ref.ptr;
   size_t len = arr->len;
+  /* A frozen array's view refuses the write. */
+  if (scr_arr_frozen(arr) && ((mid == DYN_M_push) || (mid == DYN_M_pop))) return NULL;
   if ((mid == DYN_M_push) && argc == 1 && ops->set) {
     if (!ops->set(arr, (double)len, args[0])) return NULL;
     *handled = true;
@@ -879,6 +875,20 @@ static ScrDyn *scr_dyn_invoke_impl(
       scr_dyn_release(date_method);
       return result;
     }
+    /* A method of a bag-tracked class instance that its view holds as an
+     * ordinary data property, own or inherited: the call the view's
+     * dispatch below makes, without building the view. */
+    size_t method_len = strlen(method);
+    ScrDyn *inherited = scr_dyn_typed_ref_bag_method(recv, method, method_len);
+    if (scr_exc_pending()) return NULL;
+    if (inherited && scr_dyn_is_callable(inherited)) {
+      scr_dyn_this_push_dyn(recv);
+      ScrDyn *result = scr_dyn_call(inherited, args, argc, what);
+      scr_dyn_this_pop();
+      scr_dyn_release(inherited);
+      return result;
+    }
+    scr_dyn_release(inherited);
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
     if (scr_exc_pending()) {
       scr_dyn_release(materialized);
@@ -1098,16 +1108,20 @@ static ScrDyn *scr_dyn_invoke_impl(
           return NULL;
         }
       }
-      if (recv->v.arr.frozen && ((mid == DYN_M_push) ||
-          (mid == DYN_M_pop) || (mid == DYN_M_shift) ||
-          (mid == DYN_M_unshift) || (mid == DYN_M_splice))) {
-        static const char message[] = "Cannot assign to read only property 'length'";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      /* A frozen array throws at the operation's first write, as in Node. */
+      int frozen_op = !recv->v.arr.frozen ? -1
+          : (mid == DYN_M_push) ? 1
+          : (mid == DYN_M_pop) ? 2
+          : (mid == DYN_M_shift) ? 6
+          : (mid == DYN_M_unshift) ? 4
+          : (mid == DYN_M_splice) ? 10
+          : ((mid == DYN_M_sort) || (mid == DYN_M_reverse)) ? 7
+          : -1;
+      double items = (mid == DYN_M_splice) ? (argc > 2 ? (double)(argc - 2) : 0) : (double)argc;
+      if (frozen_op >= 0 &&
+          scr_array_frozen_error(frozen_op, len, (double)splice_start, frozen_op == 10 ? (double)splice_removed : items, items))
         return NULL;
-      }
-      if ((grows && recv->non_extensible) || (shrinks && recv->v.arr.sealed && !(mid == DYN_M_shift)) ||
-          (recv->v.arr.frozen && (((mid == DYN_M_sort) && len > 1) ||
-            ((mid == DYN_M_reverse) && len > 1)))) {
+      if ((grows && recv->non_extensible) || (shrinks && recv->v.arr.sealed && !(mid == DYN_M_shift))) {
         static const char message[] = "Cannot modify a sealed or frozen array";
         scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
         return NULL;
@@ -1376,11 +1390,7 @@ static ScrDyn *scr_dyn_invoke_impl(
       if (!dyn_arr_length_unchanged(recv, len)) return NULL;
       size_t start = dyn_rel_index(startD, len);
       size_t end = dyn_rel_index(endD, len);
-      if (recv->v.arr.frozen && start < end) {
-        static const char message[] = "Cannot assign to read only array index";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-        return NULL;
-      }
+      if (recv->v.arr.frozen && scr_array_frozen_error(8, len, (double)start, (double)end, 0)) return NULL;
       ScrDyn *fill = argc ? args[0] : scr_dyn_undefined();
       if (start < end) scr_dyn_region_store(recv, fill);
       for (size_t i = start; i < end; i++) {
@@ -1409,11 +1419,8 @@ static ScrDyn *scr_dyn_invoke_impl(
       size_t end = dyn_rel_index(endD, len);
       size_t count = end > start ? end - start : 0;
       if (count > len - target) count = len - target;
-      if (recv->v.arr.frozen && count > 0) {
-        static const char message[] = "Cannot assign to read only array index";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      if (recv->v.arr.frozen && scr_array_frozen_error(9, len, (double)target, (double)start, (double)end))
         return NULL;
-      }
       if (start < target && target < start + count) {
         for (size_t i = count; i > 0; i--) {
           ScrDyn *old = recv->v.arr.items[target + i - 1];
@@ -1647,78 +1654,9 @@ static ScrDyn *scr_dyn_invoke_impl(
       dyn_throw_not_fn(what);
       return NULL;
     }
-    size_t blen = bytes->len;
-    if ((mid == DYN_M_at)) {
-      double iD = dyn_bytes_index_arg(args, argc, 0, 0);
-      if (scr_exc_pending()) return NULL;
-      double idx = iD < 0 ? (double)blen + iD : iD;
-      if (idx < 0 || idx >= (double)blen) return scr_dyn_retain(scr_dyn_undefined());
-      return scr_dyn_new_num(scr_bytes_get(bytes, idx));
-    }
-    if ((mid == DYN_M_slice) || (mid == DYN_M_subarray)) {
-      /* subarray and Buffer.slice alias their source. TypedArray.slice
-       * owns an independent copy; all keep the receiver's Buffer flavor. */
-      double startD = dyn_bytes_index_arg(args, argc, 0, 0);
-      if (scr_exc_pending()) return NULL;
-      double endD = dyn_bytes_index_arg(args, argc, 1, (double)blen);
-      if (scr_exc_pending()) return NULL;
-      ScrBytes *out = recv->buffer || (mid == DYN_M_subarray)
-        ? scr_bytes_subarray(bytes, startD, endD) : scr_bytes_slice(bytes, startD, endD);
-      ScrDyn *d = recv->buffer ? scr_dyn_new_buffer(out) : scr_dyn_new_bytes(out);
-      scr_bytes_release(out);
-      return d;
-    }
-    if ((mid == DYN_M_set)) {
-      double offset = dyn_bytes_index_arg(args, argc, 1, 0);
-      if (scr_exc_pending()) return NULL;
-      scr_bytes_set_from_dyn(bytes, argc ? args[0] : scr_dyn_undefined(), offset);
-      return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
-    }
-    if ((mid == DYN_M_copyWithin)) {
-      double target = dyn_bytes_index_arg(args, argc, 0, 0);
-      if (scr_exc_pending()) return NULL;
-      double start = dyn_bytes_index_arg(args, argc, 1, 0);
-      if (scr_exc_pending()) return NULL;
-      double end = dyn_bytes_index_arg(args, argc, 2, (double)blen);
-      if (scr_exc_pending()) return NULL;
-      scr_bytes_release(scr_bytes_copy_within(bytes, target, start, end));
-      return scr_dyn_retain(recv);
-    }
-    if ((mid == DYN_M_fill) && !recv->buffer) {
-      double value;
-      if (!scr_dyn_number_coerce_js(argc ? args[0] : scr_dyn_undefined(), &value)) return NULL;
-      double start = dyn_bytes_index_arg(args, argc, 1, 0);
-      if (scr_exc_pending()) return NULL;
-      double end = dyn_bytes_index_arg(args, argc, 2, (double)blen);
-      if (scr_exc_pending()) return NULL;
-      scr_bytes_release(scr_bytes_fill_elem(bytes, value, start, end));
-      return scr_dyn_retain(recv);
-    }
-    if ((mid == DYN_M_join) || ((mid == DYN_M_toString) && !recv->buffer)) {
-      ScrStr *separator = (mid == DYN_M_join) && argc && args[0]->kind != SCR_DYN_UNDEF
-        ? scr_dyn_string_coerce_js(args[0]) : scr_str_new(",", 1);
-      if (scr_exc_pending()) { scr_str_release(separator); return NULL; }
-      ScrStr *joined = scr_bytes_join(bytes, separator);
-      scr_str_release(separator);
-      ScrDyn *out = scr_dyn_new_str(joined);
-      scr_str_release(joined);
-      return out;
-    }
-    if (!recv->buffer &&
-        ((mid == DYN_M_indexOf) || (mid == DYN_M_lastIndexOf) || (mid == DYN_M_includes))) {
-      /* TypedArray search: strict equality (includes: SameValueZero), so a
-       * needle that is not a number matches nothing; fromIndex counts as
-       * given whenever it is passed, undefined included. */
-      double from = 0;
-      if (argc > 1) {
-        if (!scr_dyn_number_coerce_js(args[1], &from)) return NULL;
-      }
-      bool includes = mid == DYN_M_includes;
-      double found = argc > 0 && args[0]->kind == SCR_DYN_NUM
-        ? scr_bytes_ta_index_of(bytes, args[0]->v.num, from, argc > 1, mid != DYN_M_lastIndexOf, includes)
-        : -1;
-      return includes ? scr_dyn_new_bool(found >= 0) : scr_dyn_new_num(found);
-    }
+    bool handled;
+    ScrDyn *answer = scr_dyn_bytes_method(recv, method, args, argc, &handled);
+    if (handled) return answer;
     if (dyn_bytes_proto_real(mid)) {
       dyn_throw_unsupported(scr_bytes_elem_name(bytes->elem), method);
       return NULL;
@@ -1973,7 +1911,7 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
 
 static ScrDyn *dyn_global_ctor(const char *name) {
   for (size_t i = 0; i < DYN_GLOBAL_CTORS; i++) {
-    if (strcmp(dyn_global_ctor_names[i], name) != 0) continue;
+    if (dyn_global_ctor_names[i][0] != name[0] || strcmp(dyn_global_ctor_names[i], name) != 0) continue;
     if (!dyn_global_ctors_registered) {
       dyn_global_ctors_registered = true;
       scr_atexit(dyn_global_ctors_cleanup);

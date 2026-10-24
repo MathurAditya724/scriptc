@@ -13,6 +13,7 @@ import { emitStringInputs } from "./string-lifetimes.js";
 import { emitStringParts, numberPart, stringParts } from "./string-construction.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import {
+  alwaysExactInteger,
   exactInteger,
   int32Number,
   integerNumber,
@@ -45,6 +46,16 @@ import {
   type ArrayAccess,
 } from "./dense-array-access.js";
 import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
+
+/** The signed integer predicates of the number compares. */
+const INTEGER_COMPARES: Record<string, string> = {
+  "<": "slt",
+  "<=": "sle",
+  ">": "sgt",
+  ">=": "sge",
+  "===": "eq",
+  "!==": "ne",
+};
 
 export function emitLiteralExpr(
   host: LlvmEmitterContext,
@@ -318,15 +329,7 @@ export function emitOperatorExpr(
             if (integer) return integer;
           }
           if (cmp[e.op] !== undefined) {
-            const integerCmp: Record<string, string> = {
-              "<": "slt",
-              "<=": "sle",
-              ">": "sgt",
-              ">=": "sge",
-              "===": "eq",
-              "!==": "ne",
-            };
-            B.line(`${t} = icmp ${integerCmp[e.op]} i64 ${left}, ${right}`);
+            B.line(`${t} = icmp ${INTEGER_COMPARES[e.op]} i64 ${left}, ${right}`);
             return { name: t, type: e.type };
           }
         }
@@ -356,7 +359,17 @@ export function emitOperatorExpr(
             if (wideInteger) value.wideInteger = wideInteger;
             return value;
           }
-        } else B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
+        } else {
+          // An operand with only a wide view, such as `i + 1` of a speculated
+          // counter: compare the integers when both always equal the doubles.
+          const left = alwaysExactInteger(host, l, li),
+            right = left === null ? null : alwaysExactInteger(host, r, ri);
+          if (left !== null && right !== null) {
+            B.line(`${t} = icmp ${INTEGER_COMPARES[e.op]} i64 ${left}, ${right}`);
+            return { name: t, type: e.type };
+          }
+          B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
+        }
       } else if (bit[e.op] !== undefined) {
         if (e.left.type.kind !== "f64" || e.right.type.kind !== "f64") {
           throw new LlvmUnsupportedError(
@@ -1076,9 +1089,10 @@ export function emitContainerExpr(
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayState on non-array");
+      const proven = host.provenDenseIndex(e.arr, e.index);
       const t = host.checkedInt32Array(e.arr)
         ? host.emitByElementKind(arr.name, "double", (kind) =>
-            emitDenseArrayState(host, arr.name, idx, e.index, "state", slotWidth(kind)),
+            emitDenseArrayState(host, arr.name, idx, e.index, "state", slotWidth(kind), proven),
           )!
         : emitDenseArrayState(
             host,
@@ -1087,6 +1101,7 @@ export function emitContainerExpr(
             e.index,
             "state",
             host.int32Array(e.arr) ? slotWidth("i32") : denseSlotWidth(host, e.arr.type.elem),
+            proven,
           );
       return { name: t, type: e.type };
     }

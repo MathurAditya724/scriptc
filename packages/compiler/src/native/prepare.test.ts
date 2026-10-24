@@ -176,7 +176,9 @@ test("serialized IR travels as bounded parts through the frontend cache", () => 
   const key = readdirSync(family).find((name) => /^[0-9a-f]{64}$/.test(name))!;
   const payload = JSON.parse(readFileSync(join(family, key), "utf8"));
   expect(payload.schema).toBe("scriptc.native-frontend.v3");
-  expect(payload.input.llvm).toBe("");
+  // The placeholders keep NativeExecutableInput's member types: the native
+  // compiler checks the parsed entry against them when it reads it back.
+  expect(payload.input.llvm).toEqual([]);
   expect(payload.input.ir).toBeNull();
   expect(payload.llvm).toBe(first.llvm.join(""));
   expect(payload.ir).toEqual(first.ir);
