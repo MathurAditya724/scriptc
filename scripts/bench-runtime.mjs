@@ -40,6 +40,8 @@ const { values } = parseArgs({
     layouts: { type: "string", default: "1" },
     "baseline-optimization": { type: "string", default: "release" },
     "candidate-optimization": { type: "string", default: "release" },
+    "baseline-target-cpu": { type: "string" },
+    "candidate-target-cpu": { type: "string" },
     json: { type: "string" },
     "no-lock": { type: "boolean", default: false },
     node: { type: "boolean", default: true },
@@ -51,6 +53,7 @@ if (values.help) {
   console.log(`Usage: node scripts/bench-runtime.mjs [--candidate=<checkout>] [--baseline=<checkout>]
        [--workloads=a,b] [--runs=15] [--warmup=2] [--timeout=120] [--layouts=1] [--json=<file>]
        [--baseline-optimization=release] [--candidate-optimization=release]
+       [--baseline-target-cpu=<level>] [--candidate-target-cpu=<level>]
        [--no-lock] [--no-node] [--keep]
 
 Each checkout must have a built CLI (packages/cli/dist/bootstrap.js) and native
@@ -69,7 +72,10 @@ Workload names are the file names in benchmarks/runtime/workloads/*.json; for ex
 --baseline-optimization/--candidate-optimization pick each contender's
 --optimization posture (default release). The same checkout may be both
 contenders, e.g. --baseline=. --candidate-optimization=speed compares speed with
-release. cold_build_ms records each contender's first, uncached build.`);
+release. --baseline-target-cpu/--candidate-target-cpu pass --target-cpu to each
+contender's builds, e.g. --baseline=. --candidate-target-cpu=x86-64-v3 compares
+x86-64-v3 code with the baseline. cold_build_ms records each contender's first,
+uncached build.`);
   process.exit(0);
 }
 const runs = Number(values.runs);
@@ -428,7 +434,7 @@ function revision(root) {
   });
   return r.stdout.trim() + (dirty.stdout.trim() ? "+dirty" : "");
 }
-function build(label, root, workload, layout, optimization) {
+function build(label, root, workload, layout, optimization, targetCpu) {
   const cli = cliFor(root);
   const out = join(work, label, layout === 0 ? workload.name : `${workload.name}.layout${layout}`);
   mkdirSync(dirname(out), { recursive: true });
@@ -444,7 +450,15 @@ function build(label, root, workload, layout, optimization) {
   const entry = join(suiteRoot, workload.entry);
   const result = run(
     process.execPath,
-    [cli, "build", entry, `--optimization=${optimization}`, "-o", out],
+    [
+      cli,
+      "build",
+      entry,
+      `--optimization=${optimization}`,
+      ...(targetCpu === undefined ? [] : [`--target-cpu=${targetCpu}`]),
+      "-o",
+      out,
+    ],
     {
       env,
       timeout: 900_000,
@@ -467,6 +481,7 @@ const contenders = [
           label: "baseline",
           root: resolve(values.baseline),
           optimization: values["baseline-optimization"],
+          targetCpu: values["baseline-target-cpu"],
         },
       ]
     : []),
@@ -474,6 +489,7 @@ const contenders = [
     label: "candidate",
     root: resolve(values.candidate),
     optimization: values["candidate-optimization"],
+    targetCpu: values["candidate-target-cpu"],
   },
 ];
 const report = {
@@ -580,7 +596,7 @@ try {
       entry.results[c.label] = result;
       result.binaries = [];
       for (let layout = 0; layout < layouts && result.status === undefined; layout++) {
-        const built = build(c.label, c.root, w, layout, c.optimization);
+        const built = build(c.label, c.root, w, layout, c.optimization, c.targetCpu);
         result.build_ms += Math.round(built.buildMs);
         if (layout === 0) result.cold_build_ms = Math.round(built.buildMs);
         if (!built.ok) {

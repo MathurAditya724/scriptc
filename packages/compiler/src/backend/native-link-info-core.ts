@@ -35,6 +35,8 @@ export interface NativeLinkFeatures {
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
   zlib: boolean;
+  /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
+  brotli?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -81,6 +83,9 @@ export interface NativeLinkFeatures {
   dnsPromises: boolean;
   /** dgram sockets as untyped values: scr_dgram_dyn.c. */
   dgramDyn: boolean;
+  /** TextEncoder and TextDecoder records as untyped values:
+   * scr_text_codec_dyn.c. */
+  textCodecDyn: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;

@@ -17,6 +17,7 @@ import { PoisonError, dynFallbackType } from "./lowerer.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
 import type { FnCtx } from "./function-context.js";
+import { returnsGuessedOverloadValue } from "./overload-choice.js";
 
 /** Keep the conservative completion rule shared by return construction
  * and inference. Nested control flow may still make completion unreachable. */
@@ -252,6 +253,22 @@ export function declaredReturnType(
     mappedReturn.kind !== "dyn" &&
     !(mappedReturn.kind === "promise" && mappedReturn.inner.kind === "dyn") &&
     returnsOpenJsBinding(lowerer, decl)
+  )
+    return decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
+  // A JS function returning a value whose type rests on an undecided
+  // overload (guessedOverloadValue): the inferred result is the first
+  // overload's, which the returned value need not have.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !decl.type &&
+    !decl.asteriskToken &&
+    !hasExplicitJsDocReturn(decl) &&
+    mappedReturn !== null &&
+    mappedReturn.kind !== "dyn" &&
+    !(mappedReturn.kind === "promise" && mappedReturn.inner.kind === "dyn") &&
+    returnsGuessedOverloadValue(lowerer, decl)
   )
     return decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
       ? { kind: "promise", inner: DYN }
