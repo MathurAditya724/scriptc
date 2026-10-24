@@ -1485,6 +1485,10 @@ export interface IrClassDef {
   jsName?: string;
   /** JavaScript constructor arity, ending before the first default or rest parameter. */
   jsLength?: number;
+  /** The class declares public static fields. util.inspect prints them
+   * after the class tag; a class object reached through `unknown` does
+   * not carry them unless the runtime holds its static table. */
+  ownStaticFields?: true;
   /** Zero-argument native helper returning the shared prototype data object.
    * Used when materializing an instance's own-property view. */
   prototypeDataHelper?: string;

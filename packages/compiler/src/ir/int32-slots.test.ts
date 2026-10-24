@@ -281,6 +281,7 @@ test("dynamic stores disqualify the field names they can reach", () => {
     "dyn.typeof",
     "insp.dyn",
     "insp.dynS",
+    "insp.dynHidden",
     "dyn.objCreate",
     "dyn.getPrototype",
     "dyn.nameClassPrototype",
