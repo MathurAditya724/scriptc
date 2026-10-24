@@ -491,10 +491,7 @@ export function emitOptionalChainReceiver(
   // needs no reference of its own while the body cannot remove an edge
   // (so nothing can overwrite the projection before the body finishes).
   const borrowReceiver =
-    !multiple &&
-    isRefCounted(narrowed) &&
-    host.canBorrowReceiver(e.receiver) &&
-    host.referenceEffects.preserves(e.body);
+    !multiple && isRefCounted(narrowed) && borrowsChainReceiver(host, e.receiver, e.body);
   // An optional array read of a nullable-pointer union is the element
   // pointer itself, read inline and owned by the statement frame until
   // the body finishes; the bind slot borrows it like an emitExpr value.
@@ -554,6 +551,16 @@ export function emitOptionalChainReceiver(
   };
 }
 
+/** An optional chain's receiver can lend its payload to the bind slot when
+ * the body leaves the receiver's locations alone: it removes no edge at
+ * all, or it writes none of the locations the receiver reads. */
+function borrowsChainReceiver(host: LlvmEmitterContext, receiver: IrExpr, body: IrExpr): boolean {
+  if (!host.canBorrowReceiver(receiver)) return false;
+  if (host.referenceEffects.preserves(body)) return true;
+  const writes = host.referenceWrites;
+  return writes !== null && host.unwrittenRead(receiver, writes.expr(body));
+}
+
 /** `a?.b ?? d` narrowed to the chain body's present arm. The body wraps a
  * value of the result type in a non-unit arm, so the default runs exactly
  * when the receiver is nullish and the intermediate result box is never
@@ -580,16 +587,21 @@ function emitNullishOptionalChain(host: LlvmEmitterContext, e: ExprOf<"nullish">
   if (unitTags.length === 0 || present.length !== 1) return null;
   const B = host.B;
   const narrowed = receiverDef.arms[present[0]!]!;
-  const r = host.canStackReceiver(chain.receiver)
-    ? host.emitReadReceiver(chain.receiver)
-    : host.emitExpr(chain.receiver);
+  // A receiver read from a location the body cannot write lends its
+  // payload to the bind slot for the whole body (`table[k]?.(…) ?? d`).
+  const borrowed =
+    isRefCounted(narrowed) && borrowsChainReceiver(host, chain.receiver, chain.body.value);
+  const r =
+    borrowed || host.canStackReceiver(chain.receiver)
+      ? host.emitReadReceiver(chain.receiver)
+      : host.emitExpr(chain.receiver);
   const bindTy = host.llType(narrowed);
   const bind = B.slot();
   B.entryAllocas.push(`${bind} = alloca ${bindTy}`);
   B.line(
     `store ${bindTy} ${bindTy === "ptr" ? "null" : bindTy === "double" ? f64Lit(0) : "false"}, ptr ${bind}`,
   );
-  host.ownSlot(bind, narrowed);
+  if (!borrowed) host.ownSlot(bind, narrowed);
   const isUnit = host.tagInSet(r.name, receiverDef.id, unitTags);
   const ty = host.llType(e.type);
   const slot = B.slot();
@@ -602,7 +614,10 @@ function emitNullishOptionalChain(host: LlvmEmitterContext, e: ExprOf<"nullish">
   host.emitBranchInto(slot, e.right);
   B.br(lj);
   B.startBlock(lb);
-  B.line(`store ${bindTy} ${host.unionExtract(r.name, receiverDef.id, narrowed)}, ptr ${bind}`);
+  const payload = borrowed
+    ? host.unionPeek(r.name, receiverDef.id)
+    : host.unionExtract(r.name, receiverDef.id, narrowed);
+  B.line(`store ${bindTy} ${payload}, ptr ${bind}`);
   host.chainSlots.set(chain.id, { name: bind, type: narrowed, slot: true });
   host.emitBranchInto(slot, chain.body.value);
   host.chainSlots.delete(chain.id);
