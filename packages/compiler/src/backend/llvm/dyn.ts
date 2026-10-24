@@ -66,6 +66,25 @@ import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js
 import type { WalkerHost } from "./walkers.js";
 import type { LlStreamTypedRefAdapter } from "./expr-context.js";
 
+/** typeKey with `?` after every `(T | undefined)[]` (optionalElements),
+ * at any depth of arrays, Maps, Sets and promises: checked conversions to
+ * `number[][]` and `(number | undefined)[][]` need separate helpers, though
+ * the two types share a typeKey. */
+function checkedConversionKey(t: IrType): string {
+  switch (t.kind) {
+    case "array":
+      return `array<${checkedConversionKey(t.elem)}>${t.optionalElements ? "?" : ""}`;
+    case "map":
+      return `map<${checkedConversionKey(t.key)},${checkedConversionKey(t.value)}>`;
+    case "set":
+      return `set<${checkedConversionKey(t.elem)}>`;
+    case "promise":
+      return `promise<${checkedConversionKey(t.inner)}>`;
+    default:
+      return typeKey(t);
+  }
+}
+
 /** Whether to-dyn of a record shape keeps the record itself: an empty shape
  * and an event-listener record (a `handleEvent` function field) box their
  * identity. Every other shape, tuples included, copies its fields into a
@@ -1060,7 +1079,7 @@ export class LlDyn {
 
   /** `sc_dm_<n>(ptr d) -> i1` — does this dyn fit T? Never throws. */
   dynMatchHelper(t: IrType, preserveRefs = false): string {
-    const key = typeKey(t);
+    const key = checkedConversionKey(t);
     const matcherKey = preserveRefs ? `identity:${key}` : key;
     const existing = this.dynMatchers.get(matcherKey);
     if (existing) return existing;
@@ -1375,7 +1394,7 @@ export class LlDyn {
         B.startBlock(l0);
         const n = this.lenOf(B, "%d");
         const items = this.itemsOf(B, "%d");
-        this.i64Loop(B, "dm.el", n, (i, brNext) => {
+        this.i64Loop(B, "dm.el", n, (i, brNext, next) => {
           this.host.declare(`declare zeroext i1 @scr_dyn_arr_has_index(ptr, ${this.S})`);
           const present = B.tmp();
           B.line(`${present} = call zeroext i1 @scr_dyn_arr_has_index(ptr %d, ${this.S} ${i})`);
@@ -1386,6 +1405,15 @@ export class LlDyn {
           brNext();
           B.startBlock(valueLabel);
           const e = this.itemAt(B, items, i);
+          if (t.optionalElements) {
+            // A `(T | undefined)[]` stored as T elements takes undefined
+            // elements as well.
+            const undef = B.tmp();
+            const checkLabel = B.newLabel("dm.check");
+            B.line(`${undef} = icmp eq i32 ${this.kindOf(B, e)}, ${DYN_KIND.UNDEF}`);
+            B.condBr(undef, next, checkLabel);
+            B.startBlock(checkLabel);
+          }
           const ok = B.tmp();
           B.line(`${ok} = call zeroext i1 @${m}(ptr ${e})`);
           const lOk = B.newLabel("dm.eo");
@@ -1798,7 +1826,7 @@ export class LlDyn {
    * TypeError and return a dummy with the pending flag set. */
   dynCheckHelper(t: IrType, preserveRefs = false): string {
     // A `(T | undefined)[]` stored as T elements also takes undefined ones.
-    const key = t.kind === "array" && t.optionalElements ? `${typeKey(t)}?` : typeKey(t);
+    const key = checkedConversionKey(t);
     const builderKey = preserveRefs ? `identity:${key}` : key;
     const existing = this.dynBuilders.get(builderKey);
     if (existing) return existing;

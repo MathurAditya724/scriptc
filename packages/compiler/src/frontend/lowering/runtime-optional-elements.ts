@@ -31,6 +31,9 @@ export interface ElementStateHost {
   /** Element keys of the rest parameter that the spread arguments of
    * `call` fill: `[]` when the callee has none, null when it is unknown. */
   restKeys(call: ts.CallExpression | ts.NewExpression): readonly string[] | null;
+  /** The argument index where the callee's rest parameter starts, or null
+   * when the callee has none or is unknown. */
+  restStart?(call: ts.CallExpression | ts.NewExpression): number | null;
   /** Record that iterating `node`'s binding can observe `undefined`;
    * `known` when the iterated array's own facts (not only those shared by
    * its element ABI) say so. Returns true when the binding's record grew. */
@@ -518,14 +521,26 @@ export class ArrayElementStates {
   private scanCall(node: ts.CallExpression | ts.NewExpression): boolean {
     let changed = false;
     const args = node.arguments?.nodes ?? [];
-    // Spreading a sparse array into a rest parameter fills the holes.
+    // Spreading a sparse array, or a tuple with undefined elements, into a
+    // rest parameter fills the holes.
     if (args.some((arg) => ts.isSpreadElement(arg))) {
       for (const arg of args) {
-        if (!ts.isSpreadElement(arg) || !this.mayYieldUndefined(arg.expression)) continue;
+        if (!ts.isSpreadElement(arg) || !this.valueMayBeUndefined(arg)) continue;
         const rest = this.host.restKeys(node) ?? this.host.arrayKeys(arg.expression);
         if (this.addUndefined(rest)) changed = true;
       }
     }
+    // An argument in a rest position that may be undefined is a present
+    // undefined element of the rest array.
+    const restStart = this.host.restStart?.(node) ?? null;
+    if (restStart !== null)
+      for (const arg of args.slice(restStart))
+        if (
+          !ts.isSpreadElement(arg) &&
+          this.host.mayBeUndefined(arg) &&
+          this.addUndefined(this.host.restKeys(node))
+        )
+          changed = true;
     if (this.record(node)) changed = true;
     const callee = peel(node.expression);
     if (!ts.isPropertyAccessExpression(callee)) return changed;

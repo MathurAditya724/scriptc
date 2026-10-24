@@ -2471,14 +2471,21 @@ function optionalArmIndexRead(
     return null;
   if (unionArrayValueRead(lowerer, value, key, loc) === null) return null;
   const stmts: IrStmt[] = [];
-  const stable = (e: IrExpr, name: string): IrExpr => {
-    if (e.kind === "varRef" || e.kind === "numLit") return e;
+  const stable = (e: IrExpr, name: string, keep: boolean): IrExpr => {
+    if (keep) return e;
     const local = lowerer.declareHiddenLocal(name, e.type);
     stmts.push({ kind: "varDecl", localId: local.id, init: e, loc });
     return varRef(local.id, e.type, loc);
   };
-  const receiver = stable(value, "%indexReceiver");
-  const index = stable(key, "%indexKey");
+  // A receiver local stays a direct read only when the key cannot assign
+  // it (`a[(a = other, 0)]` reads the array `a` held before the key).
+  const plainKey = key.kind === "varRef" || key.kind === "numLit";
+  const receiver = stable(
+    value,
+    "%indexReceiver",
+    value.kind === "numLit" || (value.kind === "varRef" && plainKey),
+  );
+  const index = stable(key, "%indexKey", plainKey);
   const read = unionArrayValueRead(lowerer, receiver, index, loc)!;
   return stmts.length === 0 ? read : { kind: "seqExpr", stmts, result: read, type: read.type, loc };
 }

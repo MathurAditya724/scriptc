@@ -6546,8 +6546,20 @@ export class Lowerer {
       },
       iterationMayYieldUndefined: (node) => {
         const type = typeOrNull(node);
-        if (type === null || this.checker.isArrayType(type) || this.checker.isTupleType(type))
-          return false;
+        if (type === null || this.checker.isArrayType(type)) return false;
+        // A tuple yields its elements, in order.
+        if (this.checker.isTupleType(type))
+          return panicSafe(
+            () =>
+              this.checker
+                .getTypeArguments(type as ts.TypeReference)
+                .some((element) =>
+                  (element.isUnionType() ? ts.constituentTypes(element) : [element]).some(
+                    (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
+                  ),
+                ),
+            true,
+          );
         // The first type argument of Set<T>, Map and Set iterators,
         // generators and iterables is the value they yield.
         const element =
@@ -6600,6 +6612,14 @@ export class Lowerer {
         if (!sig) return ts.isPropertyAccessExpression(callee) ? [] : null;
         const rest = sig.params.find((shape) => shape.mode === "rest");
         return rest?.type.kind === "array" ? [typeKey(rest.type.elem)] : [];
+      },
+      restStart: (call) => {
+        const callee = peel(call.expression);
+        if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
+        const symbol = callableSymbolOf(callee);
+        const sig = symbol ? signatureBySymbol.get(symbol) : undefined;
+        const at = sig ? sig.params.findIndex((shape) => shape.mode === "rest") : -1;
+        return at >= 0 ? at : null;
       },
       markIterationBinding: (node, known) => {
         const symbol = symbolOf(node);

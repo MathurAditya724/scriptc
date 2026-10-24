@@ -28,7 +28,7 @@ import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { type ParamShape } from "./call-signatures.js";
 import { arrayValueRead, arrayValueType } from "./array-values.js";
 import { buildArrayConversion } from "./coercions/builders.js";
-import { lowerArraySpreadItems } from "./containers/array-construction.js";
+import { lowerArraySpreadItems, lowerArrayValueItems } from "./containers/array-construction.js";
 import { restTupleElementTypes, typeKey } from "../type-mapper.js";
 
 function fixedTupleSpreadInfo(
@@ -410,6 +410,30 @@ export function completeArgs(
     if (restType.optionalElements === true && !restNodes.some(isIr)) {
       out.push(
         lowerArraySpreadItems(lowerer, restNodes as ts.Expression[], restType.elem, restType, loc),
+      );
+      return out;
+    }
+    // Tuple-spread values (pre-lowered) and plain arguments pack the same
+    // way. Each value evaluates once, in argument order.
+    if (
+      restType.optionalElements === true &&
+      !restNodes.some((a) => !isIr(a) && ts.isSpreadElement(a))
+    ) {
+      const stmts: IrStmt[] = [];
+      const values = restNodes.map((a): IrExpr => {
+        if (isIr(a)) {
+          if (a.ir.kind !== "seqExpr") return a.ir;
+          stmts.push(...a.ir.stmts);
+          return a.ir.result;
+        }
+        const value = lowerer.lowerExpr(a as ts.Expression);
+        const saved = lowerer.declareHiddenLocal("%callArg", value.type);
+        stmts.push({ kind: "varDecl", localId: saved.id, init: value, loc: value.loc });
+        return { kind: "varRef", localId: saved.id, type: value.type, loc: value.loc };
+      });
+      const items = lowerArrayValueItems(lowerer, values, restType.elem, restType, loc);
+      out.push(
+        stmts.length === 0 ? items : { kind: "seqExpr", stmts, result: items, type: restType, loc },
       );
       return out;
     }
