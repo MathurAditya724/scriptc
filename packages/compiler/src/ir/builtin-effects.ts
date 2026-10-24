@@ -209,6 +209,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "async.awaitDyn",
   "als.run",
   "als.exitRun",
+  "als.newOptions",
+  "als.bindCallbackDyn",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
@@ -1031,6 +1033,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairCb",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.diffieHellman",
   "crypto.createSign",
   "crypto.createVerify",
 ]);

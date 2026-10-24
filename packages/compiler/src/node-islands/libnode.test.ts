@@ -160,8 +160,20 @@ describe("the recorded libnode pack", () => {
 });
 
 describe("the libnode pack identity a cached build keeps", () => {
+  // A workspace build of the target's @scriptc/libnode-<platform> that
+  // resolves next to the compiler (CI assembles one) is installed for every
+  // project, so without a pack in the project the identity names it.
+  const nextToCompiler = findInstalledLibnodePack({
+    targetName: libnodeTarget({}),
+    projectDir: "/nonexistent",
+  });
+  const withoutProjectPack = (key: string | undefined): void => {
+    if (nextToCompiler === null) expect(key).toBeUndefined();
+    else expect(key).toContain(`|${nextToCompiler}|`);
+  };
+
   test("is absent when no pack is named or installed", () => {
-    expect(libnodeCacheKey(undefined, {}, "/nonexistent")).toBeUndefined();
+    withoutProjectPack(libnodeCacheKey(undefined, {}, "/nonexistent"));
   });
 
   test("names the installed pack, and changes with it", () => {
@@ -176,7 +188,7 @@ describe("the libnode pack identity a cached build keeps", () => {
     writeFileSync(join(installed, "manifest.json"), JSON.stringify({ nodeVersion: "24.23.0" }));
     expect(libnodeCacheKey(undefined, {}, project)).not.toBe(before);
     rmSync(installed, { recursive: true, force: true });
-    expect(libnodeCacheKey(undefined, {}, project)).toBeUndefined();
+    withoutProjectPack(libnodeCacheKey(undefined, {}, project));
   });
 
   test("changes when the pack in the same directory is upgraded", () => {

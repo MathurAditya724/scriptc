@@ -14,11 +14,12 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, test } from "vitest";
 import { compile, deserializeModule } from "@scriptc/compiler";
@@ -161,8 +162,18 @@ describe.skipIf(skip)("Node islands in-process", () => {
   }, 300_000);
 
   test("the executable carries its island modules and no path of the build machine", async () => {
-    const bytes = readFileSync(binary);
-    expect(bytes.includes(Buffer.from(repoRoot))).toBe(false);
+    const bytes = readFileSync(binary).toString("latin1");
+    // The program and its island modules ship inside the executable, so
+    // the directory they were built from appears nowhere in it.
+    expect(bytes.includes(dirname(fixture))).toBe(false);
+    // Nor does any other path of the checkout, except the pack directory
+    // the executable loads libnode from (which CI may place in the
+    // checkout), and in a sanitized build the runtime sources that the
+    // sanitizers' reports name.
+    if (!sanitize) {
+      const outsidePack = [pack!, realpathSync(pack!)].reduce((b, p) => b.replaceAll(p, ""), bytes);
+      expect(outsidePack.includes(repoRoot)).toBe(false);
+    }
     // A copy elsewhere runs with the modules it carries, extracted into a
     // private cache directory named by the manifest's digest.
     const moved = join(outDir, "moved");

@@ -1971,7 +1971,7 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
 
 static ScrDyn *dyn_global_ctor(const char *name) {
   for (size_t i = 0; i < DYN_GLOBAL_CTORS; i++) {
-    if (strcmp(dyn_global_ctor_names[i], name) != 0) continue;
+    if (dyn_global_ctor_names[i][0] != name[0] || strcmp(dyn_global_ctor_names[i], name) != 0) continue;
     if (!dyn_global_ctors_registered) {
       dyn_global_ctors_registered = true;
       scr_atexit(dyn_global_ctors_cleanup);
