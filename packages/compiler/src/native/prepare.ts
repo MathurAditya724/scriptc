@@ -2,6 +2,7 @@ import { targetCpuField, targetCpuTargetRefusal } from "../backend/target-cpu.js
 import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { CompilationTiming } from "../timing.js";
 import { readFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
   CompileFailure,
@@ -546,10 +547,12 @@ export function prepareNativeLibrary(
   return input;
 }
 
-/** Worker processes that emit function bodies at a time
- * (SCRIPTC_EMIT_WORKERS; 0 or 1 emits in this process). */
+/** Worker processes that emit function bodies at a time: up to eight, one
+ * per available core (SCRIPTC_EMIT_WORKERS sets the count; 0 or 1 emits in
+ * this process). */
 function emitWorkers(): number {
-  const value = Number(process.env["SCRIPTC_EMIT_WORKERS"] ?? "4");
+  const configured = process.env["SCRIPTC_EMIT_WORKERS"];
+  const value = configured === undefined ? Math.min(8, availableParallelism()) : Number(configured);
   return Number.isFinite(value) && value > 1 ? Math.floor(value) : 1;
 }
 
