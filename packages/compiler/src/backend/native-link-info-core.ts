@@ -49,6 +49,7 @@ export interface NativeLinkFeatures {
   /** Own properties JavaScript adds to children: scr_dyn_handle_props.c.
    * Absent (false) for programs without them. */
   handleProps?: boolean;
+  declAdopt?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
@@ -80,6 +81,9 @@ export interface NativeLinkFeatures {
   dnsPromises: boolean;
   /** dgram sockets as untyped values: scr_dgram_dyn.c. */
   dgramDyn: boolean;
+  /** TextEncoder and TextDecoder records as untyped values:
+   * scr_text_codec_dyn.c. */
+  textCodecDyn: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;

@@ -1,4 +1,5 @@
 import { keyedHelperName } from "./stable-names.js";
+import { perKeyOrder } from "./key-order-witness.js";
 import {
   dynUndefinedExpr,
   boolLit,
@@ -13,7 +14,7 @@ import { InternalCompilerError } from "../../errors.js";
 
 import * as ts from "../ts7/adapter.js";
 import { unsignedHex } from "../../format-integer.js";
-import type { Lowerer } from "./lowerer.js";
+import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
 import {
   BOOL,
@@ -40,6 +41,7 @@ import {
   isDynTypedRefType,
   recordTextCodecClass,
   shapeHasAccessorSlots,
+  shapeKeyOrders,
   typeKey,
 } from "../../ir/ir.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -977,8 +979,8 @@ function withInspectUnwind(
 
 /** Whether inspecting a `t` value can end in an inspection refusal: `t`
  * or a type reachable from it is a checked-dynamic value, a generator, a
- * Dirent row or a class instance, which can render through a
- * checked-dynamic view. */
+ * Dirent row or a class instance, or a record or array that can keep
+ * undeclared properties, which can render through a checked-dynamic view. */
 function inspectMayRefuse(lowerer: Lowerer, t: IrType): boolean {
   const seen = new Set<string>();
   const walk = (u: IrType): boolean => {
@@ -986,7 +988,12 @@ function inspectMayRefuse(lowerer: Lowerer, t: IrType): boolean {
     if (u.kind === "record") {
       const shape = lowerer.shapes.get(u.shapeId);
       if (shape && isDirentShape(shape)) return true;
+      // The kept source properties render through the checked view (the
+      // helper's source gate).
+      if (recordMayKeepSource(lowerer, u)) return true;
     }
+    // So do an array's properties besides its elements.
+    if (u.kind === "array" && lowerer.dynConvertible(u)) return true;
     // A class instance can render through its checked-dynamic view, which
     // a helper built earlier may only learn at the end of lowering
     // (classInspectsAddedProperties).
@@ -1753,7 +1760,12 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
           });
         }
         body.push(depthGate("[Object]"), ...begin());
-        for (const fname of order) {
+        // One walk per key order (see perKeyOrder).
+        const orders = shapeKeyOrders(current);
+        const walks = orders.map((): IrStmt[] => []);
+        for (const [k, fname] of orders.flatMap((order, k) =>
+          order.map((name) => [k, name] as const),
+        )) {
           const ft = byName.get(fname);
           if (!ft) continue;
           const show = entry(
@@ -1761,12 +1773,13 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             boolLit(false, loc),
           );
           const present = lowerer.recordFieldPresent(v(), t.shapeId, fname, loc);
-          body.push(
+          walks[k]!.push(
             present.kind === "recordHas"
               ? { kind: "if", cond: present, then: [show], else_: null, loc }
               : show,
           );
         }
+        body.push(...perKeyOrder(current, v(), walks, loc));
         body.push(
           ret(end(strLit("", loc), strLit("{", loc), strLit("}", loc), false, boolLit(false, loc))),
         );
@@ -2529,6 +2542,12 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
   }
   const decl = sym.declarations[0];
   if (!decl) return null;
+  // A JavaScript function can hold own properties (`f.x = 1`, computed
+  // keys), which the runtime walk prints after its name.
+  if (isJsSourceFile(node.getSourceFile())) {
+    const type = lowerer.mapTypeOf(lowerer.typeOf(node));
+    if (type?.kind === "func" && lowerer.dynConvertible(type)) return null;
+  }
   if (ts.isFunctionDeclaration(decl) && decl.name) {
     return strLit(`[Function: ${decl.name.text}]`, loc);
   }
@@ -2589,7 +2608,17 @@ export function lowerInspectValue(
       loc,
     );
   }
-  const value = lowerer.lowerExpr(valueNode);
+  let value = lowerer.lowerExpr(valueNode);
+  // A JavaScript function renders through the runtime walk, which prints
+  // its own properties after its name.
+  if (
+    value.type.kind === "func" &&
+    isJsSourceFile(valueNode.getSourceFile()) &&
+    lowerer.dynConvertible(value.type)
+  ) {
+    const name = jsFuncNameOf(valueNode);
+    value = { kind: "dynFrom", value, type: DYN, ...(name !== null ? { fnName: name } : {}), loc };
+  }
   if (value.type.kind === "bytes") {
     // One runtime representation serves Buffer AND Uint8Array; their
     // renderings differ (<Buffer aa> vs Uint8Array(1) [ 170 ]), so the

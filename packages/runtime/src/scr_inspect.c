@@ -1608,18 +1608,19 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
     scr_dyn_release(table);
     return tag;
   }
-  if (recurse > depth) {
-    scr_dyn_release(table);
-    scr_str_release(tag);
-    return scr_str_new("[Function]", 10);
-  }
   /* A function already on the traversal stack renders as [Circular *N],
-   * keyed by the closure every box of the function shares. */
+   * keyed by the closure every box of the function shares, even past the
+   * depth limit. */
   double circular = scr_insp_circ_check(owner);
   if (circular > 0) {
     scr_dyn_release(table);
     scr_str_release(tag);
     return scr_insp_circular(circular);
+  }
+  if (recurse > depth) {
+    scr_dyn_release(table);
+    scr_str_release(tag);
+    return scr_str_new("[Function]", 10);
   }
   char *prefix = malloc(tag->len + 1);
   if (!prefix) scr_trap("scriptc: out of memory\n");

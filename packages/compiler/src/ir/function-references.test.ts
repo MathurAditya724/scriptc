@@ -172,6 +172,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "records[].fields[].name": "other",
   "records[].declaredOrder[]": "other",
   "records[].accessorOrder[]": "other",
+  "records[].orderVariants[][]": "other",
   "unions[].id": "other",
   "unions[].discriminant.field": "other",
   "unions[].discriminant.cases[].values[]": "other",
@@ -218,6 +219,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "wasmUntranslated[].sha256": "other",
   "wasmUntranslated[].reason": "other",
   "threadSlotKeys[]": "other",
+  "freezableArrays[]": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };

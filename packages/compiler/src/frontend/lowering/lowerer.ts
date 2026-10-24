@@ -1,3 +1,4 @@
+import { isDeclBoundaryFile } from "../decl-projection.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { moduleNamespaceObject } from "./module-namespace-elements.js";
 import { keyedHelperName } from "./stable-names.js";
@@ -30,6 +31,7 @@ import {
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
+import { bindCompletionCallbacks } from "./completion-callbacks.js";
 import { isJsonRequireDecl, type JsonRequireModule } from "./json-require.js";
 import {
   checkRequireBindingAccesses,
@@ -149,7 +151,9 @@ import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optio
 import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
 import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
 import { guardClassAttributeWrites } from "./class-attributes.js";
+import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
+import { installBufferValue } from "./containers/bytes.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
@@ -495,7 +499,7 @@ import { lowerBuiltinExtraProperty } from "./builtins/properties.js";
 import { registerPromisifiedBuiltinDecl } from "./builtins/callable-aliases.js";
 import { lowerExecFileAsyncCall } from "./builtins/child-process-async.js";
 import { lowerStringDecoderMethodCall, lowerTextCodecCall } from "./builtins/text-codecs.js";
-import { lowerReadlineMethodCall } from "./builtins/readline.js";
+import { isOptionalReadlineCursorRead, lowerReadlineMethodCall } from "./builtins/readline.js";
 import {
   lowerDiagnosticsChannelMethodCall,
   lowerDiagnosticsChannelProperty,
@@ -557,6 +561,7 @@ import {
   lowerStaticReadableStreamCancelCall,
   lowerStaticReadableStreamControllerCall,
   lowerStaticReadableStreamNew,
+  lowerStaticTransformStreamNew,
   lowerStaticReadableStreamReaderCall,
   lowerStaticResponseCall,
   lowerStdlibMethodCall,
@@ -2336,6 +2341,10 @@ export class Lowerer {
   readonly runtimeOptionalFields = new Set<string>();
   /** Bindings initialized by a Date's `toJSON()` (analyzeDateJsonResults). */
   readonly dateJsonBindings = new Set<ts.Symbol>();
+  /** isTimeValueDateDeclaration's answers, and the locals that hold a
+   * Date's time value instead of a Date object (date-values.ts). */
+  readonly timeValueDateDecisions = new Map<ts.Node, boolean>();
+  readonly timeValueDateLocals = new Set<IrLocal>();
   /** Record bindings whose flow class reaches storage outside the class:
    * they keep the declared layout, so an initializer from unchecked reads
    * converts once instead of the binding adopting the widened variant. */
@@ -2411,6 +2420,51 @@ export class Lowerer {
       }
     }
     return fallback ?? null;
+  }
+
+  /** A fresh TypeScript data literal (`{ message: "m" }`) passed to a
+   * checked-dynamic parameter of a callee implemented in JavaScript, whose
+   * contract lets it reshape the object: a call through an untyped value, an
+   * untyped parameter of a JavaScript function, or a package-declared
+   * parameter type (a non-library `.d.ts`) that makes one of the literal's
+   * properties optional (zod's `normalizeParams` deletes `params.message`).
+   * No typed alias of a fresh literal exists, so it is built as the plain
+   * object the callee receives instead of a view whose record layout refuses
+   * that delete. Standard-library and TypeScript callees, and literals with
+   * methods or accessors, keep their native storage. */
+  private reshapeableContextualLiteral(
+    literal: ts.ObjectLiteralExpression,
+    contextual: readonly ts.Type[],
+  ): boolean {
+    const call = literal.parent;
+    if (
+      call === undefined ||
+      !(ts.isCallExpression(call) || ts.isNewExpression(call)) ||
+      !call.arguments?.nodes.includes(literal) ||
+      literal.properties.nodes.length === 0 ||
+      !literal.properties.nodes.every(
+        (prop) =>
+          (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
+          (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)),
+      )
+    )
+      return false;
+    const declaration = this.checker.getResolvedSignature(call)?.declaration;
+    const file = declaration ? ts.getSourceFileOfNode(declaration) : undefined;
+    const untyped = contextual.some((part) => part.flags & ts.TypeFlags.Any);
+    if (file === undefined) return untyped;
+    if (isJsSourceFile(file)) return untyped;
+    if (!file.isDeclarationFile || this.isStdlibFile(file)) return false;
+    if (untyped) return true;
+    const objects = contextual.filter((part) => part.flags & ts.TypeFlags.Object);
+    if (objects.length === 0) return false;
+    return literal.properties.nodes.some((prop) => {
+      const name = (prop.name as ts.Identifier | ts.StringLiteral).text;
+      return objects.every((part) => {
+        const symbol = this.checker.getPropertyOfType(part, name);
+        return symbol !== undefined && (symbol.flags & ts.SymbolFlags.Optional) !== 0;
+      });
+    });
   }
 
   /** A TypeScript object literal handed to a JavaScript checked-value
@@ -2889,6 +2943,10 @@ export class Lowerer {
    * checks resolve through this map (stdlibGlobalNameOf), declarations
    * emit nothing. */
   readonly stdlibGlobalAliases = new Map<ts.Symbol, string>();
+  /** The stdlibGlobalAliases bound through a cast of the global object
+   * (`(globalThis as { Buffer?: B }).Buffer`). Their static type is the
+   * cast's, so their value reads are refused (identifiers.ts). */
+  readonly castGlobalAliases = new Set<ts.Symbol>();
   /** CJS export-table ACCESSORS (`module.exports = { get path() {...} }`),
    * lifted lazily as module-level functions and interned per accessor
    * declaration: member reads call the getter (lower-exprs). */
@@ -2975,6 +3033,23 @@ export class Lowerer {
   /** Named method slots observed before class collection need a callable
    * ABI and shared prototype descriptors instead of call-site specialization. */
   readonly prototypeMethodAccesses = new Map<string, ts.Node>();
+  /** Every site the census found for a name in prototypeMethodAccesses (which
+   * keeps one): reads of the method and writes that may replace it. The
+   * key-order witness asks which replacements can return records. */
+  readonly methodAccessSites = new Map<string, ts.Node[]>();
+
+  /** Marks `name` as a method the program may read or replace at `site`. */
+  noteMethodAccess(name: string, site: ts.Node): void {
+    this.prototypeMethodAccesses.set(name, site);
+    this.noteMethodSite(name, site);
+  }
+
+  /** Records a site for `name` without changing its prototypeMethodAccesses entry. */
+  noteMethodSite(name: string, site: ts.Node): void {
+    const sites = this.methodAccessSites.get(name);
+    if (sites === undefined) this.methodAccessSites.set(name, [site]);
+    else sites.push(site);
+  }
   /** Whether the program reads `Error.prototype`, the checked-dynamic
    * object an ES5 constructor function can inherit from, or has a class
    * whose heritage is evaluated at run time (`extends (Base ?? Error)`):
@@ -3195,6 +3270,12 @@ export class Lowerer {
   // Stack of function contexts (bottom = the function being declared at
   // top level, top = the innermost nested function currently lowering).
   fnStack: FnCtx[] = [];
+  /** Source ranges of record writes in sloppy-mode code, and of the
+   * absent-state writes of `delete r.f` (markSloppyRecordWrites). */
+  readonly sloppyRecordWrites = new Set<string>();
+  readonly recordFieldDeletes = new Set<string>();
+  /** typeKeys of the array types the program may freeze (IrModule.freezableArrays). */
+  readonly freezableArrays = new Set<string>();
   readonly liftedFns: IrFunction[] = [];
   /** The first lifted function of each name (liftedFnNamed), for the
    * liftedFns indexed so far. liftedFns only grows. */
@@ -3207,6 +3288,11 @@ export class Lowerer {
    * dispatch revision needs no weak-key identity or process-global state. */
   errorMethodDispatchRevision: string | null = null;
   errorPropertyDispatchRevision: string | null = null;
+  /** The program defines properties by reflection on an untyped or
+   * Error-shaped target, so an own accessor may replace an error's `name`
+   * or `message`: typed reads and writes of those slots check for one.
+   * Holds the first such call's location. */
+  errorAccessorReflection: SrcLoc | null = null;
   /** Structural source positions (structural-positions.ts) for names that
    * stay the same when unrelated code moves. */
   /** Files are named by their path relative to the entry's directory, so
@@ -3589,6 +3675,21 @@ export class Lowerer {
     else if (kind === "failed") s.failed += 1;
   }
 
+  /** The program holds the declaration-typed boundary's projection
+   * (decl-projection.ts): user-file record and array values crossing into
+   * dynamic slots (package parameters) box as live capsules, so a value
+   * that comes back through a boundary cast keeps its identity. */
+  private declBoundaryMemo: boolean | null = null;
+  get declBoundary(): boolean {
+    this.declBoundaryMemo ??= this.program
+      .getSourceFiles()
+      .some((sf) => isDeclBoundaryFile(sf.fileName));
+    return this.declBoundaryMemo;
+  }
+  /** Tracked classes' bag initializers over a typed `this`
+   * (class-dynamic-dispatch.ts recordBagInitializers). */
+  readonly classBagInitializers = new Map<string, IrExpr>();
+
   constructor(
     readonly program: ts.Program,
     readonly entry: ts.SourceFile,
@@ -3711,8 +3812,11 @@ export class Lowerer {
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
       isStdlibFile: this.isStdlibFile,
       isNpmFile: this.isNpmFile,
+      // The declaration-typed boundary's generated types (decl-projection.ts)
+      // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: (sf) =>
-        this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))),
+        this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))) ||
+        isDeclBoundaryFile(sf.fileName),
       typeMemo: this.typeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
@@ -4142,7 +4246,7 @@ export class Lowerer {
     // exact mappings, while star exports resolve to the mapped declaration
     // owner through externalTypeSpecifiersByFile.
     const moduleSymbol = this.checker.getSymbolAtLocation(sf);
-    const exported = moduleSymbol?.getExports().get(exportName as ts.__String);
+    const exported = moduleSymbol?.getExports().get(ts.escapedSymbolName(exportName));
     return this.externalTypeSpecifierOfSymbol(exported, seenSymbols, seenExports);
   }
 
@@ -4285,7 +4389,7 @@ export class Lowerer {
   cjsModuleExportSymbol(sf: ts.SourceFile, name: string): ts.Symbol | undefined {
     const moduleSym = this.checker.getSymbolAtLocation(sf);
     const exports = moduleSym?.getExports();
-    const direct = exports?.get(name as ts.__String);
+    const direct = exports?.get(ts.escapedSymbolName(name));
     if (direct) return direct;
     // tsgo represents `module.exports = { ... }` as one `export=` symbol
     // and does not duplicate the object literal's properties into the
@@ -5486,6 +5590,7 @@ export class Lowerer {
       if (isIndexedRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isRecordIndexPropertyRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
+      if (ts.isPropertyAccessExpression(e) && isOptionalReadlineCursorRead(this, e)) return true;
       if (isOptionalProcessVersionsRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isSettledIteratorValueRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOsConstantsSymbol(symbolOf(e.expression), this))
@@ -7628,7 +7733,9 @@ export class Lowerer {
     finalizePrivateBrands(this, functions);
     trackClassFieldCreation(this, functions);
     guardClassAttributeWrites(this, functions);
+    guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
+    installBufferValue(functions);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the
@@ -7732,14 +7839,19 @@ export class Lowerer {
             entry: ENTRY_NAME,
             ...(this.usesWorkers ? { workers: true } : {}),
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
+            ...(this.declBoundary ? { declBoundary: true as const } : {}),
             ...(this.threadSlotKeys.size > 0
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
+              : {}),
+            ...(this.freezableArrays.size > 0
+              ? { freezableArrays: [...this.freezableArrays].sort() }
               : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     if (module) checkCycleBindingAccesses(this, module);
+    if (module) bindCompletionCallbacks(module);
     // Execution tiers from the final bodies (ir/tiers.ts). Assigned with or
     // without a module: coverage reports the dynamic tier of programs that
     // still have blockers.
@@ -10607,6 +10719,46 @@ export class Lowerer {
     return this.coerceInto(node, value, expected);
   }
 
+  /** The right side of a write to a member of a typed view of the global
+   * object (`(globalThis as typeof globalThis & { k?: T }).k = value`, also
+   * through `??=` and `||=`) that is `value` itself or wraps only it in
+   * parentheses or `satisfies`; null when `value` is not in such a write. */
+  private globalViewSlot(value: ts.Expression): ts.Expression | null {
+    let operand: ts.Expression = value;
+    while (
+      operand.parent !== undefined &&
+      (ts.isParenthesizedExpression(operand.parent) || ts.isSatisfiesExpression(operand.parent))
+    )
+      operand = operand.parent;
+    const write = operand.parent;
+    if (
+      write === undefined ||
+      !ts.isBinaryExpression(write) ||
+      write.right !== operand ||
+      (write.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+        write.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionEqualsToken &&
+        write.operatorToken.kind !== ts.SyntaxKind.BarBarEqualsToken)
+    )
+      return null;
+    let target = write.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target))
+      return null;
+    const receiver = this.typeOf(target.expression);
+    const isGlobal = (type: ts.Type): boolean => {
+      const symbol = type.getSymbol();
+      return (
+        symbol !== undefined &&
+        ts.symbolName(symbol) === "globalThis" &&
+        symbol.declarations.length === 0
+      );
+    };
+    return isGlobal(receiver) ||
+      (receiver.isIntersectionType() && ts.constituentTypes(receiver).some(isGlobal))
+      ? operand
+      : null;
+  }
+
   /** Lower for a known destination, then apply ordinary value coercion.
    * Fresh arrays and records use the destination layout directly. */
   lowerExprExpecting(node: ts.Expression, expected: IrType | undefined): IrExpr {
@@ -10674,6 +10826,21 @@ export class Lowerer {
           (element) => !ts.isSpreadElement(element) && !ts.isOmittedExpression(element),
         )
       ) {
+        // A checked slot that the program declares as a native array (a
+        // member of a typed view of the global object, `typeof globalThis &
+        // { cache?: number[] }`) is read back through that declaration. Build
+        // the native array and store it boxed: every typed read then extracts
+        // that same array (a dynamic literal would be copied on each read,
+        // losing writes such as push).
+        const slot = this.globalViewSlot(x);
+        const slotType = slot ? this.checker.getContextualType(slot) : undefined;
+        const declared = slotType && this.checker.getNonNullableType(slotType);
+        const native =
+          declared && !(declared.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))
+            ? this.mapTypeOf(declared)
+            : null;
+        if (native?.kind === "array")
+          return this.coerceInto(node, this.lowerArrayLiteral(x, native), DYN);
         return {
           kind: "dynArrLit",
           elems: x.elements.nodes.map((element) => this.lowerExprExpecting(element, DYN)),
@@ -10703,6 +10870,7 @@ export class Lowerer {
           builtinOption("URLFormatOptions") ||
           !this.mapTypeOf(this.typeOf(x)) ||
           this.excessJsContextualProperty(x, parts) ||
+          this.reshapeableContextualLiteral(x, parts) ||
           holdsEvolvingArray(this, x)
         ) {
           return lowerDynObjectLiteral(this, x);
@@ -12860,7 +13028,7 @@ export class Lowerer {
   }
 
   lowerElementWrite(expr: ts.BinaryExpression): IrStmt {
-    return lowerElementWrite(this, expr);
+    return markSloppyRecordWrites(this, lowerElementWrite(this, expr), expr);
   }
 
   lowerLiveWebValue(node: ts.Expression): IrExpr {
@@ -13257,7 +13425,7 @@ export class Lowerer {
   }
 
   fieldSetStmt(target: FieldTarget, value: IrExpr, loc: SrcLoc, blame: ts.Node): IrStmt {
-    return fieldSetStmt(this, target, value, loc, blame);
+    return markSloppyRecordWrites(this, fieldSetStmt(this, target, value, loc, blame), blame);
   }
 
   lowerFieldCompound(
@@ -13297,6 +13465,7 @@ export class Lowerer {
       lowerBlobNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
+      lowerStaticTransformStreamNew(this, expr) ??
       lowerConsoleNew(this, expr);
     return (
       builtin ?? this.withRuntimeOptionalClassValue(expr.expression, () => lowerNew(this, expr))
@@ -13744,6 +13913,9 @@ export class Lowerer {
         loc,
       };
     }
+    // The buffer module's Buffer is the global constructor's value.
+    if (bi.module === "buffer" && bi.member === "Buffer")
+      return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
     if (bi.module === "fs" && (bi.member === "realpathSync" || bi.member === "realpathSync.native"))
       return fsRealpathValue(this, bi.member === "realpathSync.native", loc);
     const fn = builtinModuleFnOf(this, bi.module, bi.member);

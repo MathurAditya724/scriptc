@@ -1311,6 +1311,41 @@ console.log("after");
     expect(r.stderr).toContain(`Uncaught Error: ${refusal}`);
   });
 
+  test("a refusal in a record's kept source properties closes the inspector's frames", async () => {
+    // A record converted from an object with undeclared properties renders
+    // them through its checked view; a refusal there, inside an enclosing
+    // record or array, must not leave that render's frames open.
+    const r = await compileAndRun(
+      "inspect-refusal-kept-source",
+      `import { inspect } from "node:util";
+type P = { a: number };
+const src = JSON.parse('{"a":1}');
+src.p = Promise.resolve(3);
+const r: P = src;
+function attempt(label: string, f: () => void): void {
+  try {
+    f();
+    console.log(label, "returned");
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+attempt("record", () => console.log(inspect({ outer: r, n: [1, 2] })));
+console.log(inspect({ b: [1, { c: 2 }], long: "x".repeat(70) }));
+attempt("array", () => console.log(inspect([r, r])));
+console.log([3, 4], { d: 5 });
+`,
+    );
+    const refusal = "util.inspect of a promise value is not supported yet";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      `record ${refusal}\n` +
+        `{\n  b: [ 1, { c: 2 } ],\n  long: '${"x".repeat(70)}'\n}\n` +
+        `array ${refusal}\n` +
+        "[ 3, 4 ] { d: 5 }\n",
+    );
+  });
+
   test("accessors reached through unknown render as Node's accessor tags", async () => {
     const r = await compileAndRun(
       "inspect-accessor-tags",

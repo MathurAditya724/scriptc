@@ -111,6 +111,18 @@ double scr_date_now(void); /* integer ms since epoch, like Node */
 extern SCR_TL const double *scr_date_mock_now;
 double scr_date_new_ms(double ms); /* TimeClip (NaN when invalid) */
 double scr_date_get_time(double ms);
+/* A Date object: the TimeClip'd time value in milliseconds (NaN for an
+ * invalid date). Dates are immutable; their identity is the pointer.
+ * Retain/release follow the runtime's RC conventions (SIZE_MAX immortal). */
+typedef struct ScrDate {
+  size_t rc;
+  double ms;
+} ScrDate;
+ScrDate *scr_date_new(double ms); /* +1 */
+ScrDate *scr_date_retain(ScrDate *date);
+void scr_date_release(ScrDate *date);
+void *scr_date_retain_v(void *p);
+void scr_date_release_v(void *p);
 /* Node's exact ISO 8601 UTC format (expanded ±YYYYYY years outside
  * 0–9999). THROWS Node's "Invalid time value" RangeError on NaN or
  * |ms| > 8.64e15 and returns NULL; +1 otherwise. */
@@ -150,6 +162,11 @@ double scr_date_get_timezone_offset(double ms);
 ScrStr *scr_date_to_string(double ms);
 ScrStr *scr_date_to_date_string(double ms);
 ScrStr *scr_date_to_time_string(double ms);
+/* String() of a Date object (ScrDate *), and Array.prototype.join over an
+ * array of Date objects (holes empty). +1. */
+ScrStr *scr_date_object_to_string(void *date);
+struct ScrArr;
+ScrStr *scr_date_arr_join(struct ScrArr *dates, const ScrStr *sep);
 /* The long time zone name Node prints after the GMT offset for the host
  * zone at time value `ms`; `isdst` is tm_isdst at `ms`, or -1 when not
  * known. Borrowed; valid until the next call on the same thread. */

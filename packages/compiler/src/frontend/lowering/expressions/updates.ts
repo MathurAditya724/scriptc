@@ -191,6 +191,10 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       operatorUnsupported(lowerer, expr, "+", [raw.type]);
     }
     case ts.SyntaxKind.ExclamationToken: {
+      // `!runtimeBuffer` over an alias of the Buffer global: Node always
+      // defines Buffer (the condition twin is lowerCondition's).
+      if (lowerer.isStdlibGlobal(expr.operand, "Buffer"))
+        return { kind: "boolLit", value: false, type: BOOL, loc };
       // `!x` is ToBoolean-then-negate: f64/string operands go through toBool.
       const operand = lowerer.ensureBool(
         deferredSlotOr(

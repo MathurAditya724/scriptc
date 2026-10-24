@@ -2,7 +2,7 @@
 // Functions and classes reached as dynamic values print their enumerable
 // own properties after the tag, as Node prints them: a class's static
 // properties, properties assigned to a function, cycles through them,
-// and `[Function]` past the depth limit.
+// and `[Function]` past the depth limit, where a cycle still shows.
 const util = require('util');
 
 function f() {}
@@ -32,3 +32,5 @@ function shallow(value) {
 shallow(f);
 shallow(S);
 shallow(A);
+console.log(util.inspect(g, { depth: 0 }));
+shallow(g);

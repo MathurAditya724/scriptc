@@ -279,6 +279,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
   // Own properties JavaScript adds to children.
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
+  // The declaration-typed boundary's adoption.
+  unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
   // for await over checked-dynamic values that may hold native streams.
@@ -300,6 +302,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dgram, "scr_dgram.c"),
   unit((u) => u.opts.dgram && u.opts.dnsPromises, "scr_dns_promises.c"),
   unit((u) => u.opts.dgram && u.opts.dgramDyn, "scr_dgram_dyn.c"),
+  unit((u) => u.opts.textCodecDyn, "scr_text_codec_dyn.c"),
   unit((u) => u.opts.watch, "scr_watch.c"),
   unit((u) => u.opts.foreignFfi, "scr_ffi_queue.c"),
   unit((u) => u.opts.nodeTest, "scr_test.c"),

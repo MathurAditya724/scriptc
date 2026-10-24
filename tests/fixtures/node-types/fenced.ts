@@ -74,7 +74,7 @@ http2.connect("https://localhost");
  * secure heap the generic hint, and setFips the FIPS truth (getFips() lowers to 0). */
 import { createCipheriv, publicEncrypt, secureHeapUsed, setFips } from "node:crypto";
 publicEncrypt("key", Buffer.alloc(1));
-createCipheriv("aes-128-ccm", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
+createCipheriv("aes-128-ocb", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
 secureHeapUsed();
 setFips(false);
 fetch("https://example.invalid/", {
@@ -99,12 +99,9 @@ void callbackified;
 import { createECDH } from "node:crypto";
 createECDH("sect163k1");
 createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
-/* DiffieHellman's Object.prototype members, and crypto.diffieHellman over
- * asymmetric KeyObjects. */
-import { createDiffieHellman, diffieHellman, type KeyObject } from "node:crypto";
+/* DiffieHellman's Object.prototype members. */
+import { createDiffieHellman } from "node:crypto";
 createDiffieHellman(Buffer.from([23])).toString();
-declare const dhKey: KeyObject;
-diffieHellman({ privateKey: dhKey, publicKey: dhKey });
 /* WebCrypto beyond the secret-key slice: @types/node declares the whole
  * SubtleCrypto surface, and the methods outside the slice, such as
  * getPublicKey, fence by name. */
