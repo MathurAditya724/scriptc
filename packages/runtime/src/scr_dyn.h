@@ -186,7 +186,7 @@ typedef enum {
   X(MATCH_SOURCE, 55) /* a match result's pending metadata (scr_regex.c) */ \
   X(MESSAGE_EVENT, 50) /* ScrEvent with data — BroadcastChannel's 'message' */ \
   X(MESSAGE_PORT, 36) \
-  X(MODULE_NAMESPACE, 78) /* module namespace object read through its exports (scr_module_namespace.c) */ \
+  X(MODULE_NAMESPACE, 79) /* module namespace object read through its exports (scr_module_namespace.c) */ \
   X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
   X(NET_SERVER, 3) /* ScrNetServer — net.Server (http.Server rides the same handle) */ \
   X(NET_SOCKET, 2) /* ScrNetSocket — net.Socket */ \
