@@ -23,6 +23,17 @@ function expandos(TA) {
   try { Object.defineProperty(a, "7", { value: 1 }); } catch (e) { console.log(e.constructor.name, e.message); }
   try { Object.defineProperty(a, "-0", { value: 1 }); } catch (e) { console.log(e.constructor.name, e.message); }
   try { Object.defineProperty(a, "0", { get() { return 1; } }); } catch (e) { console.log(e.constructor.name, e.message); }
+  // An element's descriptor is read through its getters, and must be an object.
+  const got = [];
+  Object.defineProperty(a, "1", { get value() { got.push("value"); return 6; }, get enumerable() { got.push("enumerable"); return true; } });
+  console.log(a[1], got);
+  for (const bad of [5, "x", undefined]) {
+    try { Object.defineProperty(a, "0", bad); } catch (e) { console.log(e.constructor.name); }
+  }
+  try { Object.defineProperty(a, "9", 5); } catch (e) { console.log(e.constructor.name); }
+  try { Object.defineProperty(a, "0", { get configurable() { throw new RangeError("read"); } }); } catch (e) { console.log(e.constructor.name, e.message); }
+  try { Object.defineProperty(a, "0", { value: 1, get: undefined }); } catch (e) { console.log(e.constructor.name); }
+  console.log(a[0], a[1]);
   let reads = 0;
   Object.defineProperty(a, "g", { get() { reads++; return this.length; }, enumerable: true });
   console.log(a.g, reads, new TA(0));
@@ -56,6 +67,18 @@ function species(TA, Other) {
   const u = new TA([1, 2, 3]);
   u.constructor = { [Symbol.species]: Uint16Array };
   console.log(u.filter(() => true), u.subarray(1), u.subarray(1).constructor === Uint16Array);
+  // A built-in constructor set as `constructor` is its own species.
+  const w = new TA([1, 2, 3]);
+  w.constructor = Float64Array;
+  const wm = w.map((v) => v / 2), ws = w.slice(1);
+  console.log(wm, wm.constructor === Float64Array, ws, ws.constructor === Float64Array, w.filter((v) => v > 1));
+  w.constructor = TA;
+  console.log(w.map((v) => v / 2).constructor === TA);
+  // slice copies the source after the species constructor ran.
+  const x = new TA([1, 2, 3, 4]);
+  x.constructor = {};
+  x.constructor[Symbol.species] = function (n) { x[1] = 40; x[2] = 30; return new Other(n); };
+  console.log(x.slice(1, 3), x.slice(-1), x.slice(2, 1));
 }
 
 function reflection(TA) {

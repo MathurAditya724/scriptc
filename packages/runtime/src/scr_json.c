@@ -5024,6 +5024,29 @@ static double *dyn_bytes_values(const ScrBytes *b, size_t n) {
   return values;
 }
 
+static ScrDyn *scr_dyn_symbol_receiver(const ScrDyn *value);
+static ScrDynEntry *scr_dyn_symbol_entry(const ScrDyn *receiver, const ScrDyn *key, bool own);
+
+/* Whether a typed-array constructor has a Symbol.species of its own,
+ * shadowing the one it inherits from %TypedArray%. */
+static bool scr_bytes_ctor_own_species(const ScrDyn *constructor) {
+  ScrDyn *table = scr_dyn_symbol_receiver(constructor);
+  bool own = table && scr_dyn_symbol_entry(table, scr_species_symbol, true);
+  scr_dyn_release(table);
+  return own;
+}
+
+/* A relative index (ToIntegerOrInfinity, negatives from the end), clamped
+ * to [0, len], as scr_bytes_slice computes it. */
+static size_t scr_bytes_rel_index_of(double i, size_t len) {
+  if (i != i) return 0;
+  double t = trunc(i);
+  if (t < 0) t += (double)len;
+  if (t < 0) return 0;
+  if (t > (double)len) return len;
+  return (size_t)t;
+}
+
 /* SpeciesConstructor of a typed array: NULL (and no exception) for the
  * default constructor of its kind, else the species constructor (+1).
  * Only a `constructor` the program set on the view can differ. */
@@ -5044,6 +5067,13 @@ static ScrDyn *scr_bytes_species(ScrDyn *recv, bool *failed) {
     return NULL;
   }
   ScrDyn *species = scr_species_symbol ? scr_dyn_symbol_key_get(constructor, scr_species_symbol, true) : NULL;
+  if (species && species->kind == SCR_DYN_UNDEF && scr_bytes_ctor_elem(constructor) >= 0 &&
+      !scr_bytes_ctor_own_species(constructor)) {
+    /* A built-in typed-array constructor inherits %TypedArray%'s species
+     * getter, which returns the constructor itself. */
+    scr_dyn_release(species);
+    species = scr_dyn_retain(constructor);
+  }
   scr_dyn_release(constructor);
   if (scr_exc_pending()) { scr_dyn_release(species); *failed = true; return NULL; }
   if (!species || species->kind == SCR_DYN_UNDEF || species->kind == SCR_DYN_NULL ||
@@ -5096,33 +5126,40 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     bool failed;
     ScrDyn *species = recv->buffer ? NULL : scr_bytes_species(recv, &failed);
     if (!recv->buffer && failed) return NULL;
+    if (species && !subarray) {
+      /* TypedArraySpeciesCreate runs first: the constructor can change the
+       * source, and the copy reads its elements as they are afterwards,
+       * up to its current length. */
+      size_t from = scr_bytes_rel_index_of(startD, blen), to = scr_bytes_rel_index_of(endD, blen);
+      size_t count = to > from ? to - from : 0;
+      ScrDyn *result = scr_bytes_static_create(species, count);
+      scr_dyn_release(species);
+      if (!result) return NULL;
+      size_t end = to < bytes->len ? to : bytes->len;
+      for (size_t k = from, n = 0; k < end; k++, n++)
+        scr_bytes_set(result->v.bytes, (double)n, scr_bytes_get(bytes, (double)k));
+      return result;
+    }
     ScrBytes *out = subarray ? scr_bytes_subarray(bytes, startD, endD) : scr_bytes_slice(bytes, startD, endD);
     if (!species) {
       ScrDyn *d = recv->buffer ? scr_dyn_new_buffer(out) : scr_dyn_new_bytes(out);
       scr_bytes_release(out);
       return d;
     }
-    ScrDyn *result;
-    if (subarray) {
-      /* The species constructor views the same buffer. */
-      ScrDyn *ctor_args = scr_dyn_new_arr();
-      scr_dyn_arr_push(ctor_args, scr_array_buffer_from_bytes(bytes));
-      scr_dyn_arr_push(ctor_args, scr_dyn_new_num(scr_bytes_byte_offset(out)));
-      scr_dyn_arr_push(ctor_args, scr_dyn_new_num((double)out->len));
-      ScrStr *what = scr_str_new("TypedArray species", 18);
-      result = scr_dyn_construct(species, ctor_args, what);
-      scr_str_release(what);
-      scr_dyn_release(ctor_args);
-      if (result && (result->kind != SCR_DYN_BYTES || result->v.bytes->is_data_view)) {
-        scr_dyn_release(result);
-        result = NULL;
-        static const char message[] = "this is not a typed array.";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-      }
-    } else {
-      result = scr_bytes_static_create(species, out->len);
-      for (size_t i = 0; result && i < out->len; i++)
-        scr_bytes_set(result->v.bytes, (double)i, scr_bytes_get(out, (double)i));
+    /* A subarray's species constructor views the same buffer. */
+    ScrDyn *ctor_args = scr_dyn_new_arr();
+    scr_dyn_arr_push(ctor_args, scr_array_buffer_from_bytes(bytes));
+    scr_dyn_arr_push(ctor_args, scr_dyn_new_num(scr_bytes_byte_offset(out)));
+    scr_dyn_arr_push(ctor_args, scr_dyn_new_num((double)out->len));
+    ScrStr *what = scr_str_new("TypedArray species", 18);
+    ScrDyn *result = scr_dyn_construct(species, ctor_args, what);
+    scr_str_release(what);
+    scr_dyn_release(ctor_args);
+    if (result && (result->kind != SCR_DYN_BYTES || result->v.bytes->is_data_view)) {
+      scr_dyn_release(result);
+      result = NULL;
+      static const char message[] = "this is not a typed array.";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     }
     scr_dyn_release(species);
     scr_bytes_release(out);
@@ -6381,6 +6418,45 @@ bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right) {
 
 static void scr_dyn_descriptor_fields_drop(ScrDyn **fields) {
   for (size_t i = 0; i < 6; i++) scr_dyn_release(fields[i]);
+}
+
+/* ToPropertyDescriptor: the present fields of `descriptor` (enumerable,
+ * configurable, value, writable, get, set; +1 each, NULL when absent),
+ * read in that order through any getters. False with a TypeError pending
+ * for a primitive descriptor, a getter's exception, or an invalid
+ * combination; every field is then released. */
+static bool scr_dyn_descriptor_fields_read(const ScrDyn *descriptor, ScrDyn **fields) {
+  for (size_t i = 0; i < 6; i++) fields[i] = NULL;
+  if (descriptor->kind != SCR_DYN_OBJ) {
+    static const char msg[] = "Property description must be an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return false;
+  }
+  static const char *const names[] = {"enumerable", "configurable", "value", "writable", "get", "set"};
+  static const size_t lengths[] = {10, 12, 5, 8, 3, 3};
+  for (size_t i = 0; i < 6; i++) {
+    if (!scr_dyn_obj_get(descriptor, names[i], lengths[i])) continue;
+    fields[i] = scr_dyn_obj_read(descriptor, names[i], lengths[i]);
+    if (!fields[i]) {
+      scr_dyn_descriptor_fields_drop(fields);
+      return false;
+    }
+  }
+  ScrDyn *get = fields[4], *set = fields[5];
+  if ((get || set) && (fields[2] || fields[3])) {
+    scr_dyn_descriptor_fields_drop(fields);
+    static const char msg[] = "Invalid property descriptor. Cannot both specify accessors and a value or writable attribute";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return false;
+  }
+  if ((get && get->kind != SCR_DYN_UNDEF && get->kind != SCR_DYN_FUNC) ||
+      (set && set->kind != SCR_DYN_UNDEF && set->kind != SCR_DYN_FUNC)) {
+    scr_dyn_descriptor_fields_drop(fields);
+    static const char msg[] = "Getter and setter must be functions";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return false;
+  }
+  return true;
 }
 static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key);
 static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *key);
@@ -8374,12 +8450,19 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     if (numeric) {
       /* [[DefineOwnProperty]] of an element: a valid index and a data
        * descriptor that keeps it writable, enumerable and configurable. */
+      /* The descriptor is read first (ToPropertyDescriptor), through its
+       * getters, and must be an object. */
+      ScrDyn *fields[6];
+      if (!scr_dyn_descriptor_fields_read(descriptor, fields)) {
+        scr_str_release(name);
+        return NULL;
+      }
+      const ScrDyn *enumerable = fields[0], *configurable = fields[1], *value = fields[2];
+      const ScrDyn *writable = fields[3];
+      bool accessor = fields[4] || fields[5];
       bool valid = !signbit(index) && trunc(index) == index && index < (double)target->v.bytes->len;
-      const ScrDyn *configurable = scr_dyn_obj_get(descriptor, "configurable", 12);
-      const ScrDyn *enumerable = scr_dyn_obj_get(descriptor, "enumerable", 10);
-      const ScrDyn *writable = scr_dyn_obj_get(descriptor, "writable", 8);
-      bool accessor = scr_dyn_obj_get(descriptor, "get", 3) || scr_dyn_obj_get(descriptor, "set", 3);
       if (!valid) {
+        scr_dyn_descriptor_fields_drop(fields);
         scr_str_release(name);
         static const char message[] = "Invalid typed array index";
         scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -8387,6 +8470,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
       }
       if (accessor || (configurable && !scr_dyn_truthy(configurable)) ||
           (enumerable && !scr_dyn_truthy(enumerable)) || (writable && !scr_dyn_truthy(writable))) {
+        scr_dyn_descriptor_fields_drop(fields);
         ScrJsonBuf message;
         scr_jb_init(&message);
         scr_jb_puts(&message, "Cannot redefine property: ");
@@ -8396,13 +8480,15 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
         return NULL;
       }
       scr_str_release(name);
-      const ScrDyn *value = scr_dyn_obj_get(descriptor, "value", 5);
       double number;
+      bool stored = true;
       if (value) {
-        if (!scr_dyn_number_coerce_js(value, &number)) return NULL;
-        scr_bytes_set(target->v.bytes, index, number);
+        stored = scr_dyn_number_coerce_js(value, &number);
+        /* The conversion can run user code; the index is checked again. */
+        if (stored && index < (double)target->v.bytes->len) scr_bytes_set(target->v.bytes, index, number);
       }
-      return scr_dyn_retain(target);
+      scr_dyn_descriptor_fields_drop(fields);
+      return stored ? scr_dyn_retain(target) : NULL;
     }
     bool fenced = scr_bytes_protocol_name(name) && !scr_bytes_has_named(target, name);
     if (fenced) scr_bytes_protocol_fence(name->data, name->len);
@@ -8420,44 +8506,16 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
   }
   ScrStr *name = scr_dyn_property_key(key);
   if (!name) return NULL;
-  if (descriptor->kind != SCR_DYN_OBJ) {
+  ScrDyn *fields[6];
+  if (!scr_dyn_descriptor_fields_read(descriptor, fields)) {
     scr_str_release(name);
-    static const char msg[] = "Property description must be an object";
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
     return NULL;
-  }
-  static const char *const names[] = {"enumerable", "configurable", "value", "writable", "get", "set"};
-  static const size_t lengths[] = {10, 12, 5, 8, 3, 3};
-  ScrDyn *fields[6] = {NULL};
-  for (size_t i = 0; i < 6; i++) {
-    if (!scr_dyn_obj_get(descriptor, names[i], lengths[i])) continue;
-    fields[i] = scr_dyn_obj_read(descriptor, names[i], lengths[i]);
-    if (!fields[i]) {
-      scr_dyn_descriptor_fields_drop(fields);
-      scr_str_release(name);
-      return NULL;
-    }
   }
   ScrDyn *e = fields[0], *c = fields[1], *value = fields[2];
   ScrDyn *w = fields[3], *get = fields[4], *set = fields[5];
   ScrDynEntry *prior = scr_dyn_entry(target, name);
   bool accessor_descriptor = get || set;
   bool data_descriptor = value || w;
-  if (accessor_descriptor && data_descriptor) {
-    scr_dyn_descriptor_fields_drop(fields);
-    scr_str_release(name);
-    static const char msg[] = "Invalid property descriptor. Cannot both specify accessors and a value or writable attribute";
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
-    return NULL;
-  }
-  if ((get && get->kind != SCR_DYN_UNDEF && get->kind != SCR_DYN_FUNC) ||
-      (set && set->kind != SCR_DYN_UNDEF && set->kind != SCR_DYN_FUNC)) {
-    scr_dyn_descriptor_fields_drop(fields);
-    scr_str_release(name);
-    static const char msg[] = "Getter and setter must be functions";
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
-    return NULL;
-  }
   bool accessor = accessor_descriptor || (!data_descriptor && prior && prior->accessor);
   bool writable = w ? scr_dyn_truthy(w) : prior && !prior->accessor && !accessor ? prior->writable : false;
   bool enumerable = e ? scr_dyn_truthy(e) : prior ? prior->enumerable : false;
