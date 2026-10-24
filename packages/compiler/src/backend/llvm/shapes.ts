@@ -550,17 +550,16 @@ interface InlineRcFamily {
  * scr_dyn_release_survivor for kinds whose candidacy is per value,
  * including arrays and objects of intact documents (ScrDynRegion).
  *
- * Releases stay plain calls for:
- * - arr: array releases are the most numerous release sites and the
- *   least hot (at most 1% self time across the benchmark suite), and
- *   inlining them roughly doubled the code growth for no measured speedup.
- *   Array retains are inlined. */
+ * The array release inlines the decrement of an array that stays alive
+ * and is not headered (`a->cyc`): those are most array releases in
+ * type-checker workloads, where scr_arr_release's own prologue and checks
+ * took about half of its time. */
 export const INLINE_RC_FAMILIES: Readonly<Record<string, InlineRcFamily>> = {
   str: { cycle: "none", retainNull: false, release: "scr_str_release" },
   bytes: { cycle: "none", retainNull: false, release: "scr_bytes_release" },
   regex: { cycle: "none", retainNull: false, release: "scr_regex_release" },
   bigint: { cycle: "none", retainNull: true, release: "scr_bigint_release" },
-  arr: { cycle: "arr", retainNull: false, release: null },
+  arr: { cycle: "arr", retainNull: false, release: "scr_arr_release" },
   map: { cycle: "map", retainNull: false, release: "scr_map_release" },
   union: { cycle: "always", retainNull: false, release: "scr_union_release" },
   closure: { cycle: "always", retainNull: false, release: "scr_closure_release" },
