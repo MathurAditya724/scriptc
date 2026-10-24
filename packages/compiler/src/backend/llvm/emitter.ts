@@ -1781,6 +1781,7 @@ export class LlEmitter {
         const shape = this.recordsById.get(shapeId);
         return shape !== undefined && !recordDynKeepsIdentity(shape);
       },
+      (wrap) => this.borrowableNullableWrap(wrap) === "ref",
     );
     this.lentStringParameters =
       this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
