@@ -1197,6 +1197,10 @@ void scr_weak_dispose(void *object);
 double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);
+/* The member `key` of an array found before Array.prototype: an own named
+ * property, or one on its custom prototype chain (Object.setPrototypeOf).
+ * NULL when the chain reaches Array.prototype without it. +1. */
+ScrDyn *scr_dyn_arr_custom_member(const ScrDyn *d, const char *key, size_t key_len);
 void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
@@ -1411,6 +1415,9 @@ ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method
  * *mid_slot, the site's -1-initialized slot, caches the name's method id
  * after the first call, so later calls skip the name lookup. */
 ScrDyn *scr_dyn_invoke_prepared_id(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
+/* scr_dyn_invoke_prepared_id for a call whose result is discarded: a plain
+ * array's push appends without boxing its new length. */
+void scr_dyn_invoke_discard_id(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 /* scr_dyn_invoke_prepared_id for Buffer.prototype method names
  * (scr_bytes_dyn.c), one entry per method family: a Buffer receiver runs
  * the method, any other takes the ordinary dispatch. */

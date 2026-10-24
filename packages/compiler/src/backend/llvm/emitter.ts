@@ -97,7 +97,12 @@ import { unshareNodes } from "../../ir/unshare.js";
 import { runPairedWhileLoopsAsFor } from "../../ir/paired-while-loops.js";
 import { copyStableCaptures } from "../../ir/capture-values.js";
 import { resolveSelfCaptures } from "../../ir/self-captures.js";
-import { analyzeInt32Slots, dynamicFieldStores, type Int32Slots } from "../../ir/int32-slots.js";
+import {
+  analyzeInt32Slots,
+  dynamicFieldStores,
+  type DynamicFieldStores,
+  type Int32Slots,
+} from "../../ir/int32-slots.js";
 import { analyzeFinalFields, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
@@ -506,14 +511,24 @@ function versionParameters(mod: IrModule): IrModule {
   return versionLoopBoundParameters(mod, mangleFunction);
 }
 
-/** The int32 arrays the int32 slot analysis keeps in `mod` (proven and
- * checked), under the inputs LlEmitter gives it (selectInt32Arrays). */
-function provenInt32Arrays(mod: IrModule): ReadonlySet<string> {
-  const slots = analyzeInt32Slots(mod, {
-    dynamicStores: dynamicFieldStores(mod),
-    initializerBindings: findInitializerBindings(mod),
-  });
-  return new Set([...slots.int32Arrays, ...slots.checkedInt32Arrays]);
+/** The int32 slot analysis of one module and the inputs it read: the
+ * constructor's own analyses of that module, which LlEmitter takes over
+ * instead of repeating them when it emits the same module. */
+export interface Int32SlotAnalysis {
+  readonly mod: IrModule;
+  readonly nodeIndex: IrNodeIndex;
+  readonly initializerBindings: ReturnType<typeof findInitializerBindings>;
+  readonly dynamicStores: DynamicFieldStores;
+  readonly slots: Int32Slots;
+}
+
+/** The int32 slot analysis of `mod`, with the inputs LlEmitter gives it. */
+function analyzeModuleInt32Slots(mod: IrModule): Int32SlotAnalysis {
+  const nodeIndex = new IrNodeIndex(mod);
+  const initializerBindings = findInitializerBindings(mod, nodeIndex);
+  const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
+  const slots = analyzeInt32Slots(mod, { dynamicStores, initializerBindings, nodes: nodeIndex });
+  return { mod, nodeIndex, initializerBindings, dynamicStores, slots };
 }
 
 /** The functions whose calls the backend may emit as calls of their
@@ -530,8 +545,16 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
   const mod = unshareNodes(input);
+  // Each round of selectInt32Arrays analyzes the module it marks; the
+  // emitter of the module it returns reuses that round's analysis.
+  const rounds: { last: Int32SlotAnalysis | null } = { last: null };
+  const proven = (marked: IrModule): ReadonlySet<string> => {
+    const analysis = analyzeModuleInt32Slots(marked);
+    rounds.last = analysis;
+    return new Set([...analysis.slots.int32Arrays, ...analysis.slots.checkedInt32Arrays]);
+  };
   // Keep source storage intact for debugger inspection in dev builds.
-  return new LlEmitter(
+  const emitted =
     options.debugSources === undefined
       ? selectInt32Arrays(
           versionParameters(
@@ -559,12 +582,12 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
               ),
             ),
           ),
-          provenInt32Arrays,
+          proven,
           resultEntryTargets,
         )
-      : mod,
-    options,
-  );
+      : mod;
+  const prepared = rounds.last;
+  return new LlEmitter(emitted, options, null, prepared?.mod === emitted ? prepared : null);
 }
 
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
@@ -1566,6 +1589,7 @@ export class LlEmitter {
     readonly mod: IrModule,
     options: LlvmTargetOptions,
     journal: EmitJournal | null = null,
+    int32Analysis: Int32SlotAnalysis | null = null,
   ) {
     this.targetOptions = options;
     this.journal = journal;
@@ -1576,7 +1600,7 @@ export class LlEmitter {
         options.debugSources === undefined);
     // One walk of every body, which the analyses below read instead of
     // walking the bodies themselves.
-    this.nodeIndex = new IrNodeIndex(mod);
+    this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod);
     this.stackTraces = observesStacks(mod, this.nodeIndex);
     this.nullableUnions = new NullableUnions(
       mod,
@@ -1595,14 +1619,18 @@ export class LlEmitter {
             this.nullableUnions.armTypes(),
           );
     this.constantNumericTables = findConstantNumericTables(mod);
-    this.initializerBindings = findInitializerBindings(mod, this.nodeIndex);
+    this.initializerBindings =
+      int32Analysis?.initializerBindings ?? findInitializerBindings(mod, this.nodeIndex);
     // One walk finds the dynamic field stores every analysis below consults.
-    const dynamicStores = dynamicFieldStores(mod, undefined, undefined, this.nodeIndex);
-    this.int32Slots = analyzeInt32Slots(mod, {
-      dynamicStores,
-      initializerBindings: this.initializerBindings,
-      nodes: this.nodeIndex,
-    });
+    const dynamicStores =
+      int32Analysis?.dynamicStores ?? dynamicFieldStores(mod, undefined, undefined, this.nodeIndex);
+    this.int32Slots =
+      int32Analysis?.slots ??
+      analyzeInt32Slots(mod, {
+        dynamicStores,
+        initializerBindings: this.initializerBindings,
+        nodes: this.nodeIndex,
+      });
     this.untypedIntegrity = mod.untypedIntegrity === true;
     this.liveViewsReadOnly =
       mod.lib === undefined &&
@@ -5737,6 +5765,10 @@ export class LlEmitter {
       this.emitSequence(() => {
         for (const s of e.stmts) this.emitStmt(s);
       });
+      return;
+    }
+    if (e.kind === "dynInvoke" && e.calleeNameValue === undefined) {
+      emitDynamicExpr(this, e, true);
       return;
     }
     this.emitExpr(e);
