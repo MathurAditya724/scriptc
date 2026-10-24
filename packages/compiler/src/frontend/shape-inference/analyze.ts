@@ -100,6 +100,8 @@ export interface CallEdge {
   readonly caller: FunctionInfo | null;
   readonly callee: FunctionInfo;
   readonly inLoop: boolean;
+  /** The call (or `new`, getter read, builtin callback) site. */
+  readonly site: Node;
 }
 
 export interface ShapeAnalysis {
@@ -123,6 +125,10 @@ export interface ShapeAnalysis {
   readonly steps: number;
   readonly topCause: ReadonlyMap<number, number | string>;
   readonly nodeLabel: ReadonlyMap<number, string>;
+  /** Functions unknown code may call (their atoms escaped). */
+  readonly escapedFunctions: ReadonlySet<FunctionInfo>;
+  /** ES5 constructors: each function's default prototype object. */
+  readonly protoOf: ReadonlyMap<Atom, Atom>;
 }
 
 /** Array.prototype members: other names on an array are own properties. */
@@ -298,6 +304,7 @@ class Analyzer {
       caller: ctx?.caller ?? null,
       callee,
       inLoop: (ctx?.inLoop ?? false) || this.forceLoop,
+      site,
     });
   }
 
@@ -340,6 +347,8 @@ class Analyzer {
       steps: this.steps,
       topCause: this.topCause,
       nodeLabel: this.nodeLabel,
+      escapedFunctions: this.escapedFunctionCalls,
+      protoOf: this.protoOf,
     };
   }
 
@@ -413,6 +422,25 @@ class Analyzer {
     return a;
   }
 
+  /** ES5 constructor functions: the function's default prototype object,
+   * and which function each `new F()` instance atom belongs to. */
+  readonly protoOf = new Map<Atom, Atom>();
+  readonly fnOfInstance = new Map<Atom, Atom>();
+  protoAtom(fn: Atom): Atom {
+    let p = this.protoOf.get(fn);
+    if (p === undefined) {
+      p = this.atoms.intern(`proto:${this.nodeKey(fn.node!)}:${fn.ctx ?? ""}`, () => ({
+        kind: "object",
+        label: `${fn.label}.prototype`,
+        node: fn.node,
+      }));
+      this.protoOf.set(fn, p);
+      this.add(this.field(p, "constructor"), fn);
+      if (this.escaped.has(fn)) this.escape(p, `via ${fn.label}`);
+    }
+    return p;
+  }
+
   builtin(path: string, receiver?: Atom): Atom {
     const key = receiver === undefined ? `builtin:${path}` : `builtin:${path}@${receiver.id}`;
     return this.atoms.intern(key, () => ({ kind: "builtin", label: path, path, receiver }));
@@ -477,6 +505,11 @@ class Analyzer {
     if (this.escaped.has(atom)) return;
     this.escaped.set(atom, reason);
     const via = `via ${atom.label}`;
+    // Unknown code reaches a constructor's prototype through the function
+    // and through its instances.
+    const ctor = atom.kind === "function" ? atom : this.fnOfInstance.get(atom);
+    if (ctor !== undefined && ctor.node !== undefined && (atom !== ctor || this.protoOf.has(ctor)))
+      this.escape(this.protoAtom(ctor), via);
     const fm = this.fields.get(atom);
     if (fm !== undefined) {
       for (const [name, id] of fm) {
@@ -1424,6 +1457,15 @@ class Analyzer {
     )
       return this.constNode(this.top);
     if (ts.isSourceFile(decl) || ts.isModuleDeclaration(decl)) return this.namespaceNode(decl);
+    // A CommonJS export the checker resolved an import or require binding
+    // to (`module.exports = { name }`, `exports.name = v`): the member of the
+    // module's exports.
+    const exported = cjsExportName(decl);
+    if (exported !== null && decl.getSourceFile() !== id.getSourceFile()) {
+      const dst = this.newNode();
+      this.loadConstraint(this.namespaceNode(decl.getSourceFile()), exported, dst, id);
+      return dst;
+    }
     return this.narrowed(id, decl, this.binding(decl));
   }
 
@@ -1531,6 +1573,9 @@ class Analyzer {
   }
 
   private readonly namespaces = new Map<Node, number>();
+  /** Module namespaces: a CommonJS module's `module.exports` value is the
+   * namespace's `exports` field, and member reads see its members too. */
+  private readonly namespaceAtoms = new Set<Atom>();
   /** `import * as ns`: an object whose fields are the module's exports. */
   namespaceNode(mod: Node): number {
     const existing = this.namespaces.get(mod);
@@ -1542,6 +1587,7 @@ class Analyzer {
       label: `namespace ${shortFile((mod as ts.SourceFile).fileName ?? "")}`,
       node: mod,
     }));
+    this.namespaceAtoms.add(atom);
     this.add(n, atom);
     const sym = this.checker.getSymbolAtLocation(mod);
     if (sym !== undefined) {
@@ -1983,8 +2029,11 @@ class Analyzer {
       case "function":
         if (name === "call" || name === "apply" || name === "bind")
           this.add(dst, this.builtin(`function.${name}`, a));
-        else if (name === "prototype") this.add(dst, this.top);
-        else if (name === "name") this.add(dst, this.prim("string"));
+        else if (name === "prototype") {
+          // The default prototype object, or what the program assigns.
+          this.add(dst, this.protoAtom(a));
+          this.edge(this.field(a, "prototype"), dst);
+        } else if (name === "name") this.add(dst, this.prim("string"));
         else if (name === "length") this.add(dst, this.prim("number"));
         else this.edge(this.field(a, name), dst);
         return;
@@ -1994,12 +2043,28 @@ class Analyzer {
         else if (ARRAY_METHODS.has(name)) this.add(dst, this.builtin(`array.${name}`, a));
         else this.edge(this.field(a, name), dst);
         return;
-      case "object":
+      case "object": {
         this.edge(this.field(a, name), dst);
         this.edge(this.anyField(a), dst);
+        if (this.namespaceAtoms.has(a) && name !== "exports") {
+          this.loadConstraint(this.field(a, "exports"), name, dst, site);
+        }
+        // `new F()` instances read through F's prototype objects.
+        const fn = this.fnOfInstance.get(a);
+        if (fn !== undefined) {
+          const protos = this.newNode();
+          this.add(protos, this.protoAtom(fn));
+          this.edge(this.field(fn, "prototype"), protos);
+          this.on(protos, (proto) => {
+            if (proto.kind === "object") this.edge(this.field(proto, name), dst);
+            else if (proto.kind === "top") this.add(dst, this.top);
+          });
+          return;
+        }
         if (name === "constructor" || name === "hasOwnProperty" || name === "toString")
           this.add(dst, this.builtin(`object.${name}`, a));
         return;
+      }
       case "dictionary":
         this.edge(this.anyField(a), dst);
         this.edge(this.field(a, name), dst);
@@ -2190,6 +2255,27 @@ class Analyzer {
         for (const a of args) this.sink(a, `super(...) at ${locLabel(e)}`);
       return dst;
     }
+    // CommonJS `require("<spec>")` of an analyzed module: its exports (the
+    // module's namespace, which holds `module.exports` as its `exports`
+    // field and the checker's view of its exports).
+    if (ts.isIdentifier(callee) && callee.text === "require" && e.arguments.nodes.length === 1) {
+      const spec = e.arguments.nodes[0]!;
+      if (ts.isStringLiteral(spec)) {
+        let target: Node | undefined;
+        try {
+          const sym = this.checker.getSymbolAtLocation(spec);
+          target = sym?.valueDeclaration ?? sym?.declarations[0];
+        } catch {
+          target = undefined;
+        }
+        if (target !== undefined && ts.isSourceFile(target) && this.files.includes(target)) {
+          const ns = this.namespaceNode(target);
+          this.edge(ns, dst);
+          this.on(ns, (a) => this.edge(this.field(a, "exports"), dst));
+          return dst;
+        }
+      }
+    }
     if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
       const recvExpr = unparen(callee.expression);
       const { args, spread } = this.args(e);
@@ -2286,6 +2372,7 @@ class Analyzer {
             label: `new ${a.label}`,
             node: a.node,
           }));
+          this.fnOfInstance.set(inst, a);
           this.add(dst, inst);
           const info = this.infoOfAtom(a);
           if (info !== undefined) {
@@ -2861,4 +2948,22 @@ class Analyzer {
       if (this.steps === before || this.budgetExceeded) return;
     }
   }
+}
+
+/** The export name of a CommonJS export declaration the checker resolves
+ * bindings to: a member of the `module.exports` literal, or the target of
+ * `exports.name =` / `module.exports.name =`. */
+function cjsExportName(decl: Node): string | null {
+  if (ts.isShorthandPropertyAssignment(decl) || ts.isPropertyAssignment(decl)) {
+    const n = decl.name;
+    return ts.isIdentifier(n) || ts.isStringLiteral(n) ? n.text : null;
+  }
+  if (ts.isPropertyAccessExpression(decl) && ts.isIdentifier(decl.name)) return decl.name.text;
+  if (
+    ts.isBinaryExpression(decl) &&
+    ts.isPropertyAccessExpression(decl.left) &&
+    ts.isIdentifier(decl.left.name)
+  )
+    return decl.left.name.text;
+  return null;
 }
