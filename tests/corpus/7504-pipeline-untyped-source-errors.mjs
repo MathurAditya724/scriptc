@@ -135,3 +135,37 @@ for (const [label, source] of [["finalRejects", finalRejects], ["finalResolves",
     console.log(label, "rejected", err.message);
   }
 }
+
+// the final result's value is read for a sync iterator only: an async
+// iterator's done result is not read, so a throwing value getter there is
+// never called
+function finalResult(label, i) {
+  if (i === 1) return { value: `${label}1`, done: false };
+  return {
+    done: true,
+    get value() {
+      throw new Error(`${label} final value read`);
+    },
+  };
+}
+function asyncFinal() {
+  let i = 0;
+  return { [Symbol.asyncIterator]() { return { async next() { i++; return finalResult("async", i); } }; } };
+}
+function syncFinal() {
+  let i = 0;
+  return { [Symbol.iterator]() { return { next() { i++; return finalResult("sync", i); } }; } };
+}
+async function runFinal(label, source) {
+  try {
+    await pipelineP(
+      pick(source),
+      new Writable({ objectMode: true, write(c, _e, cb) { console.log(label, "write", c); cb(); } }),
+    );
+    console.log(label, "resolved");
+  } catch (err) {
+    console.log(label, "rejected", err.message);
+  }
+}
+await runFinal("async final", asyncFinal());
+await runFinal("sync final", syncFinal());

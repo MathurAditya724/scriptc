@@ -4085,14 +4085,23 @@ function lowerDynIterableSource(
                   type: BOOL,
                   loc,
                 },
-                // the final value is awaited too: a rejection rejects the
-                // pump, and the finished iterator is not closed
+                // a sync iterator's final value is awaited too: a rejection
+                // rejects the pump, and the finished iterator is not closed.
+                // An async iterator's final value is not read.
                 then: [
-                  { kind: "assign", localId: valueId, value: get(step(), "value"), loc },
                   {
                     kind: "if",
-                    cond: awaitsValue(),
-                    then: [{ kind: "exprStmt", expr: awaitDyn(value()), loc }],
+                    cond: sync(),
+                    then: [
+                      { kind: "assign", localId: valueId, value: get(step(), "value"), loc },
+                      {
+                        kind: "if",
+                        cond: awaitsValue(),
+                        then: [{ kind: "exprStmt", expr: awaitDyn(value()), loc }],
+                        else_: null,
+                        loc,
+                      },
+                    ],
                     else_: null,
                     loc,
                   },
