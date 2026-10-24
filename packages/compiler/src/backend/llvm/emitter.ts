@@ -1461,6 +1461,9 @@ export class LlEmitter {
   integerTempsEnabled = false;
   /** Speculative integer loops (speculative-integers.ts) run in this function. */
   speculativeLoopsEnabled = false;
+  /** False inside the copy of a versioned loop that runs when its guard
+   * fails: loops there get no speculative or int32 kind copies. */
+  loopCopiesEnabled = true;
   /** The fast copy of a speculative integer loop being emitted: its
    * integer-computed writes and where each resumes in the ordinary copy. */
   speculation: {
