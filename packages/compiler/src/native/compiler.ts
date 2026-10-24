@@ -407,7 +407,9 @@ export class NativeCompiler {
               ffi,
               executablePack,
             );
-      const restored = executableCache?.restore(stagedOutput) ?? false;
+      // An unchanged rebuild keeps the executable the last build left.
+      const kept = executableCache?.keep(output) ?? false;
+      const restored = kept || (executableCache?.restore(stagedOutput) ?? false);
       timing(restored ? "executable-cache-hit" : "executable-cache-miss");
       if (!restored) {
         let programObjects = [object];
@@ -524,7 +526,10 @@ export class NativeCompiler {
         irPath = join(options.outDir, `${stem}.ir.json`);
         writeTextPartsSync(irPath, prepared.ir!);
       }
-      renameSync(stagedOutput, output);
+      if (!kept) {
+        renameSync(stagedOutput, output);
+        executableCache?.recordOutput(output);
+      }
       if (target.platform === "darwin" && (optimization !== "dev" || options.strip))
         rmSync(output + ".dSYM", { recursive: true, force: true });
       return {
