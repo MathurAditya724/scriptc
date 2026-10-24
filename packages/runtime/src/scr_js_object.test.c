@@ -24,11 +24,17 @@ static ScrDyn *object_with(const ScrStr *key, double n) {
   return object;
 }
 
+/* Cache records have static storage, as the compiled sites' do: the reset
+ * at exit clears every record that holds entries. Each check starts from
+ * an empty record. */
+static ScrJsIc load_ic;
+static ScrJsIc store_ic;
+
 /* Whether a load probe answers `object.key` and returns `n`. */
 static bool probe_reads(ScrDyn *object, const ScrStr *key, double n) {
-  ScrJsIc ic;
-  memset(&ic, 0, sizeof ic);
-  ScrDyn *value = scr_js_load_probe(object, key, &ic);
+  ScrJsIc *ic = &load_ic;
+  memset(ic, 0, sizeof *ic);
+  ScrDyn *value = scr_js_load_probe(object, key, ic);
   if (!value) return false;
   assert(value->kind == SCR_DYN_NUM && value->v.num == n);
   scr_dyn_release(value);
@@ -66,14 +72,13 @@ static void budget_bounds_shapes(size_t key_len, size_t budget) {
 
   /* A store probe that would add a new shape leaves the add to the generic
    * store; one that replaces through an existing shape still runs. */
-  ScrJsIc ic;
-  memset(&ic, 0, sizeof ic);
+  memset(&store_ic, 0, sizeof store_ic);
   ScrStr *added = scr_str_new("added", 5);
   ScrDyn *value = scr_dyn_new_num(8);
-  assert(!scr_js_store_probe(object, added, value, &ic));
+  assert(!scr_js_store_probe(object, added, value, &store_ic));
   assert(object->v.obj.len == 1);
-  memset(&ic, 0, sizeof ic);
-  assert(scr_js_store_probe(object, first, value, &ic));
+  memset(&store_ic, 0, sizeof store_ic);
+  assert(scr_js_store_probe(object, first, value, &store_ic));
   assert(probe_reads(object, first, 8));
   scr_dyn_release(value);
   scr_str_release(added);
@@ -90,10 +95,9 @@ static void immortal_objects_stay_unshaped(void) {
   object->rc = SIZE_MAX;
   assert(!probe_reads(object, key, 3));
   assert(object->v.obj.shape == NULL);
-  ScrJsIc ic;
-  memset(&ic, 0, sizeof ic);
+  memset(&store_ic, 0, sizeof store_ic);
   ScrDyn *value = scr_dyn_new_num(4);
-  assert(!scr_js_store_probe(object, key, value, &ic));
+  assert(!scr_js_store_probe(object, key, value, &store_ic));
   assert(object->v.obj.shape == NULL);
   scr_dyn_release(value);
   scr_str_release(key);
