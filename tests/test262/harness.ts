@@ -79,18 +79,19 @@ export namespace assert {
     if (outcome !== "pass") throw new Test262Error(text(message, "Expected exception"));
   }
 
+  /** Converts `message` only when the contents differ, as the upstream helper does. */
   export function compareArray(actual: unknown, expected: unknown, message?: unknown): void {
-    const failure = text(message, "Expected matching array contents");
     if (!Array.isArray(actual) || !Array.isArray(expected)) {
       scalar(actual);
       scalar(expected);
-      throw new Test262Error(failure);
+      throw new Test262Error(text(message, "Expected matching array contents"));
     }
-    if (actual.length !== expected.length) throw new Test262Error(failure);
-    for (let i = 0; i < actual.length; i++) {
+    let matches = actual.length === expected.length;
+    for (let i = 0; matches && i < actual.length; i++) {
       const left: unknown = i in actual ? actual[i] : undefined;
       const right: unknown = i in expected ? expected[i] : undefined;
-      if (!same(left, right)) throw new Test262Error(failure);
+      matches = same(left, right);
     }
+    if (!matches) throw new Test262Error(text(message, "Expected matching array contents"));
   }
 }

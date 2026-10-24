@@ -278,6 +278,22 @@ assert.compareArray([object, fn], [object, fn]);
     status: "fail",
     source: "assert.sameValue(1, 2, false);",
   },
+  {
+    name: "passing assertions do not convert their message",
+    status: "pass",
+    source: `
+const message = { toString() { throw new Error("converted"); } };
+assert(true, message);
+assert.sameValue(1, 1, message);
+assert.notSameValue(1, 2, message);
+assert.compareArray([1, 2], [1, 2], message);
+`,
+  },
+  {
+    name: "array mismatch with an object message",
+    status: "fail",
+    source: 'assert.compareArray([1], [2], { toString() { return "differs"; } });',
+  },
 ];
 
 describe(`Test262 host assertion contract${shardSuffix()}`, () => {
