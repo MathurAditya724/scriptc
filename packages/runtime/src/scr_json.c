@@ -8560,6 +8560,12 @@ typedef struct {
    * or NULL. The code slot holds only strings, and a subclass's typed view
    * rebuilds its properties from the slots on every read. */
   ScrDyn *code;
+  /* The prototype a view built from the error's fields starts with
+   * (scr_error_dyn_fields: the holder of its default name and message, or
+   * none), retained so that no later object takes its address. Only such a
+   * view sets `fields_view`. */
+  ScrDyn *view_prototype;
+  bool fields_view;
 } ScrErrDynEnt;
 
 static SCR_TL ScrErrDynEnt *scr_errdyn_cache = NULL;
@@ -8664,6 +8670,7 @@ static void scr_errdyn_sweep(void) {
     scr_error_release(dead[i].err);
     scr_errdyn_release_node(dead[i].dyn);
     scr_dyn_release(dead[i].code);
+    scr_dyn_release(dead[i].view_prototype);
   }
   free(dead);
 }
@@ -8685,6 +8692,8 @@ static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
   scr_errdyn_cache[scr_errdyn_n].err = scr_error_retain(e);
   scr_errdyn_cache[scr_errdyn_n].dyn = scr_dyn_retain(d);
   scr_errdyn_cache[scr_errdyn_n].code = NULL;
+  scr_errdyn_cache[scr_errdyn_n].view_prototype = NULL;
+  scr_errdyn_cache[scr_errdyn_n].fields_view = false;
   scr_errdyn_n++;
   if (scr_errdyn_n * 2 > scr_errdyn_slots) {
     free(scr_errdyn_by_err);
@@ -8741,6 +8750,7 @@ static void scr_errdyn_teardown(void) {
     scr_error_release(cache[i].err);
     scr_errdyn_release_node(cache[i].dyn);
     scr_dyn_release(cache[i].code);
+    scr_dyn_release(cache[i].view_prototype);
   }
   free(cache);
 }
@@ -8844,24 +8854,17 @@ static void scr_error_dyn_add_stack(ScrDyn *d) {
   entry->enumerable = false;
 }
 
-/* Whether `object` is the view of an error built as an Error (not a
- * subclass or another error kind) whose prototype is still the one its view
- * starts with: none, or the holder of its default `name` and `message`
- * (scr_error_dyn_fields). Such an error's prototype is Error.prototype. */
+/* Whether `object` is the view scr_error_dyn_fields built for an error
+ * created as an Error (not a subclass or another error kind) and its
+ * prototype is still the one the view started with. Such an error's
+ * prototype is Error.prototype. */
 static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object) {
-  const ScrDyn *holder = object->prototype;
   if (object->null_proto) return false;
-  if (holder) {
-    if (holder->kind != SCR_DYN_OBJ || holder->prototype || holder->null_proto || holder->v.obj.len > 2) return false;
-    for (size_t i = 0; i < holder->v.obj.len; i++) {
-      const ScrDynEntry *entry = &holder->v.obj.entries[i];
-      bool known = (entry->key_len == 4 && memcmp(entry->key, "name", 4) == 0) ||
-                   (entry->key_len == 7 && memcmp(entry->key, "message", 7) == 0);
-      if (!known || entry->enumerable || entry->accessor) return false;
-    }
-  }
   size_t hit = scr_errdyn_find(object, false);
-  return hit != SIZE_MAX && scr_errdyn_cache[hit].err->vt == &scr_error_vts[SCR_ERR_ERROR];
+  if (hit == SIZE_MAX) return false;
+  const ScrErrDynEnt *ent = &scr_errdyn_cache[hit];
+  return ent->fields_view && object->prototype == ent->view_prototype &&
+         ent->err->vt == &scr_error_vts[SCR_ERR_ERROR];
 }
 
 ScrDyn *scr_error_dyn_fields(const ScrError *e) {
@@ -8993,8 +8996,14 @@ ScrDyn *scr_dyn_from_error(const ScrError *e) {
       break;
     }
   }
+  bool fields_view = d == NULL;
   if (!d) d = scr_error_dyn_fields(e);
   scr_errdyn_append((ScrError *)e, d);
+  if (fields_view) {
+    ScrErrDynEnt *ent = &scr_errdyn_cache[scr_errdyn_n - 1];
+    ent->fields_view = true;
+    ent->view_prototype = d->prototype ? scr_dyn_retain(d->prototype) : NULL;
+  }
   return d;
 }
 

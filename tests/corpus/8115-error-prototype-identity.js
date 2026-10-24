@@ -44,3 +44,12 @@ const values = [new Error("e"), {}, Object.create(null), [], JSON.parse('{"a":1}
 console.log(values.map(kind).join(","));
 const proto = Object.getPrototypeOf(new Error("m"));
 console.log(proto.name, JSON.stringify(proto.message), Object.prototype.hasOwnProperty.call(proto, "name"));
+
+// After Object.setPrototypeOf, the prototype is the object that was set.
+const custom = {};
+const moved = Object.setPrototypeOf(new Error("moved"), custom);
+console.log(Object.getPrototypeOf(moved) === custom, Object.getPrototypeOf(moved) === Error.prototype);
+const named = { kind: "named" };
+const movedNamed = new Error();
+Object.setPrototypeOf(movedNamed, named);
+console.log(Object.getPrototypeOf(movedNamed) === named, Object.getPrototypeOf(movedNamed).kind);
