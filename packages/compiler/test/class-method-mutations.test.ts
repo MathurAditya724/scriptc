@@ -178,3 +178,20 @@ test("a store into a generic dictionary of dictionaries keeps checked dispatch",
     .replace("const settings: Settings =", "const settings: Settings<string> =");
   expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
 });
+
+test("a runtime-key store into a dictionary view of a class instance keeps checked dispatch", async () => {
+  const source = `
+class Counter {
+  n = 0;
+  tick(): number { return ++this.n; }
+}
+const counter = new Counter();
+const view: {} = counter;
+const slots: Record<string, string> = view;
+const key: string = String(process.argv.length);
+slots[key] = "replaced";
+console.log(counter.tick());
+`;
+  // The method has a slot the write can replace, which calls consult.
+  expect(await callersOf(source, "%Counter.tick")).toContain("%method.value:%Counter.tick");
+});

@@ -983,11 +983,13 @@ export class ClassProtocols {
     if ((type.flags & ts.TypeFlags.Object) === 0) return false;
     const previous = this.answers.get(type);
     if (previous !== undefined) return previous;
+    // A dictionary keeps checked identity when the protocols already mark
+    // it (a literal whose methods read `this`) or when it receives existing
+    // objects (markDictionaryViews).
     const dictionaryValue = this.dictionaryValueType(type);
     const answer =
-      dictionaryValue !== undefined
-        ? (this.index(), this.dictionaryViews.has(dictionaryValue))
-        : this.protocol(type);
+      this.protocol(type) ||
+      (dictionaryValue !== undefined && this.dictionaryViews.has(dictionaryValue));
     this.answers.set(type, answer);
     return answer;
   }

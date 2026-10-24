@@ -170,14 +170,19 @@ export function collectClassMethodMutations(
   // A string index whose values cannot be functions excludes callable
   // method slots. Class instances have no implicit index signature, so such
   // a dictionary is only a class view when the class declares that index
-  // signature, and then every method must be assignable to its value type.
-  const functionFreeDictionary = (value: ts.Expression): boolean =>
-    lowerer.checker
-      .getIndexInfosOfType(lowerer.typeOf(value))
+  // signature, and then every method must be assignable to its value type,
+  // or when the dictionary keeps checked identity: it then holds the
+  // existing objects it receives, class instances included.
+  const functionFreeDictionary = (value: ts.Expression): boolean => {
+    const type = lowerer.typeOf(value);
+    if (lowerer.classImplementedProtocol(type)) return false;
+    return lowerer.checker
+      .getIndexInfosOfType(type)
       .some(
         (index) =>
           (index.keyType.flags & ts.TypeFlags.StringLike) !== 0 && functionFree(index.type),
       );
+  };
   const literalLoopKeys = (key: ts.Expression): (string | number)[] | null => {
     if (!ts.isIdentifier(key)) return null;
     const symbol = lowerer.checker.getSymbolAtLocation(key);

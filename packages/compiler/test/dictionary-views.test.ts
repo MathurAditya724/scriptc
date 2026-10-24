@@ -75,3 +75,15 @@ console.log(table["a"]);`),
   );
   expect(kinds["table"]).toBe("record");
 });
+
+test("a dictionary literal whose methods read this keeps checked identity", async () => {
+  const kinds = await globalKinds(
+    program(`interface Table { [key: string]: () => number }
+const methods: Table = {
+  base() { return 2; },
+  twice() { return this.base() * 2; },
+};
+console.log(methods.twice());`),
+  );
+  expect(kinds["methods"]).toBe("dyn");
+});
