@@ -1741,6 +1741,67 @@ export const BUILTIN_MODULE_FNS: Record<
       ],
     },
     parseArgs: { fn: "util.parseArgs", params: [DYN], result: DYN },
+    aborted: {
+      fn: "util.aborted",
+      params: [DYN, DYN],
+      result: DYN,
+      valueParams: [
+        { mode: "optional", type: DYN, defaultValue: undefined },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
+    },
+    diff: {
+      fn: "util.diff",
+      params: [DYN, DYN],
+      result: DYN,
+      valueParams: [
+        { mode: "optional", type: DYN, defaultValue: undefined },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
+    },
+    debounce: {
+      fn: "util.debounce",
+      params: [DYN, DYN, DYN],
+      result: DYN,
+      valueParams: [
+        { mode: "optional", type: DYN, defaultValue: undefined },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
+    },
+    throttle: {
+      fn: "util.throttle",
+      params: [DYN, DYN, DYN, DYN],
+      result: DYN,
+      valueParams: [
+        { mode: "optional", type: DYN, defaultValue: undefined },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
+    },
+    convertProcessSignalToExitCode: {
+      fn: "util.signalExitCode",
+      params: [DYN],
+      result: F64,
+      valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+    },
+    // The deprecated helpers report DEP0044 and DEP0060 on their first call.
+    isArray: {
+      fn: "util.isArrayDeprecated",
+      params: [DYN],
+      result: BOOL,
+      valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+    },
+    _extend: {
+      fn: "util.extend",
+      params: [DYN, DYN],
+      result: DYN,
+      valueParams: [
+        { mode: "optional", type: DYN, defaultValue: undefined },
+        { mode: "optional", type: DYN, defaultValue: undefined },
+      ],
+    },
     parseEnv: { fn: "util.parseEnv", params: [DYN], result: DYN },
     getSystemErrorName: {
       fn: "util.getSystemErrorName",

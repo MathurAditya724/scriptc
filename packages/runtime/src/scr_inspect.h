@@ -97,6 +97,9 @@ ScrStr *scr_insp_inspect(ScrDyn *value, ScrDyn *options, ScrDyn *depth, ScrDyn *
  * strings whose substitutions can change the output. */
 bool scr_insp_format_specifies(ScrStr *first);
 bool scr_insp_format_specifies_dyn(ScrDyn *first);
+/* format's %s over a dyn value: scr_insp_dyn_s, except that values whose
+ * class defines its own toString print String(value). */
+ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth);
 ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth); /* %o: showHidden */
 void scr_insp_begin(double recurse);
 /* util.inspect's breakLength, compact (-1 for false) and sorted for the

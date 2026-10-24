@@ -39,6 +39,7 @@ import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
+import { lowerMimeInstanceof } from "../builtins/mime.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
@@ -95,6 +96,8 @@ const NO_CLASS_INSTANCE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
   "undefinedT",
   "nullT",
 ]);
+
+const PRIMITIVE_WRAPPERS = ["Boolean", "Number", "String", "BigInt", "Symbol"] as const;
 
 /** `x instanceof C` for a program-declared class C. When x's static
  * class and C are both in extends-hierarchies the test is dynamic — the
@@ -187,6 +190,20 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       loc,
     };
   }
+  // The primitive wrapper constructors: a compiled program never creates a
+  // boxed primitive (`new Boolean(...)` and friends have no lowering), and
+  // a primitive is never an instance, so the test is false for every value
+  // (typebox's IsBoolean/IsNumber/IsString guards). The operand still runs.
+  if (PRIMITIVE_WRAPPERS.some((name) => lowerer.isStdlibGlobal(expr.right, name))) {
+    const value = lowerer.lowerExpr(expr.left);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result: { kind: "boolLit", value: false, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+  }
   if (lowerer.isStdlibGlobal(expr.right, "FinalizationRegistry")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "finalizationRegistry.is", args: [value], type: BOOL, loc };
@@ -230,6 +247,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (cryptoKey) return cryptoKey;
     const netAddress = lowerNetAddressInstanceof(lowerer, expr);
     if (netAddress) return netAddress;
+    const mime = lowerMimeInstanceof(lowerer, expr);
+    if (mime) return mime;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
     if (readlineInterface) return readlineInterface;
   }

@@ -136,6 +136,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   beginFunctionLoops(emitter, fn, numericFn);
   emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
+  emitter.loopCopiesEnabled = true;
   emitter.speculativeFunction = fn.name;
   emitter.speculation = null;
   emitter.speculationResume = null;
@@ -159,6 +160,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           emitter.optionalArrayReads,
           emitter.referenceWrites,
           emitter.fnByName,
+          emitter.nodeIndex,
         )
       : new Set();
   emitter.localArrayReads = findLocalArrayReads(
@@ -324,7 +326,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
 
   const paramIds = new Set(fn.params.map((p) => p.localId));
   if (emitter.debug === null) {
-    for (const id of findIntegerViews(numericFn)) {
+    for (const id of findIntegerViews(numericFn, emitter.nodeIndex)) {
       // An i32 slot is its own view.
       if (emitter.int32Locals.has(id)) continue;
       const slot = B.slot();
@@ -1307,8 +1309,10 @@ export function emitArgPackAndTrampolinePrologue(
  * code. */
 export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
   if (emitter.wasi || emitter.mod.workers === true) return null;
-  for (const decl of emitter.decls) if (/@scr_test_sub\b/.test(decl)) return null;
-  for (const text of emitter.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return null;
+  const testSub = (text: string): boolean =>
+    text.includes("@scr_test_sub") && /@scr_test_sub\b/.test(text);
+  for (const decl of emitter.decls) if (testSub(decl)) return null;
+  for (const text of emitter.fnDefText.values()) if (testSub(text)) return null;
   // Reverse mention edges, then propagate "may park" to every mentioner.
   const mentionedBy = new Map<string, Set<string>>();
   const parks = new Set<string>();

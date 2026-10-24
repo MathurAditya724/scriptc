@@ -345,6 +345,66 @@ ScrDyn *scr_util_deprecate(ScrDyn *fn, ScrDyn *msg, ScrDyn *code, ScrDyn *option
   return deprecated;
 }
 
+/* ── util.isArray and util._extend ─────────────────────────────────────
+ * Node wraps both with its internal deprecate(): the first call while
+ * deprecation warnings are on reports DEP0044 or DEP0060 on the next tick,
+ * unless a util.deprecate wrapper already reported that code. */
+static SCR_TL bool uc_is_array_warned = false;
+static SCR_TL bool uc_extend_warned = false;
+
+static bool uc_internal_deprecation(bool *warned, const char *message, const char *code) {
+  if (scr_process_deprecation_flag_on(0) || *warned) return true;
+  *warned = true;
+  if (!uc_codes_warned) {
+    uc_codes_warned = scr_dyn_new_obj_null_proto();
+    scr_atexit(uc_codes_warned_teardown);
+  }
+  size_t code_len = strlen(code);
+  if (scr_dyn_obj_get(uc_codes_warned, code, code_len)) return true;
+  ScrStr *text = scr_str_new(message, strlen(message));
+  ScrDyn *msg = scr_dyn_new_str(text);
+  scr_str_release(text);
+  ScrStr *key = scr_str_new(code, code_len);
+  bool ok = uc_emit(msg, "DeprecationWarning", key);
+  if (ok) scr_dyn_obj_set(uc_codes_warned, code, code_len, scr_dyn_new_bool(true));
+  scr_str_release(key);
+  scr_dyn_release(msg);
+  return ok;
+}
+
+bool scr_util_is_array_deprecated(const ScrDyn *value) {
+  if (!uc_internal_deprecation(&uc_is_array_warned,
+                               "The `util.isArray` API is deprecated. Please use `Array.isArray()` instead.",
+                               "DEP0044"))
+    return false;
+  return value->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(value);
+}
+
+/* util._extend(target, source): source's own enumerable string keys,
+ * assigned to target from the last key to the first; a source that is
+ * null or not an object leaves target as it is. +1. */
+ScrDyn *scr_util_extend(ScrDyn *target, ScrDyn *source) {
+  if (!uc_internal_deprecation(&uc_extend_warned,
+                               "The `util._extend` API is deprecated. Please use Object.assign() instead.",
+                               "DEP0060"))
+    return NULL;
+  bool object = source->kind == SCR_DYN_OBJ || source->kind == SCR_DYN_ARR || source->kind == SCR_DYN_TYPED_REF ||
+                source->kind == SCR_DYN_HANDLE || source->kind == SCR_DYN_BYTES || source->kind == SCR_DYN_PROMISE ||
+                source->kind == SCR_DYN_PROXY;
+  if (!object) return scr_dyn_retain(target);
+  ScrDyn *keys = scr_dyn_obj_keys(source);
+  if (!keys) return NULL;
+  for (size_t i = keys->v.arr.len; i-- > 0 && !scr_exc_pending();) {
+    ScrDyn *key = keys->v.arr.items[i];
+    ScrDyn *value = scr_dyn_reflect_get(source, key, source);
+    if (!value) break;
+    scr_dyn_key_set(target, key->v.str, value);
+    scr_dyn_release(value);
+  }
+  scr_dyn_release(keys);
+  return scr_exc_pending() ? NULL : scr_dyn_retain(target);
+}
+
 /* ── util.callbackify ──────────────────────────────────────────────────
  * The wrapper pops the callback, binds it to the call's receiver and
  * calls original; the promise's settlement schedules the callback on the
@@ -737,4 +797,148 @@ ScrDyn *scr_util_debuglog(ScrDyn *section, ScrDyn *callback) {
     return NULL;
   }
   return logger;
+}
+
+/* ── util.diff(actual, expected) ───────────────────────────────────────
+ * Node's diff over strings (one entry per UTF-16 code unit) or arrays of
+ * strings: identical values answer an empty array before validation;
+ * otherwise each value must be a string or an array of strings
+ * (ERR_INVALID_ARG_TYPE naming `actual`, `actual[i]`, ...), and the answer
+ * is myersDiff's operation list reversed: [0, item] for kept items,
+ * [1, item] for items of actual and [-1, item] for items of expected. */
+typedef struct {
+  ScrStr **items;
+  size_t len;
+} UcDiffSeq;
+
+static void uc_diff_seq_free(UcDiffSeq *seq) {
+  for (size_t i = 0; i < seq->len; i++) scr_str_release(seq->items[i]);
+  free(seq->items);
+  seq->items = NULL;
+  seq->len = 0;
+}
+
+static bool uc_diff_input(const ScrDyn *value, const char *name, UcDiffSeq *out) {
+  out->items = NULL;
+  out->len = 0;
+  if (value->kind == SCR_DYN_STR) {
+    ScrStr *text = value->v.str;
+    size_t len = (size_t)scr_str_utf16_len(text);
+    out->items = malloc((len ? len : 1) * sizeof *out->items);
+    if (!out->items) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < len; i++) out->items[out->len++] = scr_str_char_at(text, (double)i);
+    return true;
+  }
+  ScrDyn *array = value->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(value)
+                      ? scr_dyn_typed_ref_materialize(value)
+                      : value->kind == SCR_DYN_ARR ? scr_dyn_retain((ScrDyn *)value) : NULL;
+  if (!array) {
+    scr_dyn_arg_type_fail(name, "of type string", value);
+    return false;
+  }
+  size_t len = array->v.arr.len;
+  out->items = malloc((len ? len : 1) * sizeof *out->items);
+  if (!out->items) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < len; i++) {
+    const ScrDyn *item = array->v.arr.presence && !array->v.arr.presence[i] ? scr_dyn_undefined()
+                                                                            : array->v.arr.items[i];
+    if (item->kind != SCR_DYN_STR) {
+      char element[64];
+      snprintf(element, sizeof element, "%s[%zu]", name, i);
+      scr_dyn_arg_type_fail(element, "of type string", item);
+      scr_dyn_release(array);
+      uc_diff_seq_free(out);
+      return false;
+    }
+    out->items[out->len++] = scr_str_retain(item->v.str);
+  }
+  scr_dyn_release(array);
+  return true;
+}
+
+static void uc_diff_push(ScrDyn *result, int op, ScrStr *item) {
+  ScrDyn *entry = scr_dyn_new_arr();
+  scr_dyn_arr_push(entry, scr_dyn_new_num((double)op));
+  scr_dyn_arr_push(entry, scr_dyn_new_str(item));
+  scr_dyn_arr_push(result, entry);
+}
+
+ScrDyn *scr_util_diff(ScrDyn *actual, ScrDyn *expected) {
+  if (scr_dyn_strict_eq(actual, expected)) return scr_dyn_new_arr();
+  UcDiffSeq a, e;
+  if (!uc_diff_input(actual, "actual", &a)) return NULL;
+  if (!uc_diff_input(expected, "expected", &e)) {
+    uc_diff_seq_free(&a);
+    return NULL;
+  }
+  size_t max = a.len + e.len;
+  if (max > 2147483647u) {
+    uc_diff_seq_free(&a);
+    uc_diff_seq_free(&e);
+    char message[160];
+    int n = snprintf(message, sizeof message,
+                     "The value of \"myersDiff input size\" is out of range. It must be < 2^31. Received %zu", max);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)n, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
+  size_t width = 2 * max + 1;
+  int32_t *v = calloc(width, sizeof *v);
+  int32_t **trace = malloc((max + 1) * sizeof *trace);
+  if (!v || !trace) scr_trap("scriptc: out of memory\n");
+  size_t levels = 0;
+  bool done = false;
+  for (size_t level = 0; level <= max && !done; level++) {
+    trace[levels] = malloc(width * sizeof **trace);
+    if (!trace[levels]) scr_trap("scriptc: out of memory\n");
+    memcpy(trace[levels], v, width * sizeof *v);
+    levels++;
+    long d = (long)level;
+    for (long k = -d; k <= d; k += 2) {
+      size_t offset = (size_t)(k + (long)max);
+      int32_t previous = offset > 0 ? v[offset - 1] : 0;
+      int32_t next = offset + 1 < width ? v[offset + 1] : 0;
+      long x = k == -d || (k != d && previous < next) ? next : (long)previous + 1;
+      long y = x - k;
+      while ((size_t)x < a.len && y >= 0 && (size_t)y < e.len && scr_str_eq(a.items[x], e.items[y])) {
+        x++;
+        y++;
+      }
+      v[offset] = (int32_t)x;
+      if ((size_t)x >= a.len && y >= 0 && (size_t)y >= e.len) {
+        done = true;
+        break;
+      }
+    }
+  }
+  /* backtrack: the operations from the end, which the answer reverses. */
+  ScrDyn *reversed = scr_dyn_new_arr();
+  long x = (long)a.len, y = (long)e.len;
+  for (long level = (long)levels - 1; level >= 0; level--) {
+    const int32_t *row = trace[level];
+    long k = x - y;
+    size_t offset = (size_t)(k + (long)max);
+    long prev_k;
+    if (k == -level || (k != level && row[offset - 1] < row[offset + 1])) prev_k = k + 1;
+    else prev_k = k - 1;
+    long prev_x = row[(size_t)(prev_k + (long)max)];
+    long prev_y = prev_x - prev_k;
+    while (x > prev_x && y > prev_y) {
+      uc_diff_push(reversed, 0, a.items[x - 1]);
+      x--;
+      y--;
+    }
+    if (level > 0) {
+      if (x > prev_x) uc_diff_push(reversed, 1, a.items[--x]);
+      else uc_diff_push(reversed, -1, e.items[--y]);
+    }
+  }
+  for (size_t i = 0; i < levels; i++) free(trace[i]);
+  free(trace);
+  free(v);
+  ScrDyn *result = scr_dyn_new_arr();
+  for (size_t i = reversed->v.arr.len; i-- > 0;) scr_dyn_arr_push(result, scr_dyn_retain(reversed->v.arr.items[i]));
+  scr_dyn_release(reversed);
+  uc_diff_seq_free(&a);
+  uc_diff_seq_free(&e);
+  return result;
 }

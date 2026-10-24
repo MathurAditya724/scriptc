@@ -32,6 +32,8 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
+    ...(features.mime ? { mime: true } : {}),
+    ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
     events: features.processEvents,

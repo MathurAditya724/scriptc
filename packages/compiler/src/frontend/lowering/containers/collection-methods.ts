@@ -43,6 +43,7 @@ import {
 } from "../collection-ingestion.js";
 import { strCharsCall } from "./array-construction.js";
 import { arrayElementRead } from "./array-iteration.js";
+import { isMimeParamsIterable } from "../builtins/mime.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { generatorDrain, lowerCollectionIteratorValue } from "../iterator-adapters.js";
@@ -1259,8 +1260,8 @@ export function lowerMapSeedNew(
     );
   }
   // new Map(sp) / new Map(sp.entries()): the checked-dynamic view's live
-  // pairs seed the map in order.
-  if (isSearchParamsIterable(lowerer, argNode)) {
+  // pairs seed the map in order, and so do a MIMEParams's entries.
+  if (isSearchParamsIterable(lowerer, argNode) || isMimeParamsIterable(lowerer, argNode)) {
     return mapFromSeedValue(lowerer, lowerer.lowerExprExpecting(argNode, DYN), mapT);
   }
   const input = collectionInput(lowerer, argNode);

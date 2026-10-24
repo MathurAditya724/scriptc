@@ -470,6 +470,7 @@ const DYN_READ_ONLY = new Set<string>([
   "insp.formatWithOptions",
   "insp.inspect",
   "insp.registerCustom",
+  "insp.dynFormatS",
   "insp.dynHidden",
   // The dynamic-tier operators run their dyn twins (scr_js_value.c); the
   // conversions move a value between dyn and jsval, and js.toF64 is
@@ -1220,8 +1221,11 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
   // Each function's parameter and result writes under its latest analysis:
   // at the fixpoint, the ranges of every write under the final facts.
   const lastWrites = new Map<string, Map<string, IntegerRange | null>>();
-  while (queue.length) {
-    const fn = functions.get(queue.pop()!)!;
+  // First in, first out: a function whose slots change while others wait
+  // goes after them, so a caller of many callees is analyzed again once
+  // for all of their changes, not once for each.
+  for (let head = 0; head < queue.length; head++) {
+    const fn = functions.get(queue[head]!)!;
     queued.delete(fn.name);
     const params = slots.facts(fn.name).params;
     if (params) for (const id of params.keys()) reads(`param:${fn.name}\0${id}`, fn.name);
@@ -1675,8 +1679,14 @@ function narrowSlotRanges(
   // The ranges every function was last analyzed under.
   let analyzed: Map<string, IntegerRange> = new Map(proven);
   let verified: Map<string, IntegerRange> = new Map(proven);
-  // Functions whose recorded writes predate their current facts.
+  // Functions whose recorded writes predate their current facts: those
+  // whose parameters rangedParameters proved, and their callers, which
+  // wrote nothing into those parameters while they had no fact.
   const dirty = new Set(changed);
+  for (const name of changed) {
+    const callers = readersOf(`ret:${name}`);
+    if (callers) for (const caller of callers) dirty.add(caller);
+  }
   // The narrowing operator: a bound moves at most once from its proven
   // value (a revived result's from int32), so recursion that shifts its
   // argument (`f(d - 1)`) cannot walk a bound down one step per round.

@@ -1549,6 +1549,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           reference.kind === "map" ||
           reference.kind === "set" ||
           reference.kind === "union" ||
+          // A promise of dyn boxes its own promise, so identity holds;
+          // other promise types box a fresh adapter.
+          (reference.kind === "promise" && reference.inner.kind === "dyn") ||
           DYN_HANDLE_KINDS.has(reference.kind)) &&
         lowerer.dynConvertible(reference)
       ) {

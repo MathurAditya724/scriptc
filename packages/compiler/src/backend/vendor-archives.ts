@@ -14,6 +14,10 @@ import type { CcDriver } from "./native/driver.js";
 
 const execFileAsync = promisify(execFile);
 
+/** The section flags the libregexp/libunicode objects build with (the
+ * runtime pack's executable_section_elimination flags). */
+const LRE_SECTION_FLAGS = ["-ffunction-sections", "-fdata-sections"];
+
 import {
   QJS_COMMIT,
   MBEDTLS_VERSION,
@@ -191,13 +195,13 @@ export function createVendorArchives(context: VendorArchiveContext) {
       (sanitize ? "asan" : "plain") +
       (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
       `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
-    const cacheDir = join(cacheRoot, `${QJS_COMMIT.slice(0, 12)}-lre-${flavor}`);
+    const cacheDir = join(cacheRoot, `${QJS_COMMIT.slice(0, 12)}-lre-sections-${flavor}`);
     return LRE_SOURCES.map((f) => join(cacheDir, f.replace(/\.c$/, ".o")));
   }
 
   /** The libregexp objects for one flavor, compiled lazily on the first
    * regex-using build (~1s) and cached under
-   * <build-cache>/vendor/<commit>-lre-<flavor>-<target>-<toolchain>/*.o — with the same atomic-rename
+   * <build-cache>/vendor/<commit>-lre-sections-<flavor>-<target>-<toolchain>/*.o — with the same atomic-rename
    * publish (parallel first builds race safely; losers discard their work).
    * Plain is -Os to keep regex-using binaries small; asan matches the final link so
    * the sanitized lane instruments the matcher too. Cross targets get their
@@ -228,6 +232,10 @@ export function createVendorArchives(context: VendorArchiveContext) {
       vendor: vendorEngineDir(),
       sources: LRE_SOURCES,
       objects: lreObjectPaths(sanitize, driver, buildIdentity, cacheRoot),
+      // Section elimination keeps only the libunicode tables a program
+      // reaches: the URL host parser's NFC links the normalization tables
+      // without the regex property ones.
+      flags: LRE_SECTION_FLAGS,
     });
   }
 
@@ -296,6 +304,7 @@ export function createVendorArchives(context: VendorArchiveContext) {
     vendor: string;
     sources: readonly string[];
     objects: string[];
+    flags?: readonly string[];
   }): Promise<string[]> {
     const { sanitize, driver, cacheRoot, flavor, name, vendor, sources, objects } = options;
     if ((await Promise.all(objects.map(validVendorArtifact))).every(Boolean)) return objects;
@@ -312,6 +321,7 @@ export function createVendorArchives(context: VendorArchiveContext) {
             "-std=c11",
             ...driver.targetArgs,
             ...(sanitize ? ["-O1", "-fsanitize=address"] : ["-Os"]),
+            ...(options.flags ?? []),
             "-I",
             vendor,
             "-c",

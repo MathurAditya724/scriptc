@@ -1147,6 +1147,17 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * wrappers; call sites with a static function type check them back. */
   "util.inherits": { argTypes: [DYN, DYN], result: VOID },
   "util.deprecate": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+  "util.isArrayDeprecated": { argTypes: [DYN], result: BOOL },
+  "util.extend": { argTypes: [DYN, DYN], result: DYN },
+  "util.signalExitCode": { argTypes: [DYN], result: F64 },
+  "util.aborted": { argTypes: [DYN, DYN], result: DYN },
+  "util.diff": { argTypes: [DYN, DYN], result: DYN },
+  "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
+  "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+  "mime.typeNew": { argTypes: [DYN, DYN], result: DYN },
+  "mime.typeParse": { argTypes: [DYN], result: DYN },
+  "mime.paramsNew": { argTypes: [], result: DYN },
+  "mime.is": { argTypes: [DYN, F64], result: BOOL },
   "util.callbackify": { argTypes: [DYN], result: DYN },
   /** util.promisify over an untyped function value: a native dyn function
    * whose calls answer a dyn promise the appended callback settles. */
@@ -4516,6 +4527,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Whether a runtime format string has a '%' before its last character. */
   "insp.formatSpecifies": { argTypes: [STRING], result: BOOL },
   "insp.formatSpecifiesDyn": { argTypes: [DYN], result: BOOL },
+  "insp.dynFormatS": { argTypes: [DYN, F64], result: STRING },
   /** util.format's %o over a checked-dynamic value: inspect with
    * showHidden. Kinds whose hidden entries have no rendering throw the
    * 'not supported yet' Error. */

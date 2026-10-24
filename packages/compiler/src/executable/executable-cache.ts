@@ -75,6 +75,8 @@ export interface EarlyExecutableNativeFeatures {
   declAdopt?: boolean;
   dynForAwait?: boolean;
   eventsOnceSignal?: boolean;
+  mime?: boolean;
+  utilTiming?: boolean;
   dynBuffer?: boolean;
   builtinValues?: boolean;
   events: boolean;

@@ -3910,6 +3910,85 @@ declare module "util" {
   ): string;
   export function parseEnv(content: string): { [key: string]: string | undefined };
   export function inherits(constructor: unknown, superConstructor: unknown): void;
+  export class MIMEType {
+    constructor(input: string | { toString: () => string });
+    static parse(input: string | { toString: () => string }): MIMEType | null;
+    type: string;
+    subtype: string;
+    readonly essence: string;
+    readonly params: MIMEParams;
+    toString(): string;
+    toJSON(): string;
+  }
+  export class MIMEParams {
+    delete(name: string): void;
+    entries(): IterableIterator<[name: string, value: string]>;
+    get(name: string): string | null;
+    has(name: string): boolean;
+    keys(): IterableIterator<string>;
+    set(name: string, value: string): void;
+    values(): IterableIterator<string>;
+    toString(): string;
+    toJSON(): string;
+    [Symbol.iterator](): IterableIterator<[name: string, value: string]>;
+  }
+  export type DiffEntry = [operation: -1 | 0 | 1, value: string];
+  export function diff(
+    actual: string | readonly string[],
+    expected: string | readonly string[],
+  ): DiffEntry[];
+  export interface DebounceOptions {
+    leading?: boolean;
+    rejectOnCancel?: boolean;
+    signal?: AbortSignal;
+  }
+  /** Every call answers a promise of the result of the call it waits for. */
+  export interface DebouncedFunction<T extends (...args: any[]) => any> {
+    (...args: Parameters<T>): Promise<Awaited<ReturnType<T>>>;
+    cancel(reason?: unknown): void;
+    flush(): void;
+    ref(): this;
+    unref(): this;
+    readonly pending: Promise<Awaited<ReturnType<T>>> | null;
+    readonly pendingCount: number;
+  }
+  export function debounce<T extends (...args: any[]) => any>(
+    fn: T,
+    wait: number,
+    options?: DebounceOptions,
+  ): DebouncedFunction<T>;
+  export interface ThrottleOptions {
+    concurrency?: number;
+    maxPending?: number;
+    overflow?: "queue" | "drop";
+    signal?: AbortSignal;
+    strict?: boolean;
+  }
+  export interface ThrottledFunction<T extends (...args: any[]) => any> {
+    (...args: Parameters<T>): Promise<Awaited<ReturnType<T>>>;
+    cancel(reason?: unknown): void;
+    hasImmediateCapacity(): boolean;
+    ref(): this;
+    unref(): this;
+    readonly pending: Promise<Awaited<ReturnType<T>>> | null;
+    readonly pendingCount: number;
+    readonly activeCount: number;
+  }
+  export function throttle<T extends (...args: any[]) => any>(
+    fn: T,
+    limit: number,
+    interval: number,
+    options?: ThrottleOptions,
+  ): ThrottledFunction<T>;
+  /** Resolves with the abort event once `signal` aborts, or with undefined
+   * when it already has. */
+  export function aborted(signal: AbortSignal, resource: any): Promise<unknown>;
+  /** 128 plus the number of the signal, the exit code of a process it terminates. */
+  export function convertProcessSignalToExitCode(signalCode: string): number;
+  /** @deprecated Since v4.0.0 - Use `Array.isArray()` instead. */
+  export function isArray(object: unknown): object is unknown[];
+  /** @deprecated Since v6.0.0 - Use `Object.assign()` instead. Answers target itself. */
+  export function _extend<T extends object>(target: T, source: object | null | undefined): T;
   export interface DeprecateOptions {
     modifyPrototype?: boolean;
   }

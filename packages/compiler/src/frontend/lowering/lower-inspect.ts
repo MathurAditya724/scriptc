@@ -3333,7 +3333,7 @@ function formatSValue(
   if (t.kind === "dyn") {
     return {
       kind: "libCall",
-      fn: "insp.dynS",
+      fn: "insp.dynFormatS",
       args: [value, numLit(depth, loc)],
       type: STRING,
       loc,

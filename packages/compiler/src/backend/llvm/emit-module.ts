@@ -65,6 +65,7 @@ import { STRING_READ_HELPERS, stringScanDecl } from "./string-reads.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import { InternalCompilerError } from "../../errors.js";
 import { targetCpuAttribute } from "../target-cpu.js";
+import type { IrFunction } from "../../ir/ir.js";
 
 /** The function bodies emitted in `chunks` contiguous ranges, each by its
  * own emitter (LlEmitter.chunkEmitter), then merged in function order: the
@@ -206,6 +207,26 @@ function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean)
   ];
 }
 
+/** The group line written before each function's text. Functions from one
+ * source file share a group, which the LLVM helper keeps in the same
+ * partitions so that their calls to each other stay inside a partition
+ * (native/llvm-codegen/src/partition.h). A group is numbered by the first
+ * function of its file in the module's function order, which does not depend
+ * on the host. Functions without a source file get no group. */
+function partitionGroupLines(functions: readonly IrFunction[]): string[] {
+  const groups = new Map<string, number>();
+  return functions.map((fn) => {
+    const file = fn.loc.file;
+    if (file === "") return PARTITION_GROUP_END;
+    let group = groups.get(file);
+    if (group === undefined) groups.set(file, (group = groups.size));
+    return `${PARTITION_GROUP_END} ${group}`;
+  });
+}
+
+/** Ends the group of the definitions that follow. */
+const PARTITION_GROUP_END = "; scriptc-group";
+
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
@@ -344,6 +365,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
+  // URL programs give the host parser the IDNA unit's ToASCII.
+  const usesUrlIdna = runtimeFeatures.urlIdna;
   const snapshotsTlsCa = runtimeFeatures.tls || runtimeFeatures.tlsCa;
   // The process verdict has the same precedence as the C reference
   // emitter: node:test owns the final status when present; otherwise an
@@ -396,6 +419,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
+  if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
@@ -912,9 +936,13 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   for (const line of wrappers) out.push(line);
   for (const line of asyncDefs) out.push(line);
   for (const line of emitter.resolveThunkDefs) out.push(line);
-  out.push(fnDefs[0] ?? "");
-  for (let i = 1; i < fnDefs.length; i++) out.push("", fnDefs[i]!);
-  out.push("");
+  const groups = partitionGroupLines(emitter.mod.functions);
+  for (let i = 0; i < fnDefs.length; i++) {
+    if (i > 0) out.push("");
+    out.push(groups[i] ?? PARTITION_GROUP_END, fnDefs[i]!);
+  }
+  if (fnDefs.length === 0) out.push("");
+  out.push(PARTITION_GROUP_END, "");
   // WebAssembly modules translated into this program, and the registry.
   for (const line of emitWasmModules(emitter.mod, flushedDecls, emitter.wasmBoundsChecks))
     out.push(line);
@@ -1027,6 +1055,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
+    ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),

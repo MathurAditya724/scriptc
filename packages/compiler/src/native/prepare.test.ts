@@ -70,7 +70,7 @@ function fixture() {
     loads++;
     return runFrontend(path, loadProgram, npmStatic, externalTypes);
   };
-  const prepare = (extra: { emitIr?: boolean } = {}) =>
+  const prepare = (extra: { emitIr?: boolean; optimization?: "release" | "dev" } = {}) =>
     prepareNativeExecutable(entry, { ...options, ...extra }, null, toolchain, frontend, cache);
   return { root, entry, dependency, cache, options, prepare, loads: () => loads };
 }
@@ -121,6 +121,38 @@ test("comment and whitespace edits reuse the frontend output a fresh build repro
   const edited = f.prepare();
   expect(f.loads()).toBe(2);
   expect(edited.ok && edited.llvm.join("")).not.toBe(first.llvm.join(""));
+});
+
+test("a dev build reuses its frontend output after edits that keep every token's position", () => {
+  const f = fixture();
+  const dev = { optimization: "dev" as const };
+  const first = f.prepare(dev);
+  expect(first.ok, JSON.stringify(first)).toBe(true);
+  if (!first.ok) return;
+  // Debug information records lines and columns: a comment after the last
+  // token and trailing whitespace keep them.
+  const appended = 'export const value = "first";  \n// The exported value.\n';
+  writeFileSync(f.dependency, appended);
+  const reused = f.prepare(dev);
+  expect(f.loads()).toBe(1);
+  expect(reused.ok).toBe(true);
+  if (!reused.ok) return;
+  expect(reused.llvm.join("")).toBe(first.llvm.join(""));
+  expect(new Map(reused.sources).get(f.dependency)).toBe(appended);
+  const fresh = prepareNativeExecutable(
+    f.entry,
+    { ...f.options, ...dev },
+    null,
+    fixtureToolchain(),
+    (path, npmStatic, externalTypes) => runFrontend(path, loadProgram, npmStatic, externalTypes),
+    new NativeCache(join(f.root, "fresh-cache")),
+  );
+  expect(fresh.ok && fresh.llvm.join("")).toBe(first.llvm.join(""));
+  // A comment that moves the token after it is rebuilt.
+  writeFileSync(f.dependency, '// The exported value.\nexport const value = "first";\n');
+  const moved = f.prepare(dev);
+  expect(f.loads()).toBe(2);
+  expect(moved.ok && moved.llvm.join("")).not.toBe(first.llvm.join(""));
 });
 
 test("a comment edit inside source text the output carries is rebuilt", () => {

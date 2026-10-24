@@ -2240,12 +2240,22 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
       ib_cstr(&out, base->v.fn.name);
     }
     ib_char(&out, ']');
-  } else if (name && name[0]) {
-    ib_cstr(&out, "[Function: ");
-    ib_cstr(&out, name);
-    ib_char(&out, ']');
   } else {
-    ib_cstr(&out, "[Function (anonymous)]");
+    /* The base names the function's own string `name` when its table has
+     * one (Object.defineProperty, util.callbackify, util.debounce). */
+    size_t name_len = name ? strlen(name) : 0;
+    const ScrDyn *own_name = table && table->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(table, "name", 4) : NULL;
+    if (own_name && own_name->kind == SCR_DYN_STR) {
+      name = own_name->v.str->data;
+      name_len = own_name->v.str->len;
+    }
+    if (name_len) {
+      ib_cstr(&out, "[Function: ");
+      ib_bytes(&out, name, name_len);
+      ib_char(&out, ']');
+    } else {
+      ib_cstr(&out, "[Function (anonymous)]");
+    }
   }
   ScrStr *tag = ib_take(&out);
   if (cls && !props && cls->own_static_fields) {
@@ -2308,8 +2318,10 @@ static const char *insp_hidden_refusal(const ScrDyn *d) {
     case SCR_DYN_BYTES: return d->buffer ? "Buffer" : d->v.bytes->is_data_view ? "DataView" : "typed array";
     case SCR_DYN_OBJ: return scr_dyn_obj_get(d, "%error", 6) != NULL ? "Error" : NULL;
     case SCR_DYN_HANDLE:
+      /* A MIMEParams keeps its entries private: Node prints MIMEParams {}
+       * with or without showHidden. */
       return d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_SET ||
-                     d->v.handle.tag == SCR_DYNH_DATE
+                     d->v.handle.tag == SCR_DYNH_DATE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS
                  ? NULL
                  : scr_dyn_handle_cls(d);
     default: return NULL;
@@ -2725,6 +2737,14 @@ ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth) {
   return scr_insp_dyn(d, 0, depth);
 }
 
+ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) {
+  /* hasBuiltInToString is false for MIMEType and MIMEParams (their
+   * constructors are not globals): %s prints String(value). */
+  if (d->kind == SCR_DYN_HANDLE && (d->v.handle.tag == SCR_DYNH_MIME_TYPE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS))
+    return scr_dyn_string_coerce_js(d);
+  return scr_insp_dyn_s(d, depth);
+}
+
 /* ── util.format over checked-dynamic values ─────────────────────────────
  * formatWithOptionsInternal over argument values whose types are known
  * only at run time: util.format and util.formatWithOptions with a runtime
@@ -2829,6 +2849,8 @@ static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {
   if (value->kind == SCR_DYN_STR) return scr_str_retain(value->v.str);
   if (value->kind == SCR_DYN_NUM) return scr_insp_f64(value->v.num);
   if (value->kind == SCR_DYN_BIGINT) return scr_bigint_inspect(value->v.bigint);
+  if (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_MIME_TYPE || value->v.handle.tag == SCR_DYNH_MIME_PARAMS))
+    return scr_dyn_string_coerce_js(value);
   if (value->kind == SCR_DYN_FUNC) {
     insp_fmt_fence(o, "%s of a function prints its source text, which a compiled binary does not keep");
     return NULL;

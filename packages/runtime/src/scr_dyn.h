@@ -23,8 +23,8 @@
  * Ownership: the checked-dynamic tree owns its children (strings, items, entry keys+values);
  * releasing the root releases the tree recursively. scr_json_parse borrows
  * the text and returns +1 — or THROWS a catchable string shaped like Node's
- * V8 messages ("Unexpected end of JSON input"; approximate fidelity, see
- * SEMANTICS.md) and returns NULL. scr_dyn_obj_get returns a BORROWED
+ * V8 messages ("Unexpected end of JSON input", "... in JSON at position
+ * <n> (line <l> column <c>)") and returns NULL. scr_dyn_obj_get returns a BORROWED
  * member (the compiler's builders retain what they extract themselves).
  */
 
@@ -186,6 +186,8 @@ typedef enum {
   X(MATCH_SOURCE, 55) /* a match result's pending metadata (scr_regex.c) */ \
   X(MESSAGE_EVENT, 50) /* ScrEvent with data — BroadcastChannel's 'message' */ \
   X(MESSAGE_PORT, 36) \
+  X(MIME_PARAMS, 78) /* util.MIMEParams (scr_mime.c) */ \
+  X(MIME_TYPE, 79) /* util.MIMEType (scr_mime.c) */ \
   X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
   X(NET_SERVER, 3) /* ScrNetServer — net.Server (http.Server rides the same handle) */ \
   X(NET_SOCKET, 2) /* ScrNetSocket — net.Socket */ \
@@ -681,6 +683,14 @@ void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry 
 bool scr_dyn_field_eq_str(const ScrDyn *d, const ScrStr *key, const ScrStr *value);
 bool scr_dyn_field_eq_num(const ScrDyn *d, const ScrStr *key, double value);
 bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value);
+/* The case a union's checked match takes from its string discriminant: the
+ * index in `values` of the string `d`'s own data property `key` holds, or
+ * -1 when every literal test above fails (`d` is not an object, or its own
+ * data property `key` holds no string among `values`), or -2 when only the
+ * tests themselves can tell (a typed capsule, an accessor, or a property
+ * `d` does not own). Borrowed args. */
+int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *const *values,
+                                  size_t count);
 
 /* Object.keys/values/entries over the checked-dynamic tree: JS own-key order (array-index
  * keys ascending first), dyn-array results (+1); values/entries RETAIN
@@ -1193,6 +1203,10 @@ void scr_weak_dispose(void *object);
 double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);
+/* The member `key` of an array found before Array.prototype: an own named
+ * property, or one on its custom prototype chain (Object.setPrototypeOf).
+ * NULL when the chain reaches Array.prototype without it. +1. */
+ScrDyn *scr_dyn_arr_custom_member(const ScrDyn *d, const char *key, size_t key_len);
 void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
@@ -1395,6 +1409,9 @@ ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method
  * *mid_slot, the site's -1-initialized slot, caches the name's method id
  * after the first call, so later calls skip the name lookup. */
 ScrDyn *scr_dyn_invoke_prepared_id(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
+/* scr_dyn_invoke_prepared_id for a call whose result is discarded: a plain
+ * array's push appends without boxing its new length. */
+void scr_dyn_invoke_discard_id(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 /* scr_dyn_invoke_prepared_id for Buffer.prototype method names
  * (scr_bytes_dyn.c), one entry per method family: a Buffer receiver runs
  * the method, any other takes the ordinary dispatch. */

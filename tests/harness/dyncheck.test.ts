@@ -191,11 +191,11 @@ for (const text of inputs) {
     expect(r.stderr).toBe("");
     expect(r.stdout.split("\n")).toEqual([
       "SyntaxError: Unexpected end of JSON input (same)",
-      "SyntaxError: Expected ',' or '}' after property value in JSON at position 19 (same)",
-      "SyntaxError: Bad escaped character in JSON at position 11 (same)",
-      "SyntaxError: Unexpected non-whitespace character after JSON at position 22 (same)",
-      'SyntaxError: Unexpected token \']\', ...","x":[1,],"qty":"... is not valid JSON (same)',
-      "SyntaxError: Bad Unicode escape in JSON at position 21 (same)",
+      "SyntaxError: Unexpected number in JSON at position 19 (line 1 column 20) (same)",
+      "SyntaxError: Bad escaped character in JSON at position 11 (line 1 column 12) (same)",
+      "SyntaxError: Unexpected non-whitespace character after JSON at position 22 (line 1 column 23) (same)",
+      'SyntaxError: Unexpected token \']\', ..."a","x":[1,],"qty":1}"... is not valid JSON (same)',
+      "SyntaxError: Bad Unicode escape in JSON at position 21 (line 1 column 22) (same)",
       "RangeError: Maximum call stack size exceeded (same)",
       "TypeError: expected number at $[0].qty, got undefined (plain ok)",
       "TypeError: expected number at $[1].qty, got boolean (plain ok)",
@@ -268,7 +268,7 @@ try {
       "err TypeError: expected number at $.id, got undefined",
       "err TypeError: expected number at $.id, got null",
       "err TypeError: expected object at $, got array",
-      "err SyntaxError: Unexpected end of JSON input",
+      "err SyntaxError: Expected ',' or '}' after property value in JSON at position 39 (line 1 column 40)",
       "ok Infinity \uFFFD 0  ",
       "ok 7 reordered 0  ",
       "err expected number at $[1].qty, got string",
@@ -394,6 +394,95 @@ console.log("unreachable", s.kind);
     );
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain("Uncaught TypeError: expected object | object at $, got object");
+  });
+
+  test("a union read by its discriminant fails with every arm named, as arm-by-arm tests do", async () => {
+    // Five record arms with six literals, plus string and number arms: the
+    // check reads `kind` once and tests only the arm it names and the
+    // arms that are not records.
+    const r = await compileAndRun(
+      "union-discriminant-dispatch",
+      `type Expr =
+  | { kind: "num"; value: number }
+  | { kind: "str"; text: string }
+  | { kind: "neg"; operand: Expr }
+  | { kind: "add" | "mul"; left: Expr; right: Expr }
+  | { items: Expr[]; kind: "list" }
+  | string
+  | number;
+const inputs = [
+  '{"kind":"num"}',
+  '{"kind":"nope","value":1}',
+  '{"kind":7,"value":1}',
+  '{"value":1}',
+  '{"kind":"neg","operand":{"kind":"add","left":{"kind":"num","value":1},"right":{"kind":"str","text":5}}}',
+  'true',
+  '{"items":["a",3,{"kind":"mul","left":"x","right":2}],"kind":"list"}',
+];
+for (const input of inputs) {
+  try {
+    console.log(JSON.stringify(JSON.parse(input) as Expr));
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+`,
+    );
+    const any = "number | object | object | object | object | object | string";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got boolean`,
+        '{"items":["a",3,{"kind":"mul","left":"x","right":2}],"kind":"list"}',
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a getter that changes the discriminant during an arm's check continues with the later arms", async () => {
+    // Each getter sets `kind` and fails its arm's check: to a later arm's
+    // literal (that arm matches), to an earlier arm's literal (arm-by-arm
+    // tests do not go back), and to a literal no arm holds.
+    const r = await compileAndRun(
+      "union-discriminant-getter",
+      `type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "square"; side: number }
+  | { kind: "rect"; height: number; width: number }
+  | { kind: "tri"; a: number; b: number; c: number };
+const flip = (value: any, to: string): string => {
+  value.kind = to;
+  return "none";
+};
+const later: any = { kind: "circle", get radius() { return flip(later, "square"); }, side: 3 };
+const earlier: any = { kind: "square", radius: 2, get side() { return flip(earlier, "circle"); } };
+const unknown: any = { kind: "square", get side() { return flip(unknown, "hexagon"); } };
+const inputs = [later, earlier, unknown];
+for (const input of inputs) {
+  try {
+    const shape = input as Shape;
+    console.log("matched", shape.kind);
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+`,
+    );
+    const any = "object | object | object | object";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "matched square",
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        "",
+      ].join("\n"),
+    );
   });
 
   test("nested paths point at the offending element", async () => {

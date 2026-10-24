@@ -68,6 +68,7 @@ import { isDiffieHellmanType, lowerDiffieHellmanCall } from "./builtins/dh.js";
 import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
 import { valueStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
+import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
 import { iterableSlotValue } from "./iterable-values.js";
@@ -3756,7 +3757,7 @@ export class Lowerer {
       positionOf: (node) => this.positions.of(node),
       shapes: this.shapes,
       unions: this.unions,
-      classNamer: this.classNamer,
+      classNamer: (decl) => this.classNamer(decl),
       resolveTypeParam: this.typeParamResolver,
       resolveTypeParamTs: this.typeParamTsResolver,
       isErasing: () => this.erasingDepth > 0,
@@ -3837,8 +3838,8 @@ export class Lowerer {
       },
       mixinIntersectionInstance: (widened) => mixinIntersectionInstanceType(this, widened),
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
-      isStdlibFile: this.isStdlibFile,
-      isNpmFile: this.isNpmFile,
+      isStdlibFile: (sf) => this.isStdlibFile(sf),
+      isNpmFile: (sf) => this.isNpmFile(sf),
       // The declaration-typed boundary's generated types (decl-projection.ts)
       // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: (sf) =>
@@ -3910,7 +3911,8 @@ export class Lowerer {
   /** Declared class fields may store a DYN value only when its static type
    * is `unknown` or `object` (also with `null` or `undefined`, or an array
    * of those), names checked protocol identity, is an owned runtime
-   * handle (a Worker or MessagePort, a fetch Headers/Request/Response, or
+   * handle (a Worker or MessagePort, a fetch Headers/Request/Response or
+   * AbortController/AbortSignal, or
    * a node:crypto ECDH, DiffieHellman or DiffieHellmanGroup), or is a
    * WeakMap/WeakSet (native weak collections live in checked-dynamic
    * storage, as locals of those types do); `any` fields stay refused. */
@@ -8102,16 +8104,24 @@ export class Lowerer {
         lower: () => IrFunction | null;
       }
     >();
-    const bodyRoots = (...roots: (ts.Node | undefined | null)[]): ts.Node[] =>
-      roots.filter((root) => root !== undefined && root !== null);
-    const functionRoots = (decl: ts.FunctionLikeDeclaration): ts.Node[] =>
-      bodyRoots(...decl.parameters.nodes.map((param) => param.initializer), decl.body);
-    const classCtorRoots = (info: ClassInfo): ts.Node[] =>
-      bodyRoots(
-        ...(info.ctor?.parameters?.nodes ?? []).map((param) => param.initializer),
-        info.ctor?.body,
-        ...info.fieldOrder.map((field) => field.initializer),
-      );
+    // Roots are collected with plain pushes: spread arguments into a rest
+    // parameter pass the nodes as dynamic values.
+    const addRoot = (roots: ts.Node[], root: ts.Node | undefined | null): void => {
+      if (root !== undefined && root !== null) roots.push(root);
+    };
+    const functionRoots = (decl: ts.FunctionLikeDeclaration): ts.Node[] => {
+      const roots: ts.Node[] = [];
+      for (const param of decl.parameters.nodes) addRoot(roots, param.initializer);
+      addRoot(roots, decl.body);
+      return roots;
+    };
+    const classCtorRoots = (info: ClassInfo): ts.Node[] => {
+      const roots: ts.Node[] = [];
+      for (const param of info.ctor?.parameters?.nodes ?? []) addRoot(roots, param.initializer);
+      addRoot(roots, info.ctor?.body);
+      for (const field of info.fieldOrder) addRoot(roots, field.initializer);
+      return roots;
+    };
     const classMemberRoots = (info: ClassInfo): ts.Node[] => {
       const roots = classCtorRoots(info);
       for (const { member } of this.classMethodMembers(info)) roots.push(...functionRoots(member));
@@ -8301,7 +8311,8 @@ export class Lowerer {
         register(`%${cName}.set:${prop}`, [], () => this.throwingSetterFn(info, prop));
       }
     };
-    for (const name of collectionEdges) this.onEdge(name);
+    const onEdge = this.onEdge;
+    for (const name of collectionEdges) onEdge(name);
     // Generic instances queued by the bodies above lower here (an instance
     // body fires edges of its own and can queue further instances of
     // either kind — function instances and class instantiations drain to
@@ -8436,7 +8447,8 @@ export class Lowerer {
     // profile-mapped exports are called from outside the graph, so they
     // seed the worklist beside the init bodies. Unknown names are inert
     // (the export-map resolution reports them as SC4002 later).
-    for (const root of extraRoots ?? []) this.onEdge?.(root);
+    const rootEdge = this.onEdge;
+    for (const root of extraRoots ?? []) rootEdge?.(root);
     const shuffle = lowerShuffle();
     const drainUnits = (): void => {
       while (queue.length > 0) {
@@ -8554,7 +8566,9 @@ export class Lowerer {
   /** Reachability hook (see emitReachable): fires when lowering resolves a
    * reference to a lowerable body. */
   noteEdge(name: string): void {
-    if (this.onEdge) this.onEdge(name);
+    // Called as a plain function: the instance is not its receiver.
+    const onEdge = this.onEdge;
+    if (onEdge) onEdge(name);
   }
 
   /** A subclass constructor's super() edge: the base constructor runs, but
@@ -11954,12 +11968,15 @@ export class Lowerer {
 
   /** Method-like members with their collected method-map names. Body
    * lowering omits abstract declarations; ABI analysis must include them
-   * because an abstract-typed call selects the same virtual slot. */
-  *classMethodMembers(
+   * because an abstract-typed call selects the same virtual slot. An array,
+   * not a generator: a generator's yielded values are dynamic values, which
+   * would make every syntax node one. */
+  classMethodMembers(
     info: ClassInfo,
     includeAbstract = false,
-  ): Generator<{ mName: string; member: ts.MethodDeclaration | ts.AccessorDeclaration }> {
-    if (!info.decl) return; // builtin error classes: runtime-provided bodies
+  ): { mName: string; member: ts.MethodDeclaration | ts.AccessorDeclaration }[] {
+    const members: { mName: string; member: ts.MethodDeclaration | ts.AccessorDeclaration }[] = [];
+    if (!info.decl) return members; // builtin error classes: runtime-provided bodies
     for (const member of info.decl.members.nodes) {
       const fnLike =
         ts.isMethodDeclaration(member) || ts.isGetAccessor(member) || ts.isSetAccessor(member)
@@ -11983,8 +12000,9 @@ export class Lowerer {
         : `${ts.isGetAccessor(fnLike) ? "get" : "set"}:${baseName}`;
       const signature = info.methods.get(mName);
       if (!signature || (!fnLike.body && !(includeAbstract && signature.abstract))) continue;
-      yield { mName, member: fnLike };
+      members.push({ mName, member: fnLike });
     }
+    return members;
   }
 
   lowerClassCtor(info: ClassInfo): IrFunction {
@@ -13326,6 +13344,7 @@ export class Lowerer {
       lowerEcdhCall(this, expr) ??
       lowerDiffieHellmanCall(this, expr) ??
       lowerNetAddressCall(this, expr) ??
+      lowerMimeCall(this, expr) ??
       lowerFetchElementMethodCall(this, expr) ??
       lowerDynamicImportCall(this, expr) ??
       lowerCall(this, expr)
@@ -13550,6 +13569,7 @@ export class Lowerer {
       lowerResponseNew(this, expr) ??
       lowerBlobNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
+      lowerMimeNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
       lowerStaticTransformStreamNew(this, expr) ??
       lowerConsoleNew(this, expr);
