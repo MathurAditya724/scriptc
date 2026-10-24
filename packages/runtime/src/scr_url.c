@@ -1743,7 +1743,7 @@ static bool scr_native_url_set(void *ptr, const char *key, size_t len, const Scr
 /* util.inspect's view of a URL: the properties Node's URL inspector lists,
  * in its order, with the live searchParams object. Past the depth limit
  * the inspector returns the URL itself, which util.inspect prints as
- * [URL]. */
+ * `URL {}` (it has no own properties). */
 static ScrDyn *scr_native_url_inspect_view(void *ptr) {
   static const char *const keys[] = {"href", "origin", "protocol", "username", "password",
                                      "host", "hostname", "port", "pathname", "search",
@@ -1850,7 +1850,6 @@ ScrDyn *scr_dyn_native_url(ScrUrl *value) {
     .get = &scr_native_url_get,
     .set = &scr_native_url_set,
     .inspect_view = &scr_native_url_inspect_view,
-    .inspect_bracketed_past_depth = true,
     .inspect_view_nested = true,
   };
   scr_dyn_handle_install(SCR_DYNH_URL, &ops);

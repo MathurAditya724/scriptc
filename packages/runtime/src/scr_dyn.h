@@ -1617,7 +1617,9 @@ typedef struct ScrDynHandleOps {
   bool inspect_bracketed_past_depth;
   /* The class's inspector formats its view with a new util.inspect call
    * (URL's does): the view renders from the top level with the caller's
-   * depth, and its lines take the caller's indentation. */
+   * depth, and its lines take the caller's indentation. Past the depth
+   * limit the inspector returns the instance, which has no own
+   * properties, so util.inspect prints `cls {}`. */
   bool inspect_view_nested;
   /* The @@toStringTag when it differs from cls: String() answers
    * "[object <tag>]" and util.inspect prints `<cls> [<tag>] <view>`, or

@@ -1717,6 +1717,14 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
          * depth limit (`depth < 0`); the ones that return `this` there
          * print util.inspect's `[cls]`. */
         if (recurse > depth && !ops->inspect_view_empty) {
+          /* A nested-view inspector returns the instance itself there,
+           * which has no own properties: `URL {}`. */
+          if (ops->inspect_view_nested) {
+            InspBuf out = {0};
+            ib_cstr(&out, ops->cls);
+            ib_cstr(&out, " {}");
+            return ib_take(&out);
+          }
           if (!ops->inspect_bracketed_past_depth) return scr_str_new(ops->cls, strlen(ops->cls));
           InspBuf out = {0};
           ib_char(&out, '[');

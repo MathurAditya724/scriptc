@@ -1,6 +1,7 @@
 // util.inspect and console.log of URL values print Node's URL view: the
 // URL's properties in its inspector's order, the live searchParams, and
-// [URL] past the depth limit. URLSearchParams print their pairs.
+// `URL {}` past the depth limit. URLSearchParams print their pairs, and
+// [Object] past the depth limit.
 import { inspect } from "node:util";
 
 const url = new URL("https://user:pass@example.com:8080/a/b?x=1&y=2#h");
@@ -17,3 +18,8 @@ console.log(inspect({ params }, { depth: 0 }));
 const long = new URLSearchParams();
 for (let i = 0; i < 12; i++) long.append(`key${i}`, `value number ${i}`);
 console.log({ long });
+// Past the depth limit a URL prints as `URL {}` and URLSearchParams as
+// [Object], nested or at a negative depth.
+console.log(inspect({ a: { b: { c: url } } }), inspect(url, { depth: -1 }));
+console.log(inspect({ a: { b: { c: params } } }), inspect(params, { depth: -1 }));
+console.log(inspect({ a: url }, { depth: 0 }), inspect({ a: { b: url } }, { depth: 1 }));
