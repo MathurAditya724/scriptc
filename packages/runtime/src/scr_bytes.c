@@ -874,6 +874,21 @@ ScrBytes *scr_bytes_from_dyn(ScrBytesElem elem, const ScrDyn *value, bool from) 
   // Constructors drain array iterators before element coercion. Node's .from
   // fast path reads ordinary array elements during conversion instead. Strings
   // supplied to .from iterate by code point (set reads UTF-16 code units).
+  // An object with a Symbol.iterator method iterates; others are array-like.
+  ScrDyn *method = scr_dyn_iterator_method(value);
+  if (method) {
+    ScrDyn *items = scr_dyn_iterate_with(value, method);
+    scr_dyn_release(method);
+    if (!items) return NULL;
+    ScrBytes *out = scr_bytes_new(elem, (double)items->v.arr.len);
+    if (out && !scr_bytes_copy_array_like(out, items, 0, out->len)) {
+      scr_bytes_release(out);
+      out = NULL;
+    }
+    scr_dyn_release(items);
+    return out;
+  }
+  if (scr_exc_pending()) return NULL;
   if ((!from && value->kind == SCR_DYN_ARR) || (from && value->kind == SCR_DYN_STR)) {
     ScrDyn *items = scr_dyn_iter_pack(value, NULL);
     if (!items) return NULL;
@@ -2787,16 +2802,30 @@ static SCR_TL bool scr_pool_registered; /* scr_buffer_pool_reset runs at context
 /* Buffer.poolSize >>> 1, kept with the setting. */
 static SCR_TL size_t scr_pool_half = 32768;
 
-double scr_buffer_pool_size(void) { return scr_pool_setting; }
+SCR_TL void (*scr_buffer_pool_refresh_hook)(void) = NULL;
+SCR_TL void (*scr_buffer_pool_publish_hook)(double size) = NULL;
 
-void scr_buffer_set_pool_size(double size) {
+double scr_buffer_pool_size(void) {
+  if (scr_buffer_pool_refresh_hook) scr_buffer_pool_refresh_hook();
+  return scr_pool_setting;
+}
+
+void scr_buffer_pool_apply(double size) {
   scr_pool_setting = size;
   double t = isfinite(size) ? fmod(trunc(size), 4294967296.0) : 0;
   if (t < 0) t += 4294967296.0;
   scr_pool_half = (size_t)((uint32_t)t >> 1);
 }
 
-static size_t scr_pool_threshold(void) { return scr_pool_half; }
+void scr_buffer_set_pool_size(double size) {
+  scr_buffer_pool_apply(size);
+  if (scr_buffer_pool_publish_hook) scr_buffer_pool_publish_hook(size);
+}
+
+static size_t scr_pool_threshold(void) {
+  if (scr_buffer_pool_refresh_hook) scr_buffer_pool_refresh_hook();
+  return scr_pool_half;
+}
 
 /* Bytes left in the slab. Aligning can move the offset past the end of a
  * slab whose size is not a multiple of 8; nothing is left then. */
@@ -3298,6 +3327,51 @@ double scr_bytes_index_of_num(const ScrBytes *b, double v, double off, bool fwd)
   uint8_t byte = (uint8_t)scr_bytes_to_u32(v);
   ScrBytes needle = { .rc = 1, .len = 1, .elem = SCR_BYTES_U8, .data = &byte, .backing = NULL };
   return scr_bytes_index_of(b, &needle, off, 1, fwd);
+}
+
+/* The first index a TypedArray search from `from` starts at
+ * (ToIntegerOrInfinity, then relative to the end when negative), or false
+ * when it starts past the last element. */
+static bool scr_bytes_search_start(size_t len, double from, size_t *start) {
+  double n = from != from ? 0 : trunc(from);
+  if (n >= (double)len) return false;
+  if (n < 0) n = n + (double)len < 0 ? 0 : n + (double)len;
+  *start = (size_t)n;
+  return true;
+}
+
+double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool last) {
+  SCR_BYTES_SNAPSHOT(b);
+  size_t len = b->len;
+  size_t size = scr_bytes_elem_size(b->elem);
+  if (len == 0 || x != x) return -1;
+  if (!last) {
+    size_t k;
+    if (!scr_bytes_search_start(len, from, &k)) return -1;
+    for (; k < len; k++)
+      if (scr_bytes_decode(b->elem, b->data + k * size) == x) return (double)k;
+    return -1;
+  }
+  double n = from != from ? 0 : trunc(from);
+  double k = n >= 0 ? (n < (double)len - 1 ? n : (double)len - 1) : (double)len + n;
+  if (k < 0) return -1;
+  for (size_t i = (size_t)k + 1; i-- > 0;)
+    if (scr_bytes_decode(b->elem, b->data + i * size) == x) return (double)i;
+  return -1;
+}
+
+bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from) {
+  SCR_BYTES_SNAPSHOT(b);
+  size_t len = b->len;
+  size_t size = scr_bytes_elem_size(b->elem);
+  size_t k;
+  if (len == 0 || !scr_bytes_search_start(len, from, &k)) return false;
+  bool nan = x != x;
+  for (; k < len; k++) {
+    double v = scr_bytes_decode(b->elem, b->data + k * size);
+    if (v == x || (nan && v != v)) return true;
+  }
+  return false;
 }
 
 /* fill's shared core over a normalized byte pattern. nargs counts the
