@@ -299,6 +299,23 @@ function declaresPrototypeMembers(decl: ts.ClassLikeDeclaration): boolean {
   );
 }
 
+/** The global that is true once the class's prototype view has been
+ * populated by reflection (reflectClassPrototype): the view then holds an
+ * own `constructor` unless the program deleted it. A view that was never
+ * reflected leaves `constructor` implicit. */
+export function prototypeReflectedFlag(lowerer: Lowerer, info: ClassInfo): string {
+  if (info.prototypeReflectedFlag) return info.prototypeReflectedFlag;
+  const id = `%g.%prototype.data.${info.def.name}.reflected`;
+  lowerer.globalsList.push({
+    id,
+    name: `${info.def.jsName ?? info.def.name}.prototype.reflected`,
+    type: BOOL,
+    mutable: true,
+  });
+  info.prototypeReflectedFlag = id;
+  return id;
+}
+
 /** Populate the shared prototype view before exposing it to reflection.
  * Methods and accessors are non-enumerable and retain declaration identity. */
 export function reflectClassPrototype(
@@ -399,6 +416,12 @@ export function reflectClassPrototype(
       { key: "value", value: classValueRef(lowerer, info, info.decl) },
       writable,
     ]),
+    {
+      kind: "assign",
+      localId: prototypeReflectedFlag(lowerer, info),
+      value: { kind: "boolLit", value: true, type: BOOL, loc },
+      loc,
+    },
   );
   const context = newFnCtx(false, null, null, DYN);
   lowerer.fnStack.push(context);

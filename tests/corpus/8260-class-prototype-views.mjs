@@ -132,3 +132,24 @@ const areaValue = Shape.prototype.area;
 const disc = new Disc("d");
 const rebuilt = disc.rebuild();
 console.log(disc.constructor === Disc, rebuilt instanceof Disc, rebuilt.area(), rebuilt.name, typeof areaValue);
+
+// Deleting a reflected prototype's constructor: instances read the
+// constructor their base class's prototype holds, then Object's; a
+// replacement answers again.
+class Root {
+  hi() {
+    return "hi";
+  }
+}
+class Middle extends Root {}
+class Tip extends Middle {}
+const members = [new Middle(), new Tip(), new Root(), {}];
+const constructorNames = () => members.map((member) => member.constructor.name).join(",");
+console.log(constructorNames(), Object.getOwnPropertyNames(Object.getPrototypeOf(new Middle())).join("|"));
+delete Object.getPrototypeOf(new Middle()).constructor;
+console.log(constructorNames(), Object.getOwnPropertyNames(Object.getPrototypeOf(new Middle())).join("|"));
+console.log(new Middle().constructor === Root, new Tip().constructor === Tip);
+delete Object.getPrototypeOf(new Root()).constructor;
+console.log(constructorNames(), new Middle().constructor === Object);
+Middle.prototype.constructor = function Named() {};
+console.log(constructorNames());
