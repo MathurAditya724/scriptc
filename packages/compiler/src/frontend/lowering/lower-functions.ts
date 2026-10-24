@@ -535,12 +535,18 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
   const diagsBefore = lowerer.diags.length;
   lowerer.fnStack.push(ctx);
   try {
+    // The count a call through a value stored is taken (and its slot
+    // cleared) before the parameters bind: a destructuring default that
+    // throws must not leave the slot set for the next direct call.
+    const argumentCount: IrStmt[] = [];
+    declareArgumentCount(lowerer, decl, argumentCount);
     const receiver =
       decl.parameters.nodes.some(isThisParameter) || isJsSourceFile(ts.getSourceFileOfNode(decl))
         ? declareCallReceiver(lowerer, decl, sig.generator !== undefined)
         : null;
     const { params, prologue } = lowerer.declareParams(decl.parameters.nodes, sig.params);
     if (receiver) prologue.unshift(receiver);
+    prologue.unshift(...argumentCount);
     declareFunctionArguments(
       lowerer,
       decl,
@@ -552,7 +558,6 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
         (sig.params[sig.params.length - 1]!.mode === "dynRest" ||
           sig.params[sig.params.length - 1]!.mode === "arguments"),
     );
-    declareArgumentCount(lowerer, decl, prologue);
     const bodyBlock = blockBodyOf(decl);
     if (!bodyBlock) {
       lowerer.unsupported(
