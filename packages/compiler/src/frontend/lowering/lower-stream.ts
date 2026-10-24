@@ -3954,6 +3954,38 @@ function lowerDynIterableSource(
     const sync = (): IrExpr => varRef(syncId, BOOL, loc);
     const step = (): IrExpr => varRef(stepId, DYN, loc);
     const value = (): IrExpr => varRef(valueId, DYN, loc);
+    // for await over a sync iterator awaits each value, the final one
+    // included (CreateAsyncFromSyncIterator): an object (a promise or a
+    // thenable) passes on its result
+    const awaitsValue = (): IrExpr => ({
+      kind: "logical",
+      op: "&&",
+      left: sync(),
+      right: {
+        kind: "logical",
+        op: "||",
+        left: { kind: "dynTest", test: "promise", value: value(), type: BOOL, loc },
+        right: {
+          kind: "logical",
+          op: "&&",
+          left: {
+            kind: "dynTest",
+            test: "nullish",
+            negated: true,
+            value: value(),
+            type: BOOL,
+            loc,
+          },
+          right: { kind: "dynTest", test: "object", value: value(), type: BOOL, loc },
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    });
     const get = (obj: IrExpr, name: string): IrExpr => ({
       kind: "dynKeyGet",
       value: obj,
@@ -4053,46 +4085,28 @@ function lowerDynIterableSource(
                   type: BOOL,
                   loc,
                 },
-                then: [{ kind: "break", loc }],
+                // the final value is awaited too: a rejection rejects the
+                // pump, and the finished iterator is not closed
+                then: [
+                  { kind: "assign", localId: valueId, value: get(step(), "value"), loc },
+                  {
+                    kind: "if",
+                    cond: awaitsValue(),
+                    then: [{ kind: "exprStmt", expr: awaitDyn(value()), loc }],
+                    else_: null,
+                    loc,
+                  },
+                  { kind: "break", loc },
+                ],
                 else_: null,
                 loc,
               },
               setActive(true),
               { kind: "assign", localId: valueId, value: get(step(), "value"), loc },
-              // for await over a sync iterator awaits each value
-              // (CreateAsyncFromSyncIterator): a promise or a thenable
-              // passes on its result, and a rejection closes the iterator
+              // a rejection here closes the iterator
               {
                 kind: "if",
-                cond: {
-                  kind: "logical",
-                  op: "&&",
-                  left: sync(),
-                  right: {
-                    kind: "logical",
-                    op: "||",
-                    left: { kind: "dynTest", test: "promise", value: value(), type: BOOL, loc },
-                    right: {
-                      kind: "logical",
-                      op: "&&",
-                      left: {
-                        kind: "dynTest",
-                        test: "nullish",
-                        negated: true,
-                        value: value(),
-                        type: BOOL,
-                        loc,
-                      },
-                      right: { kind: "dynTest", test: "object", value: value(), type: BOOL, loc },
-                      type: BOOL,
-                      loc,
-                    },
-                    type: BOOL,
-                    loc,
-                  },
-                  type: BOOL,
-                  loc,
-                },
+                cond: awaitsValue(),
                 then: [{ kind: "assign", localId: valueId, value: awaitDyn(value()), loc }],
                 else_: null,
                 loc,
