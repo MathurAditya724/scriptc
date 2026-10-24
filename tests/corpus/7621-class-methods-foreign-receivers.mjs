@@ -128,3 +128,42 @@ report("square both", () => Square.prototype.both.call(foreign));
 report("tiny describe", () => Tiny.prototype.describe.call(foreign));
 report("tiny tag", () => Tiny.prototype.tag.call(foreign));
 report("square describe on tiny", () => Square.prototype.describe.call(tiny));
+
+// A base method that builds `new this.constructor()` on a subclass instance
+// builds the subclass, also once the base prototype is complete (a super call
+// above reads it) and `copy` is read through its prototype slot.
+class Node3 {
+  constructor() {
+    this.a = 0;
+  }
+  copy(source) {
+    this.a = source.a;
+    return this;
+  }
+  clone() {
+    return new this.constructor().copy(this);
+  }
+}
+class Mesh3 extends Node3 {
+  constructor(geometry) {
+    super();
+    this.geometry = geometry;
+  }
+  copy(source) {
+    super.copy(source);
+    this.geometry = source.geometry;
+    return this;
+  }
+}
+const copyValue = Node3.prototype.copy;
+const mesh = new Mesh3({ id: 1 });
+mesh.a = 5;
+const meshClone = mesh.clone();
+console.log(
+  meshClone instanceof Mesh3,
+  meshClone.constructor === Mesh3,
+  mesh.constructor === Mesh3,
+  meshClone.a,
+  JSON.stringify(meshClone.geometry),
+  typeof copyValue,
+);
