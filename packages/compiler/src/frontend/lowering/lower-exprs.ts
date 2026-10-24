@@ -426,6 +426,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         return inner;
       const use = runtimeOptionalUseOf(expr);
       if (runtimeOptionalAssertionErases(lowerer, expr, inner, use)) return inner;
+      // A destination that holds null or undefined keeps the value, as `!`
+      // does in JavaScript (`return cache.get(key)!` from a function that
+      // returns `T | null`); the destination's own coercion re-tags it.
+      if (assertionDestinationHoldsNullish(lowerer, expr, inner.type)) return inner;
       const operand = assertionOperand(lowerer, expr, inner, target ?? null, loc);
       if (operand) return operand;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
@@ -932,6 +936,65 @@ export function assertedElementKeepsUndefined(
   return (
     admits(contextual) ||
     ((contextual.flags & ts.TypeFlags.Union) !== 0 && constituentTypes(contextual).some(admits))
+  );
+}
+
+/** Whether `node!` is a returned value, an arrow function's body or a call
+ * argument whose destination type (the return or parameter type) is `any`
+ * or `unknown` (as for `String(x!)` and `Number(x!)`) or holds null or
+ * undefined that the union `inner` holds and the assertion would remove.
+ * Bindings and assignments are left out: the checker narrows them to the
+ * asserted type for later reads. */
+function assertionDestinationHoldsNullish(
+  lowerer: Lowerer,
+  node: ts.NonNullExpression,
+  inner: IrType & { kind: "union" },
+): boolean {
+  const holdsNull = lowerer.armTag(inner.unionId, NULL_T) >= 0;
+  const holdsUndefined = lowerer.armTag(inner.unionId, UNDEFINED_T) >= 0;
+  if (!holdsNull && !holdsUndefined) return false;
+  let outer: ts.Expression = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  const destination =
+    (ts.isReturnStatement(parent) && parent.expression === outer) ||
+    (ts.isArrowFunction(parent) && parent.body === outer) ||
+    ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+      parent.arguments?.nodes.includes(outer) === true);
+  if (!destination) return false;
+  const contextual = lowerer.checker.getContextualType(outer);
+  if (!contextual) return false;
+  const nullish =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    (holdsNull ? ts.TypeFlags.Null : 0) |
+    (holdsUndefined && !optionalStdlibParameter(lowerer, parent, outer)
+      ? ts.TypeFlags.Undefined
+      : 0);
+  if ((contextual.flags & ts.TypeFlags.Union) === 0) return (contextual.flags & nullish) !== 0;
+  return constituentTypes(contextual).some((type) => (type.flags & nullish) !== 0);
+}
+
+/** Whether `argument` of `call` binds an optional parameter of a standard
+ * library declaration (`decoder.decode(input?)`). The undefined such a
+ * parameter's type holds comes from its optionality, and the builtin
+ * lowerings read the argument as the declared type, so `x!` keeps the
+ * checked narrowing there. */
+function optionalStdlibParameter(
+  lowerer: Lowerer,
+  call: ts.Node,
+  argument: ts.Expression,
+): boolean {
+  if (!ts.isCallExpression(call) && !ts.isNewExpression(call)) return false;
+  const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
+  if (declaration === undefined || !lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration)))
+    return false;
+  const index = call.arguments?.nodes.indexOf(argument) ?? -1;
+  const parameter = declaration.parameters?.nodes[index];
+  return (
+    parameter !== undefined &&
+    parameter.dotDotDotToken === undefined &&
+    (parameter.questionToken !== undefined || parameter.initializer !== undefined)
   );
 }
 
