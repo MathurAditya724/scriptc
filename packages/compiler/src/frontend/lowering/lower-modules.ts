@@ -1189,19 +1189,22 @@ function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefi
   }
   if (e.kind === ts.SyntaxKind.NullKeyword) return true;
   if (ts.isIdentifier(e) && e.text === "undefined") return true;
-  if (ts.isConditionalExpression(e)) {
-    return (
-      jsDynHoldableInitializer(lowerer, e.whenTrue) &&
-      jsDynHoldableInitializer(lowerer, e.whenFalse)
-    );
-  }
+  // The arms of a conditional or logical expression: checked values, or
+  // strings, numbers and booleans, which box into the checked-dynamic
+  // result (`const APP_NAME = config.name || "pi"`).
+  const arm = (x: ts.Expression): boolean => {
+    if (jsDynHoldableInitializer(lowerer, x)) return true;
+    const kind = lowerer.mapTypeOf(lowerer.typeOf(x))?.kind;
+    return kind === "string" || kind === "f64" || kind === "bool";
+  };
+  if (ts.isConditionalExpression(e)) return arm(e.whenTrue) && arm(e.whenFalse);
   if (
     ts.isBinaryExpression(e) &&
     (e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
       e.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
       e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
   ) {
-    return jsDynHoldableInitializer(lowerer, e.left) && jsDynHoldableInitializer(lowerer, e.right);
+    return arm(e.left) && arm(e.right);
   }
   // A member of a checked module value is itself checked, including a
   // callable whose inferred overloads cannot describe one native ABI.

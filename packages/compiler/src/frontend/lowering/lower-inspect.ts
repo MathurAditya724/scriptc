@@ -18,6 +18,7 @@ import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
 import {
   BOOL,
+  CAUGHT,
   DYN,
   F64,
   type IrExpr,
@@ -44,9 +45,9 @@ import {
   shapeKeyOrders,
   typeKey,
 } from "../../ir/ir.js";
-import type { ClassInfo } from "./lower-classes.js";
+import { accessorCall, findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
-import { symbolFieldDisplayName } from "./symbol-fields.js";
+import { symbolFieldDisplayName, TO_STRING_TAG_FIELD } from "./symbol-fields.js";
 import { eventTargetRootOf } from "./lower-event-target.js";
 import { dateRootOf } from "./builtins/date-classes.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
@@ -2000,8 +2001,86 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       // observable way — Node's inspect omits them entirely (verified),
       // so a class whose only fields are private prints as `C {}`.
       const visible = info.def.fields.filter((f) => isClassOwnEnumerableFieldName(f.name));
+      // A Symbol.toStringTag getter (an own tag field is listed instead)
+      // brackets the tag after the name, `Name [tag] {`, when it is a
+      // nonempty string other than the name. A getter that throws shows
+      // no tag, as in Node.
+      const tagGetter = info.fields.has(TO_STRING_TAG_FIELD)
+        ? null
+        : findMethodOn(lowerer, info, "get:sym:toStringTag");
+      let named: (plain: string, make: (head: IrExpr) => IrExpr) => IrExpr = (plain) =>
+        strLit(plain, loc);
+      if (tagGetter?.sig.ret.kind === "string") {
+        const owner = tagGetter.declarer.def.name;
+        locals.push(
+          { id: "tag.0", name: "tag", type: STRING, mutable: true },
+          { id: "tagError.0", name: "tagError", type: CAUGHT, mutable: false },
+        );
+        body.push(
+          { kind: "varDecl", localId: "tag.0", init: strLit("", loc), loc },
+          {
+            kind: "tryCatch",
+            tryBody: [
+              {
+                kind: "assign",
+                localId: "tag.0",
+                value: accessorCall(
+                  lowerer,
+                  owner,
+                  "get:sym:toStringTag",
+                  lowerer.upcastTo(v(), owner),
+                  [],
+                  STRING,
+                  loc,
+                ),
+                loc,
+              },
+            ],
+            catchBody: [],
+            catchLocalId: "tagError.0",
+            finallyBody: null,
+            loc,
+          },
+        );
+        const tag = (): IrExpr => varRef("tag.0", STRING, loc);
+        const shown: IrExpr = {
+          kind: "logical",
+          op: "&&",
+          left: {
+            kind: "strEq",
+            negated: true,
+            left: tag(),
+            right: strLit("", loc),
+            type: BOOL,
+            loc,
+          },
+          right: {
+            kind: "strEq",
+            negated: true,
+            left: tag(),
+            right: strLit(display, loc),
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        };
+        const head = concatAll(
+          [strLit(`${display === "" ? "Object" : display} [`, loc), tag(), strLit("]", loc)],
+          loc,
+        );
+        named = (plain, make) => ({
+          kind: "ternary",
+          cond: shown,
+          then: make(head),
+          else_: strLit(plain, loc),
+          type: STRING,
+          loc,
+        });
+      }
+      const after = (text: string) => (head: IrExpr) => concatAll([head, strLit(text, loc)], loc);
       if (visible.length === 0) {
-        body = [ret(strLit(display === "" ? "{}" : `${display} {}`, loc))];
+        body.push(ret(named(display === "" ? "{}" : `${display} {}`, after(" {}"))));
         break;
       }
       const get = (field: string, type: IrType): IrExpr => ({
@@ -2012,7 +2091,22 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         type,
         loc,
       });
-      body = [depthGate(display === "" ? "[Object]" : `[${display}]`), ...begin()];
+      body.push(
+        {
+          kind: "if",
+          cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
+          then: [
+            ret(
+              named(display === "" ? "[Object]" : `[${display}]`, (head) =>
+                concatAll([strLit("[", loc), head, strLit("]", loc)], loc),
+              ),
+            ),
+          ],
+          else_: null,
+          loc,
+        },
+        ...begin(),
+      );
       // def.fields carries layout order: the base chain first, then own —
       // exactly the own-property insertion order of a constructor that
       // assigns in declaration order (SEMANTICS.md 36's stance). SYMBOL-
@@ -2041,7 +2135,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         ret(
           end(
             strLit("", loc),
-            strLit(display === "" ? "{" : `${display} {`, loc),
+            named(display === "" ? "{" : `${display} {`, after(" {")),
             strLit("}", loc),
             false,
             boolLit(false, loc),
