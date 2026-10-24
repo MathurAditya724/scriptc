@@ -7,6 +7,14 @@ import {
   lowerDateSuperMethodCall,
 } from "./builtins/date-classes.js";
 import { predeclareForwardClass } from "./lower-stmts.js";
+import {
+  arrayClassBase,
+  arrayClassFieldsFn,
+  arrayClassSpeciesFn,
+  arraySuperCall,
+  refuseArrayClassSpecies,
+  lowerArraySuperCall,
+} from "./builtins/array-classes.js";
 import { lowerDateStaticCall } from "./builtins/dates.js";
 import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
@@ -590,6 +598,10 @@ export interface ClassInfo {
    * constructor's rules, and the Date methods it does not declare lower
    * over that value. Subclasses inherit the field. */
   extendsDate?: true;
+  /** A class declared `extends Array` (builtins/array-classes.ts): its
+   * instances are arrays of `elem` whose own fields follow the array
+   * header, and its TypeScript type maps to `elem[]`. */
+  extendsArray?: { elem: IrType };
   /** The synthetic LifetimeRegion class (@scriptc/experimental,
    * lifetime-regions.ts): its constructor is synthesized with the class,
    * and its methods lower at their call sites. */
@@ -1978,6 +1990,7 @@ export function collectClassShapeInner(
     let genericBase: ts.ExpressionWithTypeArguments | undefined;
     let callableBase: ClassInfo["callableBase"];
     let extendsDate = false;
+    let extendsArray: { elem: IrType } | undefined;
     let factoryBaseExpression: ts.Expression | undefined;
     const adoptCallableBase = (expression: ts.Expression): boolean => {
       if (familyMode || inst || mixin) return false;
@@ -2178,6 +2191,13 @@ export function collectClassShapeInner(
         if (t && adoptCallableBase(t.expression)) continue;
         lowerer.unsupported("SC1090", clause, "extending computed expressions");
       }
+      if ((familyMode || inst) && lowerer.isStdlibGlobal(t.expression, "Array"))
+        lowerer.unsupported("SC1090", t, "a generic class that extends Array");
+      if (!familyMode && !inst && !mixin && lowerer.isStdlibGlobal(t.expression, "Array")) {
+        extendsArray = arrayClassBase(lowerer, t);
+        refuseArrayClassSpecies(lowerer, decl);
+        continue;
+      }
       if (!familyMode && !inst && !mixin && lowerer.isStdlibGlobal(t.expression, "Date")) {
         if (t.typeArguments?.nodes) lowerer.unsupported("SC1090", t, "extending generic classes");
         extendsDate = true;
@@ -2278,6 +2298,12 @@ export function collectClassShapeInner(
         continue;
       }
       if (t.typeArguments?.nodes) lowerer.unsupported("SC1090", t, "extending generic classes");
+      if (named?.extendsArray)
+        lowerer.unsupported(
+          "SC1090",
+          t,
+          `extending '${t.expression.text}', a class that extends Array (one level of Array subclass compiles)`,
+        );
       base = named;
       if (!base) {
         if (adoptCallableBase(t.expression)) continue;
@@ -4384,7 +4410,7 @@ export function collectClassShapeInner(
       ctor && !mixinForwarding
         ? lowerer.paramShapes(ctor.parameters.nodes)
         : (base?.ctorParams ??
-          (callableBase || extendsDate ? [{ type: DYN, mode: "dynRest" }] : []));
+          (callableBase || extendsDate || extendsArray ? [{ type: DYN, mode: "dynRest" }] : []));
     if (
       ctor &&
       !mixinForwarding &&
@@ -4439,6 +4465,13 @@ export function collectClassShapeInner(
           return am.length > 0 ? { abstractMethods: am } : {};
         })(),
         ...(inst ? { genericOf: inst.family.def.name } : {}),
+        ...(extendsArray
+          ? {
+              arrayElem: extendsArray.elem,
+              arrayFields: `%${className}.arrayFields`,
+              arraySpecies: `%${className}.species`,
+            }
+          : {}),
         loc: locOf(decl),
       },
       fields,
@@ -4455,6 +4488,7 @@ export function collectClassShapeInner(
       ...(genericBase ? { genericBase } : {}),
       ...(callableBase ? { callableBase } : {}),
       ...(extendsDate ? { extendsDate: true as const } : {}),
+      ...(extendsArray ? { extendsArray } : {}),
       ...(factoryBaseExpression ? { factoryBaseExpression } : {}),
       subclasses: [],
       throwingSetters,
@@ -7926,6 +7960,12 @@ export function lowerClassMembers(lowerer: Lowerer, info: ClassInfo): IrFunction
     const diagsBefore = lowerer.diags.length;
     try {
       out.push(lowerer.lowerClassCtor(info));
+      if (info.extendsArray) {
+        const fields = arrayClassFieldsFn(lowerer, info);
+        if (fields) out.push(fields);
+        const species = arrayClassSpeciesFn(lowerer, info);
+        if (species) out.push(species);
+      }
     } catch (e) {
       if (!(e instanceof PoisonError)) throw e;
       if (info.decl && isJsSourceFile(ts.getSourceFileOfNode(info.decl))) {
@@ -7974,6 +8014,10 @@ export function lowerClassMembers(lowerer: Lowerer, info: ClassInfo): IrFunction
  * the base's signature — forward every param to super(), then run own
  * field initializers. */
 export function lowerClassCtor(lowerer: Lowerer, info: ClassInfo): IrFunction {
+  if (info.extendsArray) {
+    lowerer.noteEdge(`%${info.def.name}.arrayFields`);
+    lowerer.noteEdge(`%${info.def.name}.species`);
+  }
   const cached = info.localClass?.bodies.get(`%${info.def.name}.constructor`);
   if (cached) return cached;
   return withInstanceBindings(lowerer, info, () => lowerClassCtorInner(lowerer, info));
@@ -8041,7 +8085,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
         lowerer.ctx.argumentsLocal = local;
       }
       body.push(...declared.prologue);
-      if (!ctorBase && !info.callableBase && !info.extendsDate) {
+      if (!ctorBase && !info.callableBase && !info.extendsDate && !info.extendsArray) {
         // Node's base-class order: field initializers run at the start
         // of construction, the parameter-property assignments open the
         // constructor body (probed — a field initializer reading a
@@ -8053,7 +8097,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
         body.push(...lowerer.lowerDerivedCtorBody(info, thisLocal));
       }
     } else {
-      if (ctorBase || info.callableBase || info.extendsDate) {
+      if (ctorBase || info.callableBase || info.extendsDate || info.extendsArray) {
         // Synthetic forwarding params (the inherited ABI signature).
         // Nothing references them by symbol — only the super call below,
         // which forwards the already-completed values UNCHANGED (defaults
@@ -8972,7 +9016,9 @@ export function lowerDerivedCtorBody(
         loc,
       },
     ];
-    if (info.callableBase || info.extendsDate) {
+    if (info.extendsArray) {
+      statements.push(...lowerArraySuperCall(lowerer, info, thisLocal, superCall));
+    } else if (info.callableBase || info.extendsDate) {
       if (superCall.arguments.nodes.some(ts.isSpreadElement))
         lowerer.unsupported(
           "SC1090",
@@ -9165,6 +9211,7 @@ export function superCallStmt(
     loc,
   };
   if (info.extendsDate) return dateSuperCall(thisRef, info, args[0]!, loc);
+  if (info.extendsArray) return arraySuperCall(info, thisRef, args[0]!, loc);
   if (info.callableBase)
     return {
       kind: "exprStmt",

@@ -1,0 +1,41 @@
+array-subclass-fences.ts:4:22 - error SC1090: a generic class that extends Array is not supported yet
+
+  3 | // and a class that declares its own Symbol.species.
+  4 | class Bag<T> extends Array<T> {
+    |                      ^~~~~~~~
+  5 |   firstOr(fallback: T): T {
+
+array-subclass-fences.ts:11:23 - error SC1090: extending 'Base', a class that extends Array (one level of Array subclass compiles) is not supported yet
+
+  10 | class Base extends Array<number> {}
+  11 | class Derived extends Base {}
+     |                       ^~~~
+  12 | 
+
+array-subclass-fences.ts:14:3 - error SC1090: Symbol.species on a class that extends Array (its methods' results construct the class itself) is not supported yet
+
+  13 | class Speciated extends Array<number> {
+  14 |   static get [Symbol.species](): ArrayConstructor {
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  15 |     return Array;
+
+array-subclass-fences.ts:19:13 - error SC1090: constructing values other than classes declared in the program is not supported yet
+
+  18 | 
+  19 | console.log(new Bag<number>().firstOr(1));
+     |             ^~~~~~~~~~~~~~~~~
+  20 | console.log(new Derived().length);
+
+array-subclass-fences.ts:20:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  19 | console.log(new Bag<number>().firstOr(1));
+  20 | console.log(new Derived().length);
+     |             ^~~~~~~~~~~~~
+  21 | console.log(new Speciated().length);
+
+array-subclass-fences.ts:21:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  20 | console.log(new Derived().length);
+  21 | console.log(new Speciated().length);
+     |             ^~~~~~~~~~~~~~~
+  22 | 
