@@ -802,20 +802,17 @@ test("node-types: fs functions take URL paths under @types/node's PathLike", asy
   expect(stdout).toBe("hello 5 5\n");
 });
 
-test("node-types: existsSync and fs.promises URL paths remain named fences", async () => {
-  const dir = outDirFor("node-fs-url-path-fences");
-  const result = await compile(join(nodeTypesDir, "fs-url-path-fences.ts"), {
-    outPath: join(dir, "fs-url-path-fences"),
+test("node-types: existsSync and fs.promises answer false or reject for unconvertible URLs", async () => {
+  const dir = outDirFor("node-fs-url-fallible");
+  const result = await compile(join(nodeTypesDir, "fs-url-fallible.ts"), {
+    outPath: join(dir, "fs-url-fallible"),
     outDir: dir,
     sanitize,
   });
-  expect(result.ok).toBe(false);
-  if (result.ok) return;
-  expect(result.diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.message])).toEqual([
-    ["SC2020", expect.stringContaining("'existsSync with a URL path'")],
-    ["SC2020", expect.stringContaining("'fs.promises.readFile with a URL path'")],
-    ["SC2020", expect.stringContaining("'fs.promises.stat with a URL path'")],
-  ]);
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe("true false\nhi\nERR_INVALID_FILE_URL_HOST\n");
 });
 
 test("node-types: path and os lower statically under @types/node's shapes", async () => {

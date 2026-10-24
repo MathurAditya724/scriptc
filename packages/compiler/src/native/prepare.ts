@@ -1,4 +1,5 @@
-import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { targetCpuField, targetCpuTargetRefusal } from "../backend/target-cpu.js";
+import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { CompilationTiming } from "../timing.js";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -59,7 +60,7 @@ export interface NativeExecutableInput {
 
 /** The two large artifacts follow the input metadata as separate members so
  * an entry can be written as parts instead of one JSON string; the stored
- * input carries empty placeholders (`""`, `null`) for them. */
+ * input carries empty placeholders (`[]`, `null`) for them. */
 interface FrontendCacheEntry {
   schema: "scriptc.native-frontend.v3";
   probes: FrontendInputSnapshot;
@@ -78,7 +79,7 @@ function* frontendCacheParts(
   const metadata = JSON.stringify({
     schema: "scriptc.native-frontend.v3",
     probes,
-    input: { ...input, llvm: "", ir: null },
+    input: { ...input, llvm: [], ir: null },
   });
   yield metadata.slice(0, metadata.length - 1) + ',"llvm":"';
   for (const part of joinedParts(input.llvm))
@@ -317,6 +318,17 @@ export function prepareNativeExecutable(
   timing: CompilationTiming = () => {},
 ): NativeExecutableInput | CompileFailure {
   const outputKind = options.outputKind ?? "exe";
+  const targetCpuRefusal = targetCpuTargetRefusal(
+    options.targetCpu,
+    toolchain.target.platform,
+    toolchain.target.architecture,
+  );
+  if (targetCpuRefusal !== null)
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag("SC3002", targetCpuRefusal, entry)],
+      sourceTexts: new Map(),
+    };
   const stem = basename(entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const outputPaths = [
     resolve(options.outPath),
@@ -397,6 +409,7 @@ export function prepareNativeExecutable(
           forkPrimitives: emitForkPrimitives(),
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
+          ...targetCpuField(options.targetCpu),
           ...(options.optimization === "dev" && !options.strip
             ? { debugSources: prepared.sourceTexts }
             : {}),

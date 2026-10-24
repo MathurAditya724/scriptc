@@ -13,6 +13,7 @@ import { emitStringInputs } from "./string-lifetimes.js";
 import { emitStringParts, numberPart, stringParts } from "./string-construction.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import {
+  alwaysExactInteger,
   exactInteger,
   int32Number,
   integerNumber,
@@ -45,6 +46,17 @@ import {
   type ArrayAccess,
 } from "./dense-array-access.js";
 import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
+import { emitPowerOfTwoQuotient, isPowerOfTwoCall } from "./lib-filesystem.js";
+
+/** The signed integer predicates of the number compares. */
+const INTEGER_COMPARES: Record<string, string> = {
+  "<": "slt",
+  "<=": "sle",
+  ">": "sgt",
+  ">=": "sge",
+  "===": "eq",
+  "!==": "ne",
+};
 
 export function emitLiteralExpr(
   host: LlvmEmitterContext,
@@ -318,15 +330,7 @@ export function emitOperatorExpr(
             if (integer) return integer;
           }
           if (cmp[e.op] !== undefined) {
-            const integerCmp: Record<string, string> = {
-              "<": "slt",
-              "<=": "sle",
-              ">": "sgt",
-              ">=": "sge",
-              "===": "eq",
-              "!==": "ne",
-            };
-            B.line(`${t} = icmp ${integerCmp[e.op]} i64 ${left}, ${right}`);
+            B.line(`${t} = icmp ${INTEGER_COMPARES[e.op]} i64 ${left}, ${right}`);
             return { name: t, type: e.type };
           }
         }
@@ -345,6 +349,8 @@ export function emitOperatorExpr(
               : emitCheckedRemainder(host, l, r, li, ri);
           if (checked) return checked;
         }
+        if (e.op === "/" && isPowerOfTwoCall(e.right))
+          return { name: emitPowerOfTwoQuotient(host, l.name, r.name), type: e.type };
         if (arith[e.op] !== undefined) {
           B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
           const uint32 = emitWrappingSum(host, e, l, r, li, ri);
@@ -356,7 +362,17 @@ export function emitOperatorExpr(
             if (wideInteger) value.wideInteger = wideInteger;
             return value;
           }
-        } else B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
+        } else {
+          // An operand with only a wide view, such as `i + 1` of a speculated
+          // counter: compare the integers when both always equal the doubles.
+          const left = alwaysExactInteger(host, l, li),
+            right = left === null ? null : alwaysExactInteger(host, r, ri);
+          if (left !== null && right !== null) {
+            B.line(`${t} = icmp ${INTEGER_COMPARES[e.op]} i64 ${left}, ${right}`);
+            return { name: t, type: e.type };
+          }
+          B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
+        }
       } else if (bit[e.op] !== undefined) {
         if (e.left.type.kind !== "f64" || e.right.type.kind !== "f64") {
           throw new LlvmUnsupportedError(

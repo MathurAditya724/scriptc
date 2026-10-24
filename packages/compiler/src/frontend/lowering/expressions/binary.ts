@@ -244,37 +244,38 @@ function lowerLooseNullCompare(
       // No unit arms: never null-ish (defensive — the fold below).
       return { kind: "boolLit", value: negated, type: BOOL, loc };
     }
-    const isTag = (tag: number): IrExpr => ({
+    const isTag = (tag: number, value: IrExpr): IrExpr => ({
       kind: "unionIsTag",
       unionId: ut.unionId,
       tag,
       negated,
-      value: other,
+      value,
       type: BOOL,
       loc,
     });
-    if (tags.length === 1) return isTag(tags[0]!);
+    if (tags.length === 1) return isTag(tags[0]!, other);
     // Both null AND undefined arms: tag-in-set as a short-circuit pair
-    // (De Morgan for `!=`). The operand IrExpr rides both tests, so the
-    // backend emits it per test — restricted to re-emittable pure reads;
-    // anything effectful gets its own actionable fence (the generic
-    // SC1040 hint would wrongly suggest `== null` as the fix).
+    // (De Morgan for `!=`). The operand rides both tests, so an operand
+    // that is not a plain read (`m.get(k)! == null`) is evaluated once
+    // into a hidden local first.
+    let value = other;
+    let prefix: IrStmt[] = [];
     if (!isSafeToRepeat(other)) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        `'== null' / '!= null' on a '${lowerer.fmt(ut)}' value that isn't a plain read ` +
-          `(both unit arms need the operand twice — bind it to a const first)`,
-      );
+      const tmp = lowerer.declareHiddenLocal("%nullish", ut);
+      value = varRef(tmp.id, ut, loc);
+      prefix = [{ kind: "varDecl", localId: tmp.id, init: other, loc }];
     }
-    return {
+    const test: IrExpr = {
       kind: "logical",
       op: negated ? "&&" : "||",
-      left: isTag(tags[0]!),
-      right: isTag(tags[1]!),
+      left: isTag(tags[0]!, value),
+      right: isTag(tags[1]!, value),
       type: BOOL,
       loc,
     };
+    return prefix.length === 0
+      ? test
+      : { kind: "seqExpr", stmts: prefix, result: test, type: BOOL, loc };
   }
   if (other.type.kind === "void") {
     return null; // no static tag to test — keep the fence

@@ -1433,16 +1433,18 @@ let mapTypeDepth = 0;
 let contextResolutions = 0;
 
 /** node:url's legacy record interfaces: url.parse()'s Url instance (and
- * its two query-typed refinements), url.format()'s UrlObject input, and the
- * URL form's URLFormatOptions. The values are checked-dynamic objects —
- * Node's Url instance carries its class name and null fields, and format()
- * reads any object's fields with JS truthiness. */
+ * its two query-typed refinements), url.format()'s UrlObject input, the
+ * URL form's URLFormatOptions, and urlToHttpOptions's result. The values
+ * are checked-dynamic objects — Node's Url instance carries its class name
+ * and null fields, format() reads any object's fields with JS truthiness,
+ * and urlToHttpOptions answers a null-prototype object. */
 const LEGACY_URL_TYPES = new Set([
   "Url",
   "UrlObject",
   "UrlWithParsedQuery",
   "UrlWithStringQuery",
   "URLFormatOptions",
+  "UrlHttpOptions",
 ]);
 
 export function isLegacyUrlType(

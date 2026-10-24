@@ -1006,6 +1006,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.set": { argTypes: [URL_T, STRING, STRING], result: VOID },
   "url.setChecked": { argTypes: [URL_T, STRING, DYN], result: VOID },
   "url.fileURLToPathUrl": { argTypes: [URL_T], result: STRING },
+  /** fileURLToPathUrl as a value: the path string, or the error it would
+   * throw (fs.existsSync and fs.promises URL paths). Never throws. */
+  "url.fileURLToPathValue": { argTypes: [URL_T], result: DYN },
+  /** getValidatedPath's null-byte check on a string path, and
+   * readFileSync's encoding check: what Node validates before it converts
+   * a later URL path. (path, argument name) and (encoding). */
+  "fs.checkPath": { argTypes: [STRING, STRING], result: VOID },
+  "fs.checkReadEncoding": { argTypes: [STRING], result: VOID },
   "url.fileURLToPathChecked": { argTypes: [DYN], result: STRING },
   "url.fileURLToPathOptions": { argTypes: [DYN, DYN], result: STRING },
   /** node:url's legacy API (scr_url_legacy.c): parse(url, parseQueryString,
@@ -1020,6 +1028,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
   "url.domainToASCII": { argTypes: [DYN, BOOL], result: STRING },
   "url.domainToUnicode": { argTypes: [DYN, BOOL], result: STRING },
+  /** url.urlToHttpOptions over a checked-dynamic argument: a URL answers
+   * Node's null-prototype options object; a primitive or null throws
+   * ERR_INVALID_ARG_TYPE. */
+  "url.toHttpOptions": { argTypes: [DYN], result: DYN },
   /** node:punycode (scr_url.c): punycode.js 2.1.0's string conversions;
    * decode/toUnicode (and, past 32-bit deltas, encode/toASCII) throw the
    * module's RangeErrors, ucs2Encode String.fromCodePoint's. warn marks the
@@ -3227,6 +3239,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * the +1 %Transform stream. flush takes the kind value, params the level
    * and strategy values; the Cb forms move their () => void callback. The
    * receivers are borrowed. */
+  /** Connects scr_brotli.c to the zlib engine (%main, before any module). */
+  "zlib.brotliInstall": { argTypes: [], result: VOID },
   "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
   "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
   /** `stream instanceof zlib.Gzip`: the borrowed stream and the class's
@@ -4498,12 +4512,19 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.buffer": { argTypes: [BYTES_U8], result: STRING },
   /** A numeric typed array that is not a Buffer (any element kind). */
   "insp.typedArray": { argTypes: [null, F64, F64], result: STRING },
+  /** A u8 byte view in a union arm, element or field: a DataView, Buffer
+   * or Uint8Array by its own flags. */
+  "insp.bytes": { argTypes: [null, F64, F64], result: STRING },
   "insp.error": { argTypes: [null, F64, F64], result: STRING },
   "insp.errorHasCause": { argTypes: [null], result: BOOL },
   "insp.errorBagHasProperties": { argTypes: [DYN], result: BOOL },
   "insp.errorCause": { argTypes: [null, F64, F64], result: STRING },
   "insp.dyn": { argTypes: [DYN, F64, F64], result: STRING },
   "insp.dynS": { argTypes: [DYN, F64], result: STRING },
+  /** util.format's %o over a checked-dynamic value: inspect with
+   * showHidden. Kinds whose hidden entries have no rendering throw the
+   * 'not supported yet' Error. */
+  "insp.dynHidden": { argTypes: [DYN, F64], result: STRING },
   "insp.begin": { argTypes: [F64], result: VOID },
   /** util.inspect's breakLength, compact (0 for false) and sorted for the
    * renders that follow; the call site restores 80, 3 and false afterwards. */
@@ -4539,6 +4560,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * `prefix inner` re-indented at the caller's level (+1). */
   "insp.nestedBegin": { argTypes: [], result: VOID },
   "insp.nestedEnd": { argTypes: [STRING, STRING], result: STRING },
+  /** Around a top-level render that an inspection refusal can end: mark
+   * records the inspector's frame and nesting depth, unwind (in the
+   * render's finally) closes what the render left open above it. */
+  "insp.mark": { argTypes: [], result: VOID },
+  "insp.unwind": { argTypes: [], result: VOID },
   /** node:string_decoder's utf8 StringDecoder (scr_string.c): the decoder
    * value is a one-field record whose f64 PACKS the pending partial
    * sequence (count + up to 3 raw bytes — Node buffers at most 3 for

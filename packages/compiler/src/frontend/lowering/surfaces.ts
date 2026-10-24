@@ -1635,6 +1635,12 @@ export const BUILTIN_MODULE_FNS: Record<
     unzip: { fn: "zlib.unzipCb", params: [], result: VOID },
     unzipSync: { fn: "zlib.unzipSync", params: [BYTES_U8], result: BYTES_U8 },
     crc32: { fn: "zlib.crc32", params: [], result: F64 },
+    // Brotli (special-cased in lowerZlibModuleCall): every form takes the
+    // options entries with Node's BROTLI_ENCODE or BROTLI_DECODE mode.
+    brotliCompress: { fn: "zlib.cbOpts", params: [], result: VOID },
+    brotliCompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
+    brotliDecompress: { fn: "zlib.cbOpts", params: [], result: VOID },
+    brotliDecompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
     // The stream factories (special-cased in lowerZlibModuleCall): each
     // answers a runtime Transform stream over the zlib engine.
     createDeflate: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
@@ -1644,6 +1650,8 @@ export const BUILTIN_MODULE_FNS: Record<
     createDeflateRaw: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
     createInflateRaw: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
     createUnzip: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createBrotliCompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+    createBrotliDecompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
   },
   url: {
     fileURLToPath: {
@@ -1681,6 +1689,7 @@ export const BUILTIN_MODULE_FNS: Record<
     resolve: { fn: "url.legacyResolve", params: [DYN, DYN], result: STRING },
     domainToASCII: { fn: "url.domainToASCII", params: [DYN], result: STRING },
     domainToUnicode: { fn: "url.domainToUnicode", params: [DYN], result: STRING },
+    urlToHttpOptions: { fn: "url.toHttpOptions", params: [DYN], result: DYN },
   },
   child_process: {
     // spawnSync's and spawn's call completions are entirely special-cased
@@ -2085,7 +2094,16 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.readFdEncoded",
       "fs.readFdSync",
       "fs.readFdSyncBytes",
+      // The runtime encoding's check before a URL path converts
+      // (fs-paths.ts).
+      "fs.checkReadEncoding",
     ],
+    // The string source's check before a URL destination converts
+    // (fs-paths.ts).
+    copyFileSync: ["fs.checkPath"],
+    renameSync: ["fs.checkPath"],
+    copyFile: ["fs.checkPath"],
+    rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
     // The bytes-data form and the { mode } options form.
     writeFileSync: ["fs.writeFileSyncBytes", "fs.writeFileModeSync"],
@@ -3048,17 +3066,6 @@ export function builtinModulesArrayLit(loc: { file: string; start: number; end: 
   };
 }
 
-/** Member-specific hints for RECOGNIZED builtin modules whose member has
- * no lowering. The default-options one-shot zlib/deflate-raw/gzip codecs
- * lower for strings and Buffers; the remaining surface points at them. */
-const ZLIB_HINT =
-  "the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, " +
-  "and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface";
-/** Brotli has no codec in the static runtime (zlib is the only vendored
- * compression library). */
-const BROTLI_HINT =
-  "Brotli needs a Brotli codec, which the static runtime does not vendor — " + ZLIB_HINT;
-
 const ASSERT_MODULE_HINTS: Record<string, string | undefined> = {
   ifError:
     "test explicitly instead: assert.strictEqual(err, null) / " +
@@ -3119,16 +3126,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
     setFips:
       "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
       "in a non-FIPS build — getFips() answers 0 here",
-  },
-  zlib: {
-    brotliCompressSync: BROTLI_HINT,
-    brotliDecompressSync: BROTLI_HINT,
-    brotliCompress: BROTLI_HINT,
-    brotliDecompress: BROTLI_HINT,
-    createBrotliCompress: BROTLI_HINT,
-    createBrotliDecompress: BROTLI_HINT,
-    BrotliCompress: BROTLI_HINT,
-    BrotliDecompress: BROTLI_HINT,
   },
   http2: {
     connect:

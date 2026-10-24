@@ -325,6 +325,35 @@ console.log(cells.join(","));
     );
   });
 
+  test("a split require closing a CommonJS cycle keeps the const form's SC1016", async () => {
+    // Node answers the closing require with the dependency's partial exports
+    // ({ fromA: 1 } at this point), which the static export model cannot
+    // represent. Preflight treats the split assignment like `const a =
+    // require("./a.cjs")`, so the cycle keeps that form's SC1016 instead of
+    // reading uninitialized export storage. A cycle whose reads are all deferred
+    // compiles (tests/corpus/split-cjs-require-cycle).
+    const r = compileAndRun(
+      "split-require-cycle",
+      `require("./a.cjs");
+`,
+      "cjs",
+      {
+        "a.cjs": `exports.fromA = 1;
+const b = require("./b.cjs");
+exports.fromB = b.fromB;
+`,
+        "b.cjs": `exports.fromB = 2;
+var a;
+a = require("./a.cjs");
+console.log(a.fromA, a.fromB);
+`,
+      },
+    );
+    await expect(r).rejects.toThrow(
+      /SC1016: circular imports \(.*a\.cjs → .*b\.cjs → .*a\.cjs; the cycle closes through a require\(\) edge/,
+    );
+  });
+
   test("an EFFECTFUL surplus argument is a named deferred fence (JS lane)", async () => {
     // Effect-free surplus args drop at compile time, JS-exact (corpus
     // 1760 — the test-string-decoder writeSequences shape). An effectful
