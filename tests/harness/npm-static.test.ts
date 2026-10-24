@@ -435,6 +435,8 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       ).toEqual([
         expect.stringContaining("'createRequire's require with a computed specifier"),
         expect.stringContaining("'createRequire's require.resolve as a value'"),
+        expect.stringContaining("'createRequire's require.resolve with a computed request'"),
+        expect.stringContaining("'createRequire's require.resolve with a computed request'"),
       ]);
       const outDir = join(cacheDir, "addon-probe", sanitize ? "san" : "plain", backend);
       const result = await compile(entry, {
@@ -450,7 +452,9 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         runBinary(process.execPath, [entry]),
         runBinary(result.binaryPath, []),
       ]);
-      expect(nativeRes.stdout.toString()).toBe("a/b absent,absent,unresolved\ncustom:other\n");
+      expect(nativeRes.stdout.toString()).toBe(
+        "a/b absent,absent,unresolved\ncustom:other\nmissing after 1,missing after 2\n",
+      );
       expect(nativeRes.stdout).toEqual(nodeRes.stdout);
       expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
       expect(nativeRes.exitCode).toBe(nodeRes.exitCode);

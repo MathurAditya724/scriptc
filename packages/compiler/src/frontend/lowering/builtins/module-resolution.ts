@@ -193,6 +193,39 @@ export function createRequireResolveFenceValue(
   };
 }
 
+/** A createRequire use deferred to run time in JavaScript source: as in
+ * Node, the call's arguments are evaluated in order, then the call throws
+ * (here, the fence). Code before the call in the same statement runs, and
+ * the expression diverges, so nothing after it does. */
+function deferredCreateRequireThrow(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  surface: string,
+  hint: string,
+  loc: SrcLoc,
+): IrExpr {
+  const stmts: IrStmt[] = call.arguments.nodes.map((arg) => ({
+    kind: "exprStmt",
+    expr: lowerer.lowerExpr(arg),
+    loc: locOf(arg),
+  }));
+  const type = lowerer.irTypeOf(call);
+  const slot = lowerer.declareHiddenLocal("%never", type);
+  slot.mutable = true;
+  stmts.push(
+    { kind: "varDecl", localId: slot.id, init: null, loc },
+    createRequireFence(lowerer, surface, call, hint),
+  );
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: varRef(slot.id, type, loc),
+    diverges: true,
+    type,
+    loc,
+  };
+}
+
 export function lowerCreateRequireCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -205,27 +238,7 @@ export function lowerCreateRequireCall(
     const hint =
       'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>"); native addons are not loaded';
     if (!isJsSourceFile(ts.getSourceFileOfNode(call))) lowerer.noLowering(surface, call, hint);
-    // Node evaluates the arguments, then the require throws.
-    const stmts: IrStmt[] = call.arguments.nodes.map((arg) => ({
-      kind: "exprStmt",
-      expr: lowerer.lowerExpr(arg),
-      loc: locOf(arg),
-    }));
-    const type = lowerer.irTypeOf(call);
-    const slot = lowerer.declareHiddenLocal("%never", type);
-    slot.mutable = true;
-    stmts.push(
-      { kind: "varDecl", localId: slot.id, init: null, loc },
-      createRequireFence(lowerer, surface, call, hint),
-    );
-    return {
-      kind: "seqExpr",
-      stmts,
-      result: varRef(slot.id, type, loc),
-      diverges: true,
-      type,
-      loc,
-    };
+    return deferredCreateRequireThrow(lowerer, call, surface, hint, loc);
   }
   const spec = cr.spec;
   if (spec === "node:ffi") {
@@ -446,11 +459,30 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
   }
   const baseFile = requireResolverBaseFile(lowerer, receiver);
   if (baseFile === null) return null;
+  const surface = pathsCall ? "require.resolve.paths" : "require.resolve";
+  // A createRequire loader's query that resolves only at run time, in
+  // JavaScript source: preflight admits it inside a try block
+  // (createRequireUse7 in program.ts). Its arguments run, then it throws.
+  const deferred = (what: string, hint: string): IrExpr | null =>
+    call.questionDotToken === undefined &&
+    createRequireCalleeFileOf(lowerer, receiver) !== null &&
+    isJsSourceFile(ts.getSourceFileOfNode(call))
+      ? deferredCreateRequireThrow(
+          lowerer,
+          call,
+          `createRequire's ${surface} ${what}`,
+          hint,
+          locOf(call),
+        )
+      : null;
+  const resolveHint = `call it with a string literal (${surface}("<specifier>")), which resolves at build time`;
   if (
     call.questionDotToken !== undefined ||
     call.arguments.nodes.length < 1 ||
     call.arguments.nodes.length > (pathsCall ? 1 : 2)
   ) {
+    const fenced = deferred("with this argument shape", resolveHint);
+    if (fenced) return fenced;
     lowerer.noLowering(
       pathsCall
         ? "require.resolve.paths with this argument shape"
@@ -460,6 +492,8 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
   }
   const specifier = staticString(call.arguments.nodes[0]);
   if (specifier === null) {
+    const fenced = deferred("with a computed request", resolveHint);
+    if (fenced) return fenced;
     lowerer.noLowering(
       `${pathsCall ? "require.resolve.paths" : "require.resolve"} with a runtime-computed request`,
       call.arguments.nodes[0]!,
@@ -495,6 +529,11 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
   }
   const paths = staticResolveOptionPaths(call.arguments.nodes[1]);
   if (paths === null) {
+    const fenced = deferred(
+      "with runtime-computed options",
+      'omit options or pass { paths: ["<static directory>", ...] }',
+    );
+    if (fenced) return fenced;
     lowerer.noLowering(
       "require.resolve with runtime-computed options",
       call.arguments.nodes[1]!,
