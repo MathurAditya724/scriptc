@@ -57,6 +57,7 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import { boolLit, countedFor, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import { everyExpr } from "../../ir/traverse.js";
 import { checkedClassInstanceOf } from "./class-construction.js";
 import { isJsSourceFile } from "../program.js";
 
@@ -231,8 +232,9 @@ function requireStatementPosition(lowerer: Lowerer, call: ts.CallExpression, wha
 const VALUE_MESSAGE = "\u0001scriptc:assert-message-value";
 
 /** A message argument that is not a string, met while one assertion
- * lowers (withValueMessage). */
-let valueMessage: { value: IrExpr; has: string; text: string } | null = null;
+ * lowers (withValueMessage). `fail` marks assert.fail's message, which
+ * Node uses for every value but null and undefined. */
+let valueMessage: { value: IrExpr; has: string; text: string; fail: boolean } | null = null;
 
 /** The optional trailing message argument: Node accepts a string or an
  * Error (throwing the Error itself) — the STRING form lowers; a literal
@@ -246,6 +248,7 @@ function lowerMessageArg(
   lowerer: Lowerer,
   node: ts.Expression | undefined,
   loc: SrcLoc,
+  fail = false,
 ): { msg: IrExpr; hasMsg: IrExpr } {
   if (!node || (ts.isIdentifier(node) && node.text === "undefined")) {
     return { msg: { kind: "strLit", value: "", type: STRING, loc }, hasMsg: boolLit(false, loc) };
@@ -265,7 +268,7 @@ function lowerMessageArg(
   }
   const has = lowerer.declareHiddenLocal("assert.hasMessage", BOOL);
   const text = lowerer.declareHiddenLocal("assert.messageText", STRING);
-  valueMessage = { value, has: has.id, text: text.id };
+  valueMessage = { value, has: has.id, text: text.id, fail };
   return { msg: varRef(text.id, STRING, loc), hasMsg: varRef(has.id, BOOL, loc) };
 }
 
@@ -285,7 +288,12 @@ function withValueMessage(
   valueMessage = null;
   try {
     const lowered = lower();
-    const message = valueMessage as { value: IrExpr; has: string; text: string } | null;
+    const message = valueMessage as {
+      value: IrExpr;
+      has: string;
+      text: string;
+      fail: boolean;
+    } | null;
     if (lowered === null || message === null) return lowered;
     // assert.ok's statements evaluate the value first; its call is last.
     const before = lowered.kind === "seqExpr" ? lowered.stmts : [];
@@ -298,13 +306,25 @@ function withValueMessage(
       );
     }
     const stmts: IrStmt[] = [...before];
+    // An argument computed from the message (assert.fail's generated flag)
+    // reads it after the declarations below; the others are evaluated first.
+    const readsMessage = (arg: IrExpr): boolean =>
+      !everyExpr(arg, {
+        stmt: () => true,
+        expr: (e) =>
+          !(e.kind === "varRef" && (e.localId === message.has || e.localId === message.text)),
+      });
     const args = call.args.map((arg, index) =>
-      arg.kind === "varRef" && (arg.localId === message.has || arg.localId === message.text)
-        ? arg
-        : stableValue(lowerer, stmts, arg, `assert.arg${index}`, loc),
+      readsMessage(arg) ? arg : stableValue(lowerer, stmts, arg, `assert.arg${index}`, loc),
     );
     const local = lowerer.declareHiddenLocal("assert.message", DYN);
     const value = varRef(local.id, DYN, loc);
+    // The runtime reports a registered value: a truthy one for the other
+    // methods, any value but null and undefined for assert.fail (Node's
+    // `actual == null` test), whose other values read "Failed".
+    const registered: IrExpr = message.fail
+      ? varRef(message.has, BOOL, loc)
+      : { kind: "dynTest", test: "truthy", value, type: BOOL, loc };
     stmts.push(
       { kind: "varDecl", localId: local.id, init: message.value, loc },
       {
@@ -318,9 +338,9 @@ function withValueMessage(
         localId: message.text,
         init: {
           kind: "ternary",
-          cond: { kind: "dynTest", test: "truthy", value, type: BOOL, loc },
+          cond: registered,
           then: strLit(VALUE_MESSAGE, loc),
-          else_: strLit("", loc),
+          else_: strLit(message.fail ? "Failed" : "", loc),
           type: STRING,
           loc,
         },
@@ -328,7 +348,7 @@ function withValueMessage(
       },
       {
         kind: "if",
-        cond: { kind: "dynTest", test: "truthy", value, type: BOOL, loc },
+        cond: registered,
         then: [
           {
             kind: "exprStmt",
@@ -1148,22 +1168,26 @@ function lowerAssertFail(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc)
     generated = boolLit(true, loc);
   } else {
     // Node's AssertionError sets generatedMessage to !message, so an
-    // empty custom message counts as generated.
-    msg = stableValue(
-      lowerer,
-      stmts,
-      lowerMessageArg(lowerer, msgNode, loc).msg,
-      "%assertFailMessage",
-      loc,
-    );
-    generated = {
-      kind: "strEq",
-      negated: false,
-      left: msg,
-      right: strLit("", loc),
-      type: BOOL,
-      loc,
-    };
+    // empty custom message counts as generated. A message that is not a
+    // string is read from the hidden local that withValueMessage declares
+    // after these statements, so it is used as is.
+    const { msg: lowered, hasMsg } = lowerMessageArg(lowerer, msgNode, loc, true);
+    if (lowered.kind === "varRef" && hasMsg.kind === "varRef") {
+      // A value message: generated when Node reads "Failed" for null or
+      // undefined; the runtime sets the flag for a registered value.
+      msg = lowered;
+      generated = { kind: "unary", op: "!", operand: hasMsg, type: BOOL, loc };
+    } else {
+      msg = stableValue(lowerer, stmts, lowered, "%assertFailMessage", loc);
+      generated = {
+        kind: "strEq",
+        negated: false,
+        left: msg,
+        right: strLit("", loc),
+        type: BOOL,
+        loc,
+      };
+    }
   }
   const falseLit: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
   stmts.push(recordOnFailure(lowerer, boolLit(true, loc), null, null, "fail", loc));

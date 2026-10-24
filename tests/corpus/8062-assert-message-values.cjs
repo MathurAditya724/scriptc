@@ -39,3 +39,10 @@ const row = [['a', 'b', true], ['c', 'd', 'x']];
 for (const [, , expected] of row) {
   attempt('union operand', () => assert.strictEqual(JSON.parse(JSON.stringify(expected)), expected));
 }
+
+// assert.fail with a message that is not a string: an Error is thrown as
+// is; other values become the message, generated when falsy.
+attempt('fail error', () => assert.fail(new RangeError('re')));
+attempt('fail value', () => assert.fail(JSON.parse('{"a":1}')));
+attempt('fail zero', () => assert.fail(zero));
+attempt('fail null', () => assert.fail(JSON.parse('null')));
