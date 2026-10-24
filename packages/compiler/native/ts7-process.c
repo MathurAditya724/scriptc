@@ -418,9 +418,10 @@ int32_t scriptc_ts7_json_value_end(const uint8_t *bytes, size_t size, uint32_t s
     uint8_t byte = bytes[index];
     if (byte == '"') {
       index++;
+      // The quote found stays the candidate end until an escape skips it, so
+      // every byte of the string is scanned once by each search.
+      const uint8_t *quote = index < size ? memchr(bytes + index, '"', size - index) : NULL;
       for (;;) {
-        if (index >= size) return -1;
-        const uint8_t *quote = memchr(bytes + index, '"', size - index);
         if (quote == NULL) return -1;
         const uint8_t *escape = memchr(bytes + index, '\\', (size_t)(quote - (bytes + index)));
         if (escape == NULL) {
@@ -428,6 +429,7 @@ int32_t scriptc_ts7_json_value_end(const uint8_t *bytes, size_t size, uint32_t s
           break;
         }
         index = (size_t)(escape - bytes) + 2;
+        if (bytes + index > quote) quote = index < size ? memchr(bytes + index, '"', size - index) : NULL;
       }
       index++;
       if (depth == 0) return (int32_t)index;

@@ -76,31 +76,45 @@ function cases(): { bytes: Uint8Array; start: number }[] {
   return out;
 }
 
+/** The native scanner's results for `all`, from a harness built in `dir`. */
+function nativeEnds(
+  dir: string,
+  all: { bytes: Uint8Array; start: number }[],
+  timeout?: number,
+): number[] {
+  const harness = join(dir, "scan" + (process.platform === "win32" ? ".exe" : ""));
+  execFileSync("clang", [
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    ...(process.env["SCRIPTC_SAN"] === "1" ? ["-fsanitize=address,undefined"] : []),
+    join(sources, "ts7-json.test.c"),
+    join(sources, "ts7-process.c"),
+    "-o",
+    harness,
+  ]);
+  const chunks: Buffer[] = [];
+  for (const { bytes, start } of all) {
+    const header = Buffer.alloc(8);
+    header.writeUInt32LE(bytes.length, 0);
+    header.writeUInt32LE(start, 4);
+    chunks.push(header, Buffer.from(bytes));
+  }
+  const output = execFileSync(harness, {
+    input: Buffer.concat(chunks),
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    ...(timeout === undefined ? {} : { timeout }),
+  });
+  return output.trim().split(/\r?\n/).map(Number);
+}
+
 test("the native scanner finds the value ends jsonValueEnd finds", () => {
   const dir = mkdtempSync(join(tempRoot, "scriptc-ts7-json-"));
   try {
-    const harness = join(dir, "scan" + (process.platform === "win32" ? ".exe" : ""));
-    execFileSync("clang", [
-      "-std=c11",
-      "-Wall",
-      "-Wextra",
-      "-Werror",
-      ...(process.env["SCRIPTC_SAN"] === "1" ? ["-fsanitize=address,undefined"] : []),
-      join(sources, "ts7-json.test.c"),
-      join(sources, "ts7-process.c"),
-      "-o",
-      harness,
-    ]);
     const all = cases();
-    const chunks: Buffer[] = [];
-    for (const { bytes, start } of all) {
-      const header = Buffer.alloc(8);
-      header.writeUInt32LE(bytes.length, 0);
-      header.writeUInt32LE(start, 4);
-      chunks.push(header, Buffer.from(bytes));
-    }
-    const output = execFileSync(harness, { input: Buffer.concat(chunks), encoding: "utf8" });
-    const actual = output.trim().split(/\r?\n/).map(Number);
+    const actual = nativeEnds(dir, all);
     expect(actual.length).toBe(all.length);
     for (let k = 0; k < all.length; k++) {
       const { bytes, start } = all[k]!;
@@ -112,6 +126,25 @@ test("the native scanner finds the value ends jsonValueEnd finds", () => {
           end: expected,
         });
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the native scanner reads strings with many escapes in one pass", () => {
+  const dir = mkdtempSync(join(tempRoot, "scriptc-ts7-json-"));
+  try {
+    // Strings of 2,000,000 escapes each: newlines, backslashes and quotes,
+    // alone and as a member of an object.
+    const strings = ["\\n", "\\\\", '\\"'].map((escape) => `"${escape.repeat(2_000_000)}"`);
+    const all = [
+      ...strings.map((text) => ({ bytes: Buffer.from(text, "utf8"), start: 0 })),
+      ...strings.map((text) => ({ bytes: Buffer.from(`{"value":${text}},1`, "utf8"), start: 0 })),
+    ];
+    // A scan that searched for the closing quote again after each escape
+    // would take minutes here.
+    const actual = nativeEnds(dir, all, 60_000);
+    expect(actual).toEqual(all.map(({ bytes, start }) => expectedEnd(bytes, start)));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
