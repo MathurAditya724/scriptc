@@ -1219,7 +1219,9 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
 function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const B = host.B;
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
-  const kind = mapKeyKindNum(key, arms);
+  // SCR_MAP_KEY_REF (2): shape-union keys are record pointers.
+  const kind =
+    key.kind === "union" && host.nullableUnions.shapes(key.unionId) ? 2 : mapKeyKindNum(key, arms);
   const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).
