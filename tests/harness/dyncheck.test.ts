@@ -444,6 +444,47 @@ for (const input of inputs) {
     );
   });
 
+  test("a getter that changes the discriminant during an arm's check continues with the later arms", async () => {
+    // Each getter sets `kind` and fails its arm's check: to a later arm's
+    // literal (that arm matches), to an earlier arm's literal (arm-by-arm
+    // tests do not go back), and to a literal no arm holds.
+    const r = await compileAndRun(
+      "union-discriminant-getter",
+      `type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "square"; side: number }
+  | { kind: "rect"; height: number; width: number }
+  | { kind: "tri"; a: number; b: number; c: number };
+const flip = (value: any, to: string): string => {
+  value.kind = to;
+  return "none";
+};
+const later: any = { kind: "circle", get radius() { return flip(later, "square"); }, side: 3 };
+const earlier: any = { kind: "square", radius: 2, get side() { return flip(earlier, "circle"); } };
+const unknown: any = { kind: "square", get side() { return flip(unknown, "hexagon"); } };
+const inputs = [later, earlier, unknown];
+for (const input of inputs) {
+  try {
+    const shape = input as Shape;
+    console.log("matched", shape.kind);
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+`,
+    );
+    const any = "object | object | object | object";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "matched square",
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("nested paths point at the offending element", async () => {
     const r = await compileAndRun(
       "nested-path",

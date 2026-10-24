@@ -440,8 +440,12 @@ export class LlDyn {
    * discriminant is read once (scr_dyn_discriminant_case, against the
    * constant `table`), and only the arms whose literal it holds and the arms
    * without a literal are tested, in `order`: every other arm's literal test
-   * fails. A value the runtime cannot classify that way (a typed capsule, an
-   * accessor, an inherited discriminant) takes the tests arm by arm. */
+   * fails. An arm's failed check can run a getter that changes the
+   * discriminant, so it is read again after each one; when its case
+   * changed, the tests continue arm by arm after the failed arm, as they
+   * would have run from the first arm. A value the runtime cannot classify
+   * that way (a typed capsule, an accessor, an inherited discriminant) takes
+   * the tests arm by arm. */
   private unionArmsByDiscriminant(
     B: BlockBuilder,
     def: IrUnionDef,
@@ -455,47 +459,66 @@ export class LlDyn {
     const discriminant = def.discriminant!;
     const literalsOf = (tag: number): readonly (string | number | boolean)[] | null =>
       discriminant.cases.find((candidate) => candidate.tag === tag)?.values ?? null;
-    const tryArms = (tags: readonly number[], literal: boolean): void => {
-      if (tags.length === 0) {
-        B.br(none);
-        return;
-      }
-      tags.forEach((tag, index) => {
-        const next = index === tags.length - 1 ? none : B.newLabel("du.c.n");
-        if (literal) this.unionArmMatch(B, def, tag, hits[tag]!, next, preserveRefs);
-        else this.unionArmStructure(B, def, tag, hits[tag]!, next, preserveRefs);
-        if (next !== none) B.startBlock(next);
-      });
-    };
-    const armsFor = (value: string | null): number[] =>
-      order.filter((tag) => {
-        const literals = literalsOf(tag);
-        return literals === null || (value !== null && literals.includes(value));
-      });
     const host = this.host;
     this.defs.push(
       `${table} = private unnamed_addr constant [${values.length} x ptr] [${values.map((value) => `ptr ${host.internLiteral(value)}`).join(", ")}]`,
       ``,
     );
     host.declare(`declare i32 @scr_dyn_discriminant_case(ptr, ptr, ptr, ${host.sizeType})`);
-    const index = B.tmp();
-    B.line(
-      `${index} = call i32 @scr_dyn_discriminant_case(ptr %d, ptr ${host.internLiteral(discriminant.field)}, ptr ${table}, ${host.sizeType} ${values.length})`,
-    );
+    const classify = (): string => {
+      const index = B.tmp();
+      B.line(
+        `${index} = call i32 @scr_dyn_discriminant_case(ptr %d, ptr ${host.internLiteral(discriminant.field)}, ptr ${table}, ${host.sizeType} ${values.length})`,
+      );
+      return index;
+    };
+    // The arm-by-arm tests, entered at any arm (`from[i]` tests order[i]
+    // and the arms after it).
     const tests = B.newLabel("du.tests");
+    const from = order.map((_, i) => (i === 0 ? tests : B.newLabel("du.t")));
+    const after = (position: number): string =>
+      position + 1 < order.length ? from[position + 1]! : none;
+    // Tests the arms a value in case `k` (-1: no literal) can match.
+    const tryCase = (k: number): void => {
+      const value = k < 0 ? null : values[k]!;
+      const positions = order
+        .map((_, position) => position)
+        .filter((position) => {
+          const literals = literalsOf(order[position]!);
+          return literals === null || (value !== null && literals.includes(value));
+        });
+      if (positions.length === 0) {
+        B.br(none);
+        return;
+      }
+      positions.forEach((position, index) => {
+        const tag = order[position]!;
+        const failed = B.newLabel("du.c.f");
+        this.unionArmStructure(B, def, tag, hits[tag]!, failed, preserveRefs);
+        B.startBlock(failed);
+        const next = index === positions.length - 1 ? none : B.newLabel("du.c.n");
+        const same = B.tmp();
+        B.line(`${same} = icmp eq i32 ${classify()}, ${k}`);
+        B.condBr(same, next, after(position));
+        if (next !== none) B.startBlock(next);
+      });
+    };
+    const index = classify();
     const unmatched = B.newLabel("du.none");
     const cases = values.map(() => B.newLabel("du.case"));
     B.terminate(
       `switch i32 ${index}, label %${tests} [ i32 -1, label %${unmatched} ${cases.map((label, k) => `i32 ${k}, label %${label}`).join(" ")} ]`,
     );
-    values.forEach((value, k) => {
+    values.forEach((_, k) => {
       B.startBlock(cases[k]!);
-      tryArms(armsFor(value), false);
+      tryCase(k);
     });
     B.startBlock(unmatched);
-    tryArms(armsFor(null), false);
-    B.startBlock(tests);
-    tryArms(order, true);
+    tryCase(-1);
+    order.forEach((tag, position) => {
+      B.startBlock(from[position]!);
+      this.unionArmMatch(B, def, tag, hits[tag]!, after(position), preserveRefs);
+    });
   }
 
   /** Branch to a variant only after its literal discriminator and complete
