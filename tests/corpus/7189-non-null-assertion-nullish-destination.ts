@@ -45,3 +45,13 @@ function kindOf(value: unknown): string {
 console.log(String(names.get("a")!), String(names.get("b")!));
 console.log(Number(amounts.get("a")!), Number(amounts.get("b")!));
 console.log(kindOf(names.get("a")!), kindOf(amounts.get("a")!), kindOf(names.get("b")!));
+
+// An optional parameter of a standard library method keeps the checked
+// narrowing: `decode(input?)` reads the asserted Uint8Array.
+const chunks = new Map<string, Uint8Array | undefined>([["a", new TextEncoder().encode("chunk")]]);
+interface Read {
+  done: boolean;
+  value?: Uint8Array;
+}
+const read: Read = { done: false, value: chunks.get("a") };
+console.log(new TextDecoder().decode(chunks.get("a")!), new TextDecoder().decode(read.value!).slice(0, 3));

@@ -1394,6 +1394,22 @@ ScrStr *scr_url_to_path(ScrUrl *u) {
 #endif
 }
 
+/* fs.existsSync and the fs.promises functions convert a URL path inside a
+ * try and turn its error into false or a rejection: the conversion's result
+ * as a value, the path string or the error. */
+ScrDyn *scr_url_to_path_value(ScrUrl *u) {
+  ScrStr *path = scr_url_to_path(u);
+  if (path) {
+    ScrDyn *value = scr_dyn_new_str(path);
+    scr_str_release(path);
+    return value;
+  }
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *error = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  return error;
+}
+
 /* The string-receiver form parses first (Node accepts URL strings). */
 ScrStr *scr_url_str_to_path(ScrStr *input) {
   ScrUrl *u = scr_url_new(input);

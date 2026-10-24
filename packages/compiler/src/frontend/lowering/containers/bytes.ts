@@ -15,6 +15,7 @@ import {
   type IrLibFn,
   type IrLocal,
   type IrParam,
+  type IrFunction,
   type IrStmt,
   type IrType,
   STRING,
@@ -30,7 +31,8 @@ import {
 import { isJsSourceFile, locOf } from "../../program.js";
 import { stdlibGlobalNameOf } from "../surfaces.js";
 import type { Lowerer } from "../lowerer.js";
-import { newFnCtx, own } from "../lowerer.js";
+import { ENTRY_NAME, newFnCtx, own } from "../lowerer.js";
+import { everyStmt } from "../../../ir/traverse.js";
 import { buildBytesSortFn, closureKeyOrder } from "../lower-array-sort.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { lowerDynObjectLiteral } from "../expressions/object-literals.js";
@@ -1377,6 +1379,8 @@ export function lowerBytesMethodCall(
         "the numeric families read/write Buffer bytes",
       );
     }
+    if (!numericArguments(lowerer, call))
+      return dynNumericCall(lowerer, call, access, name, receiverIr, loc);
     const write = name.startsWith("write");
     const required = write ? 1 : 0; // value; offset defaults to 0
     if (nArgs < required || nArgs > required + 1) {
@@ -1553,6 +1557,39 @@ const BUF_BIGINT_METHODS: Record<string, { sign: boolean; le: boolean } | undefi
   writeBigUint64BE: { sign: false, le: false },
   writeBigUint64LE: { sign: false, le: true },
 };
+
+/** Whether every argument of a numeric read/write is statically a number. */
+function numericArguments(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  return call.arguments.nodes.every((a) => lowerer.mapTypeOf(lowerer.typeOf(a))?.kind === "f64");
+}
+
+/** A numeric read/write with an argument that is not a number (a string
+ * offset from untyped JavaScript): the checked-dynamic Buffer method runs
+ * Node's argument validation at runtime. */
+function dynNumericCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+  receiverIr: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
+  return {
+    kind: "dynCheck",
+    value: {
+      kind: "dynInvoke",
+      recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
+      method: name,
+      calleeName: ts.getTextOfNode(access),
+      args: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+      type: DYN,
+      loc,
+    },
+    type: F64,
+    loc,
+  };
+}
 
 /** The variable-width quartet (offset + byteLength) → sign/endian token. */
 const BUF_NUM_VAR_METHODS: Record<string, string | undefined> = {
@@ -1913,7 +1950,12 @@ function knownBufferProducer(
  * or empty encoding and throws ERR_UNKNOWN_ENCODING for an unknown name; an
  * ArrayBuffer takes the second argument as its byte offset; other sources
  * ignore it. */
-function dynBufferFromParts(source: IrExpr, encoding: IrExpr, loc: SrcLoc): IrExpr {
+function dynBufferFromParts(
+  source: IrExpr,
+  encoding: IrExpr,
+  loc: SrcLoc,
+  length?: IrExpr,
+): IrExpr {
   const utf8: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
   const isString = (x: IrExpr): IrExpr => ({
     kind: "dynTest",
@@ -1954,18 +1996,46 @@ function dynBufferFromParts(source: IrExpr, encoding: IrExpr, loc: SrcLoc): IrEx
       type: BYTES_U8,
       loc,
     },
-    // An ArrayBuffer takes the second argument as its byte offset
-    // (scr_buffer_from_dyn_offset_pooled); other values convert with utf8.
-    else_: {
-      kind: "libCall",
-      fn: "buffer.poolFromDynOffset",
-      args: [source, encoding],
-      type: BYTES_U8,
-      loc,
-    },
+    // An ArrayBuffer takes the second argument as its byte offset and the
+    // third as its length (scr_buffer_from_dyn_range_pooled); other values
+    // convert with utf8.
+    else_: length
+      ? {
+          kind: "libCall",
+          fn: "buffer.poolFromDynRange",
+          args: [source, encoding, length],
+          type: BYTES_U8,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: "buffer.poolFromDynOffset",
+          args: [source, encoding],
+          type: BYTES_U8,
+          loc,
+        },
     type: BYTES_U8,
     loc,
   };
+}
+
+/** Buffer.from(arrayBuffer, byteOffset[, length]): each argument in order
+ * as a checked-dynamic value, read by the runtime as Node's
+ * fromArrayBuffer reads them. */
+function bufferFromArrayBufferRange(
+  lowerer: Lowerer,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+  first?: IrExpr,
+): IrExpr {
+  const operands = [0, 1, 2].map((i) =>
+    i === 0 && first
+      ? first
+      : args[i]
+        ? lowerer.lowerExprExpecting(args[i]!, DYN)
+        : dynUndefinedExpr(loc),
+  );
+  return { kind: "libCall", fn: "buffer.poolFromDynRange", args: operands, type: BYTES_U8, loc };
 }
 
 /** Lowers `source` and `encNode` (or undefined) into hidden dyn locals, in
@@ -2015,52 +2085,81 @@ function dynBufferFromRuntimeEncoding(
   );
 }
 
-/** The deprecated `new Buffer(arg[, encoding])` in a dependency's
- * JavaScript, through the global or an alias of it (buffer-crc32 and yazl
- * keep it as the fallback for runtimes without Buffer.alloc/Buffer.from).
- * Node never emits DEP0005 for calls from node_modules, so the construction
- * is exactly Node's: a number allocates zero-filled bytes (and throws
- * ERR_INVALID_ARG_TYPE beside a string second argument), anything else
- * converts as Buffer.from does. Null elsewhere: other callers owe the
- * deprecation warning. */
-export function lowerNodeModulesBufferConstruct(
+/** The deprecated `Buffer(arg[, encodingOrOffset[, length]])`, called or
+ * constructed through the global or an alias of it, as Node's Buffer
+ * function runs it: the arguments evaluate in order, DEP0005 is reported
+ * on the next tick (once, and never for a call made from node_modules,
+ * which only counts toward Node's 10000-call check), then a number
+ * allocates zero-filled bytes (and throws ERR_INVALID_ARG_TYPE beside a
+ * string second argument) and anything else converts as Buffer.from does.
+ * Null for spread arguments and more than three. */
+export function lowerBufferConstruct(
   lowerer: Lowerer,
-  expr: ts.NewExpression,
+  expr: ts.NewExpression | ts.CallExpression,
 ): IrExpr | null {
-  const sf = expr.getSourceFile();
-  if (!isJsSourceFile(sf) || !/[\\/]node_modules[\\/]/.test(sf.fileName)) return null;
+  if (ts.isCallExpression(expr) && expr.questionDotToken) return null;
   const args = expr.arguments?.nodes ?? [];
-  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) return null;
+  if (args.length > 3 || args.some(ts.isSpreadElement)) return null;
   if (stdlibGlobalNameOf(lowerer, expr.expression) !== "Buffer") return null;
   const loc = locOf(expr);
-  const value = withDynBufferArguments(
-    lowerer,
-    lowerer.lowerExpr(args[0]!),
-    args[1],
-    loc,
-    (source, encoding) => ({
+  const locals = [0, 1, 2].slice(0, Math.max(args.length, 2)).map((i) => {
+    const local = lowerer.declareHiddenLocal("%bufferArgument", DYN);
+    const node = args[i];
+    const init = node === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(node, DYN);
+    return { local, init };
+  });
+  const [source, second, third] = locals.map(({ local }) => varRef(local.id, DYN, loc)) as [
+    IrExpr,
+    IrExpr,
+    IrExpr | undefined,
+  ];
+  const inNodeModules = /[\\/]node_modules[\\/]/.test(expr.getSourceFile().fileName);
+  const value: IrExpr = {
+    kind: "ternary",
+    cond: { kind: "dynTest", test: "number", value: source, type: BOOL, loc },
+    then: {
       kind: "ternary",
-      cond: { kind: "dynTest", test: "number", value: source, type: BOOL, loc },
-      then: {
-        kind: "ternary",
-        cond: { kind: "dynTest", test: "string", value: encoding, type: BOOL, loc },
-        then: { kind: "libCall", fn: "buffer.newStringFail", args: [source], type: BYTES_U8, loc },
-        else_: {
-          kind: "libCall",
-          fn: "buffer.alloc",
-          args: [{ kind: "dynCheck", value: source, type: F64, loc }],
-          type: BYTES_U8,
-          loc,
-        },
+      cond: { kind: "dynTest", test: "string", value: second, type: BOOL, loc },
+      then: { kind: "libCall", fn: "buffer.newStringFail", args: [source], type: BYTES_U8, loc },
+      else_: {
+        kind: "libCall",
+        fn: "buffer.alloc",
+        args: [{ kind: "dynCheck", value: source, type: F64, loc }],
         type: BYTES_U8,
         loc,
       },
-      else_: dynBufferFromParts(source, encoding, loc),
       type: BYTES_U8,
       loc,
-    }),
-  );
-  return { kind: "libCall", fn: "buffer.brand", args: [value], type: BYTES_U8, loc };
+    },
+    else_: dynBufferFromParts(source, second, loc, third),
+    type: BYTES_U8,
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts: [
+      ...locals.map(({ local, init }): IrStmt => ({
+        kind: "varDecl",
+        localId: local.id,
+        init,
+        loc,
+      })),
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: inNodeModules ? "buffer.deprecationCount" : "buffer.deprecation",
+          args: [],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: { kind: "libCall", fn: "buffer.brand", args: [value], type: BYTES_U8, loc },
+    type: BYTES_U8,
+    loc,
+  };
 }
 
 /** Buffer.from(array or bytes, extra): Node copies an array-like source and
@@ -2124,7 +2223,16 @@ function lowerBufferStaticValue(
         lowerer.typeOf(args[0]!).getSymbol(),
       )
     ) {
-      return lowerArrayBufferView(lowerer, args, "u8", loc);
+      // A byte offset or length follows Node's fromArrayBuffer (its
+      // conversions and ERR_BUFFER_OUT_OF_BOUNDS), not the typed-array view.
+      if (args.length === 1) return lowerArrayBufferView(lowerer, args, "u8", loc);
+      return bufferFromArrayBufferRange(lowerer, args, loc);
+    }
+    // Buffer.from(value, byteOffset, length) over an untyped value: an
+    // ArrayBuffer's range, or the two-argument conversion of other values.
+    if (args.length === 3 && !args.some(ts.isSpreadElement)) {
+      const first = lowerer.lowerExpr(args[0]!);
+      if (first.type.kind === "dyn") return bufferFromArrayBufferRange(lowerer, args, loc, first);
     }
     // Buffer.from(x.buffer[, byteOffset[, length]]): a u8 VIEW sharing
     // x's storage (Node shares the ArrayBuffer; length is in BYTES).
@@ -2551,11 +2659,101 @@ function lowerBufferStaticValue(
       const s = lowerer.lowerExprExpecting(args[0]!, STRING);
       return { kind: "libCall", fn: "buffer.isEncoding", args: [s], type: BOOL, loc };
     }
+    // Any other single argument: Node answers false for non-strings.
+    if (args.length === 1 && !ts.isSpreadElement(args[0]!)) {
+      const value = lowerer.declareHiddenLocal("%bufferEncoding", DYN);
+      const ref = varRef(value.id, DYN, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: value.id,
+            init: lowerer.lowerExprExpecting(args[0]!, DYN),
+            loc,
+          },
+        ],
+        result: {
+          kind: "logical",
+          op: "&&",
+          left: { kind: "dynTest", test: "string", value: ref, type: BOOL, loc },
+          right: {
+            kind: "libCall",
+            fn: "buffer.isEncoding",
+            args: [{ kind: "dynCheck", value: ref, type: STRING, loc }],
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
     lowerer.noLowering(
       "Buffer.isEncoding with this argument shape",
       call,
-      "one string-typed argument is the lowered form",
+      "one argument is the lowered form",
     );
   }
   return null; // of, copyBytesFrom, ... → the SC2020 member fence
+}
+
+/** `Buffer.prototype.<name>` or `Buffer.prototype[key]` read in JavaScript
+ * (smart-buffer's `typeof Buffer.prototype[method]` probe): the member as
+ * scr_buffer_prototype_member answers it. Null for other expressions. */
+export function lowerBufferPrototypeMember(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken || !isJsSourceFile(expr.getSourceFile())) return null;
+  const receiver = expr.expression;
+  if (
+    !ts.isPropertyAccessExpression(receiver) ||
+    receiver.questionDotToken ||
+    receiver.name.text !== "prototype" ||
+    stdlibGlobalNameOf(lowerer, receiver.expression) !== "Buffer"
+  )
+    return null;
+  const loc = locOf(expr);
+  const key: IrExpr = ts.isPropertyAccessExpression(expr)
+    ? {
+        kind: "dynFrom",
+        value: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      }
+    : lowerer.lowerExprExpecting(expr.argumentExpression, DYN);
+  return { kind: "libCall", fn: "buffer.prototypeMember", args: [key], type: DYN, loc };
+}
+
+const BUFFER_VALUE_FNS: ReadonlySet<string> = new Set([
+  "buffer.constructor",
+  "buffer.staticValue",
+  "buffer.prototypeMember",
+]);
+
+/** A program that reads the Buffer function's value installs it in %main,
+ * so a Buffer's `.constructor` answers the same function. */
+export function installBufferValue(functions: IrFunction[]): void {
+  let found = false;
+  const visitor = {
+    expr: (e: IrExpr): boolean => {
+      if (e.kind === "libCall" && BUFFER_VALUE_FNS.has(e.fn)) found = true;
+      return !found;
+    },
+    stmt: (): boolean => !found,
+  };
+  for (const fn of functions) {
+    for (const s of fn.body) everyStmt(s, visitor);
+    if (found) break;
+  }
+  const main = functions.find((fn) => fn.name === ENTRY_NAME);
+  if (!found || !main) return;
+  main.body.unshift({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "buffer.installValue", args: [], type: VOID, loc: main.loc },
+    loc: main.loc,
+  });
 }
