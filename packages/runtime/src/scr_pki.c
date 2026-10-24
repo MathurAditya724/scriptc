@@ -1635,48 +1635,79 @@ static SpKey *sp_ed_from_der(const unsigned char *der, size_t len, bool private_
   return k;
 }
 
-/* RSASSA-PSS-params at *p (RFC 4055): true with the restrictions set on
- * `k`, false when they are malformed or unsupported, which leaves the key
- * without restrictions, as OpenSSL reads a negative or oversized salt. */
-static bool sp_pss_params_read(unsigned char **p, const unsigned char *end, SpKey *k) {
+/* The name of a digest OID that RSASSA-PSS-params can hold and this
+ * runtime does not sign with, for its refusal. */
+static const char *sp_pss_other_digest(const mbedtls_asn1_buf *oid) {
+  /* 2.16.840.1.101.3.4.2.x, the NIST hash arc */
+  static const unsigned char nist[] = {0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02};
+  if (oid->len == sizeof nist + 1 && memcmp(oid->p, nist, sizeof nist) == 0) {
+    switch (oid->p[sizeof nist]) {
+    case 0x05: return "sha512-224";
+    case 0x06: return "sha512-256";
+    case 0x07: return "sha3-224";
+    case 0x08: return "sha3-256";
+    case 0x09: return "sha3-384";
+    case 0x0a: return "sha3-512";
+    }
+  }
+  mbedtls_md_type_t md;
+  if (mbedtls_oid_get_md_alg(oid, &md) == 0) {
+    if (md == MBEDTLS_MD_MD5) return "md5";
+    if (md == MBEDTLS_MD_RIPEMD160) return "ripemd160";
+  }
+  return "this digest";
+}
+
+/* RSASSA-PSS-params at *p (RFC 4055): 1 with the restrictions set on `k`;
+ * 0 when they are malformed, which leaves the key without restrictions, as
+ * OpenSSL reads a negative or oversized salt; -1 with *digest named when a
+ * hash or MGF1 digest is one this runtime does not sign with, so that the
+ * key is refused rather than imported without the restrictions it carries. */
+static int sp_pss_params_read(unsigned char **p, const unsigned char *end, SpKey *k, const char **digest) {
   size_t n;
-  if (mbedtls_asn1_get_tag(p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  if (mbedtls_asn1_get_tag(p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return 0;
   const unsigned char *params_end = *p + n;
   mbedtls_md_type_t md = MBEDTLS_MD_SHA1, mgf1 = MBEDTLS_MD_SHA1;
   int salt = 20;
   if (*p < params_end && **p == (MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 0)) {
     mbedtls_asn1_buf oid, params;
     if (mbedtls_asn1_get_tag(p, params_end, &n, MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 0) != 0 ||
-        mbedtls_asn1_get_alg(p, *p + n, &oid, &params) != 0 || mbedtls_oid_get_md_alg(&oid, &md) != 0 ||
-        !sp_pss_md_name(md))
-      return false;
+        mbedtls_asn1_get_alg(p, *p + n, &oid, &params) != 0)
+      return 0;
+    if (mbedtls_oid_get_md_alg(&oid, &md) != 0 || !sp_pss_md_name(md)) {
+      *digest = sp_pss_other_digest(&oid);
+      return -1;
+    }
   }
   if (*p < params_end && **p == (MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 1)) {
     mbedtls_asn1_buf oid, params;
     if (mbedtls_asn1_get_tag(p, params_end, &n, MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 1) != 0 ||
         mbedtls_asn1_get_alg(p, *p + n, &oid, &params) != 0 || oid.len != MBEDTLS_OID_SIZE(MBEDTLS_OID_MGF1) ||
         memcmp(oid.p, MBEDTLS_OID_MGF1, oid.len) != 0)
-      return false;
+      return 0;
     /* MGF1's parameters are the hash's AlgorithmIdentifier, whose
      * content starts with the hash's OID. */
-    if (params.tag != (MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) return false;
+    if (params.tag != (MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) return 0;
     unsigned char *alg = params.p;
     mbedtls_asn1_buf hash_oid = {.tag = MBEDTLS_ASN1_OID};
-    if (mbedtls_asn1_get_tag(&alg, params.p + params.len, &hash_oid.len, MBEDTLS_ASN1_OID) != 0) return false;
+    if (mbedtls_asn1_get_tag(&alg, params.p + params.len, &hash_oid.len, MBEDTLS_ASN1_OID) != 0) return 0;
     hash_oid.p = alg;
-    if (mbedtls_oid_get_md_alg(&hash_oid, &mgf1) != 0 || !sp_pss_md_name(mgf1)) return false;
+    if (mbedtls_oid_get_md_alg(&hash_oid, &mgf1) != 0 || !sp_pss_md_name(mgf1)) {
+      *digest = sp_pss_other_digest(&hash_oid);
+      return -1;
+    }
   }
   if (*p < params_end && **p == (MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 2)) {
     if (mbedtls_asn1_get_tag(p, params_end, &n, MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 2) != 0 ||
         mbedtls_asn1_get_int(p, *p + n, &salt) != 0 || salt < 0)
-      return false;
+      return 0;
   }
   *p = (unsigned char *)params_end;
   k->pss_params = true;
   k->pss_md = md;
   k->pss_mgf1 = mgf1;
   k->pss_salt = salt;
-  return true;
+  return 1;
 }
 
 /* An RSA-PSS key from PKCS#8 or SubjectPublicKeyInfo DER whose algorithm
@@ -1706,7 +1737,19 @@ static SpKey *sp_pss_from_der(const unsigned char *der, size_t len, bool private
   p += oid_len;
   SpKey *k = sp_key_alloc(pkcs8);
   k->rsa_pss = true;
-  if (p < alg_end && !sp_pss_params_read(&p, alg_end, k)) k->pss_params = false;
+  const char *digest = NULL;
+  if (p < alg_end) {
+    int read = sp_pss_params_read(&p, alg_end, k, &digest);
+    if (read < 0) {
+      sp_key_release(k);
+      *failed = true;
+      char what[96];
+      snprintf(what, sizeof what, "RSA-PSS keys restricted to %s", digest);
+      sp_not_supported(what);
+      return NULL;
+    }
+    if (read == 0) k->pss_params = false;
+  }
   p = (unsigned char *)alg_end;
   int r;
   if (pkcs8) {
@@ -1967,7 +2010,8 @@ static ScrDyn *sp_create_key(ScrDyn *input, bool private_key) {
   }
   ScrBytes *pass = NULL;
   if (passphrase && !sp_absent(passphrase)) {
-    pass = sp_source_bytes(passphrase, NULL);
+    /* Node decodes a string passphrase with the key's encoding. */
+    pass = sp_source_bytes(passphrase, encoding);
     if (!pass) {
       scr_bytes_release(bytes);
       return NULL;
@@ -2292,7 +2336,7 @@ static ScrDyn *sp_export_plain(SpKey *k, const ScrDyn *options) {
     /* OpenSSL's error, raised once the key is encoded. */
   } else if (ci) {
     const unsigned char *start = der + SP_DER_MAX - n;
-    ScrBytes *pass = sp_source_bytes(passphrase, NULL);
+    ScrBytes *pass = sp_source_bytes(passphrase, sp_opt(options, "encoding"));
     const unsigned char *pass_data = pass ? pass->data : (const unsigned char *)"";
     size_t pass_len = pass ? (size_t)scr_bytes_byte_len(pass) : 0;
     if (pkcs8) {

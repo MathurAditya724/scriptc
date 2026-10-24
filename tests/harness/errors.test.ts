@@ -870,6 +870,38 @@ console.log(\`\${register(7)}\`);
   });
 });
 
+// An RSA-PSS key whose parameters restrict it to a digest the runtime does
+// not sign with (sha512-224 and sha512-256, which OpenSSL reads) throws a
+// coded SC2020 error naming the digest, instead of importing the key
+// without the restrictions it carries.
+describe("RSA-PSS keys restricted to unimplemented digests", () => {
+  test("importing one throws SC2020 naming the digest", async () => {
+    const r = await compileAndRun(
+      "pss-restricted-digest",
+      `import { createPublicKey } from "node:crypto";
+const keys = [
+  "-----BEGIN PUBLIC KEY-----\\nMIGQMEEGCSqGSIb3DQEBCjA0oA8wDQYJYIZIAWUDBAIFBQChHDAaBgkqhkiG9w0B\\nAQgwDQYJYIZIAWUDBAIFBQCiAwIBCANLADBIAkEArMDQESqjeWDLqFa1E5SzsMl4\\n6tyUsEqcDKSwRUvPilv1AUudf/w6qaXlPnAxBmFjZYihdQSZlk0czRLOX3o7gwID\\nAQAB\\n-----END PUBLIC KEY-----\\n",
+  "-----BEGIN PUBLIC KEY-----\\nMIGQMEEGCSqGSIb3DQEBCjA0oA8wDQYJYIZIAWUDBAIBBQChHDAaBgkqhkiG9w0B\\nAQgwDQYJYIZIAWUDBAIGBQCiAwIBCANLADBIAkEAuOa9NkzXzMDelHCIEkf0mnKe\\nnQdalNUm9vZtIMwpDJcn5U0Vbhhd6MTfRPhSo5nW71Oh5eU7v5M3PMYOHS7cMQID\\nAQAB\\n-----END PUBLIC KEY-----\\n",
+];
+for (const key of keys) {
+  try {
+    console.log(createPublicKey(key).asymmetricKeyType);
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 'RSA-PSS keys restricted to sha512-224' is part of the standard library types but has no scriptc lowering yet\n" +
+        "Error SC2020 'RSA-PSS keys restricted to sha512-256' is part of the standard library types but has no scriptc lowering yet\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
 // A cipher name Node lists in crypto.getCiphers() but the runtime does not
 // implement throws a coded SC2020 error naming the cipher when the name is
 // computed; literal names are refused at compile time (node-types-fenced).
