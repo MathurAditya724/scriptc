@@ -1286,10 +1286,14 @@ void scr_dyn_release(ScrDyn *d) {
     return;
   }
 #ifndef SCR_RC_AUDIT
-  /* Number and string boxes own at most one string, are never cycle
-   * candidates and cannot be weak keys: return them to the free list. */
+  /* Number and string boxes own at most one string and cannot be weak
+   * keys: return them to the free list. Their releases never buffer them,
+   * but a collector pass can (a box that traces its payload reaches them,
+   * and scr_xg_release buffers what it settles), so a buffered box leaves
+   * its candidate buffer first. */
   if ((d->kind == SCR_DYN_NUM || d->kind == SCR_DYN_STR) && !d->prototype &&
       !d->symbol_properties && !d->symbol_keys && scr_dyn_free_count < SCR_DYN_FREE_MAX) {
+    scr_cyc_dead(d);
     if (d->kind == SCR_DYN_STR) scr_str_release(d->v.str);
     d->v.str = (ScrStr *)scr_dyn_free_misc;
     scr_dyn_free_misc = d;
@@ -1433,6 +1437,24 @@ bool scr_dyn_field_eq_num(const ScrDyn *d, const ScrStr *key, double value) {
   bool matches = member && member->kind == SCR_DYN_NUM && member->v.num == value;
   scr_dyn_release(member);
   return matches;
+}
+
+int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *const *values,
+                                  size_t count) {
+  if (!d) return -1;
+  if (d->kind == SCR_DYN_TYPED_REF) return -2;
+  if (d->kind != SCR_DYN_OBJ) return -1;
+  for (size_t i = 0; i < d->v.obj.len; i++) {
+    const ScrDynEntry *entry = &d->v.obj.entries[i];
+    if (entry->key_len != key->len || memcmp(entry->key, key->data, key->len) != 0) continue;
+    if (entry->accessor) return -2;
+    const ScrDyn *member = entry->value;
+    if (!member || member->kind != SCR_DYN_STR) return -1;
+    for (size_t k = 0; k < count; k++)
+      if (scr_str_eq(member->v.str, values[k])) return (int32_t)k;
+    return -1;
+  }
+  return -2;
 }
 
 bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value) {

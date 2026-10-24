@@ -21,10 +21,8 @@
  *     case preserved, C0-encoded), a single "/" roots a normalized path,
  *     anything else is an OPAQUE path with the C0 control set encoded
  *     (data:text/plain,hi there)
- *
- * DOCUMENTED DIVERGENCE: a special host that holds non-ASCII text after
- * percent-decoding is rejected with "Invalid URL" (no UTS #46 processing),
- * and "xn--" labels are kept without Punycode validation.
+ *   - UTS #46 processing of non-ASCII hosts through the IDNA unit
+ *     (scr_url_idna_install)
  *
  * Failures THROW catchable TypeErrors through the exception cell with
  * Node's messages; callers are compiler-emitted pending checks. */
@@ -430,16 +428,21 @@ static int hex_val(char c) {
   return -1;
 }
 
+/* UTS #46 ToASCII (scr_idna.c), which programs that use URLs install at
+ * startup (scr_url_idna_install). NULL refuses hosts that hold non-ASCII
+ * text. */
+ScrStr *(*scr_url_host_to_ascii)(const char *p, size_t n) = NULL;
+
 /* The URL Standard's host parser for the constructor and the setters,
  * with canonical IPv6 serialization:
  * - a non-special (opaque) host refuses forbidden host code points and
  *   percent-encodes the C0 control set;
- * - a special host is percent-decoded, lowercased, refused when it holds a
- *   forbidden domain code point, and serialized as dotted decimal when it
- *   ends in a number (or refused when that number is invalid).
- * Divergence: a special host that decodes to non-ASCII needs UTS #46
- * processing, which this unit does not link, so it is refused; "xn--"
- * labels are kept without Punycode validation. */
+ * - a special host is percent-decoded and lowercased; when that leaves
+ *   non-ASCII text it goes through UTS #46 ToASCII (as Node's host parser
+ *   does, an ASCII host, "xn--" labels included, is only lowercased). The
+ *   result is refused when it holds a forbidden domain code point, and
+ *   serialized as dotted decimal when it ends in a number (or refused when
+ *   that number is invalid). */
 static bool parse_host(const char *hp, size_t host_len, bool special, bool is_file,
                        ScrStr **host) {
   bool ipv6 = host_len > 0 && hp[0] == '[';
@@ -467,6 +470,7 @@ static bool parse_host(const char *hp, size_t host_len, bool special, bool is_fi
     *host = ub_take(&hb);
     return true;
   }
+  bool non_ascii = false;
   for (size_t i = 0; i < host_len; i++) {
     unsigned char c = (unsigned char)hp[i];
     int hi, lo;
@@ -475,12 +479,27 @@ static bool parse_host(const char *hp, size_t host_len, bool special, bool is_fi
       c = (unsigned char)(hi * 16 + lo);
       i += 2;
     }
-    if (url_host_byte_class[c] & URL_FORBIDDEN_DOMAIN) {
+    if (c >= 0x80) non_ascii = true;
+    if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+    ub_push(&hb, (char)c);
+  }
+  if (non_ascii) {
+    /* UTS #46 ToASCII, or refused without the IDNA unit. */
+    ScrStr *ascii = scr_url_host_to_ascii ? scr_url_host_to_ascii(hb.data, hb.len) : NULL;
+    free(hb.data);
+    if (!ascii || ascii->len == 0) {
+      scr_str_release(ascii);
+      return false;
+    }
+    ub_init(&hb);
+    ub_append(&hb, ascii->data, ascii->len);
+    scr_str_release(ascii);
+  }
+  for (size_t i = 0; i < hb.len; i++) {
+    if (url_host_byte_class[(unsigned char)hb.data[i]] & URL_FORBIDDEN_DOMAIN) {
       free(hb.data);
       return false;
     }
-    if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
-    ub_push(&hb, (char)c);
   }
   if (url_ends_in_number(hb.data, hb.len)) {
     UrlBuf ip;
