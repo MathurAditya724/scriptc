@@ -4934,6 +4934,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * and crypto callback adapters pass NULL after an error. Borrowed arg;
    * never throws. */
   "bytes.isAbsent": { argTypes: [BYTES_U8], result: BOOL },
+  /** Whether two typed arrays share no byte: their element ranges in
+   * memory do not overlap. Borrowed args of any element kind; never throws. */
+  "bytes.disjoint": { argTypes: [null, null], result: BOOL },
   /** The absent Buffer result itself (NULL), where an error-path callback
    * body passes its undefined result on into a Buffer slot. Owned (+1);
    * never throws. */
