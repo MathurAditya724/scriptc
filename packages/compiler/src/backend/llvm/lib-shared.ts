@@ -455,6 +455,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.poolFromDyn": "scr_buffer_from_dyn_pooled",
   "buffer.poolFromDynRef": "scr_buffer_from_dyn_ref_pooled",
   "buffer.poolFromDynOffset": "scr_buffer_from_dyn_offset_pooled",
+  "buffer.poolFromDynRange": "scr_buffer_from_dyn_range_pooled",
   "buffer.poolSize": "scr_buffer_pool_size",
   "buffer.setPoolSize": "scr_buffer_set_pool_size",
   "buffer.byteLenDyn": "scr_buffer_byte_length_dyn",
@@ -480,6 +481,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "bytes.equalsChk": "scr_bytes_equals_chk",
   "bytes.compareChk": "scr_bytes_compare_chk",
   "buffer.newStringFail": "scr_buffer_new_string_fail",
+  "buffer.deprecation": "scr_buffer_deprecation",
+  "buffer.deprecationCount": "scr_buffer_deprecation_count",
+  "buffer.constructor": "scr_buffer_constructor_value",
+  "buffer.installValue": "scr_buffer_install_value",
+  "buffer.staticValue": "scr_buffer_static_value",
+  "buffer.prototypeMember": "scr_buffer_prototype_member",
   "fs.toUnixTimestamp": "scr_fs_to_unix_timestamp",
   "fs.existsChk": "scr_fs_exists_async",
   "fs.mkdtempSyncChk": "scr_fs_mkdtemp_sync_chk",
@@ -1072,6 +1079,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.generateKeyPairSync": "scr_crypto_generate_key_pair_sync",
   "crypto.generateKeyPairCb": "scr_crypto_generate_key_pair_async",
   "crypto.signOneshot": "scr_crypto_sign_oneshot",
+  "crypto.diffieHellman": "scr_crypto_diffie_hellman",
   "crypto.verifyOneshot": "scr_crypto_verify_oneshot",
   "crypto.createSign": "scr_crypto_create_sign",
   "crypto.createVerify": "scr_crypto_create_verify",
@@ -1656,6 +1664,7 @@ export function mockTimerSym(
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "crypto.generateKeyPairCb",
+  "crypto.diffieHellman",
   "crypto.checkPrimeCb",
   "crypto.generatePrimeCb",
   "process.emitWarning",
@@ -1681,6 +1690,8 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "url.legacyParse",
   "url.legacyFormat",
   "url.legacyResolve",
+  // The deprecated Buffer constructor reports DEP0005 on the next tick.
+  "buffer.deprecation",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
   "util.callbackify",

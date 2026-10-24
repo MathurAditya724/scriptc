@@ -917,6 +917,14 @@ interface Buffer<
   readBigUint64LE(offset?: number): bigint;
 }
 interface BufferConstructor {
+  /** @deprecated since v10.0.0 - Use `Buffer.from(string[, encoding])` instead. */
+  new (str: string, encoding?: BufferEncoding): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.alloc()` instead. */
+  new (size: number): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.from(array)` instead. */
+  new (array: ArrayLike<number>): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.from(arrayBuffer[, byteOffset[, length]])` instead. */
+  new (arrayBuffer: ArrayBuffer | SharedArrayBuffer): Buffer;
   from(data: string, encoding?: BufferEncoding): Buffer;
   /* The ArrayBuffer form is the VIEW construction: x.buffer with an
    * optional byte offset/length shares x's storage (the subarray rule). */
@@ -2992,6 +3000,24 @@ declare module "crypto" {
     options: ED25519KeyPairOptions<"der", "der">,
   ): KeyPairSyncResult<Buffer, Buffer>;
   export function generateKeyPairSync(type: "ed25519", options?: {}): KeyPairKeyObjectResult;
+  export interface X25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    publicKeyEncoding: { type: "spki"; format: PubF };
+    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+  }
+  export function generateKeyPairSync(
+    type: "x25519",
+    options: X25519KeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "x25519",
+    options: X25519KeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(type: "x25519", options?: {}): KeyPairKeyObjectResult;
+  export function generateKeyPair(
+    type: "x25519",
+    options: {} | undefined,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
   export function generateKeyPair(
     type: "ed25519",
     options: {} | undefined,
@@ -3020,6 +3046,11 @@ declare module "crypto" {
   export interface VerifyKeyObjectInput extends SigningOptions {
     key: KeyObject;
   }
+  export function diffieHellman(options: { privateKey: KeyObject; publicKey: KeyObject }): Buffer;
+  export function diffieHellman(
+    options: { privateKey: KeyObject; publicKey: KeyObject },
+    callback: (err: Error | null, secret: Buffer) => void,
+  ): void;
   export function sign(
     algorithm: string | null | undefined,
     data: ArrayBufferView,

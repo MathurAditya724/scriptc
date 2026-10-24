@@ -69,3 +69,25 @@ for (const kind of [0, 1, 2]) {
   console.log(s);
   console.log(s instanceof Float32Array, s instanceof Int16Array);
 }
+
+// A stored value that reassigns the receiver or index stores into the
+// receiver and at the index evaluated before it.
+type Wide = Uint8Array | Uint16Array;
+function rebound(wide: boolean): void {
+  const before: Wide = wide ? new Uint16Array(4) : new Uint8Array(4);
+  let u: Wide = before;
+  let i = 0;
+  const swap = (): number => {
+    u = new Uint16Array(4);
+    i = 2;
+    return 300;
+  };
+  u[i] = swap();
+  console.log(before, u, i);
+  const target = u;
+  target[1] = 5;
+  u[i] += swap();
+  console.log(target, u, i);
+}
+rebound(false);
+rebound(true);

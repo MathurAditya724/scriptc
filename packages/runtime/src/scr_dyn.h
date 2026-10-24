@@ -1389,6 +1389,10 @@ ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, si
  * for anonymous) and "length" (the boxed arity). Returns +1, or NULL when
  * the key answers nothing (the caller's undefined). Never throws. */
 ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len);
+/* A function value's own property table, created on first use. +1. */
+ScrDyn *scr_dyn_function_properties(const ScrDyn *function);
+/* The table a function value already has. +1, or NULL. */
+ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
 /* Object.defineProperties over dyn values (targets: OBJ and FUNC): each
  * descriptor's `value` becomes an own data property. OBJ targets preserve
  * writable/enumerable/configurable; FUNC targets still use plain properties.

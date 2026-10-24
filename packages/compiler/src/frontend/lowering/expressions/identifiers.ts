@@ -762,6 +762,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "test it in a condition, read its typeof, or call its members",
       );
     }
+    // JavaScript reads the Buffer function's value (builtinGlobalValue).
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr)))
+      return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
     return { kind: "strLit", value: "[builtin Buffer]", type: STRING, loc };
   }
   if (lowerer.isStdlibGlobal(expr, "fetch")) {

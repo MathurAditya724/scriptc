@@ -88,20 +88,28 @@ test("typed-array methods on a union with a Buffer arm need a narrowing first", 
   const dir = await mkdtemp(join(tmpdir(), "scriptc-typed-array-unions-"));
   try {
     const entry = join(dir, "main.ts");
-    await writeFile(
-      entry,
-      `import { Buffer } from "node:buffer";
-const u: Buffer | Uint16Array = process.argv.length > 9 ? new Uint16Array(2) : Buffer.alloc(2);
-console.log(u.slice(1));
+    // The Buffer arm is found by its type, also through an alias name.
+    for (const [declaration, method] of [
+      ["const u: Buffer | Uint16Array", "slice(1)"],
+      ["type Bytes = Uint16Array | Buffer;\nconst u: Bytes", "slice(1)"],
+      ["type Bytes = Uint16Array | Buffer;\nconst u: Bytes", "fill(1)"],
+      ["type Bytes = Uint16Array | Buffer;\nconst u: Bytes", "indexOf(1)"],
+    ]) {
+      await writeFile(
+        entry,
+        `import { Buffer } from "node:buffer";
+${declaration} = process.argv.length > 9 ? new Uint16Array(2) : Buffer.alloc(2);
+console.log(u.${method});
 `,
-    );
-    const result = await compile(entry, {
-      outDir: dir,
-      outPath: join(dir, "main.ll"),
-      outputKind: "llvm",
-    });
-    expect(result.ok).toBe(false);
-    expect(JSON.stringify(result.diagnostics)).toContain("slice");
+      );
+      const result = await compile(entry, {
+        outDir: dir,
+        outPath: join(dir, "main.ll"),
+        outputKind: "llvm",
+      });
+      expect(result.ok, `${declaration} ${method}`).toBe(false);
+      expect(JSON.stringify(result.diagnostics)).toContain(method.slice(0, method.indexOf("(")));
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

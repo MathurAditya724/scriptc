@@ -568,9 +568,7 @@
       "id": "node-builtin.crypto.diffieHellman",
       "kind": "node-builtin",
       "name": "crypto.diffieHellman",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "crypto.diffieHellman takes DH, EC or X25519 KeyObjects and has no lowering; the objects of createDiffieHellman, getDiffieHellman and createECDH compute shared secrets"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.generateKey",

@@ -1,7 +1,8 @@
 /* node:crypto asymmetric keys and signatures over the vendored mbedTLS
  * public-key layer: createPrivateKey, createPublicKey, generateKeyPairSync
- * and generateKeyPair for "rsa", "ec" and "ed25519" keys, the
- * PrivateKeyObject and PublicKeyObject handles (type, asymmetricKeyType,
+ * and generateKeyPair for "rsa", "ec", "ed25519" and "x25519" keys,
+ * crypto.diffieHellman (ECDH and X25519), the PrivateKeyObject and
+ * PublicKeyObject handles (type, asymmetricKeyType,
  * asymmetricKeyDetails, export(), equals()), crypto.sign and crypto.verify,
  * and the Sign and Verify objects of createSign and createVerify. Keys read
  * and write PEM and DER as PKCS#1, SEC1, PKCS#8 and SubjectPublicKeyInfo,
@@ -23,6 +24,7 @@
 #include "mbedtls/asn1write.h"
 #include "mbedtls/base64.h"
 #include "mbedtls/bignum.h"
+#include "mbedtls/ecdh.h"
 #include "mbedtls/ecdsa.h"
 #include "mbedtls/ecp.h"
 #include "mbedtls/md.h"
@@ -38,6 +40,30 @@
 
 static void sp_throw(int kind, const char *code, const char *message) {
   scr_throw_error_msg_code(kind, message, strlen(message), code);
+}
+
+/* An OpenSSL error as Node's ThrowCryptoError reports it,
+ * "error:<packed>:<library>::<reason>", with own library, reason and code
+ * properties in Node's key order. A crypto job's callback gets the error
+ * without them (`props` false), as from Node's async jobs. */
+static void sp_throw_openssl(const char *packed, const char *library, const char *reason, const char *code,
+                             bool props) {
+  char message[160];
+  snprintf(message, sizeof message, "error:%s:%s::%s", packed, library, reason);
+  ScrStr *text = scr_str_new(message, strlen(message));
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  if (props) {
+    const char *keys[] = {"library", "reason", "code"};
+    const char *values[] = {library, reason, code};
+    for (size_t i = 0; i < 3; i++) {
+      if (i == 2) scr_error_set_code(e, code);
+      ScrStr *value = scr_str_new(values[i], strlen(values[i]));
+      scr_error_set_prop(e, keys[i], strlen(keys[i]), scr_dyn_new_str(value));
+      scr_str_release(value);
+    }
+  }
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
 void scr_pki_throw_fmt(int kind, const char *code, const char *fmt, ...) {
@@ -157,6 +183,8 @@ typedef struct SpKey {
   mbedtls_pk_context pk; /* RSA and EC keys */
   bool private_key;
   bool ed25519; /* an Ed25519 key: ed_seed (private keys) and ed_pub */
+  bool x25519;  /* an X25519 key, in the same two fields: the private key's
+                 * bytes as given, before clamping, and the public key */
   uint8_t ed_seed[32];
   uint8_t ed_pub[32];
 } SpKey;
@@ -215,6 +243,43 @@ static bool sp_is_ec(const SpKey *k) { return mbedtls_pk_get_type(&k->pk) == MBE
 
 static bool sp_is_ed(const SpKey *k) { return k->ed25519; }
 
+static bool sp_is_x(const SpKey *k) { return k->x25519; }
+
+/* An Ed25519 or X25519 key: 32-byte private and public keys, no details. */
+static bool sp_is_okp(const SpKey *k) { return k->ed25519 || k->x25519; }
+
+/* X25519(scalar, point) per RFC 7748 over mbedTLS's Curve25519 group, or
+ * of the base point when point is NULL. False when the result is the
+ * all-zero value (a small-order point), which OpenSSL refuses. */
+static bool sp_x25519(const uint8_t scalar[32], const uint8_t *point, uint8_t out[32]) {
+  mbedtls_ecp_group grp;
+  mbedtls_ecp_point P, R;
+  mbedtls_mpi d;
+  mbedtls_ecp_group_init(&grp);
+  mbedtls_ecp_point_init(&P);
+  mbedtls_ecp_point_init(&R);
+  mbedtls_mpi_init(&d);
+  uint8_t k[32];
+  memcpy(k, scalar, 32);
+  k[0] &= 248;
+  k[31] &= 127;
+  k[31] |= 64;
+  size_t n = 0;
+  bool ok = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_CURVE25519) == 0 &&
+            mbedtls_mpi_read_binary_le(&d, k, 32) == 0 &&
+            (point ? mbedtls_ecp_point_read_binary(&grp, &P, point, 32) : mbedtls_ecp_copy(&P, &grp.G)) == 0 &&
+            mbedtls_ecp_mul(&grp, &R, &d, &P, sp_random, NULL) == 0 &&
+            mbedtls_ecp_point_write_binary(&grp, &R, MBEDTLS_ECP_PF_UNCOMPRESSED, &n, out, 32) == 0 && n == 32;
+  uint8_t any = 0;
+  for (size_t i = 0; ok && i < 32; i++) any |= out[i];
+  mbedtls_platform_zeroize(k, sizeof k);
+  mbedtls_mpi_free(&d);
+  mbedtls_ecp_point_free(&R);
+  mbedtls_ecp_point_free(&P);
+  mbedtls_ecp_group_free(&grp);
+  return ok && any != 0;
+}
+
 typedef struct {
   const char *name;  /* OpenSSL short name (namedCurve) */
   const char *nist;  /* EC_curve_nist2nid alias, or NULL */
@@ -241,7 +306,7 @@ static const SpCurve *sp_curve_of(const SpKey *k) {
 
 /* A parsed key is usable when it is RSA or EC on a curve above. */
 static bool sp_key_supported(const SpKey *k) {
-  return sp_is_ed(k) || sp_is_rsa(k) || (sp_is_ec(k) && sp_curve_of(k) != NULL);
+  return sp_is_okp(k) || sp_is_rsa(k) || (sp_is_ec(k) && sp_curve_of(k) != NULL);
 }
 
 /* ── DER writing ──────────────────────────────────────────────────────── */
@@ -260,6 +325,11 @@ static const uint8_t sp_ed_pkcs8_prefix[16] = {0x30, 0x2e, 0x02, 0x01, 0x00, 0x3
                                                0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20};
 static const uint8_t sp_ed_spki_prefix[12] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
                                               0x2b, 0x65, 0x70, 0x03, 0x21, 0x00};
+/* X25519's, which differ in the OID's last byte (1.3.101.110). */
+static const uint8_t sp_x_pkcs8_prefix[16] = {0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
+                                              0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20};
+static const uint8_t sp_x_spki_prefix[12] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
+                                             0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00};
 
 /* Writes prefix || 32 bytes at the end of buf, as the mbedtls writers do. */
 static int sp_write_ed_der(const uint8_t *prefix, size_t prefix_len, const uint8_t key[32],
@@ -272,7 +342,8 @@ static int sp_write_ed_der(const uint8_t *prefix, size_t prefix_len, const uint8
 }
 
 static int sp_write_spki_der(SpKey *k, unsigned char *buf, size_t size) {
-  if (sp_is_ed(k)) return sp_write_ed_der(sp_ed_spki_prefix, sizeof sp_ed_spki_prefix, k->ed_pub, buf, size);
+  if (sp_is_okp(k))
+    return sp_write_ed_der(sp_is_x(k) ? sp_x_spki_prefix : sp_ed_spki_prefix, 12, k->ed_pub, buf, size);
   return mbedtls_pk_write_pubkey_der(&k->pk, buf, size);
 }
 
@@ -287,8 +358,8 @@ static int sp_write_pkcs1_public_der(SpKey *k, unsigned char *buf, size_t size) 
  * parameters, or id-ecPublicKey with the curve OID), and the inner key,
  * which for EC omits the parameters field. */
 static int sp_write_pkcs8_der(SpKey *k, unsigned char *buf, size_t size) {
-  if (sp_is_ed(k))
-    return sp_write_ed_der(sp_ed_pkcs8_prefix, sizeof sp_ed_pkcs8_prefix, k->ed_seed, buf, size);
+  if (sp_is_okp(k))
+    return sp_write_ed_der(sp_is_x(k) ? sp_x_pkcs8_prefix : sp_ed_pkcs8_prefix, 16, k->ed_seed, buf, size);
   unsigned char inner[SP_DER_MAX];
   size_t inner_len;
   if (sp_is_rsa(k)) {
@@ -473,9 +544,9 @@ static ScrDyn *sp_b64url(const uint8_t *raw, size_t len) {
 
 static ScrDyn *sp_export_jwk(SpKey *k) {
   ScrDyn *jwk = scr_dyn_new_obj();
-  if (sp_is_ed(k)) {
+  if (sp_is_okp(k)) {
     sp_set(jwk, "kty", sp_dyn_str(scr_str_new("OKP", 3)));
-    sp_set(jwk, "crv", sp_dyn_str(scr_str_new("Ed25519", 7)));
+    sp_set(jwk, "crv", sp_dyn_str(sp_is_x(k) ? scr_str_new("X25519", 6) : scr_str_new("Ed25519", 7)));
     sp_set(jwk, "x", sp_b64url(k->ed_pub, 32));
     if (k->private_key) sp_set(jwk, "d", sp_b64url(k->ed_seed, 32));
     return jwk;
@@ -587,7 +658,8 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
   bool ok = false;
   if (sp_is_str(kty, "OKP")) {
     const ScrDyn *crv = sp_opt(jwk, "crv");
-    if (!sp_is_str(crv, "Ed25519")) {
+    bool x = sp_is_str(crv, "X25519");
+    if (!x && !sp_is_str(crv, "Ed25519")) {
       sp_key_release(k);
       if (crv->kind != SCR_DYN_STR) {
         scr_dyn_prop_type_fail("key.crv", "of type string", crv);
@@ -596,10 +668,13 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
       sp_not_supported("JWK keys of this crv");
       return NULL;
     }
-    k->ed25519 = true;
+    k->ed25519 = !x;
+    k->x25519 = x;
     if (private_key) {
       ok = sp_jwk_bytes(jwk, "d", k->ed_seed);
-      if (ok) {
+      if (ok && x) {
+        ok = sp_x25519(k->ed_seed, NULL, k->ed_pub);
+      } else if (ok) {
         const ScrPkiEd25519 *ed = sp_ed();
         if (!ed) {
           sp_key_release(k);
@@ -678,9 +753,10 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
 
 /* The private key of a public SpKey derived from `k`. */
 static SpKey *sp_public_of(SpKey *k) {
-  if (sp_is_ed(k)) {
+  if (sp_is_okp(k)) {
     SpKey *pub = sp_key_alloc(false);
-    pub->ed25519 = true;
+    pub->ed25519 = k->ed25519;
+    pub->x25519 = k->x25519;
     memcpy(pub->ed_pub, k->ed_pub, 32);
     return pub;
   }
@@ -770,6 +846,24 @@ static bool sp_cert_spki(const unsigned char *der, size_t len, const unsigned ch
  * as public answers its public key. */
 static SpKey *sp_ed_from_der(const unsigned char *der, size_t len, bool private_key, bool *failed) {
   *failed = false;
+  /* X25519 keys, which need no other unit. */
+  if (len == 48 && memcmp(der, sp_x_pkcs8_prefix, 16) == 0) {
+    SpKey *k = sp_key_alloc(private_key);
+    k->x25519 = true;
+    memcpy(k->ed_seed, der + 16, 32);
+    if (!sp_x25519(k->ed_seed, NULL, k->ed_pub)) {
+      sp_key_release(k);
+      return NULL;
+    }
+    if (!private_key) mbedtls_platform_zeroize(k->ed_seed, 32);
+    return k;
+  }
+  if (!private_key && len == 44 && memcmp(der, sp_x_spki_prefix, 12) == 0) {
+    SpKey *k = sp_key_alloc(false);
+    k->x25519 = true;
+    memcpy(k->ed_pub, der + 12, 32);
+    return k;
+  }
   if (len == 48 && memcmp(der, sp_ed_pkcs8_prefix, 16) == 0) {
     const ScrPkiEd25519 *ed = sp_ed();
     if (!ed) {
@@ -945,9 +1039,9 @@ static ScrDyn *sp_create_key(ScrDyn *input, bool private_key) {
       return NULL;
     }
     if (sp_is_str(format, "der")) {
-      bool valid = private_key ? sp_is_str(type, "pkcs1") || sp_is_str(type, "pkcs8") ||
-                                     sp_is_str(type, "sec1")
-                               : sp_is_str(type, "pkcs1") || sp_is_str(type, "spki");
+      /* createPublicKey also reads a private key's encodings. */
+      bool valid = sp_is_str(type, "pkcs1") || sp_is_str(type, "pkcs8") || sp_is_str(type, "sec1") ||
+                   (!private_key && sp_is_str(type, "spki"));
       if (!valid) {
         sp_property_invalid("key.type", type);
         return NULL;
@@ -997,15 +1091,14 @@ static ScrDyn *sp_export_raw(SpKey *k, bool private_part, bool seed, bool compre
     sp_incompatible_key_type();
     return NULL;
   }
-  if (sp_is_ed(k)) return sp_dyn_buffer(private_part ? k->ed_seed : k->ed_pub, 32);
+  if (sp_is_okp(k)) return sp_dyn_buffer(private_part ? k->ed_seed : k->ed_pub, 32);
   mbedtls_ecp_keypair *ec = mbedtls_pk_ec(k->pk);
   const mbedtls_ecp_group *grp = &ec->MBEDTLS_PRIVATE(grp);
   unsigned char buf[1 + 2 * 66];
   size_t n = (grp->nbits + 7) / 8;
+  int form = compressed ? MBEDTLS_ECP_PF_COMPRESSED : MBEDTLS_ECP_PF_UNCOMPRESSED;
   int rc = private_part ? mbedtls_mpi_write_binary(&ec->MBEDTLS_PRIVATE(d), buf, n)
-                        : mbedtls_ecp_point_write_binary(
-                              grp, &ec->MBEDTLS_PRIVATE(Q),
-                              compressed ? MBEDTLS_ECP_PF_COMPRESSED : MBEDTLS_ECP_PF_UNCOMPRESSED, &n, buf, sizeof buf);
+                        : mbedtls_ecp_point_write_binary(grp, &ec->MBEDTLS_PRIVATE(Q), form, &n, buf, sizeof buf);
   ScrDyn *out = rc == 0 ? sp_dyn_buffer(buf, n) : NULL;
   mbedtls_platform_zeroize(buf, sizeof buf);
   if (!out) sp_unsupported_input();
@@ -1013,10 +1106,9 @@ static ScrDyn *sp_export_raw(SpKey *k, bool private_part, bool seed, bool compre
 }
 
 /* Node's named key types that this runtime does not generate or read:
- * the other OKP curves and the post-quantum types. */
+ * X448, Ed448 and the post-quantum types. */
 static const char *const sp_other_named_types[] = {
     "ed448",
-    "x25519",
     "x448",
     "ml-dsa-44",
     "ml-dsa-65",
@@ -1071,15 +1163,16 @@ static SpKey *sp_key_from_raw(const ScrDyn *input, const ScrDyn *data, const Scr
     sp_incompatible_key_type();
     return NULL;
   }
+  bool x = sp_is_str(type, "x25519");
   bool other = false;
   for (size_t i = 0; i < sizeof sp_other_named_types / sizeof sp_other_named_types[0]; i++)
     other = other || sp_is_str(type, sp_other_named_types[i]);
-  if (!ec && !ed && !other) {
+  if (!ec && !ed && !x && !other) {
     ScrStr *s = type->v.str;
     scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_INVALID_ARG_VALUE", "Invalid asymmetricKeyType: %.*s", (int)s->len, s->data);
     return NULL;
   }
-  bool ml = !ec && !ed && type->v.str->len > 3 && memcmp(type->v.str->data, "ml-", 3) == 0;
+  bool ml = other && type->v.str->len > 3 && memcmp(type->v.str->data, "ml-", 3) == 0;
   if (seed && !ml) {
     sp_incompatible_key_type();
     return NULL;
@@ -1099,7 +1192,16 @@ static SpKey *sp_key_from_raw(const ScrDyn *input, const ScrDyn *data, const Scr
   size_t len = (size_t)scr_bytes_byte_len(bytes);
   SpKey *k = sp_key_alloc(!raw_public);
   bool ok = false;
-  if (ed) {
+  if (x) {
+    k->x25519 = true;
+    if (len == 32 && raw_public) {
+      memcpy(k->ed_pub, p, 32);
+      ok = true;
+    } else if (len == 32) {
+      memcpy(k->ed_seed, p, 32);
+      ok = sp_x25519(k->ed_seed, NULL, k->ed_pub);
+    }
+  } else if (ed) {
     k->ed25519 = true;
     if (len == 32 && raw_public) {
       memcpy(k->ed_pub, p, 32);
@@ -1254,7 +1356,7 @@ static ScrDyn *sp_export_plain(SpKey *k, const ScrDyn *options) {
 
 static ScrDyn *sp_key_details(SpKey *k) {
   ScrDyn *details = scr_dyn_new_obj();
-  if (sp_is_ed(k)) return details;
+  if (sp_is_okp(k)) return details;
   if (sp_is_rsa(k)) {
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(k->pk);
     mbedtls_mpi e;
@@ -1280,7 +1382,7 @@ static ScrDyn *sp_key_details(SpKey *k) {
 /* The DER that identifies a key for equals(): its private encoding for a
  * private key, its SubjectPublicKeyInfo otherwise. */
 static int sp_identity_der(SpKey *k, unsigned char *buf, size_t size) {
-  if (sp_is_ed(k)) return k->private_key ? sp_write_pkcs8_der(k, buf, size) : sp_write_spki_der(k, buf, size);
+  if (sp_is_okp(k)) return k->private_key ? sp_write_pkcs8_der(k, buf, size) : sp_write_spki_der(k, buf, size);
   return k->private_key ? sp_write_private_der(k, buf, size) : sp_write_spki_der(k, buf, size);
 }
 
@@ -1326,6 +1428,7 @@ static ScrDyn *sp_key_get(void *h, const char *name, size_t len) {
     return k->private_key ? sp_dyn_str(scr_str_new("private", 7)) : sp_dyn_str(scr_str_new("public", 6));
   if (len == 17 && memcmp(name, "asymmetricKeyType", 17) == 0)
     return sp_is_ed(k)    ? sp_dyn_str(scr_str_new("ed25519", 7))
+           : sp_is_x(k)   ? sp_dyn_str(scr_str_new("x25519", 6))
            : sp_is_rsa(k) ? sp_dyn_str(scr_str_new("rsa", 3))
                           : sp_dyn_str(scr_str_new("ec", 2));
   if (len == 20 && memcmp(name, "asymmetricKeyDetails", 20) == 0) return sp_key_details(k);
@@ -1543,7 +1646,7 @@ static bool sp_check_encoding_plain(const ScrDyn *enc, const char *name, const S
 
 /* The key generateKeyPair makes, as sp_keygen_check reads it. */
 typedef struct {
-  enum { SP_GEN_RSA, SP_GEN_EC, SP_GEN_ED25519 } kind;
+  enum { SP_GEN_RSA, SP_GEN_EC, SP_GEN_ED25519, SP_GEN_X25519 } kind;
   double bits, exponent; /* RSA */
   const SpCurve *curve;  /* EC */
 } SpKeyGen;
@@ -1604,6 +1707,8 @@ static bool sp_keygen_check(const ScrDyn *type, const ScrDyn *options, SpKeyGen 
     }
   } else if (sp_is_str(type, "ed25519")) {
     gen->kind = SP_GEN_ED25519;
+  } else if (sp_is_str(type, "x25519")) {
+    gen->kind = SP_GEN_X25519;
   } else {
     bool named = false;
     for (size_t i = 0; i < sizeof sp_other_named_types / sizeof sp_other_named_types[0]; i++)
@@ -1644,6 +1749,20 @@ static SpKey *sp_keygen_run(const SpKeyGen *gen, bool *job_error) {
     k->ed25519 = true;
     sp_random(NULL, k->ed_seed, 32);
     scr_pki_ed25519->public_key(k->ed_pub, k->ed_seed);
+    return k;
+  }
+  if (gen->kind == SP_GEN_X25519) {
+    /* OpenSSL stores a generated X25519 key clamped. */
+    k->x25519 = true;
+    sp_random(NULL, k->ed_seed, 32);
+    k->ed_seed[0] &= 248;
+    k->ed_seed[31] &= 127;
+    k->ed_seed[31] |= 64;
+    if (!sp_x25519(k->ed_seed, NULL, k->ed_pub)) {
+      sp_key_release(k);
+      sp_unsupported_input();
+      return NULL;
+    }
     return k;
   }
   if (gen->kind == SP_GEN_RSA) {
@@ -1977,6 +2096,16 @@ static bool sp_verify_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned c
   return mbedtls_pk_verify(&key->key->pk, md, hash, hash_len, sig, sig_len) == 0;
 }
 
+/* X25519 keys neither sign nor verify: OpenSSL's error, after the key
+ * checks. Releases the key and answers true when it rejects. */
+static bool sp_reject_x25519(SpSigKey *k) {
+  if (!sp_is_x(k->key)) return false;
+  sp_key_release(k->key);
+  sp_throw_openssl("03000096", "digital envelope routines", "operation not supported for this keytype",
+                   "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", true);
+  return true;
+}
+
 static const char sp_data_types[] = "an instance of Buffer, TypedArray, or DataView";
 
 /* Ed25519 signs the message itself: an algorithm other than null or
@@ -1997,6 +2126,7 @@ ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key) {
   }
   SpSigKey k;
   if (!sp_sig_key(key, true, &k)) return NULL;
+  if (sp_reject_x25519(&k)) return NULL;
   ScrBytes *bytes = scr_bytes_buffer_source(data);
   if (sp_is_ed(k.key)) {
     ScrDyn *result = NULL;
@@ -2034,6 +2164,7 @@ ScrDyn *scr_crypto_verify_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, 
     scr_dyn_arg_type_fail("signature", sp_data_types, signature);
     return NULL;
   }
+  if (sp_reject_x25519(&k)) return NULL;
   ScrBytes *bytes = scr_bytes_buffer_source(data);
   ScrBytes *sig = scr_bytes_buffer_source(signature);
   if (sp_is_ed(k.key)) {
@@ -2120,6 +2251,7 @@ static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDy
     }
     SpSigKey k;
     if (!sp_sig_key(argc ? args[0] : scr_dyn_undefined(), true, &k)) return NULL;
+    if (sp_reject_x25519(&k)) return NULL;
     if (sp_is_ed(k.key)) {
       sp_key_release(k.key);
       sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_UNSUPPORTED_OPERATION", "Unsupported crypto operation");
@@ -2157,6 +2289,7 @@ static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDy
                             signature);
       return NULL;
     }
+    if (sp_reject_x25519(&k)) return NULL;
     const ScrStr *encoding = sp_encoding_arg(argc > 2 ? args[2] : NULL);
     ScrDyn *encoding_value = encoding ? scr_dyn_new_str((ScrStr *)encoding) : NULL;
     ScrBytes *sig = sp_source_bytes(signature, encoding_value);
@@ -2321,6 +2454,156 @@ void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *c
   c->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
   scr_box_set_ref(c->caps[1], pair);
   scr_loop_defer(c);
+}
+
+/* ── diffieHellman ────────────────────────────────────────────────────── */
+
+/* The keys an options.privateKey or options.publicKey value can be. */
+static const char sp_dh_private_types[] =
+    "of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, KeyObject, CryptoKey, or URL";
+static const char sp_dh_public_types[] =
+    "of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, KeyObject, or CryptoKey";
+
+/* Node's message names: a KeyObject's asymmetricKeyType. */
+static const char *sp_type_name(const SpKey *k) {
+  return sp_is_ed(k) ? "ed25519" : sp_is_x(k) ? "x25519" : sp_is_rsa(k) ? "rsa" : "ec";
+}
+
+/* A key input of diffieHellman's options: a primitive other than a string
+ * throws Node's ERR_INVALID_ARG_TYPE for `name`; other values read as
+ * sign and verify read their keys. */
+static bool sp_dh_key(const ScrDyn *value, const char *name, bool private_key, SpSigKey *out) {
+  out->key = NULL;
+  /* Node's key preparation destructures the value before it checks it. */
+  if (value->kind == SCR_DYN_NULL) {
+    scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "Cannot destructure property 'key' of 'key' as it is null.");
+    return false;
+  }
+  bool keyish = value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value) ||
+                (value->kind != SCR_DYN_NULL && value->kind != SCR_DYN_FUNC && scr_dyn_is_object(value));
+  if (!keyish) {
+    scr_dyn_prop_type_fail(name, private_key ? sp_dh_private_types : sp_dh_public_types, value);
+    return false;
+  }
+  return sp_sig_key(value, private_key, out);
+}
+
+/* The shared secret of two keys of one type: X25519, or ECDH's x
+ * coordinate at the field's size. NULL with OpenSSL's error pending. */
+static void sp_dh_failed(bool props) {
+  sp_throw_openssl("1C8000A4", "Provider routines", "failed during derivation", "ERR_OSSL_FAILED_DURING_DERIVATION",
+                   props);
+}
+
+static ScrDyn *sp_dh_compute(SpKey *priv, SpKey *pub, bool props) {
+  if (sp_is_x(priv) && sp_is_x(pub)) {
+    uint8_t out[32];
+    if (!sp_x25519(priv->ed_seed, pub->ed_pub, out)) {
+      sp_dh_failed(props);
+      return NULL;
+    }
+    ScrDyn *secret = sp_dyn_buffer(out, 32);
+    mbedtls_platform_zeroize(out, sizeof out);
+    return secret;
+  }
+  if (!sp_is_ec(priv) || !sp_is_ec(pub)) {
+    sp_throw_openssl("03000096", "digital envelope routines", "operation not supported for this keytype",
+                     "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", props);
+    return NULL;
+  }
+  mbedtls_ecp_keypair *a = mbedtls_pk_ec(priv->pk);
+  const mbedtls_ecp_keypair *b = mbedtls_pk_ec(pub->pk);
+  if (a->MBEDTLS_PRIVATE(grp).id != b->MBEDTLS_PRIVATE(grp).id) {
+    sp_throw_openssl("1C8000CB", "Provider routines", "mismatching domain parameters",
+                     "ERR_OSSL_MISMATCHING_DOMAIN_PARAMETERS", props);
+    return NULL;
+  }
+  mbedtls_mpi z;
+  mbedtls_mpi_init(&z);
+  unsigned char out[66];
+  size_t n = (a->MBEDTLS_PRIVATE(grp).pbits + 7) / 8;
+  bool ok = mbedtls_ecdh_compute_shared(&a->MBEDTLS_PRIVATE(grp), &z, &b->MBEDTLS_PRIVATE(Q),
+                                        &a->MBEDTLS_PRIVATE(d), sp_random, NULL) == 0 &&
+            mbedtls_mpi_write_binary(&z, out, n) == 0;
+  mbedtls_mpi_free(&z);
+  ScrDyn *secret = ok ? sp_dyn_buffer(out, n) : NULL;
+  mbedtls_platform_zeroize(out, sizeof out);
+  if (!secret) sp_dh_failed(props);
+  return secret;
+}
+
+static void sp_dh_deliver(ScrClosure *self) {
+  ScrDyn *callback = sp_cap(self, 0);
+  ScrDyn *secret = sp_cap(self, 1);
+  ScrDyn *args[2] = {scr_dyn_new_null(), secret};
+  ScrDyn *result = scr_dyn_call(callback, args, 2, "callback");
+  if (result) scr_dyn_release(result);
+  scr_dyn_release(args[0]);
+  scr_dyn_release(secret);
+  scr_dyn_release(callback);
+}
+
+/* crypto.diffieHellman(options[, callback]) in Node's order: the options
+ * object, the callback, both keys present, the key types when both are
+ * KeyObjects, then the public and private key inputs. With a callback,
+ * the secret, or the error of computing it, arrives in a later macrotask. */
+ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback) {
+  ScrDyn *plain = sp_plain(options);
+  if (!plain) return NULL;
+  ScrDyn *result = NULL;
+  SpSigKey pub = {0}, priv = {0};
+  if (!sp_check_object(plain, "options")) goto done;
+  bool async = !sp_absent(callback);
+  if (async && !scr_dyn_is_callable(callback)) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    goto done;
+  }
+  const ScrDyn *private_value = sp_opt(plain, "privateKey");
+  const ScrDyn *public_value = sp_opt(plain, "publicKey");
+  if (sp_absent(private_value)) {
+    sp_property_invalid("options.privateKey", private_value);
+    goto done;
+  }
+  if (sp_absent(public_value)) {
+    sp_property_invalid("options.publicKey", public_value);
+    goto done;
+  }
+  SpKey *a = sp_key_of(private_value), *b = sp_key_of(public_value);
+  if (a && b && a->private_key) {
+    const char *ta = sp_type_name(a), *tb = sp_type_name(b);
+    if (strcmp(ta, tb) != 0 || (!sp_is_ec(a) && !sp_is_x(a))) {
+      scr_pki_throw_fmt(SCR_ERR_ERROR, "ERR_CRYPTO_INCOMPATIBLE_KEY",
+                        "Incompatible key types for Diffie-Hellman: %s and %s", ta, tb);
+      goto done;
+    }
+  }
+  if (!sp_dh_key(public_value, "options.publicKey", false, &pub) ||
+      !sp_dh_key(private_value, "options.privateKey", true, &priv))
+    goto done;
+  ScrDyn *secret = sp_dh_compute(priv.key, pub.key, !async);
+  if (!async) {
+    result = secret;
+    goto done;
+  }
+  void *deliver = (void *)sp_dh_deliver;
+  if (!secret) {
+    ScrCaught *caught = scr_exc_take();
+    secret = scr_caught_to_dyn(caught);
+    scr_caught_release(caught);
+    deliver = (void *)sp_key_pair_fail;
+  }
+  ScrClosure *c = scr_closure_new(deliver, 2);
+  c->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  scr_box_set_ref(c->caps[0], scr_dyn_retain(callback));
+  c->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  scr_box_set_ref(c->caps[1], secret);
+  scr_loop_defer(c);
+  result = scr_dyn_retain(scr_dyn_undefined());
+done:
+  if (pub.key) sp_key_release(pub.key);
+  if (priv.key) sp_key_release(priv.key);
+  scr_dyn_release(plain);
+  return result;
 }
 
 /* ── the core for the WebCrypto layer (scr_pki.h) ─────────────────────── */

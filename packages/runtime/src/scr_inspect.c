@@ -1606,7 +1606,45 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       } else {
         ib_cstr(&out, "[Function (anonymous)]");
       }
-      return ib_take(&out);
+      /* A function's own enumerable properties follow its base, as for an
+       * object (`[Function: f] { x: 1 }`), and past the depth limit it is
+       * `[Function]` (formatRaw). Classes keep the base. */
+      ScrDyn *table = d->v.fn.class_obj ? NULL : scr_dyn_function_properties_existing(d);
+      bool shown = false;
+      for (size_t i = 0; table && i < table->v.obj.len && !shown; i++) shown = table->v.obj.entries[i].enumerable;
+      for (size_t i = 0; table && !shown && table->symbol_keys && i < table->symbol_keys->v.arr.len; i++)
+        shown = scr_insp_symbol_entry(table, i) != NULL;
+      if (!shown) {
+        scr_dyn_release(table);
+        return ib_take(&out);
+      }
+      /* Every value of one function shares its table: the table is the
+       * function's identity for the circular checks. */
+      double circular = scr_insp_circ_check(table);
+      if (circular != 0) {
+        scr_dyn_release(table);
+        free(out.data);
+        return scr_insp_circular(circular);
+      }
+      if (recurse > depth) {
+        scr_dyn_release(table);
+        free(out.data);
+        return scr_str_new("[Function]", 10);
+      }
+      ScrStr *base = ib_take(&out);
+      char *cls = malloc(base->len + 1);
+      if (!cls) scr_trap("scriptc: out of memory\n");
+      memcpy(cls, base->data, base->len);
+      cls[base->len] = '\0';
+      scr_str_release(base);
+      size_t nseen = g_nseen;
+      g_pending_seen = table;
+      ScrStr *rendered = scr_insp_obj(table, recurse, depth, cls);
+      g_pending_seen = NULL;
+      if (g_nseen > nseen) g_nseen = nseen;
+      free(cls);
+      scr_dyn_release(table);
+      return rendered;
     }
     case SCR_DYN_HANDLE: {
       if (d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||

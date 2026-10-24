@@ -2444,6 +2444,10 @@ static ScrDyn *scr_dyn_fn_existing_table(const ScrDyn *function) {
   return owner->props ? (ScrDyn *)scr_box_get_ref(owner->props) : NULL;
 }
 
+ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function) {
+  return scr_dyn_fn_existing_table(function);
+}
+
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object) || scr_dyn_error_prototype_fence(object)) return NULL;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.preventExtensions"); return NULL; }
@@ -4404,6 +4408,9 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
   }
   if (scr_array_buffer_ctor && callee->v.fn.clo == scr_array_buffer_ctor->v.fn.clo) return scr_array_buffer_is(value);
   if (scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo) return value->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(value);
+  /* The Buffer function value: Buffer instances, not other Uint8Arrays. */
+  if (callee->v.fn.sig && strcmp(callee->v.fn.sig, "native:Buffer") == 0)
+    return value->kind == SCR_DYN_BYTES && value->buffer;
   for (size_t i = 0; i < SCR_BYTES_ELEM_COUNT; i++) {
     if (scr_bytes_ctors[i] && callee->v.fn.clo == scr_bytes_ctors[i]->v.fn.clo)
       return scr_dyn_typed_array_is(value, (int)i);
@@ -4466,6 +4473,7 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
   return scr_bytes_instanceof_at(value, callee, NULL);
 }
 SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) = NULL;
+ScrDyn *(*scr_bytes_buffer_constructor_fn)(void) = NULL;
 
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
   if (callee->kind == SCR_DYN_FUNC && scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo)
@@ -4486,6 +4494,14 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
   ScrDyn *constructed = NULL;
   if (scr_dyn_global_construct_fn && scr_dyn_global_construct_fn(callee, args, &constructed))
     return constructed;
+  /* The Buffer function value (scr_builtin_values.c): Node's construction
+   * reports DEP0005 by the caller's location, which a stored value does
+   * not know. */
+  if (callee->kind == SCR_DYN_FUNC && callee->v.fn.sig && strcmp(callee->v.fn.sig, "native:Buffer") == 0) {
+    static const char message[] = "Calling or constructing Buffer through a stored Buffer value is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
   ScrJsonBuf message;
   scr_jb_init(&message);
   scr_jb_write(&message, what->data, what->len);
@@ -4515,7 +4531,9 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
     return scr_dyn_new_num((double)scr_bytes_elem_size(bytes->elem));
   if (key->len == 11 && memcmp(key->data, "constructor", 11) == 0) {
     if (!value->buffer) return scr_bytes_constructor_for(bytes->elem);
-    /* Buffer retains its separate builtin identity. */
+    /* A program that reads the Buffer function's value answers it;
+     * otherwise Buffer keeps its separate builtin identity token. */
+    if (scr_bytes_buffer_constructor_fn) return scr_bytes_buffer_constructor_fn();
     char token[64];
     int length = snprintf(token, sizeof token, "[builtin %s]", value->buffer ? "Buffer" : scr_bytes_elem_name(bytes->elem));
     ScrStr *name = scr_str_new(token, (size_t)length);
@@ -5508,6 +5526,8 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
   }
   return (ScrDyn *)scr_box_get_ref(owner->props);
 }
+
+ScrDyn *scr_dyn_function_properties(const ScrDyn *function) { return scr_dyn_fn_properties(function); }
 
 ScrDyn *scr_dyn_class_inherit(ScrDyn *constructor, ScrDyn *base) {
   if (constructor->kind != SCR_DYN_FUNC || !constructor->v.fn.class_obj || (base->kind != SCR_DYN_FUNC && base->kind != SCR_DYN_UNDEF)) {
