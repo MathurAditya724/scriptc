@@ -76,3 +76,22 @@ try {
 } catch (e) {
   console.log("throw:", e.message);
 }
+
+// An object-literal iterator that replaces its next() while it runs: the
+// loop and the spread keep calling the next() they read when it opened.
+class Swapping {
+  [Symbol.iterator]() {
+    let i = 0;
+    const it = {
+      next() {
+        i++;
+        if (i === 2) it.next = () => ({ value: -1, done: true });
+        return { value: i, done: i > 4 };
+      },
+    };
+    return it;
+  }
+}
+const swapped = [];
+for (const v of new Swapping()) swapped.push(v);
+console.log(swapped.join(), [...new Swapping()].join());

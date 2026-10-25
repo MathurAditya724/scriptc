@@ -1982,7 +1982,7 @@ function classIteratorObject(
         {
           kind: "varDecl",
           localId: r.id,
-          init: classIteratorNextCall(lowerer, cit, varRef(it.id, cit.iterT, loc), loc),
+          init: classIteratorNextCall(lowerer, cit, varRef(it.id, cit.iterT, loc), null, loc),
           loc,
         },
         {

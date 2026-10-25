@@ -56,5 +56,44 @@ async function main() {
   console.log("found", await find());
   for await (const p of new Pages()) console.log(p);
   for await (const l of new Letters()) console.log("letter", l);
+  // return()'s value is awaited when the loop leaves early: a pending
+  // promise settles first, and a rejection rejects the loop after a break
+  // (after a throw from the body, the body's error wins).
+  for await (const v of new Closing((resolve) => setTimeout(() => resolve(1), 5)))
+    if (v === 1) break;
+  console.log("after break");
+  try {
+    for await (const v of new Closing((_, reject) => reject(new Error("closing failed"))))
+      if (v === 1) break;
+  } catch (e) {
+    console.log("break:", e.message);
+  }
+  try {
+    for await (const v of new Closing((_, reject) => reject(new Error("closing failed"))))
+      if (v === 1) throw new Error("body failed");
+  } catch (e) {
+    console.log("throw:", e.message);
+  }
+}
+class Closing {
+  constructor(settle) {
+    this.settle = settle;
+  }
+  [Symbol.iterator]() {
+    let i = 0;
+    const settle = this.settle;
+    return {
+      next() {
+        return { value: i++, done: false };
+      },
+      return() {
+        console.log("return called");
+        const value = new Promise((resolve, reject) =>
+          settle((v) => (console.log("value settled"), resolve(v)), reject),
+        );
+        return { value, done: true };
+      },
+    };
+  }
 }
 main();

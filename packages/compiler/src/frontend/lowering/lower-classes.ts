@@ -8016,15 +8016,42 @@ export function classIteratorOf(
   };
 }
 
-/** The `it.next()` step of a class iterator as an ordinary (possibly
- * virtual) method call. */
-export function classIteratorNextCall(
+/** The `next` an object-literal iterator's protocol calls, read once when
+ * the iterator opens: JS keeps the `next` it reads then in the iterator
+ * record, so a `next` the iterator assigns while it runs is not called.
+ * Null for an iterator class, whose `next` is a method. */
+export function classIteratorNextRead(
   lowerer: Lowerer,
   cit: ClassIteratorInfo,
   itRef: IrExpr,
   loc: SrcLoc,
+): (IrExpr & { type: IrType & { kind: "func" } }) | null {
+  const iterT = cit.iterT;
+  if (iterT.kind === "object") return null;
+  const field = lowerer.shapes.get(iterT.shapeId)!.fields.find((f) => f.name === "next")!;
+  return {
+    kind: "recordGet",
+    obj: itRef,
+    shapeId: iterT.shapeId,
+    field: "next",
+    type: field.type as IrType & { kind: "func" },
+    loc,
+  };
+}
+
+/** The `it.next()` step of a class iterator: an ordinary (possibly
+ * virtual) method call, or the call of `next`, the object-literal
+ * iterator's `next` that classIteratorNextRead read when it opened. */
+export function classIteratorNextCall(
+  lowerer: Lowerer,
+  cit: ClassIteratorInfo,
+  itRef: IrExpr,
+  next: IrExpr | null,
+  loc: SrcLoc,
 ): IrExpr {
-  return classIteratorMethodCall(lowerer, cit, "next", itRef, loc);
+  if (next === null || next.type.kind !== "func")
+    return classIteratorMethodCall(lowerer, cit, "next", itRef, loc);
+  return { kind: "callValue", callee: next, args: [], type: next.type.ret, loc };
 }
 
 /** `it.next()` or `it.return()` of a class iterator: a (possibly virtual)
@@ -8108,6 +8135,8 @@ export function classIteratorDrainCall(
     const recvT: IrType = { kind: "object", className: cit.className };
     const recvRef: IrExpr = { kind: "varRef", localId: "r.0", type: recvT, loc };
     const itRef: IrExpr = { kind: "varRef", localId: "it.0", type: cit.iterT, loc };
+    const nextRead = classIteratorNextRead(lowerer, cit, itRef, loc);
+    const nextRef: IrExpr | null = nextRead ? varRef("next.0", nextRead.type, loc) : null;
     const outRef: IrExpr = { kind: "varRef", localId: "out.0", type: outT, loc };
     const resRef: IrExpr = { kind: "varRef", localId: "res.0", type: cit.resultT, loc };
     const valueRead: IrExpr = {
@@ -8122,7 +8151,7 @@ export function classIteratorDrainCall(
       {
         kind: "varDecl",
         localId: "res.0",
-        init: classIteratorNextCall(lowerer, cit, itRef, loc),
+        init: classIteratorNextCall(lowerer, cit, itRef, nextRef, loc),
         loc,
       },
       ...(cit.hasDone
@@ -8163,6 +8192,7 @@ export function classIteratorDrainCall(
       locals: [
         { id: "r.0", name: "r", type: recvT, mutable: false },
         { id: "it.0", name: "it", type: cit.iterT, mutable: false },
+        ...(nextRead ? [{ id: "next.0", name: "next", type: nextRead.type, mutable: false }] : []),
         { id: "out.0", name: "out", type: outT, mutable: false },
         { id: "res.0", name: "res", type: cit.resultT, mutable: true },
       ],
@@ -8179,6 +8209,9 @@ export function classIteratorDrainCall(
           init: classIteratorOpenCall(lowerer, cit, recvRef, loc),
           loc,
         },
+        ...(nextRead
+          ? [{ kind: "varDecl", localId: "next.0", init: nextRead, loc } satisfies IrStmt]
+          : []),
         {
           kind: "while",
           cond: { kind: "boolLit", value: true, type: BOOL, loc },
@@ -8226,7 +8259,7 @@ export function classIteratorRestDrainCall(
       {
         kind: "varDecl",
         localId: "res.0",
-        init: classIteratorNextCall(lowerer, cit, itRef, loc),
+        init: classIteratorNextCall(lowerer, cit, itRef, null, loc),
         loc,
       },
       ...(cit.hasDone

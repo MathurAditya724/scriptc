@@ -91,3 +91,22 @@ class Range {
 let total = 0;
 for (const v of new Range(4)) total += v;
 console.log(total, [...new Range(3)].join());
+
+// An object-literal iterator that replaces its next() while it runs: the
+// loop and the spread keep calling the next() they read when it opened.
+class Swapping {
+  [Symbol.iterator]() {
+    let i = 0;
+    const it = {
+      next(): { value: number; done: boolean } {
+        i++;
+        if (i === 2) it.next = () => ({ value: -1, done: true });
+        return { value: i, done: i > 4 };
+      },
+    };
+    return it;
+  }
+}
+const swapped: number[] = [];
+for (const v of new Swapping()) swapped.push(v);
+console.log(swapped.join(), [...new Swapping()].join());

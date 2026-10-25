@@ -2578,7 +2578,7 @@ export function lowerBindingPattern(
         const itRef = (): IrExpr => ({ kind: "varRef", localId: it.id, type: citPat.iterT, loc });
         for (const el of pattern.elements.nodes) {
           const stepLoc = locOf(el);
-          const step = lowerer.classIteratorNextCall(citPat, itRef(), stepLoc);
+          const step = lowerer.classIteratorNextCall(citPat, itRef(), null, stepLoc);
           if (ts.isOmittedExpression(el) || el.name === undefined) {
             out.push({ kind: "exprStmt", expr: step, loc: stepLoc });
             continue;
@@ -10726,6 +10726,8 @@ function lowerForOfClassIterator(
     const r = lowerer.declareHiddenLocal("%cir", cit.resultT);
     const recvRef: IrExpr = { kind: "varRef", localId: recv.id, type: iterable.type, loc };
     const itRef = (): IrExpr => ({ kind: "varRef", localId: it.id, type: cit.iterT, loc });
+    const nextRead = lowerer.classIteratorNextRead(cit, itRef(), loc);
+    const next = nextRead ? lowerer.declareHiddenLocal("%cin", nextRead.type) : null;
     const rRef = (): IrExpr => ({ kind: "varRef", localId: r.id, type: cit.resultT, loc });
     const done = cit.hasReturn ? lowerer.declareHiddenLocal("%cid", BOOL) : null;
     if (done) done.mutable = true;
@@ -10756,7 +10758,12 @@ function lowerForOfClassIterator(
       {
         kind: "varDecl",
         localId: r.id,
-        init: lowerer.classIteratorNextCall(cit, itRef(), loc),
+        init: lowerer.classIteratorNextCall(
+          cit,
+          itRef(),
+          next ? varRef(next.id, next.type, loc) : null,
+          loc,
+        ),
         loc,
       },
       ...(cit.hasDone
@@ -10820,6 +10827,9 @@ function lowerForOfClassIterator(
           init: lowerer.classIteratorOpenCall(cit, recvRef, loc),
           loc,
         },
+        ...(next && nextRead
+          ? [{ kind: "varDecl", localId: next.id, init: nextRead, loc } satisfies IrStmt]
+          : []),
         ...(done
           ? [
               {
@@ -10887,6 +10897,7 @@ function lowerForOfDyn(
   done.mutable = true;
   const value = lowerer.declareHiddenLocal("%dofValue", DYN);
   const returned = lowerer.declareHiddenLocal("%dofReturn", DYN);
+  const closed = lowerer.declareHiddenLocal("%dofClosed", DYN);
   const needsClose = lowerer.declareHiddenLocal("%dofNeedsClose", BOOL);
   needsClose.mutable = true;
   const error = lowerer.declareHiddenLocal("%dofError", CAUGHT);
@@ -10952,9 +10963,10 @@ function lowerForOfDyn(
       },
       then: [
         {
-          kind: "exprStmt",
+          kind: "varDecl",
+          localId: closed.id,
           // return()'s (awaited) result must be an object, as for next().
-          expr: asyncLoop
+          init: asyncLoop
             ? check(
                 awaitDyn({
                   kind: "dynCall",
@@ -10969,6 +10981,27 @@ function lowerForOfDyn(
             : call(varRef(returned.id, DYN, loc)),
           loc,
         },
+        // A synchronous iterator's return() result is read as the
+        // async-from-sync iterator reads it: done, then the value, which is
+        // awaited, so a rejected promise there rejects the loop.
+        ...(syncIterator
+          ? [
+              {
+                kind: "if",
+                cond: varRef(syncIterator.id, BOOL, loc),
+                then: [
+                  { kind: "exprStmt", expr: get(varRef(closed.id, DYN, loc), "done"), loc },
+                  {
+                    kind: "exprStmt",
+                    expr: awaitDyn(get(varRef(closed.id, DYN, loc), "value")),
+                    loc,
+                  },
+                ],
+                else_: null,
+                loc,
+              } satisfies IrStmt,
+            ]
+          : []),
       ],
       else_: null,
       loc,
