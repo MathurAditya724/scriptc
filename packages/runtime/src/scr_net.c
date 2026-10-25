@@ -5648,6 +5648,7 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
   scr_net_ls_drop(&sock->conn_ls);
   scr_net_ls_drop(&sock->timeout_ls);
   scr_net_ls_drop(&sock->readable_ls);
+  scr_net_ls_drop(&sock->drain_ls);
   scr_net_ls_drop(&sock->finish_ls);
   scr_net_ls_drop(&sock->wcb_ls);
   scr_net_ls_drop(&sock->ready_ls);
