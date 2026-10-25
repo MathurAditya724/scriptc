@@ -1041,11 +1041,12 @@ function unifySignatureBindings(
       iAliasArgs.length === dAliasArgs.length
     ) {
       if (tsBindings && declared !== inst) {
-        let pairs = lowerer.boundAliasInstances.get(tsBindings);
-        if (!pairs) lowerer.boundAliasInstances.set(tsBindings, (pairs = new Map()));
+        let entries = lowerer.boundAliasInstances.get(declared);
+        if (!entries) lowerer.boundAliasInstances.set(declared, (entries = []));
         // A body forwarding its own alias (`inner(g)` returning `Catalog<G,
         // "x">` inside an instance) resolves through the enclosing one.
-        if (!pairs.has(declared)) pairs.set(declared, lowerer.boundAliasTsResolver(inst) ?? inst);
+        if (!entries.some((entry) => entry.tsBindings === tsBindings))
+          entries.push({ tsBindings, instance: lowerer.boundAliasTsResolver(inst) ?? inst });
       }
       dAliasArgs.forEach((da, i) => {
         const ia = iAliasArgs[i];
