@@ -2233,6 +2233,19 @@ export class Lowerer {
    * the body needs — indexed accesses (`T[K]` needs K's literal key) and
    * keyed record reads (`o[k]` where k's type is a literal-bound K). */
   typeParamTsBindings: Map<ts.Symbol, ts.Type> | null = null;
+  /** Generic alias references of call-keyed instances' declared signatures
+   * (`Catalog<G, P>`), each with the same alias as every call's resolved
+   * signature instantiates it (`Catalog<{ g1: … }, "acme">`), together with
+   * that instance's ts-level bindings map (typeParamTsBindings), which every
+   * scope that lowers the instance installs. The checker keeps the alias
+   * symbolic inside the generic body and offers no way to instantiate it
+   * with the bound arguments, but alias instantiations are interned: the
+   * body's `x as Catalog<G, P>` is the very type the signature declares, so
+   * the pair recorded during unification is that re-instantiation. */
+  readonly boundAliasInstances = new Map<
+    ts.Type,
+    { tsBindings: Map<ts.Symbol, ts.Type>; instance: ts.Type }[]
+  >();
   /** Non-null while an IMPLICIT-ANY instance body lowers (npm-static JS;
    * see generic-functions.ts): bound param symbol →
    * the call site's checker type, consulted by typeOf for identifier
@@ -3797,6 +3810,7 @@ export class Lowerer {
       classNamer: (decl) => this.classNamer(decl),
       resolveTypeParam: this.typeParamResolver,
       resolveTypeParamTs: this.typeParamTsResolver,
+      resolveBoundAliasTs: this.boundAliasTsResolver,
       isErasing: () => this.erasingDepth > 0,
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
@@ -9811,6 +9825,19 @@ export class Lowerer {
     if (!this.typeParamTsBindings || !(t.flags & ts.TypeFlags.TypeParameter)) return null;
     const sym: ts.Symbol | undefined = t.getSymbol();
     return (sym && this.typeParamTsBindings.get(sym)) ?? null;
+  };
+
+  /** The concrete instantiation of a generic alias reference (`Catalog<G,
+   * P>`) the current call-keyed instance's signature declares
+   * (boundAliasInstances), or null when its signature never instantiated
+   * that reference. Inert outside generic function instantiation. */
+  readonly boundAliasTsResolver = (t: ts.Type): ts.Type | null => {
+    if (!this.typeParamTsBindings || t.getAliasTypeArguments().length === 0) return null;
+    const tsBindings = this.typeParamTsBindings;
+    return (
+      this.boundAliasInstances.get(t)?.find((entry) => entry.tsBindings === tsBindings)?.instance ??
+      null
+    );
   };
 
   irTypeOf(node: ts.Node): IrType {

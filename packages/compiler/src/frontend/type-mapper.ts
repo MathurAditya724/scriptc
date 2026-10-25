@@ -1270,6 +1270,11 @@ export interface TypeMapperCtx {
    * only where literal identity matters — indexed accesses (`T[K]`) inside
    * generic bodies whose K is bound to a literal key. */
   resolveTypeParamTs?: TypeParamTsResolver;
+  /** A generic alias reference inside a generic body (`Catalog<G, P>`)
+   * re-instantiated with the instance's bound type arguments: the concrete
+   * checker type its signature instantiates, or null. Consulted only when
+   * the symbolic form does not map. */
+  resolveBoundAliasTs?: TypeParamTsResolver;
   /** GENERIC program classes (monomorphization by flow): the mapping of a
    * concrete instantiation reference (`Box<number>`) — the Lowerer
    * registers/reuses the instantiation (`Box%0`) and answers its object
@@ -1833,6 +1838,16 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // union the checker cannot describe has no representation.
       if (!topLevel || !ts.isUnreadableConstituentsPanic(e)) throw e;
       mapped = null;
+    }
+    // A generic alias the body spells over its own type parameters (`x as
+    // Catalog<G, P>`) stays symbolic in the checker; when that form does not
+    // map, the instance's concrete instantiation of the same alias does.
+    if (mapped === null && ctx.resolveBoundAliasTs) {
+      const concrete = ctx.resolveBoundAliasTs(type);
+      if (concrete !== null && concrete !== type) {
+        mapped = mapType(concrete, ctx);
+        if (mapped !== null) contextResolutions++;
+      }
     }
     if (
       mapped !== null &&
