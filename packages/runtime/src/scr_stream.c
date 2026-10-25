@@ -176,6 +176,9 @@ struct ScrStreamState {
     size_t n, cap, head;
     int corked;
     bool writing, wsync, need_drain, after_scheduled;
+    /* the queued SCR_ST_AFTER_WRITE tick later synchronous writes with
+     * the same callback join (Node's afterWriteTickInfo), or NULL */
+    struct ScrStreamTick *after_tick;
     /* Deferred afterWrites Node also defers (a user callback, a 'drain'
      * or a destroyed stream): its pendingcb, which holds the finish until
      * they ran — afterWrite's finishMaybe then puts 'finish' on a tick
@@ -543,6 +546,9 @@ typedef struct ScrStreamTick {
   ScrError *err;   /* owned or NULL (SCR_ST_ERROR) */
   ScrClosure *cb;  /* owned or NULL (SCR_ST_AFTER_WRITE / SCR_ST_WCB_ERR / SCR_ST_WRITE_ERR) */
   bool hold;       /* SCR_ST_AFTER_WRITE: counted in w.after_holds */
+  /* SCR_ST_AFTER_WRITE: the synchronous writes it completes, which share
+   * cb (Node's afterWriteTickInfo.count) */
+  size_t count;
   /* The AsyncLocalStorage context active when the tick was scheduled (+1,
    * NULL outside a store): Node schedules these steps with
    * process.nextTick, so their events and callbacks run in it. */
@@ -948,8 +954,14 @@ static bool scr_stream_add_chunk(ScrStream *s, ScrBytes *chunk, bool front) {
     }
     entry = dec; /* owned */
   } else {
-    entry = scr_bytes_retain(chunk);
     entry_len = chunk->len;
+    if (entry_len == 0) {
+      /* Node's readableAddChunk adds no empty chunk outside object mode:
+       * it clears reading and may read more */
+      if (!front) scr_stream_maybe_read_more(s);
+      return !st->r.ended && (st->r.length < st->r.hwm || st->r.length == 0);
+    }
+    entry = scr_bytes_retain(chunk);
   }
   if (entry_len > 0 &&
       st->r.flowing == 1 && st->r.length == 0 && !st->r.in_read_sync && !front &&
@@ -2117,7 +2129,7 @@ static void scr_stream_error_buffer(ScrStream *s) {
  * empty), THEN the user's write(chunk, cb) callback, then finishMaybe.
  * The buffered queue was already restarted by write_done (Node's onwrite
  * calls clearBuffer before afterWrite). cb moves. */
-static void scr_stream_after_write(ScrStream *s, ScrClosure *cb) {
+static void scr_stream_after_write(ScrStream *s, ScrClosure *cb, size_t count) {
   ScrStreamState *st = s->st;
   if (st->w.length == 0 && st->w.need_drain && !st->w.ending && !st->destroyed) {
     st->w.need_drain = false;
@@ -2137,7 +2149,11 @@ static void scr_stream_after_write(ScrStream *s, ScrClosure *cb) {
     }
   }
   if (cb) {
-    ((void (*)(ScrClosure *))cb->fn)(cb);
+    /* afterWrite: the callback once per write the tick completes */
+    for (size_t i = 0; i < count; i++) {
+      ((void (*)(ScrClosure *))cb->fn)(cb);
+      if (scr_exc_pending()) break;
+    }
     scr_closure_release(cb);
     if (scr_exc_pending()) return;
   }
@@ -7170,13 +7186,24 @@ void scr_stream_write_done(ScrStream *s, ScrError *err /*moves*/) {
   }
   if (was_sync) {
     bool hold = ucb != NULL || (st->w.need_drain && st->w.length == 0) || st->destroyed;
-    scr_st_tick(s, SCR_ST_AFTER_WRITE, NULL, ucb);
-    if (hold) {
-      scr_st_tail->hold = true;
+    ScrStreamTick *pending = st->w.after_tick;
+    if (pending && pending->cb == ucb) {
+      /* Node's onwrite: a synchronous write with the callback of the
+       * afterWrite tick already queued joins it (count++) */
+      pending->count++;
+      if (ucb) scr_closure_release(ucb);
+    } else {
+      scr_st_tick(s, SCR_ST_AFTER_WRITE, NULL, ucb);
+      pending = scr_st_tail;
+      pending->count = 1;
+      st->w.after_tick = pending;
+    }
+    if (hold && !pending->hold) {
+      pending->hold = true;
       st->w.after_holds++;
     }
   } else {
-    scr_stream_after_write(s, ucb);
+    scr_stream_after_write(s, ucb, 1);
   }
 }
 
@@ -7722,13 +7749,19 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
     case SCR_ST_AFTER_WRITE: {
       st->w.after_scheduled = false;
       if (t->hold) st->w.after_holds--;
+      /* afterWriteTick: the batch closes when any afterWrite tick runs, so
+       * a write its callback makes queues a new tick */
+      st->w.after_tick = NULL;
       ScrClosure *cb = t->cb;
       t->cb = NULL;
       if (!st->destroyed) {
-        scr_stream_after_write(s, cb);
+        scr_stream_after_write(s, cb, t->count);
       } else {
         if (cb) {
-          ((void (*)(ScrClosure *))cb->fn)(cb);
+          for (size_t i = 0; i < t->count; i++) {
+            ((void (*)(ScrClosure *))cb->fn)(cb);
+            if (scr_exc_pending()) break;
+          }
           scr_closure_release(cb);
           if (scr_exc_pending()) break;
         }
@@ -7898,6 +7931,7 @@ static void scr_stream_run_tick_in_context(ScrStreamTick *t) {
 }
 
 static void scr_stream_tick_free(ScrStreamTick *t) {
+  if (t->s->st && t->s->st->w.after_tick == t) t->s->st->w.after_tick = NULL;
   scr_stream_release(t->s);
   if (t->err) scr_error_release(t->err);
   if (t->cb) scr_closure_release(t->cb);

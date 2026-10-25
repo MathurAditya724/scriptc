@@ -21,6 +21,7 @@ import {
   STRING,
   UNDEFINED_T,
   arrayOf,
+  typeEquals,
   type IrExpr,
   type IrFunction,
   type IrLocal,
@@ -96,6 +97,27 @@ export function arrayOfClassInstance(info: ClassInfo, value: IrExpr, loc: SrcLoc
  * (a reinterpret; the value is known to be an instance of the class). */
 export function arrayClassView(info: ClassInfo, value: IrExpr, loc: SrcLoc): IrExpr {
   return { kind: "downcast", value, type: { kind: "object", className: info.def.name }, loc };
+}
+
+/** The receiver of a member that `info` declares, read on `value` (the
+ * lowered `node`): an array value is viewed as the class object. An array
+ * whose elements are not the class's (a species result of another element
+ * type, narrowed back to the class by `instanceof`) is refused. */
+export function arrayClassReceiver(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  value: IrExpr,
+  node: ts.Node,
+): IrExpr {
+  if (value.type.kind !== "array") return value;
+  const root = arrayRootOf(info);
+  if (root?.extendsArray === undefined || !typeEquals(value.type.elem, root.extendsArray.elem))
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      "members of an Array subclass on an array whose elements are another type (a species result narrowed back to the class)",
+    );
+  return arrayClassView(info, value, locOf(node));
 }
 
 function thisArray(info: ClassInfo, thisLocal: IrLocal, loc: SrcLoc): IrExpr {

@@ -1,11 +1,12 @@
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import {
   arrayClassMemberOwner,
-  arrayClassView,
+  arrayClassReceiver,
   lowerArrayClassConstructorRead,
 } from "../builtins/array-classes.js";
 import { indexedUnionArms, lowerIndexedUnionMember } from "../indexed-unions.js";
 import { keyedHelperName } from "../stable-names.js";
+import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
@@ -65,6 +66,7 @@ import {
   BYTES_ELEMENT_SIZE,
 } from "../../../ir/ir.js";
 import { lowerNavigatorMember } from "../builtins/navigator.js";
+import { lowerX509PublicKey } from "../builtins/x509.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
   inlineNamespaceRequireOf,
@@ -169,6 +171,7 @@ import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
 import { arrayValueRead, arrayValueType } from "../array-values.js";
 import { lowerClassMethodValue } from "../class-method-values.js";
+import { reflectMemberValue } from "../builtins/reflection.js";
 import {
   objLitGenericFnInfoOf,
   objLitGenericFnNodeOf,
@@ -374,6 +377,11 @@ export function lowerPropertyAccessExpr(
     const reading = lowerHistogramProperty(lowerer, expr);
     if (reading) return reading;
   }
+  // An X509Certificate's publicKey KeyObject.
+  {
+    const publicKey = lowerX509PublicKey(lowerer, expr);
+    if (publicKey) return publicKey;
+  }
   // `.length` of a forwarded fixed tuple (a typed `arguments`, a tuple
   // rest parameter, an alias of either): the signature's arity.
   if (expr.name.text === "length" && !expr.questionDotToken) {
@@ -525,6 +533,8 @@ export function lowerPropertyAccessExpr(
     };
   }
   if (lowerer.stdlibGlobalMember(expr, "Object") === "freeze") {
+    // Object.freeze as a value can freeze any untyped value it is passed.
+    lowerer.untypedIntegrity = true;
     const name = "%builtin.Object.freeze";
     if (!lowerer.liftedFns.some((fn) => fn.name === name))
       lowerer.liftedFns.push({
@@ -1164,11 +1174,18 @@ export function lowerPropertyAccessExpr(
       )
     ) {
       const fnName = jsFuncNameOf(expr.expression);
+      // A builtin function value whose length is not its adapter's
+      // parameter count (`Math.max.length` is 2).
+      const fnLength =
+        probed.kind === "closure"
+          ? lowerer.builtinCallableValueLengths.get(probed.fnName)
+          : undefined;
       const boxed: IrExpr = {
         kind: "dynFrom",
         value: probed,
         type: DYN,
         ...(fnName !== null ? { fnName } : {}),
+        ...(fnLength !== undefined ? { fnLength } : {}),
         loc,
       };
       const key: IrExpr = {
@@ -1738,19 +1755,8 @@ export function lowerIntrinsicProperty(
       );
     }
   }
-  if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys") {
-    const value = lowerer.lowerNativeCallableValue(
-      {
-        fn: "dyn.ownKeys",
-        params: [DYN],
-        result: DYN,
-        valueParams: [{ mode: "required", type: DYN }],
-      },
-      "Reflect.ownKeys",
-      locOf(expr),
-    )!;
-    return { kind: "dynFrom", value, fnName: "ownKeys", type: DYN, loc: locOf(expr) };
-  }
+  if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys")
+    return reflectMemberValue(lowerer, "ownKeys", locOf(expr));
   if (lowerer.chainBlocked(expr)) return null;
   // Object.prototype.constructor: the Object constructor value.
   if (
@@ -3794,11 +3800,12 @@ export function fieldTarget(
         lowerer.findMethodOn(owner, `get:${name}`) ||
         lowerer.findMethodOn(owner, `set:${name}`))
     ) {
-      const value = lowerer.lowerExpr(access.expression);
-      const receiver =
-        value.type.kind === "array"
-          ? arrayClassView(owner, value, locOf(access.expression))
-          : value;
+      const receiver = arrayClassReceiver(
+        lowerer,
+        owner,
+        lowerer.lowerExpr(access.expression),
+        access.expression,
+      );
       return classFieldTarget(
         lowerer,
         access.expression,
@@ -4360,6 +4367,10 @@ export function builtinGlobalValueAt(
   loc: SrcLoc,
   js: boolean,
 ): IrExpr | null {
+  // A namespace object models its own properties, so member reads and
+  // reflection read it like any object.
+  const namespace = js ? builtinNamespaceValue(lowerer, canonical, loc) : null;
+  if (namespace !== null) return namespace;
   if (readsBuiltinGlobalMembers(expr)) return null;
   const value = builtinGlobalValue(canonical, loc, js);
   if (value === null) return null;

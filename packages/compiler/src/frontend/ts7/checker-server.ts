@@ -19,14 +19,16 @@ export const CHECKER_SERVER_MEMORY = 2048;
  * answers, and the server keeps the files it parsed for the next build.
  * Returns the server's name, a digest of everything a server's answers
  * depend on besides the files it reads through the build: the tsc-ts
- * executable, the working directory, the file system callbacks, timing, and
- * the `TSC_TS_*` environment. Returns null when the shared server is not used.
+ * executable, the working directory, the file system callbacks, timing,
+ * whether it reads its library files from the disk, and the `TSC_TS_*`
+ * environment. Returns null when the shared server is not used.
  */
 export function checkerServerName(
   executable: string,
   cwd: string,
   timing: boolean,
   env: NodeJS.ProcessEnv = process.env,
+  librariesFromDisk = false,
 ): string | null {
   if (env["SCRIPTC_CHECKER_SERVER"] !== "1") return null;
   if (process.platform !== "linux" && process.platform !== "darwin") return null;
@@ -42,6 +44,7 @@ export function checkerServerName(
         cwd,
         TS7_FILE_SYSTEM_CALLBACKS,
         timing,
+        librariesFromDisk,
         tscTsEnv,
       ]),
     )

@@ -32,7 +32,7 @@ import { allocateLocalUnion, storeLocalUnion } from "./local-union-storage.js";
 import { boxAccess, boxNewCall, elemAccess } from "./shapes.js";
 import { dynHoleRead } from "./loop-array-borrows.js";
 import { endsWithJump, matchStringSelfConcat } from "../../ir/analysis.js";
-import { charAtUnitRead, emitDiscardedSplice } from "./expr-containers.js";
+import { charAtUnitRead, emitBorrowedMapGet, emitDiscardedSplice } from "./expr-containers.js";
 import { InternalCompilerError } from "../../errors.js";
 import {
   emitDenseArrayGet,
@@ -61,6 +61,7 @@ import {
 import {
   emitCountedLoopLimit,
   emitCountedLoopSafety,
+  emitCountedStart,
   emitPairedLoopSafety,
 } from "./counted-loops.js";
 import { emitBytesLoopVersionGuard, type BytesLoopVersion } from "./bytes-loop-versions.js";
@@ -104,6 +105,19 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       const b = emitter.binding(s.localId);
+      if (
+        emitter.borrowedMapGets.has(s.localId) &&
+        b.kind === "local" &&
+        s.init?.kind === "mapIntrinsic"
+      ) {
+        // The map entry's own reference: no retain now, no release at scope
+        // exit (findMapReadBorrows).
+        const borrowed = emitBorrowedMapGet(emitter, s.init);
+        if (borrowed) {
+          B.line(`store ptr ${borrowed.name}, ptr ${b.slot}`);
+          break;
+        }
+      }
       if (emitter.walkBorrows.has(s.localId) && b.kind === "local") {
         // A borrowed walk pointer: no retain now, no release at scope exit.
         const v = s.init === null ? "null" : emitter.emitReadReceiver(s.init).name;
@@ -464,6 +478,9 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         emitter.publishedTypes?.containerGuarded(s.arr.type) !== true
       )
         break;
+      // The literal it follows was constructed with this capacity
+      // (reservedArrayLength).
+      if (emitter.consumedReserves.delete(s)) break;
       const arr = emitBorrowedInput(emitter, s.arr);
       const length = emitter.emitExpr(s.length);
       if (s.arr.type.kind !== "array")
@@ -570,6 +587,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         s.value,
         emitter.bytesBounds.has(s),
         emitter.bytesOwned.has(s),
+        emitter.bytesAliasScopes.get(s),
       );
       break;
     }
@@ -1112,9 +1130,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.entryAllocas.push(
           `${integerSlot} = alloca i64 ; integer induction ${emitter.currentLocals.get(countedLoop.localId)!.name}`,
         );
-        const startNumber = emitter.emitExpr(countedLoop.start);
-        const start = B.tmp();
-        B.line(`${start} = fptosi double ${startNumber.name} to i64`);
+        const start = emitCountedStart(emitter, countedLoop.start);
         B.line(`store i64 ${start}, ptr ${integerSlot}`);
         emitter.integerLoopBindings.set(countedLoop.localId, {
           slot: integerSlot,
@@ -1130,9 +1146,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.entryAllocas.push(
             `${slot} = alloca i64 ; integer induction ${emitter.currentLocals.get(follower.localId)!.name}`,
           );
-          const value = emitter.emitExpr(follower.start);
-          const followerStart = B.tmp();
-          B.line(`${followerStart} = fptosi double ${value.name} to i64`);
+          const followerStart = emitCountedStart(emitter, follower.start);
           B.line(`store i64 ${followerStart}, ptr ${slot}`);
           followerSlots.push(slot);
           emitter.integerLoopBindings.set(follower.localId, {
@@ -1149,9 +1163,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.entryAllocas.push(
             `${slot} = alloca i64 ; integer induction ${emitter.currentLocals.get(counter.localId)!.name}`,
           );
-          const value = emitter.emitExpr(counter.start);
-          const start = B.tmp();
-          B.line(`${start} = fptosi double ${value.name} to i64`);
+          const start = emitCountedStart(emitter, counter.start);
           B.line(`store i64 ${start}, ptr ${slot}`);
           pairedSlots.push(slot);
           const dense = LOOPS.of(emitter).denseLoop;
@@ -2065,7 +2077,8 @@ function emitCallbackVersionedLoop(
 /** The copy of a versioned loop that runs when its guard fails. Its loops
  * get no speculative or int32 kind copies, which would emit each loop again
  * for a path that rarely runs. Proven integer loops, which emit one copy,
- * are kept. */
+ * are kept. A typed-array version whose guard requires thread-owned
+ * storage does not use it (emitVersionedLoop). */
 function emitSlowCopy(emitter: LlEmitter, s: IrStmt): void {
   const copies = emitter.loopCopiesEnabled;
   emitter.loopCopiesEnabled = false;
@@ -2080,13 +2093,55 @@ function emitSlowCopy(emitter: LlEmitter, s: IrStmt): void {
  * stops trying it. */
 const SPECULATION_BAILS = 8;
 
+/** The attachment of each scoped access in a version's fast copy: the
+ * scope of its own view, and no alias with the scopes of the other views,
+ * whose bytes the guard proved disjoint. The scopes are named after the
+ * function and the version, so every copy of a loop has its own, and
+ * written inline (string-named scopes need no numbered metadata). Also
+ * the scopes, which each fast copy declares on entry (declareAliasScopes). */
+function bytesAliasScopes(
+  emitter: LlEmitter,
+  scopes: NonNullable<BytesLoopVersion["scopes"]>,
+): { attachments: Map<IrExpr | IrStmt, string>; scopes: string[] } {
+  const version = emitter.aliasScopedVersions++;
+  const name = emitter.currentFunctionName.replace(/[^A-Za-z0-9_.$%]/g, "_");
+  const domain = '!{!"scriptc typed-array views"}';
+  const scope = (receiver: number): string => `!{!"${name}.${version}.${receiver}", ${domain}}`;
+  const attachments = new Map<number, string>();
+  for (const receiver of scopes.receivers) {
+    const others = scopes.receivers.filter((other) => other !== receiver).map(scope);
+    attachments.set(
+      receiver,
+      `, !alias.scope !{${scope(receiver)}}, !noalias !{${others.join(", ")}}`,
+    );
+  }
+  const result = new Map<IrExpr | IrStmt, string>();
+  for (const [node, receiver] of scopes.nodes) result.set(node, attachments.get(receiver)!);
+  return { attachments: result, scopes: scopes.receivers.map(scope) };
+}
+
+/** Declares a version's scopes where a fast copy starts. The guard proves
+ * the views disjoint for this entry only: an enclosing loop may pass other
+ * views on its next pass (`[cur, next] = [next, cur]`). A declared scope
+ * holds from its declaration, and LLVM gives each copy of the declaration
+ * its own scopes when it unrolls or duplicates the enclosing code, so the
+ * no-alias facts of one entry never apply to the accesses of another. */
+function declareAliasScopes(emitter: LlEmitter, scopes: readonly string[]): void {
+  if (scopes.length === 0) return;
+  emitter.declare("declare void @llvm.experimental.noalias.scope.decl(metadata)");
+  for (const scope of scopes)
+    emitter.B.line(`call void @llvm.experimental.noalias.scope.decl(metadata !{${scope}})`);
+}
+
 /** Emit a loop's condition, body and update through `emitCopy`, twice
  * when speculative-integers.ts plans a fast integer copy. Both copies
  * share the loop's setup and exit; the ordinary copy comes first so the
  * fast copy is only emitted when every resume point exists. */
 /** A typed-array loop version: the guard, then the checked copy, which
  * runs whenever the guard fails, and the copy whose accesses the guard
- * proves in bounds (or thread-owned). */
+ * proves in bounds (or thread-owned). In worker programs a version that
+ * proves both also has a copy for views with shared storage, in bounds but
+ * not owned. */
 function emitVersionedLoop(
   emitter: LlEmitter,
   s: IrStmt & { kind: "for" | "while" },
@@ -2098,24 +2153,39 @@ function emitVersionedLoop(
     done = B.newLabel("bytes.version.done");
   const unitsFast =
     version.unitsReceiver !== null ? B.newLabel("bytes.version.fast.units") : undefined;
-  const guard = emitBytesLoopVersionGuard(emitter, version, fast, slow, unitsFast);
+  const sharedFast =
+    version.sharedCopy && unitsFast === undefined
+      ? B.newLabel("bytes.version.fast.shared")
+      : undefined;
+  const guard = emitBytesLoopVersionGuard(emitter, version, fast, slow, unitsFast, sharedFast);
   const units = guard?.units ?? null;
   const originalBounds = emitter.bytesBounds,
     originalOwned = emitter.bytesOwned,
     originalRanges = emitter.integerRanges,
     originalUnitReads = emitter.stringUnitReads,
-    originalLengthReads = emitter.stringLengthReads;
+    originalLengthReads = emitter.stringLengthReads,
+    originalScopes = emitter.bytesAliasScopes;
   LOOPS.of(emitter).bytesLoopVersioning.add(s);
   try {
     B.startBlock(slow);
-    emitSlowCopy(emitter, s);
+    // A guard that requires thread-owned storage fails for every view of
+    // shared memory, which worker programs pass routinely: that checked
+    // copy keeps its loops' speculative and int32 kind copies.
+    if (version.ownedReceivers.length > 0) emitter.emitStmt(s);
+    else emitSlowCopy(emitter, s);
     B.br(done);
     if (version.owned.size > 0) emitter.bytesOwned = new Set([...originalOwned, ...version.owned]);
     if (version.ranges.size > 0)
       emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
+    // Both fast copies run under the guard's span test, so they share the
+    // version's scopes, and each declares them on entry.
+    const scoped =
+      version.scopes && emitter.debug === null ? bytesAliasScopes(emitter, version.scopes) : null;
+    if (scoped) emitter.bytesAliasScopes = new Map([...originalScopes, ...scoped.attachments]);
     if (version.counted?.guarded || version.paired?.loop.guarded)
       LOOPS.of(emitter).provenCountedGuards.add(s);
     B.startBlock(fast);
+    declareAliasScopes(emitter, scoped?.scopes ?? []);
     emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
     // Both fast copies read the string's length the guard took.
     const length = guard?.length;
@@ -2126,9 +2196,20 @@ function emitVersionedLoop(
       ]);
     emitter.emitStmt(s);
     B.br(done);
+    if (sharedFast !== undefined) {
+      // The bounds hold and a view has shared storage: the accesses skip
+      // their bounds checks and stay shared-safe, without alias scopes
+      // (which worker programs give only thread-owned views).
+      B.startBlock(sharedFast);
+      emitter.bytesOwned = originalOwned;
+      emitter.bytesAliasScopes = originalScopes;
+      emitter.emitStmt(s);
+      B.br(done);
+    }
     if (unitsFast !== undefined && units !== null) {
       // The string reads take the receiver's UTF-16 units.
       B.startBlock(unitsFast);
+      declareAliasScopes(emitter, scoped?.scopes ?? []);
       emitter.bytesBounds = new Set([
         ...originalBounds,
         ...[...version.bounds].filter((node) => !version.stringReads.has(node)),
@@ -2146,6 +2227,7 @@ function emitVersionedLoop(
     emitter.integerRanges = originalRanges;
     emitter.stringUnitReads = originalUnitReads;
     emitter.stringLengthReads = originalLengthReads;
+    emitter.bytesAliasScopes = originalScopes;
     LOOPS.of(emitter).provenCountedGuards.delete(s);
     LOOPS.of(emitter).bytesLoopVersioning.delete(s);
   }

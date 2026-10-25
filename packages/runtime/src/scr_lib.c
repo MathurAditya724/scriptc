@@ -4236,27 +4236,35 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
-  /* Node returns after the offset and position validation when the
-   * requested length normalizes to zero: buffer-window bounds and fd are
-   * not consulted. Preserve the existing size_t coercion's [0, 1) case. */
-  if (length >= 0 && length < 1) return 0;
-  if (offset > (double)bytelen) {
-    numbuf[scr_f64_to_str(offset, numbuf)] = 0;
+  /* `length |= 0`, then Node's order: a zero length reads nothing after
+   * the offset and position checks; otherwise the buffer must not be
+   * empty and the window must fit it (validateOffsetLengthRead). */
+  if (!isfinite(length)) {
+    length = 0;
+  } else {
+    double wrapped = fmod(trunc(length), 4294967296.0);
+    if (wrapped < 0) wrapped += 4294967296.0;
+    length = wrapped >= 2147483648.0 ? wrapped - 4294967296.0 : wrapped;
+  }
+  if (length == 0) return 0;
+  if (bytelen == 0) {
+    static const char empty[] =
+        "The argument 'buffer' is empty and cannot be written. Received <Buffer >";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, empty, sizeof empty - 1, "ERR_INVALID_ARG_VALUE");
+    return 0;
+  }
+  if (length < 0 || offset + length > (double)bytelen) {
+    char recv[48], range[48];
+    scr_num_received(length, recv);
+    if (length < 0) snprintf(range, sizeof range, ">= 0");
+    else snprintf(range, sizeof range, "<= %.0f", (double)bytelen - offset);
     mlen = snprintf(msg, sizeof msg,
-                    "The value of \"offset\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s",
-                    numbuf);
+                    "The value of \"length\" is out of range. It must be %s. Received %s", range,
+                    recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
   size_t off = (size_t)offset;
-  if (length < 0 || (double)length > (double)(bytelen - off)) {
-    numbuf[scr_f64_to_str(length, numbuf)] = 0;
-    mlen = snprintf(msg, sizeof msg,
-                    "The value of \"length\" is out of range. It must be <= %zu. Received %s",
-                    bytelen - off, numbuf);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
-    return 0;
-  }
   size_t want = (size_t)length;
   uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
   if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
@@ -8137,6 +8145,11 @@ static bool scr_digest_alg(const char *name, size_t len, ScrDigestAlg *out) {
   return false;
 }
 
+bool scr_digest_known(const char *name, size_t len) {
+  ScrDigestAlg alg;
+  return scr_digest_alg(name, len, &alg);
+}
+
 /* createHash() and crypto.hash() also accept "dss1" in any case. */
 static bool scr_hash_alg(const char *name, size_t len, ScrDigestAlg *out) {
   if (scr_digest_alg(name, len, out)) return true;
@@ -10526,10 +10539,29 @@ static bool scr_x509_der(const uint8_t *in, size_t n, const uint8_t **der, size_
   *der = NULL;
   *der_len = 0;
   *decoded = NULL;
+  /* One whole DER SEQUENCE is the certificate itself: these members read
+   * the DER the constructor already decoded, whose extensions can carry
+   * PEM armor as text. */
+  if (n >= 2 && in[0] == 0x30) {
+    size_t len = in[1], head = 2;
+    if (len & 0x80) {
+      size_t k = len & 0x7f;
+      len = 0;
+      head = 2 + k;
+      for (size_t i = 0; i < k && k <= 4 && head <= n; i++) len = (len << 8) | in[2 + i];
+      if (k == 0 || k > 4) head = n + 1;
+    }
+    if (head <= n && len == n - head) {
+      *der = in;
+      *der_len = n;
+      return true;
+    }
+  }
   /* PEM: base64-decode the armor's body. */
   const uint8_t *b = NULL;
+  /* OpenSSL's PEM reader looks for the armor at the start of a line. */
   for (size_t i = 0; i + sizeof begin - 1 <= n; i++) {
-    if (memcmp(in + i, begin, sizeof begin - 1) == 0) {
+    if ((i == 0 || in[i - 1] == '\n') && memcmp(in + i, begin, sizeof begin - 1) == 0) {
       b = in + i + sizeof begin - 1;
       break;
     }
