@@ -4934,7 +4934,7 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
     ScrClosure *cb = t->cb;
     ScrFsRenameFn error_cb = t->error_cb;
     void (*raw)(void) = t->raw;
-    free(t);
+    scr_mem_free(t);
     if (cb) {
       if (error_cb) error_cb(cb, NULL);
       else ((void (*)(ScrClosure *))cb->fn)(cb);

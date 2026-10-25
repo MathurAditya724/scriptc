@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -41,6 +41,97 @@ test("counted loops guard exact induction and preserve wide remainders on both p
     });
     expect(debug).not.toContain("counted.fast");
     expect(debug).toContain("@llvm.dbg.declare");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("worker programs poll counted loops over typed arrays between blocks of iterations", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-counted-poll-"));
+  try {
+    const source = (workers: boolean): string =>
+      [
+        workers ? 'import { isMainThread, Worker } from "node:worker_threads";' : "",
+        "export function scale(a: Float64Array, b: Float64Array, n: number): void {",
+        "  for (let i = 0; i < n; i++) b[i] = a[i]! * 2;",
+        "}",
+        "export function codes(a: Uint8Array): void {",
+        "  for (let i = 0; i < a.length; ++i) a[i] = a[i] === 97 ? 0 : 3;",
+        "}",
+        "export function shrink(a: Uint8Array): number {",
+        "  let t = 0;",
+        "  for (let i = 0; i < a.length; ++i) {",
+        "    t += a[i]!;",
+        "    if (i === 2) a = a.subarray(0, 3);",
+        "  }",
+        "  return t;",
+        "}",
+        "export function mix(n: number): number {",
+        "  let t = 0;",
+        "  for (let i = 0; i < n; i++) t = (t * 31 + i) % 1000003;",
+        "  return t;",
+        "}",
+        "const a = new Float64Array(8).fill(1);",
+        "const b = new Float64Array(8);",
+        "scale(a, b, 8);",
+        "const c = new Uint8Array(8).fill(97);",
+        "codes(c);",
+        "console.log(b[7], mix(8), c[0], shrink(new Uint8Array(8).fill(1)));",
+        workers ? "if (!isMainThread) new Worker(new URL(import.meta.url));" : "",
+      ].join("\n");
+    const emit = async (workers: boolean): Promise<string> => {
+      const entry = join(dir, `${workers ? "worker" : "plain"}.ts`);
+      await writeFile(entry, source(workers));
+      const outPath = join(dir, `${workers ? "worker" : "plain"}.ir.json`);
+      const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
+      if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+      return emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    };
+    // Every emitted version of a function (the number and int32 entries).
+    const bodies = (ll: string, name: string): string =>
+      [
+        ...ll.matchAll(
+          new RegExp(
+            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
+            "g",
+          ),
+        ),
+      ]
+        .map((match) => match[1]!)
+        .join("\n");
+    const workerModule = await emit(true);
+    const worker = bodies(workerModule, "scale");
+    const blocks = worker.split(/\n(?=[\w.]+:)/);
+    // No budget in the body: the inner loop's latch only steps the counter,
+    // the poll runs after each block, and the block's bound is the nearer of
+    // the limit and 64 steps on.
+    expect(worker).not.toContain("worker cancellation budget");
+    expect(worker).toContain("@llvm.sadd.sat.i64(i64 %");
+    expect(worker).toMatch(/@llvm\.smin\.i64\(i64 %\w+, i64 %\w+\)/);
+    for (const latch of blocks.filter((block) => block.startsWith("loop.u")))
+      expect(latch).not.toContain("scr_exc_flag");
+    const polls = blocks.filter((block) => block.startsWith("loop.poll"));
+    expect(polls.length).toBeGreaterThan(0);
+    for (const poll of polls) expect(poll).toContain("@scr_exc_flag");
+    // A counted loop without typed-array accesses keeps the budget.
+    // A loop to a typed array's length is strip-mined the same way, with the
+    // length as each block's limit.
+    const codes = bodies(workerModule, "codes");
+    expect(codes).not.toContain("worker cancellation budget");
+    expect(codes).toMatch(/@llvm\.uadd\.sat\.i64\(i64 %\w+, i64 64\)/);
+    expect(codes).toMatch(/@llvm\.umin\.i64\(i64 %\w+, i64 %\w+\)/);
+    expect(codes).toMatch(/^loop\.poll\d+:$/m);
+    // A loop that assigns its array reads the new length on the next
+    // iteration: it keeps the budget.
+    const shrink = bodies(workerModule, "shrink");
+    expect(shrink).toContain("worker cancellation budget");
+    expect(shrink).not.toMatch(/^loop\.poll\d+:$/m);
+    const mix = bodies(workerModule, "mix");
+    expect(mix).toContain("worker cancellation budget");
+    expect(mix).not.toContain("loop.poll");
+    const plain = bodies(await emit(false), "scale");
+    expect(plain).not.toContain("loop.poll");
+    expect(plain).not.toContain("@scr_exc_flag");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

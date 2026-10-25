@@ -2240,29 +2240,26 @@ ScrStr *scr_text_decode_stream(ScrDyn *state, const ScrBytes *input,
   return result;
 }
 
-/* Decode the next code point from an ScrStr's storage — ALWAYS valid
- * UTF-8 (the string runtime never stores ill-formed sequences), so no
- * validation re-runs here. */
-static uint32_t scr_bytes_next_cp(const uint8_t *in, size_t *ip) {
-  uint8_t b = in[*ip];
-  if (b < 0x80) {
-    *ip += 1;
-    return b;
-  }
-  if ((b & 0xe0) == 0xc0) {
-    uint32_t cp = ((uint32_t)(b & 0x1f) << 6) | (in[*ip + 1] & 0x3f);
-    *ip += 2;
-    return cp;
-  }
-  if ((b & 0xf0) == 0xe0) {
-    uint32_t cp = ((uint32_t)(b & 0xf) << 12) | ((uint32_t)(in[*ip + 1] & 0x3f) << 6) |
-                  (in[*ip + 2] & 0x3f);
-    *ip += 3;
-    return cp;
-  }
-  uint32_t cp = ((uint32_t)(b & 0x7) << 18) | ((uint32_t)(in[*ip + 1] & 0x3f) << 12) |
-                ((uint32_t)(in[*ip + 2] & 0x3f) << 6) | (in[*ip + 3] & 0x3f);
-  *ip += 4;
+/* Decode the next code point from the n bytes of an ScrStr's storage.
+ * Storage is WTF-8, except where raw outside bytes become a string
+ * unchecked (HTTP header values). A byte that does not start a complete,
+ * well-formed sequence stands for U+0000..U+00FF, as each byte of such a
+ * header does in Node, and advances by one; nothing is read past n. */
+static uint32_t scr_bytes_next_cp(const uint8_t *in, size_t n, size_t *ip) {
+  size_t i = *ip;
+  uint8_t b = in[i];
+  *ip = i + 1;
+  if (b < 0x80) return b;
+  size_t len = b >= 0xc2 && b <= 0xdf ? 2 : b >= 0xe0 && b <= 0xef ? 3 : b >= 0xf0 && b <= 0xf4 ? 4 : 0;
+  if (len == 0 || n - i < len) return b;
+  uint8_t lo = b == 0xe0 ? 0xa0 : b == 0xf0 ? 0x90 : 0x80;
+  uint8_t hi = b == 0xf4 ? 0x8f : 0xbf;
+  if (in[i + 1] < lo || in[i + 1] > hi) return b;
+  for (size_t k = 2; k < len; k++)
+    if ((in[i + k] & 0xc0) != 0x80) return b;
+  uint32_t cp = b & (0x7f >> len);
+  for (size_t k = 1; k < len; k++) cp = (cp << 6) | (in[i + k] & 0x3f);
+  *ip = i + len;
   return cp;
 }
 
@@ -2287,7 +2284,7 @@ ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination) {
     read += ascii;
     if (written == limit) break;
     size_t end = written;
-    uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, &end);
+    uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, text->len, &end);
     if (end > dest->len) break;
     read += cp > 0xffff ? 2 : 1;
     written = end;
@@ -2440,7 +2437,7 @@ ScrBytes *scr_buffer_transcode(const ScrDyn *source, const ScrDyn *from, const S
     }
     ScrStr *text = scr_str_from_utf8_lossy(input->data, len);
     for (size_t i = 0; i < text->len;) {
-      uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, &i);
+      uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, text->len, &i);
       written = scr_transcode_put(result->data, written, cp, to_encoding);
     }
     scr_str_release(text);
@@ -2774,6 +2771,7 @@ static ScrBytes *scr_bytes_decode_b64(ScrBytesSink *sink, const uint8_t *in, siz
         o += 6;
         i += 8;
       }
+      if (i == n) break; /* the groups ended the input */
     }
     /* Common complete groups need neither per-character branches nor state. */
     if (have == 0 && n - i >= 4) {
@@ -2824,7 +2822,7 @@ static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const
     size_t o = s->ascii ? n : scr_bytes_ascii_prefix(in, n), i = o;
     memcpy(b->data, in, o);
     while (i < n) {
-      uint32_t cp = scr_bytes_next_cp(in, &i);
+      uint32_t cp = scr_bytes_next_cp(in, n, &i);
       if (cp > 0xffff) {
         cp -= 0x10000;
         b->data[o++] = (uint8_t)(0xd800 + (cp >> 10));
@@ -2841,7 +2839,7 @@ static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const
     ScrBytes *b = scr_bytes_conversion_storage_in(sink, n * 2);
     size_t o = 0, i = 0;
     while (i < n) {
-      uint32_t cp = scr_bytes_next_cp(in, &i);
+      uint32_t cp = scr_bytes_next_cp(in, n, &i);
       if (cp > 0xffff) {
         cp -= 0x10000;
         uint32_t hi = 0xd800 + (cp >> 10), lo = 0xdc00 + (cp & 0x3ff);
@@ -3745,7 +3743,7 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
           continue;
         }
       }
-      uint32_t cp = scr_bytes_next_cp((const uint8_t *)s->data, &i);
+      uint32_t cp = scr_bytes_next_cp((const uint8_t *)s->data, s->len, &i);
       uint32_t first = cp, second = 0;
       if (cp > 0xffff) {
         cp -= 0x10000;

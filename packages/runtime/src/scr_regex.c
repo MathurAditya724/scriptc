@@ -1416,6 +1416,51 @@ ScrStr *scr_regex_replace(ScrStr *s, ScrRegex *re, ScrStr *rep) {
   return scr_replace_impl(s, re, rep);
 }
 
+void scr_re_replace_out_reserve(ScrReReplaceOut *o, int64_t need) {
+  if (need < 0 || (uint64_t)need > SCR_STR_MAX_CAP - (uint64_t)o->len) scr_regex_oom();
+  size_t cap = (size_t)o->cap * 2;
+  if (cap < (size_t)(o->len + need)) cap = (size_t)(o->len + need);
+  if (cap > SCR_STR_MAX_CAP) cap = SCR_STR_MAX_CAP;
+  o->str->len = (size_t)o->len;
+  o->str = scr_str_regrow(o->str, cap);
+  o->data = o->str->data;
+  o->cap = (int64_t)o->str->cap;
+}
+
+/* A global substitution with a literal ASCII replacement through the
+ * build-time replacer of its (pattern, replacement) pair: on an ASCII
+ * subject the replacer writes each gap and the replacement into the output
+ * and continues the search after every match without returning. Every
+ * other subject, and a plain-text pattern (string search), takes
+ * scr_replace_impl. */
+ScrStr *scr_regex_replace_with(ScrStr *s, ScrRegex *re, ScrStr *rep,
+                               ScrRegexMatcherFn replacer) {
+  (void)scr_regex_bc(re);
+  if (scr_regex_lit(re) || !scr_text_ascii(s)) return scr_replace_impl(s, re, rep);
+  if (s->len > (size_t)INT32_MAX - 1) scr_regex_oom();
+  re->last_index = 0;
+  ScrReReplaceOut o;
+  o.str = scr_str_alloc_raw(0, s->len + 64);
+  o.data = o.str->data;
+  o.len = 0;
+  o.cap = (int64_t)o.str->cap;
+  o.next = 0;
+  int32_t n = replacer((const uint8_t *)s->data, (int32_t)s->len, 0, (uint8_t **)(void *)&o);
+  if (n == 0) {
+    o.str->len = 0;
+    scr_str_release(o.str);
+    return scr_str_retain(s);
+  }
+  size_t tail = s->len - (size_t)o.next;
+  if ((int64_t)(tail + 1) > o.cap - o.len) scr_re_replace_out_reserve(&o, (int64_t)tail + 1);
+  scr_copy_bytes(o.data + o.len, s->data + o.next, tail);
+  o.len += (int64_t)tail;
+  o.str->len = (size_t)o.len;
+  o.data[o.len] = '\0';
+  scr_str_note_ascii(o.str);
+  return o.str;
+}
+
 typedef struct {
   ScrDyn *arguments;
   int start, end;
