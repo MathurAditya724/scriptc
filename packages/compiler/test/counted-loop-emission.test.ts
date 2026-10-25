@@ -136,3 +136,94 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("worker programs poll no loop whose proven ranges bound its runs inside another loop", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-bounded-loop-polls-"));
+  try {
+    const entry = join(dir, "bounded.ts");
+    await writeFile(
+      entry,
+      [
+        'import { isMainThread, Worker } from "node:worker_threads";',
+        "const LIMIT = 50;",
+        "export function rows(cr: Float64Array, n: number): number {",
+        "  let t = 0;",
+        "  for (let r = 0; r < n; r++)",
+        "    for (let i = 0; i < 8; i += 2) {",
+        "      const c = cr[i]!;",
+        "      for (let j = 0; j < LIMIT; j++) {",
+        "        t = (t * 31 + j + c) % 1000003;",
+        "        if (t === 7) break;",
+        "      }",
+        "    }",
+        "  return t;",
+        "}",
+        "export function open(cr: Float64Array, n: number, k: number): number {",
+        "  let t = 0;",
+        "  for (let r = 0; r < n; r++)",
+        "    for (let i = 0; i < 8; i += 2) {",
+        "      const c = cr[i]!;",
+        "      for (let j = 0; j < k; j++) {",
+        "        t = (t * 31 + j + c) % 1000003;",
+        "        if (t === 7) break;",
+        "      }",
+        "    }",
+        "  return t;",
+        "}",
+        "export function wide(n: number): number {",
+        "  let t = 0;",
+        "  for (let r = 0; r < n; r++) for (let j = 0; j < 5000; j++) t = (t * 31 + j) % 1000003;",
+        "  return t;",
+        "}",
+        "export function single(): number {",
+        "  let t = 0;",
+        "  for (let j = 0; j < 50; j++) t = (t * 31 + j) % 1000003;",
+        "  return t;",
+        "}",
+        "const cr = new Float64Array(8).fill(0.5);",
+        'const k = Number(process.argv[2] ?? "50");',
+        "console.log(rows(cr, 3), open(cr, 3, k), wide(2), single());",
+        "if (!isMainThread) new Worker(new URL(import.meta.url));",
+      ].join("\n"),
+    );
+    const outPath = join(dir, "bounded.ir.json");
+    const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    const body = (name: string): string =>
+      [
+        ...ll.matchAll(
+          new RegExp(
+            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
+            "g",
+          ),
+        ),
+      ]
+        .map((match) => match[1]!)
+        .join("\n");
+    const polls = (text: string): number => text.match(/@scr_exc_flag/g)?.length ?? 0;
+    // The i and j loops of `rows` run at most 4 × (1 + 50) bodies: only the
+    // r loop polls, and the i loop over the typed array is not strip-mined.
+    const rows = body("rows");
+    expect(rows).not.toMatch(/^loop\.poll\d+:$/m);
+    expect(polls(rows)).toBeGreaterThan(0);
+    // With a limit known only at run time the inner loops keep their polls.
+    // The innermost one is strip-mined, and a block that ends at the limit
+    // leaves it without polling: only a block that ends short of it polls.
+    const open = body("open");
+    expect(polls(open)).toBeGreaterThan(polls(rows));
+    expect(open).toMatch(/^loop\.poll\d+:$/m);
+    const ends = [...open.matchAll(/^loop\.end\d+:$[\s\S]*?^\S/gm)].map((match) => match[0]);
+    expect(ends.length).toBeGreaterThan(0);
+    for (const end of ends) expect(end).toMatch(/br i1 %\w+, label %loop\.poll\d+, label %/);
+    // A run of up to 16384 iterations is one block, polled as it leaves when
+    // it took more than 64.
+    expect(open).toMatch(/^loop\.poll\.run\d+:$/m);
+    // A nest over the bound, or a loop no other loop encloses, polls.
+    expect(polls(body("wide"))).toBeGreaterThan(0);
+    expect(body("wide")).toMatch(/^loop\.poll\d+:$/m);
+    expect(polls(body("single"))).toBeGreaterThan(0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
