@@ -2350,8 +2350,12 @@ class Analyzer {
           this.add(protos, this.protoAtom(fn));
           this.edge(this.field(fn, "prototype"), protos);
           this.on(protos, (proto) => {
-            if (proto.kind === "object") this.edge(this.field(proto, name), dst);
-            else if (proto.kind === "top") this.add(dst, this.top);
+            if (proto.kind === "object") {
+              // A method stored under a computed key (`F.prototype[k] = fn`)
+              // may be any name.
+              this.edge(this.field(proto, name), dst);
+              this.edge(this.anyField(proto), dst);
+            } else if (proto.kind === "top") this.add(dst, this.top);
           });
           return;
         }

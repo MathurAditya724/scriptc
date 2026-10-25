@@ -16,6 +16,7 @@ import {
   emitStringMapGetScalar,
   emitStringMapGetRef,
   compactMapValues,
+  noteNumberMapKey,
 } from "./map-number-lookup.js";
 import { mapKeyAccess, mapKeyParamType } from "./shapes.js";
 import { rememberMapEntry } from "./map-entry-fusion.js";
@@ -265,6 +266,7 @@ export function emitMapLookupKey(
   const value = borrow ? host.emitReadReceiver(key) : host.emitExpr(key);
   const access = mapKeyAccess(key.type);
   const type = mapKeyParamType(access);
+  if (access === "f64") noteNumberMapKey(host, value, key);
   return { access, types: type, args: `${type} ${value.name}`, value: value.name };
 }
 
