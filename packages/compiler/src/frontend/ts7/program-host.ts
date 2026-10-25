@@ -47,7 +47,7 @@ import {
 } from "../input-tracker.js";
 import { packageShimDeclarationText } from "../package-shims.js";
 import { typePatchedText } from "../type-patches/layer.js";
-import { ambientDtsPath, fallbackDtsPath, overridesDtsPath } from "../dts-paths.js";
+import { ambientDtsPath, isFallbackDtsPath, overridesDtsPath } from "../dts-paths.js";
 import { reusedLibDiagnostics } from "./lib-diagnostics.js";
 import { ts7Diagnostic } from "./diagnostic.js";
 import type { Ts7DiagnosticData } from "./session-schema.generated.js";
@@ -425,12 +425,13 @@ export class Ts7Program {
   reusedLibDiagnostics(): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
     this.snapshot.ensureActive();
     const program = this.project.program;
-    const declarations = new Set([ambientDtsPath(), overridesDtsPath(), fallbackDtsPath()]);
+    const declarations = new Set([ambientDtsPath(), overridesDtsPath()]);
     return reusedLibDiagnostics(
       program,
       this.getSourceFileNames(),
       (name) =>
         declarations.has(tsgoPath(name)) ||
+        isFallbackDtsPath(name) ||
         program.getSourceFileMetadataByPath(name)?.isDefaultLibrary === true,
       (name) => this.getSourceFile(name),
     );
