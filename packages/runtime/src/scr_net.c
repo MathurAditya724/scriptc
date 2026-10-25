@@ -516,6 +516,16 @@ struct ScrNetSocket {
   /* write buffer: [whead, wlen) of wbuf is unsent */
   char *wbuf;
   size_t whead, wlen, wcap;
+  /* Node's writable state.length: each write with bytes in the buffer
+   * counts in full until its last byte is sent (a partly sent write
+   * included). wq[wq_head, wq_n) holds those writes in order, each with
+   * the offset where its bytes end, counted from wbase, the offset of
+   * wbuf[0] in everything buffered since the buffer last emptied. */
+  struct ScrNetPendingWrite {
+    size_t end, len;
+  } *wq;
+  size_t wq_head, wq_n, wq_cap;
+  size_t wbase, wpending;
   /* receive buffer: [rhead, rlen) of rbuf is arrived-but-unconsumed —
    * fed by paused-mode reads ('readable' consumers) and unshift; drained
    * FIRST by every consumer (data listeners, the parser attach, the TLS
@@ -770,6 +780,7 @@ void scr_net_sock_release(ScrNetSocket *s) {
     if (s->lookup_evs != NULL) scr_net_lookup_ops->free(s);
     scr_net_tunnel_free(s->tunnel);
     free(s->wbuf);
+    free(s->wq);
     free(s->rbuf);
     if (s->pipe_dst) scr_net_sock_release(s->pipe_dst);
     if (s->conn_pending) scr_net_server_release(s->conn_pending);
@@ -1088,13 +1099,34 @@ static void scr_net_sock_maybe_finish_write(ScrNetSocket *s) {
   else scr_net_sock_update_read(s); /* the drain-to-EOF mode arms here */
 }
 
+/* The write buffer emptied (or its bytes moved elsewhere): every pending
+ * write is complete. */
+static void scr_net_sock_wq_clear(ScrNetSocket *s) {
+  s->whead = s->wlen = 0;
+  s->wq_head = s->wq_n = 0;
+  s->wbase = 0;
+  s->wpending = 0;
+}
+
+/* Completes the pending writes whose last byte the flush has sent. */
+static void scr_net_sock_wq_settle(ScrNetSocket *s) {
+  size_t sent_to = s->wbase + s->whead;
+  while (s->wq_head < s->wq_n && s->wq[s->wq_head].end <= sent_to) {
+    s->wpending -= s->wq[s->wq_head].len;
+    s->wq_head++;
+  }
+  if (s->wq_head == s->wq_n) s->wq_head = s->wq_n = 0;
+}
+
 /* Append bytes to the write buffer (post-immediate-write remainder, or
- * everything while connecting/buffered). */
-static void scr_net_sock_buffer(ScrNetSocket *s, const char *data, size_t len) {
+ * everything while connecting/buffered). `counted` is the length of the
+ * write they belong to, which counts in full until they are sent. */
+static void scr_net_sock_buffer(ScrNetSocket *s, const char *data, size_t len, size_t counted) {
   if (len == 0) return;
   /* compact the consumed head first */
   if (s->whead > 0) {
     memmove(s->wbuf, s->wbuf + s->whead, s->wlen - s->whead);
+    s->wbase += s->whead;
     s->wlen -= s->whead;
     s->whead = 0;
   }
@@ -1107,6 +1139,15 @@ static void scr_net_sock_buffer(ScrNetSocket *s, const char *data, size_t len) {
   }
   memcpy(s->wbuf + s->wlen, data, len);
   s->wlen += len;
+  if (s->wq_n == s->wq_cap) {
+    s->wq_cap = s->wq_cap ? s->wq_cap * 2 : 8;
+    s->wq = realloc(s->wq, s->wq_cap * sizeof *s->wq);
+    if (!s->wq) scr_net_oom();
+  }
+  s->wq[s->wq_n].end = s->wbase + s->wlen;
+  s->wq[s->wq_n].len = counted;
+  s->wq_n++;
+  s->wpending += counted;
 }
 
 /* Node's net.Socket writableHighWaterMark (the Writable default,
@@ -1125,20 +1166,27 @@ static void scr_net_sock_maybe_drain(ScrNetSocket *s) {
 
 static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len);
 
+/* The write half takes writes: not ending or closed, and connected,
+ * connecting, or waiting to dial (the agent's deferred dial, the caller
+ * lookup), which buffers them until the connection is established. */
+static bool scr_net_sock_write_open(ScrNetSocket *w) {
+  if (w->wr_ending || w->close_emitted) return false;
+  return w->fd >= 0 || w->dial_deferred || w->lookup_wait;
+}
+
 /* A user write: Writable.write's answer, as Node 24's writeOrBuffer
- * computes it after the socket writes — the bytes the write path left
- * unsent below the high-water mark — with needDrain set when it is false.
- * A write the kernel takes at once answers true whatever its size; the
- * buffered bytes of a false one drain from the flush. A write to an ended
- * or closed socket answers false. */
+ * computes it after the socket writes. Each write with bytes still
+ * unsent counts in full (wpending, Node's state.length), so the answer is
+ * false when the pending writes reach the high-water mark, and needDrain
+ * is set. A write the kernel takes at once answers true whatever its
+ * size. A write to an ended or closed socket answers false, and so does
+ * one whose send fails and closes the socket. */
 static bool scr_net_sock_user_write(ScrNetSocket *s, const char *data, size_t len) {
   ScrNetSocket *w = s->adopted_by != NULL ? s->adopted_by : s;
-  bool pre_dial = w->fd < 0 && (w->dial_deferred || w->lookup_wait) && !w->wr_ending &&
-                  !w->close_emitted;
-  bool live = pre_dial || !(w->fd < 0 || w->wr_ending || w->close_emitted);
+  bool open = scr_net_sock_write_open(w);
   scr_net_sock_write_raw(s, data, len);
-  if (!live) return false;
-  bool ok = w->wlen - w->whead < SCR_NET_WRITE_HWM;
+  if (!open || !scr_net_sock_write_open(w)) return false;
+  bool ok = w->wpending < SCR_NET_WRITE_HWM;
   if (!ok) w->need_drain = true;
   return ok;
 }
@@ -1176,7 +1224,7 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
       (s->tops && !s->t_est)) {
     /* mid-connect and mid-handshake bytes buffer; the flush after
      * 'connect'/establishment sends them */
-    scr_net_sock_buffer(s, data, len);
+    scr_net_sock_buffer(s, data, len, len);
     scr_net_sock_update_write(s);
     return;
   }
@@ -1195,7 +1243,7 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
     }
   }
   if ((size_t)sent < len) {
-    scr_net_sock_buffer(s, data + sent, len - (size_t)sent);
+    scr_net_sock_buffer(s, data + sent, len - (size_t)sent, len);
     scr_net_sock_update_write(s);
   }
 }
@@ -1260,7 +1308,7 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
         skip -= len;
         continue;
       }
-      scr_net_sock_buffer(s, (const char *)iov[i].iov_base + skip, len - skip);
+      scr_net_sock_buffer(s, (const char *)iov[i].iov_base + skip, len - skip, len);
       skip = 0;
     }
     scr_net_sock_update_write(s);
@@ -1287,9 +1335,10 @@ static void scr_net_sock_flush(ScrNetSocket *s) {
     }
     if (sent > 0) scr_net_sock_touch(s);
     s->whead += (size_t)sent;
+    scr_net_sock_wq_settle(s);
   }
   if (s->wlen == s->whead) {
-    s->whead = s->wlen = 0;
+    scr_net_sock_wq_clear(s);
     scr_net_sock_update_write(s);
     scr_net_sock_maybe_finish_write(s);
     /* Node's afterWrite for a write the socket completed later: 'drain'
@@ -2778,7 +2827,7 @@ ScrNetSocket *scr_net_connect_deferred(double port, ScrStr *host /*borrowed, nul
  * for a slot takes a pooled socket instead of dialing. */
 void scr_net_sock_move_writes(ScrNetSocket *from, ScrNetSocket *to) {
   if (from->wlen > from->whead) scr_net_sock_write_native(to, from->wbuf + from->whead, from->wlen - from->whead);
-  from->whead = from->wlen = 0;
+  scr_net_sock_wq_clear(from);
 }
 
 void scr_net_sock_dial_start(ScrNetSocket *s) {
@@ -3207,17 +3256,19 @@ bool scr_net_sock_write_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/) {
                                  (data->len * scr_bytes_elem_size(data->elem)));
 }
 
-/* socket.writableLength: the bytes written and not yet sent. */
+/* socket.writableLength: Node's state.length, the length of every write
+ * not yet completely sent. */
 double scr_net_sock_writable_length(ScrNetSocket *s) {
   ScrNetSocket *w = s->adopted_by != NULL ? s->adopted_by : s;
-  return (double)(w->wlen - w->whead);
+  return (double)w->wpending;
 }
 
 /* socket.writableNeedDrain: a write answered false and 'drain' has not
- * fired, on a socket whose write half is open. */
+ * fired, on a socket whose write half is open (including one still
+ * waiting to dial). */
 bool scr_net_sock_writable_need_drain(ScrNetSocket *s) {
   ScrNetSocket *w = s->adopted_by != NULL ? s->adopted_by : s;
-  return w->need_drain && !w->wr_ending && !w->close_emitted && w->fd >= 0;
+  return w->need_drain && scr_net_sock_write_open(w);
 }
 
 /* on('drain') / once('drain'). */
@@ -5331,7 +5382,7 @@ ScrNetSocket *scr_net_sock_adopt(ScrNetSocket *raw) {
     tun->send_only = true;
     t->tunnel = tun;
   }
-  raw->whead = raw->wlen = 0;
+  scr_net_sock_wq_clear(raw);
   raw->adopted_by = scr_net_sock_retain(t);
   t->adopted_from = scr_net_sock_retain(raw);
   scr_net_sock_register(t);
@@ -6260,10 +6311,12 @@ static ScrDyn *scr_net_dynh_sock_get(void *h, const char *key, size_t key_len) {
     }
   }
   if (strcmp(key, "readable") == 0) return scr_dyn_new_bool(scr_net_sock_readable(s));
+  if (strcmp(key, "writableLength") == 0) return scr_dyn_new_num(scr_net_sock_writable_length(s));
+  if (strcmp(key, "writableNeedDrain") == 0)
+    return scr_dyn_new_bool(scr_net_sock_writable_need_drain(s));
   if (strcmp(key, "writableHighWaterMark") == 0 || strcmp(key, "readableHighWaterMark") == 0) {
-    /* Node's default stream highWaterMark — a constant here (backpressure
-     * is not modeled; SEMANTICS.md) */
-    return scr_dyn_new_num(16384);
+    /* Node's default stream highWaterMark (getDefaultHighWaterMark()) */
+    return scr_dyn_new_num(SCR_NET_WRITE_HWM);
   }
   if (scr_net_dynh_tls != NULL) {
     ScrDyn *out = NULL;
