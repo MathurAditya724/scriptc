@@ -167,6 +167,45 @@ function ownLiteralMember(literal: Node, key: string): string | null {
   return found;
 }
 
+/** Whether a top-level statement runs no code but its own: no call, `new`,
+ * tagged template, class (static blocks and field initializers run), getter
+ * or setter, `await`, `yield` or `delete`. Function bodies do not run. */
+function runsNoCode(stmt: ts.Statement): boolean {
+  if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) return true;
+  if (!ts.isVariableStatement(stmt) && !ts.isExpressionStatement(stmt)) return false;
+  let quiet = true;
+  const visit = (n: Node): void => {
+    if (!quiet) return;
+    if (ts.isFunctionExpression(n) || ts.isArrowFunction(n)) return;
+    if (
+      ts.isCallExpression(n) ||
+      ts.isNewExpression(n) ||
+      ts.isTaggedTemplateExpression(n) ||
+      ts.isClassExpression(n) ||
+      ts.isGetAccessorDeclaration(n) ||
+      ts.isSetAccessorDeclaration(n) ||
+      ts.isAwaitExpression(n) ||
+      ts.isYieldExpression(n) ||
+      ts.isDeleteExpression(n) ||
+      ts.isMethodDeclaration(n)
+    ) {
+      quiet = false;
+      return;
+    }
+    ts.forEachChild(n, (c) => {
+      visit(c);
+      return undefined;
+    });
+  };
+  visit(stmt);
+  return quiet;
+}
+
+function enclosingFunctionLike(n: Node): Node | null {
+  for (let p = n.parent; p !== undefined; p = p.parent) if (ts.isFunctionLike(p)) return p;
+  return null;
+}
+
 function primitiveLiteralText(e: ts.Expression): string | null {
   if (
     ts.isNumericLiteral(e) ||
@@ -758,19 +797,80 @@ export function planStaticObjectRewrites(
   // the object does and nothing writes it, so every read sees it. (A
   // member stored after the object was created could be read before the
   // store; those stay reads.)
+  //
+  // A member stored once by an unconditional top-level statement of the
+  // object's own file (`app.math.EPSILON = 1e-9;`) folds too, at reads that
+  // provably run after the store: reads inside functions, when no code can
+  // run before the store (the statements before it call nothing, so no
+  // function runs and no other module starts), and top-level reads after
+  // it in the same file.
+  const writesOf = new Map<Atom, Map<string, Node[]>>();
+  for (const op of analysis.ops) {
+    if (op.kind !== "write" || op.name === null) continue;
+    for (const a of analysis.nodes[op.recv]!.atoms) {
+      let byKey = writesOf.get(a);
+      if (byKey === undefined) writesOf.set(a, (byKey = new Map()));
+      let l = byKey.get(op.name);
+      if (l === undefined) byKey.set(op.name, (l = []));
+      if (!l.includes(op.node)) l.push(op.node);
+    }
+  }
+  const quietPrefix = new Map<ts.Statement, boolean>();
+  const storedLiteral = (
+    atom: Atom,
+    site: Node,
+    key: string,
+  ): { literal: string; stmt: ts.ExpressionStatement; statements: readonly Node[] } | null => {
+    const writes = writesOf.get(atom)?.get(key) ?? [];
+    if (writes.length !== 1) return null;
+    const target = writes[0]!;
+    const assign = target.parent;
+    if (
+      assign === undefined ||
+      !ts.isBinaryExpression(assign) ||
+      assign.left !== target ||
+      assign.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+    )
+      return null;
+    const stmt = assign.parent;
+    if (stmt === undefined || !ts.isExpressionStatement(stmt) || !ts.isSourceFile(stmt.parent))
+      return null;
+    if (stmt.getSourceFile() !== site.getSourceFile()) return null;
+    const literal = primitiveLiteralText(assign.right);
+    if (literal === null) return null;
+    const statements = stmt.parent.statements.nodes;
+    let quiet = quietPrefix.get(stmt);
+    if (quiet === undefined) {
+      quiet = statements.slice(0, statements.indexOf(stmt)).every(runsNoCode);
+      quietPrefix.set(stmt, quiet);
+    }
+    return quiet ? { literal, stmt, statements } : null;
+  };
   let foldedReads = 0;
   for (const { op, atoms } of mergedOps) {
     if (op.kind !== "read" || op.name === null) continue;
     if (atoms.size !== 1) continue;
-    const o = constantAtoms.get([...atoms][0]!);
+    const atom = [...atoms][0]!;
+    const o = constantAtoms.get(atom);
     if (o === undefined || o.site.kind !== "literal") continue;
     const field = o.fields.find((f) => f.key === op.name);
     if (field === undefined || field.stores !== 1) continue;
-    const literal = ownLiteralMember(o.site.node, op.name);
-    if (literal === null) continue;
     const node = op.node;
     if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) continue;
     if (!isPlainRead(node) || topStatement(node) === null) continue;
+    let literal = ownLiteralMember(o.site.node, op.name);
+    if (literal === null && process.env["SCRIPTC_SHAPE_FOLD_STORES"] !== "0") {
+      const stored = storedLiteral(atom, o.site.node, op.name);
+      if (stored === null) continue;
+      const inFunction = enclosingFunctionLike(node) !== null;
+      const top = topStatement(node)!;
+      const after =
+        top.getSourceFile() === stored.stmt.getSourceFile() &&
+        stored.statements.indexOf(top) > stored.statements.indexOf(stored.stmt);
+      if (!inFunction && !after) continue;
+      literal = stored.literal;
+    }
+    if (literal === null) continue;
     // An element key needs no parentheses (and a parenthesized literal key
     // would read as a computed one).
     const key =

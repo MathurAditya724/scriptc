@@ -61,6 +61,29 @@ function declareCallReceiver(
   };
 }
 
+/** Whether a JavaScript function's own `this` can be read: a `this` in its
+ * parameters or body, outside nested non-arrow functions (which bind their
+ * own). Conservative inside classes and object literal methods. A function
+ * that never reads it skips the ambient receiver read at entry. */
+function readsOwnThis(node: ts.FunctionLikeDeclaration): boolean {
+  let found = false;
+  const visit = (n: ts.Node): void => {
+    if (found) return;
+    if (n.kind === ts.SyntaxKind.ThisKeyword) {
+      found = true;
+      return;
+    }
+    if (ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n)) return;
+    ts.forEachChild(n, (c) => {
+      visit(c);
+      return undefined;
+    });
+  };
+  for (const p of node.parameters.nodes) visit(p);
+  if (node.body !== undefined) visit(node.body);
+  return found;
+}
+
 /** True when the identifier resolves (through import aliases) to a
  * top-level function declaration of ANY program file (not merely a
  * same-named local shadowing one). Functions declared directly in a
@@ -335,7 +358,7 @@ export function lowerLambda(
   try {
     const receiver =
       (checkedReceiver ||
-        isJsSourceFile(ts.getSourceFileOfNode(node)) ||
+        (isJsSourceFile(ts.getSourceFileOfNode(node)) && readsOwnThis(node)) ||
         node.parameters.nodes.some(isThisParameter)) &&
       !ts.isArrowFunction(node)
         ? declareCallReceiver(lowerer, node, isGenerator)
@@ -535,7 +558,8 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
   lowerer.fnStack.push(ctx);
   try {
     const receiver =
-      decl.parameters.nodes.some(isThisParameter) || isJsSourceFile(ts.getSourceFileOfNode(decl))
+      decl.parameters.nodes.some(isThisParameter) ||
+      (isJsSourceFile(ts.getSourceFileOfNode(decl)) && readsOwnThis(decl))
         ? declareCallReceiver(lowerer, decl, sig.generator !== undefined)
         : null;
     const { params, prologue } = lowerer.declareParams(decl.parameters.nodes, sig.params);
