@@ -118,6 +118,7 @@ import {
   deferredReadHelper,
   widthNarrowHelper,
 } from "./coercions/unions.js";
+import { assertedConversion } from "./coercions/asserted.js";
 import {
   lowerUtilTypeValue,
   pathModuleValue,
@@ -2247,6 +2248,10 @@ export class Lowerer {
     ts.Type,
     { tsBindings: Map<ts.Symbol, ts.Type>; instance: ts.Type }[]
   >();
+  /** Values an erased type assertion produced, with the asserted type
+   * (`x as T` keeps x's representation): a slot that no ordinary
+   * conversion reaches converts them as asserted (assertedConversion). */
+  readonly assertedValues = new WeakMap<IrExpr, IrType>();
   /** Non-null while an IMPLICIT-ANY instance body lowers (npm-static JS;
    * see generic-functions.ts): bound param symbol →
    * the call site's checker type, consulted by typeOf for identifier
@@ -10599,6 +10604,8 @@ export class Lowerer {
       if (!typeEquals(expr.type, expected)) {
         const w = this.widthCoerce(expr, expected);
         if (w) return w;
+        const asserted = assertedConversion(this, expr, expected);
+        if (asserted) return asserted;
         // A UNIT (null/undefined) flowing into a plain non-nullable slot
         // the checker approved (`null!` casts, non-strict assignments):
         // the stranded-source stance (divergence 38) without a union in
@@ -10617,7 +10624,7 @@ export class Lowerer {
       if (helper) {
         return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
       }
-      return expr;
+      return assertedConversion(this, expr, expected) ?? expr;
     }
     if (expr.type.kind === "void") {
       // A void CALL RESULT flowing into a union with an undefined arm
