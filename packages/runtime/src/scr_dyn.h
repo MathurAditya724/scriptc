@@ -878,6 +878,10 @@ bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
 bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
+/* scr_dyn_obj_set_field for a symbol-keyed field of a class instance's
+ * view: replaces the value whatever the attributes copied into the view.
+ * Does not consume stored. */
+void scr_dyn_symbol_field_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key);
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key);
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key);
@@ -1228,6 +1232,12 @@ void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn 
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
 void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits);
 void scr_dyn_class_view_attributes(ScrDyn *view, double bits);
+/* The integrity state of a class instance's checked view as CLASS_* bits,
+ * added to `bits`. The commits of hierarchies with an integrity word store
+ * it in the word, in programs that freeze, seal or prevent extensions of
+ * untyped values. `bag`, the instance's new property bag or NULL, stops
+ * being extensible with the view. */
+double scr_dyn_class_view_integrity(const ScrDyn *view, double bits, ScrDyn *bag);
 ScrDyn *scr_class_define_field(ScrDyn *current, double field_bits, double object_bits, ScrStr *name,
                                ScrDyn *descriptor);
 double scr_class_defined_bits(ScrDyn *holder, ScrStr *name);
@@ -1257,6 +1267,12 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
 void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict);
+/* Removes the own property `key` of an ordinary object whatever its
+ * attributes, as scr_dyn_obj_set_field replaces values. */
+void scr_dyn_obj_delete_field(ScrDyn *obj, const ScrStr *key);
+/* The same for the own symbol-keyed property `symbol` of an ordinary
+ * object. */
+void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol);
 /* This thread's global object box (borrowed). Every spelling of the global
  * object answers it; its symbol-keyed properties are the global object's
  * (scr_node_builtin.c). */
