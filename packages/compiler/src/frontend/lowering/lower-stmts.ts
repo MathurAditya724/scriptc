@@ -33,6 +33,7 @@ import { InternalCompilerError } from "../../errors.js";
  * explicit resource management, and blocked-binding poisoning. */
 import * as ts from "../ts7/adapter.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
+import { builtinNamespaceValue } from "./builtin-namespaces.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
@@ -266,6 +267,7 @@ import { constituentTypes } from "../ts7/checker.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
+import { fenceX509KeyWalk } from "./builtins/x509.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { iterableUnionOf, lowerForOfIterable } from "./iterable-values.js";
 
@@ -2760,7 +2762,7 @@ export function lowerBindingPattern(
         const itRef = (): IrExpr => ({ kind: "varRef", localId: it.id, type: citPat.iterT, loc });
         for (const el of pattern.elements.nodes) {
           const stepLoc = locOf(el);
-          const step = lowerer.classIteratorNextCall(citPat, itRef(), stepLoc);
+          const step = lowerer.classIteratorNextCall(citPat, itRef(), null, stepLoc);
           if (ts.isOmittedExpression(el) || el.name === undefined) {
             out.push({ kind: "exprStmt", expr: step, loc: stepLoc });
             continue;
@@ -4330,7 +4332,8 @@ function stdlibGlobalTokenDestructure(
       value =
         canonical === "crypto"
           ? { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc: locOf(el) }
-          : builtinGlobalValue(canonical, locOf(el), true);
+          : (builtinNamespaceValue(lowerer, canonical, locOf(el)) ??
+            builtinGlobalValue(canonical, locOf(el), true));
     } else if (globalName === "console" && !CONSOLE_CALL_MEMBERS.has(propName)) {
       token = `[builtin console.${propName}]`;
     } else if (TOKEN_OPAQUE_GLOBALS.has(globalName)) {
@@ -10174,8 +10177,23 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     // iterator are awaited as the async-from-sync iterator awaits them, and
     // a value that is not iterable throws Node's TypeError.
     const headT = lowerer.mapTypeOf(lowerer.typeOf(stmt.expression));
+    // A class instance whose [Symbol.asyncIterator]() (or
+    // [Symbol.iterator]()) returns an iterator object takes the same
+    // checked-dynamic protocol over the boxed instance.
+    const headClass = headT?.kind === "object" ? lowerer.classes.get(headT.className) : undefined;
+    const classAsync =
+      headClass !== undefined && lowerer.findMethodOn(headClass, "sym:asyncIterator") !== null;
+    // Without [Symbol.asyncIterator], the loop opens [Symbol.iterator]() and
+    // awaits its values, as the async-from-sync iterator does.
+    const classSync =
+      headClass !== undefined &&
+      !classAsync &&
+      lowerer.findMethodOn(headClass, "sym:iterator") !== null;
+    const classIterable = classAsync || classSync;
     const syncGenerator =
-      (headT?.kind === "generator" && headT.async !== true) || isJsSourceFile(stmt.getSourceFile());
+      (headT?.kind === "generator" && headT.async !== true) ||
+      classIterable ||
+      isJsSourceFile(stmt.getSourceFile());
     if (lowerer.ctx.isAsync && (syncGenerator || isUntypedIterable(lowerer, stmt.expression))) {
       const iterable = lowerer.lowerExpr(stmt.expression);
       if (iterable.type.kind === "generator" && iterable.type.async)
@@ -10187,10 +10205,19 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         );
       if (iterable.type.kind === "dyn") return lowerForOfDyn(lowerer, stmt, iterable, labels, true);
       if (
-        (iterable.type.kind === "generator" || isJsSourceFile(stmt.getSourceFile())) &&
+        (iterable.type.kind === "generator" ||
+          classIterable ||
+          isJsSourceFile(stmt.getSourceFile())) &&
         lowerer.dynConvertible(iterable.type)
       )
-        return lowerForOfDyn(lowerer, stmt, lowerer.coerceToExpected(iterable, DYN), labels, true);
+        return lowerForOfDyn(
+          lowerer,
+          stmt,
+          lowerer.coerceToExpected(iterable, DYN),
+          labels,
+          true,
+          classSync && iterable.type.kind === "object",
+        );
     }
     // A NodeJS.ReadableStream iterates as the general Readable.
     requestGeneralStreamSurface(lowerer, stmt.expression);
@@ -10438,17 +10465,30 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         );
       // Class iterables ([Symbol.iterator]() + next() — classIteratorOf)
       // drive the same protocol with ordinary method calls.
-      const cit = lowerer.classIteratorOf(iterable.type);
+      const cit = lowerer.classIteratorOf(iterable.type, { records: true, close: true });
       if (cit) return lowerForOfClassIterator(lowerer, stmt, iterable, cit, labels);
       // A declared [Symbol.iterator] whose shape classIteratorOf refused
       // (an `any`-typed iterator or result, a declared return()/throw()):
       // name the protocol, not the class.
       const info = lowerer.classes.get(iterable.type.className);
+      // In JavaScript the inferred shape is often a union of result
+      // objects: the loop runs the iterator protocol over the boxed value.
+      if (
+        info &&
+        isJsSourceFile(ts.getSourceFileOfNode(stmt)) &&
+        lowerer.findMethodOn(info, "sym:iterator")
+      )
+        return lowerForOfDyn(
+          lowerer,
+          stmt,
+          lowerer.coerceInto(stmt.expression, iterable, DYN),
+          labels,
+        );
       if (info && lowerer.findMethodOn(info, "sym:iterator")) {
         lowerer.unsupported(
           "SC1090",
           stmt.expression,
-          `for-of over this [Symbol.iterator] shape (the method must take no parameters and return an object whose zero-parameter next() returns a { value, done? } record with a boolean done; iterator classes declaring return()/throw() stay out — IteratorClose has no lowering)`,
+          `for-of over this [Symbol.iterator] shape (the method must take no parameters and return an object whose zero-parameter next() returns a { value, done? } record with a boolean done, and whose return(), if any, takes no parameters and returns an object)`,
         );
       }
     }
@@ -11365,11 +11405,13 @@ function lowerForOfMatchAll(
  *     } }
  *
  * A result record with NO done field never terminates — exactly JS
- * (undefined is falsy forever; Node loops forever too). No
- * IteratorClose: classIteratorOf already refused iterator classes
- * declaring return()/throw(), so a break exits with nothing to close.
- * `done: true` results bind nothing (the loop breaks before the value
- * read), matching JS's ignore-the-final-value rule. */
+ * (undefined is falsy forever; Node loops forever too). An iterator with
+ * return() is closed when the loop leaves after a value arrived (break,
+ * return, or a throw from the body), as IteratorClose does: a done flag
+ * set around each step guards the call in a finally, and after a throw
+ * from the body an error from return() is dropped. A throw from next()
+ * does not close. `done: true` results bind nothing (the loop breaks
+ * before the value read), matching JS's ignore-the-final-value rule. */
 function lowerForOfClassIterator(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
@@ -11411,7 +11453,22 @@ function lowerForOfClassIterator(
     const r = lowerer.declareHiddenLocal("%cir", cit.resultT);
     const recvRef: IrExpr = { kind: "varRef", localId: recv.id, type: iterable.type, loc };
     const itRef = (): IrExpr => ({ kind: "varRef", localId: it.id, type: cit.iterT, loc });
+    const nextRead = lowerer.classIteratorNextRead(cit, itRef(), loc);
+    const next = nextRead ? lowerer.declareHiddenLocal("%cin", nextRead.type) : null;
     const rRef = (): IrExpr => ({ kind: "varRef", localId: r.id, type: cit.resultT, loc });
+    const done = cit.hasReturn ? lowerer.declareHiddenLocal("%cid", BOOL) : null;
+    if (done) done.mutable = true;
+    const setDone = (value: boolean): IrStmt[] =>
+      done
+        ? [
+            {
+              kind: "assign",
+              localId: done.id,
+              value: { kind: "boolLit", value, type: BOOL, loc },
+              loc,
+            },
+          ]
+        : [];
     const varTarget = exprTarget ?? (decl ? forOfVarTarget(lowerer, decl) : null);
     const x = varTarget
       ? lowerer.declareHiddenLocal("%vof", cit.valueT)
@@ -11424,10 +11481,16 @@ function lowerForOfClassIterator(
     const xRef: IrExpr = { kind: "varRef", localId: x.id, type: cit.valueT, loc };
     const blame: ts.Node = decl?.name ?? exprTargetNode ?? stmt.initializer;
     const head: IrStmt[] = [
+      ...setDone(true),
       {
         kind: "varDecl",
         localId: r.id,
-        init: lowerer.classIteratorNextCall(cit, itRef(), loc),
+        init: lowerer.classIteratorNextCall(
+          cit,
+          itRef(),
+          next ? varRef(next.id, next.type, loc) : null,
+          loc,
+        ),
         loc,
       },
       ...(cit.hasDone
@@ -11471,8 +11534,16 @@ function lowerForOfClassIterator(
             } satisfies IrStmt,
           ]
         : []),
+      ...setDone(false),
     ];
     const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement), labels);
+    const loop: IrStmt = {
+      kind: "while",
+      cond: { kind: "boolLit", value: true, type: BOOL, loc },
+      body: [...head, ...body],
+      ...(labels && { labels }),
+      loc,
+    };
     return {
       kind: "block",
       body: [
@@ -11483,13 +11554,48 @@ function lowerForOfClassIterator(
           init: lowerer.classIteratorOpenCall(cit, recvRef, loc),
           loc,
         },
-        {
-          kind: "while",
-          cond: { kind: "boolLit", value: true, type: BOOL, loc },
-          body: [...head, ...body],
-          ...(labels && { labels }),
-          loc,
-        },
+        ...(next && nextRead
+          ? [{ kind: "varDecl", localId: next.id, init: nextRead, loc } satisfies IrStmt]
+          : []),
+        ...(done
+          ? [
+              {
+                kind: "varDecl",
+                localId: done.id,
+                init: { kind: "boolLit", value: true, type: BOOL, loc },
+                loc,
+              } satisfies IrStmt,
+              {
+                kind: "tryCatch",
+                tryBody: [loop],
+                catchBody: null,
+                catchLocalId: null,
+                dropFinallyErrors: true,
+                finallyBody: [
+                  {
+                    kind: "if",
+                    cond: {
+                      kind: "unary",
+                      op: "!",
+                      operand: { kind: "varRef", localId: done.id, type: BOOL, loc },
+                      type: BOOL,
+                      loc,
+                    },
+                    then: [
+                      {
+                        kind: "exprStmt",
+                        expr: lowerer.classIteratorReturnCall(cit, itRef(), loc),
+                        loc,
+                      },
+                    ],
+                    else_: null,
+                    loc,
+                  },
+                ],
+                loc,
+              } satisfies IrStmt,
+            ]
+          : [loop]),
       ],
       loc,
     };
@@ -11507,6 +11613,7 @@ function lowerForOfDyn(
   iterable: IrExpr,
   labels?: string[],
   asyncLoop = false,
+  syncOpen = false,
 ): IrStmt {
   const loc = locOf(stmt);
   const spell = notIterableSpelling(stmt.expression, asyncLoop ? "async iterable" : "iterable");
@@ -11517,6 +11624,7 @@ function lowerForOfDyn(
   done.mutable = true;
   const value = lowerer.declareHiddenLocal("%dofValue", DYN);
   const returned = lowerer.declareHiddenLocal("%dofReturn", DYN);
+  const closed = lowerer.declareHiddenLocal("%dofClosed", DYN);
   const needsClose = lowerer.declareHiddenLocal("%dofNeedsClose", BOOL);
   needsClose.mutable = true;
   const error = lowerer.declareHiddenLocal("%dofError", CAUGHT);
@@ -11582,9 +11690,10 @@ function lowerForOfDyn(
       },
       then: [
         {
-          kind: "exprStmt",
+          kind: "varDecl",
+          localId: closed.id,
           // return()'s (awaited) result must be an object, as for next().
-          expr: asyncLoop
+          init: asyncLoop
             ? check(
                 awaitDyn({
                   kind: "dynCall",
@@ -11599,6 +11708,27 @@ function lowerForOfDyn(
             : call(varRef(returned.id, DYN, loc)),
           loc,
         },
+        // A synchronous iterator's return() result is read as the
+        // async-from-sync iterator reads it: done, then the value, which is
+        // awaited, so a rejected promise there rejects the loop.
+        ...(syncIterator
+          ? [
+              {
+                kind: "if",
+                cond: varRef(syncIterator.id, BOOL, loc),
+                then: [
+                  { kind: "exprStmt", expr: get(varRef(closed.id, DYN, loc), "done"), loc },
+                  {
+                    kind: "exprStmt",
+                    expr: awaitDyn(get(varRef(closed.id, DYN, loc), "value")),
+                    loc,
+                  },
+                ],
+                else_: null,
+                loc,
+              } satisfies IrStmt,
+            ]
+          : []),
       ],
       else_: null,
       loc,
@@ -11734,7 +11864,7 @@ function lowerForOfDyn(
           localId: iterator.id,
           init: check({
             kind: "libCall",
-            fn: asyncLoop ? "dyn.asyncIteratorOpen" : "dyn.iterator",
+            fn: asyncLoop && !syncOpen ? "dyn.asyncIteratorOpen" : "dyn.iterator",
             args: [iterable, { kind: "strLit", value: spell, type: STRING, loc }],
             type: DYN,
             loc,
@@ -11746,13 +11876,15 @@ function lowerForOfDyn(
               {
                 kind: "varDecl",
                 localId: syncIterator.id,
-                init: {
-                  kind: "libCall",
-                  fn: "dyn.asyncIteratorWasSync",
-                  args: [],
-                  type: BOOL,
-                  loc,
-                },
+                init: syncOpen
+                  ? { kind: "boolLit", value: true, type: BOOL, loc }
+                  : {
+                      kind: "libCall",
+                      fn: "dyn.asyncIteratorWasSync",
+                      args: [],
+                      type: BOOL,
+                      loc,
+                    },
                 loc,
               } satisfies IrStmt,
             ]
@@ -12176,6 +12308,7 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
       // them (accessor slots live outside declaredOrder), so the loop
       // fences rather than skip keys.
       fencePerfEntryKeyWalk(lowerer, receiver.type, stmt.expression, "for-in");
+      fenceX509KeyWalk(lowerer, receiver.type, stmt.expression, "for-in");
       if (shapeHasAccessorSlots(rShape)) {
         lowerer.unsupported(
           "SC1090",

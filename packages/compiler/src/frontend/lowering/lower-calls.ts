@@ -27,7 +27,11 @@ import {
 import { lowerMockTimersElementCall } from "./lower-test.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../errors.js";
-import { isFsStreamMember, lowerFsStreamMethodCall } from "./builtins/fs-streams.js";
+import {
+  isFsStreamMember,
+  lowerFsStreamCall,
+  lowerFsStreamMethodCall,
+} from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import {
   isZlibStreamMember,
@@ -170,6 +174,7 @@ import {
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
+import { fenceX509KeyWalk } from "./builtins/x509.js";
 import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
@@ -252,7 +257,7 @@ import {
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
 import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
 import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
-import { freezableRecordType, lowerNativeFreeze } from "./frozen-records.js";
+import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
@@ -377,6 +382,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   {
     const buffer = lowerBufferConstruct(lowerer, expr);
     if (buffer) return { kind: "dynFrom", value: buffer, type: DYN, loc };
+  }
+  {
+    const stream = lowerFsStreamCall(lowerer, expr);
+    if (stream) return stream;
   }
   // A package shim's runtime intrinsic (a bodiless `declare function`
   // named scriptcUnixDgram* in a shipped shim): a direct runtime call.
@@ -2984,6 +2993,7 @@ function lowerObjectOwnCall(
   } else if (type.kind === "record") {
     const shape = lowerer.shapes.get(type.shapeId);
     fencePerfEntryKeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
+    fenceX509KeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
     if (!shape || shape.tuple || shapeHasAccessorSlots(shape)) {
       lowerer.noLowering(
         "Object.prototype." + method + " over this record shape",
@@ -8588,6 +8598,7 @@ function lowerObjectStaticCall(
         isSealed: "dyn.isSealed",
       } as const;
       const fn = operation[member as keyof typeof operation];
+      if (!member.startsWith("is")) noteUntypedIntegrity(lowerer, call.arguments.nodes[0]!);
       return {
         kind: "libCall",
         fn,
@@ -8654,8 +8665,10 @@ function lowerObjectStaticCall(
       (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner))
         ? lowerer.lowerExprExpecting(argNode, DYN)
         : lowerer.lowerExpr(argNode);
-    if (value.type.kind === "dyn")
+    if (value.type.kind === "dyn") {
+      noteUntypedIntegrity(lowerer, argNode);
       return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
+    }
     if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
       return value; // fresh — freeze is identity here, honestly
     }
@@ -8970,6 +8983,7 @@ function lowerObjectStaticCall(
   // RESULTS, invoked in key order. The static field walk models neither
   // (accessor slots live outside declaredOrder), so the surface fences.
   fencePerfEntryKeyWalk(lowerer, argIr, call, `Object.${member}`);
+  fenceX509KeyWalk(lowerer, argIr, call, `Object.${member}`);
   if (shapeHasAccessorSlots(shape)) {
     lowerer.unsupported(
       "SC1090",

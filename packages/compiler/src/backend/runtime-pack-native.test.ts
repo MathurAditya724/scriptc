@@ -16,6 +16,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { nativeCodegenDiag } from "../diagnostics/diagnostic.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import { RuntimePackError, type RuntimePackManifest } from "./runtime-pack-core.js";
 import {
   runtimePackManifest,
@@ -114,7 +115,7 @@ async function packFixture() {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 37, marker: "scr_runtime_abi_v37" },
+    runtime_abi: { version: RUNTIME_ABI_VERSION, marker: RUNTIME_ABI_MARKER },
     compiler: { command: "clang", identity: "fixture clang", target: target.llvmTriple },
     macros: {
       executable: [],

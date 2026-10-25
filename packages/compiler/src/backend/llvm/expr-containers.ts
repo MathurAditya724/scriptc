@@ -42,6 +42,7 @@ import {
   emitStringMapGetRef,
   emitStringMapGetScalar,
   emitStringMapHas,
+  noteNumberMapKey,
 } from "./map-number-lookup.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { emitFusedMapSet, rememberMapEntry } from "./map-entry-fusion.js";
@@ -1144,6 +1145,65 @@ export function emitArrIntrinsic(
   }
 }
 
+/** Whether `e` is a Map.get that emitBorrowedMapGet can emit without a
+ * retain: a typed map with number or inline string keys, a reference value,
+ * and a nullable result (the value's pointer, or the absent arm's). */
+export function borrowableMapGet(host: LlvmEmitterContext, e: IrExpr): boolean {
+  if (e.kind !== "mapIntrinsic" || e.method !== "get" || e.args.length !== 1) return false;
+  if (!borrowsMapReadInputs(e) || e.receiver.type.kind !== "map") return false;
+  const { key, value } = e.receiver.type;
+  if (!isRefCounted(value) || value.kind === "union" || key.kind === "union") return false;
+  if (e.type.kind !== "union" || !host.nullableUnions.has(e.type.unionId)) return false;
+  const arg = e.args[0]!;
+  const access = mapKeyAccess(key);
+  return (
+    (access === "f64" && arg.type.kind === "f64") ||
+    (access === "str" && arg.type.kind === "string")
+  );
+}
+
+/** A borrowableMapGet read as the entry's own reference: no retain, and
+ * no owner. The caller proves that nothing can change the map while the
+ * value is used (findMapReadBorrows). Null, before emitting anything, for
+ * a key held as a split span, which takes the runtime's owned lookup. */
+export function emitBorrowedMapGet(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "mapIntrinsic" },
+): LlValue | null {
+  const arg = e.args[0]!;
+  if (arg.kind === "varRef" && host.splitSpans.get(arg.localId) !== undefined) return null;
+  const B = host.B;
+  const mapType = e.receiver.type as IrType & { kind: "map" };
+  const r = host.emitStableReceiver(e.receiver, e.args);
+  const k = emitMapLookupKey(host, e.args[0]!, true);
+  const numberKey = inlineNumberKey(k);
+  const stringKey = entryStringKey(k);
+  const value = mapType.value;
+  let raw: string;
+  if (numberKey !== null) raw = emitNumberMapGetRef(host, r.name, numberKey, value, true);
+  else if (stringKey !== null)
+    raw = emitStringMapGetRef(
+      host,
+      r.name,
+      stringKey,
+      value,
+      compactMapValues(host, mapType.key, value),
+      true,
+    );
+  else throw new InternalCompilerError("llvm emitter bug: borrowed Map.get without an inline key");
+  const resultType = e.type as IrType & { kind: "union" };
+  const absent = host.unitInstanceRef(
+    resultType.unionId,
+    undefinedArmTag(resultType, host.unionsById),
+  );
+  if (absent === "null") return { name: raw, type: e.type };
+  const isnull = B.tmp(),
+    t = B.tmp();
+  B.line(`${isnull} = icmp eq ptr ${raw}, null`);
+  B.line(`${t} = select i1 ${isnull}, ptr ${absent}, ptr ${raw}`);
+  return { name: t, type: e.type };
+}
+
 export function wrapNullable(
   host: LlvmEmitterContext,
   raw: string,
@@ -1219,7 +1279,9 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
 function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const B = host.B;
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
-  const kind = mapKeyKindNum(key, arms);
+  // SCR_MAP_KEY_REF (2): shape-union keys are record pointers.
+  const kind =
+    key.kind === "union" && host.nullableUnions.shapes(key.unionId) ? 2 : mapKeyKindNum(key, arms);
   const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).
@@ -1546,6 +1608,7 @@ export function emitMapLikeIntrinsic(
       // Key borrowed (the runtime retains stored string keys); the
       // value MOVES in (replacement releases the old value inside).
       const k = emitBorrowedInput(host, e.args[0]!);
+      if (kAcc === "f64") noteNumberMapKey(host, k, e.args[0]!);
       const v = host.emitExpr(e.args[1]!);
       const vAcc = elemAccess(receiverType.value);
       if (vAcc === "ref") host.toHeap(v);
@@ -1572,6 +1635,7 @@ export function emitMapLikeIntrinsic(
       // Element borrowed (the runtime retains stored strings); the unit
       // value is 0. Re-adding overwrites in place, preserving insertion.
       const k = emitBorrowedInput(host, e.args[0]!);
+      if (kAcc === "f64") noteNumberMapKey(host, k, e.args[0]!);
       if (kAcc === "f64" && host.readNumberMapWrites.has(e))
         emitNumberMapSetScalar(host, r.name, k.name, null, () =>
           host.mapSet(r.name, kAcc, "f64", k.name, f64Lit(0)),
@@ -1581,7 +1645,10 @@ export function emitMapLikeIntrinsic(
     }
     case "has": {
       const k = borrowInputs ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
-      if (kAcc === "f64") return { name: emitNumberMapHas(host, r.name, k.name), type: e.type };
+      if (kAcc === "f64") {
+        noteNumberMapKey(host, k, e.args[0]!);
+        return { name: emitNumberMapHas(host, r.name, k.name), type: e.type };
+      }
       if (kAcc === "str")
         return { name: emitStringMapHas(host, r.name, k.name, compact), type: e.type };
       host.declare(`declare zeroext i1 @scr_map_has_${kAcc}(ptr, ${kTy})`);

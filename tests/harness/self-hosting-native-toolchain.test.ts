@@ -52,6 +52,7 @@ const features: NativeLinkFeatures = {
   dh: false,
   pki: false,
   ed25519: false,
+  x509: false,
   webcrypto: false,
   perfLoop: false,
 };
@@ -109,7 +110,7 @@ for (const backend of ["llvm"] as const) {
           object_format: target.objectFormat,
           minimum_os: target.minimumOs,
         },
-        runtime_abi: { version: 42, marker: "scr_runtime_abi_v42" },
+        runtime_abi: { version: 43, marker: "scr_runtime_abi_v43" },
         compiler: { command: "fixture", identity: "fixture", target: target.llvmTriple },
         macros: { executable: [], excluded: [], sanitizer: "external-toolchain-required" },
         flavors: {

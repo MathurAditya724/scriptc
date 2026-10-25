@@ -334,7 +334,8 @@ export function lowerCreateRequireCall(
     const surface = "createRequire's require with a computed specifier or this argument shape";
     const hint =
       'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>"); native addons are not loaded';
-    if (!isJsSourceFile(ts.getSourceFileOfNode(call))) lowerer.noLowering(surface, call, hint);
+    if (!isJsSourceFile(ts.getSourceFileOfNode(call)))
+      lowerer.noLowering(surface, call, hint, undefined, "dynamic-require");
     // Spread arguments have no run-time resolution: they run, then the
     // call throws the fence.
     if (args.some((a) => ts.isSpreadElement(a)))

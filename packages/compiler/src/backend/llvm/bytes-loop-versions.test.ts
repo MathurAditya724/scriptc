@@ -701,7 +701,8 @@ test("a two-counter loop versions the typed arrays it indexes at either counter"
   };
   const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
   const guard = body.slice(0, body.search(/^bytes\.version\.(fast|slow)\d+:$/m));
-  expect(guard).toMatch(/icmp sge i64 %\S+, 0/);
+  // `i` starts at the literal 0, so its test compares the integer itself.
+  expect(guard).toMatch(/icmp sge i64 0, 0/);
   expect(guard).toMatch(/icmp slt i64 %\S+, %\S+/);
   const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(body)![0];
   // The fast copy keeps only the `src[i + 1]` check, and no second guard.

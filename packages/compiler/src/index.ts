@@ -103,7 +103,11 @@ import {
   platformLinkerSupportsPersistentCache,
   resolvePlatformLinker,
 } from "./backend/linker.js";
-import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
+import {
+  splitLlvmLibraryProgram,
+  splitLlvmProgram,
+  splitLlvmProgramFile,
+} from "./backend/llvm/split.js";
 import {
   emitLibraryIdentityLines,
   replaceLibraryIdentity,
@@ -210,11 +214,14 @@ export {
 export {
   renderCoverage,
   renderExplainDynamic,
+  renderExplainIsland,
   coverageEnvelope,
   coveragePasses,
   type CoverageInput,
   type CoverageFailOn,
 } from "./coverage/report.js";
+export type { NodeIslandReport, NodeIslandEntry } from "./node-islands/summary.js";
+export type { NodeIslandOptions, NodeIslandsMode } from "./node-islands/policy.js";
 export {
   TIER_MODES,
   type DemotedUnit,
@@ -412,8 +419,13 @@ export async function analyzeCached(
   return result;
 }
 
-const nodeFrontend: FrontendFactory = (entry, npmStatic, externalTypes, libraryNpmStatic) =>
-  runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic);
+const nodeFrontend: FrontendFactory = (
+  entry,
+  npmStatic,
+  externalTypes,
+  libraryNpmStatic,
+  options,
+) => runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
 
 /** The checker's part of the executable cache key (`checkerCacheIdentity`), as the CLI's startup route computes it. */
 function checkerField(): { checker?: string } {
@@ -566,8 +578,8 @@ async function compileExecutableNative(
   }
   const effectiveProgramSplit =
     programSplit ??
-    (!programIsObject && features.optimization === "dev" && features.backend === "llvm" && !sanitize
-      ? splitLlvmProgram(await readFile(llvmPath, "utf8"))
+    (!programIsObject && features.optimization === "dev" && features.backend === "llvm"
+      ? splitLlvmProgramFile(llvmPath)
       : null);
   if (programIsObject)
     throw new InternalCompilerError("program objects must link against a precompiled runtime pack");
@@ -643,6 +655,7 @@ async function compileExecutableNative(
     dh: features.dh,
     pki: features.pki,
     ed25519: features.ed25519,
+    x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
@@ -810,6 +823,9 @@ async function prepareExecutableInput(
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
         wasi: buildPlatform === "wasi",
         runtimeAbiMarker: outputKind === "obj",
+        // Textual output shows the code an executable gets; objects keep
+        // the pending flag, since their link may not add an unwinder.
+        unwindAbi: buildPlatform === "linux" && outputKind !== "obj",
         objectAudit: opts.sanitize === true,
         lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
         ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
@@ -909,7 +925,6 @@ async function prepareExecutableInput(
     !useRuntimePack &&
     backend === "llvm" &&
     (opts.optimization ?? "release") === "dev" &&
-    !(opts.sanitize ?? false) &&
     typeof llvmSource === "string"
       ? splitLlvmProgram(llvmSource)
       : null;
@@ -1894,6 +1909,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     searchParams: features.searchParams,
     emitter: features.emitter,
     zlib: features.zlib,
+    x509: features.x509,
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
     dynInvoke: features.dynInvoke,
@@ -1989,6 +2005,7 @@ async function compileLibraryNative(
     searchParams: features.searchParams,
     emitter: features.emitter,
     zlib: features.zlib,
+    x509: features.x509,
     copying: features.copying,
     textDecoderLegacy: features.textDecoderLegacy,
     dynInvoke: features.dynInvoke,

@@ -1291,10 +1291,9 @@ export function loadProgram(
  * packages whose declarations the boundary projects from. */
 function declBoundaryUserFiles(program: ts.Program, packages: readonly string[]): string[] {
   const out: string[] = [];
-  for (const sf of program.getSourceFiles()) {
+  for (const sf of program.getImplementationSourceFiles()) {
     const name = sf.fileName.split("\\").join("/");
-    if (sf.isDeclarationFile || name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name))
-      continue;
+    if (name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name)) continue;
     if (name.endsWith(".tsx")) continue; // JSX files: not projected yet
     const text = sf.text;
     if (
@@ -1374,9 +1373,16 @@ function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
     return ts.flattenDiagnosticMessageText(d, "\n").includes("'any'");
   }
   // The deprecated Buffer(...) call without `new`, which Node's Buffer
-  // function accepts (containers/bytes.ts lowers it).
+  // function accepts (containers/bytes.ts lowers it), and fs.ReadStream(...)
+  // and fs.WriteStream(...), which construct their stream
+  // (builtins/fs-streams.ts).
   if (d.code === 2348) {
-    return ts.flattenDiagnosticMessageText(d, "\n").includes("'BufferConstructor'");
+    const text = ts.flattenDiagnosticMessageText(d, "\n");
+    return (
+      text.includes("'BufferConstructor'") ||
+      text.includes("'typeof ReadStream'") ||
+      text.includes("'typeof WriteStream'")
+    );
   }
   return false;
 }
