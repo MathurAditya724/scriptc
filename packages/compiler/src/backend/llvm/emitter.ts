@@ -17,6 +17,7 @@ import {
 import { youngNurseryRequested } from "../young-nursery.js";
 import { llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
+import { serializeModuleParts } from "../../ir/serialize.js";
 import { createHash } from "node:crypto";
 import {
   endsWithJump,
@@ -88,6 +89,8 @@ import {
   fillAllocationLength,
   int32ArrayKey,
   selectInt32Arrays,
+  type Int32ArrayProof,
+  type Int32ArrayRevision,
 } from "../../ir/int32-arrays.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import {
@@ -103,6 +106,7 @@ import { resolveSelfCaptures } from "../../ir/self-captures.js";
 import {
   analyzeInt32Slots,
   dynamicFieldStores,
+  Int32RevisionConflict,
   type DynamicFieldStores,
   type Int32Slots,
 } from "../../ir/int32-slots.js";
@@ -552,13 +556,58 @@ export interface Int32SlotAnalysis {
   readonly slots: Int32Slots;
 }
 
-/** The int32 slot analysis of `mod`, with the inputs LlEmitter gives it. */
-function analyzeModuleInt32Slots(mod: IrModule): Int32SlotAnalysis {
+/** The int32 slot analysis of `mod`, with the inputs LlEmitter gives it.
+ * With `revise`, the analysis revises the functions of candidates that drop
+ * (Int32SlotInputs.revise), and `mod` is the module it started from. */
+function analyzeModuleInt32Slots(
+  mod: IrModule,
+  revise?: (fnName: string, dropped: ReadonlySet<string>) => IrFunction,
+): Int32SlotAnalysis {
   const nodeIndex = new IrNodeIndex(mod);
   const initializerBindings = findInitializerBindings(mod, nodeIndex);
   const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
-  const slots = analyzeInt32Slots(mod, { dynamicStores, initializerBindings, nodes: nodeIndex });
+  const slots = analyzeInt32Slots(mod, {
+    dynamicStores,
+    initializerBindings,
+    nodes: nodeIndex,
+    ...(revise === undefined ? {} : { revise }),
+  });
   return { mod, nodeIndex, initializerBindings, dynamicStores, slots };
+}
+
+/** The candidates an analysis keeps: int32 arrays and checked ones. */
+function keptInt32Arrays(analysis: Int32SlotAnalysis): ReadonlySet<string> {
+  return new Set([...analysis.slots.int32Arrays, ...analysis.slots.checkedInt32Arrays]);
+}
+
+/** An analysis that revised functions (analyzeModuleInt32Slots' `revise`)
+ * as the analysis of `mod`, the module of the functions it ended with: the
+ * node index of `mod`, and its initializer bindings and dynamic stores,
+ * which must be the ones the analysis read. Null when they differ. */
+function revisedAnalysis(analysis: Int32SlotAnalysis, mod: IrModule): Int32SlotAnalysis | null {
+  const nodeIndex = new IrNodeIndex(mod);
+  const initializerBindings = findInitializerBindings(mod, nodeIndex);
+  const dynamicStores = dynamicFieldStores(mod, undefined, undefined, nodeIndex);
+  const read = analysis.initializerBindings;
+  if (initializerBindings.size !== read.size) return null;
+  for (const [name, globals] of initializerBindings) {
+    const other = read.get(name);
+    if (other?.length !== globals.length || globals.some((g, i) => other[i] !== g)) return null;
+  }
+  const stores = analysis.dynamicStores;
+  if (
+    dynamicStores.all !== stores.all ||
+    dynamicStores.names.size !== stores.names.size ||
+    [...dynamicStores.names].some((name) => !stores.names.has(name))
+  )
+    return null;
+  return {
+    mod,
+    nodeIndex,
+    initializerBindings,
+    dynamicStores,
+    slots: analysis.slots,
+  };
 }
 
 /** The functions whose calls the backend may emit as calls of their
@@ -575,55 +624,125 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
   const mod = unshareNodes(input);
-  // Each round of selectInt32Arrays analyzes the module it marks; the
-  // emitter of the module it returns reuses that round's analysis.
-  const rounds: { last: Int32SlotAnalysis | null } = { last: null };
-  const proven = (marked: IrModule): ReadonlySet<string> => {
-    const analysis = analyzeModuleInt32Slots(marked);
-    rounds.last = analysis;
-    return new Set([...analysis.slots.int32Arrays, ...analysis.slots.checkedInt32Arrays]);
+  // Each proof selectInt32Arrays asks for analyzes a marked module; the
+  // emitter of the module it returns reuses the last one. A proof that
+  // revised functions analyzed the module of the functions it ended with.
+  const rounds: {
+    last: Int32SlotAnalysis | null;
+    functions: readonly IrFunction[] | null;
+    revising: boolean;
+  } = { last: null, functions: null, revising: true };
+  const proven = (marked: IrModule, revise: Int32ArrayRevision | null): Int32ArrayProof | null => {
+    rounds.functions = null;
+    if (revise === null || !rounds.revising) {
+      rounds.last = analyzeModuleInt32Slots(marked);
+      return { kept: keptInt32Arrays(rounds.last), functions: null };
+    }
+    const latest = new Map<string, IrFunction>();
+    try {
+      rounds.last = analyzeModuleInt32Slots(marked, (fnName, dropped) => {
+        const fn = revise(fnName, dropped);
+        latest.set(fnName, fn);
+        return fn;
+      });
+    } catch (error) {
+      if (!(error instanceof Int32RevisionConflict)) throw error;
+      rounds.last = null;
+      return null;
+    }
+    if (latest.size === 0) return { kept: keptInt32Arrays(rounds.last), functions: null };
+    rounds.functions = marked.functions.map((fn) => latest.get(fn.name) ?? fn);
+    return { kept: keptInt32Arrays(rounds.last), functions: rounds.functions };
   };
   // Keep source storage intact for debugger inspection in dev builds.
-  const emitted =
-    options.debugSources === undefined
-      ? selectInt32Arrays(
-          versionParameters(
-            addRecordResultEntries(
-              scalarizeLiteralResults(
-                scalarizeNumericRecords(
-                  specializeCallbackCalls(
-                    specializeNumericCalls(
-                      pairRowSums(
-                        inlineExpressionFunctions(
-                          foldConstantGlobals(
-                            copyStableCaptures(
-                              resolveSelfCaptures(
-                                hoistFinalFieldReads(
-                                  freezeInitOnlyGlobals(
-                                    holdCharLocalsAsUnits(
-                                      dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
-                                    ),
-                                  ),
-                                ),
-                              ),
+  if (options.debugSources !== undefined) return new LlEmitter(mod, options, null, null);
+  const passed = versionParameters(
+    addRecordResultEntries(
+      scalarizeLiteralResults(
+        scalarizeNumericRecords(
+          specializeCallbackCalls(
+            specializeNumericCalls(
+              pairRowSums(
+                inlineExpressionFunctions(
+                  foldConstantGlobals(
+                    copyStableCaptures(
+                      resolveSelfCaptures(
+                        hoistFinalFieldReads(
+                          freezeInitOnlyGlobals(
+                            holdCharLocalsAsUnits(
+                              dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
                             ),
                           ),
                         ),
                       ),
-                      mangleFunction,
                     ),
-                    mangleFunction,
                   ),
                 ),
               ),
+              mangleFunction,
             ),
+            mangleFunction,
           ),
-          proven,
-          resultEntryTargets,
-        )
-      : mod;
-  const prepared = rounds.last;
+        ),
+      ),
+    ),
+  );
+  let emitted = selectInt32Arrays(passed, proven, resultEntryTargets);
+  let prepared = rounds.last;
+  // A proof that revised functions analyzed the module of the functions it
+  // ended with, which is the selected module unless selection fell back to
+  // rounds: then the selected module was proved by its own round.
+  if (prepared !== null && rounds.functions !== null && prepared.mod !== emitted) {
+    const functions = rounds.functions;
+    prepared =
+      emitted !== passed &&
+      emitted.functions.length === functions.length &&
+      emitted.functions.every((fn, i) => fn === functions[i])
+        ? revisedAnalysis(prepared, emitted)
+        : null;
+    if (prepared === null && emitted !== passed) {
+      rounds.revising = false;
+      emitted = selectInt32Arrays(passed, proven, resultEntryTargets);
+      prepared = rounds.last;
+    }
+  }
+  if (process.env["SCRIPTC_INT32_VERIFY"] === "1")
+    verifyInt32Selection(passed, emitted, prepared?.mod === emitted ? prepared : null);
   return new LlEmitter(emitted, options, null, prepared?.mod === emitted ? prepared : null);
+}
+
+/** SCRIPTC_INT32_VERIFY=1: throws unless the selection with revisions
+ * (`emitted`, and the analysis the emitter takes over) is the one rounds
+ * without revisions give: the same module, and the same facts. */
+function verifyInt32Selection(
+  passed: IrModule,
+  emitted: IrModule,
+  analysis: Int32SlotAnalysis | null,
+): void {
+  let last: Int32SlotAnalysis | null = null;
+  const reference = selectInt32Arrays(
+    passed,
+    (marked) => {
+      last = analyzeModuleInt32Slots(marked);
+      return { kept: keptInt32Arrays(last), functions: null };
+    },
+    resultEntryTargets,
+  );
+  const text = (mod: IrModule): string => serializeModuleParts(mod).join("");
+  if (text(reference) !== text(emitted))
+    throw new InternalCompilerError("int32 selection: the revised module differs from the rounds'");
+  const facts = (mod: IrModule, prepared: Int32SlotAnalysis | null): string =>
+    (prepared?.mod === mod ? prepared : analyzeModuleInt32Slots(mod)).slots.summary(mod);
+  const expected = facts(reference, last);
+  const actual = facts(emitted, analysis);
+  if (expected !== actual) {
+    const want = expected.split("\n");
+    const got = actual.split("\n");
+    const line = want.findIndex((entry, i) => entry !== got[i]);
+    throw new InternalCompilerError(
+      `int32 selection: the revised analysis differs from the rounds': ${want[line]?.slice(0, 400)} != ${got[line]?.slice(0, 400)}`,
+    );
+  }
 }
 
 /** Emits the module's parts, emitting it again with the functions an
@@ -1438,7 +1557,12 @@ export class LlEmitter {
   /** Preorder intervals of the runtime error classes under THIS module's
    * class-forest numbering (main() stamps scr_error_vts with them, exactly
    * like the runtime ABI’s errorVtStampLines). */
-  readonly errorIntervals: { kind: number; pre: number; post: number; lib: string }[] = [];
+  readonly errorIntervals: {
+    kind: number;
+    pre: number;
+    post: number;
+    lib: string;
+  }[] = [];
   /** The runtime emitter vtable's preorder interval, when the program
    * touches node:events (the class def rides the module exactly then) —
    * main() stamps scr_emitter_vt with it (emitterVtStampLines, ported). */
@@ -1447,7 +1571,12 @@ export class LlEmitter {
    * ported): the defs ride every emitter-touching module (the frontend
    * collects the whole emitter-rooted tree), and scr_stream.c links on
    * the same predicate, so the stamps always have their globals. */
-  readonly streamIntervals: { vt: string; pre: number; post: number; lib: string }[] = [];
+  readonly streamIntervals: {
+    vt: string;
+    pre: number;
+    post: number;
+    lib: string;
+  }[] = [];
 
   // ── per-function state (reset in emitFunction) ─────────────────────────
   B = new BlockBuilder();
@@ -1514,7 +1643,12 @@ export class LlEmitter {
   /** Active induction bindings retain their width independently of size_t. */
   integerLoopBindings = new Map<
     string,
-    { slot: string; type: "i32" | "i64"; signed?: boolean; range?: { min: number; max: number } }
+    {
+      slot: string;
+      type: "i32" | "i64";
+      signed?: boolean;
+      range?: { min: number; max: number };
+    }
   >();
   /** Constant number locals whose latest emitted declaration stored an
    * exact integer beside the double, such as `const j = i * 4` in a
@@ -1597,7 +1731,11 @@ export class LlEmitter {
    * (the fast copy) or as double arrays (an ordinary copy entered only
    * after they widened), as `function\0local` keys, and where each of the
    * fast copy's writes resumes in the third copy. */
-  int32Kinds: { int32: Set<string>; wide: Set<string>; resume: Map<IrStmt, string> } | null = null;
+  int32Kinds: {
+    int32: Set<string>;
+    wide: Set<string>;
+    resume: Map<IrStmt, string>;
+  } | null = null;
   /** The resume label of the fast-copy write being emitted. */
   int32KindResume: string | null = null;
   /** The function being emitted, for speculative globals. */
@@ -1671,7 +1809,12 @@ export class LlEmitter {
    * releases frames/scopes down to the recorded depths and branches to
    * `label` (the catch, or the exception-path finally) instead of
    * returning out of the function. Entering a try emits no code. */
-  tryStack: { label: string; used: boolean; frameDepth: number; scopeDepth: number }[] = [];
+  tryStack: {
+    label: string;
+    used: boolean;
+    frameDepth: number;
+    scopeDepth: number;
+  }[] = [];
   /** Return type of the function being emitted — the unwind path returns
    * a dummy of this type (never read: callers check the flag first). */
   currentReturnType: IrType = VOID;
@@ -7150,7 +7293,10 @@ export class LlEmitter {
     return childDataDynThunkFor(this, chunk);
   }
 
-  emitterFixedAdapter(cbT: IrType & { kind: "func" }): { fn: string; shim: string } {
+  emitterFixedAdapter(cbT: IrType & { kind: "func" }): {
+    fn: string;
+    shim: string;
+  } {
     return emitterFixedAdapter(this, cbT);
   }
 
