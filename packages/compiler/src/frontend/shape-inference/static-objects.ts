@@ -14,8 +14,20 @@
  *      methods are not enumerable, prototype assignments are);
  *    - no code reads the function's or the methods' `name` or `toString`;
  *    - the bodies behave the same in strict mode (class bodies are strict):
- *      no `arguments`, no `this` in a nested non-arrow function, no `with`,
- *      no `delete` of a name, no write to an undeclared name;
+ *      no `arguments`, `eval` or strict-mode reserved word, no `this` in a
+ *      nested non-arrow function, no `with`, no `delete` of a name, no write
+ *      to an undeclared name or to `undefined`, `NaN` or `Infinity`, no
+ *      repeated parameter name, no octal literal or escape, and property
+ *      writes and deletes only through `this` (a write that sloppy mode
+ *      ignores, into a primitive or a frozen object, throws in strict mode);
+ *    - nothing freezes, seals or redefines the instances, so their own
+ *      properties stay writable;
+ *    - each method is only called as a method (`x.m(…)`): never constructed,
+ *      read as a value or for its `prototype`, so it is never called with a
+ *      primitive or missing `this` (which sloppy mode would replace) and
+ *      never needs to be constructible (class methods are not);
+ *    - a named constructor expression does not refer to its own name, which
+ *      the class would not bind;
  *    - the statements between the constructor and its last method only
  *      define more functions or data (nothing runs that could observe the
  *      prototype half built).
@@ -23,7 +35,11 @@
  *    a function expression that does not use `this`, stored by a top-level
  *    statement, is hoisted to a function declaration, and calls through
  *    the namespace in the same file whose receiver is exactly that
- *    constant object call it directly.
+ *    constant object call it directly. A member read is replaced only when
+ *    its receiver is a name or a chain of constant-object reads (nothing to
+ *    evaluate), and it runs after the store: in a top-level statement after
+ *    it, or inside the stored function, and not inside a function
+ *    declaration (which hoisting lets run earlier).
  *
  * Each rewrite keeps the original text unless every condition holds. */
 import * as ts from "../ts7/adapter.js";
@@ -63,8 +79,36 @@ const REFLECTIVE_CALLS = new Set([
   "setPrototypeOf",
   "freeze",
   "seal",
+  "preventExtensions",
   "ownKeys",
 ]);
+
+/** Words that are reserved only in strict mode. */
+const STRICT_RESERVED = new Set([
+  "implements",
+  "interface",
+  "let",
+  "package",
+  "private",
+  "protected",
+  "public",
+  "static",
+  "yield",
+  "eval",
+]);
+
+/** The reflective calls that freeze, seal or redefine an object. */
+const RESHAPING_CALLS = new Set([
+  "freeze",
+  "seal",
+  "preventExtensions",
+  "defineProperty",
+  "defineProperties",
+  "setPrototypeOf",
+]);
+
+/** Globals that sloppy mode lets a write to fail silently. */
+const READ_ONLY_GLOBALS = new Set(["undefined", "NaN", "Infinity"]);
 
 function topStatement(n: Node): ts.Statement | null {
   let p: Node = n;
@@ -90,16 +134,65 @@ function assignedFunction(fn: Node): { stmt: ts.ExpressionStatement; lhs: ts.Exp
   return { stmt, lhs: assign.left };
 }
 
+/** Whether `e` is a property access or element access through `this`. */
+function throughThis(e: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return (
+    (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) &&
+    e.expression.kind === ts.SyntaxKind.ThisKeyword
+  );
+}
+
 /** Whether a function body behaves the same in strict mode. */
 function strictSafe(checker: ts.TypeChecker, fn: ts.FunctionExpression): boolean {
   let safe = true;
+  // A repeated parameter name is a strict-mode error.
+  const params = new Set<string>();
+  for (const p of fn.parameters.nodes) {
+    if (!ts.isIdentifier(p.name) || params.has(p.name.text)) return false;
+    params.add(p.name.text);
+  }
   const visit = (n: Node, nested: boolean): void => {
     if (!safe) return;
-    if (ts.isIdentifier(n) && n.text === "arguments") safe = false;
+    if (ts.isIdentifier(n) && (n.text === "arguments" || STRICT_RESERVED.has(n.text))) safe = false;
     if (n.kind === ts.SyntaxKind.WithStatement) safe = false;
     if (nested && n.kind === ts.SyntaxKind.ThisKeyword) safe = false;
-    if (ts.isDeleteExpression(n) && ts.isIdentifier(n.expression)) safe = false;
+    if (ts.isDeleteExpression(n) && !throughThis(n.expression)) safe = false;
     if (ts.isNumericLiteral(n) && /^0\d/.test(n.getText())) safe = false;
+    // Octal escapes in strings and templates are strict-mode errors.
+    if (
+      (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) &&
+      /\\(0\d|[1-7])/.test(n.getText())
+    )
+      safe = false;
+    const assigns =
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+    const counts =
+      (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+      (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken);
+    const target = assigns
+      ? (n as ts.BinaryExpression).left
+      : counts
+        ? (n as ts.PrefixUnaryExpression).operand
+        : undefined;
+    // A store that sloppy mode drops (into a primitive, a frozen object or a
+    // read-only property) throws in strict mode: only stores through `this`,
+    // a fresh or method receiver object, are known to behave the same.
+    if (target !== undefined) {
+      let t = target;
+      while (ts.isParenthesizedExpression(t)) t = t.expression;
+      if ((ts.isPropertyAccessExpression(t) || ts.isElementAccessExpression(t)) && !throughThis(t))
+        safe = false;
+      if (ts.isIdentifier(t) && READ_ONLY_GLOBALS.has(t.text)) safe = false;
+      if (
+        !ts.isIdentifier(t) &&
+        !ts.isPropertyAccessExpression(t) &&
+        !ts.isElementAccessExpression(t)
+      )
+        safe = false;
+    }
     if (
       ts.isBinaryExpression(n) &&
       n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
@@ -120,6 +213,18 @@ function strictSafe(checker: ts.TypeChecker, fn: ts.FunctionExpression): boolean
   };
   visit(fn, false);
   return safe;
+}
+
+/** Whether an identifier named `name` appears in `fn`'s parameters or body. */
+function mentions(fn: ts.FunctionExpression, name: string): boolean {
+  let found = false;
+  const visit = (n: Node): void => {
+    if (found) return;
+    if (ts.isIdentifier(n) && n.text === name && n !== fn.name) found = true;
+    ts.forEachChild(n, visit);
+  };
+  visit(fn);
+  return found;
 }
 
 function usesThis(fn: ts.FunctionExpression): boolean {
@@ -244,6 +349,28 @@ export function planStaticObjectRewrites(
   /** Whether a reflective call may reach one of `atoms`. */
   const reflectsOn = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
     reflective.some((call) => call.arguments.nodes.some((arg) => mayBe(arg, atoms, ctorPath)));
+  /** Whether a call that freezes, seals or redefines an object may reach one of `atoms`. */
+  const reshapes = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
+    reflective.some(
+      (call) =>
+        RESHAPING_CALLS.has((call.expression as ts.PropertyAccessExpression).name.getText()) &&
+        call.arguments.nodes.some((arg) => mayBe(arg, atoms, ctorPath)),
+    );
+  /** The reads of each member name, for the method checks. */
+  const readsOf = new Map<string, { node: Node; recv: ReadonlySet<Atom> }[]>();
+  for (const op of analysis.ops) {
+    if (op.kind !== "read" || op.name === null) continue;
+    let l = readsOf.get(op.name);
+    if (l === undefined) readsOf.set(op.name, (l = []));
+    l.push({ node: op.node, recv: analysis.nodes[op.recv]!.atoms });
+  }
+  /** Whether every read of member `key` through one of `atoms` is the callee of a call. */
+  const onlyCalled = (key: string, atoms: ReadonlySet<Atom>): boolean =>
+    (readsOf.get(key) ?? []).every(({ node, recv }) => {
+      if (![...recv].some((a) => atoms.has(a))) return true;
+      const parent = node.parent;
+      return parent !== undefined && ts.isCallExpression(parent) && parent.expression === node;
+    });
   const enumerates = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
     forIns.some((e) => mayBe(e, atoms, ctorPath));
   const noNameOrSource = (a: Atom): boolean => {
@@ -323,12 +450,25 @@ export function planStaticObjectRewrites(
       keep("enumeration or reflection may reach the prototype or instances");
       continue;
     }
+    // A frozen, sealed or redefined instance turns the stores that sloppy
+    // mode drops into strict-mode TypeErrors.
+    if (reshapes(watched, ctorPath)) {
+      keep("an instance may be frozen, sealed or redefined");
+      continue;
+    }
     if (!noNameOrSource(fnAtom)) {
       keep("reads name or toString");
       continue;
     }
     if (!strictSafe(checker, fnNode as ts.FunctionExpression)) {
       keep("constructor body is not strict-mode safe");
+      continue;
+    }
+    // A named function expression binds its name in its own body; the
+    // class is declared under another name.
+    const ownName = (fnNode as ts.FunctionExpression).name;
+    if (ownName !== undefined && mentions(fnNode as ts.FunctionExpression, ownName.text)) {
+      keep("a named constructor refers to its own name");
       continue;
     }
     // The methods: one statement per prototype member, in this file.
@@ -359,6 +499,26 @@ export function planStaticObjectRewrites(
         ok = false;
         break;
       }
+      // Only ever called as a method: a class method is not constructible,
+      // has no `prototype`, and a strict-mode call keeps a primitive or
+      // missing `this` where sloppy mode would replace it.
+      const calledAsMethod = analysis.calls
+        .filter((e) => e.callee.node === mNode)
+        .every(
+          (e) =>
+            ts.isCallExpression(e.site) &&
+            ts.isPropertyAccessExpression(e.site.expression) &&
+            e.site.expression.name.getText() === f.key,
+        );
+      if (
+        analysis.escaped.has(m) ||
+        escapedFns.has(mNode!) ||
+        !calledAsMethod ||
+        !onlyCalled(f.key, watched)
+      ) {
+        ok = false;
+        break;
+      }
       methods.push({ name: f.key, fn: mNode as ts.FunctionExpression, stmt: ms.stmt });
     }
     if (!ok) {
@@ -385,12 +545,17 @@ export function planStaticObjectRewrites(
     classes++;
   }
 
+  // The statement that stores each hoisted function or class, and the
+  // function itself: a read of the member runs after the store when it is
+  // inside that function or in a later top-level statement.
+  const storeOf = new Map<Atom, { stmt: ts.Statement; fn: Node }>();
   for (const plan of classPlans) {
     const base = `__ns_${plan.site.lhs.getText().replace(/[^\w$]/g, "_")}`;
     let name = base;
     for (let i = 1; used.has(name); i++) name = `${base}_${i}`;
     used.add(name);
     hoisted.set(plan.fnAtom, name);
+    storeOf.set(plan.fnAtom, { stmt: plan.site.stmt, fn: plan.fn });
   }
   const callEdits: { sf: ts.SourceFile; edit: Edit }[] = [];
   const hoists: {
@@ -419,6 +584,7 @@ export function planStaticObjectRewrites(
       for (let i = 1; used.has(name); i++) name = `${base}_${i}`;
       used.add(name);
       hoisted.set(fnAtom, name);
+      storeOf.set(fnAtom, { stmt: site.stmt, fn });
       edit(sf, {
         start: ts.tokenStartOfNode(fn),
         end: fn.end,
@@ -431,6 +597,33 @@ export function planStaticObjectRewrites(
   // Direct references: `e.k` (called, constructed or read) in the same file
   // whose receiver is exactly the constant object holding a hoisted
   // function or class.
+  const readOps = new Map<Node, (typeof analysis.ops)[number]>();
+  for (const op of analysis.ops) if (op.kind === "read") readOps.set(op.node, op);
+  /** Whether evaluating `e` runs nothing and cannot throw: a declared name,
+   * or a chain of member reads from constant objects (plain data). */
+  const pureReceiver = (e: ts.Expression): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isIdentifier(e)) return declOf(e) !== undefined;
+    if (!ts.isPropertyAccessExpression(e)) return false;
+    const op = readOps.get(e);
+    if (op === undefined) return false;
+    const recv = analysis.nodes[op.recv]!.atoms;
+    if (recv.size !== 1 || !constantAtoms.has([...recv][0]!)) return false;
+    return pureReceiver(e.expression);
+  };
+  /** Whether `node` runs only after `store` has stored its function. */
+  const runsAfter = (node: Node, store: { stmt: ts.Statement; fn: Node }): boolean => {
+    for (let p: Node | undefined = node.parent; p !== undefined; p = p.parent) {
+      // A function declaration is created, and may be called, before any
+      // statement of its scope runs.
+      if (ts.isFunctionDeclaration(p)) return false;
+      if (p === store.fn) return true;
+    }
+    const top = topStatement(node);
+    if (top === null) return false;
+    const stmts = node.getSourceFile().statements.nodes;
+    return stmts.indexOf(top) > stmts.indexOf(store.stmt);
+  };
   for (const op of analysis.ops) {
     if (op.kind !== "read" || op.name === null) continue;
     const atoms = analysis.nodes[op.recv]!.atoms;
@@ -450,6 +643,10 @@ export function planStaticObjectRewrites(
     if (node.getSourceFile() !== field.values[0]!.node!.getSourceFile()) continue;
     if (!ts.isPropertyAccessExpression(node)) continue;
     if (topStatement(node) === null) continue;
+    // The receiver's evaluation is dropped, and the binding exists from the
+    // store on (a function) or from its declaration on (a class).
+    if (!pureReceiver(node.expression)) continue;
+    if (!runsAfter(node, storeOf.get(field.values[0]!)!)) continue;
     callEdits.push({
       sf: node.getSourceFile(),
       edit: { start: ts.tokenStartOfNode(node), end: node.end, text: name },
