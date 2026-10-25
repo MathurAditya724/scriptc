@@ -1146,6 +1146,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * arguments (scr_util_callable.c). The function results are native dyn
    * wrappers; call sites with a static function type check them back. */
   "util.inherits": { argTypes: [DYN, DYN], result: VOID },
+  "util.inheritsPrototype": { argTypes: [DYN, DYN, DYN], result: VOID },
   "util.deprecate": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
   "util.callbackify": { argTypes: [DYN], result: DYN },
   /** util.promisify over an untyped function value: a native dyn function
@@ -2608,6 +2609,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     result: CHILD_T,
   },
   "child.connected": { argTypes: [CHILD_T], result: BOOL },
+  "child.hasChannel": { argTypes: [CHILD_T], result: BOOL },
   "child.send": { argTypes: [CHILD_T, STRING], result: BOOL },
   "child.sendCb": { argTypes: [CHILD_T, STRING, null], result: BOOL },
   "child.disconnect": { argTypes: [CHILD_T], result: VOID },
@@ -4436,6 +4438,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // The equality quartet over checked-dynamic operands (the frontend
   // boxes a static side into the checked-dynamic tree first).
   "assert.eqDyn": { argTypes: [DYN, DYN, BOOL, BOOL, STRING, BOOL], result: VOID },
+  /** A message argument that is not a string, registered for the next
+   * failing assertion (scr_assert_message_value). */
+  "assert.messageValue": { argTypes: [DYN, BOOL], result: VOID },
+  /** An assert method as a function value, by canonical name. */
+  "assert.methodValue": { argTypes: [STRING], result: DYN },
+  "assert.messageClear": { argTypes: [], result: VOID },
   "assert.looseResult": { argTypes: [BOOL, BOOL, STRING, STRING, STRING, BOOL], result: VOID },
   // The throws(fn, {shape}) accumulator: begin/slot calls never throw;
   // shapeEnd throws the Comparison diff. The error slot is the
@@ -4461,6 +4469,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * against the caught value's; a mismatch throws the deep-equal
    * AssertionError (scr_assert.c). MAY THROW by design. */
   "assert.expectsErrDyn": { argTypes: [DYN, DYN, STRING, BOOL], result: VOID },
+  /** A validation function against the caught value (Node's expectedException). */
+  "assert.throwsValidate": { argTypes: [DYN, DYN, STRING, STRING, BOOL], result: VOID },
   // assert.ifError's typed entries (always throw; unit args never
   // lower). The error slot is program-dependent — any %Error-hierarchy
   // class, root or subclass (the insp.error precedent, null slot).
@@ -4899,6 +4909,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * lib-call argument passes the time value itself, and any other use
    * creates the Date. */
   "date.fromTime": { argTypes: [F64], result: DATE_T },
+  /** Date.prototype's field setters over a time value
+   * (scr_date_set_fields): time value, setter code, argument count and four
+   * arguments; answers the new time value. */
+  "date.setFields": { argTypes: [F64, F64, F64, F64, F64, F64, F64], result: F64 },
+  /** TimeClip of a number (setTime's argument). */
+  "date.timeClip": { argTypes: [F64], result: F64 },
+  /** Stores a time value into a Date object and answers it (a setter's
+   * write). */
+  "date.store": { argTypes: [DATE_T, F64], result: F64 },
   /** Date.prototype.toString / toDateString / toTimeString and String(date):
    * V8's local-time formats with the host zone's long name, "Invalid Date"
    * for an invalid date. Owned (+1) string; never throws. */

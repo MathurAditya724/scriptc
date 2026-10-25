@@ -140,6 +140,7 @@ import {
 } from "./type-only-imports.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { planDeclProjection, type DeclProjection } from "./decl-projection.js";
+import { reportShapes } from "./shape-inference/index.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
   containsJsx,
@@ -1260,6 +1261,10 @@ export function loadProgram(
       npmStaticPackages.length > 0,
       projector,
     );
+    // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
+    const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];
+    if (shapes !== undefined && shapes !== "" && shapes !== "0" && npmStaticPackages.length > 0)
+      reportShapes(load.program, shapes);
     return {
       ...load,
       services,
@@ -5358,6 +5363,16 @@ function preflight7(load: LoadResult): {
     return new RegExp(`\\btypeof\\s*\\(?\\s*${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(sf.text);
   };
 
+  // A `return` at the top level of a CommonJS module (TS1108): Node runs
+  // the module as a function body, so the return ends the module's
+  // evaluation. ES modules and TypeScript keep the error.
+  const cjsTopLevelReturnSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (d.code !== 1108 || d.fileName === undefined || !isJsSourceFileName(d.fileName))
+      return false;
+    const sf = p.getSourceFile(d.fileName);
+    return sf !== undefined && isCjsJsFile7(sf, p);
+  };
+
   const workspaceImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
     if (d.code !== 7016 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
       return false;
@@ -5404,6 +5419,7 @@ function preflight7(load: LoadResult): {
         !isNpmStaticSubclassArgument(p, d) &&
         !workspaceImplicitAnySuppressed(p, d) &&
         !typeofTestedNameSuppressed(p, d) &&
+        !cjsTopLevelReturnSuppressed(p, d) &&
         !jsdocTypeSuppressed(p, d, commentDup),
     );
   };
