@@ -6,13 +6,16 @@
  *
  *   load   ordinary object whose shape is entry 0's own-property shape:
  *          read entry `slot` inline unless it is an accessor; otherwise
- *          scr_js_load_probe (polymorphic, prototype hits, misses)
+ *          scr_js_get_probe (polymorphic, prototype hits, absent keys,
+ *          misses)
  *   store  ordinary object whose shape is entry 0's replace shape, outside
  *          an intact parse region, writable data entry: replace inline;
  *          otherwise scr_js_store_probe (adds, polymorphic, misses)
  *   keyed  dense array element at an integral number key: inline;
  *          otherwise scr_js_keyed_probe (string keys of ordinary objects)
  *   method dynInvoke's method read: scr_js_load_probe
+ *   literal an object literal's constant-key member: scr_js_store_probe,
+ *          else scr_dyn_key_set
  *
  * A probe that cannot answer from plain data leaves everything untouched,
  * and the site calls its helper (or the generic runtime entry), which
@@ -402,9 +405,10 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
   B.startBlock(object);
   inlineLoad(host, receiver.name, ic, INLINE_WAYS, INLINE_PROTO, (cell) => cell, hits, hit, probe);
   B.startBlock(probe);
-  host.declare(`declare ptr @scr_js_load_probe(ptr, ptr, ptr)`);
+  // The read's probe also answers keys the receiver's plain chain lacks.
+  host.declare(`declare ptr @scr_js_get_probe(ptr, ptr, ptr)`);
   const probed = B.tmp();
-  B.line(`${probed} = call ptr @scr_js_load_probe(ptr ${receiver.name}, ptr ${name}, ptr ${ic})`);
+  B.line(`${probed} = call ptr @scr_js_get_probe(ptr ${receiver.name}, ptr ${name}, ptr ${ic})`);
   const found = B.tmp();
   B.line(`${found} = icmp ne ptr ${probed}, null`);
   const probeEnd = B.currentLabel();
@@ -834,6 +838,27 @@ function emitKeyed(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
   const out = B.tmp();
   B.line(`${out} = phi ptr ${incoming.join(", ")}`);
   return host.own({ name: out, type: e.type });
+}
+
+/** One member of an object literal (ir/js-ic.ts jsIcLiteralKey) added to
+ * the fresh object `obj` through the site's store cache, else with
+ * scr_dyn_key_set. The key and value are borrowed. */
+export function emitJsIcLiteralMember(host: Host, obj: string, key: string, value: string): void {
+  const B = host.B;
+  const ic = host.jsIcSite();
+  host.declare(`declare zeroext i1 @scr_js_store_probe(ptr, ptr, ptr, ptr)`);
+  const done = B.tmp();
+  B.line(
+    `${done} = call zeroext i1 @scr_js_store_probe(ptr ${obj}, ptr ${key}, ptr ${value}, ptr ${ic})`,
+  );
+  const slow = B.newLabel("icl.slow");
+  const join = B.newLabel("icl.j");
+  B.condBr(done, join, slow);
+  B.startBlock(slow);
+  B.line(`call void @scr_dyn_key_set(ptr ${obj}, ptr ${key}, ptr ${value})`);
+  host.emitPendingCheck();
+  B.br(join);
+  B.startBlock(join);
 }
 
 /** dynInvoke's method read on an ordinary object through the site's

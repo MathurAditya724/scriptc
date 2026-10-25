@@ -87,7 +87,16 @@ export type IrType =
   | { kind: "date" }
   | { kind: "string" } // heap, refcounted, UTF-8
   | { kind: "bool" }
-  | { kind: "array"; elem: IrType } // heap, refcounted, monomorphic elements
+  | {
+      kind: "array";
+      elem: IrType;
+      /** A `(T | undefined)[]` of a number, string or boolean T, stored as
+       * T elements (which hold a present undefined by their state). Not
+       * part of the type's identity (typeEquals, typeKey): it only lets a
+       * checked conversion from a dynamic value accept undefined
+       * elements. */
+      optionalElements?: true;
+    } // heap, refcounted, monomorphic elements
   /** ES `Map<K, V>` — heap, refcounted, insertion-ordered hash map with ONE
    * runtime representation (ScrMap) and type-directed key/value handling,
    * exactly the array pattern (never per-instantiation structs). Keys use
@@ -3944,7 +3953,7 @@ export type IrExpr =
     }
   /** Standard-library call (`process` members, node:fs functions). `fn` is a
    * closed union; arg/result types are fixed per member (validated against
-   * LIB_FN_SIGS). Property READS (`process.argv`, `process.platform`) are
+   * libFnSignatures()). Property READS (`process.argv`, `process.platform`) are
    * zero-arg libCalls. Args are BORROWED by the operation (frame temps
    * release at statement end); refcounted results come back owned (+1) —
    * `process.argv` returns +1 on ONE interned array (JS identity:

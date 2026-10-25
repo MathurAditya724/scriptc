@@ -16,7 +16,7 @@ import { InternalCompilerError } from "../../errors.js";
  * jsonStringify emission site runs the pending check (join still walks
  * only f64/string/bool/unit arms — the frontend's fence). */
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
-import { DYN, isRefCounted, typeKey } from "../../ir/ir.js";
+import { isRefCounted, typeKey } from "../../ir/ir.js";
 import { jsonObjectKeyLabel } from "../json-literal.js";
 import { llvmBytes, wtf8Bytes } from "../literals.js";
 import { mangleRecordStruct } from "../mangle.js";
@@ -534,14 +534,15 @@ export class LlWalkers {
 
   /** Whether the walker for `t` can leave an exception pending: cyclic
    * values, records serialized through a kept checked source, and
-   * checked-dynamic values (toJSON methods, getters, BigInts). */
+   * checked-dynamic values (toJSON methods, getters, BigInts), including
+   * the foreign elements of arrays that can hold them. */
   jsonWriteMayThrow(t: IrType, seen = new Set<string>()): boolean {
     if (traceAdapter(this.host, t) !== null) return true;
     switch (t.kind) {
       case "dyn":
         return true;
       case "array":
-        return this.jsonWriteMayThrow(t.elem, seen);
+        return this.host.mayHoldForeign(t.elem) || this.jsonWriteMayThrow(t.elem, seen);
       case "union":
         return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
           this.jsonWriteMayThrow(arm, seen),
@@ -752,7 +753,8 @@ export class LlWalkers {
       B.condBr(present, valueBlock, missingBlock);
       B.startBlock(missingBlock);
       if (host.mayHoldForeign(elem)) {
-        // A foreign element (SCR_ARR_FOREIGN) serializes its own value.
+        // A foreign element (SCR_ARR_FOREIGN) serializes its own value,
+        // after its toJSON runs with the index as its key.
         const foreign = B.tmp();
         const foreignBlock = B.newLabel("jwa.foreign");
         const nullBlock = B.newLabel("jwa.null");
@@ -763,7 +765,8 @@ export class LlWalkers {
         host.declare(`declare void @scr_dyn_release(ptr)`);
         const payload = B.tmp();
         B.line(`${payload} = call ptr @scr_arr_get_foreign(ptr %v, double ${i}) ; +1`);
-        B.line(`call void @${this.jsonWriteHelper(DYN)}(ptr %b, ptr ${payload})`);
+        host.declare(`declare void @scr_jb_put_dyn_element(ptr, ptr, double)`);
+        B.line(`call void @scr_jb_put_dyn_element(ptr %b, ptr ${payload}, double ${i})`);
         B.line(`call void @scr_dyn_release(ptr ${payload})`);
         B.br(doneBlock);
         B.startBlock(nullBlock);
