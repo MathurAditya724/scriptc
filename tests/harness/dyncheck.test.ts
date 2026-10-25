@@ -686,6 +686,46 @@ console.log(JSON.stringify(plain));
     ]);
   });
 
+  test("nested unions: a getter that converts a recursive union keeps a non-recursive build untrusted", async () => {
+    // The getter converts a recursive union, which opens and ends a visit
+    // session of its own, before it answers. The outer build still matches
+    // the getter's second answer in full, and the failure names that union.
+    const r = await compileAndRun(
+      "flat-discriminated-getter-session",
+      `type Tree = { kind: "leaf"; n: number } | { kind: "node"; left: Tree; right: Tree };
+type Inner = { tag: "x"; n: number } | { tag: "y"; s: string };
+type Outer = { kind: "a"; inner: Inner } | { kind: "b"; other: number };
+const v = JSON.parse('{"kind":"a"}') as unknown;
+let calls = 0;
+let leaves = 0;
+Object.defineProperty(v, "inner", {
+  enumerable: true,
+  get() {
+    calls++;
+    const t = JSON.parse('{"kind":"node","left":{"kind":"leaf","n":1},"right":{"kind":"leaf","n":2}}') as Tree;
+    if (t.kind === "node") leaves += 2;
+    return calls === 1 ? JSON.parse('{"tag":"x","n":1}') : JSON.parse('{"tag":"x","n":"bad"}');
+  },
+});
+try {
+  const o = v as Outer;
+  console.log("ok", JSON.stringify(o));
+} catch (err) {
+  console.log((err as Error).message);
+}
+console.log("getter calls", calls, "leaves", leaves);
+const plain = JSON.parse('{"kind":"a","inner":{"tag":"y","s":"z"}}') as Outer;
+console.log(JSON.stringify(plain));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trimEnd().split("\n")).toEqual([
+      "expected object | object at $.inner, got object",
+      "getter calls 2 leaves 4",
+      '{"kind":"a","inner":{"tag":"y","s":"z"}}',
+    ]);
+  });
+
   test("array where a record is expected names the mismatch at the root", async () => {
     const r = await compileAndRun(
       "root-kind",

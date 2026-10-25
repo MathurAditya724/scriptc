@@ -10932,9 +10932,9 @@ static void scr_dyn_visit_exit(void) {
 }
 
 /* Getters and proxy traps run user code, which may start conversions of
- * its own and catch their failures. It runs with the session set aside,
- * so its conversions use their own tables and leave the session's
- * entries alone. */
+ * its own and catch their failures. It runs with the session and any
+ * trusted build set aside, so its conversions use their own tables and
+ * leave the session's entries and the trusted build's state alone. */
 typedef struct {
   size_t depth;
   ScrDynVisitSet matching, built, viewed;
@@ -10977,12 +10977,10 @@ static void scr_dyn_visit_resume(const ScrDynVisitState *saved) {
   scr_dyn_session_ran_code = true;
 }
 
-/* Calls a getter for a member read, outside any visit session. */
+/* Calls a getter for a member read, outside any visit session or trusted
+ * build. */
 static ScrDyn *scr_dyn_visit_call_getter(ScrDyn *getter) {
-  if (scr_dyn_visit_depth == 0) {
-    if (scr_dyn_trusted) scr_dyn_session_ran_code = true;
-    return scr_dyn_call(getter, NULL, 0, "getter");
-  }
+  if (scr_dyn_visit_depth == 0 && !scr_dyn_trusted) return scr_dyn_call(getter, NULL, 0, "getter");
   ScrDynVisitState saved;
   scr_dyn_visit_suspend(&saved);
   ScrDyn *result = scr_dyn_call(getter, NULL, 0, "getter");
@@ -10990,12 +10988,10 @@ static ScrDyn *scr_dyn_visit_call_getter(ScrDyn *getter) {
   return result;
 }
 
-/* A proxy's get trap for a member read, outside any visit session. */
+/* A proxy's get trap for a member read, outside any visit session or
+ * trusted build. */
 static ScrDyn *scr_dyn_visit_proxy_get(const ScrDyn *d, ScrStr *name) {
-  if (scr_dyn_visit_depth == 0) {
-    if (scr_dyn_trusted) scr_dyn_session_ran_code = true;
-    return scr_dyn_proxy_get(d, name);
-  }
+  if (scr_dyn_visit_depth == 0 && !scr_dyn_trusted) return scr_dyn_proxy_get(d, name);
   ScrDynVisitState saved;
   scr_dyn_visit_suspend(&saved);
   ScrDyn *result = scr_dyn_proxy_get(d, name);
