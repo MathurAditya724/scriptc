@@ -3691,6 +3691,15 @@ function buildLibFnSignatures() {
     "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
+    /** Installs the program's builtin-global lookup (global-values.ts). */
+    "global.installValues": { argTypes: [DYN], result: VOID },
+    /** The keys `for (key in globalThis)` visits, as a fresh object. */
+    "global.forInObject": { argTypes: [], result: DYN },
+    /** Node's navigator global (scr_node_builtin.c). */
+    "navigator.object": { argTypes: [], result: DYN },
+    "navigator.language": { argTypes: [], result: STRING },
+    "navigator.languages": { argTypes: [], result: DYN },
+    "navigator.platform": { argTypes: [], result: STRING },
     // `X.name` through a class value: the arg is a program-dependent
     // classval (a null slot; the libCall case checks the kind).
     /** `X.name` through a class VALUE (scr_object.c): args[0] is a borrowed

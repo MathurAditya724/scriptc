@@ -1,3 +1,4 @@
+import { computedGlobalReadOf, globalValuesInstall } from "./global-values.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -3022,6 +3023,10 @@ export function lowerFileInit(
       });
     }
     if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
+    // A module that reads builtin globals through the global object by
+    // computed names installs the program's lookup before its body runs.
+    const computedGlobalRead = computedGlobalReadOf(lowerer, sf);
+    if (computedGlobalRead) header.push(globalValuesInstall(lowerer, computedGlobalRead, loc0));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);

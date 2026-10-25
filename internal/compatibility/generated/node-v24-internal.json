@@ -52415,6 +52415,7 @@
           "tests/corpus/6331-jose-root-entry/main.ts",
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
+          "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -54467,6 +54468,7 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.navigator",
         "tests": [
+          "tests/corpus/8162-navigator-global.cjs",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/project-config.test.ts",
           "tests/corpus/6331-jose-root-entry/main.ts"
@@ -54492,8 +54494,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.hardwareConcurrency",
+        "tests": [
+          "tests/corpus/8162-navigator-global.cjs",
+          "tests/fixtures/node-types/navigator.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -54515,8 +54521,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.language",
+        "tests": [
+          "tests/corpus/8162-navigator-global.cjs",
+          "tests/fixtures/node-types/navigator.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -54538,8 +54548,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.languages",
+        "tests": [
+          "tests/corpus/8162-navigator-global.cjs",
+          "tests/fixtures/node-types/navigator.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -54584,8 +54598,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.platform",
+        "tests": [
+          "tests/corpus/8162-navigator-global.cjs",
+          "tests/fixtures/node-types/navigator.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
