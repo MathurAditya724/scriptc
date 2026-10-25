@@ -439,6 +439,12 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         expect.stringContaining(
           "createRequire's require.resolve with a computed specifier resolves at run time",
         ),
+        expect.stringContaining(
+          "createRequire's require.resolve with a computed specifier resolves at run time",
+        ),
+        expect.stringContaining(
+          "createRequire's require.resolve with a computed specifier resolves at run time",
+        ),
       ]);
       const outDir = join(cacheDir, "addon-probe", sanitize ? "san" : "plain", backend);
       const result = await compile(entry, {
@@ -454,7 +460,9 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         runBinary(process.execPath, [entry]),
         runBinary(result.binaryPath, []),
       ]);
-      expect(nativeRes.stdout.toString()).toBe("a/b absent,absent,unresolved\ncustom:other\n");
+      expect(nativeRes.stdout.toString()).toBe(
+        "a/b absent,absent,unresolved\ncustom:other\nmissing after 1,missing after 2\n",
+      );
       expect(nativeRes.stdout).toEqual(nodeRes.stdout);
       expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
       expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
@@ -497,6 +505,26 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test.each([
     ["escaped require", 'const alias = load; const path = alias("node:path");', "escapes"],
     [
+      "computed resolve.paths request in a catch clause",
+      'try { load("node:path"); } catch { load.resolve.paths(String(1)); } const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "computed resolve.paths request in a function inside a try block",
+      'try { [1].map((n) => load.resolve.paths(String(n))); } catch {} const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "spread require arguments in a class field inside a try block",
+      'try { new (class { addon = load(...[String(1)]); })(); } catch {} const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "resolve.paths value outside a try block",
+      'const find = load.resolve.paths; const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
       "escaped require in a try block",
       'try { const alias = load; alias("node:path"); } catch {} const path = load("node:path");',
       "escapes",
@@ -504,17 +532,12 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     [
       "computed resolve.paths request",
       'const spec = "node:path"; load.resolve.paths(spec); const path = load("node:path");',
-      "escapes",
-    ],
-    [
-      "resolve.paths value",
-      'const paths = load.resolve.paths; const path = load("node:path");',
-      "escapes",
+      "outside a try block",
     ],
     [
       "spread require arguments",
       'const specs = ["node:path"]; load(...specs); const path = load("node:path");',
-      "escapes",
+      "outside a try block",
     ],
     [
       "reassigned require",
@@ -607,6 +630,28 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("a word segmenter in a package constructs, and its segment() throws SC2020", async () => {
+    const entry = join(pilotRoot, "word-segments-cli.ts");
+    const { coverage } = analyze(entry, { npmStatic: "auto" });
+    expect(coverage.npmStatic).toEqual([{ package: "word-segments", status: "static" }]);
+    expect(coverage.diagnostics).toHaveLength(0);
+    const outDir = join(cacheDir, "word-segments", sanitize ? "san" : "plain");
+    const result = await compile(entry, {
+      backend: "llvm",
+      npmStatic: "auto",
+      sanitize,
+      outDir,
+      outPath: join(outDir, "program"),
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const nativeRes = await runBinary(result.binaryPath, []);
+    expect(nativeRes.stdout.toString()).toMatch(
+      /^SC2020: Intl\.Segmenter segmentation with granularity 'word' is not supported yet \[SC2020 at .*index\.js:1\]\n$/,
+    );
+    expect(nativeRes.exitCode).toBe(0);
   });
 
   test.each([

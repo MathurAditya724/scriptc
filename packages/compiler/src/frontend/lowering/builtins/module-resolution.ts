@@ -18,6 +18,7 @@ import {
   computedRequireDiag,
   invalidJsonModuleDiag,
   nativeAddonDiag,
+  noLoweringDiag,
   unsupportedPackageImportDiag,
 } from "../../../diagnostics/diagnostic.js";
 import { NODE_BUILTIN_MODULES_V24, builtinModulesArrayLit } from "../surfaces.js";
@@ -184,6 +185,28 @@ function computedResolveCall(
   };
 }
 
+/** The fence a createRequire use with no build-time lowering throws in
+ * JavaScript source, where preflight admits it inside a try block
+ * (createRequireUse7 in program.ts). The diagnostic joins the runtime-fence
+ * ledger, so coverage lists the use as deferred to runtime. */
+function createRequireFence(
+  lowerer: Lowerer,
+  surface: string,
+  node: ts.Node,
+  hint: string,
+): IrStmt & { kind: "runtimeFence" } {
+  const loc = locOf(node);
+  const d = noLoweringDiag(surface, loc, hint);
+  lowerer.runtimeFences.push(d);
+  const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(node), loc.start).line + 1;
+  return {
+    kind: "runtimeFence",
+    code: d.code,
+    message: `${d.message} [${d.code} at ${loc.file}:${line}]`,
+    loc,
+  };
+}
+
 /** A createRequire loader's `resolve` read as a value in JavaScript source
  * (passed on, or picked by `??`): a function that resolves its request at
  * run time, so `(options.resolve ?? require.resolve)(id)` behaves as in
@@ -235,6 +258,70 @@ export function createRequireResolveValue(
   };
 }
 
+/** A createRequire loader's `resolve.paths` read as a value in JavaScript
+ * source: a function that throws the fence when called. */
+export function createRequireResolveFenceValue(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const surface = "createRequire's require.resolve.paths as a value";
+  const hint =
+    'call it with a string literal (require.resolve.paths("<specifier>")), which resolves at build time';
+  if (!isJsSourceFile(ts.getSourceFileOfNode(access))) lowerer.noLowering(surface, access, hint);
+  const name = keyedHelperName(lowerer, "%createRequire.fence", `${loc.file}:${loc.start}`);
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    lowerer.liftedFns.push({
+      name,
+      params: [],
+      locals: [],
+      returnType: DYN,
+      body: [createRequireFence(lowerer, surface, access, hint)],
+      loc,
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: { kind: "closure", fnName: name, captures: [], type: funcOf([], DYN), loc },
+    fnName: access.name.text,
+    type: DYN,
+    loc,
+  };
+}
+
+/** A createRequire use deferred to run time in JavaScript source: as in
+ * Node, the call's arguments are evaluated in order, then the call throws
+ * (here, the fence). Code before the call in the same statement runs, and
+ * the expression diverges, so nothing after it does. */
+function deferredCreateRequireThrow(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  surface: string,
+  hint: string,
+  loc: SrcLoc,
+): IrExpr {
+  const stmts: IrStmt[] = call.arguments.nodes.map((arg) => ({
+    kind: "exprStmt",
+    expr: lowerer.lowerExpr(arg),
+    loc: locOf(arg),
+  }));
+  const type = lowerer.irTypeOf(call);
+  const slot = lowerer.declareHiddenLocal("%never", type);
+  slot.mutable = true;
+  stmts.push(
+    { kind: "varDecl", localId: slot.id, init: null, loc },
+    createRequireFence(lowerer, surface, call, hint),
+  );
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: varRef(slot.id, type, loc),
+    diverges: true,
+    type,
+    loc,
+  };
+}
+
 export function lowerCreateRequireCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -244,13 +331,14 @@ export function lowerCreateRequireCall(
   if (cr === null) return null;
   if (cr.spec === null) {
     const args = call.arguments.nodes;
-    if (!isJsSourceFile(ts.getSourceFileOfNode(call)) || args.some((a) => ts.isSpreadElement(a))) {
-      lowerer.noLowering(
-        "createRequire's require with this argument shape",
-        call,
-        'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>")',
-      );
-    }
+    const surface = "createRequire's require with a computed specifier or this argument shape";
+    const hint =
+      'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>"); native addons are not loaded';
+    if (!isJsSourceFile(ts.getSourceFileOfNode(call))) lowerer.noLowering(surface, call, hint);
+    // Spread arguments have no run-time resolution: they run, then the
+    // call throws the fence.
+    if (args.some((a) => ts.isSpreadElement(a)))
+      return deferredCreateRequireThrow(lowerer, call, surface, hint, loc);
     // Node evaluates every argument, then requires the first.
     const stmts: IrStmt[] = [];
     let id = args.length > 0 ? lowerer.lowerExprExpecting(args[0]!, DYN) : dynUndefinedExpr(loc);
@@ -493,11 +581,30 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
   }
   const baseFile = requireResolverBaseFile(lowerer, receiver);
   if (baseFile === null) return null;
+  const surface = pathsCall ? "require.resolve.paths" : "require.resolve";
+  // A createRequire loader's query that resolves only at run time, in
+  // JavaScript source: preflight admits it inside a try block
+  // (createRequireUse7 in program.ts). Its arguments run, then it throws.
+  const deferred = (what: string, hint: string): IrExpr | null =>
+    call.questionDotToken === undefined &&
+    createRequireCalleeFileOf(lowerer, receiver) !== null &&
+    isJsSourceFile(ts.getSourceFileOfNode(call))
+      ? deferredCreateRequireThrow(
+          lowerer,
+          call,
+          `createRequire's ${surface} ${what}`,
+          hint,
+          locOf(call),
+        )
+      : null;
+  const resolveHint = `call it with a string literal (${surface}("<specifier>")), which resolves at build time`;
   if (
     call.questionDotToken !== undefined ||
     call.arguments.nodes.length < 1 ||
     call.arguments.nodes.length > (pathsCall ? 1 : 2)
   ) {
+    const fenced = deferred("with this argument shape", resolveHint);
+    if (fenced) return fenced;
     lowerer.noLowering(
       pathsCall
         ? "require.resolve.paths with this argument shape"
@@ -527,6 +634,8 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
     );
   }
   if (specifier === null) {
+    const fenced = deferred("with a computed request", resolveHint);
+    if (fenced) return fenced;
     lowerer.noLowering(
       `${pathsCall ? "require.resolve.paths" : "require.resolve"} with a runtime-computed request`,
       call.arguments.nodes[0]!,
@@ -562,6 +671,11 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
   }
   const paths = staticResolveOptionPaths(call.arguments.nodes[1]);
   if (paths === null) {
+    const fenced = deferred(
+      "with runtime-computed options",
+      'omit options or pass { paths: ["<static directory>", ...] }',
+    );
+    if (fenced) return fenced;
     lowerer.noLowering(
       "require.resolve with runtime-computed options",
       call.arguments.nodes[1]!,

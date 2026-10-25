@@ -219,3 +219,53 @@ test("a supplied file that changes is a different entry", () => {
   expect(store.entries.size).toBe(2);
   writeFileSync(fallback, fallbackText);
 });
+
+/** The program's files, recording which ones were read. */
+function recording(texts: Record<string, string>): ((name: string) => SourceFile | undefined) & {
+  read: string[];
+} {
+  const inner = files(texts);
+  const read: string[] = [];
+  return Object.assign((name: string) => (read.push(name), inner(name)), { read });
+}
+
+test("a program of modules stores its answer without reading the supplied files", () => {
+  const store = memoryStore();
+  setLibDiagnosticsStore(store, "checker");
+  const sources = recording({ [main]: "export const n: number = 'x';\n" });
+  reusedLibDiagnostics(
+    sessionProgram({ semantic: new Map([[main, []]]) }),
+    names,
+    supplied,
+    sources,
+  );
+  expect(sources.read).toEqual([main]);
+  const [text] = [...store.entries.values()];
+  expect(JSON.parse(text!).globals).toBeNull();
+  // A later program of modules reuses it, again without reading them.
+  const again = recording({ [main]: "export const n: number = 'x';\n" });
+  const program = sessionProgram({ semantic: new Map([[main, []]]) });
+  expect(reusedLibDiagnostics(program, names, supplied, again)).not.toBeNull();
+  expect(program.asked).toEqual([`checked ${main}`]);
+  expect(again.read).toEqual([main]);
+});
+
+test("a script that uses an answer stored without global names collects and stores them", () => {
+  const store = memoryStore();
+  setLibDiagnosticsStore(store, "checker");
+  const semantic = new Map([[main, []]]);
+  reusedLibDiagnostics(sessionProgram({ semantic }), names, supplied, moduleFile);
+  const script = recording({ [main]: "const total = 1;\n" });
+  const program = sessionProgram({ semantic });
+  expect(reusedLibDiagnostics(program, names, supplied, script)).not.toBeNull();
+  expect(program.asked).toEqual([`checked ${main}`]);
+  expect(script.read).toEqual([main, lib, fallback]);
+  const [text] = [...store.entries.values()];
+  expect(new Set(JSON.parse(text!).globals)).toEqual(new Set(["NaN", "Array", "process"]));
+  // A script that declares one of them runs the full check, and the entry keeps its names.
+  const clash = sessionProgram({ semantic });
+  reusedLibDiagnostics(clash, names, supplied, files({ [main]: "declare var NaN: number;\n" }));
+  expect(clash.asked[0]).toBe("getGlobalDiagnostics");
+  expect(store.entries.size).toBe(1);
+  expect(JSON.parse([...store.entries.values()][0]!).globals).not.toBeNull();
+});

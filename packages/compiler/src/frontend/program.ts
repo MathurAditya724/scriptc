@@ -96,8 +96,8 @@ import type {
 import {
   configurePackageShims,
   isPackageShimFile,
-  isPackageShimName,
   isShimmedImport,
+  npmStaticOmitsPackage,
 } from "./package-shims.js";
 import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
@@ -140,6 +140,7 @@ import {
 } from "./type-only-imports.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { planDeclProjection, type DeclProjection } from "./decl-projection.js";
+import { reportShapes } from "./shape-inference/index.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
   containsJsx,
@@ -487,43 +488,33 @@ function visitNpmStaticDeclarationClosure(
   visit(entryPath);
 }
 
-function npmStaticDeclarationOverloadsOf(
+/** The overloads and properties of the classes a package's declaration
+ * closure declares, read from one parse of each declaration file. */
+function npmStaticDeclarationMetadataOf(
   services: FrontendServices,
   entryPath: string,
-): NpmStaticDeclarationOverloads {
-  const classes = new Map<string, Map<string, readonly NpmStaticOverloadSignature[]>>();
+): { overloads: NpmStaticDeclarationOverloads; properties: NpmStaticDeclarationProperties } {
+  const overloads = new Map<string, Map<string, readonly NpmStaticOverloadSignature[]>>();
+  const properties = new Map<string, Map<string, string>>();
   visitNpmStaticDeclarationClosure(services, entryPath, (path, source) => {
-    for (const [className, methods] of parseNpmStaticDeclarationOverloads(
-      services.parse(path, source, "ts"),
-    )) {
+    const sourceFile = services.parse(path, source, "ts");
+    for (const [className, methods] of parseNpmStaticDeclarationOverloads(sourceFile)) {
       const target =
-        classes.get(className) ?? new Map<string, readonly NpmStaticOverloadSignature[]>();
-      classes.set(className, target);
+        overloads.get(className) ?? new Map<string, readonly NpmStaticOverloadSignature[]>();
+      overloads.set(className, target);
       for (const [methodName, signatures] of methods) {
         if (!target.has(methodName)) target.set(methodName, signatures);
       }
     }
-  });
-  return classes;
-}
-
-function npmStaticDeclarationPropertiesOf(
-  services: FrontendServices,
-  entryPath: string,
-): NpmStaticDeclarationProperties {
-  const classes = new Map<string, Map<string, string>>();
-  visitNpmStaticDeclarationClosure(services, entryPath, (path, source) => {
-    for (const [className, properties] of parseNpmStaticDeclarationProperties(
-      services.parse(path, source, "ts"),
-    )) {
-      const target = classes.get(className) ?? new Map<string, string>();
-      classes.set(className, target);
-      for (const [propertyName, type] of properties) {
+    for (const [className, fields] of parseNpmStaticDeclarationProperties(sourceFile)) {
+      const target = properties.get(className) ?? new Map<string, string>();
+      properties.set(className, target);
+      for (const [propertyName, type] of fields) {
         if (!target.has(propertyName)) target.set(propertyName, type);
       }
     }
   });
-  return classes;
+  return { overloads, properties };
 }
 
 /** See LoadResult.startupCrash: Node's exact error message, the IR error
@@ -1072,12 +1063,13 @@ export function loadProgram(
     }
     externalTypes.set(specifier, declarationPath);
   }
-  // Packages scriptc implements itself or the project marks never loaded
-  // (package-shims.ts) never compile their published JavaScript, even when
-  // named.
+  // Packages scriptc implements itself, and packages the project marks
+  // never loaded (package-shims.ts), never compile their published
+  // JavaScript, even when named. A registry entry's `sourceVersions`
+  // (chalk 6) compile from their own source.
   configurePackageShims(entryPath);
   const npmStaticPackages = [...new Set(opts?.npmStatic ?? [])].filter(
-    (name) => !isPackageShimName(name),
+    (name) => !npmStaticOmitsPackage(entryPath, name),
   );
   // Resolve authored declaration entries before enabling the JS-only
   // package resolver. Safe overload metadata binds through the runtime
@@ -1095,8 +1087,7 @@ export function loadProgram(
     ) {
       continue;
     }
-    const overloads = npmStaticDeclarationOverloadsOf(services, resolved.typesFile);
-    const properties = npmStaticDeclarationPropertiesOf(services, resolved.typesFile);
+    const { overloads, properties } = npmStaticDeclarationMetadataOf(services, resolved.typesFile);
     const classNames = new Set([...overloads.keys(), ...properties.keys()]);
     if (classNames.size === 0) continue;
     const runtime = resolveBareModule(entryPath, pkg, "js-only");
@@ -1260,6 +1251,10 @@ export function loadProgram(
       npmStaticPackages.length > 0,
       projector,
     );
+    // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
+    const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];
+    if (shapes !== undefined && shapes !== "" && shapes !== "0" && npmStaticPackages.length > 0)
+      reportShapes(load.program, shapes);
     return {
       ...load,
       services,
@@ -2526,11 +2521,21 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
  *   require.resolve call with a computed request, or `resolve` read as a
  *   value. The runtime resolves the specifier like Node
  *   (module-resolution.ts, scr_require.c).
- * - "computed": the same uses in TypeScript source.
- * - "escaping": the loader itself as a value, writes, optional calls,
- *   spread arguments, `resolve.paths` with a computed request or as a
- *   value, and other members. */
-type CreateRequireUse7 = "static" | "runtime" | "computed" | "escaping";
+ * - "deferred": in JavaScript source, inside the try block of a try
+ *   statement in the same function, the other shapes: spread arguments,
+ *   require.resolve with another argument count, and `resolve.paths` with
+ *   a computed request or read as a value. The call throws a runtime
+ *   fence, and the resolve.paths value is a function that throws one when
+ *   called (module-resolution.ts), so the statement's catch clause handles
+ *   them (packages that look for optional native addons).
+ * - "computed": the "runtime" uses in TypeScript source, and the
+ *   "deferred" shapes outside a try block.
+ * - "escaping": the loader itself as a value, writes, optional calls, and
+ *   other members. */
+const COMPUTED_CREATE_REQUIRE_REASON =
+  "its createRequire result is used with a computed specifier in TypeScript, or with spread arguments or resolve.paths outside a try block (static requires need literal specifiers)";
+
+type CreateRequireUse7 = "static" | "runtime" | "deferred" | "computed" | "escaping";
 
 function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
   const use = createRequireUseShape7(expr);
@@ -2565,10 +2570,18 @@ function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
     if (call.questionDotToken) return "escaping";
     const args = call.arguments.nodes;
     if (args.length === 1 && ts.isStringLiteralLike(args[0]!)) return "static";
-    if (paths || args.some((arg) => ts.isSpreadElement(arg))) return "escaping";
-    return member && (args.length === 0 || args.length > 2) ? "escaping" : "runtime";
+    if (
+      !paths &&
+      !args.some((arg) => ts.isSpreadElement(arg)) &&
+      !(member && (args.length === 0 || args.length > 2))
+    )
+      return "runtime";
+  } else if (!member || isAssignmentTarget7(use)) {
+    return "escaping";
+  } else if (!paths) {
+    return "runtime";
   }
-  return member && !paths && !isAssignmentTarget7(use) ? "runtime" : "escaping";
+  return insideTryBlock7(use) ? "deferred" : "computed";
 }
 
 function isAssignmentTarget7(node: ts.Node): boolean {
@@ -2579,6 +2592,22 @@ function isAssignmentTarget7(node: ts.Node): boolean {
     parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
     parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
   );
+}
+
+/** True when `node` is inside the try block of a try statement in the same
+ * function (a catch clause or finally block does not count). A class field
+ * initializer runs when the class is instantiated, so it is a boundary too. */
+function insideTryBlock7(node: ts.Node): boolean {
+  for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (ts.isTryStatement(parent) && parent.tryBlock === child) return true;
+    if (
+      ts.isFunctionLike(parent) ||
+      ts.isClassStaticBlockDeclaration(parent) ||
+      ts.isPropertyDeclaration(parent)
+    )
+      return false;
+  }
+  return false;
 }
 
 function stableCreateRequireBindingReason7(
@@ -2615,8 +2644,7 @@ function stableCreateRequireBindingReason7(
         target = checker.getAliasedSymbol(target);
       if (target !== symbol) continue;
       const use = createRequireUse7(ref);
-      if (use === "computed")
-        return "its createRequire binding is reassigned, escapes, or uses a computed specifier";
+      if (use === "computed") return COMPUTED_CREATE_REQUIRE_REASON;
       if (use === "escaping") return "its createRequire binding is reassigned or escapes";
     }
     const preceding = stmt.declarationList.declarations.nodes.slice(
@@ -2681,9 +2709,7 @@ function npmStaticModuleImportReason7(
     let reason: string | null = null;
     const checkUse = (expr: ts.Expression): void => {
       const use = createRequireUse7(expr);
-      if (use === "computed")
-        reason =
-          "its createRequire result escapes or is used with a computed specifier (static requires need literal specifiers)";
+      if (use === "computed") reason = COMPUTED_CREATE_REQUIRE_REASON;
       else if (use === "escaping")
         reason = "its createRequire result escapes (static requires need literal specifiers)";
     };
@@ -5393,6 +5419,16 @@ function preflight7(load: LoadResult): {
     return new RegExp(`\\btypeof\\s*\\(?\\s*${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(sf.text);
   };
 
+  // A `return` at the top level of a CommonJS module (TS1108): Node runs
+  // the module as a function body, so the return ends the module's
+  // evaluation. ES modules and TypeScript keep the error.
+  const cjsTopLevelReturnSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (d.code !== 1108 || d.fileName === undefined || !isJsSourceFileName(d.fileName))
+      return false;
+    const sf = p.getSourceFile(d.fileName);
+    return sf !== undefined && isCjsJsFile7(sf, p);
+  };
+
   const workspaceImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
     if (d.code !== 7016 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
       return false;
@@ -5439,6 +5475,7 @@ function preflight7(load: LoadResult): {
         !isNpmStaticSubclassArgument(p, d) &&
         !workspaceImplicitAnySuppressed(p, d) &&
         !typeofTestedNameSuppressed(p, d) &&
+        !cjsTopLevelReturnSuppressed(p, d) &&
         !jsdocTypeSuppressed(p, d, commentDup),
     );
   };
@@ -5976,9 +6013,15 @@ function preflight7(load: LoadResult): {
             // to Node's no-op, the module still evaluates through its
             // ordinary init edge, and no member is ever read through the
             // lexer facade (self-imports of a CJS module included — the
-            // partially-built exports are never observed). Any OTHER use
-            // keeps the fence.
-            if (!nsBindingUsesAreBareStatements7(program, sf, clause.namedBindings.name)) {
+            // partially-built exports are never observed). In JavaScript
+            // sources every use passes here: member reads lower through the
+            // names Node's lexer detects, and the other reads refuse at
+            // their site (lower-namespaces.ts, cjsNamespaceImportDep). Any
+            // OTHER use in TypeScript keeps the fence.
+            if (
+              !isJsSourceFileName(sf.fileName) &&
+              !nsBindingUsesAreBareStatements7(program, sf, clause.namedBindings.name)
+            ) {
               diags.push(
                 unsupportedDiag(
                   "SC1013",
@@ -6407,6 +6450,108 @@ function preflight7(load: LoadResult): {
  * Node refuses the program). This walk asks Node's question at compile
  * time, in Node's exact ORDER, and answers with Node's exact message. */
 
+/** The CommonJS program file a re-export (`module.exports = require(spec)`)
+ * of `from` resolves to, or null: reexport targets union in only when they
+ * resolve to CommonJS program files (Node's cjsPreparseModuleExports rule). */
+function cjsReexportDep7(program: ts.Program) {
+  return (from: ts.SourceFile, spec: string): ts.SourceFile | null => {
+    const dep =
+      resolveImport7(program, from, spec, "require") ??
+      npmStaticDepSf7(program, from, spec, "require");
+    return dep !== null && isCjsJsFile7(dep, program) ? dep : null;
+  };
+}
+
+/** Node's lexer analysis of a CommonJS file. A bundler rewrite spells some
+ * lexer-visible names as accessors. */
+function lexWithAccessorNames(sf: ts.SourceFile): ReturnType<typeof cjsLexedExportsOfFile> {
+  const lexed = cjsLexedExportsOfFile(sf);
+  for (const name of npmStaticLexerVisibleNames(sf.fileName)) lexed.exports.add(name);
+  return lexed;
+}
+
+/** The property names of Node's namespace object for the CommonJS module
+ * `dep`: the names its lexer detects, CommonJS re-exports included (the
+ * rule of the named-import link check), plus `default` and
+ * `module.exports`. */
+/** `dep` and every CommonJS module it re-exports, transitively (the modules
+ * whose exports its namespace object shows). */
+export function cjsReexportedModules(program: ts.Program, dep: ts.SourceFile): ts.SourceFile[] {
+  const resolveDep = cjsReexportDep7(program);
+  const seen = new Set<ts.SourceFile>([dep]);
+  const order = [dep];
+  for (let i = 0; i < order.length; i++) {
+    const mod = order[i]!;
+    for (const spec of lexWithAccessorNames(mod).reexports) {
+      const next = resolveDep(mod, spec);
+      if (next !== null && !seen.has(next)) {
+        seen.add(next);
+        order.push(next);
+      }
+    }
+  }
+  return order;
+}
+
+export function cjsNamespaceExportNames(program: ts.Program, dep: ts.SourceFile): Set<string> {
+  const names = cjsVisibleNames(dep, lexWithAccessorNames, cjsReexportDep7(program), new Map());
+  return new Set([...names, "default", "module.exports"]);
+}
+
+/** The export names a CommonJS module assigns inside functions
+ * (`exports.current = value` in a function body), or "all" when such code
+ * writes a computed name, replaces module.exports or redefines exports
+ * through Object.defineProperty. Node's namespace object of the module
+ * holds the values the exports had when the module finished evaluating,
+ * so it does not see those writes. */
+export function cjsExportsAssignedInFunctions(sf: ts.SourceFile): ReadonlySet<string> | "all" {
+  const names = new Set<string>();
+  let all = false;
+  const exportsObject = (e: ts.Expression): boolean =>
+    (ts.isIdentifier(e) && e.text === "exports") || isModuleExportsAccess(e);
+  const target = (e: ts.Expression): void => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (isModuleExportsAccess(e)) all = true;
+    else if (ts.isPropertyAccessExpression(e) && exportsObject(e.expression))
+      names.add(e.name.text);
+    else if (ts.isElementAccessExpression(e) && exportsObject(e.expression)) {
+      if (ts.isStringLiteralLike(e.argumentExpression)) names.add(e.argumentExpression.text);
+      else all = true;
+    }
+  };
+  const visit = (node: ts.Node, inFunction: boolean): void => {
+    if (all) return;
+    const nested = inFunction || ts.isFunctionLike(node);
+    if (nested) {
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      )
+        target(node.left);
+      else if (
+        (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken)
+      )
+        target(node.operand);
+      else if (ts.isDeleteExpression(node)) target(node.expression);
+      else if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === "Object" &&
+        node.arguments.nodes[0] !== undefined &&
+        exportsObject(node.arguments.nodes[0])
+      )
+        all = true;
+    }
+    ts.forEachChild(node, (child) => visit(child, nested));
+  };
+  visit(sf, false);
+  return all ? "all" : names;
+}
+
 interface BadCjsImport {
   /** The export name requested from the CJS module. */
   exportName: string;
@@ -6447,25 +6592,14 @@ function cjsNamedImportLinkCheck(
     const npmStatic = npmStaticDepSf7(program, from, spec);
     return npmStatic;
   };
-  // Reexport targets union in only when they resolve to CommonJS program
-  // files (Node's cjsPreparseModuleExports rule).
-  const resolveCjsDep = (from: ts.SourceFile, spec: string): ts.SourceFile | null => {
-    const dep =
-      resolveImport7(program, from, spec, "require") ??
-      npmStaticDepSf7(program, from, spec, "require");
-    return dep !== null && isCjsJsFile7(dep, program) ? dep : null;
-  };
-  // A bundler rewrite spells some lexer-visible names as accessors.
-  const lexWithAccessorNames = (sf: ts.SourceFile): ReturnType<typeof cjsLexedExportsOfFile> => {
-    const lexed = cjsLexedExportsOfFile(sf);
-    for (const name of npmStaticLexerVisibleNames(sf.fileName)) lexed.exports.add(name);
-    return lexed;
-  };
+  const resolveCjsDep = cjsReexportDep7(program);
   const visible = (dep: ts.SourceFile, name: string): boolean =>
-    // `default` is the module.exports binding itself — always provided.
-    // The program already owns native source ASTs; reuse them without
-    // starting another syntax session or reparsing their source text.
+    // `default` and `module.exports` are the module.exports binding itself
+    // — always provided. The program already owns native source ASTs;
+    // reuse them without starting another syntax session or reparsing
+    // their source text.
     name === "default" ||
+    name === "module.exports" ||
     cjsVisibleNames(dep, lexWithAccessorNames, resolveCjsDep, lexMemo).has(name);
 
   /** The statement's resolved LOCAL CommonJS dependency, when it is an

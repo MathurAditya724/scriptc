@@ -10,7 +10,14 @@
  * (getDiagnosticsOfCheckedFiles), and the semantic diagnostics merge in the
  * order the full check sorts them, by file name. An answer is stored only
  * when the full check reports no global diagnostics: the global diagnostics
- * of checking the other files are then the full check's. */
+ * of checking the other files are then the full check's.
+ *
+ * The global names the supplied files declare matter only to programs with
+ * scripts, and collecting them reads every supplied file's syntax tree,
+ * which a program of modules does not otherwise read (about 4 MB at the
+ * peak of a small build). An answer stored by such a program leaves them
+ * out; the first program with scripts that uses the answer collects them
+ * and stores them with it. */
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import type { Node, SourceFile } from "./ast-types.js";
@@ -25,7 +32,7 @@ export interface LibDiagnosticsStore {
   write(key: string, text: string): void;
 }
 
-const SCHEMA = "scriptc.lib-diagnostics.v1";
+const SCHEMA = "scriptc.lib-diagnostics.v2";
 
 let configured: { store: LibDiagnosticsStore; checker: string } | null = null;
 
@@ -89,7 +96,14 @@ export function reusedLibDiagnostics(
   const key = entryKey(checker, options, libs);
   if (key === null) return null;
   const stored = readEntry(store, key, libs);
-  if (stored !== null && !collides(stored.globals)) {
+  // An answer stored without the supplied files' global names: a program
+  // with scripts collects them and stores them with the answer.
+  let globals = stored?.globals ?? null;
+  if (stored !== null && globals === null && scripts.length > 0) {
+    globals = suppliedGlobalNames(libs, sourceFile);
+    if (globals !== null) writeEntry(store, key, globals, Object.fromEntries(stored.files));
+  }
+  if (stored !== null && (scripts.length === 0 || (globals !== null && !collides(globals)))) {
     const checked = program.checkedFileDiagnosticData(own);
     if (checked === null) return null;
     const byFile = new Map<string, Ts7DiagnosticData[]>(stored.files);
@@ -104,18 +118,33 @@ export function reusedLibDiagnostics(
   const semantic = program.diagnosticData("getSemanticDiagnostics");
   // A server that cannot check only some files could never use the answer.
   if (global.length === 0 && stored === null && program.checkedFileDiagnosticData([]) !== null) {
-    const globals = suppliedGlobalNames(libs, sourceFile);
-    if (globals !== null && !collides(globals)) {
+    const names = scripts.length === 0 ? null : suppliedGlobalNames(libs, sourceFile);
+    if (scripts.length === 0 || (names !== null && !collides(names))) {
       const files: Record<string, Ts7DiagnosticData[]> = {};
       for (const name of libs) files[name] = program.diagnosticData("getSemanticDiagnostics", name);
-      try {
-        store.write(key, JSON.stringify({ schema: SCHEMA, globals: [...globals], files }));
-      } catch {
-        // Best effort: a failed write is a later miss.
-      }
+      writeEntry(store, key, names, files);
     }
   }
   return { semantic, global };
+}
+
+/** Stores an answer: the supplied files' diagnostics, and their global names
+ * when they were collected (null otherwise). Best effort: a failed write is
+ * a later miss. */
+function writeEntry(
+  store: LibDiagnosticsStore,
+  key: string,
+  globals: ReadonlySet<string> | null,
+  files: Record<string, Ts7DiagnosticData[]>,
+): void {
+  try {
+    store.write(
+      key,
+      JSON.stringify({ schema: SCHEMA, globals: globals === null ? null : [...globals], files }),
+    );
+  } catch {
+    // A failed write is a later miss.
+  }
 }
 
 /** Whether a file cannot add to or change the global declarations the
@@ -276,7 +305,7 @@ function readEntry(
   store: LibDiagnosticsStore,
   key: string,
   libs: readonly string[],
-): { files: Map<string, Ts7DiagnosticData[]>; globals: Set<string> } | null {
+): { files: Map<string, Ts7DiagnosticData[]>; globals: Set<string> | null } | null {
   let text: string | null;
   try {
     text = store.read(key);
@@ -290,7 +319,11 @@ function readEntry(
   } catch {
     return null;
   }
-  if (entry.schema !== SCHEMA || entry.files === undefined || !Array.isArray(entry.globals))
+  if (
+    entry.schema !== SCHEMA ||
+    entry.files === undefined ||
+    (entry.globals !== null && !Array.isArray(entry.globals))
+  )
     return null;
   const files = new Map<string, Ts7DiagnosticData[]>();
   for (const name of libs) {
@@ -298,7 +331,10 @@ function readEntry(
     if (!Array.isArray(list)) return null;
     files.set(name, list);
   }
-  return { files, globals: new Set(entry.globals.filter((name) => typeof name === "string")) };
+  const globals = Array.isArray(entry.globals)
+    ? new Set(entry.globals.filter((name): name is string => typeof name === "string"))
+    : null;
+  return { files, globals };
 }
 
 /** Each file's diagnostics (already in the checker's order) in the order the
