@@ -190,6 +190,8 @@ ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len) {
   b->external = false;
   b->untransferable = false;
   b->shared = NULL;
+  b->properties = NULL;
+  b->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -304,6 +306,7 @@ void scr_bytes_release(ScrBytes *b) {
   if (!b || b->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--b->rc == 0) {
     scr_weak_dispose_inline(b);
+    if (b->properties) scr_dyn_release(b->properties);
     if (b->backing) {
       scr_bytes_release(b->backing); /* a view: data points into the owner */
     } else if (b->shared) {
@@ -740,6 +743,8 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
   v->external = false;
   v->untransferable = false;
   v->shared = owner->shared;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -883,7 +888,9 @@ ScrBytes *scr_bytes_from_dyn(ScrBytesElem elem, const ScrDyn *value, bool from) 
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(elem, value->v.bytes);
   if (!from && scr_buffer_storage_is(value)) return scr_array_buffer_view(elem, value, scr_dyn_undefined(), scr_dyn_undefined());
   if (!from && (value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_BOOL ||
-                value->kind == SCR_DYN_STR || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF)) {
+                value->kind == SCR_DYN_STR || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF ||
+                value->kind == SCR_DYN_SYMBOL || value->kind == SCR_DYN_BIGINT)) {
+    /* ToIndex: a Symbol or BigInt length throws ToNumber's TypeError. */
     double number;
     if (!scr_dyn_number_coerce_js(value, &number)) return NULL;
     return scr_bytes_new(elem, number);
@@ -1009,6 +1016,8 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
   v->external = false;
   v->untransferable = false;
   v->shared = owner->shared;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -2232,29 +2241,26 @@ ScrStr *scr_text_decode_stream(ScrDyn *state, const ScrBytes *input,
   return result;
 }
 
-/* Decode the next code point from an ScrStr's storage — ALWAYS valid
- * UTF-8 (the string runtime never stores ill-formed sequences), so no
- * validation re-runs here. */
-static uint32_t scr_bytes_next_cp(const uint8_t *in, size_t *ip) {
-  uint8_t b = in[*ip];
-  if (b < 0x80) {
-    *ip += 1;
-    return b;
-  }
-  if ((b & 0xe0) == 0xc0) {
-    uint32_t cp = ((uint32_t)(b & 0x1f) << 6) | (in[*ip + 1] & 0x3f);
-    *ip += 2;
-    return cp;
-  }
-  if ((b & 0xf0) == 0xe0) {
-    uint32_t cp = ((uint32_t)(b & 0xf) << 12) | ((uint32_t)(in[*ip + 1] & 0x3f) << 6) |
-                  (in[*ip + 2] & 0x3f);
-    *ip += 3;
-    return cp;
-  }
-  uint32_t cp = ((uint32_t)(b & 0x7) << 18) | ((uint32_t)(in[*ip + 1] & 0x3f) << 12) |
-                ((uint32_t)(in[*ip + 2] & 0x3f) << 6) | (in[*ip + 3] & 0x3f);
-  *ip += 4;
+/* Decode the next code point from the n bytes of an ScrStr's storage.
+ * Storage is WTF-8, except where raw outside bytes become a string
+ * unchecked (HTTP header values). A byte that does not start a complete,
+ * well-formed sequence stands for U+0000..U+00FF, as each byte of such a
+ * header does in Node, and advances by one; nothing is read past n. */
+static uint32_t scr_bytes_next_cp(const uint8_t *in, size_t n, size_t *ip) {
+  size_t i = *ip;
+  uint8_t b = in[i];
+  *ip = i + 1;
+  if (b < 0x80) return b;
+  size_t len = b >= 0xc2 && b <= 0xdf ? 2 : b >= 0xe0 && b <= 0xef ? 3 : b >= 0xf0 && b <= 0xf4 ? 4 : 0;
+  if (len == 0 || n - i < len) return b;
+  uint8_t lo = b == 0xe0 ? 0xa0 : b == 0xf0 ? 0x90 : 0x80;
+  uint8_t hi = b == 0xf4 ? 0x8f : 0xbf;
+  if (in[i + 1] < lo || in[i + 1] > hi) return b;
+  for (size_t k = 2; k < len; k++)
+    if ((in[i + k] & 0xc0) != 0x80) return b;
+  uint32_t cp = b & (0x7f >> len);
+  for (size_t k = 1; k < len; k++) cp = (cp << 6) | (in[i + k] & 0x3f);
+  *ip = i + len;
   return cp;
 }
 
@@ -2279,7 +2285,7 @@ ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination) {
     read += ascii;
     if (written == limit) break;
     size_t end = written;
-    uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, &end);
+    uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, text->len, &end);
     if (end > dest->len) break;
     read += cp > 0xffff ? 2 : 1;
     written = end;
@@ -2432,7 +2438,7 @@ ScrBytes *scr_buffer_transcode(const ScrDyn *source, const ScrDyn *from, const S
     }
     ScrStr *text = scr_str_from_utf8_lossy(input->data, len);
     for (size_t i = 0; i < text->len;) {
-      uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, &i);
+      uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, text->len, &i);
       written = scr_transcode_put(result->data, written, cp, to_encoding);
     }
     scr_str_release(text);
@@ -2487,14 +2493,57 @@ static uint32_t scr_bytes_utf16le_cp(const uint8_t *in, size_t units, size_t *u)
   return cu;
 }
 
+/* Four units below 0x80 copy as four bytes (one word holds them), and
+ * other units outside the surrogate range are written inline; surrogates
+ * take scr_bytes_utf16le_cp. The string has one UTF-16 unit per input
+ * unit, which is recorded so its length needs no walk. */
 static ScrStr *scr_bytes_decode_utf16le(const uint8_t *in, size_t n) {
   size_t units = n / 2;
   if (units > SIZE_MAX / 3) scr_bytes_oom();
   ScrStr *s = scr_str_alloc_raw(0, units * 3);
-  size_t o = 0;
-  for (size_t u = 0; u < units;) o = scr_bytes_put_cp(s->data, o, scr_bytes_utf16le_cp(in, units, &u));
+  uint8_t *out = (uint8_t *)s->data;
+  size_t o = 0, u = 0;
+  while (u < units) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    if (units - u >= 4) {
+      uint64_t w;
+      memcpy(&w, in + u * 2, 8);
+      if (!(w & UINT64_C(0xff80ff80ff80ff80))) {
+        out[o] = (uint8_t)w;
+        out[o + 1] = (uint8_t)(w >> 16);
+        out[o + 2] = (uint8_t)(w >> 32);
+        out[o + 3] = (uint8_t)(w >> 48);
+        o += 4;
+        u += 4;
+        continue;
+      }
+    }
+#endif
+    uint32_t cu = (uint32_t)in[u * 2] | ((uint32_t)in[u * 2 + 1] << 8);
+    if (cu >= 0x800 && (cu < 0xd800 || cu > 0xdfff)) {
+      /* Three bytes in one four-byte store; the next write (or the
+       * terminator) replaces the fourth. */
+      uint8_t seq[4] = {(uint8_t)(0xe0 | (cu >> 12)), (uint8_t)(0x80 | ((cu >> 6) & 0x3f)),
+                        (uint8_t)(0x80 | (cu & 0x3f)), 0};
+      memcpy(out + o, seq, 4);
+      o += 3;
+      u++;
+    } else if (cu < 0x80) {
+      out[o++] = (uint8_t)cu;
+      u++;
+    } else if (cu < 0x800) {
+      out[o] = (uint8_t)(0xc0 | (cu >> 6));
+      out[o + 1] = (uint8_t)(0x80 | (cu & 0x3f));
+      o += 2;
+      u++;
+    } else {
+      o = scr_bytes_put_cp(s->data, o, scr_bytes_utf16le_cp(in, units, &u));
+    }
+  }
   s->len = o;
   s->data[o] = '\0';
+  if (o == units) scr_str_note_ascii(s);
+  else scr_str_note_utf16_len(s, units);
   return s;
 }
 
@@ -2777,20 +2826,67 @@ static ScrBytes *scr_bytes_conversion_storage(size_t capacity) {
   return scr_bytes_conversion_storage_in(NULL, capacity);
 }
 
+/* scr_b64_values, each value shifted into its place in a four-character
+ * group's 24 bits; a character outside both alphabets sets bit 24. */
+#define SCR_B64_VALUE(c)                                                       \
+  ((c) >= 'A' && (c) <= 'Z'   ? (c) - 'A'                                     \
+   : (c) >= 'a' && (c) <= 'z' ? (c) - 'a' + 26                                \
+   : (c) >= '0' && (c) <= '9' ? (c) - '0' + 52                                \
+   : (c) == '+' || (c) == '-' ? 62                                            \
+   : (c) == '/' || (c) == '_' ? 63                                            \
+                              : -1)
+#define SCR_B64_AT(c, shift)                                                   \
+  (SCR_B64_VALUE(c) < 0 ? UINT32_C(0x1000000) : (uint32_t)SCR_B64_VALUE(c) << (shift))
+#define SCR_B64_4(c, s) SCR_B64_AT(c, s), SCR_B64_AT(c + 1, s), SCR_B64_AT(c + 2, s), SCR_B64_AT(c + 3, s)
+#define SCR_B64_16(c, s) SCR_B64_4(c, s), SCR_B64_4(c + 4, s), SCR_B64_4(c + 8, s), SCR_B64_4(c + 12, s)
+#define SCR_B64_64(c, s) SCR_B64_16(c, s), SCR_B64_16(c + 16, s), SCR_B64_16(c + 32, s), SCR_B64_16(c + 48, s)
+#define SCR_B64_256(s) SCR_B64_64(0, s), SCR_B64_64(64, s), SCR_B64_64(128, s), SCR_B64_64(192, s)
+static const uint32_t scr_b64_shifted[4][256] = {
+    {SCR_B64_256(18)}, {SCR_B64_256(12)}, {SCR_B64_256(6)}, {SCR_B64_256(0)}};
+
+/* One group's 24 bits as three bytes, in a four-byte store whose last byte
+ * the next store overwrites (the destination holds two spare bytes). */
+static inline void scr_b64_put_group(uint8_t *out, uint32_t bits) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  uint32_t word = __builtin_bswap32(bits << 8);
+#else
+  uint32_t word = bits << 8;
+#endif
+  memcpy(out, &word, 4);
+}
+
 static ScrBytes *scr_bytes_decode_b64(ScrBytesSink *sink, const uint8_t *in, size_t n) {
   ScrBytes *b = scr_bytes_conversion_storage_in(sink, n / 4 * 3 + 2);
+  /* A local copy: a byte store could otherwise change b->data. */
+  uint8_t *out = b->data;
+  const uint32_t(*t)[256] = scr_b64_shifted;
   size_t i = 0, o = 0;
   unsigned acc = 0, have = 0;
   while (i < n) {
+    /* Complete groups, two per step: each character's shifted value comes
+     * from a table and one bit test covers all eight. The second store
+     * ends at o + 6, within the destination while eight characters remain. */
+    if (have == 0) {
+      while (n - i >= 8) {
+        uint32_t first = t[0][in[i]] | t[1][in[i + 1]] | t[2][in[i + 2]] | t[3][in[i + 3]];
+        uint32_t second = t[0][in[i + 4]] | t[1][in[i + 5]] | t[2][in[i + 6]] | t[3][in[i + 7]];
+        if ((first | second) & UINT32_C(0x1000000)) break;
+        scr_b64_put_group(out + o, first);
+        scr_b64_put_group(out + o + 3, second);
+        o += 6;
+        i += 8;
+      }
+      if (i == n) break; /* the groups ended the input */
+    }
     /* Common complete groups need neither per-character branches nor state. */
     if (have == 0 && n - i >= 4) {
       int a = scr_b64_values[in[i]], c = scr_b64_values[in[i + 1]];
       int d = scr_b64_values[in[i + 2]], e = scr_b64_values[in[i + 3]];
       if ((a | c | d | e) >= 0) {
         unsigned v = ((unsigned)a << 18) | ((unsigned)c << 12) | ((unsigned)d << 6) | (unsigned)e;
-        b->data[o++] = (uint8_t)(v >> 16);
-        b->data[o++] = (uint8_t)(v >> 8);
-        b->data[o++] = (uint8_t)v;
+        out[o++] = (uint8_t)(v >> 16);
+        out[o++] = (uint8_t)(v >> 8);
+        out[o++] = (uint8_t)v;
         i += 4;
         continue;
       }
@@ -2801,17 +2897,17 @@ static ScrBytes *scr_bytes_decode_b64(ScrBytesSink *sink, const uint8_t *in, siz
     if (v < 0) continue;
     acc = (acc << 6) | (unsigned)v;
     if (++have == 4) {
-      b->data[o++] = (uint8_t)(acc >> 16);
-      b->data[o++] = (uint8_t)(acc >> 8);
-      b->data[o++] = (uint8_t)acc;
+      out[o++] = (uint8_t)(acc >> 16);
+      out[o++] = (uint8_t)(acc >> 8);
+      out[o++] = (uint8_t)acc;
       acc = 0;
       have = 0;
     }
   }
-  if (have == 2) b->data[o++] = (uint8_t)(acc >> 4);
+  if (have == 2) out[o++] = (uint8_t)(acc >> 4);
   else if (have == 3) {
-    b->data[o++] = (uint8_t)(acc >> 10);
-    b->data[o++] = (uint8_t)(acc >> 2);
+    out[o++] = (uint8_t)(acc >> 10);
+    out[o++] = (uint8_t)(acc >> 2);
   }
   b->len = o;
   return b;
@@ -2825,23 +2921,25 @@ static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const
   size_t n = s->len;
   if (scr_enc_is(enc, "latin1") || scr_enc_is(enc, "ascii")) {
     /* Node writes charCodeAt(i) & 0xFF for BOTH spellings — an astral
-     * code point contributes its two surrogates' low bytes. ASCII text
-     * copies. Elsewhere eight ASCII bytes copy as one word. In eight bytes
-     * holding two or more high bytes and no sequence longer than two
-     * bytes, every continuation byte's output byte (the code point's low
-     * byte, from the continuation and the lead before it) is computed in
-     * one word; each byte is then stored without branches, a continuation
-     * replacing the byte its lead wrote. */
+     * code point contributes its two surrogates' low bytes. The ASCII
+     * prefix copies. Elsewhere eight ASCII bytes copy as one word. In eight bytes
+     * holding two or more high bytes, all of them in two-byte sequences,
+     * every continuation byte's output byte (the code point's low byte,
+     * from the continuation and its lead) is computed in one word; each
+     * byte is then stored without branches, a continuation replacing the
+     * byte its lead wrote. A lead in a word's last byte stays pending: its
+     * continuation, if the next byte is one, replaces it the same way. Any
+     * other byte decodes with scr_bytes_next_cp. */
     ScrBytes *b = scr_bytes_conversion_storage_in(sink, n);
-    if (scr_str_known_ascii(s)) {
-      memcpy(b->data, in, n);
-      b->len = n;
-      return b;
-    }
     /* A local copy: a byte store could otherwise change b->data. */
     uint8_t *dst = b->data;
     const uint64_t top = UINT64_C(0x8080808080808080);
-    size_t o = 0, i = 0;
+    /* An ASCII prefix (all of an ASCII string) is its own encoding. */
+    size_t o = s->ascii ? n : scr_bytes_ascii_prefix(in, n), i = o;
+    memcpy(dst, in, o);
+    /* in[i - 1] is a two-byte lead (0xC2..0xDF) the word path wrote as
+     * dst[o - 1], and in[i] is not yet known to continue it. */
+    bool pending = false;
     while (i < n) {
       if (n - i >= 8) {
         uint64_t w;
@@ -2851,13 +2949,19 @@ static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const
           memcpy(dst + o, &w, 8);
           i += 8;
           o += 8;
+          pending = false;
           continue;
         }
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-        /* Byte k of the input is bits 8k..8k+7 of w. */
-        if (i > 0 && (high & (high - 1)) && !(w & (w << 1) & (w << 2) & top)) {
-          uint64_t prev = (w << 8) | in[i - 1];
-          uint64_t cont = w & ~(w << 1) & top;
+        /* Byte k of the input is bits 8k..8k+7 of w; bit 8k+7 of w << j
+         * is bit 7 - j of byte k. */
+        uint64_t cont = w & ~(w << 1) & top;           /* 10xxxxxx */
+        uint64_t lead = w & (w << 1) & ~(w << 2) & top; /* 110xxxxx */
+        /* 0xC0 and 0xC1 (bits 4..1 clear) only begin overlong forms. */
+        uint64_t overlong = lead & ~((w << 3) | (w << 4) | (w << 5) | (w << 6));
+        if ((high & (high - 1)) && high == (cont | lead) && !overlong &&
+            cont == ((lead << 8) | (pending ? 0x80u : 0u))) {
+          uint64_t prev = (w << 8) | (pending ? in[i - 1] : 0u);
           uint64_t low = ((prev & UINT64_C(0x0303030303030303)) << 6) |
                          (w & UINT64_C(0x3f3f3f3f3f3f3f3f));
           uint64_t mask = (cont >> 7) * 0xff;
@@ -2867,23 +2971,26 @@ static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const
             dst[o++] = (uint8_t)(out >> (8 * k));
           }
           i += 8;
+          pending = (lead >> 63) != 0;
           continue;
         }
 #endif
       }
       unsigned c = in[i];
+      if (pending && c >> 6 == 2) {
+        /* The rest of the two-byte sequence whose lead ended a word. */
+        dst[o - 1] = (uint8_t)(((in[i - 1] & 3u) << 6) | (c & 0x3f));
+        i++;
+        pending = false;
+        continue;
+      }
+      pending = false;
       if (c < 0x80) {
         dst[o++] = (uint8_t)c;
         i++;
         continue;
       }
-      if (c >> 6 == 2) {
-        /* The rest of a two-byte sequence whose lead ended a word. */
-        dst[o - 1] = (uint8_t)(((in[i - 1] & 3u) << 6) | (c & 0x3f));
-        i++;
-        continue;
-      }
-      uint32_t cp = scr_bytes_next_cp(in, &i);
+      uint32_t cp = scr_bytes_next_cp(in, n, &i);
       if (cp > 0xffff) {
         cp -= 0x10000;
         dst[o++] = (uint8_t)(0xd800 + (cp >> 10));
@@ -2900,7 +3007,7 @@ static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const
     ScrBytes *b = scr_bytes_conversion_storage_in(sink, n * 2);
     size_t o = 0, i = 0;
     while (i < n) {
-      uint32_t cp = scr_bytes_next_cp(in, &i);
+      uint32_t cp = scr_bytes_next_cp(in, n, &i);
       if (cp > 0xffff) {
         cp -= 0x10000;
         uint32_t hi = 0xd800 + (cp >> 10), lo = 0xdc00 + (cp & 0x3ff);
@@ -3060,6 +3167,8 @@ static ScrBytes *scr_pool_take(size_t len) {
   v->external = false;
   v->untransferable = false;
   v->shared = NULL;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -3580,7 +3689,15 @@ static ScrBytes *scr_bytes_fill_core(ScrBytes *b, const uint8_t *pat, size_t pat
     } else if (patn == 1) {
       memset(dst, pat[0], e - o);
     } else {
-      for (size_t i = o; i < e; i++) dst[i - o] = pat[(i - o) % patn];
+      /* Node's fill: the pattern's first bytes (memmove: the pattern may
+       * be a view of this buffer), then the filled prefix doubled. */
+      size_t len = e - o, done = patn < len ? patn : len;
+      memmove(dst, pat, done);
+      while (done < len) {
+        size_t step = done < len - done ? done : len - done;
+        memcpy(dst + done, dst, step);
+        done += step;
+      }
     }
     if (b->shared) {
       scr_shared_store(b->data + o, dst, e - o);
@@ -3659,11 +3776,29 @@ ScrBytes *scr_bytes_swap(ScrBytes *b, double width) {
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_INVALID_BUFFER_SIZE");
     return NULL;
   }
-  for (size_t g = 0; g < b->len; g += w) {
-    for (size_t i = 0; i < w / 2; i++) {
-      uint8_t t = b->data[g + i];
-      b->data[g + i] = b->data[g + w - 1 - i];
-      b->data[g + w - 1 - i] = t;
+  /* One load, byte swap and store per group. */
+  uint8_t *p = b->data;
+  size_t len = b->len;
+  if (w == 2) {
+    for (size_t g = 0; g < len; g += 2) {
+      uint16_t v;
+      memcpy(&v, p + g, 2);
+      v = __builtin_bswap16(v);
+      memcpy(p + g, &v, 2);
+    }
+  } else if (w == 4) {
+    for (size_t g = 0; g < len; g += 4) {
+      uint32_t v;
+      memcpy(&v, p + g, 4);
+      v = __builtin_bswap32(v);
+      memcpy(p + g, &v, 4);
+    }
+  } else {
+    for (size_t g = 0; g < len; g += 8) {
+      uint64_t v;
+      memcpy(&v, p + g, 8);
+      v = __builtin_bswap64(v);
+      memcpy(p + g, &v, 8);
     }
   }
   return scr_bytes_retain(b);
@@ -3777,7 +3912,7 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
           continue;
         }
       }
-      uint32_t cp = scr_bytes_next_cp((const uint8_t *)s->data, &i);
+      uint32_t cp = scr_bytes_next_cp((const uint8_t *)s->data, s->len, &i);
       uint32_t first = cp, second = 0;
       if (cp > 0xffff) {
         cp -= 0x10000;

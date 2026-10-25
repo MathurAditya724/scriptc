@@ -66,6 +66,25 @@ import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js
 import type { WalkerHost } from "./walkers.js";
 import type { LlStreamTypedRefAdapter } from "./expr-context.js";
 
+/** typeKey with `?` after every `(T | undefined)[]` (optionalElements),
+ * at any depth of arrays, Maps, Sets and promises: checked conversions to
+ * `number[][]` and `(number | undefined)[][]` need separate helpers, though
+ * the two types share a typeKey. */
+function checkedConversionKey(t: IrType): string {
+  switch (t.kind) {
+    case "array":
+      return `array<${checkedConversionKey(t.elem)}>${t.optionalElements ? "?" : ""}`;
+    case "map":
+      return `map<${checkedConversionKey(t.key)},${checkedConversionKey(t.value)}>`;
+    case "set":
+      return `set<${checkedConversionKey(t.elem)}>`;
+    case "promise":
+      return `promise<${checkedConversionKey(t.inner)}>`;
+    default:
+      return typeKey(t);
+  }
+}
+
 /** Whether to-dyn of a record shape keeps the record itself: an empty shape
  * and an event-listener record (a `handleEvent` function field) box their
  * identity. Every other shape, tuples included, copies its fields into a
@@ -152,6 +171,18 @@ export const DYN_KIND = {
   BIGINT: 14,
   SYMBOL: 15,
 } as const;
+
+/** Union arm kinds whose matchers reject every plain dyn object
+ * (trustedArmByLiteral). */
+const NON_OBJECT_ARM_KINDS: ReadonlySet<IrType["kind"]> = new Set<IrType["kind"]>([
+  "f64",
+  "string",
+  "bool",
+  "nullT",
+  "undefinedT",
+  "bigint",
+  "symbol",
+]);
 
 /** What the dyn helpers need beyond the walker host: interned immortal
  * unit instances (undefined-armed dynCheck targets build them). */
@@ -394,6 +425,51 @@ export class LlDyn {
     B.line(`call void @scr_dyn_build_add(ptr %d, ptr @${name}, ptr ${value})`);
   }
 
+  /** Whether a builder of `def` may pick a plain object's arm by its literal
+   * discriminator alone inside a trusted build (scr_dyn_trust_enter): the
+   * arms' literals are disjoint, and every arm without a literal has a kind
+   * no plain object matches. The value then matched exactly one arm with a
+   * literal, the arm whose literal it carries. */
+  private trustedArmByLiteral(def: IrUnionDef): boolean {
+    const discriminant = def.discriminant;
+    if (!discriminant) return false;
+    const seen = new Set<string>();
+    for (const { values } of discriminant.cases) {
+      for (const value of values) {
+        const key = `${typeof value}:${String(value)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+      }
+    }
+    return def.arms.every(
+      (arm, tag) =>
+        discriminant.cases.some((candidate) => candidate.tag === tag) ||
+        NON_OBJECT_ARM_KINDS.has(arm.kind),
+    );
+  }
+
+  /** Per arm of `def`, the dyn kind of the values a builder may convert into
+   * that arm without matching its structure inside a trusted build, or null.
+   * A value there already matched one of the union's arms, so the arm is
+   * known when it is the only arm that takes values of its kind: the arm
+   * whose literal a plain object carries (trustedArmByLiteral), or the one
+   * arm a plain object or an array can match at all. */
+  private trustedArmKinds(def: IrUnionDef): (number | null)[] {
+    const byLiteral = this.trustedArmByLiteral(def);
+    const objectArms = def.arms.flatMap((arm, tag) =>
+      NON_OBJECT_ARM_KINDS.has(arm.kind) ? [] : [tag],
+    );
+    return def.arms.map((arm, tag) => {
+      if (def.discriminant?.cases.some((candidate) => candidate.tag === tag))
+        return byLiteral ? DYN_KIND.OBJ : null;
+      if (objectArms.length !== 1 || objectArms[0] !== tag) return null;
+      if (arm.kind === "array") return DYN_KIND.ARR;
+      if (arm.kind === "record" && this.host.recordsById.get(arm.shapeId)?.tuple !== true)
+        return DYN_KIND.OBJ;
+      return null;
+    });
+  }
+
   /** The order a dyn value tries a union's arms in: the canonical order,
    * except that among the record arms, those with more required fields go
    * first, then those with more fields. Records are width-tolerant, so an
@@ -461,6 +537,7 @@ export class LlDyn {
     none: string,
     preserveRefs: boolean,
     table: string,
+    trustedKinds: readonly (number | null)[] = def.arms.map(() => null),
   ): void {
     const discriminant = def.discriminant!;
     const literalsOf = (tag: number): readonly (string | number | boolean)[] | null =>
@@ -500,7 +577,7 @@ export class LlDyn {
       positions.forEach((position, index) => {
         const tag = order[position]!;
         const failed = B.newLabel("du.c.f");
-        this.unionArmStructure(B, def, tag, hits[tag]!, failed, preserveRefs);
+        this.unionArmStructure(B, def, tag, hits[tag]!, failed, preserveRefs, trustedKinds[tag]!);
         B.startBlock(failed);
         const next = index === positions.length - 1 ? none : B.newLabel("du.c.n");
         const same = B.tmp();
@@ -523,12 +600,23 @@ export class LlDyn {
     tryCase(-1);
     order.forEach((tag, position) => {
       B.startBlock(from[position]!);
-      this.unionArmMatch(B, def, tag, hits[tag]!, after(position), preserveRefs);
+      this.unionArmMatch(
+        B,
+        def,
+        tag,
+        hits[tag]!,
+        after(position),
+        preserveRefs,
+        trustedKinds[tag]!,
+      );
     });
   }
 
   /** Branch to a variant only after its literal discriminator and complete
-   * structure match. Use the same path for predicates and builders. */
+   * structure match. Use the same path for predicates and builders. With a
+   * `trustedKind` (builders, trustedArmKinds), a value of that dyn kind
+   * inside a trusted build skips the structure match once its literal
+   * matched. */
   private unionArmMatch(
     B: BlockBuilder,
     def: IrUnionDef,
@@ -536,6 +624,7 @@ export class LlDyn {
     yes: string,
     no: string,
     preserveRefs = false,
+    trustedKind: number | null = null,
   ): void {
     const guard = def.discriminant?.cases.find((candidate) => candidate.tag === tag);
     if (guard && def.discriminant) {
@@ -564,10 +653,12 @@ export class LlDyn {
       });
       B.startBlock(structure);
     }
-    this.unionArmStructure(B, def, tag, yes, no, preserveRefs);
+    this.unionArmStructure(B, def, tag, yes, no, preserveRefs, trustedKind);
   }
 
-  /** The part of unionArmMatch past the arm's literal test. */
+  /** The part of unionArmMatch past the arm's literal test. With a
+   * `trustedKind`, a value of that dyn kind inside a trusted build skips the
+   * structure match. */
   private unionArmStructure(
     B: BlockBuilder,
     def: IrUnionDef,
@@ -575,7 +666,21 @@ export class LlDyn {
     yes: string,
     no: string,
     preserveRefs: boolean,
+    trustedKind: number | null = null,
   ): void {
+    if (trustedKind !== null) {
+      this.host.declare(`declare zeroext i1 @scr_dyn_trusted_build()`);
+      const kind = this.kindOf(B, "%d");
+      const sameKind = B.tmp();
+      const trusted = B.tmp();
+      const skip = B.tmp();
+      B.line(`${sameKind} = icmp eq i32 ${kind}, ${trustedKind}`);
+      B.line(`${trusted} = call zeroext i1 @scr_dyn_trusted_build()`);
+      B.line(`${skip} = and i1 ${sameKind}, ${trusted}`);
+      const full = B.newLabel("du.full");
+      B.condBr(skip, yes, full);
+      B.startBlock(full);
+    }
     const matches = B.tmp();
     B.line(
       `${matches} = call zeroext i1 @${this.dynMatchHelper(def.arms[tag]!, preserveRefs)}(ptr %d)`,
@@ -673,6 +778,13 @@ export class LlDyn {
   /* ── dyn node plumbing ─────────────────────────────────────────────── */
 
   /** Loads a dyn node's kind tag (after the size_t rc word). */
+  /** i1: the checked-dynamic value `d` is undefined. */
+  isUndefined(B: BlockBuilder, d: string): string {
+    const is = B.tmp();
+    B.line(`${is} = icmp eq i32 ${this.kindOf(B, d)}, ${DYN_KIND.UNDEF}`);
+    return is;
+  }
+
   private kindOf(B: BlockBuilder, d: string): string {
     const p = B.tmp();
     const k = B.tmp();
@@ -1059,7 +1171,7 @@ export class LlDyn {
 
   /** `sc_dm_<n>(ptr d) -> i1` — does this dyn fit T? Never throws. */
   dynMatchHelper(t: IrType, preserveRefs = false): string {
-    const key = typeKey(t);
+    const key = checkedConversionKey(t);
     const matcherKey = preserveRefs ? `identity:${key}` : key;
     const existing = this.dynMatchers.get(matcherKey);
     if (existing) return existing;
@@ -1374,7 +1486,7 @@ export class LlDyn {
         B.startBlock(l0);
         const n = this.lenOf(B, "%d");
         const items = this.itemsOf(B, "%d");
-        this.i64Loop(B, "dm.el", n, (i, brNext) => {
+        this.i64Loop(B, "dm.el", n, (i, brNext, next) => {
           this.host.declare(`declare zeroext i1 @scr_dyn_arr_has_index(ptr, ${this.S})`);
           const present = B.tmp();
           B.line(`${present} = call zeroext i1 @scr_dyn_arr_has_index(ptr %d, ${this.S} ${i})`);
@@ -1385,6 +1497,15 @@ export class LlDyn {
           brNext();
           B.startBlock(valueLabel);
           const e = this.itemAt(B, items, i);
+          if (t.optionalElements) {
+            // A `(T | undefined)[]` stored as T elements takes undefined
+            // elements as well.
+            const undef = B.tmp();
+            const checkLabel = B.newLabel("dm.check");
+            B.line(`${undef} = icmp eq i32 ${this.kindOf(B, e)}, ${DYN_KIND.UNDEF}`);
+            B.condBr(undef, next, checkLabel);
+            B.startBlock(checkLabel);
+          }
           const ok = B.tmp();
           B.line(`${ok} = call zeroext i1 @${m}(ptr ${e})`);
           const lOk = B.newLabel("dm.eo");
@@ -1480,8 +1601,9 @@ export class LlDyn {
    * fields, and at least one unless an index signature collects the
    * members), record members typed as unions of those leaves, records and
    * arrays, null and undefined (optional and nullable members; see
-   * jsonUnionSupported), and index signatures whose value type is not a
-   * union. Everything else keeps the checked-dynamic route alone. */
+   * jsonUnionSupported), discriminated unions of records anywhere (see
+   * jsonDiscriminatedSupported), and index signatures whose value type is
+   * not a union. Everything else keeps the checked-dynamic route alone. */
   private jsonSchemaSupported(t: IrType, visiting: Set<string>, member = false): boolean {
     switch (t.kind) {
       case "f64":
@@ -1508,11 +1630,40 @@ export class LlDyn {
           (!index || this.jsonSchemaSupported(index, visiting))
         );
       }
-      case "union":
+      case "union": {
+        const def = this.host.unionsById.get(t.unionId);
+        if (def?.discriminant) return this.jsonDiscriminatedSupported(def, visiting);
         return member && this.jsonUnionSupported(t, visiting);
+      }
       default:
         return false;
     }
+  }
+
+  /** A discriminated union the one-pass parser writes directly, as a record
+   * member, an array element or the whole document: record arms that each
+   * name the string literals their discriminant member holds, every
+   * literal naming one arm, plus null and undefined arms. An object then
+   * selects the one arm whose literal its discriminant member holds, the
+   * only arm the checked route's literal tests leave to match
+   * (unionArmsByDiscriminant); an object holding no such literal declines. */
+  private jsonDiscriminatedSupported(def: IrUnionDef, visiting: Set<string>): boolean {
+    const discriminant = def.discriminant!;
+    const literals = new Set<string>();
+    let records = 0;
+    const supported = def.arms.every((arm, tag) => {
+      if (arm.kind === "nullT" || arm.kind === "undefinedT") return true;
+      if (arm.kind !== "record") return false;
+      records++;
+      const guard = discriminant.cases.find((candidate) => candidate.tag === tag);
+      if (!guard || guard.values.length === 0) return false;
+      for (const value of guard.values) {
+        if (typeof value !== "string" || literals.has(value)) return false;
+        literals.add(value);
+      }
+      return this.jsonSchemaSupported(arm, visiting);
+    });
+    return supported && records >= 2;
   }
 
   /** A union record member the one-pass parser writes directly: every arm
@@ -1619,9 +1770,15 @@ export class LlDyn {
         body = `${S} 3, ${S} ${entries.length}, ptr ${fields}, ptr ${overflow.elem}, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}, ptr null, ${S} ${overflow.offset}`;
         break;
       }
-      case "union":
-        body = `${S} 5, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null, ptr @${this.jsonUnionSchema(t, name)}, ${S} 0`;
+      case "union": {
+        // A discriminated union can be a whole document, whose value the
+        // parser releases when text follows it.
+        const release = host.unionsById.get(t.unionId)?.discriminant
+          ? vAdapters(host, t).release
+          : "null";
+        body = `${S} 5, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr ${release}, ptr @${this.jsonUnionSchema(t, name)}, ${S} 0`;
         break;
+      }
       default:
         throw new InternalCompilerError(`llvm emitter bug: JSON schema of ${t.kind}`);
     }
@@ -1636,7 +1793,11 @@ export class LlDyn {
   /** The ScrJsonUnion descriptor of a union member (scr_json.h layout):
    * its slot representation, the arm each JSON value kind selects, and the
    * values the runtime stores for null and for a missing member. Boxed
-   * unions build their boxes through `<name>_box`. */
+   * unions build their boxes through `<name>_box`. A discriminated union
+   * also lists its object arms by discriminant literal (`<name>_cases`),
+   * and, because it can be an array element or a whole document, whose
+   * values are boxes unless the union is a pointer union, it keeps its null
+   * value and box whatever its field representation. */
   private jsonUnionSchema(t: IrType & { kind: "union" }, name: string): string {
     const host = this.host;
     const S = host.sizeType;
@@ -1655,10 +1816,11 @@ export class LlDyn {
     );
     const nullTag = tags[0]!;
     const absentTag = tags[6]!;
-    const nullValue = !inline && nullTag >= 0 ? host.unitInstanceRef(t.unionId, nullTag) : "null";
-    const absentValue = !inline && absentTag >= 0 ? host.absentInstanceRef(t.unionId) : "null";
+    const values = !inline || def.discriminant !== undefined;
+    const nullValue = values && nullTag >= 0 ? host.unitInstanceRef(t.unionId, nullTag) : "null";
+    const absentValue = values && absentTag >= 0 ? host.absentInstanceRef(t.unionId) : "null";
     let box = "null";
-    if (repr === 2) {
+    if (repr === 2 || (def.discriminant && !nullable)) {
       box = `@${name}_box`;
       const lines = [`define internal ptr ${box}(i32 %tag, i64 %bits) ${FN_ATTRS} {`, `entry:`];
       const cases: string[] = [];
@@ -1699,9 +1861,27 @@ export class LlDyn {
         ``,
       );
     }
+    let cases = "null";
+    if (def.discriminant) {
+      const discriminant = def.discriminant;
+      const caseTy = `{ ptr, ${S}, ${S}, ptr }`;
+      const entries = discriminant.cases.flatMap((guard) =>
+        guard.values.map(
+          (value) =>
+            `${caseTy} { ptr ${host.cstr(String(value))}, ${S} ${Buffer.byteLength(String(value), "utf8")}, ${S} ${guard.tag}, ptr @${this.jsonSchema(def.arms[guard.tag]!)} }`,
+        ),
+      );
+      const table = `@${name}_case_table`;
+      cases = `@${name}_cases`;
+      this.defs.push(
+        `${table} = internal constant [${entries.length} x ${caseTy}] [${entries.join(", ")}]`,
+        `${cases} = internal constant { ptr, ${S}, ${S}, ptr } { ptr ${host.cstr(discriminant.field)}, ${S} ${Buffer.byteLength(discriminant.field, "utf8")}, ${S} ${entries.length}, ptr ${table} }`,
+        ``,
+      );
+    }
     const descriptor = `${name}_union`;
     this.defs.push(
-      `@${descriptor} = internal constant { ${S}, [7 x ${S}], [7 x ptr], ptr, ptr, ptr } { ${S} ${repr}, [7 x ${S}] [${tags.map((tag) => `${S} ${tag}`).join(", ")}], [7 x ptr] [${arms.join(", ")}], ptr ${nullValue}, ptr ${absentValue}, ptr ${box} }`,
+      `@${descriptor} = internal constant { ${S}, [7 x ${S}], [7 x ptr], ptr, ptr, ptr, ptr } { ${S} ${repr}, [7 x ${S}] [${tags.map((tag) => `${S} ${tag}`).join(", ")}], [7 x ptr] [${arms.join(", ")}], ptr ${nullValue}, ptr ${absentValue}, ptr ${box}, ptr ${cases} }`,
       ``,
     );
     return descriptor;
@@ -1751,7 +1931,12 @@ export class LlDyn {
    * dynCheck builder — which reports the exact error. Returns +1, or null
    * with the pending flag set. */
   jsonParseHelper(t: IrType): string | null {
-    if (t.kind !== "record" && t.kind !== "array") return null;
+    if (
+      t.kind !== "record" &&
+      t.kind !== "array" &&
+      !(t.kind === "union" && this.host.unionsById.get(t.unionId)?.discriminant)
+    )
+      return null;
     const key = typeKey(t);
     const existing = this.jsonParsers.get(key);
     if (existing) return existing;
@@ -1796,7 +1981,8 @@ export class LlDyn {
    * BUILD the typed value (+1), or throw the catchable path-annotated
    * TypeError and return a dummy with the pending flag set. */
   dynCheckHelper(t: IrType, preserveRefs = false): string {
-    const key = typeKey(t);
+    // A `(T | undefined)[]` stored as T elements also takes undefined ones.
+    const key = checkedConversionKey(t);
     const builderKey = preserveRefs ? `identity:${key}` : key;
     const existing = this.dynBuilders.get(builderKey);
     if (existing) return existing;
@@ -2603,6 +2789,21 @@ export class LlDyn {
           B.line(`${ip} = getelementptr inbounds %ScrDynPath, ptr ${pathSlot}, i64 0, i32 2`);
           B.line(`store ${host.sizeType} ${i}, ptr ${ip}`);
           const e = this.itemAt(B, items, i);
+          if (t.optionalElements) {
+            // An undefined element is a present undefined element.
+            const undef = B.tmp();
+            const storeUndefined = B.newLabel("dca.undef");
+            const checkLabel = B.newLabel("dca.check");
+            B.line(`${undef} = icmp eq i32 ${this.kindOf(B, e)}, ${DYN_KIND.UNDEF}`);
+            B.condBr(undef, storeUndefined, checkLabel);
+            B.startBlock(storeUndefined);
+            host.declare(`declare void @scr_arr_set_undefined(ptr, double)`);
+            const at = B.tmp();
+            B.line(`${at} = ${sizeToDouble(this.S)} ${this.S} ${i} to double`);
+            B.line(`call void @scr_arr_set_undefined(ptr ${a}, double ${at})`);
+            B.br(doneLabel);
+            B.startBlock(checkLabel);
+          }
           const v = B.tmp();
           B.line(`${v} = call ${this.valTy(elem)} @${c}(ptr ${e}, ptr ${pathSlot})`);
           this.pendingBail(
@@ -2629,7 +2830,18 @@ export class LlDyn {
             `llvm emitter bug: dynCheck of unknown union ${t.unionId}`,
           );
         // Arms in unionArmOrder, first FULL match wins. The matched arm's
-        // builder can no longer fail.
+        // builder can no longer fail, and it runs as a trusted build: a
+        // nested union inside it picks the arm trustedArmKinds names without
+        // matching the structure that this match already checked.
+        const trustedKinds = preserveRefs ? def.arms.map(() => null) : this.trustedArmKinds(def);
+        const trustedCall = (call: () => void): void => {
+          host.declare(`declare zeroext i1 @scr_dyn_trust_enter()`);
+          host.declare(`declare void @scr_dyn_trust_exit(i1 zeroext)`);
+          const previous = B.tmp();
+          B.line(`${previous} = call zeroext i1 @scr_dyn_trust_enter()`);
+          call();
+          B.line(`call void @scr_dyn_trust_exit(i1 zeroext ${previous})`);
+        };
         const build = (i: number): void => {
           const arm = def.arms[i]!;
           if (arm.kind === "undefinedT" || arm.kind === "nullT") {
@@ -2657,14 +2869,22 @@ export class LlDyn {
           } else if (host.nullableUnions.has(t.unionId)) {
             // A nullable union is its (+1) reference payload.
             const x = B.tmp();
-            B.line(`${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`);
+            trustedCall(() =>
+              B.line(
+                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+              ),
+            );
             B.terminate(`ret ptr ${x}`);
           } else {
             const rc = vAdapters(host, arm);
             host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
             const x = B.tmp();
             const u = B.tmp();
-            B.line(`${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`);
+            trustedCall(() =>
+              B.line(
+                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+              ),
+            );
             B.line(
               `${u} = call ptr @scr_union_new_ref(i32 ${i}, ptr ${x}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host, arm)})`,
             );
@@ -2685,6 +2905,7 @@ export class LlDyn {
             unmatched,
             preserveRefs,
             `@${name}.cases`,
+            trustedKinds,
           );
           for (const i of order) {
             B.startBlock(hits[i]!);
@@ -2695,7 +2916,7 @@ export class LlDyn {
           for (const i of order) {
             const lHit = B.newLabel("dcu.h");
             const lNext = B.newLabel("dcu.n");
-            this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs);
+            this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs, trustedKinds[i]!);
             B.startBlock(lHit);
             build(i);
             B.startBlock(lNext);

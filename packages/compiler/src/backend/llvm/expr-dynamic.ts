@@ -31,7 +31,8 @@ import { elemAccess, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { emitUnionWiden } from "./expr-records.js";
-import { emitJsIcMethod, jsIcMethods } from "./js-ic.js";
+import { emitJsIcLiteralMember, emitJsIcMethod, jsIcMethods } from "./js-ic.js";
+import { jsIcLiteralKey } from "../../ir/js-ic.js";
 import { DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
@@ -316,9 +317,14 @@ export function emitDynamicExpr(
       const obj = B.tmp();
       B.line(`${obj} = call ptr @scr_dyn_new_obj()`);
       const out = host.own({ name: obj, type: e.type });
+      const cached = jsIcMethods(host);
       for (const f of e.fields ?? []) {
         const k = emitBorrowedInput(host, f.key);
         const v = emitBorrowedInput(host, f.value);
+        if (cached && jsIcLiteralKey(f.key) !== null) {
+          emitJsIcLiteralMember(host, obj, k.name, v.name);
+          continue;
+        }
         B.line(
           `call void @${f.key.type.kind === "dyn" ? "scr_dyn_key_set_computed" : "scr_dyn_key_set"}(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`,
         );

@@ -325,8 +325,7 @@ class Analyzer {
   }
 
   run(): ShapeAnalysis {
-    for (const sf of this.program.getSourceFiles()) {
-      if (sf.isDeclarationFile) continue;
+    for (const sf of this.program.getImplementationSourceFiles()) {
       const name = sf.fileName.split("\\").join("/");
       const inPackage = isPackageJsFile(sf);
       if (!inPackage && name.includes("/node_modules/")) continue;
