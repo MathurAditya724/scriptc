@@ -96,9 +96,13 @@ static SCR_TL ScrDyn *scr_iterator_symbol;
 static SCR_TL ScrDyn *scr_async_iterator_symbol;
 static SCR_TL ScrDyn *scr_to_primitive_symbol;
 static bool scr_dyn_generator(const ScrDyn *value) {
-  return value && value->kind == SCR_DYN_TYPED_REF &&
-    (value->v.typed_ref.type_key[0] == 'g' || value->v.typed_ref.type_key[0] == 'a') &&
-    (!strncmp(value->v.typed_ref.type_key, "generator<", 10) || !strncmp(value->v.typed_ref.type_key, "async-generator<", 16));
+  if (!value || value->kind != SCR_DYN_TYPED_REF) return false;
+  /* Array keys also start with 'a': the second byte sets them apart before
+   * any comparison. */
+  const char *key = value->v.typed_ref.type_key;
+  size_t len = value->v.typed_ref.type_key_len;
+  if (key[0] == 'g') return len >= 10 && !memcmp(key, "generator<", 10);
+  return key[0] == 'a' && key[1] == 's' && len >= 16 && !memcmp(key, "async-generator<", 16);
 }
 static bool scr_dyn_generator_symbol(const ScrDyn *value, const ScrDyn *key) {
   const ScrDyn *symbol = value->v.typed_ref.type_key[0] == 'a' ? scr_async_iterator_symbol : scr_iterator_symbol;
@@ -7494,6 +7498,23 @@ static ScrDyn *scr_native_iterator_new(ScrDyn *source) {
   return result;
 }
 
+#ifdef SCR_JS_TIER
+/* A read site's answer for a receiver without a JS shape whose property is
+ * plain data the runtime holds directly: a native array's length (the
+ * generic read would build its checked view first) and a native iterator's
+ * `next` (the builtin the generic read returns). +1, or NULL for the slow
+ * path. */
+ScrDyn *scr_dyn_tier_unshaped_get(const ScrDyn *receiver, const ScrStr *key) {
+  if (key->len == 6 && receiver->kind == SCR_DYN_TYPED_REF && !memcmp(key->data, "length", 6) &&
+      scr_dyn_typed_ref_array_ops(receiver) && scr_dyn_ref_is_array(receiver))
+    return scr_dyn_new_num((double)((ScrArr *)receiver->v.typed_ref.ptr)->len);
+  if (key->len == 4 && receiver->kind == SCR_DYN_HANDLE &&
+      receiver->v.handle.tag == SCR_DYNH_ITERATOR && !memcmp(key->data, "next", 4))
+    return scr_native_iterator_get(receiver->v.handle.ptr, key->data, key->len);
+  return NULL;
+}
+#endif
+
 static ScrDyn *scr_native_collection_iterator(ScrDyn *source, unsigned selection) {
   ScrDyn *result = scr_native_iterator_new(source);
   ((ScrNativeIterator *)result->v.handle.ptr)->selection = selection;
@@ -8384,7 +8405,9 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
   }
   /* An array whose iterator method is the builtin values(): what calling
    * it with the array as `this` returns, without the call. */
-  if (source->kind == SCR_DYN_ARR && method == scr_iterator_functions[1]) {
+  if (method == scr_iterator_functions[1] &&
+      (source->kind == SCR_DYN_ARR ||
+       (source->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(source)))) {
     scr_dyn_release(method);
     return scr_native_iterator_new((ScrDyn *)source);
   }
