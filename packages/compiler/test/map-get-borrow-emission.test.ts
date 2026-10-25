@@ -49,9 +49,20 @@ function temporary(keys: number[]): number {
   }
   return total;
 }
+class Holder {
+  m = new Map<number, Counter>([[1, new Counter()]]);
+  key(): number {
+    this.m = new Map();
+    return 1;
+  }
+  read(): number {
+    const held = this.m.get(this.key());
+    return held === undefined ? 0 : held.num;
+  }
+}
 const numbers = new Map<number, Counter>();
 count(numbers, [1, 2, 1]);
-console.log(named(new Map([["a", new Counter()]]), "a"), replaced(numbers), aliased(numbers), temporary([1, 2]));
+console.log(named(new Map([["a", new Counter()]]), "a"), replaced(numbers), aliased(numbers), temporary([1, 2]), new Holder().read());
 `,
     );
     const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
@@ -72,6 +83,10 @@ console.log(named(new Map([["a", new Counter()]]), "a"), replaced(numbers), alia
     // does a read from a map that is released after the declaration.
     for (const name of ["replaced", "aliased", "temporary"])
       expect(fn(name)).toContain("@sc_retain_Counter");
+    // A key whose evaluation replaces the receiver's field leaves the read
+    // on the old map, which the statement releases: the read keeps its own
+    // reference.
+    expect(fn("_x25_Holder_read")).toContain("@sc_retain_Counter");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

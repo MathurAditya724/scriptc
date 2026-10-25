@@ -186,8 +186,10 @@ function heldReceiver(expr: IrExpr): boolean {
  * branches and joins them; any other statement that names the local is
  * judged whole. A later pass of an enclosing loop declares the local again,
  * so only the rest of its own statement list matters. The map must be held
- * by a local or a field (heldReceiver), and locals declared from the local
- * count as its uses. An update such as
+ * by a local or a field (heldReceiver), the read itself must preserve
+ * reference edges (a key whose evaluation replaces the receiver's field
+ * leaves the read on a map the statement releases), and locals declared
+ * from the local count as its uses. An update such as
  * `const c = m.get(k); if (c === undefined) m.set(k, v); else c.n++` keeps
  * the borrow: the write runs only on the branch that does not read `c`. */
 export function findMapReadBorrows(
@@ -264,6 +266,7 @@ export function findMapReadBorrows(
         stmt.kind === "varDecl" &&
         stmt.init?.kind === "mapIntrinsic" &&
         heldReceiver(stmt.init.receiver) &&
+        effects.preserves(stmt.init) &&
         candidate(stmt) &&
         walk(list.slice(index + 1), new Set([stmt.localId]), false) !== null
       )

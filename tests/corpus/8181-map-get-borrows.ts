@@ -2,7 +2,8 @@
 // release the entry's value: an update on the absent branch, a write, delete
 // or clear before a later read, a call that may change the map, loops,
 // string keys, values that are stored, returned or compared, a local declared
-// from the read, and a read from a temporary map.
+// from the read, a read from a temporary map, and a key that replaces the
+// field holding the map.
 class Counter {
   num: number;
   label: string;
@@ -153,3 +154,19 @@ function fromTemporary(): string {
   return held === undefined ? "none" : `${held.num}:${held.label}:${filler.length}`;
 }
 console.log("temporary", fromTemporary());
+
+// A key whose evaluation replaces the field that holds the map: the read
+// uses the old map, which only the statement still holds.
+class Holder {
+  m = new Map<number, Counter>([[1, new Counter(9, "nine")]]);
+  key(): number {
+    this.m = new Map();
+    return 1;
+  }
+  read(): string {
+    const held = this.m.get(this.key());
+    const filler = [new Counter(10, "filler"), new Counter(11, "filler")];
+    return held === undefined ? "none" : `${held.num}:${held.label}:${filler.length}:${this.m.size}`;
+  }
+}
+console.log("replaced by key", new Holder().read());
