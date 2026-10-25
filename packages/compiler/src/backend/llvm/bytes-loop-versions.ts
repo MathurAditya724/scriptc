@@ -20,6 +20,7 @@ import {
 } from "./counted-loops.js";
 import { emitBytesData, emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
 import { f64Lit } from "./common.js";
+import { InternalCompilerError } from "../../errors.js";
 import {
   emitStringAsciiFlag,
   emitStringByteLength,
@@ -85,8 +86,15 @@ export interface BytesLoopVersion {
   /** Root receiver bindings, read once before the loop; `string` marks a
    * string whose `charCodeAt` and `charAt` reads the version covers. */
   receivers: { ref: VarRef; global: boolean; string: boolean }[];
-  /** Receivers the guard requires to have no shared storage. */
+  /** Receivers the guard requires to have no shared storage for the fast
+   * copy. */
   ownedReceivers: number[];
+  /** Worker programs: when the bounds hold but a receiver in
+   * `ownedReceivers` has shared storage, the loop runs a second fast copy
+   * instead of the checked one. It skips the bounds checks of `bounds` and
+   * keeps shared-safe accesses (emitBytesLoopVersionGuard's `sharedFast`). Set
+   * when the version proves bounds as well as ownership. */
+  sharedCopy: boolean;
   /** The string reads among `bounds`. */
   stringReads: ReadonlySet<Node>;
   /** The version's one string receiver, when the loop may also run over
@@ -752,6 +760,7 @@ export function matchBytesLoopVersion(
     owned: ownedNodes,
     receivers: order.map((index) => receivers[index]!),
     ownedReceivers: ownedKept.map(([receiver]) => renumber.get(receiver)!),
+    sharedCopy: ownedKept.length > 0 && bounds.size > 0,
     stringReads,
     unitsReceiver,
     unitLengths: unitLengths ?? new Set<IrExpr>(),
@@ -1102,6 +1111,10 @@ function findWhileCounterAccesses(
  * storage, and to `slow` otherwise (including a counted loop whose
  * integer form is not established, or a module receiver not yet set).
  *
+ * With `sharedFast` (a version with `sharedCopy`), the ownership tests are
+ * separate: when everything else holds but a view has shared storage, the
+ * guard branches to `sharedFast` instead of `slow`.
+ *
  * With `unitsFast`, the version's units receiver may instead be a string
  * that is not ASCII: the guard has the runtime publish it as the scan
  * receiver (one read), tests the same accesses against its UTF-16 length,
@@ -1115,6 +1128,7 @@ export function emitBytesLoopVersionGuard(
   fast: string,
   slow: string,
   unitsFast?: string,
+  sharedFast?: string,
 ): { units: string | null; length: string | null } | null {
   const B = host.B;
   const next = (cond: string): void => {
@@ -1165,10 +1179,13 @@ export function emitBytesLoopVersionGuard(
     if (string && index !== unitsIndex)
       conditions.push(emitStringAsciiFlag(host, receivers[index]!));
   });
+  // Without `sharedFast`, shared storage sends the loop to the checked copy
+  // with the other failed tests; with it, only to the shared fast copy.
+  const ownership: string[] = [];
   for (const index of version.ownedReceivers) {
     const owned = B.tmp();
     B.line(`${owned} = icmp eq ptr ${emitBytesSharedStorage(host, receivers[index]!)}, null`);
-    conditions.push(owned);
+    (sharedFast !== undefined ? ownership : conditions).push(owned);
   }
   for (const check of version.fixed) {
     const ok = B.tmp();
@@ -1351,7 +1368,22 @@ export function emitBytesLoopVersionGuard(
   const length = version.unitsReceiver !== null ? lengths[version.unitsReceiver]! : null;
   const taken = units.read;
   const target = taken ? B.newLabel("bytes.version.units") : fast;
-  if (valid === "true") B.br(target);
+  if (sharedFast !== undefined && taken)
+    throw new InternalCompilerError("llvm emitter bug: a shared fast copy with a units copy");
+  if (sharedFast !== undefined && ownership.length > 0) {
+    // The bounds hold: unshared views take the owned copy.
+    const split = B.newLabel("bytes.version.owned");
+    let owned = ownership[0]!;
+    for (const cond of ownership.slice(1)) {
+      const all = B.tmp();
+      B.line(`${all} = and i1 ${owned}, ${cond}`);
+      owned = all;
+    }
+    if (valid === "true") B.br(split);
+    else B.condBr(valid, split, slow);
+    B.startBlock(split);
+    B.condBr(owned, target, sharedFast);
+  } else if (valid === "true") B.br(target);
   else B.condBr(valid, target, slow);
   if (!taken) return { units: null, length };
   B.startBlock(target);
