@@ -1991,6 +1991,19 @@ double scr_str_utf16_len(ScrStr *s) {
   return (double)(int64_t)units;
 }
 
+/* Records the UTF-16 length of a string whose producer counted it (latin1
+ * text has one unit per byte), so scr_str_utf16_len does not walk it. Only
+ * strings that scr_str_utf16_len would otherwise record are kept. */
+void scr_str_note_utf16_len(ScrStr *s, size_t units) {
+  if (s->ascii || s->len <= 64 || s->rc == SIZE_MAX) return;
+  if (!scr_u16len_tab) {
+    scr_u16len_tab = calloc(SCR_U16LEN_N, sizeof *scr_u16len_tab);
+    if (!scr_u16len_tab) return;
+    scr_sidx_register_cleanup();
+  }
+  *scr_u16len_slot(s) = (ScrU16Len){s, units};
+}
+
 double scr_str_char_code_at(ScrStr *s, double i) {
   /* A sequential scan of a non-ASCII receiver stays inside the bounded
    * ASCII span cached at its last resolved position. Its unit offset is an
