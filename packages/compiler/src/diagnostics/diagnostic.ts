@@ -71,9 +71,11 @@
  *            required to be native (SC8003) or every island refused
  *            (SC8002) while outside the native subset, and the R2
  *            object-model constructs in user JavaScript (SC8101–SC8105,
- *            behind --strict-user-js); and programs that call into
- *            Node.js where the build finds no usable libnode pack
- *            (SC8005), or cannot collect the modules a call loads (SC8006)
+ *            behind --strict-user-js); programs that call into Node.js
+ *            where the build finds no usable libnode pack (SC8005), or
+ *            cannot collect the modules a call loads (SC8006); and type
+ *            patches from `scriptc.typePatches` that did not apply as
+ *            written (SC8030–SC8033, warnings)
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
@@ -287,6 +289,25 @@ export function nodeIslandsOffModuleDiag(
     loc,
     hint: "allow Node islands (--node-islands=auto or explicit), or remove the marking",
   };
+}
+
+/** SC8030–SC8033 — a type patch (`scriptc.typePatches`) that did not
+ * apply as written: no range covers the installed copy (SC8030), its
+ * selector matches nothing (SC8031), the declaration already has the type
+ * (SC8032), or the selector is ambiguous or not patchable (SC8033).
+ * Warnings: the build goes on with the declarations it has. */
+export function typePatchDiag(
+  code: "SC8030" | "SC8031" | "SC8032" | "SC8033",
+  message: string,
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return { code, message, loc, hint };
+}
+
+/** True for the type patch warnings (SC8030–SC8033). */
+export function isTypePatchCode(code: string): boolean {
+  return /^SC803[0-3]$/.test(code);
 }
 
 /** SC8003 — a package marked "native" is outside the native subset. */

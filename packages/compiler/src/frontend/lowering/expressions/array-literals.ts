@@ -504,7 +504,7 @@ export function lowerArrayLiteral(
       // interned helper as Array.from(s); the result rides the array
       // machinery below like any string[] source.
       if (src.type.kind === "string") {
-        src = strCharsCall(lowerer, src, locOf(el));
+        src = strCharsCall(src, locOf(el));
       }
       // `[...typedArray]`: represented typed arrays are dense numeric
       // iterables, so drain their elements into the fresh number[] that

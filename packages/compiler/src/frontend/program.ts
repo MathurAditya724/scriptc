@@ -140,6 +140,7 @@ import {
 } from "./type-only-imports.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { planDeclProjection, type DeclProjection } from "./decl-projection.js";
+import { configureTypePatches, packageSourceText } from "./type-patches/layer.js";
 import { reportShapes } from "./shape-inference/index.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
@@ -477,7 +478,7 @@ function visitNpmStaticDeclarationClosure(
     if (normalized !== packageRoot && !normalized.startsWith(packageRoot + "/")) return;
     if (seen.has(path)) return;
     seen.add(path);
-    const source = trackedReadFile(path);
+    const source = packageSourceText(path);
     if (source === null) return;
     onSource(path, source);
     for (const specifier of npmStaticDeclarationReexports(services.parse(path, source, "ts"))) {
@@ -1068,6 +1069,9 @@ export function loadProgram(
   // JavaScript, even when named. A registry entry's `sourceVersions`
   // (chalk 6) compile from their own source.
   configurePackageShims(entryPath);
+  // The project's type patches (type-patches/layer.ts), read by every host
+  // this load creates; nothing at all without `scriptc.typePatches`.
+  configureTypePatches(entryPath, (path, text, kind) => services.parse(path, text, kind));
   const npmStaticPackages = [...new Set(opts?.npmStatic ?? [])].filter(
     (name) => !npmStaticOmitsPackage(entryPath, name),
   );

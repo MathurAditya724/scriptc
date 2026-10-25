@@ -1307,6 +1307,12 @@ export class LlEmitter {
     string,
     { sym: string; src: string; fl: string; pattern: string; flags: string }
   >();
+  /** Build-time replacers: one per (pattern, flags, replacement) of a
+   * global substitution with a literal replacement (regex-matchers.ts). */
+  readonly regexReplacers = new Map<
+    string,
+    { sym: string; pattern: string; flags: string; replacement: string }
+  >();
   /** Interned tagged-template strings objects: per-site key → { symbol,
    * interned cooked-literal refs }. One immortal ScrArr of string slots
    * per template SITE (the spec's per-occurrence identity — the C
@@ -1637,6 +1643,9 @@ export class LlEmitter {
    * commit back into their objects. Library builds keep their commits:
    * their values cross a native boundary. */
   readonly liveViewsReadOnly: boolean;
+  /** IrModule.foreignElementKeys: element keys whose arrays can hold
+   * SCR_ARR_FOREIGN elements. */
+  readonly foreignElementKeys: ReadonlySet<string>;
   /** The program freezes, seals or prevents extensions of untyped values
    * (IrModule.untypedIntegrity): the commits of class views store the
    * view's integrity state in the instance's integrity word. */
@@ -1929,6 +1938,7 @@ export class LlEmitter {
       !this.untypedIntegrity &&
       !dynamicStores.all &&
       dynamicStores.names.size === 0;
+    this.foreignElementKeys = new Set(mod.foreignElementKeys ?? []);
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
@@ -2224,6 +2234,7 @@ export class LlEmitter {
       declare: (decl) => this.declare(decl),
       needOom: () => this.needOom(),
       needBadTag: () => this.needBadTag(),
+      mayHoldForeign: (elem) => this.mayHoldForeign(elem),
       internLiteral: (text) => this.internLiteral(text),
       cstr: (text) => this.cstr(text),
       mapOps: (operands) => this.mapOps(operands),
@@ -3934,13 +3945,19 @@ export class LlEmitter {
     }
   }
 
+  /** Whether `loop` needs a cancellation poll: in a worker program, unless
+   * the loop already runs a pending test on every iteration, which observes
+   * a terminate request itself (a separate poll would only add work). */
+  workerLoopPolls(loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" | "forOf" }>): boolean {
+    return (
+      this.mod.workers === true && !loopTestsEveryIteration(loop, (e) => this.callTestsPending(e))
+    );
+  }
+
   workerLoopBudget(
     loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" | "forOf" }>,
   ): string | null {
-    if (!this.mod.workers) return null;
-    // A loop that runs a pending test on every iteration observes a
-    // terminate request through it; a separate poll would only add work.
-    if (loopTestsEveryIteration(loop, (e) => this.callTestsPending(e))) return null;
+    if (!this.workerLoopPolls(loop)) return null;
     const slot = this.B.slot();
     this.B.entryAllocas.push(`${slot} = alloca i32 ; worker cancellation budget`);
     this.B.line(`store i32 0, ptr ${slot}`);
@@ -4058,12 +4075,17 @@ export class LlEmitter {
     B.condBr(due, poll, next);
     B.startBlock(poll);
     B.line(`store i32 63, ptr ${slot}`);
-    // Calls and throwing operations retain their own checks. Amortize the
-    // extra cancellation poll across bounded loop batches so scalar work
-    // does not cross the runtime ABI on every iteration.
-    this.emitPendingCheck(undefined, true);
+    this.emitWorkerPoll();
     B.br(next);
     B.startBlock(next);
+  }
+
+  /** The cancellation poll itself. Calls and throwing operations retain
+   * their own checks. Loops amortize this extra poll across bounded
+   * batches of iterations so scalar work does not cross the runtime ABI on
+   * every iteration. */
+  emitWorkerPoll(): void {
+    this.emitPendingCheck(undefined, true);
   }
 
   /** Moves an already-evaluated value into the runtime's exception cell —
@@ -5433,6 +5455,8 @@ export class LlEmitter {
         return addNumbered(this.threadSlotsBlocks, key, value as string, "@sc_slots_", names);
       case "regex":
         return addNumberedSymbol(this.regexInstances, key, value as never, "sc_re_", names);
+      case "regexReplacer":
+        return addNumberedSymbol(this.regexReplacers, key, value as never, "sc_rr_", names);
       case "templateStrings":
         return addNumberedSymbol(
           this.templateStringsInstances,
@@ -6708,6 +6732,12 @@ export class LlEmitter {
       default:
         throw new InternalCompilerError(`llvm emitter bug: unknown intrinsic ${e.name}`);
     }
+  }
+
+  /** Arrays of this element type can hold SCR_ARR_FOREIGN elements. */
+  mayHoldForeign(elem: IrType): boolean {
+    if (this.foreignElementKeys.size === 0) return false;
+    return this.foreignElementKeys.has("*") || this.foreignElementKeys.has(typeKey(elem));
   }
 
   /** Lifetime regions in modules with lifetimeRegions (llvm/regions.ts).
