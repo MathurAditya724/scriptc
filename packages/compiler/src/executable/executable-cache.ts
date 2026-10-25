@@ -18,6 +18,7 @@ import { compilerReleaseVersion } from "../library/sidecar.js";
 import { nativeArtifactDependenciesStillMatch } from "../backend/native/artifact-stamps.js";
 import { type NativeArtifactDependency } from "../backend/native/contracts.js";
 import { optimizationKeyParts } from "../backend/optimization.js";
+import { type TargetCpu, targetCpuKeyParts } from "../backend/target-cpu.js";
 import { privateSiblingPath } from "../backend/build-cache.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
@@ -63,6 +64,7 @@ export interface EarlyExecutableNativeFeatures {
   stdioExtended?: boolean;
   nodeIsland?: boolean;
   zlib: boolean;
+  brotli?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -93,6 +95,7 @@ export interface EarlyExecutableNativeFeatures {
   dgram: boolean;
   dnsPromises: boolean;
   dgramDyn: boolean;
+  textCodecDyn: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
@@ -121,6 +124,9 @@ interface EarlyExecutableCacheStamp {
   native: EarlyExecutableNativeFeatures;
   /** The build's performance warnings (SC61xx), which a cache hit repeats. */
   performance?: ScrDiagnostic[];
+  /** Programs that call into Node.js: the libnode pack identity the build
+   * recorded (EarlyExecutableCacheOptions.libnodeIdentity). */
+  libnode?: string;
   integrity: string;
 }
 
@@ -139,9 +145,14 @@ export interface EarlyExecutableCacheOptions {
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
-  /** Omitted unless --libnode or SCRIPTC_LIBNODE is set (calls into Node.js
-   * record the pack). */
-  libnode?: string;
+  /** The identity of the libnode pack a program that calls into Node.js
+   * records (node-islands/libnode.ts libnodeCacheKey), or undefined when the
+   * build names none. Not part of the key: an entry of a program that calls
+   * into Node records it, and a hit requires the same identity, so the pack
+   * settings never change the key of a program that does not. */
+  libnodeIdentity?: () => string | undefined;
+  /** Omitted for the x86-64 baseline (`--target-cpu`). */
+  targetCpu?: TargetCpu;
   /** Omitted without --profile-generate/--profile-use; otherwise the
    * pattern, or the digest of the profile's bytes. */
   profile?: string;
@@ -241,6 +252,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "dgram",
   "dnsPromises",
   "dgramDyn",
+  "textCodecDyn",
   "watch",
   "foreignFfi",
   "nodeTest",
@@ -285,7 +297,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.strip ? ["strip"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
-    ...(options.libnode !== undefined ? [`libnode:${options.libnode}`] : []),
+    ...targetCpuKeyParts(options.targetCpu),
     ...(options.profile !== undefined ? [options.profile] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
@@ -329,7 +341,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.strip) hash.update("strip\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
-  if (options.libnode !== undefined) hash.update(`libnode:${options.libnode}\0`);
+  for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
@@ -537,6 +549,8 @@ async function readExecutableCache(
       (stamp.nativeDependencies !== null && !Array.isArray(stamp.nativeDependencies)) ||
       (stamp.files.ir !== null) !== options.emitIr ||
       stampIntegrity(unsigned) !== integrity ||
+      (stamp.native.nodeIsland === true &&
+        (stamp.libnode ?? "") !== (options.libnodeIdentity?.() ?? "")) ||
       !frontendInputsStillMatch(
         validateRoute === undefined ? stamp.frontend : routedFrontendCandidate(stamp.frontend),
         executableFrontendOutputExclusions(options, stamp.native.backend),
@@ -852,6 +866,7 @@ export async function publishEarlyExecutableCache(
       ...(result.performance === undefined || result.performance.length === 0
         ? {}
         : { performance: result.performance }),
+      ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
     };
     const stamp: EarlyExecutableCacheStamp = { ...unsigned, integrity: stampIntegrity(unsigned) };
     await writeFile(join(stage, "stamp.json"), `${JSON.stringify(stamp)}\n`, { mode: 0o600 });

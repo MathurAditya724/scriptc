@@ -120,13 +120,19 @@ const KNOWN: Record<string, Known> = {
 const cases = shardSelect(npmCases(fixturesRoot), (c) => c.name);
 
 /** Per-case timeouts past the default 120 s: the undici cases compile the
- * built-in undici implementation's module graph, and the zod 3 cases
- * (zod3, zod3-adoption, zod3-boundary, zod3-infer) compile zod 3's
- * 3,700-line types module. A sanitized build of either takes minutes on a
- * CI runner. */
+ * built-in undici implementation's module graph, the zod 3 cases (zod3,
+ * zod3-adoption, zod3-boundary, zod3-infer) compile zod 3's 3,700-line
+ * types module, and the zod 4 cases (zod4-boundary, zod4-record,
+ * hono-zod-validator, hono-zod-default-hook)
+ * compile zod 4's core, classic API and locales. A sanitized build of any
+ * of them takes minutes on a CI runner. */
 const TIMEOUTS: Record<string, number> = {
+  "hono-zod-default-hook": 900_000,
+  "hono-zod-validator": 900_000,
   undici5: 600_000,
   undici7: 600_000,
+  "zod4-boundary": 900_000,
+  "zod4-record": 900_000,
   zod3: 600_000,
   "zod3-adoption": 600_000,
   "zod3-boundary": 600_000,
@@ -198,13 +204,25 @@ async function build(entry: string): Promise<Built> {
   };
 }
 
-async function expectMatchesNode(c: NpmCase, binary: string): Promise<void> {
+/** A Node island's modules run from the module tree the program ships
+ * (node-islands/modules.ts), extracted under the user's cache directory, so
+ * a path they print names the tree's copy. The tree's root is the fixtures'
+ * npm directory: such a path reads as the fixture's own. */
+function fixturePaths(out: Buffer): Buffer {
+  const tree = /(?:\/[^\s"'`/]+)+\/scriptc\/node-islands\/[0-9a-f]{64}/g;
+  return Buffer.from(out.toString("utf8").replace(tree, join(fixturesRoot, "npm")), "utf8");
+}
+
+async function expectMatchesNode(c: NpmCase, binary: string, island = false): Promise<void> {
   const cwd = dirname(c.entry);
   for (const argv of c.argvs ?? [[]]) {
-    const [nodeRes, nativeRes] = await Promise.all([
+    const [nodeRes, ran] = await Promise.all([
       runBinary(process.execPath, [c.entry, ...argv], cwd),
       runBinary(binary, argv, cwd),
     ]);
+    const nativeRes = island
+      ? { ...ran, stdout: fixturePaths(ran.stdout), stderr: fixturePaths(ran.stderr) }
+      : ran;
     const label = argv.join(" ");
     if (!nodeRes.stdout.equals(nativeRes.stdout)) {
       expect(nativeRes.stdout.toString("utf8"), label).toBe(nodeRes.stdout.toString("utf8"));
@@ -240,7 +258,7 @@ describe(`npm native (${cases.length} programs${sanitize ? ", sanitized" : ""}${
           return;
         }
         if (!built.ok) throw new Error(`npm fixture failed to compile:\n${built.text}`);
-        await expectMatchesNode(c, built.binary);
+        await expectMatchesNode(c, built.binary, true);
       }, 120_000);
       continue;
     }

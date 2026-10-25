@@ -3,7 +3,7 @@
 // NI-5b): Array.isArray holds, island reads see the native elements, island
 // writes (push, element and length assignment) change the native array,
 // and the same array crosses as the same object.
-import { show, append, bump, describe, entries, isKept, json, keep, keys, maxVersion, sum, truncate } from "list-pkg";
+import { append, bump, describe, entries, isKept, json, keep, keys, maxVersion, selfRef, show, sum, truncate } from "list-pkg";
 
 const nums: number[] = [1, 2, 3];
 console.log(describe(nums), sum(nums));
@@ -28,3 +28,7 @@ console.log(describe(words), json({ words, n: words.length }));
 console.log("inspect", show(nums), show(files), show(words));
 words.push("z");
 console.log("inspect again", show(words));
+// An array that holds itself crosses as itself.
+const loop: unknown[] = ["head"];
+loop.push(loop);
+console.log(selfRef(loop));

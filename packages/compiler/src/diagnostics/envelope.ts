@@ -334,7 +334,10 @@ export function locateDiagnostic(
   return {
     code: diag.code,
     category: categoryOf(diag),
-    severity: isDivergenceCode(diag.code) || isPerformanceCode(diag.code) ? "warning" : "error",
+    severity:
+      isDivergenceCode(diag.code) || isPerformanceCode(diag.code) || diag.code === "SC8004"
+        ? "warning"
+        : "error",
     scope,
     file: diag.loc.file,
     line: start.line,

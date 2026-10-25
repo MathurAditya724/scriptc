@@ -135,7 +135,9 @@ export function parseLibnodePackManifest(json: unknown, where: string): LibnodeP
   const files = json["files"];
   if (!isRecord(files)) return invalid("lists no files in manifest.json");
   for (const name of [json["libnode"], json["bridge"]] as string[]) {
-    if (name.includes("/") || name.includes("\\")) return invalid(`names a nested file ${name}`);
+    if (name === "." || name === ".." || /[/\\\0]/.test(name) || isAbsolute(name)) {
+      return invalid(`names a file outside the pack (${JSON.stringify(name)})`);
+    }
     if (!isFileEntry(files[name])) return invalid(`lists no size and SHA-256 for ${name}`);
   }
   return json as unknown as LibnodePackManifest;

@@ -18,6 +18,7 @@
 #include "scr_key.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 /* The compiler's inline cache tests read these in place (64-bit targets;
  * backend/llvm/js-ic.ts). */
@@ -37,10 +38,10 @@ _Static_assert(sizeof(ScrJsIcEntry) == 40 && sizeof(ScrJsIc) == 168, "cache layo
  * take the generic path and its hash index. */
 #define SCR_JS_SHAPE_MAX 64
 
-/* Shapes live until the thread exits, so a thread creates at most this
- * many, holding at most this many key bytes. Once either budget is spent,
- * objects whose key sequence has no shape yet stay unshaped; shapes that
- * exist keep serving. */
+/* Shapes live until the thread exits or a library session ends, so a thread
+ * creates at most this many, holding at most this many key bytes. Once
+ * either budget is spent, objects whose key sequence has no shape yet stay
+ * unshaped; shapes that exist keep serving. */
 #define SCR_JS_SHAPE_BUDGET ((size_t)1 << 16)
 #define SCR_JS_SHAPE_KEY_BYTES_BUDGET ((size_t)4 << 20)
 
@@ -63,12 +64,25 @@ static SCR_TL size_t scr_js_transition_count;
 static SCR_TL size_t scr_js_shape_key_bytes;
 static SCR_TL bool scr_js_shapes_registered;
 
+/* The cache records that hold entries. Entries name shapes and prototype
+ * objects, so the reset that frees the shapes also clears these records: a
+ * library's next session runs the same sites with the same records. */
+static SCR_TL ScrJsIc **scr_js_filled_ics;
+static SCR_TL size_t scr_js_filled_count;
+static SCR_TL size_t scr_js_filled_capacity;
+
 /* The shape word of an object whose key sequence has no shape within the
  * budgets. No cache entry names it, so its accesses take the probes,
  * which answer with a miss until the key set changes. */
 static ScrJsShape scr_js_unshaped;
 
 static void scr_js_shapes_reset(void) {
+  for (size_t i = 0; i < scr_js_filled_count; i++)
+    memset(scr_js_filled_ics[i], 0, sizeof *scr_js_filled_ics[i]);
+  free(scr_js_filled_ics);
+  scr_js_filled_ics = NULL;
+  scr_js_filled_count = 0;
+  scr_js_filled_capacity = 0;
   while (scr_js_all_shapes) {
     ScrJsShape *shape = scr_js_all_shapes;
     scr_js_all_shapes = shape->all_next;
@@ -192,6 +206,16 @@ static size_t scr_js_shape_find(const ScrJsShape *shape, const char *key, size_t
 /* Fills a cache entry: `stale` (a matching entry whose hit failed) when
  * there is one, else a free or replaceable one. */
 static void scr_js_ic_add(ScrJsIc *ic, uint32_t stale, ScrJsIcEntry entry) {
+  if (ic->count == 0) {
+    if (scr_js_filled_count == scr_js_filled_capacity) {
+      size_t capacity = scr_js_filled_capacity ? scr_js_filled_capacity * 2 : 64;
+      ScrJsIc **grown = realloc(scr_js_filled_ics, capacity * sizeof *grown);
+      if (!grown) scr_trap("scriptc: out of memory\n");
+      scr_js_filled_ics = grown;
+      scr_js_filled_capacity = capacity;
+    }
+    scr_js_filled_ics[scr_js_filled_count++] = ic;
+  }
   uint32_t index;
   if (stale < ic->count) {
     index = stale;

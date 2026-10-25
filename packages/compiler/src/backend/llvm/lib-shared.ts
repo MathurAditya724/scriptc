@@ -333,6 +333,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "date.parse": "scr_date_parse",
   "date.getTime": "scr_date_get_time",
   "date.valueOf": "scr_date_get_time",
+  "date.fromTime": "scr_date_get_time",
   "date.parseGetTime": "scr_date_parse",
   "date.utc": "scr_date_utc",
   "date.newLocal": "scr_date_new_local",
@@ -454,6 +455,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.poolFromDyn": "scr_buffer_from_dyn_pooled",
   "buffer.poolFromDynRef": "scr_buffer_from_dyn_ref_pooled",
   "buffer.poolFromDynOffset": "scr_buffer_from_dyn_offset_pooled",
+  "buffer.poolFromDynRange": "scr_buffer_from_dyn_range_pooled",
   "buffer.poolSize": "scr_buffer_pool_size",
   "buffer.setPoolSize": "scr_buffer_set_pool_size",
   "buffer.byteLenDyn": "scr_buffer_byte_length_dyn",
@@ -479,6 +481,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "bytes.equalsChk": "scr_bytes_equals_chk",
   "bytes.compareChk": "scr_bytes_compare_chk",
   "buffer.newStringFail": "scr_buffer_new_string_fail",
+  "buffer.deprecation": "scr_buffer_deprecation",
+  "buffer.deprecationCount": "scr_buffer_deprecation_count",
+  "buffer.constructor": "scr_buffer_constructor_value",
+  "buffer.installValue": "scr_buffer_install_value",
+  "buffer.staticValue": "scr_buffer_static_value",
+  "buffer.prototypeMember": "scr_buffer_prototype_member",
   "fs.toUnixTimestamp": "scr_fs_to_unix_timestamp",
   "fs.existsChk": "scr_fs_exists_async",
   "fs.mkdtempSyncChk": "scr_fs_mkdtemp_sync_chk",
@@ -560,12 +568,14 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "text.decoderEncoding": "scr_text_decoder_encoding",
   "text.decoderName": "scr_text_decoder_name",
   "text.encodeInto": "scr_text_encode_into",
+  "text.codecIs": "scr_text_codec_is",
   "buffer.isAscii": "scr_buffer_is_ascii",
   "buffer.isUtf8": "scr_buffer_is_utf8",
   "buffer.transcode": "scr_buffer_transcode",
   "zlib.deflateSync": "scr_zlib_deflate",
   "zlib.inflateSync": "scr_zlib_inflate",
   "zlib.crc32": "scr_zlib_crc32",
+  "zlib.brotliInstall": "scr_brotli_install",
   // The CA-store unit. get/set throw (an unknown type name, a
   // certificate-free set) and take the generic path's pending check.
   "tlsca.root": "scr_tls_ca_root",
@@ -649,6 +659,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.stderrWriteBytes": "scr_process_stderr_write_bytes",
   "insp.buffer": "scr_insp_buffer",
   "insp.typedArray": "scr_insp_typed_array",
+  "insp.bytes": "scr_insp_bytes",
   // util.inspect (scr_inspect.c): all args borrowed; string results +1;
   // the begin/entry/key/moreItems/end accumulator drives the emitted
   // container walks. None of these throw.
@@ -667,6 +678,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.moreItems": "scr_insp_more_items",
   "insp.end": "scr_insp_end",
   "insp.nestedBegin": "scr_insp_nested_begin",
+  "insp.mark": "scr_insp_mark",
+  "insp.unwind": "scr_insp_unwind",
   "insp.nestedEnd": "scr_insp_nested_end",
   // Circular references over cycle-capable composites (Node's
   // seen/circular machinery — none of these throw; refWrap borrows its
@@ -677,6 +690,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  "record.sourceSpread": "scr_record_source_spread",
   // WHATWG URL + URLSearchParams (scr_url.c / scr_url_params.c):
   // constructions +1; url.new, the fileURLToPath pair, the win32
   // pathToFileURL flavor, and sp.fromPairs throw catchably (may-throw).
@@ -701,6 +715,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "url.hash": "scr_url_hash",
   "url.searchParams": "scr_url_search_params",
   "url.fileURLToPathUrl": "scr_url_to_path",
+  "url.fileURLToPathValue": "scr_url_to_path_value",
+  "fs.checkPath": "scr_fs_check_path",
+  "fs.checkReadEncoding": "scr_fs_check_read_encoding",
   "url.fileURLToPathChecked": "scr_url_checked_to_path",
   "url.fileURLToPathOptions": "scr_url_checked_to_path_options",
   "url.fileURLToPathBuffer": "scr_url_checked_to_path_buffer",
@@ -718,6 +735,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "punycode.ucs2Encode": "scr_str_from_code_point",
   "punycode.warn": "scr_punycode_warn",
   "url.domainToUnicode": "scr_url_domain_to_unicode",
+  "url.toHttpOptions": "scr_url_to_http_options_dyn",
   "url.pathToFileURL": "scr_url_from_path",
   "url.pathToFileURLPlatform": "scr_url_from_path_platform",
   "url.pathToFileURLWin32": "scr_url_from_path",
@@ -958,6 +976,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.streamIs": "scr_fetch_stream_is",
   "zlib.streamIs": "scr_zlib_stream_is",
   "fetch.streamNew": "scr_fetch_stream_new",
+  "fetch.transformNew": "scr_fetch_transform_new",
   "fetch.streamFrom": "scr_fetch_stream_from",
   "fetch.readerRead": "scr_fetch_reader_read",
   "json.parse": "scr_json_parse",
@@ -975,6 +994,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "nodeIsland.setKey": "scr_node_island_set_key",
   "nodeIsland.invoke": "scr_node_island_invoke",
   "nodeIsland.apply": "scr_node_island_apply",
+  "nodeIsland.applyTo": "scr_node_island_apply_to",
   "nodeIsland.construct": "scr_node_island_construct",
   "nodeIsland.instanceof": "scr_node_island_instanceof",
   "nodeIsland.classMethods": "scr_node_island_class_methods",
@@ -1045,6 +1065,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "class.descriptorHasValue": "scr_class_descriptor_has_value",
   "class.throwReadOnly": "scr_class_throw_read_only",
   "class.throwNotExtensible": "scr_class_throw_not_extensible",
+  "record.freeze": "scr_record_freeze",
+  "record.throwFrozen": "scr_record_throw_frozen",
+  "array.freeze": "scr_arr_freeze",
+  "array.isFrozen": "scr_arr_is_frozen",
+  "collection.preventExtensions": "scr_map_prevent_extensions",
+  "collection.isExtensible": "scr_map_is_extensible",
   "dyn.nativeSetNew": "scr_dyn_native_set_new",
   "dyn.nativeSetIs": "scr_dyn_native_set_is",
   "dyn.nativeMapIs": "scr_dyn_native_map_is",
@@ -1068,6 +1094,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.generatorThis": "scr_gen_receiver",
   "insp.dyn": "scr_insp_dyn",
   "insp.dynS": "scr_insp_dyn_s",
+  "insp.dynHidden": "scr_insp_dyn_hidden",
   "fs.readFileSyncDyn": "scr_fs_read_file_sync_dyn",
   "fs.readFileEncoded": "scr_fs_read_file_encoded",
   "fs.readFdEncoded": "scr_fs_read_fd_encoded",
@@ -1087,6 +1114,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.generateKeyPairSync": "scr_crypto_generate_key_pair_sync",
   "crypto.generateKeyPairCb": "scr_crypto_generate_key_pair_async",
   "crypto.signOneshot": "scr_crypto_sign_oneshot",
+  "crypto.diffieHellman": "scr_crypto_diffie_hellman",
   "crypto.verifyOneshot": "scr_crypto_verify_oneshot",
   "crypto.createSign": "scr_crypto_create_sign",
   "crypto.createVerify": "scr_crypto_create_verify",
@@ -1504,6 +1532,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "als.exitRun": "scr_als_exit_run",
   "als.enterWith": "scr_als_enter_with",
   "als.disable": "scr_als_disable",
+  "als.newOptions": "scr_als_new_options",
+  "als.name": "scr_als_name",
+  "als.bindCallbackDyn": "scr_als_bind_dyn",
+  "als.snapshot": "scr_als_snapshot",
   "dc.chanBindStore": "scr_dc_chan_bind_store",
   "dc.chanUnbindStore": "scr_dc_chan_unbind_store",
   "dc.chanRunStores": "scr_dc_chan_run_stores",
@@ -1667,6 +1699,7 @@ export function mockTimerSym(
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
   "crypto.generateKeyPairCb",
+  "crypto.diffieHellman",
   "crypto.checkPrimeCb",
   "crypto.generatePrimeCb",
   "process.emitWarning",
@@ -1692,6 +1725,8 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "url.legacyParse",
   "url.legacyFormat",
   "url.legacyResolve",
+  // The deprecated Buffer constructor reports DEP0005 on the next tick.
+  "buffer.deprecation",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
   "util.callbackify",
@@ -1717,6 +1752,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "fetch.abortAny",
   "fetch.streamNew",
   "fetch.streamFrom",
+  "fetch.transformNew",
   "readable.new",
   // fs.ReadStream / fs.WriteStream open, read and write on the worker pool.
   "fs.createReadStream",
@@ -1902,6 +1938,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "nodeIsland.setKey",
   "nodeIsland.invoke",
   "nodeIsland.apply",
+  "nodeIsland.applyTo",
   "nodeIsland.construct",
   "nodeIsland.instanceof",
 ]);
