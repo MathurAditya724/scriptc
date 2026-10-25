@@ -1303,6 +1303,12 @@ export class LlEmitter {
     string,
     { sym: string; src: string; fl: string; pattern: string; flags: string }
   >();
+  /** Build-time replacers: one per (pattern, flags, replacement) of a
+   * global substitution with a literal replacement (regex-matchers.ts). */
+  readonly regexReplacers = new Map<
+    string,
+    { sym: string; pattern: string; flags: string; replacement: string }
+  >();
   /** Interned tagged-template strings objects: per-site key → { symbol,
    * interned cooked-literal refs }. One immortal ScrArr of string slots
    * per template SITE (the spec's per-occurrence identity — the C
@@ -5439,6 +5445,8 @@ export class LlEmitter {
         return addNumbered(this.threadSlotsBlocks, key, value as string, "@sc_slots_", names);
       case "regex":
         return addNumberedSymbol(this.regexInstances, key, value as never, "sc_re_", names);
+      case "regexReplacer":
+        return addNumberedSymbol(this.regexReplacers, key, value as never, "sc_rr_", names);
       case "templateStrings":
         return addNumberedSymbol(
           this.templateStringsInstances,
