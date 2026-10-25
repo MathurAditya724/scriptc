@@ -954,8 +954,14 @@ static bool scr_stream_add_chunk(ScrStream *s, ScrBytes *chunk, bool front) {
     }
     entry = dec; /* owned */
   } else {
-    entry = scr_bytes_retain(chunk);
     entry_len = chunk->len;
+    if (entry_len == 0) {
+      /* Node's readableAddChunk adds no empty chunk outside object mode:
+       * it clears reading and may read more */
+      if (!front) scr_stream_maybe_read_more(s);
+      return !st->r.ended && (st->r.length < st->r.hwm || st->r.length == 0);
+    }
+    entry = scr_bytes_retain(chunk);
   }
   if (entry_len > 0 &&
       st->r.flowing == 1 && st->r.length == 0 && !st->r.in_read_sync && !front &&

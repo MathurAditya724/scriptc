@@ -6585,6 +6585,17 @@ export class Lowerer {
       mayBeUndefined: (node) => {
         if (explicitlyNonNull(node)) return assertedReadMayBeUndefined(node);
         if (mayBeOptional(node)) return true;
+        // A value the checker types as possibly undefined: `(T | undefined)[]`
+        // stores T elements (the type mapper), so its undefined values are
+        // facts of T's arrays.
+        const checked = typeOrNull(node);
+        if (
+          checked !== null &&
+          (checked.isUnionType() ? ts.constituentTypes(checked) : [checked]).some(
+            (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
+          )
+        )
+          return true;
         // `undefined as unknown as T` keeps the undefined value.
         for (
           let inner: ts.Expression = node;
@@ -6603,7 +6614,49 @@ export class Lowerer {
         const symbol = symbolOf(e);
         return symbol !== null && iterationSymbols.has(symbol) && !provenPresent(e, symbol);
       },
-      callbackReturnsUndefined: (node) => callbackReturnsOptional(node),
+      iterationMayYieldUndefined: (node) => {
+        const type = typeOrNull(node);
+        if (type === null || this.checker.isArrayType(type)) return false;
+        // A tuple yields its elements, in order.
+        if (this.checker.isTupleType(type))
+          return panicSafe(
+            () =>
+              this.checker
+                .getTypeArguments(type as ts.TypeReference)
+                .some((element) =>
+                  (element.isUnionType() ? ts.constituentTypes(element) : [element]).some(
+                    (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
+                  ),
+                ),
+            true,
+          );
+        // The first type argument of Set<T>, Map and Set iterators,
+        // generators and iterables is the value they yield.
+        const element =
+          (type.flags & ts.TypeFlags.Object) !== 0
+            ? panicSafe(() => this.checker.getTypeArguments(type as ts.TypeReference)[0], undefined)
+            : undefined;
+        if (element === undefined) return false;
+        return (element.isUnionType() ? ts.constituentTypes(element) : [element]).some(
+          (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
+        );
+      },
+      callbackReturnsUndefined: (node) => {
+        if (callbackReturnsOptional(node)) return true;
+        // A callback the checker types as possibly returning undefined
+        // (`(m) => map.get(m)`): its results are present undefined
+        // elements of a `(T | undefined)[]`, which stores T elements.
+        const type = typeOrNull(node);
+        return (
+          type !== null &&
+          this.checker.getCallSignatures(type).some((signature) => {
+            const result = this.checker.getReturnTypeOfSignature(signature);
+            return (result.isUnionType() ? ts.constituentTypes(result) : [result]).some(
+              (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
+            );
+          })
+        );
+      },
       isGlobal: (node, name) => this.isStdlibGlobal(node, name),
       isString: (node) => {
         const type = typeOrNull(node);
@@ -6629,6 +6682,14 @@ export class Lowerer {
         if (!sig) return ts.isPropertyAccessExpression(callee) ? [] : null;
         const rest = sig.params.find((shape) => shape.mode === "rest");
         return rest?.type.kind === "array" ? [typeKey(rest.type.elem)] : [];
+      },
+      restStart: (call) => {
+        const callee = peel(call.expression);
+        if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
+        const symbol = callableSymbolOf(callee);
+        const sig = symbol ? signatureBySymbol.get(symbol) : undefined;
+        const at = sig ? sig.params.findIndex((shape) => shape.mode === "rest") : -1;
+        return at >= 0 ? at : null;
       },
       markIterationBinding: (node, known) => {
         const symbol = symbolOf(node);
@@ -6664,6 +6725,7 @@ export class Lowerer {
       const cached = scanSites.get(sf);
       if (cached !== undefined) return cached;
       const nodes: ts.Node[] = [];
+      const values: ts.Node[] = [];
       ts.walkPreorder(sf, (node) => {
         if (
           ts.isVariableDeclaration(node) ||
@@ -6679,7 +6741,21 @@ export class Lowerer {
           ts.isPostfixUnaryExpression(node)
         )
           nodes.push(node);
+        // The values these sites store, whose checker types mayBeUndefined
+        // reads: batched here, since dead bodies are scanned too.
+        if (ts.isArrayLiteralExpression(node))
+          for (const element of node.elements.nodes)
+            values.push(ts.isSpreadElement(element) ? element.expression : element);
+        else if (ts.isCallExpression(node) || ts.isNewExpression(node))
+          for (const arg of node.arguments?.nodes ?? [])
+            values.push(ts.isSpreadElement(arg) ? arg.expression : arg);
+        else if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        )
+          values.push(node.right);
       });
+      this.checker.prefetchCollectionTypes(values);
       scanSites.set(sf, nodes);
       return nodes;
     };
