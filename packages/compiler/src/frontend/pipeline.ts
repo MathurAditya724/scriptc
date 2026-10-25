@@ -3,9 +3,11 @@
 import {
   beginShapeOverlayBuild,
   excludeRefusedOverlay,
+  recordShapeOverlayMemo,
   restoreShapeOverlayState,
   setShapeOverlayDropped,
   shapeOverlayActive,
+  shapeOverlayMemoPlainFences,
   shapeOverlayReport,
 } from "./shape-inference/index.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
@@ -750,10 +752,10 @@ function loadFrontend(
       // fallback.ts): refusals drop the overlay annotations they depend on
       // and the program reloads. Rounds that stop converging escalate to
       // the overlay of every file involved, then to no overlay at all.
-      // Refusals deferred to run time (runtime fences) drop only the
-      // annotations they are blamed on: a fence the overlay did not cause
-      // stays as it is without the overlay.
-      let level: "annotations" | "files" | "all" | "fences" = "annotations";
+      // Refusals deferred to run time (runtime fences) are compared with
+      // the build without the overlay below: a fence the overlay did not
+      // cause stays as it is without the overlay.
+      let level: "annotations" | "files" | "all" = "annotations";
       // Deferred refusals the coverage pass found in code the lowering
       // judged unreached count too: that code can still run.
       const fencesOf = (l: LowerResult): ScrDiagnostic[] => [
@@ -764,31 +766,23 @@ function loadFrontend(
         process.stderr.write(
           `[shape-fallback] lowered: overlay ${shapeOverlayActive()}, ${lowered.diagnostics.length} refusals, ${fencesOf(lowered).length} deferred\n`,
         );
+      // Failing refusals first; deferred refusals are compared with the
+      // build without the overlay below.
       for (let round = 0; shapeOverlayActive(); round++) {
-        const failed = lowered.diagnostics.length > 0;
-        const refusals = failed ? lowered.diagnostics : fencesOf(lowered);
+        const refusals = lowered.diagnostics;
         if (refusals.length === 0) break;
-        let changed: boolean;
-        if (!failed) {
-          level = "fences";
-          changed =
-            round < OVERLAY_ANNOTATION_ROUNDS &&
-            excludeRefusedOverlay(finalLoad.program, refusals, level);
-        } else {
-          if (level === "fences") level = "annotations";
-          if (round >= OVERLAY_ANNOTATION_ROUNDS && level === "annotations") level = "files";
-          else if (round > OVERLAY_ANNOTATION_ROUNDS) level = "all";
+        if (round >= OVERLAY_ANNOTATION_ROUNDS && level === "annotations") level = "files";
+        else if (round > OVERLAY_ANNOTATION_ROUNDS) level = "all";
+        let changed = excludeRefusedOverlay(finalLoad.program, refusals, level);
+        while (!changed && level !== "all") {
+          level = level === "annotations" ? "files" : "all";
           changed = excludeRefusedOverlay(finalLoad.program, refusals, level);
-          while (!changed && level !== "all") {
-            level = level === "annotations" ? "files" : "all";
-            changed = excludeRefusedOverlay(finalLoad.program, refusals, level);
-          }
-          // The same round also drops what the deferred refusals blame,
-          // saving a reload.
-          if (level !== "all" && fencesOf(lowered).length > 0)
-            changed =
-              excludeRefusedOverlay(finalLoad.program, fencesOf(lowered), "fences") || changed;
         }
+        // The program reloads anyway: the same round also drops what the
+        // deferred refusals blame, which often saves the comparison below.
+        if (level !== "all" && fencesOf(lowered).length > 0)
+          changed =
+            excludeRefusedOverlay(finalLoad.program, fencesOf(lowered), "fences") || changed;
         if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
           process.stderr.write(
             `[shape-fallback] round ${round} level ${level}: ${refusals.length} refusals (${refusals
@@ -817,40 +811,79 @@ function loadFrontend(
           );
       }
       // Deferred refusals the program without the overlay does not have
-      // mean the overlay changed what runs: the build compiles without it
-      // (the overlay must not add failures the default build lacks).
+      // mean the overlay changed what runs (the overlay must not add
+      // failures the default build lacks). The build lowers the program
+      // without the overlay once, drops what the added refusals blame and
+      // reloads; when they persist (or blame nothing), it compiles without
+      // the overlay, reusing that lowering. A memo of the same JavaScript
+      // that already knows every remaining refusal skips the comparison.
+      let plainFences: Set<string> | null = null;
       if (shapeOverlayActive() && lowered.diagnostics.length === 0) {
+        const keyOf = (l: typeof finalLoad, d: ScrDiagnostic): string => {
+          const sf = l.program.getSourceFile(d.loc.file);
+          const line = sf === undefined ? -1 : sf.getLineAndCharacterOfPosition(d.loc.start).line;
+          return `${d.code}|${d.loc.file}|${line}`;
+        };
+        const remembered = shapeOverlayMemoPlainFences();
         const fences = fencesOf(lowered);
-        if (fences.length > 0) {
-          const keyOf = (l: typeof finalLoad, d: ScrDiagnostic): string => {
-            const sf = l.program.getSourceFile(d.loc.file);
-            const line = sf === undefined ? -1 : sf.getLineAndCharacterOfPosition(d.loc.start).line;
-            return `${d.code}|${d.loc.file}|${line}`;
-          };
+        const knownByMemo =
+          remembered !== null && fences.every((d) => remembered.has(keyOf(finalLoad, d)));
+        if (fences.length > 0 && !knownByMemo) {
           const overlayState = finalLoad.shapeOverlayState;
           setShapeOverlayDropped(true);
           const plainLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
           const plainPreflight = checkPreflight(plainLoad);
           const plain = plainPreflight.length === 0 ? lowerLoad(plainLoad) : null;
-          const known = new Set(
-            plain === null ? [] : fencesOf(plain).map((d) => keyOf(plainLoad, d)),
-          );
-          const added = fences.filter((d) => !known.has(keyOf(finalLoad, d)));
-          if (plain !== null && plain.diagnostics.length === 0 && added.length > 0) {
-            if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
-              process.stderr.write(
-                `[shape-fallback] ${added.length} deferred refusals the default build lacks (${added
-                  .slice(0, 3)
-                  .map((d) => `${d.loc.file.split("/").pop()}: ${d.message.slice(0, 60)}`)
-                  .join("; ")}); overlay off\n`,
-              );
-            finalLoad.dispose();
-            finalLoad = plainLoad;
-            lowered = plain;
-          } else {
+          setShapeOverlayDropped(false);
+          if (overlayState !== undefined) restoreShapeOverlayState(overlayState);
+          if (plain === null || plain.diagnostics.length > 0) {
+            // Nothing to compare with: the default build itself fails.
             plainLoad.dispose();
-            setShapeOverlayDropped(false);
-            if (overlayState !== undefined) restoreShapeOverlayState(overlayState);
+          } else {
+            const known = new Set(fencesOf(plain).map((d) => keyOf(plainLoad, d)));
+            plainFences = known;
+            let usePlain = false;
+            for (let round = 0; ; round++) {
+              const added = fencesOf(lowered).filter((d) => !known.has(keyOf(finalLoad, d)));
+              if (added.length === 0) break;
+              const changed =
+                round < OVERLAY_ANNOTATION_ROUNDS &&
+                excludeRefusedOverlay(finalLoad.program, added, "fences");
+              if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+                process.stderr.write(
+                  `[shape-fallback] ${added.length} deferred refusals the default build lacks (${added
+                    .slice(0, 3)
+                    .map((d) => `${d.loc.file.split("/").pop()}: ${d.message.slice(0, 60)}`)
+                    .join("; ")}), changed ${changed}\n`,
+                );
+              if (!changed) {
+                usePlain = true;
+                break;
+              }
+              finalLoad.dispose();
+              finalLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
+              if (checkPreflight(finalLoad).length > 0) {
+                usePlain = true;
+                break;
+              }
+              lowered = lowerOnce();
+              if (lowered.diagnostics.length > 0) {
+                usePlain = true;
+                break;
+              }
+            }
+            if (usePlain) {
+              if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+                process.stderr.write(`[shape-fallback] overlay off\n`);
+              setShapeOverlayDropped(true);
+              if (plainLoad.shapeOverlayState !== undefined)
+                restoreShapeOverlayState(plainLoad.shapeOverlayState);
+              finalLoad.dispose();
+              finalLoad = plainLoad;
+              lowered = plain;
+            } else {
+              plainLoad.dispose();
+            }
           }
         }
       }
@@ -874,6 +907,7 @@ function loadFrontend(
           return { ...lowered, module: null, diagnostics: reloadPreflight };
         lowered = lowerOnce();
       }
+      recordShapeOverlayMemo(plainFences);
       // The declaration-typed boundary's notes (SC6102) join the
       // performance warnings; they never fail a build.
       const notes = [

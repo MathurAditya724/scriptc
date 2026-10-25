@@ -324,7 +324,15 @@ function propertyNameText(name: Node): string | null {
   return null;
 }
 
+const shortFiles = new Map<string, string>();
+
 function shortFile(fileName: string): string {
+  let short = shortFiles.get(fileName);
+  if (short === undefined) shortFiles.set(fileName, (short = shortFileOf(fileName)));
+  return short;
+}
+
+function shortFileOf(fileName: string): string {
   const norm = fileName.split("\\").join("/");
   const nm = norm.lastIndexOf("/node_modules/");
   if (nm >= 0) {
@@ -506,7 +514,9 @@ class Analyzer {
       this.files.push(sf);
       if (inPackage) this.packageFiles++;
     }
-    for (const sf of this.files) this.checker.prefetchSourceFile(sf);
+    // Analysis resolves names and never asks for types: the program it
+    // runs on is usually replaced by the overlay's before lowering.
+    for (const sf of this.files) this.checker.prefetchSourceFileSymbols(sf);
     for (const sf of this.files) this.moduleBody(sf);
     this.finish();
     if (this.profiling) this.profileReport();

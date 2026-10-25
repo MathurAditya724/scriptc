@@ -1021,9 +1021,16 @@ function loadProgram7(
     if (overlayer !== undefined && jsx.refusal === null) {
       // Rounds: structural rewrites, then the typed overlay of the rebuilt
       // program (shape-inference/index.ts).
+      const timeShapes = process.env["SCRIPTC_DEBUG_SHAPE_TIME"] !== undefined;
       for (let round = 0; round < 3; round++) {
+        const t0 = timeShapes ? performance.now() : 0;
         const overlay = overlayer(program, round);
+        if (timeShapes)
+          process.stderr.write(
+            `[shape-time] round ${round} overlayer ${(performance.now() - t0).toFixed(0)} ms\n`,
+          );
         if (overlay === null || overlay.size === 0) break;
+        const t1 = timeShapes ? performance.now() : 0;
         const before = program;
         // The tsc gate reads the files as written: its diagnostics are
         // taken before the overlay's files replace them on the host, and
@@ -1042,6 +1049,10 @@ function loadProgram7(
         for (const [file, text] of overlay) host.addVirtualFile(file, text);
         program = host.createProgram([...programRoots, overridesDtsPath()], options);
         if (tscWorld.program !== before) before.dispose();
+        if (timeShapes)
+          process.stderr.write(
+            `[shape-time] round ${round} gate+program ${(performance.now() - t1).toFixed(0)} ms\n`,
+          );
         if (shapeOverlayDone()) break;
       }
     }

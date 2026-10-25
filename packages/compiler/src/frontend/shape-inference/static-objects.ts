@@ -39,8 +39,13 @@ interface Edit {
   readonly text: string;
 }
 
+export type RewriteEdit = Edit;
+
 export interface StaticObjectRewrites {
   readonly files: Map<string, string>;
+  /** Per rewritten file, the edits its text applied (in order; edits nested
+   * in a replacement are left out), in the text's original offsets. */
+  readonly edits: Map<string, readonly RewriteEdit[]>;
   readonly classes: number;
   readonly functions: number;
   readonly directCalls: number;
@@ -913,8 +918,53 @@ export function planStaticObjectRewrites(
     edit(sf, { start: at, end: at, text: props.length > 0 ? `, ${text}` : ` ${text} ` });
   }
   const out = new Map<string, string>();
-  for (const [sf, edits] of editsByFile) out.set(sf.fileName, applyEdits(sf.text, edits));
-  return { files: out, classes, functions, directCalls, tableDispatches, foldedReads, kept };
+  const applied = new Map<string, readonly Edit[]>();
+  for (const [sf, edits] of editsByFile) {
+    out.set(sf.fileName, applyEdits(sf.text, edits));
+    applied.set(sf.fileName, appliedEdits(edits));
+  }
+  return {
+    files: out,
+    edits: applied,
+    classes,
+    functions,
+    directCalls,
+    tableDispatches,
+    foldedReads,
+    kept,
+  };
+}
+
+/** The edits applyEdits applies, in order. */
+function appliedEdits(edits: readonly Edit[]): Edit[] {
+  const sorted = [...edits].sort((a, b) => a.start - b.start || b.end - a.end);
+  const out: Edit[] = [];
+  let at = 0;
+  for (const e of sorted) {
+    if (e.start < at) continue;
+    out.push(e);
+    at = e.end > e.start ? e.end : e.start;
+  }
+  return out;
+}
+
+/** A position of a rewritten file's original text in its rewritten text,
+ * or null inside a replaced range or at an insertion (the text there
+ * changed). */
+export function rewrittenPosition(edits: readonly RewriteEdit[], pos: number): number | null {
+  let shift = 0;
+  for (const e of edits) {
+    if (e.start > pos) break;
+    if (e.end === e.start) {
+      if (e.start === pos) return null;
+      shift += e.text.length;
+      continue;
+    }
+    if (pos === e.start) break;
+    if (pos < e.end) return null;
+    shift += e.text.length - (e.end - e.start);
+  }
+  return pos + shift;
 }
 
 /** Applies replacements and insertions; an edit inside an earlier
