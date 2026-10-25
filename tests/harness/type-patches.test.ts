@@ -7,7 +7,9 @@
  * apply as written warn (SC8030-SC8033). The `.d.ts`, `@types`, replaced
  * file and supplied entry cases run in npm.test.ts (type-patch-dts,
  * type-patch-types-twin, type-patch-files, type-patch-types-entry); here
- * their unpatched copies show the patches are what makes them compile. And
+ * their unpatched copies show the patches are what makes them compile, and
+ * a failing check names the declaration and the patch (scr_type_origin.c,
+ * frontend/lowering/decl-origin.ts). And
  * commander-calc carries the HelpContext.helpWidth patch. */
 import { execFile } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -115,7 +117,11 @@ describe("type patches", () => {
         if (result.ok) {
           const native = await run(result.binaryPath, []);
           expect(native.exitCode).not.toBe(0);
-          expect(native.stderr).toContain("TypeError: expected string at $, got undefined");
+          expect(native.stderr).toBe(
+            "Uncaught TypeError: expected string at $, got undefined\n" +
+              "    profilekit@3.1.0 declares Profile.email as string (index.d.ts:7)\n" +
+              `    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "profilekit@^3.1.0": { "declarations": { "Profile.email": "| undefined" } } } }\n`,
+          );
         }
       } finally {
         rmSync(copy, { recursive: true, force: true });
@@ -162,6 +168,28 @@ describe("type patches", () => {
       } finally {
         rmSync(copy, { recursive: true, force: true });
       }
+    },
+  );
+
+  test(
+    "a failing check names the package declaration and the patch",
+    { timeout: 600_000 },
+    async () => {
+      const result = await build(join(fixture, "unpatched/main.ts"), "unpatched", ["termctx"]);
+      const native = await run(result.binaryPath, []);
+      const patch = (selector: string) =>
+        `    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "termctx@^1.2.0": { "declarations": { "${selector}": "| undefined" } } } }`;
+      expect(native.stdout).toBe(
+        [
+          "expected number at $, got undefined",
+          "    termctx@1.2.0 declares Terminal.columns() as number (index.js:16)",
+          patch("Terminal.columns()"),
+          "undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
+          "    termctx@1.2.0 declares OutputContext.width as number (index.js:24)",
+          patch("OutputContext.width"),
+          "",
+        ].join("\n"),
+      );
     },
   );
 

@@ -134,6 +134,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
   ["scr_decl_adopt.c", "declAdopt"],
+  ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
   ["scr_dyn_for_await_stream.c", all("dynForAwait", "stream", "dynAsync")],
