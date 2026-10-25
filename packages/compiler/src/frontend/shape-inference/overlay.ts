@@ -654,13 +654,28 @@ export function renderShapeOverlay(
       else annotations++;
     }
     if (edits.length === 0 && part.suffix === "") continue;
-    let text = part.text;
-    for (const r of part.docRanges)
-      if (dropped?.has(r.id) !== true)
-        text = text.slice(0, r.lo) + neutralizeDocTags(text.slice(r.lo, r.hi)) + text.slice(r.hi);
-    files.set(file, applyEdits(text, edits) + part.suffix);
+    files.set(file, applyEdits(neutralizedDocRanges(part, dropped), edits) + part.suffix);
   }
   return { files, annotations, deadBranches };
+}
+
+/** The part's text with the package JSDoc neutralized in the leading trivia
+ * of the annotations a build kept. Each range is one declaration's leading
+ * trivia, so two ranges are equal or disjoint; the text is built once. */
+function neutralizedDocRanges(part: OverlayPart, dropped: ReadonlySet<number> | undefined): string {
+  const ranges = part.docRanges
+    .filter((r) => dropped?.has(r.id) !== true)
+    .sort((a, b) => a.lo - b.lo || a.hi - b.hi);
+  if (ranges.length === 0) return part.text;
+  let out = "";
+  let at = 0;
+  for (const r of ranges) {
+    const lo = Math.max(r.lo, at);
+    if (r.hi <= lo) continue;
+    out += part.text.slice(at, lo) + neutralizeDocTags(part.text.slice(lo, r.hi));
+    at = r.hi;
+  }
+  return out + part.text.slice(at);
 }
 
 /** The `typeof` results the values can have. */
