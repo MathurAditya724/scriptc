@@ -12708,13 +12708,15 @@ function isAssertionInitializer(node: ts.Expression): boolean {
   return ts.isAsExpression(e) || ts.isTypeAssertion(e);
 }
 
-/** A `var` (or `let`) whose initialized declaration precedes the export
- * statement in the module's top-level statements and that nothing ever
- * reassigns: exporting it by reference reads the value Node copies. The
+/** A `var` (or `let`) whose one initialized declaration precedes the
+ * export statement in the module's top-level statements and that nothing
+ * ever reassigns or redeclares: exporting it by reference reads the value Node copies. The
  * legacy `var ns = ns || {}; …; module.exports = { ns }` shape. */
 function settledBeforeExport(lowerer: Lowerer, sym: ts.Symbol, exportNode: ts.Node): boolean {
   const decl = sym.valueDeclaration;
   if (!decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) return false;
+  // A redeclaration (`var ns = other` after the export) writes it too.
+  if (sym.declarations.some((d) => d !== decl)) return false;
   const stmt = decl.parent?.parent;
   if (!stmt || !ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent)) return false;
   let exportStmt: ts.Node = exportNode;
