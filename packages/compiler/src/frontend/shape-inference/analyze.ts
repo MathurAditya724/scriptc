@@ -270,6 +270,18 @@ const PRIMITIVE_MEMBERS: Readonly<Record<"string" | "number" | "boolean", Readon
 const SITE_CLONES = Number(process.env["SCRIPTC_SHAPE_SITE_CLONES"] ?? 64);
 const SITE_CLONE_DEPTH = 4;
 
+/** The prototypes a string, number or boolean member read reaches. */
+const PRIMITIVE_PROTOTYPES: ReadonlySet<string> = new Set([
+  "String.prototype",
+  "Number.prototype",
+  "Boolean.prototype",
+  "Object.prototype",
+]);
+
+function isPrimitivePrototype(a: Atom): boolean {
+  return a.kind === "builtin" && a.receiver === undefined && PRIMITIVE_PROTOTYPES.has(a.path ?? "");
+}
+
 /** The most atoms a value node tracks before it widens to ⊤
  * (SCRIPTC_SHAPE_WIDEN overrides). */
 const WIDEN_AT = Number(process.env["SCRIPTC_SHAPE_WIDEN"] ?? 32);
@@ -373,6 +385,14 @@ class Analyzer {
   readonly escaped = new Map<Atom, string>();
   readonly topWriteNames = new Map<string, Node>();
   readonly topComputedWrites: Node[] = [];
+  /** Names a write may add to a primitive's prototype chain, or every name
+   * (`primitiveExtensionsAll`). A read of a name the chain lacks reads ⊤
+   * for them as well as undefined. */
+  private readonly primitiveExtensions = new Set<string>();
+  private primitiveExtensionsAll = false;
+  /** Reads of names a primitive's prototype chain lacks, by name; each
+   * takes ⊤ once a write may add the name. */
+  private readonly primitiveReads = new Map<string, number[]>();
   readonly fields = new Map<Atom, Map<string, number>>();
   readonly elements = new Map<Atom, number>();
   readonly top: Atom;
@@ -766,6 +786,8 @@ class Analyzer {
 
   escape(atom: Atom, reason: string): void {
     if (atom.kind === "prim" || atom.kind === "top") return;
+    // Unknown code may add any member to a primitive's prototype.
+    if (isPrimitivePrototype(atom)) this.extendPrimitives(null);
     if (atom.kind === "builtin" && atom.receiver === undefined) return;
     if (this.escaped.has(atom)) return;
     this.escaped.set(atom, reason);
@@ -817,6 +839,8 @@ class Analyzer {
 
   /** Property names that untyped code writes on receivers that may be ⊤ (census). */
   noteTopWrite(name: string | null, node: Node): void {
+    // ⊤ may be a primitive's prototype.
+    this.extendPrimitives(name);
     if (name === null) {
       const first = this.topComputedWrites.length === 0;
       this.topComputedWrites.push(node);
@@ -836,6 +860,43 @@ class Analyzer {
       const id = this.fields.get(atom)?.get(name);
       if (id !== undefined) this.add(id, this.top);
     }
+  }
+
+  /** A read of a name a primitive's prototype chain lacks: ⊤ as well, now
+   * or once a write may add the name there. */
+  primitiveRead(name: string, dst: number): void {
+    if (this.primitiveExtensionsAll || this.primitiveExtensions.has(name)) {
+      this.add(dst, this.top);
+      return;
+    }
+    const reads = this.primitiveReads.get(name);
+    if (reads === undefined) this.primitiveReads.set(name, [dst]);
+    else reads.push(dst);
+  }
+
+  /** A write that may add `name` (any name when null) to String.prototype,
+   * Number.prototype, Boolean.prototype or Object.prototype. */
+  extendPrimitives(name: string | null): void {
+    if (this.primitiveExtensionsAll) return;
+    if (name === null || name === "__proto__") {
+      this.primitiveExtensionsAll = true;
+      for (const reads of this.primitiveReads.values())
+        for (const dst of reads) this.add(dst, this.top);
+      this.primitiveReads.clear();
+      return;
+    }
+    if (this.primitiveExtensions.has(name)) return;
+    this.primitiveExtensions.add(name);
+    for (const dst of this.primitiveReads.get(name) ?? []) this.add(dst, this.top);
+    this.primitiveReads.delete(name);
+  }
+
+  /** An operation that may add, replace or remove `name` (any name when
+   * null) on its receiver: a primitive's prototype, or ⊤, which may be one. */
+  prototypeWrite(recv: number, name: string | null): void {
+    this.on(recv, (t) => {
+      if (t.kind === "top" || isPrimitivePrototype(t)) this.extendPrimitives(name);
+    });
   }
 
   // ---- classes ---------------------------------------------------------------
@@ -1763,6 +1824,7 @@ class Analyzer {
         const recv = this.expr(target.expression);
         const name = ts.isPropertyAccessExpression(target) ? target.name.text : null;
         this.ops.push({ kind: "delete", recv, name, node: e });
+        this.prototypeWrite(recv, name);
       }
       return this.constNode(this.prim("boolean"));
     }
@@ -2449,13 +2511,19 @@ class Analyzer {
       case "prim":
         if (name === "length" && a.label === "string") this.add(dst, this.prim("number"));
         else if (a.label === "string" && /^\d+$/.test(name)) {
+          // An index past the end reads the prototype chain.
           this.add(dst, this.prim("string"));
           this.add(dst, this.prim("undefined"));
+          this.primitiveRead(name, dst);
         } else if (a.label === "string" || a.label === "number" || a.label === "boolean") {
-          // A name the primitive's prototype chain lacks reads undefined.
+          // A name the primitive's prototype chain lacks reads undefined,
+          // unless the program may add it there.
           if (PRIMITIVE_MEMBERS[a.label].has(name) || OBJECT_PROTOTYPE_MEMBERS.has(name))
             this.add(dst, this.builtin(`${a.label}.${name}`, a));
-          else this.add(dst, this.prim("undefined"));
+          else {
+            this.add(dst, this.prim("undefined"));
+            this.primitiveRead(name, dst);
+          }
         }
         return;
       case "instance": {
@@ -2655,6 +2723,7 @@ class Analyzer {
         case "prim":
           return;
         default:
+          if (isPrimitivePrototype(a)) this.extendPrimitives(name);
           this.sink(value, `stored into ${a.label} at ${locLabel(site)}`);
       }
     });
@@ -2722,6 +2791,7 @@ class Analyzer {
           return;
         default:
           // As a store under a name: a builtin, promise or collection keeps it where it isn't tracked.
+          if (isPrimitivePrototype(a)) this.extendPrimitives(null);
           this.sink(value, `stored into ${a.label}[k] at ${locLabel(site)}`);
       }
     });
@@ -3188,8 +3258,10 @@ class Analyzer {
       if (path.startsWith("regexp.")) {
         if (method === "test") prim("boolean");
         else if (method === "exec") {
+          // The match and its capture groups; a group that did not take part is undefined.
           const out = this.syntheticArray(site, "exec");
           this.add(this.element(out), this.prim("string"));
+          this.add(this.element(out), this.prim("undefined"));
           this.add(dst, out);
           prim("null");
         } else escapeAll();
@@ -3360,6 +3432,7 @@ class Analyzer {
         return;
       case "Object.assign": {
         this.ops.push({ kind: "assign", recv: arg(0), name: null, node: site });
+        this.prototypeWrite(arg(0), null);
         this.on(arg(0), (t) => {
           for (const s of args.slice(1)) this.copyFields(s, t, site);
           if (t.kind === "top")
@@ -3373,6 +3446,10 @@ class Analyzer {
       case "Object.defineProperties":
       case "Reflect.defineProperty":
         this.ops.push({ kind: "defineProperty", recv: arg(0), name: null, node: site });
+        this.prototypeWrite(
+          arg(0),
+          path === "Object.defineProperties" ? null : literalKey(site, 1),
+        );
         this.sink(arg(2), `property descriptor at ${locLabel(site)}`);
         this.sink(arg(1), `property descriptor at ${locLabel(site)}`);
         this.edge(arg(0), dst);
@@ -3380,6 +3457,7 @@ class Analyzer {
       case "Object.setPrototypeOf":
       case "Reflect.setPrototypeOf":
         this.ops.push({ kind: "setPrototypeOf", recv: arg(0), name: null, node: site });
+        this.prototypeWrite(arg(0), null);
         this.sink(arg(1), `prototype at ${locLabel(site)}`);
         this.edge(arg(0), dst);
         return;
@@ -3478,12 +3556,9 @@ class Analyzer {
         return;
       }
       case "Reflect.deleteProperty": {
-        const key = ts.isCallExpression(site) ? unparen(list(site.arguments)[1]!) : undefined;
-        const name =
-          key !== undefined && (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key))
-            ? key.text
-            : null;
+        const name = literalKey(site, 1);
         this.ops.push({ kind: "delete", recv: arg(0), name, node: site });
+        this.prototypeWrite(arg(0), name);
         prim("boolean");
         return;
       }
@@ -3639,6 +3714,17 @@ interface PendingIf {
   readonly env: WalkEnv;
   thenDone: boolean;
   elseDone: boolean;
+}
+
+/** The string literal a call passes as argument `i`, or null. */
+function literalKey(
+  site: ts.CallExpression | ts.TaggedTemplateExpression,
+  i: number,
+): string | null {
+  const key = ts.isCallExpression(site) ? list(site.arguments)[i] : undefined;
+  if (key === undefined) return null;
+  const k = unparen(key);
+  return ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k) ? k.text : null;
 }
 
 /** Whether a value of the atom may be truthy (only `null`, `undefined` and
