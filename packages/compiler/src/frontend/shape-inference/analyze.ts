@@ -196,6 +196,25 @@ const ARRAY_METHODS: ReadonlySet<string> = new Set([
 ]);
 const MAX_STEPS = 20_000_000;
 
+/** The well-known symbols, static members of `Symbol` (Node 24). */
+const WELL_KNOWN_SYMBOLS: ReadonlySet<string> = new Set([
+  "asyncDispose",
+  "asyncIterator",
+  "dispose",
+  "hasInstance",
+  "isConcatSpreadable",
+  "iterator",
+  "match",
+  "matchAll",
+  "replace",
+  "search",
+  "species",
+  "split",
+  "toPrimitive",
+  "toStringTag",
+  "unscopables",
+]);
+
 /** The members String.prototype, Number.prototype and Boolean.prototype
  * define (Node 24); Object.prototype's come from OBJECT_PROTOTYPE_MEMBERS. */
 const PRIMITIVE_MEMBERS: Readonly<Record<"string" | "number" | "boolean", ReadonlySet<string>>> = {
@@ -609,6 +628,26 @@ class Analyzer {
    * and which function each `new F()` instance atom belongs to. */
   readonly protoOf = new Map<Atom, Atom>();
   readonly fnOfInstance = new Map<Atom, Atom>();
+  /** Per dictionary atom, the prototypes it was created with (Object.create). */
+  private readonly dictProtos = new Map<Atom, number>();
+  /** Per object literal atom, the keys it has from its creation: another
+   * key may be absent when read (flow-insensitively, before its write). */
+  private readonly literalOwnKeys = new Map<Atom, ReadonlySet<string>>();
+  private readonly protoReads = new Set<string>();
+  /** Arrays whose elements an index read inside its bounds may still miss:
+   * shrunk (pop, shift, splice, a length write), holey (`new Array(n)`, a
+   * delete, a store at an index that is not proven in bounds or the end). */
+  private readonly unsafeArrays = new Set<Atom>();
+  /** Index reads proven in bounds by their loop (`for (let i = 0; i <
+   * a.length; i++) a[i]`): undefined joins them only if the array turns
+   * out unsafe (finish). */
+  private readonly guardedIndexReads: { recv: Atom; dst: number; done: boolean }[] = [];
+  private readonly boundsMemo = new Map<Node, boolean>();
+  dictProto(d: Atom): number {
+    let id = this.dictProtos.get(d);
+    if (id === undefined) this.dictProtos.set(d, (id = this.newNode()));
+    return id;
+  }
   protoAtom(fn: Atom): Atom {
     let p = this.protoOf.get(fn);
     if (p === undefined) {
@@ -1355,6 +1394,15 @@ class Analyzer {
     this.edgeFor(site, info, args);
   }
 
+  /** The prototype object of a class declaration (`C.prototype`). */
+  classProto(decl: Node): Atom {
+    return this.atoms.intern(`cproto:${this.nodeKey(decl)}`, () => ({
+      kind: "object",
+      label: `${this.className(decl)}.prototype`,
+      node: decl,
+    }));
+  }
+
   /** Per-call-site clones of init factories: a function called from
    * module initialization (top-level code outside loops, or another such
    * clone) is analyzed once per call site, so the objects it creates are
@@ -1574,6 +1622,13 @@ class Analyzer {
   varDecl(d: ts.VariableDeclaration): void {
     const b = this.binding(d);
     if (d.initializer !== undefined) this.edge(this.expr(d.initializer), b);
+    else {
+      // `let x;` holds undefined until it is assigned (a for-in/for-of
+      // binding gets its values from the loop).
+      const loop = d.parent?.parent;
+      if (loop === undefined || !(ts.isForOfStatement(loop) || ts.isForInStatement(loop)))
+        this.add(b, this.prim("undefined"));
+    }
     this.bindPattern(d.name, b);
   }
 
@@ -1632,7 +1687,15 @@ class Analyzer {
     const key = this.ctxKey(e);
     const memo = this.exprMemo.get(key);
     if (memo !== undefined) return memo;
-    const id = this.exprUncached(e);
+    let id = this.exprUncached(e);
+    // A member of an optional chain (`a?.b.c`, `f?.()`) is undefined when
+    // the chain short-circuits.
+    if ((e.flags & ts.NodeFlags.OptionalChain) !== 0) {
+      const out = this.newNode();
+      this.edge(id, out);
+      this.add(out, this.prim("undefined"));
+      id = out;
+    }
     this.exprMemo.set(key, id);
     if (this.traceTop && !this.nodeLabel.has(id))
       this.nodeLabel.set(
@@ -1756,15 +1819,19 @@ class Analyzer {
     }
     if (ts.isPrefixUnaryExpression(e) || ts.isPostfixUnaryExpression(e)) {
       const operand = e.operand;
-      this.expr(operand);
+      const value = this.expr(operand);
+      if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken)
+        return this.constNode(this.prim("boolean"));
+      // `+x` is a number (a bigint throws); `-x`, `~x`, `++`/`--` keep a bigint.
+      if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.PlusToken)
+        return this.constNode(this.prim("number"));
+      const result = this.numericResult([value]);
       if (
         e.operator === ts.SyntaxKind.PlusPlusToken ||
         e.operator === ts.SyntaxKind.MinusMinusToken
       )
-        this.assignTo(operand, this.constNode(this.prim("number")));
-      if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken)
-        return this.constNode(this.prim("boolean"));
-      return this.constNode(this.prim("number"));
+        this.assignTo(operand, result);
+      return result;
     }
     if (ts.isSpreadElement(e)) return this.expr(e.expression);
     if (ts.isTaggedTemplateExpression(e)) return this.taggedTemplate(e);
@@ -1792,6 +1859,8 @@ class Analyzer {
         if (!forwarding) fn.usesArguments = true;
         const arr = this.syntheticArray(id, "arguments");
         for (const p of fn.params) this.edge(p, this.element(arr));
+        // Arguments past the declared parameters are not tracked.
+        this.add(this.element(arr), this.top);
         return this.constNode(arr);
       }
     }
@@ -2085,6 +2154,7 @@ class Analyzer {
       if (key !== null) this.edge(value, this.field(atom, key));
       else this.edge(value, this.anyField(atom));
     }
+    if (!this.literalOwnKeys.has(atom)) this.literalOwnKeys.set(atom, new Set(keys));
     if (!this.siteAtoms.has(atom) && this.siteAtoms.add(atom))
       this.sites.push({
         atom,
@@ -2295,16 +2365,11 @@ class Analyzer {
       return n;
     }
     if (op >= ts.SyntaxKind.FirstCompoundAssignment && op <= ts.SyntaxKind.LastCompoundAssignment) {
-      this.expr(e.left);
-      this.expr(e.right);
-      const result = this.constNode(
-        op === ts.SyntaxKind.PlusEqualsToken ? this.top : this.prim("number"),
-      );
-      if (op === ts.SyntaxKind.PlusEqualsToken) {
-        this.nodes[result]!.atoms.clear();
-        this.add(result, this.prim("string"));
-        this.add(result, this.prim("number"));
-      }
+      const lv = this.expr(e.left);
+      const rv = this.expr(e.right);
+      // Arithmetic on bigints answers bigints; `+=` may also concatenate.
+      const result = this.numericResult([lv, rv]);
+      if (op === ts.SyntaxKind.PlusEqualsToken) this.add(result, this.prim("string"));
       this.assignTo(e.left, result);
       return result;
     }
@@ -2351,13 +2416,15 @@ class Analyzer {
           )
             this.add(n, this.prim("number"));
           if (a.kind === "top") this.add(n, this.prim("number"));
+          if (a.kind === "top" || (a.kind === "prim" && a.label === "bigint"))
+            this.add(n, this.prim("bigint"));
         };
         this.on(l, strOrNum);
         this.on(r, strOrNum);
         return n;
       }
       default:
-        return this.constNode(this.prim("number"));
+        return this.numericResult([l, r]);
     }
   }
 
@@ -2455,6 +2522,8 @@ class Analyzer {
           this.unknownKeysInto(a, dst);
           return;
         }
+        // Members stored on a class's prototype object after the fact.
+        for (const c of this.classChain(decl)) this.edge(this.field(this.classProto(c), name), dst);
         const member = this.lookupMember(decl, name, false);
         if (member?.kind === "method")
           this.add(
@@ -2478,7 +2547,9 @@ class Analyzer {
       case "class": {
         const decl = a.node!;
         if (name === "prototype" || name === "name") {
-          this.add(dst, name === "prototype" ? this.top : this.prim("string"));
+          // A class's prototype object: members stored on it later
+          // (`C.prototype.isVector3 = true`) are members of its instances.
+          this.add(dst, name === "prototype" ? this.classProto(decl) : this.prim("string"));
           this.fieldInto(a, name, dst);
           this.unknownKeysInto(a, dst);
           return;
@@ -2524,8 +2595,10 @@ class Analyzer {
         return;
       case "array":
         if (name === "length") this.add(dst, this.prim("number"));
-        else if (/^\d+$/.test(name)) this.edge(this.element(a), dst);
-        else {
+        else if (/^\d+$/.test(name)) {
+          this.edge(this.element(a), dst);
+          this.add(dst, this.prim("undefined"));
+        } else {
           // A named property, written by name or under an unknown key; an own field shadows a method.
           if (ARRAY_METHODS.has(name)) {
             this.add(dst, this.builtin(`array.${name}`, a));
@@ -2535,8 +2608,19 @@ class Analyzer {
         }
         return;
       case "object": {
+        // A read through a class's prototype object (`C.prototype.m`) may
+        // be any member: unknown, as before prototype objects were tracked.
+        if (
+          a.label.endsWith(".prototype") &&
+          a.node !== undefined &&
+          ts.isClassLikeDeclaration(a.node)
+        )
+          this.add(dst, this.top);
         this.edge(this.field(a, name), dst);
         this.edge(this.anyField(a), dst);
+        const own = this.literalOwnKeys.get(a);
+        if (own !== undefined && !own.has(name) && !OBJECT_PROTOTYPE_MEMBERS.has(name))
+          this.add(dst, this.prim("undefined"));
         if (this.namespaceAtoms.has(a) && name !== "exports") {
           this.loadConstraint(this.field(a, "exports"), name, dst, site);
         }
@@ -2556,10 +2640,23 @@ class Analyzer {
           this.add(dst, this.builtin(`object.${name}`, a));
         return;
       }
-      case "dictionary":
+      case "dictionary": {
         this.edge(this.anyField(a), dst);
         this.edge(this.field(a, name), dst);
+        // An absent key reads undefined, or what the prototype has.
+        this.add(dst, this.prim("undefined"));
+        const proto = this.dictProtos.get(a);
+        // Once per dictionary, name and destination: prototype chains can
+        // be cyclic in the analysis (`Object.create(this)`).
+        const key = `${a.id}:${name}:${dst}`;
+        if (proto !== undefined && !this.protoReads.has(key)) {
+          this.protoReads.add(key);
+          this.on(proto, (p) => {
+            if (p.kind !== "prim") this.loadAtom(p, name, dst, site);
+          });
+        }
         return;
+      }
       case "promise":
         if (name === "then" || name === "catch" || name === "finally")
           this.add(dst, this.builtin(`promise.${name}`, a));
@@ -2595,8 +2692,13 @@ class Analyzer {
     )
       this.add(dst, this.prim("number"));
     else if (path === "Math" && /^[A-Z0-9_]+$/.test(name)) this.add(dst, this.prim("number"));
-    else if (path === "Symbol") this.add(dst, this.prim("symbol"));
-    else if (path === "Error.instance" || path === "error") {
+    else if (path === "Symbol") {
+      // The well-known symbols are symbols; `Symbol.for` and `Symbol.keyFor`
+      // are functions (a call of a symbol would answer nothing).
+      if (WELL_KNOWN_SYMBOLS.has(name)) this.add(dst, this.prim("symbol"));
+      else if (name === "for" || name === "keyFor") this.add(dst, this.builtin(`Symbol.${name}`));
+      else this.add(dst, this.top);
+    } else if (path === "Error.instance" || path === "error") {
       if (name === "message" || name === "stack" || name === "name")
         this.add(dst, this.prim("string"));
       else this.add(dst, this.top);
@@ -2637,6 +2739,7 @@ class Analyzer {
           this.edge(value, this.field(a, name));
           return;
         case "array":
+          if (/^\d+$/.test(name) || name === "length") this.unsafeArrays.add(a);
           if (/^\d+$/.test(name)) this.edge(value, this.element(a));
           else if (name !== "length") this.edge(value, this.field(a, name));
           return;
@@ -2655,11 +2758,20 @@ class Analyzer {
           this.add(dst, this.top);
           return;
         case "array":
+          // An index past the end (or a hole) reads undefined, unless the
+          // loop proves the index in bounds of an array without holes.
+          this.edge(this.element(a), dst);
+          if (this.indexInBounds(site)) this.guardedIndexReads.push({ recv: a, dst, done: false });
+          else this.add(dst, this.prim("undefined"));
+          return;
         case "collection":
           this.edge(this.element(a), dst);
           return;
         case "prim":
-          if (a.label === "string") this.add(dst, this.prim("string"));
+          if (a.label === "string") {
+            this.add(dst, this.prim("string"));
+            if (!this.indexInBounds(site)) this.add(dst, this.prim("undefined"));
+          }
           return;
         case "object":
         case "dictionary":
@@ -2678,6 +2790,8 @@ class Analyzer {
           copy();
           this.lateCopies.push(copy);
           if (a.kind === "instance" || a.kind === "class") this.add(dst, this.top);
+          // A key the object does not have reads undefined.
+          else this.add(dst, this.prim("undefined"));
           return;
         }
         default:
@@ -2698,6 +2812,7 @@ class Analyzer {
           // An index, or a named property under an unknown key.
           this.edge(value, this.element(a));
           this.edge(value, this.anyField(a));
+          if (!this.indexInBounds(site) && !isAppendIndex(site)) this.unsafeArrays.add(a);
           return;
         case "prim":
           return;
@@ -2937,6 +3052,8 @@ class Analyzer {
         case "builtin":
           this.constructBuiltin(a.path ?? "", args, dst, e);
           return;
+        case "prim":
+          return; // `new` of a primitive throws
         default:
           for (const x of args) this.sink(x, `argument of ⊤ constructor at ${locLabel(e)}`);
           this.add(dst, this.top);
@@ -2993,7 +3110,10 @@ class Analyzer {
         this.add(dst, this.builtin("RegExp.instance"));
         return;
       case "Array": {
-        this.add(dst, this.syntheticArray(site, "Array"));
+        const arr = this.syntheticArray(site, "Array");
+        // `new Array(n)` has holes.
+        this.unsafeArrays.add(arr);
+        this.add(dst, arr);
         return;
       }
       case "Proxy":
@@ -3059,6 +3179,7 @@ class Analyzer {
           case "pop":
           case "shift":
           case "at":
+            if (method !== "at") this.unsafeArrays.add(recv);
             this.edge(el, dst);
             this.add(dst, this.prim("undefined"));
             return;
@@ -3111,6 +3232,7 @@ class Analyzer {
           case "toSorted":
           case "toReversed":
           case "flat": {
+            if (method === "splice") this.unsafeArrays.add(recv);
             if (method === "filter") callback(0, [el, num, recvN], null);
             if (method === "sort" || method === "toSorted") callback(0, [el, el], null);
             if (method === "reverse" || method === "sort") {
@@ -3377,6 +3499,9 @@ class Analyzer {
           label: `Object.create@${locLabel(site)}`,
           node: site,
         }));
+        // Its members are inherited from the prototype argument.
+        this.edge(arg(0), this.dictProto(d));
+        if (args[1] !== undefined) this.sink(args[1], `property descriptors at ${locLabel(site)}`);
         this.add(dst, d);
         return;
       }
@@ -3570,11 +3695,184 @@ class Analyzer {
     escapeAll();
   }
 
+  /** Whether an index access `x[i]` reads inside the bounds of `x` on
+   * every evaluation: an enclosing `for (let i = <n ≥ 0>; i < x.length;
+   * i++ | ++i | i += <n > 0>)` whose body assigns neither `i` nor `x`.
+   * (The array's own length may still shrink or have holes: unsafeArrays.) */
+  indexInBounds(site: Node): boolean {
+    if (!ts.isElementAccessExpression(site) || site.questionDotToken !== undefined) return false;
+    const memo = this.boundsMemo.get(site);
+    if (memo !== undefined) return memo;
+    const out = this.indexInBoundsUncached(site);
+    this.boundsMemo.set(site, out);
+    return out;
+  }
+
+  private indexInBoundsUncached(site: ts.ElementAccessExpression): boolean {
+    const obj = unparen(site.expression);
+    const key = unparen(site.argumentExpression);
+    if (!ts.isIdentifier(obj) || !ts.isIdentifier(key)) return false;
+    const objDecl = this.resolve(obj);
+    const keyDecl = this.resolve(key);
+    if (objDecl === undefined || keyDecl === undefined) return false;
+    const names = (id: Node, decl: Node): boolean =>
+      ts.isIdentifier(id) && this.resolve(id) === decl;
+    for (let n: Node | undefined = site.parent; n !== undefined; n = n.parent) {
+      if (ts.isFunctionLike(n) || ts.isSourceFile(n)) return false;
+      if (!ts.isForStatement(n) || n.statement === undefined) continue;
+      if (!(site.pos >= n.statement.pos && site.end <= n.statement.end)) continue;
+      const cond = n.condition !== undefined ? unparen(n.condition) : undefined;
+      if (
+        cond === undefined ||
+        !ts.isBinaryExpression(cond) ||
+        cond.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
+        !names(unparen(cond.left), keyDecl)
+      )
+        continue;
+      const bound = unparen(cond.right);
+      if (
+        !ts.isPropertyAccessExpression(bound) ||
+        bound.name.text !== "length" ||
+        !names(unparen(bound.expression), objDecl)
+      )
+        continue;
+      // The index starts at a non-negative integer literal ...
+      const init = n.initializer;
+      let start: ts.Expression | undefined;
+      // (declared by the loop, so only the loop's own code can write it)
+      if (
+        init !== undefined &&
+        ts.isVariableDeclarationList(init) &&
+        (init.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0
+      ) {
+        const d = init.declarations.nodes.find((x) => x === keyDecl);
+        start = d !== undefined ? (d as ts.VariableDeclaration).initializer : undefined;
+      }
+      if (start === undefined || !nonNegativeIntegerLiteral(start)) continue;
+      if (!this.neverReassigned(objDecl)) continue;
+      // ... and only grows by integers,
+      const inc = n.incrementor !== undefined ? unparen(n.incrementor) : undefined;
+      const grows =
+        inc !== undefined &&
+        (((ts.isPostfixUnaryExpression(inc) || ts.isPrefixUnaryExpression(inc)) &&
+          inc.operator === ts.SyntaxKind.PlusPlusToken &&
+          names(unparen(inc.operand), keyDecl)) ||
+          (ts.isBinaryExpression(inc) &&
+            inc.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
+            names(unparen(inc.left), keyDecl) &&
+            positiveIntegerLiteral(inc.right)));
+      if (!grows) continue;
+      // ... and the body writes neither the index nor the array binding.
+      let written = false;
+      const visit = (m: Node): void => {
+        if (written) return;
+        if (
+          ts.isBinaryExpression(m) &&
+          m.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+          m.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+          (names(unparen(m.left), keyDecl) || names(unparen(m.left), objDecl))
+        )
+          written = true;
+        else if (
+          (ts.isPostfixUnaryExpression(m) || ts.isPrefixUnaryExpression(m)) &&
+          (m.operator === ts.SyntaxKind.PlusPlusToken ||
+            m.operator === ts.SyntaxKind.MinusMinusToken) &&
+          (names(unparen(m.operand), keyDecl) || names(unparen(m.operand), objDecl))
+        )
+          written = true;
+        ts.forEachChild(m, (c) => {
+          visit(c);
+          return undefined;
+        });
+      };
+      visit(n.statement);
+      if (!written) return true;
+    }
+    return false;
+  }
+
+  private readonly reassignMemo = new Map<Node, boolean>();
+  /** Whether a binding keeps the value it is declared with: a `const`, or a
+   * parameter or variable that no code in its scope assigns. */
+  neverReassigned(decl: Node): boolean {
+    const memo = this.reassignMemo.get(decl);
+    if (memo !== undefined) return memo;
+    let out = false;
+    if (ts.isVariableDeclaration(decl) || ts.isParameter(decl)) {
+      const list = decl.parent;
+      if (
+        ts.isVariableDeclaration(decl) &&
+        list !== undefined &&
+        ts.isVariableDeclarationList(list) &&
+        (list.flags & ts.NodeFlags.Const) !== 0
+      )
+        out = true;
+      else {
+        let scope: Node | undefined = decl.parent;
+        while (scope !== undefined && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope))
+          scope = scope.parent;
+        if (scope !== undefined && ts.isIdentifier((decl as ts.VariableDeclaration).name)) {
+          const text = ((decl as ts.VariableDeclaration).name as ts.Identifier).text;
+          let written = false;
+          const target = (e: ts.Expression): boolean => {
+            const u = unparen(e);
+            return ts.isIdentifier(u) && u.text === text && this.resolve(u) === decl;
+          };
+          const visit = (m: Node): void => {
+            if (written) return;
+            if (
+              (ts.isBinaryExpression(m) &&
+                m.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                m.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+                target(m.left)) ||
+              ((ts.isPostfixUnaryExpression(m) || ts.isPrefixUnaryExpression(m)) &&
+                (m.operator === ts.SyntaxKind.PlusPlusToken ||
+                  m.operator === ts.SyntaxKind.MinusMinusToken) &&
+                target(m.operand))
+            )
+              written = true;
+            ts.forEachChild(m, (c) => {
+              visit(c);
+              return undefined;
+            });
+          };
+          visit(scope);
+          out = !written;
+        }
+      }
+    }
+    this.reassignMemo.set(decl, out);
+    return out;
+  }
+
+  /** The result of arithmetic over the operands: a number, or a bigint
+   * where an operand may be one. */
+  numericResult(operands: number[]): number {
+    const n = this.newNode();
+    this.add(n, this.prim("number"));
+    for (const o of operands)
+      this.on(o, (a) => {
+        if (a.kind === "top" || (a.kind === "prim" && a.label === "bigint"))
+          this.add(n, this.prim("bigint"));
+      });
+    return n;
+  }
+
   /** Re-run deferred field copies until nothing new flows. */
   finish(): void {
     for (;;) {
       const before = this.steps;
       for (const c of this.lateCopies) c();
+      this.solve();
+      for (const o of this.ops)
+        if (o.kind === "delete" || o.kind === "lengthWrite")
+          for (const a of this.nodes[o.recv]!.atoms)
+            if (a.kind === "array") this.unsafeArrays.add(a);
+      for (const g of this.guardedIndexReads)
+        if (!g.done && this.unsafeArrays.has(g.recv)) {
+          g.done = true;
+          this.add(g.dst, this.prim("undefined"));
+        }
       this.solve();
       // A condition with no values at the fixpoint is one the analysis
       // could not evaluate: walk both of its branches.
@@ -3594,6 +3892,30 @@ class Analyzer {
       if (this.steps === before || this.budgetExceeded) return;
     }
   }
+}
+
+function nonNegativeIntegerLiteral(e: ts.Expression): boolean {
+  const u = unparen(e);
+  return ts.isNumericLiteral(u) && Number.isInteger(Number(u.text)) && Number(u.text) >= 0;
+}
+
+function positiveIntegerLiteral(e: ts.Expression): boolean {
+  const u = unparen(e);
+  return ts.isNumericLiteral(u) && Number.isInteger(Number(u.text)) && Number(u.text) > 0;
+}
+
+/** `x[x.length] = v`: a store at the end, which appends without a hole. */
+function isAppendIndex(site: Node): boolean {
+  if (!ts.isElementAccessExpression(site)) return false;
+  const obj = unparen(site.expression);
+  const key = unparen(site.argumentExpression);
+  return (
+    ts.isIdentifier(obj) &&
+    ts.isPropertyAccessExpression(key) &&
+    key.name.text === "length" &&
+    ts.isIdentifier(unparen(key.expression)) &&
+    (unparen(key.expression) as ts.Identifier).text === obj.text
+  );
 }
 
 /** The export name of a CommonJS export declaration the checker resolves

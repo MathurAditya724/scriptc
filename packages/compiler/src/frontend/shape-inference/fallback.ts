@@ -235,7 +235,7 @@ function visitReturns(body: ts.Node, f: (e: ts.Expression) => void): void {
 }
 
 /** The innermost node whose token span covers [start, end). */
-function innermostNodeAt(sf: ts.SourceFile, start: number, end: number): ts.Node {
+export function innermostNodeAt(sf: ts.SourceFile, start: number, end: number): ts.Node {
   let node: ts.Node = sf;
   for (;;) {
     let next: ts.Node | undefined;

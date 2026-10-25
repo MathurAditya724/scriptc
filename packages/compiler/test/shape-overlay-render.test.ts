@@ -1,53 +1,34 @@
-/* renderShapeOverlay neutralizes the package JSDoc in the leading trivia of
- * the annotations a build keeps, and leaves the trivia of dropped ones. */
+/* renderShapeOverlay keeps the package's JSDoc as written (package JSDoc is
+ * a declaration) and writes the annotations a build keeps. */
 import { expect, test } from "vitest";
-import {
-  neutralizeDocTags,
-  OVERLAY_MARK,
-  renderShapeOverlay,
-} from "../src/frontend/shape-inference/overlay.js";
+import { OVERLAY_MARK, renderShapeOverlay } from "../src/frontend/shape-inference/overlay.js";
 import type { ShapeOverlayPlan } from "../src/frontend/shape-inference/overlay.js";
 
-test("each kept annotation's leading JSDoc is neutralized, once per range", () => {
+test("package JSDoc stays as written; dropped annotations are left out", () => {
   const decls = [
-    "/** @param {string} a */\nfunction f(a) {}\n",
+    "/** @param {string} a */\nfunction f(a, b) {}\n",
     "/** @type {number} */\nvar x = 1;\n",
-    "/** @returns {void} */\nfunction g() {}\n",
+    "function g(c) {}\n",
   ];
   const text = decls.join("");
-  const docRanges: { lo: number; hi: number; id: number }[] = [];
   const edits: { pos: number; id: number; text: string }[] = [];
+  const at: number[] = [];
   let lo = 0;
   for (const decl of decls) {
-    const hi = lo + decl.indexOf("\n") + 1;
-    docRanges.push({ lo, hi, id: hi });
-    // A declaration's first child starts at the same position: its range is
-    // the same trivia.
-    docRanges.push({ lo, hi, id: hi });
-    edits.push({ pos: hi, id: hi, text: `/** @type {any} ${OVERLAY_MARK} #${hi} */ ` });
+    const pos = lo + (decl.startsWith("/**") ? decl.indexOf("\n") + 1 : 0);
+    at.push(pos);
+    edits.push({ pos, id: pos, text: `/** @param {number} b ${OVERLAY_MARK} #${pos} */ ` });
     lo += decl.length;
   }
-  const plan: ShapeOverlayPlan = {
-    parts: new Map([["a.js", { text, edits, suffix: "", docRanges }]]),
-  };
-  const dropped = docRanges[2]!.id;
+  const plan: ShapeOverlayPlan = { parts: new Map([["a.js", { text, edits, suffix: "" }]]) };
   const overlay = renderShapeOverlay(plan, {
-    annotations: new Map([["a.js", new Set([dropped])]]),
+    annotations: new Map([["a.js", new Set([at[1]!])]]),
     files: new Set(),
   });
-  const annotated = (decl: string, keep: boolean, at: number): string => {
-    const head = decl.slice(0, decl.indexOf("\n") + 1);
-    const rest = decl.slice(head.length);
-    return keep
-      ? `${neutralizeDocTags(head)}/** @type {any} ${OVERLAY_MARK} #${at} */ ${rest}`
-      : decl;
-  };
-  expect(overlay.files.get("a.js")).toBe(
-    decls
-      .map((decl, i) => annotated(decl, docRanges[2 * i]!.id !== dropped, docRanges[2 * i]!.id))
-      .join(""),
-  );
-  expect(overlay.files.get("a.js")).toContain("/** @type {number} */");
-  expect(overlay.files.get("a.js")).toContain("/** -param {string} a */");
+  const out = overlay.files.get("a.js")!;
+  expect(out).toContain("/** @param {string} a */\n/** @param {number} b");
+  expect(out).toContain("/** @type {number} */\nvar x = 1;");
+  expect(out).not.toContain(`#${at[1]}`);
+  expect(out).toContain(`#${at[2]} */ function g(c) {}`);
   expect(overlay.annotations).toBe(2);
 });
