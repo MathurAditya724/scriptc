@@ -86,6 +86,8 @@ export interface LiteralSite {
   readonly hasComputedKey: boolean;
   readonly spreads: number[];
   readonly inPackage: boolean;
+  /** The per-call-site clone that allocates it ("" outside clones). */
+  readonly ctx: string;
 }
 
 export interface Op {
@@ -263,6 +265,11 @@ const PRIMITIVE_MEMBERS: Readonly<Record<"string" | "number" | "boolean", Readon
   boolean: new Set(["toString", "valueOf", "constructor"]),
 };
 
+/** Per-call-site clones of an init factory, at most (SCRIPTC_SHAPE_SITE_CLONES;
+ * 0 turns them off), and the deepest chain of nested clones. */
+const SITE_CLONES = Number(process.env["SCRIPTC_SHAPE_SITE_CLONES"] ?? 64);
+const SITE_CLONE_DEPTH = 4;
+
 /** The most atoms a value node tracks before it widens to ⊤
  * (SCRIPTC_SHAPE_WIDEN overrides). */
 const WIDEN_AT = Number(process.env["SCRIPTC_SHAPE_WIDEN"] ?? 32);
@@ -400,8 +407,9 @@ class Analyzer {
    * which may run after the call's own handling. */
   private readonly repeatingSites = new Set<Node>();
 
-  edgeFor(site: Node, callee: FunctionInfo): void {
-    const ctx = this.siteCtx.get(site);
+  edgeFor(site: Node, callee: FunctionInfo, args?: number[]): void {
+    const ctx =
+      (args !== undefined ? this.argsFrom.get(args) : undefined) ?? this.siteCtx.get(site);
     this.calls.push({
       caller: ctx?.caller ?? null,
       callee,
@@ -1250,7 +1258,9 @@ class Analyzer {
     spread: boolean,
     site: Node,
   ): void {
-    const key = `ctor:${this.nodeKey(decl)}:${instance.id}:${this.nodeKey(site)}`;
+    // The arguments' nodes too: one `new` site walked in several contexts
+    // (receiver classes, per-site clones) passes each context's values.
+    const key = `ctor:${this.nodeKey(decl)}:${instance.id}:${this.nodeKey(site)}:${args.join(",")}`;
     if (this.boundCalls.has(key)) return;
     this.boundCalls.add(key);
     const entry = this.ensureClass(decl);
@@ -1263,7 +1273,7 @@ class Analyzer {
       this.activate(info);
       this.add(info.thisNode, instance);
       this.bindArgs(info, args, spread);
-      this.edgeFor(site, info);
+      this.edgeFor(site, info, args);
       return;
     }
     const base = this.baseClass(decl);
@@ -1299,7 +1309,7 @@ class Analyzer {
 
   /** Call of a function atom with a receiver node. */
   callFunction(
-    info: FunctionInfo,
+    callee: FunctionInfo,
     thisNode: number | null,
     args: number[],
     spread: boolean,
@@ -1308,7 +1318,7 @@ class Analyzer {
   ): void {
     // `() => Object.create(null)` helpers: each call site gets its own
     // dictionary, as if the helper were inlined.
-    if (this.isFactory(info.node)) {
+    if (this.isFactory(callee.node)) {
       const d = this.atoms.intern(`dict:${this.nodeKey(site)}`, () => ({
         kind: "dictionary",
         label: `Object.create@${locLabel(site)}`,
@@ -1317,6 +1327,7 @@ class Analyzer {
       this.add(dst, d);
       return;
     }
+    const info = this.siteClone(callee, site, args) ?? callee;
     this.activate(info);
     const fnNode = info.node;
     const key = `call:${info.ctx}|${this.nodeKey(fnNode)}:${this.nodeKey(site)}:${thisNode ?? -1}:${dst}`;
@@ -1331,7 +1342,47 @@ class Analyzer {
     } else if (info.isGenerator) {
       this.add(dst, this.top);
     } else this.edge(info.ret, dst);
-    this.edgeFor(site, info);
+    this.edgeFor(site, info, args);
+  }
+
+  /** Per-call-site clones of init factories: a function called from
+   * module initialization (top-level code outside loops, or another such
+   * clone) is analyzed once per call site, so the objects it creates are
+   * one allocation per site (`z.string()` and `z.object(…)` schemas,
+   * valibot's schema literals) instead of one per function. Clones run
+   * at most once, which makes their objects singletons. */
+  private readonly siteClones = new Map<Node, number>();
+  /** The site-clone context a literal at `node` is allocated in, or "". */
+  private siteCloneCtx(node: Node): string {
+    const root = this.ctxRoot;
+    if (!this.ctx.includes("@S") || root === null) return "";
+    const inside =
+      node.getSourceFile() === root.getSourceFile() && node.pos >= root.pos && node.end <= root.end;
+    return inside ? this.ctx : "";
+  }
+  private siteClone(info: FunctionInfo, site: Node, args: number[]): FunctionInfo | null {
+    if (SITE_CLONES === 0 || info.isGenerator || ts.isSourceFile(info.node)) return null;
+    if (ts.isClassLikeDeclaration(info.node)) return null;
+    const sc = this.argsFrom.get(args);
+    if (sc === undefined || sc.inLoop || this.forceLoop || this.repeatingSites.has(site))
+      return null;
+    const caller = sc.caller;
+    if (caller === null) return null;
+    // The clone itself, not a closure created inside it (which inherits
+    // its context but may run any number of times).
+    const callerInit =
+      ts.isSourceFile(caller.node) || (caller.ctx.includes("@S") && caller.root === caller.node);
+    if (!callerInit) return null;
+    // A clone inside a clone keys on the whole chain of sites.
+    const chain = caller.ctx.includes("@S") ? caller.ctx.slice(caller.ctx.indexOf("@S")) : "";
+    if (chain.split("@S").length > SITE_CLONE_DEPTH) return null;
+    const ctx = `${info.ctx}${chain}@S${this.nodeKey(site)}`;
+    const existing = this.functions.get(`${ctx}|${this.nodeKey(info.node)}`);
+    if (existing !== undefined) return existing;
+    const count = this.siteClones.get(info.node) ?? 0;
+    if (count >= SITE_CLONES) return null;
+    this.siteClones.set(info.node, count + 1);
+    return this.functionInfo(info.node, info.ownerClass, ctx);
   }
 
   private readonly factories = new Map<Node, boolean>();
@@ -1982,11 +2033,11 @@ class Analyzer {
         hasProto = true;
       if (!keys.includes(key)) keys.push(key);
     }
-    const atom = this.atoms.intern(`obj:${this.nodeKey(e)}`, () => ({
-      kind: "object",
-      label: label(),
-      node: e,
-    }));
+    const sctx = this.siteCloneCtx(e);
+    const atom = this.atoms.intern(
+      sctx === "" ? `obj:${this.nodeKey(e)}` : `obj:${sctx}|${this.nodeKey(e)}`,
+      () => ({ kind: "object", label: label(), node: e, ...(sctx === "" ? {} : { ctx: sctx }) }),
+    );
     const n = this.newNode();
     this.add(n, atom);
     for (const p of list(e.properties)) {
@@ -2036,6 +2087,7 @@ class Analyzer {
         hasComputedKey,
         spreads,
         inPackage,
+        ctx: sctx,
       });
     return n;
   }
@@ -2174,11 +2226,16 @@ class Analyzer {
   }
 
   arrayLiteral(e: ts.ArrayLiteralExpression): number {
-    const atom = this.atoms.intern(`arr:${this.nodeKey(e)}`, () => ({
-      kind: "array",
-      label: `[]@${locLabel(e)}`,
-      node: e,
-    }));
+    const sctx = this.siteCloneCtx(e);
+    const atom = this.atoms.intern(
+      sctx === "" ? `arr:${this.nodeKey(e)}` : `arr:${sctx}|${this.nodeKey(e)}`,
+      () => ({
+        kind: "array",
+        label: `[]@${locLabel(e)}`,
+        node: e,
+        ...(sctx === "" ? {} : { ctx: sctx }),
+      }),
+    );
     const n = this.newNode();
     this.add(n, atom);
     const el = this.element(atom);
@@ -2203,6 +2260,7 @@ class Analyzer {
         hasComputedKey: false,
         spreads: [],
         inPackage: isPackageJsFile(e.getSourceFile()),
+        ctx: sctx,
       });
     return n;
   }
@@ -2701,8 +2759,23 @@ class Analyzer {
       }
       out.push(this.expr(a));
     }
+    // The walk context of this call (one argument list per call site and
+    // context): calls fire during solving, after the walk moved on.
+    this.argsFrom.set(out, {
+      caller: this.currentFn,
+      inLoop: this.loopDepth > 0 || this.forceLoop,
+    });
     return { args: out, spread };
   }
+
+  /** Per argument list (args()), the calling function and whether the call
+   * is in a loop, in the context the call was walked in. siteCtx keeps
+   * the first context per syntax node, which a site walked in several
+   * contexts (receiver classes, per-site clones) does not determine. */
+  private readonly argsFrom = new WeakMap<
+    number[],
+    { caller: FunctionInfo | null; inLoop: boolean }
+  >();
 
   call(e: ts.CallExpression): number {
     this.noteSite(e);
@@ -2847,7 +2920,7 @@ class Analyzer {
             this.add(info.thisNode, inst);
             this.bindArgs(info, args, spread);
             this.edge(info.ret, dst);
-            this.edgeFor(e, info);
+            this.edgeFor(e, info, args);
           }
           return;
         }

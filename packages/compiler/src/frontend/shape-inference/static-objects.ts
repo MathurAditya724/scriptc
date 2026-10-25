@@ -325,6 +325,25 @@ export function planStaticObjectRewrites(
   for (const op of analysis.ops)
     if (op.kind !== "read" && op.kind !== "write" && op.kind !== "lengthWrite")
       for (const a of analysis.nodes[op.recv]!.atoms) computedRecv.add(a);
+  // One entry per (kind, syntax node): a node the analysis walked in
+  // several contexts (receiver classes, per-site clones) is rewritten only
+  // when the receivers of every context together satisfy the conditions.
+  const mergedOps: { op: (typeof analysis.ops)[number]; atoms: Set<Atom> }[] = [];
+  {
+    const byKey = new Map<string, { op: (typeof analysis.ops)[number]; atoms: Set<Atom> }>();
+    const ids = new Map<Node, number>();
+    for (const op of analysis.ops) {
+      let id = ids.get(op.node);
+      if (id === undefined) ids.set(op.node, (id = ids.size));
+      const key = `${op.kind}:${op.name ?? ""}:${id}`;
+      let entry = byKey.get(key);
+      if (entry === undefined) {
+        byKey.set(key, (entry = { op, atoms: new Set() }));
+        mergedOps.push(entry);
+      }
+      for (const a of analysis.nodes[op.recv]!.atoms) entry.atoms.add(a);
+    }
+  }
   const forIns: ts.Expression[] = [];
   const reflective: ts.CallExpression[] = [];
   for (const sf of analysis.files) {
@@ -686,9 +705,8 @@ export function planStaticObjectRewrites(
   // Direct references: `e.k` (called, constructed or read) in the same file
   // whose receiver is exactly the constant object holding a hoisted
   // function or class.
-  for (const op of analysis.ops) {
+  for (const { op, atoms } of mergedOps) {
     if (op.kind !== "read" || op.name === null) continue;
-    const atoms = analysis.nodes[op.recv]!.atoms;
     if (atoms.size !== 1) continue;
     const recv = [...atoms][0]!;
     const o = constantAtoms.get(recv);
@@ -729,9 +747,8 @@ export function planStaticObjectRewrites(
   // member stored after the object was created could be read before the
   // store; those stay reads.)
   let foldedReads = 0;
-  for (const op of analysis.ops) {
+  for (const { op, atoms } of mergedOps) {
     if (op.kind !== "read" || op.name === null) continue;
-    const atoms = analysis.nodes[op.recv]!.atoms;
     if (atoms.size !== 1) continue;
     const o = constantAtoms.get([...atoms][0]!);
     if (o === undefined || o.site.kind !== "literal") continue;
@@ -775,14 +792,13 @@ export function planStaticObjectRewrites(
   // table has no accessors, and comparing a string runs no code, so only
   // the representation of the call changes.
   const tableCalls: { sf: ts.SourceFile; call: ts.CallExpression; arms: [string, string][] }[] = [];
-  for (const op of analysis.ops) {
+  for (const { op, atoms } of mergedOps) {
     if (op.kind !== "computedRead") continue;
     const node = op.node;
     if (!ts.isElementAccessExpression(node) || node.questionDotToken !== undefined) continue;
     const call = node.parent;
     if (call === undefined || !ts.isCallExpression(call) || call.expression !== node) continue;
     if (call.questionDotToken !== undefined || topStatement(call) === null) continue;
-    const atoms = analysis.nodes[op.recv]!.atoms;
     const where = `table call ${node.getText()}`;
     if (atoms.size !== 1) {
       kept.push(`${where}: the table may be ${atoms.size} values`);
