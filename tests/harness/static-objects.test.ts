@@ -35,7 +35,7 @@ test(
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const report = (result.warnings ?? []).find((w) => w.code === "SC6103");
     expect(report?.message).toMatch(
-      /compiled 1 constructor function as classes and 2 namespace functions as direct functions/,
+      /compiled 2 constructor functions as classes and 3 namespace functions as direct functions/,
     );
     const pending = execFileAsync(result.binaryPath, [], { cwd: dirname(entry), encoding: "utf8" });
     pending.child.stdin?.end();

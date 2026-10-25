@@ -324,6 +324,10 @@ export function planShapeOverlay(
       return name;
     };
 
+    // Functions called with `new` yield their instance, whatever they return.
+    const constructed = new Set<ts.Node | undefined>(
+      [...analysis.fnOfInstance.values()].map((a) => a.node),
+    );
     // Return values merged over every analysis context of each function.
     const returns = new Map<ts.Node, Set<Atom>>();
     for (const info of analysis.functions.values()) {
@@ -436,7 +440,7 @@ export function planShapeOverlay(
 
     const paramTags = (fn: ts.FunctionLikeDeclaration): string | null => {
       const tags: string[] = [];
-      if (!ts.isConstructorDeclaration(fn)) {
+      if (!ts.isConstructorDeclaration(fn) && !constructed.has(fn)) {
         const ret = returnValues(fn);
         const t = ret !== undefined && ret.size > 0 ? typeOf(ret, false, 0) : null;
         const why = process.env["SCRIPTC_DEBUG_SHAPE_OVERLAY_WHY"];
@@ -549,10 +553,14 @@ export function planShapeOverlay(
     // Dead branches: outermost first; edits inside a replaced range drop.
     const dead = (deadByFile.get(sf) ?? []).sort((a, b) => a.pos - b.pos);
     const ranges: [number, number][] = [];
+    const hoisted = new Map<number, readonly string[]>();
     for (const branch of dead) {
       const start = ts.tokenStartOfNode(branch);
       if (dropped?.has(start) === true) continue;
       if (ranges.some(([lo, hi]) => start >= lo && start < hi)) continue;
+      const names = hoistedNames(branch);
+      if (names === null) continue;
+      hoisted.set(start, names);
       ranges.push([start, branch.end]);
     }
     if (ranges.length > 0) {
@@ -567,10 +575,13 @@ export function planShapeOverlay(
           `scriptc internal error: shape inference proved the branch at ${rel}:${line} unreachable, but it ran. ` +
           `This is a bug in scriptc's shape analysis, not in the program. Rebuild with --no-shape-overlay, ` +
           `or set "scriptc": {"packages": {"${pkg}": {"shapes": false}}} in package.json.`;
+        // The branch's own var names stay declared in its scope, undefined.
+        const names = hoisted.get(lo)!;
+        const vars = names.length > 0 ? `var ${names.join(", ")}; ` : "";
         edits.push({
           pos: lo,
           end: hi,
-          text: `{ /** ${MARK} #${lo} */ throw new Error(${JSON.stringify(message)}); }`,
+          text: `{ /** ${MARK} #${lo} */ ${vars}throw new Error(${JSON.stringify(message)}); }`,
         });
         deadBranches++;
       }
@@ -589,7 +600,7 @@ export function planShapeOverlay(
       edits.push(...kept);
     }
     if (edits.length === 0) continue;
-    files.set(sf.fileName, neutralizeDocTags(applyEdits(sf.text, edits)) + typedefText.join(""));
+    files.set(sf.fileName, applyEdits(neutralizeDocTags(sf), edits) + typedefText.join(""));
   }
   // Type aliases other files name these files' classes through.
   for (const [other, names] of exportedClasses) {
@@ -599,7 +610,7 @@ export function planShapeOverlay(
       .join("");
     files.set(
       other.fileName,
-      (files.get(other.fileName) ?? neutralizeDocTags(other.text)) + "\n" + aliases,
+      (files.get(other.fileName) ?? neutralizeDocTags(other)) + "\n" + aliases,
     );
   }
   return { files, annotations, deadBranches };
@@ -635,17 +646,158 @@ function applyEdits(text: string, edits: readonly Edit[]): string {
   return out + text.slice(at);
 }
 
-/** The package's JSDoc type tags become plain text: package JSDoc is a
- * hint, not a declaration. The overlay's own comments carry MARK and are
- * kept. Lengths are unchanged. */
-export function neutralizeDocTags(text: string): string {
-  return text.replace(/\/\*\*[\s\S]*?\*\//g, (comment) => {
-    if (comment.includes(MARK)) return comment;
-    return comment.replace(
-      /@(param|type|typedef|returns?|template|this|callback|property|prop|arg|argument|enum|implements|extends|augments|satisfies|overload|import)\b/g,
-      "-$1",
-    );
+/** The file's text with the JSDoc type tags of its comments made plain
+ * text: package JSDoc is a hint, not a declaration. String, template and
+ * regular expression literals and JSX text are copied unchanged, so
+ * comment-like text in them keeps its runtime value. Lengths are unchanged,
+ * so edit positions in the source text stay valid. */
+export function neutralizeDocTags(sf: ts.SourceFile): string {
+  const text = sf.text;
+  // Literal token ranges, in source order.
+  const literals: [number, number][] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxText(node)) {
+      literals.push([node.pos, node.end]);
+      return;
+    }
+    if (
+      ts.isStringLiteral(node) ||
+      ts.isNoSubstitutionTemplateLiteral(node) ||
+      ts.isTemplateHead(node) ||
+      ts.isTemplateMiddle(node) ||
+      ts.isTemplateTail(node) ||
+      ts.isRegularExpressionLiteral(node)
+    ) {
+      literals.push([ts.tokenStartOfNode(node), node.end]);
+      return;
+    }
+    ts.forEachChild(node, (c) => {
+      visit(c);
+      return undefined;
+    });
+  };
+  visit(sf);
+  literals.sort((a, b) => a[0] - b[0]);
+  let out = "";
+  let copied = 0;
+  let next = 0;
+  let pos = 0;
+  // Outside literals, `//` and `/*` only start comments.
+  while (pos < text.length) {
+    while (next < literals.length && literals[next]![1] <= pos) next++;
+    const literal = literals[next];
+    if (literal !== undefined && literal[0] <= pos) {
+      pos = literal[1];
+      continue;
+    }
+    if (text.charCodeAt(pos) !== 47) {
+      pos++;
+      continue;
+    }
+    const second = text.charCodeAt(pos + 1);
+    if (second === 47) {
+      while (pos < text.length && !lineBreak(text.charCodeAt(pos))) pos++;
+      continue;
+    }
+    if (second !== 42) {
+      pos++;
+      continue;
+    }
+    const close = text.indexOf("*/", pos + 2);
+    const end = close < 0 ? text.length : close + 2;
+    const comment = text.slice(pos, end);
+    if (comment.startsWith("/**") && !comment.includes(MARK)) {
+      out += text.slice(copied, pos) + neutralizeComment(comment);
+      copied = end;
+    }
+    pos = end;
+  }
+  return out + text.slice(copied);
+}
+
+function lineBreak(code: number): boolean {
+  return code === 10 || code === 13 || code === 0x2028 || code === 0x2029;
+}
+
+function neutralizeComment(comment: string): string {
+  return comment.replace(
+    /@(param|type|typedef|returns?|template|this|callback|property|prop|arg|argument|enum|implements|extends|augments|satisfies|overload|import)\b/g,
+    "-$1",
+  );
+}
+
+/** The `var` names a dead branch declares that its function (or file)
+ * declares nowhere else: replacing the branch must keep them bound, as
+ * undefined. Null when the branch declares a function in a block, whose
+ * binding outside the block depends on the file's strictness; such a
+ * branch is kept. */
+function hoistedNames(branch: ts.Node): readonly string[] | null {
+  let scope: ts.Node | undefined = branch.parent;
+  while (scope !== undefined && !ts.isSourceFile(scope) && !functionScope(scope))
+    scope = scope.parent;
+  if (scope === undefined) return null;
+  const own = new Set<string>();
+  let blockFunction = false;
+  ts.walkPreorder(branch, (n) => {
+    if (n !== branch && ts.isFunctionDeclaration(n)) {
+      blockFunction = true;
+      return "skip";
+    }
+    if (n !== branch && (functionScope(n) || ts.isClassDeclaration(n) || ts.isClassExpression(n)))
+      return "skip";
+    if (ts.isVariableDeclarationList(n) && (n.flags & ts.NodeFlags.BlockScoped) === 0)
+      for (const d of n.declarations.nodes) addBindingNames(d.name, own);
+    return undefined;
   });
+  if (blockFunction) return null;
+  if (own.size === 0) return [];
+  // Names the scope binds outside the branch: parameters, a function
+  // expression's name, other var declarations and function declarations.
+  const elsewhere = new Set<string>();
+  if (!ts.isSourceFile(scope)) {
+    for (const p of list(
+      (scope as { parameters?: { readonly nodes: readonly ts.ParameterDeclaration[] } }).parameters,
+    ))
+      addBindingNames(p.name, elsewhere);
+    const name = (scope as { name?: ts.Node }).name;
+    if (name !== undefined && ts.isIdentifier(name)) elsewhere.add(name.text);
+  }
+  const body = ts.isSourceFile(scope) ? scope : (scope as { body?: ts.Node }).body;
+  if (body !== undefined)
+    ts.walkPreorder(body, (n) => {
+      if (n === branch) return "skip";
+      if (n !== body && ts.isFunctionDeclaration(n) && n.name !== undefined)
+        elsewhere.add(n.name.text);
+      if (n !== body && (functionScope(n) || ts.isClassDeclaration(n) || ts.isClassExpression(n)))
+        return "skip";
+      if (ts.isVariableDeclarationList(n) && (n.flags & ts.NodeFlags.BlockScoped) === 0)
+        for (const d of n.declarations.nodes) addBindingNames(d.name, elsewhere);
+      return undefined;
+    });
+  return [...own].filter((name) => !elsewhere.has(name));
+}
+
+function functionScope(n: ts.Node): boolean {
+  return (
+    ts.isFunctionDeclaration(n) ||
+    ts.isFunctionExpression(n) ||
+    ts.isArrowFunction(n) ||
+    ts.isMethodDeclaration(n) ||
+    ts.isGetAccessorDeclaration(n) ||
+    ts.isSetAccessorDeclaration(n) ||
+    ts.isConstructorDeclaration(n) ||
+    ts.isClassStaticBlockDeclaration(n)
+  );
+}
+
+function addBindingNames(name: ts.BindingName, out: Set<string>): void {
+  if (ts.isIdentifier(name)) {
+    out.add(name.text);
+    return;
+  }
+  for (const element of name.elements.nodes)
+    if (!ts.isOmittedExpression(element) && element.name !== undefined)
+      addBindingNames(element.name, out);
 }
 
 /** A record site's keys: its static keys, or for a literal with spreads its

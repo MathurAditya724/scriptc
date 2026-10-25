@@ -142,6 +142,8 @@ export interface ShapeAnalysis {
   readonly escapedFunctions: ReadonlySet<FunctionInfo>;
   /** ES5 constructors: each function's default prototype object. */
   readonly protoOf: ReadonlyMap<Atom, Atom>;
+  /** ES5 constructor instances: the function atom whose `new` made each. */
+  readonly fnOfInstance: ReadonlyMap<Atom, Atom>;
   /** Every value a declaration (parameter, variable, binding element) holds,
    * merged over the analysis contexts it was analyzed in. */
   declValues(decl: Node): Set<Atom>;
@@ -350,6 +352,47 @@ function isLoop(node: Node): boolean {
   );
 }
 
+/** Whether control can reach the end of `stmts`. False only when every
+ * path ends in a return or throw, or in a `while (true)`, `do … while
+ * (true)` or `for (;;)` loop with no break inside; anything else is
+ * assumed to complete. */
+function canComplete(stmts: readonly Node[]): boolean {
+  return stmts.every(canCompleteStatement);
+}
+
+function canCompleteStatement(s: Node): boolean {
+  if (ts.isReturnStatement(s) || ts.isThrowStatement(s)) return false;
+  if (ts.isBlock(s)) return canComplete(list(s.statements));
+  if (ts.isIfStatement(s))
+    return (
+      s.elseStatement === undefined ||
+      canCompleteStatement(s.thenStatement) ||
+      canCompleteStatement(s.elseStatement)
+    );
+  if (ts.isTryStatement(s)) {
+    if (s.finallyBlock !== undefined && !canCompleteStatement(s.finallyBlock)) return false;
+    return (
+      canCompleteStatement(s.tryBlock) ||
+      (s.catchClause !== undefined && canCompleteStatement(s.catchClause.block))
+    );
+  }
+  const endless =
+    ((ts.isWhileStatement(s) || ts.isDoStatement(s)) &&
+      s.expression.kind === ts.SyntaxKind.TrueKeyword) ||
+    (ts.isForStatement(s) && s.condition === undefined);
+  return !endless || containsBreak(s);
+}
+
+/** Whether a break statement occurs in `node`'s body, outside nested
+ * functions. */
+function containsBreak(node: Node): boolean {
+  return (
+    ts.forEachChild(node, (c) =>
+      ts.isBreakStatement(c) || (!ts.isFunctionLike(c) && containsBreak(c)) ? true : undefined,
+    ) === true
+  );
+}
+
 const LOOP_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   "map",
   "forEach",
@@ -489,8 +532,7 @@ class Analyzer {
   private readonly popsByNode = new Map<number, number>();
 
   run(): ShapeAnalysis {
-    for (const sf of this.program.getSourceFiles()) {
-      if (sf.isDeclarationFile) continue;
+    for (const sf of this.program.getImplementationSourceFiles()) {
       const name = sf.fileName.split("\\").join("/");
       const inPackage = isPackageJsFile(sf);
       if (!inPackage && name.includes("/node_modules/")) continue;
@@ -523,6 +565,7 @@ class Analyzer {
       nodeLabel: this.nodeLabel,
       escapedFunctions: this.escapedFunctionCalls,
       protoOf: this.protoOf,
+      fnOfInstance: this.fnOfInstance,
       declValues: (decl) => this.declValues(decl),
       classChain: (decl) => this.classChain(decl),
       branchIfs: this.branchIfs,
@@ -1169,8 +1212,11 @@ class Analyzer {
     }
     const body = fn.body;
     if (body !== undefined) {
-      if (ts.isBlock(body)) this.stmts(list(body.statements));
-      else this.edge(this.expr(body as ts.Expression), info.ret);
+      if (ts.isBlock(body)) {
+        this.stmts(list(body.statements));
+        // A call that runs off the end of the body returns undefined.
+        if (canComplete(list(body.statements))) this.add(info.ret, this.prim("undefined"));
+      } else this.edge(this.expr(body as ts.Expression), info.ret);
     }
     this.currentFn = saved;
     this.loopDepth = savedLoop;
@@ -1574,8 +1620,9 @@ class Analyzer {
       return;
     }
     if (ts.isReturnStatement(s)) {
-      if (s.expression !== undefined && this.currentFn !== null)
-        this.edge(this.expr(s.expression), this.currentFn.ret);
+      if (this.currentFn === null) return;
+      if (s.expression !== undefined) this.edge(this.expr(s.expression), this.currentFn.ret);
+      else this.add(this.currentFn.ret, this.prim("undefined"));
       return;
     }
     if (ts.isFunctionDeclaration(s)) {
@@ -2644,8 +2691,12 @@ class Analyzer {
           this.add(protos, this.protoAtom(fn));
           this.edge(this.field(fn, "prototype"), protos);
           this.on(protos, (proto) => {
-            if (proto.kind === "object") this.edge(this.field(proto, name), dst);
-            else if (proto.kind === "top") this.add(dst, this.top);
+            if (proto.kind === "object") {
+              // A method stored under a computed key (`F.prototype[k] = fn`)
+              // may be any name.
+              this.edge(this.field(proto, name), dst);
+              this.edge(this.anyField(proto), dst);
+            } else if (proto.kind === "top") this.add(dst, this.top);
           });
           return;
         }
@@ -2881,10 +2932,7 @@ class Analyzer {
    * is in a loop, in the context the call was walked in. siteCtx keeps
    * the first context per syntax node, which a site walked in several
    * contexts (receiver classes, per-site clones) does not determine. */
-  private readonly argsFrom = new WeakMap<
-    number[],
-    { caller: FunctionInfo | null; inLoop: boolean }
-  >();
+  private readonly argsFrom = new Map<number[], { caller: FunctionInfo | null; inLoop: boolean }>();
 
   call(e: ts.CallExpression): number {
     this.noteSite(e);
@@ -3028,7 +3076,11 @@ class Analyzer {
             this.activate(info);
             this.add(info.thisNode, inst);
             this.bindArgs(info, args, spread);
-            this.edge(info.ret, dst);
+            // `new` ignores a primitive result (and the undefined of a
+            // body that runs off its end) and yields the instance.
+            this.on(info.ret, (r) => {
+              if (r.kind !== "prim") this.add(dst, r);
+            });
             this.edgeFor(e, info, args);
           }
           return;
