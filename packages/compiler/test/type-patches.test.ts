@@ -12,7 +12,9 @@ import {
   typePatchDiagnostics,
   typePatchedSpans,
   typePatchedText,
+  typePatchFileExists,
   typePatchMatches,
+  typePatchSuppliesTypes,
 } from "../src/frontend/type-patches/layer.js";
 
 const fixtures = join(import.meta.dirname, "../../../tests/fixtures");
@@ -213,6 +215,85 @@ test("an export before its hoisted function is patched, and string text that loo
         .diagnostics.map((d) => d.message)
         .join("\n"),
     ).toContain("Opts.width");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("files replaces a declaration file and declarations still apply on top", () => {
+  const root = join(fixtures, "npm/cases/type-patch-files");
+  configureTypePatches(join(root, "main.ts"), parse);
+  const entry = typePatchedText(join(root, "node_modules/eventlog/dist/entry.d.ts"));
+  expect(entry).toBe(readFileSync(join(root, "type-patches/entry.d.ts"), "utf8"));
+  expect(typePatchedText(join(root, "node_modules/eventlog/dist/index.d.ts"))).toContain(
+    "{ count: number; last: string | undefined }",
+  );
+  expect(typePatchDiagnostics()!.diagnostics).toEqual([]);
+});
+
+test("types gives a package without declarations an entry beside its main", () => {
+  const root = join(fixtures, "npm/cases/type-patch-types-entry");
+  configureTypePatches(join(root, "main.ts"), parse);
+  const pkg = join(root, "node_modules/pointjs");
+  expect(typePatchFileExists(join(pkg, "lib/point.d.ts"))).toBe(true);
+  expect(typePatchFileExists(join(pkg, "index.d.ts"))).toBe(false);
+  expect(typePatchFileExists(join(pkg, "lib/other.d.ts"))).toBe(false);
+  expect(typePatchSuppliesTypes(pkg)).toBe(true);
+  expect(typePatchedText(join(pkg, "lib/point.d.ts"))).toBe(
+    readFileSync(join(root, "type-patches/pointjs.d.ts"), "utf8"),
+  );
+  // Without patches nothing exists that is not on disk.
+  configureTypePatches(join(tmpdir(), "none", "main.ts"), parse);
+  expect(typePatchFileExists(join(pkg, "lib/point.d.ts"))).toBe(false);
+  expect(typePatchSuppliesTypes(pkg)).toBe(false);
+});
+
+test("types gives a package whose main is a .jsx file an entry beside it", () => {
+  const root = mkdtempSync(join(tmpdir(), "scriptc-type-patches-"));
+  try {
+    const pkg = join(root, "node_modules/viewjs");
+    mkdirSync(join(pkg, "lib"), { recursive: true });
+    writeFileSync(
+      join(pkg, "package.json"),
+      JSON.stringify({ name: "viewjs", version: "1.0.0", main: "lib/view.jsx" }),
+    );
+    writeFileSync(join(pkg, "lib/view.jsx"), "export const view = 1;\n");
+    writeFileSync(join(root, "viewjs.d.ts"), "export declare const view: number;\n");
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ scriptc: { typePatches: { "viewjs@^1.0.0": { types: "./viewjs.d.ts" } } } }),
+    );
+    configureTypePatches(join(root, "main.ts"), parse);
+    expect(typePatchFileExists(join(pkg, "lib/view.d.ts"))).toBe(true);
+    expect(typePatchSuppliesTypes(pkg)).toBe(true);
+    expect(typePatchedText(join(pkg, "lib/view.d.ts"))).toBe(
+      "export declare const view: number;\n",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a files target the installed package does not ship warns", () => {
+  const root = mkdtempSync(join(tmpdir(), "scriptc-type-patches-"));
+  try {
+    const twin = join(fixtures, "npm/cases/type-patch-files");
+    writeFileSync(join(root, "local.d.ts"), "export type Entry = {};\n");
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({
+        scriptc: {
+          typePatches: { "eventlog@^2.0.0": { files: { "dist/gone.d.ts": "./local.d.ts" } } },
+        },
+      }),
+    );
+    configureTypePatches(join(root, "main.ts"), parse);
+    expect(typePatchedText(join(twin, "node_modules/eventlog/dist/index.d.ts"))).toBeUndefined();
+    const diags = typePatchDiagnostics()!.diagnostics;
+    expect(diags.map((d) => d.code)).toEqual(["SC8031"]);
+    expect(diags[0]!.message).toMatch(
+      /^type patch 'eventlog@\^2\.0\.0': dist\/gone\.d\.ts is not a file of eventlog at .*type-patch-files\/node_modules\/eventlog$/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
