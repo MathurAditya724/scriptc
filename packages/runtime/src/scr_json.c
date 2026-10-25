@@ -2219,6 +2219,40 @@ static bool scr_dyn_prototype_valid(const ScrDyn *prototype) {
 }
 
 /* A valid receiver or prototype whose kind this operation does not handle. */
+/* Compiled class prototypes. Compiled code binds a class's methods, its
+ * base chain and its instanceof answers when it compiles, so the
+ * prototype's own [[Prototype]] is fixed: scr_dyn_set_prototype refuses to
+ * change it. Each module-level class prototype registers when it is
+ * created (scr_dyn_name_class_prototype) and stays alive until its thread
+ * exits, as the class does. */
+static SCR_TL ScrDyn **scr_dyn_fixed_prototypes;
+static SCR_TL size_t scr_dyn_fixed_count, scr_dyn_fixed_cap;
+
+static void scr_dyn_fixed_prototypes_cleanup(void) {
+  for (size_t i = 0; i < scr_dyn_fixed_count; i++) scr_dyn_release(scr_dyn_fixed_prototypes[i]);
+  free(scr_dyn_fixed_prototypes);
+  scr_dyn_fixed_prototypes = NULL;
+  scr_dyn_fixed_count = scr_dyn_fixed_cap = 0;
+}
+
+static void scr_dyn_fix_prototype(ScrDyn *prototype) {
+  if (scr_dyn_fixed_count == scr_dyn_fixed_cap) {
+    if (scr_dyn_fixed_cap == 0) scr_atexit(scr_dyn_fixed_prototypes_cleanup);
+    size_t cap = scr_dyn_fixed_cap ? scr_dyn_fixed_cap * 2 : 8;
+    ScrDyn **grown = realloc(scr_dyn_fixed_prototypes, cap * sizeof *grown);
+    if (!grown) scr_json_oom();
+    scr_dyn_fixed_prototypes = grown;
+    scr_dyn_fixed_cap = cap;
+  }
+  scr_dyn_fixed_prototypes[scr_dyn_fixed_count++] = scr_dyn_retain(prototype);
+}
+
+static bool scr_dyn_prototype_fixed(const ScrDyn *object) {
+  for (size_t i = 0; i < scr_dyn_fixed_count; i++)
+    if (scr_dyn_fixed_prototypes[i] == object) return true;
+  return false;
+}
+
 static void scr_dyn_prototype_unsupported(const char *operation) {
   ScrJsonBuf b;
   scr_jb_init(&b);
@@ -2338,6 +2372,11 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     return NULL;
   }
   if (!scr_dyn_prototype_valid(prototype)) return NULL;
+  if (object->kind == SCR_DYN_OBJ && scr_dyn_fixed_count && scr_dyn_prototype_fixed(object) &&
+      !(prototype->kind == SCR_DYN_NULL ? object->null_proto : prototype == object->prototype)) {
+    scr_dyn_prototype_unsupported("Object.setPrototypeOf");
+    return NULL;
+  }
   bool typed = scr_dyn_typed_ref_prototype(prototype);
   if (scr_exc_pending()) return NULL;
   if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR) ||
@@ -4680,6 +4719,115 @@ int scr_dyn_has_instance_hook(const ScrDyn *value, const ScrDyn *callee) {
   return truthy ? 1 : 0;
 }
 
+/* `value instanceof Object`: whether Object.prototype is on the value's
+ * prototype chain. Primitives answer false, and so does an object whose
+ * chain ends in null first (Object.create(null), a null-prototype record).
+ * Objects without a chain the runtime walks (class instances, native
+ * handles, errors, promises) inherit Object.prototype. False with the
+ * exception pending when a prototype read throws. */
+static bool scr_dyn_instanceof_object(const ScrDyn *value) {
+  switch (value->kind) {
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NULL:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL:
+    return false;
+  default:
+    break;
+  }
+  /* Object.prototype is on the chain from the value's own prototype on:
+   * Object.prototype itself has a null prototype, so it is not an Object. */
+  ScrDyn *current = scr_dyn_retain((ScrDyn *)value);
+  for (bool first = true;; first = false) {
+    if (!first && current == scr_builtin_object_prototype) {
+      scr_dyn_release(current);
+      return true;
+    }
+    if (current == scr_builtin_object_prototype) {
+      scr_dyn_release(current);
+      return false;
+    }
+    ScrDyn *next = NULL;
+    if (current->kind == SCR_DYN_FUNC) {
+      /* A function's prototype is Function.prototype, whose own is
+       * Object.prototype, unless the program set it. */
+      if (scr_closure_identity(current->v.fn.clo)->props) {
+        ScrDyn *table = scr_dyn_fn_properties(current);
+        next = table->prototype ? scr_dyn_retain(table->prototype)
+             : table->null_proto ? scr_dyn_new_null() : NULL;
+        scr_dyn_release(table);
+      }
+    } else if (current->kind == SCR_DYN_OBJ || current->kind == SCR_DYN_ARR ||
+               (current->kind == SCR_DYN_TYPED_REF &&
+                strncmp(current->v.typed_ref.type_key, "object:", 7) != 0)) {
+      next = scr_dyn_get_prototype(current);
+      if (!next) {
+        scr_dyn_release(current);
+        return false; /* the read threw: pending */
+      }
+    }
+    scr_dyn_release(current);
+    if (!next) return true;
+    if (next->kind == SCR_DYN_NULL) {
+      scr_dyn_release(next);
+      return false;
+    }
+    current = next;
+  }
+}
+
+/* `value instanceof Function`: whether a function is on the value's
+ * prototype chain. A function's own prototype is Function.prototype unless
+ * the program set it, so the walk ends true at the first function that
+ * kept its prototype; it follows set prototypes through functions and
+ * objects alike (`Object.create(function () {})` is a Function instance),
+ * and ends false at null or at a value without a chain the runtime walks.
+ * False with the exception pending when a prototype read throws. */
+static bool scr_dyn_instanceof_function(const ScrDyn *value) {
+  ScrDyn *current = NULL;
+  if (value->kind == SCR_DYN_FUNC) {
+    if (!scr_closure_identity(value->v.fn.clo)->props) return true;
+    ScrDyn *table = scr_dyn_fn_properties((ScrDyn *)value);
+    current = table->prototype ? scr_dyn_retain(table->prototype) : NULL;
+    bool unset = !table->prototype && !table->null_proto;
+    scr_dyn_release(table);
+    if (unset) return true;
+  } else if (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR) {
+    current = scr_dyn_get_prototype((ScrDyn *)value);
+    if (!current) return false; /* the read threw: pending */
+  }
+  while (current && current->kind != SCR_DYN_NULL) {
+    ScrDyn *next = NULL;
+    if (current->kind == SCR_DYN_FUNC) {
+      if (!scr_closure_identity(current->v.fn.clo)->props) {
+        scr_dyn_release(current);
+        return true;
+      }
+      ScrDyn *table = scr_dyn_fn_properties(current);
+      bool unset = !table->prototype && !table->null_proto;
+      next = table->prototype ? scr_dyn_retain(table->prototype) : NULL;
+      scr_dyn_release(table);
+      if (unset) {
+        scr_dyn_release(current);
+        return true;
+      }
+    } else if (current->kind == SCR_DYN_OBJ || current->kind == SCR_DYN_ARR) {
+      next = scr_dyn_get_prototype(current);
+      if (!next) {
+        scr_dyn_release(current);
+        return false; /* the read threw: pending */
+      }
+    }
+    scr_dyn_release(current);
+    current = next;
+  }
+  if (current) scr_dyn_release(current);
+  return false;
+}
+
 bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal) {
   if (!callee || callee->kind != SCR_DYN_FUNC) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
@@ -4688,6 +4836,13 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
   }
   int hooked = scr_dyn_has_instance_hook(value, callee);
   if (hooked >= 0) return hooked == 1;
+  if (callee->v.fn.sig && callee->v.fn.name) {
+    if (strcmp(callee->v.fn.sig, "native:constructor") == 0 && strcmp(callee->v.fn.name, "Object") == 0)
+      return scr_dyn_instanceof_object(value);
+    if (strcmp(callee->v.fn.sig, "native:function-constructor") == 0 &&
+        strcmp(callee->v.fn.name, "Function") == 0)
+      return scr_dyn_instanceof_function(value);
+  }
   /* An error constructor held as a value (`inst instanceof params.Parent`
    * with Parent === Error): the error kind's interval, and for Error itself
    * objects inheriting Error.prototype. */
@@ -6426,7 +6581,9 @@ static void scr_dyn_name_prototype_chain(const ScrDyn *object) {
 }
 
 void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name) {
-  if (prototype->kind != SCR_DYN_OBJ || prototype->v.obj.class_name || name->len == 0) return;
+  if (prototype->kind != SCR_DYN_OBJ) return;
+  if (!scr_dyn_prototype_fixed(prototype)) scr_dyn_fix_prototype(prototype);
+  if (prototype->v.obj.class_name || name->len == 0) return;
   scr_dyn_stamp_prototype_name(prototype, name->data, name->len);
 }
 
@@ -8015,6 +8172,45 @@ void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *raw_key, bool stri
   }
   scr_dyn_release(receiver);
   scr_dyn_release(key);
+}
+
+/* Reflect.deleteProperty(target, key): a TypeError for a primitive target,
+ * then the key's ToPropertyKey and a sloppy-mode delete. Answers whether
+ * the property is absent afterwards (false when it is non-configurable).
+ * A Proxy would observe the own-property check through its traps, and a
+ * compiled object's native fields keep their values after a delete through
+ * its checked-dynamic view, so both refuse. */
+bool scr_dyn_reflect_delete_property(ScrDyn *target, const ScrDyn *raw_key) {
+  switch (target->kind) {
+  case SCR_DYN_NULL:
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL: {
+    static const char message[] = "Reflect.deleteProperty called on non-object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
+  default:
+    break;
+  }
+  if (target->kind == SCR_DYN_PROXY) {
+    scr_dyn_proxy_unsupported("Reflect.deleteProperty");
+    return false;
+  }
+  if (target->kind == SCR_DYN_TYPED_REF) {
+    static const char message[] = "Reflect.deleteProperty on a compiled object is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+  ScrDyn *key = scr_dyn_property_key_value(raw_key);
+  if (!key) return false;
+  scr_dyn_key_delete_computed(target, key, false);
+  bool deleted = !scr_exc_pending() && !scr_dyn_has_own_computed(target, key);
+  scr_dyn_release(key);
+  return deleted;
 }
 
 /* Native call/apply/bind lowering still owns these prototype operations.
@@ -16274,26 +16470,176 @@ typedef struct ScrWeakEntry {
   unsigned kind;
   ScrDyn *value;
   ScrWeakMap *owner;
-  struct ScrWeakEntry *next, *all_next;
+  /* The owner's entries, and every collection's entries for the same key
+   * pointer (whatever their kind): both doubly linked, so an entry leaves
+   * either list in constant time. */
+  struct ScrWeakEntry *next, *prev, *key_next, *key_prev;
 } ScrWeakEntry;
 
 struct ScrWeakMap { size_t rc; ScrWeakEntry *entries; bool is_set; };
 /* Weak observers borrow key identities. Values are traced strong edges;
- * value-to-key cycles require explicit deletion or container disposal. */
-#define SCR_WEAK_BUCKETS 1024
-static SCR_TL ScrWeakEntry *scr_weak_entries[SCR_WEAK_BUCKETS];
-static size_t scr_weak_bucket(void *key) {
-  uintptr_t bits = (uintptr_t)key;
-  return ((bits >> 4) ^ (bits >> 14)) & (SCR_WEAK_BUCKETS - 1);
+ * value-to-key cycles require explicit deletion or container disposal.
+ *
+ * Two open-addressing indexes per thread find entries in expected constant
+ * time: scr_weak_index by (collection, key, kind), for get/set/has/delete,
+ * and scr_weak_keys by key pointer, the head of that key's entries, for a
+ * disposal, which ends the key's entries in every collection. Both use
+ * linear probing with backward-shift deletion, grow at half load, and are
+ * freed when their last entry goes. */
+static SCR_TL ScrWeakEntry **scr_weak_index;
+static SCR_TL size_t scr_weak_index_mask, scr_weak_index_used;
+typedef struct { void *key; ScrWeakEntry *head; } ScrWeakKeySlot;
+static SCR_TL ScrWeakKeySlot *scr_weak_keys;
+static SCR_TL size_t scr_weak_keys_mask, scr_weak_keys_used;
+
+/* Mixed in 64 bits on every target: uintptr_t is 32 bits on wasm32, where
+ * these shifts would exceed its width. */
+static inline size_t scr_weak_mix(uint64_t bits) {
+  bits ^= bits >> 33;
+  bits *= UINT64_C(0xff51afd7ed558ccd);
+  bits ^= bits >> 29;
+  return (size_t)bits;
+}
+static inline size_t scr_weak_entry_hash(const ScrWeakMap *owner, const void *key, unsigned kind) {
+  return scr_weak_mix((uint64_t)(uintptr_t)key ^ ((uint64_t)(uintptr_t)owner * UINT64_C(0x9E3779B97F4A7C15)) ^
+                      ((uint64_t)kind << 56));
+}
+static inline size_t scr_weak_key_hash(const void *key) { return scr_weak_mix((uint64_t)(uintptr_t)key); }
+
+static void scr_weak_index_put(ScrWeakEntry *entry) {
+  size_t j = scr_weak_entry_hash(entry->owner, entry->key, entry->kind) & scr_weak_index_mask;
+  while (scr_weak_index[j]) j = (j + 1) & scr_weak_index_mask;
+  scr_weak_index[j] = entry;
+}
+static void scr_weak_index_reserve(void) {
+  if (scr_weak_index && (scr_weak_index_used + 1) * 2 <= scr_weak_index_mask + 1) return;
+  ScrWeakEntry **old = scr_weak_index;
+  size_t n = old ? scr_weak_index_mask + 1 : 0, cap = n ? n * 2 : 64;
+  scr_weak_index = calloc(cap, sizeof *scr_weak_index);
+  if (!scr_weak_index) scr_json_oom();
+  scr_weak_index_mask = cap - 1;
+  for (size_t i = 0; i < n; i++)
+    if (old[i]) scr_weak_index_put(old[i]);
+  free(old);
+}
+static ScrWeakEntry *scr_weak_find(ScrWeakMap *map, void *ptr, unsigned kind) {
+  if (!scr_weak_index) return NULL;
+  for (size_t j = scr_weak_entry_hash(map, ptr, kind) & scr_weak_index_mask;; j = (j + 1) & scr_weak_index_mask) {
+    ScrWeakEntry *entry = scr_weak_index[j];
+    if (!entry) return NULL;
+    if (entry->owner == map && entry->key == ptr && entry->kind == kind) return entry;
+  }
+}
+static void scr_weak_index_delete(ScrWeakEntry *entry) {
+  size_t mask = scr_weak_index_mask;
+  size_t i = scr_weak_entry_hash(entry->owner, entry->key, entry->kind) & mask;
+  while (scr_weak_index[i] != entry) i = (i + 1) & mask;
+  if (--scr_weak_index_used == 0) {
+    /* Empty: give the table back, so a thread that exits leaves none. */
+    free(scr_weak_index);
+    scr_weak_index = NULL;
+    return;
+  }
+  for (size_t k = i;;) {
+    scr_weak_index[i] = NULL;
+    for (;;) {
+      k = (k + 1) & mask;
+      ScrWeakEntry *e = scr_weak_index[k];
+      if (!e) return;
+      size_t home = scr_weak_entry_hash(e->owner, e->key, e->kind) & mask;
+      /* e stays unless its home lies cyclically outside (i, k]. */
+      if (i <= k ? (i < home && home <= k) : (i < home || home <= k)) continue;
+      scr_weak_index[i] = e;
+      i = k;
+      break;
+    }
+  }
+}
+
+static ScrWeakKeySlot *scr_weak_key_slot(const void *key) {
+  if (!scr_weak_keys) return NULL;
+  for (size_t j = scr_weak_key_hash(key) & scr_weak_keys_mask;; j = (j + 1) & scr_weak_keys_mask) {
+    if (scr_weak_keys[j].key == key) return &scr_weak_keys[j];
+    if (!scr_weak_keys[j].key) return NULL;
+  }
+}
+static ScrWeakKeySlot *scr_weak_key_slot_put(void *key) {
+  if (!scr_weak_keys || (scr_weak_keys_used + 1) * 2 > scr_weak_keys_mask + 1) {
+    ScrWeakKeySlot *old = scr_weak_keys;
+    size_t n = old ? scr_weak_keys_mask + 1 : 0, cap = n ? n * 2 : 64;
+    scr_weak_keys = calloc(cap, sizeof *scr_weak_keys);
+    if (!scr_weak_keys) scr_json_oom();
+    scr_weak_keys_mask = cap - 1;
+    for (size_t i = 0; i < n; i++) {
+      if (!old[i].key) continue;
+      size_t j = scr_weak_key_hash(old[i].key) & scr_weak_keys_mask;
+      while (scr_weak_keys[j].key) j = (j + 1) & scr_weak_keys_mask;
+      scr_weak_keys[j] = old[i];
+    }
+    free(old);
+  }
+  size_t j = scr_weak_key_hash(key) & scr_weak_keys_mask;
+  while (scr_weak_keys[j].key && scr_weak_keys[j].key != key) j = (j + 1) & scr_weak_keys_mask;
+  if (!scr_weak_keys[j].key) {
+    scr_weak_keys[j].key = key;
+    scr_weak_keys[j].head = NULL;
+    scr_weak_keys_used++;
+  }
+  return &scr_weak_keys[j];
+}
+static void scr_weak_key_slot_delete(ScrWeakKeySlot *slot) {
+  size_t mask = scr_weak_keys_mask;
+  size_t i = (size_t)(slot - scr_weak_keys);
+  if (--scr_weak_keys_used == 0) {
+    free(scr_weak_keys);
+    scr_weak_keys = NULL;
+    return;
+  }
+  for (size_t k = i;;) {
+    scr_weak_keys[i].key = NULL;
+    scr_weak_keys[i].head = NULL;
+    for (;;) {
+      k = (k + 1) & mask;
+      if (!scr_weak_keys[k].key) return;
+      size_t home = scr_weak_key_hash(scr_weak_keys[k].key) & mask;
+      if (i <= k ? (i < home && home <= k) : (i < home || home <= k)) continue;
+      scr_weak_keys[i] = scr_weak_keys[k];
+      i = k;
+      break;
+    }
+  }
+}
+
+/* Indexes a new entry (its key, kind and owner set) under its key. */
+static void scr_weak_link(ScrWeakEntry *entry) {
+  scr_weak_index_reserve();
+  scr_weak_index_put(entry);
+  scr_weak_index_used++;
+  ScrWeakKeySlot *slot = scr_weak_key_slot_put(entry->key);
+  entry->key_prev = NULL;
+  entry->key_next = slot->head;
+  if (slot->head) slot->head->key_prev = entry;
+  slot->head = entry;
+}
+
+/* Takes an entry out of both indexes (it stays in its owner's list). */
+static void scr_weak_unlink(ScrWeakEntry *entry) {
+  scr_weak_index_delete(entry);
+  if (entry->key_next) entry->key_next->key_prev = entry->key_prev;
+  if (entry->key_prev) entry->key_prev->key_next = entry->key_next;
+  else {
+    ScrWeakKeySlot *slot = scr_weak_key_slot(entry->key);
+    if (entry->key_next) slot->head = entry->key_next;
+    else scr_weak_key_slot_delete(slot);
+  }
 }
 
 static void scr_weak_remove_impl(ScrWeakEntry *entry, bool collected) {
-  ScrWeakEntry **slot = &entry->owner->entries;
-  while (*slot != entry) slot = &(*slot)->next;
-  *slot = entry->next;
-  slot = &scr_weak_entries[scr_weak_bucket(entry->key)];
-  while (*slot != entry) slot = &(*slot)->all_next;
-  *slot = entry->all_next;
+  ScrWeakMap *owner = entry->owner;
+  if (entry->next) entry->next->prev = entry->prev;
+  if (entry->prev) entry->prev->next = entry->next;
+  else owner->entries = entry->next;
+  scr_weak_unlink(entry);
   ScrDyn *value = entry->value;
   free(entry);
   /* Unlink before release: releasing a value can dispose another key. */
@@ -16317,10 +16663,9 @@ static void scr_weak_map_gcfree(void *ptr) {
 
 static void scr_weak_disposed(void *key) {
   for (;;) {
-    ScrWeakEntry *entry = scr_weak_entries[scr_weak_bucket(key)];
-    while (entry && entry->key != key) entry = entry->all_next;
-    if (!entry) return;
-    scr_weak_remove(entry);
+    ScrWeakKeySlot *slot = scr_weak_key_slot(key);
+    if (!slot) return;
+    scr_weak_remove(slot->head);
   }
 }
 
@@ -16378,12 +16723,6 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
   }
 }
 
-static ScrWeakEntry *scr_weak_find(ScrWeakMap *map, void *ptr, unsigned kind) {
-  for (ScrWeakEntry *entry = map->entries; entry; entry = entry->next)
-    if (entry->key == ptr && entry->kind == kind) return entry;
-  return NULL;
-}
-
 static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
   void *ptr = NULL;
   unsigned kind = 0;
@@ -16412,10 +16751,9 @@ static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
   entry->value = scr_dyn_retain(value);
   entry->owner = map;
   entry->next = map->entries;
+  if (map->entries) map->entries->prev = entry;
   map->entries = entry;
-  size_t bucket = scr_weak_bucket(ptr);
-  entry->all_next = scr_weak_entries[bucket];
-  scr_weak_entries[bucket] = entry;
+  scr_weak_link(entry);
   return true;
 }
 
@@ -17652,16 +17990,14 @@ static bool scr_dyn_decl_rekey(ScrDyn *node, void *ptr) {
   bool moved = false;
   if (!scr_weak_observing) return false;
   for (;;) {
-    ScrWeakEntry **slot = &scr_weak_entries[scr_weak_bucket(node)];
-    while (*slot && !((*slot)->key == (void *)node && (*slot)->kind == 0)) slot = &(*slot)->all_next;
-    ScrWeakEntry *entry = *slot;
+    ScrWeakKeySlot *slot = scr_weak_key_slot(node);
+    ScrWeakEntry *entry = slot ? slot->head : NULL;
+    while (entry && entry->kind != 0) entry = entry->key_next;
     if (!entry) return moved;
-    *slot = entry->all_next;
+    scr_weak_unlink(entry);
     entry->key = ptr;
     entry->kind = 32;
-    ScrWeakEntry **head = &scr_weak_entries[scr_weak_bucket(ptr)];
-    entry->all_next = *head;
-    *head = entry;
+    scr_weak_link(entry);
     moved = true;
   }
 }

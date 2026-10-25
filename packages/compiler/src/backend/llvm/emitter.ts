@@ -80,6 +80,8 @@ import {
 } from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
+import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
+import { pairRowSums } from "../../ir/row-pairs.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
@@ -109,6 +111,8 @@ import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
+import { unitSafeFunctions } from "./string-unit-versions.js";
+import { stringScanInline } from "./string-reads.js";
 import {
   findInt32Abis,
   INT32_ABI_SUFFIX,
@@ -128,6 +132,16 @@ import {
   type FfiCallbackAdapter,
 } from "../ffi-callbacks.js";
 import { computeMayThrow } from "../may-throw.js";
+import {
+  UNWIND_PERSONALITY,
+  UNWIND_RAISE,
+  UNWIND_RAISE_DECLARATION,
+  UNWIND_RESUME,
+  UNWIND_SLOT,
+  UnwindAbiViolation,
+  bridgePlainUnwindCalls,
+  unwindAbiFunctions,
+} from "./unwind-abi.js";
 import {
   mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
@@ -344,6 +358,13 @@ import {
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
 import { INLINE_LITERAL_BYTES } from "./string-literal-equality.js";
 import {
+  inlinableNumberFunction,
+  withSpeculativeValue,
+  type InlinableFunction,
+  type SpeculationContext,
+  type SpeculativeValue,
+} from "./speculative-integers.js";
+import {
   emitFfiCallbackDefs,
   emitLibDefs,
   emitModuleParts,
@@ -439,6 +460,12 @@ export interface ForkPrimitives {
 export interface LlvmTargetOptions {
   /** C ABI target; omitted direct emission uses the host ABI. */
   targetTriple?: string;
+  /** Linux (glibc and musl) executables: functions reached only by direct
+   * calls propagate exceptions by unwinding the native stack (unwind-abi.ts). */
+  unwindAbi?: boolean;
+  /** Functions kept on the pending-flag ABI under `unwindAbi`: the ones an
+   * earlier emission found breaking its rules (UnwindAbiViolation). */
+  unwindExcluded?: ReadonlySet<string>;
   /** Emit the function bodies in this many contiguous ranges, each by its
    * own emitter, and merge them in function order (emit-journal.ts). The
    * output is the same as one emitter's. Debug builds (`debugSources`)
@@ -565,13 +592,17 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
               scalarizeNumericRecords(
                 specializeCallbackCalls(
                   specializeNumericCalls(
-                    foldConstantGlobals(
-                      copyStableCaptures(
-                        resolveSelfCaptures(
-                          hoistFinalFieldReads(
-                            freezeInitOnlyGlobals(
-                              holdCharLocalsAsUnits(
-                                dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                    pairRowSums(
+                      inlineExpressionFunctions(
+                        foldConstantGlobals(
+                          copyStableCaptures(
+                            resolveSelfCaptures(
+                              hoistFinalFieldReads(
+                                freezeInitOnlyGlobals(
+                                  holdCharLocalsAsUnits(
+                                    dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
@@ -593,16 +624,36 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   return new LlEmitter(emitted, options, null, prepared?.mod === emitted ? prepared : null);
 }
 
+/** Emits the module's parts, emitting it again with the functions an
+ * UnwindAbiViolation names on the pending-flag ABI. */
+function emitModuleText(input: IrModule, options: LlvmTargetOptions): string[] {
+  for (let excluded = options.unwindExcluded ?? new Set<string>(); ;) {
+    const emitter = moduleEmitter(input, { ...options, unwindExcluded: excluded });
+    try {
+      return emitter.emitParts();
+    } catch (error) {
+      if (!(error instanceof UnwindAbiViolation)) throw error;
+      const names = new Set(excluded);
+      for (const name of emitter.unwindAbi)
+        for (const symbol of [mangleFunction(name), mangleBorrowedFunction(name)])
+          if (error.symbols.has(symbol) || error.symbols.has(symbol + INT32_ABI_SUFFIX))
+            names.add(name);
+      if (names.size === excluded.size) throw error;
+      excluded = names;
+    }
+  }
+}
+
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
-  return moduleEmitter(input, options).emit();
+  return emitModuleText(input, options).join("\n");
 }
 
 /** emitLlvmModule's text as parts that concatenate to it, without the copy
  * that joining them makes: a large program's text is 150 MB. */
 export function emitLlvmModuleParts(input: IrModule, options: LlvmTargetOptions = {}): string[] {
-  return moduleEmitter(input, options)
-    .emitParts()
-    .flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
+  return emitModuleText(input, options).flatMap((part, index) =>
+    index === 0 ? [part] : ["\n", part],
+  );
 }
 
 /** Keep large translation units below the host's single-string limit. */
@@ -612,7 +663,7 @@ export function emitLlvmModuleSource(
 ): string | readonly string[] {
   // IR validation, contracts and the frontend's disposal run after lowering without checks.
   relieveHeapPressure(true);
-  const parts = moduleEmitter(input, options).emitParts();
+  const parts = emitModuleText(input, options);
   const length = parts.reduce((total, part) => total + part.length, Math.max(0, parts.length - 1));
   if (length <= 256 * 1024 * 1024) return parts.join("\n");
   return parts.flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
@@ -1257,6 +1308,10 @@ export class LlEmitter {
   /** May-throw analysis (computeMayThrow): pending
    * checks are emitted only after calls that can actually raise. */
   readonly mayThrow: Set<string>;
+  /** The functions that propagate exceptions by unwinding (unwind-abi.ts). */
+  readonly unwindAbi: Set<string>;
+  /** Whether the function being emitted is one of unwindAbi. */
+  currentUnwindAbi = false;
   readonly indirectMayThrow: boolean;
   /** Worker programs: the functions that poll for termination on entry
    * (workerTerminationPolls); null outside worker programs. */
@@ -1465,6 +1520,9 @@ export class LlEmitter {
   integerTempsEnabled = false;
   /** Speculative integer loops (speculative-integers.ts) run in this function. */
   speculativeLoopsEnabled = false;
+  /** False inside the copy of a versioned loop that runs when its guard
+   * fails: loops there get no speculative or int32 kind copies. */
+  loopCopiesEnabled = true;
   /** The fast copy of a speculative integer loop being emitted: its
    * integer-computed writes and where each resumes in the ordinary copy. */
   speculation: {
@@ -1477,11 +1535,47 @@ export class LlEmitter {
      * integer loop has neither. */
     bails?: string;
     ran?: string;
+    /** Writes that speculate a rewritten value (rewriteSpeculable). */
+    values?: ReadonlyMap<IrStmt, SpeculativeValue>;
   } | null = null;
   /** Speculative loop sites numbered so far in the module. */
   speculativeLoopSites = 0;
   /** The ordinary copy being emitted: resume labels still to place. */
   speculationResume: Map<IrStmt, { label: string; placed: boolean }> | null = null;
+  /** The rewritten values of the writes `speculationResume` resumes at. */
+  speculationResumeValues: ReadonlyMap<IrStmt, SpeculativeValue> | null = null;
+  /** Hoisted speculative leaves numbered so far in the module. */
+  private speculativeLeaves = 0;
+  private readonly inlinableFunctions = new Map<string, InlinableFunction | undefined>();
+
+  /** What speculative loop planning may assume here (SpeculationContext). */
+  speculationContext(): SpeculationContext {
+    const inlinable = (callee: string): InlinableFunction | undefined => {
+      if (!this.inlinableFunctions.has(callee)) {
+        // Unset while its body is checked: a recursive helper is not inlinable.
+        this.inlinableFunctions.set(callee, undefined);
+        const fn = this.fnByName.get(callee);
+        this.inlinableFunctions.set(
+          callee,
+          fn ? inlinableNumberFunction(fn, inlinable) : undefined,
+        );
+      }
+      return this.inlinableFunctions.get(callee);
+    };
+    return {
+      inlinable,
+      unaliased: (id) => {
+        const local = this.currentLocals.get(id);
+        return (
+          local !== undefined &&
+          !local.boxed &&
+          !this.captureIds.has(id) &&
+          !this.lazyCaptureBoxes.has(id)
+        );
+      },
+      leafId: () => `%spec.leaf.${this.speculativeLeaves++}`,
+    };
+  }
   /** Run once at the top of the next loop copy's header
    * (`enterLoopHeader`): records the ordinary copy's header, or sends the
    * third copy's header there. */
@@ -1519,6 +1613,12 @@ export class LlEmitter {
    * (one-unit tests and switches, charAtUnitRead), with the charAt each
    * stands for: a loop version's proof for the charAt covers its read. */
   readonly charAtUnitReads = new Map<IrExpr, IrExpr>();
+  /** String reads a loop version proved in bounds of a string's UTF-16
+   * units, with the units pointer to read (string-unit-versions.ts). */
+  stringUnitReads: ReadonlyMap<IrExpr | IrStmt, string> = new Map();
+  /** `length` reads of a loop version's string, with the i64 UTF-16
+   * length its guard took (bytes-loop-versions.ts). */
+  stringLengthReads: ReadonlyMap<IrExpr, string> = new Map();
   /** Worker programs: typed-array accesses whose views an enclosing version
    * guard proved thread-owned. */
   bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
@@ -1716,6 +1816,16 @@ export class LlEmitter {
       nodes: this.nodeIndex,
     });
     this.mayThrow = mt.fns;
+    this.unwindAbi =
+      options.unwindAbi === true &&
+      !this.wasi &&
+      mod.lib === undefined &&
+      options.debugSources === undefined &&
+      (options.targetTriple
+        ? /-linux-(?:gnu|musl)/.test(options.targetTriple)
+        : process.platform === "linux")
+        ? unwindAbiFunctions(mod, this.mayThrow, options.unwindExcluded)
+        : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
     // A stackless call's eager prefix borrows its caller's stack; the
@@ -1851,6 +1961,9 @@ export class LlEmitter {
               : undefined,
           )
         : NO_INTEGER_CLONES;
+    // Integer clones and their dispatchers call each other through their
+    // own lowering, which keeps plain calls and flag tests.
+    for (const name of this.integerClones.members) this.unwindAbi.delete(name);
     this.stackCallbacks = new StackCallbacks(this.fnByName);
     this.receiverReaders = new AmbientReceiverReaders(this.fnByName, this.nodeIndex);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
@@ -2130,7 +2243,8 @@ export class LlEmitter {
     return this.emitParts().join("\n");
   }
   emitParts(): string[] {
-    return emitParts(this);
+    const parts = emitParts(this);
+    return this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
   }
 
   /** The dispose-observer gates the emitted frees and record writers test
@@ -3240,6 +3354,13 @@ export class LlEmitter {
       terminator = `br label %${target.label}`;
     } else if (this.currentCoro !== null) {
       terminator = `br label %${this.currentCoro.finalLabel}`;
+    } else if (this.currentUnwindAbi && this.inLandingPad) {
+      // The unwind that entered the landing pad goes on to the caller's.
+      terminator = UNWIND_RESUME;
+    } else if (this.currentUnwindAbi) {
+      // The caller's invoke takes the exception at its landing pad.
+      this.declare(UNWIND_RAISE_DECLARATION);
+      terminator = UNWIND_RAISE;
     } else {
       const t = this.llType(this.currentReturnType);
       terminator =
@@ -3270,6 +3391,7 @@ export class LlEmitter {
         passThrough !== undefined &&
         !target &&
         this.currentCoro === null &&
+        !this.currentUnwindAbi &&
         !this.currentInt32Result
       ) {
         const t = this.llType(this.currentReturnType);
@@ -3455,6 +3577,46 @@ export class LlEmitter {
     this.emitUnwind();
     B.startBlock(B.newLabel("exc.dead"));
   }
+
+  /** Emits `line`, a `call` of `callee`, and reports whether the call
+   * needs no pending check after it: a call of an unwinding-ABI function
+   * becomes an `invoke` whose landing pad runs this frame's unwind (the
+   * same releases and handler as emitPendingCheck's unwind path), and the
+   * normal path continues in a fresh block. Coroutine bodies keep plain
+   * calls (unwindAbiFunctions excludes their callees). */
+  emitDirectCall(line: string, callee: string): boolean {
+    const B = this.B;
+    if (!this.unwindAbi.has(callee) || this.currentCoro !== null || B.isTerminated()) {
+      B.line(line);
+      return false;
+    }
+    const ok = B.newLabel("inv.ok");
+    const pad = B.newLabel("inv.lp");
+    this.usesLandingPads = true;
+    // A trailing comment goes after the invoke's labels.
+    const comment = line.indexOf(" ; ");
+    const text = comment < 0 ? line : line.slice(0, comment);
+    B.terminate(
+      `${text.replace(/^((?:%[\w.]+ = )?)call /, "$1invoke ")} to label %${ok} unwind label %${pad}`,
+    );
+    B.startBlock(pad);
+    const exception = B.tmp();
+    B.line(`${exception} = landingpad { ptr, i32 } cleanup`);
+    if (this.currentUnwindAbi) B.line(`store { ptr, i32 } ${exception}, ptr ${UNWIND_SLOT}`);
+    this.inLandingPad = true;
+    this.emitUnwind();
+    this.inLandingPad = false;
+    B.startBlock(ok);
+    return true;
+  }
+
+  /** Whether emitUnwind runs for a landing pad, whose unwind goes on with
+   * `resume` instead of raising again. */
+  private inLandingPad = false;
+
+  /** Whether the function being emitted has a landing pad (its definition
+   * needs the personality). */
+  usesLandingPads = false;
 
   /** A recursive function's entry check: below the running stack's guard,
    * throw Node's RangeError and unwind like any other pending exception. */
@@ -4372,9 +4534,19 @@ export class LlEmitter {
         workers: this.mod.workers === true,
         owned: this.bytesOwned,
         scalarStrings: new Set(this.stringSlices.keys()),
+        unitSafeFunctions: this.unitSafeFunctions(),
       },
       paired,
     );
+  }
+
+  private unitSafe: ReadonlySet<string> | null | undefined;
+  /** The functions a loop over a string's UTF-16 units may call, or null
+   * where emitted reads do not use the runtime's scan receiver. */
+  private unitSafeFunctions(): ReadonlySet<string> | null {
+    if (this.unitSafe === undefined)
+      this.unitSafe = stringScanInline(this) ? unitSafeFunctions(this.mod) : null;
+    return this.unitSafe;
   }
 
   /** The alias tag of a whole-slot load of a binding (module globals only). */
@@ -5219,7 +5391,22 @@ export class LlEmitter {
     if (fn.captures !== undefined) params.unshift("ptr %sc_env");
     const ret = this.llType(fn.returnType);
     const call = `call ${ret} @${mangleBorrowedFunction(fn.name)}(${params.join(", ")})`;
-    B.line(ret === "void" ? call : `%result = ${call}`);
+    // The owned entry of an unwinding-ABI body releases the borrowed
+    // parameters on the unwind too, then resumes it to its caller.
+    const unwinding = this.unwindAbi.has(fn.name) && kept.size === 0;
+    if (unwinding) {
+      const ok = B.newLabel("adapt.ok");
+      const pad = B.newLabel("adapt.lp");
+      B.terminate(
+        `${ret === "void" ? "" : "%result = "}invoke ${call.slice(5)} to label %${ok} unwind label %${pad}`,
+      );
+      B.startBlock(pad);
+      const exception = B.tmp();
+      B.line(`${exception} = landingpad { ptr, i32 } cleanup`);
+      for (const index of borrowed) this.releaseFrame(`%p${index}`, fn.params[index]!.type);
+      B.terminate(`resume { ptr, i32 } ${exception}`);
+      B.startBlock(ok);
+    } else B.line(ret === "void" ? call : `%result = ${call}`);
     // A borrowed result is reachable from the parameters: own it first. A
     // throwing body returns a null dummy, which needs no owner (and string
     // or array retains do not accept NULL).
@@ -5245,7 +5432,9 @@ export class LlEmitter {
     B.terminate(ret === "void" ? "ret void" : `ret ${ret} ${result}`);
     const symbol =
       kept.size > 0 ? `${mangleBorrowedFunction(fn.name)}.virtual` : mangleFunction(fn.name);
-    return `define internal ${ret} @${symbol}(${params.join(", ")}) ${FN_ATTRS} {\n${B.render()}\n}`;
+    if (unwinding) this.declare(`declare i32 @__gcc_personality_v0(...)`);
+    const personality = unwinding ? ` ${UNWIND_PERSONALITY}` : "";
+    return `define internal ${ret} @${symbol}(${params.join(", ")}) ${FN_ATTRS}${personality} {\n${B.render()}\n}`;
   }
   canBorrowCallArgument(value: IrExpr): boolean {
     return canBorrowCallArgument(this, value);
@@ -5658,6 +5847,22 @@ export class LlEmitter {
     if (resume && !resume.placed && !this.B.isTerminated()) {
       // The fast copy's failed checks re-execute this statement here.
       resume.placed = true;
+      // A write with hoisted leaves resumed from its own failed check
+      // re-executes its arithmetic over the leaves' stored doubles: each
+      // leaf ran once, in the fast copy. Reached from an earlier statement
+      // of this copy (a failed check before it), its leaves never ran, so
+      // it runs as written.
+      const rewritten = this.speculationResumeValues?.get(s);
+      if (rewritten !== undefined && rewritten.leaves.length > 0) {
+        const join = this.B.newLabel("spec.resume.join");
+        this.emitStmt(s);
+        if (!this.B.isTerminated()) this.B.br(join);
+        this.B.startBlock(resume.label);
+        this.emitStmt(withSpeculativeValue(s, rewritten.value));
+        if (!this.B.isTerminated()) this.B.br(join);
+        this.B.startBlock(join);
+        return;
+      }
       this.B.br(resume.label);
       this.B.startBlock(resume.label);
     }

@@ -30,6 +30,7 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_object.c",
   "scr_union.c",
   "scr_exception.c",
+  "scr_unwind.c",
   "scr_error.c",
   "scr_console.c",
   "scr_lib.c",
@@ -80,6 +81,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_perf.c", "dynAsync"],
   // perf_hooks event-loop metrics, only for programs that read them.
   ["scr_perf_loop.c", "perfLoop"],
+  // Module namespace objects as checked-dynamic values.
+  ["scr_module_namespace.c", "moduleNamespace"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],

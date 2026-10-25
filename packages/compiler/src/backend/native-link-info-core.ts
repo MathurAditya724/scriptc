@@ -37,6 +37,9 @@ export interface NativeLinkFeatures {
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
+  /** Module namespace objects as checked-dynamic values link
+   * scr_module_namespace.c; absent (false) otherwise. */
+  moduleNamespace?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;

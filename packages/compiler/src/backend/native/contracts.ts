@@ -150,6 +150,9 @@ export interface CcOptions {
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;
+  /** Module namespace objects as checked-dynamic values: compiles
+   * scr_module_namespace.c. */
+  moduleNamespace?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep

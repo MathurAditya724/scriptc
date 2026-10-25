@@ -168,6 +168,7 @@ import {
 import {
   bindingNeverReassigned,
   deadUnmappableBinding,
+  fileWritesBinding,
   nullishExprUnitOf,
   nullishGenericBindingUnitOf,
 } from "./binding-analysis.js";
@@ -181,7 +182,12 @@ import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
-import { genericIfaceBindingKeepsClass, superConditionLead } from "./lower-classes.js";
+import {
+  genericIfaceBindingKeepsClass,
+  lowerClassStaticRead,
+  staticReceiverClass,
+  superConditionLead,
+} from "./lower-classes.js";
 import {
   lowerStreamUnderscoreAssign,
   streamClassAliasDecl,
@@ -1624,7 +1630,46 @@ const THROWN_AS_DYN: ReadonlySet<IrType["kind"]> = new Set([
   "bytes",
   "func",
   "regex",
+  "date",
 ]);
+
+/** A `return` at the top level of a CommonJS module (preflight admits it
+ * there only): it ends the module's evaluation, and its value is
+ * evaluated and discarded, as Node's module wrapper does. Top-level
+ * bindings and export assignments after it would be left uninitialized
+ * where Node leaves them in their temporal dead zone or absent, so a
+ * module with any keeps a refusal. Null for a return inside a function. */
+function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrStmt | null {
+  let top: ts.Node = stmt;
+  while (top.parent !== undefined && !ts.isSourceFile(top.parent)) {
+    if (ts.isFunctionLike(top.parent) || ts.isClassStaticBlockDeclaration(top.parent)) return null;
+    top = top.parent;
+  }
+  const sf = top.parent;
+  if (sf === undefined || !ts.isSourceFile(sf)) return null;
+  const stmts = sf.statements.nodes;
+  const later = stmts.slice(stmts.indexOf(top as ts.Statement) + 1);
+  if (
+    later.some(
+      (s) =>
+        ts.isVariableStatement(s) || ts.isClassDeclaration(s) || cjsExportAssignmentOf(s) !== null,
+    )
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      stmt,
+      "a top-level return in a CommonJS module that declares variables or classes, or assigns exports, after it",
+    );
+  }
+  const loc = locOf(stmt);
+  const ret: IrStmt = { kind: "return", value: null, loc };
+  if (!stmt.expression) return ret;
+  return {
+    kind: "block",
+    body: [{ kind: "exprStmt", expr: lowerer.lowerExpr(stmt.expression), loc }, ret],
+    loc,
+  };
+}
 
 export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt[] | null {
   if (ownPrototypeResetStatement(lowerer, stmt))
@@ -1735,6 +1780,8 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
   if (ts.isForOfStatement(stmt)) return lowerer.lowerForOf(stmt);
   if (ts.isLabeledStatement(stmt)) return lowerLabeled(lowerer, stmt);
   if (ts.isReturnStatement(stmt)) {
+    const moduleReturn = lowerModuleLevelReturn(lowerer, stmt);
+    if (moduleReturn) return moduleReturn;
     // Implicit-any instance RETURN INFERENCE (function-returns.ts
     // resolveInferredReturn): the value lowers BARE and the statement
     // records itself — the post-pass settles the instance's return type
@@ -1828,9 +1875,7 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
       return { kind: "rethrow", localId: caughtLocal.id, loc: locOf(stmt) };
     }
     // Exception-representable values move into the runtime's exception
-    // cell. `throw f()` of a void call has no value; Date has numeric
-    // storage internally, but cannot preserve its object kind through the
-    // untyped catch boundary. Reject both rather than changing JS identity.
+    // cell. `throw f()` of a void call has no value.
     let value = lowerer.lowerExpr(stmt.expression);
     if (value.type.kind === "void")
       lowerer.badType(stmt.expression, lowerer.typeOf(stmt.expression));
@@ -1842,18 +1887,11 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     } else if (value.type.kind === "record" && lowerer.dynConvertible(value.type)) {
       value = { kind: "dynFrom", value, liveRef: true, type: DYN, loc: locOf(stmt.expression) };
     } else if (THROWN_AS_DYN.has(value.type.kind) && lowerer.dynConvertible(value.type)) {
-      // Arrays, Maps, Sets, typed arrays, Buffers, functions, regexes and
-      // unions over them keep their identity and contents the same way:
-      // the catch binding, `typeof`, `instanceof`, `Array.isArray`,
-      // inspection and typed views read the thrown object.
+      // Arrays, Maps, Sets, typed arrays, Buffers, functions, regexes,
+      // Dates and unions over them keep their identity and contents the
+      // same way: the catch binding, `typeof`, `instanceof`,
+      // `Array.isArray`, inspection and typed views read the thrown object.
       value = lowerer.coerceInto(stmt.expression, value, DYN);
-    }
-    if (value.type.kind === "date") {
-      lowerer.unsupported(
-        "SC1090",
-        stmt.expression,
-        "throwing Date values (catch bindings cannot preserve Date's object kind; throw an Error or primitive instead)",
-      );
     }
     // A dyn throw rides the REF cell arm (scr_throw_ref over the checked-dynamic tree
     // node — identity preserved through catch bindings, caughtToDyn
@@ -3053,6 +3091,18 @@ export function lowerBindingPattern(
     );
     return;
   }
+  // A class in a JavaScript file, destructured through its own name
+  // (`const { ANY, parse } = Comparator`): each element is the static
+  // read `Comparator.ANY` — the static getter, field or method as Node
+  // reads it, with the element's default applied when the read answers
+  // undefined. Other class-valued sources keep the refusal below.
+  if (
+    srcType.kind === "classval" &&
+    ts.isObjectBindingPattern(pattern) &&
+    isJsSourceFile(ts.getSourceFileOfNode(pattern)) &&
+    lowerClassValuePattern(lowerer, pattern, isLet, out)
+  )
+    return;
   if (srcType.kind === "dyn") {
     // A runtime computed first key evaluates after RequireObjectCoercible:
     // a nullish source throws before the key's side effects run. Later
@@ -4364,6 +4414,60 @@ function stdlibGlobalTokenDestructure(
   return out;
 }
 
+/** `const { ANY, parse } = Comparator` in a JavaScript file, where the
+ * declaration's initializer names the class exactly (staticReceiverClass):
+ * one static read per element, left to right. False, with nothing
+ * emitted, for other sources (a parameter or nested pattern over a class
+ * value), which keep the class-value refusal. */
+function lowerClassValuePattern(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  isLet: boolean,
+  out: IrStmt[],
+): boolean {
+  const decl = pattern.parent;
+  if (!ts.isVariableDeclaration(decl) || decl.initializer === undefined) return false;
+  let receiver: ts.Expression = decl.initializer;
+  while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+  const info = staticReceiverClass(lowerer, receiver);
+  if (info === null) return false;
+  for (const el of pattern.elements.nodes) {
+    if (el.name === undefined) continue;
+    if (el.dotDotDotToken)
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings over class values (the rest object copies the class's own enumerable statics)",
+      );
+    const prop = el.propertyName ?? el.name;
+    const name =
+      ts.isIdentifier(prop) ||
+      ts.isComputedPropertyName(prop) ||
+      ts.isStringLiteralLike(prop) ||
+      ts.isNumericLiteral(prop)
+        ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
+        : null;
+    if (name === null)
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "destructuring with computed keys that do not fold to one property name",
+      );
+    if (name === "prototype" || name.startsWith("#"))
+      lowerer.unsupported("SC1031", el, `destructuring '${name}' from a class value`);
+    let value = lowerClassStaticRead(lowerer, info, name, receiver, receiver);
+    if (value === null)
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        `destructuring the property '${name}' the class '${info.def.jsName ?? info.def.name}' does not declare as a static`,
+      );
+    if (el.initializer) value = applyBindingDefault(lowerer, el, value);
+    lowerer.bindPatternTarget(el.name, value, isLet, out);
+  }
+  return true;
+}
+
 /** `x = dflt` on a pattern position whose source value always EXISTS
  * (tuple positions, record fields): JS evaluates the default exactly
  * when the value is undefined — the undefined-arm ternary, lazy, so
@@ -5450,7 +5554,12 @@ export function lowerVarDecl(
   if (isTimeValueDateDeclaration(lowerer, decl)) {
     const loc = locOf(decl);
     const date = lowerer.lowerExprExpecting(decl.initializer!, DATE_T);
-    const local = lowerer.declareLocal(decl.name, decl.name.text, F64, isLet);
+    const local = lowerer.declareLocal(
+      decl.name,
+      decl.name.text,
+      F64,
+      isLet || lowerer.timeValueDateWrites.has(decl),
+    );
     lowerer.timeValueDateLocals.add(local);
     const init: IrExpr = { kind: "libCall", fn: "date.getTime", args: [date], type: F64, loc };
     return { kind: "varDecl", localId: local.id, init, loc };
@@ -7262,6 +7371,66 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   );
 }
 
+/** True when the `var`/`let` binding `nameNode` names cannot change after
+ * the top-level CommonJS export statement `exportNode` that exports it by
+ * reference, so importers read the value Node copies at the export: its
+ * module's top level declares it once, with an initializer that runs
+ * before the export, and nothing assigns it. The initializer runs earlier
+ * in the same module, or in a module the exporting module required before
+ * the export (`var hljs = require('./core'); module.exports = hljs;` over
+ * highlight.js's `var highlight = HLJS({}); module.exports = highlight;`). */
+function unchangedAfterExport(
+  lowerer: Lowerer,
+  nameNode: ts.Identifier,
+  exportNode: ts.Node,
+): boolean {
+  const topLevelDeclaration = (symbol: ts.Symbol): ts.VariableDeclaration | null => {
+    const decl = symbol.declarations.length === 1 ? symbol.declarations[0]! : undefined;
+    return decl !== undefined &&
+      ts.isVariableDeclaration(decl) &&
+      ts.isIdentifier(decl.name) &&
+      decl.initializer !== undefined &&
+      ts.isVariableDeclarationList(decl.parent) &&
+      ts.isVariableStatement(decl.parent.parent) &&
+      ts.isSourceFile(decl.parent.parent.parent)
+      ? decl
+      : null;
+  };
+  const exportFile = ts.getSourceFileOfNode(exportNode);
+  let exportStatement: ts.Node = exportNode;
+  for (let parent = exportNode.parent; parent !== undefined && !ts.isSourceFile(parent);) {
+    if (ts.isFunctionLike(parent) || ts.isClassDeclaration(parent) || ts.isClassExpression(parent))
+      return false;
+    exportStatement = parent;
+    parent = parent.parent;
+  }
+  const runsBeforeExport = (decl: ts.VariableDeclaration): boolean => {
+    const statement = decl.parent?.parent;
+    return statement?.parent === exportFile && statement.end <= exportStatement.pos;
+  };
+  const sym = lowerer.resolveValueSymbol(nameNode);
+  const decl = sym ? topLevelDeclaration(sym) : null;
+  if (!sym || !decl || !bindingNeverReassigned(lowerer, sym, decl)) return false;
+  if (ts.getSourceFileOfNode(decl) === exportFile) return runsBeforeExport(decl);
+  // A binding of another module: the exporting module's own binding
+  // `nameNode` names holds that module's require, evaluated before the
+  // export, and this file does not assign the binding either.
+  const local = lowerer.checker.getSymbolAtLocation(nameNode);
+  const localDecl = local ? topLevelDeclaration(local) : null;
+  if (!localDecl || !runsBeforeExport(localDecl)) return false;
+  let init: ts.Expression = localDecl.initializer!;
+  while (ts.isParenthesizedExpression(init)) init = init.expression;
+  if (
+    !ts.isCallExpression(init) ||
+    !ts.isIdentifier(init.expression) ||
+    init.expression.text !== "require" ||
+    init.arguments.nodes.length !== 1 ||
+    !ts.isStringLiteralLike(init.arguments.nodes[0]!)
+  )
+    return false;
+  return !fileWritesBinding(sym, exportFile, (ident) => lowerer.resolveValueSymbol(ident));
+}
+
 /** A top-level CommonJS export statement (see cjsExportAssignmentOf):
  * `exports.f = <expr>` and each expression-valued property of
  * `module.exports = { ... }` assign their pre-registered export globals
@@ -7445,7 +7614,7 @@ function lowerCjsExportStatement(
   const fenceMutable = (nameNode: ts.Identifier): void => {
     const sym = lowerer.resolveValueSymbol(nameNode);
     const g = sym ? lowerer.globalsBySymbol.get(sym) : undefined;
-    if (g?.mutable) {
+    if (g?.mutable && !unchangedAfterExport(lowerer, nameNode, cjs.expr)) {
       lowerer.unsupported(
         "SC1090",
         nameNode,
@@ -7605,7 +7774,7 @@ function lowerCjsSingleValueExport(
     }
     const g = lowerer.globalsBySymbol.get(sym);
     if (g) {
-      if (g.mutable) {
+      if (g.mutable && !unchangedAfterExport(lowerer, rhs, expr)) {
         lowerer.unsupported(
           "SC1090",
           rhs,
