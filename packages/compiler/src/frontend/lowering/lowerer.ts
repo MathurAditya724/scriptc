@@ -2251,7 +2251,7 @@ export class Lowerer {
   /** Values an erased type assertion produced, with the asserted type
    * (`x as T` keeps x's representation): a slot that no ordinary
    * conversion reaches converts them as asserted (assertedConversion). */
-  readonly assertedValues = new WeakMap<IrExpr, IrType>();
+  readonly assertedValues = new Map<IrExpr, IrType>();
   /** Non-null while an IMPLICIT-ANY instance body lowers (npm-static JS;
    * see generic-functions.ts): bound param symbol →
    * the call site's checker type, consulted by typeOf for identifier
