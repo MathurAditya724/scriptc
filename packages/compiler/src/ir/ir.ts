@@ -87,7 +87,16 @@ export type IrType =
   | { kind: "date" }
   | { kind: "string" } // heap, refcounted, UTF-8
   | { kind: "bool" }
-  | { kind: "array"; elem: IrType } // heap, refcounted, monomorphic elements
+  | {
+      kind: "array";
+      elem: IrType;
+      /** A `(T | undefined)[]` of a number, string or boolean T, stored as
+       * T elements (which hold a present undefined by their state). Not
+       * part of the type's identity (typeEquals, typeKey): it only lets a
+       * checked conversion from a dynamic value accept undefined
+       * elements. */
+      optionalElements?: true;
+    } // heap, refcounted, monomorphic elements
   /** ES `Map<K, V>` — heap, refcounted, insertion-ordered hash map with ONE
    * runtime representation (ScrMap) and type-directed key/value handling,
    * exactly the array pattern (never per-instantiation structs). Keys use
@@ -1078,6 +1087,11 @@ export interface IrModule {
    * (frontend frozen-records.ts): their writes test the array's frozen bit
    * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
   freezableArrays?: string[];
+  /** The program freezes, seals or prevents extensions of untyped values
+   * (frontend frozen-records.ts noteUntypedIntegrity). Class hierarchies
+   * that can be held there carry an integrity word, which the runtime sets
+   * through the commit of the instance's checked view. */
+  untypedIntegrity?: true;
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
@@ -3436,7 +3450,17 @@ export type IrExpr =
    * from a union) whose Web API contract exposes the reference again, such
    * as stream chunks and abort reasons; ordinary JSON-shaped values retain
    * the documented deep-copy boundary. */
-  | { kind: "dynFrom"; value: IrExpr; fnName?: string; liveRef?: true; type: IrType; loc: SrcLoc }
+  | {
+      kind: "dynFrom";
+      value: IrExpr;
+      fnName?: string;
+      /** A boxed function's `length` when it differs from its parameter
+       * count (builtin function values). */
+      fnLength?: number;
+      liveRef?: true;
+      type: IrType;
+      loc: SrcLoc;
+    }
   /** CALLING a dyn value — `fn(a, b)` where fn is checked-dynamic (an
    * implicit-any JS binding, a dyn record member, a dynKeyGet result).
    * Arguments are ALREADY dyn-typed (typed values box through dynFrom at
@@ -3949,7 +3973,7 @@ export type IrExpr =
     }
   /** Standard-library call (`process` members, node:fs functions). `fn` is a
    * closed union; arg/result types are fixed per member (validated against
-   * LIB_FN_SIGS). Property READS (`process.argv`, `process.platform`) are
+   * libFnSignatures()). Property READS (`process.argv`, `process.platform`) are
    * zero-arg libCalls. Args are BORROWED by the operation (frame temps
    * release at statement end); refcounted results come back owned (+1) —
    * `process.argv` returns +1 on ONE interned array (JS identity:

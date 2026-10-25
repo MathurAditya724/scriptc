@@ -104,10 +104,10 @@ function emitFunctionsInChunks(emitter: LlEmitter, chunks: number): string[] {
   return fnDefs;
 }
 
-/** Modules with fewer functions emit in one process: forking and merging
- * would cost more than the workers save (SCRIPTC_EMIT_WORKER_FUNCTIONS
- * lowers it, for tests). */
-function workerMinFunctions(): number {
+/** Modules with fewer functions emit in one process, and compute their
+ * analyses in it: forking and merging would cost more than the workers save
+ * (SCRIPTC_EMIT_WORKER_FUNCTIONS lowers it, for tests). */
+export function workerMinFunctions(): number {
   const value = Number(process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] ?? "2000");
   return Number.isFinite(value) && value > 0 ? value : 2000;
 }
@@ -136,6 +136,7 @@ function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] |
       let code = 1;
       try {
         emitter.journal = new EmitJournal();
+        emitter.debug?.record();
         const texts: string[] = [];
         for (const fn of functions.slice(range * size, (range + 1) * size)) {
           texts.push(emitter.emitFunction(fn));
@@ -232,13 +233,10 @@ const PARTITION_GROUP_END = "; scriptc-group";
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
-  // Debug metadata is numbered per emitter and not journaled, so a debug
-  // build emits every body here.
-  const ranges = emitter.debug === null;
   const chunks = emitter.targetOptions.functionChunks ?? 1;
   const fnDefs =
-    (ranges && chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
-    (ranges ? emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) : null) ??
+    (chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
+    emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) ??
     [];
   if (fnDefs.length === 0)
     for (const fn of emitter.mod.functions) {
@@ -1353,6 +1351,42 @@ export function helperDefs(emitter: LlEmitter): string[] {
       `  ret ptr %hashed`,
       `}`,
       ``,
+      // The same lookup for a key the emitter knows is an integer (`%ki`,
+      // the double `%k`'s exact value): the direct index tests the integer
+      // itself, so the double is converted only by the hashed probe. A
+      // negative key is not below the index's size as an unsigned value.
+      `define internal ptr @sc_map_entry_f64_int(ptr %m, i64 %ki, double %k) ${FN_ATTRS} {`,
+      `entry:`,
+      `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
+      `  %nd32 = load i32, ptr %ndp`,
+      `  %nd = zext i32 %nd32 to i64`,
+      `  %inside = icmp ult i64 %ki, %nd`,
+      `  br i1 %inside, label %slot, label %outside`,
+      `slot:`,
+      sz === "i64" ? `  %i = add i64 %ki, 0` : `  %i = trunc i64 %ki to ${sz}`,
+      `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
+      `  %dense = load ptr, ptr %dp`,
+      `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,
+      `  %s = load i32, ptr %sp`,
+      `  %empty = icmp eq i32 %s, 0`,
+      `  br i1 %empty, label %miss, label %hit`,
+      `hit:`,
+      `  %e32 = sub i32 %s, 1`,
+      sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
+      `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+      `  %entries = load ptr, ptr %ep`,
+      `  %found = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %e`,
+      `  ret ptr %found`,
+      `miss:`,
+      `  ret ptr null`,
+      `outside:`,
+      `  %dense.any = icmp ne i64 %nd, 0`,
+      `  br i1 %dense.any, label %miss, label %slow`,
+      `slow:`,
+      `  %hashed = call ptr @sc_map_entry_f64_hashed(ptr %m, double %k)`,
+      `  ret ptr %hashed`,
+      `}`,
+      ``,
       // Hashing (scr_map_find_f64): the SameValueZero key word, its
       // scr_key_mix hash (zero remapped to one) and the absent-key filter.
       `define internal ptr @sc_map_entry_f64_hashed(ptr %m, double %k) noinline ${FN_ATTRS} {`,
@@ -1693,8 +1727,8 @@ export function helperDefs(emitter: LlEmitter): string[] {
   // order; other differing words decide by their first differing byte,
   // and strings shorter than a word by their first byte. Otherwise a
   // proven-ASCII string on either side orders by bytes (scr_str_cmp), and
-  // other pairs call scr_str_cmp_u16_bytes, which only reads the two
-  // strings, so LLVM can merge repeated comparisons of one pair. Callers
+  // other pairs call scr_str_cmp_u16_bytes. Both only read the two strings,
+  // so LLVM can merge repeated comparisons of one pair. Callers
   // only test the sign of the result.
   if (emitter.decls.has(`declare i32 @scr_str_cmp_u16(ptr, ptr)`)) {
     const fn = "scr_str_cmp_u16";
@@ -1824,7 +1858,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
       `  %anyascii = icmp slt i32 %cws, 0`,
       `  br i1 %anyascii, label %memorder, label %units`,
       `memorder:`,
-      `  %m = call i32 @scr_str_cmp(ptr %a, ptr %b)`,
+      `  %m = call i32 @scr_str_cmp(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)`,
       `  ret i32 %m`,
       `units:`,
       `  %c = call i32 @scr_str_cmp_u16_bytes(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)`,

@@ -1889,6 +1889,31 @@ static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
   return true;
 }
 
+/* A loop about to read s (bytes-loop-versions.ts) between the indexes
+ * `from` and `to` (NaN: no bound) converts it at once instead of after the
+ * threshold's reads, and publishes it as the scan's receiver, when that
+ * range has at least one unit per 16 bytes of s (the threshold's ratio).
+ * A shorter loop, such as one over a line of a source text, counts as one
+ * read, so a short loop does not keep all of a long string's units. ASCII
+ * receivers and receivers past SCR_SIDX_UNITS_MAX publish nothing; the
+ * caller compares scr_str_scan.s with s. */
+void scr_str_scan_units_for(ScrStr *s, double from, double to) {
+  if (s->ascii || s->len > SCR_SIDX_UNITS_MAX) return;
+  ScrSidx *e = scr_sidx(s);
+  if (!e->units) {
+    if (fabs(to - from) * 16 < (double)s->len) {
+      (void)scr_sidx_units(s, e);
+      return;
+    }
+    e->units = scr_str_units(s, &e->nunits);
+  }
+  if (scr_str_scan.s != s) {
+    scr_str_scan.s = s;
+    scr_str_scan.units = e->units;
+    scr_str_scan.n = e->nunits;
+  }
+}
+
 typedef enum { SCR_UNIT_FIRST, SCR_UNIT_LAST, SCR_UNIT_AT } ScrUnitSearch;
 
 /* The UTF-16 index of needle in s: the first match at or after `from`,
@@ -1989,6 +2014,19 @@ double scr_str_utf16_len(ScrStr *s) {
   }
   *slot = (ScrU16Len){s, units};
   return (double)(int64_t)units;
+}
+
+/* Records the UTF-16 length of a string whose producer counted it (latin1
+ * text has one unit per byte), so scr_str_utf16_len does not walk it. Only
+ * strings that scr_str_utf16_len would otherwise record are kept. */
+void scr_str_note_utf16_len(ScrStr *s, size_t units) {
+  if (s->ascii || s->len <= 64 || s->rc == SIZE_MAX) return;
+  if (!scr_u16len_tab) {
+    scr_u16len_tab = calloc(SCR_U16LEN_N, sizeof *scr_u16len_tab);
+    if (!scr_u16len_tab) return;
+    scr_sidx_register_cleanup();
+  }
+  *scr_u16len_slot(s) = (ScrU16Len){s, units};
 }
 
 double scr_str_char_code_at(ScrStr *s, double i) {

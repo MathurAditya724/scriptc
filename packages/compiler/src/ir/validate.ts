@@ -66,7 +66,7 @@ import {
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
-import { LIB_FN_SIGS, pipelinePumpedRuns } from "./builtin-signatures.js";
+import { libFnSignatures, pipelinePumpedRuns } from "./builtin-signatures.js";
 import { ALWAYS_THROW_LIB_FNS } from "./builtin-effects.js";
 
 /** The promisified crypto calls' value kinds besides checked-dynamic. */
@@ -127,6 +127,8 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     errors.push({ message: "worker execution mode must be a boolean", loc: moduleLoc });
   if (mod.declBoundary !== undefined && mod.declBoundary !== true)
     errors.push({ message: "declBoundary must be true when present", loc: moduleLoc });
+  if (mod.untypedIntegrity !== undefined && mod.untypedIntegrity !== true)
+    errors.push({ message: "untypedIntegrity must be true when present", loc: moduleLoc });
   if (mod.lifetimeRegions !== undefined && mod.lifetimeRegions !== true)
     errors.push({ message: "lifetimeRegions must be true when present", loc: moduleLoc });
   if (mod.workers && mod.lib !== undefined)
@@ -2070,12 +2072,18 @@ function validateFunction(
       }
       case "arrayNewLen": {
         // Mapper-less Array.from({length: n}): absent-slot fill exists
-        // only for refcounted element kinds (frontend fences scalars).
+        // only for refcounted element kinds. Number and boolean slots are
+        // filled with present undefined values right after
+        // (`(T | undefined)[]`); the frontend fences other scalar uses.
         if (e.type.kind !== "array") {
           err(`arrayNewLen must be array-typed, got ${e.type.kind}`, e.loc);
           break;
         }
-        if (!isRefCounted(e.type.elem)) {
+        if (
+          !isRefCounted(e.type.elem) &&
+          e.type.elem.kind !== "f64" &&
+          e.type.elem.kind !== "bool"
+        ) {
           err(
             `arrayNewLen with non-refcounted ${e.type.elem.kind} elements (no absent value)`,
             e.loc,
@@ -4102,7 +4110,7 @@ function validateFunction(
     }
     if (e.fn === "worker.new" && !workers)
       errors.push({ message: "Worker construction requires worker execution mode", loc: e.loc });
-    const sig = LIB_FN_SIGS[e.fn];
+    const sig = libFnSignatures()[e.fn];
     if (!sig) {
       err(`libCall of unknown library function "${e.fn as string}"`, e.loc);
       return;

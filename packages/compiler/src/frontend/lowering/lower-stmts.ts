@@ -33,6 +33,7 @@ import { InternalCompilerError } from "../../errors.js";
  * explicit resource management, and blocked-binding poisoning. */
 import * as ts from "../ts7/adapter.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
+import { builtinNamespaceValue } from "./builtin-namespaces.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
@@ -266,6 +267,7 @@ import { constituentTypes } from "../ts7/checker.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
+import { fenceX509KeyWalk } from "./builtins/x509.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { iterableUnionOf, lowerForOfIterable } from "./iterable-values.js";
 
@@ -4330,7 +4332,8 @@ function stdlibGlobalTokenDestructure(
       value =
         canonical === "crypto"
           ? { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc: locOf(el) }
-          : builtinGlobalValue(canonical, locOf(el), true);
+          : (builtinNamespaceValue(lowerer, canonical, locOf(el)) ??
+            builtinGlobalValue(canonical, locOf(el), true));
     } else if (globalName === "console" && !CONSOLE_CALL_MEMBERS.has(propName)) {
       token = `[builtin console.${propName}]`;
     } else if (TOKEN_OPAQUE_GLOBALS.has(globalName)) {
@@ -12305,6 +12308,7 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
       // them (accessor slots live outside declaredOrder), so the loop
       // fences rather than skip keys.
       fencePerfEntryKeyWalk(lowerer, receiver.type, stmt.expression, "for-in");
+      fenceX509KeyWalk(lowerer, receiver.type, stmt.expression, "for-in");
       if (shapeHasAccessorSlots(rShape)) {
         lowerer.unsupported(
           "SC1090",
