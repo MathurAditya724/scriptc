@@ -647,7 +647,16 @@ export function planStaticObjectRewrites(
    * as the object `propertyIsEnumerable` is asked about. */
   const reflectsOn = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
     enumerabilityEscapes ||
-    enumerabilityQueries.some((recv) => mayBeValue(recv, atoms, ctorPath)) ||
+    enumerabilityQueries.some((recv) => {
+      // `F.prototype` is one of `atoms` (a class's prototype) only when F
+      // may be that class's function, which `atoms` holds too: the analysis
+      // reads a prototype as ⊤ beside the class prototype objects it tracks.
+      let e: ts.Expression = recv;
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (ts.isPropertyAccessExpression(e) && e.name.text === "prototype")
+        return mayBeValue(e.expression, atoms, ctorPath);
+      return mayBeValue(recv, atoms, ctorPath);
+    }) ||
     reflective.some((call) => call.arguments.nodes.some((arg) => mayBe(arg, atoms, ctorPath)));
   /** Whether a call that freezes, seals or redefines an object may reach one of `atoms`. */
   const reshapes = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
