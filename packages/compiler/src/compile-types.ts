@@ -54,6 +54,11 @@ export interface CompileBaseOptions {
    * merge-profiles`). Code the profile does not describe, or describes
    * from an older version of the program, is optimized as without one. */
   profileUse?: string;
+  /** A function layout (scripts/refresh-cli-layout.mjs; gzip-compressed when
+   * the name ends in .gz): the listed functions are written first, by tier,
+   * so the code that runs together sits together in the executable. The
+   * native compiler's build uses it. Executables and LLVM output. */
+  functionLayout?: string;
 
   /** Eligible packages compile automatically. Explicit names override automatic selection heuristics. */
   npmStatic?: readonly string[] | "auto";
