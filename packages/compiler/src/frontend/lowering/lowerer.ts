@@ -5234,11 +5234,11 @@ export class Lowerer {
     const sourceFiles = parts.map((p) => p.sf);
     const fnDecls = parts.flatMap((p) => p.fnDecls);
     // This fixed-point scan intentionally sees deferred bodies before
-    // reachability is known. Batch their binding queries through the
-    // facade's panic fence, then keep lookup free of lowering side effects:
-    // resolveValueSymbol also flushes deferred diagnostics and applies
-    // merged-namespace fences, whose authority remains ordinary lowering.
-    this.checker.prefetchSymbolRoots(sourceFiles, true);
+    // reachability is known. Its binding queries were batched through the
+    // facade's panic fence before collection (prefetchProgramSymbols); keep
+    // lookup free of lowering side effects: resolveValueSymbol also flushes
+    // deferred diagnostics and applies merged-namespace fences, whose
+    // authority remains ordinary lowering.
     // The facts each fixed-point site reads, by the symbols, nodes and
     // element keys they belong to (created with the site list below).
     let siteDependencies: SiteDependencies | null = null;
@@ -8040,6 +8040,7 @@ export class Lowerer {
     if (this.remainder) {
       for (const fp of parts) this.checker.prefetchSourceFile(fp.sf);
     }
+    this.prefetchProgramSymbols(parts);
     this.collectProgram(parts);
     this.speculativeTypeQueries(() => {
       extendAssertedRecordMembers(
@@ -8499,6 +8500,7 @@ export class Lowerer {
     this.onEdge = (name) => {
       collectionEdges.add(name);
     };
+    this.prefetchProgramSymbols(parts);
     this.collectProgram(parts);
     this.speculativeTypeQueries(() => {
       extendAssertedRecordMembers(
@@ -12207,6 +12209,17 @@ export class Lowerer {
 
   lowerClassExpressionInfo(expr: ts.ClassLikeDeclaration): ClassInfo {
     return lowerClassExpressionInfo(this, expr);
+  }
+
+  /** Batch-prefetches the symbols of every runtime identifier of the
+   * program's files. Collection's early-binding scan and the runtime-
+   * optional analysis look them up across every body, reached or not;
+   * one batch answers both, instead of one request per identifier. */
+  private prefetchProgramSymbols(parts: FileParts[]): void {
+    this.checker.prefetchSymbolRoots(
+      parts.map((fp) => fp.sf),
+      true,
+    );
   }
 
   /** Depth of the whole-program analyses that query types across every

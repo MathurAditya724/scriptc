@@ -46,7 +46,7 @@ import {
   trackedRealpath,
 } from "../input-tracker.js";
 import { packageShimDeclarationText } from "../package-shims.js";
-import { typePatchedText } from "../type-patches/layer.js";
+import { typePatchedText, typePatchFileExists } from "../type-patches/layer.js";
 import { ambientDtsPath, isFallbackDtsPath, overridesDtsPath } from "../dts-paths.js";
 import { reusedLibDiagnostics } from "./lib-diagnostics.js";
 import { ts7Diagnostic } from "./diagnostic.js";
@@ -190,7 +190,7 @@ export class Ts7Host {
         fileExists: (fileName) => {
           if (virtualFiles.has(tsgoPath(fileName))) return true;
           if (shadow !== null && shadow.hideFile(fileName)) return false;
-          return trackedFileExists(fileName);
+          return trackedFileExists(fileName) || typePatchFileExists(fileName);
         },
         directoryExists: (path) => trackedDirectoryExists(path),
         realpath: (path) =>

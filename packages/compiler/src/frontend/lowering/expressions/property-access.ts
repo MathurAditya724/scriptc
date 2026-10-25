@@ -115,6 +115,7 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../.
 import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
+import { lowerRecordInheritedMember } from "../record-inherited.js";
 import { DATE_METHOD_HINT } from "../builtins/dates.js";
 import {
   cjsClassExprWholeExportOf,
@@ -3187,6 +3188,12 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
             type: field.type,
             loc: locOf(expr),
           };
+      }
+      // Object.prototype's methods read as values: an own entry of the
+      // member's function type, else the built-in.
+      if (actual?.type.kind === "record") {
+        const inherited = lowerRecordInheritedMember(lowerer, actual, expr);
+        if (inherited) return inherited;
       }
       // A member the checker declares on the receiver, stored in a pure
       // index-signature record (an object literal that spread one, see

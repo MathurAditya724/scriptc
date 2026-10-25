@@ -5422,6 +5422,12 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
   const scope = decl.parent?.parent?.parent;
   if (symbol === undefined || (!ts.isBlock(scope) && !ts.isSourceFile(scope))) return null;
 
+  // A shorthand property's name (`{ width }`) resolves to the property
+  // symbol, but it reads the binding: the checker's shorthand-value symbol.
+  const refersToBinding = (node: ts.Identifier): boolean =>
+    (ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
+      ? lowerer.checker.getShorthandAssignmentValueSymbol(node.parent)
+      : lowerer.checker.getSymbolAtLocation(node)) === symbol;
   const isPlainAssignmentTarget = (node: ts.Identifier): boolean => {
     let target: ts.Expression = node;
     while (ts.isParenthesizedExpression(target.parent) && target.parent.expression === target) {
@@ -5437,11 +5443,7 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
   const captures = (fn: ts.Node): boolean => {
     let captured = false;
     ts.walkPreorder(fn, (node) => {
-      if (
-        node !== fn &&
-        ts.isIdentifier(node) &&
-        lowerer.checker.getSymbolAtLocation(node) === symbol
-      ) {
+      if (node !== fn && ts.isIdentifier(node) && refersToBinding(node)) {
         captured = true;
         return "stop";
       }
@@ -5493,7 +5495,7 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
     if (
       ts.isIdentifier(node) &&
       node !== decl.name &&
-      lowerer.checker.getSymbolAtLocation(node) === symbol &&
+      refersToBinding(node) &&
       !isPlainAssignmentTarget(node)
     ) {
       reads.push(node);
