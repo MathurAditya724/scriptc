@@ -854,6 +854,7 @@ async function prepareExecutableInput(
         // the pending flag, since their link may not add an unwinder.
         unwindAbi: buildPlatform === "linux" && outputKind !== "obj",
         objectAudit: opts.sanitize === true,
+        sanitizeAttributes: opts.sanitize === true,
         lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
         ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
         ...inlineRcOption(opts.optimization, opts.sanitize === true),
@@ -925,6 +926,7 @@ async function prepareExecutableInput(
       runtimeAbiMarker: useRuntimePack,
       unwindAbi: buildPlatform === "linux",
       objectAudit: opts.sanitize === true,
+      sanitizeAttributes: opts.sanitize === true,
       lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
@@ -2357,6 +2359,7 @@ async function compileLibraryTracked(
       pointerBits: buildPlatform === "wasi" ? 32 : 64,
       wasi: buildPlatform === "wasi",
       objectAudit: opts.sanitize === true,
+      sanitizeAttributes: opts.sanitize === true,
       ...inlineRcOption(profile.optimization, opts.sanitize === true),
     });
     timing("llvm-emit", {

@@ -688,6 +688,14 @@ function createRequireProgramRoots7(program: ts.Program): string[] {
   return [...roots].sort();
 }
 
+/** Whether the tsc gate can keep a file's diagnostics when the program
+ * loads: it drops all of an opted-in package's files and of the package
+ * shims (keptErrors in preflight also drops unselected package JavaScript,
+ * which is not known yet here, so those files are still checked). */
+function tscGateFileKept(fileName: string): boolean {
+  return npmStaticPackageOfPath(fileName) === null && !isPackageShimFile(fileName);
+}
+
 /** Classify the explicitly selected installed package's own sources. */
 export function entryPackageFilePredicate(entryPath: string): (file: string) => boolean {
   const entryFile = tsgoPath(entryPath);
@@ -968,7 +976,7 @@ function loadProgram7(
       const original = program;
       // The project world must read the original text too, so it is built
       // before the rewritten files are served, and only when it is needed.
-      const diagnostics = ts.getPreEmitDiagnostics(original);
+      const diagnostics = ts.getPreEmitDiagnostics(original, tscGateFileKept);
       const errors = diagnostics.some((d) => d.category === ts.DiagnosticCategory.Error);
       tscWorld = {
         program: original,
@@ -1016,7 +1024,7 @@ function loadProgram7(
         } else {
           tscWorld = {
             program: original,
-            diagnostics: ts.getPreEmitDiagnostics(original),
+            diagnostics: ts.getPreEmitDiagnostics(original, tscGateFileKept),
             projectWorld: null,
             declWorldFallback: true,
           };
@@ -5472,7 +5480,14 @@ function preflight7(load: LoadResult): {
     const sf = p.getSourceFile(d.fileName);
     return sf !== undefined && isCheckedJsSourceFile(sf, projectCheckJs);
   };
-  const errorsOf = (p: ts.Program): ts.Diagnostic[] => keptErrors(p, ts.getPreEmitDiagnostics(p));
+  // keptErrors drops every diagnostic of these files: the gate does not ask
+  // the checker for them.
+  const diagnosticsKept = (fileName: string): boolean =>
+    npmStaticPackageOfPath(fileName) === null &&
+    !unselectedPackageJsFile(fileName) &&
+    !isPackageShimFile(fileName);
+  const errorsOf = (p: ts.Program): ts.Diagnostic[] =>
+    keptErrors(p, ts.getPreEmitDiagnostics(p, diagnosticsKept));
   const keptErrors = (p: ts.Program, all: readonly ts.Diagnostic[]): ts.Diagnostic[] => {
     // First pass: every comment-side 2300's (file, name) — the partners
     // the second pass forgives.

@@ -116,6 +116,7 @@ import {
   checkedNarrowCall,
   checkedNarrowOperand,
   deferredReadHelper,
+  widthNarrowHelper,
 } from "./coercions/unions.js";
 import {
   lowerUtilTypeValue,
@@ -461,7 +462,7 @@ import { bindingNeverReassigned } from "./binding-analysis.js";
 import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import { completeArgs, wrappedUndefined, undefinedArgFor } from "./call-arguments.js";
-import { bodyReturnType, declaredReturnType } from "./function-returns.js";
+import { bodyReturnType, declaredReturnType, widensReducedRecords } from "./function-returns.js";
 import { lowerCall, lowerPromiseMethodCall, lowerFilterNarrowCall } from "./lower-calls.js";
 import { lowerFfiCall, validateFfiImports } from "./native-ffi.js";
 import {
@@ -3552,6 +3553,7 @@ export class Lowerer {
       this.internTableHelpers,
       this.coercions.retags,
       this.coercions.narrows,
+      this.coercions.widthNarrows,
     ])
       for (const name of table.values()) interned.add(name);
     for (const fn of [...this.liftedFns, ...this.implicitFns])
@@ -10564,7 +10566,11 @@ export class Lowerer {
         expected.kind !== "void" &&
         this.armTag(expr.type.unionId, expected) >= 0
       ) {
-        const helper = this.narrowedArmHelper(expr.type.unionId, expected, expr.loc);
+        // A function's widened inferred return (widenReducedReturn) also
+        // holds records with more fields; those convert instead of throwing.
+        const helper = widensReducedRecords(this, expected, expr.type)
+          ? widthNarrowHelper(this, expr.type.unionId, expected, expr.loc)
+          : this.narrowedArmHelper(expr.type.unionId, expected, expr.loc);
         if (helper) {
           return this.checkedNarrowCall(helper, expr, expected, expr.loc);
         }
@@ -10682,6 +10688,31 @@ export class Lowerer {
               unionId: expected.unionId,
               tag: baseTag,
               value: widened,
+              type: expected,
+              loc: expr.loc,
+            };
+          }
+        }
+      }
+      // A promise or function value against a union whose ONLY arm of
+      // that kind differs from it (`Promise<T>` into `Promise<unknown> |
+      // undefined`, `() => Promise<string | null>` into an optional
+      // `() => Promise<string | null | undefined>` member): convert into
+      // that arm with the arm-level conversion (the checked payload
+      // widening, the function adapter), then wrap. Several arms of the
+      // kind stay ambiguous and fall through to the union fence.
+      if (expr.type.kind === "promise" || expr.type.kind === "func") {
+        const arms = this.unions.get(expected.unionId)?.arms ?? [];
+        const candidates = arms.filter((arm) => arm.kind === expr.type.kind);
+        const arm = candidates.length === 1 ? candidates[0]! : null;
+        if (arm) {
+          const converted = this.coerceToExpected(expr, arm);
+          if (converted !== expr && typeEquals(converted.type, arm)) {
+            return {
+              kind: "unionWrap",
+              unionId: expected.unionId,
+              tag: arms.indexOf(arm),
+              value: converted,
               type: expected,
               loc: expr.loc,
             };
