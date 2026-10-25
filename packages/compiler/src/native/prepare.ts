@@ -257,6 +257,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "dh",
     "pki",
     "ed25519",
+    "x509",
     "webcrypto",
     "perfLoop",
   ].every((name) => typeof features[name] === "boolean");
@@ -408,6 +409,11 @@ export function prepareNativeExecutable(
           pointerBits: toolchain.target.pointerBits,
           wasi: toolchain.target.platform === "wasi",
           runtimeAbiMarker: outputKind === "obj" || outputKind === "exe",
+          // As for the Node-hosted build: executables and their textual
+          // LLVM and assembly, not objects.
+          unwindAbi:
+            (outputKind === "exe" || outputKind === "llvm" || outputKind === "asm") &&
+            toolchain.target.platform === "linux",
           objectAudit: options.sanitize === true,
           lowRegion: lowRegionTarget(toolchain.target.platform, options.sanitize === true),
           functionWorkers: emitWorkers(),
