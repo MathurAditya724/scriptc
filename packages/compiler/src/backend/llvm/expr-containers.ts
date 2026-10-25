@@ -257,6 +257,16 @@ function emitDiscarded(host: LlvmEmitterContext, e: IrExpr): void {
   const start = host.emitExpr(e.args[0]!);
   const count = e.args[1] ? host.emitExpr(e.args[1]).name : F64_INF;
   const values = items.map((item) => host.emitExpr(item));
+  // Before the values move into the buffer: a throw releases them with the
+  // frame.
+  host.emitPublishedArrayGuard(
+    r.name,
+    e.receiver.type,
+    10,
+    start.name,
+    count,
+    f64Lit(values.length),
+  );
   if (acc === "ref") values.forEach((value) => host.toHeap(value));
   let buffer = "null";
   if (values.length > 0) {
@@ -904,6 +914,12 @@ export function emitArrIntrinsic(
         B.line(`${t} = call ptr @${helper}(ptr ${r.name}, ptr ${sep.name})`);
         return host.own({ name: t, type: e.type });
       }
+      if (elem.kind === "date") {
+        host.declare(`declare ptr @scr_date_arr_join(ptr, ptr)`);
+        const t = B.tmp();
+        B.line(`${t} = call ptr @scr_date_arr_join(ptr ${r.name}, ptr ${sep.name})`);
+        return host.own({ name: t, type: e.type });
+      }
       host.declare(`declare ptr @scr_arr_join(ptr, ptr)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_arr_join(ptr ${r.name}, ptr ${sep.name})`);
@@ -928,6 +944,16 @@ export function emitArrIntrinsic(
     case "sortPrimitive":
     case "toSortedPrimitive": {
       if (e.method === "sortPrimitive") host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      if (elem.kind === "date") {
+        // Dates order by their toString() text.
+        host.declare(`declare ptr @scr_arr_sort_by_text(ptr, i1 zeroext, ptr)`);
+        host.declare(`declare ptr @scr_date_object_to_string(ptr)`);
+        const sorted = B.tmp();
+        B.line(
+          `${sorted} = call ptr @scr_arr_sort_by_text(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0}, ptr @scr_date_object_to_string)`,
+        );
+        return host.own({ name: sorted, type: e.type });
+      }
       host.declare(`declare ptr @scr_arr_sort_primitive(ptr, i1 zeroext)`);
       const result = B.tmp();
       B.line(
@@ -978,7 +1004,25 @@ export function emitArrIntrinsic(
     case "fill":
     case "fillUndefined": {
       const args = e.args.map((arg) => host.emitExpr(arg));
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      // fill's range is its last two arguments; copyWithin's target,
+      // start and end are its three.
+      if (e.method === "copyWithin")
+        host.emitPublishedArrayGuard(
+          r.name,
+          e.receiver.type,
+          9,
+          args[0]!.name,
+          args[1]!.name,
+          args[2]!.name,
+        );
+      else
+        host.emitPublishedArrayGuard(
+          r.name,
+          e.receiver.type,
+          8,
+          args[args.length - 2]!.name,
+          args[args.length - 1]!.name,
+        );
       if (host.checkedFills.has(e)) {
         // A new int32 array with checked stores, filled with a value that
         // may not be an int32: widen it first then.
@@ -1042,7 +1086,7 @@ export function emitArrIntrinsic(
       // removes to the end (+Infinity, the slice convention).
       const start = host.emitExpr(e.args[0]!);
       const cnt = e.args[1] ? host.emitExpr(e.args[1]).name : F64_INF;
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      host.emitPublishedArrayGuard(r.name, e.receiver.type, 10, start.name, cnt, f64Lit(0));
       host.declare(`declare ptr @scr_arr_splice(ptr, double, double)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_arr_splice(ptr ${r.name}, double ${start.name}, double ${cnt})`);
@@ -1052,7 +1096,12 @@ export function emitArrIntrinsic(
       const start = host.emitExpr(e.args[0]!);
       const count = host.emitExpr(e.args[1]!);
       const items = emitBorrowedInput(host, e.args[2]!);
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      if (host.publishedTypes?.containerGuarded(e.receiver.type) === true) {
+        host.declare(`declare double @scr_arr_len(ptr)`);
+        const n = B.tmp();
+        B.line(`${n} = call double @scr_arr_len(ptr ${items.name})`);
+        host.emitPublishedArrayGuard(r.name, e.receiver.type, 10, start.name, count.name, n);
+      }
       host.declare(`declare ptr @scr_arr_splice_insert(ptr, double, double, ptr)`);
       const t = B.tmp();
       B.line(
@@ -1412,6 +1461,7 @@ export function emitMapLikeIntrinsic(
               : emitStringMapGetScalar(host, r.name, stringKey!);
           found = scalar.found;
           if (stringKey !== null) rememberMapEntry(host, e, r.name, stringKey, scalar.entry);
+          else rememberMapEntry(host, e, r.name, numberKey!, scalar.entry, "double");
           readHit = () => {
             const hit = B.tmp();
             B.line(
@@ -1483,7 +1533,13 @@ export function emitMapLikeIntrinsic(
       const vAcc = elemAccess(receiverType.value);
       if (vAcc === "ref") host.toHeap(v);
       const ordinary = (): void => host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
-      if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
+      if (
+        (kAcc === "str" || kAcc === "f64") &&
+        vAcc !== "ref" &&
+        emitFusedMapSet(host, e, r.name, k.name, { name: v.name, access: vAcc }, ordinary)
+      ) {
+        // Written through the read's entry, or inserted.
+      } else if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
         const bits = B.tmp();
         B.line(
           vAcc === "f64"
@@ -1491,12 +1547,7 @@ export function emitMapLikeIntrinsic(
             : `${bits} = zext i1 ${v.name} to i64`,
         );
         emitNumberMapSetScalar(host, r.name, k.name, bits, ordinary);
-      } else if (
-        kAcc !== "str" ||
-        vAcc === "ref" ||
-        !emitFusedMapSet(host, e, r.name, k.name, { name: v.name, access: vAcc }, ordinary)
-      )
-        ordinary();
+      } else ordinary();
       return { name: "", type: e.type };
     }
     case "add": {

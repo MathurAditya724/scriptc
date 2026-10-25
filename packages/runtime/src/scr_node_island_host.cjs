@@ -14,11 +14,37 @@
  * them in-process under Node: both must produce the same results, errors
  * and messages. Outcomes are "R<json>" (returned; "R" alone is undefined)
  * or "T<json>" (threw), the encoding of scr_node_bridge.h. */
-const { createRequire } = require("node:module");
+const { createRequire, isBuiltin, registerHooks } = require("node:module");
 const { constants: osConstants } = require("node:os");
 const timers = require("node:timers");
 
 const nativeHost = globalThis.__scriptcNodeIslandHost;
+
+// The program's island module tree (scr_node_island.c prefixes this script
+// with its root, then the bridge removes the global): modules resolve only
+// to files inside it, never to a file elsewhere on the machine.
+const islandRoot = globalThis.__scriptcNodeIslandRoot;
+delete globalThis.__scriptcNodeIslandRoot;
+if (typeof islandRoot === "string" && islandRoot !== "/") {
+  const { realpathSync } = require("node:fs");
+  const { sep } = require("node:path");
+  const { fileURLToPath } = require("node:url");
+  const root = realpathSync(islandRoot);
+  const inside = root.endsWith(sep) ? root : root + sep;
+  registerHooks({
+    resolve(specifier, context, nextResolve) {
+      const result = nextResolve(specifier, context);
+      if (result.url.startsWith("file:") && !fileURLToPath(result.url).startsWith(inside)) {
+        const error = new Error(
+          `Cannot find module '${specifier}': it is not one of the modules this program ships`,
+        );
+        error.code = "MODULE_NOT_FOUND";
+        throw error;
+      }
+      return result;
+    },
+  });
+}
 
 // Error classes that cross as copies, at their scr_error.h kind index.
 const ERROR_KINDS = [
@@ -43,9 +69,11 @@ function plainCopy(value, memo) {
   if (memo.has(value)) return memo.get(value);
   const native = nativeHost.isExport(value);
   if (Array.isArray(value)) {
-    const out = [];
+    // Own enumerable keys, as structuredClone copies them: holes stay holes
+    // and named properties come along.
+    const out = new Array(value.length);
     memo.set(value, out);
-    for (let i = 0; i < value.length; i++) out[i] = plainCopy(value[i], memo);
+    for (const key of Object.keys(value)) out[key] = plainCopy(value[key], memo);
     return out;
   }
   const proto = Object.getPrototypeOf(value);
@@ -134,8 +162,18 @@ function errorKind(error) {
 }
 
 // A thrown value crosses as a copy: an Error as its nearest intrinsic
-// class with its message and string code, anything else as JSON data.
+// class with its message and string code, anything else as JSON data. An
+// error whose class, message or code cannot be read crosses as an Error
+// with an empty message.
 function thrown(error) {
+  try {
+    return thrownCopy(error);
+  } catch {
+    return 'T{"error":{"kind":0,"message":""}}';
+  }
+}
+
+function thrownCopy(error) {
   if (error instanceof Error) {
     const copy = { kind: errorKind(error), message: String(error.message) };
     if (typeof error.code === "string") copy.code = error.code;
@@ -189,7 +227,8 @@ const { pathToFileURL } = require("node:url");
 let sharedModules = null;
 
 function load(path, esm) {
-  if (path.startsWith("node:")) return require(path);
+  // A built-in module's name, with or without the node: prefix.
+  if (isBuiltin(path)) return require(path);
   if (sharedModules === null) sharedModules = scriptcSharedModules(nativeHost);
   if (esm) return import(pathToFileURL(path).href);
   const load = createRequire(path);
@@ -364,6 +403,23 @@ for (const stream of [process.stdout, process.stderr]) {
   if (stream._handle && typeof stream._handle.setBlocking === "function")
     stream._handle.setBlocking(true);
 }
+
+// process.execPath is this program, not a node executable: a fork without
+// an execPath of its own would start the program again.
+const childProcess = require("node:child_process");
+const nodeFork = childProcess.fork;
+childProcess.fork = function fork(modulePath, args, options) {
+  const forkOptions = Array.isArray(args) ? options : args;
+  const execPath =
+    forkOptions === null || typeof forkOptions !== "object" ? undefined : forkOptions.execPath;
+  if (execPath === undefined || execPath === process.execPath) {
+    throw new Error(
+      "child_process.fork() in a Node island needs options.execPath (a node executable): process.execPath is this program",
+    );
+  }
+  return Reflect.apply(nodeFork, this, arguments);
+};
+require("node:module").syncBuiltinESMExports();
 
 globalThis.__scriptcNodeIsland = {
   call,

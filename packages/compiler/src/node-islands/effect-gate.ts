@@ -216,15 +216,41 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
     throw new Refusal(`${what} at line ${line + 1}`);
   };
 
-  // Top-level bindings and what they hold.
-  const locals = new Map<string, "fn" | "class" | "module" | "value">();
+  /** Whether reading a class's static members can run code: it has a
+   * static accessor, or extends a class other than one of this file's
+   * plain classes or a global constructor. */
+  const runsOnRead = (c: ts.ClassLikeDeclaration): boolean =>
+    (c.heritageClauses ?? []).some(
+      (h) =>
+        h.token === SK.ExtendsKeyword &&
+        h.types.some(
+          (t) =>
+            !parser.isIdentifier(t.expression) ||
+            (locals.get(t.expression.text) !== "class" && !PURE_GLOBALS.has(t.expression.text)),
+        ),
+    ) ||
+    c.members.some(
+      (m) =>
+        (parser.isGetAccessorDeclaration(m) || parser.isSetAccessorDeclaration(m)) &&
+        parser.canHaveModifiers(m) &&
+        (parser.getModifiers(m) ?? []).some((x) => x.kind === SK.StaticKeyword),
+    );
+
+  // Top-level bindings and what they hold. A class whose member reads can
+  // run code ("accessors") is no readable receiver.
+  const locals = new Map<string, "fn" | "class" | "accessors" | "module" | "value">();
   for (const stmt of sf.statements) {
     if (parser.isFunctionDeclaration(stmt) && stmt.name) locals.set(stmt.name.text, "fn");
-    else if (parser.isClassDeclaration(stmt) && stmt.name) locals.set(stmt.name.text, "class");
+    else if (parser.isClassDeclaration(stmt) && stmt.name)
+      locals.set(stmt.name.text, runsOnRead(stmt) ? "accessors" : "class");
     else if (parser.isVariableStatement(stmt)) {
       for (const d of stmt.declarationList.declarations) {
-        const kind =
-          d.initializer !== undefined && isRequireish(d.initializer) ? "module" : "value";
+        const init = d.initializer;
+        if (init !== undefined && parser.isIdentifier(d.name) && parser.isClassExpression(init)) {
+          locals.set(d.name.text, runsOnRead(init) ? "accessors" : "class");
+          continue;
+        }
+        const kind = init !== undefined && isRequireish(init) ? "module" : "value";
         bindNames(d.name, kind);
       }
     } else if (parser.isImportDeclaration(stmt) && stmt.importClause) {
@@ -286,7 +312,7 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
     if (parser.isParenthesizedExpression(e)) return readable(e.expression);
     if (parser.isIdentifier(e)) {
       const kind = locals.get(e.text);
-      if (kind !== undefined) return true;
+      if (kind !== undefined) return kind !== "accessors";
       return PURE_GLOBALS.has(e.text) || (!esm && (e.text === "module" || e.text === "exports"));
     }
     if (parser.isPropertyAccessExpression(e)) return readable(e.expression);

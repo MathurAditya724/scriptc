@@ -124,7 +124,9 @@ static void ni_ids_del(const void *key) {
 }
 
 /* The identity of a value that crosses by reference: the referent for
- * boxes that wrap one (closures, promises, typed capsules), else the box. */
+ * boxes that wrap one (closures, typed capsules), a promise's shared
+ * identity (a typed promise boxes a fresh adapter each time it crosses),
+ * else the box. */
 static const void *ni_identity(const ScrDyn *v) {
   switch (v->kind) {
   case SCR_DYN_FUNC:
@@ -132,7 +134,7 @@ static const void *ni_identity(const ScrDyn *v) {
     if (v->v.fn.class_obj != NULL) return v->v.fn.class_obj;
     return v->v.fn.clo != NULL ? (const void *)v->v.fn.clo : (const void *)v;
   case SCR_DYN_PROMISE:
-    return v->v.promise;
+    return scr_promise_identity_key(v->v.promise);
   case SCR_DYN_TYPED_REF:
     return v->v.typed_ref.ptr;
   default:
@@ -190,6 +192,9 @@ uint32_t scr_ni_export_id(ScrDyn *v) {
   }
   ni_exports[id].value = scr_dyn_retain(v);
   ni_exports[id].identity = identity;
+  /* The table keeps a promise's identity cell while the export lives: a
+   * freed cell's address could come back as another promise's. */
+  if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_hold(identity);
   ni_exports[id].flags = scr_ni_export_flags(v);
   ni_ids_put(identity, id);
   return id;
@@ -570,6 +575,7 @@ void scr_ni_host_export_release(uint32_t id) {
   if (id == 0 || id >= ni_exports_len || ni_exports[id].value == NULL) return;
   ScrDyn *v = ni_exports[id].value;
   ni_ids_del(ni_exports[id].identity);
+  if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[id].identity);
   ni_exports[id].value = NULL;
   ni_exports[id].identity = NULL;
   if (ni_nfree == ni_free_cap) {
@@ -646,7 +652,7 @@ static void ni_settle_export(uint32_t id, ScrPromise *p) {
 
 static void ni_promise_settled(ScrPromise *dst, ScrPromise *src) {
   (void)dst;
-  uint32_t id = ni_ids_get(src);
+  uint32_t id = ni_ids_get(scr_promise_identity_key(src));
   if (id != 0) ni_settle_export(id, src);
 }
 
@@ -743,9 +749,14 @@ static ScrDyn *ni_shared_values(NiShared *m) {
 
 void scr_ni_host_shared_table(ScrNodeValue *out) {
   ni_keep_set(NULL);
+  /* Each module's file as Node resolves it: in the shipped module tree. */
+  char **paths = calloc(ni_nshared > 0 ? ni_nshared : 1, sizeof *paths);
+  if (paths == NULL) ni_export_oom();
   size_t len = 2;
-  for (uint32_t i = 0; i < ni_nshared; i++)
-    len += ni_shared[i].path->len * 2 + ni_shared[i].exports->len + 32;
+  for (uint32_t i = 0; i < ni_nshared; i++) {
+    paths[i] = scr_ni_module_path(ni_shared[i].path);
+    len += strlen(paths[i]) * 2 + ni_shared[i].exports->len + 32;
+  }
   char *buf = malloc(len);
   if (buf == NULL) ni_export_oom();
   size_t at = 0;
@@ -754,17 +765,19 @@ void scr_ni_host_shared_table(ScrNodeValue *out) {
     NiShared *m = &ni_shared[i];
     if (i > 0) buf[at++] = ',';
     at += (size_t)sprintf(buf + at, "{\"path\":\"");
-    for (size_t j = 0; j < m->path->len; j++) {
-      char c = m->path->data[j];
+    for (const char *p = paths[i]; *p != '\0'; p++) {
+      char c = *p;
       if (c == '"' || c == '\\') buf[at++] = '\\';
       buf[at++] = c;
     }
+    free(paths[i]);
     at += (size_t)sprintf(buf + at, "\",\"exports\":");
     memcpy(buf + at, m->exports->data, m->exports->len);
     at += m->exports->len;
     buf[at++] = '}';
   }
   buf[at++] = ']';
+  free(paths);
   ScrStr *text = scr_str_new(buf, at);
   ScrDyn *json = scr_dyn_new_str(text);
   scr_str_release(text);
@@ -909,6 +922,8 @@ void scr_ni_exports_release_all(void) {
   ni_keep_set(NULL);
   for (uint32_t i = 1; i < ni_exports_len; i++) {
     ScrDyn *v = ni_exports[i].value;
+    if (v == NULL) continue;
+    if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[i].identity);
     ni_exports[i].value = NULL;
     scr_dyn_release(v);
   }

@@ -796,10 +796,7 @@ static bool nh_receiver(ScrDyn *obj, uint32_t *id, const char *what) {
 static ScrDyn *nh_load(ScrStr *path, int esm) {
   nh_bridge();
   nh_enter();
-  char *p = malloc(path->len + 1);
-  if (p == NULL) nh_oom();
-  memcpy(p, path->data, path->len);
-  p[path->len] = '\0';
+  char *p = scr_ni_module_path(path);
   ScrNodeValue out;
   NhCall c = {.op = NH_LOAD, .path = p, .mode = esm, .out = &out};
   nh_run(&c);
@@ -1237,6 +1234,21 @@ static bool nh_op_set(void *h, const char *key, size_t key_len, const ScrDyn *va
   return true; /* handled; a throw stays pending */
 }
 
+/* A member that reads back as one of the program's own functions (a
+ * module the program shares with its islands gives them its native
+ * exports): called natively, with the island object as the receiver. */
+static bool nh_is_native_function(const ScrDyn *fn) {
+  return !scr_ni_is_handle(fn) && scr_dyn_is_callable(fn);
+}
+
+static ScrDyn *nh_call_native(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc,
+                              const char *what) {
+  scr_dyn_this_push_dyn(this_);
+  ScrDyn *result = scr_dyn_call(fn, args, argc, what);
+  scr_dyn_this_pop();
+  return result;
+}
+
 /* obj.m(...) from dynamic code: the member read, then the call with obj
  * as the receiver; a member that is not a function throws Node's TypeError
  * with the call site's text (`what`), as V8 words it. */
@@ -1245,6 +1257,11 @@ static ScrDyn *nh_op_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *c
   (void)h;
   ScrDyn *fn = scr_ni_get_str(self, method, strlen(method));
   if (fn == NULL) return NULL;
+  if (nh_is_native_function(fn)) {
+    ScrDyn *result = nh_call_native(fn, self, args, argc, what != NULL ? what : method);
+    scr_dyn_release(fn);
+    return result;
+  }
   if (!scr_ni_is_function(fn)) {
     scr_dyn_release(fn);
     char message[512];
@@ -1343,6 +1360,13 @@ ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args) {
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
   return scr_ni_call(fn, NULL, items, argc);
+}
+
+ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrDyn *args) {
+  ScrDyn *const *items;
+  size_t argc = ni_libcall_args(args, &items);
+  if (nh_is_native_function(fn)) return nh_call_native(fn, this_, items, argc, "value");
+  return scr_ni_call(fn, this_, items, argc);
 }
 
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args) {

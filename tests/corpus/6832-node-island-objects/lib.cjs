@@ -18,4 +18,9 @@ function has(o, k) { return k in o; }
 function readThrough(o) { return `${o.greeting}, island (${Object.keys(o).join(",")})`; }
 function store(o) { return { inner: o }; }
 
-module.exports = { describe, bump, keep, keptAt, same, has, readThrough, store };
+// Reads a property from a Node timer: outside any call from the program.
+function readLater(o) {
+  return new Promise((resolve) => setTimeout(() => resolve(`${o.label}/${o.count}`), 0));
+}
+
+module.exports = { describe, bump, keep, keptAt, same, has, readThrough, store, readLater };

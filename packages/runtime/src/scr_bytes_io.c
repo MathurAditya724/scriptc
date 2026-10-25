@@ -59,6 +59,10 @@ static bool scr_fs_read_utf8(ScrStr *encoding) {
   return encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding);
 }
 
+void scr_fs_check_read_encoding(ScrStr *encoding) {
+  (void)scr_fs_read_encoding_valid(encoding);
+}
+
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding) {
   if (!scr_fs_read_encoding_valid(encoding)) return NULL;
   if (scr_fs_read_utf8(encoding)) return scr_fs_read_file(path);
@@ -1299,13 +1303,16 @@ ScrBytes *scr_buffer_concat_len_dyn(const ScrDyn *list, double total) {
   return scr_buffer_concat_dyn_impl(list, total, true);
 }
 
-/* Buffer.from(arrayBuffer, byteOffset) over a checked ArrayBuffer or
- * SharedArrayBuffer, as Node's fromArrayBuffer: a Buffer from the offset to
- * the end of the buffer that shares its memory. The offset converts with
- * ToNumber, where a missing offset (NULL) or undefined and NaN are 0; an
- * offset past the end throws ERR_BUFFER_OUT_OF_BOUNDS, and one at or below
- * -1 V8's start-offset RangeError. NULL with the exception pending. */
-static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage, const ScrDyn *offset_value) {
+/* Buffer.from(arrayBuffer, byteOffset, length) over a checked ArrayBuffer
+ * or SharedArrayBuffer, as Node's fromArrayBuffer: a Buffer that shares its
+ * memory. The offset converts with ToNumber, where a missing offset (NULL)
+ * or undefined and NaN are 0; an offset past the end throws
+ * ERR_BUFFER_OUT_OF_BOUNDS, and one at or below -1 V8's start-offset
+ * RangeError. A missing length runs to the end; a given one converts with
+ * ToNumber, past the end throws ERR_BUFFER_OUT_OF_BOUNDS for "length", and
+ * zero, negative and NaN lengths are 0. NULL with the exception pending. */
+static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage, const ScrDyn *offset_value,
+                                         const ScrDyn *length_value) {
   double offset = 0;
   if (offset_value && offset_value->kind != SCR_DYN_UNDEF) {
     if (!scr_dyn_number_coerce_js(offset_value, &offset)) return NULL;
@@ -1313,10 +1320,25 @@ static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage, const ScrDyn *of
   }
   ScrBytes *bytes = storage->v.handle.ptr;
   ScrBytes *owner = bytes->backing ? bytes->backing : bytes;
-  if ((double)scr_bytes_byte_len(owner) - offset < 0) {
+  double max_length = (double)scr_bytes_byte_len(owner) - offset;
+  if (max_length < 0) {
     static const char msg[] = "\"offset\" is outside of buffer bounds";
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_BUFFER_OUT_OF_BOUNDS");
     return NULL;
+  }
+  bool has_length = length_value && length_value->kind != SCR_DYN_UNDEF;
+  double length = max_length;
+  if (has_length) {
+    if (!scr_dyn_number_coerce_js(length_value, &length)) return NULL;
+    if (length > 0) {
+      if (length > max_length) {
+        static const char msg[] = "\"length\" is outside of buffer bounds";
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_BUFFER_OUT_OF_BOUNDS");
+        return NULL;
+      }
+    } else {
+      length = 0;
+    }
   }
   double start = trunc(offset);
   if (start < 0) {
@@ -1331,7 +1353,7 @@ static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage, const ScrDyn *of
     scr_throw_error(SCR_ERR_RANGE, message);
     return NULL;
   }
-  ScrBytes *out = scr_bytes_buffer_view(bytes, SCR_BYTES_U8, start, false, 0);
+  ScrBytes *out = scr_bytes_buffer_view(bytes, SCR_BYTES_U8, start, has_length, trunc(length));
   if (out) out->is_buffer = true;
   return out;
 }
@@ -1340,7 +1362,7 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
   if (value->kind == SCR_DYN_STR) return scr_bytes_from_str(value->v.str, encoding);
   /* The second argument here is an encoding name, which as a byte offset
    * converts to NaN: offset 0. */
-  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL);
+  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL, NULL);
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(SCR_BYTES_U8, value->v.bytes);
   if (value->kind == SCR_DYN_ARR) {
     return scr_buffer_from_array_like(value, (double)value->v.arr.len);
@@ -1386,7 +1408,7 @@ ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding
     return scr_buffer_from_bytes(value->v.bytes);
   /* A view of an ArrayBuffer shares its memory, so it never comes from the
    * pool. The second argument here is an encoding name: offset 0. */
-  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL);
+  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL, NULL);
   ScrBytes *out = scr_buffer_from_dyn(value, encoding);
   if (!out) return NULL;
   out->is_buffer = true;
@@ -1413,21 +1435,51 @@ ScrBytes *scr_buffer_from_dyn_ref_pooled(const ScrDyn *value, const ScrStr *enco
 
 /* Buffer.from(value, second) over checked values whose second argument is
  * not a literal encoding name: an ArrayBuffer or SharedArrayBuffer takes it
- * as the byte offset (scr_buffer_from_storage); other values convert as
- * scr_buffer_from_dyn_ref_pooled with utf8. */
+ * as the byte offset (scr_buffer_from_storage); a string takes it as the
+ * encoding (Node's fromString: utf8 unless it is a non-empty string, which
+ * must name a Buffer encoding or throw ERR_UNKNOWN_ENCODING); other values
+ * convert as scr_buffer_from_dyn_ref_pooled with utf8. */
 ScrBytes *scr_buffer_from_dyn_offset_pooled(const ScrDyn *value, const ScrDyn *second) {
+  if (value->kind == SCR_DYN_STR) {
+    if (second->kind == SCR_DYN_STR && second->v.str->len > 0)
+      return scr_buffer_from_str_checked(value->v.str, second->v.str);
+    ScrStr *utf8 = scr_str_new("utf8", 4);
+    ScrBytes *out = scr_buffer_from_str(value->v.str, utf8);
+    scr_str_release(utf8);
+    return out;
+  }
   if (!scr_buffer_storage_is(value)) {
     ScrStr *utf8 = scr_str_new("utf8", 4);
     ScrBytes *out = scr_buffer_from_dyn_ref_pooled(value, utf8);
     scr_str_release(utf8);
     return out;
   }
-  return scr_buffer_from_storage(value, second);
+  return scr_buffer_from_storage(value, second, NULL);
+}
+
+/* Buffer.from(value, second, third): an ArrayBuffer or SharedArrayBuffer
+ * takes them as its byte offset and length; other values convert as
+ * scr_buffer_from_dyn_offset_pooled does, without the third argument. */
+ScrBytes *scr_buffer_from_dyn_range_pooled(const ScrDyn *value, const ScrDyn *second,
+                                           const ScrDyn *third) {
+  if (!scr_buffer_storage_is(value)) return scr_buffer_from_dyn_offset_pooled(value, second);
+  return scr_buffer_from_storage(value, second, third);
+}
+
+/* The deprecated Buffer constructor's DEP0005 state, Node's
+ * bufferWarningAlreadyEmitted and nodeModulesCheckCounter: a call from
+ * node_modules only counts toward the 10000-call check, and
+ * scr_buffer_deprecation (scr_async_dyn.c) reports for the others. */
+SCR_TL bool scr_buffer_ctor_warned = false;
+SCR_TL uint64_t scr_buffer_ctor_checks = 0;
+
+void scr_buffer_deprecation_count(void) {
+  if (!scr_buffer_ctor_warned) scr_buffer_ctor_checks++;
 }
 
 /* new Buffer(number, encoding) — the deprecated ctor's string arm with a
- * non-string first argument: Node's exact ERR_INVALID_ARG_TYPE (the
- * throwing path never fires DEP0005, so compiled silence matches). */
+ * non-string first argument: Node's exact ERR_INVALID_ARG_TYPE, thrown
+ * after scr_buffer_deprecation has reported DEP0005. */
 ScrBytes *scr_buffer_new_string_fail(const ScrDyn *got) {
   scr_dyn_arg_type_fail("string", "of type string", got);
   return NULL;
