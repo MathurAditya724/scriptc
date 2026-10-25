@@ -1546,8 +1546,11 @@ export class LlEmitter {
   speculationResume: Map<IrStmt, { label: string; placed: boolean }> | null = null;
   /** The rewritten values of the writes `speculationResume` resumes at. */
   speculationResumeValues: ReadonlyMap<IrStmt, SpeculativeValue> | null = null;
-  /** Hoisted speculative leaves numbered so far in the module. */
-  private speculativeLeaves = 0;
+  /** Hoisted speculative leaves numbered so far in the function being
+   * emitted (emitFunction resets it): a function's local names must not
+   * depend on which functions the same emitter emitted before it, since
+   * function workers each emit a share of the module. */
+  speculativeLeaves = 0;
   private readonly inlinableFunctions = new Map<string, InlinableFunction | undefined>();
 
   /** What speculative loop planning may assume here (SpeculationContext). */

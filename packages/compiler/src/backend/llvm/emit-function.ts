@@ -66,6 +66,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.usesLandingPads = false;
   emitter.aliasScopedVersions = 0;
   emitter.findInt32Allocations(fn);
+  emitter.speculativeLeaves = 0;
   emitter.currentTier = fn.tier;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
