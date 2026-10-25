@@ -1014,7 +1014,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // LIBRARY mode: no @main — the profile-declared external
     // symbols specified by the library IR instead.
     for (const line of emitter.emitLibDefs(globals, globalReleaseLines, stamps)) out.push(line);
-    out.push(...emitter.inlineRcTail(flushedDecls));
+    for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
     out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
     out.push(``);
     out.push(...emitter.fieldAliasMetadata());
@@ -1160,7 +1160,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       : [`  %native_exit = call i32 @scr_exit_code_hint_get()`, `  ret i32 %native_exit`]),
     `}`,
     ``,
-    ...emitter.inlineRcTail(flushedDecls),
+  );
+  for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
+  out.push(
     // sanitize_address is inert under the plain pipeline; the sanitized
     // lane's -fsanitize=address link activates instrumentation over the
     // emitted functions too (the runtime TUs get theirs from clang).

@@ -266,6 +266,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.prop",
   "stream.stdioWritable",
   "stream.unboxDyn",
+  "stream.dynIterableSource",
   "stream.handleStream",
   "stream.unpipeDyn",
   "stream.workerStdio",
@@ -1127,6 +1128,9 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** Module namespace objects as checked-dynamic values
+   * (scr_module_namespace.c). */
+  moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1191,6 +1195,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     searchParams: false,
     urlIdna: false,
     stdioExtended: false,
+    moduleNamespace: false,
     stream: false,
     streamDyn: false,
     handleProps: false,

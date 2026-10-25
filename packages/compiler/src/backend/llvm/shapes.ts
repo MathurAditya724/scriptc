@@ -233,7 +233,7 @@ export { computeTraced } from "../cycle-analysis.js";
  * `_v`-shaped. */
 export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release: string } {
   const nullable = host.nullableUnions.of(t);
-  if (nullable?.repr === "shapes") return shapeUnionRc(nullable);
+  if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable);
   if (nullable) {
     const arm = vAdapters(host, nullable.arm);
     return { retain: nullableRetainSym(host, nullable.arm), release: arm.release };
@@ -290,7 +290,7 @@ export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release
 export function retainSym(host: ShapeHost, t: IrType): string {
   if (t.kind === "jsval") return jsvalRcSym(host, "retain");
   const nullable = host.nullableUnions.of(t);
-  if (nullable?.repr === "shapes") return shapeUnionRc(nullable).retain;
+  if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable).retain;
   if (nullable) return nullableRetainSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "retain") !== null) {
@@ -305,10 +305,10 @@ export function retainSym(host: ShapeHost, t: IrType): string {
 /** A shape union's RC entry points: every record retain is the same
  * NULL- and immortal-skipping increment (the null sentinel is immortal),
  * so the first arm's serves; release dispatches on the arm. */
-function shapeUnionRc(union: ShapeUnion): { retain: string; release: string } {
+function shapeUnionRc(host: ShapeHost, union: ShapeUnion): { retain: string; release: string } {
   return {
     retain: `@${mangleRecordRetain(union.arms[0]!.shapeId)}`,
-    release: shapeReleaseFn(union.unionId),
+    release: shapeReleaseFn(host.nullableUnions.helperOwner(union.unionId)),
   };
 }
 
@@ -352,38 +352,81 @@ export function emitShapeUnionHelpers(host: ShapeHost): string[] {
       `}`,
       ``,
     );
-    // release: unit encodings are NULL or immortal; each arm releases
-    // through its own (NULL- and immortal-tolerant) helper.
-    out.push(
-      `define internal void ${shapeReleaseFn(union.unionId)}(ptr %u) ${FN_ATTRS} { ; shape union release`,
-      `entry:`,
-      `  %t = call i32 ${tagFn}(ptr %u)`,
-      `  switch i32 %t, label %done [ ${union.arms.map((arm) => `i32 ${arm.tag}, label %a${arm.tag}`).join(" ")} ]`,
-      ...union.arms.flatMap((arm) => [
-        `a${arm.tag}:`,
-        `  call void @${mangleRecordRelease(arm.shapeId)}(ptr %u)`,
-        `  br label %done`,
-      ]),
+    // Release and trace: one definition for the unions over the same
+    // record arms (helperOwner). Unit encodings are NULL or the immortal
+    // null sentinel; the shape word picks the arm.
+    if (host.nullableUnions.helperOwner(union.unionId) !== union.unionId) continue;
+    const units = [
+      `  %isnull = icmp eq ptr %o, null`,
+      `  br i1 %isnull, label %done, label %${host.nullableUnions.usesNullSentinel ? "notnull" : "rec"}`,
+      ...(host.nullableUnions.usesNullSentinel
+        ? [
+            `notnull:`,
+            `  %isnullarm = icmp eq ptr %o, ${NULLABLE_NULL}`,
+            `  br i1 %isnullarm, label %done, label %rec`,
+          ]
+        : []),
+      `rec:`,
+    ];
+    const armSwitch = (call: (shapeId: string) => string): string[] => [
+      `  %wp = getelementptr inbounds ${header}, ptr %o, i32 0, i32 ${SHAPE_WORD_INDEX}`,
+      `  %w = load i32, ptr %wp`,
+      `  switch i32 %w, label %done [ ${union.arms.map((arm) => `i32 ${host.nullableUnions.shapeNumber(arm.shapeId)}, label %a${arm.tag}`).join(" ")} ]`,
+      ...union.arms.flatMap((arm) => [`a${arm.tag}:`, call(arm.shapeId), `  br label %done`]),
       `done:`,
       `  ret void`,
       `}`,
       ``,
-    );
+    ];
+    // Every record arm shares the release fast path (the count at the same
+    // offset, one collector header choice for the whole union), so only a
+    // release that may free dispatches on the arm. The release stays a call:
+    // inlined at every release site, it grows code more than it saves.
+    const traced = union.arms.map((arm) => host.tracedShapes.has(`record:${arm.shapeId}`));
+    // A freezable arm's count is the word without its frozen bit, as in
+    // releaseFastPath: a frozen record's last reference takes the slow path.
+    const frozen = union.arms.some((arm) => host.recordsById.get(arm.shapeId)?.freezable === true);
+    const notFrozen = ~recordFrozenBit(S);
+    const release = shapeReleaseFn(union.unionId);
+    if (traced.every((t) => t === traced[0]))
+      out.push(
+        `define internal void ${release}(ptr %o) noinline ${FN_ATTRS} { ; shape union release`,
+        `entry:`,
+        ...units,
+        `  %rc = load ${S}, ptr %o`,
+        ...(frozen
+          ? [
+              `  %refs = and ${S} %rc, ${sizeLiteral(S, notFrozen)}`,
+              `  %rcm2 = sub ${S} %refs, 2`,
+              `  %shared = icmp ult ${S} %rcm2, ${sizeLiteral(S, notFrozen - 2n)}`,
+            ]
+          : [`  %rcm2 = sub ${S} %rc, 2`, `  %shared = icmp ult ${S} %rcm2, -3`]),
+        `  br i1 %shared, label %dec, label %slow`,
+        `dec:`,
+        `  %n = sub ${S} %rc, 1`,
+        `  store ${S} %n, ptr %o`,
+        ...(traced[0] ? cycleRootLines(host, "done") : [`  br label %done`]),
+        `slow:`,
+        `  %imm = icmp eq ${S} %rc, -1`,
+        `  br i1 %imm, label %done, label %free`,
+        `free:`,
+        ...armSwitch((shapeId) => `  call void @${mangleRecordRelease(shapeId)}_slow(ptr %o)`),
+      );
+    else
+      out.push(
+        `define internal void ${release}(ptr %o) ${FN_ATTRS} { ; shape union release`,
+        `entry:`,
+        ...units,
+        ...armSwitch((shapeId) => `  call void @${mangleRecordRelease(shapeId)}(ptr %o)`),
+      );
     if (shapeUnionTraced(host, union))
       out.push(
-        `define internal void ${shapeTraceFn(union.unionId)}(ptr %u, ptr %visit, ptr %ctx) ${FN_ATTRS} { ; shape union trace`,
+        `define internal void ${shapeTraceFn(union.unionId)}(ptr %o, ptr %visit, ptr %ctx) ${FN_ATTRS} { ; shape union trace`,
         `entry:`,
-        `  %t = call i32 ${tagFn}(ptr %u)`,
-        `  switch i32 %t, label %done [ ${union.arms.map((arm) => `i32 ${arm.tag}, label %a${arm.tag}`).join(" ")} ]`,
-        ...union.arms.flatMap((arm) => [
-          `a${arm.tag}:`,
-          `  call void @${mangleRecordTrace(arm.shapeId)}(ptr %u, ptr %visit, ptr %ctx)`,
-          `  br label %done`,
-        ]),
-        `done:`,
-        `  ret void`,
-        `}`,
-        ``,
+        ...units,
+        ...armSwitch(
+          (shapeId) => `  call void @${mangleRecordTrace(shapeId)}(ptr %o, ptr %visit, ptr %ctx)`,
+        ),
       );
   }
   return out;
@@ -435,7 +478,7 @@ export function emitNullableRetainWrappers(host: ShapeHost): string[] {
 export function releaseSym(host: ShapeHost, t: IrType): string {
   if (t.kind === "jsval") return jsvalRcSym(host, "release");
   const nullable = host.nullableUnions.of(t);
-  if (nullable?.repr === "shapes") return shapeUnionRc(nullable).release;
+  if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable).release;
   if (nullable) return releaseSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "release") !== null) {
@@ -985,7 +1028,9 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
     case "union": {
       const nullable = host.nullableUnions.get(t.unionId);
       if (nullable?.repr === "shapes")
-        return shapeUnionTraced(host, nullable) ? shapeTraceFn(nullable.unionId) : null;
+        return shapeUnionTraced(host, nullable)
+          ? shapeTraceFn(host.nullableUnions.helperOwner(nullable.unionId))
+          : null;
       if (nullable) return traceAdapter(host, nullable.arm);
       if (!host.tracedUnions.has(t.unionId)) return null;
       host.declare(`declare void @scr_union_trace_v(ptr, ptr, ptr)`);

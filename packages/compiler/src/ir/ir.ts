@@ -1634,6 +1634,28 @@ export function classValueConstructor(def: { name: string; runtime?: true }): {
     : { fn: `%${def.name}.constructor`, firstArg: 1 };
 }
 
+/** Whether construction through a class value typed as `sup` may call
+ * `sub`'s construct thunk: both class-value constructors exist and take the
+ * same argument types after the receiver. The classval upcast rule and the
+ * checked class-value boundary both rest on it. */
+export function classValueAbiEquals(
+  sub: { name: string; runtime?: true },
+  sup: { name: string; runtime?: true },
+  functions: ReadonlyMap<string, IrFunction>,
+): boolean {
+  const subValueCtor = classValueConstructor(sub);
+  const supValueCtor = classValueConstructor(sup);
+  const subCtor = functions.get(subValueCtor.fn);
+  const supCtor = functions.get(supValueCtor.fn);
+  if (!subCtor || !supCtor) return false;
+  const subArgs = subCtor.params.slice(subValueCtor.firstArg);
+  const supArgs = supCtor.params.slice(supValueCtor.firstArg);
+  return (
+    subArgs.length === supArgs.length &&
+    subArgs.every((p, i) => typeEquals(p.type, supArgs[i]!.type))
+  );
+}
+
 /** The JavaScript `.name` of a class: its jsName, or the runtime-provided
  * class's own name (`%TypeError` is TypeError). */
 export function classJsName(def: { name: string; runtime?: true; jsName?: string }): string {

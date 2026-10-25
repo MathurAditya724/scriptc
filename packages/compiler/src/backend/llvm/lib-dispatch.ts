@@ -11,7 +11,7 @@ import { FN_ATTRS, arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
-import { F64, type IrExpr, type IrType } from "../../ir/ir.js";
+import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
@@ -1013,6 +1013,57 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     return { name: t, type: e.type };
   }
   if (e.fn === "bytes.absent") return host.own({ name: "null", type: e.type });
+  if (e.fn === "bytes.disjoint") {
+    // [data, data + len * size) of each view, compared as addresses. A view
+    // that is not there (a binding the nest never assigned, NULL) answers
+    // false without reading its header, so the caller keeps its loop.
+    const B = host.B;
+    const values = e.args.map((arg) => ({ arg, value: host.emitReadReceiver(arg) }));
+    const present = values.map(({ value }) => {
+      const t = B.tmp();
+      B.line(`${t} = icmp ne ptr ${value.name}, null`);
+      return t;
+    });
+    const both = B.tmp();
+    B.line(`${both} = and i1 ${present[0]}, ${present[1]}`);
+    const compare = B.newLabel("disjoint.compare"),
+      done = B.newLabel("disjoint.done");
+    const from = B.currentLabel();
+    B.condBr(both, compare, done);
+    B.startBlock(compare);
+    const range = (arg: IrExpr, pointer: string): { start: string; end: string } => {
+      const size = arg.type.kind === "bytes" ? BYTES_ELEMENT_SIZE[arg.type.elem] : 1;
+      const dataSlot = B.tmp(),
+        data = B.tmp(),
+        lenSlot = B.tmp(),
+        len = B.tmp(),
+        bytes = B.tmp(),
+        start = B.tmp(),
+        end = B.tmp();
+      B.line(`${dataSlot} = getelementptr inbounds %ScrBytes, ptr ${pointer}, i64 0, i32 3`);
+      B.line(`${data} = load ptr, ptr ${dataSlot}`);
+      B.line(`${lenSlot} = getelementptr inbounds %ScrBytes, ptr ${pointer}, i64 0, i32 1`);
+      B.line(`${len} = load ${host.sizeType}, ptr ${lenSlot}`);
+      B.line(`${bytes} = mul ${host.sizeType} ${len}, ${size}`);
+      B.line(`${start} = ptrtoint ptr ${data} to ${host.sizeType}`);
+      B.line(`${end} = add ${host.sizeType} ${start}, ${bytes}`);
+      return { start, end };
+    };
+    const left = range(values[0]!.arg, values[0]!.value.name),
+      right = range(values[1]!.arg, values[1]!.value.name);
+    const before = B.tmp(),
+      after = B.tmp(),
+      apart = B.tmp(),
+      t = B.tmp();
+    B.line(`${before} = icmp ule ${host.sizeType} ${left.end}, ${right.start}`);
+    B.line(`${after} = icmp ule ${host.sizeType} ${right.end}, ${left.start}`);
+    B.line(`${apart} = or i1 ${before}, ${after}`);
+    const compared = B.currentLabel();
+    B.br(done);
+    B.startBlock(done);
+    B.line(`${t} = phi i1 [ false, %${from} ], [ ${apart}, %${compared} ]`);
+    return { name: t, type: e.type };
+  }
   if (e.fn === "record.isFrozen") {
     // The frozen bit of the record's rc word (scr_rc.h SCR_RC_FROZEN) is
     // its second-highest bit; an immortal word sets the highest one too.
