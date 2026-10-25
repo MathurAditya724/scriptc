@@ -6,14 +6,27 @@
  * read in its own initializer sees `undefined` unless something writes the
  * variable first. When nothing else in the file ever writes it (no other
  * declaration, assignment or update of that name anywhere, no function or
- * class of that name) and no earlier top-level statement mentions it, the
- * initializer is its right operand: `var ns = {};`. Inference then types
+ * class of that name), no earlier top-level statement mentions it, and it
+ * is not a name a CommonJS module's wrapper defines (`exports`, `module`,
+ * ...), the initializer is its right operand: `var ns = {};`. Inference then types
  * the namespace from that literal and the members later statements add,
  * instead of `any` (the self-reference makes the checker give up). `??`
  * is the same. Anything else keeps the original text. */
 import * as ts from "./ts7/syntax.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
 import { applyEdits, unparen, type Edit } from "./npm-static-bundled-chunks.js";
+
+/** Names a CommonJS module's wrapper function defines before its first
+ * statement: its parameters and its arguments object. `var exports =
+ * exports || {}` keeps the module's export object, not a fresh one. */
+const COMMONJS_WRAPPER_NAMES = new Set([
+  "exports",
+  "require",
+  "module",
+  "__filename",
+  "__dirname",
+  "arguments",
+]);
 
 /** A cheap probe: some `var X = X ||` or `?? ` may be present. */
 export function mayHoldNamespaceDefault(source: string): boolean {
@@ -42,6 +55,7 @@ export function rewriteNamespaceDefaults(sf: ts.SourceFile): string | null {
         continue;
       const left = unparen(init.left);
       if (!ts.isIdentifier(left) || left.text !== name) continue;
+      if (COMMONJS_WRAPPER_NAMES.has(name)) continue;
       if (mentionedBefore(stmts, i, name) || writtenElsewhere(sf, name, decl)) continue;
       const right = init.right;
       edits.push({
@@ -82,7 +96,7 @@ function writtenElsewhere(sf: ts.SourceFile, name: string, decl: ts.VariableDecl
     if (written) return "stop";
     if (n === decl.name) return undefined;
     if (ts.isBinaryExpression(n) && isAssignmentOperator(n.operatorToken.kind)) {
-      if (isName(n.left, name)) written = true;
+      if (assignsName(n.left, name)) written = true;
     } else if (
       (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
       (n.operator === ts.SyntaxKind.PlusPlusToken ||
@@ -108,7 +122,7 @@ function writtenElsewhere(sf: ts.SourceFile, name: string, decl: ts.VariableDecl
     } else if (
       (ts.isForInStatement(n) || ts.isForOfStatement(n)) &&
       !ts.isVariableDeclarationList(n.initializer) &&
-      isName(n.initializer, name)
+      assignsName(n.initializer, name)
     ) {
       written = true;
     }
@@ -126,6 +140,15 @@ function bindsName(binding: ts.Node, name: string): boolean {
     return undefined;
   });
   return found;
+}
+
+/** Whether an assignment target may write `name`: the name itself, or a
+ * destructuring pattern that mentions it anywhere (over-approximated: a
+ * property key of that name counts too). */
+function assignsName(target: ts.Node, name: string): boolean {
+  const t = unparen(target as ts.Expression);
+  if (ts.isArrayLiteralExpression(t) || ts.isObjectLiteralExpression(t)) return bindsName(t, name);
+  return isName(t, name);
 }
 
 function isName(node: ts.Node, name: string): boolean {

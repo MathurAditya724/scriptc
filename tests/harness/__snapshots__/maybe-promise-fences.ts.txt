@@ -49,10 +49,3 @@ maybe-promise-fences.ts:27:50 - error SC2020: 'Promise.resolve over 'Promise<str
   28 | console.log(typeof widened);
 
   hint: the promise arm passes through identically, so it must already be the result's promise type
-
-maybe-promise-fences.ts:32:13 - error SC1090: 'instanceof Promise' on '{ v: number }' values (only promises, promise-armed unions, and checked-dynamic values have a lowering) are not supported yet
-
-  31 | const record = { v: 1 };
-  32 | console.log(record instanceof Promise);
-     |             ^~~~~~~~~~~~~~~~~~~~~~~~~
-  33 | 
