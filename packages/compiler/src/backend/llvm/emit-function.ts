@@ -200,6 +200,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     emitter.callLifetimes,
   );
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
+  emitter.numberMapKeyIntegers = new Map();
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;
   emitter.localStackUnions = findLocalStackUnions(
     fn,

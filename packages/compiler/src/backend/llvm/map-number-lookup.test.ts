@@ -118,7 +118,7 @@ test("string keys and reference values are retained inline, boolean slots compar
 });
 
 /** work(map, k): map.has(k) on a number-keyed map. */
-function lookupFixture(): IrModule {
+function lookupFixture(key: IrExpr = ref("k", F64)): IrModule {
   const map: IrType = { kind: "map", key: F64, value: F64 };
   const params = [
     { localId: "map", name: "map", type: map },
@@ -128,7 +128,7 @@ function lookupFixture(): IrModule {
     kind: "mapIntrinsic",
     method: "has",
     receiver: ref("map", map),
-    args: [ref("k", F64)],
+    args: [key],
     type: BOOL,
     loc,
   };
@@ -179,6 +179,30 @@ test("hashed number-key lookups probe inline and call the runtime only for wide 
     expect(hashed).toContain(
       "call ptr @scr_map_entry_f64(ptr %m, double %k) memory(read) nounwind willreturn",
     );
+  }
+});
+
+test("a key with an integer view tests the direct index on the integer", () => {
+  for (const bits of [32, 64] as const) {
+    const sz = bits === 64 ? "i64" : "i32";
+    const integral = emitted(lookupFixture({ kind: "numLit", value: 12, type: F64, loc }), bits);
+    expect(integral.work).toMatch(/call ptr @sc_map_entry_f64_int\(ptr %\S+, i64 12, double /);
+    const helper =
+      /^define internal ptr @sc_map_entry_f64_int\(ptr %m, i64 %ki, double %k\)[^]*?^}/m.exec(
+        integral.module,
+      )![0];
+    // An unsigned compare also rejects negative keys; the hashed probe takes
+    // the double.
+    expect(helper).toContain("icmp ult i64 %ki, %nd");
+    expect(helper).toContain(`getelementptr inbounds i32, ptr %dense, ${sz} %i`);
+    expect(helper).toContain("call ptr @sc_map_entry_f64_hashed(ptr %m, double %k)");
+    expect(helper).not.toContain("fptosi");
+    // A fractional key and a key without a proof keep the double lookup.
+    for (const key of [{ kind: "numLit", value: 0.5, type: F64, loc } as IrExpr, ref("k", F64)]) {
+      const { work } = emitted(lookupFixture(key), bits);
+      expect(work).toContain("call ptr @sc_map_entry_f64(");
+      expect(work).not.toContain("@sc_map_entry_f64_int(");
+    }
   }
 });
 

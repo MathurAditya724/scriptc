@@ -28,16 +28,34 @@
  * guard excludes. for-of starts at scr_map_iter_start, past a deleted
  * prefix.
  */
-import type { IrType } from "../../ir/ir.js";
-import type { LlvmEmitterContext } from "./expr-context.js";
+import type { IrExpr, IrType } from "../../ir/ir.js";
+import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
+import { exactInteger, widenInteger } from "./integer-values.js";
 import { mapKeyAccess } from "./shapes.js";
 
 export const NUMBER_MAP_ENTRY_DECL = "declare ptr @scr_map_entry_f64(ptr, double)";
+/** Record the integer view of a number Map/Set key operand, when the
+ * emitter has one (exactInteger), for the entry lookups of that key. */
+export function noteNumberMapKey(host: LlvmEmitterContext, key: LlValue, expr: IrExpr): void {
+  if (key.type.kind !== "f64" || host.numberMapKeyIntegers.has(key.name)) return;
+  const integer = exactInteger(host, key, expr);
+  if (integer) host.numberMapKeyIntegers.set(key.name, integer);
+}
 
-/** The entry for `key`, or null when absent. Valid until the next mutation. */
+/** The entry for `key`, or null when absent. Valid until the next mutation.
+ * A key with an integer view (noteNumberMapKey) tests the direct index on
+ * that integer instead of converting the double back. */
 export function emitNumberMapEntry(host: LlvmEmitterContext, map: string, key: string): string {
   host.declare(NUMBER_MAP_ENTRY_DECL);
   const entry = host.B.tmp();
+  const integer = host.numberMapKeyIntegers.get(key);
+  if (integer) {
+    const wide = widenInteger(host, integer);
+    host.B.line(
+      `${entry} = call ptr @sc_map_entry_f64_int(ptr ${map}, i64 ${wide}, double ${key})`,
+    );
+    return entry;
+  }
   host.B.line(`${entry} = call ptr @sc_map_entry_f64(ptr ${map}, double ${key})`);
   return entry;
 }
