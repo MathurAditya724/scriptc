@@ -1317,14 +1317,18 @@ static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
 static void scr_dyn_destroy(void *ptr) { scr_dyn_dispose(ptr, false); }
 
 /* The cycle bookkeeping of a value that survives a release. Compiled
- * release fast paths decrement first and call this for the kinds whose
- * candidacy depends on per-value state, matching scr_dyn_release: arrays
- * and objects not yet buffered (skipped while their document is intact,
+ * release fast paths decrement first and call this for every kind that can
+ * be a candidate and is not one yet, matching scr_dyn_release: functions
+ * and proxies, arrays and objects (skipped while their document is intact,
  * ScrDynRegion), capsules and handles. */
 void scr_dyn_release_survivor(ScrDyn *d) {
   if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) {
     const ScrDynRegion *region = scr_dyn_region_of(d);
     if (!region || !region->intact) scr_cyc_released(d);
+    return;
+  }
+  if (d->kind == SCR_DYN_FUNC || d->kind == SCR_DYN_PROXY) {
+    scr_cyc_released(d);
     return;
   }
   if ((d->kind == SCR_DYN_TYPED_REF &&
