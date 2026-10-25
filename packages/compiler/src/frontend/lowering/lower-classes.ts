@@ -194,7 +194,10 @@ import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js
 import { constructionEscape } from "./construction-escapes.js";
 import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
 import { initializeRuntimeStatics, hasRuntimeStatics } from "./class-runtime-statics.js";
-import { reflectedClassStaticMethodValue } from "./class-method-values.js";
+import {
+  reflectedClassMethodValue,
+  reflectedClassStaticMethodValue,
+} from "./class-method-values.js";
 import { identifierReadSymbol } from "./surfaces.js";
 
 export function returnsOnlyThis(member: ts.MethodDeclaration): boolean {
@@ -9560,19 +9563,31 @@ export function lowerSuperMethodCall(
   // method up on the base class's complete prototype, as `super` reads
   // [[HomeObject]].[[Prototype]], and calls it with that receiver.
   const dynamicThis = thisRef.type.kind === "dyn";
+  // While no code reads a prototype method by name (which could replace it),
+  // that method is the declaring class's own: its receiver-independent value
+  // is called directly. Reflecting the base's whole prototype instead would
+  // put its members on the prototype chain of every subclass instance's
+  // property bag, ahead of the subclasses' own compiled overrides.
+  const declared =
+    dynamicThis && !lowerer.prototypeMethodAccesses.has(access.name.text)
+      ? reflectedClassMethodValue(lowerer, found.declarer, access.name.text)
+      : null;
   if (dynamicThis || lowerer.prototypeMethodAccesses.has(access.name.text)) {
-    const prototype =
-      dynamicThis && cls.base.decl
+    const prototype = declared
+      ? null
+      : dynamicThis && cls.base.decl
         ? reflectClassPrototype(lowerer, cls.base, loc, classValueRef(lowerer, cls.base, access))
         : classPrototypeData(lowerer, cls.base, loc);
-    if (prototype) {
-      const callee: IrExpr = {
-        kind: "dynKeyGet",
-        value: prototype,
-        key: { kind: "strLit", value: access.name.text, type: STRING, loc },
-        type: DYN,
-        loc,
-      };
+    if (declared || prototype) {
+      const callee: IrExpr = declared
+        ? lowerer.coerceToExpected(declared, DYN)
+        : {
+            kind: "dynKeyGet",
+            value: prototype!,
+            key: { kind: "strLit", value: access.name.text, type: STRING, loc },
+            type: DYN,
+            loc,
+          };
       // Spread arguments are spread into the dynamic call, as in a dynamic method call.
       const spreads: { arg: number; what: string }[] = [];
       const args = call.arguments.nodes.map((arg, index) => {
