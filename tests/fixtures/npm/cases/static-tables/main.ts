@@ -13,4 +13,4 @@ console.log(lib.read("get"), lib.dispatch("a"), lib.pick(1));
 lib.register("b", () => "b!");
 console.log(lib.dispatch("b"), lib.limit());
 lib.bump();
-console.log(lib.limit(), new lib.Pair(2, 3).sum());
+console.log(lib.limit(), new lib.Pair(2, 3).sum(), lib.inits());

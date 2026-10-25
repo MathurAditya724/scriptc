@@ -142,6 +142,8 @@ export interface ShapeAnalysis {
   readonly escapedFunctions: ReadonlySet<FunctionInfo>;
   /** ES5 constructors: each function's default prototype object. */
   readonly protoOf: ReadonlyMap<Atom, Atom>;
+  /** ES5 constructor instances: the function atom whose `new` made each. */
+  readonly fnOfInstance: ReadonlyMap<Atom, Atom>;
   /** Every value a declaration (parameter, variable, binding element) holds,
    * merged over the analysis contexts it was analyzed in. */
   declValues(decl: Node): Set<Atom>;
@@ -270,6 +272,18 @@ const PRIMITIVE_MEMBERS: Readonly<Record<"string" | "number" | "boolean", Readon
 const SITE_CLONES = Number(process.env["SCRIPTC_SHAPE_SITE_CLONES"] ?? 64);
 const SITE_CLONE_DEPTH = 4;
 
+/** The prototypes a string, number or boolean member read reaches. */
+const PRIMITIVE_PROTOTYPES: ReadonlySet<string> = new Set([
+  "String.prototype",
+  "Number.prototype",
+  "Boolean.prototype",
+  "Object.prototype",
+]);
+
+function isPrimitivePrototype(a: Atom): boolean {
+  return a.kind === "builtin" && a.receiver === undefined && PRIMITIVE_PROTOTYPES.has(a.path ?? "");
+}
+
 /** The most atoms a value node tracks before it widens to ⊤
  * (SCRIPTC_SHAPE_WIDEN overrides). */
 const WIDEN_AT = Number(process.env["SCRIPTC_SHAPE_WIDEN"] ?? 32);
@@ -338,6 +352,47 @@ function isLoop(node: Node): boolean {
   );
 }
 
+/** Whether control can reach the end of `stmts`. False only when every
+ * path ends in a return or throw, or in a `while (true)`, `do … while
+ * (true)` or `for (;;)` loop with no break inside; anything else is
+ * assumed to complete. */
+function canComplete(stmts: readonly Node[]): boolean {
+  return stmts.every(canCompleteStatement);
+}
+
+function canCompleteStatement(s: Node): boolean {
+  if (ts.isReturnStatement(s) || ts.isThrowStatement(s)) return false;
+  if (ts.isBlock(s)) return canComplete(list(s.statements));
+  if (ts.isIfStatement(s))
+    return (
+      s.elseStatement === undefined ||
+      canCompleteStatement(s.thenStatement) ||
+      canCompleteStatement(s.elseStatement)
+    );
+  if (ts.isTryStatement(s)) {
+    if (s.finallyBlock !== undefined && !canCompleteStatement(s.finallyBlock)) return false;
+    return (
+      canCompleteStatement(s.tryBlock) ||
+      (s.catchClause !== undefined && canCompleteStatement(s.catchClause.block))
+    );
+  }
+  const endless =
+    ((ts.isWhileStatement(s) || ts.isDoStatement(s)) &&
+      s.expression.kind === ts.SyntaxKind.TrueKeyword) ||
+    (ts.isForStatement(s) && s.condition === undefined);
+  return !endless || containsBreak(s);
+}
+
+/** Whether a break statement occurs in `node`'s body, outside nested
+ * functions. */
+function containsBreak(node: Node): boolean {
+  return (
+    ts.forEachChild(node, (c) =>
+      ts.isBreakStatement(c) || (!ts.isFunctionLike(c) && containsBreak(c)) ? true : undefined,
+    ) === true
+  );
+}
+
 const LOOP_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   "map",
   "forEach",
@@ -382,6 +437,14 @@ class Analyzer {
   readonly escaped = new Map<Atom, string>();
   readonly topWriteNames = new Map<string, Node>();
   readonly topComputedWrites: Node[] = [];
+  /** Names a write may add to a primitive's prototype chain, or every name
+   * (`primitiveExtensionsAll`). A read of a name the chain lacks reads ⊤
+   * for them as well as undefined. */
+  private readonly primitiveExtensions = new Set<string>();
+  private primitiveExtensionsAll = false;
+  /** Reads of names a primitive's prototype chain lacks, by name; each
+   * takes ⊤ once a write may add the name. */
+  private readonly primitiveReads = new Map<string, number[]>();
   readonly fields = new Map<Atom, Map<string, number>>();
   readonly elements = new Map<Atom, number>();
   readonly top: Atom;
@@ -479,8 +542,7 @@ class Analyzer {
   private readonly popsByNode = new Map<number, number>();
 
   run(): ShapeAnalysis {
-    for (const sf of this.program.getSourceFiles()) {
-      if (sf.isDeclarationFile) continue;
+    for (const sf of this.program.getImplementationSourceFiles()) {
       const name = sf.fileName.split("\\").join("/");
       const inPackage = isPackageJsFile(sf);
       if (!inPackage && name.includes("/node_modules/")) continue;
@@ -513,6 +575,7 @@ class Analyzer {
       nodeLabel: this.nodeLabel,
       escapedFunctions: this.escapedFunctionCalls,
       protoOf: this.protoOf,
+      fnOfInstance: this.fnOfInstance,
       declValues: (decl) => this.declValues(decl),
       classChain: (decl) => this.classChain(decl),
       branchIfs: this.branchIfs,
@@ -776,6 +839,8 @@ class Analyzer {
 
   escape(atom: Atom, reason: string): void {
     if (atom.kind === "prim" || atom.kind === "top") return;
+    // Unknown code may add any member to a primitive's prototype.
+    if (isPrimitivePrototype(atom)) this.extendPrimitives(null);
     if (atom.kind === "builtin" && atom.receiver === undefined) return;
     if (this.escaped.has(atom)) return;
     this.escaped.set(atom, reason);
@@ -827,6 +892,8 @@ class Analyzer {
 
   /** Property names that untyped code writes on receivers that may be ⊤ (census). */
   noteTopWrite(name: string | null, node: Node): void {
+    // ⊤ may be a primitive's prototype.
+    this.extendPrimitives(name);
     if (name === null) {
       const first = this.topComputedWrites.length === 0;
       this.topComputedWrites.push(node);
@@ -846,6 +913,43 @@ class Analyzer {
       const id = this.fields.get(atom)?.get(name);
       if (id !== undefined) this.add(id, this.top);
     }
+  }
+
+  /** A read of a name a primitive's prototype chain lacks: ⊤ as well, now
+   * or once a write may add the name there. */
+  primitiveRead(name: string, dst: number): void {
+    if (this.primitiveExtensionsAll || this.primitiveExtensions.has(name)) {
+      this.add(dst, this.top);
+      return;
+    }
+    const reads = this.primitiveReads.get(name);
+    if (reads === undefined) this.primitiveReads.set(name, [dst]);
+    else reads.push(dst);
+  }
+
+  /** A write that may add `name` (any name when null) to String.prototype,
+   * Number.prototype, Boolean.prototype or Object.prototype. */
+  extendPrimitives(name: string | null): void {
+    if (this.primitiveExtensionsAll) return;
+    if (name === null || name === "__proto__") {
+      this.primitiveExtensionsAll = true;
+      for (const reads of this.primitiveReads.values())
+        for (const dst of reads) this.add(dst, this.top);
+      this.primitiveReads.clear();
+      return;
+    }
+    if (this.primitiveExtensions.has(name)) return;
+    this.primitiveExtensions.add(name);
+    for (const dst of this.primitiveReads.get(name) ?? []) this.add(dst, this.top);
+    this.primitiveReads.delete(name);
+  }
+
+  /** An operation that may add, replace or remove `name` (any name when
+   * null) on its receiver: a primitive's prototype, or ⊤, which may be one. */
+  prototypeWrite(recv: number, name: string | null): void {
+    this.on(recv, (t) => {
+      if (t.kind === "top" || isPrimitivePrototype(t)) this.extendPrimitives(name);
+    });
   }
 
   // ---- classes ---------------------------------------------------------------
@@ -1022,7 +1126,14 @@ class Analyzer {
 
   // ---- functions ---------------------------------------------------------------
 
-  functionInfo(node: Node, ownerClass: Node | null, ctxArg = ""): FunctionInfo {
+  /** `lexicalThis`: an arrow's receiver node, for a clone walked away from
+   * the function that encloses the arrow. */
+  functionInfo(
+    node: Node,
+    ownerClass: Node | null,
+    ctxArg = "",
+    lexicalThis: number | null = null,
+  ): FunctionInfo {
     // A nested closure walked inside a clone shares the clone's context.
     const inherit =
       ctxArg === "" &&
@@ -1062,7 +1173,12 @@ class Analyzer {
       label: ctx === "" ? label : `${label} [${this.ctxLabel(ctx)}]`,
       params,
       rest,
-      thisNode: isArrow && this.currentFn !== null ? this.currentFn.thisNode : this.newNode(),
+      thisNode:
+        isArrow && lexicalThis !== null
+          ? lexicalThis
+          : isArrow && this.currentFn !== null
+            ? this.currentFn.thisNode
+            : this.newNode(),
       ret: this.newNode(),
       isArrow,
       isAsync: mods.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword),
@@ -1106,8 +1222,11 @@ class Analyzer {
     }
     const body = fn.body;
     if (body !== undefined) {
-      if (ts.isBlock(body)) this.stmts(list(body.statements));
-      else this.edge(this.expr(body as ts.Expression), info.ret);
+      if (ts.isBlock(body)) {
+        this.stmts(list(body.statements));
+        // A call that runs off the end of the body returns undefined.
+        if (canComplete(list(body.statements))) this.add(info.ret, this.prim("undefined"));
+      } else this.edge(this.expr(body as ts.Expression), info.ret);
     }
     this.currentFn = saved;
     this.loopDepth = savedLoop;
@@ -1373,6 +1492,15 @@ class Analyzer {
   private siteClone(info: FunctionInfo, site: Node, args: number[]): FunctionInfo | null {
     if (this.siteCloneLimit === 0 || info.isGenerator || ts.isSourceFile(info.node)) return null;
     if (ts.isClassLikeDeclaration(info.node)) return null;
+    // A function walked in an enclosing clone's or receiver's context reads
+    // and writes that context's bindings of the variables it captures. A
+    // clone is its own context root, so it would resolve them in the
+    // default context instead, and their writes would be lost.
+    if (info.root !== null && info.root !== info.node) return null;
+    // A class's constructor and methods run in receiver contexts of their
+    // own, rooted at each member: inside a clone they too would resolve the
+    // function's bindings in the default context.
+    if (this.declaresClass(info.node)) return null;
     const sc = this.argsFrom.get(args);
     if (sc === undefined || sc.inLoop || this.forceLoop || this.repeatingSites.has(site))
       return null;
@@ -1392,7 +1520,25 @@ class Analyzer {
     const count = this.siteClones.get(info.node) ?? 0;
     if (count >= this.siteCloneLimit) return null;
     this.siteClones.set(info.node, count + 1);
-    return this.functionInfo(info.node, info.ownerClass, ctx);
+    // The clone keeps the function's receiver: an arrow's lexical `this`,
+    // and whatever reaches a function's own `this`, such as the receiver
+    // `bind` supplies.
+    const clone = this.functionInfo(info.node, info.ownerClass, ctx, info.thisNode);
+    if (!clone.isArrow) this.edge(info.thisNode, clone.thisNode);
+    return clone;
+  }
+
+  private readonly classDeclarers = new Map<Node, boolean>();
+  /** Whether a class declaration or expression is anywhere inside `node`. */
+  private declaresClass(node: Node): boolean {
+    let r = this.classDeclarers.get(node);
+    if (r === undefined) {
+      const visit = (n: Node): true | undefined =>
+        ts.isClassLikeDeclaration(n) ? true : ts.forEachChild(n, visit);
+      r = ts.forEachChild(node, visit) === true;
+      this.classDeclarers.set(node, r);
+    }
+    return r;
   }
 
   private readonly factories = new Map<Node, boolean>();
@@ -1484,8 +1630,9 @@ class Analyzer {
       return;
     }
     if (ts.isReturnStatement(s)) {
-      if (s.expression !== undefined && this.currentFn !== null)
-        this.edge(this.expr(s.expression), this.currentFn.ret);
+      if (this.currentFn === null) return;
+      if (s.expression !== undefined) this.edge(this.expr(s.expression), this.currentFn.ret);
+      else this.add(this.currentFn.ret, this.prim("undefined"));
       return;
     }
     if (ts.isFunctionDeclaration(s)) {
@@ -1751,6 +1898,7 @@ class Analyzer {
         const recv = this.expr(target.expression);
         const name = ts.isPropertyAccessExpression(target) ? target.name.text : null;
         this.ops.push({ kind: "delete", recv, name, node: e });
+        this.prototypeWrite(recv, name);
       }
       return this.constNode(this.prim("boolean"));
     }
@@ -2437,13 +2585,19 @@ class Analyzer {
       case "prim":
         if (name === "length" && a.label === "string") this.add(dst, this.prim("number"));
         else if (a.label === "string" && /^\d+$/.test(name)) {
+          // An index past the end reads the prototype chain.
           this.add(dst, this.prim("string"));
           this.add(dst, this.prim("undefined"));
+          this.primitiveRead(name, dst);
         } else if (a.label === "string" || a.label === "number" || a.label === "boolean") {
-          // A name the primitive's prototype chain lacks reads undefined.
+          // A name the primitive's prototype chain lacks reads undefined,
+          // unless the program may add it there.
           if (PRIMITIVE_MEMBERS[a.label].has(name) || OBJECT_PROTOTYPE_MEMBERS.has(name))
             this.add(dst, this.builtin(`${a.label}.${name}`, a));
-          else this.add(dst, this.prim("undefined"));
+          else {
+            this.add(dst, this.prim("undefined"));
+            this.primitiveRead(name, dst);
+          }
         }
         return;
       case "instance": {
@@ -2547,8 +2701,12 @@ class Analyzer {
           this.add(protos, this.protoAtom(fn));
           this.edge(this.field(fn, "prototype"), protos);
           this.on(protos, (proto) => {
-            if (proto.kind === "object") this.edge(this.field(proto, name), dst);
-            else if (proto.kind === "top") this.add(dst, this.top);
+            if (proto.kind === "object") {
+              // A method stored under a computed key (`F.prototype[k] = fn`)
+              // may be any name.
+              this.edge(this.field(proto, name), dst);
+              this.edge(this.anyField(proto), dst);
+            } else if (proto.kind === "top") this.add(dst, this.top);
           });
           return;
         }
@@ -2643,6 +2801,7 @@ class Analyzer {
         case "prim":
           return;
         default:
+          if (isPrimitivePrototype(a)) this.extendPrimitives(name);
           this.sink(value, `stored into ${a.label} at ${locLabel(site)}`);
       }
     });
@@ -2710,6 +2869,7 @@ class Analyzer {
           return;
         default:
           // As a store under a name: a builtin, promise or collection keeps it where it isn't tracked.
+          if (isPrimitivePrototype(a)) this.extendPrimitives(null);
           this.sink(value, `stored into ${a.label}[k] at ${locLabel(site)}`);
       }
     });
@@ -2782,10 +2942,7 @@ class Analyzer {
    * is in a loop, in the context the call was walked in. siteCtx keeps
    * the first context per syntax node, which a site walked in several
    * contexts (receiver classes, per-site clones) does not determine. */
-  private readonly argsFrom = new WeakMap<
-    number[],
-    { caller: FunctionInfo | null; inLoop: boolean }
-  >();
+  private readonly argsFrom = new Map<number[], { caller: FunctionInfo | null; inLoop: boolean }>();
 
   call(e: ts.CallExpression): number {
     this.noteSite(e);
@@ -2929,7 +3086,11 @@ class Analyzer {
             this.activate(info);
             this.add(info.thisNode, inst);
             this.bindArgs(info, args, spread);
-            this.edge(info.ret, dst);
+            // `new` ignores a primitive result (and the undefined of a
+            // body that runs off its end) and yields the instance.
+            this.on(info.ret, (r) => {
+              if (r.kind !== "prim") this.add(dst, r);
+            });
             this.edgeFor(e, info, args);
           }
           return;
@@ -3176,8 +3337,10 @@ class Analyzer {
       if (path.startsWith("regexp.")) {
         if (method === "test") prim("boolean");
         else if (method === "exec") {
+          // The match and its capture groups; a group that did not take part is undefined.
           const out = this.syntheticArray(site, "exec");
           this.add(this.element(out), this.prim("string"));
+          this.add(this.element(out), this.prim("undefined"));
           this.add(dst, out);
           prim("null");
         } else escapeAll();
@@ -3348,6 +3511,7 @@ class Analyzer {
         return;
       case "Object.assign": {
         this.ops.push({ kind: "assign", recv: arg(0), name: null, node: site });
+        this.prototypeWrite(arg(0), null);
         this.on(arg(0), (t) => {
           for (const s of args.slice(1)) this.copyFields(s, t, site);
           if (t.kind === "top")
@@ -3361,6 +3525,10 @@ class Analyzer {
       case "Object.defineProperties":
       case "Reflect.defineProperty":
         this.ops.push({ kind: "defineProperty", recv: arg(0), name: null, node: site });
+        this.prototypeWrite(
+          arg(0),
+          path === "Object.defineProperties" ? null : literalKey(site, 1),
+        );
         this.sink(arg(2), `property descriptor at ${locLabel(site)}`);
         this.sink(arg(1), `property descriptor at ${locLabel(site)}`);
         this.edge(arg(0), dst);
@@ -3368,6 +3536,7 @@ class Analyzer {
       case "Object.setPrototypeOf":
       case "Reflect.setPrototypeOf":
         this.ops.push({ kind: "setPrototypeOf", recv: arg(0), name: null, node: site });
+        this.prototypeWrite(arg(0), null);
         this.sink(arg(1), `prototype at ${locLabel(site)}`);
         this.edge(arg(0), dst);
         return;
@@ -3466,12 +3635,9 @@ class Analyzer {
         return;
       }
       case "Reflect.deleteProperty": {
-        const key = ts.isCallExpression(site) ? unparen(list(site.arguments)[1]!) : undefined;
-        const name =
-          key !== undefined && (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key))
-            ? key.text
-            : null;
+        const name = literalKey(site, 1);
         this.ops.push({ kind: "delete", recv: arg(0), name, node: site });
+        this.prototypeWrite(arg(0), name);
         prim("boolean");
         return;
       }
@@ -3627,6 +3793,17 @@ interface PendingIf {
   readonly env: WalkEnv;
   thenDone: boolean;
   elseDone: boolean;
+}
+
+/** The string literal a call passes as argument `i`, or null. */
+function literalKey(
+  site: ts.CallExpression | ts.TaggedTemplateExpression,
+  i: number,
+): string | null {
+  const key = ts.isCallExpression(site) ? list(site.arguments)[i] : undefined;
+  if (key === undefined) return null;
+  const k = unparen(key);
+  return ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k) ? k.text : null;
 }
 
 /** Whether a value of the atom may be truthy (only `null`, `undefined` and

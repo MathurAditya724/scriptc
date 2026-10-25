@@ -304,6 +304,16 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (!target) {
     const date = lowerer.isStdlibGlobal(expr.right, "Date");
     const url = lowerer.isStdlibGlobal(expr.right, "URL");
+    // A catch binding holds a thrown Date as its checked-dynamic handle.
+    const caughtDate = date ? lowerer.caughtLocalOf(expr.left) : null;
+    if (caughtDate)
+      return {
+        kind: "libCall",
+        fn: "dyn.nativeDateIs",
+        args: [{ kind: "caughtToDyn", value: varRef(caughtDate.id, CAUGHT, loc), type: DYN, loc }],
+        type: BOOL,
+        loc,
+      };
     if ((date || url) && !lowerer.caughtLocalOf(expr.left)) {
       const value = lowerer.lowerExpr(expr.left);
       if (value.type.kind === "dyn")
@@ -2234,23 +2244,10 @@ function lowerRuntimeKeyIn(
   return { kind: "call", callee: helper, args: [keyIr, recv], type: BOOL, loc };
 }
 
-/** Standard-library constructors the untyped instanceof helper has no
- * instance test for: an untyped `x instanceof Object` always refuses. */
-const DYN_INSTANCEOF_REFUSED: ReadonlySet<string> = new Set(["Object", "Function"]);
-
 /** The SC1090 message `x instanceof C` throws, with the site's position,
- * when `C` is a runtime constructor with no instance test. A right-hand
- * side that names one of DYN_INSTANCEOF_REFUSED always reaches that
- * refusal, so the site is listed with the runtime fences. */
+ * when `C` is a runtime constructor with no instance test. */
 function dynInstanceOfRefusal(lowerer: Lowerer, expr: ts.BinaryExpression): string {
   const diag = unsupportedDiag("SC1090", locOf(expr), "instanceof against this native constructor");
-  const symbol = lowerer.checker.getSymbolAtLocation(expr.right);
-  if (
-    symbol !== undefined &&
-    lowerer.isStdlibSymbol(symbol) &&
-    DYN_INSTANCEOF_REFUSED.has(ts.symbolName(symbol))
-  )
-    lowerer.runtimeFences.push(diag);
   const sf = ts.getSourceFileOfNode(expr);
   const line = ts.getLineAndCharacterOfPosition(sf, diag.loc.start).line + 1;
   return `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`;

@@ -2,7 +2,7 @@
  * the annotations a build keeps, and leaves the trivia of dropped ones. */
 import { expect, test } from "vitest";
 import {
-  neutralizeDocTags,
+  neutralizeCommentTags,
   OVERLAY_MARK,
   renderShapeOverlay,
 } from "../src/frontend/shape-inference/overlay.js";
@@ -39,7 +39,7 @@ test("each kept annotation's leading JSDoc is neutralized, once per range", () =
     const head = decl.slice(0, decl.indexOf("\n") + 1);
     const rest = decl.slice(head.length);
     return keep
-      ? `${neutralizeDocTags(head)}/** @type {any} ${OVERLAY_MARK} #${at} */ ${rest}`
+      ? `${neutralizeCommentTags(head)}/** @type {any} ${OVERLAY_MARK} #${at} */ ${rest}`
       : decl;
   };
   expect(overlay.files.get("a.js")).toBe(
