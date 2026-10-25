@@ -206,7 +206,7 @@ describe("type patches", () => {
       const failure = (pkg: string, version: string) => [
         "undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
         `    ${pkg}@${version} declares OutputContext.width as number (index.js:24)`,
-        `    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "${pkg}@^${version}": { "declarations": { "OutputContext.width": "| undefined" } } } }`,
+        `    if that declaration is wrong, patch it: scriptc types patch ${pkg} "OutputContext.width" "| undefined"`,
       ];
       expect(native.stdout).toBe(
         [...failure("panectx", "2.0.0"), ...failure("gridctx", "4.1.0"), ""].join("\n"),
