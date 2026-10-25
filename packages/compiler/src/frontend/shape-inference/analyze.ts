@@ -24,7 +24,13 @@
 import * as ts from "../ts7/adapter.js";
 import { isJsSourceFile } from "../program.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
-import { AtomTable, MODELED_GLOBALS, STRING_METHOD_RESULTS, type Atom } from "./domain.js";
+import {
+  AtomTable,
+  MODELED_GLOBALS,
+  OBJECT_PROTOTYPE_MEMBERS,
+  STRING_METHOD_RESULTS,
+  type Atom,
+} from "./domain.js";
 
 type Node = ts.Node;
 
@@ -36,6 +42,9 @@ export interface ValueNode {
   readonly onAtom: ((atom: Atom) => void)[];
   /** Every atom that arrives escapes. */
   escapeSink: string | null;
+  /** Widened (WIDEN_AT): the node holds ⊤, and every further atom that
+   * arrives escapes instead of flowing on. */
+  wide?: true;
 }
 
 export interface FunctionInfo {
@@ -184,6 +193,79 @@ const ARRAY_METHODS: ReadonlySet<string> = new Set([
   "with",
 ]);
 const MAX_STEPS = 20_000_000;
+
+/** The members String.prototype, Number.prototype and Boolean.prototype
+ * define (Node 24); Object.prototype's come from OBJECT_PROTOTYPE_MEMBERS. */
+const PRIMITIVE_MEMBERS: Readonly<Record<"string" | "number" | "boolean", ReadonlySet<string>>> = {
+  string: new Set([
+    "at",
+    "charAt",
+    "charCodeAt",
+    "codePointAt",
+    "concat",
+    "endsWith",
+    "includes",
+    "indexOf",
+    "isWellFormed",
+    "lastIndexOf",
+    "localeCompare",
+    "match",
+    "matchAll",
+    "normalize",
+    "padEnd",
+    "padStart",
+    "repeat",
+    "replace",
+    "replaceAll",
+    "search",
+    "slice",
+    "split",
+    "startsWith",
+    "substr",
+    "substring",
+    "toLocaleLowerCase",
+    "toLocaleUpperCase",
+    "toLowerCase",
+    "toString",
+    "toUpperCase",
+    "toWellFormed",
+    "trim",
+    "trimEnd",
+    "trimStart",
+    "trimLeft",
+    "trimRight",
+    "valueOf",
+    "anchor",
+    "big",
+    "blink",
+    "bold",
+    "fixed",
+    "fontcolor",
+    "fontsize",
+    "italics",
+    "link",
+    "small",
+    "strike",
+    "sub",
+    "sup",
+    "length",
+    "constructor",
+  ]),
+  number: new Set([
+    "toExponential",
+    "toFixed",
+    "toLocaleString",
+    "toPrecision",
+    "toString",
+    "valueOf",
+    "constructor",
+  ]),
+  boolean: new Set(["toString", "valueOf", "constructor"]),
+};
+
+/** The most atoms a value node tracks before it widens to ⊤
+ * (SCRIPTC_SHAPE_WIDEN overrides). */
+const WIDEN_AT = Number(process.env["SCRIPTC_SHAPE_WIDEN"] ?? 32);
 
 function list<T extends Node>(arr: { readonly nodes: readonly T[] } | undefined): readonly T[] {
   return arr?.nodes ?? [];
@@ -335,6 +417,49 @@ class Analyzer {
     this.top = this.atoms.intern("top", () => ({ kind: "top", label: "⊤" }));
   }
 
+  /** SCRIPTC_DEBUG_SHAPES_PROFILE: where the solver's steps go. */
+  private profileReport(): void {
+    const byNodeLabel = new Map<string, number>();
+    let atomsTotal = 0;
+    let maxAtoms = 0;
+    let onAtoms = 0;
+    let succ = 0;
+    for (const n of this.nodes) {
+      atomsTotal += n.atoms.size;
+      maxAtoms = Math.max(maxAtoms, n.atoms.size);
+      onAtoms += n.onAtom.length;
+      succ += n.succ.size;
+    }
+    const kinds = new Map<string, number>();
+    for (const a of this.atoms.atoms) kinds.set(a.kind, (kinds.get(a.kind) ?? 0) + 1);
+    const ctxPerFn = new Map<Node, number>();
+    for (const info of this.functions.values())
+      ctxPerFn.set(info.node, (ctxPerFn.get(info.node) ?? 0) + 1);
+    const topFns = [...ctxPerFn.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15);
+    const lines = [
+      `nodes ${this.nodes.length} atoms ${this.atoms.atoms.length} (${[...kinds].map(([k, v]) => `${k} ${v}`).join(", ")})`,
+      `solve ${this.solveMs.toFixed(0)} ms (nested walks included) checker ${this.checkerMs.toFixed(0)} ms in ${this.checkerCalls} calls`,
+      `node-atom pairs ${atomsTotal} max ${maxAtoms} edges ${succ} listeners ${onAtoms} functions ${this.functions.size} steps ${this.steps}`,
+      ...topFns.map(([n, c]) => `  ${c} contexts: ${locLabel(n)}`),
+      ...[...this.popsByAtom.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 15)
+        .map(([a, c]) => `  ${c} pops: atom ${a.kind} ${a.label}`),
+      ...[...this.popsByNode.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(
+          ([id, c]) =>
+            `  ${c} pops: node ${id} ${this.nodeLabel.get(id) ?? ""} atoms ${this.nodes[id]!.atoms.size} succ ${this.nodes[id]!.succ.size} listeners ${this.nodes[id]!.onAtom.length}`,
+        ),
+    ];
+    void byNodeLabel;
+    process.stderr.write(lines.map((l) => `[shapes-profile] ${l}\n`).join(""));
+  }
+  private readonly profiling = process.env["SCRIPTC_DEBUG_SHAPES_PROFILE"] !== undefined;
+  private readonly popsByAtom = new Map<Atom, number>();
+  private readonly popsByNode = new Map<number, number>();
+
   run(): ShapeAnalysis {
     for (const sf of this.program.getSourceFiles()) {
       if (sf.isDeclarationFile) continue;
@@ -347,6 +472,7 @@ class Analyzer {
     for (const sf of this.files) this.checker.prefetchSourceFile(sf);
     for (const sf of this.files) this.moduleBody(sf);
     this.finish();
+    if (this.profiling) this.profileReport();
     return {
       atoms: this.atoms,
       nodes: this.nodes,
@@ -393,7 +519,22 @@ class Analyzer {
   add(node: number, atom: Atom): void {
     const n = this.nodes[node]!;
     if (n.atoms.has(atom)) return;
+    if (n.wide === true) {
+      this.escape(atom, "a value set too large to track");
+      return;
+    }
     n.atoms.add(atom);
+    // Widening: a value set this large is merged code (a utility every
+    // value flows through). It becomes ⊤: its values escape, so the facts
+    // stay sound, and the solver stops multiplying constraints per atom.
+    if (n.atoms.size > WIDEN_AT) {
+      n.wide = true;
+      for (const a of n.atoms) this.escape(a, "a value set too large to track");
+      if (!n.atoms.has(this.top)) {
+        n.atoms.add(this.top);
+        this.worklist.push([node, this.top]);
+      }
+    }
     if (this.traceTop && atom === this.top && !this.topCause.has(node))
       this.topCause.set(
         node,
@@ -542,7 +683,17 @@ class Analyzer {
     return this.atoms.intern(key, () => ({ kind: "builtin", label: path, path, receiver }));
   }
 
+  private solveMs = 0;
   solve(): void {
+    const started = this.profiling ? performance.now() : 0;
+    try {
+      this.solveLoop();
+    } finally {
+      if (this.profiling) this.solveMs += performance.now() - started;
+    }
+  }
+
+  private solveLoop(): void {
     while (this.worklist.length > 0) {
       if (++this.steps > MAX_STEPS) {
         this.budgetExceeded = true;
@@ -550,6 +701,10 @@ class Analyzer {
       }
       const [id, atom] = this.worklist.pop()!;
       const n = this.nodes[id]!;
+      if (this.profiling) {
+        this.popsByAtom.set(atom, (this.popsByAtom.get(atom) ?? 0) + 1);
+        this.popsByNode.set(id, (this.popsByNode.get(id) ?? 0) + 1);
+      }
       this.cause = id;
       for (const s of n.succ) this.add(s, atom);
       this.cause = null;
@@ -765,7 +920,22 @@ class Analyzer {
 
   // ---- symbols -----------------------------------------------------------------
 
+  private checkerMs = 0;
+  private checkerCalls = 0;
+  private readonly resolved = new Map<Node, Node | undefined>();
   resolve(id: Node): Node | undefined {
+    if (this.resolved.has(id)) return this.resolved.get(id);
+    const started = this.profiling ? performance.now() : 0;
+    const out = this.resolveUncached(id);
+    if (this.profiling) {
+      this.checkerMs += performance.now() - started;
+      this.checkerCalls++;
+    }
+    this.resolved.set(id, out);
+    return out;
+  }
+
+  private resolveUncached(id: Node): Node | undefined {
     let sym = this.checker.getSymbolAtLocation(id);
     if (sym === undefined) return undefined;
     if (sym.flags & ts.SymbolFlags.Alias) {
@@ -2198,8 +2368,15 @@ class Analyzer {
         return;
       case "prim":
         if (name === "length" && a.label === "string") this.add(dst, this.prim("number"));
-        else if (a.label === "string" || a.label === "number" || a.label === "boolean")
-          this.add(dst, this.builtin(`${a.label}.${name}`, a));
+        else if (a.label === "string" && /^\d+$/.test(name)) {
+          this.add(dst, this.prim("string"));
+          this.add(dst, this.prim("undefined"));
+        } else if (a.label === "string" || a.label === "number" || a.label === "boolean") {
+          // A name the primitive's prototype chain lacks reads undefined.
+          if (PRIMITIVE_MEMBERS[a.label].has(name) || OBJECT_PROTOTYPE_MEMBERS.has(name))
+            this.add(dst, this.builtin(`${a.label}.${name}`, a));
+          else this.add(dst, this.prim("undefined"));
+        }
         return;
       case "instance": {
         const decl = a.node!;
@@ -2358,6 +2535,7 @@ class Analyzer {
     } else if (
       a.receiver === undefined &&
       MODELED_GLOBALS.has(path.split(".")[0]!) &&
+      !path.endsWith(".instance") &&
       path.split(".").length < 4
     )
       this.add(dst, this.builtin(`${path}.${name}`));
