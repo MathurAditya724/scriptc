@@ -103,7 +103,11 @@ import {
   platformLinkerSupportsPersistentCache,
   resolvePlatformLinker,
 } from "./backend/linker.js";
-import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
+import {
+  splitLlvmLibraryProgram,
+  splitLlvmProgram,
+  splitLlvmProgramFile,
+} from "./backend/llvm/split.js";
 import {
   emitLibraryIdentityLines,
   replaceLibraryIdentity,
@@ -566,8 +570,8 @@ async function compileExecutableNative(
   }
   const effectiveProgramSplit =
     programSplit ??
-    (!programIsObject && features.optimization === "dev" && features.backend === "llvm" && !sanitize
-      ? splitLlvmProgram(await readFile(llvmPath, "utf8"))
+    (!programIsObject && features.optimization === "dev" && features.backend === "llvm"
+      ? splitLlvmProgramFile(llvmPath)
       : null);
   if (programIsObject)
     throw new InternalCompilerError("program objects must link against a precompiled runtime pack");
@@ -912,7 +916,6 @@ async function prepareExecutableInput(
     !useRuntimePack &&
     backend === "llvm" &&
     (opts.optimization ?? "release") === "dev" &&
-    !(opts.sanitize ?? false) &&
     typeof llvmSource === "string"
       ? splitLlvmProgram(llvmSource)
       : null;

@@ -153,7 +153,7 @@ export async function compilePackedLibrary(
             ...(await Promise.all(
               shards
                 .slice(start, start + 4)
-                .map((shard, offset) => emit(shard.source, `shard-${start + offset}.o`)),
+                .map((shard, offset) => emit(shard.source(), `shard-${start + offset}.o`)),
             )),
           );
         }
