@@ -120,8 +120,11 @@ const KNOWN: Record<string, Known> = {
  * types module, and the zod 4 cases (zod4-boundary, zod4-record,
  * hono-zod-validator, hono-zod-default-hook)
  * compile zod 4's core, classic API and locales. A sanitized build of any
- * of them takes minutes on a CI runner. */
+ * of them takes minutes on a CI runner. commander-calc-async runs four
+ * command lines, and with the shape overlay its build analyzes commander
+ * for most of a minute. */
 const TIMEOUTS: Record<string, number> = {
+  "commander-calc-async": 300_000,
   "hono-zod-default-hook": 900_000,
   "hono-zod-validator": 900_000,
   undici5: 600_000,
