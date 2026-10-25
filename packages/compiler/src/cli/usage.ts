@@ -13,6 +13,13 @@ Usage:
                                             exporting the profile symbols; a profile
                                             with a sidecar section also gets the
                                             contract sidecar JSON beside the archive
+  scriptc types patch <package> <selector> <type> [--range <r>] [--dry-run]
+                                            fix a wrong declaration of an installed
+                                            package: shows what the selector
+                                            matches and adds the type patch to
+                                            package.json ("| undefined" widens)
+  scriptc types list                        the project's type patches and what
+                                            they match
   scriptc cache warm [runtime|tls…] verify and load precompiled runtime families
                                             for the current compiler/SDK/target
   scriptc merge-profiles -o <out.profdata> [--sparse] <profile…>
@@ -157,6 +164,8 @@ export const CLI_OPTIONS = {
   "profile-generate": { type: "string" },
   "profile-use": { type: "string" },
   sparse: { type: "boolean", default: false },
+  range: { type: "string" },
+  "dry-run": { type: "boolean", default: false },
   "keep-llvm": { type: "boolean", default: true },
   "emit-ir": { type: "boolean", default: false },
   sanitize: { type: "boolean", default: false },

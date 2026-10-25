@@ -9,12 +9,13 @@
  * site's cold exception path, which calls scr_type_origin_note: the
  * pending TypeError's message gains two lines naming the declaration and
  * the type patch (package.json scriptc.typePatches) that would make the
- * declaration admit the value. The hot path is unchanged, and so is every
+ * declaration admit the value, as the `scriptc types patch` command that
+ * writes it. The hot path is unchanged, and so is every
  * other error.
  *
  * The origin is one string of fields separated by \x1f: package, version,
- * suggested range, the selector of the declared slot, where it is
- * declared, and the declared type. */
+ * suggested range (which the command chooses itself), the selector of the
+ * declared slot, where it is declared, and the declared type. */
 #include "scr_runtime.h"
 
 #include <stdlib.h>
@@ -92,10 +93,9 @@ void scr_type_origin_note(const char *origin) {
       }
     }
   }
-  const char *pkg, *version, *range, *selector, *where, *declared;
+  const char *pkg, *version, *selector, *where, *declared;
   size_t pkg_len = scr_origin_field(origin, 0, &pkg);
   size_t version_len = scr_origin_field(origin, 1, &version);
-  size_t range_len = scr_origin_field(origin, 2, &range);
   size_t selector_len = scr_origin_field(origin, 3, &selector);
   size_t where_len = scr_origin_field(origin, 4, &where);
   size_t declared_len = scr_origin_field(origin, 5, &declared);
@@ -116,11 +116,9 @@ void scr_type_origin_note(const char *origin) {
   }
   scr_origin_puts(&b, " (");
   scr_origin_put(&b, where, where_len);
-  scr_origin_puts(&b, ")\n    if that declaration is wrong, patch it in package.json: \"scriptc\": { \"typePatches\": { \"");
+  scr_origin_puts(&b, ")\n    if that declaration is wrong, patch it: scriptc types patch ");
   scr_origin_put(&b, pkg, pkg_len);
-  scr_origin_puts(&b, "@");
-  scr_origin_put(&b, range, range_len);
-  scr_origin_puts(&b, "\": { \"declarations\": { \"");
+  scr_origin_puts(&b, " \"");
   scr_origin_put(&b, selector, selector_len);
   /* $[3].email extends the selector as [].email: elements of an array
    * share one declared type. */
@@ -132,7 +130,7 @@ void scr_type_origin_note(const char *origin) {
       scr_origin_put(&b, path + i, 1);
     }
   }
-  scr_origin_puts(&b, "\": \"| ");
+  scr_origin_puts(&b, "\" \"| ");
   if (got != NULL) {
     const char *arm = scr_origin_arm(got, got_len);
     if (arm != NULL) scr_origin_puts(&b, arm);
@@ -140,7 +138,7 @@ void scr_type_origin_note(const char *origin) {
   } else {
     scr_origin_puts(&b, "undefined");
   }
-  scr_origin_puts(&b, "\" } } } }");
+  scr_origin_puts(&b, "\"");
 
   ScrStr *next = scr_str_new(b.data, b.len);
   free(b.data);

@@ -348,12 +348,12 @@ export function declarationSelector(decl: ts.Node): string | null {
 /** The note a union extraction's TypeError carries for a failing `arm`
  * (the same text the runtime renders for checked conversions). */
 export function renderOriginNote(origin: string, arm: string): string {
-  const [pkg = "", version = "", range = "", selector = "", where = "", declared = ""] =
+  const [pkg = "", version = "", , selector = "", where = "", declared = ""] =
     origin.split(ORIGIN_SEPARATOR);
   return (
     `\n    ${pkg}${version === "" ? "" : `@${version}`} declares ${selector}` +
     `${declared === "" ? "" : ` as ${declared}`} (${where})` +
-    `\n    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "${pkg}@${range}": { "declarations": { "${selector}": "| ${arm}" } } } }`
+    `\n    if that declaration is wrong, patch it: scriptc types patch ${pkg} "${selector}" "| ${arm}"`
   );
 }
 
