@@ -1,4 +1,6 @@
 node_modules/
+# A symlinked node_modules is a file to git, which node_modules/ does not match.
+/packages/*/node_modules
 .pnpm-store/
 # test-fixture packages are TEST DATA, committed on purpose
 !tests/diagnostics/npm-imports/node_modules/
