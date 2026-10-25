@@ -80,6 +80,7 @@ import {
 } from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
+import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
@@ -109,6 +110,8 @@ import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
+import { unitSafeFunctions } from "./string-unit-versions.js";
+import { stringScanInline } from "./string-reads.js";
 import {
   findInt32Abis,
   INT32_ABI_SUFFIX,
@@ -128,6 +131,16 @@ import {
   type FfiCallbackAdapter,
 } from "../ffi-callbacks.js";
 import { computeMayThrow } from "../may-throw.js";
+import {
+  UNWIND_PERSONALITY,
+  UNWIND_RAISE,
+  UNWIND_RAISE_DECLARATION,
+  UNWIND_RESUME,
+  UNWIND_SLOT,
+  UnwindAbiViolation,
+  bridgePlainUnwindCalls,
+  unwindAbiFunctions,
+} from "./unwind-abi.js";
 import {
   mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
@@ -176,7 +189,7 @@ import { type MapEntryFusion } from "./map-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import { findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
-import { IrNodeIndex } from "../../ir/node-index.js";
+import { eachNodeOfKinds, IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
 import { lastUseRead } from "./local-extents.js";
 import { findReboundParameters } from "./rebound-parameters.js";
 import { ReferenceEffects } from "./reference-effects.js";
@@ -439,6 +452,12 @@ export interface ForkPrimitives {
 export interface LlvmTargetOptions {
   /** C ABI target; omitted direct emission uses the host ABI. */
   targetTriple?: string;
+  /** Linux (glibc and musl) executables: functions reached only by direct
+   * calls propagate exceptions by unwinding the native stack (unwind-abi.ts). */
+  unwindAbi?: boolean;
+  /** Functions kept on the pending-flag ABI under `unwindAbi`: the ones an
+   * earlier emission found breaking its rules (UnwindAbiViolation). */
+  unwindExcluded?: ReadonlySet<string>;
   /** Emit the function bodies in this many contiguous ranges, each by its
    * own emitter, and merge them in function order (emit-journal.ts). The
    * output is the same as one emitter's. Debug builds (`debugSources`)
@@ -562,13 +581,15 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
               scalarizeNumericRecords(
                 specializeCallbackCalls(
                   specializeNumericCalls(
-                    foldConstantGlobals(
-                      copyStableCaptures(
-                        resolveSelfCaptures(
-                          hoistFinalFieldReads(
-                            freezeInitOnlyGlobals(
-                              holdCharLocalsAsUnits(
-                                dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                    inlineExpressionFunctions(
+                      foldConstantGlobals(
+                        copyStableCaptures(
+                          resolveSelfCaptures(
+                            hoistFinalFieldReads(
+                              freezeInitOnlyGlobals(
+                                holdCharLocalsAsUnits(
+                                  dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                                ),
                               ),
                             ),
                           ),
@@ -590,16 +611,36 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   return new LlEmitter(emitted, options, null, prepared?.mod === emitted ? prepared : null);
 }
 
+/** Emits the module's parts, emitting it again with the functions an
+ * UnwindAbiViolation names on the pending-flag ABI. */
+function emitModuleText(input: IrModule, options: LlvmTargetOptions): string[] {
+  for (let excluded = options.unwindExcluded ?? new Set<string>(); ;) {
+    const emitter = moduleEmitter(input, { ...options, unwindExcluded: excluded });
+    try {
+      return emitter.emitParts();
+    } catch (error) {
+      if (!(error instanceof UnwindAbiViolation)) throw error;
+      const names = new Set(excluded);
+      for (const name of emitter.unwindAbi)
+        for (const symbol of [mangleFunction(name), mangleBorrowedFunction(name)])
+          if (error.symbols.has(symbol) || error.symbols.has(symbol + INT32_ABI_SUFFIX))
+            names.add(name);
+      if (names.size === excluded.size) throw error;
+      excluded = names;
+    }
+  }
+}
+
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
-  return moduleEmitter(input, options).emit();
+  return emitModuleText(input, options).join("\n");
 }
 
 /** emitLlvmModule's text as parts that concatenate to it, without the copy
  * that joining them makes: a large program's text is 150 MB. */
 export function emitLlvmModuleParts(input: IrModule, options: LlvmTargetOptions = {}): string[] {
-  return moduleEmitter(input, options)
-    .emitParts()
-    .flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
+  return emitModuleText(input, options).flatMap((part, index) =>
+    index === 0 ? [part] : ["\n", part],
+  );
 }
 
 /** Keep large translation units below the host's single-string limit. */
@@ -609,7 +650,7 @@ export function emitLlvmModuleSource(
 ): string | readonly string[] {
   // IR validation, contracts and the frontend's disposal run after lowering without checks.
   relieveHeapPressure(true);
-  const parts = moduleEmitter(input, options).emitParts();
+  const parts = emitModuleText(input, options);
   const length = parts.reduce((total, part) => total + part.length, Math.max(0, parts.length - 1));
   if (length <= 256 * 1024 * 1024) return parts.join("\n");
   return parts.flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
@@ -620,6 +661,11 @@ export function llStrBytes(text: string): string {
 }
 
 const NO_BORROWED: ReadonlySet<number> = new Set();
+
+/** The nodes that write a binding by its id (numberGlobalWriters). */
+const GLOBAL_WRITE_KINDS: readonly IrNodeKind[] = ["assign", "varDecl", "assignExpr", "incDec"];
+/** Runtime library calls (readsLoopMetrics). */
+const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
 
 /** [A-Za-z0-9_] */
 function isIdentifierByte(code: number): boolean {
@@ -1248,6 +1294,10 @@ export class LlEmitter {
   /** May-throw analysis (computeMayThrow): pending
    * checks are emitted only after calls that can actually raise. */
   readonly mayThrow: Set<string>;
+  /** The functions that propagate exceptions by unwinding (unwind-abi.ts). */
+  readonly unwindAbi: Set<string>;
+  /** Whether the function being emitted is one of unwindAbi. */
+  currentUnwindAbi = false;
   readonly indirectMayThrow: boolean;
   /** Worker programs: the functions that poll for termination on entry
    * (workerTerminationPolls); null outside worker programs. */
@@ -1456,6 +1506,9 @@ export class LlEmitter {
   integerTempsEnabled = false;
   /** Speculative integer loops (speculative-integers.ts) run in this function. */
   speculativeLoopsEnabled = false;
+  /** False inside the copy of a versioned loop that runs when its guard
+   * fails: loops there get no speculative or int32 kind copies. */
+  loopCopiesEnabled = true;
   /** The fast copy of a speculative integer loop being emitted: its
    * integer-computed writes and where each resumes in the ordinary copy. */
   speculation: {
@@ -1510,6 +1563,12 @@ export class LlEmitter {
    * (one-unit tests and switches, charAtUnitRead), with the charAt each
    * stands for: a loop version's proof for the charAt covers its read. */
   readonly charAtUnitReads = new Map<IrExpr, IrExpr>();
+  /** String reads a loop version proved in bounds of a string's UTF-16
+   * units, with the units pointer to read (string-unit-versions.ts). */
+  stringUnitReads: ReadonlyMap<IrExpr | IrStmt, string> = new Map();
+  /** `length` reads of a loop version's string, with the i64 UTF-16
+   * length its guard took (bytes-loop-versions.ts). */
+  stringLengthReads: ReadonlyMap<IrExpr, string> = new Map();
   /** Worker programs: typed-array accesses whose views an enclosing version
    * guard proved thread-owned. */
   bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
@@ -1706,6 +1765,16 @@ export class LlEmitter {
       nodes: this.nodeIndex,
     });
     this.mayThrow = mt.fns;
+    this.unwindAbi =
+      options.unwindAbi === true &&
+      !this.wasi &&
+      mod.lib === undefined &&
+      options.debugSources === undefined &&
+      (options.targetTriple
+        ? /-linux-(?:gnu|musl)/.test(options.targetTriple)
+        : process.platform === "linux")
+        ? unwindAbiFunctions(mod, this.mayThrow, options.unwindExcluded)
+        : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
     // A stackless call's eager prefix borrows its caller's stack; the
@@ -1841,10 +1910,13 @@ export class LlEmitter {
               : undefined,
           )
         : NO_INTEGER_CLONES;
+    // Integer clones and their dispatchers call each other through their
+    // own lowering, which keeps plain calls and flag tests.
+    for (const name of this.integerClones.members) this.unwindAbi.delete(name);
     this.stackCallbacks = new StackCallbacks(this.fnByName);
-    this.receiverReaders = new AmbientReceiverReaders(this.fnByName);
+    this.receiverReaders = new AmbientReceiverReaders(this.fnByName, this.nodeIndex);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
-    this.lazyCaptures = new LazyCaptures(this.fnByName);
+    this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
     const traced = computeTraced(mod, dynamicStores, cycleMutability);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
@@ -2120,7 +2192,8 @@ export class LlEmitter {
     return this.emitParts().join("\n");
   }
   emitParts(): string[] {
-    return emitParts(this);
+    const parts = emitParts(this);
+    return this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
   }
 
   /** The dispose-observer gates the emitted frees and record writers test
@@ -3231,6 +3304,13 @@ export class LlEmitter {
       terminator = `br label %${target.label}`;
     } else if (this.currentCoro !== null) {
       terminator = `br label %${this.currentCoro.finalLabel}`;
+    } else if (this.currentUnwindAbi && this.inLandingPad) {
+      // The unwind that entered the landing pad goes on to the caller's.
+      terminator = UNWIND_RESUME;
+    } else if (this.currentUnwindAbi) {
+      // The caller's invoke takes the exception at its landing pad.
+      this.declare(UNWIND_RAISE_DECLARATION);
+      terminator = UNWIND_RAISE;
     } else {
       const t = this.llType(this.currentReturnType);
       terminator =
@@ -3261,6 +3341,7 @@ export class LlEmitter {
         passThrough !== undefined &&
         !target &&
         this.currentCoro === null &&
+        !this.currentUnwindAbi &&
         !this.currentInt32Result
       ) {
         const t = this.llType(this.currentReturnType);
@@ -3447,6 +3528,46 @@ export class LlEmitter {
     B.startBlock(B.newLabel("exc.dead"));
   }
 
+  /** Emits `line`, a `call` of `callee`, and reports whether the call
+   * needs no pending check after it: a call of an unwinding-ABI function
+   * becomes an `invoke` whose landing pad runs this frame's unwind (the
+   * same releases and handler as emitPendingCheck's unwind path), and the
+   * normal path continues in a fresh block. Coroutine bodies keep plain
+   * calls (unwindAbiFunctions excludes their callees). */
+  emitDirectCall(line: string, callee: string): boolean {
+    const B = this.B;
+    if (!this.unwindAbi.has(callee) || this.currentCoro !== null || B.isTerminated()) {
+      B.line(line);
+      return false;
+    }
+    const ok = B.newLabel("inv.ok");
+    const pad = B.newLabel("inv.lp");
+    this.usesLandingPads = true;
+    // A trailing comment goes after the invoke's labels.
+    const comment = line.indexOf(" ; ");
+    const text = comment < 0 ? line : line.slice(0, comment);
+    B.terminate(
+      `${text.replace(/^((?:%[\w.]+ = )?)call /, "$1invoke ")} to label %${ok} unwind label %${pad}`,
+    );
+    B.startBlock(pad);
+    const exception = B.tmp();
+    B.line(`${exception} = landingpad { ptr, i32 } cleanup`);
+    if (this.currentUnwindAbi) B.line(`store { ptr, i32 } ${exception}, ptr ${UNWIND_SLOT}`);
+    this.inLandingPad = true;
+    this.emitUnwind();
+    this.inLandingPad = false;
+    B.startBlock(ok);
+    return true;
+  }
+
+  /** Whether emitUnwind runs for a landing pad, whose unwind goes on with
+   * `resume` instead of raising again. */
+  private inLandingPad = false;
+
+  /** Whether the function being emitted has a landing pad (its definition
+   * needs the personality). */
+  usesLandingPads = false;
+
   /** A recursive function's entry check: below the running stack's guard,
    * throw Node's RangeError and unwind like any other pending exception. */
   emitStackCheck(): void {
@@ -3622,15 +3743,14 @@ export class LlEmitter {
           set.add(fn.name);
           writers.set(localId, set);
         };
-        everyStmtList(fn.body, {
-          stmt: (s) => {
-            if (s.kind === "assign" || s.kind === "varDecl") note(s.localId);
-            return true;
-          },
-          expr: (e) => {
-            if (e.kind === "assignExpr" || e.kind === "incDec") note(e.localId);
-            return true;
-          },
+        eachNodeOfKinds(fn, this.nodeIndex.scan(GLOBAL_WRITE_KINDS), (node) => {
+          if (
+            node.kind === "assign" ||
+            node.kind === "varDecl" ||
+            node.kind === "assignExpr" ||
+            node.kind === "incDec"
+          )
+            note(node.localId);
         });
       }
       this.globalWriters = writers;
@@ -4364,9 +4484,19 @@ export class LlEmitter {
         workers: this.mod.workers === true,
         owned: this.bytesOwned,
         scalarStrings: new Set(this.stringSlices.keys()),
+        unitSafeFunctions: this.unitSafeFunctions(),
       },
       paired,
     );
+  }
+
+  private unitSafe: ReadonlySet<string> | null | undefined;
+  /** The functions a loop over a string's UTF-16 units may call, or null
+   * where emitted reads do not use the runtime's scan receiver. */
+  private unitSafeFunctions(): ReadonlySet<string> | null {
+    if (this.unitSafe === undefined)
+      this.unitSafe = stringScanInline(this) ? unitSafeFunctions(this.mod) : null;
+    return this.unitSafe;
   }
 
   /** The alias tag of a whole-slot load of a binding (module globals only). */
@@ -5218,7 +5348,22 @@ export class LlEmitter {
     if (fn.captures !== undefined) params.unshift("ptr %sc_env");
     const ret = this.llType(fn.returnType);
     const call = `call ${ret} @${mangleBorrowedFunction(fn.name)}(${params.join(", ")})`;
-    B.line(ret === "void" ? call : `%result = ${call}`);
+    // The owned entry of an unwinding-ABI body releases the borrowed
+    // parameters on the unwind too, then resumes it to its caller.
+    const unwinding = this.unwindAbi.has(fn.name) && kept.size === 0;
+    if (unwinding) {
+      const ok = B.newLabel("adapt.ok");
+      const pad = B.newLabel("adapt.lp");
+      B.terminate(
+        `${ret === "void" ? "" : "%result = "}invoke ${call.slice(5)} to label %${ok} unwind label %${pad}`,
+      );
+      B.startBlock(pad);
+      const exception = B.tmp();
+      B.line(`${exception} = landingpad { ptr, i32 } cleanup`);
+      for (const index of borrowed) this.releaseFrame(`%p${index}`, fn.params[index]!.type);
+      B.terminate(`resume { ptr, i32 } ${exception}`);
+      B.startBlock(ok);
+    } else B.line(ret === "void" ? call : `%result = ${call}`);
     // A borrowed result is reachable from the parameters: own it first. A
     // throwing body returns a null dummy, which needs no owner (and string
     // or array retains do not accept NULL).
@@ -5244,7 +5389,9 @@ export class LlEmitter {
     B.terminate(ret === "void" ? "ret void" : `ret ${ret} ${result}`);
     const symbol =
       kept.size > 0 ? `${mangleBorrowedFunction(fn.name)}.virtual` : mangleFunction(fn.name);
-    return `define internal ${ret} @${symbol}(${params.join(", ")}) ${FN_ATTRS} {\n${B.render()}\n}`;
+    if (unwinding) this.declare(`declare i32 @__gcc_personality_v0(...)`);
+    const personality = unwinding ? ` ${UNWIND_PERSONALITY}` : "";
+    return `define internal ${ret} @${symbol}(${params.join(", ")}) ${FN_ATTRS}${personality} {\n${B.render()}\n}`;
   }
   canBorrowCallArgument(value: IrExpr): boolean {
     return canBorrowCallArgument(this, value);
@@ -5417,13 +5564,21 @@ export class LlEmitter {
   private loopMetricsRead: boolean | undefined;
   readsLoopMetrics(): boolean {
     if (this.loopMetricsRead !== undefined) return this.loopMetricsRead;
-    const visitor = {
-      expr: (e: IrExpr): boolean =>
-        !(e.kind === "libCall" && (e.fn === "perf.loopStart" || e.fn === "perf.idleTime")),
-      stmt: (): boolean => true,
-    };
-    this.loopMetricsRead = !this.mod.functions.every((fn) => everyStmtList(fn.body, visitor));
-    return this.loopMetricsRead;
+    let found = false;
+    const scan = this.nodeIndex.scan(LIB_CALL_KINDS);
+    for (const fn of this.mod.functions) {
+      eachNodeOfKinds(fn, scan, (node) => {
+        if (
+          node.kind === "libCall" &&
+          (node.fn === "perf.loopStart" || node.fn === "perf.idleTime")
+        )
+          found = true;
+        return !found;
+      });
+      if (found) break;
+    }
+    this.loopMetricsRead = found;
+    return found;
   }
 
   private lastUseMovesAllowed(): boolean {

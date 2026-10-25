@@ -23,8 +23,8 @@
  * Ownership: the checked-dynamic tree owns its children (strings, items, entry keys+values);
  * releasing the root releases the tree recursively. scr_json_parse borrows
  * the text and returns +1 — or THROWS a catchable string shaped like Node's
- * V8 messages ("Unexpected end of JSON input"; approximate fidelity, see
- * SEMANTICS.md) and returns NULL. scr_dyn_obj_get returns a BORROWED
+ * V8 messages ("Unexpected end of JSON input", "... in JSON at position
+ * <n> (line <l> column <c>)") and returns NULL. scr_dyn_obj_get returns a BORROWED
  * member (the compiler's builders retain what they extract themselves).
  */
 
@@ -200,6 +200,7 @@ typedef enum {
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
+  X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_ENCODER, 77) /* compiled TextEncoder record (scr_text_codec_dyn.c) */ \
   X(URL, 28) /* native WHATWG URL */ \

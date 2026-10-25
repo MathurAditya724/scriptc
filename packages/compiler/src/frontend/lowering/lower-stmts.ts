@@ -1624,7 +1624,46 @@ const THROWN_AS_DYN: ReadonlySet<IrType["kind"]> = new Set([
   "bytes",
   "func",
   "regex",
+  "date",
 ]);
+
+/** A `return` at the top level of a CommonJS module (preflight admits it
+ * there only): it ends the module's evaluation, and its value is
+ * evaluated and discarded, as Node's module wrapper does. Top-level
+ * bindings and export assignments after it would be left uninitialized
+ * where Node leaves them in their temporal dead zone or absent, so a
+ * module with any keeps a refusal. Null for a return inside a function. */
+function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrStmt | null {
+  let top: ts.Node = stmt;
+  while (top.parent !== undefined && !ts.isSourceFile(top.parent)) {
+    if (ts.isFunctionLike(top.parent) || ts.isClassStaticBlockDeclaration(top.parent)) return null;
+    top = top.parent;
+  }
+  const sf = top.parent;
+  if (sf === undefined || !ts.isSourceFile(sf)) return null;
+  const stmts = sf.statements.nodes;
+  const later = stmts.slice(stmts.indexOf(top as ts.Statement) + 1);
+  if (
+    later.some(
+      (s) =>
+        ts.isVariableStatement(s) || ts.isClassDeclaration(s) || cjsExportAssignmentOf(s) !== null,
+    )
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      stmt,
+      "a top-level return in a CommonJS module that declares variables or classes, or assigns exports, after it",
+    );
+  }
+  const loc = locOf(stmt);
+  const ret: IrStmt = { kind: "return", value: null, loc };
+  if (!stmt.expression) return ret;
+  return {
+    kind: "block",
+    body: [{ kind: "exprStmt", expr: lowerer.lowerExpr(stmt.expression), loc }, ret],
+    loc,
+  };
+}
 
 export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt[] | null {
   if (ownPrototypeResetStatement(lowerer, stmt))
@@ -1735,6 +1774,8 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
   if (ts.isForOfStatement(stmt)) return lowerer.lowerForOf(stmt);
   if (ts.isLabeledStatement(stmt)) return lowerLabeled(lowerer, stmt);
   if (ts.isReturnStatement(stmt)) {
+    const moduleReturn = lowerModuleLevelReturn(lowerer, stmt);
+    if (moduleReturn) return moduleReturn;
     // Implicit-any instance RETURN INFERENCE (function-returns.ts
     // resolveInferredReturn): the value lowers BARE and the statement
     // records itself — the post-pass settles the instance's return type
@@ -1828,9 +1869,7 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
       return { kind: "rethrow", localId: caughtLocal.id, loc: locOf(stmt) };
     }
     // Exception-representable values move into the runtime's exception
-    // cell. `throw f()` of a void call has no value; Date has numeric
-    // storage internally, but cannot preserve its object kind through the
-    // untyped catch boundary. Reject both rather than changing JS identity.
+    // cell. `throw f()` of a void call has no value.
     let value = lowerer.lowerExpr(stmt.expression);
     if (value.type.kind === "void")
       lowerer.badType(stmt.expression, lowerer.typeOf(stmt.expression));
@@ -1842,18 +1881,11 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     } else if (value.type.kind === "record" && lowerer.dynConvertible(value.type)) {
       value = { kind: "dynFrom", value, liveRef: true, type: DYN, loc: locOf(stmt.expression) };
     } else if (THROWN_AS_DYN.has(value.type.kind) && lowerer.dynConvertible(value.type)) {
-      // Arrays, Maps, Sets, typed arrays, Buffers, functions, regexes and
-      // unions over them keep their identity and contents the same way:
-      // the catch binding, `typeof`, `instanceof`, `Array.isArray`,
-      // inspection and typed views read the thrown object.
+      // Arrays, Maps, Sets, typed arrays, Buffers, functions, regexes,
+      // Dates and unions over them keep their identity and contents the
+      // same way: the catch binding, `typeof`, `instanceof`,
+      // `Array.isArray`, inspection and typed views read the thrown object.
       value = lowerer.coerceInto(stmt.expression, value, DYN);
-    }
-    if (value.type.kind === "date") {
-      lowerer.unsupported(
-        "SC1090",
-        stmt.expression,
-        "throwing Date values (catch bindings cannot preserve Date's object kind; throw an Error or primitive instead)",
-      );
     }
     // A dyn throw rides the REF cell arm (scr_throw_ref over the checked-dynamic tree
     // node — identity preserved through catch bindings, caughtToDyn
@@ -5450,7 +5482,12 @@ export function lowerVarDecl(
   if (isTimeValueDateDeclaration(lowerer, decl)) {
     const loc = locOf(decl);
     const date = lowerer.lowerExprExpecting(decl.initializer!, DATE_T);
-    const local = lowerer.declareLocal(decl.name, decl.name.text, F64, isLet);
+    const local = lowerer.declareLocal(
+      decl.name,
+      decl.name.text,
+      F64,
+      isLet || lowerer.timeValueDateWrites.has(decl),
+    );
     lowerer.timeValueDateLocals.add(local);
     const init: IrExpr = { kind: "libCall", fn: "date.getTime", args: [date], type: F64, loc };
     return { kind: "varDecl", localId: local.id, init, loc };

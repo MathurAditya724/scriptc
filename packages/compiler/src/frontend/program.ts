@@ -140,6 +140,7 @@ import {
 } from "./type-only-imports.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { planDeclProjection, type DeclProjection } from "./decl-projection.js";
+import { reportShapes } from "./shape-inference/index.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
   containsJsx,
@@ -487,43 +488,33 @@ function visitNpmStaticDeclarationClosure(
   visit(entryPath);
 }
 
-function npmStaticDeclarationOverloadsOf(
+/** The overloads and properties of the classes a package's declaration
+ * closure declares, read from one parse of each declaration file. */
+function npmStaticDeclarationMetadataOf(
   services: FrontendServices,
   entryPath: string,
-): NpmStaticDeclarationOverloads {
-  const classes = new Map<string, Map<string, readonly NpmStaticOverloadSignature[]>>();
+): { overloads: NpmStaticDeclarationOverloads; properties: NpmStaticDeclarationProperties } {
+  const overloads = new Map<string, Map<string, readonly NpmStaticOverloadSignature[]>>();
+  const properties = new Map<string, Map<string, string>>();
   visitNpmStaticDeclarationClosure(services, entryPath, (path, source) => {
-    for (const [className, methods] of parseNpmStaticDeclarationOverloads(
-      services.parse(path, source, "ts"),
-    )) {
+    const sourceFile = services.parse(path, source, "ts");
+    for (const [className, methods] of parseNpmStaticDeclarationOverloads(sourceFile)) {
       const target =
-        classes.get(className) ?? new Map<string, readonly NpmStaticOverloadSignature[]>();
-      classes.set(className, target);
+        overloads.get(className) ?? new Map<string, readonly NpmStaticOverloadSignature[]>();
+      overloads.set(className, target);
       for (const [methodName, signatures] of methods) {
         if (!target.has(methodName)) target.set(methodName, signatures);
       }
     }
-  });
-  return classes;
-}
-
-function npmStaticDeclarationPropertiesOf(
-  services: FrontendServices,
-  entryPath: string,
-): NpmStaticDeclarationProperties {
-  const classes = new Map<string, Map<string, string>>();
-  visitNpmStaticDeclarationClosure(services, entryPath, (path, source) => {
-    for (const [className, properties] of parseNpmStaticDeclarationProperties(
-      services.parse(path, source, "ts"),
-    )) {
-      const target = classes.get(className) ?? new Map<string, string>();
-      classes.set(className, target);
-      for (const [propertyName, type] of properties) {
+    for (const [className, fields] of parseNpmStaticDeclarationProperties(sourceFile)) {
+      const target = properties.get(className) ?? new Map<string, string>();
+      properties.set(className, target);
+      for (const [propertyName, type] of fields) {
         if (!target.has(propertyName)) target.set(propertyName, type);
       }
     }
   });
-  return classes;
+  return { overloads, properties };
 }
 
 /** See LoadResult.startupCrash: Node's exact error message, the IR error
@@ -1095,8 +1086,7 @@ export function loadProgram(
     ) {
       continue;
     }
-    const overloads = npmStaticDeclarationOverloadsOf(services, resolved.typesFile);
-    const properties = npmStaticDeclarationPropertiesOf(services, resolved.typesFile);
+    const { overloads, properties } = npmStaticDeclarationMetadataOf(services, resolved.typesFile);
     const classNames = new Set([...overloads.keys(), ...properties.keys()]);
     if (classNames.size === 0) continue;
     const runtime = resolveBareModule(entryPath, pkg, "js-only");
@@ -1260,6 +1250,10 @@ export function loadProgram(
       npmStaticPackages.length > 0,
       projector,
     );
+    // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
+    const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];
+    if (shapes !== undefined && shapes !== "" && shapes !== "0" && npmStaticPackages.length > 0)
+      reportShapes(load.program, shapes);
     return {
       ...load,
       services,
@@ -5358,6 +5352,16 @@ function preflight7(load: LoadResult): {
     return new RegExp(`\\btypeof\\s*\\(?\\s*${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(sf.text);
   };
 
+  // A `return` at the top level of a CommonJS module (TS1108): Node runs
+  // the module as a function body, so the return ends the module's
+  // evaluation. ES modules and TypeScript keep the error.
+  const cjsTopLevelReturnSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (d.code !== 1108 || d.fileName === undefined || !isJsSourceFileName(d.fileName))
+      return false;
+    const sf = p.getSourceFile(d.fileName);
+    return sf !== undefined && isCjsJsFile7(sf, p);
+  };
+
   const workspaceImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
     if (d.code !== 7016 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
       return false;
@@ -5404,6 +5408,7 @@ function preflight7(load: LoadResult): {
         !isNpmStaticSubclassArgument(p, d) &&
         !workspaceImplicitAnySuppressed(p, d) &&
         !typeofTestedNameSuppressed(p, d) &&
+        !cjsTopLevelReturnSuppressed(p, d) &&
         !jsdocTypeSuppressed(p, d, commentDup),
     );
   };
