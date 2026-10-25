@@ -8,6 +8,7 @@ import { everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse
 import { F64_INF, f64Lit, sizeToDouble } from "./common.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
+import { emitStringAsciiFlag, emitStringByteLength } from "./string-reads.js";
 
 type Slice = IrExpr & { kind: "strIntrinsic" };
 
@@ -66,6 +67,58 @@ export function findScalarStringSlices(
   return slices;
 }
 
+/** scr_slice_unit: a slice()/substring() bound `v` over `length` units. A
+ * non-negative bound clamps to the length; a negative one counts from the
+ * end for slice (truncated toward zero) and is 0 for substring, as is NaN. */
+function emitSliceUnit(
+  host: LlvmEmitterContext,
+  v: string,
+  length: string,
+  substring: boolean,
+): string {
+  const B = host.B;
+  const size = host.sizeType;
+  const lengthNumber = B.tmp(),
+    nonNegative = B.tmp(),
+    past = B.tmp(),
+    whole = B.tmp(),
+    clamped = B.tmp(),
+    result = B.tmp();
+  B.line(`${lengthNumber} = ${sizeToDouble(size)} ${size} ${length} to double`);
+  B.line(`${nonNegative} = fcmp oge double ${v}, 0.0`);
+  B.line(`${past} = fcmp oge double ${v}, ${lengthNumber}`);
+  // Frozen: the conversion is only used where the bound is in range.
+  const raw = B.tmp();
+  B.line(`${raw} = fptosi double ${v} to i64`);
+  B.line(`${whole} = freeze i64 ${raw}`);
+  let unit = whole;
+  if (size !== "i64") {
+    unit = B.tmp();
+    B.line(`${unit} = trunc i64 ${whole} to ${size}`);
+  }
+  B.line(`${clamped} = select i1 ${past}, ${size} ${length}, ${size} ${unit}`);
+  if (substring) {
+    B.line(`${result} = select i1 ${nonNegative}, ${size} ${clamped}, ${size} 0`);
+    return result;
+  }
+  // Negative: (-length, -1] counts back from the end; (-1, 0) truncates to
+  // 0, and at or below -length, and NaN, give 0.
+  const negLength = B.tmp(),
+    inside = B.tmp(),
+    zero = B.tmp(),
+    back = B.tmp(),
+    counted = B.tmp(),
+    negative = B.tmp();
+  B.line(`${negLength} = fneg double ${lengthNumber}`);
+  B.line(`${inside} = fcmp ogt double ${v}, ${negLength}`);
+  B.line(`${zero} = icmp eq ${size} ${unit}, 0`);
+  B.line(`${back} = add ${size} ${length}, ${unit}`);
+  B.line(`${counted} = select i1 ${zero}, ${size} 0, ${size} ${back}`);
+  B.line(`${negative} = select i1 ${inside}, ${size} ${counted}, ${size} 0`);
+  B.line(`${result} = select i1 ${nonNegative}, ${size} ${clamped}, ${size} ${negative}`);
+  return result;
+}
+
 export interface StringSliceSnapshot {
   source: string;
   range: string;
@@ -87,10 +140,55 @@ export function emitStringSliceSnapshot(
     `${range} = alloca { ${host.sizeType}, ${host.sizeType}, i32 }`,
   );
   B.line(`store ptr ${source.name}, ptr ${sourceSlot}`);
+  const start = args[0]?.name ?? f64Lit(0),
+    end = args[1]?.name ?? F64_INF;
+  const substring = slice.method === "substring";
+  // A proven-ASCII receiver's units are its bytes, so the range is the
+  // runtime's clamped bounds over its byte length, and no boundary splits a
+  // surrogate pair (scr_str_slice_range); other strings ask the runtime.
+  const ascii = B.newLabel("slice.range.ascii"),
+    runtime = B.newLabel("slice.range.runtime"),
+    done = B.newLabel("slice.range.done");
+  B.condBr(emitStringAsciiFlag(host, source.name), ascii, runtime);
+  B.startBlock(ascii);
+  const size = host.sizeType;
+  const length = emitStringByteLength(host, source.name);
+  let from = emitSliceUnit(host, start, length, substring),
+    to = emitSliceUnit(host, end, length, substring);
+  if (substring) {
+    const swap = B.tmp(),
+      low = B.tmp(),
+      high = B.tmp();
+    B.line(`${swap} = icmp ugt ${size} ${from}, ${to}`);
+    B.line(`${low} = select i1 ${swap}, ${size} ${to}, ${size} ${from}`);
+    B.line(`${high} = select i1 ${swap}, ${size} ${from}, ${size} ${to}`);
+    from = low;
+    to = high;
+  }
+  const nonEmpty = B.tmp(),
+    difference = B.tmp(),
+    units = B.tmp(),
+    startPtr = B.tmp(),
+    lengthPtr = B.tmp(),
+    splitPtr = B.tmp();
+  B.line(`${nonEmpty} = icmp ugt ${size} ${to}, ${from}`);
+  B.line(`${difference} = sub ${size} ${to}, ${from}`);
+  B.line(`${units} = select i1 ${nonEmpty}, ${size} ${difference}, ${size} 0`);
+  const rangeType = `{ ${size}, ${size}, i32 }`;
+  B.line(`${startPtr} = getelementptr inbounds ${rangeType}, ptr ${range}, i32 0, i32 0`);
+  B.line(`store ${size} ${from}, ptr ${startPtr}`);
+  B.line(`${lengthPtr} = getelementptr inbounds ${rangeType}, ptr ${range}, i32 0, i32 1`);
+  B.line(`store ${size} ${units}, ptr ${lengthPtr}`);
+  B.line(`${splitPtr} = getelementptr inbounds ${rangeType}, ptr ${range}, i32 0, i32 2`);
+  B.line(`store i32 0, ptr ${splitPtr}`);
+  B.br(done);
+  B.startBlock(runtime);
   host.declare("declare void @scr_str_slice_range(ptr, double, double, i1 zeroext, ptr)");
   B.line(
-    `call void @scr_str_slice_range(ptr ${source.name}, double ${args[0]?.name ?? f64Lit(0)}, double ${args[1]?.name ?? F64_INF}, i1 ${slice.method === "substring" ? "true" : "false"}, ptr ${range})`,
+    `call void @scr_str_slice_range(ptr ${source.name}, double ${start}, double ${end}, i1 ${substring ? "true" : "false"}, ptr ${range})`,
   );
+  B.br(done);
+  B.startBlock(done);
   host.toFrame(source);
   return { source: sourceSlot, range };
 }

@@ -2210,6 +2210,17 @@ static void scr_str_slice_bounds(ScrStr *s, ScrSidx *e, double start, double end
 
 void scr_str_slice_range(ScrStr *s, double start, double end, bool substring,
                          ScrStringSlice *out) {
+  if (__builtin_expect(s->ascii, 1)) {
+    /* Units are bytes: no index entry, and no boundary splits a pair. */
+    size_t length = s->len;
+    size_t from = scr_slice_unit(start, length, substring);
+    size_t to = scr_slice_unit(end, length, substring);
+    if (substring && from > to) { size_t swap = from; from = to; to = swap; }
+    out->start = from;
+    out->length = to > from ? to - from : 0;
+    out->split = 0;
+    return;
+  }
   ScrSidx *e = scr_sidx_for(s);
   size_t from, to;
   scr_str_slice_bounds(s, e, start, end, substring, &from, &to);

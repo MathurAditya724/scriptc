@@ -68,7 +68,7 @@ import {
   type StoredSplitSnapshot,
   type StringSplit,
 } from "./split-loops.js";
-import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
+import { scalarizeLiteralResults, scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { addRecordResultEntries, resultEntryName } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import {
@@ -586,18 +586,20 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
       ? selectInt32Arrays(
           versionParameters(
             addRecordResultEntries(
-              scalarizeNumericRecords(
-                specializeCallbackCalls(
-                  specializeNumericCalls(
-                    pairRowSums(
-                      inlineExpressionFunctions(
-                        foldConstantGlobals(
-                          copyStableCaptures(
-                            resolveSelfCaptures(
-                              hoistFinalFieldReads(
-                                freezeInitOnlyGlobals(
-                                  holdCharLocalsAsUnits(
-                                    dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+              scalarizeLiteralResults(
+                scalarizeNumericRecords(
+                  specializeCallbackCalls(
+                    specializeNumericCalls(
+                      pairRowSums(
+                        inlineExpressionFunctions(
+                          foldConstantGlobals(
+                            copyStableCaptures(
+                              resolveSelfCaptures(
+                                hoistFinalFieldReads(
+                                  freezeInitOnlyGlobals(
+                                    holdCharLocalsAsUnits(
+                                      dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                                    ),
                                   ),
                                 ),
                               ),
@@ -605,10 +607,10 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                           ),
                         ),
                       ),
+                      mangleFunction,
                     ),
                     mangleFunction,
                   ),
-                  mangleFunction,
                 ),
               ),
             ),
