@@ -8,6 +8,7 @@ const early = require("static-objects-order/early-user.js");
 console.log("start");
 console.log(receivers.ns.run("add"), receivers.ns.run("sub"), receivers.ns.reads());
 console.log(receivers.ns.proto());
+console.log(receivers.ns.early());
 console.log(lazy.greet("a"), lazy.greet("b"));
 console.log(vec.len2(3, 4));
 console.log(early.early());

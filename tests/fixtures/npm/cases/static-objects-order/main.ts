@@ -8,6 +8,7 @@ import { early } from "static-objects-order/early-user.js";
 console.log("start");
 console.log(ns.run("add"), ns.run("sub"), ns.reads());
 console.log(ns.proto());
+console.log(ns.early());
 console.log(greet("a"), greet("b"));
 console.log(len2(3, 4));
 console.log(early());

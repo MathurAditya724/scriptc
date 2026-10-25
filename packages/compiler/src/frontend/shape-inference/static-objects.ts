@@ -733,6 +733,67 @@ export function planStaticObjectRewrites(
       const call = requireValue(v);
       return call !== null && requiredFiles(sf, call).includes(target);
     });
+  /** Whether `node` sits inside a function of its top-level statement. */
+  const insideFunction = (node: Node): boolean => {
+    const top = topStatement(node);
+    for (let p: Node | undefined = node.parent; p !== undefined && p !== top; p = p.parent)
+      if (ts.isFunctionLike(p)) return true;
+    return false;
+  };
+  /** The nodes whose statements must have run for an effect-free receiver
+   * (effectFree) to be the constant object it reads as: each member read's
+   * stores of that member, and a name's declaration. */
+  const receiverDeps = (e: ts.Expression): Node[] => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isIdentifier(e)) {
+      const d = declOf(e);
+      return d === undefined ? [] : [d];
+    }
+    if (!ts.isPropertyAccessExpression(e) && !ts.isElementAccessExpression(e)) return [];
+    const op = readOps.get(e);
+    if (op === undefined || op.name === null) return [];
+    const objects = analysis.nodes[op.recv]!.atoms;
+    const stores = analysis.ops
+      .filter(
+        (w) =>
+          w.kind === "write" &&
+          w.name === op.name &&
+          [...analysis.nodes[w.recv]!.atoms].some((a) => objects.has(a)),
+      )
+      .map((w) => w.node);
+    return [...stores, ...receiverDeps(e.expression)];
+  };
+  /** Whether `read` can only run after the statements holding `deps`: what
+   * it reads exists by then, so a rewrite that no longer evaluates the read
+   * cannot drop the TypeError or ReferenceError of an earlier read. In
+   * another file, the defining module has finished loading unless it
+   * requires the reading file. In the same file, a top-level read comes
+   * after them. A read inside a function runs when the function is called:
+   * the statements from the one that creates the function (the first, for
+   * a hoisted declaration) to the last of them must only define things. */
+  const createdBefore = (read: Node, deps: readonly Node[]): boolean => {
+    const sf = read.getSourceFile();
+    const stmts = sf.statements.nodes;
+    let last = -1;
+    for (const d of deps) {
+      const file = d.getSourceFile();
+      if (file !== sf) {
+        if (requiredClosure(file).has(sf)) return false;
+        continue;
+      }
+      const at = stmts.indexOf(topStatement(d)!);
+      if (at < 0) return false;
+      last = Math.max(last, at);
+    }
+    if (last < 0) return true;
+    const top = topStatement(read)!;
+    if (!insideFunction(read)) return stmts.indexOf(top) > last;
+    let fn: Node | undefined;
+    for (let p: Node | undefined = read.parent; p !== undefined && p !== top; p = p.parent)
+      if (ts.isFunctionLike(p)) fn = p;
+    const from = fn !== undefined && ts.isFunctionDeclaration(fn) ? 0 : stmts.indexOf(top);
+    return stmts.slice(from, last + 1).every(definitionOnly);
+  };
   const moduleBindings = new Map<string, string>();
   const exportAdds = new Map<ts.SourceFile, Set<string>>();
   const crossFileReference = (
@@ -759,11 +820,7 @@ export function planStaticObjectRewrites(
     const at = stmts.findIndex((st) => requiresWhenRun(sf, st, defining));
     if (at < 0) return null;
     const top = topStatement(node)!;
-    const inFunction = ((): boolean => {
-      for (let p: Node | undefined = node.parent; p !== undefined && p !== top; p = p.parent)
-        if (ts.isFunctionLike(p)) return true;
-      return false;
-    })();
+    const inFunction = insideFunction(node);
     if (!inFunction && stmts.indexOf(top) <= at) return null;
     // A function may run before the binding below is initialized if the
     // statement that loads the module, or one before it, runs other code
@@ -829,6 +886,10 @@ export function planStaticObjectRewrites(
       kept.push(`reference ${node.getText()}: the receiver may have effects`);
       continue;
     }
+    if (!createdBefore(node, [field.values[0]!.node!, ...receiverDeps(node.expression)])) {
+      kept.push(`reference ${node.getText()}: it may run before the member is stored`);
+      continue;
+    }
     if (node.getSourceFile() !== field.values[0]!.node!.getSourceFile()) {
       const text = crossFileReference(node, field.values[0]!.node!.getSourceFile(), name);
       if (text === null) continue;
@@ -869,6 +930,10 @@ export function planStaticObjectRewrites(
     if (!isPlainRead(node) || topStatement(node) === null) continue;
     if (!effectFree(node.expression)) {
       kept.push(`constant read ${node.getText()}: the receiver may have effects`);
+      continue;
+    }
+    if (!createdBefore(node, [o.site.node, ...receiverDeps(node.expression)])) {
+      kept.push(`constant read ${node.getText()}: it may run before the object is created`);
       continue;
     }
     callEdits.push({
@@ -948,6 +1013,11 @@ export function planStaticObjectRewrites(
     }
     if (arms.length !== o.fields.length) {
       kept.push(`${where}: a member is not a hoisted function of this file`);
+      continue;
+    }
+    const armNodes = o.fields.map((f) => f.values[0]!.node!);
+    if (!createdBefore(call, [o.site.node, ...armNodes, ...receiverDeps(node.expression)])) {
+      kept.push(`${where}: it may run before the table is created`);
       continue;
     }
     tableCalls.push({ sf: call.getSourceFile(), call, arms });

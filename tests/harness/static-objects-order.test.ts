@@ -2,10 +2,11 @@
  * rewrites keep what the program evaluates and when its modules load. With
  * the shape overlay on, the npm case static-objects-order (through its
  * JavaScript consumer, js-main.cjs) keeps receivers with effects as
- * written, binds a module where the program loads it and only for reads
- * that run after the binding, never adds a hoisted class to an exports
- * literal that runs before the class's declaration, does not fold a
- * literal's `__proto__`, and prints what Node prints. A module in a require cycle through another
+ * written, keeps reads that may run before what they read exists, binds a
+ * module where the program loads it and only for reads that run after the
+ * binding, never adds a hoisted class to an exports literal that runs
+ * before the class's declaration, does not fold a literal's `__proto__`,
+ * and prints what Node prints. A module in a require cycle through another
  * module is not read through its exports from the cycle. The rewritten
  * files are read from the overlay's debug output
  * (SCRIPTC_DEBUG_SHAPE_OVERLAY). */
@@ -83,6 +84,11 @@ test(
       "kept table call (reads++, ns.ops)[op]: the table expression may have effects",
     );
     // vec.js assigns its exports literal before the constructor function.
+    // receivers.js reads ns.Late.X and calls ns.later() before they exist.
+    expect(debug).toContain(
+      "kept constant read ns.Late.X: it may run before the object is created",
+    );
+    expect(debug).toContain("kept reference ns.later: it may run before the member is stored");
     // lazy-user.js's first mention of lazy.js is a conditional require: the
     // binding follows the statement that loads the module each time it runs.
     expect(rewritten(debug, join(pkg, "lazy-user.js"))).toMatch(
