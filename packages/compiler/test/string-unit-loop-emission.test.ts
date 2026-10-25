@@ -50,9 +50,9 @@ console.log(total, spaces("plain ascii text"), spaces(""));
       )![0];
 
     const spaces = body("spaces");
-    // A string that is not ASCII is published as the scan receiver once,
-    // before the loop, and its copy loads units.
-    expect(spaces).toMatch(/call double @scr_str_char_code_at\(ptr %\S+, double 0\.0\)/);
+    // A string that is not ASCII is converted to units and published as the
+    // scan receiver once, before the loop, and its copy loads units.
+    expect(spaces).toMatch(/call void @scr_str_scan_units\(ptr %\S+\)/);
     // The copies follow the checked one: bytes, then units.
     const bytesAt = spaces.search(/^bytes\.version\.fast\d+:/m);
     const unitsAt = spaces.search(/^bytes\.version\.fast\.units\d+:/m);
@@ -88,6 +88,64 @@ console.log(total, spaces("plain ascii text"), spaces(""));
       if (text.charCodeAt(i) === other.charCodeAt(i % other.length)) pairs++;
     const total = 4 * (count(text) + count(other) + pairs + text.indexOf(" "));
     expect(execFileSync(exe, { encoding: "utf8" })).toBe(`${total} 2 0\n`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loops that start at each token publish the scan receiver only when it changed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-unit-republish-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(
+      entry,
+      `
+function words(s: string): number {
+  let n = 0,
+    pos = 0;
+  while (pos < s.length) {
+    while (pos < s.length && s.charCodeAt(pos) !== 32) pos++;
+    while (pos < s.length && s.charCodeAt(pos) === 32) pos++;
+    n++;
+  }
+  return n;
+}
+let text = "";
+for (let k = 0; k < 400; k++) text += k % 3 === 0 ? "café " : "naïve  façade ";
+console.log(words(text), words(text.replace(/a/g, "ä")), words("plain ascii"));
+`,
+    );
+    const outPath = join(dir, "main.ir.json");
+    const lowered = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!lowered.ok)
+      throw new Error(lowered.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    const words = ll.match(
+      /define internal [^\n]+ @sc_bf_words(?:\.i32)?\([^\n]*\) #0 \{[\s\S]*?\n\}/,
+    )![0];
+    // Each inner loop's entry compares the scan receiver with `s` and calls
+    // the runtime to publish `s` only when they differ.
+    const guards = [
+      ...words.matchAll(
+        /^bytes\.version\.publish\d+:[^\n]*\n\s+(%\S+) = load ptr, ptr @scr_str_scan\n\s+(%\S+) = icmp eq ptr \1, (%\S+)\n\s+br i1 \2, label %(bytes\.version\.publish\.load\d+), label %(bytes\.version\.publish\.units\d+)\n/gm,
+      ),
+    ];
+    expect(guards.length).toBeGreaterThanOrEqual(2);
+    for (const [, , , s, load, convert] of guards) {
+      const block = words.slice(words.search(new RegExp(`^${convert}:`, "m")));
+      expect(block).toMatch(
+        new RegExp(
+          `^${convert}:[^\\n]*\\n\\s+call void @scr_str_scan_units\\(ptr ${s}\\)\\n\\s+br label %${load}\\n`,
+        ),
+      );
+    }
+    const calls = words.match(/call void @scr_str_scan_units\(ptr %\S+\)/g)!;
+    expect(calls.length).toBe(guards.length);
+
+    const exe = join(dir, "main");
+    const built = await compile(entry, { outputKind: "exe", outDir: dir, outPath: exe });
+    if (!built.ok) throw new Error(JSON.stringify(built.diagnostics));
+    expect(execFileSync(exe, { encoding: "utf8" })).toBe("666 666 2\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
