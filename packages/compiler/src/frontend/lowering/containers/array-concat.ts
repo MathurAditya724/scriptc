@@ -206,7 +206,7 @@ export function arrayConcatHelper(
     ),
     { kind: "return", value: out, loc },
   ];
-  if (shape.some((type) => type && type !== "dyn" && !typeEquals(type, elem))) {
+  if (shape.some((type) => type !== null && type !== "dyn" && !typeEquals(type, elem))) {
     for (const id of ["i.0", "offset.0", "count.0"])
       locals.push({ id, name: id, type: F64, mutable: true });
   }
