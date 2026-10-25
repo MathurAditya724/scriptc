@@ -202,7 +202,7 @@ import { ReferenceEffects } from "./reference-effects.js";
 import { ReferenceWrites, type Writes } from "./reference-writes.js";
 import { LlvmDebugInfo } from "./debug-info.js";
 import { StackCallbacks } from "./stack-callbacks.js";
-import { findAppendedArrayLiterals } from "./appended-array-literals.js";
+import { findAppendedArrayLiterals, reservedArrayLength } from "./appended-array-literals.js";
 import { AmbientReceiverReaders, findConstantCallbacks } from "./constant-callbacks.js";
 import {
   findLentRecordFields,
@@ -476,14 +476,13 @@ export interface LlvmTargetOptions {
    * earlier emission found breaking its rules (UnwindAbiViolation). */
   unwindExcluded?: ReadonlySet<string>;
   /** Emit the function bodies in this many contiguous ranges, each by its
-   * own emitter, and merge them in function order (emit-journal.ts). The
-   * output is the same as one emitter's. Debug builds (`debugSources`)
-   * emit in one emitter. */
+   * own emitter, and merge them in function order (emit-journal.ts, and
+   * debug-info.ts for debug metadata). The output is the same as one
+   * emitter's. */
   functionChunks?: number;
   /** Emit the function bodies of a large module on this many forked worker
    * processes at a time (emit-module.ts), forked with `forkPrimitives`. The
-   * output is the same as one emitter's. Debug builds (`debugSources`)
-   * emit in one emitter. */
+   * output is the same as one emitter's. */
   functionWorkers?: number;
   /** The host's process primitives, where it can fork (the native
    * compiler's). */
@@ -1304,6 +1303,12 @@ export class LlEmitter {
     string,
     { sym: string; src: string; fl: string; pattern: string; flags: string }
   >();
+  /** Build-time replacers: one per (pattern, flags, replacement) of a
+   * global substitution with a literal replacement (regex-matchers.ts). */
+  readonly regexReplacers = new Map<
+    string,
+    { sym: string; pattern: string; flags: string; replacement: string }
+  >();
   /** Interned tagged-template strings objects: per-site key → { symbol,
    * interned cooked-literal refs }. One immortal ScrArr of string slots
    * per template SITE (the spec's per-occurrence identity — the C
@@ -1479,6 +1484,11 @@ export class LlEmitter {
   /** Locals whose array literal emitStmts left for the `await Promise.all`
    * that reads them (deferredPromiseAllLocal). */
   private readonly deferredPromiseAllEntries = new Map<string, ExprOf<"arrayLit">>();
+  /** Empty array literals that a capacity hint follows directly
+   * (reservedArrayLength), with that hint. Constructing the literal with
+   * the hinted capacity consumes the hint, which then emits nothing. */
+  readonly reservedArrayLengths = new Map<IrExpr, IrStmt & { kind: "arraySetLength" }>();
+  readonly consumedReserves = new Set<IrStmt>();
   /** The promise a `return` emitted past its finally regions already
    * produced for its adopting await (borrowed from the return's parked
    * slot); that await takes it instead of evaluating its operand. */
@@ -1629,6 +1639,9 @@ export class LlEmitter {
    * commit back into their objects. Library builds keep their commits:
    * their values cross a native boundary. */
   readonly liveViewsReadOnly: boolean;
+  /** IrModule.foreignElementKeys: element keys whose arrays can hold
+   * SCR_ARR_FOREIGN elements. */
+  readonly foreignElementKeys: ReadonlySet<string>;
   /** The program freezes, seals or prevents extensions of untyped values
    * (IrModule.untypedIntegrity): the commits of class views store the
    * view's integrity state in the instance's integrity word. */
@@ -1884,9 +1897,7 @@ export class LlEmitter {
     this.journal = journal;
     this.journaled =
       journal !== null ||
-      ((options.functionWorkers ?? 1) > 1 &&
-        options.forkPrimitives !== undefined &&
-        options.debugSources === undefined);
+      ((options.functionWorkers ?? 1) > 1 && options.forkPrimitives !== undefined);
     // One walk of every body, which the analyses below read instead of
     // walking the bodies themselves.
     this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod);
@@ -1923,6 +1934,7 @@ export class LlEmitter {
       !this.untypedIntegrity &&
       !dynamicStores.all &&
       dynamicStores.names.size === 0;
+    this.foreignElementKeys = new Set(mod.foreignElementKeys ?? []);
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
@@ -2217,6 +2229,7 @@ export class LlEmitter {
       declare: (decl) => this.declare(decl),
       needOom: () => this.needOom(),
       needBadTag: () => this.needBadTag(),
+      mayHoldForeign: (elem) => this.mayHoldForeign(elem),
       internLiteral: (text) => this.internLiteral(text),
       cstr: (text) => this.cstr(text),
       mapOps: (operands) => this.mapOps(operands),
@@ -3927,13 +3940,19 @@ export class LlEmitter {
     }
   }
 
+  /** Whether `loop` needs a cancellation poll: in a worker program, unless
+   * the loop already runs a pending test on every iteration, which observes
+   * a terminate request itself (a separate poll would only add work). */
+  workerLoopPolls(loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" | "forOf" }>): boolean {
+    return (
+      this.mod.workers === true && !loopTestsEveryIteration(loop, (e) => this.callTestsPending(e))
+    );
+  }
+
   workerLoopBudget(
     loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" | "forOf" }>,
   ): string | null {
-    if (!this.mod.workers) return null;
-    // A loop that runs a pending test on every iteration observes a
-    // terminate request through it; a separate poll would only add work.
-    if (loopTestsEveryIteration(loop, (e) => this.callTestsPending(e))) return null;
+    if (!this.workerLoopPolls(loop)) return null;
     const slot = this.B.slot();
     this.B.entryAllocas.push(`${slot} = alloca i32 ; worker cancellation budget`);
     this.B.line(`store i32 0, ptr ${slot}`);
@@ -4051,12 +4070,17 @@ export class LlEmitter {
     B.condBr(due, poll, next);
     B.startBlock(poll);
     B.line(`store i32 63, ptr ${slot}`);
-    // Calls and throwing operations retain their own checks. Amortize the
-    // extra cancellation poll across bounded loop batches so scalar work
-    // does not cross the runtime ABI on every iteration.
-    this.emitPendingCheck(undefined, true);
+    this.emitWorkerPoll();
     B.br(next);
     B.startBlock(next);
+  }
+
+  /** The cancellation poll itself. Calls and throwing operations retain
+   * their own checks. Loops amortize this extra poll across bounded
+   * batches of iterations so scalar work does not cross the runtime ABI on
+   * every iteration. */
+  emitWorkerPoll(): void {
+    this.emitPendingCheck(undefined, true);
   }
 
   /** Moves an already-evaluated value into the runtime's exception cell —
@@ -5259,6 +5283,7 @@ export class LlEmitter {
   chunkResult(): ChunkResult {
     return {
       entries: this.journal!.entries,
+      debugRequests: this.debug?.recorded() ?? [],
       flags: {
         usesCoroutines: this.usesCoroutines,
         usesTimers: this.usesTimers,
@@ -5294,6 +5319,8 @@ export class LlEmitter {
     // emission left them (a helper set guards the declarations its first
     // request adds).
     replayJournal(this, chunk.entries, names, tags);
+    const debugIds = new Map<string, string>();
+    this.debug?.replay(chunk.debugRequests, (name) => this.functionNamed(name), debugIds);
     const flags = chunk.flags;
     this.usesCoroutines ||= flags.usesCoroutines;
     this.usesTimers ||= flags.usesTimers;
@@ -5314,7 +5341,13 @@ export class LlEmitter {
     for (const name of chunk.adoptCallees) this.adoptCallees.add(name);
     for (const name of chunk.directAwaitCallees) this.directAwaitCallees.add(name);
     for (const name of chunk.inlineAwaitCallees) this.inlineAwaitCallees.add(name);
-    return renameChunk(names, tags);
+    return renameChunk(names, tags, debugIds);
+  }
+
+  private functionNamed(name: string): IrFunction {
+    const fn = this.fnByName.get(name);
+    if (fn === undefined) throw new InternalCompilerError(`llvm emitter bug: no function ${name}`);
+    return fn;
   }
 
   /** Adds a content-named constant a chunk interned. Its symbol is this
@@ -5417,6 +5450,8 @@ export class LlEmitter {
         return addNumbered(this.threadSlotsBlocks, key, value as string, "@sc_slots_", names);
       case "regex":
         return addNumberedSymbol(this.regexInstances, key, value as never, "sc_re_", names);
+      case "regexReplacer":
+        return addNumberedSymbol(this.regexReplacers, key, value as never, "sc_rr_", names);
       case "templateStrings":
         return addNumberedSymbol(
           this.templateStringsInstances,
@@ -5442,7 +5477,13 @@ export class LlEmitter {
   /** An emitter for a range of this module's functions: the same facts,
    * empty module-level tables, and a journal of what the range adds. */
   chunkEmitter(): LlEmitter {
-    return new LlEmitter(this.mod, { ...this.targetOptions, functionChunks: 1 }, new EmitJournal());
+    const chunk = new LlEmitter(
+      this.mod,
+      { ...this.targetOptions, functionChunks: 1 },
+      new EmitJournal(),
+    );
+    chunk.debug?.record();
+    return chunk;
   }
 
   /** The double-ABI entry of a function with an i32 entry: every caller
@@ -6044,6 +6085,8 @@ export class LlEmitter {
         if (this.B.isTerminated()) return;
         if (cursor) cursor.index = i;
         this.stmtCursor = cursor;
+        const reserve = reservedArrayLength(stmts, i);
+        if (reserve !== null) this.reservedArrayLengths.set(reserve.literal, reserve.hint);
         const deferred = this.deferredPromiseAllLocal(stmts, i);
         if (deferred !== null) {
           this.deferredPromiseAllEntries.set((stmts[i] as { localId: string }).localId, deferred);
@@ -6684,6 +6727,12 @@ export class LlEmitter {
       default:
         throw new InternalCompilerError(`llvm emitter bug: unknown intrinsic ${e.name}`);
     }
+  }
+
+  /** Arrays of this element type can hold SCR_ARR_FOREIGN elements. */
+  mayHoldForeign(elem: IrType): boolean {
+    if (this.foreignElementKeys.size === 0) return false;
+    return this.foreignElementKeys.has("*") || this.foreignElementKeys.has(typeKey(elem));
   }
 
   /** Lifetime regions in modules with lifetimeRegions (llvm/regions.ts).

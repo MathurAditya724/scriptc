@@ -47,11 +47,13 @@ export type {
   AnalyzeResult,
 } from "./compile-types.js";
 import { compilePackedLibrary } from "./backend/library-pack.js";
+import { node24FetchCompatProfile } from "./compat/fetch-profile.js";
+import { libFnSignatures } from "./ir/builtin-signatures.js";
 import { InternalCompilerError } from "./errors.js";
 import { frontendProcessExecArgv } from "./frontend-process-args.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -118,6 +120,7 @@ import {
   ffiNativeBuildDiag,
   iceDiag,
   nativeCodegenDiag,
+  isTypePatchCode,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
@@ -250,7 +253,7 @@ export {
   type SurfaceManifestEntry,
 } from "./coverage/surface-manifest.js";
 export {
-  NODE24_FETCH_COMPAT_PROFILE,
+  node24FetchCompatProfile,
   type FetchCompatEvidence,
   type FetchCompatFacet,
   type FetchCompatInventory,
@@ -262,7 +265,13 @@ export {
   type FetchCompatOption,
   type FetchCompatProfile,
 } from "./compat/fetch-profile.js";
-export { LIB_FN_SIGS } from "./ir/builtin-signatures.js";
+export { libFnSignatures } from "./ir/builtin-signatures.js";
+/** @deprecated Use `libFnSignatures()`. Built when this module loads; the
+ * native compiler does not load this module. */
+export const LIB_FN_SIGS = libFnSignatures();
+/** @deprecated Use `node24FetchCompatProfile()`. Built when this module
+ * loads; the native compiler does not load this module. */
+export const NODE24_FETCH_COMPAT_PROFILE = node24FetchCompatProfile();
 export { validateModule } from "./ir/validate.js";
 export {
   assignLegacyTiers,
@@ -486,12 +495,31 @@ interface CompileWarningSink {
   sourceTexts: Map<string, string> | null;
 }
 
+/** The package.json texts type patch warnings point into, re-read for a
+ * cache hit's code frames (performance warnings need none). */
+function cachedWarningSources(warnings: readonly ScrDiagnostic[]): Map<string, string> {
+  const texts = new Map<string, string>();
+  for (const w of warnings) {
+    if (!isTypePatchCode(w.code) || texts.has(w.loc.file)) continue;
+    try {
+      texts.set(w.loc.file, readFileSync(w.loc.file, "utf8"));
+    } catch {
+      // The frame is omitted; the message stands alone.
+    }
+  }
+  return texts;
+}
+
 /** The build's performance warnings (SC61xx), stored with its cache entry
  * so a cache hit repeats them. */
 function performanceWarnings(sink: CompileWarningSink | undefined): {
   performance?: ScrDiagnostic[];
 } {
-  const performance = (sink?.warnings ?? []).filter((d) => isPerformanceCode(d.code));
+  // Type patch warnings (SC8030–SC8033) describe the same unchanged inputs,
+  // so a hit repeats them too.
+  const performance = (sink?.warnings ?? []).filter(
+    (d) => isPerformanceCode(d.code) || isTypePatchCode(d.code),
+  );
   return performance.length === 0 ? {} : { performance };
 }
 
@@ -1606,7 +1634,7 @@ async function compileTracked(
     // names is just as untyped as when it was built.
     if (warningSink !== undefined && earlyHit.performance !== undefined) {
       warningSink.warnings = earlyHit.performance;
-      warningSink.sourceTexts = new Map();
+      warningSink.sourceTexts = cachedWarningSources(earlyHit.performance);
     }
     const executableCacheOptions = earlyCacheOptions;
     // Route/proof metadata is independently evictable. A full-compiler

@@ -6,7 +6,8 @@ import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { f64Lit, llvmCommentText } from "./common.js";
 import { borrowableInputs, emitBorrowedInputs, emitBorrowedInput } from "./borrowed-inputs.js";
-import { regexLiteralTemplate } from "./expr-primitives.js";
+import { regexLiteralReplacer, regexLiteralTemplate } from "./expr-primitives.js";
+import { canReplaceWith, regexLiteralCompiles } from "./regex-matchers.js";
 import { isScalarUnionDef, loadInlineUnion, presentBits } from "./inline-unions.js";
 import { preservesRegexInputs } from "./reference-effects.js";
 
@@ -160,6 +161,39 @@ function directRegexOperandMethod(method: string): boolean {
   }
 }
 
+/** The build-time replacer of a substitution: a regex literal running on
+ * its template, with a literal replacement the replacer can write as is.
+ * Null when the substitution takes the runtime's loop. */
+function literalReplacer(
+  host: LlvmEmitterContext,
+  literal: IrExpr | null,
+  template: string | null,
+  replacement: IrExpr,
+): string | null {
+  if (literal === null || template === null || literal.kind !== "regexLit") return null;
+  if (replacement.kind !== "strLit") return null;
+  if (!canReplaceWith(literal.pattern, literal.flags, replacement.value)) return null;
+  if (!regexLiteralCompiles(literal.pattern, literal.flags)) return null;
+  return regexLiteralReplacer(host, literal, replacement.value);
+}
+
+/** scr_regex_replace_with: the runtime runs `replacer` on an ASCII subject
+ * and its own loop on any other. */
+function emitReplaceWith(
+  host: LlvmEmitterContext,
+  e: IrExpr,
+  r: LlValue,
+  args: LlValue[],
+  replacer: string,
+): LlValue {
+  host.declare(`declare ptr @scr_regex_replace_with(ptr, ptr, ptr, ptr)`);
+  const t = host.B.tmp();
+  host.B.line(
+    `${t} = call ptr @scr_regex_replace_with(ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${replacer})`,
+  );
+  return host.own({ name: t, type: e.type });
+}
+
 export function emitRegexIntrinsic(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "regexIntrinsic" },
@@ -234,11 +268,16 @@ export function emitRegexIntrinsic(
         "scr_regex_match_all_captures_into",
         `ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}`,
       );
-    case "replaceAll":
+    case "replaceAll": {
+      // A global literal (the only kind a replacer is built for) never takes
+      // replaceAll's non-global TypeError.
+      const replacer = literalReplacer(host, literal, template, e.args[1]!);
+      if (replacer !== null) return emitReplaceWith(host, e, r, args, replacer);
       return fallible(
         "scr_regex_replace_all",
         `ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}`,
       );
+    }
     case "split":
       host.declare(`declare ptr @scr_regex_split_limit(ptr, ptr, double)`);
       {
@@ -323,6 +362,8 @@ export function emitRegexIntrinsic(
       return host.own({ name: t, type: e.type });
     }
     case "replace": {
+      const replacer = literalReplacer(host, literal, template, e.args[1]!);
+      if (replacer !== null) return emitReplaceWith(host, e, r, args, replacer);
       host.declare(`declare ptr @scr_regex_replace(ptr, ptr, ptr)`);
       const t = B.tmp();
       B.line(

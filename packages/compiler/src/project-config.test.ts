@@ -183,3 +183,80 @@ test("package setting keys named like Object.prototype members are unknown setti
   ]);
   expect(c.packages.has("debug")).toBe(false);
 });
+
+test("typePatches: entries keyed by package and range", () => {
+  const c = config({
+    typePatches: {
+      "commander@^15.0.0": { declarations: { "HelpContext.helpWidth": "| undefined" } },
+      "@scope/lib@1.x || 2.x": {
+        declarations: { "Options.name": "string | null" },
+        note: "https://example.invalid/issue/1",
+      },
+    },
+  });
+  expect(c.diagnostics).toEqual([]);
+  expect(
+    c.typePatches.map(({ key, pkg, range, declarations }) => ({
+      key,
+      pkg,
+      range,
+      declarations: declarations.map((d) => [d.selector, d.type]),
+    })),
+  ).toEqual([
+    {
+      key: "commander@^15.0.0",
+      pkg: "commander",
+      range: "^15.0.0",
+      declarations: [["HelpContext.helpWidth", "| undefined"]],
+    },
+    {
+      key: "@scope/lib@1.x || 2.x",
+      pkg: "@scope/lib",
+      range: "1.x || 2.x",
+      declarations: [["Options.name", "string | null"]],
+    },
+  ]);
+  expect(c.typePatches[0]!.declarations[0]!.offset).toBeGreaterThan(0);
+});
+
+test("typePatches: malformed keys, ranges, selectors and types are SC8004", () => {
+  const c = config({
+    typePatches: {
+      commander: { declarations: { "A.b": "| undefined" } },
+      "ms@^banana": { declarations: {} },
+      "@types/node@*": { declarations: {} },
+      "typescript@5": { declarations: {} },
+      "lib@^1.0.0": {
+        declarations: {
+          "1bad": "| undefined",
+          "A.b": 3,
+          "A.c": "string\nnumber",
+          "A.d": "| undefined",
+        },
+        files: {},
+      },
+      "other@^1.0.0": [],
+    },
+  });
+  expect(c.diagnostics.every((d) => d.code === "SC8004")).toBe(true);
+  expect(c.diagnostics.map((d) => d.message)).toEqual([
+    "package.json 'scriptc.typePatches.commander' must name a package and a version range",
+    `package.json 'scriptc.typePatches.ms@^banana' has the version range "^banana", which is not a semver range`,
+    "package.json 'scriptc.typePatches.@types/node@*' patches @types/node, whose declarations ship with scriptc or TypeScript",
+    "package.json 'scriptc.typePatches.typescript@5' patches typescript, whose declarations ship with scriptc or TypeScript",
+    "package.json 'scriptc.typePatches.lib@^1.0.0.files' is not a known type patch setting",
+    "package.json 'scriptc.typePatches.lib@^1.0.0.declarations.1bad' is not a selector: it must start with a declared name, 'export=' or 'default'",
+    "package.json 'scriptc.typePatches.lib@^1.0.0.declarations.A.b' must map to a type string, not 3",
+    "package.json 'scriptc.typePatches.lib@^1.0.0.declarations.A.c' has a type that must be one line",
+    "package.json 'scriptc.typePatches.other@^1.0.0' must be an object, not an array",
+  ]);
+  // The valid selector of an entry with an unknown key is dropped with it;
+  // entries with only bad selectors keep their valid ones.
+  expect(c.typePatches).toEqual([]);
+  const partial = config({
+    typePatches: {
+      "lib@^1.0.0": { declarations: { "1bad": "| undefined", "A.d": "| undefined" } },
+    },
+  });
+  expect(partial.typePatches[0]!.declarations.map((d) => d.selector)).toEqual(["A.d"]);
+});

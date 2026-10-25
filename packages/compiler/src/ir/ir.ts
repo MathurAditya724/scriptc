@@ -87,7 +87,16 @@ export type IrType =
   | { kind: "date" }
   | { kind: "string" } // heap, refcounted, UTF-8
   | { kind: "bool" }
-  | { kind: "array"; elem: IrType } // heap, refcounted, monomorphic elements
+  | {
+      kind: "array";
+      elem: IrType;
+      /** A `(T | undefined)[]` of a number, string or boolean T, stored as
+       * T elements (which hold a present undefined by their state). Not
+       * part of the type's identity (typeEquals, typeKey): it only lets a
+       * checked conversion from a dynamic value accept undefined
+       * elements. */
+      optionalElements?: true;
+    } // heap, refcounted, monomorphic elements
   /** ES `Map<K, V>` — heap, refcounted, insertion-ordered hash map with ONE
    * runtime representation (ScrMap) and type-directed key/value handling,
    * exactly the array pattern (never per-instantiation structs). Keys use
@@ -1063,6 +1072,10 @@ export interface IrModule {
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
   lifetimeRegions?: true;
+  /** Element keys (typeKey of the element type) of native arrays that can
+   * hold elements outside their element type (SCR_ARR_FOREIGN), stored
+   * through dynamic views; "*" for every array. Absent when none can. */
+  foreignElementKeys?: string[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
@@ -2443,10 +2456,13 @@ export type IrStrIntrinsicMethod =
   // surrogate, and the copy with each one replaced by U+FFFD.
   | "isWellFormed"
   | "toWellFormed"
-  // The string iterator's step: the full code-POINT character at a UTF-16
-  // index (astral chars come back whole where charAt truncates) — for-of
-  // over strings desugars onto it, advancing by the result's length.
-  | "cpAt";
+  // The string iterator over the WTF-8 bytes: the byte count of a string,
+  // and the code-point character that starts at a byte offset (a lone
+  // surrogate is a one-unit character). for-of, spread and Array.from of a
+  // string walk a byte cursor with them, advancing by the character's
+  // byte count; the cursor is always a character start below the count.
+  | "byteLength"
+  | "cpAtByte";
 
 /** The typed-array/Buffer method surface (bytesIntrinsic). Receiver/arg
  * conventions (validated): `length`/`byteLength` are property reads → f64;
@@ -3945,7 +3961,7 @@ export type IrExpr =
     }
   /** Standard-library call (`process` members, node:fs functions). `fn` is a
    * closed union; arg/result types are fixed per member (validated against
-   * LIB_FN_SIGS). Property READS (`process.argv`, `process.platform`) are
+   * libFnSignatures()). Property READS (`process.argv`, `process.platform`) are
    * zero-arg libCalls. Args are BORROWED by the operation (frame temps
    * release at statement end); refcounted results come back owned (+1) —
    * `process.argv` returns +1 on ONE interned array (JS identity:

@@ -2668,7 +2668,7 @@ export function lowerBindingPattern(
           lowerer.unsupported("SC1031", el, "rest elements over a union of array or tuple layouts");
         const loc = locOf(el);
         let value = unionArrayValueRead(lowerer, srcRef(), numLit(i, loc), loc, (text) =>
-          strCharsCall(lowerer, text, loc),
+          strCharsCall(text, loc),
         );
         if (!value)
           lowerer.unsupported(
@@ -2798,7 +2798,7 @@ export function lowerBindingPattern(
     }
     // STRING sources (`const [a, b] = str`): array destructuring walks
     // the STRING ITERATOR — code points, astral characters whole —
-    // which is Array.from(string)'s own machinery (%str.chars), so the
+    // which is Array.from(string)'s own machinery (str.codePoints), so the
     // source splits once into a hidden chars array and the pattern
     // lowers as an array pattern over string[]. Positions, holes,
     // defaults (with the bounds test), rest (the remaining code points
@@ -2817,7 +2817,7 @@ export function lowerBindingPattern(
       out.push({
         kind: "varDecl",
         localId: chars.id,
-        init: strCharsCall(lowerer, srcRef(), loc),
+        init: strCharsCall(srcRef(), loc),
         loc,
       });
       lowerer.lowerBindingPattern(
@@ -9826,7 +9826,7 @@ function lowerArrayAssignInto(
   let srcType = tmpRef().type;
   // A STRING source (`[a, b] = s`): the declaration path's rule in
   // assignment position — the string iterator's code-point split
-  // (%str.chars, astral characters whole) into a hidden chars array,
+  // (str.codePoints, astral characters whole) into a hidden chars array,
   // then the pattern proceeds as an array pattern over string[]
   // (defaults with the bounds test, rest packing the remaining code
   // points, elisions; positions past the last code point inherit the
@@ -9839,7 +9839,7 @@ function lowerArrayAssignInto(
     out.push({
       kind: "varDecl",
       localId: chars.id,
-      init: strCharsCall(lowerer, tmpRef(), loc),
+      init: strCharsCall(tmpRef(), loc),
       loc,
     });
     tmpRef = () => ({ kind: "varRef", localId: chars.id, type: charsT, loc });
@@ -11383,16 +11383,18 @@ function lowerForOfMatchAll(
 /** `for (const ch of s)` over a STRING: JS's string iterator, which walks
  * code POINTS — each pass binds the whole character (a two-unit string
  * for astral chars, where charAt/slice would return one surrogate half).
- * Desugars over the UTF-16 cursor machinery: a hidden unit
- * index reads the character with the cpAt intrinsic and advances by ITS
- * length before the body runs (so `continue` never skips the advance):
+ * Desugars over a byte cursor into the WTF-8 data: a hidden byte offset
+ * reads the character that starts there with the cpAtByte intrinsic and
+ * advances by ITS byte count before the body runs (so `continue` never
+ * skips the advance):
  *
  *   { const %s = <expr>; let %i = 0;
- *     while (%i < %s.length) { const ch = cpAt(%s, %i); %i += ch.length; <body> } }
+ *     while (%i < byteLength(%s)) { const ch = cpAtByte(%s, %i); %i += byteLength(ch); <body> } }
  *
- * Strings are immutable, so the length is stable and there is no
+ * Strings are immutable, so the byte count is stable and there is no
  * iterator state to unwind on throw; a lone surrogate is a one-unit
- * character, so every step lands on a character start. */
+ * character with its own three-byte encoding, so every step lands on a
+ * character start. */
 /** for-of over a CLASS ITERABLE (classIteratorOf's shape) — the
  * iterator protocol as ordinary method calls:
  *
@@ -12087,7 +12089,7 @@ function lowerForOfString(
   try {
     const s = lowerer.declareHiddenLocal("%strof", STRING);
     const i = lowerer.declareHiddenLocal("%iterof", F64);
-    i.mutable = true; // the unit index reassigns (hidden locals default const)
+    i.mutable = true; // the byte cursor reassigns (hidden locals default const)
     const sRef = (): IrExpr => ({ kind: "varRef", localId: s.id, type: STRING, loc });
     const iRef = (): IrExpr => ({ kind: "varRef", localId: i.id, type: F64, loc });
     // `for (var c of str)`: the character mechanics stay on a hidden
@@ -12118,7 +12120,7 @@ function lowerForOfString(
         localId: ch.id,
         init: {
           kind: "strIntrinsic",
-          method: "cpAt",
+          method: "cpAtByte",
           receiver: sRef(),
           args: [iRef()],
           type: STRING,
@@ -12145,7 +12147,7 @@ function lowerForOfString(
           left: iRef(),
           right: {
             kind: "strIntrinsic",
-            method: "length",
+            method: "byteLength",
             receiver: chRef,
             args: [],
             type: F64,
@@ -12177,7 +12179,7 @@ function lowerForOfString(
             left: iRef(),
             right: {
               kind: "strIntrinsic",
-              method: "length",
+              method: "byteLength",
               receiver: sRef(),
               args: [],
               type: F64,

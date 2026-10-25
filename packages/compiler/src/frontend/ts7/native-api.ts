@@ -1,4 +1,5 @@
 import { Ts7Api } from "./api.js";
+import { checkerReadsLibrariesFromDisk } from "./checker-features.js";
 import { checkerServerName } from "./checker-server.js";
 import { attachNativeTs7Process, spawnNativeTs7Wire } from "./native-process.js";
 import { Ts7RpcClient } from "./rpc-client.js";
@@ -15,12 +16,17 @@ export function createNativeTs7Api(options: {
   shared?: boolean;
 }): Ts7Api {
   const timing = options.collectTiming ?? false;
+  // The checker reads its own library files when it can: they are part of the
+  // installed tsc-ts, so no build serves them differently.
+  const libraries = checkerReadsLibrariesFromDisk(options.executable);
   const server =
-    options.shared === false ? null : checkerServerName(options.executable, options.cwd, timing);
+    options.shared === false
+      ? null
+      : checkerServerName(options.executable, options.cwd, timing, process.env, libraries);
   const shared =
     server === null
       ? null
-      : attachNativeTs7Process(server, options.executable, options.cwd, timing);
+      : attachNativeTs7Process(server, options.executable, options.cwd, timing, libraries);
   if (shared !== null) {
     const rpc = new Ts7RpcClient(new Ts7Wire(shared));
     try {
@@ -32,7 +38,7 @@ export function createNativeTs7Api(options: {
     }
   }
   return new Ts7Api(
-    new Ts7RpcClient(spawnNativeTs7Wire(options.executable, options.cwd, timing)),
+    new Ts7RpcClient(spawnNativeTs7Wire(options.executable, options.cwd, timing, libraries)),
     options.fs,
     timing,
   );
