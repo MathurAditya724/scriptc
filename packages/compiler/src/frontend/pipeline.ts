@@ -545,7 +545,9 @@ function loadFrontend(
   // The shared preflight/lowering refusal and dependency-closure checks remain.
   // Node island packages are judged already: they stay out of the
   // program, typed by their declarations (scope-B NI-4).
-  const judged = new Set<string>([...libraryNpmStatic, ...(options.islandPackages ?? [])]);
+  const judged = new Set<string>(libraryNpmStatic);
+  if (options.islandPackages !== undefined)
+    for (const name of options.islandPackages) judged.add(name);
   let requested: string[] = [];
   let reusableScout: ReturnType<typeof loadProgram> | null = null;
   let reusablePreflight: ScrDiagnostic[] | null = null;
