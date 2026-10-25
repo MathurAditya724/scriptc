@@ -365,17 +365,32 @@ test.each([
   "escapes-callee",
   "captured",
   "producer-reuse",
+  "producer-capture",
 ])("a slice stored in a record that may be kept (%s) stays owned", (reason) => {
+  // The factory also stores a closure over its text parameter.
+  const capturing = producerHelper("capturing");
+  const literal = (capturing.body[0] as IrStmt & { kind: "return" }).value as IrExpr & {
+    kind: "recordLit";
+  };
+  literal.fields.push({
+    name: "get",
+    value: { kind: "closure", fnName: "get", captures: ["text"], type: F64, loc },
+  });
   const helpers = [
     reads,
     keepsText,
     escapes,
     producerHelper("make"),
     producerHelper("twice", [keepIn(ref("text"))]),
+    capturing,
   ];
   const init = slice("source", 1, 5);
   const declare =
-    reason === "producer-reuse" ? callOf("twice", ref("word")) : tokenLit(ref("word"));
+    reason === "producer-reuse"
+      ? callOf("twice", ref("word"))
+      : reason === "producer-capture"
+        ? callOf("capturing", ref("word"))
+        : tokenLit(ref("word"));
   if (declare.kind === "call") declare.type = TOKEN;
   const uses: IrStmt[] = [{ kind: "exprStmt", expr: equals(textOf(record("tok"))), loc }];
   if (reason === "kept-field") uses.push(keepIn(textOf(record("tok"))));

@@ -419,6 +419,9 @@ export function findRecordFieldProducers(
     everyStmtList(fn.body, {
       expr: (value) => {
         if (value.kind === "varRef") reads.set(value.localId, (reads.get(value.localId) ?? 0) + 1);
+        // A closure or class that captures a parameter keeps it too.
+        if (value.kind === "closure" || value.kind === "classRef")
+          for (const id of value.captures ?? []) reads.set(id, (reads.get(id) ?? 0) + 1);
         return true;
       },
       stmt: () => true,

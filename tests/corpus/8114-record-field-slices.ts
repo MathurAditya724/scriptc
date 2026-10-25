@@ -2,8 +2,9 @@
 // whose fields are only read for their length, comparisons and keyword
 // searches, next to records that are kept after the iteration that built
 // them (pushed into an array, held in an outer binding, captured by a
-// closure, read into a kept array, returned from a helper). Slices of
-// non-ASCII text and slices longer than a short token are included.
+// closure, read into a kept array, returned from a helper, captured by a
+// closure the factory stores beside it). Slices of non-ASCII text and slices
+// longer than a short token are included.
 interface Token {
   kind: string;
   text: string;
@@ -14,6 +15,15 @@ const KEYWORDS = ["let", "const", "if", "else", "return"];
 
 function token(kind: string, text: string, pos: number): Token {
   return { kind, text, pos };
+}
+
+interface LazyToken {
+  text: string;
+  upper: () => string;
+}
+
+function lazyToken(text: string): LazyToken {
+  return { text, upper: () => text.toUpperCase() };
 }
 
 function classify(text: string): string {
@@ -74,6 +84,8 @@ function keptTokens(source: string): string {
   const texts: string[] = [];
   const later: (() => string)[] = [];
   const returned: string[] = [];
+  const uppers: (() => string)[] = [];
+  let lazyLength = 0;
   let last: Token | null = null;
   for (let i = 0, start = -1; i <= source.length; i++) {
     const c = i < source.length ? source.charCodeAt(i) : 32;
@@ -93,6 +105,10 @@ function keptTokens(source: string): string {
     later.push(() => captured.text);
     const viaHelper = token("helper", source.slice(start, i), start);
     returned.push(textOf(viaHelper));
+    const lazyText = source.slice(start, i);
+    const lazy = lazyToken(lazyText);
+    lazyLength += lazy.text.length;
+    uppers.push(lazy.upper);
     start = -1;
   }
   return [
@@ -101,6 +117,7 @@ function keptTokens(source: string): string {
     `texts ${texts.join("|")}`,
     `later ${later.map((f) => f()).join("|")}`,
     `returned ${returned.join("|")}`,
+    `upper ${lazyLength} ${uppers.map((f) => f()).join("|")}`,
   ].join("\n");
 }
 
