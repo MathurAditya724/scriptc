@@ -700,7 +700,10 @@ function loadFrontend(
       });
       // The declaration-typed boundary's notes (SC6102) join the
       // performance warnings; they never fail a build.
-      const notes = [...(finalLoad.declBoundaryNotes ?? []), ...shapeOverlayReport(finalLoad.entry.fileName)];
+      const notes = [
+        ...(finalLoad.declBoundaryNotes ?? []),
+        ...shapeOverlayReport(finalLoad.entry.fileName),
+      ];
       if (notes.length === 0) return lowered;
       return { ...lowered, performance: [...notes, ...(lowered.performance ?? [])] };
     },

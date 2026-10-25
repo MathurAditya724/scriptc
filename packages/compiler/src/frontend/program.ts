@@ -1018,7 +1018,11 @@ function loadProgram7(
         for (const [file, text] of overlay) host.addVirtualFile(file, text);
         program = host.createProgram([...programRoots, overridesDtsPath()], options);
         if (tscWorld === undefined)
-          tscWorld = { program: before, diagnostics: ts.getPreEmitDiagnostics(before), projectWorld: null };
+          tscWorld = {
+            program: before,
+            diagnostics: ts.getPreEmitDiagnostics(before),
+            projectWorld: null,
+          };
         else if (tscWorld.program !== before) before.dispose();
       }
     }

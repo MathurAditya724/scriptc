@@ -60,3 +60,33 @@ test("shapeOverlay: false compiles without the overlay", { timeout: 900_000 }, a
     throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
   expect((result.warnings ?? []).some((w) => w.code === "SC6103")).toBe(false);
 });
+
+// shape-facts: results that include the undefined of a fall-through or a bare
+// return keep the caller's falsy branch, comment-like text in literals keeps
+// its value, and a replaced branch keeps its var declared.
+const factsEntry = join(repoRoot, "tests/fixtures/npm/cases/shape-overlay-facts/main.ts");
+
+test(
+  "the overlay keeps undefined results, literal text and hoisted vars",
+  { timeout: 900_000 },
+  async () => {
+    mkdirSync(outDir, { recursive: true });
+    const result = await withOverlay(() =>
+      compile(factsEntry, { outPath: join(outDir, "facts"), outDir, sanitize }),
+    );
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const report = (result.warnings ?? []).find((w) => w.code === "SC6103");
+    expect(report?.message).toMatch(/of 1 package \(shape-facts\)/);
+    expect(report?.message).toMatch(/replaces 1 branch it proved unreachable/);
+    const native = await execFileAsync(result.binaryPath, [], {
+      cwd: dirname(factsEntry),
+      encoding: "utf8",
+    });
+    const node = await execFileAsync(process.execPath, [factsEntry], {
+      cwd: dirname(factsEntry),
+      encoding: "utf8",
+    });
+    expect(native.stdout).toBe(node.stdout);
+  },
+);
