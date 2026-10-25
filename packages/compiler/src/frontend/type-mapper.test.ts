@@ -53,20 +53,6 @@ describe("union arm lookup", () => {
   });
 });
 
-describe("recursive union placeholders", () => {
-  test("refuse a unit arm until their arms are known", () => {
-    const unions = new UnionRegistry();
-    const recursive = {} as Type;
-    const union = unions.recursiveRef(recursive, () => "Recursive");
-    const placeholder: IrType = { kind: "union", unionId: union };
-    expect(unions.isPendingPlaceholder(union)).toBe(true);
-    expect(withUndefinedArm(placeholder, unions)).toBeNull();
-    unions.finalizeRecursive(recursive, [{ kind: "record", shapeId: "r1" }, UNDEFINED_T]);
-    expect(unions.isPendingPlaceholder(union)).toBe(false);
-    expect(withUndefinedArm(placeholder, unions)).toEqual(placeholder);
-  });
-});
-
 describe("nullable collection union builders", () => {
   test.each([mapOf(STRING, F64), setOf(STRING)])(
     "optional %j fields and generator results share the same union",

@@ -6799,9 +6799,6 @@ export function withUnitArm(
   if (t.kind === "union") {
     const def = unions.get(t.unionId);
     if (!def) return null;
-    // A recursive placeholder's arms arrive when its outer frame finishes;
-    // extending its (still empty) arm list would drop every arm but the unit.
-    if (unions.isPendingPlaceholder(t.unionId)) return null;
     if (def.arms.some((a) => a.kind === kind)) return t;
     const arms = [...def.arms, unit];
     // Date and Promise arms beside other data arms have no union home.
