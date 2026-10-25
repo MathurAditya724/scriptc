@@ -57,6 +57,50 @@ interface OverlayPart {
   readonly suffix: string;
 }
 
+/** Spans of a served package file that a project type patch edited (the
+ * type-patches layer's `typePatchedSpans`, in served-text offsets). */
+export type ProtectedSpans = (fileName: string) => readonly { start: number; end: number }[];
+
+let protectedSpansOf: ProtectedSpans = () => [];
+
+/** Installs the source of patched spans: the overlay neither annotates nor
+ * rewrites a declaration a project type patch edited, since the patch is
+ * the project's own declaration of its type. */
+export function setShapeOverlayProtectedSpans(spans: ProtectedSpans | null): void {
+  protectedSpansOf = spans ?? (() => []);
+}
+
+/** Whether a file has patched spans (static-objects.ts leaves it as served,
+ * so the spans keep their offsets). */
+export function hasShapeOverlayProtectedSpans(fileName: string): boolean {
+  return protectedSpansOf(fileName).length > 0;
+}
+
+/** Whether the declaration whose first token starts at `pos` overlaps a
+ * patched span: its leading comments and its header (up to its body). */
+export function declarationPatched(
+  sf: ts.SourceFile,
+  pos: number,
+  spans: readonly { start: number; end: number }[],
+): boolean {
+  if (spans.length === 0) return false;
+  let node: ts.Node = sf;
+  for (;;) {
+    let next: ts.Node | undefined;
+    ts.forEachChild(node, (c) => {
+      if (next === undefined && c.pos <= pos && c.end > pos) next = c;
+      return undefined;
+    });
+    if (next === undefined || ts.tokenStartOfNode(next) > pos) break;
+    node = next;
+    if (ts.tokenStartOfNode(node) === pos) break;
+  }
+  if (node === sf) return false;
+  const body = (node as { body?: ts.Node }).body;
+  const end = body !== undefined ? ts.tokenStartOfNode(body) : node.end;
+  return spans.some((span) => span.start < end && span.end > node.pos);
+}
+
 /** Marks the overlay's own comments (an unknown JSDoc tag, ignored). */
 export const OVERLAY_MARK = "@scriptcShape";
 const MARK = OVERLAY_MARK;
@@ -142,6 +186,19 @@ export function planShapeOverlay(
         list.push(branch);
       }
     }
+  // Classes whose instances meet as the receivers of one member read, by
+  // member name: their same-named methods need one signature.
+  const cooccurring = new Map<string, Set<ts.Node>[]>();
+  for (const op of analysis.ops) {
+    if (op.kind !== "read" || op.name === null) continue;
+    const classes = new Set<ts.Node>();
+    for (const a of analysis.nodes[op.recv]!.atoms)
+      if (a.kind === "instance" && a.node !== undefined) classes.add(a.node);
+    if (classes.size < 2) continue;
+    let l = cooccurring.get(op.name);
+    if (l === undefined) cooccurring.set(op.name, (l = []));
+    l.push(classes);
+  }
   for (const sf of packageFiles) {
     if (exclusions.files.has(sf.fileName)) continue;
     const typedefs = new Map<string, string>();
@@ -150,7 +207,10 @@ export function planShapeOverlay(
     // One annotation: a JSDoc comment at `pos` carrying MARK and the
     // annotation's id (its position), so a refused lowering can name it and
     // the next load drop it. `close`: the text that closes a type cast.
+    const patchedSpans = protectedSpansOf(sf.fileName);
     const annotate = (pos: number, tags: string, close?: number): void => {
+      // A declaration a project type patch edited keeps the patch alone.
+      if (declarationPatched(sf, pos, patchedSpans)) return;
       edits.push({
         pos,
         id: pos,
@@ -414,9 +474,14 @@ export function planShapeOverlay(
       if (method.body !== undefined) for (const st of method.body.statements.nodes) scan(st);
     };
 
-    // Same-named instance methods of the file's classes form a family: a
-    // call on a union of those classes needs one signature, so each member's
-    // parameters and result join the whole family's values.
+    // Same-named instance methods of the file's classes form a family when
+    // a call can reach several of them: a call on a union of those classes
+    // needs one signature, so each member's parameters and result join the
+    // whole family's values. Two members join when their classes' instances
+    // meet as the receivers of one read of the method, or when one class
+    // extends the other (an override keeps its base's signature). Members
+    // no union reaches keep their own values: ZodString's `_addCheck`
+    // returns a ZodString, not every schema class's `_addCheck` result.
     const families = new Map<string, ts.MethodDeclaration[]>();
     const familyVisit = (node: ts.Node): void => {
       if (
@@ -436,6 +501,84 @@ export function planShapeOverlay(
       });
     };
     familyVisit(sf);
+    const familyParent = new Map<ts.MethodDeclaration, ts.MethodDeclaration>();
+    const familyFind = (m: ts.MethodDeclaration): ts.MethodDeclaration => {
+      let r = m;
+      for (let p = familyParent.get(r); p !== undefined && p !== r; p = familyParent.get(r)) r = p;
+      return r;
+    };
+    const familyUnion = (a: ts.MethodDeclaration, b: ts.MethodDeclaration): void => {
+      const ra = familyFind(a);
+      const rb = familyFind(b);
+      if (ra !== rb) familyParent.set(rb, ra);
+    };
+    const classNameOf = (c: ts.Node): string | null => {
+      const named = c as { name?: ts.Node };
+      if (named.name !== undefined && ts.isIdentifier(named.name)) return named.name.text;
+      const p = c.parent;
+      return p !== undefined && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name)
+        ? p.name.text
+        : null;
+    };
+    const baseNameOf = (c: ts.Node): string | null => {
+      const clauses = (c as { heritageClauses?: { nodes: readonly ts.HeritageClause[] } })
+        .heritageClauses;
+      for (const h of list(clauses)) {
+        if (h.token !== ts.SyntaxKind.ExtendsKeyword) continue;
+        const t = list(h.types)[0];
+        if (t !== undefined && ts.isIdentifier(t.expression)) return t.expression.text;
+      }
+      return null;
+    };
+    for (const [name, members] of families) {
+      if (members.length < 2) continue;
+      // The member a class's instances run: its own, or its nearest base's
+      // (by name, within the file).
+      const byClass = new Map<ts.Node, ts.MethodDeclaration>();
+      for (const m of members) if (m.parent !== undefined) byClass.set(m.parent, m);
+      const classesByName = new Map<string, ts.Node>();
+      const collect = (node: ts.Node): void => {
+        if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+          const n = classNameOf(node);
+          if (n !== null && !classesByName.has(n)) classesByName.set(n, node);
+        }
+        ts.forEachChild(node, (c) => {
+          collect(c);
+          return undefined;
+        });
+      };
+      const memberOf = (c: ts.Node): ts.MethodDeclaration | undefined => {
+        let cur: ts.Node | undefined = c;
+        for (let depth = 0; cur !== undefined && depth < 16; depth++) {
+          const own = byClass.get(cur);
+          if (own !== undefined) return own;
+          const base = baseNameOf(cur);
+          if (base === null) return undefined;
+          if (classesByName.size === 0) collect(sf);
+          cur = classesByName.get(base);
+        }
+        return undefined;
+      };
+      // Overrides join their base's member.
+      for (const m of members) {
+        const base = m.parent === undefined ? null : baseNameOf(m.parent);
+        if (base === null) continue;
+        if (classesByName.size === 0) collect(sf);
+        const baseClass = classesByName.get(base);
+        const inherited = baseClass === undefined ? undefined : memberOf(baseClass);
+        if (inherited !== undefined) familyUnion(inherited, m);
+      }
+      for (const classes of cooccurring.get(name) ?? []) {
+        let first: ts.MethodDeclaration | undefined;
+        for (const c of classes) {
+          if (c.getSourceFile() !== sf) continue;
+          const m = memberOf(c);
+          if (m === undefined) continue;
+          if (first === undefined) first = m;
+          else familyUnion(first, m);
+        }
+      }
+    }
     // Members the program runs (they have analysis contexts); members it
     // never reaches would only widen the family's types.
     const reached = new Set<ts.Node>();
@@ -444,7 +587,10 @@ export function planShapeOverlay(
     const familyOf = (fn: ts.FunctionLikeDeclaration): readonly ts.MethodDeclaration[] => {
       if (!ts.isMethodDeclaration(fn) || !ts.isIdentifier(fn.name))
         return [fn as ts.MethodDeclaration];
-      const members = (families.get(fn.name.text) ?? [fn]).filter((m) => reached.has(m));
+      const root = familyFind(fn as ts.MethodDeclaration);
+      const members = (families.get(fn.name.text) ?? [fn]).filter(
+        (m) => reached.has(m) && familyFind(m) === root,
+      );
       return members.length > 0 ? members : [fn];
     };
     const paramValues = (fn: ts.FunctionLikeDeclaration, index: number): Set<Atom> => {
@@ -654,6 +800,44 @@ export function planShapeOverlay(
         edits: [],
         suffix: `\n${aliases}`,
       });
+  }
+  return { parts };
+}
+
+/** The plan moved onto texts that structural rewrites changed: each
+ * annotation and dead-branch edit maps through the rewrite's edits, and an
+ * annotation whose position the rewrite replaced is left out (with its
+ * closing parenthesis). `rewritten` gives a rewritten file's text and its
+ * position map. */
+export function planOnRewrittenTexts(
+  plan: ShapeOverlayPlan,
+  rewritten: ReadonlyMap<string, { text: string; map: (pos: number) => number | null }>,
+): ShapeOverlayPlan {
+  const parts = new Map<string, OverlayPart>();
+  for (const [file, part] of plan.parts) {
+    const r = rewritten.get(file);
+    if (r === undefined) {
+      parts.set(file, part);
+      continue;
+    }
+    const lost = new Set<number>();
+    const moved: Edit[] = [];
+    for (const e of part.edits) {
+      const pos = r.map(e.pos);
+      const end = e.end === undefined ? undefined : r.map(e.end);
+      if (pos === null || end === null || (end !== undefined && end < pos)) {
+        if (e.id !== undefined) lost.add(e.id);
+        continue;
+      }
+      if (e.end !== undefined && end !== undefined && end - pos !== e.end - e.pos) {
+        // A rewrite inside a replaced dead branch.
+        if (e.id !== undefined) lost.add(e.id);
+        continue;
+      }
+      moved.push(end === undefined ? { ...e, pos } : { ...e, pos, end });
+    }
+    const edits = moved.filter((e) => e.id === undefined || !lost.has(e.id));
+    parts.set(file, { text: r.text, edits, suffix: part.suffix });
   }
   return { parts };
 }

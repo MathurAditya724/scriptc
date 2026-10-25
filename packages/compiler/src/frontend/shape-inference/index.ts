@@ -9,7 +9,9 @@ import { isShapelessPackage } from "../package-shims.js";
 import { analyzeShapes, isPackageJsFile, type ShapeAnalysis } from "./analyze.js";
 import { createHash } from "node:crypto";
 import {
+  hasShapeOverlayProtectedSpans,
   OVERLAY_MARK,
+  planOnRewrittenTexts,
   planShapeOverlay,
   renderShapeOverlay,
   type OverlayExclusions,
@@ -17,13 +19,27 @@ import {
 } from "./overlay.js";
 import { attributeOverlayRefusals } from "./fallback.js";
 import { checksInferredFact } from "./inferred-checks.js";
-import { planStaticObjectRewrites, type StaticObjectRewrites } from "./static-objects.js";
+import {
+  planStaticObjectRewrites,
+  rewrittenPosition,
+  type StaticObjectRewrites,
+} from "./static-objects.js";
 import { isJsSourceFile } from "../program.js";
 import { buildShapeReport } from "./report.js";
 import { computeConstantGraphs, constantGraphReport } from "./constant-graphs.js";
+import {
+  overlayMemoKey,
+  readOverlayMemo,
+  shapeOverlayMemoEnabled,
+  textHash,
+  writeOverlayMemo,
+  type OverlayMemo,
+} from "./memo.js";
 
 export { analyzeShapes } from "./analyze.js";
 export { buildShapeReport } from "./report.js";
+export { setShapeOverlayMemoDir } from "./memo.js";
+export { setShapeOverlayProtectedSpans } from "./overlay.js";
 
 /** SCRIPTC_DEBUG_SHAPES: `1` reports package code in hot functions,
  * `verbose` every package site, `all` user files too, any other value only
@@ -134,6 +150,18 @@ let exclusions: { annotations: Map<string, Set<number>>; files: Set<string> } = 
 };
 let overlayDropped = false;
 let droppedAnnotations = 0;
+/* The annotations dropped before a comparison load turned the overlay off
+ * for a moment (setShapeOverlayDropped). */
+let droppedBeforeComparison = 0;
+
+/* The build's memo (memo.ts): its key, what an earlier build recorded, the
+ * hashes of the JavaScript files as written, and the last overlay plan. */
+let memoKey: string | null = null;
+let memo: OverlayMemo | null = null;
+let memoOff = false;
+let asWrittenHashes = new Map<string, string>();
+let lastPlan: ShapeOverlayPlan | null = null;
+let memoSeededPlan: ShapeOverlayPlan | null = null;
 
 /** Starts a build: no annotation is excluded yet. */
 export function beginShapeOverlayBuild(): void {
@@ -141,14 +169,100 @@ export function beginShapeOverlayBuild(): void {
   exclusions = { annotations: new Map(), files: new Set() };
   overlayDropped = false;
   droppedAnnotations = 0;
+  droppedBeforeComparison = 0;
+  memoKey = null;
+  memo = null;
+  memoOff = false;
+  asWrittenHashes = new Map();
+  lastPlan = null;
+  memoSeededPlan = null;
 }
 
 /** Turns the overlay off for the rest of the build (true), or back on
  * (false): the pipeline compares a load without it when the overlay's
  * program fails a check the program without it passes. */
 export function setShapeOverlayDropped(dropped: boolean): void {
+  if (dropped && !overlayDropped) droppedBeforeComparison = droppedAnnotations;
   overlayDropped = dropped;
-  droppedAnnotations = dropped ? overlayAnnotations : 0;
+  droppedAnnotations = dropped ? overlayAnnotations : droppedBeforeComparison;
+}
+
+/** The memo's deferred refusals of the build without the overlay, if an
+ * earlier build of the same JavaScript recorded them. */
+export function shapeOverlayMemoPlainFences(): ReadonlySet<string> | null {
+  return memo === null || memo.plainFences.length === 0 ? null : new Set(memo.plainFences);
+}
+
+/** Records the build's verdicts for the next build of the same
+ * JavaScript (memo.ts): the refused annotations and files, whether the
+ * build compiled without the overlay, and the deferred refusals of the
+ * build without it (`plainFences`, from a comparison). */
+export function recordShapeOverlayMemo(plainFences: Iterable<string> | null): void {
+  if (memoKey === null || !shapeOverlayMemoEnabled() || memoOff) return;
+  const annotations: { file: string; hash: string; ids: number[] }[] = [];
+  for (const [file, ids] of exclusions.annotations) {
+    const part = lastPlan?.parts.get(file);
+    if (part === undefined || ids.size === 0) continue;
+    annotations.push({ file, hash: textHash(part.text), ids: [...ids].sort((a, b) => a - b) });
+  }
+  annotations.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  const files: { file: string; hash: string }[] = [];
+  for (const file of [...exclusions.files].sort()) {
+    const hash = asWrittenHashes.get(file);
+    if (hash !== undefined) files.push({ file, hash });
+  }
+  const plain = new Set(memo?.plainFences ?? []);
+  for (const k of plainFences ?? []) plain.add(k);
+  const next: OverlayMemo = {
+    off: overlayDropped,
+    annotations,
+    files,
+    plainFences: [...plain].sort(),
+  };
+  if (memo !== null && JSON.stringify(memo) === JSON.stringify(next)) return;
+  writeOverlayMemo(memoKey, next);
+  memo = next;
+}
+
+/* Round 0 of a load: the memo of the program's JavaScript, read once per
+ * key. A memo that says the build compiled without the overlay turns it
+ * off before any analysis; whole-file exclusions apply to files whose text
+ * is unchanged. */
+function readMemoFor(program: ts.Program): void {
+  if (!shapeOverlayMemoEnabled()) return;
+  const js = program.getSourceFiles().filter((sf) => !sf.isDeclarationFile && isJsSourceFile(sf));
+  const key = overlayMemoKey(js.map((sf) => [sf.fileName, sf.text] as const));
+  if (key === memoKey) return;
+  memoKey = key;
+  asWrittenHashes = new Map(js.map((sf) => [sf.fileName, textHash(sf.text)] as const));
+  memo = readOverlayMemo(key);
+  memoOff = false;
+  if (memo === null) return;
+  if (memo.off) {
+    memoOff = true;
+    overlayDropped = true;
+    return;
+  }
+  for (const f of memo.files)
+    if (asWrittenHashes.get(f.file) === f.hash) exclusions.files.add(f.file);
+}
+
+/* Applies the memo's refused annotations to a plan, once per plan: ids
+ * count only for a file whose overlay input text is unchanged. */
+function seedMemoAnnotations(plan: ShapeOverlayPlan): void {
+  if (memo === null || memoSeededPlan === plan) return;
+  memoSeededPlan = plan;
+  for (const a of memo.annotations) {
+    const part = plan.parts.get(a.file);
+    if (part === undefined || textHash(part.text) !== a.hash) continue;
+    let set = exclusions.annotations.get(a.file);
+    if (set === undefined) exclusions.annotations.set(a.file, (set = new Set()));
+    for (const id of a.ids) {
+      if (set.has(id)) continue;
+      set.add(id);
+      droppedAnnotations++;
+    }
+  }
 }
 
 /** Whether the current load has overlay files or structural rewrites. */
@@ -266,7 +380,10 @@ export function shapeOverlayer(
   program: ts.Program,
   round: number,
 ): ReadonlyMap<string, string> | null {
-  if (round === 0) resetShapeOverlay();
+  if (round === 0) {
+    resetShapeOverlay();
+    readMemoFor(program);
+  }
   if (overlayDropped) return null;
   const key = `${programTextKey(program)}|${[...exclusions.files].sort().join(",")}`;
   const cached = overlayCache.get(key);
@@ -275,9 +392,16 @@ export function shapeOverlayer(
   if (entry.budgetExceeded === true) return null;
   let analysis: ShapeAnalysis | null = null;
   const analyzed = (): ShapeAnalysis | null => {
-    analysis ??= analyzeShapes(program, program.getTypeChecker(), {
-      siteClones: overlaySiteClones(),
-    });
+    if (analysis === null) {
+      const t0 = performance.now();
+      analysis = analyzeShapes(program, program.getTypeChecker(), {
+        siteClones: overlaySiteClones(),
+      });
+      if (process.env["SCRIPTC_DEBUG_SHAPE_TIME"] !== undefined)
+        process.stderr.write(
+          `[shape-time] round ${round} analysis ${(performance.now() - t0).toFixed(0)} ms\n`,
+        );
+    }
     if (analysis.budgetExceeded) {
       entry.budgetExceeded = true;
       return null;
@@ -292,7 +416,11 @@ export function shapeOverlayer(
       if (a === null) return null;
       entry.rewrites = planStaticObjectRewrites(
         a,
-        overlayJsFiles(a).filter((sf) => !exclusions.files.has(sf.fileName)),
+        // Files a project type patch edited stay as served: the patch's
+        // spans are offsets in that text.
+        overlayJsFiles(a).filter(
+          (sf) => !exclusions.files.has(sf.fileName) && !hasShapeOverlayProtectedSpans(sf.fileName),
+        ),
       );
     }
     const rewrites = entry.rewrites;
@@ -309,7 +437,35 @@ export function shapeOverlayer(
       for (const [file, text] of rewrites.files)
         process.stderr.write(`[static-objects] ${file}\n${text}\n`);
     }
-    if (rewrites.files.size > 0) return rewrites.files;
+    if (rewrites.files.size > 0) {
+      // Rewrites that only replace constant reads keep every declaration
+      // where it is: the typed overlay is planned on this analysis and
+      // moved onto the rewritten texts, so the program is rebuilt and
+      // analyzed once instead of twice. Hoisting classes or functions
+      // changes the declarations: the rewritten program is analyzed again.
+      const compose =
+        rewrites.classes + rewrites.functions === 0 && process.env["SCRIPTC_SHAPE_COMPOSE"] !== "0";
+      if (!compose) return rewrites.files;
+      if (entry.plan === undefined) {
+        const a = analyzed();
+        if (a === null) return null;
+        const report = buildShapeReport(a, "1");
+        const plan = planShapeOverlay(a, report.sites, overlayJsFiles(a), {
+          annotations: new Map(),
+          files: exclusions.files,
+        });
+        const moved = new Map<string, { text: string; map: (pos: number) => number | null }>();
+        for (const [file, text] of rewrites.files) {
+          const edits = rewrites.edits.get(file) ?? [];
+          moved.set(file, { text, map: (pos) => rewrittenPosition(edits, pos) });
+        }
+        entry.plan = planOnRewrittenTexts(plan, moved);
+      }
+      const files = renderTyped(entry.plan);
+      for (const [file, text] of rewrites.files) if (!files.has(file)) files.set(file, text);
+      renderedFiles = new Set(files.keys());
+      return files;
+    }
   }
   if (round > 1) return null;
   if (entry.plan === undefined) {
@@ -321,7 +477,16 @@ export function shapeOverlayer(
       files: exclusions.files,
     });
   }
-  const overlay = renderShapeOverlay(entry.plan, overlayExclusions());
+  const files = renderTyped(entry.plan);
+  return files.size > 0 ? files : null;
+}
+
+/* Renders a typed plan with the build's exclusions and registers the
+ * overlay files; the typed overlay is a load's last round. */
+function renderTyped(plan: ShapeOverlayPlan): Map<string, string> {
+  lastPlan = plan;
+  seedMemoAnnotations(plan);
+  const overlay = renderShapeOverlay(plan, overlayExclusions());
   overlayFiles = new Set(overlay.typed);
   renderedFiles = new Set(overlay.files.keys());
   overlayAnnotations = overlay.annotations;
@@ -332,7 +497,7 @@ export function shapeOverlayer(
   }
   // The typed overlay is the last round.
   overlayDone = true;
-  return overlay.files.size > 0 ? overlay.files : null;
+  return overlay.files;
 }
 
 let staticObjectStats = {
@@ -409,7 +574,9 @@ export function shapeOverlayReport(entryFile: string): ScrDiagnostic[] {
   // Annotations whose lowering was refused (fallback.ts); they compile
   // untyped.
   const fallback = overlayDropped
-    ? "the lowering refused code the overlay typed, so the build compiles without it"
+    ? memoOff
+      ? "an earlier build of the same JavaScript compiled without the overlay, so this build does too"
+      : "the lowering refused code the overlay typed, so the build compiles without it"
     : droppedAnnotations + exclusions.files.size > 0
       ? `it dropped ${droppedAnnotations} annotation${droppedAnnotations === 1 ? "" : "s"}` +
         (exclusions.files.size > 0
