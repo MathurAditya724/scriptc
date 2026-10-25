@@ -213,3 +213,39 @@ console.log(out.join(","));
 ${postlude}`);
   expect(helperCalls(init(mod))).toEqual(["%arr.loop"]);
 });
+
+test("a copied callback with early returns keeps its switch labels", async () => {
+  const mod = await lowerSource(`${prelude}
+const out = rows.map((r) => {
+  let n = 0;
+  outer: switch (r.id % 4) {
+    case 0:
+      return -1;
+    case 1:
+      n = 10;
+      break outer;
+    default:
+      inner: switch (r.value % 2) {
+        case 0:
+          n = r.value;
+          break outer;
+        default:
+          break inner;
+      }
+      n = 1;
+  }
+  return n;
+});
+const hit = rows.some((r) => {
+  pick: switch (r.id) {
+    case 3:
+      break pick;
+    default:
+      return false;
+  }
+  return true;
+});
+console.log(out.join(","), hit);
+${postlude}`);
+  expect(helperCalls(init(mod))).toEqual(["%arr.loop", "%arr.loop"]);
+});
