@@ -386,6 +386,10 @@ async function build() {
               ? [
                   await archive("libregexp", lreSources, quickjs, [
                     ...vendorTarget,
+                    // Section elimination keeps only the libunicode tables a
+                    // program reaches: the URL host parser's NFC links the
+                    // normalization tables without the regex property ones.
+                    ...matrix.executable_section_elimination.compile_flags,
                     "-std=c11",
                     "-Os",
                     "-I",
@@ -465,7 +469,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 40, marker: "scr_runtime_abi_v40" },
+      runtime_abi: { version: 43, marker: "scr_runtime_abi_v43" },
       compiler: {
         command: compiler,
         identity: compilerVersion,
