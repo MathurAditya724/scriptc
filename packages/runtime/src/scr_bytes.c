@@ -190,6 +190,8 @@ ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len) {
   b->external = false;
   b->untransferable = false;
   b->shared = NULL;
+  b->properties = NULL;
+  b->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -304,6 +306,7 @@ void scr_bytes_release(ScrBytes *b) {
   if (!b || b->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--b->rc == 0) {
     scr_weak_dispose_inline(b);
+    if (b->properties) scr_dyn_release(b->properties);
     if (b->backing) {
       scr_bytes_release(b->backing); /* a view: data points into the owner */
     } else if (b->shared) {
@@ -740,6 +743,8 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
   v->external = false;
   v->untransferable = false;
   v->shared = owner->shared;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -883,7 +888,9 @@ ScrBytes *scr_bytes_from_dyn(ScrBytesElem elem, const ScrDyn *value, bool from) 
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(elem, value->v.bytes);
   if (!from && scr_buffer_storage_is(value)) return scr_array_buffer_view(elem, value, scr_dyn_undefined(), scr_dyn_undefined());
   if (!from && (value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_BOOL ||
-                value->kind == SCR_DYN_STR || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF)) {
+                value->kind == SCR_DYN_STR || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF ||
+                value->kind == SCR_DYN_SYMBOL || value->kind == SCR_DYN_BIGINT)) {
+    /* ToIndex: a Symbol or BigInt length throws ToNumber's TypeError. */
     double number;
     if (!scr_dyn_number_coerce_js(value, &number)) return NULL;
     return scr_bytes_new(elem, number);
@@ -1009,6 +1016,8 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
   v->external = false;
   v->untransferable = false;
   v->shared = owner->shared;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -2672,20 +2681,66 @@ static ScrBytes *scr_bytes_conversion_storage(size_t capacity) {
   return scr_bytes_conversion_storage_in(NULL, capacity);
 }
 
+/* scr_b64_values, each value shifted into its place in a four-character
+ * group's 24 bits; a character outside both alphabets sets bit 24. */
+#define SCR_B64_VALUE(c)                                                       \
+  ((c) >= 'A' && (c) <= 'Z'   ? (c) - 'A'                                     \
+   : (c) >= 'a' && (c) <= 'z' ? (c) - 'a' + 26                                \
+   : (c) >= '0' && (c) <= '9' ? (c) - '0' + 52                                \
+   : (c) == '+' || (c) == '-' ? 62                                            \
+   : (c) == '/' || (c) == '_' ? 63                                            \
+                              : -1)
+#define SCR_B64_AT(c, shift)                                                   \
+  (SCR_B64_VALUE(c) < 0 ? UINT32_C(0x1000000) : (uint32_t)SCR_B64_VALUE(c) << (shift))
+#define SCR_B64_4(c, s) SCR_B64_AT(c, s), SCR_B64_AT(c + 1, s), SCR_B64_AT(c + 2, s), SCR_B64_AT(c + 3, s)
+#define SCR_B64_16(c, s) SCR_B64_4(c, s), SCR_B64_4(c + 4, s), SCR_B64_4(c + 8, s), SCR_B64_4(c + 12, s)
+#define SCR_B64_64(c, s) SCR_B64_16(c, s), SCR_B64_16(c + 16, s), SCR_B64_16(c + 32, s), SCR_B64_16(c + 48, s)
+#define SCR_B64_256(s) SCR_B64_64(0, s), SCR_B64_64(64, s), SCR_B64_64(128, s), SCR_B64_64(192, s)
+static const uint32_t scr_b64_shifted[4][256] = {
+    {SCR_B64_256(18)}, {SCR_B64_256(12)}, {SCR_B64_256(6)}, {SCR_B64_256(0)}};
+
+/* One group's 24 bits as three bytes, in a four-byte store whose last byte
+ * the next store overwrites (the destination holds two spare bytes). */
+static inline void scr_b64_put_group(uint8_t *out, uint32_t bits) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  uint32_t word = __builtin_bswap32(bits << 8);
+#else
+  uint32_t word = bits << 8;
+#endif
+  memcpy(out, &word, 4);
+}
+
 static ScrBytes *scr_bytes_decode_b64(ScrBytesSink *sink, const uint8_t *in, size_t n) {
   ScrBytes *b = scr_bytes_conversion_storage_in(sink, n / 4 * 3 + 2);
+  /* A local copy: a byte store could otherwise change b->data. */
+  uint8_t *out = b->data;
+  const uint32_t(*t)[256] = scr_b64_shifted;
   size_t i = 0, o = 0;
   unsigned acc = 0, have = 0;
   while (i < n) {
+    /* Complete groups, two per step: each character's shifted value comes
+     * from a table and one bit test covers all eight. The second store
+     * ends at o + 6, within the destination while eight characters remain. */
+    if (have == 0) {
+      while (n - i >= 8) {
+        uint32_t first = t[0][in[i]] | t[1][in[i + 1]] | t[2][in[i + 2]] | t[3][in[i + 3]];
+        uint32_t second = t[0][in[i + 4]] | t[1][in[i + 5]] | t[2][in[i + 6]] | t[3][in[i + 7]];
+        if ((first | second) & UINT32_C(0x1000000)) break;
+        scr_b64_put_group(out + o, first);
+        scr_b64_put_group(out + o + 3, second);
+        o += 6;
+        i += 8;
+      }
+    }
     /* Common complete groups need neither per-character branches nor state. */
     if (have == 0 && n - i >= 4) {
       int a = scr_b64_values[in[i]], c = scr_b64_values[in[i + 1]];
       int d = scr_b64_values[in[i + 2]], e = scr_b64_values[in[i + 3]];
       if ((a | c | d | e) >= 0) {
         unsigned v = ((unsigned)a << 18) | ((unsigned)c << 12) | ((unsigned)d << 6) | (unsigned)e;
-        b->data[o++] = (uint8_t)(v >> 16);
-        b->data[o++] = (uint8_t)(v >> 8);
-        b->data[o++] = (uint8_t)v;
+        out[o++] = (uint8_t)(v >> 16);
+        out[o++] = (uint8_t)(v >> 8);
+        out[o++] = (uint8_t)v;
         i += 4;
         continue;
       }
@@ -2696,17 +2751,17 @@ static ScrBytes *scr_bytes_decode_b64(ScrBytesSink *sink, const uint8_t *in, siz
     if (v < 0) continue;
     acc = (acc << 6) | (unsigned)v;
     if (++have == 4) {
-      b->data[o++] = (uint8_t)(acc >> 16);
-      b->data[o++] = (uint8_t)(acc >> 8);
-      b->data[o++] = (uint8_t)acc;
+      out[o++] = (uint8_t)(acc >> 16);
+      out[o++] = (uint8_t)(acc >> 8);
+      out[o++] = (uint8_t)acc;
       acc = 0;
       have = 0;
     }
   }
-  if (have == 2) b->data[o++] = (uint8_t)(acc >> 4);
+  if (have == 2) out[o++] = (uint8_t)(acc >> 4);
   else if (have == 3) {
-    b->data[o++] = (uint8_t)(acc >> 10);
-    b->data[o++] = (uint8_t)(acc >> 2);
+    out[o++] = (uint8_t)(acc >> 10);
+    out[o++] = (uint8_t)(acc >> 2);
   }
   b->len = o;
   return b;
@@ -2764,7 +2819,7 @@ static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const
     /* Node interprets encoded text as the low byte of each UTF-16 unit.
      * ASCII can borrow storage; non-ASCII must preserve that truncation. */
     ScrBytes *narrowed = NULL;
-    if (scr_bytes_ascii_prefix(in, n) != n) {
+    if (!scr_str_known_ascii(s) && scr_bytes_ascii_prefix(in, n) != n) {
       ScrStr *latin1 = scr_str_new("latin1", 6);
       narrowed = scr_bytes_encode_str(NULL, s, latin1);
       scr_str_release(latin1);
@@ -2902,6 +2957,8 @@ static ScrBytes *scr_pool_take(size_t len) {
   v->external = false;
   v->untransferable = false;
   v->shared = NULL;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif

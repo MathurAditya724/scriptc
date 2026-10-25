@@ -159,3 +159,27 @@ if (isMainThread) {
   expect(order.slice(slow, fast).some((l) => l.startsWith("spec.fast"))).toBe(true);
   expect(order.slice(fast).some((l) => l.startsWith("spec.fast"))).toBe(true);
 });
+
+test("a floor-mod by a power of two speculates as a mask and a product by one as a shift", async () => {
+  const llvm = await emitLlvm(`
+function trim(value: number, bits: number): number {
+  return value - Math.floor(value / Math.pow(2, bits)) * Math.pow(2, bits);
+}
+function key(bytes: Uint8Array, bits: number): number {
+  let k = 0;
+  for (let i = 0; i < bytes.length; i++) k = trim(k, bits) * 4 + bytes[i]!;
+  return k;
+}
+console.log(key(new Uint8Array([1, 2, 3, 0]), 6));
+`);
+  const fn = /^define internal double @sc_bf_\w*key[\w.]*\([^]*?^}/m.exec(llvm)?.[0] ?? "";
+  const fast = fn.slice(fn.search(/^spec\.fast\d+:/m));
+  expect(fast.length).toBeLessThan(fn.length);
+  // trim(k, bits): the low `bits` bits; * 4: a shift by two.
+  expect(fast).toMatch(/= sub i64 %\S+, 1\n\s+%\S+ = and i64 %\S+, %\S+\n/);
+  expect(fast).toMatch(/= shl nsw i64 %\S+, 2\n/);
+  // No floor division of k (an arithmetic shift of it) and no checked
+  // multiply remain.
+  expect(fast).not.toMatch(/ashr i64 %/);
+  expect(fast).not.toContain("@llvm.smul.with.overflow.i64");
+});
