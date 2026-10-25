@@ -20,3 +20,8 @@ console.log(parse("[1,2]").length, JSON.stringify({ a: [1] }));
 
 console.log(typeof Math === "object" && typeof Reflect === "object");
 console.log(Math.max.length, Math.min.length, Math.hypot.length, Math.abs.length);
+
+const r = Reflect;
+const ownKeys = r.ownKeys;
+console.log(ownKeys === Reflect.ownKeys, r.ownKeys === Reflect.ownKeys, typeof ownKeys);
+console.log(r.ownKeys({ a: 1, b: 2 }).length, ownKeys({ c: 3 })[0], ownKeys.name, ownKeys.length);

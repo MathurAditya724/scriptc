@@ -3,7 +3,24 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { builtinModuleFnOf } from "../surfaces.js";
-import { BOOL, DYN, type IrExpr, STRING, arrayOf } from "../../../ir/ir.js";
+import { BOOL, DYN, type IrExpr, STRING, type SrcLoc, arrayOf } from "../../../ir/ir.js";
+
+/** The function value of the Reflect member `member` (ownKeys, on native
+ * computed-key reflection), or null for members without one. */
+export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
+  if (member !== "ownKeys") return null;
+  const value = lowerer.lowerNativeCallableValue(
+    {
+      fn: "dyn.ownKeys",
+      params: [DYN],
+      result: DYN,
+      valueParams: [{ mode: "required", type: DYN }],
+    },
+    "Reflect.ownKeys",
+    loc,
+  )!;
+  return { kind: "dynFrom", value, fnName: "ownKeys", type: DYN, loc };
+}
 
 /** Reflect.ownKeys uses native computed-key reflection. Reflect.apply(target,
  * thisArg, argsList) where the TARGET is a builtin

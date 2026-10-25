@@ -24,6 +24,7 @@ import type { Lowerer } from "./lowerer.js";
 import { InternalCompilerError } from "../../errors.js";
 import { mathMemberValue } from "./lower-stdlib.js";
 import { jsonMemberValue } from "./builtins/json.js";
+import { reflectMemberValue } from "./builtins/reflection.js";
 
 /** A function member with its `length`, or a constant (`length` -1). */
 interface NamespaceMember {
@@ -244,7 +245,7 @@ function functionValue(lowerer: Lowerer, canonical: string, key: string, loc: Sr
       ? mathMemberValue(lowerer, key, loc)
       : canonical === "JSON"
         ? jsonMemberValue(lowerer, key, loc)
-        : null;
+        : reflectMemberValue(lowerer, key, loc);
   if (value !== null)
     return value.type.kind === "dyn"
       ? value

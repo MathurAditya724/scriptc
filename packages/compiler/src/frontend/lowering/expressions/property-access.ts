@@ -161,6 +161,7 @@ import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
 import { arrayValueRead, arrayValueType } from "../array-values.js";
 import { lowerClassMethodValue } from "../class-method-values.js";
+import { reflectMemberValue } from "../builtins/reflection.js";
 import {
   objLitGenericFnInfoOf,
   objLitGenericFnNodeOf,
@@ -1691,19 +1692,8 @@ export function lowerIntrinsicProperty(
       );
     }
   }
-  if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys") {
-    const value = lowerer.lowerNativeCallableValue(
-      {
-        fn: "dyn.ownKeys",
-        params: [DYN],
-        result: DYN,
-        valueParams: [{ mode: "required", type: DYN }],
-      },
-      "Reflect.ownKeys",
-      locOf(expr),
-    )!;
-    return { kind: "dynFrom", value, fnName: "ownKeys", type: DYN, loc: locOf(expr) };
-  }
+  if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys")
+    return reflectMemberValue(lowerer, "ownKeys", locOf(expr));
   if (lowerer.chainBlocked(expr)) return null;
   // Object.prototype.constructor: the Object constructor value.
   if (
