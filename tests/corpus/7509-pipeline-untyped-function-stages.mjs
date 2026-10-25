@@ -53,6 +53,11 @@ const out = pipeline(Readable.from(["p1", "p2"]), wrap, (err, value) => {
 console.log("returns a PassThrough", out instanceof PassThrough);
 for await (const chunk of out) console.log("passthrough", chunk);
 
+// an async generator destination in the promise form: the PassThrough
+// takes its values and the promise resolves to undefined
+const promised = await pipelineP(Readable.from(["q1", "q2"]), wrap);
+console.log("generator destination promise", promised, typeof promised);
+
 // a destination whose promise rejects
 try {
   await pipelineP(

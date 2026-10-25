@@ -5312,13 +5312,31 @@ static void scr_sp_value_inv(ScrClosure *cb, ScrError *err, ScrDyn *value, ScrPr
   scr_promise_release(p);
 }
 
+/* scr_sp_value_inv for an untyped destination (SCR_PIPE_DEST_DYN), whose
+ * result promise carries a dyn value: when the destination returned an
+ * async iterable (no promise), or its promise carries no payload, the
+ * result is undefined, as in Node. */
+static void scr_sp_dyn_value_inv(ScrClosure *cb, ScrError *err, ScrDyn *value,
+                                 ScrPromise *value_p) {
+  if (err != NULL || (value_p != NULL && scr_promise_payload_kind(value_p) != SCR_EXC_NONE)) {
+    scr_sp_value_inv(cb, err, value, value_p);
+    return;
+  }
+  ScrPromise *p = scr_box_get_ref(cb->caps[0]); /* +1 */
+  scr_promise_fulfill_ref(p, scr_dyn_retain(scr_dyn_undefined()), scr_dyn_retain_v,
+                          scr_dyn_release_v, NULL);
+  scr_promise_release(p);
+}
+
 ScrPromise *scr_sp_pipeline_stages(double n, ScrStream **streams, double count,
                                    ScrClosure **stages, double positions, double flags,
                                    double mask, ScrClosure **helpers, ScrClosure *box,
                                    ScrDyn *signal, ScrClosure *abort) {
   ScrPromise *p = scr_promise_new();
   ScrPipeStages fs = scr_pipe_stages_of(count, stages, positions, flags, mask, helpers, box, signal);
-  ScrPipeValInv vi = fs.dest != SCR_PIPE_DEST_STREAM ? &scr_sp_value_inv : NULL;
+  ScrPipeValInv vi = fs.dest == SCR_PIPE_DEST_STREAM ? NULL
+                     : fs.dest == SCR_PIPE_DEST_DYN  ? &scr_sp_dyn_value_inv
+                                                     : &scr_sp_value_inv;
   ScrStream *dst = scr_stream_pipeline_ex((size_t)n, streams, scr_sp_watcher(p), &scr_sp_settle_inv,
                                           true, NULL, NULL, &fs, abort, vi);
   if (dst) scr_stream_release(dst);
@@ -5370,7 +5388,9 @@ ScrPromise *scr_sp_pipeline_stages_opts(double n, ScrStream **streams, double co
   ScrPromise *p = scr_promise_new();
   if (!scr_sp_opts_signal(p, &outer)) return p;
   ScrPipeStages fs = scr_pipe_stages_of(count, stages, positions, flags, mask, helpers, box, signal);
-  ScrPipeValInv vi = fs.dest != SCR_PIPE_DEST_STREAM ? &scr_sp_value_inv : NULL;
+  ScrPipeValInv vi = fs.dest == SCR_PIPE_DEST_STREAM ? NULL
+                     : fs.dest == SCR_PIPE_DEST_DYN  ? &scr_sp_dyn_value_inv
+                                                     : &scr_sp_value_inv;
   ScrStream *dst = scr_stream_pipeline_ex((size_t)n, streams, scr_sp_watcher(p), &scr_sp_settle_inv,
                                           end, outer, add, &fs, abort, vi);
   if (dst) scr_stream_release(dst);
