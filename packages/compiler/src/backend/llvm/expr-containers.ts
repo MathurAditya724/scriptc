@@ -50,11 +50,13 @@ import { emitFusedMapSet, rememberMapEntry } from "./map-entry-fusion.js";
 import { emitScratchStringSlice, emitStringSliceRead } from "./string-slices.js";
 import {
   STRING_CHAR_AT_DECL,
+  STRING_CP_AT_BYTE_DECL,
   STRING_CHAR_AT_INT_MARKER,
   STRING_CHAR_CODE_AT_DECL,
   STRING_CHAR_CODE_AT_INT_MARKER,
   emitAsciiChar,
   emitAsciiCharCode,
+  emitStringByteLength,
   emitUnitCharCode,
   STRING_UTF16_LEN_DECL,
 } from "./string-reads.js";
@@ -565,16 +567,30 @@ export function emitStrIntrinsic(
       return call("scr_str_is_well_formed", "zeroext i1 (ptr)", `ptr ${r.name}`, "i1", false);
     case "toWellFormed":
       return call("scr_str_to_well_formed", "ptr (ptr)", `ptr ${r.name}`, "ptr", true);
-    case "cpAt":
-      // The code point AT an index as a one-code-point string (+1) —
-      // the string-for-of desugar's read.
-      return call(
-        "scr_str_cp_at",
-        "ptr (ptr, double)",
-        `ptr ${r.name}, double ${args[0]!.name}`,
-        "ptr",
-        true,
-      );
+    case "byteLength": {
+      const t = B.tmp();
+      // A byte count fits in a signed size, whose conversion is one instruction.
+      B.line(`${t} = sitofp ${host.sizeType} ${emitStringByteLength(host, r.name)} to double`);
+      return { name: t, type: e.type };
+    }
+    case "cpAtByte": {
+      // sc_str_cp_at_byte (string-reads.ts) answers ASCII bytes from the
+      // charAt table inline. The cursor is a character start, an exact
+      // integer below the byte count.
+      host.declare(STRING_CHAR_AT_DECL);
+      host.declare(STRING_CP_AT_BYTE_DECL);
+      const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
+      let wide: string;
+      if (index) {
+        wide = widenInteger(host, index);
+      } else {
+        wide = B.tmp();
+        B.line(`${wide} = fptosi double ${args[0]!.name} to i64`);
+      }
+      const t = B.tmp();
+      B.line(`${t} = call ptr @sc_str_cp_at_byte(ptr ${r.name}, i64 ${wide})`);
+      return host.own({ name: t, type: e.type });
+    }
     default: {
       const _exhaustive: never = method;
       void _exhaustive;
