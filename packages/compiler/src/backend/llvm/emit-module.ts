@@ -102,10 +102,10 @@ function emitFunctionsInChunks(emitter: LlEmitter, chunks: number): string[] {
   return fnDefs;
 }
 
-/** Modules with fewer functions emit in one process: forking and merging
- * would cost more than the workers save (SCRIPTC_EMIT_WORKER_FUNCTIONS
- * lowers it, for tests). */
-function workerMinFunctions(): number {
+/** Modules with fewer functions emit in one process, and compute their
+ * analyses in it: forking and merging would cost more than the workers save
+ * (SCRIPTC_EMIT_WORKER_FUNCTIONS lowers it, for tests). */
+export function workerMinFunctions(): number {
   const value = Number(process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] ?? "2000");
   return Number.isFinite(value) && value > 0 ? value : 2000;
 }

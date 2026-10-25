@@ -353,6 +353,60 @@ export class Int32Slots {
     return count;
   }
 
+  /** The analysis as JSON, for a process that shares this module and its
+   * node index (a forked one). Proven writes are numbered by their position
+   * in `nodes`. Null when a proven write is not in the index. */
+  encode(nodes: IrNodeIndex): string | null {
+    const proven = nodes.expressionPositions(this.provenWrites);
+    if (proven === null) return null;
+    const data: Int32SlotsData = {
+      fields: [...this.fields],
+      familyOf: [...this.familyOf],
+      paramFacts: [...this.paramFacts].map(([fn, params]) => [fn, [...params]]),
+      returns: [...this.returns],
+      returnRanges: [...this.returnRanges],
+      boxes: [...this.boxes],
+      boxGroupOf: [...this.boxGroupOf],
+      provenWrites: proven,
+      called: [...this.called],
+      reasons: [...this.reasons],
+      pinned: [...this.pinned],
+      int32Locals: [...this.int32Locals],
+      int32Elements: [...this.int32Elements],
+      pinViolations: this.pinViolations,
+      nonNegative: [...this.nonNegative],
+      narrowedReads: this.narrowedReads,
+      int32Arrays: [...this.int32Arrays],
+      checkedInt32Arrays: [...this.checkedInt32Arrays],
+    };
+    return JSON.stringify(data);
+  }
+
+  /** The analysis `encode` wrote for `mod`, whose node index is `nodes`. */
+  static decode(text: string, mod: IrModule, nodes: IrNodeIndex): Int32Slots {
+    const data = JSON.parse(text) as Int32SlotsData;
+    const slots = new Int32Slots(new Map((mod.classes ?? []).map((c) => [c.name, c])));
+    for (const family of data.fields) slots.fields.add(family);
+    for (const [key, family] of data.familyOf) slots.familyOf.set(key, family);
+    for (const [fn, params] of data.paramFacts) slots.paramFacts.set(fn, new Map(params));
+    for (const fn of data.returns) slots.returns.add(fn);
+    for (const [fn, range] of data.returnRanges) slots.returnRanges.set(fn, range);
+    for (const group of data.boxes) slots.boxes.add(group);
+    for (const [member, group] of data.boxGroupOf) slots.boxGroupOf.set(member, group);
+    for (const node of nodes.expressionsAt(data.provenWrites)) slots.provenWrites.add(node);
+    for (const fn of data.called) slots.called.add(fn);
+    for (const [key, why] of data.reasons) slots.reasons.set(key, why);
+    for (const key of data.pinned) slots.pinned.add(key);
+    for (const key of data.int32Locals) slots.int32Locals.add(key);
+    for (const key of data.int32Elements) slots.int32Elements.add(key);
+    slots.pinViolations.push(...data.pinViolations);
+    for (const key of data.nonNegative) slots.nonNegative.add(key);
+    slots.narrowedReads = data.narrowedReads;
+    for (const key of data.int32Arrays) slots.int32Arrays.add(key);
+    for (const key of data.checkedInt32Arrays) slots.checkedInt32Arrays.add(key);
+    return slots;
+  }
+
   /** Every fact, in a canonical order, with each proven write as its
    * position in `mod` (function index, then walk order): two analyses of
    * equal modules hold the same facts when their summaries are equal. */
@@ -393,6 +447,28 @@ export class Int32Slots {
     lines.push(`provenWrites ${this.provenWrites.size} ${positions.join(",")}`);
     return lines.join("\n");
   }
+}
+
+/** Int32Slots as plain data (Int32Slots.encode). */
+interface Int32SlotsData {
+  fields: string[];
+  familyOf: [string, string | null][];
+  paramFacts: [string, [string, IntegerRange][]][];
+  returns: string[];
+  returnRanges: [string, IntegerRange][];
+  boxes: string[];
+  boxGroupOf: [string, string][];
+  provenWrites: number[];
+  called: string[];
+  reasons: [string, string][];
+  pinned: string[];
+  int32Locals: string[];
+  int32Elements: string[];
+  pinViolations: string[];
+  nonNegative: string[];
+  narrowedReads: boolean;
+  int32Arrays: string[];
+  checkedInt32Arrays: string[];
 }
 
 const DYN_KINDS = new Set<IrType["kind"]>(["dyn", "jsval", "caught"]);

@@ -436,7 +436,7 @@ export async function compileCInternal(
       ? ["-gline-tables-only", ...(opts.cPath.endsWith(".ll") ? [] : ["-gno-column-info"])]
       : [];
   const { programShards, programPublicSymbols, programShardMergeIdentity } =
-    await selectProgramShards(driver, opts, optimization === "dev" && !sanitize);
+    await selectProgramShards(driver, opts, optimization === "dev");
   // Mobile triples produce library archives, never standalone executables:
   // the executable-lane runtime (event loop, sockets, child processes) is
   // not verified on those device classes. compile() reports the SC3002
@@ -890,9 +890,15 @@ export async function compileCInternal(
   };
   const buildExecutable = async (
     runtimeInput: (path: string) => string,
-    build: { programPath?: string; outPath?: string; compilerVisibleSource?: string } = {},
+    build: {
+      programPath?: string;
+      outPath?: string;
+      compilerVisibleSource?: string;
+      /** programPath is an object already (the merged program shards). */
+      programObject?: boolean;
+    } = {},
   ): Promise<void> => {
-    if (!separateSanitizedProgram) {
+    if (!separateSanitizedProgram || build.programObject === true) {
       await runClang(buildArgs(runtimeInput, build));
       return;
     }
@@ -1471,7 +1477,7 @@ export async function compileCInternal(
             .update("\0")
             .update(shard.name)
             .update("\0")
-            .update(shard.source)
+            .update(shard.source())
             .digest("hex");
           return {
             ...shard,
@@ -1485,7 +1491,7 @@ export async function compileCInternal(
         for (let i = 0; i < entries.length; i += shardWidth) {
           await Promise.all(
             entries.slice(i, i + shardWidth).map(async (entry) => {
-              await writeFile(entry.sourcePath, entry.source);
+              await writeFile(entry.sourcePath, entry.source());
               if (await copyValidCachedFile(entry.cachePath, entry.staged)) return;
               entry.missed = true;
               await runClang([
@@ -1572,7 +1578,7 @@ export async function compileCInternal(
       (p) => objects?.get(p) ?? p,
       shardedProgramObject === null
         ? { programPath, outPath: privateOut, compilerVisibleSource: opts.cPath }
-        : { programPath: shardedProgramObject, outPath: privateOut },
+        : { programPath: shardedProgramObject, outPath: privateOut, programObject: true },
     );
     if (darwinDebugSymbols) {
       // clang invokes dsymutil when compiling a source TU while linking.

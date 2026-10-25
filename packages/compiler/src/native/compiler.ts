@@ -295,7 +295,7 @@ export class NativeCompiler {
     for (const [index, shard] of split.shards.entries()) {
       const shardInput = join(stage, `shard-${index}.ll`);
       const shardOutput = join(stage, `shard-${index}` + this.toolchain.target.outputSuffixes.obj);
-      writeFileSync(shardInput, shard.source);
+      writeFileSync(shardInput, shard.source());
       this.emitObject(shardInput, shardOutput, source + "." + shard.name, optimization, "obj");
       objects.push(shardOutput);
     }
