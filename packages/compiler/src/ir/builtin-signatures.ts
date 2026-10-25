@@ -1547,9 +1547,9 @@ function buildLibFnSignatures() {
      * true } and a callback taking an address string or list, then dials
      * the answers in order. MAY THROW (host validation, a lookup throw). */
     "net.connectLookupDyn": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
-    /** socket.write: Node's Writable answer — false when the bytes the write
-     * left unsent reach the 65536-byte high-water mark ('drain' follows),
-     * and on an ended or closed socket. */
+    /** socket.write: Node's Writable answer — false when the writes not yet
+     * completely sent, each counted in full, reach the 65536-byte
+     * high-water mark ('drain' follows), and on an ended or closed socket. */
     "net.sockWrite": { argTypes: [NETSOCKET_T, STRING], result: BOOL },
     "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: BOOL },
     "net.sockEnd": { argTypes: [NETSOCKET_T], result: VOID },
@@ -2148,7 +2148,8 @@ function buildLibFnSignatures() {
     /** socket.address(): { address, family, port } or {} as a dyn. */
     "net.sockAddress": { argTypes: [NETSOCKET_T], result: DYN },
     "net.sockBytesWritten": { argTypes: [NETSOCKET_T], result: F64 },
-    /** socket.writableLength: the bytes written and not yet sent. */
+    /** socket.writableLength: Node's state.length, the length of every
+     * write not yet completely sent. */
     "net.sockWritableLength": { argTypes: [NETSOCKET_T], result: F64 },
     /** socket.writableNeedDrain: a write answered false and 'drain' has not
      * fired, with the write half open. */
