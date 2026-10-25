@@ -33,7 +33,7 @@ test(
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const report = (result.warnings ?? []).find((w) => w.code === "SC6103");
-    expect(report?.message).toMatch(/, 5 constant reads\)/);
+    expect(report?.message).toMatch(/2 function table calls, 5 constant reads\)/);
     const pending = execFileAsync(result.binaryPath, [], { cwd: dirname(entry), encoding: "utf8" });
     pending.child.stdin?.end();
     const { stdout } = await pending;

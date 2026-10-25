@@ -913,7 +913,63 @@ export function planStaticObjectRewrites(
   // key reads the table as written. The members do not use `this`, the
   // table has no accessors, and comparing a string runs no code, so only
   // the representation of the call changes.
-  const tableCalls: { sf: ts.SourceFile; call: ts.CallExpression; arms: [string, string][] }[] = [];
+  const tableCalls: {
+    sf: ts.SourceFile;
+    call: ts.CallExpression;
+    arms: [string, string][];
+    exhaustive: boolean;
+  }[] = [];
+  // Whether a key parameter only ever holds one of the table's keys: its
+  // function never escapes, every call of it passes a string literal key
+  // of the table, and its body neither assigns the parameter nor uses
+  // `arguments` (which aliases parameters in sloppy code). The dispatch
+  // then needs no arm for other keys.
+  const literalKeysOnly = (keyDecl: Node, keys: ReadonlySet<string>): boolean => {
+    if (process.env["SCRIPTC_SHAPE_EXHAUSTIVE_TABLES"] === "0") return false;
+    if (!ts.isParameter(keyDecl) || !ts.isIdentifier(keyDecl.name)) return false;
+    const fn = keyDecl.parent;
+    if (fn === undefined || !ts.isFunctionLike(fn) || escapedFns.has(fn)) return false;
+    for (const a of analysis.atoms.atoms)
+      if (a.kind === "function" && a.node === fn && analysis.escaped.has(a)) return false;
+    const index = (fn as ts.FunctionLikeDeclaration).parameters.nodes.indexOf(keyDecl);
+    const name = keyDecl.name.text;
+    let touched = false;
+    const visit = (n: Node): void => {
+      if (touched) return;
+      if (ts.isIdentifier(n) && n.text === "arguments") touched = true;
+      else if (
+        ts.isBinaryExpression(n) &&
+        n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        ts.isIdentifier(n.left) &&
+        n.left.text === name
+      )
+        touched = true;
+      else if (
+        (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+        ts.isIdentifier(n.operand) &&
+        n.operand.text === name
+      )
+        touched = true;
+      ts.forEachChild(n, (c) => {
+        visit(c);
+        return undefined;
+      });
+    };
+    const body = (fn as { body?: Node }).body;
+    if (body === undefined) return false;
+    visit(body);
+    if (touched) return false;
+    const edges = analysis.calls.filter((c) => c.callee.node === fn);
+    if (edges.length === 0) return false;
+    return edges.every((e) => {
+      if (!ts.isCallExpression(e.site)) return false;
+      const args = e.site.arguments.nodes;
+      if (args.slice(0, index + 1).some((a) => ts.isSpreadElement(a))) return false;
+      const arg = args[index];
+      return arg !== undefined && ts.isStringLiteral(arg) && keys.has(arg.text);
+    });
+  };
   for (const { op, atoms } of mergedOps) {
     if (op.kind !== "computedRead") continue;
     const node = op.node;
@@ -954,16 +1010,34 @@ export function planStaticObjectRewrites(
       kept.push(`${where}: a member is not a hoisted function of this file`);
       continue;
     }
-    tableCalls.push({ sf: call.getSourceFile(), call, arms });
+    tableCalls.push({
+      sf: call.getSourceFile(),
+      call,
+      arms,
+      exhaustive: literalKeysOnly(keyDecl, new Set(arms.map(([k]) => k))),
+    });
   }
-  for (const { sf, call, arms } of tableCalls) {
+  for (const { sf, call, arms, exhaustive } of tableCalls) {
     const node = call.expression as ts.ElementAccessExpression;
     const key = node.argumentExpression.getText();
     const args = call.arguments.nodes.map((a) => sliceWithCalls(sf, a)).join(", ");
     const table = sliceWithCalls(sf, node.expression);
-    const text = arms
+    const tested = exhaustive ? arms.slice(0, -1) : arms;
+    const text = tested
       .map(([k, name]) => `${key} === ${JSON.stringify(k)} ? ${name}(${args}) : `)
       .join("");
+    if (exhaustive) {
+      callEdits.push({
+        sf,
+        edit: {
+          start: ts.tokenStartOfNode(call),
+          end: call.end,
+          text: `(${text}${arms[arms.length - 1]![1]}(${args}))`,
+        },
+      });
+      tableDispatches++;
+      continue;
+    }
     callEdits.push({
       sf,
       edit: {
