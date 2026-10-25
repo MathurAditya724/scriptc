@@ -23,7 +23,7 @@ import { f64Lit } from "./common.js";
 import {
   emitStringAsciiFlag,
   emitStringByteLength,
-  STRING_CHAR_CODE_AT_DECL,
+  STRING_SCAN_UNITS_DECL,
   stringScanType,
 } from "./string-reads.js";
 import { unitSafeLoop } from "./string-unit-versions.js";
@@ -1360,10 +1360,11 @@ export function emitBytesLoopVersionGuard(
 }
 
 /** The length of a version's units receiver `s` in UTF-16 units: its byte
- * length when it is ASCII; otherwise, after one runtime read publishes it
- * as the scan receiver, the published unit count (0 when the runtime does
- * not hold its units). Also the units pointer, whether the loop is to
- * read it, and whether the published receiver is `s`. */
+ * length when it is ASCII; otherwise, once it is the scan receiver, the
+ * published unit count (0 when the runtime does not hold its units). When
+ * `s` is not already the scan receiver, the runtime converts it to units
+ * and publishes it (scr_str_scan_units). Also the units pointer, whether
+ * the loop is to read it, and whether the published receiver is `s`. */
 function emitUnitsLength(
   host: LlvmEmitterContext,
   s: string,
@@ -1378,16 +1379,28 @@ function emitUnitsLength(
     join = B.newLabel("bytes.version.length");
   B.condBr(ascii, join, publish);
   B.startBlock(publish);
-  host.declare(STRING_CHAR_CODE_AT_DECL);
-  const read = B.tmp(),
-    receiver = B.tmp(),
+  // When `s` is already the scan receiver (an earlier loop over it published
+  // it), its units stay published until the runtime clears the scan: skip
+  // the call.
+  const held = B.tmp(),
+    holds = B.tmp();
+  B.line(`${held} = load ptr, ptr @scr_str_scan`);
+  B.line(`${holds} = icmp eq ptr ${held}, ${s}`);
+  const call = B.newLabel("bytes.version.publish.units"),
+    load = B.newLabel("bytes.version.publish.load");
+  B.condBr(holds, load, call);
+  B.startBlock(call);
+  host.declare(STRING_SCAN_UNITS_DECL);
+  const receiver = B.tmp(),
     same = B.tmp(),
     pointerSlot = B.tmp(),
     pointer = B.tmp(),
     countSlot = B.tmp(),
     count = B.tmp(),
     published = B.tmp();
-  B.line(`${read} = call double @scr_str_char_code_at(ptr ${s}, double 0.0)`);
+  B.line(`call void @scr_str_scan_units(ptr ${s})`);
+  B.br(load);
+  B.startBlock(load);
   B.line(`${receiver} = load ptr, ptr @scr_str_scan`);
   B.line(`${same} = icmp eq ptr ${receiver}, ${s}`);
   B.line(`${pointerSlot} = getelementptr inbounds ${type}, ptr @scr_str_scan, i32 0, i32 1`);

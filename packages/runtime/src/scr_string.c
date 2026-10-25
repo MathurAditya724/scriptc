@@ -1889,6 +1889,21 @@ static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
   return true;
 }
 
+/* A loop about to read every unit of s (bytes-loop-versions.ts) converts it
+ * at once instead of after the threshold's reads, and publishes it as the
+ * scan's receiver. ASCII receivers and receivers past SCR_SIDX_UNITS_MAX
+ * publish nothing; the caller compares scr_str_scan.s with s. */
+void scr_str_scan_units(ScrStr *s) {
+  if (s->ascii || s->len > SCR_SIDX_UNITS_MAX) return;
+  ScrSidx *e = scr_sidx(s);
+  if (!e->units) e->units = scr_str_units(s, &e->nunits);
+  if (scr_str_scan.s != s) {
+    scr_str_scan.s = s;
+    scr_str_scan.units = e->units;
+    scr_str_scan.n = e->nunits;
+  }
+}
+
 typedef enum { SCR_UNIT_FIRST, SCR_UNIT_LAST, SCR_UNIT_AT } ScrUnitSearch;
 
 /* The UTF-16 index of needle in s: the first match at or after `from`,
