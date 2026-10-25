@@ -51,6 +51,17 @@ console.log(
   web.ReadableStream === ReadableStream,
 );
 console.log(globalThis["noSuchGlobal"], typeof globalThis["Temporal"]);
+// A snapshot of the global object in a function reads the same values.
+function readThroughSnapshot(name) {
+  const g = globalThis;
+  return g[name];
+}
+console.log(
+  readThroughSnapshot("setTimeout") === setTimeout,
+  readThroughSnapshot("Map") === Map,
+  typeof readThroughSnapshot("structuredClone"),
+  readThroughSnapshot("noSuchGlobal"),
+);
 const pick = (name) => globalThis[name];
 console.log(pick("Math") === Math, pick("JSON") === JSON, pick("Reflect") === Reflect, pick("Math").max(1, 3));
 

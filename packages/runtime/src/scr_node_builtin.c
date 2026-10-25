@@ -471,6 +471,18 @@ ScrDyn *scr_process_builtin_unsupported(ScrStr *id, ScrStr *member) {
 static SCR_TL ScrDyn *scr_navigator_box;
 static SCR_TL ScrDyn *scr_navigator_langs;
 static SCR_TL ScrStr *scr_navigator_lang;
+static SCR_TL bool scr_navigator_cleanup_registered;
+
+static void scr_navigator_cleanup(void);
+
+/* Registers the release of the cached navigator values at exit, once per
+ * thread: a program can read navigator.language or navigator.languages
+ * without ever taking the navigator object. */
+static void scr_navigator_keep(void) {
+  if (scr_navigator_cleanup_registered) return;
+  scr_navigator_cleanup_registered = true;
+  scr_atexit(scr_navigator_cleanup);
+}
 
 static void scr_navigator_refuse(const char *what) {
   ScrJsonBuf text;
@@ -575,6 +587,7 @@ ScrStr *scr_navigator_language(void) {
       return NULL;
     }
     scr_navigator_lang = tag;
+    scr_navigator_keep();
   }
   return scr_str_retain(scr_navigator_lang);
 }
@@ -587,6 +600,7 @@ ScrDyn *scr_navigator_languages(void) {
     scr_dyn_arr_push(languages, scr_global_take_str(language));
     scr_dyn_release(scr_dyn_freeze_data(languages));
     scr_navigator_langs = languages;
+    scr_navigator_keep();
   }
   return scr_dyn_retain(scr_navigator_langs);
 }
@@ -661,6 +675,7 @@ static void scr_navigator_cleanup(void) {
   scr_navigator_box = NULL;
   scr_navigator_langs = NULL;
   scr_navigator_lang = NULL;
+  scr_navigator_cleanup_registered = false;
 }
 
 ScrDyn *scr_navigator_object(void) {
@@ -673,7 +688,7 @@ ScrDyn *scr_navigator_object(void) {
     scr_dyn_handle_install(SCR_DYNH_NAVIGATOR, &ops);
     static SCR_TL char token;
     scr_navigator_box = scr_dyn_new_handle(&token, SCR_DYNH_NAVIGATOR);
-    scr_atexit(scr_navigator_cleanup);
+    scr_navigator_keep();
   }
   return scr_dyn_retain(scr_navigator_box);
 }

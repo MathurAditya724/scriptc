@@ -63,7 +63,7 @@ export function computedGlobalReadOf(lowerer: Lowerer, sf: ts.SourceFile): ts.Ex
   ts.walkPreorder(sf, (node) => {
     if (
       (ts.isElementAccessExpression(node) || ts.isForInStatement(node)) &&
-      stdlibGlobalNameOf(lowerer, node.expression) === "globalThis" &&
+      isGlobalObjectRead(lowerer, node.expression) &&
       (ts.isForInStatement(node) || readsBuiltinByName(lowerer, node))
     ) {
       found = node.expression;
@@ -73,6 +73,27 @@ export function computedGlobalReadOf(lowerer: Lowerer, sf: ts.SourceFile): ts.Ex
   });
   lowerer.computedGlobalReads.set(sf, found);
   return found;
+}
+
+/** Whether `expr` reads the global object: a spelling of it, or a variable
+ * whose only declaration initializes it with one (`const g = globalThis`).
+ * The scan runs before function bodies are lowered, so the alias of a
+ * variable declared in a function is not registered yet. */
+function isGlobalObjectRead(lowerer: Lowerer, expr: ts.Expression): boolean {
+  if (stdlibGlobalNameOf(lowerer, expr) === "globalThis") return true;
+  let inner = expr;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!ts.isIdentifier(inner)) return false;
+  const declarations = lowerer.checker.getSymbolAtLocation(inner)?.declarations ?? [];
+  const declaration = declarations[0];
+  return (
+    declarations.length === 1 &&
+    declaration !== undefined &&
+    ts.isVariableDeclaration(declaration) &&
+    ts.isIdentifier(declaration.name) &&
+    declaration.initializer !== undefined &&
+    stdlibGlobalNameOf(lowerer, declaration.initializer) === "globalThis"
+  );
 }
 
 /** Whether the element access `node` of the global object can read a
