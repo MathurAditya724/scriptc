@@ -3538,7 +3538,11 @@ ScrStr *scr_str_cp_at(ScrStr *s, double i) {
  * thread, as the ASCII ones are static: the string iterator returns them
  * instead of a new string per character. A string is immortal before its
  * slot publishes it; a thread that loses the race to fill a slot keeps its
- * own immortal copy, so at most one extra string per slot and thread. */
+ * own immortal copy, so at most one extra string per slot and thread. The
+ * strings come from the system allocator, as other state that outlives a
+ * thread does: a worker's own memory goes back when it exits without
+ * sharing (scr_alloc.c), and the table outlives the worker that filled a
+ * slot. */
 static ScrStr *scr_two_byte_chars[0x800 - 0x80];
 
 static ScrStr *scr_two_byte_char(const char *bytes) {
@@ -3546,12 +3550,13 @@ static ScrStr *scr_two_byte_char(const char *bytes) {
   ScrStr **slot = &scr_two_byte_chars[cp - 0x80];
   ScrStr *known = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
   if (known) return known;
-  ScrStr *made = scr_str_from_span(bytes, 2);
+  ScrStr *made = calloc(1, sizeof(ScrStr) + 3);
+  if (!made) scr_oom();
+  made->len = 2;
+  made->cap = 2;
+  memcpy(made->data, bytes, 2);
   scr_str_hash_prime(made);
   made->rc = SIZE_MAX;
-#ifdef SCR_RC_AUDIT
-  scr_str_live_forget();
-#endif
   scr_lsan_immortal(made);
   ScrStr *expected = NULL;
   if (__atomic_compare_exchange_n(slot, &expected, made, false, __ATOMIC_ACQ_REL,
