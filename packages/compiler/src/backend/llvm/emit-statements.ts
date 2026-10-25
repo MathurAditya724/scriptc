@@ -994,7 +994,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         LOOPS.of(emitter).denseLoopsEnabled = false;
         try {
           B.startBlock(slow);
-          emitter.emitStmt(s);
+          emitSlowCopy(emitter, s);
           B.br(done);
           B.startBlock(fast);
           LOOPS.of(emitter).denseLoop = dense;
@@ -1018,7 +1018,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         LOOPS.of(emitter).byteWindowsEnabled = false;
         try {
           B.startBlock(slow);
-          emitter.emitStmt(s);
+          emitSlowCopy(emitter, s);
           B.br(done);
           B.startBlock(fast);
           emitter.integerRanges = window.ranges;
@@ -1072,7 +1072,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.condBr(safe, fast, slow);
         B.startBlock(slow);
         LOOPS.of(emitter).countedLoopsEnabled = false;
-        emitter.emitStmt(s);
+        emitSlowCopy(emitter, s);
         LOOPS.of(emitter).countedLoopsEnabled = true;
         B.br(countedJoin);
         B.startBlock(fast);
@@ -2049,7 +2049,7 @@ function emitCallbackVersionedLoop(
   emitter.callbackVersioning.add(s);
   try {
     B.startBlock(slow);
-    emitter.emitStmt(s);
+    emitSlowCopy(emitter, s);
     B.br(done);
     B.startBlock(fast);
     for (const { ref } of bindings) emitter.knownCallbacks.add(ref.localId);
@@ -2060,6 +2060,20 @@ function emitCallbackVersionedLoop(
     emitter.callbackVersioning.delete(s);
   }
   B.startBlock(done);
+}
+
+/** The copy of a versioned loop that runs when its guard fails. Its loops
+ * get no speculative or int32 kind copies, which would emit each loop again
+ * for a path that rarely runs. Proven integer loops, which emit one copy,
+ * are kept. */
+function emitSlowCopy(emitter: LlEmitter, s: IrStmt): void {
+  const copies = emitter.loopCopiesEnabled;
+  emitter.loopCopiesEnabled = false;
+  try {
+    emitter.emitStmt(s);
+  } finally {
+    emitter.loopCopiesEnabled = copies;
+  }
 }
 
 /** Entries in a row whose fast copy bailed before a speculative loop site
@@ -2082,28 +2096,56 @@ function emitVersionedLoop(
   const fast = B.newLabel("bytes.version.fast"),
     slow = B.newLabel("bytes.version.slow"),
     done = B.newLabel("bytes.version.done");
-  emitBytesLoopVersionGuard(emitter, version, fast, slow);
+  const unitsFast =
+    version.unitsReceiver !== null ? B.newLabel("bytes.version.fast.units") : undefined;
+  const guard = emitBytesLoopVersionGuard(emitter, version, fast, slow, unitsFast);
+  const units = guard?.units ?? null;
   const originalBounds = emitter.bytesBounds,
     originalOwned = emitter.bytesOwned,
-    originalRanges = emitter.integerRanges;
+    originalRanges = emitter.integerRanges,
+    originalUnitReads = emitter.stringUnitReads,
+    originalLengthReads = emitter.stringLengthReads;
   LOOPS.of(emitter).bytesLoopVersioning.add(s);
   try {
     B.startBlock(slow);
-    emitter.emitStmt(s);
+    emitSlowCopy(emitter, s);
     B.br(done);
-    B.startBlock(fast);
-    emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
     if (version.owned.size > 0) emitter.bytesOwned = new Set([...originalOwned, ...version.owned]);
     if (version.ranges.size > 0)
       emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
     if (version.counted?.guarded || version.paired?.loop.guarded)
       LOOPS.of(emitter).provenCountedGuards.add(s);
+    B.startBlock(fast);
+    emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
+    // Both fast copies read the string's length the guard took.
+    const length = guard?.length;
+    if (length != null && version.unitLengths.size > 0)
+      emitter.stringLengthReads = new Map([
+        ...originalLengthReads,
+        ...[...version.unitLengths].map((node) => [node, length] as const),
+      ]);
     emitter.emitStmt(s);
     B.br(done);
+    if (unitsFast !== undefined && units !== null) {
+      // The string reads take the receiver's UTF-16 units.
+      B.startBlock(unitsFast);
+      emitter.bytesBounds = new Set([
+        ...originalBounds,
+        ...[...version.bounds].filter((node) => !version.stringReads.has(node)),
+      ]);
+      emitter.stringUnitReads = new Map([
+        ...originalUnitReads,
+        ...[...version.stringReads].map((node) => [node, units] as const),
+      ]);
+      emitter.emitStmt(s);
+      B.br(done);
+    }
   } finally {
     emitter.bytesBounds = originalBounds;
     emitter.bytesOwned = originalOwned;
     emitter.integerRanges = originalRanges;
+    emitter.stringUnitReads = originalUnitReads;
+    emitter.stringLengthReads = originalLengthReads;
     LOOPS.of(emitter).provenCountedGuards.delete(s);
     LOOPS.of(emitter).bytesLoopVersioning.delete(s);
   }
@@ -2120,6 +2162,7 @@ export function emitLoopCopies(
   const plan =
     allowed &&
     emitter.speculativeLoopsEnabled &&
+    emitter.loopCopiesEnabled &&
     emitter.speculation === null &&
     emitter.speculationResume === null
       ? planSpeculativeLoop(
@@ -2136,6 +2179,7 @@ export function emitLoopCopies(
             );
           },
           (id) => emitter.speculativeLocal(id) || emitter.speculativeInvariantGlobal(id),
+          emitter.speculationContext(),
         )
       : null;
   if (!plan) {
@@ -2147,6 +2191,7 @@ export function emitLoopCopies(
     const kinds =
       allowed &&
       emitter.speculativeLoopsEnabled &&
+      emitter.loopCopiesEnabled &&
       emitter.int32Slots.checkedInt32Arrays.size > 0 &&
       emitter.int32Kinds === null &&
       emitter.speculation === null &&
@@ -2193,6 +2238,20 @@ export function emitLoopCopies(
     B.line(`${both} = and i1 ${ok}, ${trying}`);
     ok = both;
   }
+  // Hoisted leaves live in locals of their own, which the resume copy of
+  // their write reads (see SpeculativeValue).
+  for (const { leaves } of plan.values.values())
+    for (const leaf of leaves) {
+      emitter.currentLocals.set(leaf.localId, {
+        id: leaf.localId,
+        name: "speculated leaf",
+        type: leaf.expr.type,
+        mutable: true,
+      });
+      B.entryAllocas.push(
+        `${emitter.binding(leaf.localId).slot} = alloca double ; speculated leaf`,
+      );
+    }
   const fast = B.newLabel("spec.fast"),
     slow = B.newLabel("spec.slow");
   B.condBr(ok, fast, slow);
@@ -2218,6 +2277,7 @@ export function emitLoopCopies(
     throw new InternalCompilerError("llvm emitter bug: speculative loop copy without a header");
   B.startBlock(B.newLabel("spec.tail"));
   emitter.speculationResume = resume;
+  emitter.speculationResumeValues = plan.values;
   emitter.speculationHeader = () => {
     B.br(header!);
     B.startBlock(B.newLabel("spec.unused"));
@@ -2226,6 +2286,7 @@ export function emitLoopCopies(
     emitCopy(exit);
   } finally {
     emitter.speculationResume = null;
+    emitter.speculationResumeValues = null;
     emitter.speculationHeader = null;
   }
   B.startBlock(fast);
@@ -2274,6 +2335,7 @@ export function emitLoopCopies(
     deferred,
     bails,
     ran,
+    values: plan.values,
   };
   try {
     const leave = B.newLabel("spec.leave");
@@ -2437,7 +2499,7 @@ function planProvenLoop(
   loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" }>,
 ): ProvenLoopPlan | null {
   if (
-    loop.kind !== "for" ||
+    loop.kind === "doWhile" ||
     !emitter.speculativeLoopsEnabled ||
     emitter.speculation !== null ||
     emitter.speculationResume !== null ||
@@ -2531,9 +2593,22 @@ export function emitSpeculativeWrite(
   // at once: a bailing path then owns nothing, and reads have no effect
   // whose reordering before the arithmetic could be observed.
   const reads = new Map<IrExpr, LlValue>();
-  if (target.value !== null) {
+  const rewritten = emitter.speculation!.values?.get(s);
+  const value = rewritten?.value ?? target.value;
+  if (rewritten !== undefined) {
+    // Hoisted leaves run first, in the write's order, and keep their
+    // doubles for the resume copy.
     emitter.frames.push([]);
-    for (const read of speculativeReads(target.value)) reads.set(read, emitter.emitExpr(read));
+    for (const leaf of rewritten.leaves) {
+      const evaluated = emitter.emitExpr(leaf.expr);
+      B.line(`store double ${evaluated.name}, ptr ${emitter.binding(leaf.localId).slot}`);
+      reads.set(leaf.ref, evaluated);
+    }
+    emitter.releaseTemps(emitter.frames.pop()!);
+  }
+  if (value !== null) {
+    emitter.frames.push([]);
+    for (const read of speculativeReads(value)) reads.set(read, emitter.emitExpr(read));
     emitter.releaseTemps(emitter.frames.pop()!);
   }
   emitter.frames.push([]);
@@ -2548,7 +2623,7 @@ export function emitSpeculativeWrite(
     B.line(`${biased} = add i64 ${result}, ${Number.MAX_SAFE_INTEGER}`);
     B.line(`${outside} = icmp ugt i64 ${biased}, ${2 * Number.MAX_SAFE_INTEGER}`);
     bail(outside);
-  } else result = emitSpeculativeInteger(emitter, target.value, bail, reads, resume === undefined);
+  } else result = emitSpeculativeInteger(emitter, value!, bail, reads, resume === undefined);
   // Speculable values read only numbers past this point.
   if (emitter.frames.pop()!.length > 0)
     throw new InternalCompilerError("llvm emitter bug: speculative write owns a temporary");

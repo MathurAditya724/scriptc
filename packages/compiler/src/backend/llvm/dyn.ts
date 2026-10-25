@@ -43,7 +43,7 @@ import {
   isDynTypedRefType,
   isRefCounted,
   isUnitType,
-  recordTextCodecClass,
+  recordHandleCodecClass,
   textCodecRecordClass,
   typeKey,
 } from "../../ir/ir.js";
@@ -98,14 +98,16 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
 
 /** The handle tags of TextEncoder and TextDecoder records boxed as dyn
  * (scr_dyn.h; scr_text_codec_dyn.c boxes and unboxes them). */
-export const TEXT_CODEC_TAG_NUM: Record<"TextEncoder" | "TextDecoder", number> = {
+export const TEXT_CODEC_TAG_NUM: Record<"TextEncoder" | "TextDecoder" | "StringDecoder", number> = {
   TextDecoder: 76,
   TextEncoder: 77,
+  StringDecoder: 78,
 };
 
 /** The decoder record fields scr_text_decoder_to_dyn reads, in its
  * parameter order. */
 const TEXT_DECODER_FIELDS = ["%TextDecoder", "%fatal", "%ignoreBOM", "%state"] as const;
+const STRING_DECODER_FIELDS = ["%enc", "%pending"] as const;
 
 /** Handle kinds whose runtime unit boxes them through its own function,
  * which installs the tag's ops on first use (scr_crypto.h). Programs that
@@ -174,6 +176,10 @@ export interface DynHost extends WalkerHost {
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
   classSubtypes(className: string): readonly string[];
+  /** The strict subclasses whose class-value constructor takes the same
+   * arguments as `className`'s (classValueAbiEquals): the class values a
+   * checked `classval` slot accepts besides its own class. */
+  classValueSubtypes(className: string): readonly string[];
   /** emitter.ts's pendingTestLines: the inline pending-exception test. */
   pendingTestLines(dest: string): string[];
 }
@@ -1808,6 +1814,26 @@ export class LlDyn {
     const B = new BlockBuilder();
     if (t.kind === "classval") {
       host.declare(`declare ptr @scr_dyn_class_check(ptr, ptr, ptr)`);
+      // A subclass's class value checks into the base class's slot when
+      // construction through the slot can call its thunk with the base
+      // constructor's arguments; any other subclass fails the check.
+      const subclasses = host.classValueSubtypes(t.className);
+      if (subclasses.length > 0) {
+        host.declare(`declare zeroext i1 @scr_dyn_class_is(ptr, ptr)`);
+        for (const className of subclasses) {
+          const subKey = host.cstr(typeKey({ kind: "classval", className }));
+          const matched = B.tmp();
+          B.line(`${matched} = call zeroext i1 @scr_dyn_class_is(ptr %d, ptr ${subKey})`);
+          const yes = B.newLabel("sub.yes");
+          const no = B.newLabel("sub.no");
+          B.condBr(matched, yes, no);
+          B.startBlock(yes);
+          const sub = B.tmp();
+          B.line(`${sub} = call ptr @scr_dyn_class_check(ptr %d, ptr ${subKey}, ptr %path)`);
+          B.terminate(`ret ptr ${sub}`);
+          B.startBlock(no);
+        }
+      }
       const checked = B.tmp();
       B.line(
         `${checked} = call ptr @scr_dyn_class_check(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,
@@ -1825,11 +1851,18 @@ export class LlDyn {
     const codec = textCodecRecordClass(t, (id) => host.recordsById.get(id));
     if (codec !== null) {
       // The record the codec's handle box holds (+1), or the path TypeError.
-      host.declare(`declare ptr @scr_text_codec_from_dyn(ptr, i1 zeroext, ptr, ptr)`);
       const checked = B.tmp();
-      B.line(
-        `${checked} = call ptr @scr_text_codec_from_dyn(ptr %d, i1 ${codec === "TextDecoder"}, ptr %path, ptr ${want})`,
-      );
+      if (codec === "StringDecoder") {
+        host.declare(`declare ptr @scr_string_decoder_from_dyn(ptr, ptr, ptr)`);
+        B.line(
+          `${checked} = call ptr @scr_string_decoder_from_dyn(ptr %d, ptr %path, ptr ${want})`,
+        );
+      } else {
+        host.declare(`declare ptr @scr_text_codec_from_dyn(ptr, i1 zeroext, ptr, ptr)`);
+        B.line(
+          `${checked} = call ptr @scr_text_codec_from_dyn(ptr %d, i1 ${codec === "TextDecoder"}, ptr %path, ptr ${want})`,
+        );
+      }
       B.terminate(`ret ptr ${checked}`);
       this.defs.push(
         `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} {`,
@@ -2917,14 +2950,14 @@ export class LlDyn {
     return matched;
   }
 
-  /** A TextEncoder or TextDecoder record boxes as its handle (+1), which
-   * holds the record by reference. A decoder passes the byte offsets of the
-   * fields its boxed decode reads. */
+  /** A TextEncoder, TextDecoder or StringDecoder record boxes as its
+   * handle (+1), which holds the record by reference. The decoders pass
+   * the byte offsets of the fields their boxed methods read. */
   private textCodecToDyn(
     B: BlockBuilder,
     t: IrType & { kind: "record" },
     shape: IrRecordShape,
-    codec: "TextEncoder" | "TextDecoder",
+    codec: "TextEncoder" | "TextDecoder" | "StringDecoder",
   ): void {
     const host = this.host;
     const rc = vAdapters(host, t);
@@ -2939,10 +2972,12 @@ export class LlDyn {
       const base = host.nullableUnions.fieldBase(t.shapeId);
       const start = B.tmp();
       B.line(`${start} = ptrtoint ptr %v to ${this.S}`);
-      const offsets = TEXT_DECODER_FIELDS.map((field) => {
+      const fields: readonly string[] =
+        codec === "StringDecoder" ? STRING_DECODER_FIELDS : TEXT_DECODER_FIELDS;
+      const offsets = fields.map((field) => {
         const index = shape.fields.findIndex((f) => f.name === field);
         if (index < 0)
-          throw new InternalCompilerError(`llvm emitter bug: TextDecoder record lacks ${field}`);
+          throw new InternalCompilerError(`llvm emitter bug: ${codec} record lacks ${field}`);
         const p = B.tmp();
         const at = B.tmp();
         const offset = B.tmp();
@@ -2953,11 +2988,11 @@ export class LlDyn {
         B.line(`${offset} = sub ${this.S} ${at}, ${start}`);
         return `${this.S} ${offset}`;
       });
-      host.declare(
-        `declare ptr @scr_text_decoder_to_dyn(ptr, ptr, ptr, ${this.S}, ${this.S}, ${this.S}, ${this.S})`,
-      );
+      const fn =
+        codec === "StringDecoder" ? "scr_string_decoder_to_dyn" : "scr_text_decoder_to_dyn";
+      host.declare(`declare ptr @${fn}(ptr, ptr, ptr, ${fields.map(() => this.S).join(", ")})`);
       B.line(
-        `${r} = call ptr @scr_text_decoder_to_dyn(ptr %v, ptr ${rc.retain}, ptr ${rc.release}, ${offsets.join(", ")})`,
+        `${r} = call ptr @${fn}(ptr %v, ptr ${rc.retain}, ptr ${rc.release}, ${offsets.join(", ")})`,
       );
     }
     B.terminate(`ret ptr ${r}`);
@@ -3137,7 +3172,7 @@ export class LlDyn {
         const shape = host.recordsById.get(t.shapeId);
         if (!shape)
           throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
-        const codec = recordTextCodecClass(shape);
+        const codec = recordHandleCodecClass(shape);
         if (codec !== null) {
           this.textCodecToDyn(B, t, shape, codec);
           break;

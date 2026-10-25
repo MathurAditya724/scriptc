@@ -61,10 +61,11 @@ import { hasLoneSurrogate, wtf8Bytes } from "../literals.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
 import { NULLABLE_ABSENT, NULLABLE_NULL } from "./nullable-unions.js";
 import { literalEqualityDefinition } from "./string-literal-equality.js";
-import { STRING_READ_HELPERS, stringScanDecl } from "./string-reads.js";
+import { STRING_READ_HELPERS, stringScanDecl, stringScanInline } from "./string-reads.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import { InternalCompilerError } from "../../errors.js";
 import { targetCpuAttribute } from "../target-cpu.js";
+import type { IrFunction } from "../../ir/ir.js";
 
 /** The function bodies emitted in `chunks` contiguous ranges, each by its
  * own emitter (LlEmitter.chunkEmitter), then merged in function order: the
@@ -205,6 +206,26 @@ function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean)
     ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address${cpu} }`] : []),
   ];
 }
+
+/** The group line written before each function's text. Functions from one
+ * source file share a group, which the LLVM helper keeps in the same
+ * partitions so that their calls to each other stay inside a partition
+ * (native/llvm-codegen/src/partition.h). A group is numbered by the first
+ * function of its file in the module's function order, which does not depend
+ * on the host. Functions without a source file get no group. */
+function partitionGroupLines(functions: readonly IrFunction[]): string[] {
+  const groups = new Map<string, number>();
+  return functions.map((fn) => {
+    const file = fn.loc.file;
+    if (file === "") return PARTITION_GROUP_END;
+    let group = groups.get(file);
+    if (group === undefined) groups.set(file, (group = groups.size));
+    return `${PARTITION_GROUP_END} ${group}`;
+  });
+}
+
+/** Ends the group of the definitions that follow. */
+const PARTITION_GROUP_END = "; scriptc-group";
 
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
@@ -915,9 +936,13 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   for (const line of wrappers) out.push(line);
   for (const line of asyncDefs) out.push(line);
   for (const line of emitter.resolveThunkDefs) out.push(line);
-  out.push(fnDefs[0] ?? "");
-  for (let i = 1; i < fnDefs.length; i++) out.push("", fnDefs[i]!);
-  out.push("");
+  const groups = partitionGroupLines(emitter.mod.functions);
+  for (let i = 0; i < fnDefs.length; i++) {
+    if (i > 0) out.push("");
+    out.push(groups[i] ?? PARTITION_GROUP_END, fnDefs[i]!);
+  }
+  if (fnDefs.length === 0) out.push("");
+  out.push(PARTITION_GROUP_END, "");
   // WebAssembly modules translated into this program, and the registry.
   for (const line of emitWasmModules(emitter.mod, flushedDecls, emitter.wasmBoundsChecks))
     out.push(line);
@@ -989,7 +1014,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // LIBRARY mode: no @main — the profile-declared external
     // symbols specified by the library IR instead.
     for (const line of emitter.emitLibDefs(globals, globalReleaseLines, stamps)) out.push(line);
-    out.push(...emitter.inlineRcTail(flushedDecls));
+    for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
     out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
     out.push(``);
     out.push(...emitter.fieldAliasMetadata());
@@ -1135,7 +1160,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       : [`  %native_exit = call i32 @scr_exit_code_hint_get()`, `  ret i32 %native_exit`]),
     `}`,
     ``,
-    ...emitter.inlineRcTail(flushedDecls),
+  );
+  for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
+  out.push(
     // sanitize_address is inert under the plain pipeline; the sanitized
     // lane's -fsanitize=address link activates instrumentation over the
     // emitted functions too (the runtime TUs get theirs from clang).
@@ -1590,9 +1617,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
   // A scan's receiver reads inline too (ScrStrScan): from ordinary global
   // storage, or, in worker executables, from the thread's static TLS block,
   // one thread-pointer-relative load (see executableTls).
-  const scanInline =
-    emitter.executableTls ||
-    (emitter.mod.workers !== true && emitter.mod.lib?.threadInstances !== true);
+  const scanInline = stringScanInline(emitter);
   let scanDeclared = false;
   for (const helper of STRING_READ_HELPERS) {
     if (!emitter.decls.has(helper.decl)) continue;

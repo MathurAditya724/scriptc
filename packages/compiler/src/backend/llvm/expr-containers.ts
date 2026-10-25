@@ -53,6 +53,7 @@ import {
   STRING_CHAR_CODE_AT_INT_MARKER,
   emitAsciiChar,
   emitAsciiCharCode,
+  emitUnitCharCode,
   STRING_UTF16_LEN_DECL,
 } from "./string-reads.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
@@ -322,6 +323,15 @@ export function charAtUnitRead(
   return read;
 }
 
+/** The UTF-16 units an enclosing loop version proved the index of `e`
+ * below the count of (string-unit-versions.ts). */
+function provenUnitsRead(host: LlvmEmitterContext, e: IrExpr): string | null {
+  const units = host.stringUnitReads.get(e);
+  if (units !== undefined) return units;
+  const origin = host.charAtUnitReads.get(e);
+  return origin !== undefined ? (host.stringUnitReads.get(origin) ?? null) : null;
+}
+
 /** An enclosing loop version proved the string of `e` ASCII and its index
  * below the length (bytes-loop-versions.ts). */
 function provenStringRead(host: LlvmEmitterContext, e: IrExpr): boolean {
@@ -364,9 +374,14 @@ export function emitStrIntrinsic(
   const method = e.method;
   switch (method) {
     case "length": {
+      const t = B.tmp();
+      const length = host.stringLengthReads.get(e);
+      if (length !== undefined) {
+        B.line(`${t} = sitofp i64 ${length} to double`);
+        return { name: t, type: e.type };
+      }
       // sc_str_utf16_len (string-reads.ts) answers proven-ASCII strings inline.
       host.declare(STRING_UTF16_LEN_DECL);
-      const t = B.tmp();
       B.line(`${t} = call double @sc_str_utf16_len(ptr ${r.name})`);
       return { name: t, type: e.type };
     }
@@ -376,6 +391,8 @@ export function emitStrIntrinsic(
       const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
       if (index) {
         const wide = widenInteger(host, index);
+        const units = provenUnitsRead(host, e);
+        if (units !== null) return { name: emitUnitCharCode(host, units, wide), type: e.type };
         if (provenStringRead(host, e))
           return { name: emitAsciiCharCode(host, r.name, wide), type: e.type };
         host.declare(STRING_CHAR_CODE_AT_INT_MARKER);
@@ -1202,7 +1219,9 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
 function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const B = host.B;
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
-  const kind = mapKeyKindNum(key, arms);
+  // SCR_MAP_KEY_REF (2): shape-union keys are record pointers.
+  const kind =
+    key.kind === "union" && host.nullableUnions.shapes(key.unionId) ? 2 : mapKeyKindNum(key, arms);
   const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).
@@ -1461,6 +1480,7 @@ export function emitMapLikeIntrinsic(
               : emitStringMapGetScalar(host, r.name, stringKey!);
           found = scalar.found;
           if (stringKey !== null) rememberMapEntry(host, e, r.name, stringKey, scalar.entry);
+          else rememberMapEntry(host, e, r.name, numberKey!, scalar.entry, "double");
           readHit = () => {
             const hit = B.tmp();
             B.line(
@@ -1532,7 +1552,13 @@ export function emitMapLikeIntrinsic(
       const vAcc = elemAccess(receiverType.value);
       if (vAcc === "ref") host.toHeap(v);
       const ordinary = (): void => host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
-      if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
+      if (
+        (kAcc === "str" || kAcc === "f64") &&
+        vAcc !== "ref" &&
+        emitFusedMapSet(host, e, r.name, k.name, { name: v.name, access: vAcc }, ordinary)
+      ) {
+        // Written through the read's entry, or inserted.
+      } else if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
         const bits = B.tmp();
         B.line(
           vAcc === "f64"
@@ -1540,12 +1566,7 @@ export function emitMapLikeIntrinsic(
             : `${bits} = zext i1 ${v.name} to i64`,
         );
         emitNumberMapSetScalar(host, r.name, k.name, bits, ordinary);
-      } else if (
-        kAcc !== "str" ||
-        vAcc === "ref" ||
-        !emitFusedMapSet(host, e, r.name, k.name, { name: v.name, access: vAcc }, ordinary)
-      )
-        ordinary();
+      } else ordinary();
       return { name: "", type: e.type };
     }
     case "add": {
