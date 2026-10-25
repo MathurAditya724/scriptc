@@ -7,7 +7,13 @@ import {
   type IrModule,
   type IrStmt,
 } from "./ir.js";
-import { everyExpr, everyExprChild, mapExprChildren, transformStmtList } from "./traverse.js";
+import {
+  everyExpr,
+  everyExprChild,
+  everyStmtList,
+  mapExprChildren,
+  transformStmtList,
+} from "./traverse.js";
 import { PRODUCT_COUNTER_BOUND } from "./integer-loops.js";
 
 /** Inner-loop expressions above this many nodes keep the loop as written. */
@@ -506,6 +512,16 @@ export function pairRowSums(mod: IrModule): IrModule {
   const functions = mod.functions.map((fn): IrFunction => {
     if (fn.async || fn.generator) return fn;
     const locals = new Map(fn.locals.map((local) => [local.id, local]));
+    // Most bodies hold no row sum: find one before copying the body.
+    let found = false;
+    everyStmtList(fn.body, {
+      expr: () => !found,
+      stmt: (s) => {
+        if (s.kind === "for" && matchRowSum(s, locals) !== null) found = true;
+        return !found;
+      },
+    });
+    if (!found) return fn;
     const added: IrLocal[] = [];
     const ids = new Set(fn.locals.map((local) => local.id));
     const fresh = (name: string): string => {

@@ -46,6 +46,7 @@ import {
   trackedRealpath,
 } from "../input-tracker.js";
 import { packageShimDeclarationText } from "../package-shims.js";
+import { typePatchedText } from "../type-patches/layer.js";
 import { ambientDtsPath, fallbackDtsPath, overridesDtsPath } from "../dts-paths.js";
 import { reusedLibDiagnostics } from "./lib-diagnostics.js";
 import { ts7Diagnostic } from "./diagnostic.js";
@@ -160,7 +161,7 @@ export class Ts7Host {
     const virtualFiles = this.virtualFiles;
     const shadow = options?.fsShadow ?? null;
     // A virtual file, a shadow's replacement, a package shim's declaration
-    // entry or the file on disk; null when shadowed out of existence or
+    // entry, a type-patched package file or the file on disk; null when shadowed out of existence or
     // missing.
     this.readSource = (fileName) => {
       const virtual = virtualFiles.get(tsgoPath(fileName));
@@ -175,6 +176,9 @@ export class Ts7Host {
       // program the host creates.
       const shim = packageShimDeclarationText(fileName);
       if (shim !== undefined) return shim;
+      // A package file a project type patch edits (type-patches/layer.ts).
+      const patched = typePatchedText(fileName);
+      if (patched !== undefined) return stripSourceBom(patched);
       const source = trackedReadFile(fileName);
       return source === null ? null : stripSourceBom(source);
     };
