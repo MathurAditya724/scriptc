@@ -4,8 +4,10 @@
  * value (the shape of commander's HelpContext.helpWidth), and ms's @return
  * tags, compile natively and byte-match Node once patched; without the
  * patches the same declarations throw where Node runs. Patches that do not
- * apply as written warn (SC8030-SC8033). The `.d.ts` and `@types` cases
- * run in npm.test.ts (type-patch-dts, type-patch-types-twin), and
+ * apply as written warn (SC8030-SC8033). The `.d.ts`, `@types`, replaced
+ * file and supplied entry cases run in npm.test.ts (type-patch-dts,
+ * type-patch-types-twin, type-patch-files, type-patch-types-entry); here
+ * their unpatched copies show the patches are what makes them compile. And
  * commander-calc carries the HelpContext.helpWidth patch. */
 import { execFile } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -115,6 +117,48 @@ describe("type patches", () => {
           expect(native.exitCode).not.toBe(0);
           expect(native.stderr).toContain("TypeError: expected string at $, got undefined");
         }
+      } finally {
+        rmSync(copy, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test(
+    "without its patch, code using the out-of-date declaration file does not type-check",
+    { timeout: 600_000 },
+    async () => {
+      const copy = unpatched(join(repoRoot, "tests/fixtures/npm/cases/type-patch-files"));
+      try {
+        mkdirSync(outDir, { recursive: true });
+        const result = await compile(join(copy, "main.ts"), {
+          outPath: join(outDir, "files-unpatched"),
+          outDir,
+          sanitize,
+        });
+        expect(result.ok).toBe(false);
+        if (!result.ok)
+          expect(result.diagnostics.map((d) => d.message)).toContain(
+            "Property 'toUpperCase' does not exist on type 'number'.",
+          );
+      } finally {
+        rmSync(copy, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test(
+    "without its patch, a package without declarations is not compiled for a typed import",
+    { timeout: 600_000 },
+    async () => {
+      const copy = unpatched(join(repoRoot, "tests/fixtures/npm/cases/type-patch-types-entry"));
+      try {
+        mkdirSync(outDir, { recursive: true });
+        const result = await compile(join(copy, "main.ts"), {
+          outPath: join(outDir, "types-entry-unpatched"),
+          outDir,
+          sanitize,
+        });
+        expect(result.ok).toBe(false);
       } finally {
         rmSync(copy, { recursive: true, force: true });
       }

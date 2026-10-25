@@ -2418,6 +2418,57 @@ static void *scr_normalize_realloc(void *opaque, void *ptr, size_t size) {
   return realloc(ptr, size);
 }
 
+/* unicode_normalize, except that U+11A7 never composes. libunicode composes
+ * an LV syllable with U+11A7 as a trailing consonant (those are U+11A8 to
+ * U+11C2), which drops it: "\uAC00\u11A7" became "\uAC00". U+11A7 is a
+ * class-0 vowel that composes with nothing, so for the composing forms the
+ * code points between occurrences of it normalize on their own and it is
+ * kept as it is, as in Node. */
+static int scr_unicode_normalize(uint32_t **pdst, const uint32_t *src, int len,
+                                 UnicodeNormalizationEnum mode) {
+  int at = 0;
+  if (mode == UNICODE_NFC || mode == UNICODE_NFKC)
+    while (at < len && src[at] != 0x11A7) at++;
+  else
+    at = len;
+  if (at == len) return unicode_normalize(pdst, src, len, mode, NULL, scr_normalize_realloc);
+  uint32_t *out = NULL;
+  size_t count = 0, cap = 0;
+  int start = 0;
+  for (int i = 0; i <= len; i++) {
+    if (i < len && src[i] != 0x11A7) continue;
+    uint32_t *part = NULL;
+    int n = 0;
+    if (i > start) {
+      n = unicode_normalize(&part, src + start, i - start, mode, NULL, scr_normalize_realloc);
+      if (n < 0) {
+        free(out);
+        return -1;
+      }
+    }
+    size_t need = count + (size_t)n + 1;
+    if (need > cap) {
+      size_t grown = cap ? cap * 2 : 16;
+      if (grown < need) grown = need;
+      uint32_t *bigger = realloc(out, grown * sizeof *out);
+      if (!bigger) {
+        free(part);
+        free(out);
+        return -1;
+      }
+      out = bigger;
+      cap = grown;
+    }
+    if (n > 0) memcpy(out + count, part, (size_t)n * sizeof *out);
+    count += (size_t)n;
+    free(part);
+    if (i < len) out[count++] = 0x11A7;
+    start = i + 1;
+  }
+  *pdst = out;
+  return (int)count;
+}
+
 ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form) {
   UnicodeNormalizationEnum mode;
   if (form->len == 3 && !memcmp(form->data, "NFC", 3)) mode = UNICODE_NFC;
@@ -2442,7 +2493,7 @@ ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form) {
     offset += step;
   }
   uint32_t *output = NULL;
-  int count = unicode_normalize(&output, input, length, mode, NULL, scr_normalize_realloc);
+  int count = scr_unicode_normalize(&output, input, length, mode);
   free(input);
   if (count < 0) scr_regex_oom();
   ScrJsonBuf buffer;
@@ -2455,7 +2506,7 @@ ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form) {
 uint32_t *scr_nfc_code_points(const uint32_t *input, size_t length, size_t *out_len) {
   if (length > INT32_MAX) scr_regex_oom();
   uint32_t *output = NULL;
-  int count = unicode_normalize(&output, input, (int)length, UNICODE_NFC, NULL, scr_normalize_realloc);
+  int count = scr_unicode_normalize(&output, input, (int)length, UNICODE_NFC);
   if (count < 0) scr_regex_oom();
   *out_len = (size_t)count;
   return output;

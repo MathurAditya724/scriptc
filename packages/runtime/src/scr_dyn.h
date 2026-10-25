@@ -186,6 +186,8 @@ typedef enum {
   X(MATCH_SOURCE, 55) /* a match result's pending metadata (scr_regex.c) */ \
   X(MESSAGE_EVENT, 50) /* ScrEvent with data — BroadcastChannel's 'message' */ \
   X(MESSAGE_PORT, 36) \
+  X(MIME_PARAMS, 81) /* util.MIMEParams (scr_mime.c) */ \
+  X(MIME_TYPE, 82) /* util.MIMEType (scr_mime.c) */ \
   X(MODULE_NAMESPACE, 79) /* module namespace object read through its exports (scr_module_namespace.c) */ \
   X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
   X(NET_SERVER, 3) /* ScrNetServer — net.Server (http.Server rides the same handle) */ \
@@ -961,6 +963,10 @@ ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators);
  * for-of protocol reads it. +1, or NULL with the error pending. */
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
+/* Symbol.for('nodejs.util.inspect.custom'): the symbol unit installs it
+ * when the registry creates it; NULL (borrowed) until then. */
+void scr_dyn_install_inspect_custom_symbol(ScrDyn *key);
+ScrDyn *scr_dyn_inspect_custom_symbol(void);
 void scr_dyn_install_has_instance_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_dispose_symbol(ScrDyn *key);

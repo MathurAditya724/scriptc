@@ -282,8 +282,31 @@ import {
 } from "./generic-functions.js";
 
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
+import { lowerRecordInheritedCall } from "./record-inherited.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
+
+/** The node:util member a `(0, member)` callee names, or null. */
+function indirectUtilCalleeOf(
+  lowerer: Lowerer,
+  callee: ts.Expression,
+): { module: string; member: string } | null {
+  let e = callee;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (
+    !ts.isBinaryExpression(e) ||
+    e.operatorToken.kind !== ts.SyntaxKind.CommaToken ||
+    !ts.isNumericLiteral(e.left)
+  )
+    return null;
+  const target = e.right;
+  const bi = ts.isIdentifier(target)
+    ? lowerer.builtinImportOf(target)
+    : ts.isPropertyAccessExpression(target) && !target.questionDotToken
+      ? lowerer.builtinMemberOf(target)
+      : null;
+  return bi?.module === "util" ? bi : null;
+}
 
 /** `Object.defineProperty(target, ...)`, `Object.defineProperties`,
  * `Reflect.defineProperty`, and `target.__defineGetter__/__defineSetter__`
@@ -383,6 +406,14 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   {
     const nodeApi = nodeApiCalleeOf(lowerer.program, expr.expression);
     if (nodeApi !== null) return lowerNodeApiCall(lowerer, expr, nodeApi);
+  }
+  // `(0, util_1.inspect)(value)`: TypeScript's CommonJS output calls a
+  // named import through a comma expression, which leaves the call's
+  // receiver undefined. node:util's functions do not read their receiver,
+  // so the call lowers as the direct one.
+  {
+    const util = indirectUtilCalleeOf(lowerer, expr.expression);
+    if (util) return lowerBuiltinCall(lowerer, expr, util, loc);
   }
   // The deprecated Buffer(...) call (containers/bytes.ts). The checker
   // types it `any`, so the bytes cross as a checked-dynamic value, which
@@ -1651,6 +1682,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // Union receivers whose every arm has a text — the ngrok
       // `(chunk: Buffer | string) => chunk.toString()` idiom.
       lowerUnionToStringCall(lowerer, expr, expr.expression) ??
+      // Object.prototype's methods called by name on records: an own
+      // callable entry, else the built-in with the record as receiver.
+      lowerRecordInheritedCall(lowerer, expr, expr.expression) ??
       // Object.prototype.toString's default answer on records and
       // override-free program classes — "[object Object]", folded.
       lowerDefaultToStringCall(lowerer, expr, expr.expression) ??

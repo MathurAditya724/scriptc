@@ -23,7 +23,7 @@ import {
   trackedRealpath,
 } from "./input-tracker.js";
 import { npmBuiltinAliasOf } from "./builtin-modules.js";
-import { packageSourceText } from "./type-patches/layer.js";
+import { packageSourceText, typePatchSuppliesTypes } from "./type-patches/layer.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -374,6 +374,7 @@ function packageIsUntyped(path: string): boolean {
     /* no package.json — keep probing */
   }
   if (untyped && trackedExists(`${pkgDir}/index.d.ts`)) untyped = false;
+  if (untyped && typePatchSuppliesTypes(pkgDir)) untyped = false;
   if (untyped) {
     // the @types twin, hoisted anywhere up the realm chain
     const mangled = mangledTypesName(dirName);

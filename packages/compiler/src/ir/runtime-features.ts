@@ -103,6 +103,11 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
+  // util.aborted answers a checked-dynamic promise, and so do the
+  // functions util.debounce and util.throttle return.
+  "util.aborted",
+  "util.debounce",
+  "util.throttle",
   "timers.immediatePromise",
   // The performance timeline (scr_perf.c, linked with this unit for its
   // MaxPerformanceEntryBufferExceededWarning).
@@ -144,8 +149,11 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.promisifyDyn",
   "util.debuglog",
   "util.deprecate",
+  "util.diff",
+  "util.extend",
   "util.inherits",
   "util.inheritsPrototype",
+  "util.isArrayDeprecated",
   "util.styleText",
 ]);
 
@@ -174,8 +182,11 @@ const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.callbackify",
   "util.debuglog",
   "util.deprecate",
+  "util.diff",
+  "util.extend",
   "util.inherits",
   "util.inheritsPrototype",
+  "util.isArrayDeprecated",
 ]);
 
 /** Entry points that link the regex unit: the regex and glob matchers (fs.glob's walk compiles its patterns with the glob matcher), and readline's terminal unit (scr_readline_tty.c), which measures with the regex unit's stripVTControlCharacters. */
@@ -997,9 +1008,20 @@ const RUNTIME_FEATURE_RULES = {
       (mod.classes ?? []).some(
         (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
       ),
-    fns: ["events.addAbortListener", ...ABORT_SIGNAL_LIB_FNS],
+    // util.debounce and util.throttle register options.signal's listener.
+    fns: [
+      "events.addAbortListener",
+      "util.aborted",
+      "util.debounce",
+      "util.throttle",
+      ...ABORT_SIGNAL_LIB_FNS,
+    ],
     prefixes: ["event."],
   }),
+  /** util.MIMEType and util.MIMEParams (scr_mime.c). */
+  mime: rule({ prefixes: ["mime."] }),
+  /** util.debounce and util.throttle (scr_util_timing.c). */
+  utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
@@ -1221,6 +1243,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     http: false,
     inspect: false,
     legacyTextDecoder: false,
+    mime: false,
+    utilTiming: false,
     mockTimers: false,
     net: false,
     netLookup: false,

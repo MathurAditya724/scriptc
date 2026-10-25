@@ -511,6 +511,12 @@ export interface LlvmTargetOptions {
   inlineRc?: InlineRcMode;
   /** Define the inline RC fast-path helpers `noinline` (sanitized builds). */
   rcHelpersNoinline?: boolean;
+  /** Mark every emitted function `sanitize_address`, which the sanitized
+   * lane's `-fsanitize=address` link needs to instrument it. Without a
+   * sanitizer pass the attribute still turns off shrink-wrapping and
+   * speculative loads, so plain builds pass false. Defaults to true for
+   * direct emission. */
+  sanitizeAttributes?: boolean;
   /** Define `scr_detached_exit` so the Linux runtime hands the address-space
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
@@ -1273,6 +1279,8 @@ export class LlEmitter {
   readonly detachedExit: boolean;
   readonly nodeIslandModuleData: Uint8Array | null;
   readonly targetCpu: TargetCpu | undefined;
+  /** Emitted functions carry `sanitize_address` (LlvmTargetOptions). */
+  readonly sanitizeAttributes: boolean;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -1976,6 +1984,7 @@ export class LlEmitter {
     this.detachedExit = options.detachedExit === true;
     this.nodeIslandModuleData = options.nodeIslandModuleData ?? null;
     this.targetCpu = options.targetCpu;
+    this.sanitizeAttributes = options.sanitizeAttributes !== false;
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
