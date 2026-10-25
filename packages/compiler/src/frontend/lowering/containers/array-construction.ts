@@ -174,7 +174,15 @@ export function lowerArraySpreadItems(
   ];
   for (const node of nodes) {
     if (!(node instanceof AstNode)) {
-      const value = undefinedForNullish(lowerer, node, arrType);
+      // A spread tuple's first field declares the tuple's storage, which
+      // the later fields read: its statements join this sequence, whose
+      // frame lasts until every item is stored.
+      let item = node;
+      if (item.kind === "seqExpr") {
+        body.push(...item.stmts);
+        item = item.result;
+      }
+      const value = undefinedForNullish(lowerer, item, arrType);
       const stored =
         lowerer.runtimeOptionalWidening(value.type, elem) !== null ||
         optionalElementValue(lowerer, value, elem)

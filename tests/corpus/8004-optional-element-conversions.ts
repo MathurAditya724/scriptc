@@ -58,6 +58,14 @@ const mixedChanging: [boolean, boolean | undefined] = [true, undefined];
 console.log(flags(...mixedChanging, ...mixedMore, flip(mixedChanging, true), ...mixedChanging));
 const mixedWords: [string, string | undefined] = ["a", undefined];
 console.log(label("z", ...["b", undefined, "c"], ...mixedWords), label("y", ...mixedWords, ...new Set(["s", undefined])));
+// A tuple returned by a call keeps its string fields alive until every
+// field is packed beside the other spreads.
+function makeTuple(n: number): [string, string | undefined, string] {
+  return ["p" + n.toString(16).repeat(4), n % 2 ? undefined : "q" + n, "r".repeat((n % 7) + 3) + n];
+}
+for (let i = 0; i < 3; i++) {
+  console.log(label("z", ...["m", undefined], ...makeTuple(i), ...mixedWords), label("y", ...makeTuple(i + 10), ...new Set(["s" + i])));
+}
 
 function pick(start: (number | undefined)[] | string[], other: (number | undefined)[] | string[]): string {
   let a = start;
