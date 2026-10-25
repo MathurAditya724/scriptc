@@ -523,7 +523,9 @@ struct ScrDyn {
        * identity while the source reference remains observable. */
       ScrDyn *materialized;
       ScrDynTypedCast *casts;
-      /* One word keeps this, the largest payload, at its previous size. */
+      /* One word keeps this, the largest payload, at its previous size.
+       * Dynamic-tier inline caches read record, klass and bag_class as
+       * the word's top three bits (backend/llvm/js-ic.ts nativeArray). */
       uint32_t type_key_len : 27;
       uint32_t traced : 1; /* native referent has a cycle header */
       uint32_t observed : 1; /* native release reports this identity's disposal */
