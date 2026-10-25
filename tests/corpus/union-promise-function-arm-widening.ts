@@ -58,6 +58,15 @@ async function main(): Promise<void> {
   console.log(store.pending === other);
   console.log(await store.pending);
 
+  // One promise in two optional slots: each holds its own conversion.
+  const second: Store = {};
+  second.pending = work;
+  console.log(store.pending === second.pending, store.pending !== second.pending);
+  const slots: Store[] = [store, second, { pending: other }];
+  console.log(slots.map((slot) => slot.pending === slots[0]!.pending).join(","));
+  second.lookup = findName;
+  console.log(store.lookup === second.lookup);
+
   const lookup = store.lookup;
   if (lookup) console.log(await lookup("abcd"), await lookup("ab"));
   console.log(store.scale?.(21));

@@ -2388,19 +2388,22 @@ export function lowerStrictEquality(
         loc,
       };
     }
-    // A plain promise against a union whose promise arm has a different
-    // payload (`chains.get(id) === tail` with a `Map<K, Promise<unknown>>`):
-    // wrapping would convert the promise into that arm, and the converted
-    // promise is a new object. Promises are objects to ===, so compare both
-    // sides as untyped values, where a converted promise answers with its
-    // origin's identity (the plain promise-vs-promise rule below).
-    const plainPromise =
-      left.type.kind === "promise" ? left : right.type.kind === "promise" ? right : null;
+    // A promise against a union with a promise arm, or two such unions:
+    // converting a promise into a union's promise arm of another payload
+    // (`chains.get(id) === tail` with a `Map<K, Promise<unknown>>`, or
+    // `a.pending === b.pending` after both were set to one promise) builds a
+    // new promise, so either side may hold a conversion of the other's
+    // promise, and a value narrowed out of the union may be one too.
+    // Promises are objects to ===, so compare both sides as untyped values,
+    // where a converted promise answers with its origin's identity (the plain
+    // promise-vs-promise rule below).
+    const holdsPromise = (type: IrType): boolean =>
+      type.kind === "promise" ||
+      (type.kind === "union" &&
+        (lowerer.unions.get(type.unionId)?.arms ?? []).some((arm) => arm.kind === "promise"));
     if (
-      !bothUnion &&
-      plainPromise !== null &&
-      lowerer.armTag(ut.unionId, plainPromise.type) < 0 &&
-      unionArms.some((arm) => arm.kind === "promise") &&
+      holdsPromise(left.type) &&
+      holdsPromise(right.type) &&
       lowerer.dynConvertible(left.type) &&
       lowerer.dynConvertible(right.type)
     ) {
