@@ -83,6 +83,7 @@ jobs:
                 spawnSync('git', ['diff', '--quiet', run.head_sha, 'HEAD', '--', '.',
                   ':(exclude).github/workflows/release.yml', ':(exclude)scripts/verify-native-cli.mjs',
                   ':(exclude)scripts/package-native-cli.mjs', ':(exclude)tests/harness/native-cli-packaging.test.ts',
+                  ':(exclude)scripts/wait-npm-available.mjs', ':(exclude)tests/harness/npm-available.test.ts',
                 ]).status !== 0) continue;
             const artifacts = api(`repos/${repo}/actions/runs/${run.id}/artifacts?per_page=100`).artifacts
               .filter((artifact) => !artifact.expired && artifact.size_in_bytes > 0);
@@ -394,6 +395,8 @@ jobs:
       contents: read
       actions: read
       id-token: write
+    outputs:
+      uploads: ${{ steps.publish.outputs.uploads }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -413,7 +416,7 @@ jobs:
           VERSION: ${{ needs.check-release.outputs.version }}
           RECEIPT_RUN: ${{ needs.check-release.outputs.receipt_run }}
         run: |
-          touch "$RUNNER_TEMP/npm-accepted.txt"
+          touch "$RUNNER_TEMP/npm-accepted.txt" "$RUNNER_TEMP/npm-accepted-times.txt"
           # Include this run so re-running only failed jobs restores its receipts.
           for run in "$GITHUB_RUN_ID" "$RECEIPT_RUN"; do
             if [ -z "$run" ]; then continue; fi
@@ -422,6 +425,7 @@ jobs:
             if [ "$count" -eq 0 ]; then continue; fi
             gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern "npm-accepted-$VERSION-*" --dir "$RUNNER_TEMP/npm-receipts/$run"
             find "$RUNNER_TEMP/npm-receipts/$run" -name npm-accepted.txt -exec cat {} + >> "$RUNNER_TEMP/npm-accepted.txt"
+            find "$RUNNER_TEMP/npm-receipts/$run" -name npm-accepted-times.txt -exec cat {} + >> "$RUNNER_TEMP/npm-accepted-times.txt"
           done
 
       - name: Setup pnpm
@@ -471,6 +475,7 @@ jobs:
           done
 
       - name: Publish to npm
+        id: publish
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -490,10 +495,14 @@ jobs:
 
           # Upload acceptance and public availability are separate states.
           # Save acceptance immediately so retries never depend on registry lag.
+          # npm-release.txt lists every package of the release, and
+          # npm-accepted-times.txt the time npm accepted each upload, for the
+          # npm-available job.
           publish_dir() {
             dir="$1"
             packed="${2:-}"
             name=$(node -p "require('./$dir/package.json').name")
+            echo "$name@$VERSION" >> "$RUNNER_TEMP/npm-release.txt"
             if grep -Fxq "$name@$VERSION" "$RUNNER_TEMP/npm-accepted.txt"; then
               echo "$name@$VERSION upload already accepted, skipping"
               return 0
@@ -510,6 +519,7 @@ jobs:
             publish_log="$RUNNER_TEMP/npm-publish.log"
             if npm publish "$packed" $PROVENANCE --access public 2>&1 | tee "$publish_log"; then
               echo "$name@$VERSION" >> "$RUNNER_TEMP/npm-accepted.txt"
+              echo "$name@$VERSION $(date +%s)" >> "$RUNNER_TEMP/npm-accepted-times.txt"
               return 0
             else
               publish_status=${PIPESTATUS[0]}
@@ -533,7 +543,8 @@ jobs:
 
           # pnpm pack resolves workspace dependencies; npm handles OIDC.
           # Publish dependencies first. Registry propagation after an accepted
-          # upload must not block the remaining packages or the GitHub release.
+          # upload must not block the remaining packages; the npm-available
+          # job waits for it.
           publish_dir packages/runtime
           publish_dir packages/runtime-darwin-arm64
           publish_dir packages/llvm-darwin-arm64
@@ -561,22 +572,65 @@ jobs:
           publish_dir packages/cli
           echo "All package uploads accepted; npm registry propagation may continue after this job." >> "$GITHUB_STEP_SUMMARY"
 
+          # Each package of the release with the time its upload was accepted,
+          # when a run recorded it.
+          {
+            echo "uploads<<NPM_UPLOADS"
+            awk 'FILENAME == ARGV[1] { accepted[$1] = $2; next } { print $1, accepted[$1] }' \
+              "$RUNNER_TEMP/npm-accepted-times.txt" "$RUNNER_TEMP/npm-release.txt"
+            echo "NPM_UPLOADS"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Save accepted upload receipts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: npm-accepted-${{ needs.check-release.outputs.version }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/npm-accepted.txt
+          path: |
+            ${{ runner.temp }}/npm-accepted.txt
+            ${{ runner.temp }}/npm-accepted-times.txt
           if-no-files-found: ignore
           retention-days: 90
 
-  # Publish standalone native distributions and the surface manifest after
-  # npm publishing succeeds. The release body comes from the marked changelog.
-  github-release:
-    name: Create GitHub Release
+  # Waits until every package of the release resolves on the npm registry,
+  # and reports each package's time from upload to available. Fails with the
+  # packages that are still missing after 2 hours. It only reads from the
+  # registry; the next release run retries it, and publishing skips uploads
+  # npm already accepted.
+  npm-available:
+    name: Wait for npm availability
     needs: [check-release, publish]
     if: >-
       !cancelled() && needs.check-release.outputs.should_release == 'true' && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 135
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Wait for every package to resolve
+        env:
+          UPLOADS: ${{ needs.publish.outputs.uploads }}
+        run: |
+          printf '%s\n' "$UPLOADS" > "$RUNNER_TEMP/npm-uploads.txt"
+          node scripts/wait-npm-available.mjs "$RUNNER_TEMP/npm-uploads.txt"
+
+  # Publish standalone native distributions and the surface manifest after
+  # every npm package resolves. The release body comes from the marked
+  # changelog.
+  github-release:
+    name: Create GitHub Release
+    needs: [check-release, publish, npm-available]
+    if: >-
+      !cancelled() && needs.check-release.outputs.should_release == 'true' && needs.npm-available.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
