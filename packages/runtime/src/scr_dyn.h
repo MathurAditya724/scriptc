@@ -186,8 +186,8 @@ typedef enum {
   X(MATCH_SOURCE, 55) /* a match result's pending metadata (scr_regex.c) */ \
   X(MESSAGE_EVENT, 50) /* ScrEvent with data — BroadcastChannel's 'message' */ \
   X(MESSAGE_PORT, 36) \
-  X(MIME_PARAMS, 78) /* util.MIMEParams (scr_mime.c) */ \
-  X(MIME_TYPE, 79) /* util.MIMEType (scr_mime.c) */ \
+  X(MIME_PARAMS, 81) /* util.MIMEParams (scr_mime.c) */ \
+  X(MIME_TYPE, 82) /* util.MIMEType (scr_mime.c) */ \
   X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
   X(NET_SERVER, 3) /* ScrNetServer — net.Server (http.Server rides the same handle) */ \
   X(NET_SOCKET, 2) /* ScrNetSocket — net.Socket */ \
