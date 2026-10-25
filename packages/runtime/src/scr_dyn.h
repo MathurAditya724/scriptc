@@ -1956,6 +1956,9 @@ long scr_dyn_live_count(void);
  * scr_json.c, which programs with dynamic-tier code link. */
 /* The builtin Object.prototype node, or NULL before its first use. */
 const ScrDyn *scr_dyn_tier_object_prototype(void);
+/* A read site's answer for a native array's length or a native iterator's
+ * next (scr_js_get_probe_native): +1, or NULL. */
+ScrDyn *scr_dyn_tier_unshaped_get(const ScrDyn *receiver, const ScrStr *key);
 /* Shared key bytes for `key` (+1, NUL-terminated), and their release. */
 char *scr_dyn_tier_key_copy(const char *key, size_t key_len);
 void scr_dyn_tier_key_release(char *key, size_t key_len);
