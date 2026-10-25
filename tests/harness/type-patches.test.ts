@@ -9,7 +9,8 @@
  * type-patch-types-twin, type-patch-files, type-patch-types-entry); here
  * their unpatched copies show the patches are what makes them compile, and
  * a failing check names the declaration and the patch (scr_type_origin.c,
- * frontend/lowering/decl-origin.ts). And
+ * frontend/lowering/decl-origin.ts), its own package's also when two
+ * packages declare a record of one name and shape. And
  * commander-calc carries the HelpContext.helpWidth patch. */
 import { execFile } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -190,6 +191,56 @@ describe("type patches", () => {
           "",
         ].join("\n"),
       );
+    },
+  );
+
+  test(
+    "records of one name and shape from two packages name their own declarations",
+    { timeout: 600_000 },
+    async () => {
+      const result = await build(join(fixture, "same-name/main.ts"), "same-name", [
+        "panectx",
+        "gridctx",
+      ]);
+      const native = await run(result.binaryPath, []);
+      const failure = (pkg: string, version: string) => [
+        "undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
+        `    ${pkg}@${version} declares OutputContext.width as number (index.js:24)`,
+        `    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "${pkg}@^${version}": { "declarations": { "OutputContext.width": "| undefined" } } } }`,
+      ];
+      expect(native.stdout).toBe(
+        [...failure("panectx", "2.0.0"), ...failure("gridctx", "4.1.0"), ""].join("\n"),
+      );
+    },
+  );
+
+  test(
+    "a rebuild after the package's version changes names the installed version",
+    { timeout: 600_000 },
+    async () => {
+      const copy = mkdtempSync(join(tmpdir(), "scriptc-reinstalled-"));
+      try {
+        cpSync(fixture, copy, { recursive: true });
+        const entry = join(copy, "unpatched/main.ts");
+        const declares = async (name: string) => {
+          const native = await run((await build(entry, name, ["termctx"])).binaryPath, []);
+          return native.stdout.split("\n").filter((line) => line.includes(" declares "));
+        };
+        expect(await declares("reinstalled-1.2.0")).toEqual([
+          "    termctx@1.2.0 declares Terminal.columns() as number (index.js:16)",
+          "    termctx@1.2.0 declares OutputContext.width as number (index.js:24)",
+        ]);
+        writeFileSync(
+          join(copy, "node_modules/termctx/package.json"),
+          '{ "name": "termctx", "version": "1.3.0", "main": "index.js" }\n',
+        );
+        expect(await declares("reinstalled-1.3.0")).toEqual([
+          "    termctx@1.3.0 declares Terminal.columns() as number (index.js:16)",
+          "    termctx@1.3.0 declares OutputContext.width as number (index.js:24)",
+        ]);
+      } finally {
+        rmSync(copy, { recursive: true, force: true });
+      }
     },
   );
 

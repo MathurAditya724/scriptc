@@ -40,7 +40,14 @@ interface PackageFile {
   rel: string;
 }
 
+/** Installed package versions by package root, read once per program load
+ * (resetDeclOriginVersions): a dependency reinstalled at another version
+ * between two builds of one process is read again. */
 const versions = new Map<string, string>();
+
+export function resetDeclOriginVersions(): void {
+  versions.clear();
+}
 
 function packageFileOf(fileName: string): PackageFile | null {
   const path = fileName.split("\\").join("/");
@@ -268,6 +275,9 @@ export function slotOrigin(checker: ts.TypeChecker, node: ts.Node): string | nul
 export interface RecordOrigin {
   type: ts.Type;
   name: string;
+  /** The declaration's identity (package, version, file, line and name):
+   * records of the same shape and name declared by two packages differ. */
+  key: string;
 }
 
 export function recordOrigin(checker: ts.TypeChecker, node: ts.Node): RecordOrigin | null {
@@ -277,13 +287,11 @@ export function recordOrigin(checker: ts.TypeChecker, node: ts.Node): RecordOrig
   const name = symbol === undefined ? "" : ts.symbolName(symbol);
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) return null;
   const decl = symbol?.declarations[0];
-  if (
-    decl === undefined ||
-    genericDeclaration(decl) ||
-    packageFileOf(ts.getSourceFileOfNode(decl).fileName) === null
-  )
-    return null;
-  return { type: contextual, name };
+  if (decl === undefined || genericDeclaration(decl)) return null;
+  const file = packageFileOf(ts.getSourceFileOfNode(decl).fileName);
+  if (file === null) return null;
+  const key = [file.pkg, file.version, file.rel, lineOf(decl), name].join(ORIGIN_SEPARATOR);
+  return { type: contextual, name, key };
 }
 
 /** The origin of one field of a package-declared record type. */

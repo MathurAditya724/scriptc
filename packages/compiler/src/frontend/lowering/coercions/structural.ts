@@ -398,10 +398,12 @@ export function recordWidthHelper(
   // Package code converting into a package-declared record type (an
   // object literal returned under `@returns {HelpContext}`): its field
   // extractions name the declared fields (decl-origin.ts), so the helper
-  // is keyed by that type too. Every other projection is shared as before.
+  // is keyed by that type's declaration too (two packages may declare
+  // records of the same name and shape). Every other projection is shared
+  // as before.
   const declared = lowerer.coercionRecordOrigin();
   const key =
-    declared === null ? `rec:${fromId}:${toId}` : `rec:${fromId}:${toId}:origin:${declared.name}`;
+    declared === null ? `rec:${fromId}:${toId}` : `rec:${fromId}:${toId}:origin:${declared.key}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%rec.width", key);
