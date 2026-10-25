@@ -8,8 +8,14 @@
 import type { BlockBuilder } from "./blocks.js";
 import { NULLABLE_NULL, shapeTagFn, type PointerUnion } from "./nullable-unions.js";
 
-/** The i32 tag of a union value. */
-export function emitUnionTag(B: BlockBuilder, nullable: PointerUnion | null, u: string): string {
+/** The i32 tag of a union value. `alias` is the tag word's alias
+ * attachment (", !tbaa !N"), when the caller has one. */
+export function emitUnionTag(
+  B: BlockBuilder,
+  nullable: PointerUnion | null,
+  u: string,
+  alias = "",
+): string {
   const t = B.tmp();
   if (nullable?.repr === "shapes") {
     B.line(`${t} = call i32 ${shapeTagFn(nullable.unionId)}(ptr ${u})`);
@@ -31,7 +37,7 @@ export function emitUnionTag(B: BlockBuilder, nullable: PointerUnion | null, u: 
   }
   const p = B.tmp();
   B.line(`${p} = getelementptr inbounds %ScrUnion, ptr ${u}, i64 0, i32 1`);
-  B.line(`${t} = load i32, ptr ${p}`);
+  B.line(`${t} = load i32, ptr ${p}${alias}`);
   return t;
 }
 
@@ -81,12 +87,17 @@ export function emitNullableIsTag(
 }
 
 /** The BORROWED payload pointer of a reference arm. */
-export function emitUnionPeek(B: BlockBuilder, nullable: PointerUnion | null, u: string): string {
+export function emitUnionPeek(
+  B: BlockBuilder,
+  nullable: PointerUnion | null,
+  u: string,
+  alias = "",
+): string {
   if (nullable) return u;
   const p = B.tmp();
   const t = B.tmp();
   B.line(`${p} = getelementptr inbounds %ScrUnion, ptr ${u}, i64 0, i32 5`);
-  B.line(`${t} = load ptr, ptr ${p}`);
+  B.line(`${t} = load ptr, ptr ${p}${alias}`);
   return t;
 }
 

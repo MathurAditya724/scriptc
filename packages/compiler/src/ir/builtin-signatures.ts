@@ -163,6 +163,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fetch.abortNow": { argTypes: [DYN], result: DYN },
   "fetch.abortAny": { argTypes: [DYN], result: DYN },
   "fetch.streamNew": { argTypes: [DYN], result: DYN },
+  "fetch.transformNew": { argTypes: [], result: DYN },
   // Program-dependent iterable: typed arrays/bytes/string stay intact so
   // the native stream can pull lazily; checked-dynamic values are the
   // fallback. The libCall validator in validate.ts checks the closed set.
@@ -201,6 +202,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "nodeIsland.setKey": { argTypes: [DYN, DYN, DYN], result: VOID },
   "nodeIsland.invoke": { argTypes: [DYN, STRING, DYN], result: DYN },
   "nodeIsland.apply": { argTypes: [DYN, DYN], result: DYN },
+  "nodeIsland.applyTo": { argTypes: [DYN, DYN, DYN], result: DYN },
   "nodeIsland.construct": { argTypes: [DYN, DYN], result: DYN },
   "nodeIsland.instanceof": { argTypes: [DYN, DYN], result: BOOL },
   /** NI-5: a class instance crossing into an island, with the builder of
@@ -304,6 +306,28 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** Throws Node's TypeError for a class field initializer on a
    * non-extensible instance: the field name. */
   "class.throwNotExtensible": { argTypes: [STRING], result: VOID },
+  /** Object.freeze of a record whose shape is freezable (frozen-records.ts):
+   * sets the frozen bit in its rc word (scr_record_freeze). The receiver is
+   * any record type. */
+  "record.freeze": { argTypes: [null], result: VOID },
+  /** Whether a record is frozen: its rc word's frozen bit, set by
+   * record.freeze and dyn.freeze of a capsule. Emitted inline. The receiver
+   * is any record type. */
+  "record.isFrozen": { argTypes: [null], result: BOOL },
+  /** Throws Node's TypeError for a write to a frozen record: the key, the
+   * object's text in the message ("#<Object>") and the operation (0 assign,
+   * 1 add, 2 delete). */
+  "record.throwFrozen": { argTypes: [STRING, STRING, F64], result: VOID },
+  /** Object.freeze of an array (scr_arr_freeze): sets its frozen bit, which
+   * the write guards of IrModule.freezableArrays test, and isFrozen reads.
+   * The receiver is any array type. */
+  "array.freeze": { argTypes: [null], result: VOID },
+  "array.isFrozen": { argTypes: [null], result: BOOL },
+  /** Object.freeze, seal or preventExtensions of a Map or Set
+   * (scr_map_prevent_extensions), which only makes it not extensible: its
+   * entries stay writable. The receiver is any map or set type. */
+  "collection.preventExtensions": { argTypes: [null], result: VOID },
+  "collection.isExtensible": { argTypes: [null], result: BOOL },
   "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
   "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
   "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
@@ -1015,6 +1039,14 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.set": { argTypes: [URL_T, STRING, STRING], result: VOID },
   "url.setChecked": { argTypes: [URL_T, STRING, DYN], result: VOID },
   "url.fileURLToPathUrl": { argTypes: [URL_T], result: STRING },
+  /** fileURLToPathUrl as a value: the path string, or the error it would
+   * throw (fs.existsSync and fs.promises URL paths). Never throws. */
+  "url.fileURLToPathValue": { argTypes: [URL_T], result: DYN },
+  /** getValidatedPath's null-byte check on a string path, and
+   * readFileSync's encoding check: what Node validates before it converts
+   * a later URL path. (path, argument name) and (encoding). */
+  "fs.checkPath": { argTypes: [STRING, STRING], result: VOID },
+  "fs.checkReadEncoding": { argTypes: [STRING], result: VOID },
   "url.fileURLToPathChecked": { argTypes: [DYN], result: STRING },
   "url.fileURLToPathOptions": { argTypes: [DYN, DYN], result: STRING },
   /** node:url's legacy API (scr_url_legacy.c): parse(url, parseQueryString,
@@ -1029,6 +1061,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
   "url.domainToASCII": { argTypes: [DYN, BOOL], result: STRING },
   "url.domainToUnicode": { argTypes: [DYN, BOOL], result: STRING },
+  /** url.urlToHttpOptions over a checked-dynamic argument: a URL answers
+   * Node's null-prototype options object; a primitive or null throws
+   * ERR_INVALID_ARG_TYPE. */
+  "url.toHttpOptions": { argTypes: [DYN], result: DYN },
   /** node:punycode (scr_url.c): punycode.js 2.1.0's string conversions;
    * decode/toUnicode (and, past 32-bit deltas, encode/toASCII) throw the
    * module's RangeErrors, ucs2Encode String.fromCodePoint's. warn marks the
@@ -3025,6 +3061,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** poolFromDyn that also copies an array crossing by reference. */
   "buffer.poolFromDynRef": { argTypes: [DYN, STRING], result: BYTES_U8 },
   "buffer.poolFromDynOffset": { argTypes: [DYN, DYN], result: BYTES_U8 },
+  /** Buffer.from(value, byteOffset, length): an ArrayBuffer's range with
+   * Node's fromArrayBuffer checks; other values as poolFromDynOffset. */
+  "buffer.poolFromDynRange": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
   "buffer.poolSize": { argTypes: [], result: F64 },
   "buffer.setPoolSize": { argTypes: [F64], result: VOID },
   /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
@@ -3059,6 +3098,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * always throws Node's ERR_INVALID_ARG_TYPE ("The \"string\" argument
    * must be of type string. Received ..."). Borrowed dyn; may-throw. */
   "buffer.newStringFail": { argTypes: [DYN], result: BYTES_U8 },
+  "buffer.deprecation": { argTypes: [], result: VOID },
+  "buffer.deprecationCount": { argTypes: [], result: VOID },
+  "buffer.constructor": { argTypes: [], result: DYN },
+  "buffer.installValue": { argTypes: [], result: VOID },
+  "buffer.staticValue": { argTypes: [STRING], result: DYN },
+  "buffer.prototypeMember": { argTypes: [DYN], result: DYN },
   /** fs._toUnixTimestamp(time) over a dyn value: numeric strings and
    * finite numbers coerce (negatives answer now/1000, Node's shape);
    * everything else throws Node's ERR_INVALID_ARG_TYPE. May-throw. */
@@ -3181,6 +3226,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * the +1 %Transform stream. flush takes the kind value, params the level
    * and strategy values; the Cb forms move their () => void callback. The
    * receivers are borrowed. */
+  /** Connects scr_brotli.c to the zlib engine (%main, before any module). */
+  "zlib.brotliInstall": { argTypes: [], result: VOID },
   "zlib.streamNew": { argTypes: [F64, DYN], result: VOID },
   "zlib.streamBytesWritten": { argTypes: [null], result: F64 },
   /** `stream instanceof zlib.Gzip`: the borrowed stream and the class's
@@ -3203,6 +3250,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // or an optional Error | null slot (same success shape as fs.rename).
   "process.stdoutWriteBytesCb": { argTypes: [BYTES_U8, STRING, null], result: BOOL },
   "process.stderrWriteBytesCb": { argTypes: [BYTES_U8, STRING, null], result: BOOL },
+  /** The value of a FULFILLED promise, read without a microtask turn (+1
+   * for references): the tuple form of Promise.all reads its entries this
+   * way once the combinator fulfills, each entry widened to Promise<void>
+   * and read at the type it was built with (program-dependent). */
+  "promise.fulfilledValue": { argTypes: [null], result: VOID },
+  /** Promise.all's tuple form as a value: the entries (each widened to
+   * Promise<void>) join the runtime combinator, and when it fulfills the
+   * function reads the fulfilled entries into the tuple inside that
+   * settlement, so the result settles on the combinator's turn; a
+   * rejection settles it the same way. The result is the tuple's promise
+   * (program-dependent). */
+  "promise.allTuple": { argTypes: [null, null], result: VOID },
   "fsp.readFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: STRING } },
   "fsp.writeFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
   /** fs.promises.writeFile(path, data, { mode }): the settled-promise
@@ -4440,12 +4499,19 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.buffer": { argTypes: [BYTES_U8], result: STRING },
   /** A numeric typed array that is not a Buffer (any element kind). */
   "insp.typedArray": { argTypes: [null, F64, F64], result: STRING },
+  /** A u8 byte view in a union arm, element or field: a DataView, Buffer
+   * or Uint8Array by its own flags. */
+  "insp.bytes": { argTypes: [null, F64, F64], result: STRING },
   "insp.error": { argTypes: [null, F64, F64], result: STRING },
   "insp.errorHasCause": { argTypes: [null], result: BOOL },
   "insp.errorBagHasProperties": { argTypes: [DYN], result: BOOL },
   "insp.errorCause": { argTypes: [null, F64, F64], result: STRING },
   "insp.dyn": { argTypes: [DYN, F64, F64], result: STRING },
   "insp.dynS": { argTypes: [DYN, F64], result: STRING },
+  /** util.format's %o over a checked-dynamic value: inspect with
+   * showHidden. Kinds whose hidden entries have no rendering throw the
+   * 'not supported yet' Error. */
+  "insp.dynHidden": { argTypes: [DYN, F64], result: STRING },
   "insp.begin": { argTypes: [F64], result: VOID },
   /** util.inspect's breakLength, compact (0 for false) and sorted for the
    * renders that follow; the call site restores 80, 3 and false afterwards. */
@@ -4467,6 +4533,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * (inspect, Object.keys/values/entries) then answer through its live
    * checked view. The receiver is any such record type. Never throws. */
   "record.sourceHas": { argTypes: [null], result: BOOL },
+  /** `record.sourceSpread(built, value)`: the record a literal starting
+   * with `...value` just built keeps the order of value's kept source
+   * (key-order-witness.ts ordered spreads). Both are record types. Never
+   * throws. */
+  "record.sourceSpread": { argTypes: [null, null], result: VOID },
   "insp.key": { argTypes: [STRING], result: STRING },
   "insp.moreItems": { argTypes: [F64], result: STRING },
   "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },
@@ -4476,6 +4547,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * `prefix inner` re-indented at the caller's level (+1). */
   "insp.nestedBegin": { argTypes: [], result: VOID },
   "insp.nestedEnd": { argTypes: [STRING, STRING], result: STRING },
+  /** Around a top-level render that an inspection refusal can end: mark
+   * records the inspector's frame and nesting depth, unwind (in the
+   * render's finally) closes what the render left open above it. */
+  "insp.mark": { argTypes: [], result: VOID },
+  "insp.unwind": { argTypes: [], result: VOID },
   /** node:string_decoder's utf8 StringDecoder (scr_string.c): the decoder
    * value is a one-field record whose f64 PACKS the pending partial
    * sequence (count + up to 3 raw bytes — Node buffers at most 3 for
@@ -4757,6 +4833,20 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "als.exitRun": { argTypes: [F64, DYN, DYN], result: DYN },
   "als.enterWith": { argTypes: [F64, DYN], result: VOID },
   "als.disable": { argTypes: [F64], result: VOID },
+  /** new AsyncLocalStorage(options) (Node's object check throws; MAY
+   * THROW) and the store's name option (dyn; "" without one). */
+  "als.newOptions": { argTypes: [DYN], result: F64 },
+  "als.name": { argTypes: [F64], result: DYN },
+  /** A function bound to the active context: the completion callbacks of
+   * callback-style APIs (always false: an empty context leaves the
+   * callback unbound) and AsyncLocalStorage.bind (always true). The typed
+   * form answers its closure argument's type; the dyn form throws Node's
+   * ERR_INVALID_ARG_TYPE for a non-function when always (MAY THROW). */
+  "als.bindCallback": { argTypes: [null, BOOL], result: VOID },
+  "als.bindCallbackDyn": { argTypes: [DYN, BOOL], result: DYN },
+  /** AsyncLocalStorage.snapshot(): a dyn function (cb, ...args) that runs
+   * cb in the context active at the snapshot. */
+  "als.snapshot": { argTypes: [], result: DYN },
   /** Channel.bindStore/unbindStore/runStores (scr_dc.c): the
    * AsyncLocalStorage integration — set-semantics bindings per store,
    * runStores entering every bound store with transform(data) around the
@@ -4812,6 +4902,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "date.getMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getUTCMilliseconds": { argTypes: [DATE_T], result: F64 },
   "date.getTimezoneOffset": { argTypes: [DATE_T], result: F64 },
+  /** A Date object for a time value a local holds (date-values.ts): a
+   * lib-call argument passes the time value itself, and any other use
+   * creates the Date. */
+  "date.fromTime": { argTypes: [F64], result: DATE_T },
   /** Date.prototype.toString / toDateString / toTimeString and String(date):
    * V8's local-time formats with the host zone's long name, "Invalid Date"
    * for an invalid date. Owned (+1) string; never throws. */
@@ -4864,6 +4958,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
   "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
   "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
+  "crypto.diffieHellman": { argTypes: [DYN, DYN], result: DYN },
   "crypto.verifyOneshot": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
   "crypto.createSign": { argTypes: [DYN], result: DYN },
   "crypto.createVerify": { argTypes: [DYN], result: DYN },
@@ -4884,6 +4979,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "text.decoderEncoding": { argTypes: [DYN], result: F64 },
   "text.decoderName": { argTypes: [F64], result: STRING },
   "text.encodeInto": { argTypes: [DYN, DYN], result: DYN },
+  /** `value instanceof TextDecoder` (true) or `TextEncoder` (false) on a
+   * checked-dynamic value: a codec record's handle box (scr_text_codec_dyn.c).
+   * Borrowed; never throws. */
+  "text.codecIs": { argTypes: [DYN, BOOL], result: BOOL },
   "buffer.isAscii": { argTypes: [DYN], result: BOOL },
   "buffer.isUtf8": { argTypes: [DYN], result: BOOL },
   "buffer.transcode": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },

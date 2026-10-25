@@ -708,10 +708,7 @@ static bool nh_receiver(ScrDyn *obj, uint32_t *id, const char *what) {
 static ScrDyn *nh_load(ScrStr *path, int esm) {
   nh_bridge();
   nh_enter();
-  char *p = malloc(path->len + 1);
-  if (p == NULL) nh_oom();
-  memcpy(p, path->data, path->len);
-  p[path->len] = '\0';
+  char *p = scr_ni_module_path(path);
   ScrNodeValue out;
   NhCall c = {.op = NH_LOAD, .path = p, .mode = esm, .out = &out};
   nh_run(&c);
@@ -1217,6 +1214,12 @@ ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args) {
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
   return scr_ni_call(fn, NULL, items, argc);
+}
+
+ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrDyn *args) {
+  ScrDyn *const *items;
+  size_t argc = ni_libcall_args(args, &items);
+  return scr_ni_call(fn, this_, items, argc);
 }
 
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args) {

@@ -4,7 +4,8 @@
 // storage, and the same native object comes back as itself.
 import { requireModule } from "@scriptc/node";
 
-const { bump, describe, has, keep, keptAt, readThrough, same, store } = requireModule("./lib.cjs");
+const { bump, describe, has, keep, keptAt, readLater, readThrough, same, store } =
+  requireModule("./lib.cjs");
 
 class Greeter {
   constructor(greeting) {
@@ -36,3 +37,4 @@ g.greeting = "Hi";
 console.log(readThrough(g));
 const boxed = store(g);
 console.log("boxed", boxed.inner === g, boxed.inner.greet("native"));
+console.log("later", await readLater(counter));

@@ -2,7 +2,15 @@
 // structuredClone in a Node island of native objects passed in clones
 // their data, as under Node; arrays of plain values the island returns,
 // directly or through a promise, arrive as arrays.
-import { cloneClaims, cloneFails, cloneNested, listFiles, matrix, names } from "data-pkg";
+import {
+  cloneClaims,
+  cloneFails,
+  cloneNested,
+  cloneSparse,
+  listFiles,
+  matrix,
+  names,
+} from "data-pkg";
 
 interface Claims {
   sub: string;
@@ -22,6 +30,7 @@ async function main(): Promise<void> {
   console.log(cloneNested({ list: [1, 2], session: new Session() }));
   console.log(cloneNested([claims, claims]));
   console.log(cloneFails());
+  console.log(cloneSparse({ kind: "native" }));
   const files = await listFiles("/tmp");
   for (const f of files) console.log("file", f);
   console.log("count", files.length, files.join(","));

@@ -124,13 +124,15 @@ static void ni_ids_del(const void *key) {
 }
 
 /* The identity of a value that crosses by reference: the referent for
- * boxes that wrap one (closures, promises, typed capsules), else the box. */
+ * boxes that wrap one (closures, typed capsules), a promise's shared
+ * identity (a typed promise boxes a fresh adapter each time it crosses),
+ * else the box. */
 static const void *ni_identity(const ScrDyn *v) {
   switch (v->kind) {
   case SCR_DYN_FUNC:
     return v->v.fn.clo != NULL ? (const void *)v->v.fn.clo : (const void *)v;
   case SCR_DYN_PROMISE:
-    return v->v.promise;
+    return scr_promise_identity_key(v->v.promise);
   case SCR_DYN_TYPED_REF:
     return v->v.typed_ref.ptr;
   default:
@@ -188,6 +190,9 @@ uint32_t scr_ni_export_id(ScrDyn *v) {
   }
   ni_exports[id].value = scr_dyn_retain(v);
   ni_exports[id].identity = identity;
+  /* The table keeps a promise's identity cell while the export lives: a
+   * freed cell's address could come back as another promise's. */
+  if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_hold(identity);
   ni_exports[id].flags = scr_ni_export_flags(v);
   ni_ids_put(identity, id);
   return id;
@@ -484,6 +489,7 @@ void scr_ni_host_export_release(uint32_t id) {
   if (id == 0 || id >= ni_exports_len || ni_exports[id].value == NULL) return;
   ScrDyn *v = ni_exports[id].value;
   ni_ids_del(ni_exports[id].identity);
+  if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[id].identity);
   ni_exports[id].value = NULL;
   ni_exports[id].identity = NULL;
   if (ni_nfree == ni_free_cap) {
@@ -547,7 +553,7 @@ static void ni_settle_export(uint32_t id, ScrPromise *p) {
 
 static void ni_promise_settled(ScrPromise *dst, ScrPromise *src) {
   (void)dst;
-  uint32_t id = ni_ids_get(src);
+  uint32_t id = ni_ids_get(scr_promise_identity_key(src));
   if (id != 0) ni_settle_export(id, src);
 }
 
@@ -573,6 +579,8 @@ void scr_ni_exports_release_all(void) {
   ni_keep_set(NULL);
   for (uint32_t i = 1; i < ni_exports_len; i++) {
     ScrDyn *v = ni_exports[i].value;
+    if (v == NULL) continue;
+    if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[i].identity);
     ni_exports[i].value = NULL;
     scr_dyn_release(v);
   }
