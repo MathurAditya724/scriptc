@@ -120,7 +120,7 @@ describe("type patches", () => {
           expect(native.stderr).toBe(
             "Uncaught TypeError: expected string at $, got undefined\n" +
               "    profilekit@3.1.0 declares Profile.email as string (index.d.ts:7)\n" +
-              `    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "profilekit@^3.1.0": { "declarations": { "Profile.email": "| undefined" } } } }\n`,
+              `    if that declaration is wrong, patch it: scriptc types patch profilekit "Profile.email" "| undefined"\n`,
           );
         }
       } finally {
@@ -178,7 +178,7 @@ describe("type patches", () => {
       const result = await build(join(fixture, "unpatched/main.ts"), "unpatched", ["termctx"]);
       const native = await run(result.binaryPath, []);
       const patch = (selector: string) =>
-        `    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "termctx@^1.2.0": { "declarations": { "${selector}": "| undefined" } } } }`;
+        `    if that declaration is wrong, patch it: scriptc types patch termctx "${selector}" "| undefined"`;
       expect(native.stdout).toBe(
         [
           "expected number at $, got undefined",
