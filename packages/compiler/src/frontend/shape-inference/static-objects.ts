@@ -30,16 +30,22 @@
  *      the class would not bind;
  *    - the statements between the constructor and its last method only
  *      define more functions or data (nothing runs that could observe the
- *      prototype half built).
+ *      prototype half built): their stores go to constant objects, which
+ *      have no setters;
+ *    - nothing asks the prototype whether its members are enumerable
+ *      (`propertyIsEnumerable`).
  * 2. Namespace functions become direct functions. A constant field holding
  *    a function expression that does not use `this`, stored by a top-level
  *    statement, is hoisted to a function declaration, and calls through
  *    the namespace in the same file whose receiver is exactly that
  *    constant object call it directly. A member read is replaced only when
- *    its receiver is a name or a chain of constant-object reads (nothing to
- *    evaluate), and it runs after the store: in a top-level statement after
- *    it, or inside the stored function, and not inside a function
- *    declaration (which hoisting lets run earlier).
+ *    its receiver is an initialized name or a chain of constant-object reads
+ *    from one (nothing to evaluate, nothing to throw), and it runs after the
+ *    store: in a top-level statement after it, or inside the stored
+ *    function, and not inside a function declaration (which hoisting lets
+ *    run earlier). A name is initialized when it is a parameter, a function
+ *    declaration, or a variable declared with an initializer by an earlier
+ *    top-level statement and never assigned again.
  *
  * Each rewrite keeps the original text unless every condition holds. */
 import * as ts from "../ts7/adapter.js";
@@ -239,33 +245,6 @@ function usesThis(fn: ts.FunctionExpression): boolean {
   return found;
 }
 
-/** Whether a statement only defines things: function or data stores and
- * declarations whose initializers run no code outside function bodies. */
-function definitionOnly(stmt: ts.Statement): boolean {
-  if (ts.isFunctionDeclaration(stmt)) return true;
-  let runs = false;
-  const visit = (n: Node): void => {
-    if (runs) return;
-    if (ts.isFunctionLike(n)) return;
-    if (ts.isCallExpression(n) || ts.isNewExpression(n) || ts.isTaggedTemplateExpression(n))
-      runs = true;
-    if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
-      // A read could run a getter; stores into plain paths are fine.
-      const p = n.parent;
-      const isStoreTarget =
-        p !== undefined &&
-        ts.isBinaryExpression(p) &&
-        p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        p.left === n;
-      if (!isStoreTarget && !ts.isPropertyAccessExpression(p ?? n)) runs = true;
-    }
-    ts.forEachChild(n, visit);
-  };
-  if (ts.isExpressionStatement(stmt) || ts.isVariableStatement(stmt)) visit(stmt);
-  else return false;
-  return !runs;
-}
-
 export function planStaticObjectRewrites(
   analysis: ShapeAnalysis,
   files: readonly ts.SourceFile[],
@@ -299,6 +278,12 @@ export function planStaticObjectRewrites(
       for (const a of analysis.nodes[op.recv]!.atoms) computedRecv.add(a);
   const forIns: ts.Expression[] = [];
   const reflective: ts.CallExpression[] = [];
+  // Receivers of `x.propertyIsEnumerable(…)` calls, and whether the method
+  // is also reached any other way (`.call`, a stored reference).
+  const enumerabilityQueries: ts.Expression[] = [];
+  let enumerabilityEscapes = false;
+  // Names stored to by assignments or updates.
+  const assignedNames: ts.Identifier[] = [];
   for (const sf of analysis.files) {
     const visit = (n: Node): void => {
       if (ts.isForInStatement(n)) forIns.push(n.expression);
@@ -310,6 +295,34 @@ export function planStaticObjectRewrites(
           n.expression.name.text === "propertyIsEnumerable")
       )
         reflective.push(n);
+      if (ts.isIdentifier(n) && n.text === "propertyIsEnumerable") {
+        const access = n.parent;
+        const call = access?.parent;
+        if (
+          access !== undefined &&
+          ts.isPropertyAccessExpression(access) &&
+          access.name === n &&
+          call !== undefined &&
+          ts.isCallExpression(call) &&
+          call.expression === access
+        )
+          enumerabilityQueries.push(access.expression);
+        else enumerabilityEscapes = true;
+      }
+      if (
+        ts.isBinaryExpression(n) &&
+        n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        ts.isIdentifier(n.left)
+      )
+        assignedNames.push(n.left);
+      if (
+        (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+        (n.operator === ts.SyntaxKind.PlusPlusToken ||
+          n.operator === ts.SyntaxKind.MinusMinusToken) &&
+        ts.isIdentifier(n.operand)
+      )
+        assignedNames.push(n.operand);
       ts.forEachChild(n, visit);
     };
     visit(sf);
@@ -322,6 +335,17 @@ export function planStaticObjectRewrites(
       return undefined;
     }
   };
+  const readOps = new Map<Node, (typeof analysis.ops)[number]>();
+  const writeOps = new Map<Node, (typeof analysis.ops)[number]>();
+  for (const op of analysis.ops) {
+    if (op.kind === "read") readOps.set(op.node, op);
+    if (op.kind === "write") writeOps.set(op.node, op);
+  }
+  const reassigned = new Set<Node>();
+  for (const id of assignedNames) {
+    const d = declOf(id);
+    if (d !== undefined) reassigned.add(d);
+  }
   /** Whether an expression may evaluate to one of `atoms` (identifiers
    * through their declarations' values, `new` of a known constructor path;
    * anything else may). */
@@ -346,8 +370,32 @@ export function planStaticObjectRewrites(
       return false;
     return true;
   };
-  /** Whether a reflective call may reach one of `atoms`. */
+  /** `mayBe`, which also follows member reads: a constructor's `prototype`
+   * is its default prototype object, and a constant object's field holds
+   * the values stored to it. */
+  const mayBeValue = (e: ts.Expression, atoms: ReadonlySet<Atom>, ctorPath: string): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!ts.isPropertyAccessExpression(e)) return mayBe(e, atoms, ctorPath);
+    const op = readOps.get(e);
+    if (op === undefined || op.name === null) return true;
+    for (const a of analysis.nodes[op.recv]!.atoms) {
+      const proto = op.name === "prototype" ? analysis.protoOf.get(a) : undefined;
+      if (proto !== undefined) {
+        if (atoms.has(proto)) return true;
+        continue;
+      }
+      if (!constantAtoms.has(a)) return true;
+      const field = analysis.fields.get(a)?.get(op.name);
+      if (field !== undefined && [...analysis.nodes[field]!.atoms].some((v) => atoms.has(v)))
+        return true;
+    }
+    return false;
+  };
+  /** Whether a reflective call may reach one of `atoms`: as an argument, or
+   * as the object `propertyIsEnumerable` is asked about. */
   const reflectsOn = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
+    enumerabilityEscapes ||
+    enumerabilityQueries.some((recv) => mayBeValue(recv, atoms, ctorPath)) ||
     reflective.some((call) => call.arguments.nodes.some((arg) => mayBe(arg, atoms, ctorPath)));
   /** Whether a call that freezes, seals or redefines an object may reach one of `atoms`. */
   const reshapes = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
@@ -376,6 +424,90 @@ export function planStaticObjectRewrites(
   const noNameOrSource = (a: Atom): boolean => {
     const names = readNames.get(a);
     return names === undefined || (!names.has("name") && !names.has("toString"));
+  };
+
+  /** Whether `node` runs only after the top-level statement `stmt` has run:
+   * in a later top-level statement, and not in a function declaration
+   * (which hoisting lets run earlier). */
+  const afterStatement = (node: Node, stmt: ts.Statement): boolean => {
+    for (let p: Node | undefined = node.parent; p !== undefined; p = p.parent)
+      if (ts.isFunctionDeclaration(p)) return false;
+    const top = topStatement(node);
+    if (top === null) return false;
+    const stmts = node.getSourceFile().statements.nodes;
+    return stmts.indexOf(top) > stmts.indexOf(stmt);
+  };
+  /** Whether the binding `id` names holds its value whenever `at` runs: a
+   * parameter or a function declaration, or a variable declared with an
+   * initializer by an earlier top-level statement of the same file. None is
+   * ever assigned again. A variable read earlier is undefined, or throws in
+   * its temporal dead zone. */
+  const initializedAt = (id: ts.Identifier, at: Node): boolean => {
+    const d = declOf(id);
+    if (d === undefined || reassigned.has(d)) return false;
+    if (ts.isParameter(d) || ts.isFunctionDeclaration(d)) return true;
+    if (!ts.isVariableDeclaration(d) || d.initializer === undefined) return false;
+    const stmt = d.parent?.parent;
+    if (stmt === undefined || !ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent))
+      return false;
+    return stmt.parent === at.getSourceFile() && afterStatement(at, stmt);
+  };
+  /** Whether evaluating `e` where `at` runs runs nothing and cannot throw: an
+   * initialized name, or a chain of member reads from constant objects
+   * (plain data) starting at one. */
+  const pureReceiver = (e: ts.Expression, at: Node): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isIdentifier(e)) return initializedAt(e, at);
+    if (!ts.isPropertyAccessExpression(e)) return false;
+    const op = readOps.get(e);
+    if (op === undefined) return false;
+    const recv = analysis.nodes[op.recv]!.atoms;
+    if (recv.size !== 1 || !constantAtoms.has([...recv][0]!)) return false;
+    return pureReceiver(e.expression, at);
+  };
+  /** Whether a store to `target` runs no code: its receiver is a constant
+   * object, which has no setters, reached without running anything, and the
+   * key is not `__proto__`, which Object.prototype stores through a setter. */
+  const inertStore = (target: ts.Expression): boolean => {
+    if (!ts.isPropertyAccessExpression(target) || !ts.isIdentifier(target.name)) return false;
+    if (target.name.text === "__proto__") return false;
+    const op = writeOps.get(target);
+    if (op === undefined) return false;
+    const recv = analysis.nodes[op.recv]!.atoms;
+    if (recv.size !== 1 || !constantAtoms.has([...recv][0]!)) return false;
+    return pureReceiver(target.expression, target);
+  };
+  /** Whether a statement only defines things: function declarations, and
+   * declarations and stores whose evaluation runs no code outside function
+   * bodies (no call, no read that could run a getter, no store that could run
+   * a setter). */
+  const definitionOnly = (stmt: ts.Statement): boolean => {
+    if (ts.isFunctionDeclaration(stmt)) return true;
+    if (!ts.isExpressionStatement(stmt) && !ts.isVariableStatement(stmt)) return false;
+    let runs = false;
+    const visit = (n: Node): void => {
+      if (runs) return;
+      if (ts.isFunctionLike(n)) return;
+      if (ts.isCallExpression(n) || ts.isNewExpression(n) || ts.isTaggedTemplateExpression(n))
+        runs = true;
+      if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
+        const p = n.parent;
+        const isStoreTarget =
+          p !== undefined &&
+          ts.isBinaryExpression(p) &&
+          p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          p.left === n;
+        if (isStoreTarget) {
+          if (!inertStore(n)) runs = true;
+          return;
+        }
+        // A read could run a getter; the receivers of reads are part of them.
+        if (!ts.isPropertyAccessExpression(p ?? n)) runs = true;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(stmt);
+    return !runs;
   };
 
   const hoisted = new Map<Atom, string>();
@@ -597,20 +729,6 @@ export function planStaticObjectRewrites(
   // Direct references: `e.k` (called, constructed or read) in the same file
   // whose receiver is exactly the constant object holding a hoisted
   // function or class.
-  const readOps = new Map<Node, (typeof analysis.ops)[number]>();
-  for (const op of analysis.ops) if (op.kind === "read") readOps.set(op.node, op);
-  /** Whether evaluating `e` runs nothing and cannot throw: a declared name,
-   * or a chain of member reads from constant objects (plain data). */
-  const pureReceiver = (e: ts.Expression): boolean => {
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    if (ts.isIdentifier(e)) return declOf(e) !== undefined;
-    if (!ts.isPropertyAccessExpression(e)) return false;
-    const op = readOps.get(e);
-    if (op === undefined) return false;
-    const recv = analysis.nodes[op.recv]!.atoms;
-    if (recv.size !== 1 || !constantAtoms.has([...recv][0]!)) return false;
-    return pureReceiver(e.expression);
-  };
   /** Whether `node` runs only after `store` has stored its function. */
   const runsAfter = (node: Node, store: { stmt: ts.Statement; fn: Node }): boolean => {
     for (let p: Node | undefined = node.parent; p !== undefined; p = p.parent) {
@@ -645,7 +763,7 @@ export function planStaticObjectRewrites(
     if (topStatement(node) === null) continue;
     // The receiver's evaluation is dropped, and the binding exists from the
     // store on (a function) or from its declaration on (a class).
-    if (!pureReceiver(node.expression)) continue;
+    if (!pureReceiver(node.expression, node)) continue;
     if (!runsAfter(node, storeOf.get(field.values[0]!)!)) continue;
     callEdits.push({
       sf: node.getSourceFile(),
