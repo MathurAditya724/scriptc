@@ -4,7 +4,7 @@
  * nearest package.json under a range covering the installed version (or
  * an existing entry that covers it), and nothing is written when the
  * selector matches nothing. */
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -116,5 +116,53 @@ test("list shows each patch and what it matches", () => {
   );
   expect(runTypePatchCommand({ action: "list", cwd: root }, parse).stdout).toBe(
     "termctx@^2.0.0\n  does not apply to the installed termctx 1.2.0\n  A.b: | undefined\n",
+  );
+});
+
+test("nothing is written when a replacement is ambiguous in one of the files it matches", () => {
+  const pkg = join(root, "node_modules/overloads");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(
+    join(pkg, "package.json"),
+    JSON.stringify({ name: "overloads", version: "1.0.0", types: "index.d.ts" }),
+  );
+  writeFileSync(join(pkg, "index.d.ts"), "export declare function pick(a: string): string;\n");
+  writeFileSync(
+    join(pkg, "more.d.ts"),
+    "export declare function pick(a: string): string;\nexport declare function pick(a: number): string;\n",
+  );
+  const result = patch("overloads", "pick()", "string | undefined");
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toBe(
+    "scriptc: 'pick()' matches 2 declarations in more.d.ts; a replacement must name one " +
+      "(widen them, or replace the declaration file) (more.d.ts)\nnothing was written\n",
+  );
+  expect(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scriptc).toBeUndefined();
+});
+
+test("the patch goes to the covering entry the compiler applies", () => {
+  const manifest = join(root, "package.json");
+  const entries = {
+    "termctx@^1.0.0": { declarations: { "OutputContext.width": "| null" } },
+    "termctx@1.x": { declarations: { "OutputContext.width": "| null" } },
+  };
+  writeFileSync(manifest, JSON.stringify({ name: "app", scriptc: { typePatches: entries } }));
+  // Both ranges cover termctx 1.2.0, and the later entry wins on the same
+  // selector: it takes the patch.
+  const result = patch("termctx", "OutputContext.width", "| undefined");
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain(
+    `wrote package.json scriptc.typePatches["termctx@1.x"].declarations["OutputContext.width"]\n`,
+  );
+  expect(JSON.parse(readFileSync(manifest, "utf8")).scriptc.typePatches).toEqual({
+    "termctx@^1.0.0": { declarations: { "OutputContext.width": "| null" } },
+    "termctx@1.x": { declarations: { "OutputContext.width": "| undefined" } },
+  });
+  // Asked for the earlier range, the later entry would still win.
+  const earlier = patch("termctx", "OutputContext.width", "| undefined", { range: "^1.0.0" });
+  expect(earlier.exitCode).toBe(1);
+  expect(earlier.stderr).toBe(
+    `scriptc: scriptc.typePatches["termctx@1.x"] also patches 'OutputContext.width' for termctx 1.2.0 ` +
+      `and takes precedence over scriptc.typePatches["termctx@^1.0.0"]\nnothing was written\n`,
   );
 });

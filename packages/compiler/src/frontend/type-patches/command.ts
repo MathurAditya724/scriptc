@@ -131,13 +131,15 @@ interface FileMatch extends PatchMatch {
 }
 
 /** Every declaration a selector matches in a copy, and the problems where
- * it cannot apply. */
+ * it cannot apply (`always`: a problem even where the selector matched
+ * elsewhere, such as an ambiguous replacement, which leaves those
+ * declarations as they are). */
 function matchCopy(
   copy: PackageCopy,
   selector: Selector,
   op: TypePatchOp,
   parse: TypePatchParse,
-): { matches: FileMatch[]; problems: string[] } {
+): { matches: FileMatch[]; problems: { message: string; always: boolean }[] } {
   const words =
     selector.root === "export="
       ? ["exports", "export"]
@@ -145,7 +147,7 @@ function matchCopy(
         ? ["default"]
         : [selector.root];
   const matches: FileMatch[] = [];
-  const problems: string[] = [];
+  const problems: { message: string; always: boolean }[] = [];
   for (const rel of packageFiles(copy.root)) {
     if (selector.file !== null && selector.file !== rel) continue;
     const path = join(copy.root, rel);
@@ -165,7 +167,8 @@ function matchCopy(
       continue;
     }
     for (const m of result.matches) matches.push({ ...m, file: rel });
-    for (const p of result.problems) problems.push(`${p.message} (${rel})`);
+    for (const p of result.problems)
+      problems.push({ message: `${p.message} (${rel})`, always: p.always === true });
   }
   return { matches, problems };
 }
@@ -258,7 +261,7 @@ function patchCommand(
   const lines: string[] = [];
   let matched = 0;
   let changed = 0;
-  const problems: string[] = [];
+  const problems: { message: string; always: boolean }[] = [];
   for (const copy of copies) {
     const found = matchCopy(copy, selector, op, parse);
     problems.push(...found.problems);
@@ -272,9 +275,16 @@ function patchCommand(
   }
   if (matched === 0) {
     const why =
-      problems.length > 0 ? problems.join("\n") : `'${req.selector}' matches no declaration`;
+      problems.length > 0
+        ? problems.map((p) => p.message).join("\n")
+        : `'${req.selector}' matches no declaration`;
     return fail(`${why}\nnothing was written`);
   }
+  // A declaration the patch cannot apply to where it also matched (an
+  // ambiguous replacement) would stay as it is.
+  const unapplied = problems.filter((p) => p.always);
+  if (unapplied.length > 0)
+    return fail(`${unapplied.map((p) => p.message).join("\n")}\nnothing was written`);
   if (changed === 0) {
     lines.push("the declarations already say this; nothing was written");
     return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
@@ -286,15 +296,30 @@ function patchCommand(
   } catch {
     return fail(`${relative(req.cwd, manifest) || "package.json"} is not valid JSON`);
   }
-  // An existing entry whose range covers the installed version takes the
-  // patch; otherwise a new one under the range asked for.
-  const existing = parseProjectConfig(manifest, text).typePatches.find(
-    (e: TypePatchEntry) =>
-      e.pkg === req.pkg &&
-      (req.range === null
-        ? version !== null && satisfies(version, e.range)
-        : e.range === req.range),
+  // The compiler applies every entry whose range covers the installed
+  // version, and a later entry wins on the same selector. Without a range,
+  // the patch goes to the last covering entry that patches the selector
+  // already, else to the first covering entry; with one, to the entry of
+  // that range. Otherwise a new entry, which comes last, takes it.
+  const entries = parseProjectConfig(manifest, text).typePatches.filter(
+    (e: TypePatchEntry) => e.pkg === req.pkg,
   );
+  const covers = (e: TypePatchEntry): boolean => version !== null && satisfies(version, e.range);
+  const declares = (e: TypePatchEntry): boolean =>
+    e.declarations.some((d) => d.selector === req.selector);
+  const existing =
+    req.range === null
+      ? (entries.findLast((e) => covers(e) && declares(e)) ?? entries.find(covers))
+      : entries.find((e) => e.range === req.range);
+  if (existing !== undefined && covers(existing)) {
+    const later = entries
+      .slice(entries.indexOf(existing) + 1)
+      .find((e) => covers(e) && declares(e));
+    if (later !== undefined)
+      return fail(
+        `scriptc.typePatches["${later.key}"] also patches '${req.selector}' for ${req.pkg} ${version} and takes precedence over scriptc.typePatches["${existing.key}"]\nnothing was written`,
+      );
+  }
   const key =
     existing?.key ?? `${req.pkg}@${req.range ?? (version === null ? "*" : `^${version}`)}`;
   const where = `scriptc.typePatches["${key}"].declarations["${req.selector}"]`;
