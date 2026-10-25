@@ -186,6 +186,7 @@ typedef enum {
   X(MATCH_SOURCE, 55) /* a match result's pending metadata (scr_regex.c) */ \
   X(MESSAGE_EVENT, 50) /* ScrEvent with data — BroadcastChannel's 'message' */ \
   X(MESSAGE_PORT, 36) \
+  X(MODULE_NAMESPACE, 79) /* module namespace object read through its exports (scr_module_namespace.c) */ \
   X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
   X(NET_SERVER, 3) /* ScrNetServer — net.Server (http.Server rides the same handle) */ \
   X(NET_SOCKET, 2) /* ScrNetSocket — net.Socket */ \
@@ -195,6 +196,7 @@ typedef enum {
   X(REGEXP, 26) /* native RegExp, shared compiled pattern */ \
   X(SEARCH_PARAMS, 33) /* live WHATWG URLSearchParams */ \
   X(SEGMENTER, 19) /* default Unicode grapheme segmentation */ \
+  X(SEGMENTER_REFUSING, 80) /* word or sentence Segmenter whose segment() throws (scr_grapheme.c) */ \
   X(SEGMENTS, 20) /* iterable immutable segmentation result */ \
   X(SET, 25) /* native Set<unknown>, shared backing map */ \
   X(SHARED_ARRAY_BUFFER, 37) \
@@ -325,6 +327,9 @@ typedef struct {
    * must not inspect the value: an earlier cycle member may already be freed.
    * Ordinary mutations need not maintain this collector-only decision. */
   bool value_traced : 1;
+  /* A namespace object's function member (scr_dyn_namespace_define), which
+   * static member calls bypass: a change to its value fences instead. */
+  bool fenced : 1;
   /* Ordinary object insertion sets all three attributes true. */
   bool writable;
   bool enumerable;
@@ -518,7 +523,9 @@ struct ScrDyn {
        * identity while the source reference remains observable. */
       ScrDyn *materialized;
       ScrDynTypedCast *casts;
-      /* One word keeps this, the largest payload, at its previous size. */
+      /* One word keeps this, the largest payload, at its previous size.
+       * Dynamic-tier inline caches read record, klass and bag_class as
+       * the word's top three bits (backend/llvm/js-ic.ts nativeArray). */
       uint32_t type_key_len : 27;
       uint32_t traced : 1; /* native referent has a cycle header */
       uint32_t observed : 1; /* native release reports this identity's disposal */
@@ -871,11 +878,16 @@ bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
 bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
+/* scr_dyn_obj_set_field for a symbol-keyed field of a class instance's
+ * view: replaces the value whatever the attributes copied into the view.
+ * Does not consume stored. */
+void scr_dyn_symbol_field_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key);
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key);
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key);
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key);
 void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *key, bool strict);
+bool scr_dyn_reflect_delete_property(ScrDyn *target, const ScrDyn *key);
 ScrStr *scr_dyn_string_constructor(const ScrDyn *value);
 ScrDyn *scr_dyn_property_key_value(const ScrDyn *value);
 ScrDyn *scr_dyn_to_numeric(const ScrDyn *value);
@@ -898,6 +910,19 @@ ScrDyn *scr_dyn_error_constructor(const char *name);
 /* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
  * as an interned dynamic function value: +1. */
 ScrDyn *scr_dyn_builtin_function(const ScrStr *name);
+/* A standard namespace object (Math, JSON, Reflect read as a JavaScript
+ * value): an ordinary object whose Symbol.toStringTag is `tag` (+1).
+ * `tag_key` is the Symbol.toStringTag key (borrowed), which the compiler
+ * passes so this unit needs no symbol entry points. */
+ScrDyn *scr_dyn_namespace_new(const ScrStr *tag, ScrDyn *tag_key);
+/* Defines the own data property `key` of a namespace object. `attributes`
+ * has bits 1 writable, 2 enumerable, 4 configurable; a function value
+ * takes `length` as its length when it is not negative. */
+void scr_dyn_namespace_define(ScrDyn *object, const ScrStr *key, ScrDyn *value, double attributes,
+                              double length);
+/* Marks the own property `key` of `object` as a fenced namespace member
+ * (ScrDynEntry.fenced). */
+void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key);
 /* A constant-key read of an Object.prototype member name: takes the
  * ordinary read's +1 result and answers the inherited member in place of
  * an undefined one (scr_dyn_invoke.c). */
@@ -1213,6 +1238,12 @@ void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn 
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
 void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits);
 void scr_dyn_class_view_attributes(ScrDyn *view, double bits);
+/* The integrity state of a class instance's checked view as CLASS_* bits,
+ * added to `bits`. The commits of hierarchies with an integrity word store
+ * it in the word, in programs that freeze, seal or prevent extensions of
+ * untyped values. `bag`, the instance's new property bag or NULL, stops
+ * being extensible with the view. */
+double scr_dyn_class_view_integrity(const ScrDyn *view, double bits, ScrDyn *bag);
 ScrDyn *scr_class_define_field(ScrDyn *current, double field_bits, double object_bits, ScrStr *name,
                                ScrDyn *descriptor);
 double scr_class_defined_bits(ScrDyn *holder, ScrStr *name);
@@ -1242,6 +1273,12 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
 void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict);
+/* Removes the own property `key` of an ordinary object whatever its
+ * attributes, as scr_dyn_obj_set_field replaces values. */
+void scr_dyn_obj_delete_field(ScrDyn *obj, const ScrStr *key);
+/* The same for the own symbol-keyed property `symbol` of an ordinary
+ * object. */
+void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol);
 /* This thread's global object box (borrowed). Every spelling of the global
  * object answers it; its symbol-keyed properties are the global object's
  * (scr_node_builtin.c). */
@@ -1457,6 +1494,9 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
 /* Gives a function box made with thunk its typed message entry (an
  * EventEmitter listener registered from it keeps the entry). */
 void scr_dyn_func_set_message(ScrDyn *fn, ScrDynThunk thunk, ScrDynMessageListener listener);
+/* Sets a freshly boxed function's `length` (a builtin function value whose
+ * length is not its adapter's parameter count). */
+void scr_dyn_function_set_length(ScrDyn *fn, uint32_t length);
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
 /* EventEmitter and the stream constructors as untyped constructor values,
  * and instanceof over untyped constructor functions

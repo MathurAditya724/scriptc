@@ -1,4 +1,11 @@
-import { F64, type IrExpr, type IrLocal, type IrStmt } from "../../ir/ir.js";
+import {
+  BYTES_ELEMENT_SIZE,
+  F64,
+  type IrExpr,
+  type IrLocal,
+  type IrStmt,
+  type IrType,
+} from "../../ir/ir.js";
 import type { IntegerRange, IntegerRanges } from "../../ir/integer-ranges.js";
 import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
@@ -9,13 +16,14 @@ import {
   emitCountedLoopLimit,
   emitCountedLoopSafety,
   emitExactIntegerTest,
+  emitStartIntegerTest,
 } from "./counted-loops.js";
-import { emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
+import { emitBytesData, emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
 import { f64Lit } from "./common.js";
 import {
   emitStringAsciiFlag,
   emitStringByteLength,
-  STRING_CHAR_CODE_AT_DECL,
+  STRING_SCAN_UNITS_DECL,
   stringScanType,
 } from "./string-reads.js";
 import { unitSafeLoop } from "./string-unit-versions.js";
@@ -106,6 +114,12 @@ export interface BytesLoopVersion {
   /** Integer ranges of affine index operands that hold in the unchecked
    * loop (where the guard bounds the counter). */
   ranges: ReadonlyMap<IrExpr, IntegerRange>;
+  /** Typed-array receivers whose element ranges the guard proves disjoint,
+   * and the receiver of each of their element reads and writes. The fast
+   * copy gives each receiver its own alias scope, so a store to one view
+   * leaves the elements of the others in registers. Null when the loop
+   * writes no element, or reads and writes a single view. */
+  scopes: { receivers: number[]; nodes: ReadonlyMap<Node, number> } | null;
 }
 
 export interface BytesLoopFacts {
@@ -136,6 +150,8 @@ export interface BytesLoopFacts {
 const MAX_COST = 400;
 const MAX_FIXED_END = 2 ** 31;
 const MAX_CHECKS = 8;
+/** Alias-scoped views per loop: the guard tests every pair's ranges. */
+const MAX_SCOPED_RECEIVERS = 6;
 const MAX_OFFSET = 2 ** 31;
 const SAFE = Number.MAX_SAFE_INTEGER;
 /** The range the guard requires of an invariant index term without a
@@ -547,11 +563,24 @@ export function matchBytesLoopVersion(
       group.nodes.push(node);
     } else fixed.set(receiver, { check: { receiver, end }, nodes: [node] });
   };
+  // Element reads and writes of each typed-array receiver, for alias scopes.
+  const scoped = new Map<Node, number>();
+  const writtenViews = new Set<number>();
+  const scope = (node: Node, array: IrExpr, write: boolean): void => {
+    const ref = root(array);
+    if (!ref || ref.type.kind !== "bytes") return;
+    const receiver = receiverOf(ref);
+    scoped.set(node, receiver);
+    if (write) writtenViews.add(receiver);
+  };
   const visitExpr = (e: IrExpr): boolean => {
     if (e.kind === "bytesIntrinsic") {
       const numeric = byteNumberAccess(e);
       if (numeric) access(e, e.receiver, e.args[numeric.offsetArg]!, numeric.width);
-      else if (e.method === "get" && e.args[0]) access(e, e.receiver, e.args[0], 1);
+      else if (e.method === "get" && e.args[0]) {
+        access(e, e.receiver, e.args[0], 1);
+        scope(e, e.receiver, false);
+      }
     } else if (
       e.kind === "strIntrinsic" &&
       (e.method === "charCodeAt" || e.method === "charAt") &&
@@ -561,7 +590,10 @@ export function matchBytesLoopVersion(
     return everyExprChild(e, visitExpr, visitStmt);
   };
   const visitStmt = (s: IrStmt): boolean => {
-    if (s.kind === "bytesSet") access(s, s.arr, s.index, 1);
+    if (s.kind === "bytesSet") {
+      access(s, s.arr, s.index, 1);
+      scope(s, s.arr, true);
+    }
     return everyStmtChild(s, visitExpr, visitStmt);
   };
   loop.body.every(visitStmt);
@@ -684,6 +716,17 @@ export function matchBytesLoopVersion(
         : [],
     });
   }
+  // Alias scopes: at least two views, one of them written, each read only
+  // through plain loads (in a worker program, a view the guard proves
+  // thread-owned).
+  const scopedReceivers = [...new Set(scoped.values())].sort((a, b) => a - b);
+  const ownedSet = new Set(ownedKept.map(([receiver]) => receiver));
+  const scoping =
+    scopedReceivers.length >= 2 &&
+    scopedReceivers.length <= MAX_SCOPED_RECEIVERS &&
+    scopedReceivers.some((receiver) => writtenViews.has(receiver)) &&
+    (!facts.workers || scopedReceivers.every((receiver) => ownedSet.has(receiver)));
+  if (scoping) for (const receiver of scopedReceivers) used.add(receiver);
   // Renumber the receivers the kept checks use.
   const order = [...used].sort((a, b) => a - b);
   const renumber = new Map(order.map((old, index) => [old, index]));
@@ -737,6 +780,12 @@ export function matchBytesLoopVersion(
         : null,
     counterBound: needsBound ? bound : null,
     ranges,
+    scopes: scoping
+      ? {
+          receivers: scopedReceivers.map((receiver) => renumber.get(receiver)!),
+          nodes: new Map([...scoped].map(([node, receiver]) => [node, renumber.get(receiver)!])),
+        }
+      : null,
   };
 }
 
@@ -1126,6 +1175,31 @@ export function emitBytesLoopVersionGuard(
     B.line(`${ok} = icmp ugt i64 ${lengths[check.receiver]}, ${check.end}`);
     conditions.push(ok);
   }
+  if (version.scopes) {
+    // Every pair of scoped views covers disjoint bytes: one ends at or
+    // before the other starts. An empty view covers none.
+    const spans = version.scopes.receivers.map((index) => {
+      const type = version.receivers[index]!.ref.type as IrType & { kind: "bytes" };
+      const start = B.tmp(),
+        size = B.tmp(),
+        end = B.tmp();
+      B.line(`${start} = ptrtoint ptr ${emitBytesData(host, receivers[index]!)} to i64`);
+      B.line(`${size} = mul nuw i64 ${lengths[index]}, ${BYTES_ELEMENT_SIZE[type.elem]}`);
+      B.line(`${end} = add nuw i64 ${start}, ${size}`);
+      return { start, end };
+    });
+    spans.forEach((a, i) => {
+      for (const b of spans.slice(i + 1)) {
+        const before = B.tmp(),
+          after = B.tmp(),
+          apart = B.tmp();
+        B.line(`${before} = icmp ule i64 ${a.end}, ${b.start}`);
+        B.line(`${after} = icmp ule i64 ${b.end}, ${a.start}`);
+        B.line(`${apart} = or i1 ${before}, ${after}`);
+        conditions.push(apart);
+      }
+    });
+  }
   for (const counter of version.counters) {
     const value = host.emitExpr(counter.ref);
     // A counter held as an integer (an int32 slot) is exact already and
@@ -1251,8 +1325,8 @@ export function emitBytesLoopVersionGuard(
     // access at either one is in bounds when `lo >= 0` and `hi < length`.
     const { loop } = version.paired;
     const [low, high] = [loop.low.start, loop.high.start].map((expr) => {
-      const tested = emitExactIntegerTest(host, host.emitExpr(expr).name, -SAFE, SAFE);
-      conditions.push(tested.ok);
+      const tested = emitStartIntegerTest(host, expr, -SAFE, SAFE);
+      if (tested.ok !== "true") conditions.push(tested.ok);
       return tested.integer;
     });
     const nonNegative = B.tmp();
@@ -1286,10 +1360,11 @@ export function emitBytesLoopVersionGuard(
 }
 
 /** The length of a version's units receiver `s` in UTF-16 units: its byte
- * length when it is ASCII; otherwise, after one runtime read publishes it
- * as the scan receiver, the published unit count (0 when the runtime does
- * not hold its units). Also the units pointer, whether the loop is to
- * read it, and whether the published receiver is `s`. */
+ * length when it is ASCII; otherwise, once it is the scan receiver, the
+ * published unit count (0 when the runtime does not hold its units). When
+ * `s` is not already the scan receiver, the runtime converts it to units
+ * and publishes it (scr_str_scan_units). Also the units pointer, whether
+ * the loop is to read it, and whether the published receiver is `s`. */
 function emitUnitsLength(
   host: LlvmEmitterContext,
   s: string,
@@ -1304,16 +1379,28 @@ function emitUnitsLength(
     join = B.newLabel("bytes.version.length");
   B.condBr(ascii, join, publish);
   B.startBlock(publish);
-  host.declare(STRING_CHAR_CODE_AT_DECL);
-  const read = B.tmp(),
-    receiver = B.tmp(),
+  // When `s` is already the scan receiver (an earlier loop over it published
+  // it), its units stay published until the runtime clears the scan: skip
+  // the call.
+  const held = B.tmp(),
+    holds = B.tmp();
+  B.line(`${held} = load ptr, ptr @scr_str_scan`);
+  B.line(`${holds} = icmp eq ptr ${held}, ${s}`);
+  const call = B.newLabel("bytes.version.publish.units"),
+    load = B.newLabel("bytes.version.publish.load");
+  B.condBr(holds, load, call);
+  B.startBlock(call);
+  host.declare(STRING_SCAN_UNITS_DECL);
+  const receiver = B.tmp(),
     same = B.tmp(),
     pointerSlot = B.tmp(),
     pointer = B.tmp(),
     countSlot = B.tmp(),
     count = B.tmp(),
     published = B.tmp();
-  B.line(`${read} = call double @scr_str_char_code_at(ptr ${s}, double 0.0)`);
+  B.line(`call void @scr_str_scan_units(ptr ${s})`);
+  B.br(load);
+  B.startBlock(load);
   B.line(`${receiver} = load ptr, ptr @scr_str_scan`);
   B.line(`${same} = icmp eq ptr ${receiver}, ${s}`);
   B.line(`${pointerSlot} = getelementptr inbounds ${type}, ptr @scr_str_scan, i32 0, i32 1`);

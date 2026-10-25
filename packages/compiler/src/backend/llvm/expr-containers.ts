@@ -42,6 +42,7 @@ import {
   emitStringMapGetRef,
   emitStringMapGetScalar,
   emitStringMapHas,
+  noteNumberMapKey,
 } from "./map-number-lookup.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { emitFusedMapSet, rememberMapEntry } from "./map-entry-fusion.js";
@@ -1219,7 +1220,9 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
 function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const B = host.B;
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
-  const kind = mapKeyKindNum(key, arms);
+  // SCR_MAP_KEY_REF (2): shape-union keys are record pointers.
+  const kind =
+    key.kind === "union" && host.nullableUnions.shapes(key.unionId) ? 2 : mapKeyKindNum(key, arms);
   const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).
@@ -1546,6 +1549,7 @@ export function emitMapLikeIntrinsic(
       // Key borrowed (the runtime retains stored string keys); the
       // value MOVES in (replacement releases the old value inside).
       const k = emitBorrowedInput(host, e.args[0]!);
+      if (kAcc === "f64") noteNumberMapKey(host, k, e.args[0]!);
       const v = host.emitExpr(e.args[1]!);
       const vAcc = elemAccess(receiverType.value);
       if (vAcc === "ref") host.toHeap(v);
@@ -1572,6 +1576,7 @@ export function emitMapLikeIntrinsic(
       // Element borrowed (the runtime retains stored strings); the unit
       // value is 0. Re-adding overwrites in place, preserving insertion.
       const k = emitBorrowedInput(host, e.args[0]!);
+      if (kAcc === "f64") noteNumberMapKey(host, k, e.args[0]!);
       if (kAcc === "f64" && host.readNumberMapWrites.has(e))
         emitNumberMapSetScalar(host, r.name, k.name, null, () =>
           host.mapSet(r.name, kAcc, "f64", k.name, f64Lit(0)),
@@ -1581,7 +1586,10 @@ export function emitMapLikeIntrinsic(
     }
     case "has": {
       const k = borrowInputs ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
-      if (kAcc === "f64") return { name: emitNumberMapHas(host, r.name, k.name), type: e.type };
+      if (kAcc === "f64") {
+        noteNumberMapKey(host, k, e.args[0]!);
+        return { name: emitNumberMapHas(host, r.name, k.name), type: e.type };
+      }
       if (kAcc === "str")
         return { name: emitStringMapHas(host, r.name, k.name, compact), type: e.type };
       host.declare(`declare zeroext i1 @scr_map_has_${kAcc}(ptr, ${kTy})`);

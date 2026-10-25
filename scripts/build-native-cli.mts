@@ -17,8 +17,9 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 // SCRIPTC_NATIVE_PROFILE_GENERATE=<pattern> builds a compiler that writes a
 // raw profile per run (scripts/refresh-cli-profile.mjs). Optimized builds
 // otherwise use the committed profile, or the indexed profile that
-// SCRIPTC_NATIVE_PROFILE_USE names; an empty SCRIPTC_NATIVE_PROFILE_USE
-// builds without one.
+// SCRIPTC_NATIVE_PROFILE_USE names (gzip-compressed when the name ends in
+// .gz, as refresh-cli-profile.mjs writes it); an empty
+// SCRIPTC_NATIVE_PROFILE_USE builds without one.
 const profileGenerate = process.env["SCRIPTC_NATIVE_PROFILE_GENERATE"] || undefined;
 // Below this share of matching functions, the build warns that the profile
 // has lost most of its gain. A profile refreshed on the same commit matched
@@ -51,10 +52,11 @@ const seed = join(dirname(output), ".scriptc", basename(output) + "-seed");
 for (const dir of [bin, lib, seed]) mkdirSync(dir, { recursive: true });
 let profileUse: string | undefined;
 if (useProfile) {
-  profileUse = requestedProfile;
-  if (profileUse === undefined) {
+  profileUse = requestedProfile ?? committedProfile;
+  if (profileUse.endsWith(".gz")) {
+    const compressed = profileUse;
     profileUse = join(seed, "cli.profdata");
-    writeFileSync(profileUse, gunzipSync(readFileSync(committedProfile)));
+    writeFileSync(profileUse, gunzipSync(readFileSync(compressed)));
   }
 }
 const compiler = process.env["SCRIPTC_CC"] ?? target.defaultLinker;
