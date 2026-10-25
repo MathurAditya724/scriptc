@@ -153,6 +153,25 @@ const PURE_GLOBALS = new Set([
 
 const CJS_GLOBALS = new Set(["require", "module", "exports", "__filename", "__dirname"]);
 
+/** Symbol's well-known symbol properties: reading one runs no code. */
+const WELL_KNOWN_SYMBOLS = new Set([
+  "asyncDispose",
+  "asyncIterator",
+  "dispose",
+  "hasInstance",
+  "isConcatSpreadable",
+  "iterator",
+  "match",
+  "matchAll",
+  "replace",
+  "search",
+  "species",
+  "split",
+  "toPrimitive",
+  "toStringTag",
+  "unscopables",
+]);
+
 export type EffectGateResult =
   | { ok: true; files: string[] }
   | { ok: false; reason: string; file: string };
@@ -359,12 +378,14 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
       case SK.ObjectLiteralExpression:
         for (const p of (e as ts.ObjectLiteralExpression).properties) {
           if (parser.isPropertyAssignment(p)) {
-            if (parser.isComputedPropertyName(p.name)) pure(p.name.expression);
+            if (parser.isComputedPropertyName(p.name))
+              primitive(p.name.expression, "a computed key");
             pure(p.initializer);
           } else if (parser.isShorthandPropertyAssignment(p)) {
             pure(p.name);
           } else if (parser.isMethodDeclaration(p)) {
-            if (parser.isComputedPropertyName(p.name)) pure(p.name.expression);
+            if (parser.isComputedPropertyName(p.name))
+              primitive(p.name.expression, "a computed key");
           } else {
             refuse(p, "a spread or accessor in an object literal");
           }
@@ -437,13 +458,17 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
           !locals.has(callee.expression.text)
         ) {
           const name = `${callee.expression.text}.${callee.name.text}`;
-          if (name === "Symbol.for" || name === "Object.freeze" || name === "Object.create") {
+          if (name === "Symbol.for") {
+            for (const a of call.arguments) primitive(a, "a symbol key");
+            return;
+          }
+          if (name === "Object.freeze" || name === "Object.create") {
             for (const a of call.arguments) pure(a);
             return;
           }
         }
         if (parser.isIdentifier(callee) && callee.text === "Symbol" && !locals.has("Symbol")) {
-          for (const a of call.arguments) pure(a);
+          for (const a of call.arguments) primitive(a, "a symbol description");
           return;
         }
         return refuse(e, "a call");
@@ -474,6 +499,46 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
     (parser.isPrefixUnaryExpression(e) && e.operator === SK.MinusToken && isLiteral(e.operand)) ||
     (parser.isParenthesizedExpression(e) && isLiteral(e.expression));
 
+  /** Whether converting `e` to a property key or a string runs no code: a
+   * literal, a well-known symbol, a symbol made from such a value, or a
+   * top-level const that holds one. Converting an object calls its
+   * toString, valueOf or Symbol.toPrimitive, which can run anything. */
+  const primitiveKey = (e: ts.Expression): boolean => {
+    if (isLiteral(e) || e.kind === SK.BigIntLiteral) return true;
+    if (parser.isParenthesizedExpression(e)) return primitiveKey(e.expression);
+    if (parser.isIdentifier(e)) return primitiveConsts.has(e.text);
+    if (
+      parser.isPropertyAccessExpression(e) &&
+      parser.isIdentifier(e.expression) &&
+      e.expression.text === "Symbol" &&
+      !locals.has("Symbol")
+    )
+      return WELL_KNOWN_SYMBOLS.has(e.name.text);
+    if (parser.isCallExpression(e) && e.questionDotToken === undefined) {
+      const callee = e.expression;
+      const symbol =
+        (parser.isIdentifier(callee) && callee.text === "Symbol") ||
+        (parser.isPropertyAccessExpression(callee) &&
+          parser.isIdentifier(callee.expression) &&
+          callee.expression.text === "Symbol" &&
+          callee.name.text === "for");
+      return symbol && !locals.has("Symbol") && e.arguments.every(primitiveKey);
+    }
+    return false;
+  };
+  const primitive = (e: ts.Expression, what: string): void => {
+    if (!primitiveKey(e)) refuse(e, `${what} that is not a literal or a symbol`);
+  };
+  // Top-level consts initialized with a primitive key, in source order.
+  const primitiveConsts = new Set<string>();
+  for (const stmt of sf.statements) {
+    if (!parser.isVariableStatement(stmt)) continue;
+    if ((stmt.declarationList.flags & parser.NodeFlags.Const) === 0) continue;
+    for (const d of stmt.declarationList.declarations)
+      if (parser.isIdentifier(d.name) && d.initializer !== undefined && primitiveKey(d.initializer))
+        primitiveConsts.add(d.name.text);
+  }
+
   function checkClass(c: ts.ClassLikeDeclaration): void {
     const decorated = parser.canHaveDecorators(c) && (parser.getDecorators(c)?.length ?? 0) > 0;
     if (decorated) refuse(c, "a decorated class");
@@ -482,7 +547,8 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
       if (parser.isClassStaticBlockDeclaration(m)) refuse(m, "a class static block");
       if (parser.canHaveDecorators(m) && (parser.getDecorators(m)?.length ?? 0) > 0)
         refuse(m, "a decorated class member");
-      if (m.name !== undefined && parser.isComputedPropertyName(m.name)) pure(m.name.expression);
+      if (m.name !== undefined && parser.isComputedPropertyName(m.name))
+        primitive(m.name.expression, "a computed key");
       const isStatic =
         parser.canHaveModifiers(m) &&
         (parser.getModifiers(m) ?? []).some((x) => x.kind === SK.StaticKeyword);
@@ -594,6 +660,16 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
                   noDefaults(el.name)),
             );
           if (!noDefaults(d.name)) refuse(d, "a destructuring default or rest element");
+          const keys = (n: ts.BindingName): void => {
+            if (parser.isIdentifier(n)) return;
+            for (const el of n.elements) {
+              if (parser.isOmittedExpression(el)) continue;
+              if (el.propertyName !== undefined && parser.isComputedPropertyName(el.propertyName))
+                primitive(el.propertyName.expression, "a computed key");
+              keys(el.name);
+            }
+          };
+          keys(d.name);
         }
         if (d.initializer !== undefined) pure(d.initializer);
       }
