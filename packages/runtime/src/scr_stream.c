@@ -7743,7 +7743,9 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
     case SCR_ST_AFTER_WRITE: {
       st->w.after_scheduled = false;
       if (t->hold) st->w.after_holds--;
-      if (st->w.after_tick == t) st->w.after_tick = NULL;
+      /* afterWriteTick: the batch closes when any afterWrite tick runs, so
+       * a write its callback makes queues a new tick */
+      st->w.after_tick = NULL;
       ScrClosure *cb = t->cb;
       t->cb = NULL;
       if (!st->destroyed) {
