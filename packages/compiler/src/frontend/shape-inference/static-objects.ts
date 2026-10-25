@@ -238,38 +238,142 @@ function ownLiteralMember(literal: Node, key: string): string | null {
   return found;
 }
 
-/** Whether a top-level statement runs no code but its own: no call, `new`,
- * tagged template, class (static blocks and field initializers run), getter
- * or setter, `await`, `yield` or `delete`. Function bodies do not run. */
-function runsNoCode(stmt: ts.Statement): boolean {
+/** Whether a top-level statement runs no code but its own. Its expressions
+ * are literals, identifiers, functions (not run), object and array literals
+ * without spreads or computed keys, `=` stores, `var` bindings without
+ * patterns, `&&`, `||`, `??`, `?:`, `,`, `!`, `typeof`, `void`, `===` and
+ * `!==`, none of which calls a function, and member reads and stores that
+ * `plainMember` accepts (no getter or setter runs). Every other form can
+ * run code: a call, `new` or tagged template, a class (static blocks and
+ * field initializers run), coercion (arithmetic, `+`, templates with
+ * substitutions, relational and loose comparisons, `in`, `instanceof`,
+ * computed keys), iteration (spreads, destructuring), `delete`, `await` and
+ * `yield`. */
+function runsNoCode(stmt: ts.Statement, plainMember: (n: Node) => boolean): boolean {
   if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) return true;
-  if (!ts.isVariableStatement(stmt) && !ts.isExpressionStatement(stmt)) return false;
-  let quiet = true;
-  const visit = (n: Node): void => {
-    if (!quiet) return;
-    if (ts.isFunctionExpression(n) || ts.isArrowFunction(n)) return;
-    if (
-      ts.isCallExpression(n) ||
-      ts.isNewExpression(n) ||
-      ts.isTaggedTemplateExpression(n) ||
-      ts.isClassExpression(n) ||
-      ts.isGetAccessorDeclaration(n) ||
-      ts.isSetAccessorDeclaration(n) ||
-      ts.isAwaitExpression(n) ||
-      ts.isYieldExpression(n) ||
-      ts.isDeleteExpression(n) ||
-      ts.isMethodDeclaration(n)
-    ) {
-      quiet = false;
-      return;
-    }
-    ts.forEachChild(n, (c) => {
-      visit(c);
-      return undefined;
+  if (ts.isExpressionStatement(stmt)) return quietExpression(stmt.expression, plainMember);
+  if (!ts.isVariableStatement(stmt)) return false;
+  return stmt.declarationList.declarations.nodes.every(
+    (d) =>
+      ts.isIdentifier(d.name) &&
+      (d.initializer === undefined || quietExpression(d.initializer, plainMember)),
+  );
+}
+
+function quietExpression(e: ts.Expression, plainMember: (n: Node) => boolean): boolean {
+  const quiet = (x: ts.Expression): boolean => quietExpression(x, plainMember);
+  if (ts.isParenthesizedExpression(e)) return quiet(e.expression);
+  if (
+    ts.isIdentifier(e) ||
+    ts.isNumericLiteral(e) ||
+    ts.isBigIntLiteral(e) ||
+    ts.isStringLiteral(e) ||
+    ts.isNoSubstitutionTemplateLiteral(e) ||
+    ts.isRegularExpressionLiteral(e) ||
+    ts.isFunctionExpression(e) ||
+    ts.isArrowFunction(e) ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    e.kind === ts.SyntaxKind.NullKeyword ||
+    e.kind === ts.SyntaxKind.ThisKeyword
+  )
+    return true;
+  if (ts.isObjectLiteralExpression(e))
+    return e.properties.nodes.every((m) => {
+      if (ts.isShorthandPropertyAssignment(m)) return m.objectAssignmentInitializer === undefined;
+      if (!ts.isPropertyAssignment(m)) return false;
+      const name = m.name;
+      if (!ts.isIdentifier(name) && !ts.isStringLiteral(name) && !ts.isNumericLiteral(name))
+        return false;
+      return quiet(m.initializer);
     });
-  };
-  visit(stmt);
-  return quiet;
+  if (ts.isArrayLiteralExpression(e))
+    return e.elements.nodes.every(
+      (x) => ts.isOmittedExpression(x) || (!ts.isSpreadElement(x) && quiet(x)),
+    );
+  if (ts.isTypeOfExpression(e) || ts.isVoidExpression(e)) return quiet(e.expression);
+  if (ts.isPrefixUnaryExpression(e))
+    return e.operator === ts.SyntaxKind.ExclamationToken && quiet(e.operand);
+  if (ts.isConditionalExpression(e))
+    return quiet(e.condition) && quiet(e.whenTrue) && quiet(e.whenFalse);
+  if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e))
+    return quietMember(e, plainMember);
+  if (!ts.isBinaryExpression(e)) return false;
+  switch (e.operatorToken.kind) {
+    case ts.SyntaxKind.EqualsToken:
+      if (ts.isIdentifier(e.left)) return quiet(e.right);
+      return (
+        (ts.isPropertyAccessExpression(e.left) || ts.isElementAccessExpression(e.left)) &&
+        quietMember(e.left, plainMember) &&
+        quiet(e.right)
+      );
+    case ts.SyntaxKind.AmpersandAmpersandToken:
+    case ts.SyntaxKind.BarBarToken:
+    case ts.SyntaxKind.QuestionQuestionToken:
+    case ts.SyntaxKind.CommaToken:
+    case ts.SyntaxKind.EqualsEqualsEqualsToken:
+    case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+      return quiet(e.left) && quiet(e.right);
+    default:
+      return false;
+  }
+}
+
+/** A member read or store target with a literal key on a receiver that
+ * runs no code, which `plainMember` accepts. */
+function quietMember(
+  e: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  plainMember: (n: Node) => boolean,
+): boolean {
+  if (e.questionDotToken !== undefined) return false;
+  if (
+    ts.isElementAccessExpression(e) &&
+    !ts.isStringLiteral(e.argumentExpression) &&
+    !ts.isNumericLiteral(e.argumentExpression)
+  )
+    return false;
+  return plainMember(e) && quietExpression(e.expression, plainMember);
+}
+
+/** Whether an identifier is written where it appears: an assignment or
+ * update target, a destructuring assignment or loop target (through array
+ * and object patterns, defaults and rests), or a `var`, `let`, `const` or
+ * parameter binding of the name (a nested binding shadows it, which only
+ * makes the answer conservative). */
+function writesBinding(id: ts.Identifier): boolean {
+  let n: Node = id;
+  for (let p = n.parent; p !== undefined; n = p, p = p.parent) {
+    if (ts.isPrefixUnaryExpression(p) || ts.isPostfixUnaryExpression(p))
+      return (
+        p.operator === ts.SyntaxKind.PlusPlusToken || p.operator === ts.SyntaxKind.MinusMinusToken
+      );
+    if (ts.isBinaryExpression(p)) {
+      const op = p.operatorToken.kind;
+      if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment)
+        return p.left === n;
+      return false;
+    }
+    if (ts.isForOfStatement(p) || ts.isForInStatement(p)) return p.initializer === n;
+    if (ts.isVariableDeclaration(p) || ts.isParameter(p) || ts.isBindingElement(p))
+      return p.name === n;
+    if (
+      ts.isParenthesizedExpression(p) ||
+      ts.isArrayLiteralExpression(p) ||
+      ts.isObjectLiteralExpression(p) ||
+      ts.isSpreadElement(p) ||
+      ts.isSpreadAssignment(p) ||
+      ts.isShorthandPropertyAssignment(p) ||
+      ts.isArrayBindingPattern(p) ||
+      ts.isObjectBindingPattern(p)
+    )
+      continue;
+    if (ts.isPropertyAssignment(p)) {
+      if (p.initializer !== n) return false;
+      continue;
+    }
+    return false;
+  }
+  return false;
 }
 
 function enclosingFunctionLike(n: Node): Node | null {
@@ -1354,6 +1458,24 @@ export function planStaticObjectRewrites(
       if (!l.includes(op.node)) l.push(op.node);
     }
   }
+  // Member reads and stores whose receiver can only be constant objects or
+  // primitives: neither has accessors of its own, so no getter or setter
+  // runs (a primitive receiver of a store throws, or reads its prototype).
+  const memberReceivers = new Map<Node, Set<Atom>>();
+  for (const op of analysis.ops) {
+    if ((op.kind !== "read" && op.kind !== "write") || op.name === null) continue;
+    let set = memberReceivers.get(op.node);
+    if (set === undefined) memberReceivers.set(op.node, (set = new Set()));
+    for (const a of analysis.nodes[op.recv]!.atoms) set.add(a);
+  }
+  const plainMember = (n: Node): boolean => {
+    const atoms = memberReceivers.get(n);
+    return (
+      atoms !== undefined &&
+      atoms.size > 0 &&
+      [...atoms].every((a) => a.kind === "prim" || constantAtoms.has(a))
+    );
+  };
   const quietPrefix = new Map<ts.Statement, boolean>();
   const storedLiteral = (
     atom: Atom,
@@ -1380,7 +1502,9 @@ export function planStaticObjectRewrites(
     const statements = stmt.parent.statements.nodes;
     let quiet = quietPrefix.get(stmt);
     if (quiet === undefined) {
-      quiet = statements.slice(0, statements.indexOf(stmt)).every(runsNoCode);
+      quiet = statements
+        .slice(0, statements.indexOf(stmt))
+        .every((s) => runsNoCode(s, plainMember));
       quietPrefix.set(stmt, quiet);
     }
     return quiet ? { literal, stmt, statements } : null;
@@ -1481,29 +1605,21 @@ export function planStaticObjectRewrites(
       if (a.kind === "function" && a.node === fn && analysis.escaped.has(a)) return false;
     const index = (fn as ts.FunctionLikeDeclaration).parameters.nodes.indexOf(keyDecl);
     const name = keyDecl.name.text;
+    // Any write of the name in the function, its other parameters included,
+    // or a direct eval or `arguments` (which aliases parameters in sloppy
+    // code) can give the key another value.
     let touched = false;
     const visit = (n: Node): void => {
       if (touched) return;
-      if (ts.isIdentifier(n) && n.text === "arguments") touched = true;
-      else if (
-        ts.isBinaryExpression(n) &&
-        n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-        n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-        ts.isIdentifier(n.left) &&
-        n.left.text === name
-      )
-        touched = true;
-      else if (
-        (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
-        ts.isIdentifier(n.operand) &&
-        n.operand.text === name
-      )
+      if (ts.isIdentifier(n) && (n.text === "arguments" || n.text === "eval")) touched = true;
+      else if (ts.isIdentifier(n) && n.text === name && n !== keyDecl.name && writesBinding(n))
         touched = true;
       ts.forEachChild(n, (c) => {
         visit(c);
         return undefined;
       });
     };
+    for (const p of (fn as ts.FunctionLikeDeclaration).parameters.nodes) visit(p);
     const body = (fn as { body?: Node }).body;
     if (body === undefined) return false;
     visit(body);
