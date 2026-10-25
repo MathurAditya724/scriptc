@@ -190,6 +190,8 @@ ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len) {
   b->external = false;
   b->untransferable = false;
   b->shared = NULL;
+  b->properties = NULL;
+  b->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -304,6 +306,7 @@ void scr_bytes_release(ScrBytes *b) {
   if (!b || b->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--b->rc == 0) {
     scr_weak_dispose_inline(b);
+    if (b->properties) scr_dyn_release(b->properties);
     if (b->backing) {
       scr_bytes_release(b->backing); /* a view: data points into the owner */
     } else if (b->shared) {
@@ -740,6 +743,8 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
   v->external = false;
   v->untransferable = false;
   v->shared = owner->shared;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -883,7 +888,9 @@ ScrBytes *scr_bytes_from_dyn(ScrBytesElem elem, const ScrDyn *value, bool from) 
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(elem, value->v.bytes);
   if (!from && scr_buffer_storage_is(value)) return scr_array_buffer_view(elem, value, scr_dyn_undefined(), scr_dyn_undefined());
   if (!from && (value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_BOOL ||
-                value->kind == SCR_DYN_STR || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF)) {
+                value->kind == SCR_DYN_STR || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF ||
+                value->kind == SCR_DYN_SYMBOL || value->kind == SCR_DYN_BIGINT)) {
+    /* ToIndex: a Symbol or BigInt length throws ToNumber's TypeError. */
     double number;
     if (!scr_dyn_number_coerce_js(value, &number)) return NULL;
     return scr_bytes_new(elem, number);
@@ -1009,6 +1016,8 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
   v->external = false;
   v->untransferable = false;
   v->shared = owner->shared;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -2486,14 +2495,57 @@ static uint32_t scr_bytes_utf16le_cp(const uint8_t *in, size_t units, size_t *u)
   return cu;
 }
 
+/* Four units below 0x80 copy as four bytes (one word holds them), and
+ * other units outside the surrogate range are written inline; surrogates
+ * take scr_bytes_utf16le_cp. The string has one UTF-16 unit per input
+ * unit, which is recorded so its length needs no walk. */
 static ScrStr *scr_bytes_decode_utf16le(const uint8_t *in, size_t n) {
   size_t units = n / 2;
   if (units > SIZE_MAX / 3) scr_bytes_oom();
   ScrStr *s = scr_str_alloc_raw(0, units * 3);
-  size_t o = 0;
-  for (size_t u = 0; u < units;) o = scr_bytes_put_cp(s->data, o, scr_bytes_utf16le_cp(in, units, &u));
+  uint8_t *out = (uint8_t *)s->data;
+  size_t o = 0, u = 0;
+  while (u < units) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    if (units - u >= 4) {
+      uint64_t w;
+      memcpy(&w, in + u * 2, 8);
+      if (!(w & UINT64_C(0xff80ff80ff80ff80))) {
+        out[o] = (uint8_t)w;
+        out[o + 1] = (uint8_t)(w >> 16);
+        out[o + 2] = (uint8_t)(w >> 32);
+        out[o + 3] = (uint8_t)(w >> 48);
+        o += 4;
+        u += 4;
+        continue;
+      }
+    }
+#endif
+    uint32_t cu = (uint32_t)in[u * 2] | ((uint32_t)in[u * 2 + 1] << 8);
+    if (cu >= 0x800 && (cu < 0xd800 || cu > 0xdfff)) {
+      /* Three bytes in one four-byte store; the next write (or the
+       * terminator) replaces the fourth. */
+      uint8_t seq[4] = {(uint8_t)(0xe0 | (cu >> 12)), (uint8_t)(0x80 | ((cu >> 6) & 0x3f)),
+                        (uint8_t)(0x80 | (cu & 0x3f)), 0};
+      memcpy(out + o, seq, 4);
+      o += 3;
+      u++;
+    } else if (cu < 0x80) {
+      out[o++] = (uint8_t)cu;
+      u++;
+    } else if (cu < 0x800) {
+      out[o] = (uint8_t)(0xc0 | (cu >> 6));
+      out[o + 1] = (uint8_t)(0x80 | (cu & 0x3f));
+      o += 2;
+      u++;
+    } else {
+      o = scr_bytes_put_cp(s->data, o, scr_bytes_utf16le_cp(in, units, &u));
+    }
+  }
   s->len = o;
   s->data[o] = '\0';
+  if (o == units) scr_str_note_ascii(s);
+  else scr_str_note_utf16_len(s, units);
   return s;
 }
 
@@ -2948,6 +3000,8 @@ static ScrBytes *scr_pool_take(size_t len) {
   v->external = false;
   v->untransferable = false;
   v->shared = NULL;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -3468,7 +3522,15 @@ static ScrBytes *scr_bytes_fill_core(ScrBytes *b, const uint8_t *pat, size_t pat
     } else if (patn == 1) {
       memset(dst, pat[0], e - o);
     } else {
-      for (size_t i = o; i < e; i++) dst[i - o] = pat[(i - o) % patn];
+      /* Node's fill: the pattern's first bytes (memmove: the pattern may
+       * be a view of this buffer), then the filled prefix doubled. */
+      size_t len = e - o, done = patn < len ? patn : len;
+      memmove(dst, pat, done);
+      while (done < len) {
+        size_t step = done < len - done ? done : len - done;
+        memcpy(dst + done, dst, step);
+        done += step;
+      }
     }
     if (b->shared) {
       scr_shared_store(b->data + o, dst, e - o);
@@ -3547,11 +3609,29 @@ ScrBytes *scr_bytes_swap(ScrBytes *b, double width) {
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_INVALID_BUFFER_SIZE");
     return NULL;
   }
-  for (size_t g = 0; g < b->len; g += w) {
-    for (size_t i = 0; i < w / 2; i++) {
-      uint8_t t = b->data[g + i];
-      b->data[g + i] = b->data[g + w - 1 - i];
-      b->data[g + w - 1 - i] = t;
+  /* One load, byte swap and store per group. */
+  uint8_t *p = b->data;
+  size_t len = b->len;
+  if (w == 2) {
+    for (size_t g = 0; g < len; g += 2) {
+      uint16_t v;
+      memcpy(&v, p + g, 2);
+      v = __builtin_bswap16(v);
+      memcpy(p + g, &v, 2);
+    }
+  } else if (w == 4) {
+    for (size_t g = 0; g < len; g += 4) {
+      uint32_t v;
+      memcpy(&v, p + g, 4);
+      v = __builtin_bswap32(v);
+      memcpy(p + g, &v, 4);
+    }
+  } else {
+    for (size_t g = 0; g < len; g += 8) {
+      uint64_t v;
+      memcpy(&v, p + g, 8);
+      v = __builtin_bswap64(v);
+      memcpy(p + g, &v, 8);
     }
   }
   return scr_bytes_retain(b);
