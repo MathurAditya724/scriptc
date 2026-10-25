@@ -14,24 +14,66 @@
  *      methods are not enumerable, prototype assignments are);
  *    - no code reads the function's or the methods' `name` or `toString`;
  *    - the bodies behave the same in strict mode (class bodies are strict):
- *      no `arguments`, no `this` in a nested non-arrow function, no `with`,
- *      no `delete` of a name, no write to an undeclared name;
+ *      no `arguments`, `eval` or strict-mode reserved word, no `this` in a
+ *      nested non-arrow function, no `with`, no `delete` of a name, no write
+ *      to an undeclared name or to `undefined`, `NaN` or `Infinity`, no
+ *      repeated parameter name, no octal literal or escape, and property
+ *      writes and deletes only through `this` (a write that sloppy mode
+ *      ignores, into a primitive or a frozen object, throws in strict mode);
+ *    - nothing freezes, seals or redefines the instances, so their own
+ *      properties stay writable;
+ *    - each method is only called as a method (`x.m(…)`): never constructed,
+ *      read as a value or for its `prototype`, so it is never called with a
+ *      primitive or missing `this` (which sloppy mode would replace) and
+ *      never needs to be constructible (class methods are not);
+ *    - a named constructor expression does not refer to its own name, which
+ *      the class would not bind;
  *    - the statements between the constructor and its last method only
  *      define more functions or data (nothing runs that could observe the
- *      prototype half built).
+ *      prototype half built): their stores go to constant objects, which
+ *      have no setters;
+ *    - nothing asks the prototype whether its members are enumerable
+ *      (`propertyIsEnumerable`).
  * 2. Namespace functions become direct functions. A constant field holding
  *    a function expression that does not use `this`, stored by a top-level
  *    statement, is hoisted to a function declaration, and calls through
  *    the namespace in the same file whose receiver is exactly that
- *    constant object call it directly.
+ *    constant object call it directly. A member read is replaced only when
+ *    its receiver is an initialized name or a chain of constant-object reads
+ *    from one (nothing to evaluate, nothing to throw), and it runs after the
+ *    store: in a top-level statement after it, or inside the stored
+ *    function, and not inside a function declaration (which hoisting lets
+ *    run earlier). A name is initialized when it is a parameter, a function
+ *    declaration, or a variable declared with an initializer by an earlier
+ *    top-level statement and never assigned again.
  *
  * Each rewrite keeps the original text unless every condition holds. */
 import * as ts from "../ts7/adapter.js";
 import type { Atom } from "./domain.js";
 import type { ShapeAnalysis } from "./analyze.js";
 import { computeConstantGraphs } from "./constant-graphs.js";
+import { resolveCjsRuntime } from "../cjs-resolve.js";
 
 type Node = ts.Node;
+
+/** One read, call or write site, with the receivers of every context it
+ * was analyzed in. `nullish`: a receiver may also be null or undefined,
+ * which `atoms` leaves out (see planStaticObjectRewrites). */
+interface MergedOp {
+  op: ShapeAnalysis["ops"][number];
+  atoms: Set<Atom>;
+  nullish: boolean;
+}
+
+/** The replacement text of the read `node`: `text`, or, when the receiver
+ * may be nullish, the read as written followed by `text` in a comma
+ * expression, so a nullish receiver still throws Node's TypeError and any
+ * other receiver yields `text`'s value. */
+function keepRead(node: ts.Node, text: string, nullish: boolean): string {
+  if (!nullish) return text;
+  const sf = node.getSourceFile();
+  return `(${sf.text.slice(ts.tokenStartOfNode(node), node.end)}, ${text})`;
+}
 
 interface Edit {
   readonly start: number;
@@ -72,11 +114,39 @@ const REFLECTIVE_CALLS = new Set([
   "setPrototypeOf",
   "freeze",
   "seal",
+  "preventExtensions",
   "ownKeys",
 ]);
 
 /** The most members a dispatched function table may have. */
 const MAX_TABLE_ARMS = 16;
+
+/** Words that are reserved only in strict mode. */
+const STRICT_RESERVED = new Set([
+  "implements",
+  "interface",
+  "let",
+  "package",
+  "private",
+  "protected",
+  "public",
+  "static",
+  "yield",
+  "eval",
+]);
+
+/** The reflective calls that freeze, seal or redefine an object. */
+const RESHAPING_CALLS = new Set([
+  "freeze",
+  "seal",
+  "preventExtensions",
+  "defineProperty",
+  "defineProperties",
+  "setPrototypeOf",
+]);
+
+/** Globals that sloppy mode lets a write to fail silently. */
+const READ_ONLY_GLOBALS = new Set(["undefined", "NaN", "Infinity"]);
 
 function topStatement(n: Node): ts.Statement | null {
   let p: Node = n;
@@ -153,7 +223,8 @@ function literalMemberFunction(fn: Node): { stmt: ts.Statement; path: string } |
 /** The text of a primitive literal an object literal itself gives `key`
  * (`{ K: 1 }`, `{ "k": "v" }`, `-1`, `true`, `null`), or null. */
 function ownLiteralMember(literal: Node, key: string): string | null {
-  if (!ts.isObjectLiteralExpression(literal)) return null;
+  // `__proto__: v` in a literal sets the prototype and makes no property.
+  if (!ts.isObjectLiteralExpression(literal) || key === "__proto__") return null;
   let found: string | null = null;
   for (const m of literal.properties.nodes) {
     const name = (m as { name?: Node }).name;
@@ -267,16 +338,65 @@ function isPlainRead(node: ts.Expression): boolean {
   return true;
 }
 
+/** Whether `e` is a property access or element access through `this`. */
+function throughThis(e: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return (
+    (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) &&
+    e.expression.kind === ts.SyntaxKind.ThisKeyword
+  );
+}
+
 /** Whether a function body behaves the same in strict mode. */
 function strictSafe(checker: ts.TypeChecker, fn: ts.FunctionExpression): boolean {
   let safe = true;
+  // A repeated parameter name is a strict-mode error.
+  const params = new Set<string>();
+  for (const p of fn.parameters.nodes) {
+    if (!ts.isIdentifier(p.name) || params.has(p.name.text)) return false;
+    params.add(p.name.text);
+  }
   const visit = (n: Node, nested: boolean): void => {
     if (!safe) return;
-    if (ts.isIdentifier(n) && n.text === "arguments") safe = false;
+    if (ts.isIdentifier(n) && (n.text === "arguments" || STRICT_RESERVED.has(n.text))) safe = false;
     if (n.kind === ts.SyntaxKind.WithStatement) safe = false;
     if (nested && n.kind === ts.SyntaxKind.ThisKeyword) safe = false;
-    if (ts.isDeleteExpression(n) && ts.isIdentifier(n.expression)) safe = false;
+    if (ts.isDeleteExpression(n) && !throughThis(n.expression)) safe = false;
     if (ts.isNumericLiteral(n) && /^0\d/.test(n.getText())) safe = false;
+    // Octal escapes in strings and templates are strict-mode errors.
+    if (
+      (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) &&
+      /\\(0\d|[1-7])/.test(n.getText())
+    )
+      safe = false;
+    const assigns =
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+    const counts =
+      (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+      (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken);
+    const target = assigns
+      ? (n as ts.BinaryExpression).left
+      : counts
+        ? (n as ts.PrefixUnaryExpression).operand
+        : undefined;
+    // A store that sloppy mode drops (into a primitive, a frozen object or a
+    // read-only property) throws in strict mode: only stores through `this`,
+    // a fresh or method receiver object, are known to behave the same.
+    if (target !== undefined) {
+      let t = target;
+      while (ts.isParenthesizedExpression(t)) t = t.expression;
+      if ((ts.isPropertyAccessExpression(t) || ts.isElementAccessExpression(t)) && !throughThis(t))
+        safe = false;
+      if (ts.isIdentifier(t) && READ_ONLY_GLOBALS.has(t.text)) safe = false;
+      if (
+        !ts.isIdentifier(t) &&
+        !ts.isPropertyAccessExpression(t) &&
+        !ts.isElementAccessExpression(t)
+      )
+        safe = false;
+    }
     if (
       ts.isBinaryExpression(n) &&
       n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
@@ -299,6 +419,18 @@ function strictSafe(checker: ts.TypeChecker, fn: ts.FunctionExpression): boolean
   return safe;
 }
 
+/** Whether an identifier named `name` appears in `fn`'s parameters or body. */
+function mentions(fn: ts.FunctionExpression, name: string): boolean {
+  let found = false;
+  const visit = (n: Node): void => {
+    if (found) return;
+    if (ts.isIdentifier(n) && n.text === name && n !== fn.name) found = true;
+    ts.forEachChild(n, visit);
+  };
+  visit(fn);
+  return found;
+}
+
 function usesThis(fn: ts.FunctionExpression): boolean {
   let found = false;
   const visit = (n: Node): void => {
@@ -309,33 +441,6 @@ function usesThis(fn: ts.FunctionExpression): boolean {
   };
   visit(fn);
   return found;
-}
-
-/** Whether a statement only defines things: function or data stores and
- * declarations whose initializers run no code outside function bodies. */
-function definitionOnly(stmt: ts.Statement): boolean {
-  if (ts.isFunctionDeclaration(stmt)) return true;
-  let runs = false;
-  const visit = (n: Node): void => {
-    if (runs) return;
-    if (ts.isFunctionLike(n)) return;
-    if (ts.isCallExpression(n) || ts.isNewExpression(n) || ts.isTaggedTemplateExpression(n))
-      runs = true;
-    if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
-      // A read could run a getter; stores into plain paths are fine.
-      const p = n.parent;
-      const isStoreTarget =
-        p !== undefined &&
-        ts.isBinaryExpression(p) &&
-        p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        p.left === n;
-      if (!isStoreTarget && !ts.isPropertyAccessExpression(p ?? n)) runs = true;
-    }
-    ts.forEachChild(n, visit);
-  };
-  if (ts.isExpressionStatement(stmt) || ts.isVariableStatement(stmt)) visit(stmt);
-  else return false;
-  return !runs;
 }
 
 export function planStaticObjectRewrites(
@@ -372,9 +477,9 @@ export function planStaticObjectRewrites(
   // One entry per (kind, syntax node): a node the analysis walked in
   // several contexts (receiver classes, per-site clones) is rewritten only
   // when the receivers of every context together satisfy the conditions.
-  const mergedOps: { op: (typeof analysis.ops)[number]; atoms: Set<Atom> }[] = [];
+  const mergedOps: MergedOp[] = [];
   {
-    const byKey = new Map<string, { op: (typeof analysis.ops)[number]; atoms: Set<Atom> }>();
+    const byKey = new Map<string, MergedOp>();
     const ids = new Map<Node, number>();
     for (const op of analysis.ops) {
       let id = ids.get(op.node);
@@ -382,21 +487,31 @@ export function planStaticObjectRewrites(
       const key = `${op.kind}:${op.name ?? ""}:${id}`;
       let entry = byKey.get(key);
       if (entry === undefined) {
-        byKey.set(key, (entry = { op, atoms: new Set() }));
+        byKey.set(key, (entry = { op, atoms: new Set(), nullish: false }));
         mergedOps.push(entry);
       }
       // A nullish receiver makes the read throw, so the rewrites decide on
       // the other receivers (absent keys read undefined in the analysis:
-      // `ns.util` before `ns.util = {…}` runs). In an optional chain a
-      // nullish receiver short-circuits instead, so it counts.
+      // `ns.util` before `ns.util = {…}` runs), and `nullish` keeps the
+      // throw: a rewrite of such a read evaluates the read first. In an
+      // optional chain a nullish receiver short-circuits instead, so it
+      // counts.
       const optional = (op.node.flags & ts.NodeFlags.OptionalChain) !== 0;
-      for (const a of analysis.nodes[op.recv]!.atoms)
+      for (const a of analysis.nodes[op.recv]!.atoms) {
         if (optional || !(a.kind === "prim" && (a.label === "undefined" || a.label === "null")))
           entry.atoms.add(a);
+        else entry.nullish = true;
+      }
     }
   }
   const forIns: ts.Expression[] = [];
   const reflective: ts.CallExpression[] = [];
+  // Receivers of `x.propertyIsEnumerable(…)` calls, and whether the method
+  // is also reached any other way (`.call`, a stored reference).
+  const enumerabilityQueries: ts.Expression[] = [];
+  let enumerabilityEscapes = false;
+  // Names stored to by assignments or updates.
+  const assignedNames: ts.Identifier[] = [];
   for (const sf of analysis.files) {
     const visit = (n: Node): void => {
       if (ts.isForInStatement(n)) forIns.push(n.expression);
@@ -408,6 +523,34 @@ export function planStaticObjectRewrites(
           n.expression.name.text === "propertyIsEnumerable")
       )
         reflective.push(n);
+      if (ts.isIdentifier(n) && n.text === "propertyIsEnumerable") {
+        const access = n.parent;
+        const call = access?.parent;
+        if (
+          access !== undefined &&
+          ts.isPropertyAccessExpression(access) &&
+          access.name === n &&
+          call !== undefined &&
+          ts.isCallExpression(call) &&
+          call.expression === access
+        )
+          enumerabilityQueries.push(access.expression);
+        else enumerabilityEscapes = true;
+      }
+      if (
+        ts.isBinaryExpression(n) &&
+        n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        ts.isIdentifier(n.left)
+      )
+        assignedNames.push(n.left);
+      if (
+        (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+        (n.operator === ts.SyntaxKind.PlusPlusToken ||
+          n.operator === ts.SyntaxKind.MinusMinusToken) &&
+        ts.isIdentifier(n.operand)
+      )
+        assignedNames.push(n.operand);
       ts.forEachChild(n, visit);
     };
     visit(sf);
@@ -419,6 +562,41 @@ export function planStaticObjectRewrites(
     } catch {
       return undefined;
     }
+  };
+  const readOps = new Map<Node, (typeof analysis.ops)[number]>();
+  const writeOps = new Map<Node, (typeof analysis.ops)[number]>();
+  for (const op of analysis.ops) {
+    if (op.kind === "read") readOps.set(op.node, op);
+    if (op.kind === "write") writeOps.set(op.node, op);
+  }
+  const reassigned = new Set<Node>();
+  for (const id of assignedNames) {
+    const d = declOf(id);
+    if (d !== undefined) reassigned.add(d);
+  }
+  /** Whether evaluating `e` runs no code, so a rewrite that no longer
+   * evaluates it changes nothing: a name, `this`, or a member read whose
+   * receiver is such an expression and can only be constant objects (they
+   * have no accessors). A call, an assignment or any other expression may
+   * have effects. */
+  const effectFree = (e: ts.Expression): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isIdentifier(e) || e.kind === ts.SyntaxKind.ThisKeyword) return true;
+    let receiver: ts.Expression;
+    if (ts.isPropertyAccessExpression(e) && e.questionDotToken === undefined)
+      receiver = e.expression;
+    else if (
+      ts.isElementAccessExpression(e) &&
+      e.questionDotToken === undefined &&
+      ts.isStringLiteralLike(e.argumentExpression)
+    )
+      receiver = e.expression;
+    else return false;
+    const op = readOps.get(e);
+    if (op === undefined) return false;
+    const atoms = analysis.nodes[op.recv]!.atoms;
+    if (atoms.size === 0 || ![...atoms].every((a) => constantAtoms.has(a))) return false;
+    return effectFree(receiver);
   };
   /** Whether an expression may evaluate to one of `atoms` (identifiers
    * through their declarations' values, `new` of a known constructor path;
@@ -444,14 +622,144 @@ export function planStaticObjectRewrites(
       return false;
     return true;
   };
-  /** Whether a reflective call may reach one of `atoms`. */
+  /** `mayBe`, which also follows member reads: a constructor's `prototype`
+   * is its default prototype object, and a constant object's field holds
+   * the values stored to it. */
+  const mayBeValue = (e: ts.Expression, atoms: ReadonlySet<Atom>, ctorPath: string): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!ts.isPropertyAccessExpression(e)) return mayBe(e, atoms, ctorPath);
+    const op = readOps.get(e);
+    if (op === undefined || op.name === null) return true;
+    for (const a of analysis.nodes[op.recv]!.atoms) {
+      const proto = op.name === "prototype" ? analysis.protoOf.get(a) : undefined;
+      if (proto !== undefined) {
+        if (atoms.has(proto)) return true;
+        continue;
+      }
+      if (!constantAtoms.has(a)) return true;
+      const field = analysis.fields.get(a)?.get(op.name);
+      if (field !== undefined && [...analysis.nodes[field]!.atoms].some((v) => atoms.has(v)))
+        return true;
+    }
+    return false;
+  };
+  /** Whether a reflective call may reach one of `atoms`: as an argument, or
+   * as the object `propertyIsEnumerable` is asked about. */
   const reflectsOn = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
+    enumerabilityEscapes ||
+    enumerabilityQueries.some((recv) => mayBeValue(recv, atoms, ctorPath)) ||
     reflective.some((call) => call.arguments.nodes.some((arg) => mayBe(arg, atoms, ctorPath)));
+  /** Whether a call that freezes, seals or redefines an object may reach one of `atoms`. */
+  const reshapes = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
+    reflective.some(
+      (call) =>
+        RESHAPING_CALLS.has((call.expression as ts.PropertyAccessExpression).name.getText()) &&
+        call.arguments.nodes.some((arg) => mayBe(arg, atoms, ctorPath)),
+    );
+  /** The reads of each member name, for the method checks. */
+  const readsOf = new Map<string, { node: Node; recv: ReadonlySet<Atom> }[]>();
+  for (const op of analysis.ops) {
+    if (op.kind !== "read" || op.name === null) continue;
+    let l = readsOf.get(op.name);
+    if (l === undefined) readsOf.set(op.name, (l = []));
+    l.push({ node: op.node, recv: analysis.nodes[op.recv]!.atoms });
+  }
+  /** Whether every read of member `key` through one of `atoms` is the callee of a call. */
+  const onlyCalled = (key: string, atoms: ReadonlySet<Atom>): boolean =>
+    (readsOf.get(key) ?? []).every(({ node, recv }) => {
+      if (![...recv].some((a) => atoms.has(a))) return true;
+      const parent = node.parent;
+      return parent !== undefined && ts.isCallExpression(parent) && parent.expression === node;
+    });
   const enumerates = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
     forIns.some((e) => mayBe(e, atoms, ctorPath));
   const noNameOrSource = (a: Atom): boolean => {
     const names = readNames.get(a);
     return names === undefined || (!names.has("name") && !names.has("toString"));
+  };
+
+  /** Whether `node` runs only after the top-level statement `stmt` has run:
+   * in a later top-level statement, and not in a function declaration
+   * (which hoisting lets run earlier). */
+  const afterStatement = (node: Node, stmt: ts.Statement): boolean => {
+    for (let p: Node | undefined = node.parent; p !== undefined; p = p.parent)
+      if (ts.isFunctionDeclaration(p)) return false;
+    const top = topStatement(node);
+    if (top === null) return false;
+    const stmts = node.getSourceFile().statements.nodes;
+    return stmts.indexOf(top) > stmts.indexOf(stmt);
+  };
+  /** Whether the binding `id` names holds its value whenever `at` runs: a
+   * parameter or a function declaration, or a variable declared with an
+   * initializer by an earlier top-level statement of the same file. None is
+   * ever assigned again. A variable read earlier is undefined, or throws in
+   * its temporal dead zone. */
+  const initializedAt = (id: ts.Identifier, at: Node): boolean => {
+    const d = declOf(id);
+    if (d === undefined || reassigned.has(d)) return false;
+    if (ts.isParameter(d) || ts.isFunctionDeclaration(d)) return true;
+    if (!ts.isVariableDeclaration(d) || d.initializer === undefined) return false;
+    const stmt = d.parent?.parent;
+    if (stmt === undefined || !ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent))
+      return false;
+    return stmt.parent === at.getSourceFile() && afterStatement(at, stmt);
+  };
+  /** Whether evaluating `e` where `at` runs runs nothing and cannot throw: an
+   * initialized name, or a chain of member reads from constant objects
+   * (plain data) starting at one. */
+  const pureReceiver = (e: ts.Expression, at: Node): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isIdentifier(e)) return initializedAt(e, at);
+    if (!ts.isPropertyAccessExpression(e)) return false;
+    const op = readOps.get(e);
+    if (op === undefined) return false;
+    const recv = analysis.nodes[op.recv]!.atoms;
+    if (recv.size !== 1 || !constantAtoms.has([...recv][0]!)) return false;
+    return pureReceiver(e.expression, at);
+  };
+  /** Whether a store to `target` runs no code: its receiver is a constant
+   * object, which has no setters, reached without running anything, and the
+   * key is not `__proto__`, which Object.prototype stores through a setter. */
+  const inertStore = (target: ts.Expression): boolean => {
+    if (!ts.isPropertyAccessExpression(target) || !ts.isIdentifier(target.name)) return false;
+    if (target.name.text === "__proto__") return false;
+    const op = writeOps.get(target);
+    if (op === undefined) return false;
+    const recv = analysis.nodes[op.recv]!.atoms;
+    if (recv.size !== 1 || !constantAtoms.has([...recv][0]!)) return false;
+    return pureReceiver(target.expression, target);
+  };
+  /** Whether a statement only defines things: function declarations, and
+   * declarations and stores whose evaluation runs no code outside function
+   * bodies (no call, no read that could run a getter, no store that could run
+   * a setter). */
+  const definitionOnly = (stmt: ts.Statement): boolean => {
+    if (ts.isFunctionDeclaration(stmt)) return true;
+    if (!ts.isExpressionStatement(stmt) && !ts.isVariableStatement(stmt)) return false;
+    let runs = false;
+    const visit = (n: Node): void => {
+      if (runs) return;
+      if (ts.isFunctionLike(n)) return;
+      if (ts.isCallExpression(n) || ts.isNewExpression(n) || ts.isTaggedTemplateExpression(n))
+        runs = true;
+      if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
+        const p = n.parent;
+        const isStoreTarget =
+          p !== undefined &&
+          ts.isBinaryExpression(p) &&
+          p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          p.left === n;
+        if (isStoreTarget) {
+          if (!inertStore(n)) runs = true;
+          return;
+        }
+        // A read could run a getter; the receivers of reads are part of them.
+        if (!ts.isPropertyAccessExpression(p ?? n)) runs = true;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(stmt);
+    return !runs;
   };
 
   const hoisted = new Map<Atom, string>();
@@ -526,12 +834,25 @@ export function planStaticObjectRewrites(
       keep("enumeration or reflection may reach the prototype or instances");
       continue;
     }
+    // A frozen, sealed or redefined instance turns the stores that sloppy
+    // mode drops into strict-mode TypeErrors.
+    if (reshapes(watched, ctorPath)) {
+      keep("an instance may be frozen, sealed or redefined");
+      continue;
+    }
     if (!noNameOrSource(fnAtom)) {
       keep("reads name or toString");
       continue;
     }
     if (!strictSafe(checker, fnNode as ts.FunctionExpression)) {
       keep("constructor body is not strict-mode safe");
+      continue;
+    }
+    // A named function expression binds its name in its own body; the
+    // class is declared under another name.
+    const ownName = (fnNode as ts.FunctionExpression).name;
+    if (ownName !== undefined && mentions(fnNode as ts.FunctionExpression, ownName.text)) {
+      keep("a named constructor refers to its own name");
       continue;
     }
     // The methods: one statement per prototype member, in this file.
@@ -562,6 +883,26 @@ export function planStaticObjectRewrites(
         ok = false;
         break;
       }
+      // Only ever called as a method: a class method is not constructible,
+      // has no `prototype`, and a strict-mode call keeps a primitive or
+      // missing `this` where sloppy mode would replace it.
+      const calledAsMethod = analysis.calls
+        .filter((e) => e.callee.node === mNode)
+        .every(
+          (e) =>
+            ts.isCallExpression(e.site) &&
+            ts.isPropertyAccessExpression(e.site.expression) &&
+            e.site.expression.name.getText() === f.key,
+        );
+      if (
+        analysis.escaped.has(m) ||
+        escapedFns.has(mNode!) ||
+        !calledAsMethod ||
+        !onlyCalled(f.key, watched)
+      ) {
+        ok = false;
+        break;
+      }
       methods.push({ name: f.key, fn: mNode as ts.FunctionExpression, stmt: ms.stmt });
     }
     if (!ok) {
@@ -588,12 +929,20 @@ export function planStaticObjectRewrites(
     classes++;
   }
 
+  // The statement each hoisted class is declared at (before it).
+  const classStatements = new Map<string, ts.Statement>();
+  // The statement that stores each hoisted function or class, and the
+  // function itself: a read of the member runs after the store when it is
+  // inside that function or in a later top-level statement.
+  const storeOf = new Map<Atom, { stmt: ts.Statement; fn: Node }>();
   for (const plan of classPlans) {
     const base = `__ns_${plan.site.lhs.getText().replace(/[^\w$]/g, "_")}`;
     let name = base;
     for (let i = 1; used.has(name); i++) name = `${base}_${i}`;
     used.add(name);
     hoisted.set(plan.fnAtom, name);
+    classStatements.set(name, plan.site.stmt);
+    storeOf.set(plan.fnAtom, { stmt: plan.site.stmt, fn: plan.fn });
   }
   const callEdits: { sf: ts.SourceFile; edit: Edit }[] = [];
   const hoists: {
@@ -628,6 +977,7 @@ export function planStaticObjectRewrites(
       for (let i = 1; used.has(name); i++) name = `${base}_${i}`;
       used.add(name);
       hoisted.set(fnAtom, name);
+      storeOf.set(fnAtom, { stmt: site.stmt, fn });
       edit(sf, {
         start: ts.tokenStartOfNode(fn),
         end: fn.end,
@@ -678,6 +1028,22 @@ export function planStaticObjectRewrites(
     exportLiterals.set(sf, found);
     return found;
   };
+  const filesByName = new Map<string, ts.SourceFile>();
+  for (const f of analysis.files) filesByName.set(f.fileName, f);
+  /** The program file `require(lit)` in `sf` loads: the checker's module,
+   * else the file Node's resolver finds (the checker resolves only some
+   * require forms), or null. */
+  const requireTarget = (sf: ts.SourceFile, lit: ts.StringLiteral): ts.SourceFile | null => {
+    let target: Node | undefined;
+    try {
+      target = checker.getSymbolAtLocation(lit)?.declarations[0];
+    } catch {
+      target = undefined;
+    }
+    if (target !== undefined && ts.isSourceFile(target)) return target;
+    const resolved = resolveCjsRuntime(sf.fileName, lit.text);
+    return resolved.ok ? (filesByName.get(resolved.value) ?? null) : null;
+  };
   const requiredFiles = (sf: ts.SourceFile, node: Node): ts.SourceFile[] => {
     const out: ts.SourceFile[] = [];
     const visit = (n: Node): void => {
@@ -688,19 +1054,134 @@ export function planStaticObjectRewrites(
         n.arguments.nodes.length === 1 &&
         ts.isStringLiteral(n.arguments.nodes[0]!)
       ) {
-        let target: Node | undefined;
-        try {
-          target = checker.getSymbolAtLocation(n.arguments.nodes[0]!)?.declarations[0];
-        } catch {
-          target = undefined;
-        }
-        if (target !== undefined && ts.isSourceFile(target)) out.push(target);
+        const target = requireTarget(sf, n.arguments.nodes[0] as ts.StringLiteral);
+        if (target !== null) out.push(target);
       }
       ts.forEachChild(n, visit);
     };
     visit(node);
-    void sf;
     return out;
+  };
+  /** The files `sf` requires, directly or through the files they require. */
+  const requireClosures = new Map<ts.SourceFile, Set<ts.SourceFile>>();
+  const requiredClosure = (sf: ts.SourceFile): Set<ts.SourceFile> => {
+    let seen = requireClosures.get(sf);
+    if (seen !== undefined) return seen;
+    seen = new Set();
+    const work = [sf];
+    while (work.length > 0) {
+      const f = work.pop()!;
+      for (const t of requiredFiles(f, f))
+        if (!seen.has(t)) {
+          seen.add(t);
+          work.push(t);
+        }
+    }
+    requireClosures.set(sf, seen);
+    return seen;
+  };
+  /** Whether a top-level statement requires `target` each time it runs:
+   * the statement is `require(…)`, an assignment of it, or declarations
+   * one of which it initializes, optionally followed by member reads. A
+   * require inside a function, a condition or another expression runs only
+   * when that does. */
+  /** The values a top-level statement computes: its declarations'
+   * initializers, or its expression (an assignment's right side). */
+  const statementValues = (st: ts.Statement): ts.Expression[] | null => {
+    if (ts.isVariableStatement(st))
+      return st.declarationList.declarations.nodes.flatMap((d) =>
+        d.initializer !== undefined ? [d.initializer] : [],
+      );
+    if (!ts.isExpressionStatement(st)) return null;
+    const e = st.expression;
+    return [
+      ts.isBinaryExpression(e) &&
+      e.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(e.left)
+        ? e.right
+        : e,
+    ];
+  };
+  /** The require call `v` is, followed by member reads, or null. */
+  const requireValue = (v: ts.Expression): ts.CallExpression | null => {
+    let e = v;
+    for (;;) {
+      if (ts.isParenthesizedExpression(e)) e = e.expression;
+      else if (ts.isPropertyAccessExpression(e) && e.questionDotToken === undefined)
+        e = e.expression;
+      else break;
+    }
+    return ts.isCallExpression(e) &&
+      ts.isIdentifier(e.expression) &&
+      e.expression.text === "require"
+      ? e
+      : null;
+  };
+  const requiresWhenRun = (sf: ts.SourceFile, st: ts.Statement, target: ts.SourceFile): boolean =>
+    (statementValues(st) ?? []).some((v) => {
+      const call = requireValue(v);
+      return call !== null && requiredFiles(sf, call).includes(target);
+    });
+  /** Whether `node` sits inside a function of its top-level statement. */
+  const insideFunction = (node: Node): boolean => {
+    const top = topStatement(node);
+    for (let p: Node | undefined = node.parent; p !== undefined && p !== top; p = p.parent)
+      if (ts.isFunctionLike(p)) return true;
+    return false;
+  };
+  /** The nodes whose statements must have run for an effect-free receiver
+   * (effectFree) to be the constant object it reads as: each member read's
+   * stores of that member, and a name's declaration. */
+  const receiverDeps = (e: ts.Expression): Node[] => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isIdentifier(e)) {
+      const d = declOf(e);
+      return d === undefined ? [] : [d];
+    }
+    if (!ts.isPropertyAccessExpression(e) && !ts.isElementAccessExpression(e)) return [];
+    const op = readOps.get(e);
+    if (op === undefined || op.name === null) return [];
+    const objects = analysis.nodes[op.recv]!.atoms;
+    const stores = analysis.ops
+      .filter(
+        (w) =>
+          w.kind === "write" &&
+          w.name === op.name &&
+          [...analysis.nodes[w.recv]!.atoms].some((a) => objects.has(a)),
+      )
+      .map((w) => w.node);
+    return [...stores, ...receiverDeps(e.expression)];
+  };
+  /** Whether `read` can only run after the statements holding `deps`: what
+   * it reads exists by then, so a rewrite that no longer evaluates the read
+   * cannot drop the TypeError or ReferenceError of an earlier read. In
+   * another file, the defining module has finished loading unless it
+   * requires the reading file. In the same file, a top-level read comes
+   * after them. A read inside a function runs when the function is called:
+   * the statements from the one that creates the function (the first, for
+   * a hoisted declaration) to the last of them must only define things. */
+  const createdBefore = (read: Node, deps: readonly Node[]): boolean => {
+    const sf = read.getSourceFile();
+    const stmts = sf.statements.nodes;
+    let last = -1;
+    for (const d of deps) {
+      const file = d.getSourceFile();
+      if (file !== sf) {
+        if (requiredClosure(file).has(sf)) return false;
+        continue;
+      }
+      const at = stmts.indexOf(topStatement(d)!);
+      if (at < 0) return false;
+      last = Math.max(last, at);
+    }
+    if (last < 0) return true;
+    const top = topStatement(read)!;
+    if (!insideFunction(read)) return stmts.indexOf(top) > last;
+    let fn: Node | undefined;
+    for (let p: Node | undefined = read.parent; p !== undefined && p !== top; p = p.parent)
+      if (ts.isFunctionLike(p)) fn = p;
+    const from = fn !== undefined && ts.isFunctionDeclaration(fn) ? 0 : stmts.indexOf(top);
+    return stmts.slice(from, last + 1).every(definitionOnly);
   };
   const moduleBindings = new Map<string, string>();
   const exportAdds = new Map<ts.SourceFile, Set<string>>();
@@ -712,18 +1193,32 @@ export function planStaticObjectRewrites(
     if (process.env["SCRIPTC_SHAPE_CROSS_FILE_REFS"] === "0") return null;
     const sf = node.getSourceFile();
     if (!fileSet.has(sf) || exportLiteralOf(defining) === null) return null;
-    if (requiredFiles(defining, defining).includes(sf)) return null;
-    // The reading file's top-level statement that requires the module.
+    // A cycle back to the reading file, directly or through other files,
+    // could run the reading file's code before the module finished.
+    if (requiredClosure(defining).has(sf)) return null;
+    // A class is declared at its constructor's statement: an exports
+    // literal before it would read the class before its declaration.
+    const classStmt = classStatements.get(name);
+    if (classStmt !== undefined) {
+      const ds = defining.statements.nodes;
+      const exportsAt = ds.indexOf(topStatement(exportLiteralOf(defining)!)!);
+      if (exportsAt < ds.indexOf(classStmt)) return null;
+    }
+    // The reading file's top-level statement that loads the module.
     const stmts = sf.statements.nodes;
-    const at = stmts.findIndex((st) => requiredFiles(sf, st).includes(defining));
+    const at = stmts.findIndex((st) => requiresWhenRun(sf, st, defining));
     if (at < 0) return null;
     const top = topStatement(node)!;
-    const inFunction = ((): boolean => {
-      for (let p: Node | undefined = node.parent; p !== undefined && p !== top; p = p.parent)
-        if (ts.isFunctionLike(p)) return true;
-      return false;
-    })();
+    const inFunction = insideFunction(node);
     if (!inFunction && stmts.indexOf(top) <= at) return null;
+    // A function may run before the binding below is initialized if the
+    // statement that loads the module, or one before it, runs other code
+    // (`var m = require("lib"), x = f();`): then its reads stay as written.
+    if (inFunction) {
+      const values = statementValues(stmts[at]!);
+      const onlyLoads = values !== null && values.every((v) => requireValue(v) !== null);
+      if (!onlyLoads || !stmts.slice(0, at).every(definitionOnly)) return null;
+    }
     const key = `${sf.fileName}\0${defining.fileName}`;
     let binding = moduleBindings.get(key);
     if (binding === undefined) {
@@ -756,7 +1251,20 @@ export function planStaticObjectRewrites(
   // Direct references: `e.k` (called, constructed or read) in the same file
   // whose receiver is exactly the constant object holding a hoisted
   // function or class.
-  for (const { op, atoms } of mergedOps) {
+  /** Whether `node` runs only after `store` has stored its function. */
+  const runsAfter = (node: Node, store: { stmt: ts.Statement; fn: Node }): boolean => {
+    for (let p: Node | undefined = node.parent; p !== undefined; p = p.parent) {
+      // A function declaration is created, and may be called, before any
+      // statement of its scope runs.
+      if (ts.isFunctionDeclaration(p)) return false;
+      if (p === store.fn) return true;
+    }
+    const top = topStatement(node);
+    if (top === null) return false;
+    const stmts = node.getSourceFile().statements.nodes;
+    return stmts.indexOf(top) > stmts.indexOf(store.stmt);
+  };
+  for (const { op, atoms, nullish } of mergedOps) {
     if (op.kind !== "read" || op.name === null) continue;
     if (atoms.size !== 1) continue;
     const recv = [...atoms][0]!;
@@ -773,19 +1281,41 @@ export function planStaticObjectRewrites(
     if (parent === undefined || ts.isDeleteExpression(parent)) continue;
     if (!ts.isPropertyAccessExpression(node)) continue;
     if (topStatement(node) === null) continue;
+    // The receiver's evaluation is dropped, and the binding exists from the
+    // store on (a function) or from its declaration on (a class).
+    if (!pureReceiver(node.expression, node)) continue;
+    if (!runsAfter(node, storeOf.get(field.values[0]!)!)) continue;
+    // The reference replaces the whole member expression: its receiver
+    // must be one that evaluating runs no code.
+    if (!effectFree(node.expression)) {
+      kept.push(`reference ${node.getText()}: the receiver may have effects`);
+      continue;
+    }
+    if (!createdBefore(node, [field.values[0]!.node!, ...receiverDeps(node.expression)])) {
+      kept.push(`reference ${node.getText()}: it may run before the member is stored`);
+      continue;
+    }
     if (node.getSourceFile() !== field.values[0]!.node!.getSourceFile()) {
       const text = crossFileReference(node, field.values[0]!.node!.getSourceFile(), name);
       if (text === null) continue;
       callEdits.push({
         sf: node.getSourceFile(),
-        edit: { start: ts.tokenStartOfNode(node), end: node.end, text },
+        edit: {
+          start: ts.tokenStartOfNode(node),
+          end: node.end,
+          text: keepRead(node, text, nullish),
+        },
       });
       directCalls++;
       continue;
     }
     callEdits.push({
       sf: node.getSourceFile(),
-      edit: { start: ts.tokenStartOfNode(node), end: node.end, text: name },
+      edit: {
+        start: ts.tokenStartOfNode(node),
+        end: node.end,
+        text: keepRead(node, name, nullish),
+      },
     });
     directCalls++;
   }
@@ -847,7 +1377,7 @@ export function planStaticObjectRewrites(
     return quiet ? { literal, stmt, statements } : null;
   };
   let foldedReads = 0;
-  for (const { op, atoms } of mergedOps) {
+  for (const { op, atoms, nullish } of mergedOps) {
     if (op.kind !== "read" || op.name === null) continue;
     if (atoms.size !== 1) continue;
     const atom = [...atoms][0]!;
@@ -858,6 +1388,14 @@ export function planStaticObjectRewrites(
     const node = op.node;
     if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) continue;
     if (!isPlainRead(node) || topStatement(node) === null) continue;
+    if (!effectFree(node.expression)) {
+      kept.push(`constant read ${node.getText()}: the receiver may have effects`);
+      continue;
+    }
+    if (!createdBefore(node, [o.site.node, ...receiverDeps(node.expression)])) {
+      kept.push(`constant read ${node.getText()}: it may run before the object is created`);
+      continue;
+    }
     let literal = ownLiteralMember(o.site.node, op.name);
     if (literal === null && process.env["SCRIPTC_SHAPE_FOLD_STORES"] !== "0") {
       const stored = storedLiteral(atom, o.site.node, op.name);
@@ -882,7 +1420,7 @@ export function planStaticObjectRewrites(
       edit: {
         start: ts.tokenStartOfNode(node),
         end: node.end,
-        text: key ? literal : `(${literal})`,
+        text: nullish ? keepRead(node, literal, true) : key ? literal : `(${literal})`,
       },
     });
     foldedReads++;
@@ -917,6 +1455,7 @@ export function planStaticObjectRewrites(
     sf: ts.SourceFile;
     call: ts.CallExpression;
     arms: [string, string][];
+    nullish: boolean;
     exhaustive: boolean;
   }[] = [];
   // Whether a key parameter only ever holds one of the table's keys: its
@@ -970,7 +1509,7 @@ export function planStaticObjectRewrites(
       return arg !== undefined && ts.isStringLiteral(arg) && keys.has(arg.text);
     });
   };
-  for (const { op, atoms } of mergedOps) {
+  for (const { op, atoms, nullish } of mergedOps) {
     if (op.kind !== "computedRead") continue;
     const node = op.node;
     if (!ts.isElementAccessExpression(node) || node.questionDotToken !== undefined) continue;
@@ -985,6 +1524,11 @@ export function planStaticObjectRewrites(
     const o = constantAtoms.get([...atoms][0]!);
     if (o === undefined || o.fields.length === 0 || o.fields.length > MAX_TABLE_ARMS) {
       kept.push(`${where}: not a constant object of at most ${MAX_TABLE_ARMS} members`);
+      continue;
+    }
+    // The arms call a member without evaluating the table expression.
+    if (!effectFree(node.expression)) {
+      kept.push(`${where}: the table expression may have effects`);
       continue;
     }
     const key = node.argumentExpression;
@@ -1010,14 +1554,20 @@ export function planStaticObjectRewrites(
       kept.push(`${where}: a member is not a hoisted function of this file`);
       continue;
     }
+    const armNodes = o.fields.map((f) => f.values[0]!.node!);
+    if (!createdBefore(call, [o.site.node, ...armNodes, ...receiverDeps(node.expression)])) {
+      kept.push(`${where}: it may run before the table is created`);
+      continue;
+    }
     tableCalls.push({
       sf: call.getSourceFile(),
       call,
       arms,
+      nullish,
       exhaustive: literalKeysOnly(keyDecl, new Set(arms.map(([k]) => k))),
     });
   }
-  for (const { sf, call, arms, exhaustive } of tableCalls) {
+  for (const { sf, call, arms, nullish, exhaustive } of tableCalls) {
     const node = call.expression as ts.ElementAccessExpression;
     const key = node.argumentExpression.getText();
     const args = call.arguments.nodes.map((a) => sliceWithCalls(sf, a)).join(", ");
@@ -1032,7 +1582,7 @@ export function planStaticObjectRewrites(
         edit: {
           start: ts.tokenStartOfNode(call),
           end: call.end,
-          text: `(${text}${arms[arms.length - 1]![1]}(${args}))`,
+          text: `(${nullish ? `${table}[${key}], ` : ""}${text}${arms[arms.length - 1]![1]}(${args}))`,
         },
       });
       tableDispatches++;
@@ -1043,7 +1593,10 @@ export function planStaticObjectRewrites(
       edit: {
         start: ts.tokenStartOfNode(call),
         end: call.end,
-        text: `(${text}${table}[${key}](${args}))`,
+        // A table that may be nullish is read first, where the call reads
+        // it, so the read throws before the arguments run; on the constant
+        // object it reads a plain member with a string key.
+        text: `(${nullish ? `${table}[${key}], ` : ""}${text}${table}[${key}](${args}))`,
       },
     });
     tableDispatches++;

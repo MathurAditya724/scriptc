@@ -14,9 +14,18 @@ lib.register("b", function () {
 });
 console.log(lib.dispatch("b"), lib.limit());
 lib.bump();
-console.log(lib.limit(), new lib.Pair(2, 3).sum());
+console.log(lib.limit(), new lib.Pair(2, 3).sum(), lib.inits());
 try {
   lib.apply("missing", 1, 2);
 } catch (e) {
   console.log(e instanceof TypeError);
+}
+for (const holder of lib.holders) {
+  for (const read of [() => lib.modeOn(holder), () => lib.addVia(holder), () => lib.callVia(holder, "mul")]) {
+    try {
+      console.log(read());
+    } catch (e) {
+      console.log(e.constructor.name, e.message);
+    }
+  }
 }

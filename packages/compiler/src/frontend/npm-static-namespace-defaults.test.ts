@@ -60,4 +60,21 @@ test("any other write, declaration or earlier mention keeps the text", () => {
   expect(rewrite("let ns = ns || {};\n")).toBeNull();
   // Not the declared name on the left.
   expect(rewrite("var ns = other || {};\n")).toBeNull();
+  // Written through a destructuring assignment, here by a hoisted function
+  // that runs before the declaration.
+  expect(
+    rewrite("init();\nvar ns = ns || {};\nfunction init() { [ns] = [{ a: 1 }]; }\n"),
+  ).toBeNull();
+  expect(
+    rewrite("init();\nvar ns = ns || {};\nfunction init() { ({ ns } = { ns: { a: 1 } }); }\n"),
+  ).toBeNull();
+  expect(rewrite("var ns = ns || {};\nfor ([ns] of [[{}]]);\n")).toBeNull();
+});
+
+test("a name the CommonJS wrapper defines keeps the text", () => {
+  // `exports` is the module's export object here, not undefined.
+  const source = "var exports = exports || {};\nexports.answer = 42;\n";
+  expect(rewrite(source)).toBeNull();
+  expect(rewrite("var module = module || {};\n")).toBeNull();
+  expect(rewrite("var require = require || null;\n")).toBeNull();
 });
