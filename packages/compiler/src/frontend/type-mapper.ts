@@ -10,6 +10,7 @@ import {
   isDynTypedRefType,
   BOOL,
   bytesOf,
+  canBoxFuncIntoDyn,
   canConvertToDyn,
   canDynCheckTo,
   CHILD_T,
@@ -8415,6 +8416,16 @@ function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
     // `string | URL | Request`, fetch's own input type under @types/node.
     case "url":
       return true;
+    // A function the checked-dynamic tree can box (each parameter checks
+    // in, the result converts out) is held by reference there, and
+    // `typeof x === "function"` narrows it back out: `Progress | AbortSignal`
+    // beside fetch's handles.
+    case "func":
+      return canBoxFuncIntoDyn(
+        arm,
+        (id) => ctx.shapes.get(id),
+        (id) => ctx.unions.get(id),
+      );
     case "record":
     case "array":
     // `T | Promise<T>` with T bound to `unknown`: the checked-dynamic value
