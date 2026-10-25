@@ -418,6 +418,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/typed-array-scan-workers",
   "bench/log-summary",
   "bench/inventory-report",
+  "bench/line-reader",
   "bench/json-unions",
   "bench/throw-chains",
 ]);

@@ -2722,7 +2722,9 @@ static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const
     /* Node writes charCodeAt(i) & 0xFF for BOTH spellings — an astral
      * code point contributes its two surrogates' low bytes. */
     ScrBytes *b = scr_bytes_conversion_storage_in(sink, n);
-    size_t o = 0, i = 0;
+    /* An ASCII prefix (all of an ASCII string) is its own encoding. */
+    size_t o = s->ascii ? n : scr_bytes_ascii_prefix(in, n), i = o;
+    memcpy(b->data, in, o);
     while (i < n) {
       uint32_t cp = scr_bytes_next_cp(in, &i);
       if (cp > 0xffff) {
