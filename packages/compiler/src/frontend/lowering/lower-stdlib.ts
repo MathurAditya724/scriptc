@@ -1630,16 +1630,22 @@ export function lowerStaticAbortControllerCall(
   call: ts.CallExpression,
 ): IrExpr | null {
   const access = call.expression;
+  // An optional chain (`controller?.abort()`) lowers the call again once it
+  // has narrowed the receiver (Lowerer.chainHandled).
   if (
-    call.questionDotToken ||
+    (call.questionDotToken && !lowerer.chainHandled.has(call)) ||
     call.arguments.nodes.some((argument) => ts.isSpreadElement(argument)) ||
     (!ts.isPropertyAccessExpression(access) && !ts.isElementAccessExpression(access)) ||
-    access.questionDotToken ||
+    (access.questionDotToken && !lowerer.chainHandled.has(access)) ||
     staticResponseMemberName(lowerer, access) !== "abort"
   ) {
     return null;
   }
-  const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
+  const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(
+    access.questionDotToken
+      ? lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression))
+      : lowerer.typeOf(access.expression),
+  );
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
     symbol === undefined ||

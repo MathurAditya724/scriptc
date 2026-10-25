@@ -322,7 +322,13 @@ export function readProjectConfig(entryPath: string): ProjectConfig {
     if (text !== null) {
       if (cachedConfig !== null && cachedManifest === manifest && cachedText === text)
         return cachedConfig;
-      const config = parseProjectConfig(manifest, text);
+      // A manifest without a `scriptc` key (none spelled out, none behind a
+      // \u escape) has the empty configuration; builds of such projects
+      // skip parsing and validating it.
+      const config =
+        text.includes("scriptc") || text.includes("\\u")
+          ? parseProjectConfig(manifest, text)
+          : { ...emptyProjectConfig(), manifest, manifestText: text };
       cachedManifest = manifest;
       cachedText = text;
       cachedConfig = config;

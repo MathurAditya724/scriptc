@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "vitest";
-import { parseProjectConfig } from "./project-config.js";
+import { parseProjectConfig, readProjectConfig } from "./project-config.js";
 
 const manifest = "/project/package.json";
 
@@ -20,6 +23,34 @@ test("a package.json without a scriptc key has the default configuration", () =>
     speculativeStart: false,
   });
   expect(parseProjectConfig(manifest, "{ not json").diagnostics).toEqual([]);
+});
+
+test("readProjectConfig reads the nearest package.json like parseProjectConfig", () => {
+  const root = mkdtempSync(join(tmpdir(), "scriptc-project-config-"));
+  try {
+    const manifests = [
+      '{ "name": "app", "type": "module" }',
+      '{ "name": "app", "\\u0073criptc": { "packages": { "encoding": "unloaded" } } }',
+      '{ "name": "app", "scriptc": { "packages": { "encoding": "unloaded", "x": "bogus" } } }',
+    ];
+    manifests.forEach((text, i) => {
+      const dir = join(root, `p${i}`, "src");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(root, `p${i}`, "package.json"), text);
+      const read = readProjectConfig(join(dir, "main.ts"));
+      const parsed = parseProjectConfig(join(root, `p${i}`, "package.json"), text);
+      expect(read.manifest).toBe(parsed.manifest);
+      expect(read.manifestText).toBe(text);
+      expect([...read.packages]).toEqual([...parsed.packages]);
+      expect(read.nodeIslands).toEqual(parsed.nodeIslands);
+      expect(read.diagnostics).toEqual(parsed.diagnostics);
+    });
+    expect(
+      readProjectConfig(join(root, "p1", "src", "main.ts")).packages.get("encoding")?.unloaded,
+    ).toBe(true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("package settings: strings and objects", () => {

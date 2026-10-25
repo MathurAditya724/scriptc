@@ -855,9 +855,8 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
  * promises nullable-only; declared maybe-promise unions are admitted by
  * maybePromiseUnionArmsOk. */
 export function unionContainerArmsOk(arms: IrType[]): boolean {
-  return (
-    arms.every((a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b))) &&
-    dateUnionArmsOk(arms)
+  return arms.every(
+    (a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b)),
   );
 }
 
@@ -868,13 +867,7 @@ export function unionContainerArmsOk(arms: IrType[]): boolean {
  * non-thenable path). Data arms must not be thenable; the type mapper
  * checks that against the checker types before minting such a union. */
 export function maybePromiseUnionArmsOk(arms: IrType[]): boolean {
-  return arms.filter((a) => a.kind === "promise").length <= 1 && dateUnionArmsOk(arms);
-}
-
-/** A Date arm has a union home beside undefined and null arms only: no
- * narrowing contract tells it from other data arms yet. */
-function dateUnionArmsOk(arms: IrType[]): boolean {
-  return arms.every((a, i) => a.kind !== "date" || arms.every((b, j) => j === i || isUnitType(b)));
+  return arms.filter((a) => a.kind === "promise").length <= 1;
 }
 
 /** Canonical, injective text form of an IrType — the building block of
@@ -1630,6 +1623,28 @@ export function classValueConstructor(def: { name: string; runtime?: true }): {
     : { fn: `%${def.name}.constructor`, firstArg: 1 };
 }
 
+/** Whether construction through a class value typed as `sup` may call
+ * `sub`'s construct thunk: both class-value constructors exist and take the
+ * same argument types after the receiver. The classval upcast rule and the
+ * checked class-value boundary both rest on it. */
+export function classValueAbiEquals(
+  sub: { name: string; runtime?: true },
+  sup: { name: string; runtime?: true },
+  functions: ReadonlyMap<string, IrFunction>,
+): boolean {
+  const subValueCtor = classValueConstructor(sub);
+  const supValueCtor = classValueConstructor(sup);
+  const subCtor = functions.get(subValueCtor.fn);
+  const supCtor = functions.get(supValueCtor.fn);
+  if (!subCtor || !supCtor) return false;
+  const subArgs = subCtor.params.slice(subValueCtor.firstArg);
+  const supArgs = supCtor.params.slice(supValueCtor.firstArg);
+  return (
+    subArgs.length === supArgs.length &&
+    subArgs.every((p, i) => typeEquals(p.type, supArgs[i]!.type))
+  );
+}
+
 /** The JavaScript `.name` of a class: its jsName, or the runtime-provided
  * class's own name (`%TypeError` is TypeError). */
 export function classJsName(def: { name: string; runtime?: true; jsName?: string }): string {
@@ -1781,16 +1796,32 @@ export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "Tex
   return null;
 }
 
-/** The codec class of a TextEncoder or TextDecoder record type, else null.
- * Such a record crosses an `unknown` slot as a native handle that holds the
- * record itself (scr_text_codec_dyn.c), never as a copy or a field view. */
+/** The class of a record that crosses checked-dynamic slots as a native
+ * handle: the codecs, and a StringDecoder (type-mapper.ts: its canonical
+ * encoding and the packing of its pending bytes). */
+export function recordHandleCodecClass(
+  shape: IrRecordShape,
+): "TextEncoder" | "TextDecoder" | "StringDecoder" | null {
+  const codec = recordTextCodecClass(shape);
+  if (codec !== null) return codec;
+  return shape.fields.length === 2 &&
+    shape.fields[0]!.name === "%enc" &&
+    shape.fields[1]!.name === "%pending"
+    ? "StringDecoder"
+    : null;
+}
+
+/** The codec class of a TextEncoder, TextDecoder or StringDecoder record
+ * type, else null. Such a record crosses an `unknown` slot as a native
+ * handle that holds the record itself (scr_text_codec_dyn.c), never as a
+ * copy or a field view. */
 export function textCodecRecordClass(
   t: IrType,
   getRecord: (shapeId: string) => IrRecordShape | undefined,
-): "TextEncoder" | "TextDecoder" | null {
+): "TextEncoder" | "TextDecoder" | "StringDecoder" | null {
   if (t.kind !== "record") return null;
   const shape = getRecord(t.shapeId);
-  return shape ? recordTextCodecClass(shape) : null;
+  return shape ? recordHandleCodecClass(shape) : null;
 }
 
 /** Object-literal ACCESSOR properties (`{ get x() {...}, set x(v) {...} }`)
