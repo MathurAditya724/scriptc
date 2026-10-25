@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -58,6 +58,33 @@ test("untyped JavaScript collections take the types their uses prove, and only t
       "renamed",
     ])
       expect(typed(types.get(untyped)!), untyped).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Resolving a candidate's constructor through a destructured require reads
+// types while the inference runs; those reads must not start it again.
+test("the inference runs once when a candidate's values come from a destructured require", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-js-collection-reentry-"));
+  try {
+    const entry = join(dir, "main.cjs");
+    writeFileSync(
+      entry,
+      [
+        'const util = require("node:util");',
+        "const { TextDecoder } = util;",
+        "const decoder = new TextDecoder();",
+        'const decoders = new Map([["utf-8", decoder]]);',
+        "const seen = new Set([decoder]);",
+        "console.log(decoders.size, seen.size);",
+        "",
+      ].join("\n"),
+    );
+    const output = join(dir, "main.ir.json");
+    const lowered = await compile(entry, { outputKind: "ir", outDir: dir, outPath: output });
+    if (!lowered.ok) throw new Error(JSON.stringify(lowered.diagnostics));
+    expect(validateModule(deserializeModule(readFileSync(output, "utf8")))).toEqual([]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

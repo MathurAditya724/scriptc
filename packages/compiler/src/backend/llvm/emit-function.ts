@@ -20,7 +20,12 @@ import { constructorClass } from "../../ir/final-fields.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findCallArrayReads, findLocalArrayReads } from "./local-array-reads.js";
 import { findScalarStringSlices, findScratchStringSlices } from "./string-slices.js";
-import { findMapReadLifetimes, findReadNumberMapWrites } from "./map-read-lifetimes.js";
+import {
+  findMapReadBorrows,
+  findMapReadLifetimes,
+  findReadNumberMapWrites,
+} from "./map-read-lifetimes.js";
+import { borrowableMapGet } from "./expr-containers.js";
 import { findMapEntryFusions } from "./map-entry-fusion.js";
 import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
@@ -64,7 +69,9 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.currentFunctionName = fn.name;
   emitter.currentUnwindAbi = emitter.unwindAbi.has(fn.name);
   emitter.usesLandingPads = false;
+  emitter.aliasScopedVersions = 0;
   emitter.findInt32Allocations(fn);
+  emitter.speculativeLeaves = 0;
   emitter.currentTier = fn.tier;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
@@ -191,15 +198,27 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           fn,
           emitter.callLifetimes,
           emitter.scalarStringSlices,
-          emitter.lentStringParameters,
+          emitter.lendingFacts,
         )
       : new Set();
   emitter.mapReadLifetimes = findMapReadLifetimes(
     fn,
     emitter.boxedUnionsById,
     emitter.callLifetimes,
+    emitter.referenceEffects,
+  );
+  const stable = emitter.callLifetimes.bindings.get(fn.name);
+  emitter.borrowedMapGets = findMapReadBorrows(
+    fn,
+    emitter.referenceEffects,
+    (decl) =>
+      decl.init !== null &&
+      stable?.has(decl.localId) === true &&
+      !emitter.mapReadLifetimes.locals.has(decl.localId) &&
+      borrowableMapGet(emitter, decl.init),
   );
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
+  emitter.numberMapKeyIntegers = new Map();
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;
   emitter.localStackUnions = findLocalStackUnions(
     fn,

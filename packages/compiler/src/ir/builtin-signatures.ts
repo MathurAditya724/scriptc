@@ -196,6 +196,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * arguments; other receiver representations retain a runtime refusal. */
   "dyn.keyDelete": { argTypes: [DYN, STRING, BOOL], result: VOID },
   "dyn.keyDeleteComputed": { argTypes: [DYN, DYN, BOOL], result: VOID },
+  "dyn.reflectDeleteProperty": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.hasKeyComputed": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.hasOwnComputed": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.propertyIsEnumerableComputed": { argTypes: [DYN, DYN], result: BOOL },
@@ -312,6 +313,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * timer APIs (it pulls in the event loop). The name is a compiler-chosen
    * literal. */
   "dyn.builtinFunction": { argTypes: [STRING], result: DYN },
+  "dyn.namespaceNew": { argTypes: [STRING, DYN], result: DYN },
+  "dyn.namespaceDefine": { argTypes: [DYN, STRING, DYN, F64, F64], result: VOID },
   "date.nativeNew": { argTypes: [DYN], result: DYN },
   /** `new Date(year, monthIndex, ...)` in JavaScript: the argument array's
    * first seven values pass through ToNumber in order (later ones are
@@ -1196,6 +1199,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.openSync": { argTypes: [STRING, STRING], result: F64 },
   "fs.openNumericSync": { argTypes: [STRING, F64, F64], result: F64 },
   "fs.readSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
+  "fs.readSyncDyn": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
   "fs.writeSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
   "fs.writeStrSync": { argTypes: [F64, STRING, F64, STRING], result: F64 },
   // fs.watch's callback func type is program-dependent (zero params, or
@@ -1229,6 +1233,38 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.x509ValidFromStr": { argTypes: [STRING], result: STRING },
   "crypto.x509ValidTo": { argTypes: [BYTES_U8], result: STRING },
   "crypto.x509ValidToStr": { argTypes: [STRING], result: STRING },
+  /** The certificate's DER as a fresh Buffer (the raw field), decoded
+   * once from the constructor's input; the same PEM error (may-throw). */
+  "crypto.x509Raw": { argTypes: [BYTES_U8], result: BYTES_U8 },
+  "crypto.x509RawDer": { argTypes: [BYTES_U8], result: BYTES_U8 },
+  "crypto.x509RawStr": { argTypes: [STRING], result: BYTES_U8 },
+  /** The remaining X509Certificate fields over that DER, in Node's
+   * renderings (scr_lib.c). subjectAltName, infoAccess and
+   * signatureAlgorithm answer "" where Node answers undefined. Borrowed;
+   * never throw. */
+  "crypto.x509Subject": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509Issuer": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509SubjectAltName": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509InfoAccess": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509SerialNumber": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509Fingerprint256": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509Fingerprint512": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509Ca": { argTypes: [BYTES_U8], result: BOOL },
+  "crypto.x509SignatureAlgorithm": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509SignatureAlgorithmOid": { argTypes: [BYTES_U8], result: STRING },
+  /** X509Certificate methods over its raw DER. checkHost/checkEmail/checkIP
+   * answer the matching name or "" (undefined), checkIssued compares two
+   * certificates, x509Pem is toString's PEM (scr_x509.c); publicKey,
+   * verify and checkPrivateKey read keys (scr_pki.c). */
+  "crypto.x509CheckHost": { argTypes: [BYTES_U8, DYN, DYN], result: STRING },
+  "crypto.x509CheckEmail": { argTypes: [BYTES_U8, DYN, DYN], result: STRING },
+  "crypto.x509CheckIP": { argTypes: [BYTES_U8, DYN, DYN], result: STRING },
+  "crypto.x509CheckIssued": { argTypes: [BYTES_U8, BYTES_U8], result: BOOL },
+  "crypto.x509LegacyObject": { argTypes: [BYTES_U8], result: DYN },
+  "crypto.x509Pem": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509PublicKey": { argTypes: [BYTES_U8], result: DYN },
+  "crypto.x509Verify": { argTypes: [BYTES_U8, DYN], result: BOOL },
+  "crypto.x509CheckPrivateKey": { argTypes: [BYTES_U8, DYN], result: BOOL },
   "fs.closeSync": { argTypes: [F64], result: VOID },
   "stats.isFile": { argTypes: [STATS_T], result: BOOL },
   "stats.isDirectory": { argTypes: [STATS_T], result: BOOL },
@@ -2231,6 +2267,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
+  /** getPeerCertificate(detailed) and getCertificate() (the legacy object,
+   * {} or null; scr_tls_x509.c), and the DER behind getPeerX509Certificate()
+   * and getX509Certificate() (a Buffer, empty without a certificate). */
+  "tls.sockGetPeerCertificate": { argTypes: [NETSOCKET_T, DYN], result: DYN },
+  "tls.sockGetCertificate": { argTypes: [NETSOCKET_T], result: DYN },
+  "tls.sockPeerCertDer": { argTypes: [NETSOCKET_T], result: BYTES_U8 },
+  "tls.sockOwnCertDer": { argTypes: [NETSOCKET_T], result: BYTES_U8 },
   "tls.sockAuthError": { argTypes: [NETSOCKET_T], result: VOID },
   "tls.sockOnSecureConnect": {
     argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
@@ -2262,6 +2305,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * walk — a validated { cert, key } bag builds the real context.
    * May-throw. */
   "tls.createSecureContextDyn": { argTypes: [DYN], result: SECURECTX_T },
+  /** server.addContext(servername, options | SecureContext),
+   * server.setSecureContext(options) and the 'tlsClientError' listener of
+   * a tls or https server (scr_tls.c). */
+  "tls.serverAddContext": { argTypes: [NETSERVER_T, DYN, DYN], result: VOID },
+  "tls.serverAddContextCtx": { argTypes: [NETSERVER_T, DYN, SECURECTX_T], result: VOID },
+  "tls.serverSetSecureContext": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  "tls.serverOnClientError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   /** tls.getCACertificates(type): validateString + the documented name
    * set, then the trailing compiler-rendered fence — ALWAYS THROWS (the
    * error.nodeThrow polymorphic-result carve-out). May-throw seed. */
@@ -2788,6 +2838,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [DYN, STRING],
     result: { kind: "object", className: "%Duplex" },
   },
+  /** Whether pipeline() pumps a checked-dynamic first stage as an
+   * iterable (a string, or a value with an iterator method that is not a
+   * stream with pipe() and on()) instead of piping it as a stream. */
+  "stream.dynIterableSource": { argTypes: [DYN], result: BOOL },
   /** The Transform a Cipheriv or Decipheriv reads and writes as a stream
    * (+1, created on first use and owned by the cipher). */
   "stream.handleStream": {
@@ -3427,6 +3481,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "process.builtinId": { argTypes: [DYN, arrayOf(STRING)], result: STRING },
   "process.builtinModule": { argTypes: [STRING, DYN], result: DYN },
   "process.builtinUnsupported": { argTypes: [STRING, STRING], result: DYN },
+  /** A module namespace object as a checked-dynamic value
+   * (scr_module_namespace_value): the module id, its sorted export names
+   * and the compiled getter. One object per module. Never throws. */
+  "module.namespaceValue": { argTypes: [STRING, arrayOf(STRING), DYN], result: DYN },
   "fs.callbackValue": { argTypes: [STRING], result: DYN },
   "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
   "process.hrtimeValue": { argTypes: [], result: DYN },
@@ -3712,6 +3770,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "ffi.argument": { argTypes: [DYN, STRING], result: DYN },
   "ffi.memoryModule": { argTypes: [DYN], result: DYN },
   "intl.segmenterNew": { argTypes: [], result: DYN },
+  "intl.segmenterRefusing": { argTypes: [STRING], result: DYN },
   "arrayBuffer.is": { argTypes: [DYN], result: BOOL },
   "arrayBuffer.isView": { argTypes: [DYN], result: BOOL },
   "arrayBuffer.byteLengthGetter": { argTypes: [], result: F64 },
@@ -4930,6 +4989,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * and crypto callback adapters pass NULL after an error. Borrowed arg;
    * never throws. */
   "bytes.isAbsent": { argTypes: [BYTES_U8], result: BOOL },
+  /** Whether two typed arrays share no byte: their element ranges in
+   * memory do not overlap. Borrowed args of any element kind; never throws. */
+  "bytes.disjoint": { argTypes: [null, null], result: BOOL },
   /** The absent Buffer result itself (NULL), where an error-path callback
    * body passes its undefined result on into a Buffer slot. Owned (+1);
    * never throws. */

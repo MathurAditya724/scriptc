@@ -266,6 +266,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.prop",
   "stream.stdioWritable",
   "stream.unboxDyn",
+  "stream.dynIterableSource",
   "stream.handleStream",
   "stream.unpipeDyn",
   "stream.workerStdio",
@@ -319,6 +320,8 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.definePrototypeProps",
   "dyn.functionApply",
   "dyn.globalConstructor",
+  "dyn.namespaceDefine",
+  "dyn.namespaceNew",
   "dyn.objCreateWithProperties",
   "dyn.objectTag",
   "stream.dynNative",
@@ -745,6 +748,9 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.x509PublicKey",
+  "crypto.x509Verify",
+  "crypto.x509CheckPrivateKey",
   "crypto.diffieHellman",
 ]);
 
@@ -1127,11 +1133,42 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** Module namespace objects as checked-dynamic values
+   * (scr_module_namespace.c). */
+  moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
    * scr_webcrypto.c. */
   webcrypto: rule({ prefixes: ["webcrypto."] }),
+  /** scr_x509.c: the X509Certificate fields beyond the validity window and
+   * fingerprint, which stay in scr_lib.c. */
+  x509: rule({
+    fns: [
+      "crypto.x509Ca",
+      "crypto.x509Fingerprint256",
+      "crypto.x509Fingerprint512",
+      "crypto.x509InfoAccess",
+      "crypto.x509Issuer",
+      "crypto.x509Raw",
+      "crypto.x509RawDer",
+      "crypto.x509RawStr",
+      "crypto.x509SerialNumber",
+      "crypto.x509SignatureAlgorithm",
+      "crypto.x509SignatureAlgorithmOid",
+      "crypto.x509Subject",
+      "crypto.x509SubjectAltName",
+      "crypto.x509CheckHost",
+      "crypto.x509CheckEmail",
+      "crypto.x509CheckIP",
+      "crypto.x509CheckIssued",
+      "crypto.x509LegacyObject",
+      "crypto.x509Pem",
+      // getPeerCertificate and getCertificate build with scr_x509.c too.
+      "tls.sockGetPeerCertificate",
+      "tls.sockGetCertificate",
+    ],
+  }),
   zlib: rule({ prefixes: ["zlib."] }),
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
@@ -1166,6 +1203,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynInvoke: false,
     dynTier: false,
     ecdh: false,
+    x509: false,
     dh: false,
     emitter: false,
     eventTarget: false,
@@ -1191,6 +1229,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     searchParams: false,
     urlIdna: false,
     stdioExtended: false,
+    moduleNamespace: false,
     stream: false,
     streamDyn: false,
     handleProps: false,

@@ -14,6 +14,10 @@ import {
 } from "./npm-static-builtin-aliases.js";
 import { mayHoldUmdWrapper, unwrapUmdFactory } from "./npm-static-umd.js";
 import { mayHoldEnumIife, rewriteEnumIifes } from "./npm-static-enum-iife.js";
+import {
+  mayHoldNamespaceDefault,
+  rewriteNamespaceDefaults,
+} from "./npm-static-namespace-defaults.js";
 import { mayHoldTscBuiltinImport, unwrapTscBuiltinImports } from "./npm-static-tsc-helpers.js";
 import { builtinPackageAliasFor } from "./package-shims.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
@@ -61,7 +65,9 @@ export class FrontendServices {
     // Called as a plain function: the instance is not its receiver.
     const createApi = this.createApi;
     return (this.parser ??= new Ts7SourceParser(
-      (options) => createApi({ ...options, collectTiming: false }),
+      // The parser reads no libraries, so it gains nothing from the shared
+      // checker server, and leaves it to the program's checker.
+      (options) => createApi({ ...options, collectTiming: false, shared: false }),
       this.cwd,
     ));
   }
@@ -137,6 +143,13 @@ export class FrontendServices {
     this.ensureOpen();
     if (!mayHoldEnumIife(source)) return null;
     return rewriteEnumIifes(this.parse(path, source, "js"));
+  }
+  /** A package module with its guarded namespace declarations
+   * (`var ns = ns || {}`) respelled as plain ones (null: none). */
+  namespaceDefaults(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!mayHoldNamespaceDefault(source)) return null;
+    return rewriteNamespaceDefaults(this.parse(path, source, "js"));
   }
   /** A package module with its requires of builtin-aliased polyfill
    * packages respelled as the builtins (null: none). */

@@ -1066,6 +1066,11 @@ export interface IrModule {
    * (frontend frozen-records.ts): their writes test the array's frozen bit
    * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
   freezableArrays?: string[];
+  /** The program freezes, seals or prevents extensions of untyped values
+   * (frontend frozen-records.ts noteUntypedIntegrity). Class hierarchies
+   * that can be held there carry an integrity word, which the runtime sets
+   * through the commit of the instance's checked view. */
+  untypedIntegrity?: true;
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
@@ -1621,6 +1626,28 @@ export function classValueConstructor(def: { name: string; runtime?: true }): {
   return def.runtime
     ? { fn: `%${def.name}.construct`, firstArg: 0 }
     : { fn: `%${def.name}.constructor`, firstArg: 1 };
+}
+
+/** Whether construction through a class value typed as `sup` may call
+ * `sub`'s construct thunk: both class-value constructors exist and take the
+ * same argument types after the receiver. The classval upcast rule and the
+ * checked class-value boundary both rest on it. */
+export function classValueAbiEquals(
+  sub: { name: string; runtime?: true },
+  sup: { name: string; runtime?: true },
+  functions: ReadonlyMap<string, IrFunction>,
+): boolean {
+  const subValueCtor = classValueConstructor(sub);
+  const supValueCtor = classValueConstructor(sup);
+  const subCtor = functions.get(subValueCtor.fn);
+  const supCtor = functions.get(supValueCtor.fn);
+  if (!subCtor || !supCtor) return false;
+  const subArgs = subCtor.params.slice(subValueCtor.firstArg);
+  const supArgs = supCtor.params.slice(supValueCtor.firstArg);
+  return (
+    subArgs.length === supArgs.length &&
+    subArgs.every((p, i) => typeEquals(p.type, supArgs[i]!.type))
+  );
 }
 
 /** The JavaScript `.name` of a class: its jsName, or the runtime-provided
@@ -3390,7 +3417,17 @@ export type IrExpr =
    * from a union) whose Web API contract exposes the reference again, such
    * as stream chunks and abort reasons; ordinary JSON-shaped values retain
    * the documented deep-copy boundary. */
-  | { kind: "dynFrom"; value: IrExpr; fnName?: string; liveRef?: true; type: IrType; loc: SrcLoc }
+  | {
+      kind: "dynFrom";
+      value: IrExpr;
+      fnName?: string;
+      /** A boxed function's `length` when it differs from its parameter
+       * count (builtin function values). */
+      fnLength?: number;
+      liveRef?: true;
+      type: IrType;
+      loc: SrcLoc;
+    }
   /** CALLING a dyn value — `fn(a, b)` where fn is checked-dynamic (an
    * implicit-any JS binding, a dyn record member, a dynKeyGet result).
    * Arguments are ALREADY dyn-typed (typed values box through dynFrom at

@@ -2222,6 +2222,8 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
       call,
       "dynamic import() of computed specifiers (the module graph resolves at " +
         "build time — the specifier must be a string literal)",
+      undefined,
+      "dynamic-import",
     );
   }
   if (call.arguments.nodes.length !== 1) {
@@ -2572,35 +2574,8 @@ export function lowerMathProperty(
   const member = lowerer.stdlibGlobalMember(expr, "Math");
   if (member === null) return null;
   const loc = locOf(expr);
-  const staticValue = own(STATIC_MATH_PROPS, member);
-  if (staticValue !== undefined) {
-    return { kind: "numLit", value: staticValue, type: F64, loc };
-  }
-  const native = own(STATIC_MATH_FNS, member);
-  if (native && (member === "min" || member === "max" || member === "hypot"))
-    return lowerer.lowerNativeCallableValue(
-      {
-        fn: member === "min" ? "math.minArr" : member === "max" ? "math.maxArr" : "math.hypotArr",
-        params: [arrayOf(F64)],
-        result: F64,
-        valueParams: [{ mode: "rest", type: F64 }],
-      },
-      `Math.${member}`,
-      loc,
-    );
-  if (native && member !== "min" && member !== "max" && member !== "hypot") {
-    const params = Array.from({ length: native.arity }, () => F64);
-    return lowerer.lowerNativeCallableValue(
-      {
-        fn: native.fn,
-        params,
-        result: F64,
-        valueParams: params.map((type) => ({ mode: "required", type })),
-      },
-      `Math.${member}`,
-      loc,
-    );
-  }
+  const value = mathMemberValue(lowerer, member, loc);
+  if (value !== null) return value;
   const propType = own(STDLIB_SURFACE.math.props, member);
   if (propType !== undefined) {
     lowerer.refuseUnsupportedApi(`'Math.${member}'`, expr);
@@ -2612,6 +2587,40 @@ export function lowerMathProperty(
     lowerer.unsupported("SC1090", expr, `Math methods as values (call '${member}' directly)`);
   }
   return null; // declared-but-untabled members fall through generically
+}
+
+/** The value of the Math member `member`: a constant, or the interned
+ * native function value of a Math function. Null for other members. */
+export function mathMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
+  const staticValue = own(STATIC_MATH_PROPS, member);
+  if (staticValue !== undefined) {
+    return { kind: "numLit", value: staticValue, type: F64, loc };
+  }
+  const native = own(STATIC_MATH_FNS, member);
+  if (!native) return null;
+  if (member === "min" || member === "max" || member === "hypot")
+    return lowerer.lowerNativeCallableValue(
+      {
+        fn: member === "min" ? "math.minArr" : member === "max" ? "math.maxArr" : "math.hypotArr",
+        params: [arrayOf(F64)],
+        result: F64,
+        valueParams: [{ mode: "rest", type: F64 }],
+        valueLength: 2,
+      },
+      `Math.${member}`,
+      loc,
+    );
+  const params = Array.from({ length: native.arity }, () => F64);
+  return lowerer.lowerNativeCallableValue(
+    {
+      fn: native.fn,
+      params,
+      result: F64,
+      valueParams: params.map((type) => ({ mode: "required", type })),
+    },
+    `Math.${member}`,
+    loc,
+  );
 }
 
 export function npmPackageOf(lowerer: Lowerer, type: ts.Type): string | null {
