@@ -10073,7 +10073,18 @@ function lowerObjLitGenericMethodCall(
           type: DYN,
           loc,
         };
-        return lowerer.coerceInto(call, invoked, lowerer.irTypeOf(call));
+        const resultType = lowerer.irTypeOf(call);
+        // A void method's runtime result is discarded, as JavaScript does.
+        if (resultType.kind === "void") {
+          return {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: invoked, loc }],
+            result: { kind: "libCall", fn: "console.noop", args: [], type: VOID, loc },
+            type: VOID,
+            loc,
+          };
+        }
+        return lowerer.coerceInto(call, invoked, resultType);
       }
     }
     if (onInterface) {
