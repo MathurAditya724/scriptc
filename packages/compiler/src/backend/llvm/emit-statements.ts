@@ -2061,7 +2061,8 @@ function emitCallbackVersionedLoop(
 /** The copy of a versioned loop that runs when its guard fails. Its loops
  * get no speculative or int32 kind copies, which would emit each loop again
  * for a path that rarely runs. Proven integer loops, which emit one copy,
- * are kept. */
+ * are kept. A typed-array version whose guard requires thread-owned
+ * storage does not use it (emitVersionedLoop). */
 function emitSlowCopy(emitter: LlEmitter, s: IrStmt): void {
   const copies = emitter.loopCopiesEnabled;
   emitter.loopCopiesEnabled = false;
@@ -2145,7 +2146,11 @@ function emitVersionedLoop(
   LOOPS.of(emitter).bytesLoopVersioning.add(s);
   try {
     B.startBlock(slow);
-    emitSlowCopy(emitter, s);
+    // A guard that requires thread-owned storage fails for every view of
+    // shared memory, which worker programs pass routinely: that checked
+    // copy keeps its loops' speculative and int32 kind copies.
+    if (version.ownedReceivers.length > 0) emitter.emitStmt(s);
+    else emitSlowCopy(emitter, s);
     B.br(done);
     if (version.owned.size > 0) emitter.bytesOwned = new Set([...originalOwned, ...version.owned]);
     if (version.ranges.size > 0)
