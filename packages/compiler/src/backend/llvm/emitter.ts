@@ -55,6 +55,7 @@ import {
   typeKey,
   VOID,
   classJsName,
+  classValueAbiEquals,
 } from "../../ir/ir.js";
 import { moduleRuntimeFeatures, type RuntimeFeatures } from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
@@ -68,7 +69,7 @@ import {
   type StoredSplitSnapshot,
   type StringSplit,
 } from "./split-loops.js";
-import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
+import { scalarizeLiteralResults, scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { addRecordResultEntries, resultEntryName } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import {
@@ -200,8 +201,10 @@ import { StackCallbacks } from "./stack-callbacks.js";
 import { findAppendedArrayLiterals } from "./appended-array-literals.js";
 import { AmbientReceiverReaders, findConstantCallbacks } from "./constant-callbacks.js";
 import {
+  findLentRecordFields,
   findLentStringParameters,
-  type LentStringParameters,
+  findRecordFieldProducers,
+  type LendingFacts,
   type StringSliceSnapshot,
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
@@ -589,18 +592,20 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
       ? selectInt32Arrays(
           versionParameters(
             addRecordResultEntries(
-              scalarizeNumericRecords(
-                specializeCallbackCalls(
-                  specializeNumericCalls(
-                    pairRowSums(
-                      inlineExpressionFunctions(
-                        foldConstantGlobals(
-                          copyStableCaptures(
-                            resolveSelfCaptures(
-                              hoistFinalFieldReads(
-                                freezeInitOnlyGlobals(
-                                  holdCharLocalsAsUnits(
-                                    dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+              scalarizeLiteralResults(
+                scalarizeNumericRecords(
+                  specializeCallbackCalls(
+                    specializeNumericCalls(
+                      pairRowSums(
+                        inlineExpressionFunctions(
+                          foldConstantGlobals(
+                            copyStableCaptures(
+                              resolveSelfCaptures(
+                                hoistFinalFieldReads(
+                                  freezeInitOnlyGlobals(
+                                    holdCharLocalsAsUnits(
+                                      dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                                    ),
                                   ),
                                 ),
                               ),
@@ -608,10 +613,10 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                           ),
                         ),
                       ),
+                      mangleFunction,
                     ),
                     mangleFunction,
                   ),
-                  mangleFunction,
                 ),
               ),
             ),
@@ -802,8 +807,9 @@ export class LlEmitter {
   readonly stringSlices = new Map<string, StringSliceSnapshot>();
   /** Slices written into stack buffers (findScratchStringSlices). */
   scratchStringSlices: ReadonlySet<IrExpr> = new Set();
-  /** String parameters a caller may lend scratch slices to. */
-  lentStringParameters: LentStringParameters = new Map();
+  /** String parameters, record fields and record producers a caller may
+   * lend scratch slices to. */
+  lendingFacts: LendingFacts = { strings: new Map(), records: new Map(), producers: new Map() };
   localStackUnions = new Map<string, IrExpr & { kind: "unionWrap" }>();
   localStackObjects = new Map<string, StackObjectSource>();
   reassignedStackObjects = new Set<string>();
@@ -1941,8 +1947,14 @@ export class LlEmitter {
       },
       (wrap) => this.borrowableNullableWrap(wrap) === "ref",
     );
-    this.lentStringParameters =
-      this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
+    if (this.debug === null) {
+      const strings = findLentStringParameters(this.fnByName, this.callLifetimes);
+      this.lendingFacts = {
+        strings,
+        records: findLentRecordFields(this.fnByName, this.callLifetimes, strings),
+        producers: findRecordFieldProducers(this.fnByName),
+      };
+    }
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes, this.nodeIndex);
     // Integer clones signal a stack overflow through their result, which
     // needs the single-threaded guard; worker programs also poll for
@@ -2056,14 +2068,14 @@ export class LlEmitter {
         const meta = this.classMeta.get(t.className);
         return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
       },
-      classSubtypes: (name) => {
-        const target = this.classMetaOf(name);
-        const intervals = classMembershipIntervals(this.classMeta, target.def.name);
-        return [...this.classMeta.values()]
-          .filter((meta) =>
-            intervals.some((range) => range.pre <= meta.pre && meta.pre <= range.post),
-          )
-          .map((meta) => meta.def.name);
+      classSubtypes: (name) => this.classSubtypes(name),
+      classValueSubtypes: (name) => {
+        const target = this.classMetaOf(name).def;
+        return this.classSubtypes(name).filter(
+          (sub) =>
+            sub !== target.name &&
+            classValueAbiEquals(this.classMetaOf(sub).def, target, this.fnByName),
+        );
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
@@ -4187,6 +4199,15 @@ export class LlEmitter {
   }
 
   // ── class plumbing ──────────────────────────────────────────────────────
+
+  /** `name` and every class whose membership interval falls in its own. */
+  private classSubtypes(name: string): string[] {
+    const target = this.classMetaOf(name);
+    const intervals = classMembershipIntervals(this.classMeta, target.def.name);
+    return [...this.classMeta.values()]
+      .filter((meta) => intervals.some((range) => range.pre <= meta.pre && meta.pre <= range.post))
+      .map((meta) => meta.def.name);
+  }
 
   classMetaOf(className: string): LlClassMeta {
     const meta = this.classMeta.get(className);

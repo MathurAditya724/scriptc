@@ -8223,31 +8223,83 @@ export function classMemberNameOf(lowerer: Lowerer, name: ts.PropertyName): stri
 export interface ClassIteratorInfo {
   /** The `[Symbol.iterator]()` call's receiver class + its declarer. */
   className: string;
-  /** The iterator object's type (the method's return). */
-  iterT: IrType & { kind: "object" };
+  /** The iterator's type (the method's return): a class instance, or a
+   * record (an object literal) whose `next` field is a function. */
+  iterT: IrType & ({ kind: "object" } | { kind: "record" });
   /** next()'s result record type. */
   resultT: IrType & { kind: "record" };
   valueT: IrType;
   /** False: no done field — the protocol never terminates. */
   hasDone: boolean;
+  /** The iterator declares a zero-parameter return(), which a consumer
+   * that stops before the end calls (IteratorClose). Only consumers that
+   * ask for `close` see such iterators. */
+  hasReturn: boolean;
 }
-export function classIteratorOf(lowerer: Lowerer, t: IrType): ClassIteratorInfo | null {
+/** A return() result type that is always an object: IteratorClose after a
+ * break throws a TypeError for any other result, which these desugars do
+ * not model. */
+function objectResult(t: IrType): boolean {
+  return t.kind === "record" || t.kind === "object";
+}
+
+/** What a class iterable's consumer handles: `records` accepts an
+ * object-literal iterator; `close` accepts an iterator with return(),
+ * which the consumer calls when it stops early (or never stops early). */
+export interface ClassIteratorOptions {
+  records?: boolean;
+  close?: boolean;
+}
+export function classIteratorOf(
+  lowerer: Lowerer,
+  t: IrType,
+  options: ClassIteratorOptions = {},
+): ClassIteratorInfo | null {
   if (t.kind !== "object") return null;
   const info = lowerer.classes.get(t.className);
   if (!info) return null;
   const iter = findMethodOn(lowerer, info, "sym:iterator");
   if (!iter || iter.sig.params.length !== 0 || iter.sig.abstract === true) return null;
   const iterT = iter.sig.ret;
-  if (iterT.kind !== "object") return null;
-  const itInfo = lowerer.classes.get(iterT.className);
-  if (!itInfo) return null;
-  // IteratorClose honesty: a declared return()/throw() would be called
-  // by JS on abrupt completion; these desugars never close.
-  if (findMethodOn(lowerer, itInfo, "return") || findMethodOn(lowerer, itInfo, "throw"))
-    return null;
-  const next = findMethodOn(lowerer, itInfo, "next");
-  if (!next || next.sig.params.length !== 0 || next.sig.abstract === true) return null;
-  const resultT = next.sig.ret;
+  let resultT: IrType;
+  let hasReturn: boolean;
+  if (iterT.kind === "object") {
+    const itInfo = lowerer.classes.get(iterT.className);
+    if (!itInfo) return null;
+    // IteratorClose honesty: a declared return() would be called by JS on
+    // abrupt completion, so only a consumer that closes takes it; for-of
+    // never calls throw(), the other consumers refuse it.
+    const close = findMethodOn(lowerer, itInfo, "return");
+    if (
+      close &&
+      (!options.close ||
+        close.sig.abstract === true ||
+        close.sig.params.length !== 0 ||
+        !objectResult(close.sig.ret))
+    )
+      return null;
+    if (findMethodOn(lowerer, itInfo, "throw") && !options.close) return null;
+    const next = findMethodOn(lowerer, itInfo, "next");
+    if (!next || next.sig.params.length !== 0 || next.sig.abstract === true) return null;
+    resultT = next.sig.ret;
+    hasReturn = !!close;
+  } else if (iterT.kind === "record" && options.records) {
+    const fields = lowerer.shapes.get(iterT.shapeId)?.fields;
+    const next = fields?.find((f) => f.name === "next")?.type;
+    if (!next || next.kind !== "func" || next.params.length !== 0 || next.rest) return null;
+    const close = fields?.find((f) => f.name === "return")?.type;
+    if (
+      close &&
+      (!options.close ||
+        close.kind !== "func" ||
+        close.params.length !== 0 ||
+        close.rest ||
+        !objectResult(close.ret))
+    )
+      return null;
+    resultT = next.ret;
+    hasReturn = close !== undefined;
+  } else return null;
   if (resultT.kind !== "record") return null;
   const shape = lowerer.shapes.get(resultT.shapeId);
   const value = shape?.fields.find((f) => f.name === "value");
@@ -8260,18 +8312,82 @@ export function classIteratorOf(lowerer: Lowerer, t: IrType): ClassIteratorInfo 
     resultT,
     valueT: value.type,
     hasDone: done !== undefined,
+    hasReturn,
   };
 }
 
-/** The `it.next()` step of a class iterator as an ordinary (possibly
- * virtual) method call. */
-export function classIteratorNextCall(
+/** The `next` an object-literal iterator's protocol calls, read once when
+ * the iterator opens: JS keeps the `next` it reads then in the iterator
+ * record, so a `next` the iterator assigns while it runs is not called.
+ * Null for an iterator class, whose `next` is a method. */
+export function classIteratorNextRead(
   lowerer: Lowerer,
   cit: ClassIteratorInfo,
   itRef: IrExpr,
   loc: SrcLoc,
+): (IrExpr & { type: IrType & { kind: "func" } }) | null {
+  const iterT = cit.iterT;
+  if (iterT.kind === "object") return null;
+  const field = lowerer.shapes.get(iterT.shapeId)!.fields.find((f) => f.name === "next")!;
+  return {
+    kind: "recordGet",
+    obj: itRef,
+    shapeId: iterT.shapeId,
+    field: "next",
+    type: field.type as IrType & { kind: "func" },
+    loc,
+  };
+}
+
+/** The `it.next()` step of a class iterator: an ordinary (possibly
+ * virtual) method call, or the call of `next`, the object-literal
+ * iterator's `next` that classIteratorNextRead read when it opened. */
+export function classIteratorNextCall(
+  lowerer: Lowerer,
+  cit: ClassIteratorInfo,
+  itRef: IrExpr,
+  next: IrExpr | null,
+  loc: SrcLoc,
 ): IrExpr {
-  return accessorCall(lowerer, cit.iterT.className, "next", itRef, [], cit.resultT, loc);
+  if (next === null || next.type.kind !== "func")
+    return classIteratorMethodCall(lowerer, cit, "next", itRef, loc);
+  return { kind: "callValue", callee: next, args: [], type: next.type.ret, loc };
+}
+
+/** `it.next()` or `it.return()` of a class iterator: a (possibly virtual)
+ * method call of an iterator class, or the call of an object-literal
+ * iterator's function field. */
+export function classIteratorMethodCall(
+  lowerer: Lowerer,
+  cit: ClassIteratorInfo,
+  method: "next" | "return",
+  itRef: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const iterT = cit.iterT;
+  if (iterT.kind === "object") {
+    const ret =
+      method === "next"
+        ? cit.resultT
+        : findMethodOn(lowerer, lowerer.classes.get(iterT.className)!, "return")!.sig.ret;
+    return accessorCall(lowerer, iterT.className, method, itRef, [], ret, loc);
+  }
+  const field = lowerer.shapes.get(iterT.shapeId)!.fields.find((f) => f.name === method)!;
+  const fnT = field.type as IrType & { kind: "func" };
+  return {
+    kind: "callValue",
+    callee: {
+      kind: "recordGet",
+      obj: itRef,
+      shapeId: iterT.shapeId,
+      field: method,
+      type: fnT,
+      loc,
+    },
+    args: [],
+    type: fnT.ret,
+    loc,
+  };
 }
 
 /** `recv[Symbol.iterator]()` as an ordinary method call. */
@@ -8299,12 +8415,15 @@ export function classIteratorDrainCall(
   loc: SrcLoc,
   elemT?: IrType,
 ): IrExpr | null {
-  const cit = classIteratorOf(lowerer, src.type);
+  // A spread takes every value, so it never closes the iterator.
+  const cit = classIteratorOf(lowerer, src.type, { records: true, close: true });
   if (!cit) return null;
   const outElem = elemT ?? cit.valueT;
   // Probe the element coercion purely: identical types, or an arm of a
   // union destination (the wrap coerceToExpected applies below).
-  if (!typeEquals(outElem, cit.valueT)) {
+  // A checked-dynamic value (`IteratorResult<T>`'s value is `T | any`)
+  // converts to the destination element with a check.
+  if (!typeEquals(outElem, cit.valueT) && cit.valueT.kind !== "dyn") {
     if (outElem.kind !== "union" || lowerer.armTag(outElem.unionId, cit.valueT) < 0) return null;
   }
   const outT = arrayOf(outElem);
@@ -8316,6 +8435,8 @@ export function classIteratorDrainCall(
     const recvT: IrType = { kind: "object", className: cit.className };
     const recvRef: IrExpr = { kind: "varRef", localId: "r.0", type: recvT, loc };
     const itRef: IrExpr = { kind: "varRef", localId: "it.0", type: cit.iterT, loc };
+    const nextRead = classIteratorNextRead(lowerer, cit, itRef, loc);
+    const nextRef: IrExpr | null = nextRead ? varRef("next.0", nextRead.type, loc) : null;
     const outRef: IrExpr = { kind: "varRef", localId: "out.0", type: outT, loc };
     const resRef: IrExpr = { kind: "varRef", localId: "res.0", type: cit.resultT, loc };
     const valueRead: IrExpr = {
@@ -8330,7 +8451,7 @@ export function classIteratorDrainCall(
       {
         kind: "varDecl",
         localId: "res.0",
-        init: classIteratorNextCall(lowerer, cit, itRef, loc),
+        init: classIteratorNextCall(lowerer, cit, itRef, nextRef, loc),
         loc,
       },
       ...(cit.hasDone
@@ -8371,6 +8492,7 @@ export function classIteratorDrainCall(
       locals: [
         { id: "r.0", name: "r", type: recvT, mutable: false },
         { id: "it.0", name: "it", type: cit.iterT, mutable: false },
+        ...(nextRead ? [{ id: "next.0", name: "next", type: nextRead.type, mutable: false }] : []),
         { id: "out.0", name: "out", type: outT, mutable: false },
         { id: "res.0", name: "res", type: cit.resultT, mutable: true },
       ],
@@ -8387,6 +8509,9 @@ export function classIteratorDrainCall(
           init: classIteratorOpenCall(lowerer, cit, recvRef, loc),
           loc,
         },
+        ...(nextRead
+          ? [{ kind: "varDecl", localId: "next.0", init: nextRead, loc } satisfies IrStmt]
+          : []),
         {
           kind: "while",
           cond: { kind: "boolLit", value: true, type: BOOL, loc },
@@ -8422,7 +8547,7 @@ export function classIteratorRestDrainCall(
   loc: SrcLoc,
 ): IrExpr {
   const outT = arrayOf(cit.valueT);
-  const key = `it:${cit.iterT.className}`;
+  const key = `it:${cit.iterT.kind === "object" ? cit.iterT.className : typeKey(cit.iterT)}`;
   let name = lowerer.iterDrainHelpers.get(key);
   if (!name) {
     name = keyedHelperName(lowerer, "%iter.drain", key);
@@ -8434,7 +8559,7 @@ export function classIteratorRestDrainCall(
       {
         kind: "varDecl",
         localId: "res.0",
-        init: classIteratorNextCall(lowerer, cit, itRef, loc),
+        init: classIteratorNextCall(lowerer, cit, itRef, null, loc),
         loc,
       },
       ...(cit.hasDone
@@ -9831,6 +9956,75 @@ function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType
   return lowerer.currentClass?.fields.get(parent.left.name.text) ?? null;
 }
 
+/** An array element read that construction narrows to a class value with a
+ * check (`%new.callee`, which throws "is not a constructor"). */
+interface NarrowedConstructorRead {
+  read: IrExpr;
+  check: string;
+  unionT: IrType & { kind: "union" };
+  calleeT: IrType & { kind: "classval" };
+  message: IrExpr;
+}
+
+/** `new arr[i](args)` through a narrowed element read: an interned lifted
+ * function takes the read and the completed arguments, which evaluate in
+ * that order as call arguments, then runs the check and constructs. JS
+ * evaluates the arguments before it checks that the callee constructs, and
+ * the arguments stay in the one call, where a spread's argument pack lives
+ * until every argument has read it. */
+function checkedElementConstruction(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  narrowed: NarrowedConstructorRead,
+  args: IrExpr[],
+  loc: SrcLoc,
+): IrExpr {
+  const type: IrType = { kind: "object", className: info.def.name };
+  const key = `newChecked:${narrowed.check}:${info.def.name}:${args.map((a) => typeKey(a.type)).join(",")}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = keyedHelperName(lowerer, "%new.checked", key);
+    lowerer.valueHelpers.set(key, name);
+    const params: IrParam[] = [
+      { localId: "value", name: "value", type: narrowed.unionT },
+      { localId: "message", name: "message", type: STRING },
+      ...args.map((arg, i) => ({ localId: `arg.${i}`, name: `arg${i}`, type: arg.type })),
+    ];
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: type,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "newValue",
+            callee: {
+              kind: "call",
+              callee: narrowed.check,
+              args: [varRef("value", narrowed.unionT, loc), varRef("message", STRING, loc)],
+              type: narrowed.calleeT,
+              loc,
+            },
+            args: params.slice(2).map((p) => varRef(p.localId, p.type, loc)),
+            type,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return {
+    kind: "call",
+    callee: name,
+    args: [narrowed.read, narrowed.message, ...args],
+    type,
+    loc,
+  };
+}
 /** Map, Set and the error classes construct in lowerNew's identifier
  * branch, which a module member alias of one (`new mod.M()`) also takes. */
 function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
@@ -11169,8 +11363,109 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           "constructing through a class value of an uninstantiated generic type (annotate the slot with a concrete instantiation — e.g. 'new (v: number) => Box<number>')",
         );
       }
-      const callee = lowerer.lowerExpr(expr.expression);
+      let callee = lowerer.lowerExpr(expr.expression);
       if (callee.type.kind === "dyn") return lowerCheckedConstructor(lowerer, expr, callee);
+      /** The union-typed element read a narrowing check guards, and the
+       * check (`%new.callee`) that yields the class value or throws. */
+      let narrowedCallee: NarrowedConstructorRead | null = null;
+      // An array element read (`new T[0]()` over `[Dog, Animal]`, whose
+      // checker type is the common base) keeps the undefined an index past
+      // the end reads: the class value is narrowed out with a check, which
+      // throws a TypeError for undefined.
+      if (callee.type.kind === "union") {
+        const arms = lowerer.unions.get(callee.type.unionId)?.arms ?? [];
+        const classArms = arms.filter((arm) => arm.kind === "classval");
+        if (
+          classArms.length === 1 &&
+          classArms[0]!.kind === "classval" &&
+          classArms[0]!.className === calleeT.className &&
+          arms.every((arm) => arm.kind === "classval" || arm.kind === "undefinedT")
+        ) {
+          const unionT = callee.type;
+          const helper = lowerer.narrowedArmHelper(unionT.unionId, calleeT, callee.loc);
+          if (helper) {
+            const loc = callee.loc;
+            const name = `%new.callee:${unionT.unionId}`;
+            if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+              const undefinedTag = lowerer.armTag(unionT.unionId, UNDEFINED_T);
+              const value: IrExpr = { kind: "varRef", localId: "value", type: unionT, loc };
+              lowerer.liftedFns.push({
+                name,
+                params: [
+                  { localId: "value", name: "value", type: unionT },
+                  { localId: "message", name: "message", type: STRING },
+                ],
+                locals: [
+                  { id: "value", name: "value", type: unionT, mutable: false },
+                  { id: "message", name: "message", type: STRING, mutable: false },
+                ],
+                returnType: calleeT,
+                body: [
+                  ...(undefinedTag >= 0
+                    ? [
+                        {
+                          kind: "if",
+                          cond: {
+                            kind: "unionIsTag",
+                            unionId: unionT.unionId,
+                            tag: undefinedTag,
+                            negated: false,
+                            value,
+                            type: BOOL,
+                            loc,
+                          },
+                          then: [
+                            {
+                              kind: "throw",
+                              value: {
+                                kind: "libCall",
+                                fn: "error.new",
+                                args: [{ kind: "varRef", localId: "message", type: STRING, loc }],
+                                type: { kind: "object", className: "%TypeError" },
+                                loc,
+                              },
+                              loc,
+                            },
+                          ],
+                          else_: null,
+                          loc,
+                        } satisfies IrStmt,
+                      ]
+                    : []),
+                  {
+                    kind: "return",
+                    value: lowerer.checkedNarrowCall(helper, value, calleeT, loc),
+                    loc,
+                  },
+                ],
+                loc,
+              });
+            }
+            // JavaScript evaluates the arguments before it checks that the
+            // callee constructs, so the check runs at the construction
+            // (checkedElementConstruction).
+            narrowedCallee = {
+              read: callee,
+              check: name,
+              unionT,
+              calleeT,
+              message: {
+                kind: "strLit",
+                value: `${expr.expression.getText()} is not a constructor`,
+                type: STRING,
+                loc,
+              },
+            };
+            callee = {
+              kind: "call",
+              callee: name,
+              args: [callee, narrowedCallee.message],
+              type: calleeT,
+              loc,
+            };
+          }
+        }
+      }
       if (callee.type.kind !== "classval")
         lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
       lowerer.noteEdge(classValueConstructor(info.def).fn);
@@ -11210,13 +11505,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       const built = constructedFromValue(
         lowerer,
         info,
-        {
-          kind: "newValue",
-          callee,
-          args,
-          type: { kind: "object", className: info.def.name },
-          loc,
-        },
+        narrowedCallee !== null
+          ? checkedElementConstruction(lowerer, info, narrowedCallee, args, loc)
+          : {
+              kind: "newValue",
+              callee,
+              args,
+              type: { kind: "object", className: info.def.name },
+              loc,
+            },
         expr,
       );
       // A runtime class slot widened from a union (`[Readable, Writable]`'s
