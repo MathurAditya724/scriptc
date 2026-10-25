@@ -43,3 +43,23 @@ for (const channel of channels) {
   console.log(channel.name, result === undefined, channel.count(["a", "b", "c"]));
 }
 console.log(delivered.join(" | "));
+
+// A class may implement the void member with a method that returns a value;
+// JavaScript passes that value on.
+class CountingChannel implements Channel {
+  name = "counting";
+  sent = 0;
+  publish<T = unknown>(message: Message<T>): number {
+    this.sent++;
+    return message.content.length;
+  }
+  count<T>(items: T[]): number {
+    return items.length * 2;
+  }
+}
+
+const counted: Channel[] = [new CountingChannel(), new LogChannel("plain")];
+for (const channel of counted) {
+  console.log(channel.name, channel.publish({ content: "four" }));
+  console.log(`sent ${channel.publish<number>({ content: "again", details: 2 })}`);
+}
