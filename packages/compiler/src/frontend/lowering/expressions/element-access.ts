@@ -69,6 +69,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
+import { withInheritedMethods } from "../record-inherited.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
 import { isKeyedFieldAccess } from "./keyed-field-targets.js";
@@ -1444,7 +1445,17 @@ export function lowerRecordKeyRead(
     loc,
   };
   if (nanCoded) return read;
-  return includeUndefined || optionalRead ? read : lowerer.maybeNarrow(read, expr);
+  const answered = withInheritedMethods(lowerer, read, litKey, isCalledAccess(expr));
+  return includeUndefined || optionalRead ? answered : lowerer.maybeNarrow(answered, expr);
+}
+
+/** The access is the callee of a call (`o[k](…)`, `o[k]?.(…)`, `o[k]!(…)`),
+ * which passes the object as `this`. */
+function isCalledAccess(node: ts.Expression): boolean {
+  let child: ts.Expression = node;
+  while (ts.isParenthesizedExpression(child.parent) || ts.isNonNullExpression(child.parent))
+    child = child.parent;
+  return ts.isCallExpression(child.parent) && child.parent.expression === child;
 }
 
 /** ToPropertyKey for represented record keys. Missing array-derived string

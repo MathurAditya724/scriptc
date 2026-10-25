@@ -2,11 +2,12 @@ import { emitBorrowedInput } from "./borrowed-inputs.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, isUnitType, typeEquals, type IrExpr } from "../../ir/ir.js";
+import { isRefCounted, isUnitType, typeEquals, type IrExpr, type IrType } from "../../ir/ir.js";
 import { DYN_KIND } from "./dyn.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import { emitRecordKeyGetOr } from "./expr-records.js";
 import { NULLABLE_NULL, SHAPE_WORD_INDEX, shapeWordHeader } from "./nullable-unions.js";
 import { emitUnionTag } from "./union-repr.js";
 
@@ -398,6 +399,13 @@ export function emitControlExpr(
       const fused = emitNullishOptionalChain(host, e);
       if (fused) return fused;
       if (
+        e.left.kind === "recordKeyGet" &&
+        e.left.missNaN !== true &&
+        typeEquals(e.type, e.left.type) &&
+        storesNoUnit(host, e.left)
+      )
+        return emitRecordKeyGetOr(host, e.left, e.right);
+      if (
         !typeEquals(e.type, e.left.type) &&
         (e.left.kind === "varRef" ||
           host.isStackUnionSource(e.left) ||
@@ -699,4 +707,16 @@ function emitUnionTagSet(host: LlvmEmitterContext, set: TagSet): string {
   const t = B.tmp();
   B.line(`${t} = phi i1 [ true, %${yes} ], [ false, %${no} ]`);
   return t;
+}
+
+/** Every value a keyed read can hit is present (no stored undefined or
+ * null), so only a missing key yields the read's unit arm. */
+function storesNoUnit(host: LlvmEmitterContext, e: ExprOf<"recordKeyGet">): boolean {
+  const shape = host.recordShape(e.shapeId);
+  const holdsUnit = (t: IrType): boolean =>
+    isUnitType(t) ||
+    t.kind === "dyn" ||
+    (t.kind === "union" && (host.unionsById.get(t.unionId)?.arms ?? []).some(isUnitType));
+  if (shape.indexValue !== undefined && holdsUnit(shape.indexValue)) return false;
+  return e.overflowOnly === true || !shape.fields.some((f) => holdsUnit(f.type));
 }

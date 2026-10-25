@@ -280,6 +280,7 @@ import {
 } from "./generic-functions.js";
 
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
+import { lowerRecordInheritedCall } from "./record-inherited.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
@@ -1643,6 +1644,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // Union receivers whose every arm has a text — the ngrok
       // `(chunk: Buffer | string) => chunk.toString()` idiom.
       lowerUnionToStringCall(lowerer, expr, expr.expression) ??
+      // Object.prototype's methods called by name on records: an own
+      // callable entry, else the built-in with the record as receiver.
+      lowerRecordInheritedCall(lowerer, expr, expr.expression) ??
       // Object.prototype.toString's default answer on records and
       // override-free program classes — "[object Object]", folded.
       lowerDefaultToStringCall(lowerer, expr, expr.expression) ??
