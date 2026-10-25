@@ -1253,6 +1253,18 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
+  test("package values cross at the members their declarations promise", async () => {
+    const entry = join(pilotRoot, "declared-members-cli.ts");
+    const binary = await buildStatic(entry, ["declared-members"]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+    expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
   test("the published Effect Function subpath initializes and runs statically", async () => {
     const entry = join(pilotRoot, "effect-function-cli.ts");
     const { coverage } = analyze(entry, { npmStatic: ["effect"] });

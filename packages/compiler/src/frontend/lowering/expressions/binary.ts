@@ -2388,6 +2388,34 @@ export function lowerStrictEquality(
         loc,
       };
     }
+    // A promise against a union with a promise arm, or two such unions:
+    // converting a promise into a union's promise arm of another payload
+    // (`chains.get(id) === tail` with a `Map<K, Promise<unknown>>`, or
+    // `a.pending === b.pending` after both were set to one promise) builds a
+    // new promise, so either side may hold a conversion of the other's
+    // promise, and a value narrowed out of the union may be one too.
+    // Promises are objects to ===, so compare both sides as untyped values,
+    // where a converted promise answers with its origin's identity (the plain
+    // promise-vs-promise rule below).
+    const holdsPromise = (type: IrType): boolean =>
+      type.kind === "promise" ||
+      (type.kind === "union" &&
+        (lowerer.unions.get(type.unionId)?.arms ?? []).some((arm) => arm.kind === "promise"));
+    if (
+      holdsPromise(left.type) &&
+      holdsPromise(right.type) &&
+      lowerer.dynConvertible(left.type) &&
+      lowerer.dynConvertible(right.type)
+    ) {
+      return {
+        kind: "dynScalarEq",
+        left: lowerer.coerceToExpected(left, DYN),
+        right: lowerer.coerceToExpected(right, DYN),
+        ...(negated ? { negated: true as const } : {}),
+        type: BOOL,
+        loc,
+      };
+    }
     if ((sameUnion || !bothUnion) && lowerer.eqComparableUnion(ut.unionId)) {
       aliasRefusal(ut);
       return {

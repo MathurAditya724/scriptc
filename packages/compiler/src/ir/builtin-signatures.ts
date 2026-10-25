@@ -860,6 +860,7 @@ function buildLibFnSignatures() {
     // (subject, characters, NUL-separated replacement texts): the fused
     // chain of global one-character replacements.
     "str.replaceChars": { argTypes: [STRING, STRING, STRING], result: STRING },
+    "str.codePoints": { argTypes: [STRING], result: arrayOf(STRING) },
     /* ToNumber(string) — ECMA-262 7.1.4.1 StringToNumber (scr_string.c):
      * trim the JS StrWhiteSpace set, empty/whitespace-only → +0, then the
      * whole span must be one StrNumericLiteral — signed decimal (Infinity
@@ -1559,15 +1560,18 @@ function buildLibFnSignatures() {
      * true } and a callback taking an address string or list, then dials
      * the answers in order. MAY THROW (host validation, a lookup throw). */
     "net.connectLookupDyn": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
-    "net.sockWrite": { argTypes: [NETSOCKET_T, STRING], result: VOID },
-    "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
+    /** socket.write: Node's Writable answer — false when the writes not yet
+     * completely sent, each counted in full, reach the 65536-byte
+     * high-water mark ('drain' follows), and on an ended or closed socket. */
+    "net.sockWrite": { argTypes: [NETSOCKET_T, STRING], result: BOOL },
+    "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: BOOL },
     "net.sockEnd": { argTypes: [NETSOCKET_T], result: VOID },
     "net.sockEndStr": { argTypes: [NETSOCKET_T, STRING], result: VOID },
     "net.sockEndBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
     /** write/end with a CHECKED-DYNAMIC chunk (an untyped JS payload into a
      * typed socket): the runtime dispatches STR/BYTES and throws Node's
      * ERR_INVALID_ARG_TYPE chunk TypeError on any other kind. */
-    "net.sockWriteDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
+    "net.sockWriteDyn": { argTypes: [NETSOCKET_T, DYN], result: BOOL },
     "net.sockEndDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
     "net.sockDestroy": { argTypes: [NETSOCKET_T], result: VOID },
     "net.sockPipe": { argTypes: [NETSOCKET_T, NETSOCKET_T], result: VOID },
@@ -2025,6 +2029,12 @@ function buildLibFnSignatures() {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
       result: VOID,
     },
+    /** on('drain') / once('drain'): fires after a write answered false, once
+     * the write buffer empties. */
+    "net.sockOnDrain": {
+      argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
+      result: VOID,
+    },
     "net.sockRemoteAddress": { argTypes: [NETSOCKET_T], result: VOID },
     /** socket.encrypted — `boolean | undefined`: the true arm iff the
      * socket carries a TLS transport (Node types `encrypted: true` on
@@ -2151,6 +2161,12 @@ function buildLibFnSignatures() {
     /** socket.address(): { address, family, port } or {} as a dyn. */
     "net.sockAddress": { argTypes: [NETSOCKET_T], result: DYN },
     "net.sockBytesWritten": { argTypes: [NETSOCKET_T], result: F64 },
+    /** socket.writableLength: Node's state.length, the length of every
+     * write not yet completely sent. */
+    "net.sockWritableLength": { argTypes: [NETSOCKET_T], result: F64 },
+    /** socket.writableNeedDrain: a write answered false and 'drain' has not
+     * fired, with the write half open. */
+    "net.sockWritableNeedDrain": { argTypes: [NETSOCKET_T], result: BOOL },
     /** remotePort (0), remoteFamily (1), localAddress (2), localPort (3),
      * localFamily (4): dyn values, undefined when unknown. */
     "net.sockAddrField": { argTypes: [NETSOCKET_T, F64], result: DYN },
@@ -3986,6 +4002,15 @@ function buildLibFnSignatures() {
     // The string keys `for...in` visits on an array (args[0], any element
     // type) after its indices. Borrowed; never throws.
     "array.namedKeys": { argTypes: [null], result: arrayOf(STRING) },
+    // The value of the foreign element (SCR_ARR_FOREIGN) at args[1] of an
+    // array (args[0], any element type); callers test the element state
+    // first. Borrowed; never throws.
+    "array.foreign": { argTypes: [null, F64], result: DYN },
+    /** The checked conversion's TypeError for the foreign element at args[1]
+     * of an array (args[0]) read where a value described by args[2] is
+     * expected. ALWAYS THROWS; polymorphic result (the error.nodeThrow
+     * pattern). May-throw seed. */
+    "array.foreignThrow": { argTypes: [null, F64, STRING], result: VOID },
     // Whether the array (args[0]) still has the key (args[1]) from its
     // namedKeys list. Borrowed; never throws.
     "array.hasNamedKey": { argTypes: [null, STRING], result: BOOL },
