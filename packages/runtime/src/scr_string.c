@@ -1889,6 +1889,21 @@ static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
   return true;
 }
 
+/* A loop about to read every unit of s (bytes-loop-versions.ts) converts it
+ * at once instead of after the threshold's reads, and publishes it as the
+ * scan's receiver. ASCII receivers and receivers past SCR_SIDX_UNITS_MAX
+ * publish nothing; the caller compares scr_str_scan.s with s. */
+void scr_str_scan_units(ScrStr *s) {
+  if (s->ascii || s->len > SCR_SIDX_UNITS_MAX) return;
+  ScrSidx *e = scr_sidx(s);
+  if (!e->units) e->units = scr_str_units(s, &e->nunits);
+  if (scr_str_scan.s != s) {
+    scr_str_scan.s = s;
+    scr_str_scan.units = e->units;
+    scr_str_scan.n = e->nunits;
+  }
+}
+
 typedef enum { SCR_UNIT_FIRST, SCR_UNIT_LAST, SCR_UNIT_AT } ScrUnitSearch;
 
 /* The UTF-16 index of needle in s: the first match at or after `from`,
@@ -1928,6 +1943,22 @@ static __attribute__((noinline)) double scr_str_unit_search(const ScrStr *s, con
 /* Search backwards from a clamped UTF-16 position. A low-surrogate position
  * maps to its scalar's first byte, so that scalar remains searchable. */
 double scr_str_last_index_of_from(ScrStr *s, ScrStr *needle, double position) {
+  /* A proven-ASCII receiver: byte offsets are UTF-16 indexes, and a needle
+   * with other bytes (including lone surrogate halves) is never found. */
+  if (s->ascii) {
+    size_t start = isnan(position) || position >= (double)s->len ? s->len
+                   : position <= 0 ? 0 : (size_t)trunc(position);
+    if (needle->len == 0) return (double)start;
+    if (needle->len > s->len) return -1.0;
+    size_t max_start = s->len - needle->len;
+    if (start < max_start) max_start = start;
+    char first = needle->data[0];
+    for (size_t i = max_start + 1; i-- > 0;) {
+      if (s->data[i] == first && memcmp(s->data + i, needle->data, needle->len) == 0)
+        return (double)i;
+    }
+    return -1.0;
+  }
   ScrSidx *e = scr_sidx_for(s);
   size_t len16 = scr_sidx_len(s, e);
   size_t start16 = isnan(position) || position >= (double)len16 ? len16
@@ -1973,6 +2004,19 @@ double scr_str_utf16_len(ScrStr *s) {
   }
   *slot = (ScrU16Len){s, units};
   return (double)(int64_t)units;
+}
+
+/* Records the UTF-16 length of a string whose producer counted it (latin1
+ * text has one unit per byte), so scr_str_utf16_len does not walk it. Only
+ * strings that scr_str_utf16_len would otherwise record are kept. */
+void scr_str_note_utf16_len(ScrStr *s, size_t units) {
+  if (s->ascii || s->len <= 64 || s->rc == SIZE_MAX) return;
+  if (!scr_u16len_tab) {
+    scr_u16len_tab = calloc(SCR_U16LEN_N, sizeof *scr_u16len_tab);
+    if (!scr_u16len_tab) return;
+    scr_sidx_register_cleanup();
+  }
+  *scr_u16len_slot(s) = (ScrU16Len){s, units};
 }
 
 double scr_str_char_code_at(ScrStr *s, double i) {
@@ -2194,6 +2238,17 @@ static void scr_str_slice_bounds(ScrStr *s, ScrSidx *e, double start, double end
 
 void scr_str_slice_range(ScrStr *s, double start, double end, bool substring,
                          ScrStringSlice *out) {
+  if (__builtin_expect(s->ascii, 1)) {
+    /* Units are bytes: no index entry, and no boundary splits a pair. */
+    size_t length = s->len;
+    size_t from = scr_slice_unit(start, length, substring);
+    size_t to = scr_slice_unit(end, length, substring);
+    if (substring && from > to) { size_t swap = from; from = to; to = swap; }
+    out->start = from;
+    out->length = to > from ? to - from : 0;
+    out->split = 0;
+    return;
+  }
   ScrSidx *e = scr_sidx_for(s);
   size_t from, to;
   scr_str_slice_bounds(s, e, start, end, substring, &from, &to);

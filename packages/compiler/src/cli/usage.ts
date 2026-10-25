@@ -31,11 +31,13 @@ Options:
                      (native-link-info implies --emit=obj and never links;
                      diagnostics prints the versioned JSON diagnostics
                      envelope for build and coverage)
-      --fail-on <blockers|divergences|dynamic>
+      --fail-on <blockers|divergences|dynamic|node-islands|eager-node-islands|island-gaps>
                      coverage only: exit 1 when the entry path has blockers
                      (a build would fail), or also when it has Node
-                     divergences, or also when it has likely-hot functions
-                     that use untyped values (SC6101)
+                     divergences, likely-hot functions that use untyped
+                     values (SC6101), any Node island (eager-node-islands is
+                     the same until deferred evaluation lands), or a gap
+                     island (a package scriptc should compile but cannot yet)
       --backend <b>  code generator (llvm)
       --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev
@@ -54,6 +56,12 @@ Options:
                      a helper process so the parent sees the exit sooner. The
                      helper keeps the executable mapped and its memory charged
                      for up to ~100 ms after exit (opt in; --emit=exe only)
+      --target-cpu <baseline|x86-64-v2|x86-64-v3|x86-64-v4|native>
+                     x86-64: compile the program's code for a CPU level
+                     (default: baseline, which runs on any x86-64 CPU). The
+                     executable then requires that level: v3 adds AVX2, BMI2
+                     and FMA, v4 adds AVX-512. native uses the build host's
+                     level. The runtime keeps its baseline code
       --profile-generate <pattern>
                      Linux: instrument the executable for profile-guided
                      optimization. Each run writes a raw profile to the
@@ -77,9 +85,9 @@ Options:
       --npm-static <pkg[,pkg…]|auto>
                      compile the named npm packages' shipped JS statically as
                      program modules (repeatable; "auto" opts in every eligible
-                     direct import: own .d.ts, unminified JS, no build-transform
-                     markers; "pkg..." also names every package pkg depends
-                     on). Packages that fail preflight are refused with a
+                     direct import: own .d.ts, no build-transform markers;
+                     "pkg..." also names every package pkg depends on).
+                     Packages that fail preflight are refused with a
                      diagnostic. Eligible dependencies compile automatically.
       --provenance-sources
                      EXPERIMENTAL: compile npm dependencies from their
@@ -104,6 +112,28 @@ Options:
       --no-dynamic-tier-warning
                      build and coverage: leave out SC6101, the warning that
                      names likely-hot functions that use untyped values
+      --node-islands <auto|explicit|off>
+                     Node island policy (default: auto): npm packages outside
+                     the native subset run in Node automatically; explicit
+                     allows only marked islands; off allows none. REPORT-ONLY
+                     in this version: coverage reports the islands a build
+                     would choose; builds compile as before
+      --node-island <pkg-or-path>
+                     mark an npm package or one of your modules (a path or
+                     glob) to run in a Node island (repeatable, comma lists;
+                     report-only)
+      --native <pkg> require an npm package to compile natively; outside the
+                     native subset it is SC8003 (repeatable; report-only)
+      --node <path>  the node executable Node islands use (report-only)
+      --explain-island <pkg>
+                     coverage only: why a package would run in a Node island,
+                     with the first reason per module, the native import
+                     sites and the packages inside its closure
+      --strict-user-js
+                     coverage only: report constructor functions, prototype
+                     and shape mutation, sloppy-mode semantics and builtin
+                     patching in your own .js/.cjs/.mjs modules as
+                     SC8101–SC8105 blockers
       --wasm <file.wasm>
                      coverage only: report a WebAssembly module the program
                      loads whose path its sources do not spell (repeatable;
@@ -123,6 +153,7 @@ export const CLI_OPTIONS = {
   strip: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
+  "target-cpu": { type: "string" },
   "profile-generate": { type: "string" },
   "profile-use": { type: "string" },
   sparse: { type: "boolean", default: false },
@@ -137,6 +168,12 @@ export const CLI_OPTIONS = {
   "explain-dynamic": { type: "string" },
   "dynamic-tier-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },
+  "node-islands": { type: "string" },
+  "node-island": { type: "string", multiple: true },
+  native: { type: "string", multiple: true },
+  node: { type: "string" },
+  "explain-island": { type: "string" },
+  "strict-user-js": { type: "boolean", default: false },
   lib: { type: "boolean", default: false },
   profile: { type: "string" },
   help: { type: "boolean", short: "h", default: false },

@@ -30,6 +30,7 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_object.c",
   "scr_union.c",
   "scr_exception.c",
+  "scr_unwind.c",
   "scr_error.c",
   "scr_console.c",
   "scr_lib.c",
@@ -49,6 +50,8 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_itable.c",
   "scr_slots.c",
   "scr_alloc.c",
+  // crypto.getCipherInfo's table; it links only into programs that call it.
+  "scr_cipher_info.c",
 ];
 
 export const OPTIONAL_RUNTIME_SOURCES = [
@@ -78,9 +81,12 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_perf.c", "dynAsync"],
   // perf_hooks event-loop metrics, only for programs that read them.
   ["scr_perf_loop.c", "perfLoop"],
+  // Module namespace objects as checked-dynamic values.
+  ["scr_module_namespace.c", "moduleNamespace"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
+  ["scr_brotli.c", all("zlib", "brotli")],
   ["scr_events.c", "events"],
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
@@ -146,6 +152,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dns_promises.c", all("dgram", "dnsPromises")],
   // Sockets as untyped values run over the dgram unit.
   ["scr_dgram_dyn.c", all("dgram", "dgramDyn")],
+  // TextEncoder and TextDecoder records boxed as untyped values.
+  ["scr_text_codec_dyn.c", "textCodecDyn"],
   ["scr_watch.c", "watch"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
@@ -159,6 +167,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_webcrypto.c", "webcrypto"],
   ["scr_webcrypto_pki.c", all("webcrypto", "pki")],
   ["scr_ed25519.c", all("pki", "ed25519")],
+  ["scr_x509.c", "x509"],
+  // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
+  ["scr_tls_x509.c", all("tlsEffective", "x509")],
   // WebCrypto's AES ciphers run over the cipher feature's mbedTLS archive.
   ["scr_webcrypto_aes.c", all("cipher", "webcrypto")],
   ["scr_fetch.c", "nativeFetch"],
@@ -223,6 +234,7 @@ export function createRuntimePackMatrix({
     { id: "quickjs", predicate: false },
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
+    { id: "brotli", predicate: all("zlib", "brotli") },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];
   const matrix = withLibraryRuntimeFlavors(

@@ -1,5 +1,8 @@
+import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
+import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
+import { lowerDateToPrimitiveCall } from "./builtins/dates.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerDynStreamMemberCall } from "./dyn-streams.js";
@@ -24,7 +27,11 @@ import {
 import { lowerMockTimersElementCall } from "./lower-test.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../errors.js";
-import { isFsStreamMember, lowerFsStreamMethodCall } from "./builtins/fs-streams.js";
+import {
+  isFsStreamMember,
+  lowerFsStreamCall,
+  lowerFsStreamMethodCall,
+} from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import {
   isZlibStreamMember,
@@ -119,7 +126,11 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
-import { lowerBytesStaticCall } from "./containers/bytes.js";
+import {
+  lowerBufferConstruct,
+  lowerBytesPrototypeSetCall,
+  lowerBytesStaticCall,
+} from "./containers/bytes.js";
 import {
   lowerRegexMethodCall,
   lowerStringIndexCall,
@@ -163,6 +174,7 @@ import {
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
+import { fenceX509KeyWalk } from "./builtins/x509.js";
 import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
@@ -183,7 +195,7 @@ import {
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerChildMethodValue, lowerChildPropertyCall } from "./handle-properties.js";
-import { classToNumberConversion } from "./class-to-primitive.js";
+import { classObjectTag, classToNumberConversion } from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import { structuralReadType } from "./class-unions.js";
 import {
@@ -245,6 +257,7 @@ import {
 import { fenceSymbolFieldCopy } from "./symbol-fields.js";
 import { lowerClassDataDescriptor, lowerClassDescriptorRead } from "./class-descriptors.js";
 import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.js";
+import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
 import { nullishValueUnitOf } from "./binding-analysis.js";
@@ -255,6 +268,7 @@ import {
   completeArgs,
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
+import { dynamicOverloadChoice } from "./overload-choice.js";
 import { lowerStringIteratorValue } from "./iterator-adapters.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import { maybePromiseReturnStmt, promiseArmedUnionOf } from "./maybe-promise.js";
@@ -269,8 +283,62 @@ import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generati
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
+/** `Object.defineProperty(target, ...)`, `Object.defineProperties`,
+ * `Reflect.defineProperty`, and `target.__defineGetter__/__defineSetter__`
+ * over a target that may hold an Error can install an accessor over an
+ * error's `name` or `message` (error-methods.ts). */
+function noteErrorAccessorReflection(lowerer: Lowerer, expr: ts.CallExpression): void {
+  const callee = expr.expression;
+  if (!ts.isPropertyAccessExpression(callee)) return;
+  const member = callee.name.text;
+  const target =
+    member === "defineProperty" || member === "defineProperties"
+      ? expr.arguments.nodes[0]
+      : member === "__defineGetter__" || member === "__defineSetter__"
+        ? callee.expression
+        : undefined;
+  if (!target) return;
+  const error = lowerer.checker.resolveName("Error", ts.SymbolFlags.Type, target, false);
+  const errorType = error ? lowerer.checker.getDeclaredTypeOfSymbol(error) : null;
+  if (mayHoldError(lowerer, lowerer.checker.getTypeAtLocation(target), errorType))
+    lowerer.errorAccessorReflection = locOf(expr);
+}
+
+/** An untyped or generic type, a type Error is assignable to (`object`,
+ * `{}`, `Object`, `{ message?: string }`), or
+ * an Error-shaped type with both `name` and `message`, alone or in a
+ * union or intersection. */
+function mayHoldError(lowerer: Lowerer, type: ts.Type, errorType: ts.Type | null): boolean {
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Instantiable))
+    return true;
+  if (type.flags & (ts.TypeFlags.Union | ts.TypeFlags.Intersection))
+    return ts.constituentTypes(type).some((part) => mayHoldError(lowerer, part, errorType));
+  return (
+    (lowerer.checker.getPropertyOfType(type, "message") !== undefined &&
+      lowerer.checker.getPropertyOfType(type, "name") !== undefined) ||
+    (errorType !== null && lowerer.checker.isTypeAssignableTo(errorType, type))
+  );
+}
+
+/** The `f` of a `(0, f)` callee (a numeric left operand, so dropping it
+ * changes only the call's receiver), or null. */
+function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
+  let e = callee;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (
+    !ts.isBinaryExpression(e) ||
+    e.operatorToken.kind !== ts.SyntaxKind.CommaToken ||
+    !ts.isNumericLiteral(e.left)
+  )
+    return null;
+  let right = e.right;
+  while (ts.isParenthesizedExpression(right)) right = right.expression;
+  return right;
+}
+
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
+  if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
   if (
@@ -291,11 +359,33 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const json = lowerJsonRequireCall(lowerer, expr);
   if (json) return json;
 
+  // `(0, ns.member)(...)` over a builtin module (tsc's and esbuild's call
+  // without a receiver): Node's module functions do not read `this`, so it
+  // is the member call.
+  {
+    const member = receiverlessCalleeOf(expr.expression);
+    if (member !== null && ts.isPropertyAccessExpression(member)) {
+      const builtin = lowerer.lowerNamespaceBuiltinCall(expr, member);
+      if (builtin) return builtin;
+    }
+  }
+
   // eval(...) and Function(...): Node's EvalError under
   // --disallow-code-generation-from-strings (code-generation.ts).
   {
     const codeGeneration = codeGenerationCalleeOf(lowerer, expr.expression);
     if (codeGeneration !== null) return lowerCodeGenerationCall(lowerer, expr, codeGeneration);
+  }
+  // The deprecated Buffer(...) call (containers/bytes.ts). The checker
+  // types it `any`, so the bytes cross as a checked-dynamic value, which
+  // keeps the Buffer brand for inspection.
+  {
+    const buffer = lowerBufferConstruct(lowerer, expr);
+    if (buffer) return { kind: "dynFrom", value: buffer, type: DYN, loc };
+  }
+  {
+    const stream = lowerFsStreamCall(lowerer, expr);
+    if (stream) return stream;
   }
   // A package shim's runtime intrinsic (a bodiless `declare function`
   // named scriptcUnixDgram* in a shipped shim): a direct runtime call.
@@ -516,6 +606,17 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     expr.expression.expression.kind === ts.SyntaxKind.SuperKeyword
   ) {
     return lowerer.lowerSuperMethodCall(expr, expr.expression);
+  }
+  // `value.#m(...)` on a checked-dynamic value (`this` in a JavaScript
+  // class's receiver-independent method): the private method of the
+  // brand-checked receiver.
+  if (
+    ts.isPropertyAccessExpression(expr.expression) &&
+    ts.isPrivateIdentifier(expr.expression.name) &&
+    !expr.expression.questionDotToken
+  ) {
+    const privateCall = lowerCheckedPrivateMethodCall(lowerer, expr, expr.expression);
+    if (privateCall) return privateCall;
   }
 
   const consoleMember = lowerer.consoleCallMember(expr);
@@ -982,6 +1083,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
     const bi = lowerer.builtinImportOf(expr.expression);
     if (bi) return lowerBuiltinCall(lowerer, expr, bi, loc);
+    // A constant bound to an assert method (`const ok = assert.ok`) called
+    // directly is that assertion, with the message Node quotes the call for.
+    {
+      const alias = assertFunctionAliasOf(lowerer, expr.expression);
+      const served = alias ? lowerer.lowerAssertModuleCall(expr, alias, loc) : null;
+      if (served) return served;
+    }
     // The assert module binding called DIRECTLY (`assert(x)` — a default
     // import or the CJS `const assert = require("assert")`): Node's
     // module object IS assert.ok; namespace-import bindings fence inside
@@ -1017,7 +1125,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       if (!argNode || (ts.isIdentifier(argNode) && argNode.text === "undefined")) {
         return { kind: "libCall", fn: "sym.newAnon", args: [], type: SYMBOL_T, loc };
       }
-      const desc = lowerer.lowerExpr(argNode);
+      let desc = lowerer.lowerExpr(argNode);
+      // A number or boolean description is its ToString.
+      if (desc.type.kind === "f64" || desc.type.kind === "bool")
+        desc = lowerer.ensureString(desc, argNode);
       if (desc.type.kind !== "string") {
         lowerer.noLowering(
           `Symbol with a '${lowerer.fmt(desc.type)}' description`,
@@ -1521,6 +1632,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerer.lowerTestMethodCall(expr, expr.expression) ??
       lowerer.lowerTimeoutMethodCall(expr, expr.expression) ??
       lowerArrayPrototypeBorrowCall(lowerer, expr, expr.expression) ??
+      lowerBytesPrototypeSetCall(lowerer, expr, expr.expression) ??
       lowerObjectOwnPrototypeCall(lowerer, expr, expr.expression) ??
       lowerObjectPrototypeCall(lowerer, expr, expr.expression) ??
       lowerStringPrototypeCall(lowerer, expr, expr.expression) ??
@@ -1745,6 +1857,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // The element spelling of an unsupported native Web method must fence
   // before lowering the callee into a checked-dynamic keyed read.
   if (ts.isElementAccessExpression(expr.expression)) {
+    const datePrimitive = lowerDateToPrimitiveCall(lowerer, expr, expr.expression);
+    if (datePrimitive) return datePrimitive;
     const timersDispose = lowerMockTimersElementCall(lowerer, expr, expr.expression);
     if (timersDispose) return timersDispose;
     const symbolMethod = lowerClassSymbolMethodCall(lowerer, expr);
@@ -2385,6 +2499,9 @@ function lowerNumberConstructorValue(
     };
   const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
   if (optionalNumber) return optionalNumber;
+  // A Date's number hint answers its time value.
+  if (arg.type.kind === "date")
+    return { kind: "libCall", fn: "date.valueOf", args: [arg], type: F64, loc };
   // A program class instance converts through its own methods.
   const classNumber = classToNumberConversion(lowerer, arg, argNode);
   if (classNumber) return classNumber;
@@ -2887,6 +3004,7 @@ function lowerObjectOwnCall(
   } else if (type.kind === "record") {
     const shape = lowerer.shapes.get(type.shapeId);
     fencePerfEntryKeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
+    fenceX509KeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
     if (!shape || shape.tuple || shapeHasAccessorSlots(shape)) {
       lowerer.noLowering(
         "Object.prototype." + method + " over this record shape",
@@ -3045,6 +3163,10 @@ function lowerObjectPrototypeCall(
   const immediate = immediateObjectTagReceiver(lowerer, receiverNode);
   const receiver = immediate?.effect ?? lowerer.lowerExpr(receiverNode);
   const tag = immediate?.tag ?? objectToStringTag(lowerer, receiver.type);
+  if (tag === null && immediate === null && call.arguments.nodes.length === 1) {
+    const classTag = classObjectTag(lowerer, receiver, receiverNode);
+    if (classTag) return classTag;
+  }
   // A generator object answers its tag through its checked capsule.
   if (tag === null && receiver.type.kind !== "dyn" && receiver.type.kind !== "generator") {
     lowerer.noLowering(
@@ -3698,6 +3820,14 @@ function lowerDynReceiverMethodCall(
   // 'unknown' slot does.
   if (checkerUntyped && DYN_HANDLE_KINDS.has(recv.type.kind))
     recv = lowerer.coerceToExpected(recv, DYN);
+  // A typed array whose checker type collapsed to `any` (a JS binding
+  // referenced in its own initializer's inference — hono's etag digest
+  // `const nextChunk = new Uint8Array(new ArrayBuffer(f(chunk)))` beside
+  // `chunk = nextChunk`) still lowered to its native bytes. The typed
+  // lowerings key on the checker type and decline it, so it boxes by
+  // reference (the box shares the native storage, so writes through the
+  // call stay visible) and the call dispatches on the runtime kind.
+  if (checkerUntyped && recv.type.kind === "bytes") recv = lowerer.coerceToExpected(recv, DYN);
   // The last-resort retry (boxTypedTemporary — every other lowering
   // already declined): a checker-`any` receiver whose value is a FRESH
   // typed result of an earlier step in the chain (`out.split("\n")`
@@ -5428,6 +5558,9 @@ function reconcileOverloadReturn(
   expr: ts.CallExpression | ts.TaggedTemplateExpression,
   call: IrExpr,
 ): IrExpr {
+  // The checker's overload is a guess for a checked-dynamic argument
+  // another overload accepts: the implementation's value stands.
+  if (ts.isCallExpression(expr) && dynamicOverloadChoice(lowerer, expr)) return call;
   const rsig = lowerer.checker.getResolvedSignature(expr);
   const rdecl = rsig ? rsig.declaration : undefined;
   // Nominal covariant overrides share the base's return ABI, but retain
@@ -7214,7 +7347,7 @@ export function recordKeysArrayCall(
  * (a key is own exactly when Object.keys would list it — the two share
  * the test), everything else true. Unmatched keys probe the overflow
  * map when present, so explicit undefined values remain own keys. */
-function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string {
+export function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string {
   const key = `obj.hasOwn:${shapeId}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
@@ -8378,7 +8511,17 @@ function lowerObjectStaticCall(
         ...(fnName !== null ? { fnName } : {}),
       };
     }
-    if (target && isUnitType(target.type)) {
+    // A class value whose statics are runtime properties of its constructor
+    // boxes to that constructor function, as for Object.defineProperty above.
+    const runtimeStaticClass =
+      target?.type.kind === "classval" ? lowerer.classes.get(target.type.className) : undefined;
+    if (
+      target &&
+      (isUnitType(target.type) ||
+        (runtimeStaticClass !== undefined &&
+          hasRuntimeStatics(runtimeStaticClass) &&
+          lowerer.dynConvertible(target.type)))
+    ) {
       target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(call.arguments.nodes[0]!) };
     }
     if (target?.type.kind === "dyn") {
@@ -8429,6 +8572,22 @@ function lowerObjectStaticCall(
       locOf(call),
     );
     if (fnIntegrity) return fnIntegrity;
+    // A Map or Set has no own properties: freeze, seal and preventExtensions
+    // all only make it not extensible.
+    if (value.type.kind === "map" || value.type.kind === "set") {
+      if (member === "preventExtensions" || member === "seal")
+        return lowerNativeFreeze(lowerer, "collection.preventExtensions", value, locOf(call));
+      const extensible: IrExpr = {
+        kind: "libCall",
+        fn: "collection.isExtensible",
+        args: [value],
+        type: BOOL,
+        loc: locOf(call),
+      };
+      return member === "isExtensible"
+        ? extensible
+        : { kind: "unary", op: "!", operand: extensible, type: BOOL, loc: locOf(call) };
+    }
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
@@ -8450,6 +8609,7 @@ function lowerObjectStaticCall(
         isSealed: "dyn.isSealed",
       } as const;
       const fn = operation[member as keyof typeof operation];
+      if (!member.startsWith("is")) noteUntypedIntegrity(lowerer, call.arguments.nodes[0]!);
       return {
         kind: "libCall",
         fn,
@@ -8463,10 +8623,44 @@ function lowerObjectStaticCall(
   // the argument — no alias exists, so the frozen bit is unobservable
   // (writes through the Readonly<T> result are compile errors, and no
   // other reference can write). Primitives pass through per ES2015.
-  // Aliased objects keep a fence: a later write through the original
-  // reference would need the runtime frozen bit (strict mode throws).
+  // Aliased records get the frozen bit of their rc word (frozen-records.ts);
+  // other aliased objects keep a fence: a later write through the original
+  // reference would need a runtime frozen bit (strict mode throws).
   if (member === "isFrozen" && call.arguments.nodes.length === 1) {
-    const value = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN);
+    const argNode = call.arguments.nodes[0]!;
+    const probedKind = tryLowerExpression(lowerer, argNode)?.type.kind;
+    if (
+      probedKind === "record" ||
+      probedKind === "array" ||
+      probedKind === "map" ||
+      probedKind === "set"
+    ) {
+      const native = lowerer.lowerExpr(argNode);
+      const loc = locOf(call);
+      if (native.type.kind === "record" || native.type.kind === "array")
+        return {
+          kind: "libCall",
+          fn: native.type.kind === "record" ? "record.isFrozen" : "array.isFrozen",
+          args: [native],
+          type: BOOL,
+          loc,
+        };
+      if (native.type.kind === "map" || native.type.kind === "set")
+        return {
+          kind: "unary",
+          op: "!",
+          operand: {
+            kind: "libCall",
+            fn: "collection.isExtensible",
+            args: [native],
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        };
+    }
+    const value = lowerer.lowerExprExpecting(argNode, DYN);
     return { kind: "libCall", fn: "dyn.isFrozen", args: [value], type: BOOL, loc: locOf(call) };
   }
   if (member === "freeze") {
@@ -8482,8 +8676,10 @@ function lowerObjectStaticCall(
       (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner))
         ? lowerer.lowerExprExpecting(argNode, DYN)
         : lowerer.lowerExpr(argNode);
-    if (value.type.kind === "dyn")
+    if (value.type.kind === "dyn") {
+      noteUntypedIntegrity(lowerer, argNode);
       return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
+    }
     if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
       return value; // fresh — freeze is identity here, honestly
     }
@@ -8516,6 +8712,12 @@ function lowerObjectStaticCall(
     if (fnIntegrity) return fnIntegrity;
     const integrity = lowerClassIntegrity(lowerer, call, "freeze", value);
     if (integrity) return integrity;
+    if (freezableRecordType(lowerer, value.type))
+      return lowerNativeFreeze(lowerer, "record.freeze", value, locOf(call));
+    if (value.type.kind === "array")
+      return lowerNativeFreeze(lowerer, "array.freeze", value, locOf(call));
+    if (value.type.kind === "map" || value.type.kind === "set")
+      return lowerNativeFreeze(lowerer, "collection.preventExtensions", value, locOf(call));
     lowerer.noLowering(
       "Object.freeze of a possibly-aliased value",
       call,
@@ -8561,7 +8763,12 @@ function lowerObjectStaticCall(
       (probed && isDynTypedRefType(probed.type)) ||
       (probed?.type.kind === "object" && lowerer.errorHierarchyClassOf(probed.type.className)) ||
       (probed && constructor && (constructor.callableBase || hasRuntimeStatics(constructor))) ||
-      (probed?.type.kind === "func" && lowerer.dynConvertible(probed.type))
+      (probed?.type.kind === "func" && lowerer.dynConvertible(probed.type)) ||
+      // null, undefined and unions of untyped JavaScript values: the same
+      // probe, whose ToObject throws Node's TypeError on nullish.
+      (probed &&
+        (isUnitType(probed.type) || probed.type.kind === "union") &&
+        lowerer.dynConvertible(probed.type))
     ) {
       const loc = locOf(call);
       const receiver = lowerer.coerceToExpected(probed, DYN);
@@ -8655,11 +8862,13 @@ function lowerObjectStaticCall(
       const moduleSymbol = source ? lowerer.checker.getSymbolAtLocation(source) : undefined;
       const names: string[] = [];
       moduleSymbol?.getExports().forEach((symbol, key) => {
+        // Internal names (`__export`) start with `__`; an exported name that
+        // does is keyed with an extra `_` (escapedSymbolName).
         const name = String(key);
-        if (name.startsWith("__") || name === "export=") return;
+        if ((name.startsWith("__") && !name.startsWith("___")) || name === "export=") return;
         const target =
           symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-        if (target.flags & ts.SymbolFlags.Value) names.push(name);
+        if (target.flags & ts.SymbolFlags.Value) names.push(ts.symbolName(symbol));
       });
       names.sort();
       const loc = locOf(call);
@@ -8785,6 +8994,7 @@ function lowerObjectStaticCall(
   // RESULTS, invoked in key order. The static field walk models neither
   // (accessor slots live outside declaredOrder), so the surface fences.
   fencePerfEntryKeyWalk(lowerer, argIr, call, `Object.${member}`);
+  fenceX509KeyWalk(lowerer, argIr, call, `Object.${member}`);
   if (shapeHasAccessorSlots(shape)) {
     lowerer.unsupported(
       "SC1090",
@@ -11232,6 +11442,7 @@ const SHIM_INTRINSICS: ReadonlyMap<string, { fn: IrLibFn; args: IrType[]; ret: I
   ["scriptcUnixDgramConnect", { fn: "dgram.unixConnect", args: [F64, STRING], ret: F64 }],
   ["scriptcUnixDgramSend", { fn: "dgram.unixSend", args: [F64, BYTES_U8], ret: F64 }],
   ["scriptcUnixDgramClose", { fn: "dgram.unixClose", args: [F64], ret: F64 }],
+  ["scriptcResponseLight", { fn: "fetch.responseLight", args: [DYN], ret: arrayOf(STRING) }],
 ]);
 
 function lowerShimIntrinsicCall(
@@ -11255,4 +11466,36 @@ function lowerShimIntrinsicCall(
     lowerer.lowerExprExpecting(arg, intrinsic.args[i]!),
   );
   return { kind: "libCall", fn: intrinsic.fn, args, type: intrinsic.ret, loc };
+}
+
+/** `value.#m(args)` where `value` lowers to a checked-dynamic value and the
+ * declaration-level class whose body declares `#m` declares it as a method:
+ * the method called on the brand-checked receiver
+ * (checkedPrivateMethodReceiver). Null for any other private member call. */
+function lowerCheckedPrivateMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (!ts.isPrivateIdentifier(access.name)) return null;
+  const name = access.name.text;
+  const owner = privateNameClass(lowerer, access.name);
+  const found = owner ? lowerer.findMethodOn(owner, name) : null;
+  if (!owner || !found || found.declarer !== owner || found.sig.abstract === true) return null;
+  const probed = tryLowerExpression(lowerer, access.expression);
+  if (!probed || !checkedDynamicOperand(probed)) return null;
+  const value = checkedDynamicOperand(lowerer.lowerExpr(access.expression));
+  if (!value) return null;
+  const loc = locOf(call);
+  const callee = `%${owner.def.name}.${name}`;
+  lowerer.noteEdge(callee);
+  const receiver = checkedPrivateMethodReceiver(lowerer, owner, name, value, loc);
+  const args = lowerer.completeArgs(call.arguments.nodes, found.sig.params, loc, call);
+  return { kind: "call", callee, args: [receiver, ...args], type: found.sig.ret, loc };
+}
+
+/** A checked-dynamic value, or the dynamic value under a checked extraction. */
+function checkedDynamicOperand(expr: IrExpr): IrExpr | null {
+  if (expr.type.kind === "dyn") return expr;
+  return expr.kind === "dynCheck" && expr.value.type.kind === "dyn" ? expr.value : null;
 }

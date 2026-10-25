@@ -58,6 +58,46 @@ import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 
+/** The class value an `instanceof` right-hand side holds. A JavaScript
+ * object's property holding a program class (`holder.type`) reads as a
+ * checked-dynamic value that the checker types as the class: it converts
+ * to the class value. Runtime-provided classes keep their own lowering. */
+function classValueOperand(
+  lowerer: Lowerer,
+  right: ts.Expression,
+  type: IrType & { kind: "classval" },
+): IrExpr {
+  if (
+    !isJsSourceFile(ts.getSourceFileOfNode(right)) ||
+    ts.isIdentifier(right) ||
+    lowerer.classes.get(type.className)?.def.runtime
+  )
+    return lowerer.lowerExpr(right);
+  const value = lowerer.lowerExprExpecting(right, DYN);
+  if (value.type.kind !== "dyn") return value;
+  return { kind: "dynCheck", value, type, loc: locOf(right) };
+}
+
+/** The value kinds that never hold an instance of a program class. */
+const NO_CLASS_INSTANCE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "f64",
+  "bigint",
+  "date",
+  "string",
+  "bool",
+  "array",
+  "map",
+  "set",
+  "regex",
+  "bytes",
+  "symbol",
+  "promise",
+  "undefinedT",
+  "nullT",
+]);
+
+const PRIMITIVE_WRAPPERS = ["Boolean", "Number", "String", "BigInt", "Symbol"] as const;
+
 /** `x instanceof C` for a program-declared class C. When x's static
  * class and C are both in extends-hierarchies the test is dynamic — the
  * O(1) preorder-interval check against the vtable (`instanceOf` node).
@@ -145,6 +185,20 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       kind: "libCall",
       fn: lowerer.isStdlibGlobal(expr.right, "WeakMap") ? "weakMap.is" : "weakSet.is",
       args: [value],
+      type: BOOL,
+      loc,
+    };
+  }
+  // The primitive wrapper constructors: a compiled program never creates a
+  // boxed primitive (`new Boolean(...)` and friends have no lowering), and
+  // a primitive is never an instance, so the test is false for every value
+  // (typebox's IsBoolean/IsNumber/IsString guards). The operand still runs.
+  if (PRIMITIVE_WRAPPERS.some((name) => lowerer.isStdlibGlobal(expr.right, name))) {
+    const value = lowerer.lowerExpr(expr.left);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result: { kind: "boolLit", value: false, type: BOOL, loc },
       type: BOOL,
       loc,
     };
@@ -250,6 +304,16 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (!target) {
     const date = lowerer.isStdlibGlobal(expr.right, "Date");
     const url = lowerer.isStdlibGlobal(expr.right, "URL");
+    // A catch binding holds a thrown Date as its checked-dynamic handle.
+    const caughtDate = date ? lowerer.caughtLocalOf(expr.left) : null;
+    if (caughtDate)
+      return {
+        kind: "libCall",
+        fn: "dyn.nativeDateIs",
+        args: [{ kind: "caughtToDyn", value: varRef(caughtDate.id, CAUGHT, loc), type: DYN, loc }],
+        type: BOOL,
+        loc,
+      };
     if ((date || url) && !lowerer.caughtLocalOf(expr.left)) {
       const value = lowerer.lowerExpr(expr.left);
       if (value.type.kind === "dyn")
@@ -300,6 +364,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         type: BOOL,
         loc,
       };
+    // A codec in untyped storage is its record's handle box.
+    const codec = (["TextEncoder", "TextDecoder"] as const).find((name) =>
+      lowerer.isStdlibGlobal(expr.right, name),
+    );
+    if (codec && lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind === "dyn") {
+      return {
+        kind: "libCall",
+        fn: "text.codecIs",
+        args: [
+          lowerer.lowerExprExpecting(expr.left, DYN),
+          { kind: "boolLit", value: codec === "TextDecoder", type: BOOL, loc },
+        ],
+        type: BOOL,
+        loc,
+      };
+    }
     if (lowerer.isStdlibGlobal(expr.right, "ReadableStream")) {
       const value = lowerer.lowerExprExpecting(expr.left, DYN);
       return { kind: "libCall", fn: "fetch.streamIs", args: [value], type: BOOL, loc };
@@ -400,7 +480,58 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     // (itself — no descendants can flow into the slot), so the answer
     // folds statically exactly like the named-target folds below.
     const rhsClassval = storedClassValueType(lowerer, expr.right);
-    if (rhsClassval?.kind === "classval" && !lowerer.caughtLocalOf(expr.left)) {
+    // A catch binding against a class held by a binding (`var E = class
+    // extends Error {}`). The binding holds the declared class or one of its
+    // subclasses. Without subclasses the test is the class's caught test,
+    // after the right operand's read; otherwise a payload of the declared
+    // class is tested against the class the binding holds.
+    const caught = lowerer.caughtLocalOf(expr.left);
+    const caughtTarget =
+      rhsClassval?.kind === "classval" && caught
+        ? lowerer.classes.get(rhsClassval.className)
+        : undefined;
+    if (caught && caughtTarget && !caughtTarget.localClass && !caughtTarget.def.runtime) {
+      const classValue = lowerer.lowerExpr(expr.right);
+      if (caughtTarget.subclasses.length === 0) {
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: classValue, loc }],
+          result: caughtClassInstanceOf(lowerer, caught.id, caughtTarget, loc),
+          type: BOOL,
+          loc,
+        };
+      }
+      if (classValue.type.kind !== "classval")
+        lowerer.badType(expr.right, lowerer.typeOf(expr.right));
+      const held = lowerer.declareHiddenLocal("%instanceofClass", classValue.type);
+      const instance: IrType = { kind: "object", className: caughtTarget.def.name };
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: held.id, init: classValue, loc }],
+        result: {
+          kind: "logical",
+          op: "&&",
+          left: caughtClassInstanceOf(lowerer, caught.id, caughtTarget, loc),
+          right: {
+            kind: "instanceOfValue",
+            value: {
+              kind: "caughtNarrow",
+              value: varRef(caught.id, CAUGHT, loc),
+              type: instance,
+              loc,
+            },
+            classValue: varRef(held.id, classValue.type, loc),
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+    if (rhsClassval?.kind === "classval" && !caught) {
       const targetInfo = lowerer.classes.get(rhsClassval.className);
       if (!targetInfo) {
         // The type world names a class the lowering never registered
@@ -432,7 +563,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
             "'instanceof' through a runtime-provided class value on an untyped value (give the operand a class type first)",
           );
         }
-        const classValue = lowerer.lowerExpr(expr.right);
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
         return classInstanceOf(lowerer, left, targetInfo, loc, classValue);
       }
       // A union of class instances against a runtime class value (`new K()`
@@ -440,6 +571,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       if (left.type.kind === "union" && targetInfo.def.runtime) {
         const tested = unionClassValueInstanceOf(lowerer, left, expr.right, targetInfo, loc);
         if (tested) return tested;
+      }
+      // A value whose type holds no class instance (a primitive, a native
+      // collection, a date, a regex, an array) is never an instance
+      // of a program class: false, after both operands evaluate.
+      if (!targetInfo.def.runtime && NO_CLASS_INSTANCE_KINDS.has(left.type.kind)) {
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "exprStmt", expr: left, loc },
+            { kind: "exprStmt", expr: classValue, loc },
+          ],
+          result: { kind: "boolLit", value: false, type: BOOL, loc },
+          type: BOOL,
+          loc,
+        };
       }
       if (left.type.kind !== "object") {
         lowerer.unsupported(
@@ -455,7 +602,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         (lowerer.inHierarchy(targetInfo) && lowerer.inHierarchy(lhsInfo)) ||
         (targetInfo.localClass !== undefined && lhsInfo.localClass !== undefined)
       ) {
-        const classValue = lowerer.lowerExpr(expr.right);
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
         if (classValue.type.kind !== "classval")
           lowerer.badType(expr.right, lowerer.typeOf(expr.right));
         const writableTest = writableClassValueTest(
@@ -493,8 +640,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         "statically-decided 'instanceof' on computed operands (bind the values to variables first)",
       );
     }
+    // A checked-dynamic right-hand side (a constructor read from a table, a
+    // structural constructor type, a builtin constructor held as `any`):
+    // the runtime's instanceof over the value, in both source languages.
     const constructor = tryLowerExpression(lowerer, expr.right);
-    if (constructor?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    if (constructor?.type.kind === "dyn") {
       const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
       return checkedClassInstanceOf(
         lowerer,
@@ -551,39 +701,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // narrowing then types the branches; reads bridge through caughtRead.
   const caughtLocal = lowerer.caughtLocalOf(expr.left);
   if (caughtLocal) {
-    const caughtInstanceOf = (info: ClassInfo): IrExpr => {
-      if (!lowerer.inHierarchy(info)) {
-        const value = varRef(caughtLocal.id, CAUGHT, loc);
-        return {
-          kind: "ternary",
-          cond: {
-            kind: "caughtTest",
-            value,
-            test: "instanceof",
-            className: info.def.name,
-            type: BOOL,
-            loc,
-          },
-          then: { kind: "boolLit", value: true, type: BOOL, loc },
-          else_: classInstanceOf(
-            lowerer,
-            { kind: "caughtToDyn", value, type: DYN, loc },
-            info,
-            loc,
-          ),
-          type: BOOL,
-          loc,
-        };
-      }
-      return {
-        kind: "caughtTest",
-        value: { kind: "varRef", localId: caughtLocal.id, type: CAUGHT, loc },
-        test: "instanceof",
-        className: info.def.name,
-        type: BOOL,
-        loc,
-      };
-    };
+    const caughtInstanceOf = (info: ClassInfo): IrExpr =>
+      caughtClassInstanceOf(lowerer, caughtLocal.id, info, loc);
     let test = caughtInstanceOf(target);
     // A thrown checked-dynamic object whose prototype chain reaches
     // Error.prototype (an ES5 constructor function inheriting from it).
@@ -973,6 +1092,42 @@ function writableClassValueTest(
       type: BOOL,
       loc,
     },
+    type: BOOL,
+    loc,
+  };
+}
+
+/** A catch binding tested against a program class: the runtime test against
+ * the class's preorder interval (false for non-hierarchy-object payloads). */
+function caughtClassInstanceOf(
+  lowerer: Lowerer,
+  caughtId: string,
+  info: ClassInfo,
+  loc: SrcLoc,
+): IrExpr {
+  if (!lowerer.inHierarchy(info)) {
+    const value = varRef(caughtId, CAUGHT, loc);
+    return {
+      kind: "ternary",
+      cond: {
+        kind: "caughtTest",
+        value,
+        test: "instanceof",
+        className: info.def.name,
+        type: BOOL,
+        loc,
+      },
+      then: { kind: "boolLit", value: true, type: BOOL, loc },
+      else_: classInstanceOf(lowerer, { kind: "caughtToDyn", value, type: DYN, loc }, info, loc),
+      type: BOOL,
+      loc,
+    };
+  }
+  return {
+    kind: "caughtTest",
+    value: { kind: "varRef", localId: caughtId, type: CAUGHT, loc },
+    test: "instanceof",
+    className: info.def.name,
     type: BOOL,
     loc,
   };
@@ -1773,6 +1928,30 @@ export function lowerInExpression(
           };
     }
   }
+  // A child process has `send`, `disconnect` and `channel` only when it was
+  // created with an IPC channel (fork, or an "ipc" stdio entry), and keeps
+  // them after the channel closes: the runtime answers from the child.
+  if (recv.type.kind === "child" && CHILD_CHANNEL_MEMBERS.has(key))
+    return { kind: "libCall", fn: "child.hasChannel", args: [recv], type: BOOL, loc };
+  // A native Node handle (an http.Server, a socket, a child process...):
+  // a member Node's declarations give the class is on its prototype, so
+  // `"closeAllConnections" in server` answers true. Undeclared names can
+  // still be real (internal `_`-prefixed fields), so they keep the fence.
+  if (
+    NATIVE_HANDLE_KINDS.has(recv.type.kind) &&
+    nodeDeclaredMember(lowerer, lowerer.typeOf(expr.right), key)
+  ) {
+    const answer: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+    return isSafeToDiscard(recv)
+      ? answer
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: recv, loc }],
+          result: answer,
+          type: BOOL,
+          loc,
+        };
+  }
   if (recv.type.kind !== "record") {
     lowerer.unsupported(
       "SC1090",
@@ -2049,24 +2228,43 @@ function lowerRuntimeKeyIn(
   return { kind: "call", callee: helper, args: [keyIr, recv], type: BOOL, loc };
 }
 
-/** Standard-library constructors the untyped instanceof helper has no
- * instance test for: an untyped `x instanceof Object` always refuses. */
-const DYN_INSTANCEOF_REFUSED: ReadonlySet<string> = new Set(["Object", "Function"]);
-
 /** The SC1090 message `x instanceof C` throws, with the site's position,
- * when `C` is a runtime constructor with no instance test. A right-hand
- * side that names one of DYN_INSTANCEOF_REFUSED always reaches that
- * refusal, so the site is listed with the runtime fences. */
+ * when `C` is a runtime constructor with no instance test. */
 function dynInstanceOfRefusal(lowerer: Lowerer, expr: ts.BinaryExpression): string {
   const diag = unsupportedDiag("SC1090", locOf(expr), "instanceof against this native constructor");
-  const symbol = lowerer.checker.getSymbolAtLocation(expr.right);
-  if (
-    symbol !== undefined &&
-    lowerer.isStdlibSymbol(symbol) &&
-    DYN_INSTANCEOF_REFUSED.has(ts.symbolName(symbol))
-  )
-    lowerer.runtimeFences.push(diag);
   const sf = ts.getSourceFileOfNode(expr);
   const line = ts.getLineAndCharacterOfPosition(sf, diag.loc.start).line + 1;
   return `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`;
+}
+
+/** IR kinds of native Node handles whose members come from Node's own
+ * declarations. */
+const NATIVE_HANDLE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "netServer",
+  "netSocket",
+  "httpReq",
+  "httpRes",
+  "httpClientReq",
+  "child",
+  "dgramSocket",
+  "fsWatcher",
+  "http2Session",
+  "http2Stream",
+]);
+
+/** Child process members that exist only on a child with an IPC channel. */
+const CHILD_CHANNEL_MEMBERS: ReadonlySet<string> = new Set(["send", "disconnect", "channel"]);
+
+/** Whether every constituent of `t` declares a required member `key` in
+ * a declaration file (Node's @types/node). */
+function nodeDeclaredMember(lowerer: Lowerer, t: ts.Type, key: string): boolean {
+  const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
+  return parts.every((part) => {
+    const prop = lowerer.checker.getPropertyOfType(part, key);
+    if (prop === undefined || (prop.flags & ts.SymbolFlags.Optional) !== 0) return false;
+    return (
+      prop.declarations.length > 0 &&
+      prop.declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile)
+    );
+  });
 }

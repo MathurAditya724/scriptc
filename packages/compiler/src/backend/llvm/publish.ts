@@ -596,10 +596,10 @@ export class PublishWalkers {
   }
 }
 
-/** Unpublishable types stored as scalars (dates are time values, process
- * streams file descriptors): no pointer to push, and always a value. */
+/** Unpublishable types stored as scalars (process streams are file
+ * descriptors): no pointer to push, and always a value. */
 function scalarRefusal(t: IrType): boolean {
-  return t.kind === "date" || t.kind === "procStream";
+  return t.kind === "procStream";
 }
 
 /** The Node.js implementation's refusal for a value of type `t`. */

@@ -17,6 +17,7 @@ import { PoisonError, dynFallbackType } from "./lowerer.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
 import type { FnCtx } from "./function-context.js";
+import { returnsGuessedOverloadValue } from "./overload-choice.js";
 
 /** Keep the conservative completion rule shared by return construction
  * and inference. Nested control flow may still make completion unreachable. */
@@ -174,6 +175,23 @@ export function declaredReturnType(
   // `() => void`), and throw-only callbacks are ordinary code
   // (`.action(() => { throw ... })`). `never` VALUES stay unmapped.
   if (retTsType.flags & ts.TypeFlags.Never) return VOID;
+  // A JS generator whose result the checker cannot infer (mutually
+  // recursive methods returning `yield*` of each other, as in yaml's
+  // Parser) has the return type `any`: a generator over untyped values.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    decl.asteriskToken &&
+    retTsType.flags & ts.TypeFlags.Any
+  )
+    return {
+      kind: "generator",
+      ...(decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+        ? { async: true as const }
+        : {}),
+      yieldT: DYN,
+      retT: DYN,
+      nextT: DYN,
+    };
   let mappedReturn = lowerer.mapTypeOf(retTsType);
   // A generator declared to return Iterable<T> returns a generator over T.
   if (mappedReturn && decl.asteriskToken)
@@ -252,6 +270,22 @@ export function declaredReturnType(
     mappedReturn.kind !== "dyn" &&
     !(mappedReturn.kind === "promise" && mappedReturn.inner.kind === "dyn") &&
     returnsOpenJsBinding(lowerer, decl)
+  )
+    return decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
+  // A JS function returning a value whose type rests on an undecided
+  // overload (guessedOverloadValue): the inferred result is the first
+  // overload's, which the returned value need not have.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !decl.type &&
+    !decl.asteriskToken &&
+    !hasExplicitJsDocReturn(decl) &&
+    mappedReturn !== null &&
+    mappedReturn.kind !== "dyn" &&
+    !(mappedReturn.kind === "promise" && mappedReturn.inner.kind === "dyn") &&
+    returnsGuessedOverloadValue(lowerer, decl)
   )
     return decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
       ? { kind: "promise", inner: DYN }

@@ -5,11 +5,12 @@ import { emitTlsLibCall } from "./lib-tls.js";
 import { emitHttp2LibCall } from "./lib-http2.js";
 import { emitDatagramLibCall } from "./lib-datagram.js";
 import { emitTestLibCall } from "./lib-test.js";
+import { FN_ATTRS, arrNewCall, traceArg, vAdapters } from "./shapes.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
-import type { IrExpr, IrType } from "../../ir/ir.js";
+import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
@@ -21,9 +22,13 @@ import {
 } from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
-import { rawBytes } from "./lib-abi.js";
+import { caBytes } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
+import { registerReplay } from "./emit-journal.js";
+
+/** ScrDyn.v.typed_ref.type_key_len: the low 27 bits of its bit-field word. */
+const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -236,6 +241,42 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return output;
   }
+  if (e.fn === "promise.allTuple") return emitPromiseAllTuple(host, e);
+  if (e.fn === "promise.fulfilledValue") {
+    // The payload of a fulfilled promise (borrowed operand): the scalar
+    // kinds that lower to a double (numbers, Dates, process streams) and
+    // booleans by value, strings and references +1.
+    const promise = host.emitExpr(e.args[0]!);
+    const out = B.tmp();
+    const ty = host.llType(e.type);
+    if (ty === "double") {
+      host.declare(`declare double @scr_promise_payload_f64(ptr)`);
+      B.line(`${out} = call double @scr_promise_payload_f64(ptr ${promise.name})`);
+      return { name: out, type: e.type };
+    }
+    if (ty === "i1") {
+      host.declare(`declare zeroext i1 @scr_promise_payload_bool(ptr)`);
+      B.line(`${out} = call zeroext i1 @scr_promise_payload_bool(ptr ${promise.name})`);
+      return { name: out, type: e.type };
+    }
+    if (e.type.kind === "string") {
+      host.declare(`declare ptr @scr_promise_payload_str(ptr)`);
+      B.line(`${out} = call ptr @scr_promise_payload_str(ptr ${promise.name}) ; +1`);
+      return host.own({ name: out, type: e.type });
+    }
+    host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
+    B.line(`${out} = call ptr @scr_promise_payload_ref(ptr ${promise.name}) ; +1`);
+    return host.own({ name: out, type: e.type });
+  }
+  if (e.fn === "record.sourceSpread") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const value = host.emitReadReceiver(e.args[1]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceSpread of a non-record");
+    host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
   if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
     const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
     if (e.fn === "dyn.typedRefKeyIs" && literal === null)
@@ -281,6 +322,38 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         B.line(`store i1 true, ptr ${slot}`);
         B.condBr(same, done, compare);
         B.startBlock(compare);
+        // A capsule with another key pointer usually belongs to another
+        // class: reject it on its key length and last eight bytes before
+        // the out-of-line name comparison, so a class table's chain of
+        // probes costs a few instructions per class it skips.
+        B.line(`store i1 false, ptr ${slot}`);
+        const bytes = Buffer.from(literal, "utf8");
+        const lenSlot = B.tmp(),
+          lenWord = B.tmp(),
+          len = B.tmp(),
+          lenEq = B.tmp();
+        B.line(
+          `${lenSlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(88, 52)} ; ->v.typed_ref.type_key_len`,
+        );
+        B.line(`${lenWord} = load i32, ptr ${lenSlot}`);
+        B.line(`${len} = and i32 ${lenWord}, ${TYPE_KEY_LEN_MASK}`);
+        B.line(`${lenEq} = icmp eq i32 ${len}, ${bytes.length}`);
+        const full = B.newLabel("brand.full");
+        if (bytes.length >= 8) {
+          const tail = B.newLabel("brand.tail");
+          B.condBr(lenEq, tail, done);
+          B.startBlock(tail);
+          const tailPtr = B.tmp(),
+            word = B.tmp(),
+            wordEq = B.tmp();
+          B.line(`${tailPtr} = getelementptr inbounds i8, ptr ${keyPtr}, i64 ${bytes.length - 8}`);
+          B.line(`${word} = load i64, ptr ${tailPtr}, align 1`);
+          B.line(`${wordEq} = icmp eq i64 ${word}, ${bytes.readBigInt64LE(bytes.length - 8)}`);
+          B.condBr(wordEq, full, done);
+        } else {
+          B.condBr(lenEq, full, done);
+        }
+        B.startBlock(full);
       }
     }
     if (e.fn === "dyn.typedRefIs") {
@@ -292,6 +365,41 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       B.line(`store i1 ${matches}, ptr ${slot}`);
       B.br(done);
     }
+    B.startBlock(done);
+    const result = B.tmp();
+    B.line(`${result} = load i1, ptr ${slot}`);
+    return { name: result, type: e.type };
+  }
+  if (e.fn === "dyn.classIs") {
+    // Only a class constructor's function value can match. Expose the
+    // function tag to LLVM so a chain of constructor probes (a static
+    // property bag's dispatch) costs one test for every other value, and
+    // borrow the receiver across a literal key as the capsule probes do.
+    const literal = e.args[1]!.kind === "strLit";
+    const value = literal ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
+    const key = host.emitExpr(e.args[1]!);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i1`);
+    B.line(`store i1 false, ptr ${slot}`);
+    const present = B.tmp();
+    const inspect = B.newLabel("ctor.inspect");
+    const compare = B.newLabel("ctor.compare");
+    const done = B.newLabel("ctor.done");
+    B.line(`${present} = icmp ne ptr ${value.name}, null`);
+    B.condBr(present, inspect, done);
+    B.startBlock(inspect);
+    const kind = host.dynKind(value.name);
+    const fn = B.tmp();
+    B.line(`${fn} = icmp eq i32 ${kind}, ${DYN_KIND.FUNC}`);
+    B.condBr(fn, compare, done);
+    B.startBlock(compare);
+    host.declare("declare zeroext i1 @scr_dyn_class_is_key(ptr, ptr)");
+    const matches = B.tmp();
+    B.line(
+      `${matches} = call zeroext i1 @scr_dyn_class_is_key(ptr ${value.name}, ptr ${key.name})`,
+    );
+    B.line(`store i1 ${matches}, ptr ${slot}`);
+    B.br(done);
     B.startBlock(done);
     const result = B.tmp();
     B.line(`${result} = load i1, ptr ${slot}`);
@@ -488,7 +596,8 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     // The https URL row is the http one with the TLS entry point — same
     // three arguments, same response-callback adapter. The https options
     // row is wider: rejectUnauthorized stays an i1, while its ScrStr or
-    // ScrBytes CA value expands to the runtime's raw pointer + length.
+    // ScrBytes CA value expands to the runtime's raw pointer + length
+    // (caBytes: a null pointer for none).
     const isTls = e.fn.startsWith("https.");
     const isUrl = e.fn.includes("requestUrl");
     const isTlsOptions = isTls && !isUrl;
@@ -522,7 +631,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (isTlsOptions) {
       callArgs = [
         ...callArgs.slice(0, 8),
-        ...rawBytes(host, args[8]!).map((arg) => `${arg.type} ${arg.name}`),
+        ...caBytes(host, args[8]!).map((arg) => `${arg.type} ${arg.name}`),
       ];
       host.declare(
         `declare ptr @scr_https_request(ptr, double, ptr, ptr, double, ptr, i1 zeroext, i1 zeroext, ptr, ${host.sizeType}, ptr, ptr)`,
@@ -542,6 +651,15 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   }
+  // A setter's write: the time value into the Date object (ScrDate.ms).
+  if (e.fn === "date.store") {
+    const date = emitBorrowedInput(host, e.args[0]!).name;
+    const ms = host.emitExpr(e.args[1]!).name;
+    const field = B.tmp();
+    B.line(`${field} = getelementptr inbounds i8, ptr ${date}, i64 8 ; ->ms`);
+    B.line(`store double ${ms}, ptr ${field}`);
+    return { name: ms, type: e.type };
+  }
   // queueMicrotask's checked-dynamic form carries the AsyncLocalStorage
   // context like the static one (lib-process.ts).
   const sym =
@@ -559,16 +677,66 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
           ? "scr_stream_dyn_async_iterator_open"
           : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
+  // The runtime's Date functions take and answer time values: a Date
+  // operand passes its time value, read at once from the borrowed object,
+  // and a Date result is a new Date object.
   const args = READ_ONLY_STRING_LIB_FNS.has(e.fn)
     ? emitBorrowedInputs(host, e.args)
     : e.args.map((a) =>
-        borrowsJsonInputs(e.fn) || borrowsIteratorInputs(e.fn)
-          ? emitBorrowedInput(host, a)
-          : host.emitExpr(a),
+        a.type.kind === "date"
+          ? { name: emitDateTimeArg(host, a), type: F64 }
+          : borrowsJsonInputs(e.fn) || borrowsIteratorInputs(e.fn)
+            ? emitBorrowedInput(host, a)
+            : host.emitExpr(a),
       );
+  // getTime and valueOf answer the time value the argument already is.
+  if ((e.fn === "date.getTime" || e.fn === "date.valueOf") && e.args[0]?.type.kind === "date")
+    return { name: args[0]!.name, type: e.type };
   // The deep comparisons' number test: computed here, with no runtime call.
   if (e.fn === "assert.sameValue")
     return { name: emitSameValueF64(host, args[0]!.name, args[1]!.name), type: e.type };
+  const callArgs = args;
+  if (e.type.kind === "date") {
+    const ms = emitSymbolLibCall(host, { ...e, type: F64 }, sym, callArgs);
+    host.declare(`declare ptr @scr_date_new(double)`);
+    const date = B.tmp();
+    B.line(`${date} = call ptr @scr_date_new(double ${ms.name})`);
+    return host.own({ name: date, type: e.type });
+  }
+  return emitSymbolLibCall(host, e, sym, callArgs);
+}
+
+/** The time value of a Date argument. A Date that a runtime Date function
+ * produces for this argument alone (`new Date(ms).getTime()`, a
+ * time-value local's read) passes the function's time value and creates
+ * no Date object. */
+function emitDateTimeArg(host: LlvmEmitterContext, date: IrExpr): string {
+  // A time-value local's read is its time value itself.
+  if (date.kind === "libCall" && date.fn === "date.fromTime")
+    return host.emitExpr(date.args[0]!).name;
+  if (date.kind === "libCall" && date.fn.startsWith("date."))
+    return emitGenericLibCall(host, { ...date, type: F64 }).name;
+  return emitDateTime(host, emitBorrowedInput(host, date).name);
+}
+
+/** A Date object's time value (ScrDate.ms). */
+function emitDateTime(host: LlvmEmitterContext, date: string): string {
+  const B = host.B;
+  const field = B.tmp();
+  const ms = B.tmp();
+  B.line(`${field} = getelementptr inbounds i8, ptr ${date}, i64 8 ; ->ms`);
+  B.line(`${ms} = load double, ptr ${field}`);
+  return ms;
+}
+
+/** The call of runtime function `sym` with evaluated arguments. */
+function emitSymbolLibCall(
+  host: LlvmEmitterContext,
+  e: LibCallExpr,
+  sym: string,
+  args: readonly LlValue[],
+): LlValue {
+  const B = host.B;
   const argDecls = args.map((a) => {
     const ty = host.llType(a.type);
     return ty === "i1" ? "i1 zeroext" : ty;
@@ -770,6 +938,70 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     return { name: t, type: e.type };
   }
   if (e.fn === "bytes.absent") return host.own({ name: "null", type: e.type });
+  if (e.fn === "bytes.disjoint") {
+    // [data, data + len * size) of each view, compared as addresses. A view
+    // that is not there (a binding the nest never assigned, NULL) answers
+    // false without reading its header, so the caller keeps its loop.
+    const B = host.B;
+    const values = e.args.map((arg) => ({ arg, value: host.emitReadReceiver(arg) }));
+    const present = values.map(({ value }) => {
+      const t = B.tmp();
+      B.line(`${t} = icmp ne ptr ${value.name}, null`);
+      return t;
+    });
+    const both = B.tmp();
+    B.line(`${both} = and i1 ${present[0]}, ${present[1]}`);
+    const compare = B.newLabel("disjoint.compare"),
+      done = B.newLabel("disjoint.done");
+    const from = B.currentLabel();
+    B.condBr(both, compare, done);
+    B.startBlock(compare);
+    const range = (arg: IrExpr, pointer: string): { start: string; end: string } => {
+      const size = arg.type.kind === "bytes" ? BYTES_ELEMENT_SIZE[arg.type.elem] : 1;
+      const dataSlot = B.tmp(),
+        data = B.tmp(),
+        lenSlot = B.tmp(),
+        len = B.tmp(),
+        bytes = B.tmp(),
+        start = B.tmp(),
+        end = B.tmp();
+      B.line(`${dataSlot} = getelementptr inbounds %ScrBytes, ptr ${pointer}, i64 0, i32 3`);
+      B.line(`${data} = load ptr, ptr ${dataSlot}`);
+      B.line(`${lenSlot} = getelementptr inbounds %ScrBytes, ptr ${pointer}, i64 0, i32 1`);
+      B.line(`${len} = load ${host.sizeType}, ptr ${lenSlot}`);
+      B.line(`${bytes} = mul ${host.sizeType} ${len}, ${size}`);
+      B.line(`${start} = ptrtoint ptr ${data} to ${host.sizeType}`);
+      B.line(`${end} = add ${host.sizeType} ${start}, ${bytes}`);
+      return { start, end };
+    };
+    const left = range(values[0]!.arg, values[0]!.value.name),
+      right = range(values[1]!.arg, values[1]!.value.name);
+    const before = B.tmp(),
+      after = B.tmp(),
+      apart = B.tmp(),
+      t = B.tmp();
+    B.line(`${before} = icmp ule ${host.sizeType} ${left.end}, ${right.start}`);
+    B.line(`${after} = icmp ule ${host.sizeType} ${right.end}, ${left.start}`);
+    B.line(`${apart} = or i1 ${before}, ${after}`);
+    const compared = B.currentLabel();
+    B.br(done);
+    B.startBlock(done);
+    B.line(`${t} = phi i1 [ false, %${from} ], [ ${apart}, %${compared} ]`);
+    return { name: t, type: e.type };
+  }
+  if (e.fn === "record.isFrozen") {
+    // The frozen bit of the record's rc word (scr_rc.h SCR_RC_FROZEN) is
+    // its second-highest bit; an immortal word sets the highest one too.
+    const value = host.emitReadReceiver(e.args[0]!);
+    const S = host.sizeType;
+    const rc = host.B.tmp(),
+      top = host.B.tmp(),
+      t = host.B.tmp();
+    host.B.line(`${rc} = load ${S}, ptr ${value.name}`);
+    host.B.line(`${top} = lshr ${S} ${rc}, ${S === "i64" ? 62 : 30}`);
+    host.B.line(`${t} = icmp eq ${S} ${top}, 1`);
+    return { name: t, type: e.type };
+  }
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
   // events.once builds typed listener adapters beside the emitter calls.
   if (e.fn === "events.once" || e.fn === "events.onceSignal")
@@ -878,10 +1110,12 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "blob":
     case "wasm":
     case "array":
+    case "collection":
     case "record":
     case "disposable":
     case "punycode":
     case "constants":
+    case "promise":
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
@@ -895,4 +1129,75 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** The settlement adapter of Promise.all's tuple form for the builder
+ * `fnName`, which fulfills the result with the builder's tuple. */
+function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrType): string {
+  const key = `allTuple:${fnName}`;
+  let adapter = host.resolveThunks.get(key);
+  if (adapter !== undefined) return adapter;
+  adapter = `sc_all_tuple_${host.resolveThunks.size}`;
+  host.resolveThunks.set(key, adapter);
+  host.journal?.allocated(adapter, "allTupleAdapterFor", [fnName, tuple]);
+  const rc = vAdapters(host.shapeHost, tuple);
+  host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
+  host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
+  host.resolveThunkDefs.push(
+    `define internal void @${adapter}(ptr %dst, ptr %src) ${FN_ATTRS} { ; Promise.all tuple`,
+    `entry:`,
+    `  %entries = call ptr @scr_promise_payload_ref(ptr %src) ; +1, moves into the builder`,
+    `  %tuple = call ptr @${host.callTarget(fnName)}(ptr %entries)`,
+    `  call void @scr_promise_fulfill_ref(ptr %dst, ptr %tuple, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, tuple)})`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  host.journal?.built();
+  return adapter;
+}
+
+registerReplay("allTupleAdapterFor", (host, args) =>
+  allTupleAdapterFor(host, args[0] as string, args[1] as IrType),
+);
+
+/** Promise.all's tuple form (promise.allTuple): the combinator over the
+ * entries stores each fulfilled entry promise, and a settlement adapter on
+ * the combinator calls the builder with them and fulfills the result with
+ * the tuple inside the combinator's settlement; a rejection settles the
+ * result the same way. The combinator itself counts as handled. */
+function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
+  const B = host.B;
+  const build = e.args[1]!;
+  if (build.kind !== "closure" || e.type.kind !== "promise")
+    throw new InternalCompilerError("llvm emitter bug: promise.allTuple shape");
+  const entriesT = e.args[0]!.type;
+  const entries = host.emitExpr(e.args[0]!);
+  const adapter = allTupleAdapterFor(host, build.fnName, e.type.inner);
+  host.declare(`declare ptr @scr_promise_all(ptr, ptr, ptr)`);
+  host.declare(`declare void @scr_promise_all_store_promise(ptr, double, ptr)`);
+  host.declare(`declare ptr @scr_promise_new()`);
+  host.declare(`declare void @scr_promise_race_add(ptr, ptr, ptr)`);
+  host.declare(`declare void @scr_promise_mark_handled(ptr)`);
+  host.declare(`declare void @scr_promise_release(ptr)`);
+  host.declare(`declare double @scr_arr_len(ptr)`);
+  if (entriesT.kind !== "array")
+    throw new InternalCompilerError("llvm emitter bug: promise.allTuple entries");
+  const len = B.tmp();
+  const cap = B.tmp();
+  B.line(`${len} = call double @scr_arr_len(ptr ${entries.name})`);
+  B.line(`${cap} = fptoui double ${len} to ${host.sizeType}`);
+  const values = B.tmp();
+  B.line(`${values} = ${arrNewCall(host.shapeHost, entriesT.elem, cap)}`);
+  host.own({ name: values, type: entriesT });
+  const all = B.tmp();
+  B.line(
+    `${all} = call ptr @scr_promise_all(ptr ${entries.name}, ptr ${values}, ptr @scr_promise_all_store_promise)`,
+  );
+  B.line(`call void @scr_promise_mark_handled(ptr ${all})`);
+  const result = B.tmp();
+  B.line(`${result} = call ptr @scr_promise_new()`);
+  B.line(`call void @scr_promise_race_add(ptr ${result}, ptr ${all}, ptr @${adapter})`);
+  B.line(`call void @scr_promise_release(ptr ${all})`);
+  return host.own({ name: result, type: e.type });
 }

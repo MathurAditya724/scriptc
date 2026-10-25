@@ -254,13 +254,18 @@ function aliasedPackageName(pkgDir: string): string | null {
 export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
   delete pkg["types"];
   delete pkg["typings"];
-  const transform = (v: unknown): void => {
-    if (v === null || typeof v !== "object") return;
-    if (Array.isArray(v)) {
-      for (const item of v) transform(item);
-      return;
-    }
-    const obj = v as Record<string, unknown>;
+  const transform = (v: unknown): unknown => {
+    if (v === null || typeof v !== "object") return v;
+    if (Array.isArray(v)) return v.map(transform);
+    // The result is a new object, built in key order; the first entry of a
+    // key wins.
+    const entries: [string, unknown][] = [];
+    const seen = new Set<string>();
+    const add = (key: string, value: unknown): void => {
+      if (seen.has(key)) return;
+      seen.add(key);
+      entries.push([key, value]);
+    };
     // 0. The "node" condition HOISTS: Node's runtime resolution matches it
     //    (yaml's `{ types, node: "./dist/index.js", default: "./browser/
     //    index.js" }` runs the node dist; the browser dist is a DIFFERENT
@@ -270,24 +275,18 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
     //    under import+require (either matcher finds it there), an object's
     //    entries splice inline — earlier real keys keep winning, exactly
     //    Node's first-match-in-key-order rule.
-    if (obj["node"] !== undefined) {
-      const entries = Object.entries(obj);
-      for (const k of Object.keys(obj)) delete obj[k];
-      for (const [k, val] of entries) {
-        if (k !== "node") {
-          if (!(k in obj)) obj[k] = val;
-          continue;
-        }
-        const inner: Record<string, unknown> =
-          typeof val === "string"
-            ? { import: val, require: val }
-            : val !== null && typeof val === "object" && !Array.isArray(val)
-              ? (val as Record<string, unknown>)
-              : {};
-        for (const [ik, iv] of Object.entries(inner)) {
-          if (!(ik in obj)) obj[ik] = iv;
-        }
+    for (const [key, value] of Object.entries(v as Record<string, unknown>)) {
+      if (key !== "node") {
+        add(key, value);
+        continue;
       }
+      const inner: Record<string, unknown> =
+        typeof value === "string"
+          ? { import: value, require: value }
+          : value !== null && typeof value === "object" && !Array.isArray(value)
+            ? (value as Record<string, unknown>)
+            : {};
+      for (const [innerKey, innerValue] of Object.entries(inner)) add(innerKey, innerValue);
     }
     // 1. The types claims go AFTER the hoist: a node object's own
     //    "types" key (uuid's `node: { types: "./dist/index.d.ts", default:
@@ -295,15 +294,17 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
     //    in place tsgo follows it, maps the hidden declaration to its
     //    same-stem JS (dist/index.js, the browser build) and disagrees with
     //    this resolver's runtime answer.
-    delete obj["types"];
-    delete obj["typings"];
-    for (const value of Object.values(obj)) transform(value);
+    return Object.fromEntries(
+      entries
+        .filter(([key]) => key !== "types" && key !== "typings")
+        .map(([key, value]): [string, unknown] => [key, transform(value)]),
+    );
   };
-  if (pkg["exports"] !== undefined) transform(pkg["exports"]);
+  if (pkg["exports"] !== undefined) pkg["exports"] = transform(pkg["exports"]);
   // The "imports" field maps "#" specifiers with the same condition objects
   // (chalk 5's `"#supports-color": { node, default }`), so Node's "node"
   // target hoists there too.
-  if (pkg["imports"] !== undefined) transform(pkg["imports"]);
+  if (pkg["imports"] !== undefined) pkg["imports"] = transform(pkg["imports"]);
 }
 
 /** npmStaticTransformPkgJson over a package.json TEXT (the fs shadow's
@@ -504,6 +505,10 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // literals they build.
           const enums = original === null ? null : services.enumIifes(original, path);
           if (enums !== null) original = enums;
+          // Guarded namespace declarations (`var ns = ns || {}`) read the
+          // hoisted `undefined`: the declaration is its default.
+          const namespaces = original === null ? null : services.namespaceDefaults(original, path);
+          if (namespaces !== null) original = namespaces;
           // A module that names its export object through a variable reaches
           // its members through `exports`.
           const exportsVar = original === null ? null : services.cjsExportsVar(original, path);
@@ -516,6 +521,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
             aliased !== null ||
             fnExports !== null ||
             enums !== null ||
+            namespaces !== null ||
             exportsVar !== null;
           if (original !== null) {
             const namepaths = services.jsDocNamepaths(path, original);
@@ -614,26 +620,11 @@ export function clearProgramBuiltinAliasCache(): void {
  * but the bundler-emitted CJS export rewrite (npm-static-rewrite.ts)
  * types the getter-table shapes and the offender attribution degrades a
  * package whose surface still breaks its consumers — so those bundles are
- * worth ATTEMPTING: eligible when the .d.ts and unminified criteria hold,
- * gracefully per-package-degraded when the attempt fails. */
+ * worth ATTEMPTING: eligible when the .d.ts criteria hold, gracefully
+ * per-package-degraded when the attempt fails. Minified JS is attempted
+ * too: a minified dist is ordinary JavaScript, and the bundle recognizers
+ * know esbuild's __commonJS helper by its shape under any name. */
 const TRANSFORM_MARKERS = ["__webpack_require__"];
-
-/** Unminified-JS heuristic over an entry source: at least two lines and
- * an average line length under 200 characters (minified dists are one
- * enormous line; readable code averages well under 100). */
-function looksUnminified(source: string): boolean {
-  const lines = source.split("\n");
-  if (lines.length < 2) return false;
-  return source.length / lines.length <= 200;
-}
-
-/** A whitespace/syntax-minified bundler dist whose interop helpers keep
- * their names (`var __toESM=…,__toCommonJS=mod=>…`): the recognizers
- * verify those shapes and refuse the package precisely when they cannot,
- * so the minification heuristic need not refuse it up front. */
-function namedBundlerHelpers(source: string): boolean {
-  return /\b__(?:toCommonJS|commonJS|toESM)\d*\s*=\s*(?:\(|[A-Za-z_$][\w$]*\s*=>)/.test(source);
-}
 
 function hasTransformMarkers(source: string): boolean {
   return TRANSFORM_MARKERS.some((m) => source.includes(m));
@@ -676,8 +667,6 @@ export function npmStaticIneligibleReason(
   if (jsEntry === null) return "no runtime JS entry resolves";
   const source = trackedReadFile(jsEntry);
   if (source === null) return `its runtime entry ${jsEntry} cannot be read`;
-  if (!looksUnminified(source) && !namedBundlerHelpers(source))
-    return "its shipped JS looks minified";
   if (hasTransformMarkers(source)) {
     return "its shipped JS carries build-transform markers (bundled/transpiled dist)";
   }

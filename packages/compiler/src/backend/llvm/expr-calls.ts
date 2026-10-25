@@ -44,6 +44,7 @@ import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { f64Lit, ffiNativeTypeLl, ffiNativeParamLl, ffiNativeReturnLl } from "./common.js";
 import { canStackUnion, emitStackUnion } from "./stack-unions.js";
+import { emitStackRecordKeyGet, scalarRecordKeyGet } from "./expr-records.js";
 import { emitCallArrayRead } from "./local-array-reads.js";
 import { emitScalarOptional, isScalarOptionalSource } from "./local-union-storage.js";
 import { emitStackMapRead } from "./map-read-lifetimes.js";
@@ -166,6 +167,9 @@ export function emitCallExpr(
               return { name: host.emitOwnedNullableStack(a).box, type: a.type };
             // An inline union field read copies its tag and bits.
             if (host.inlineFieldGet(a)) return host.emitReadReceiver(a);
+            // A scalar keyed record read writes its tag and bits.
+            if (a.kind === "recordKeyGet" && scalarRecordKeyGet(host, a))
+              return { name: emitStackRecordKeyGet(host, a), type: a.type };
           }
           if (inputs[index]) return host.emitReadReceiver(a);
         }
@@ -240,38 +244,46 @@ export function emitCallExpr(
         ? INTEGER_DISPATCH_SUFFIX
         : "";
       const target = `@${borrowed ? mangleBorrowedFunction(e.callee) : host.callTarget(e.callee)}${abi ? INT32_ABI_SUFFIX : ""}${dispatch}`;
+      // A call of an unwinding-ABI callee is an invoke (emitDirectCall):
+      // its landing pad unwinds, so no pending check follows it.
       if (e.type.kind === "void") {
-        B.line(`call void ${target}(${argList})`);
-        if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
+        const invoked = host.emitDirectCall(`call void ${target}(${argList})`, e.callee);
+        if (!invoked && host.mayThrow.has(e.callee)) host.emitPendingCheck();
         if (borrowed) host.releaseTemps(host.frames.pop()!);
         return { name: "", type: e.type };
       }
       const t = B.tmp();
       if (abi?.union) {
-        B.line(`${t} = call ${SCALAR_UNION_RESULT} ${target}(${argList})`);
-        if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
+        const invoked = host.emitDirectCall(
+          `${t} = call ${SCALAR_UNION_RESULT} ${target}(${argList})`,
+          e.callee,
+        );
+        if (!invoked && host.mayThrow.has(e.callee)) host.emitPendingCheck();
         if (borrowed) host.releaseTemps(host.frames.pop()!);
         if (stackResult) return host.stackScalarUnion(t, e.type);
         return host.own({ name: host.boxScalarUnion(t, e.type), type: e.type });
       }
       if (abi?.result) {
-        B.line(`${t} = call i32 ${target}(${argList})`);
+        const invoked = host.emitDirectCall(`${t} = call i32 ${target}(${argList})`, e.callee);
         const out = host.int32Result(t, e.type);
-        if (host.mayThrow.has(e.callee)) host.emitPendingCheck(out);
+        if (!invoked && host.mayThrow.has(e.callee)) host.emitPendingCheck(out);
         if (borrowed) host.releaseTemps(host.frames.pop()!);
         return out;
       }
-      B.line(`${t} = call ${host.llType(e.type)} ${target}(${argList})`);
+      const invoked = host.emitDirectCall(
+        `${t} = call ${host.llType(e.type)} ${target}(${argList})`,
+        e.callee,
+      );
       let out: LlValue;
       if (borrowed && host.borrowedReturns.has(e.callee)) {
         // A borrowed-return body hands back +0 (a null dummy when it threw):
         // test the exception first, then own the result before the
         // argument snapshots that keep it reachable are released.
-        if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
+        if (!invoked && host.mayThrow.has(e.callee)) host.emitPendingCheck();
         out = host.own({ name: host.retainFrame(t, e.type), type: e.type });
       } else {
         out = host.own({ name: t, type: e.type });
-        if (host.mayThrow.has(e.callee)) host.emitPendingCheck(out);
+        if (!invoked && host.mayThrow.has(e.callee)) host.emitPendingCheck(out);
       }
       if (borrowed) {
         host.toFrame(out);
@@ -1362,10 +1374,11 @@ export function emitBorrowedResultCall(host: LlvmEmitterContext, e: ExprOf<"call
     )
     .join(", ");
   const t = host.B.tmp();
-  host.B.line(
+  const invoked = host.emitDirectCall(
     `${t} = call ${host.llType(e.type)} @${mangleBorrowedFunction(e.callee)}${abi ? INT32_ABI_SUFFIX : ""}(${argList}) ; borrowed result`,
+    e.callee,
   );
-  if (host.mayThrow.has(e.callee)) host.emitPendingCheck();
+  if (!invoked && host.mayThrow.has(e.callee)) host.emitPendingCheck();
   return { name: t, type: e.type };
 }
 

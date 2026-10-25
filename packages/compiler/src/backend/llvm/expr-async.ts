@@ -184,7 +184,7 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
         }
         const v = host.emitExpr(e.args[0]!);
         const t = e.args[0]!.type;
-        if (t.kind === "f64" || t.kind === "date") {
+        if (t.kind === "f64") {
           host.declare(`declare void @scr_promise_fulfill_f64(ptr, double)`);
           B.line(`call void @scr_promise_fulfill_f64(ptr ${p}, double ${v.name})`);
         } else if (t.kind === "bool") {
@@ -500,7 +500,7 @@ export function emitAsyncExpr(
         host.declare(`declare void @scr_async_gen_hop_done()`);
         B.line(`call void @scr_async_gen_hop_done()`);
       }
-      if (yt.kind === "f64" || yt.kind === "date") {
+      if (yt.kind === "f64") {
         if (host.currentCoro !== null) {
           const coro = host.currentCoro;
           if (coro.out !== null) host.emitGenSlotStore(coro.out, "f64", v.name);
@@ -582,7 +582,7 @@ export function emitAsyncExpr(
         return { name: "", type: e.type };
       }
       const t = B.tmp();
-      if (e.type.kind === "f64" || e.type.kind === "date") {
+      if (e.type.kind === "f64") {
         host.declare(`declare double @scr_gen_take_in_f64()`);
         B.line(`${t} = call double @scr_gen_take_in_f64()`);
         return { name: t, type: e.type };
@@ -710,12 +710,12 @@ export function emitAsyncExpr(
           throw new InternalCompilerError(`llvm emitter bug: genResume ${e.mode} on async`);
         const gb = emitBorrowedInput(host, e.gen);
         if (e.mode === "value") {
-          if (!host.wasi && (e.type.kind === "f64" || e.type.kind === "date"))
+          if (!host.wasi && e.type.kind === "f64")
             return { name: host.emitGenSlotTake(host.genOutSlot(gb.name), "f64"), type: e.type };
           if (!host.wasi && e.type.kind === "bool")
             return { name: host.emitGenSlotTake(host.genOutSlot(gb.name), "bool"), type: e.type };
           const t = B.tmp();
-          if (e.type.kind === "f64" || e.type.kind === "date") {
+          if (e.type.kind === "f64") {
             host.declare(`declare double @scr_gen_take_out_f64(ptr)`);
             B.line(`${t} = call double @scr_gen_take_out_f64(ptr ${gb.name})`);
             return { name: t, type: e.type };
@@ -752,7 +752,7 @@ export function emitAsyncExpr(
         store(a.name, e.arg!.type);
       };
       const parkIn = (name: string, t: IrType): void => {
-        if (t.kind === "f64" || t.kind === "date") {
+        if (t.kind === "f64") {
           host.declare(`declare void @scr_gen_in_f64(ptr, double)`);
           B.line(`call void @scr_gen_in_f64(ptr ${g.name}, double ${name})`);
         } else if (t.kind === "bool") {
@@ -787,7 +787,7 @@ export function emitAsyncExpr(
             const a = host.emitExpr(e.arg);
             const t = e.arg.type;
             if (isRefCounted(t)) host.toHeap(a);
-            if (t.kind === "f64" || t.kind === "date") {
+            if (t.kind === "f64") {
               host.declare(`declare ptr @scr_async_gen_next_f64(ptr, double)`);
               call = `call ptr @scr_async_gen_next_f64(ptr ${g.name}, double ${a.name})`;
             } else if (t.kind === "bool") {
@@ -806,7 +806,7 @@ export function emitAsyncExpr(
             const a = host.emitExpr(e.arg);
             const t = e.arg.type;
             if (isRefCounted(t)) host.toHeap(a);
-            if (t.kind === "f64" || t.kind === "date") {
+            if (t.kind === "f64") {
               host.declare(`declare ptr @scr_async_gen_return_f64(ptr, double)`);
               call = `call ptr @scr_async_gen_return_f64(ptr ${g.name}, double ${a.name})`;
             } else if (t.kind === "bool") {
@@ -849,7 +849,7 @@ export function emitAsyncExpr(
           B.line(`call void @scr_gen_ret_none(ptr ${g.name})`);
         } else {
           sendArg((name, t) => {
-            if (t.kind === "f64" || t.kind === "date") {
+            if (t.kind === "f64") {
               host.declare(`declare void @scr_gen_ret_f64(ptr, double)`);
               B.line(`call void @scr_gen_ret_f64(ptr ${g.name}, double ${name})`);
             } else if (t.kind === "bool") {
@@ -960,7 +960,7 @@ export function emitAsyncExpr(
         return { name: "", type: e.type };
       }
       const t = B.tmp();
-      if (e.type.kind === "f64" || e.type.kind === "date") {
+      if (e.type.kind === "f64") {
         const f64Await = host.awaitResultFn("f64");
         host.declare(`declare double @${f64Await}(ptr)`);
         B.line(`${t} = call double @${f64Await}(ptr ${pr.name})`);
@@ -1050,7 +1050,7 @@ export function emitAsyncExpr(
       const peek = host.unionPeek(u.name, def.id);
       if (host.coroAwait) host.emitCoroAwait(peek);
       let awaited: LlValue;
-      if (inner.kind === "f64" || inner.kind === "date") {
+      if (inner.kind === "f64") {
         const f64Await = host.awaitResultFn("f64");
         host.declare(`declare double @${f64Await}(ptr)`);
         const x = B.tmp();
@@ -1136,7 +1136,6 @@ export function emitAsyncExpr(
       let resolve: string;
       const kindNums: Partial<Record<IrType["kind"], number>> = {
         f64: 0,
-        date: 0,
         bool: 1,
         string: 2,
         void: 3,
@@ -1191,7 +1190,6 @@ export function emitAsyncExpr(
       B.line(`${p} = call ptr @scr_promise_new()`);
       const kindNums: Partial<Record<IrType["kind"], number>> = {
         f64: 0,
-        date: 0,
         bool: 1,
         string: 2,
         void: 3,

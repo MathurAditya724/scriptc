@@ -99,6 +99,70 @@ function declaredInPackage(symbol: ts.Symbol | undefined): boolean {
   return symbol.declarations.some((d) => isPackageDeclarationFile(ts.getSourceFileOfNode(d)));
 }
 
+/** The parts of a call signature's declaration that pass-through detection
+ * reads, for the declaration kinds a resolved call signature has. */
+function signatureParts(node: ts.Node | undefined): {
+  typeParameters: readonly ts.TypeParameterDeclaration[];
+  parameters: readonly ts.ParameterDeclaration[];
+  type: ts.TypeNode | undefined;
+} | null {
+  if (node === undefined) return null;
+  if (ts.isFunctionTypeNode(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isFunctionDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isMethodDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isMethodSignatureDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  if (ts.isCallSignatureDeclaration(node))
+    return {
+      typeParameters: node.typeParameters?.nodes ?? [],
+      parameters: node.parameters.nodes,
+      type: node.type,
+    };
+  return null;
+}
+
+/** A signature that returns one of its own type parameters which also types
+ * a parameter (`<T extends object>(obj: T) => T`) hands back the argument
+ * or something standing in for it, a proxy or a marked object, whose
+ * identity the package may track (Effect's `Equal.byReference`). Its result
+ * type comes from the caller's argument, not from data the package
+ * declares, so the boundary leaves it alone: converting it would build a
+ * separate native value. */
+function passesArgumentThrough(declaration: ts.Node | undefined): boolean {
+  const sig = signatureParts(declaration);
+  if (sig === null || sig.type === undefined || !ts.isTypeReferenceNode(sig.type)) return false;
+  const ret = sig.type;
+  if (!ts.isIdentifier(ret.typeName) || ret.typeArguments !== undefined) return false;
+  const name = ret.typeName.text;
+  if (!sig.typeParameters.some((tp) => tp.name.text === name)) return false;
+  return sig.parameters.some(
+    (param) =>
+      param.type !== undefined &&
+      ts.isTypeReferenceNode(param.type) &&
+      ts.isIdentifier(param.type.typeName) &&
+      param.type.typeName.text === name,
+  );
+}
+
 function declaredInUserFile(symbol: ts.Symbol | undefined): boolean {
   if (symbol === undefined) return false;
   const decls = symbol.declarations;
@@ -121,7 +185,23 @@ class TypePrinter {
   readonly declarations: string[] = [];
   private readonly inProgress = new Map<number, { name: string | null }>();
 
+  /** While set, printing registers no recursive alias (projectable()). */
+  private dry = false;
+
   constructor(private readonly checker: ts.TypeChecker) {}
+
+  /** Whether a type projects, without naming it in the generated file. */
+  projectable(type: ts.Type): boolean {
+    if (type.flags & ANYISH) return false;
+    const was = this.dry;
+    this.dry = true;
+    try {
+      const text = this.print(type, 0);
+      return text !== null && text !== "unknown";
+    } finally {
+      this.dry = was;
+    }
+  }
 
   /** The alias naming a projectable type, or null. Top-level any/unknown
    * never projects. */
@@ -148,7 +228,12 @@ class TypePrinter {
     if (f & ts.TypeFlags.Null) return "null";
     if (f & ts.TypeFlags.Undefined) return "undefined";
     if (f & ts.TypeFlags.EnumLiteral || f & ts.TypeFlags.Enum) return null;
-    if (f & ts.TypeFlags.BooleanLiteral) return type.intrinsicName === "true" ? "true" : "false";
+    // A boolean literal type carries its value (`intrinsicName` is not
+    // set for it by every checker facade).
+    if (f & ts.TypeFlags.BooleanLiteral)
+      return (type as ts.BooleanLiteralType).value === true || type.intrinsicName === "true"
+        ? "true"
+        : "false";
     if (f & ts.TypeFlags.StringLiteral) return JSON.stringify(String(type.value));
     if (f & ts.TypeFlags.NumberLiteral) {
       const v = Number(type.value);
@@ -188,6 +273,16 @@ class TypePrinter {
     return props.length > 0 && props.every((p) => String(p.escapedName).startsWith("__@"));
   }
 
+  /** Whether an interface type and every type it extends are declared in
+   * user files. */
+  private userInterface(type: ts.Type, seen = new Set<ts.Type>()): boolean {
+    if (!declaredInUserFile(type.getSymbol())) return false;
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    if (target === undefined || !target.isClassOrInterface() || seen.has(target)) return true;
+    seen.add(target);
+    return this.checker.getBaseTypes(target).every((base) => this.userInterface(base, seen));
+  }
+
   private printObject(type: ts.Type, depth: number): string | null {
     const checker = this.checker;
     if (checker.isArrayType(type)) {
@@ -216,8 +311,11 @@ class TypePrinter {
       if (symbol.flags & (ts.SymbolFlags.Class | ts.SymbolFlags.Function | ts.SymbolFlags.Method))
         return null;
       // Interfaces: only user-declared ones describe plain data reliably
-      // (package and lib interfaces often describe class instances).
-      if (symbol.flags & ts.SymbolFlags.Interface && !declaredInUserFile(symbol)) return null;
+      // (package and lib interfaces often describe class instances), and
+      // only when every interface they extend is user-declared too: a user
+      // interface extending a package one (effect's Request.Request)
+      // inherits members the package's own constructors create.
+      if (symbol.flags & ts.SymbolFlags.Interface && !this.userInterface(type)) return null;
     }
     if (
       checker.getCallSignatures(type).length > 0 ||
@@ -264,7 +362,7 @@ class TypePrinter {
       if (props.length > 0 && readonlyCount === props.length) return null;
       const text = `{ ${members.join("; ")} }`;
       if (frame.name !== null) {
-        this.declarations.push(`type ${frame.name} = ${text};`);
+        if (!this.dry) this.declarations.push(`type ${frame.name} = ${text};`);
         return frame.name;
       }
       return text;
@@ -440,9 +538,17 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
     const declSf = input.declProgram.getSourceFile(file);
     if (jsSf === undefined || declSf === undefined || jsSf.text !== declSf.text) continue;
     const fileEdits: Edit[] = [];
-    /** Candidate expressions (by js node) with their alias. */
-    const exprCandidates = new Map<ts.Node, string>();
+    /** Candidate expressions (by js node) with their declared type, named
+     * only for the casts that survive suppression. */
+    const exprCandidates = new Map<ts.Node, ts.Type>();
     const exprOrder: ts.Node[] = [];
+    /** Reads whose projectable receiver the JavaScript world types `any`:
+     * kept only when nothing types the receiver. */
+    const deferred = new Set<ts.Node>();
+    /** Package calls whose declared type does not project. */
+    const unprojected = new Set<ts.Node>();
+    /** The declaration-world twin of every walked node. */
+    const twins = new Map<ts.Node, ts.Node>();
 
     const considerType = (jsNode: ts.Node, declNode: ts.Node): boolean => {
       if (
@@ -511,23 +617,33 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       if (ts.isCallExpression(d) || ts.isNewExpression(d)) {
         const callee = d.expression;
         const target = ts.isPropertyAccessExpression(callee) ? callee.name : callee;
-        produced = declaredInPackage(declSymbol(target));
-        if (!produced) {
-          try {
-            const sig = declChecker.getResolvedSignature(d);
-            const decl = sig?.declaration;
-            produced = decl !== undefined && isPackageDeclarationFile(ts.getSourceFileOfNode(decl));
-          } catch {
-            produced = false;
-          }
+        let decl: ts.Node | undefined;
+        try {
+          decl = declChecker.getResolvedSignature(d)?.declaration;
+        } catch {
+          decl = undefined;
         }
+        produced =
+          (declaredInPackage(declSymbol(target)) ||
+            (decl !== undefined && isPackageDeclarationFile(ts.getSourceFileOfNode(decl)))) &&
+          !passesArgumentThrough(decl);
       } else if (ts.isTaggedTemplateExpression(d)) {
         produced = declaredInPackage(declSymbol(d.tag));
       } else if (ts.isPropertyAccessExpression(d) || ts.isElementAccessExpression(d)) {
         const recvDecl = typeAt(declChecker, d.expression);
         const recvJs = typeAt(jsChecker, (jsNode as ts.PropertyAccessExpression).expression);
-        const recvProjectable = recvDecl !== null && printer.project(recvDecl) !== null;
+        const recvProjectable = recvDecl !== null && printer.projectable(recvDecl);
         produced = !recvProjectable || (recvJs !== null && !isAnyish(recvJs));
+        // A projectable receiver the JavaScript world types `any` is
+        // usually typed by another candidate. One that is a package value
+        // nothing projects stays `any`, such as a safeParse result narrowed
+        // to its success arm (the whole result is not data: its error arm
+        // is a class): the read crosses here instead, if the suppression
+        // below confirms the receiver stays untyped.
+        if (!produced) {
+          produced = true;
+          deferred.add(jsNode);
+        }
       } else if (ts.isAwaitExpression(d)) {
         const inner = unwrapTransparent(d.expression);
         produced =
@@ -556,6 +672,12 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
           declaredInPackage(resolveAlias(raw));
       }
       if (!produced) return;
+      if (isCall && !deferred.has(jsNode)) {
+        // Recorded before the contextual-type test below: a package value
+        // whose type does not project stays `any` wherever it flows.
+        const t = typeAt(declChecker, d);
+        if (t === null || !printer.projectable(t)) unprojected.add(jsNode);
+      }
       // A consumer that takes anything needs no conversion.
       try {
         const ctx = declChecker.getContextualType(d);
@@ -564,10 +686,8 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
         // no contextual type
       }
       const declType = typeAt(declChecker, d);
-      if (declType === null) return;
-      const alias = printer.project(declType);
-      if (alias === null) return;
-      exprCandidates.set(jsNode, alias);
+      if (declType === null || !printer.projectable(declType)) return;
+      exprCandidates.set(jsNode, declType);
       exprOrder.push(jsNode);
     };
 
@@ -626,6 +746,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
 
     const walk = (jsNode: ts.Node, declNode: ts.Node): void => {
       if (jsNode.kind !== declNode.kind) return;
+      twins.set(jsNode, declNode);
       if (ts.isTypeNode(jsNode) || ts.isExpressionWithTypeArguments(jsNode)) {
         if (considerType(jsNode, declNode)) return;
       } else {
@@ -672,11 +793,31 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
             result = willBeTyped(decl.initializer, depth + 1);
           else if (ts.isParameter(decl) && annotated.has(decl)) result = true;
           else if (ts.isBindingElement(decl)) result = false;
+          else if (
+            (ts.isVariableDeclaration(decl) || ts.isParameter(decl)) &&
+            decl.type !== undefined
+          )
+            result = annotationWillBeTyped(decl.type);
         }
         symbolTyped.set(sym, result);
         return result;
       }
       return false;
+    };
+    /** An annotation in this file whose declaration-world type projects:
+     * after the rewrite it names the projected structure (a package type
+     * is replaced by its alias, a user alias of one has its right-hand
+     * side replaced). */
+    const annotationWillBeTyped = (type: ts.TypeNode): boolean => {
+      const twin = twins.get(type);
+      if (twin === undefined) return false;
+      let declType: ts.Type | null;
+      try {
+        declType = declChecker.getTypeFromTypeNode(twin as ts.TypeNode);
+      } catch {
+        return false;
+      }
+      return declType !== null && printer.projectable(declType);
     };
     const receiverOf = (e: ts.Node): ts.Node | null => {
       if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) return e.expression;
@@ -684,9 +825,35 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       return null;
     };
     const kept: ts.Node[] = [];
+    /** A receiver that stays `any` after the rewrite: a package call whose
+     * type does not project, or a user const bound to one. */
+    const staysUntyped = (e: ts.Node): boolean => {
+      const u = unwrapTransparent(e as ts.Expression);
+      if (unprojected.has(u)) return true;
+      if (!ts.isIdentifier(u)) return false;
+      let sym: ts.Symbol | undefined;
+      try {
+        sym = jsChecker.getSymbolAtLocation(u);
+      } catch {
+        return false;
+      }
+      const decls = sym?.declarations ?? [];
+      if (decls.length !== 1) return false;
+      const decl = decls[0]!;
+      return (
+        ts.isVariableDeclaration(decl) &&
+        decl.type === undefined &&
+        decl.initializer !== undefined &&
+        decl.parent !== undefined &&
+        ts.isVariableDeclarationList(decl.parent) &&
+        (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        unprojected.has(unwrapTransparent(decl.initializer))
+      );
+    };
     for (const e of exprOrder) {
       const recv = receiverOf(e);
       if (recv !== null && willBeTyped(recv)) continue;
+      if (deferred.has(e) && (recv === null || !staysUntyped(recv))) continue;
       // An identifier candidate that is a user binding never gets here
       // (only package imports are candidates).
       kept.push(e);
@@ -723,7 +890,8 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
         )
           continue;
       }
-      const alias = exprCandidates.get(e)!;
+      const alias = printer.project(exprCandidates.get(e)!);
+      if (alias === null) continue;
       const start = ts.tokenStartOfNode(e);
       const stmt = e.parent;
       let prefix = "(";

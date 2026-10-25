@@ -1,4 +1,9 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
+import {
+  indexedUnionArms,
+  lowerIndexedUnionNumberRead,
+  lowerIndexedUnionWrite,
+} from "../indexed-unions.js";
 import * as ts from "../../ts7/adapter.js";
 import {
   lowerOptionalIndex,
@@ -115,6 +120,11 @@ function coercedUnion(lowerer: Lowerer, type: IrType): boolean {
   return arms.some((arm) => arm.kind !== "f64" && !isUnitType(arm));
 }
 
+/** ToNumber of a Date: its time value (valueOf, the number hint). */
+function dateTimeValue(date: IrExpr, loc: SrcLoc): IrExpr {
+  return { kind: "libCall", fn: "date.valueOf", args: [date], type: F64, loc };
+}
+
 /** ToNumber of a boolean: 1 for true, 0 for false. */
 function booleanToNumber(value: IrExpr, loc: SrcLoc): IrExpr {
   return {
@@ -140,23 +150,25 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       const operand =
         raw.type.kind === "bool"
           ? booleanToNumber(raw, loc)
-          : coercedUnion(lowerer, raw.type)
-            ? ({
-                kind: "libCall",
-                fn: "dyn.toNumberCoerce",
-                args: [{ kind: "dynFrom", value: raw, type: DYN, loc }],
-                type: F64,
-                loc,
-              } satisfies IrExpr)
-            : raw.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))
+          : raw.type.kind === "date"
+            ? dateTimeValue(raw, loc)
+            : coercedUnion(lowerer, raw.type)
               ? ({
                   kind: "libCall",
                   fn: "dyn.toNumberCoerce",
-                  args: [raw],
+                  args: [{ kind: "dynFrom", value: raw, type: DYN, loc }],
                   type: F64,
                   loc,
                 } satisfies IrExpr)
-              : lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+              : raw.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))
+                ? ({
+                    kind: "libCall",
+                    fn: "dyn.toNumberCoerce",
+                    args: [raw],
+                    type: F64,
+                    loc,
+                  } satisfies IrExpr)
+                : lowerOptionalNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "-", [raw.type]);
       if (operand.kind === "numLit") return { ...operand, value: -operand.value, loc };
       return { kind: "unary", op: "-", operand, type: F64, loc };
@@ -180,6 +192,8 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
         return { kind: "libCall", fn: "num.fromString", args: [raw], type: F64, loc };
       }
       if (raw.type.kind === "bool") return booleanToNumber(raw, loc);
+      // A Date's number hint answers its time value.
+      if (raw.type.kind === "date") return dateTimeValue(raw, loc);
       const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
       if (classNumber) return classNumber;
       const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
@@ -191,6 +205,10 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       operatorUnsupported(lowerer, expr, "+", [raw.type]);
     }
     case ts.SyntaxKind.ExclamationToken: {
+      // `!runtimeBuffer` over an alias of the Buffer global: Node always
+      // defines Buffer (the condition twin is lowerCondition's).
+      if (lowerer.isStdlibGlobal(expr.operand, "Buffer"))
+        return { kind: "boolLit", value: false, type: BOOL, loc };
       // `!x` is ToBoolean-then-negate: f64/string operands go through toBool.
       const operand = lowerer.ensureBool(
         deferredSlotOr(
@@ -385,6 +403,39 @@ export function lowerIncDec(
         else_: [store(value)],
         loc,
       }));
+    }
+    // A union of typed arrays and number arrays (indexed-unions.ts): the
+    // element read as a number and the union's element write.
+    const indexedArms = indexedUnionArms(lowerer, raw.type);
+    if (
+      ts.isElementAccessExpression(access) &&
+      indexedArms &&
+      !isJsSourceFile(ts.getSourceFileOfNode(expr))
+    ) {
+      const receiver = save(raw, "%incrementArray");
+      const index = save(
+        lowerOptionalIndex(
+          lowerer,
+          lowerer.lowerExpr(access.argumentExpression),
+          locOf(access.argumentExpression),
+          access.argumentExpression,
+        ),
+        "%incrementIndex",
+      );
+      if (index.type.kind !== "f64")
+        lowerer.unsupported("SC1090", access, "incrementing non-number array keys");
+      return finish(
+        lowerIndexedUnionNumberRead(lowerer, receiver, indexedArms, index, loc),
+        (value) =>
+          lowerIndexedUnionWrite(
+            lowerer,
+            receiver,
+            indexedArms,
+            index,
+            lowerer.coerceInto(access, value, F64),
+            loc,
+          ),
+      );
     }
     // A TS member statically typed number on a checked-dynamic receiver (a
     // class-backed protocol view): the expanded form `o.v = o.v + 1`, its

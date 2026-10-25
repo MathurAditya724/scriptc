@@ -9,6 +9,7 @@ import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
+  DATE_T,
   DYN,
   F64,
   type IrExpr,
@@ -24,8 +25,14 @@ import {
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
+import {
+  splitRequireBindingOfIdent,
+  wholeExportSymbolOfModule,
+  wholeExportValue,
+} from "../cjs-inline-require.js";
 import { captureContextArguments } from "../function-context.js";
 import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
+import { argumentCountValue } from "../argument-counts.js";
 import {
   isCjsExportTableLiteral,
   isCjsJsFile,
@@ -51,6 +58,7 @@ import {
   contextualUndefReadType,
   fenceEarlyAliasUse,
   isTemporalGlobalRoot,
+  cjsNamespaceImportDep,
   lowerNsIdentifierValue,
   nsUndefRead,
 } from "../lower-namespaces.js";
@@ -171,6 +179,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // when the checker types this USE as a single arm, maybeNarrow
   // bridges the tagged representation with a unionNarrow.
   const local = lowerer.resolveLocal(expr);
+  // A Date local holding its time value reads as that Date: only uses
+  // that read the time value reach here (date-values.ts).
+  if (local && lowerer.timeValueDateLocals.has(local)) {
+    const time: IrExpr = { kind: "varRef", localId: local.id, type: F64, loc };
+    return { kind: "libCall", fn: "date.fromTime", args: [time], type: DATE_T, loc };
+  }
   if (local) {
     // A switch can dispatch past a lexical declaration. Keep this
     // previously refused codec form out until switch-scope TDZ boxes
@@ -436,7 +450,17 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     // semantics); the rest marker carries the trailing dyn-array ABI.
     const funcType: IrType = funcTypeFromParamShapes(sig.params, sig.returnType);
     lowerer.requireExactArityValue(expr, expr, sig.params, funcType);
-    return { kind: "closure", fnName: sig.name, captures: [], type: funcType, loc };
+    const closure = {
+      kind: "closure" as const,
+      fnName: sig.name,
+      captures: [],
+      type: funcType,
+      loc,
+    };
+    const decl = lowerer.resolveValueSymbol(expr)?.valueDeclaration;
+    return decl && ts.isFunctionDeclaration(decl) && funcType.kind === "func"
+      ? argumentCountValue(lowerer, decl, expr, { ...closure, type: funcType })
+      : closure;
   }
   {
     // A generic function as a VALUE: monomorphized by flow — the
@@ -744,6 +768,20 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
   const nativeAlias = stdlibGlobalNameOf(lowerer, expr);
   if (nativeAlias === "Buffer" && expr.text !== "Buffer") {
+    // An alias through a cast of globalThis carries the cast's static type,
+    // which the identity token below does not have.
+    const aliasSymbol = identifierReadSymbol(lowerer, expr);
+    if (aliasSymbol && lowerer.castGlobalAliases.has(aliasSymbol)) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "the Buffer constructor read through a cast of globalThis as a value",
+        "test it in a condition, read its typeof, or call its members",
+      );
+    }
+    // JavaScript reads the Buffer function's value (builtinGlobalValue).
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr)))
+      return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
     return { kind: "strLit", value: "[builtin Buffer]", type: STRING, loc };
   }
   if (lowerer.isStdlibGlobal(expr, "fetch")) {
@@ -804,7 +842,17 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
         eval: "runtime code evaluation cannot be compiled ahead of time",
       };
-      lowerer.noLowering(expr.text, expr, globalHints[expr.text], sym ?? undefined);
+      lowerer.noLowering(
+        expr.text,
+        expr,
+        globalHints[expr.text],
+        sym ?? undefined,
+        expr.text === "WeakRef" || expr.text === "FinalizationRegistry"
+          ? "weak-ref"
+          : expr.text === "eval"
+            ? "code-from-string"
+            : undefined,
+      );
     }
   }
   // An ambient global nothing defines compiles to exactly what Node does
@@ -932,6 +980,37 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // representation (ambient namespaces compile to Node's
   // ReferenceError instead — the object never exists at runtime).
   {
+    // `ns.name` through a namespace import of a CommonJS module, where Node's
+    // namespace has no `name` property (its lexer does not detect it), or
+    // `ns.default` (module.exports itself).
+    const cjsNamespace = cjsNamespaceImportDep(lowerer, expr);
+    if (
+      cjsNamespace !== null &&
+      ts.isPropertyAccessExpression(expr.parent) &&
+      expr.parent.expression === expr &&
+      ts.isIdentifier(expr.parent.name)
+    ) {
+      const name = expr.parent.name.text;
+      const { names, assignedLater } = lowerer.cjsNamespaceOf(cjsNamespace);
+      if (name === "default")
+        lowerer.unsupported(
+          "SC1090",
+          expr.parent,
+          `reads of 'default' through namespace imports of CommonJS modules (module.exports itself: read it through a default import)`,
+        );
+      if (!names.has(name))
+        lowerer.unsupported(
+          "SC1090",
+          expr.parent,
+          `reads of '${name}' through namespace imports of CommonJS modules (Node's lexer does not detect '${name}' among the module's exports, so Node reads undefined)`,
+        );
+      if (assignedLater === "all" || assignedLater.has(name))
+        lowerer.unsupported(
+          "SC1090",
+          expr.parent,
+          `reads of '${name}' through namespace imports of CommonJS modules whose functions assign exports (Node's namespace keeps the values from the end of the module's evaluation)`,
+        );
+    }
     const moduleNs = lowerer.mapTypeOf(lowerer.typeOf(expr));
     if (moduleNs?.kind === "moduleNs") {
       return { kind: "moduleNsRef", moduleId: moduleNs.moduleId, type: moduleNs, loc };
@@ -958,6 +1037,27 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // Client`): the member holds that binding's value.
   const memberAlias = cjsMemberAliasValueOf(lowerer, expr);
   if (memberAlias !== null) return lowerer.lowerExpr(memberAlias);
+  // `var m; m = require("./x")` as a bare value: a whole-export target is
+  // the exported value; a table target has no first-class module object.
+  {
+    const split = splitRequireBindingOfIdent(lowerer, expr);
+    if (split !== null) {
+      if (wholeExportSymbolOfModule(lowerer, split.dep) !== null) {
+        const value = wholeExportValue(lowerer, split.dep, expr);
+        if (value !== null) return value;
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `the whole export of '${split.spec}' as a value (its 'module.exports =' value has no static representation)`,
+        );
+      }
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `the exports object of '${split.spec}' as a value (its exports compile to a static table: read require(${JSON.stringify(split.spec)}).member directly)`,
+      );
+    }
+  }
   // Preflight guarantees no unresolved identifiers; anything else here
   // is a blocked declaration's binding (the SC2004 cascade) or a
   // binding form we don't model yet.
