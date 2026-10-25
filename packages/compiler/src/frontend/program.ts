@@ -1008,10 +1008,8 @@ function loadProgram7(
       }
     }
     // Shape inference's overlay: package files typed from proven facts. The
-    // tsc gate keeps reading the files as written.
-    // A load without the overlay must not see an earlier load's overlay
-    // files (the registry is per process).
-    resetShapeOverlay();
+    // tsc gate keeps reading the files as written. loadProgram resets the
+    // overlay registry before the lowering world's load.
     const overlayOriginals = new Map<string, string | null>();
     if (overlayer !== undefined && jsx.refusal === null) {
       // Rounds: structural rewrites, then the typed overlay of the rebuilt
@@ -1320,6 +1318,12 @@ export function loadProgram(
           return projection;
         };
   try {
+    // The overlay registry is per process and describes the lowering
+    // world's load: a load without the overlay must not see an earlier
+    // load's overlay files. The authored world (authored()) is a second load
+    // of the same build, which preflight can create after the overlay
+    // rounds, so it leaves the registry as this load set it.
+    resetShapeOverlay();
     const load = loadProgram7(
       host,
       entryPath,
