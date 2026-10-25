@@ -1,7 +1,9 @@
 // Loops that read one typed array and write another, where the two views
 // may share bytes: overlapping and disjoint views of one buffer, the same
 // array passed twice, views of different element types over one buffer,
-// and empty views. A loop over views that overlap must see its own writes.
+// and empty views, and passes whose views an enclosing loop swaps. A loop
+// over views that overlap must see its own writes, and each pass the
+// previous pass's writes.
 function shiftAdd(dst: Float64Array, src: Float64Array, n: number): void {
   for (let i = 0; i < n; i++) dst[i] = src[i]! + 1;
 }
@@ -87,3 +89,46 @@ console.log(
   "lanes overlapping",
   lanes(pool.subarray(0, 4), pool.subarray(2, 6), pool.subarray(8, 12), pool.subarray(9, 13)).toFixed(6),
 );
+
+// Ping-pong passes: an enclosing loop swaps the two views after every pass,
+// so each pass reads what the previous one wrote.
+function pingPongPairs(a: Float64Array, b: Float64Array, steps: number): string {
+  let cur = a;
+  let next = b;
+  for (let s = 0; s < steps; s++) {
+    for (let i = 0; i < 2; i++) next[i] = cur[i]! + cur[1 - i]! * 2 + s;
+    const t = cur;
+    cur = next;
+    next = t;
+  }
+  return Array.from(cur).join(",");
+}
+function pingPongWords(a: Int32Array, b: Int32Array): string {
+  let cur = a;
+  let next = b;
+  for (let s = 0; s < 4; s++) {
+    for (let i = 0; i < 4; i++) next[i] = (cur[i]! * 3 + cur[(i + 1) & 3]! + 1) | 0;
+    const t = cur;
+    cur = next;
+    next = t;
+  }
+  return Array.from(cur).join(",");
+}
+function pingPongRows(a: Float64Array, b: Float64Array, steps: number): number {
+  let cur = a;
+  let next = b;
+  for (let s = 0; s < steps; s++) {
+    for (let i = 0; i < cur.length; i++) next[i] = cur[i]! * 0.5 + 1;
+    const t = cur;
+    cur = next;
+    next = t;
+  }
+  let sum = 0;
+  for (let i = 0; i < cur.length; i++) sum += cur[i]!;
+  return sum;
+}
+for (let k = 0; k < 3; k++) {
+  console.log("ping-pong pairs", pingPongPairs(new Float64Array([1, 2]), new Float64Array(2), 3 + k));
+  console.log("ping-pong words", pingPongWords(new Int32Array([1, 2, 3, 4]), new Int32Array(4)));
+}
+console.log("ping-pong rows", pingPongRows(new Float64Array(37).fill(8), new Float64Array(37), 9));

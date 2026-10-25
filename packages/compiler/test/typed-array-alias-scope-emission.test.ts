@@ -46,6 +46,13 @@ console.log(dot(a, b, 8));
       /load double, ptr %\w+, align 1[^\n]*!alias\.scope !\{!\{!"copy\.0\.\d", !\{!"scriptc typed-array views"\}\}\}, !noalias/,
     );
     expect(copy).toMatch(/store double %\w+, ptr %\w+, align 1[^\n]*!alias\.scope/);
+    // The fast copy declares both scopes where it starts, so they hold for
+    // this entry only, and declares nothing else.
+    for (const receiver of [0, 1])
+      expect(copy).toContain(
+        `call void @llvm.experimental.noalias.scope.decl(metadata !{!{!"copy.0.${receiver}", !{!"scriptc typed-array views"}}})`,
+      );
+    expect(copy.match(/noalias\.scope\.decl/g)).toHaveLength(2);
     // One view, or views that are only read, need no scopes.
     for (const name of ["scale", "dot"]) {
       expect(fn(name)).not.toContain("!alias.scope");
