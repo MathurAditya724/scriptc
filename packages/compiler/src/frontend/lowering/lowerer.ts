@@ -3778,6 +3778,9 @@ export class Lowerer {
    * in a package file: union extractions built for it carry the slot's
    * origin in their TypeError. */
   coercionOriginNode: ts.Node | null = null;
+  /** Per user file, each declaration-boundary cast's index in source
+   * order (narrowing.ts recordedBoundaryOrigin). */
+  readonly boundaryCastOrder = new Map<ts.SourceFile, Map<ts.Node, number>>();
   /** The union type of that value: only its own extraction is the slot's. */
   coercionOriginUnion: string | null = null;
   /** While a record projection into a package-declared type builds, the

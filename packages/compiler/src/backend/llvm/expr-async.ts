@@ -374,7 +374,12 @@ export function emitSerializationExpr(
       // falls back to exactly this route whenever the fast path declines.
       // A package-declared target: the cold path names the declaration in
       // the pending TypeError (scr_type_origin.c).
-      const origin = e.origin === undefined ? undefined : host.mod.declOrigins?.[e.origin];
+      // Library archives and reactors link a fixed runtime set without the
+      // note unit: their checks keep the plain message.
+      const origin =
+        e.origin === undefined || host.mod.lib !== undefined
+          ? undefined
+          : host.mod.declOrigins?.[e.origin];
       const note =
         origin === undefined
           ? undefined

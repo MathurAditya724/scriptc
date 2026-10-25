@@ -1640,14 +1640,12 @@ function holdsReference(lowerer: Lowerer, t: IrType, seen = new Set<string>()): 
  * becomes a live capsule of the value built from it
  * (scr_dyn_decl_adopt), so identity and mutation visibility hold on both
  * sides. Scalar targets are ordinary checked casts. */
-const boundaryCastOrder = new WeakMap<ts.SourceFile, Map<ts.Node, number>>();
-
 /** The origin the projection recorded for a boundary cast (the package
  * declaration its type comes from, decl-projection.ts), found by the
  * cast's position among the file's boundary casts in source order. */
-function recordedBoundaryOrigin(cast: ts.Node): string | null {
+function recordedBoundaryOrigin(lowerer: Lowerer, cast: ts.Node): string | null {
   const sf = ts.getSourceFileOfNode(cast);
-  let order = boundaryCastOrder.get(sf);
+  let order = lowerer.boundaryCastOrder.get(sf);
   if (order === undefined) {
     const found = new Map<ts.Node, number>();
     const visit = (node: ts.Node): void => {
@@ -1666,7 +1664,7 @@ function recordedBoundaryOrigin(cast: ts.Node): string | null {
     };
     visit(sf);
     order = found;
-    boundaryCastOrder.set(sf, order);
+    lowerer.boundaryCastOrder.set(sf, order);
   }
   const index = order.get(cast);
   return index === undefined ? null : declBoundaryOrigin(sf.fileName, index);
@@ -1692,7 +1690,7 @@ function declBoundaryCast(
   // failing check names it and the patch admitting the value.
   let originText: string | null = null;
   try {
-    originText = recordedBoundaryOrigin(cast);
+    originText = recordedBoundaryOrigin(lowerer, cast);
   } catch {
     originText = null;
   }
