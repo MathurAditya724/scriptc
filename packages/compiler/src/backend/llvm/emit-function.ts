@@ -66,6 +66,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.usesLandingPads = false;
   emitter.aliasScopedVersions = 0;
   emitter.findInt32Allocations(fn);
+  emitter.speculativeLeaves = 0;
   emitter.currentTier = fn.tier;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
@@ -201,6 +202,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     emitter.callLifetimes,
   );
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
+  emitter.numberMapKeyIntegers = new Map();
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;
   emitter.localStackUnions = findLocalStackUnions(
     fn,

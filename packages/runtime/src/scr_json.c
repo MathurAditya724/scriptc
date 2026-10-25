@@ -12324,7 +12324,8 @@ static bool scr_jschema_read(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *o
 
 static void scr_jschema_drop(const ScrJsonSchema *s, ScrJsonSlot *v) {
   if (s->kind == SCR_JSCHEMA_STR) scr_str_release(v->ptr);
-  else if (s->kind == SCR_JSCHEMA_REC || s->kind == SCR_JSCHEMA_ARR) s->release(v->ptr);
+  else if (s->kind == SCR_JSCHEMA_REC || s->kind == SCR_JSCHEMA_ARR || s->kind == SCR_JSCHEMA_UNION)
+    s->release(v->ptr);
 }
 
 static bool scr_jschema_string_skip(ScrJsonP *p) {
@@ -12438,14 +12439,79 @@ static void scr_jschema_inline_store(char *slot, size_t tag, uint64_t bits) {
   memcpy(slot, &pair, sizeof pair);
 }
 
-/* A union member value written into its field slot. Each JSON value kind
- * selects at most one arm (the compiler admits no two arms one kind could
- * both match), so the checked route's first full match is that arm, and
- * any other value declines. */
-static __attribute__((noinline)) bool scr_jschema_union(ScrJsonP *p, const ScrJsonUnion *u,
-                                                         char *slot) {
-  scr_json_ws(p);
-  if (p->pos >= p->len) return false;
+/* The string at p->pos (a quote), as a span into the text or, when it
+ * holds escapes, decoded into *decoded (released by the caller). */
+static bool scr_jschema_string_at(ScrJsonP *p, const char **span, size_t *span_len,
+                                  ScrStr **decoded) {
+  *decoded = NULL;
+  int r = scr_json_string_span(p, span, span_len);
+  if (r > 0) return true;
+  if (r < 0) return false;
+  *decoded = scr_json_string_slow(p, *span_len);
+  if (!*decoded) return false;
+  *span = (*decoded)->data;
+  *span_len = (*decoded)->len;
+  return true;
+}
+
+/* The case of discriminated union `d` that the object at p->pos (its
+ * opening brace) selects: the one whose literal the object's discriminant
+ * member holds. A shallow scan of the members up to that one finds it and
+ * restores p->pos. NULL when the member is missing or not a string, when
+ * no case has its value, or when the text before it is malformed: the
+ * checked route then decides. A repeated discriminant member selects by
+ * its first value; the arm's record then declines the repeat. */
+static __attribute__((noinline)) const ScrJsonCase *scr_jschema_case(ScrJsonP *p,
+                                                                      const ScrJsonDiscriminant *d) {
+  const size_t start = p->pos, depth = p->depth;
+  const ScrJsonCase *found = NULL;
+  if (++p->depth > SCR_JSON_MAX_DEPTH) goto done;
+  p->pos++; /* '{' */
+  for (;;) {
+    scr_json_ws(p);
+    if (p->pos >= p->len || p->s[p->pos] != '"') goto done;
+    const char *key;
+    size_t key_len;
+    ScrStr *decoded;
+    if (!scr_jschema_string_at(p, &key, &key_len, &decoded)) goto done;
+    bool discriminant = key_len == d->field_len && scr_key_equal(key, d->field, key_len);
+    scr_str_release(decoded);
+    scr_json_ws(p);
+    if (p->pos >= p->len || p->s[p->pos] != ':') goto done;
+    p->pos++;
+    if (discriminant) {
+      scr_json_ws(p);
+      if (p->pos >= p->len || p->s[p->pos] != '"') goto done;
+      const char *value;
+      size_t value_len;
+      if (!scr_jschema_string_at(p, &value, &value_len, &decoded)) goto done;
+      for (size_t i = 0; i < d->ncases; i++) {
+        const ScrJsonCase *c = &d->cases[i];
+        if (c->value_len == value_len && memcmp(c->value, value, value_len) == 0) {
+          found = c;
+          break;
+        }
+      }
+      scr_str_release(decoded);
+      goto done;
+    }
+    if (!scr_jschema_skip(p)) goto done;
+    scr_json_ws(p);
+    if (p->pos >= p->len || p->s[p->pos] != ',') goto done;
+    p->pos++;
+  }
+done:
+  p->pos = start;
+  p->depth = depth;
+  return found;
+}
+
+/* A union value's arm tag and payload at p->pos (whitespace skipped): the
+ * arm its JSON value kind selects or, for an object of a discriminated
+ * union, its case's record. A null value reads no payload (*arm_out is
+ * SCR_JARM_NULL). False when the value declines. */
+static bool scr_jschema_union_payload(ScrJsonP *p, const ScrJsonUnion *u, size_t *tag,
+                                      size_t *arm_out, ScrJsonSlot *v) {
   char c = p->s[p->pos];
   size_t arm;
   if (c == 'n') arm = SCR_JARM_NULL;
@@ -12455,16 +12521,36 @@ static __attribute__((noinline)) bool scr_jschema_union(ScrJsonP *p, const ScrJs
   else if (c == 't' || c == 'f') arm = SCR_JARM_BOOL;
   else if (c == '-' || (c >= '0' && c <= '9')) arm = SCR_JARM_NUM;
   else return false;
-  size_t tag = u->tags[arm];
-  if (tag == SCR_JSCHEMA_NO_ARM) return false;
+  *arm_out = arm;
+  if (arm == SCR_JARM_OBJ && u->disc) {
+    const ScrJsonCase *selected = scr_jschema_case(p, u->disc);
+    if (!selected) return false;
+    *tag = selected->tag;
+    return scr_jschema_read(p, selected->record, v);
+  }
+  *tag = u->tags[arm];
+  if (*tag == SCR_JSCHEMA_NO_ARM) return false;
+  if (arm == SCR_JARM_NULL) return scr_json_lit(p, "null", 4);
+  return scr_jschema_read(p, u->arms[arm], v);
+}
+
+/* A union member value written into its field slot. Each JSON value kind
+ * selects at most one arm, and an object of a discriminated union selects
+ * its case's arm (the compiler admits no two arms one value could both
+ * match), so the checked route's first full match is that arm, and any
+ * other value declines. */
+static __attribute__((noinline)) bool scr_jschema_union(ScrJsonP *p, const ScrJsonUnion *u,
+                                                         char *slot) {
+  scr_json_ws(p);
+  if (p->pos >= p->len) return false;
+  size_t tag, arm;
+  ScrJsonSlot v;
+  if (!scr_jschema_union_payload(p, u, &tag, &arm, &v)) return false;
   if (arm == SCR_JARM_NULL) {
-    if (!scr_json_lit(p, "null", 4)) return false;
     if (u->repr == SCR_JUNION_INLINE) scr_jschema_inline_store(slot, tag, 0);
     else memcpy(slot, &u->null_value, sizeof u->null_value); /* immortal */
     return true;
   }
-  ScrJsonSlot v;
-  if (!scr_jschema_read(p, u->arms[arm], &v)) return false;
   uint64_t bits = 0;
   if (arm == SCR_JARM_NUM) memcpy(&bits, &v.f, sizeof bits);
   else if (arm == SCR_JARM_BOOL) bits = v.b ? 1 : 0;
@@ -12477,6 +12563,19 @@ static __attribute__((noinline)) bool scr_jschema_union(ScrJsonP *p, const ScrJs
     memcpy(slot, &box, sizeof box);
   }
   }
+  return true;
+}
+
+/* A discriminated union value outside a record field: an array element or
+ * the whole document. A pointer union's value is the case's record itself;
+ * any other union's is a box. */
+static bool scr_jschema_union_value(ScrJsonP *p, const ScrJsonUnion *u, ScrJsonSlot *out) {
+  size_t tag, arm;
+  ScrJsonSlot v;
+  if (!scr_jschema_union_payload(p, u, &tag, &arm, &v)) return false;
+  if (arm == SCR_JARM_NULL) out->ptr = u->null_value; /* immortal */
+  else if (u->repr == SCR_JUNION_NULLABLE) out->ptr = v.ptr;
+  else out->ptr = u->box((uint32_t)tag, (uint64_t)(uintptr_t)v.ptr); /* the record moves in */
   return true;
 }
 
@@ -12825,6 +12924,8 @@ static bool scr_jschema_read(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *o
     p->depth--;
     return ok;
   }
+  case SCR_JSCHEMA_UNION:
+    return scr_jschema_union_value(p, s->uni, out);
   }
   return false;
 }

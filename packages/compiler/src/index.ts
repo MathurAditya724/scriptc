@@ -103,7 +103,11 @@ import {
   platformLinkerSupportsPersistentCache,
   resolvePlatformLinker,
 } from "./backend/linker.js";
-import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
+import {
+  splitLlvmLibraryProgram,
+  splitLlvmProgram,
+  splitLlvmProgramFile,
+} from "./backend/llvm/split.js";
 import {
   emitLibraryIdentityLines,
   replaceLibraryIdentity,
@@ -566,8 +570,8 @@ async function compileExecutableNative(
   }
   const effectiveProgramSplit =
     programSplit ??
-    (!programIsObject && features.optimization === "dev" && features.backend === "llvm" && !sanitize
-      ? splitLlvmProgram(await readFile(llvmPath, "utf8"))
+    (!programIsObject && features.optimization === "dev" && features.backend === "llvm"
+      ? splitLlvmProgramFile(llvmPath)
       : null);
   if (programIsObject)
     throw new InternalCompilerError("program objects must link against a precompiled runtime pack");
@@ -644,6 +648,7 @@ async function compileExecutableNative(
     dh: features.dh,
     pki: features.pki,
     ed25519: features.ed25519,
+    x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
@@ -913,7 +918,6 @@ async function prepareExecutableInput(
     !useRuntimePack &&
     backend === "llvm" &&
     (opts.optimization ?? "release") === "dev" &&
-    !(opts.sanitize ?? false) &&
     typeof llvmSource === "string"
       ? splitLlvmProgram(llvmSource)
       : null;
@@ -1898,6 +1902,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     searchParams: features.searchParams,
     emitter: features.emitter,
     zlib: features.zlib,
+    x509: features.x509,
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
     dynInvoke: features.dynInvoke,
@@ -1993,6 +1998,7 @@ async function compileLibraryNative(
     searchParams: features.searchParams,
     emitter: features.emitter,
     zlib: features.zlib,
+    x509: features.x509,
     copying: features.copying,
     textDecoderLegacy: features.textDecoderLegacy,
     dynInvoke: features.dynInvoke,
