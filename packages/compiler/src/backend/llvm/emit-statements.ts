@@ -61,6 +61,7 @@ import {
 import {
   emitCountedLoopLimit,
   emitCountedLoopSafety,
+  emitCountedStart,
   emitPairedLoopSafety,
 } from "./counted-loops.js";
 import { emitBytesLoopVersionGuard, type BytesLoopVersion } from "./bytes-loop-versions.js";
@@ -1112,9 +1113,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.entryAllocas.push(
           `${integerSlot} = alloca i64 ; integer induction ${emitter.currentLocals.get(countedLoop.localId)!.name}`,
         );
-        const startNumber = emitter.emitExpr(countedLoop.start);
-        const start = B.tmp();
-        B.line(`${start} = fptosi double ${startNumber.name} to i64`);
+        const start = emitCountedStart(emitter, countedLoop.start);
         B.line(`store i64 ${start}, ptr ${integerSlot}`);
         emitter.integerLoopBindings.set(countedLoop.localId, {
           slot: integerSlot,
@@ -1130,9 +1129,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.entryAllocas.push(
             `${slot} = alloca i64 ; integer induction ${emitter.currentLocals.get(follower.localId)!.name}`,
           );
-          const value = emitter.emitExpr(follower.start);
-          const followerStart = B.tmp();
-          B.line(`${followerStart} = fptosi double ${value.name} to i64`);
+          const followerStart = emitCountedStart(emitter, follower.start);
           B.line(`store i64 ${followerStart}, ptr ${slot}`);
           followerSlots.push(slot);
           emitter.integerLoopBindings.set(follower.localId, {
@@ -1149,9 +1146,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.entryAllocas.push(
             `${slot} = alloca i64 ; integer induction ${emitter.currentLocals.get(counter.localId)!.name}`,
           );
-          const value = emitter.emitExpr(counter.start);
-          const start = B.tmp();
-          B.line(`${start} = fptosi double ${value.name} to i64`);
+          const start = emitCountedStart(emitter, counter.start);
           B.line(`store i64 ${start}, ptr ${slot}`);
           pairedSlots.push(slot);
           const dense = LOOPS.of(emitter).denseLoop;
