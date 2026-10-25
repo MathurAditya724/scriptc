@@ -185,6 +185,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  // The runtime formatter calls toString, valueOf and toJSON, and refuses
+  // renderings it has no lowering for.
+  "insp.format",
+  "insp.formatList",
+  "insp.formatWithOptions",
+  "insp.inspect",
+  // The options object reads the caller's options (getters included), and
+  // the checked-dynamic walk calls custom inspect functions.
+  "insp.customOptions",
+  "insp.customResult",
   // A checked-dynamic value the inspector does not render (a promise, a
   // URL, a RegExp) throws the 'not supported yet' Error.
   "insp.dyn",
@@ -599,6 +609,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.inherits",
   "util.inheritsPrototype",
   "util.deprecate",
+  "util.extend",
+  "util.signalExitCode",
+  "util.diff",
+  "util.debounce",
+  "util.throttle",
+  "mime.typeNew",
+  "mime.typeParse",
   "util.callbackify",
   "util.promisifyDyn",
   "util.debuglog",
@@ -880,6 +897,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.setAutoSelTimeout",
   "error.argTypeThrow",
   "error.propTypeThrow",
+  "array.foreignThrow",
   "emitter.setMaxChk",
   "emitter.setDefaultMaxChk",
   "fs.readFileSyncBytes",
@@ -1081,6 +1099,7 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "error.nodeThrow",
   "error.argTypeThrow",
   "error.propTypeThrow",
+  "array.foreignThrow",
   "fs.mkdtempChk",
   "fs.readFileChk",
   "fs.opendirChk",

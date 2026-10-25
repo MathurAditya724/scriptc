@@ -1,3 +1,5 @@
+import { widensReducedRecords } from "../function-returns.js";
+import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { jsSpecialGlobalValue } from "../global-values.js";
 import { indexedUnionArms, lowerIndexedUnionMember } from "../indexed-unions.js";
@@ -8,6 +10,7 @@ import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
+import { INSPECT_CUSTOM_DESCRIPTION, isInspectCustomAccess } from "../symbol-fields.js";
 import { isThisParameter } from "../call-signatures.js";
 import { argumentCountSlot, contextualCallCount, usedAsValue } from "../argument-counts.js";
 import {
@@ -62,6 +65,7 @@ import {
 } from "../../../ir/ir.js";
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
 import { lowerX509PublicKey } from "../builtins/x509.js";
+import { fenceMimeStaticRead } from "../builtins/mime.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
   inlineNamespaceRequireOf,
@@ -115,6 +119,7 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../.
 import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
+import { lowerRecordInheritedMember } from "../record-inherited.js";
 import { DATE_METHOD_HINT } from "../builtins/dates.js";
 import {
   cjsClassExprWholeExportOf,
@@ -335,6 +340,16 @@ export function lowerPropertyAccessExpr(
   // Cloudflare probe) folds like `navigator.userAgent`.
   const navigator = lowerNavigatorMember(lowerer, expr, NODE_COMPAT_VERSION);
   if (navigator) return navigator;
+  // util.inspect.custom: Symbol.for('nodejs.util.inspect.custom').
+  if (isInspectCustomAccess(lowerer, expr)) {
+    return {
+      kind: "libCall",
+      fn: "sym.for",
+      args: [{ kind: "strLit", value: INSPECT_CUSTOM_DESCRIPTION, type: STRING, loc }],
+      type: SYMBOL_T,
+      loc,
+    };
+  }
   {
     const member = lowerBufferPrototypeMember(lowerer, expr);
     if (member) return member;
@@ -938,6 +953,7 @@ export function lowerPropertyAccessExpr(
     // prototype that no lowering above claimed keeps the SC2020 fence
     // rather than reading undefined through the field and dynamic reads.
     fenceBuiltinConstructorStaticRead(lowerer, expr) ??
+    fenceMimeStaticRead(lowerer, expr) ??
     lowerer.lowerFieldRead(expr);
   // A union-typed field read narrows like an identifier when the
   // checker has narrowed this use to one arm.
@@ -1361,7 +1377,23 @@ export function lowerPropertyAccessExpr(
   // honest one, not a generic recitation about the outer dot. A
   // receiver that lowers cleanly means the MEMBER is the gap — name
   // the property and the receiver's type instead of "property access".
-  const recvLowered = lowerer.lowerExpr(expr.expression);
+  let recvLowered = lowerer.lowerExpr(expr.expression);
+  // A receiver whose value union holds record types the checker's subtype
+  // reduction folded into its type (`{ status } | { status, value }` typed
+  // `{ status }`, a call of a function with an inferred return type): read
+  // through the checker's type, converting the wider arms.
+  if (recvLowered.type.kind === "union") {
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    if (
+      declared !== null &&
+      declared.kind === "record" &&
+      widensReducedRecords(lowerer, declared, recvLowered.type)
+    ) {
+      const helper = widthNarrowHelper(lowerer, recvLowered.type.unionId, declared, loc);
+      if (helper !== null)
+        recvLowered = lowerer.checkedNarrowCall(helper, recvLowered, declared, loc);
+    }
+  }
   // A dyn receiver — JSON.parse's `any`, or `unknown` the checker
   // narrowed to `object` — reads through the dyn keyed read: member
   // or undefined (JS's own-property answer), throwing JS's TypeError
@@ -3184,6 +3216,12 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
             type: field.type,
             loc: locOf(expr),
           };
+      }
+      // Object.prototype's methods read as values: an own entry of the
+      // member's function type, else the built-in.
+      if (actual?.type.kind === "record") {
+        const inherited = lowerRecordInheritedMember(lowerer, actual, expr);
+        if (inherited) return inherited;
       }
       // A member the checker declares on the receiver, stored in a pure
       // index-signature record (an object literal that spread one, see

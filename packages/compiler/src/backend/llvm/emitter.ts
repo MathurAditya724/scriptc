@@ -511,6 +511,12 @@ export interface LlvmTargetOptions {
   inlineRc?: InlineRcMode;
   /** Define the inline RC fast-path helpers `noinline` (sanitized builds). */
   rcHelpersNoinline?: boolean;
+  /** Mark every emitted function `sanitize_address`, which the sanitized
+   * lane's `-fsanitize=address` link needs to instrument it. Without a
+   * sanitizer pass the attribute still turns off shrink-wrapping and
+   * speculative loads, so plain builds pass false. Defaults to true for
+   * direct emission. */
+  sanitizeAttributes?: boolean;
   /** Define `scr_detached_exit` so the Linux runtime hands the address-space
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
@@ -1269,6 +1275,8 @@ export class LlEmitter {
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
   readonly targetCpu: TargetCpu | undefined;
+  /** Emitted functions carry `sanitize_address` (LlvmTargetOptions). */
+  readonly sanitizeAttributes: boolean;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -1302,6 +1310,12 @@ export class LlEmitter {
   readonly regexInstances = new Map<
     string,
     { sym: string; src: string; fl: string; pattern: string; flags: string }
+  >();
+  /** Build-time replacers: one per (pattern, flags, replacement) of a
+   * global substitution with a literal replacement (regex-matchers.ts). */
+  readonly regexReplacers = new Map<
+    string,
+    { sym: string; pattern: string; flags: string; replacement: string }
   >();
   /** Interned tagged-template strings objects: per-site key → { symbol,
    * interned cooked-literal refs }. One immortal ScrArr of string slots
@@ -1633,6 +1647,9 @@ export class LlEmitter {
    * commit back into their objects. Library builds keep their commits:
    * their values cross a native boundary. */
   readonly liveViewsReadOnly: boolean;
+  /** IrModule.foreignElementKeys: element keys whose arrays can hold
+   * SCR_ARR_FOREIGN elements. */
+  readonly foreignElementKeys: ReadonlySet<string>;
   /** The program freezes, seals or prevents extensions of untyped values
    * (IrModule.untypedIntegrity): the commits of class views store the
    * view's integrity state in the instance's integrity word. */
@@ -1925,6 +1942,7 @@ export class LlEmitter {
       !this.untypedIntegrity &&
       !dynamicStores.all &&
       dynamicStores.names.size === 0;
+    this.foreignElementKeys = new Set(mod.foreignElementKeys ?? []);
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
@@ -1961,6 +1979,7 @@ export class LlEmitter {
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
     this.targetCpu = options.targetCpu;
+    this.sanitizeAttributes = options.sanitizeAttributes !== false;
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
@@ -2219,6 +2238,7 @@ export class LlEmitter {
       declare: (decl) => this.declare(decl),
       needOom: () => this.needOom(),
       needBadTag: () => this.needBadTag(),
+      mayHoldForeign: (elem) => this.mayHoldForeign(elem),
       internLiteral: (text) => this.internLiteral(text),
       cstr: (text) => this.cstr(text),
       mapOps: (operands) => this.mapOps(operands),
@@ -5439,6 +5459,8 @@ export class LlEmitter {
         return addNumbered(this.threadSlotsBlocks, key, value as string, "@sc_slots_", names);
       case "regex":
         return addNumberedSymbol(this.regexInstances, key, value as never, "sc_re_", names);
+      case "regexReplacer":
+        return addNumberedSymbol(this.regexReplacers, key, value as never, "sc_rr_", names);
       case "templateStrings":
         return addNumberedSymbol(
           this.templateStringsInstances,
@@ -6714,6 +6736,12 @@ export class LlEmitter {
       default:
         throw new InternalCompilerError(`llvm emitter bug: unknown intrinsic ${e.name}`);
     }
+  }
+
+  /** Arrays of this element type can hold SCR_ARR_FOREIGN elements. */
+  mayHoldForeign(elem: IrType): boolean {
+    if (this.foreignElementKeys.size === 0) return false;
+    return this.foreignElementKeys.has("*") || this.foreignElementKeys.has(typeKey(elem));
   }
 
   /** Lifetime regions in modules with lifetimeRegions (llvm/regions.ts).
