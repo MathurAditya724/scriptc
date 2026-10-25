@@ -1,4 +1,11 @@
-import { F64, type IrExpr, type IrLocal, type IrStmt } from "../../ir/ir.js";
+import {
+  BYTES_ELEMENT_SIZE,
+  F64,
+  type IrExpr,
+  type IrLocal,
+  type IrStmt,
+  type IrType,
+} from "../../ir/ir.js";
 import type { IntegerRange, IntegerRanges } from "../../ir/integer-ranges.js";
 import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
@@ -10,7 +17,7 @@ import {
   emitCountedLoopSafety,
   emitExactIntegerTest,
 } from "./counted-loops.js";
-import { emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
+import { emitBytesData, emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
 import { f64Lit } from "./common.js";
 import {
   emitStringAsciiFlag,
@@ -106,6 +113,12 @@ export interface BytesLoopVersion {
   /** Integer ranges of affine index operands that hold in the unchecked
    * loop (where the guard bounds the counter). */
   ranges: ReadonlyMap<IrExpr, IntegerRange>;
+  /** Typed-array receivers whose element ranges the guard proves disjoint,
+   * and the receiver of each of their element reads and writes. The fast
+   * copy gives each receiver its own alias scope, so a store to one view
+   * leaves the elements of the others in registers. Null when the loop
+   * writes no element, or reads and writes a single view. */
+  scopes: { receivers: number[]; nodes: ReadonlyMap<Node, number> } | null;
 }
 
 export interface BytesLoopFacts {
@@ -136,6 +149,8 @@ export interface BytesLoopFacts {
 const MAX_COST = 400;
 const MAX_FIXED_END = 2 ** 31;
 const MAX_CHECKS = 8;
+/** Alias-scoped views per loop: the guard tests every pair's ranges. */
+const MAX_SCOPED_RECEIVERS = 6;
 const MAX_OFFSET = 2 ** 31;
 const SAFE = Number.MAX_SAFE_INTEGER;
 /** The range the guard requires of an invariant index term without a
@@ -547,11 +562,24 @@ export function matchBytesLoopVersion(
       group.nodes.push(node);
     } else fixed.set(receiver, { check: { receiver, end }, nodes: [node] });
   };
+  // Element reads and writes of each typed-array receiver, for alias scopes.
+  const scoped = new Map<Node, number>();
+  const writtenViews = new Set<number>();
+  const scope = (node: Node, array: IrExpr, write: boolean): void => {
+    const ref = root(array);
+    if (!ref || ref.type.kind !== "bytes") return;
+    const receiver = receiverOf(ref);
+    scoped.set(node, receiver);
+    if (write) writtenViews.add(receiver);
+  };
   const visitExpr = (e: IrExpr): boolean => {
     if (e.kind === "bytesIntrinsic") {
       const numeric = byteNumberAccess(e);
       if (numeric) access(e, e.receiver, e.args[numeric.offsetArg]!, numeric.width);
-      else if (e.method === "get" && e.args[0]) access(e, e.receiver, e.args[0], 1);
+      else if (e.method === "get" && e.args[0]) {
+        access(e, e.receiver, e.args[0], 1);
+        scope(e, e.receiver, false);
+      }
     } else if (
       e.kind === "strIntrinsic" &&
       (e.method === "charCodeAt" || e.method === "charAt") &&
@@ -561,7 +589,10 @@ export function matchBytesLoopVersion(
     return everyExprChild(e, visitExpr, visitStmt);
   };
   const visitStmt = (s: IrStmt): boolean => {
-    if (s.kind === "bytesSet") access(s, s.arr, s.index, 1);
+    if (s.kind === "bytesSet") {
+      access(s, s.arr, s.index, 1);
+      scope(s, s.arr, true);
+    }
     return everyStmtChild(s, visitExpr, visitStmt);
   };
   loop.body.every(visitStmt);
@@ -684,6 +715,17 @@ export function matchBytesLoopVersion(
         : [],
     });
   }
+  // Alias scopes: at least two views, one of them written, each read only
+  // through plain loads (in a worker program, a view the guard proves
+  // thread-owned).
+  const scopedReceivers = [...new Set(scoped.values())].sort((a, b) => a - b);
+  const ownedSet = new Set(ownedKept.map(([receiver]) => receiver));
+  const scoping =
+    scopedReceivers.length >= 2 &&
+    scopedReceivers.length <= MAX_SCOPED_RECEIVERS &&
+    scopedReceivers.some((receiver) => writtenViews.has(receiver)) &&
+    (!facts.workers || scopedReceivers.every((receiver) => ownedSet.has(receiver)));
+  if (scoping) for (const receiver of scopedReceivers) used.add(receiver);
   // Renumber the receivers the kept checks use.
   const order = [...used].sort((a, b) => a - b);
   const renumber = new Map(order.map((old, index) => [old, index]));
@@ -737,6 +779,12 @@ export function matchBytesLoopVersion(
         : null,
     counterBound: needsBound ? bound : null,
     ranges,
+    scopes: scoping
+      ? {
+          receivers: scopedReceivers.map((receiver) => renumber.get(receiver)!),
+          nodes: new Map([...scoped].map(([node, receiver]) => [node, renumber.get(receiver)!])),
+        }
+      : null,
   };
 }
 
@@ -1125,6 +1173,31 @@ export function emitBytesLoopVersionGuard(
     const ok = B.tmp();
     B.line(`${ok} = icmp ugt i64 ${lengths[check.receiver]}, ${check.end}`);
     conditions.push(ok);
+  }
+  if (version.scopes) {
+    // Every pair of scoped views covers disjoint bytes: one ends at or
+    // before the other starts. An empty view covers none.
+    const spans = version.scopes.receivers.map((index) => {
+      const type = version.receivers[index]!.ref.type as IrType & { kind: "bytes" };
+      const start = B.tmp(),
+        size = B.tmp(),
+        end = B.tmp();
+      B.line(`${start} = ptrtoint ptr ${emitBytesData(host, receivers[index]!)} to i64`);
+      B.line(`${size} = mul nuw i64 ${lengths[index]}, ${BYTES_ELEMENT_SIZE[type.elem]}`);
+      B.line(`${end} = add nuw i64 ${start}, ${size}`);
+      return { start, end };
+    });
+    spans.forEach((a, i) => {
+      for (const b of spans.slice(i + 1)) {
+        const before = B.tmp(),
+          after = B.tmp(),
+          apart = B.tmp();
+        B.line(`${before} = icmp ule i64 ${a.end}, ${b.start}`);
+        B.line(`${after} = icmp ule i64 ${b.end}, ${a.start}`);
+        B.line(`${apart} = or i1 ${before}, ${after}`);
+        conditions.push(apart);
+      }
+    });
   }
   for (const counter of version.counters) {
     const value = host.emitExpr(counter.ref);
