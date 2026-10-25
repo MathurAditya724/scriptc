@@ -64,8 +64,11 @@ static int child_main(int argc, char **argv) {
 #endif
   int listening = argc >= 9 && strcmp(argv[5], "--listen") == 0 && strcmp(argv[7], "--idle-exit") == 0;
   int fixed = listening ? 9 : 5;
-  if (argc < fixed || argc > fixed + 1 || strcmp(argv[1], "--api") != 0 || strcmp(argv[2], "--cwd") != 0 ||
-      strncmp(argv[4], "--callbacks=", 12) != 0 || (argc == fixed + 1 && strcmp(argv[fixed], "--timing") != 0))
+  int at = fixed, timing = 0, libraries = 0;
+  if (at < argc && strcmp(argv[at], "--timing") == 0) { timing = 1; at++; }
+  if (at < argc && strcmp(argv[at], "--default-libraries-from-disk") == 0) { libraries = 1; at++; }
+  if (argc < fixed || at != argc || strcmp(argv[1], "--api") != 0 || strcmp(argv[2], "--cwd") != 0 ||
+      strncmp(argv[4], "--callbacks=", 12) != 0)
     return 71;
   const char *mode = argv[3];
 #ifndef _WIN32
@@ -76,7 +79,8 @@ static int child_main(int argc, char **argv) {
     fputc('\n', stdout);
     fputs(argv[4], stdout);
     fputc('\n', stdout);
-    fputs(argc == 6 ? "timing\n" : "plain\n", stdout);
+    fputs(timing ? "timing\n" : "plain\n", stdout);
+    if (libraries) fputs("libraries from disk\n", stdout);
     return ferror(stdout) ? 72 : 0;
   }
   if (strcmp(mode, "exit") == 0) return 0;
