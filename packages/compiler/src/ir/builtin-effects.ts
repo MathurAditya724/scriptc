@@ -19,6 +19,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.setKey",
   "nodeIsland.invoke",
   "nodeIsland.apply",
+  "nodeIsland.applyTo",
   "nodeIsland.construct",
   "nodeIsland.instanceof",
   "nodeIsland.classMethods",
@@ -199,6 +200,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  // A checked-dynamic value the inspector does not render (a promise, a
+  // URL, a RegExp) throws the 'not supported yet' Error.
+  "insp.dyn",
+  "insp.dynS",
+  // %o's showHidden walk refuses the kinds whose hidden entries it cannot
+  // render.
+  "insp.dynHidden",
   // diagnostics_channel: publish runs subscribers synchronously (a throw
   // propagates — the documented divergence from triggerUncaughtException);
   // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
@@ -222,6 +230,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "async.awaitDyn",
   "als.run",
   "als.exitRun",
+  "als.newOptions",
+  "als.bindCallbackDyn",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
@@ -709,6 +719,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.defineField",
   "class.throwReadOnly",
   "class.throwNotExtensible",
+  "record.throwFrozen",
   "dyn.toString",
   "dyn.valueOf",
   "string.fromCodePoint",
@@ -751,6 +762,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.set",
   "url.setChecked",
   "url.fileURLToPathUrl",
+  "fs.checkPath",
+  "fs.checkReadEncoding",
   "url.fileURLToPathChecked",
   "url.fileURLToPathOptions",
   "url.fileURLToPathBuffer",
@@ -763,6 +776,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.legacyResolve",
   "url.domainToASCII",
   "url.domainToUnicode",
+  // ERR_INVALID_ARG_TYPE and the credentials' URIError.
+  "url.toHttpOptions",
   // The win32-target flavor of pathToFileURL (same runtime entry point —
   // the bridge dispatches by the binary's platform): Node's win32 arm
   // raises ERR_INVALID_ARG_VALUE TypeErrors for malformed UNC inputs, so
@@ -847,12 +862,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromDyn",
   "buffer.poolFromDynRef",
   "buffer.poolFromDynOffset",
+  "buffer.poolFromDynRange",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",
   "bytes.equalsChk",
   "bytes.compareChk",
   "buffer.newStringFail",
+  // Inherited and symbol-keyed Buffer.prototype members throw SC2020.
+  "buffer.prototypeMember",
   "fs.toUnixTimestamp",
   "fs.existsChk",
   "fs.mkdtempChk",
@@ -1043,6 +1061,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairCb",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.diffieHellman",
   "crypto.createSign",
   "crypto.createVerify",
 ]);

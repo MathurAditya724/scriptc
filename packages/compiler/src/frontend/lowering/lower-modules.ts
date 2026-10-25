@@ -45,10 +45,14 @@ import {
 } from "./cycle-initialization.js";
 import { markRequireEarlyBindings } from "./require-initialization.js";
 import {
+  cjsHasLiveMemberExports,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   nestedCjsExportAssignmentsOf,
   requireNestedPatternsOf,
+  splitRequireBindingOf,
+  splitRequireBindingOfIdent,
+  wholeExportSymbolOfModule,
 } from "./cjs-inline-require.js";
 import { isDeadTscHelperDecl, tscInteropBindingOfDecl } from "./cjs-tsc-interop.js";
 import { collectJsonRequires, isJsonRequireDecl } from "./json-require.js";
@@ -1189,19 +1193,22 @@ function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefi
   }
   if (e.kind === ts.SyntaxKind.NullKeyword) return true;
   if (ts.isIdentifier(e) && e.text === "undefined") return true;
-  if (ts.isConditionalExpression(e)) {
-    return (
-      jsDynHoldableInitializer(lowerer, e.whenTrue) &&
-      jsDynHoldableInitializer(lowerer, e.whenFalse)
-    );
-  }
+  // The arms of a conditional or logical expression: checked values, or
+  // strings, numbers and booleans, which box into the checked-dynamic
+  // result (`const APP_NAME = config.name || "pi"`).
+  const arm = (x: ts.Expression): boolean => {
+    if (jsDynHoldableInitializer(lowerer, x)) return true;
+    const kind = lowerer.mapTypeOf(lowerer.typeOf(x))?.kind;
+    return kind === "string" || kind === "f64" || kind === "bool";
+  };
+  if (ts.isConditionalExpression(e)) return arm(e.whenTrue) && arm(e.whenFalse);
   if (
     ts.isBinaryExpression(e) &&
     (e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
       e.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
       e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
   ) {
-    return jsDynHoldableInitializer(lowerer, e.left) && jsDynHoldableInitializer(lowerer, e.right);
+    return arm(e.left) && arm(e.right);
   }
   // A member of a checked module value is itself checked, including a
   // callable whose inferred overloads cannot describe one native ABI.
@@ -1607,14 +1614,26 @@ export function collectGlobals(
         // require() of a program module is not: the exporter re-exports
         // that module's exports, which requirers resolve through the
         // checker's alias (the statement lowers to the dep's %init).
+        // A split binding re-exported whole with later member writes needs
+        // a mutable root: `module.exports = m; module.exports.extra = 1`
+        // extends the SAME object Node exposes. Without later members the
+        // binder is pure alias plumbing (no storage).
+        const splitWholeBinding = ts.isIdentifier(rhs)
+          ? splitRequireBindingOfIdent(lowerer, rhs)
+          : null;
+        const hasMemberExports = cjsHasLiveMemberExports(lowerer, sf);
+        const splitWhole =
+          splitWholeBinding !== null &&
+          wholeExportSymbolOfModule(lowerer, splitWholeBinding.dep) !== null &&
+          hasMemberExports;
         const factoryValued =
-          !ts.isIdentifier(rhs) &&
+          (!ts.isIdentifier(rhs) || splitWhole) &&
           !ts.isClassExpression(rhs) &&
           !ts.isObjectLiteralExpression(rhs) &&
           !(
             requireSpecOf(rhs) !== null &&
             inlineProgramRequireOf(lowerer, rhs) !== null &&
-            !sf.statements.nodes.some((s) => cjsExportAssignmentOf(s)?.kind === "member")
+            !hasMemberExports
           ) &&
           cjsExportTargetLiteral(rhs, sf) === null;
         if (cjsScalarLiteral(rhs) || fnValued || factoryValued) {
@@ -1627,6 +1646,9 @@ export function collectGlobals(
             // A returned object remains the live CommonJS root; later
             // exports.member writes must update that same open object.
             if (factoryValued && t?.kind === "record" && lowerer.dynConvertible(t)) t = DYN;
+            // A split whole-export root is extended by later member writes;
+            // keep it checked-dynamic so those writes reach the same object.
+            if (splitWhole && t && t.kind !== "dyn") t = DYN;
             if (t && t.kind !== "void") {
               const g: IrGlobal = {
                 id: `%g.${tag}exports`,
@@ -2371,7 +2393,6 @@ export function collectGlobals(
           // References from separately-declared functions cascade to
           // their own per-site runtime fences.
           const factoryType =
-            !isLet &&
             isJsSourceFile(sf) &&
             !decl.type &&
             !hasJsTypeAnnotation(decl) &&
@@ -2718,6 +2739,7 @@ function noteVarGlobalEntryInit(lowerer: Lowerer, sf: ts.SourceFile, g: IrGlobal
  * plumbing (lowerVarDeclarator): no storage, the reads resolve through to
  * the module. JSON documents and native FFI requires keep their storage. */
 function requireAliasDecl(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (splitRequireBindingOf(lowerer, decl) !== null) return true;
   return (
     decl.initializer !== undefined &&
     requireSpecOf(decl.initializer) !== null &&

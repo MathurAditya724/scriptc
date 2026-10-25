@@ -352,11 +352,13 @@ test("sanitized native artifacts fail before helper resolution", async () => {
 
 test("program partitions depend only on module size", () => {
   const megabyte = 1024 * 1024;
-  expect(nativeProgramPartitions(4 * megabyte)).toBe(1);
-  expect(nativeProgramPartitions(4 * megabyte + 1)).toBe(2);
+  expect(nativeProgramPartitions(megabyte)).toBe(1);
+  expect(nativeProgramPartitions(megabyte + 1)).toBe(4);
+  expect(nativeProgramPartitions(2 * megabyte)).toBe(4);
+  expect(nativeProgramPartitions(2 * megabyte + 1)).toBe(8);
+  expect(nativeProgramPartitions(32 * megabyte)).toBe(8);
   // Powers of two keep every function in its partition across small edits.
-  expect(nativeProgramPartitions(13 * megabyte)).toBe(4);
-  expect(nativeProgramPartitions(16 * megabyte)).toBe(4);
+  expect(nativeProgramPartitions(32 * megabyte + 1)).toBe(16);
   expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
   expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
   expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([

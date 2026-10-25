@@ -112,10 +112,13 @@ static void host_listen(uint32_t event, const char *name, uint32_t listener, int
   (void)event, (void)name, (void)listener, (void)add, (void)once;
 }
 static uintptr_t host_stack_limit(void) { return 0; }
+/* The smoke test runs on its own thread's stack. */
+static uintptr_t host_stack_start(void) { return 0; }
 
 static const ScrNodeBridgeHost kHost = {
     host_settle,     host_exit,           host_run,    host_io_state,
     host_io_dispatch, host_microtasks_done, host_listen, host_stack_limit,
+    host_stack_start,
 };
 
 static const ScrNodeBridge *bridge;

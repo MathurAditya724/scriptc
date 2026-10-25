@@ -6,8 +6,20 @@
  * (6800-6803) pins the call semantics against Node. Needs a libnode pack
  * in SCRIPTC_LIBNODE; required in the Linux x64 CI lanes (libnode.ts). */
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, test } from "vitest";
 import { compile, deserializeModule } from "@scriptc/compiler";
@@ -36,10 +48,13 @@ let binary = "";
 const before = `mapped before ${process.platform === "linux" ? "false" : "unknown"}`;
 const after = `mapped after ${process.platform === "linux" ? "true" : "unknown"}`;
 
+// The island module cache of these runs (scr_node_island.c).
+const cacheHome = join(outDir, "cache");
+
 async function run(
   path: string,
   args: string[],
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = { ...process.env, XDG_CACHE_HOME: cacheHome },
 ): Promise<Run> {
   try {
     const { stdout, stderr } = await execFileAsync(path, args, { env, encoding: "utf8" });
@@ -61,11 +76,11 @@ function comparable(stderr: string): string {
     .join("\n");
 }
 
-async function build(name: string, libnode?: string): Promise<string> {
+async function build(name: string, libnode?: string, entry = fixture): Promise<string> {
   const dir = join(outDir, name);
   mkdirSync(dir, { recursive: true });
-  const result = await compile(fixture, {
-    outPath: join(dir, "lifecycle"),
+  const result = await compile(entry, {
+    outPath: join(dir, basename(entry, ".ts")),
     outDir: dir,
     sanitize,
     ...(libnode === undefined ? {} : { libnode }),
@@ -125,18 +140,67 @@ describe.skipIf(skip)("Node islands in-process", () => {
     expect(result.stdout).toBe(`${before}\n42\n${after}\n`);
   });
 
-  test("beside packaging carries its own pack", async () => {
+  test("beside packaging carries its own pack and island modules", async () => {
     const beside = await build("beside", "beside");
     expect(existsSync(join(outDir, "beside/lifecycle.libnode/manifest.json"))).toBe(true);
-    const env = { ...process.env };
+    const helper = join(outDir, "beside/lifecycle.libnode/modules/helper.cjs");
+    expect(readFileSync(helper, "utf8")).toBe(
+      readFileSync(join(repoRoot, "tests/fixtures/node-island/helper.cjs"), "utf8"),
+    );
+    const env = { ...process.env, XDG_CACHE_HOME: cacheHome };
     delete env["SCRIPTC_LIBNODE"];
     const result = await run(beside, [], env);
     expect(result.stdout).toBe(`${before}\n42\n${after}\ndone\n`);
     expect(result.code).toBe(0);
+    // Modules that no longer match the executable are refused.
+    writeFileSync(helper, `${readFileSync(helper, "utf8")}\n// edited\n`);
+    const edited = await run(beside, [], env);
+    expect(edited.code).toBe(1);
+    expect(edited.stderr).toBe(
+      `scriptc: the Node island modules at ${join(outDir, "beside/lifecycle.libnode/modules")} do not match this program\n`,
+    );
   }, 300_000);
 
+  test("the executable carries its island modules and no path of the build machine", async () => {
+    const bytes = readFileSync(binary).toString("latin1");
+    // The program and its island modules ship inside the executable, so
+    // the directory they were built from appears nowhere in it.
+    expect(bytes.includes(dirname(fixture))).toBe(false);
+    // Nor does any other path of the checkout, except the pack directory
+    // the executable loads libnode from (which CI may place in the
+    // checkout), and in a sanitized build the runtime sources that the
+    // sanitizers' reports name.
+    if (!sanitize) {
+      const outsidePack = [pack!, realpathSync(pack!)].reduce((b, p) => b.replaceAll(p, ""), bytes);
+      expect(outsidePack.includes(repoRoot)).toBe(false);
+    }
+    // A copy elsewhere runs with the modules it carries, extracted into a
+    // private cache directory named by the manifest's digest.
+    const moved = join(outDir, "moved");
+    mkdirSync(moved, { recursive: true });
+    copyFileSync(binary, join(moved, "app"));
+    chmodSync(join(moved, "app"), 0o755);
+    const cache = join(outDir, "moved-cache");
+    rmSync(cache, { recursive: true, force: true });
+    const env = { ...process.env, XDG_CACHE_HOME: cache };
+    expect((await run(join(moved, "app"), [], env)).stdout).toBe(`${before}\n42\n${after}\ndone\n`);
+    const islands = join(cache, "scriptc/node-islands");
+    const [digest] = readdirSync(islands);
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(statSync(islands).mode & 0o777).toBe(0o700);
+    expect(statSync(join(islands, digest!)).mode & 0o777).toBe(0o700);
+    // An entry that no longer matches is not used: the run extracts the
+    // modules into a directory of its own instead.
+    writeFileSync(join(islands, digest!, "helper.cjs"), "exports.answer = () => 0;\n");
+    expect((await run(join(moved, "app"), [], env)).stdout).toBe(`${before}\n42\n${after}\ndone\n`);
+  });
+
   test("a missing pack fails the first call", async () => {
-    const result = await run(binary, [], { ...process.env, SCRIPTC_LIBNODE: "/nonexistent/pack" });
+    const result = await run(binary, [], {
+      ...process.env,
+      XDG_CACHE_HOME: cacheHome,
+      SCRIPTC_LIBNODE: "/nonexistent/pack",
+    });
     expect(result.code).toBe(1);
     expect(result.stdout).toBe(`${before}\n`);
     expect(result.stderr).toMatch(
@@ -144,9 +208,89 @@ describe.skipIf(skip)("Node islands in-process", () => {
     );
   });
 
+  test("SCRIPTC_LIBNODE must be an absolute path", async () => {
+    const result = await run(binary, [], {
+      ...process.env,
+      XDG_CACHE_HOME: cacheHome,
+      SCRIPTC_LIBNODE: "relative/pack",
+    });
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe(`${before}\n`);
+    expect(result.stderr).toBe(
+      "scriptc: SCRIPTC_LIBNODE must be an absolute path to a libnode pack directory\n",
+    );
+  });
+
+  test("an error whose message cannot be read crosses with an empty message", async () => {
+    expect(await run(binary, ["unreadable"])).toEqual({
+      stdout: `${before}\n42\n${after}\ncaught true ""\ndone\n`,
+      stderr: "",
+      code: 0,
+    });
+  });
+
+  test("a call from a worker thread throws", async () => {
+    const worker = await build(
+      "worker",
+      undefined,
+      join(repoRoot, "tests/fixtures/node-island/worker.ts"),
+    );
+    expect(await run(worker, [])).toEqual({
+      stdout:
+        "main 42\nworker Node islands run on the main thread only; this call came from a worker thread\nexit 0\n",
+      stderr: "",
+      code: 0,
+    });
+  }, 300_000);
+
+  test("full garbage collections during calls, at depth on both sides", async () => {
+    const stress = await build(
+      "gc-stress",
+      undefined,
+      join(repoRoot, "tests/fixtures/node-island/gc-stress.ts"),
+    );
+    expect(await run(stress, [])).toEqual({
+      stdout:
+        "churn 2000000\nnested 5000\ndeep 8000\nfibers 100001,100002,100003,100004\ntimer 500000\n",
+      stderr: "",
+      code: 0,
+    });
+  }, 300_000);
+
+  test("Node ignores NODE_OPTIONS from the program's environment", async () => {
+    const result = await run(binary, [], {
+      ...process.env,
+      XDG_CACHE_HOME: cacheHome,
+      NODE_OPTIONS: "--require /nonexistent/preload.cjs",
+    });
+    expect(result).toEqual({ stdout: `${before}\n42\n${after}\ndone\n`, stderr: "", code: 0 });
+  });
+
+  test("child_process.fork() needs an execPath of its own", async () => {
+    expect((await run(binary, ["fork"])).stdout).toBe(
+      `${before}\n42\n${after}\nchild_process.fork() in a Node island needs options.execPath (a node executable): process.execPath is this program\ndone\n`,
+    );
+  });
+
+  test("a cached build follows a change of the recorded libnode pack", async () => {
+    // The same program built against a copy of the pack elsewhere records
+    // the copy: the executable cache does not serve the first build's entry.
+    const copy = join(outDir, "pack-copy");
+    rmSync(copy, { recursive: true, force: true });
+    cpSync(pack!, copy, { recursive: true });
+    const first = readFileSync(await build("cached-pack", pack!));
+    const second = readFileSync(await build("cached-pack", copy));
+    expect(first.includes(Buffer.from(copy))).toBe(false);
+    expect(second.includes(Buffer.from(copy))).toBe(true);
+  }, 300_000);
+
   test("a pack of another Node version fails the first call", async () => {
     const dir = await fakePack("old-node", "SCR_NODE_BRIDGE_ABI", "22.11.0");
-    const result = await run(binary, [], { ...process.env, SCRIPTC_LIBNODE: dir });
+    const result = await run(binary, [], {
+      ...process.env,
+      XDG_CACHE_HOME: cacheHome,
+      SCRIPTC_LIBNODE: dir,
+    });
     expect(result.code).toBe(1);
     expect(result.stderr).toMatch(
       new RegExp(
@@ -157,7 +301,11 @@ describe.skipIf(skip)("Node islands in-process", () => {
 
   test("a bridge of another ABI fails the first call", async () => {
     const dir = await fakePack("other-abi", "999u", "24.22.0");
-    const result = await run(binary, [], { ...process.env, SCRIPTC_LIBNODE: dir });
+    const result = await run(binary, [], {
+      ...process.env,
+      XDG_CACHE_HOME: cacheHome,
+      SCRIPTC_LIBNODE: dir,
+    });
     expect(result.code).toBe(1);
     expect(result.stderr).toBe(
       `scriptc: the libnode pack at ${dir} has an incompatible bridge (ABI 999; this program needs 6)\n`,

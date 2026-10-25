@@ -9,6 +9,8 @@
  * - the module loads with require() from the calling module, so a relative
  *   specifier resolves from the caller's directory and a bare one from its
  *   node_modules (ES modules load through require(esm));
+ * - in scriptc builds `specifier` is a string literal: the build ships the
+ *   module, and what it loads, inside the executable;
  * - the arguments cross as a copy, `JSON.parse(JSON.stringify(args))`, and
  *   the function runs with the module namespace as `this`;
  * - the result crosses as its JSON copy (undefined stays undefined), and
