@@ -69,6 +69,8 @@ console.log(text.replace(/(a)|(b)/g, (m, a, b) => \`\${m}\${a}\${b}\`));
 console.log(text.replace(/(a)(b)?/g, (m: string, a: string, b: string | undefined, at: number) => m + a + (b ?? "") + at));
 const half = (n: number): number => n / 2;
 console.log(text.replace(/b/g, (m, at) => String(half(at))));
+console.log(text.replace(/b/g, (m, at) => String(parseFloat(at) + parseInt(at))));
+console.log(text.replace(/(\\d)/g, (m, d) => String(parseInt("11", d))));
 console.log(text.replace(/(a)(b)(c)/g, (m, a, b, c, at, all, extra) => m + a + b + c + at + all + extra));
 `);
     expect(replacerCalls(llvm)).toEqual({
@@ -76,7 +78,10 @@ console.log(text.replace(/(a)(b)(c)/g, (m, a, b, c, at, all, extra) => m + a + b
       // two captures a match can leave unset (bits 1 and 2);
       // \`string | undefined\` at capture 2 (bit 8 + 2); an offset passed to a
       // number parameter keeps its checked-dynamic box (bit 1).
-      direct: ["2:0", "2:-2147483648", "3:6", "4:1024", "2:2"],
+      // parseFloat and parseInt take text, and parseInt's radix is a
+      // number: the offset passed as text and the capture passed as the
+      // radix stay checked-dynamic (bit 1), so both calls compile.
+      direct: ["2:0", "2:-2147483648", "3:6", "4:1024", "2:2", "2:2", "2:2"],
       // Seven parameters exceed the direct calls' limit.
       boxed: 1,
     });

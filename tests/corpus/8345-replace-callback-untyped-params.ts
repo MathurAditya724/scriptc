@@ -51,6 +51,11 @@ console.log("ab".replace(/(?<a>a)|(?<b>b)/g, (m, a, b, at, all, groups) => `${m}
 console.log("ab".replace(/b/, (m, at, all, extra, more) => `${m}:${at}:${all}:${extra}:${more}`));
 console.log("ab".replace(/(a)(b)/, (m, a, b, at, all, extra, more) => `${m}${a}${b}${at}${all}${extra}${more}`));
 
+// An offset passed to parseFloat converts with ToString, and captures
+// passed to parseInt and parseFloat are their text.
+console.log("a1b22".replace(/\d+/g, (m, at) => `<${parseFloat(at) + parseInt(m, at + 10)}>`));
+console.log("1.5 2e1".replace(/(\S+)/g, (_m, d) => String(parseFloat(d) + parseInt(d) + Number(d))));
+
 // Results that are not strings convert with ToString.
 const counts: Record<string, any> = { a: 1, b: true, c: null, d: undefined, e: { toString: () => "E" } };
 console.log("a b c d e".replace(/\w/g, (m) => counts[m]));

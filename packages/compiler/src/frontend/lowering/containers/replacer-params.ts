@@ -115,7 +115,10 @@ const STRING_MEMBERS: ReadonlySet<string> = new Set([
 
 /** Whether every read of `symbol` in `body` is one that means the same
  * for an `any` value and for a `kind` value, and lowers for both: a
- * template span, a Number/String/parseInt/parseFloat argument, a listed
+ * template span, the argument of Number or String, the text argument of
+ * parseInt or parseFloat for a string and the radix of parseInt for a
+ * number (each a parameter of that type, which an `any` value converts
+ * to), a listed
  * string member, `+`, strict equality, arithmetic and comparisons of
  * numbers, a returned value, and a string key of an element access on a
  * string-indexed record or an `any` value. Anything else keeps the
@@ -144,13 +147,20 @@ function readsFit(
       return shape?.indexValue !== undefined && !shape.tuple;
     }
     if (ts.isArrowFunction(parent)) return parent.body === node;
-    if (ts.isCallExpression(parent))
-      return (
-        parent.expression !== node &&
-        ["Number", "String", "parseInt", "parseFloat"].some((global) =>
-          lowerer.isStdlibGlobal(parent.expression, global),
-        )
-      );
+    if (ts.isCallExpression(parent)) {
+      if (parent.expression === node) return false;
+      const position = parent.arguments.nodes.indexOf(node as ts.Expression);
+      if (
+        lowerer.isStdlibGlobal(parent.expression, "Number") ||
+        lowerer.isStdlibGlobal(parent.expression, "String")
+      )
+        return position === 0;
+      if (lowerer.isStdlibGlobal(parent.expression, "parseFloat"))
+        return position === 0 && kind === "string";
+      if (lowerer.isStdlibGlobal(parent.expression, "parseInt"))
+        return position === 0 ? kind === "string" : position === 1 && kind === "f64";
+      return false;
+    }
     if (ts.isPropertyAccessExpression(parent)) {
       const member = parent.name.text;
       if (kind !== "string" || parent.expression !== node || !STRING_MEMBERS.has(member))
