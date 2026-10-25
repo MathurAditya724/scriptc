@@ -2907,7 +2907,7 @@ class Analyzer {
    * is in a loop, in the context the call was walked in. siteCtx keeps
    * the first context per syntax node, which a site walked in several
    * contexts (receiver classes, per-site clones) does not determine. */
-  private readonly argsFrom = new WeakMap<
+  private readonly argsFrom = new Map<
     number[],
     { caller: FunctionInfo | null; inLoop: boolean }
   >();
