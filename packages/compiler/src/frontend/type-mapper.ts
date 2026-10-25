@@ -6171,6 +6171,9 @@ function distributedConditionalParts(type: ts.Type, ctx: TypeMapperCtx): ts.Type
   const symbol = checkType.getSymbol();
   const bound = resolveTypeParamTs(checkType);
   if (!symbol || !bound) return null;
+  // The answer depends on the instance's binding: a mapping that consults
+  // it, even one that drops an all-never part, is not context-free.
+  contextResolutions++;
   const parts: ts.Type[] = [];
   for (const member of bound.isUnionType() ? ts.constituentTypes(bound) : [bound]) {
     // `string & {}` (the open-union spelling) extends exactly what `string`
@@ -6209,14 +6212,27 @@ function neverConditionalUnitOnly(t: ts.Type, ctx: TypeMapperCtx): boolean {
 }
 
 /** mapType of a distributed conditional (distributedConditionalParts): the
- * union of its members' results. Null when it does not distribute, when a
- * result does not map, or when every member selects never (the enclosing
- * union drops such a part). */
+ * union of its members' results, as the concrete conditional's union maps
+ * them. An `unknown` or `any` result absorbs the rest (the checker's union
+ * is that type), and `undefined` and `null` results are the unit arms. Null
+ * when it does not distribute, when a result does not map, when every
+ * member selects never (the enclosing union drops such a part), or when
+ * only units remain. */
 function mapDistributedConditional(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const parts = distributedConditionalParts(type, ctx);
   if (!parts || parts.length === 0) return null;
+  const top = parts.find((part) => (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0);
+  if (top !== undefined) return mapType(top, ctx);
   const arms: IrType[] = [];
   for (const part of parts) {
+    if (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) {
+      if (!arms.some((a) => typeEquals(a, UNDEFINED_T))) arms.push(UNDEFINED_T);
+      continue;
+    }
+    if (part.flags & ts.TypeFlags.Null) {
+      if (!arms.some((a) => typeEquals(a, NULL_T))) arms.push(NULL_T);
+      continue;
+    }
     const mapped = mapType(part, ctx);
     if (!mapped) return null;
     const members =
@@ -6224,6 +6240,7 @@ function mapDistributedConditional(type: ts.Type, ctx: TypeMapperCtx): IrType | 
     if (!members) return null;
     for (const arm of members) if (!arms.some((a) => typeEquals(a, arm))) arms.push(arm);
   }
+  if (arms.every(isUnitType)) return null;
   if (arms.length === 1) return arms[0]!;
   if (!unionContainerArmsOk(arms)) return null;
   arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
