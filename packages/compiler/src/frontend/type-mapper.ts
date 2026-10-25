@@ -3036,6 +3036,30 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // util.inspect as a value (a custom inspect method's third parameter is
+  // `typeof inspect`): the runtime's inspect function, called through the
+  // checked-dynamic boundary.
+  if (
+    psym !== undefined &&
+    ts.symbolName(psym) === "inspect" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isFunctionDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "util"),
+    )
+  )
+    return DYN;
+  // util.inspect's options bag, which inspect and formatWithOptions read
+  // at run time (its sorted option can be a comparator function), and the
+  // options custom inspect functions receive.
+  if (
+    (isStdlibInterface("InspectOptions") || isStdlibInterface("InspectOptionsStylized")) &&
+    psym!.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "util"),
+    )
+  )
+    return DYN;
   // dns.LookupAllOptions (`all: true`, the overload whose callback takes
   // an address list): a lookup option bag dns.lookup reads at run time.
   // It rides checked-dynamic storage, so the lookup function type that
@@ -3099,15 +3123,30 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!elem) return null;
     return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
   }
-  // node:net's SocketAddress and BlockList: native handles (scr_net.c)
-  // whose getters and methods dispatch through the handle.
+  // node:net's SocketAddress and BlockList (scr_net.c) and node:util's
+  // MIMEType and MIMEParams (scr_mime.c): native handles whose getters and
+  // methods dispatch through the handle.
   if (
     ((psym !== undefined && ts.symbolName(psym) === "SocketAddress") ||
-      (psym !== undefined && ts.symbolName(psym) === "BlockList")) &&
+      (psym !== undefined && ts.symbolName(psym) === "BlockList") ||
+      (psym !== undefined && ts.symbolName(psym) === "MIMEType") ||
+      (psym !== undefined && ts.symbolName(psym) === "MIMEParams")) &&
     psym.declarations.some(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  ) {
+    return DYN;
+  }
+  // The functions node:util's debounce and throttle return
+  // (scr_util_timing.c): native functions with their own members and
+  // getters.
+  if (
+    psym !== undefined &&
+    (ts.symbolName(psym) === "DebouncedFunction" || ts.symbolName(psym) === "ThrottledFunction") &&
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
     )
   ) {
     return DYN;
