@@ -7,7 +7,7 @@ const show = (a, e) => {
   try { console.log(JSON.stringify(util.diff(a, e))); } catch (err) { console.log(err.name, err.code, err.message); }
 };
 show("abc", "abd"); show("kitten", "sitting"); show("", "x"); show("same", "same"); show("", "");
-show(["a", "b", "c"], ["a", "c", "d"]); show(["x"], []); show([], ["y", "z"]);
+show(["a", "b", "c"], ["a", "c", "d"]); show(["x"], []); show([], ["y", "z"]); show([], []);
 const arr = ["p"]; show(arr, arr); show(1, 1); show(1, 2); show("a", 2); show(["a", 1], ["a"]); show(["a"], [, "b"]);
 show(null, "x"); show("x", undefined); show("héllo😀", "hello😀"); show({}, "x");
 show("the quick brown fox", "the quack brown box");

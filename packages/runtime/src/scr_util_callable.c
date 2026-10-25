@@ -881,6 +881,17 @@ ScrDyn *scr_util_diff(ScrDyn *actual, ScrDyn *expected) {
     scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)n, "ERR_OUT_OF_RANGE");
     return NULL;
   }
+  /* Two distinct empty sequences: Node's myersDiff reads past its
+   * one-element state, finds no end and answers undefined, which the
+   * ArrayPrototypeReverse of util.diff rejects. The trace below would be read
+   * out of bounds. */
+  if (max == 0) {
+    uc_diff_seq_free(&a);
+    uc_diff_seq_free(&e);
+    static const char message[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
   size_t width = 2 * max + 1;
   int32_t *v = calloc(width, sizeof *v);
   int32_t **trace = malloc((max + 1) * sizeof *trace);
