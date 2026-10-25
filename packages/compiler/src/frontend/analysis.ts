@@ -38,7 +38,9 @@ export function analyzeWithFrontend(
     }
     ffi = loaded.profile;
   }
-  const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes);
+  const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
+    nodeIslands: true,
+  });
   try {
     const emptyStats = {
       statementsTotal: 0,

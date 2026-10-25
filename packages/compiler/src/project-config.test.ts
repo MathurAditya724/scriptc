@@ -124,3 +124,12 @@ test("a non-object packages or nodeIslands value is SC8004", () => {
   // Other keys of the scriptc object belong to other readers.
   expect(config({ somethingElse: 1 }).diagnostics).toEqual([]);
 });
+
+test("package setting keys named like Object.prototype members are unknown settings", () => {
+  const c = config({ packages: { debug: { constructor: "node", toString: "node" } } });
+  expect(c.diagnostics.map((d) => [d.code, d.message])).toEqual([
+    ["SC8004", "package.json 'scriptc.packages.debug.constructor' is not a known package setting"],
+    ["SC8004", "package.json 'scriptc.packages.debug.toString' is not a known package setting"],
+  ]);
+  expect(c.packages.has("debug")).toBe(false);
+});

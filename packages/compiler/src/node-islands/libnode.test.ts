@@ -1,9 +1,18 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { USES_TIMERS_LIB_FNS } from "../backend/llvm/lib-shared.js";
-import { libnodeCacheKey, libnodeRecord, NODE_BRIDGE_ABI } from "./libnode.js";
+import { libnodeCacheKey, libnodeRecord, libnodeTarget, NODE_BRIDGE_ABI } from "./libnode.js";
+import { libnodePackPackage } from "./libnode-pack.js";
 import { findInstalledLibnodePack, hostLibnodeTarget } from "./libnode-pack.js";
 
 function pack(nodeVersion: string, bridgeAbi = NODE_BRIDGE_ABI): string {
@@ -84,6 +93,64 @@ describe("the recorded libnode pack", () => {
     expect(readFileSync(join(out, "app.libnode/libscr_node_bridge.so"), "utf8")).toBe("bridge");
   });
 
+  test("beside refuses to replace the pack it copies", () => {
+    const out = mkdtempSync(join(tmpdir(), "scriptc-libnode-out-"));
+    const first = pack("24.22.0");
+    libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: first });
+    // The placed copy as the source of the next beside build.
+    const placed = join(out, "app.libnode");
+    expect(libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: placed })).toMatch(
+      /^--libnode=beside would replace the libnode pack it copies/,
+    );
+    expect(readFileSync(join(placed, "libscr_node_bridge.so"), "utf8")).toBe("bridge");
+  });
+
+  test("beside refuses manifest file names outside the pack", () => {
+    const dir = pack("24.22.0");
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({ nodeVersion: "24.22.0", bridgeAbi: NODE_BRIDGE_ABI, files: { "../x": {} } }),
+    );
+    const out = mkdtempSync(join(tmpdir(), "scriptc-libnode-out-"));
+    expect(libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: dir })).toBe(
+      `the libnode pack at ${dir} lists a file outside the pack ('../x')`,
+    );
+    expect(existsSync(join(out, "app.libnode"))).toBe(false);
+  });
+
+  test("beside refuses manifest file names outside the pack", () => {
+    for (const name of ["..", ".", "../escaped", "/etc/passwd", "a/b", "a\\b", "x\u0000y"]) {
+      const dir = pack("24.22.0");
+      writeFileSync(
+        join(dir, "manifest.json"),
+        JSON.stringify({
+          nodeVersion: "24.22.0",
+          bridgeAbi: NODE_BRIDGE_ABI,
+          files: { [name]: {} },
+        }),
+      );
+      const out = mkdtempSync(join(tmpdir(), "scriptc-libnode-out-"));
+      expect(libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: dir })).toBe(
+        `the libnode pack at ${dir} lists a file outside the pack ('${name}')`,
+      );
+      expect(existsSync(join(out, "app.libnode"))).toBe(false);
+      expect(existsSync(join(out, "escaped"))).toBe(false);
+    }
+  });
+
+  test("beside refuses pack files that are symbolic links", () => {
+    const dir = pack("24.22.0");
+    const elsewhere = join(mkdtempSync(join(tmpdir(), "scriptc-libnode-elsewhere-")), "secret");
+    writeFileSync(elsewhere, "secret");
+    rmSync(join(dir, "libnode.so.137"));
+    symlinkSync(elsewhere, join(dir, "libnode.so.137"));
+    const out = mkdtempSync(join(tmpdir(), "scriptc-libnode-out-"));
+    expect(libnodeRecord("beside", join(out, "app"), { SCRIPTC_LIBNODE: dir })).toBe(
+      `the libnode pack at ${dir} holds libnode.so.137 as a symbolic link; pack files must be regular files`,
+    );
+    expect(existsSync(join(out, "app.libnode"))).toBe(false);
+  });
+
   test("a pack the deployment places beside the executable needs no manifest at build time", () => {
     expect(libnodeRecord("$ORIGIN/node", "/out/app", {})).toEqual({
       libnode: "$ORIGIN/node",
@@ -92,9 +159,36 @@ describe("the recorded libnode pack", () => {
   });
 });
 
-describe("the libnode pack in an executable's cache key", () => {
-  test("is absent without --libnode or SCRIPTC_LIBNODE", () => {
-    expect(libnodeCacheKey(undefined, {})).toBeUndefined();
+describe("the libnode pack identity a cached build keeps", () => {
+  // A workspace build of the target's @scriptc/libnode-<platform> that
+  // resolves next to the compiler (CI assembles one) is installed for every
+  // project, so without a pack in the project the identity names it.
+  const nextToCompiler = findInstalledLibnodePack({
+    targetName: libnodeTarget({}),
+    projectDir: "/nonexistent",
+  });
+  const withoutProjectPack = (key: string | undefined): void => {
+    if (nextToCompiler === null) expect(key).toBeUndefined();
+    else expect(key).toContain(`|${nextToCompiler}|`);
+  };
+
+  test("is absent when no pack is named or installed", () => {
+    withoutProjectPack(libnodeCacheKey(undefined, {}, "/nonexistent"));
+  });
+
+  test("names the installed pack, and changes with it", () => {
+    const project = mkdtempSync(join(tmpdir(), "scriptc-libnode-project-"));
+    const name = libnodePackPackage(libnodeTarget({}));
+    if (name === null) return;
+    const installed = join(project, "node_modules", name);
+    mkdirSync(installed, { recursive: true });
+    writeFileSync(join(installed, "manifest.json"), JSON.stringify({ nodeVersion: "24.22.0" }));
+    const before = libnodeCacheKey(undefined, {}, project);
+    expect(before).toContain(installed);
+    writeFileSync(join(installed, "manifest.json"), JSON.stringify({ nodeVersion: "24.23.0" }));
+    expect(libnodeCacheKey(undefined, {}, project)).not.toBe(before);
+    rmSync(installed, { recursive: true, force: true });
+    withoutProjectPack(libnodeCacheKey(undefined, {}, project));
   });
 
   test("changes when the pack in the same directory is upgraded", () => {

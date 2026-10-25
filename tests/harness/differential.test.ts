@@ -149,9 +149,9 @@ function nodeOracleFile(file: string): string {
 }
 
 /** `// @no-deprecation` in the directive head: the Node oracle runs with
- * --no-deprecation — for programs exercising deprecated-API ERROR paths
- * (new Buffer's ctor ladder) whose DEP warnings carry a pid and can never
- * byte-compare; the compiled runtime emits no process warnings at all. */
+ * --no-deprecation, for programs whose DEP warnings carry a pid and cannot
+ * compare. The compiled program does not read the directive; a program
+ * whose compiled form reports the warning sets process.noDeprecation. */
 function wantsNoDeprecation(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l));
 }

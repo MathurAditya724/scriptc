@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import {
   analyze,
+  compile,
   coverageEnvelope,
   coveragePasses,
   renderCoverage,
@@ -869,6 +870,33 @@ test("Node islands (report-only): one package per class, gap islands first", asy
   expect(coverage.diagnostics.every((d) => d.code === "SC2013")).toBe(true);
   expect(coveragePasses(coverage, "island-gaps")).toBe(false);
   expect(coveragePasses(coverage, "node-islands")).toBe(false);
+});
+
+test("unknown scriptc settings warn in a build and make the island report unavailable", async () => {
+  const entry = fixture("node-islands-config/main.ts");
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-config-"));
+  try {
+    const built = await compile(entry, {
+      outputKind: "ir",
+      outPath: join(outDir, "main.ir.json"),
+      outDir,
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect((built.warnings ?? []).map((d) => [d.code, d.message])).toEqual([
+      ["SC8004", `package.json 'scriptc.packages.encoding' has the unknown value "unloded"`],
+      ["SC8004", `package.json 'scriptc.packages.debug.run' has the unknown value "island"`],
+      ["SC8004", `package.json 'scriptc.nodeIslands.auto' must be true or false, not "yes"`],
+      ["SC8004", "package.json 'scriptc.nodeIslands.mode' is not a known Node island setting"],
+    ]);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+  const { coverage } = analyze(entry);
+  expect(coverage.nodeIslands).toBeUndefined();
+  expect(renderCoverage({ ...coverage, file: "main.ts" }, { root: repoRoot })).toContain(
+    "not analyzable: the project's scriptc configuration has 4 unknown settings",
+  );
 });
 
 test("Node island policy from the command line: native, forced, off", () => {

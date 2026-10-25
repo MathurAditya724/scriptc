@@ -108,6 +108,12 @@ Local<String> Utf8(Isolate *isolate, const char *text, size_t len) {
       .ToLocalChecked();
 }
 
+// A string longer than V8 can hold is empty instead of a fatal error.
+v8::MaybeLocal<String> MaybeUtf8(Isolate *isolate, const char *text, size_t len) {
+  if (len > static_cast<size_t>(String::kMaxLength)) return {};
+  return String::NewFromUtf8(isolate, text, NewStringType::kNormal, static_cast<int>(len));
+}
+
 Local<String> Utf8(Isolate *isolate, const char *text) {
   return Utf8(isolate, text, std::strlen(text));
 }
@@ -119,15 +125,20 @@ std::string ToStdString(Isolate *isolate, Local<Value> value) {
 
 // The outcome of an exception the dispatcher itself did not catch (a stack
 // overflow, for example): an Error copy with its message.
+// Reading the message runs user code (a getter, a toString), which may throw
+// again; the copy then has an empty message.
 std::string ThrownOutcome(Isolate *isolate, Local<Context> context, Local<Value> exception) {
+  TryCatch inner(isolate);
   Local<Value> message = exception;
   if (exception->IsObject()) {
     Local<Value> own;
     if (exception.As<Object>()->Get(context, Utf8(isolate, "message")).ToLocal(&own))
       message = own;
   }
+  Local<String> text;
   Local<String> quoted;
-  if (!v8::JSON::Stringify(context, message->ToString(context).ToLocalChecked()).ToLocal(&quoted))
+  if (!message->ToString(context).ToLocal(&text) ||
+      !v8::JSON::Stringify(context, text).ToLocal(&quoted))
     return "T{\"error\":{\"kind\":0,\"message\":\"\"}}";
   return "T{\"error\":{\"kind\":0,\"message\":" + ToStdString(isolate, quoted) + "}}";
 }
@@ -183,12 +194,18 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
   if (dladdr(reinterpret_cast<void *>(&napi_create_function), &info) && info.dli_fname)
     dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD | RTLD_GLOBAL);
   std::vector<std::string> args = {argv0};
+  // The program is not a node process: NODE_OPTIONS from its environment
+  // does not apply, and Node leaves the process's resource limits and code
+  // pages as they are.
   auto result = node::InitializeOncePerProcess(
       args, {node::ProcessInitializationFlags::kNoInitializeV8,
              node::ProcessInitializationFlags::kNoInitializeNodeV8Platform,
              node::ProcessInitializationFlags::kNoStdioInitialization,
              node::ProcessInitializationFlags::kNoDefaultSignalHandling,
-             node::ProcessInitializationFlags::kNoPrintHelpOrVersionOutput});
+             node::ProcessInitializationFlags::kNoPrintHelpOrVersionOutput,
+             node::ProcessInitializationFlags::kDisableNodeOptionsEnv,
+             node::ProcessInitializationFlags::kNoAdjustResourceLimits,
+             node::ProcessInitializationFlags::kNoUseLargePages});
   if (result->early_return() || result->exit_code() != 0) {
     std::string message = "Node initialization failed";
     for (const std::string &error : result->errors()) message += ": " + error;
@@ -198,9 +215,12 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
   v8::V8::InitializePlatform(g_platform.get());
   v8::V8::Initialize();
   g_snapshot = node::EmbedderSnapshotData::BuiltinSnapshotData();
+  // Modules resolve inside the program's own module tree, never from
+  // NODE_PATH or the user's global module directories.
   auto flags = static_cast<node::EnvironmentFlags::Flags>(
       node::EnvironmentFlags::kDefaultFlags | node::EnvironmentFlags::kNoCreateInspector |
-      node::EnvironmentFlags::kNoStartDebugSignalHandler);
+      node::EnvironmentFlags::kNoStartDebugSignalHandler |
+      node::EnvironmentFlags::kNoGlobalSearchPaths);
   std::vector<std::string> errors;
   g_setup = g_snapshot ? node::CommonEnvironmentSetup::CreateFromSnapshot(
                              g_platform.get(), &errors, g_snapshot.get(), result->args(),
@@ -281,12 +301,23 @@ char *Call(uint32_t id, int sync, const char *file, const char *specifier, const
     // No callback scope: the runtime's checkpoint drains what the call
     // queued, at the end of the runtime callback that made it (NI-3).
     TryCatch try_catch(isolate);
+    Local<String> args_text;
+    if (!MaybeUtf8(isolate, args, args_len).ToLocal(&args_text)) {
+      // The argument JSON is longer than V8's string limit: the RangeError
+      // V8 throws for such a string.
+      outcome = "T{\"error\":{\"kind\":2,\"message\":\"Invalid string length\"}}";
+      if (!sync) {
+        g_host->settle(id, outcome.data(), outcome.size());
+        return nullptr;
+      }
+      return Copy(outcome, len);
+    }
     Local<Value> argv[] = {Integer::NewFromUnsigned(isolate, id),
                            v8::Boolean::New(isolate, sync != 0),
                            Utf8(isolate, file),
                            Utf8(isolate, specifier),
                            Utf8(isolate, name),
-                           Utf8(isolate, args, args_len)};
+                           args_text};
     Local<Value> result;
     if (g_call.Get(isolate)
             ->Call(context, v8::Undefined(isolate), sizeof argv / sizeof argv[0], argv)
@@ -631,14 +662,14 @@ const ScrNodeBridge kBridge = {
 // scans the stack while JavaScript runs on the runtime's stack walks from
 // that stack up to the main thread's and faults in the unmapped gap.
 // (macOS binds libnode's calls inside libnode; its packs need another way.)
-#define SCR_V8_STACK_START(fn, symbol)                                        \
+#define SCR_V8_STACK_START(fn, symbol)                                          \
   extern "C" __attribute__((visibility("default"))) void *fn() __asm__(symbol); \
-  extern "C" void *fn() {                                                     \
-    static void *(*next)() = nullptr;                                         \
-    uintptr_t start = HostStackStart();                                       \
-    if (start != 0) return reinterpret_cast<void *>(start);                   \
+  extern "C" void *fn() {                                                       \
+    static void *(*next)() = nullptr;                                           \
+    uintptr_t start = HostStackStart();                                         \
+    if (start != 0) return reinterpret_cast<void *>(start);                     \
     if (next == nullptr) next = reinterpret_cast<void *(*)()>(dlsym(RTLD_NEXT, symbol)); \
-    return next != nullptr ? next() : nullptr;                                \
+    return next != nullptr ? next() : nullptr;                                  \
   }
 SCR_V8_STACK_START(ScrV8GetStackStart, "_ZN2v84base5Stack13GetStackStartEv")
 SCR_V8_STACK_START(ScrV8GetStackStartUnchecked, "_ZN2v84base5Stack22GetStackStartUncheckedEv")

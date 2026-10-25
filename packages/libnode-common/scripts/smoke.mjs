@@ -84,10 +84,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({
     options: { pack: { type: "string" }, platform: { type: "string" } },
   });
+  // An explicit --pack or --platform names the pack; SCRIPTC_LIBNODE only
+  // replaces the host's default.
   const pack = resolve(
     values.pack ??
-      process.env.SCRIPTC_LIBNODE ??
-      join(repoRoot, "packages", `libnode-${values.platform ?? hostPlatform()}`),
+      (values.platform !== undefined
+        ? join(repoRoot, "packages", `libnode-${values.platform}`)
+        : (process.env.SCRIPTC_LIBNODE ?? join(repoRoot, "packages", `libnode-${hostPlatform()}`))),
   );
   const manifest = JSON.parse(readFileSync(join(pack, "manifest.json"), "utf8"));
   const { status, stdout, stderr } = runSmoke(pack);
