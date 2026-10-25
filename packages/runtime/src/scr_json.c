@@ -6615,11 +6615,44 @@ ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr
 
 /* Symbol descriptors use the ordinary descriptor implementation in an
  * inaccessible table. Keep a retained key list so identities cannot be
- * recycled while properties exist, and reflection returns real symbols. */
+ * recycled while properties exist, and reflection returns real symbols.
+ *
+ * The storage key is the symbol's address in text, which depends on the
+ * address alone, so a small cache by address answers repeated defines and
+ * lookups without formatting a new string each time. A recycled address
+ * names the same key text, so entries never go stale. */
+#define SCR_SYMBOL_KEY_CACHE 256
+static SCR_TL struct {
+  const void *symbol;
+  ScrStr *key;
+} scr_symbol_key_cache[SCR_SYMBOL_KEY_CACHE];
+static SCR_TL bool scr_symbol_key_cache_registered;
+
+static void scr_symbol_key_cache_cleanup(void) {
+  for (size_t i = 0; i < SCR_SYMBOL_KEY_CACHE; i++) {
+    scr_str_release(scr_symbol_key_cache[i].key);
+    scr_symbol_key_cache[i].key = NULL;
+    scr_symbol_key_cache[i].symbol = NULL;
+  }
+  scr_symbol_key_cache_registered = false;
+}
+
 static ScrStr *scr_dyn_symbol_storage_key(const ScrDyn *key) {
+  const void *symbol = key->v.symbol.value;
+  size_t slot = ((uintptr_t)symbol >> 4) & (SCR_SYMBOL_KEY_CACHE - 1);
+  if (scr_symbol_key_cache[slot].key && scr_symbol_key_cache[slot].symbol == symbol)
+    return scr_str_retain(scr_symbol_key_cache[slot].key);
   char buffer[2 * sizeof(void *) + 4];
-  int length = snprintf(buffer, sizeof buffer, "%p", (void *)key->v.symbol.value);
-  return scr_str_new(buffer, (size_t)length);
+  int length = snprintf(buffer, sizeof buffer, "%p", (void *)symbol);
+  ScrStr *name = scr_str_new(buffer, (size_t)length);
+  if (!scr_symbol_key_cache_registered) {
+    scr_symbol_key_cache_registered = true;
+    scr_atexit(scr_symbol_key_cache_cleanup);
+  }
+  scr_str_release(scr_symbol_key_cache[slot].key);
+  scr_symbol_key_cache[slot].symbol = symbol;
+  scr_symbol_key_cache[slot].key = scr_str_retain(name);
+  return name;
 }
 
 static ScrDyn *scr_dyn_symbol_receiver(const ScrDyn *value) {
