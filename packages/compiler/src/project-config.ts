@@ -27,7 +27,7 @@
  * to their own readers. */
 import { dirname, join, resolve } from "node:path";
 import { projectConfigDiag, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
-import { trackedReadFile } from "./frontend/input-tracker.js";
+import { trackedFileExists, trackedReadFile } from "./frontend/input-tracker.js";
 import { parseSelector, parseTypeText } from "./frontend/type-patches/selector.js";
 import { isValidRange } from "./frontend/type-patches/semver.js";
 
@@ -79,6 +79,13 @@ export interface TypePatchEntry {
   pkg: string;
   range: string;
   declarations: TypePatchDeclaration[];
+  /** `files`: declaration files of the package (or of its `@types/` twin,
+   * written `@types/<name>/<path>`) replaced by local files, by
+   * package-relative path. The local paths are absolute. */
+  files: Map<string, string>;
+  /** `types`: a local declaration file that becomes the package's
+   * declaration entry (absolute), or null. */
+  types: string | null;
   /** Offset of the key in the manifest. */
   offset: number;
 }
@@ -341,7 +348,8 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
   return config;
 }
 
-const TYPE_PATCH_KEYS = ["declarations", "note"];
+const TYPE_PATCH_KEYS = ["declarations", "files", "types", "note"];
+const DECLARATION_FILE = /\.d\.[cm]?ts$/;
 /** Packages whose declarations ship with scriptc or TypeScript: a wrong
  * one is a bug to report, not a project-local patch. */
 const UNPATCHABLE = /^(?:@types\/node|typescript|@typescript\/.*)$/;
@@ -404,8 +412,64 @@ function readTypePatches(
       pkg,
       range,
       declarations: [],
+      files: new Map(),
+      types: null,
       offset: locate.offsetOf(["scriptc", "typePatches", key]),
     };
+    const base = dirname(config.manifest!);
+    const localFile = (path: string[], v: unknown): string | null => {
+      if (typeof v !== "string" || v === "") {
+        problem(
+          path,
+          `must be the path of a local declaration file, not ${shown(v)}`,
+          `write "./type-patches/${pkg}.d.ts"`,
+        );
+        return null;
+      }
+      const abs = resolve(base, v);
+      if (!DECLARATION_FILE.test(abs)) {
+        problem(
+          path,
+          `names "${v}", which is not a declaration file`,
+          "use a .d.ts, .d.mts or .d.cts file",
+        );
+        return null;
+      }
+      if (!trackedFileExists(abs)) {
+        problem(
+          path,
+          `names "${v}", which does not exist`,
+          "give the path relative to this package.json",
+        );
+        return null;
+      }
+      return abs;
+    };
+    const files = value["files"];
+    if (files !== undefined && !isRecord(files)) {
+      problem(
+        ["typePatches", key, "files"],
+        `must be an object mapping declaration files of the package to local files, not ${shown(files)}`,
+        `write "files": { "dist/index.d.ts": "./type-patches/${pkg}.d.ts" }`,
+      );
+    } else if (files !== undefined) {
+      for (const target of Object.keys(files)) {
+        const path = ["typePatches", key, "files", target];
+        const rel = target.replace(/^\.\//, "");
+        if (!DECLARATION_FILE.test(rel) || rel.startsWith("/") || rel.split("/").includes("..")) {
+          problem(
+            path,
+            "must name a declaration file inside the package",
+            `write a package-relative .d.ts path such as "dist/index.d.ts", or "@types/<name>/index.d.ts" for its @types package`,
+          );
+          continue;
+        }
+        const abs = localFile(path, files[target]);
+        if (abs !== null) entry.files.set(rel, abs);
+      }
+    }
+    if (value["types"] !== undefined)
+      entry.types = localFile(["typePatches", key, "types"], value["types"]);
     let valid = true;
     for (const k of Object.keys(value)) {
       if (!TYPE_PATCH_KEYS.includes(k)) {

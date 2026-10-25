@@ -27,7 +27,7 @@ import { dirname, relative } from "node:path";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { typePatchDiag } from "../../diagnostics/diagnostic.js";
 import { readProjectConfig, type TypePatchEntry } from "../../project-config.js";
-import { trackedReadFile } from "../input-tracker.js";
+import { trackedFileExists, trackedReadFile } from "../input-tracker.js";
 import type { SourceFile } from "../ts7/syntax.js";
 import { applyPatchEdits, patchFile, type PatchMatch, type PatchRequest } from "./locate.js";
 import { parseSelector, parseTypeText, type Selector, type TypePatchOp } from "./selector.js";
@@ -49,6 +49,11 @@ interface CopyInfo {
   root: string;
   /** Requests whose entry's range the version satisfies. */
   requests: Request[];
+  /** Replaced declaration files: package-relative path → local file. */
+  files: Map<string, string>;
+  /** Declaration entries a `types` patch supplies: package-relative path
+   * → local file (existing entries are replaced, missing ones appear). */
+  entries: Map<string, string>;
 }
 
 interface MatchRecord extends PatchMatch {
@@ -61,9 +66,11 @@ interface State {
   manifest: string;
   manifestText: string;
   parse: TypePatchParse;
-  byPackage: Map<string, Request[]>;
+  byPackage: Map<string, { entries: TypePatchEntry[]; requests: Request[] }>;
   copies: Map<string, CopyInfo | null>;
   files: Map<string, string | null>;
+  /** `files` targets that do not exist in a copy. */
+  missingFiles: { entry: TypePatchEntry; root: string; rel: string }[];
   /** Package copies whose version no patch range covers. */
   unmatchedCopies: Map<string, { pkg: string; version: string | null; entries: TypePatchEntry[] }>;
   /** Requests applicable to a copy this load read files of. */
@@ -84,22 +91,23 @@ export function configureTypePatches(entryPath: string, parse: TypePatchParse): 
     state = null;
     return;
   }
-  const byPackage = new Map<string, Request[]>();
+  const byPackage = new Map<string, { entries: TypePatchEntry[]; requests: Request[] }>();
   let id = 0;
   for (const entry of config.typePatches) {
+    const pkg = byPackage.get(entry.pkg) ?? { entries: [], requests: [] };
+    byPackage.set(entry.pkg, pkg);
+    pkg.entries.push(entry);
     for (const decl of entry.declarations) {
       const selector = parseSelector(decl.selector);
       const op = parseTypeText(decl.type);
       if ("error" in selector || "error" in op) continue; // reported as SC8004
-      const list = byPackage.get(entry.pkg) ?? [];
-      list.push({
+      pkg.requests.push({
         id: id++,
         selector: selector as Selector,
         op: op as TypePatchOp,
         entry,
         offset: decl.offset,
       });
-      byPackage.set(entry.pkg, list);
     }
   }
   state = {
@@ -109,6 +117,7 @@ export function configureTypePatches(entryPath: string, parse: TypePatchParse): 
     byPackage,
     copies: new Map(),
     files: new Map(),
+    missingFiles: [],
     unmatchedCopies: new Map(),
     touched: new Set(),
     matches: [],
@@ -145,7 +154,7 @@ function versionAt(dir: string): string | null {
 /** The installed package copy a file belongs to, with the requests that
  * apply to it; null for files outside node_modules or of unpatched
  * packages. */
-function copyOf(s: State, path: string): { copy: CopyInfo; rel: string } | null {
+function copyOf(s: State, path: string, touch = true): { copy: CopyInfo; rel: string } | null {
   const marker = "/node_modules/";
   const at = path.lastIndexOf(marker);
   if (at < 0) return null;
@@ -159,31 +168,118 @@ function copyOf(s: State, path: string): { copy: CopyInfo; rel: string } | null 
   let copy = s.copies.get(root);
   if (copy === undefined) {
     copy = null;
-    const pkg = name.startsWith("@types/") ? unmangleTypesName(name) : name;
-    const requests = s.byPackage.get(pkg);
-    if (requests !== undefined) {
+    const twin = name.startsWith("@types/");
+    const pkg = twin ? unmangleTypesName(name) : name;
+    const patches = s.byPackage.get(pkg);
+    if (patches !== undefined) {
       // A twin describes the runtime package installed beside it.
-      const version = name.startsWith("@types/")
+      const version = twin
         ? (versionAt(path.slice(0, at + marker.length) + pkg) ?? versionAt(root))
         : versionAt(root);
-      const applicable = requests.filter(
-        (r) => version !== null && satisfies(version, r.entry.range),
+      const applicable = patches.entries.filter(
+        (e) => version !== null && satisfies(version, e.range),
       );
-      // Later entries win on the same selector.
-      const bySelector = new Map<string, Request>();
-      for (const r of applicable) bySelector.set(r.selector.text, r);
-      const chosen = [...bySelector.values()];
-      if (chosen.length === 0) {
-        const entries = [...new Set(requests.map((r) => r.entry))];
-        s.unmatchedCopies.set(root, { pkg, version, entries });
+      if (applicable.length === 0) {
+        s.unmatchedCopies.set(root, { pkg, version, entries: patches.entries });
+      } else {
+        // Later entries win on the same selector, file or entry.
+        const bySelector = new Map<string, Request>();
+        for (const r of patches.requests)
+          if (applicable.includes(r.entry)) bySelector.set(r.selector.text, r);
+        const files = new Map<string, string>();
+        let types: string | null = null;
+        const prefix = `${name}/`;
+        for (const e of applicable) {
+          for (const [target, local] of e.files) {
+            // `@types/<name>/<path>` names the twin's file; plain paths the
+            // package's own.
+            const forTwin = target.startsWith("@types/");
+            if (forTwin !== twin) continue;
+            const rel = forTwin
+              ? target.startsWith(prefix)
+                ? target.slice(prefix.length)
+                : null
+              : target;
+            if (rel === null) continue;
+            if (!trackedFileExists(`${root}/${rel}`)) {
+              s.missingFiles.push({ entry: e, root, rel });
+              continue;
+            }
+            files.set(rel, local);
+          }
+          if (e.types !== null && !twin) types = e.types;
+        }
+        copy = {
+          pkg,
+          version,
+          root,
+          requests: [...bySelector.values()],
+          files,
+          entries: types === null ? new Map() : declarationEntries(root, types),
+        };
       }
-      copy = chosen.length === 0 ? null : { pkg, version, root, requests: chosen };
     }
     s.copies.set(root, copy);
   }
   if (copy === null) return null;
-  for (const r of copy.requests) s.touched.add(r);
+  if (touch) for (const r of copy.requests) s.touched.add(r);
   return { copy, rel };
+}
+
+/** The declaration entry paths of a package a `types` patch stands for:
+ * its `types`/`typings` file and every declaration TypeScript probes
+ * beside a JavaScript entry (`main`, the `exports` targets of "."). */
+function declarationEntries(root: string, local: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let pkg: Record<string, unknown> = {};
+  try {
+    pkg = JSON.parse(trackedReadFile(`${root}/package.json`) ?? "{}") as Record<string, unknown>;
+  } catch {
+    pkg = {};
+  }
+  const add = (target: unknown): void => {
+    if (typeof target !== "string") return;
+    const rel = target.replace(/^\.\//, "");
+    if (/\.d\.[cm]?ts$/.test(rel)) out.set(rel, local);
+    else if (/\.[cm]?js$/.test(rel)) out.set(rel.replace(/\.([cm]?)js$/, ".d.$1ts"), local);
+    else if (!/\.\w+$/.test(rel)) out.set(`${rel}.d.ts`, local);
+  };
+  add(pkg["types"]);
+  add(pkg["typings"]);
+  add(typeof pkg["main"] === "string" ? pkg["main"] : "index.js");
+  const exportsField = pkg["exports"];
+  const dot =
+    exportsField !== null && typeof exportsField === "object" && "." in exportsField
+      ? (exportsField as Record<string, unknown>)["."]
+      : exportsField;
+  const visit = (v: unknown): void => {
+    if (typeof v === "string") add(v);
+    else if (v !== null && typeof v === "object") for (const x of Object.values(v)) visit(x);
+  };
+  // Subpath exports ("./x") are not the entry.
+  if (dot !== null && typeof dot === "object" && Object.keys(dot).some((k) => k.startsWith(".")))
+    return out;
+  visit(dot);
+  return out;
+}
+
+/** True for a declaration entry a `types` patch supplies that does not
+ * exist on disk (a package without declarations gains one). */
+export function typePatchFileExists(fileName: string): boolean {
+  const s = state;
+  if (s === null) return false;
+  const path = fileName.split("\\").join("/");
+  if (!/\.d\.[cm]?ts$/.test(path)) return false;
+  const located = copyOf(s, path, false);
+  return located !== null && located.copy.entries.has(located.rel);
+}
+
+/** True when a `types` patch gives the package at `pkgDir` declarations. */
+export function typePatchSuppliesTypes(pkgDir: string): boolean {
+  const s = state;
+  if (s === null) return false;
+  const located = copyOf(s, `${pkgDir.split("\\").join("/")}/package.json`, false);
+  return located !== null && located.copy.entries.size > 0;
 }
 
 /** Names a request's root can appear under in a file's text. */
@@ -205,7 +301,12 @@ export function typePatchedText(fileName: string): string | undefined {
   let result: string | null = null;
   const located = copyOf(s, path);
   if (located !== null) {
-    const text = trackedReadFile(path);
+    // A replaced file or a supplied entry reads as the local file; the
+    // declaration patches then apply to it like to the package's own.
+    const local = located.copy.files.get(located.rel) ?? located.copy.entries.get(located.rel);
+    const replaced = local === undefined ? null : trackedReadFile(local);
+    const text = replaced ?? trackedReadFile(path);
+    if (replaced !== null) result = replaced;
     const requests = located.copy.requests.filter(
       (r) =>
         (r.selector.file === null || r.selector.file === located.rel) &&
@@ -313,6 +414,16 @@ export function typePatchDiagnostics(): {
         ),
       );
     }
+  }
+  for (const missing of s.missingFiles) {
+    out.push(
+      typePatchDiag(
+        "SC8031",
+        `type patch '${missing.entry.key}': ${missing.rel} is not a file of ${missing.entry.pkg} at ${relativeToManifest(s, missing.root)}`,
+        "name a declaration file the installed package ships; the package may have moved it",
+        loc(s, missing.entry.offset),
+      ),
+    );
   }
   for (const r of s.touched) {
     const mine = s.matches.filter((m) => m.id === r.id);

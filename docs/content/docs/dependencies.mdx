@@ -172,6 +172,25 @@ Each key names a package and a semver range of the installed versions the patch 
 
 A declaration is named by its path: `Options.name` for a member of a type, `parse()` for a function's return type, `parse(text)` for a parameter, `list()[]` for an array's elements, and `Env[string]` for an index signature. `export=()` names the return type of the function the module exports, `default` its default export, and a file prefix such as `index.js:parse()` names a declaration inside one of the package's files. One patch applies to the package's own declarations, its JSDoc, and its `@types/` package. The patched type then holds everywhere, so your code has to handle the `undefined` that a widened declaration allows. An optional `"note"` string can link the upstream issue.
 
+For larger fixes, replace a whole declaration file, or give a package without declarations its own:
+
+```json:package.json
+{
+  "scriptc": {
+    "typePatches": {
+      "some-client@^3.2.0": {
+        "files": { "dist/types/options.d.ts": "./type-patches/options.d.ts" }
+      },
+      "untyped-helper@1.x": {
+        "types": "./type-patches/untyped-helper.d.ts"
+      }
+    }
+  }
+}
+```
+
+`files` maps a declaration file inside the package, or inside its `@types/` package written as `@types/<name>/<path>`, to a local `.d.ts` file. `types` supplies the package's declaration entry. Paths of local files are relative to the `package.json`, and a replaced file can import the package's other declaration files with the same relative paths as the file it replaces.
+
 Patches change only declarations, never the package's code, and values are still checked against the patched types. A build warns when a patch doesn't apply as written: when no range covers the installed version, when a declaration path matches nothing, when the declaration already has the type, or when a path is ambiguous. Report wrong declarations to the package too, so the patch can be removed later.
 
 ## Provenance sources (experimental)

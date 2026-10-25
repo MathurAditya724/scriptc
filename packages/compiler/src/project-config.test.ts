@@ -214,7 +214,7 @@ test("typePatches: malformed keys, ranges, selectors and types are SC8004", () =
           "A.c": "string\nnumber",
           "A.d": "| undefined",
         },
-        files: {},
+        patches: {},
       },
       "other@^1.0.0": [],
     },
@@ -225,7 +225,7 @@ test("typePatches: malformed keys, ranges, selectors and types are SC8004", () =
     `package.json 'scriptc.typePatches.ms@^banana' has the version range "^banana", which is not a semver range`,
     "package.json 'scriptc.typePatches.@types/node@*' patches @types/node, whose declarations ship with scriptc or TypeScript",
     "package.json 'scriptc.typePatches.typescript@5' patches typescript, whose declarations ship with scriptc or TypeScript",
-    "package.json 'scriptc.typePatches.lib@^1.0.0.files' is not a known type patch setting",
+    "package.json 'scriptc.typePatches.lib@^1.0.0.patches' is not a known type patch setting",
     "package.json 'scriptc.typePatches.lib@^1.0.0.declarations.1bad' is not a selector: it must start with a declared name, 'export=' or 'default'",
     "package.json 'scriptc.typePatches.lib@^1.0.0.declarations.A.b' must map to a type string, not 3",
     "package.json 'scriptc.typePatches.lib@^1.0.0.declarations.A.c' has a type that must be one line",
@@ -240,4 +240,44 @@ test("typePatches: malformed keys, ranges, selectors and types are SC8004", () =
     },
   });
   expect(partial.typePatches[0]!.declarations.map((d) => d.selector)).toEqual(["A.d"]);
+});
+
+test("typePatches: files and types name local declaration files", () => {
+  const root = mkdtempSync(join(tmpdir(), "scriptc-project-config-"));
+  try {
+    mkdirSync(join(root, "patches"));
+    writeFileSync(join(root, "patches", "entry.d.ts"), "export {};\n");
+    const text = JSON.stringify({
+      scriptc: {
+        typePatches: {
+          "lib@^1.0.0": {
+            files: {
+              "dist/entry.d.ts": "./patches/entry.d.ts",
+              "@types/lib/index.d.ts": "patches/entry.d.ts",
+              "dist/index.js": "./patches/entry.d.ts",
+              "../outside.d.ts": "./patches/entry.d.ts",
+              "dist/other.d.ts": "./patches/missing.d.ts",
+            },
+            types: "./patches/entry.d.ts",
+          },
+          "other@^1.0.0": { types: "./patches/entry.ts" },
+        },
+      },
+    });
+    const c = parseProjectConfig(join(root, "package.json"), text);
+    expect(c.diagnostics.map((d) => d.message)).toEqual([
+      "package.json 'scriptc.typePatches.lib@^1.0.0.files.dist/index.js' must name a declaration file inside the package",
+      "package.json 'scriptc.typePatches.lib@^1.0.0.files.../outside.d.ts' must name a declaration file inside the package",
+      `package.json 'scriptc.typePatches.lib@^1.0.0.files.dist/other.d.ts' names "./patches/missing.d.ts", which does not exist`,
+      `package.json 'scriptc.typePatches.other@^1.0.0.types' names "./patches/entry.ts", which is not a declaration file`,
+    ]);
+    const entry = c.typePatches.find((e) => e.pkg === "lib")!;
+    expect([...entry.files]).toEqual([
+      ["dist/entry.d.ts", join(root, "patches/entry.d.ts")],
+      ["@types/lib/index.d.ts", join(root, "patches/entry.d.ts")],
+    ]);
+    expect(entry.types).toBe(join(root, "patches/entry.d.ts"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
