@@ -1012,7 +1012,14 @@ class Analyzer {
 
   // ---- functions ---------------------------------------------------------------
 
-  functionInfo(node: Node, ownerClass: Node | null, ctxArg = ""): FunctionInfo {
+  /** `lexicalThis`: an arrow's receiver node, for a clone walked away from
+   * the function that encloses the arrow. */
+  functionInfo(
+    node: Node,
+    ownerClass: Node | null,
+    ctxArg = "",
+    lexicalThis: number | null = null,
+  ): FunctionInfo {
     // A nested closure walked inside a clone shares the clone's context.
     const inherit =
       ctxArg === "" &&
@@ -1052,7 +1059,12 @@ class Analyzer {
       label: ctx === "" ? label : `${label} [${this.ctxLabel(ctx)}]`,
       params,
       rest,
-      thisNode: isArrow && this.currentFn !== null ? this.currentFn.thisNode : this.newNode(),
+      thisNode:
+        isArrow && lexicalThis !== null
+          ? lexicalThis
+          : isArrow && this.currentFn !== null
+            ? this.currentFn.thisNode
+            : this.newNode(),
       ret: this.newNode(),
       isArrow,
       isAsync: mods.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword),
@@ -1363,6 +1375,11 @@ class Analyzer {
   private siteClone(info: FunctionInfo, site: Node, args: number[]): FunctionInfo | null {
     if (SITE_CLONES === 0 || info.isGenerator || ts.isSourceFile(info.node)) return null;
     if (ts.isClassLikeDeclaration(info.node)) return null;
+    // A function walked in an enclosing clone's or receiver's context reads
+    // and writes that context's bindings of the variables it captures. A
+    // clone is its own context root, so it would resolve them in the
+    // default context instead, and their writes would be lost.
+    if (info.root !== null && info.root !== info.node) return null;
     const sc = this.argsFrom.get(args);
     if (sc === undefined || sc.inLoop || this.forceLoop || this.repeatingSites.has(site))
       return null;
@@ -1382,7 +1399,12 @@ class Analyzer {
     const count = this.siteClones.get(info.node) ?? 0;
     if (count >= SITE_CLONES) return null;
     this.siteClones.set(info.node, count + 1);
-    return this.functionInfo(info.node, info.ownerClass, ctx);
+    // The clone keeps the function's receiver: an arrow's lexical `this`,
+    // and whatever reaches a function's own `this`, such as the receiver
+    // `bind` supplies.
+    const clone = this.functionInfo(info.node, info.ownerClass, ctx, info.thisNode);
+    if (!clone.isArrow) this.edge(info.thisNode, clone.thisNode);
+    return clone;
   }
 
   private readonly factories = new Map<Node, boolean>();
