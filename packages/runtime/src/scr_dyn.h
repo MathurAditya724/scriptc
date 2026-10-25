@@ -482,7 +482,12 @@ struct ScrDyn {
        * exits, and those clear it before release; reuse of a freed object
        * resets it (scr_dyn_alloc). */
       const char *class_name;
-      struct ScrDynRegion *region; /* see ScrDynRegion */
+      union {
+        struct ScrDynRegion *region; /* see ScrDynRegion */
+        /* While the node is pooled: the key bytes it keeps for reuse,
+         * counted in the pool's key budget (scr_dyn_obj_drop_keys). */
+        size_t cached_key_bytes;
+      };
       /* The dynamic tier's hidden class (scr_js_object.c): the transition
        * tree node naming this object's key sequence, or NULL while it has
        * none. Only programs with dynamic-tier code read or maintain it:
@@ -965,6 +970,9 @@ ScrDyn *scr_dyn_inspect_custom_symbol(void);
 void scr_dyn_install_has_instance_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
+void scr_dyn_install_species_symbol(ScrDyn *key);
+/* Records each well-known symbol the symbol unit creates. */
+void scr_dyn_install_well_known_symbol(ScrDyn *key);
 void scr_dyn_install_to_string_tag_symbol(ScrDyn *key);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
@@ -1052,6 +1060,9 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
 extern SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args,
                                                   ScrDyn **result);
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key);
+/* A typed array's, Buffer's or DataView's own named property (+1), or NULL
+ * without an exception when it has none. */
+ScrDyn *scr_bytes_named_get(const ScrDyn *view, const char *key, size_t key_len);
 /* The Buffer-flavored twin (stream chunks): string coercion/toString
  * decode utf8 instead of joining elements. */
 ScrDyn *scr_dyn_new_buffer(const ScrBytes *b);
@@ -1623,6 +1634,19 @@ void scr_dyn_build_add(const ScrDyn *d, const void *builder, void *value);
 void scr_dyn_build_note(const ScrDyn *d, const void *builder, void *value);
 void scr_dyn_build_rekey(const ScrDyn *d, const void *builder, void *value);
 ScrDyn *scr_dyn_visit_view(const ScrDyn *capsule);
+
+/* A union's builder converts the arm whose literal discriminator and
+ * complete structure matched; every value inside that arm then matched its
+ * own type too. Between scr_dyn_trust_enter and scr_dyn_trust_exit (which
+ * restores the value enter returned), scr_dyn_trusted_build answers true,
+ * and the builder of a nested union whose arms' literals are disjoint picks
+ * a plain object's arm by its literal alone instead of matching the arm's
+ * structure again (dyn.ts unionArmMatch). Code a getter or proxy trap runs
+ * sees false, and so does the rest of the conversion once such code has
+ * run: it can return a value the match never saw. */
+bool scr_dyn_trust_enter(void);
+void scr_dyn_trust_exit(bool previous);
+bool scr_dyn_trusted_build(void);
 
 /* ── native handles in the checked-dynamic tree (SCR_DYN_HANDLE) ────────────────────────
  * Per-tag dispatch ops, registered by the handle's owning unit

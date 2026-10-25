@@ -46,6 +46,8 @@ export type {
   AnalyzeResult,
 } from "./compile-types.js";
 import { compilePackedLibrary } from "./backend/library-pack.js";
+import { node24FetchCompatProfile } from "./compat/fetch-profile.js";
+import { libFnSignatures } from "./ir/builtin-signatures.js";
 import { InternalCompilerError } from "./errors.js";
 import { frontendProcessExecArgv } from "./frontend-process-args.js";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -214,11 +216,14 @@ export {
 export {
   renderCoverage,
   renderExplainDynamic,
+  renderExplainIsland,
   coverageEnvelope,
   coveragePasses,
   type CoverageInput,
   type CoverageFailOn,
 } from "./coverage/report.js";
+export type { NodeIslandReport, NodeIslandEntry } from "./node-islands/summary.js";
+export type { NodeIslandOptions, NodeIslandsMode } from "./node-islands/policy.js";
 export {
   TIER_MODES,
   type DemotedUnit,
@@ -246,7 +251,7 @@ export {
   type SurfaceManifestEntry,
 } from "./coverage/surface-manifest.js";
 export {
-  NODE24_FETCH_COMPAT_PROFILE,
+  node24FetchCompatProfile,
   type FetchCompatEvidence,
   type FetchCompatFacet,
   type FetchCompatInventory,
@@ -258,7 +263,13 @@ export {
   type FetchCompatOption,
   type FetchCompatProfile,
 } from "./compat/fetch-profile.js";
-export { LIB_FN_SIGS } from "./ir/builtin-signatures.js";
+export { libFnSignatures } from "./ir/builtin-signatures.js";
+/** @deprecated Use `libFnSignatures()`. Built when this module loads; the
+ * native compiler does not load this module. */
+export const LIB_FN_SIGS = libFnSignatures();
+/** @deprecated Use `node24FetchCompatProfile()`. Built when this module
+ * loads; the native compiler does not load this module. */
+export const NODE24_FETCH_COMPAT_PROFILE = node24FetchCompatProfile();
 export { validateModule } from "./ir/validate.js";
 export {
   assignLegacyTiers,
@@ -416,8 +427,13 @@ export async function analyzeCached(
   return result;
 }
 
-const nodeFrontend: FrontendFactory = (entry, npmStatic, externalTypes, libraryNpmStatic) =>
-  runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic);
+const nodeFrontend: FrontendFactory = (
+  entry,
+  npmStatic,
+  externalTypes,
+  libraryNpmStatic,
+  options,
+) => runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
 
 /** The checker's part of the executable cache key (`checkerCacheIdentity`), as the CLI's startup route computes it. */
 function checkerField(): { checker?: string } {

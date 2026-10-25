@@ -237,7 +237,8 @@ export function lowerCreateRequireCall(
     const surface = "createRequire's require with a computed specifier or this argument shape";
     const hint =
       'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>"); native addons are not loaded';
-    if (!isJsSourceFile(ts.getSourceFileOfNode(call))) lowerer.noLowering(surface, call, hint);
+    if (!isJsSourceFile(ts.getSourceFileOfNode(call)))
+      lowerer.noLowering(surface, call, hint, undefined, "dynamic-require");
     return deferredCreateRequireThrow(lowerer, call, surface, hint, loc);
   }
   const spec = cr.spec;
