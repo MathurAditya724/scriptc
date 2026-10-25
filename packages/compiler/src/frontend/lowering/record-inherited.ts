@@ -104,14 +104,19 @@ export function withInheritedMethods(
   if (form === null || !shape || shape.tuple) return read;
   const loc = read.loc;
   const stmts: IrStmt[] = [];
-  const stable = (value: IrExpr, name: string): IrExpr => {
-    if (isSafeToRepeat(value) || value.kind === "strLit") return value;
+  const repeatable = (value: IrExpr): boolean => isSafeToRepeat(value) || value.kind === "strLit";
+  const stable = (value: IrExpr, name: string, keep: boolean): IrExpr => {
+    if (keep) return value;
     const local = lowerer.declareHiddenLocal(name, value.type);
     stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
     return varRef(local.id, value.type, loc);
   };
-  const obj = stable(read.obj, "%inheritedRecv");
-  const key = stable(read.key, "%inheritedKey");
+  // The receiver is evaluated before the key: when computing the key runs
+  // code (it may reassign the receiver's variable), the receiver is held
+  // first, even when reading it again would be safe on its own.
+  const keyRepeatable = repeatable(read.key);
+  const obj = stable(read.obj, "%inheritedRecv", repeatable(read.obj) && keyRepeatable);
+  const key = stable(read.key, "%inheritedKey", keyRepeatable);
   const helper = inheritedReadHelper(lowerer, read.shapeId, read.type, form, bound, loc);
   const fallback: IrExpr = { kind: "call", callee: helper, args: [obj, key], type: read.type, loc };
   if (
@@ -481,11 +486,33 @@ function builtinAnswer(
       // No object is created with a typed record as its prototype.
       return { kind: "boolLit", value: false, type: BOOL, loc };
     default: {
-      const key = propertyKeyOf(lowerer, args[0], loc);
-      return {
+      // hasOwnProperty and propertyIsEnumerable: ToPropertyKey keeps a
+      // symbol a symbol, and a record's own keys are strings, so a symbol
+      // key is no entry of it.
+      const no: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+      const arg = args[0];
+      if (arg?.type.kind === "symbol") return sequence(arg, no, loc);
+      const has = (key: IrExpr): IrExpr => ({
         kind: "call",
         callee: recordHasOwnHelper(lowerer, shapeId, loc),
         args: [o, key],
+        type: BOOL,
+        loc,
+      });
+      if (arg === undefined || !mayBeSymbol(arg.type)) return has(propertyKeyOf(lowerer, arg, loc));
+      const id = declare("%protoKey", DYN);
+      const held = varRef(id, DYN, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: id, init: lowerer.coerceToExpected(arg, DYN), loc }],
+        result: {
+          kind: "ternary",
+          cond: { kind: "dynTest", test: "symbol", value: held, type: BOOL, loc } as IrExpr,
+          then: no,
+          else_: has(propertyKeyOf(lowerer, held, loc)),
+          type: BOOL,
+          loc,
+        },
         type: BOOL,
         loc,
       };
@@ -493,7 +520,18 @@ function builtinAnswer(
   }
 }
 
-/** ToPropertyKey of a built-in's key argument (absent: "undefined"). */
+/** Whether a value of `type` may be a symbol at run time. */
+function mayBeSymbol(type: IrType): boolean {
+  return !(
+    isUnitType(type) ||
+    type.kind === "string" ||
+    type.kind === "f64" ||
+    type.kind === "bool"
+  );
+}
+
+/** ToPropertyKey of a built-in's key argument (absent: "undefined"), for
+ * keys that are not symbols. */
 function propertyKeyOf(lowerer: Lowerer, arg: IrExpr | undefined, loc: SrcLoc): IrExpr {
   if (arg === undefined || isUnitType(arg.type))
     return {
@@ -552,6 +590,7 @@ function callOwnOrBuiltin(
   want: IrType,
   calleeText: string,
   loc: SrcLoc,
+  resolved?: { has: IrExpr; own: IrExpr },
 ): IrExpr {
   const shape = lowerer.shapes.get(shapeId)!;
   const field = shape.fields.find((f) => f.name === method);
@@ -569,7 +608,47 @@ function callOwnOrBuiltin(
     };
   const builtinAsWant = convertTo(lowerer, builtin, want) ?? builtin;
   if (ownType === undefined || !callableType(lowerer, ownType)) return builtinAsWant;
-  const own: IrExpr = field
+  const own = resolved?.own ?? ownEntryRead(lowerer, o, shapeId, method, loc);
+  const called = callOwn(lowerer, declare, own, args, builtinAsWant.type, calleeText, loc);
+  return {
+    kind: "ternary",
+    cond: resolved?.has ?? ownEntryTest(lowerer, o, shapeId, method, loc),
+    then: called,
+    else_: builtinAsWant,
+    type: builtinAsWant.type,
+    loc,
+  };
+}
+
+/** Whether the record holds an own entry named `method`. */
+function ownEntryTest(
+  lowerer: Lowerer,
+  o: IrExpr,
+  shapeId: string,
+  method: string,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "call",
+    callee: recordHasOwnHelper(lowerer, shapeId, loc),
+    args: [o, { kind: "strLit", value: method, type: STRING, loc }],
+    type: BOOL,
+    loc,
+  };
+}
+
+/** The record's own entry named `method`: its field, or its overflow entry
+ * (undefined when absent). */
+function ownEntryRead(
+  lowerer: Lowerer,
+  o: IrExpr,
+  shapeId: string,
+  method: string,
+  loc: SrcLoc,
+): IrExpr {
+  const shape = lowerer.shapes.get(shapeId)!;
+  const field = shape.fields.find((f) => f.name === method);
+  return field
     ? { kind: "recordGet", obj: o, shapeId, field: method, type: field.type, loc }
     : {
         kind: "recordKeyGet",
@@ -580,21 +659,6 @@ function callOwnOrBuiltin(
         type: lowerer.withUndefinedArmOf(shape.indexValue!) ?? shape.indexValue!,
         loc,
       };
-  const called = callOwn(lowerer, declare, own, args, builtinAsWant.type, calleeText, loc);
-  return {
-    kind: "ternary",
-    cond: {
-      kind: "call",
-      callee: recordHasOwnHelper(lowerer, shapeId, loc),
-      args: [o, { kind: "strLit", value: method, type: STRING, loc }],
-      type: BOOL,
-      loc,
-    },
-    then: called,
-    else_: builtinAsWant,
-    type: builtinAsWant.type,
-    loc,
-  };
 }
 
 /** Call the own entry `own` (present, of any stored type) with `args`. A
@@ -727,6 +791,25 @@ export function lowerRecordInheritedCall(
   const recvLocal = lowerer.declareHiddenLocal("%protoRecv", receiver.type);
   stmts.push({ kind: "varDecl", localId: recvLocal.id, init: receiver, loc });
   const o = varRef(recvLocal.id, receiver.type, loc);
+  // `o.m(...)` reads the member before its arguments run: an argument that
+  // adds, deletes or replaces the own method does not change the callee.
+  const field = shape.fields.find((f) => f.name === method);
+  const ownType = field ? field.type : shape.indexValue;
+  let resolved: { has: IrExpr; own: IrExpr } | undefined;
+  if (ownType !== undefined && callableType(lowerer, ownType)) {
+    const shapeId = receiver.type.shapeId;
+    const hasLocal = lowerer.declareHiddenLocal("%protoHas", BOOL);
+    stmts.push({
+      kind: "varDecl",
+      localId: hasLocal.id,
+      init: ownEntryTest(lowerer, o, shapeId, method, loc),
+      loc,
+    });
+    const read = ownEntryRead(lowerer, o, shapeId, method, loc);
+    const ownLocal = lowerer.declareHiddenLocal("%protoOwn", read.type);
+    stmts.push({ kind: "varDecl", localId: ownLocal.id, init: read, loc });
+    resolved = { has: varRef(hasLocal.id, BOOL, loc), own: varRef(ownLocal.id, read.type, loc) };
+  }
   const args: IrExpr[] = [];
   for (const node of call.arguments.nodes) {
     const arg = lowerer.lowerExpr(node);
@@ -744,6 +827,7 @@ export function lowerRecordInheritedCall(
     want,
     ts.getTextOfNode(access),
     loc,
+    resolved,
   );
   return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
@@ -751,7 +835,10 @@ export function lowerRecordInheritedCall(
 /** `r.toString` and the other Object.prototype methods read by name (not
  * called) on an index-signature record: an own entry of the member's
  * function type when the record holds one, else the built-in as a plain
- * function value. Null when the checker's member type is not a function. */
+ * function value. An own entry of another type than the member's (a
+ * function of another signature) throws the checked-conversion TypeError:
+ * the program's types claimed the member. Null when the checker's member
+ * type is not a function. */
 export function lowerRecordInheritedMember(
   lowerer: Lowerer,
   receiver: IrExpr,
@@ -810,6 +897,15 @@ export function lowerRecordInheritedMember(
         loc,
       };
     }
+  } else if (shape.indexValue && callableType(lowerer, shape.indexValue)) {
+    result = {
+      kind: "ternary",
+      cond: ownEntryTest(lowerer, o, shapeId, method, loc),
+      then: nodeThrowExpr(1, "", OTHER_ARM_FAILURE_MESSAGE, want, loc),
+      else_: builtin,
+      type: want,
+      loc,
+    };
   }
   return { kind: "seqExpr", stmts, result, type: want, loc };
 }
