@@ -75,9 +75,15 @@ export function initializedCollectionType(
 
 /** The inferred collection type of an identifier that names a proven
  * binding, or null. Computed for every JavaScript file of the program on
- * first use. */
+ * first use. The inference itself reads types (a candidate's constructor
+ * through a destructured require, for example); while it runs, those reads
+ * see no inferred types rather than starting it again. */
 export function inferredCollectionType(lowerer: Lowerer, node: ts.Identifier): ts.Type | null {
-  const types = (lowerer.inferredCollectionTypes ??= inferProgram(lowerer));
+  if (lowerer.inferredCollectionTypes === undefined) {
+    lowerer.inferredCollectionTypes = new Map();
+    lowerer.inferredCollectionTypes = inferProgram(lowerer);
+  }
+  const types = lowerer.inferredCollectionTypes;
   return types.size === 0 ? null : (types.get(node) ?? null);
 }
 
