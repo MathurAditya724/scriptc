@@ -43,6 +43,7 @@ import {
   cacheTargetIdentity,
   isZigDriver,
   isMuslTarget,
+  type CcDriver,
 } from "./driver.js";
 import {
   resolveProgramShardMergeIdentity,
@@ -194,6 +195,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
   unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
+  // Module namespace objects as checked-dynamic values.
+  unit((u) => u.opts.moduleNamespace === true, "scr_module_namespace.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||
@@ -823,6 +826,7 @@ export async function compileCInternal(
     // generated/native input that references inflate symbols. Cross
     // and targetless Zig builds use vendored zlib objects in the input section above.
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
+    ...unwinderLinkArgs(driver),
     // glibc keeps libm separate from libc. This must trail the generated
     // program and every native FFI input because GNU ld resolves archives
     // from left to right.
@@ -1070,6 +1074,7 @@ export async function compileCInternal(
     ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
+    ...unwinderLinkArgs(driver),
     ...driver.linkArgs,
     ...executableLinkFlags,
   ];
@@ -1082,6 +1087,7 @@ export async function compileCInternal(
     ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
+    ...unwinderLinkArgs(driver),
     ...driver.linkArgs,
     ...executableLinkFlags,
   ];
@@ -1690,4 +1696,12 @@ export async function compileC(opts: CcOptions): Promise<void> {
   ) {
     await rm(`${opts.outPath}.dSYM`, { recursive: true, force: true });
   }
+}
+
+/** Linux runtimes raise through the native unwinder (scr_unwind_raise):
+ * Zig's libunwind, or the toolchain's libgcc_eh. Both are static archives,
+ * so programs load no shared library for them. */
+function unwinderLinkArgs(driver: CcDriver): string[] {
+  if (targetPlatform(driver) !== "linux") return [];
+  return isZigDriver(driver) ? ["-lunwind"] : ["-lgcc_eh"];
 }

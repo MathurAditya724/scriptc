@@ -3,6 +3,7 @@
 import type * as ts from "../ts7/adapter.js";
 import { analyzeShapes } from "./analyze.js";
 import { buildShapeReport } from "./report.js";
+import { computeConstantGraphs, constantGraphReport } from "./constant-graphs.js";
 
 export { analyzeShapes } from "./analyze.js";
 export { buildShapeReport } from "./report.js";
@@ -13,9 +14,11 @@ export { buildShapeReport } from "./report.js";
 export function reportShapes(program: ts.Program, filter: string): void {
   const start = performance.now();
   const analysis = analyzeShapes(program, program.getTypeChecker());
-  const report = buildShapeReport(analysis, filter);
+  // `const`: the constant object graphs (DESIGN-constant-objects.md, stage 1).
+  const lines =
+    filter === "const"
+      ? constantGraphReport(analysis, computeConstantGraphs(analysis))
+      : buildShapeReport(analysis, filter).lines;
   const ms = (performance.now() - start).toFixed(0);
-  process.stderr.write(
-    `[shapes] ${ms} ms\n${report.lines.map((l) => `[shapes] ${l}`).join("\n")}\n`,
-  );
+  process.stderr.write(`[shapes] ${ms} ms\n${lines.map((l) => `[shapes] ${l}`).join("\n")}\n`);
 }

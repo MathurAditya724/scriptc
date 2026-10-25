@@ -2,6 +2,7 @@ import type { IrClassDef, IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } 
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   isDirentShape,
+  recordHandleCodecClass,
   recordTextCodecClass,
   RUNTIME_EMITTER_CLASS,
   RUNTIME_EVENT_CLASS,
@@ -151,6 +152,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.diff",
   "util.extend",
   "util.inherits",
+  "util.inheritsPrototype",
   "util.isArrayDeprecated",
   "util.styleText",
 ]);
@@ -183,6 +185,7 @@ const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.diff",
   "util.extend",
   "util.inherits",
+  "util.inheritsPrototype",
   "util.isArrayDeprecated",
 ]);
 
@@ -274,6 +277,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.prop",
   "stream.stdioWritable",
   "stream.unboxDyn",
+  "stream.dynIterableSource",
   "stream.handleStream",
   "stream.unpipeDyn",
   "stream.workerStdio",
@@ -327,6 +331,8 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.definePrototypeProps",
   "dyn.functionApply",
   "dyn.globalConstructor",
+  "dyn.namespaceDefine",
+  "dyn.namespaceNew",
   "dyn.objCreateWithProperties",
   "dyn.objectTag",
   "stream.dynNative",
@@ -597,7 +603,7 @@ function mentionsDgramSocket(t: IrType, tables: TypeTables): boolean {
 const textCodecLeaf: CarrierLeaf = (t, tables) => {
   if (t.kind !== "record") return false;
   const shape = tables.records.get(t.shapeId);
-  return shape !== undefined && recordTextCodecClass(shape) !== null;
+  return shape !== undefined && recordHandleCodecClass(shape) !== null;
 };
 
 const textDecoderLeaf: CarrierLeaf = (t, tables) => {
@@ -607,7 +613,7 @@ const textDecoderLeaf: CarrierLeaf = (t, tables) => {
 };
 
 /** Whether converting a value of type `t` to or from dyn converts a
- * TextEncoder or TextDecoder record, which boxes it as a handle of
+ * TextEncoder, TextDecoder or StringDecoder record, which boxes it as a handle of
  * scr_text_codec_dyn.c (the same carrier walk as dgram sockets). */
 function mentionsTextCodec(t: IrType, tables: TypeTables): boolean {
   tables.textCodecCarriers ??= leafCarriers(tables, textCodecLeaf);
@@ -869,7 +875,7 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "dynFrom" && mentionsDgramSocket(node.value.type, tables())) ||
       (node.kind === "dynCheck" && mentionsDgramSocket(node.type, tables())),
   }),
-  /** A TextEncoder or TextDecoder record converts to or from an untyped
+  /** A TextEncoder, TextDecoder or StringDecoder record converts to or from an untyped
    * value (its handle box, or a boxed function, record or collection that
    * carries one): scr_text_codec_dyn.c. */
   textCodecDyn: rule({
@@ -1146,6 +1152,9 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** Module namespace objects as checked-dynamic values
+   * (scr_module_namespace.c). */
+  moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1212,6 +1221,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     searchParams: false,
     urlIdna: false,
     stdioExtended: false,
+    moduleNamespace: false,
     stream: false,
     streamDyn: false,
     handleProps: false,
