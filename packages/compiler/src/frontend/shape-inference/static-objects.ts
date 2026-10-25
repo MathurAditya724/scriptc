@@ -604,18 +604,40 @@ export function planStaticObjectRewrites(
     }
     return false;
   };
+  /** Whether the read `e` of a `prototype` member may yield one of `atoms`
+   * through a receiver that is not a function. An object's field holds the
+   * values stored to it by name (writes through a ⊤ receiver reach every
+   * object); ⊤, a ⊤ field and an object written by computed key may hold
+   * anything. */
+  const prototypeFieldMayBe = (
+    e: ts.PropertyAccessExpression,
+    atoms: ReadonlySet<Atom>,
+  ): boolean => {
+    const op = readOps.get(e);
+    if (op === undefined) return true;
+    for (const a of analysis.nodes[op.recv]!.atoms) {
+      if (analysis.protoOf.get(a) !== undefined) continue;
+      if (a === analysis.top || computedRecv.has(a)) return true;
+      const field = analysis.fields.get(a)?.get("prototype");
+      if (field === undefined) continue;
+      for (const v of analysis.nodes[field]!.atoms)
+        if (v === analysis.top || atoms.has(v)) return true;
+    }
+    return false;
+  };
   /** Whether a reflective call may reach one of `atoms`: as an argument, or
    * as the object `propertyIsEnumerable` is asked about. */
   const reflectsOn = (atoms: ReadonlySet<Atom>, ctorPath: string): boolean =>
     enumerabilityEscapes ||
     enumerabilityQueries.some((recv) => {
-      // `F.prototype` is one of `atoms` (a class's prototype) only when F
-      // may be that class's function, which `atoms` holds too: the analysis
-      // reads a prototype as ⊤ beside the class prototype objects it tracks.
+      // `F.prototype` is one of `atoms` (a class's prototype) when F may be
+      // that class's function, which `atoms` holds too: the analysis reads
+      // a prototype as ⊤ beside the class prototype objects it tracks. It
+      // also is when F is an object whose `prototype` field holds it.
       let e: ts.Expression = recv;
       while (ts.isParenthesizedExpression(e)) e = e.expression;
       if (ts.isPropertyAccessExpression(e) && e.name.text === "prototype")
-        return mayBeValue(e.expression, atoms, ctorPath);
+        return mayBeValue(e.expression, atoms, ctorPath) || prototypeFieldMayBe(e, atoms);
       return mayBeValue(recv, atoms, ctorPath);
     }) ||
     reflective.some((call) => call.arguments.nodes.some((arg) => mayBe(arg, atoms, ctorPath)));
