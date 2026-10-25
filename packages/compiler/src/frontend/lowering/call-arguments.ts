@@ -407,10 +407,18 @@ export function completeArgs(
     // A `(T | undefined)[]` rest (stored as T elements) packs undefined
     // arguments as present undefined elements.
     const restNodes = sources.slice(restAt);
-    if (restType.optionalElements === true && !restNodes.some(isIr)) {
-      out.push(
-        lowerArraySpreadItems(lowerer, restNodes as ts.Expression[], restType.elem, restType, loc),
-      );
+    // Plain arguments and spreads, also together with spread tuple fields
+    // (pre-lowered): each item, in argument order.
+    if (
+      restType.optionalElements === true &&
+      (!restNodes.some(isIr) || restNodes.some((a) => !isIr(a) && ts.isSpreadElement(a)))
+    ) {
+      const items: (ts.Expression | IrExpr)[] = [];
+      for (const a of restNodes) {
+        if (isIr(a)) items.push(a.ir);
+        else items.push(a);
+      }
+      out.push(lowerArraySpreadItems(lowerer, items, restType.elem, restType, loc));
       return out;
     }
     // Tuple-spread values (pre-lowered) and plain arguments pack the same

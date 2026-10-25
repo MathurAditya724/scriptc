@@ -49,6 +49,15 @@ function swap(pair: [string, string | undefined]): string {
   return "v";
 }
 console.log(label("z", ...swapped, swap(swapped), ...swapped));
+// Tuple spreads together with array and Set spreads keep undefined
+// elements, and every item is read in argument order.
+const mixedPair: [boolean, boolean | undefined] = [true, undefined];
+const mixedMore: (boolean | undefined)[] = [false, undefined];
+console.log(flags(...mixedPair, ...mixedMore), flags(...mixedMore, ...mixedPair), flags(true, ...mixedPair, ...mixedMore, undefined));
+const mixedChanging: [boolean, boolean | undefined] = [true, undefined];
+console.log(flags(...mixedChanging, ...mixedMore, flip(mixedChanging, true), ...mixedChanging));
+const mixedWords: [string, string | undefined] = ["a", undefined];
+console.log(label("z", ...["b", undefined, "c"], ...mixedWords), label("y", ...mixedWords, ...new Set(["s", undefined])));
 
 function pick(start: (number | undefined)[] | string[], other: (number | undefined)[] | string[]): string {
   let a = start;

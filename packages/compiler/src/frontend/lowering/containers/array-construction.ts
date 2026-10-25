@@ -4,6 +4,7 @@ import { generatorDrain } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
 import { liftedFreshSpread } from "../coercions/fresh-spread.js";
 import { checkedIterableSpread } from "../checked-iterable-spread.js";
+import { AstNode } from "../../ts7/ast-node.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
   dynUndefinedExpr,
@@ -27,7 +28,9 @@ import {
   type IrType,
   STRING,
   type SrcLoc,
+  UNDEFINED_T,
   arrayOf,
+  isUnitType,
   canConvertToDyn,
   funcOf,
   isRefCounted,
@@ -56,6 +59,34 @@ import {
   callbackArrayElement,
 } from "./callback-arguments.js";
 import { classGeneratorIterable } from "../class-iterables.js";
+
+/** A value whose type admits only null and undefined, stored into an array
+ * that keeps undefined elements: the checker admits it there only when its
+ * type is `undefined` (a tuple element typed `undefined` maps to such a
+ * union), so it is evaluated and stored as undefined. */
+function undefinedForNullish(
+  lowerer: Lowerer,
+  value: IrExpr,
+  arrType: IrType & { kind: "array" },
+): IrExpr {
+  if (arrType.optionalElements !== true || value.type.kind !== "union") return value;
+  const arms = lowerer.unions.get(value.type.unionId)?.arms ?? [];
+  if (arms.length === 0 || !arms.every(isUnitType)) return value;
+  const loc = value.loc;
+  const optional: IrType = {
+    kind: "union",
+    unionId: lowerer.unions.intern([arrType.elem, UNDEFINED_T]),
+  };
+  const missing = lowerer.wrappedUndefined(optional, loc);
+  if (!missing) return value;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: missing,
+    type: optional,
+    loc,
+  };
+}
 
 /** Build the argument array for a mutating/copying operation while keeping
  * the receiver's scalar payload ABI. A missing read is represented as the
@@ -92,7 +123,8 @@ export function lowerArrayValueItems(
       loc,
     },
   ];
-  for (const value of values) {
+  for (const item of values) {
+    const value = undefinedForNullish(lowerer, item, arrType);
     const stored =
       lowerer.runtimeOptionalWidening(value.type, elem) !== null ||
       optionalElementValue(lowerer, value, elem)
@@ -103,16 +135,21 @@ export function lowerArrayValueItems(
   return { kind: "seqExpr", stmts: body, result: outRef, type: arrType, loc };
 }
 
+/** The items of an array built from argument nodes (a spread copies its
+ * elements in) and values already lowered (a spread tuple's fields), in
+ * order. Each value is stored when its turn comes. */
 export function lowerArraySpreadItems(
   lowerer: Lowerer,
-  nodes: readonly ts.Expression[],
+  nodes: readonly (ts.Expression | IrExpr)[],
   elem: IrType,
   arrType: IrType & { kind: "array" },
   loc: SrcLoc,
 ): IrExpr {
   const out = lowerer.declareHiddenLocal("%arrayItems", arrType);
   const outRef = varRef(out.id, arrType, loc);
-  const plainItems = nodes.filter((node) => !ts.isSpreadElement(node)).length;
+  const plainItems = nodes.filter(
+    (node) => !(node instanceof AstNode) || !ts.isSpreadElement(node),
+  ).length;
   const length = (): IrExpr => ({
     kind: "arrIntrinsic",
     method: "length",
@@ -136,7 +173,15 @@ export function lowerArraySpreadItems(
     },
   ];
   for (const node of nodes) {
-    if (ts.isSpreadElement(node)) {
+    if (!(node instanceof AstNode)) {
+      const value = undefinedForNullish(lowerer, node, arrType);
+      const stored =
+        lowerer.runtimeOptionalWidening(value.type, elem) !== null ||
+        optionalElementValue(lowerer, value, elem)
+          ? value
+          : lowerer.coerceToExpected(value, elem);
+      body.push(arrayValueStore(lowerer, outRef, length(), stored, elem, loc));
+    } else if (ts.isSpreadElement(node)) {
       let source = lowerer.lowerExpr(node.expression);
       if (
         source.type.kind === "set" &&
