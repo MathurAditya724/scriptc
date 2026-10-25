@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { compile } from "../src/index.js";
 import {
   functionLayoutKey,
@@ -142,6 +142,42 @@ console.log(points.map(norm).join(","), points[0]!.x === 3 ? "three" : "other");
     expect(built.ok, JSON.stringify(built.diagnostics)).toBe(true);
     expect(execFileSync(exe, { encoding: "utf8" })).toBe("5,10 three\n");
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a changed function layout misses the executable cache", async () => {
+  vi.stubEnv("SCRIPTC_NO_CACHE", undefined);
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-function-layout-cache-"));
+  try {
+    vi.stubEnv("SCRIPTC_CACHE_DIR", join(dir, "cache"));
+    const entry = join(dir, "main.ts");
+    await writeFile(entry, source);
+    const exe = join(dir, "main");
+    const llvm = join(dir, "main.ll");
+    const build = async (functionLayout?: string) => {
+      const built = await compile(entry, {
+        outputKind: "exe",
+        outDir: dir,
+        outPath: exe,
+        ...(functionLayout === undefined ? {} : { functionLayout }),
+      });
+      expect(built.ok, JSON.stringify(built.diagnostics)).toBe(true);
+      return definitions(await readFile(llvm, "utf8"));
+    };
+    const plain = await build();
+    const third = plain.find((d) => /^sc_b?f_third$/.test(d.name))!.name;
+    const first = plain.find((d) => /^sc_b?f_first$/.test(d.name))!.name;
+    const layout = join(dir, "layout");
+    await writeFile(layout, `1 ${third}\n`);
+    expect((await build(layout)).find((d) => d.name === third)!.group).toBe("layout-1");
+    // The same path with other contents is another layout.
+    await writeFile(layout, `1 ${first}\n`);
+    const edited = await build(layout);
+    expect(edited.find((d) => d.name === first)!.group).toBe("layout-1");
+    expect(edited.find((d) => d.name === third)!.group).not.toMatch(/^layout-/);
+  } finally {
+    vi.unstubAllEnvs();
     await rm(dir, { recursive: true, force: true });
   }
 });

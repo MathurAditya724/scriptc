@@ -776,6 +776,23 @@ async function readNativeProfile(
   return { use: { path, digest: createHash("sha256").update(bytes).digest("hex") } };
 }
 
+/** The digest of the request's function layout file, which keys the
+ * executable cache: the layout changes the code's order, not its frontend
+ * input. */
+async function functionLayoutKey(opts: CompileRequestOptions): Promise<string | undefined> {
+  if (opts.functionLayout === undefined) return undefined;
+  const path = resolve(opts.functionLayout);
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(path);
+  } catch (err) {
+    throw new Error(
+      `cannot read function layout ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 /** The request's function layout. */
 async function readFunctionLayout(
   opts: CompileRequestOptions,
@@ -1546,9 +1563,11 @@ async function compileTracked(
     platform: buildPlatform,
   });
   let profile: NativeProfileOptions | undefined;
+  let functionLayoutDigest: string | undefined;
   try {
     if (profileRefusal !== null) throw new Error(profileRefusal);
     profile = await readNativeProfile(opts);
+    functionLayoutDigest = await functionLayoutKey(opts);
   } catch (err) {
     return {
       ok: false,
@@ -1583,6 +1602,7 @@ async function compileTracked(
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
       ...targetCpuField(opts.targetCpu),
       ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
+      ...(functionLayoutDigest === undefined ? {} : { functionLayout: functionLayoutDigest }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,
