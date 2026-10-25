@@ -104,7 +104,7 @@ import {
   analyzeInt32Slots,
   dynamicFieldStores,
   type DynamicFieldStores,
-  type Int32Slots,
+  Int32Slots,
 } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, type FinalFields } from "../../ir/final-fields.js";
 import { foldConstantGlobals } from "../../ir/constant-globals.js";
@@ -373,7 +373,9 @@ import {
   emitModuleParts,
   emitParts,
   helperDefs,
+  workerMinFunctions,
 } from "./emit-module.js";
+import { forkedAnalysis } from "./forked-analysis.js";
 import {
   emitLoopCopies,
   emitSpeculativeWrite,
@@ -1483,7 +1485,13 @@ export class LlEmitter {
   streamingSplitsEnabled = false;
   readonly initializerBindings: ReturnType<typeof findInitializerBindings>;
   /** Whole-program int32 storage and parameter/result facts. */
-  readonly int32Slots: Int32Slots;
+  get int32Slots(): Int32Slots {
+    return (this.int32SlotsValue ??= this.joinInt32Slots());
+  }
+  private int32SlotsValue: Int32Slots | undefined;
+  /** The join of the int32 slot analysis a forked process computes
+   * (startInt32Slots). */
+  private int32SlotsJoin: (() => Int32Slots) | undefined;
   /** The program has no runtime store into a checked-dynamic value
    * (dynamicFieldStores), so live views of classes and records never
    * commit back into their objects. Library builds keep their commits:
@@ -1736,6 +1744,15 @@ export class LlEmitter {
     // One walk of every body, which the analyses below read instead of
     // walking the bodies themselves.
     this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod);
+    this.initializerBindings =
+      int32Analysis?.initializerBindings ?? findInitializerBindings(mod, this.nodeIndex);
+    // One walk finds the dynamic field stores every analysis below consults.
+    const dynamicStores =
+      int32Analysis?.dynamicStores ?? dynamicFieldStores(mod, undefined, undefined, this.nodeIndex);
+    // Started before the other analyses, which may run while a forked
+    // process computes it (startInt32Slots).
+    if (int32Analysis !== null) this.int32SlotsValue = int32Analysis.slots;
+    else this.startInt32Slots(dynamicStores);
     this.stackTraces = observesStacks(mod, this.nodeIndex);
     this.nullableUnions = new NullableUnions(
       mod,
@@ -1754,18 +1771,6 @@ export class LlEmitter {
             this.nullableUnions.armTypes(),
           );
     this.constantNumericTables = findConstantNumericTables(mod);
-    this.initializerBindings =
-      int32Analysis?.initializerBindings ?? findInitializerBindings(mod, this.nodeIndex);
-    // One walk finds the dynamic field stores every analysis below consults.
-    const dynamicStores =
-      int32Analysis?.dynamicStores ?? dynamicFieldStores(mod, undefined, undefined, this.nodeIndex);
-    this.int32Slots =
-      int32Analysis?.slots ??
-      analyzeInt32Slots(mod, {
-        dynamicStores,
-        initializerBindings: this.initializerBindings,
-        nodes: this.nodeIndex,
-      });
     this.untypedIntegrity = mod.untypedIntegrity === true;
     this.liveViewsReadOnly =
       mod.lib === undefined &&
@@ -2211,6 +2216,46 @@ export class LlEmitter {
     );
     // After the vtable slots: borrowing slots exclude their implementations.
     if (this.debug === null) this.analyzeBorrowedReturns();
+    this.int32SlotsValue ??= this.joinInt32Slots();
+  }
+
+  /** Computes the int32 slot analysis, or starts it on a forked process.
+   * Dev builds read its result only near the end of the constructor
+   * (int32Abis is empty with debug info), so for a large module the
+   * process computes it while the constructor runs the other analyses. */
+  private startInt32Slots(dynamicStores: DynamicFieldStores): void {
+    const mod = this.mod;
+    const nodes = this.nodeIndex;
+    const analyze = (): Int32Slots =>
+      analyzeInt32Slots(mod, {
+        dynamicStores,
+        initializerBindings: this.initializerBindings,
+        nodes,
+      });
+    const fork = this.targetOptions.forkPrimitives;
+    if (
+      fork === undefined ||
+      this.targetOptions.debugSources === undefined ||
+      (this.targetOptions.functionWorkers ?? 1) < 2 ||
+      mod.functions.length < workerMinFunctions()
+    ) {
+      this.int32SlotsValue = analyze();
+      return;
+    }
+    this.int32SlotsJoin = forkedAnalysis(
+      fork,
+      analyze,
+      (slots) => slots.encode(nodes),
+      (text) => Int32Slots.decode(text, mod, nodes),
+    );
+  }
+
+  private joinInt32Slots(): Int32Slots {
+    const join = this.int32SlotsJoin;
+    if (join === undefined)
+      throw new InternalCompilerError("llvm emitter bug: int32 slots read before analysis");
+    this.int32SlotsJoin = undefined;
+    return join();
   }
 
   /** The borrowed parameters of a hierarchy's vtable slot (empty: owned). */

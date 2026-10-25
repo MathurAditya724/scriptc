@@ -104,7 +104,9 @@ test("a Promise.all tuple adapter requested in a range is defined", async () => 
 }, 60_000);
 
 // Debug metadata is numbered per emitter (debug-info.ts) and not journaled:
-// a debug build emits its function bodies in one emitter.
+// a debug build emits its function bodies in one emitter. Its one fork
+// computes the int32 slot analysis; when the fork fails, the emitter
+// computes it itself.
 test("debug builds emit function bodies serially, with every metadata reference defined", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-chunked-debug-"));
   const minFunctions = process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"];
@@ -148,7 +150,7 @@ test("debug builds emit function bodies serially, with every metadata reference 
       const referenced = new Set([...emitted.matchAll(/(![0-9]+)\b/g)].map((m) => m[1]));
       expect([...referenced].filter((id) => !defined.has(id))).toEqual([]);
     }
-    expect(forks).toBe(0);
+    expect(forks).toBe(1);
   } finally {
     if (minFunctions === undefined) delete process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"];
     else process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] = minFunctions;
