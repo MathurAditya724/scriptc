@@ -303,6 +303,13 @@ static size_t ut_pending_count(const UtState *s) {
 }
 
 static void ut_push(UtState *s, ScrPromise *promise /* moves in */, ScrDyn **args /* moves in */, size_t argc) {
+  /* Calls already taken free their slots, so a queue that never empties
+   * keeps its storage within twice its live calls. */
+  if (s->len == s->cap && s->head > 0) {
+    s->len -= s->head;
+    memmove(s->calls, s->calls + s->head, s->len * sizeof *s->calls);
+    s->head = 0;
+  }
   if (s->len == s->cap) {
     size_t cap = s->cap ? s->cap * 2 : 4;
     UtCall *grown = realloc(s->calls, cap * sizeof *grown);

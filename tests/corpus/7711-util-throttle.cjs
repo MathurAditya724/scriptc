@@ -35,6 +35,18 @@ async function main() {
   console.log(c.activeCount, c.pendingCount);
   console.log(await ca, await cb, order, c.activeCount);
 
+  // A queue that never empties while calls are taken and others arrive.
+  const q = util.throttle(async (x) => { await null; return x; }, 1000, 1000, { concurrency: 1 });
+  const queued = [];
+  for (let i = 0; i < 5; i++) queued.push(q(i));
+  const results = [];
+  for (let i = 5; i < 25; i++) {
+    results.push(await queued[i - 5]);
+    queued.push(q(i));
+  }
+  for (let i = 20; i < 25; i++) results.push(await queued[i]);
+  console.log(results.join(","), q.pendingCount, q.activeCount);
+
   // A throwing fn rejects that call only.
   const e = util.throttle((x) => { if (x === 2) throw new RangeError("two"); return x; }, 5, 10);
   await settle("e1", e(1));
