@@ -13,7 +13,12 @@
  *       "proper-lockfile": { "run": "node", "evaluate": "lazy" }
  *     },
  *     "nodeIslands": { "auto": true, "modules": ["src/plugins/*.ts"] },
- *     "wasm": ["build/module.wasm"]
+ *     "wasm": ["build/module.wasm"],
+ *     "typePatches": {                   // frontend/type-patches/layer.ts
+ *       "commander@^15.0.0": {
+ *         "declarations": { "HelpContext.helpWidth": "| undefined" }
+ *       }
+ *     }
  *   }
  *
  * Node islands are report-only in this version: the policy decides which
@@ -23,6 +28,8 @@
 import { dirname, join, resolve } from "node:path";
 import { projectConfigDiag, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import { trackedReadFile } from "./frontend/input-tracker.js";
+import { parseSelector, parseTypeText } from "./frontend/type-patches/selector.js";
+import { isValidRange } from "./frontend/type-patches/semver.js";
 
 /** How a package runs: compiled natively, in a Node island, or decided by
  * the detector. */
@@ -57,6 +64,25 @@ export interface NodeIslandsSetting {
   speculativeStart: boolean;
 }
 
+/** One declaration patch: a selector and the type text it maps to. */
+export interface TypePatchDeclaration {
+  selector: string;
+  type: string;
+  /** Offset of the selector key in the manifest, for diagnostics. */
+  offset: number;
+}
+
+/** One `scriptc.typePatches["<package>@<range>"]` entry. */
+export interface TypePatchEntry {
+  /** The key as written. */
+  key: string;
+  pkg: string;
+  range: string;
+  declarations: TypePatchDeclaration[];
+  /** Offset of the key in the manifest. */
+  offset: number;
+}
+
 export interface ProjectConfig {
   /** The package.json the configuration came from, or null. */
   manifest: string | null;
@@ -66,6 +92,8 @@ export interface ProjectConfig {
   nodeIslands: NodeIslandsSetting;
   /** `scriptc.wasm`: module paths, resolved against the manifest. */
   wasm: string[];
+  /** `scriptc.typePatches`, in manifest order. */
+  typePatches: TypePatchEntry[];
   /** SC8004 for every unknown key or value. */
   diagnostics: ScrDiagnostic[];
 }
@@ -117,6 +145,7 @@ export function emptyProjectConfig(): ProjectConfig {
     packages: new Map<string, PackageSetting>(),
     nodeIslands: defaultNodeIslands(),
     wasm: [],
+    typePatches: [],
     diagnostics: [],
   };
 }
@@ -299,6 +328,9 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
     }
   }
 
+  const patches = root["typePatches"];
+  if (patches !== undefined) readTypePatches(patches, config, problem, locate);
+
   // `scriptc.wasm` keeps its lenient reading: string entries of an array.
   const wasm = root["wasm"];
   if (Array.isArray(wasm)) {
@@ -307,6 +339,136 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
     }
   }
   return config;
+}
+
+const TYPE_PATCH_KEYS = ["declarations", "note"];
+/** Packages whose declarations ship with scriptc or TypeScript: a wrong
+ * one is a bug to report, not a project-local patch. */
+const UNPATCHABLE = /^(?:@types\/node|typescript|@typescript\/.*)$/;
+const PACKAGE_NAME = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i;
+
+/** Reads and validates `scriptc.typePatches`. */
+function readTypePatches(
+  patches: unknown,
+  config: ProjectConfig,
+  problem: (path: string[], detail: string, hint: string) => void,
+  locate: JsonLocator,
+): void {
+  if (!isRecord(patches)) {
+    problem(
+      ["typePatches"],
+      `must be an object mapping "<package>@<range>" to patches, not ${shown(patches)}`,
+      `write "typePatches": { "<package>@^1.0.0": { "declarations": { "Type.member": "| undefined" } } }`,
+    );
+    return;
+  }
+  for (const key of Object.keys(patches)) {
+    const at = key.lastIndexOf("@");
+    const pkg = at > 0 ? key.slice(0, at) : key;
+    const range = at > 0 ? key.slice(at + 1).trim() : "";
+    if (at <= 0 || range === "" || !PACKAGE_NAME.test(pkg)) {
+      problem(
+        ["typePatches", key],
+        "must name a package and a version range",
+        `write "${at > 0 ? pkg : key}@^1.0.0": the range says which installed versions the patch describes`,
+      );
+      continue;
+    }
+    if (!isValidRange(range)) {
+      problem(
+        ["typePatches", key],
+        `has the version range "${range}", which is not a semver range`,
+        `use a range such as "^${/^\d/.test(range) ? range.replace(/[^\d.]/g, "") : "1.0.0"}" or "1.2.x"`,
+      );
+      continue;
+    }
+    if (UNPATCHABLE.test(pkg)) {
+      problem(
+        ["typePatches", key],
+        `patches ${pkg}, whose declarations ship with scriptc or TypeScript`,
+        "report a wrong declaration there instead of patching it",
+      );
+      continue;
+    }
+    const value = patches[key];
+    if (!isRecord(value)) {
+      problem(
+        ["typePatches", key],
+        `must be an object, not ${shown(value)}`,
+        `write { "declarations": { "Type.member": "| undefined" } }`,
+      );
+      continue;
+    }
+    const entry: TypePatchEntry = {
+      key,
+      pkg,
+      range,
+      declarations: [],
+      offset: locate.offsetOf(["scriptc", "typePatches", key]),
+    };
+    let valid = true;
+    for (const k of Object.keys(value)) {
+      if (!TYPE_PATCH_KEYS.includes(k)) {
+        problem(
+          ["typePatches", key, k],
+          "is not a known type patch setting",
+          `the settings are ${TYPE_PATCH_KEYS.join(", ")}`,
+        );
+        valid = false;
+      }
+    }
+    const note = value["note"];
+    if (note !== undefined && typeof note !== "string") {
+      problem(
+        ["typePatches", key, "note"],
+        `must be a string, not ${shown(note)}`,
+        "write a short note, such as a link to the upstream issue",
+      );
+      valid = false;
+    }
+    const decls = value["declarations"];
+    if (decls !== undefined && !isRecord(decls)) {
+      problem(
+        ["typePatches", key, "declarations"],
+        `must be an object mapping selectors to types, not ${shown(decls)}`,
+        `write "declarations": { "Type.member": "| undefined" }`,
+      );
+      valid = false;
+    } else if (decls !== undefined) {
+      for (const selector of Object.keys(decls)) {
+        const path = ["typePatches", key, "declarations", selector];
+        const parsed = parseSelector(selector);
+        if ("error" in parsed) {
+          problem(
+            path,
+            `is not a selector: it ${parsed.error}`,
+            `name a declaration such as "Type.member", "fn()", "fn(param)", "file.js:local()" or "export=()"`,
+          );
+          continue;
+        }
+        const type = decls[selector];
+        if (typeof type !== "string") {
+          problem(
+            path,
+            `must map to a type string, not ${shown(type)}`,
+            `write "| undefined" to widen, or the whole type to replace it`,
+          );
+          continue;
+        }
+        const op = parseTypeText(type);
+        if ("error" in op) {
+          problem(
+            path,
+            `has a type that ${op.error}`,
+            `write "| undefined" to widen, or the whole type on one line`,
+          );
+          continue;
+        }
+        entry.declarations.push({ selector, type, offset: locate.offsetOf(["scriptc", ...path]) });
+      }
+    }
+    if (valid) config.typePatches.push(entry);
+  }
 }
 
 let cachedManifest: string | null = null;

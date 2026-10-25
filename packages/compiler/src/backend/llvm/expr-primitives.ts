@@ -661,6 +661,29 @@ export function regexLiteralTemplate(
   return `@${re.sym}`;
 }
 
+/** The build-time replacer of a global substitution of regex literal `e`
+ * with the literal `replacement` (regex-matchers.ts), registered on first
+ * use. */
+export function regexLiteralReplacer(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "regexLit" },
+  replacement: string,
+): string {
+  const key = `${e.flags}/${e.pattern}\0${replacement}`;
+  let rr = host.regexReplacers.get(key);
+  if (!rr) {
+    rr = {
+      sym: host.contentSymbol("sc_rr_", key),
+      pattern: e.pattern,
+      flags: e.flags,
+      replacement,
+    };
+    host.regexReplacers.set(key, rr);
+  }
+  host.journal?.entry("regexReplacer", key, rr);
+  return `@${rr.sym}`;
+}
+
 /** A string equality or comparison between `s.charAt(i)` and a literal of
  * exactly one UTF-16 code unit: the charAt call, the unit, and whether the
  * charAt is the left operand. */

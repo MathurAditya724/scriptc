@@ -1135,7 +1135,7 @@ function setFromSeedValue(
   if (source.type.kind === "set" && typeEquals(source.type, setT)) {
     return { kind: "setIntrinsic", method: "clone", receiver: source, args: [], type: setT, loc };
   } else if (source.type.kind === "string" && setT.elem.kind === "string") {
-    seed = strCharsCall(lowerer, source, loc);
+    seed = strCharsCall(source, loc);
   } else if (source.type.kind === "array" && typeEquals(source.type.elem, setT.elem)) {
     seed = source;
   } else if (

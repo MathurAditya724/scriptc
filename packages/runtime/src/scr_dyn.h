@@ -1941,7 +1941,8 @@ extern void scr_dyn_listener_fire_data(ScrClosure *cb, ScrBytes *chunk);
 extern void scr_dyn_listener_fire_err(ScrClosure *cb, ScrStr *msg);
 
 void *scr_dyn_retain_v(void *d);
-/* After a compiled fast path decremented a surviving capsule or handle. */
+/* After a compiled fast path decremented a surviving value of a kind that
+ * can be a cycle candidate and is not one yet (scr_json.c). */
 void scr_dyn_release_survivor(ScrDyn *d);
 void scr_dyn_release_v(void *d);
 void scr_dyn_trace_v(void *d, ScrTraceVisit visit, void *ctx);
@@ -1955,6 +1956,9 @@ long scr_dyn_live_count(void);
  * scr_json.c, which programs with dynamic-tier code link. */
 /* The builtin Object.prototype node, or NULL before its first use. */
 const ScrDyn *scr_dyn_tier_object_prototype(void);
+/* A read site's answer for a native array's length or a native iterator's
+ * next (scr_js_get_probe_native): +1, or NULL. */
+ScrDyn *scr_dyn_tier_unshaped_get(const ScrDyn *receiver, const ScrStr *key);
 /* Shared key bytes for `key` (+1, NUL-terminated), and their release. */
 char *scr_dyn_tier_key_copy(const char *key, size_t key_len);
 void scr_dyn_tier_key_release(char *key, size_t key_len);
