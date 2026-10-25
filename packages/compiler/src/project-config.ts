@@ -101,6 +101,10 @@ export interface ProjectConfig {
   wasm: string[];
   /** `scriptc.typePatches`, in manifest order. */
   typePatches: TypePatchEntry[];
+  /** The local files the configuration checked for existence, with the
+   * answer. A configuration read again from an unchanged package.json is
+   * reused only while every answer still holds. */
+  localFiles: { path: string; exists: boolean }[];
   /** SC8004 for every unknown key or value. */
   diagnostics: ScrDiagnostic[];
 }
@@ -153,6 +157,7 @@ export function emptyProjectConfig(): ProjectConfig {
     nodeIslands: defaultNodeIslands(),
     wasm: [],
     typePatches: [],
+    localFiles: [],
     diagnostics: [],
   };
 }
@@ -435,7 +440,9 @@ function readTypePatches(
         );
         return null;
       }
-      if (!trackedFileExists(abs)) {
+      const exists = trackedFileExists(abs);
+      config.localFiles.push({ path: abs, exists });
+      if (!exists) {
         problem(
           path,
           `names "${v}", which does not exist`,
@@ -546,7 +553,12 @@ export function readProjectConfig(entryPath: string): ProjectConfig {
     const manifest = join(dir, "package.json");
     const text = trackedReadFile(manifest);
     if (text !== null) {
-      if (cachedConfig !== null && cachedManifest === manifest && cachedText === text)
+      if (
+        cachedConfig !== null &&
+        cachedManifest === manifest &&
+        cachedText === text &&
+        cachedConfig.localFiles.every((file) => trackedFileExists(file.path) === file.exists)
+      )
         return cachedConfig;
       // A manifest without a `scriptc` key (none spelled out, none behind a
       // \u escape) has the empty configuration; builds of such projects

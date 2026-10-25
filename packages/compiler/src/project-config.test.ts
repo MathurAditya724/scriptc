@@ -281,3 +281,28 @@ test("typePatches: files and types name local declaration files", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("readProjectConfig checks local type patch files again for an unchanged package.json", () => {
+  const root = mkdtempSync(join(tmpdir(), "scriptc-project-config-"));
+  try {
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ scriptc: { typePatches: { "lib@^1.0.0": { types: "./lib.d.ts" } } } }),
+    );
+    const entry = join(root, "main.ts");
+    const missing = readProjectConfig(entry);
+    expect(missing.diagnostics.map((d) => d.message)).toEqual([
+      `package.json 'scriptc.typePatches.lib@^1.0.0.types' names "./lib.d.ts", which does not exist`,
+    ]);
+    expect(readProjectConfig(entry)).toBe(missing);
+    writeFileSync(join(root, "lib.d.ts"), "export {};\n");
+    const created = readProjectConfig(entry);
+    expect(created.diagnostics).toEqual([]);
+    expect(created.typePatches[0]!.types).toBe(join(root, "lib.d.ts"));
+    expect(readProjectConfig(entry)).toBe(created);
+    rmSync(join(root, "lib.d.ts"));
+    expect(readProjectConfig(entry).diagnostics.map((d) => d.code)).toEqual(["SC8004"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

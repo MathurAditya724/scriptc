@@ -2,7 +2,7 @@
  * packages: commander's HelpContext.helpWidth @typedef property and ms's
  * @return tags, patched from the fixtures' package.json; installed-version
  * selection; and the warnings for patches that do not apply as written. */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -151,6 +151,32 @@ test("types gives a package without declarations an entry beside its main", () =
   configureTypePatches(join(tmpdir(), "none", "main.ts"), parse);
   expect(typePatchFileExists(join(pkg, "lib/point.d.ts"))).toBe(false);
   expect(typePatchSuppliesTypes(pkg)).toBe(false);
+});
+
+test("types gives a package whose main is a .jsx file an entry beside it", () => {
+  const root = mkdtempSync(join(tmpdir(), "scriptc-type-patches-"));
+  try {
+    const pkg = join(root, "node_modules/viewjs");
+    mkdirSync(join(pkg, "lib"), { recursive: true });
+    writeFileSync(
+      join(pkg, "package.json"),
+      JSON.stringify({ name: "viewjs", version: "1.0.0", main: "lib/view.jsx" }),
+    );
+    writeFileSync(join(pkg, "lib/view.jsx"), "export const view = 1;\n");
+    writeFileSync(join(root, "viewjs.d.ts"), "export declare const view: number;\n");
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ scriptc: { typePatches: { "viewjs@^1.0.0": { types: "./viewjs.d.ts" } } } }),
+    );
+    configureTypePatches(join(root, "main.ts"), parse);
+    expect(typePatchFileExists(join(pkg, "lib/view.d.ts"))).toBe(true);
+    expect(typePatchSuppliesTypes(pkg)).toBe(true);
+    expect(typePatchedText(join(pkg, "lib/view.d.ts"))).toBe(
+      "export declare const view: number;\n",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("a files target the installed package does not ship warns", () => {

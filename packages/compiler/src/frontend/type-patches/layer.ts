@@ -242,6 +242,8 @@ function declarationEntries(root: string, local: string): Map<string, string> {
     const rel = target.replace(/^\.\//, "");
     if (/\.d\.[cm]?ts$/.test(rel)) out.set(rel, local);
     else if (/\.[cm]?js$/.test(rel)) out.set(rel.replace(/\.([cm]?)js$/, ".d.$1ts"), local);
+    // TypeScript probes x.tsx and then x.d.ts for x.jsx.
+    else if (rel.endsWith(".jsx")) out.set(`${rel.slice(0, -".jsx".length)}.d.ts`, local);
     else if (!/\.\w+$/.test(rel)) out.set(`${rel}.d.ts`, local);
   };
   add(pkg["types"]);
