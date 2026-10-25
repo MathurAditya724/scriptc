@@ -191,7 +191,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           fn,
           emitter.callLifetimes,
           emitter.scalarStringSlices,
-          emitter.lentStringParameters,
+          emitter.lendingFacts,
         )
       : new Set();
   emitter.mapReadLifetimes = findMapReadLifetimes(
