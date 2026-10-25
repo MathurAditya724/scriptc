@@ -103,57 +103,77 @@ test("a Promise.all tuple adapter requested in a range is defined", async () => 
   }
 }, 60_000);
 
-// Debug metadata is numbered per emitter (debug-info.ts) and not journaled:
-// a debug build emits its function bodies in one emitter. Its one fork
-// computes the int32 slot analysis; when the fork fails, the emitter
-// computes it itself.
-test("debug builds emit function bodies serially, with every metadata reference defined", async () => {
+// Debug builds journal their metadata requests (debug-info.ts): ranges
+// merged in function order number every node as one emitter does.
+const DEBUG_PROGRAMS: { entry: string; sources: string[] }[] = [
+  {
+    entry: "3066-source-debugging/main.ts",
+    sources: ["3066-source-debugging/main.ts", "3066-source-debugging/helper.ts"],
+  },
+  ...[
+    "1020-async-basics.ts",
+    "7103-fiberless-plain-calls.ts",
+    "7110-als-completion-callbacks.ts",
+    "1301-errors-subclass.ts",
+    "1529-class-with-statics.ts",
+    "1591-js-closures.js",
+    "2010-generators-basics.ts",
+    "2013-generators-sent-values.ts",
+    "4451-int32-field-storage.ts",
+  ].map((program) => ({ entry: program, sources: [program] })),
+];
+
+test("debug builds emitted in ranges merge into the text one emitter gives", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-chunked-debug-"));
   const minFunctions = process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"];
   try {
-    const corpus = join(import.meta.dirname, "../../../tests/corpus/3066-source-debugging");
-    const entry = join(corpus, "main.ts");
-    const outPath = join(dir, "main.ir.json");
-    const result = await compile(entry, {
-      outDir: dir,
-      outPath,
-      outputKind: "ir",
-      optimization: "dev",
-    });
-    if (!result.ok)
-      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    const ir = await readFile(outPath, "utf8");
-    const debugSources = new Map<string, string>();
-    for (const name of ["main.ts", "helper.ts"])
-      debugSources.set(join(corpus, name), await readFile(join(corpus, name), "utf8"));
-    const options: LlvmTargetOptions = { debugSources };
-    const serial = text(emitLlvmModuleSource(deserializeModule(ir), options));
-    expect(serial).toContain("!DILocation");
+    const corpus = join(import.meta.dirname, "../../../tests/corpus");
+    for (const program of DEBUG_PROGRAMS) {
+      const outPath = join(dir, "main.ir.json");
+      const result = await compile(join(corpus, program.entry), {
+        outDir: dir,
+        outPath,
+        outputKind: "ir",
+        optimization: "dev",
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const ir = await readFile(outPath, "utf8");
+      const debugSources = new Map<string, string>();
+      for (const name of program.sources)
+        debugSources.set(join(corpus, name), await readFile(join(corpus, name), "utf8"));
+      const options: LlvmTargetOptions = { debugSources };
+      const serial = text(emitLlvmModuleSource(deserializeModule(ir), options));
+      expect(serial, program.entry).toContain("!DILocation");
 
-    let forks = 0;
-    process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] = "1";
-    const forkPrimitives = {
-      fork: (): number => {
-        forks++;
-        return -1;
-      },
-      exit: (): void => {},
-      wait: (): number => -1,
-    };
-    for (const variant of [
-      { functionChunks: 3 },
-      { functionWorkers: 4, forkPrimitives },
-    ] satisfies LlvmTargetOptions[]) {
-      const emitted = text(emitLlvmModuleSource(deserializeModule(ir), { ...options, ...variant }));
-      expect(emitted === serial, JSON.stringify(Object.keys(variant))).toBe(true);
-      const defined = new Set([...emitted.matchAll(/^(![0-9]+) = /gm)].map((m) => m[1]));
-      const referenced = new Set([...emitted.matchAll(/(![0-9]+)\b/g)].map((m) => m[1]));
-      expect([...referenced].filter((id) => !defined.has(id))).toEqual([]);
+      // A fork that fails leaves every range to the merging emitter.
+      process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] = "1";
+      const forkPrimitives = {
+        fork: (): number => -1,
+        exit: (): void => {},
+        wait: (): number => -1,
+      };
+      for (const variant of [
+        { functionChunks: 2 },
+        { functionChunks: 5 },
+        { functionWorkers: 4, forkPrimitives },
+      ] satisfies LlvmTargetOptions[]) {
+        const emitted = text(
+          emitLlvmModuleSource(deserializeModule(ir), { ...options, ...variant }),
+        );
+        expect(emitted === serial, `${program.entry} ${JSON.stringify(Object.keys(variant))}`).toBe(
+          true,
+        );
+        const defined = new Set([...emitted.matchAll(/^(![0-9]+) = /gm)].map((m) => m[1]));
+        const referenced = new Set([...emitted.matchAll(/(![0-9]+)\b/g)].map((m) => m[1]));
+        expect([...referenced].filter((id) => !defined.has(id))).toEqual([]);
+      }
+      if (minFunctions === undefined) delete process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"];
+      else process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] = minFunctions;
     }
-    expect(forks).toBe(1);
   } finally {
     if (minFunctions === undefined) delete process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"];
     else process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] = minFunctions;
     await rm(dir, { recursive: true, force: true });
   }
-}, 120_000);
+}, 300_000);
