@@ -596,6 +596,26 @@ function parseJsDoc(text: string, start: number, end: number): JsDocComment {
   return { start, end, tags };
 }
 
+/** The spans of a file's string, template and regular expression literal
+ * tokens. */
+function literalSpans(sf: ts.SourceFile): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  const kinds = new Set([
+    ts.SyntaxKind.StringLiteral,
+    ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+    ts.SyntaxKind.TemplateHead,
+    ts.SyntaxKind.TemplateMiddle,
+    ts.SyntaxKind.TemplateTail,
+    ts.SyntaxKind.RegularExpressionLiteral,
+  ]);
+  const visit = (n: ts.Node): void => {
+    if (kinds.has(n.kind)) out.push({ start: tokenStartOfNode(n), end: n.end });
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out.sort((a, b) => a.start - b.start);
+}
+
 const RETURN_TAGS = new Set(["returns", "return"]);
 const PROPERTY_TAGS = new Set(["property", "prop"]);
 
@@ -615,15 +635,27 @@ class JsResolver {
     private readonly text: string,
     sf: ts.SourceFile,
   ) {
+    // JSDoc comments, not text inside string, template or regular
+    // expression literals that looks like one.
+    const literals = literalSpans(sf);
     const re = /\/\*\*(?!\/)[\s\S]*?\*\//g;
-    for (let m = re.exec(text); m !== null; m = re.exec(text))
+    for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+      const inside = literals.find((l) => l.start <= m!.index && m!.index < l.end);
+      if (inside !== undefined) {
+        re.lastIndex = inside.end;
+        continue;
+      }
       this.comments.push(parseJsDoc(text, m.index, m.index + m[0].length));
+    }
     for (const c of this.comments)
       c.tags.forEach((t, i) => {
         if ((t.tag === "typedef" || t.tag === "callback") && t.name !== null)
           this.add(t.name, { kind: "typedef", comment: c, tagIndex: i, prefix: "" });
       });
-    for (const s of sf.statements.nodes) this.collect(s);
+    // Declarations first: `exports.name = name` may come before the
+    // function declaration it exports, which is hoisted.
+    for (const s of sf.statements.nodes) if (!ts.isExpressionStatement(s)) this.collect(s);
+    for (const s of sf.statements.nodes) if (ts.isExpressionStatement(s)) this.collect(s);
   }
 
   private add(name: string, pos: JsPos): void {
@@ -681,9 +713,11 @@ class JsResolver {
         if (named !== undefined) this.exportEquals.push(...named);
       }
     } else if (ts.isIdentifier(e.right) && this.roots.has(e.right.text)) {
-      // `exports.name = name`: the named declaration is the export.
-      for (const pos of this.roots.get(e.right.text)!)
-        if (pos.kind === "decl") this.add(target, pos);
+      // `exports.name = local`: the named declaration is the export (and
+      // already is under its own name).
+      if (target !== e.right.text)
+        for (const pos of [...this.roots.get(e.right.text)!])
+          if (pos.kind === "decl") this.add(target, pos);
     } else this.add(target, this.declPos(s, s, e.right));
   }
 

@@ -2,7 +2,7 @@
  * packages: commander's HelpContext.helpWidth @typedef property and ms's
  * @return tags, patched from the fixtures' package.json; installed-version
  * selection; and the warnings for patches that do not apply as written. */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -118,6 +118,101 @@ test("an @types twin is matched by the runtime package's installed version", () 
     configureTypePatches(join(root, "main.ts"), parse);
     expect(typePatchedText(join(twin, "node_modules/@types/tallyjs/index.d.ts"))).toBeUndefined();
     expect(typePatchDiagnostics()!.diagnostics.map((d) => d.code)).toEqual(["SC8030"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an @types twin in pnpm's layout is matched by the runtime package the project resolves", () => {
+  // pnpm keeps each package in its own directory under node_modules/.pnpm
+  // and links the project's dependencies from node_modules: the twin has no
+  // runtime package beside it.
+  const root = mkdtempSync(join(tmpdir(), "scriptc-type-patches-pnpm-"));
+  try {
+    const store = join(root, "node_modules/.pnpm");
+    const runtime = join(store, "tallyjs@0.5.0/node_modules/tallyjs");
+    const types = join(store, "@types+tallyjs@0.4.0/node_modules/@types/tallyjs");
+    mkdirSync(runtime, { recursive: true });
+    mkdirSync(types, { recursive: true });
+    writeFileSync(join(runtime, "package.json"), '{ "name": "tallyjs", "version": "0.5.0" }');
+    writeFileSync(join(runtime, "index.js"), "exports.totals = () => ({});\n");
+    writeFileSync(join(types, "package.json"), '{ "name": "@types/tallyjs", "version": "0.4.0" }');
+    writeFileSync(
+      join(types, "index.d.ts"),
+      "export type Totals = {\n  max: number;\n};\nexport declare function totals(): Totals;\n",
+    );
+    mkdirSync(join(root, "node_modules/@types"), { recursive: true });
+    symlinkSync(runtime, join(root, "node_modules/tallyjs"));
+    symlinkSync(types, join(root, "node_modules/@types/tallyjs"));
+    const patchFor = (range: string) =>
+      writeFileSync(
+        join(root, "package.json"),
+        JSON.stringify({
+          scriptc: {
+            typePatches: {
+              [`tallyjs@${range}`]: { declarations: { "Totals.max": "| undefined" } },
+            },
+          },
+        }),
+      );
+    // A range the runtime (0.5.0) satisfies applies, though the twin's own
+    // version (0.4.0) does not satisfy it.
+    patchFor("0.5.0");
+    configureTypePatches(join(root, "main.ts"), parse);
+    expect(typePatchedText(join(types, "index.d.ts"))).toContain("max: number | undefined;");
+    // A range only the twin's own version satisfies does not.
+    patchFor("0.4.0");
+    configureTypePatches(join(root, "main.ts"), parse);
+    expect(typePatchedText(join(types, "index.d.ts"))).toBeUndefined();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an export before its hoisted function is patched, and string text that looks like JSDoc is not", () => {
+  const root = mkdtempSync(join(tmpdir(), "scriptc-type-patches-js-"));
+  try {
+    const pkg = join(root, "node_modules/hoistkit");
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, "package.json"), '{ "name": "hoistkit", "version": "1.0.0" }');
+    const source = [
+      '"use strict";',
+      "exports.measure = size;",
+      'exports.doc = "/** @typedef {object} Opts\\n * @property {number} width */";',
+      "",
+      "/**",
+      " * @returns {number}",
+      " */",
+      "function size(s) {",
+      "  return s.length || undefined;",
+      "}",
+      "",
+    ].join("\n");
+    writeFileSync(join(pkg, "index.js"), source);
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({
+        scriptc: {
+          typePatches: {
+            "hoistkit@^1.0.0": {
+              declarations: { "measure()": "| undefined", "Opts.width": "| undefined" },
+            },
+          },
+        },
+      }),
+    );
+    configureTypePatches(join(root, "main.ts"), parse);
+    // The export, under another name, comes before the function it exports:
+    // the function's @returns tag widens.
+    expect(typePatchedText(join(pkg, "index.js"))).toBe(
+      source.replace(" * @returns {number}\n", " * @returns {number | undefined}\n"),
+    );
+    // The string's text is a value, not a typedef: the patch finds nothing.
+    expect(
+      typePatchDiagnostics()!
+        .diagnostics.map((d) => d.message)
+        .join("\n"),
+    ).toContain("Opts.width");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
