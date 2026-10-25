@@ -371,6 +371,8 @@ interface LiteralProducer {
   shape: IrRecordShape;
   literal: IrExpr & { kind: "recordLit" };
   size: number;
+  /** The parameters the literal writes (`a++`, `a = b`). */
+  written: ReadonlySet<string>;
 }
 
 /** Whether `value` holds no counted temporary of its own: every counted
@@ -443,17 +445,22 @@ function literalProducer(
   )
     return null;
   let size = 0;
+  const written = new Set<string>();
   const small = everyExpr(literal, {
-    expr: (node) =>
-      ++size <= MAX_CALLEE_NODES &&
-      node.kind !== "closure" &&
-      node.kind !== "selfRef" &&
-      node.kind !== "awaitExpr" &&
-      node.kind !== "awaitUnionExpr" &&
-      node.kind !== "yieldExpr",
+    expr: (node) => {
+      if (node.kind === "incDec" || node.kind === "assignExpr") written.add(node.localId);
+      return (
+        ++size <= MAX_CALLEE_NODES &&
+        node.kind !== "closure" &&
+        node.kind !== "selfRef" &&
+        node.kind !== "awaitExpr" &&
+        node.kind !== "awaitUnionExpr" &&
+        node.kind !== "yieldExpr"
+      );
+    },
     stmt: () => false,
   });
-  return small ? { fn, shape, literal, size } : null;
+  return small ? { fn, shape, literal, size, written } : null;
 }
 
 /** Rewrite every statement list under `body`, innermost first. */
@@ -628,7 +635,7 @@ export function scalarizeLiteralResults(mod: IrModule): IrModule {
             id: renamed.get(l.id)!,
             name: l.name,
             type: l.type,
-            mutable: false,
+            mutable: p.written.has(l.id),
           };
           if (l.source !== undefined) copy.source = l.source;
           added.push(copy);
@@ -641,10 +648,12 @@ export function scalarizeLiteralResults(mod: IrModule): IrModule {
             loc: decl.loc,
           });
         });
+        // Reads and writes of a parameter (`a++`, `a = b`) both name it.
         const rename = (value: IrExpr): IrExpr =>
           transformExpr(value, {
             expr: (node) =>
-              node.kind === "varRef" && renamed.has(node.localId)
+              (node.kind === "varRef" || node.kind === "incDec" || node.kind === "assignExpr") &&
+              renamed.has(node.localId)
                 ? { ...node, localId: renamed.get(node.localId)! }
                 : node,
             stmt: (node) => node,

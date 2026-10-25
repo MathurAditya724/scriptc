@@ -2788,6 +2788,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [DYN, STRING],
     result: { kind: "object", className: "%Duplex" },
   },
+  /** Whether pipeline() pumps a checked-dynamic first stage as an
+   * iterable (a string, or a value with an iterator method that is not a
+   * stream with pipe() and on()) instead of piping it as a stream. */
+  "stream.dynIterableSource": { argTypes: [DYN], result: BOOL },
   /** The Transform a Cipheriv or Decipheriv reads and writes as a stream
    * (+1, created on first use and owned by the cipher). */
   "stream.handleStream": {
@@ -4930,6 +4934,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * and crypto callback adapters pass NULL after an error. Borrowed arg;
    * never throws. */
   "bytes.isAbsent": { argTypes: [BYTES_U8], result: BOOL },
+  /** Whether two typed arrays share no byte: their element ranges in
+   * memory do not overlap. Borrowed args of any element kind; never throws. */
+  "bytes.disjoint": { argTypes: [null, null], result: BOOL },
   /** The absent Buffer result itself (NULL), where an error-path callback
    * body passes its undefined result on into a Buffer slot. Owned (+1);
    * never throws. */

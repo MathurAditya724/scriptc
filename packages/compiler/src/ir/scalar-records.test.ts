@@ -442,3 +442,31 @@ test("keeps the call when an argument holds a counted temporary of its own", () 
   (decl.init as IrExpr & { kind: "call" }).args[1] = length;
   expect(literalTransformed(mod)).toBe(mod);
 });
+
+test("renames a producer's parameter where its literal writes it", () => {
+  const mod = literalFixture([element("head", "0", STRING), element("tail", "1", STRING)]);
+  const split = mod.functions.find((fn) => fn.name === "split")!;
+  // Lowering declares every parameter mutable.
+  for (const l of split.locals) l.mutable = true;
+  const ret = split.body[0] as IrStmt & { kind: "return" };
+  const literal = ret.value as IrExpr & { kind: "recordLit" };
+  // `at++ > (at = 0)`
+  literal.fields[2]!.value = {
+    kind: "bin",
+    op: ">",
+    left: { kind: "incDec", op: "+", prefix: false, localId: "at", type: F64, loc },
+    right: { kind: "assignExpr", localId: "at", value: num(0), type: F64, loc },
+    type: BOOL,
+    loc,
+  };
+  const caller = main(literalTransformed(mod));
+  const [text, at] = caller.body
+    .slice(0, 2)
+    .map((s) => (s as IrStmt & { kind: "varDecl" }).localId);
+  expect(at).not.toBe("at");
+  const writes = [...nodes(caller.body, "incDec"), ...nodes(caller.body, "assignExpr")];
+  expect(writes.map((w) => w["localId"])).toEqual([at, at]);
+  // Only the written parameter's binding is mutable.
+  expect(caller.locals.find((l) => l.id === at)?.mutable).toBe(true);
+  expect(caller.locals.find((l) => l.id === text)?.mutable).toBe(false);
+});

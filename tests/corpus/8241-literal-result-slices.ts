@@ -79,3 +79,12 @@ for (const item of list) {
 // The producer keeps working for every other caller.
 const whole = split("kept", 2);
 console.log("kept", whole[0], whole[1], whole.length);
+
+// Fields that write a parameter: each inlined call writes its own copy.
+function bump(a: number, s: string): [number, number, string] {
+  return [a++, (a = a * 2), s.slice(a - 3)];
+}
+for (const start of [2, 3]) {
+  const [before, doubled, tailOf] = bump(start, "abcdefgh");
+  console.log("writes", start, before, doubled, tailOf);
+}

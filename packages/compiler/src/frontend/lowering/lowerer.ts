@@ -156,6 +156,7 @@ import {
   trackClassFieldCreation,
 } from "./class-dynamic-dispatch.js";
 import { guardClassAttributeWrites } from "./class-attributes.js";
+import { inferredCollectionType } from "./js-collection-types.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
@@ -2377,6 +2378,9 @@ export class Lowerer {
    * every name destructured from a present source optional. */
   readonly runtimeOptionalPatternTypes = new Map<ts.Node, IrType>();
   readonly runtimeOptionalReduceTypes = new Map<ts.CallExpression, IrType>();
+  /** Each function declaration's `arguments.length` count slot, or null
+   * (argument-counts.ts argumentCountSlot). */
+  readonly argumentCountSlots = new Map<ts.FunctionDeclaration, string | null>();
   /** Non-null assertions whose value is forwarded into a slot promoted to
    * hold undefined. `x!` has no runtime effect, so these keep the stored
    * undefined state instead of trapping before any dereference. */
@@ -2853,6 +2857,9 @@ export class Lowerer {
   /** Parameters read as `any` in the error-path copy of an error-first
    * callback. */
   readonly anySymbols = new Set<ts.Symbol>();
+  /** The collection types that uses prove for untyped JavaScript bindings,
+   * by every identifier naming one (js-collection-types.ts). */
+  inferredCollectionTypes: Map<ts.Node, ts.Type> | undefined = undefined;
   /** overload-choice's answers per call, binding and function. */
   readonly dynamicOverloadAnswers = new Map<ts.Node, boolean>();
   /** Error parameters of an error-first callback with a known value in
@@ -3174,6 +3181,14 @@ export class Lowerer {
    * (builtins/fs-paths.ts): each lowers to the hidden local that holds its
    * value, which is null until the path's lowering has saved it. */
   readonly stagedArguments = new Map<ts.Expression, { localId: string; type: IrType } | null>();
+  /** Closure arguments an implicit-any call already lowered to learn their
+   * type (storedImplicitArgumentType), by node: the argument's own lowering
+   * in the same function and with the same type bindings takes that value
+   * once instead of lowering the closure again. */
+  readonly speculatedClosures = new Map<
+    ts.Expression,
+    { ctx: FnCtx; bindings: Map<ts.Symbol, IrType> | null; value: IrExpr }
+  >();
   /** What each fs path argument of a URL-path call lowers to (the plans
    * of builtins/fs-paths.ts). */
   readonly fsPathPlans = new Map<ts.Expression, FsPathPlan>();
@@ -9075,6 +9090,10 @@ export class Lowerer {
   }
 
   typeOf(node: ts.Node): ts.Type {
+    if (ts.isIdentifier(node)) {
+      const inferred = inferredCollectionType(this, node);
+      if (inferred) return inferred;
+    }
     if (this.anySymbols.size > 0 && this.readsAnySymbol(node)) return this.checker.getAnyType();
     // A checked-dynamic argument that another overload could take at run
     // time leaves the resolved overload's return a guess, and JS bindings
@@ -12938,10 +12957,28 @@ export class Lowerer {
   /* ── expressions ──────────────────────────────────────────────────── */
 
   lowerExpr(expr: ts.Expression): IrExpr {
+    if (this.speculatedClosures.size > 0) {
+      const speculated = this.speculatedClosure(expr);
+      if (speculated !== null) {
+        this.speculatedClosures.delete(expr);
+        return speculated;
+      }
+    }
     const streamValue = this.valueStreamReceivers.get(expr);
     if (streamValue)
       return valueStreamOf(varRef(streamValue.localId, streamValue.type, locOf(expr)));
     return this.stagedArgument(expr) ?? lowerExpr(this, expr);
+  }
+
+  /** The value storedImplicitArgumentType lowered for `expr` in the active
+   * function and type bindings (speculatedClosures), or null. */
+  speculatedClosure(expr: ts.Expression): IrExpr | null {
+    const entry = this.speculatedClosures.get(expr);
+    return entry !== undefined &&
+      entry.ctx === this.ctx &&
+      entry.bindings === this.typeParamBindings
+      ? entry.value
+      : null;
   }
 
   /** The saved value of a staged fs argument (stagedArguments, keyed
