@@ -642,6 +642,14 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
   }
 }
 
+/** Whether an island reads the lowered method `name` by that name: a
+ * public, string-keyed prototype method. The constructor, #private methods,
+ * accessor halves (`get:x`, `set:x`) and symbol-keyed slots (`sym:iterator`)
+ * are not properties an island can name. */
+function islandMethodName(name: string): boolean {
+  return name !== "constructor" && !name.startsWith("#") && !/^(?:get|set|sym):/.test(name);
+}
+
 /** A class instance crossing into an island: its capsule answers island
  * reads of its fields, and its prototype methods come from a table the
  * runtime builds once per class (nodeIsland.classMethods): the unbound
@@ -661,7 +669,7 @@ function withClassMethods(
     c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
   ) {
     for (const m of c.def.methods ?? [])
-      if (!names.includes(m) && m !== "constructor") names.push(m);
+      if (!names.includes(m) && islandMethodName(m)) names.push(m);
   }
   if (names.length === 0) return value;
   const loc = value.loc;
