@@ -31,10 +31,10 @@ for (const [label, value] of values) {
     c.on("secureConnect", () => events.push("client secureConnect"));
     c.on("data", (d) => events.push(`client data ${d}`));
     c.on("error", (e) => events.push(`client error ${e.code}`));
-    c.on("close", () => setTimeout(done, 50));
+    c.on("close", () => setTimeout(() => done(undefined), 50));
   });
   console.log("rejectUnauthorized", label, "|", events.join(" ; "));
-  await new Promise((res) => server.close(() => res()));
+  await new Promise((res) => server.close(() => res(undefined)));
 }
 
 {
@@ -47,7 +47,7 @@ for (const [label, value] of values) {
       c.on("secureConnect", () => events.push(`secureConnect authorized=${c.authorized} error=${c.authorizationError}`));
       c.on("data", (d) => events.push(`data ${d}`));
       c.on("error", (e) => events.push(`error ${e.code}`));
-      c.on("close", () => done());
+      c.on("close", () => done(undefined));
     });
     console.log("tls.connect rejectUnauthorized", label, "|", events.join(" ; "));
   }
