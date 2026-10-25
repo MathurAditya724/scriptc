@@ -76,4 +76,12 @@ console.log(seen, `${m}`);
   const bare = new MIMEType("a/b");
   console.log(Object.keys(bare), bare.foo, bare.params.size);
   console.log(format("%s|%s", bare, bare.params), "%s", new MIMEType("c/d;e=f"));
+  // Every argument evaluates before the constructor or parse runs.
+  const order = [];
+  const note = (label) => { order.push(label); return label; };
+  const coerced = { toString() { order.push("coerce"); return "a/b"; } };
+  show("surplus, then coercion", () => { new MIMEType(coerced, undefined, note("third")); return order.splice(0).join(","); });
+  show("surplus, then parse error", () => { try { new MIMEType("bad", undefined, note("x")); } catch (e) { order.push(e.code); } return order.splice(0).join(","); });
+  show("parse surplus", () => { MIMEType.parse(coerced, note("second")); return order.splice(0).join(","); });
+  show("params surplus", () => { new MIMEParams(note("p")); return order.splice(0).join(","); });
 }

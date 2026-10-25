@@ -392,6 +392,13 @@ static void th_reserve(UtState *s, double now) {
     s->window_count++;
     return;
   }
+  /* Ticks that left the window free their slots: at most limit ticks are
+   * live, so the storage stays within twice that. */
+  if (s->tick_len == s->tick_cap && s->tick_head > 0) {
+    s->tick_len -= s->tick_head;
+    memmove(s->ticks, s->ticks + s->tick_head, s->tick_len * sizeof *s->ticks);
+    s->tick_head = 0;
+  }
   if (s->tick_len == s->tick_cap) {
     size_t cap = s->tick_cap ? s->tick_cap * 2 : 8;
     double *grown = realloc(s->ticks, cap * sizeof *grown);

@@ -2,7 +2,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { dynUndefinedExpr, numLit } from "../../../ir/build.js";
-import { BOOL, DYN, type IrExpr } from "../../../ir/ir.js";
+import { BOOL, DYN, type IrExpr, type IrLibFn } from "../../../ir/ir.js";
 import { builtinImportOf } from "./module-bindings.js";
 
 /* node:util's MIMEType and MIMEParams are native checked-dynamic handles
@@ -34,38 +34,51 @@ function mimeValueClass(lowerer: Lowerer, node: ts.Expression): MimeClass | null
   return lowerer.isStdlibSymbol(sym) ? name : null;
 }
 
-/** Every argument in order, as checked-dynamic values; the first `count`
- * fill the call, missing ones as undefined, and the others still
- * evaluate. */
-function mimeArguments(
+/** The call of `fn` over the first `count` arguments, as checked-dynamic
+ * values (missing ones as undefined). Every argument evaluates in order
+ * before the call, as in JavaScript: with surplus arguments, the used ones
+ * are held in hidden locals while the others evaluate. */
+function mimeCall(
   lowerer: Lowerer,
+  fn: IrLibFn,
   nodes: readonly ts.Expression[],
   count: number,
   loc: ReturnType<typeof locOf>,
-): { used: IrExpr[]; extra: IrExpr[] } {
-  const values = nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
-  const used = values.slice(0, count);
-  while (used.length < count) used.push(dynUndefinedExpr(loc));
-  return { used, extra: values.slice(count) };
-}
-
-/** The call, after which any surplus arguments evaluate. */
-function withSurplus(
-  lowerer: Lowerer,
-  call: IrExpr,
-  extra: IrExpr[],
-  loc: ReturnType<typeof locOf>,
 ): IrExpr {
-  if (extra.length === 0) return call;
-  const local = lowerer.declareHiddenLocal("%mimeResult", call.type);
+  const values = nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  if (values.length <= count) {
+    const args = [...values];
+    while (args.length < count) args.push(dynUndefinedExpr(loc));
+    return { kind: "libCall", fn, args, type: DYN, loc };
+  }
+  const locals = values.slice(0, count).map((value) => ({
+    value,
+    local: lowerer.declareHiddenLocal("%mimeArg", DYN),
+  }));
   return {
     kind: "seqExpr",
     stmts: [
-      { kind: "varDecl", localId: local.id, init: call, loc },
-      ...extra.map((arg) => ({ kind: "exprStmt" as const, expr: arg, loc: arg.loc })),
+      ...locals.map(({ value, local }) => ({
+        kind: "varDecl" as const,
+        localId: local.id,
+        init: value,
+        loc,
+      })),
+      ...values.slice(count).map((arg) => ({ kind: "exprStmt" as const, expr: arg, loc: arg.loc })),
     ],
-    result: { kind: "varRef", localId: local.id, type: call.type, loc },
-    type: call.type,
+    result: {
+      kind: "libCall",
+      fn,
+      args: locals.map(({ local }): IrExpr => ({
+        kind: "varRef",
+        localId: local.id,
+        type: DYN,
+        loc,
+      })),
+      type: DYN,
+      loc,
+    },
+    type: DYN,
     loc,
   };
 }
@@ -77,15 +90,8 @@ export function lowerMimeNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr |
   const nodes = expr.arguments?.nodes ?? [];
   if (nodes.some(ts.isSpreadElement)) return null;
   const loc = locOf(expr);
-  const { used, extra } = mimeArguments(lowerer, nodes, cls === "MIMEType" ? 2 : 0, loc);
-  const call: IrExpr = {
-    kind: "libCall",
-    fn: cls === "MIMEType" ? "mime.typeNew" : "mime.paramsNew",
-    args: used,
-    type: DYN,
-    loc,
-  };
-  return withSurplus(lowerer, call, extra, loc);
+  const fn: IrLibFn = cls === "MIMEType" ? "mime.typeNew" : "mime.paramsNew";
+  return mimeCall(lowerer, fn, nodes, cls === "MIMEType" ? 2 : 0, loc);
 }
 
 const INSTANCE_METHODS: Record<MimeClass, ReadonlySet<string>> = {
@@ -113,13 +119,7 @@ export function lowerMimeCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr
   const name = access.name.text;
   const loc = locOf(call);
   if (name === "parse" && mimeClassOf(lowerer, access.expression) === "MIMEType") {
-    const { used, extra } = mimeArguments(lowerer, call.arguments.nodes, 1, loc);
-    return withSurplus(
-      lowerer,
-      { kind: "libCall", fn: "mime.typeParse", args: used, type: DYN, loc },
-      extra,
-      loc,
-    );
+    return mimeCall(lowerer, "mime.typeParse", call.arguments.nodes, 1, loc);
   }
   const cls = mimeValueClass(lowerer, access.expression);
   if (cls === null || !INSTANCE_METHODS[cls].has(name)) return null;
