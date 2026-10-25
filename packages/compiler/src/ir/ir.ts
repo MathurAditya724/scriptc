@@ -3949,7 +3949,7 @@ export type IrExpr =
     }
   /** Standard-library call (`process` members, node:fs functions). `fn` is a
    * closed union; arg/result types are fixed per member (validated against
-   * LIB_FN_SIGS). Property READS (`process.argv`, `process.platform`) are
+   * libFnSignatures()). Property READS (`process.argv`, `process.platform`) are
    * zero-arg libCalls. Args are BORROWED by the operation (frame temps
    * release at statement end); refcounted results come back owned (+1) —
    * `process.argv` returns +1 on ONE interned array (JS identity:
