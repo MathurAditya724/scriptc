@@ -6,7 +6,8 @@
  *
  *   load   ordinary object whose shape is entry 0's own-property shape:
  *          read entry `slot` inline unless it is an accessor; otherwise
- *          scr_js_load_probe (polymorphic, prototype hits, misses)
+ *          scr_js_get_probe (polymorphic, prototype hits, absent keys,
+ *          misses)
  *   store  ordinary object whose shape is entry 0's replace shape, outside
  *          an intact parse region, writable data entry: replace inline;
  *          otherwise scr_js_store_probe (adds, polymorphic, misses)
@@ -402,9 +403,10 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
   B.startBlock(object);
   inlineLoad(host, receiver.name, ic, INLINE_WAYS, INLINE_PROTO, (cell) => cell, hits, hit, probe);
   B.startBlock(probe);
-  host.declare(`declare ptr @scr_js_load_probe(ptr, ptr, ptr)`);
+  // The read's probe also answers keys the receiver's plain chain lacks.
+  host.declare(`declare ptr @scr_js_get_probe(ptr, ptr, ptr)`);
   const probed = B.tmp();
-  B.line(`${probed} = call ptr @scr_js_load_probe(ptr ${receiver.name}, ptr ${name}, ptr ${ic})`);
+  B.line(`${probed} = call ptr @scr_js_get_probe(ptr ${receiver.name}, ptr ${name}, ptr ${ic})`);
   const found = B.tmp();
   B.line(`${found} = icmp ne ptr ${probed}, null`);
   const probeEnd = B.currentLabel();

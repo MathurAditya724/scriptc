@@ -48,7 +48,7 @@ console.log(read(o), at(dyn([5, 6]), 1), call(o), o.n);
     expect(llvm).toMatch(
       /@sc_js_ic_0 = internal (thread_local )?global \[21 x i64\] zeroinitializer/,
     );
-    expect(body(llvm, "read")).toContain("@scr_js_load_probe(");
+    expect(body(llvm, "read")).toContain("@scr_js_get_probe(");
     expect(body(llvm, "write")).toContain("@scr_js_store_probe(");
     expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
     expect(body(llvm, "call")).toContain("@scr_js_load_probe(");
@@ -100,7 +100,7 @@ console.log(read(o), read(p), read(t), at(dyn([5, 6]), 1), at(p, "x"), at(t, "ta
     const mod = deserializeModule(await readFile(outPath, "utf8"));
     expect(validateModule(mod)).toEqual([]);
     const llvm = emitLlvmModule(mod);
-    expect(body(llvm, "read")).toContain("@scr_js_load_probe(");
+    expect(body(llvm, "read")).toContain("@scr_js_get_probe(");
     expect(body(llvm, "write")).toContain("@scr_js_store_probe(");
     expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
   } finally {
