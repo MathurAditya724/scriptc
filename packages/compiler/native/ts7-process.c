@@ -161,7 +161,7 @@ static wchar_t *command_line(wchar_t **arguments, size_t count) {
 }
 
 static int start_process(Ts7Process *p, char **args, size_t argc) {
-  wchar_t *wide[6] = {0};
+  wchar_t *wide[7] = {0};
   wchar_t *line = NULL;
   HANDLE child_input = NULL, child_output = NULL, child_error = NULL;
   LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
@@ -330,7 +330,7 @@ static void stop_process(Ts7Process *p) {
 uint32_t scriptc_ts7_open(const uint8_t *executable, size_t executable_size,
                          const uint8_t *cwd, size_t cwd_size,
                          const uint8_t *callbacks, size_t callbacks_size,
-                         uint8_t timing) {
+                         uint8_t timing, uint8_t libraries_from_disk) {
   if (next_id == 0) { error_text("server handle IDs are exhausted"); return 0; }
   char *exe = copy_argument(executable, executable_size, "");
   if (exe == NULL) return 0;
@@ -346,8 +346,12 @@ uint32_t scriptc_ts7_open(const uint8_t *executable, size_t executable_size,
     }
     exit_registered = 1;
   }
-  char *args[] = {exe, "--api", "--cwd", directory, callback_flag, timing ? "--timing" : NULL, NULL};
-  int started = start_process(p, args, timing ? 6 : 5);
+  char *args[8] = {exe, "--api", "--cwd", directory, callback_flag};
+  size_t argc = 5;
+  if (timing) args[argc++] = "--timing";
+  if (libraries_from_disk) args[argc++] = "--default-libraries-from-disk";
+  args[argc] = NULL;
+  int started = start_process(p, args, argc);
   free(exe); free(directory); free(callback_flag);
   if (!started) { free(p); return 0; }
   p->id = next_id++;
@@ -361,9 +365,10 @@ uint32_t scriptc_ts7_attach(const uint8_t *name, size_t name_size,
                            const uint8_t *executable, size_t executable_size,
                            const uint8_t *cwd, size_t cwd_size,
                            const uint8_t *callbacks, size_t callbacks_size,
-                           uint8_t timing, uint32_t idle_exit, uint32_t memory) {
+                           uint8_t timing, uint8_t libraries_from_disk, uint32_t idle_exit,
+                           uint32_t memory) {
   (void)name; (void)name_size; (void)executable; (void)executable_size; (void)cwd; (void)cwd_size;
-  (void)callbacks; (void)callbacks_size; (void)timing; (void)idle_exit; (void)memory;
+  (void)callbacks; (void)callbacks_size; (void)timing; (void)libraries_from_disk; (void)idle_exit; (void)memory;
   error_text("a shared checker server needs Unix sockets");
   return 0;
 }
@@ -455,7 +460,8 @@ uint32_t scriptc_ts7_attach(const uint8_t *name, size_t name_size,
                            const uint8_t *executable, size_t executable_size,
                            const uint8_t *cwd, size_t cwd_size,
                            const uint8_t *callbacks, size_t callbacks_size,
-                           uint8_t timing, uint32_t idle_exit, uint32_t memory) {
+                           uint8_t timing, uint8_t libraries_from_disk, uint32_t idle_exit,
+                           uint32_t memory) {
   if (next_id == 0) { error_text("server handle IDs are exhausted"); return 0; }
   char *server = copy_argument(name, name_size, "");
   if (server == NULL) return 0;
@@ -491,8 +497,11 @@ uint32_t scriptc_ts7_attach(const uint8_t *name, size_t name_size,
     (void)snprintf(limit, sizeof(limit), "TSC_TS_LISTEN_MEMORY=%lu", (unsigned long)memory);
     pid_t pid = -1;
     if (callback_flag != NULL) {
-      char *args[] = {exe, "--api", "--cwd", dir, callback_flag, "--listen", socket_path, "--idle-exit", idle,
-                      timing ? "--timing" : NULL, NULL};
+      char *args[12] = {exe, "--api", "--cwd", dir, callback_flag, "--listen", socket_path, "--idle-exit", idle};
+      size_t argc = 9;
+      if (timing) args[argc++] = "--timing";
+      if (libraries_from_disk) args[argc++] = "--default-libraries-from-disk";
+      args[argc] = NULL;
       pid = start_server(args, limit);
     }
     free(exe); free(dir); free(callback_flag);
