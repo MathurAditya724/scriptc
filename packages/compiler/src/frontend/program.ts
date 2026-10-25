@@ -145,6 +145,7 @@ import {
   type DeclProjection,
 } from "./decl-projection.js";
 import { configureTypePatches, packageSourceText } from "./type-patches/layer.js";
+import { resetDeclOriginVersions } from "./lowering/decl-origin.js";
 import { reportShapes } from "./shape-inference/index.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
@@ -1082,6 +1083,7 @@ export function loadProgram(
   // (chalk 6) compile from their own source.
   configurePackageShims(entryPath);
   resetDeclBoundaryOrigins();
+  resetDeclOriginVersions();
   // The project's type patches (type-patches/layer.ts), read by every host
   // this load creates; nothing at all without `scriptc.typePatches`.
   configureTypePatches(entryPath, (path, text, kind) => services.parse(path, text, kind));
