@@ -66,6 +66,16 @@ Test location follows scope:
 Keep existing tests in place unless a change already touches their organization;
 new tests should follow this convention.
 
+## Numbered registries
+
+Parallel changes must never pick the same number by hand. Each registry has one source of truth and a fast check:
+
+- Diagnostic codes: claim a code by adding its row, in numeric order, to `DIAGNOSTIC_CODES` in `packages/compiler/src/diagnostics/codes.ts` before any site uses it. A shipped construct's code moves to `RETIRED_DIAGNOSTIC_CODES` and is never reused; codes that open work already uses are held in `RESERVED_DIAGNOSTIC_CODES`. `codes.test.ts` fails on a code without a row, a retired code in use, an unused row, or rows out of order, and two claims of one code are a merge conflict or a duplicate key.
+- Dyn handle tags: add a new tag by name only to `SCR_DYNH_NEW_TAGS` in `packages/runtime/src/scr_dyn.h`, in name order; the enum numbers it. Pin a tag to an explicit value in `SCR_DYNH_TAGS` only when the LLVM backend needs its number. The header does not compile when two tags share a value, and `dyn-handle-tags.test.ts` names the problem.
+- Runtime enums and flag bits the backend mirrors (`ScrDynKind`, `ScrMessageKind`, `ScrBytesElem`, `SCR_CLOSURE_KIND_*`, the `%ScrArr` spare flags) are checked against their C declarations by `packages/compiler/src/backend/llvm/runtime-registries.test.ts`. A new mirrored enum or flag set gets a check there, and C code names flag bits instead of writing their values.
+
+Before taking a number in a pinned registry, run `node scripts/registry-claims.mjs`: it lists the diagnostic codes and pinned handle tags that open pull requests claim and reports collisions; `--check` reports only collisions with the current branch and exits 1 when there is one.
+
 ## Where things live
 
 - `packages/compiler` — the frontend (tsc API to IR), typed IR, validator, serializer, and LLVM backend.

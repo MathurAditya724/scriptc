@@ -32,6 +32,15 @@ export const SCR_ARR_STATES = 16;
 /** The `spare` flag of a frozen %ScrArr (SCR_ARR_FROZEN in scr_array.h). */
 export const SCR_ARR_FROZEN = 32;
 
+/** The bits of ScrClosure.function_kind (SCR_CLOSURE_KIND_* in
+ * scr_closure.h; runtime-registries.test.ts checks they agree). */
+export const CLOSURE_KIND = {
+  GENERATOR: 1,
+  ASYNC: 2,
+  OWN_PROTOTYPE: 4,
+  CHECKED_ADAPTER: 8,
+} as const;
+
 /** Loads the i32 `len` or `cap` of a %ScrArr at `ptr` into `dest` as a
  * size-type count. */
 export function loadArrCount(

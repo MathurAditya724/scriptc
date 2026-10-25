@@ -42,7 +42,13 @@ import {
 } from "./classes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
-import { f64Lit, ffiNativeTypeLl, ffiNativeParamLl, ffiNativeReturnLl } from "./common.js";
+import {
+  CLOSURE_KIND,
+  f64Lit,
+  ffiNativeTypeLl,
+  ffiNativeParamLl,
+  ffiNativeReturnLl,
+} from "./common.js";
 import { canStackUnion, emitStackUnion } from "./stack-unions.js";
 import { emitStackRecordKeyGet, scalarRecordKeyGet } from "./expr-records.js";
 import { emitCallArrayRead } from "./local-array-reads.js";
@@ -762,7 +768,9 @@ export function emitCallExpr(
       );
       const out = host.own({ name: c, type: e.type });
       const functionKind =
-        (target.generator ? 1 : 0) + (target.async ? 2 : 0) + (target.ownsPrototype ? 4 : 0);
+        (target.generator ? CLOSURE_KIND.GENERATOR : 0) +
+        (target.async ? CLOSURE_KIND.ASYNC : 0) +
+        (target.ownsPrototype ? CLOSURE_KIND.OWN_PROTOTYPE : 0);
       if (functionKind) {
         const kindPtr = B.tmp();
         B.line(`${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 4`);
