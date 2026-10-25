@@ -480,7 +480,12 @@ struct ScrDyn {
        * exits, and those clear it before release; reuse of a freed object
        * resets it (scr_dyn_alloc). */
       const char *class_name;
-      struct ScrDynRegion *region; /* see ScrDynRegion */
+      union {
+        struct ScrDynRegion *region; /* see ScrDynRegion */
+        /* While the node is pooled: the key bytes it keeps for reuse,
+         * counted in the pool's key budget (scr_dyn_obj_drop_keys). */
+        size_t cached_key_bytes;
+      };
       /* The dynamic tier's hidden class (scr_js_object.c): the transition
        * tree node naming this object's key sequence, or NULL while it has
        * none. Only programs with dynamic-tier code read or maintain it:

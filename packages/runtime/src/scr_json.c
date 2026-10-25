@@ -846,15 +846,21 @@ static SCR_TL size_t scr_dyn_cached_key_bytes;
 #define SCR_DYN_KEY_CACHE_LENGTH 64
 #endif
 
-static void scr_dyn_obj_drop_keys(ScrDyn *d, bool cache) {
+/* Returns the key bytes it kept for reuse, which it added to the budget;
+ * the pooled node records them (v.obj.cached_key_bytes) so its reuse takes
+ * them back without walking its slots. */
+static size_t scr_dyn_obj_drop_keys(ScrDyn *d, bool cache) {
+  size_t kept = 0;
   for (size_t i = 0; i < d->v.obj.cap; i++) {
     ScrDynEntry *entry = &d->v.obj.entries[i];
     if (!entry->key) continue;
 #ifndef SCR_RC_AUDIT
+    size_t bytes = sizeof(ScrDynKey) + entry->key_len + 1;
     if (cache && d->v.obj.cap <= SCR_DYN_KEY_CACHE_SLOTS &&
         entry->key_len <= SCR_DYN_KEY_CACHE_LENGTH &&
-        sizeof(ScrDynKey) + entry->key_len + 1 <= SCR_DYN_KEY_CACHE_MAX - scr_dyn_cached_key_bytes) {
-      scr_dyn_cached_key_bytes += sizeof(ScrDynKey) + entry->key_len + 1;
+        bytes <= SCR_DYN_KEY_CACHE_MAX - scr_dyn_cached_key_bytes) {
+      scr_dyn_cached_key_bytes += bytes;
+      kept += bytes;
       continue;
     }
 #else
@@ -864,6 +870,7 @@ static void scr_dyn_obj_drop_keys(ScrDyn *d, bool cache) {
     entry->key = NULL;
     entry->key_len = 0;
   }
+  return kept;
 }
 
 /* Primitive kinds cannot acquire properties or change kind while live, so
@@ -1054,15 +1061,11 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
       d->v.arr.region = NULL;
     } else if (kind == SCR_DYN_OBJ) {
       d->v.obj.len = 0; /* cap/entries preserved */
+      /* The kept keys leave the pool's budget with the node. */
+      scr_dyn_cached_key_bytes -= d->v.obj.cached_key_bytes;
       d->v.obj.region = NULL;
       d->v.obj.class_name = NULL; /* a released class prototype's name */
       SCR_JS_SHAPE_RESET(d);
-      if (d->v.obj.cap <= SCR_DYN_KEY_CACHE_SLOTS) {
-        for (size_t i = 0; i < d->v.obj.cap; i++) {
-          ScrDynEntry *entry = &d->v.obj.entries[i];
-          if (entry->key) scr_dyn_cached_key_bytes -= sizeof(ScrDynKey) + entry->key_len + 1;
-        }
-      }
       d->v.obj.source_identity = NULL;
       d->v.obj.source_access = NULL;
     } else if (kind != SCR_DYN_NUM && kind != SCR_DYN_STR) {
@@ -1128,6 +1131,12 @@ static inline void scr_dyn_weak_dispose(ScrDyn *d) {
   if (scr_weak_observing) scr_weak_disposed(d);
 }
 
+/* A disposed node's child: most getters, setters, prototypes and symbol
+ * tables are NULL, and the test costs less than the call. */
+static inline void scr_dyn_release_child(ScrDyn *child) {
+  if (child) scr_dyn_release(child);
+}
+
 static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 #ifndef SCR_RC_AUDIT
   /* A capsule with nothing but its referent and adapters: the common end
@@ -1149,9 +1158,9 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     d->v.obj.index = NULL;
   }
   if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) scr_dyn_region_leave(d);
-  if (!collected) scr_dyn_release(d->prototype);
-  if (!collected) scr_dyn_release(d->symbol_properties);
-  if (!collected) scr_dyn_release(d->symbol_keys);
+  if (!collected) scr_dyn_release_child(d->prototype);
+  if (!collected) scr_dyn_release_child(d->symbol_properties);
+  if (!collected) scr_dyn_release_child(d->symbol_keys);
   /* Pooled nodes keep all three NULL (scr_dyn_leaf_alloc relies on it). */
   d->prototype = d->symbol_properties = d->symbol_keys = NULL;
   switch (d->kind) {
@@ -1171,17 +1180,17 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     free(d->v.arr.presence);
     d->v.arr.presence = NULL;
     if (!collected) {
-      for (size_t i = 0; i < d->v.arr.len; i++) scr_dyn_release(d->v.arr.items[i]);
-      scr_dyn_release(d->v.arr.properties);
+      for (size_t i = 0; i < d->v.arr.len; i++) scr_dyn_release_child(d->v.arr.items[i]);
+      scr_dyn_release_child(d->v.arr.properties);
     }
     break;
   case SCR_DYN_OBJ:
     for (size_t i = 0; i < d->v.obj.len; i++) {
       ScrDyn *value = d->v.obj.entries[i].value;
-      if (!collected || !d->v.obj.entries[i].value_traced) scr_dyn_release(value);
+      if (!collected || !d->v.obj.entries[i].value_traced) scr_dyn_release_child(value);
       if (!collected) {
-        scr_dyn_release(d->v.obj.entries[i].getter);
-        scr_dyn_release(d->v.obj.entries[i].setter);
+        scr_dyn_release_child(d->v.obj.entries[i].getter);
+        scr_dyn_release_child(d->v.obj.entries[i].setter);
       }
       d->v.obj.entries[i].value = NULL;
       d->v.obj.entries[i].getter = NULL;
@@ -1207,7 +1216,7 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 
   case SCR_DYN_TYPED_REF:
     scr_typed_ref_forget(d);
-    if (!collected) scr_dyn_release(d->v.typed_ref.materialized);
+    if (!collected) scr_dyn_release_child(d->v.typed_ref.materialized);
     while (d->v.typed_ref.casts) {
       ScrDynTypedCast *cast = d->v.typed_ref.casts;
       d->v.typed_ref.casts = cast->next;
@@ -1218,8 +1227,8 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     break;
   case SCR_DYN_PROXY:
     if (!collected) {
-      scr_dyn_release(d->v.proxy.target);
-      scr_dyn_release(d->v.proxy.handler);
+      scr_dyn_release_child(d->v.proxy.target);
+      scr_dyn_release_child(d->v.proxy.handler);
     }
     break;
   default:
@@ -1230,7 +1239,7 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 #endif
 #ifndef SCR_RC_AUDIT
   if (!collected && scr_dyn_free_count < SCR_DYN_FREE_MAX) {
-    if (d->kind == SCR_DYN_OBJ) scr_dyn_obj_drop_keys(d, true);
+    if (d->kind == SCR_DYN_OBJ) d->v.obj.cached_key_bytes = scr_dyn_obj_drop_keys(d, true);
     /* Pooled blocks retain their headers and count toward the bounded
      * allocated heap, but never remain in a candidate buffer. */
     scr_dyn_weak_dispose(d);
