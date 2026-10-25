@@ -30,6 +30,7 @@ import * as ts from "../ts7/adapter.js";
 import type { Atom } from "./domain.js";
 import type { ShapeAnalysis } from "./analyze.js";
 import { computeConstantGraphs } from "./constant-graphs.js";
+import { resolveCjsRuntime } from "../cjs-resolve.js";
 
 type Node = ts.Node;
 
@@ -350,6 +351,32 @@ export function planStaticObjectRewrites(
       return undefined;
     }
   };
+  const readOps = new Map<Node, (typeof analysis.ops)[number]>();
+  for (const op of analysis.ops) if (op.kind === "read") readOps.set(op.node, op);
+  /** Whether evaluating `e` runs no code, so a rewrite that no longer
+   * evaluates it changes nothing: a name, `this`, or a member read whose
+   * receiver is such an expression and can only be constant objects (they
+   * have no accessors). A call, an assignment or any other expression may
+   * have effects. */
+  const effectFree = (e: ts.Expression): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isIdentifier(e) || e.kind === ts.SyntaxKind.ThisKeyword) return true;
+    let receiver: ts.Expression;
+    if (ts.isPropertyAccessExpression(e) && e.questionDotToken === undefined)
+      receiver = e.expression;
+    else if (
+      ts.isElementAccessExpression(e) &&
+      e.questionDotToken === undefined &&
+      ts.isStringLiteralLike(e.argumentExpression)
+    )
+      receiver = e.expression;
+    else return false;
+    const op = readOps.get(e);
+    if (op === undefined) return false;
+    const atoms = analysis.nodes[op.recv]!.atoms;
+    if (atoms.size === 0 || ![...atoms].every((a) => constantAtoms.has(a))) return false;
+    return effectFree(receiver);
+  };
   /** Whether an expression may evaluate to one of `atoms` (identifiers
    * through their declarations' values, `new` of a known constructor path;
    * anything else may). */
@@ -518,12 +545,15 @@ export function planStaticObjectRewrites(
     classes++;
   }
 
+  // The statement each hoisted class is declared at (before it).
+  const classStatements = new Map<string, ts.Statement>();
   for (const plan of classPlans) {
     const base = `__ns_${plan.site.lhs.getText().replace(/[^\w$]/g, "_")}`;
     let name = base;
     for (let i = 1; used.has(name); i++) name = `${base}_${i}`;
     used.add(name);
     hoisted.set(plan.fnAtom, name);
+    classStatements.set(name, plan.site.stmt);
   }
   const callEdits: { sf: ts.SourceFile; edit: Edit }[] = [];
   const hoists: {
@@ -608,6 +638,22 @@ export function planStaticObjectRewrites(
     exportLiterals.set(sf, found);
     return found;
   };
+  const filesByName = new Map<string, ts.SourceFile>();
+  for (const f of analysis.files) filesByName.set(f.fileName, f);
+  /** The program file `require(lit)` in `sf` loads: the checker's module,
+   * else the file Node's resolver finds (the checker resolves only some
+   * require forms), or null. */
+  const requireTarget = (sf: ts.SourceFile, lit: ts.StringLiteral): ts.SourceFile | null => {
+    let target: Node | undefined;
+    try {
+      target = checker.getSymbolAtLocation(lit)?.declarations[0];
+    } catch {
+      target = undefined;
+    }
+    if (target !== undefined && ts.isSourceFile(target)) return target;
+    const resolved = resolveCjsRuntime(sf.fileName, lit.text);
+    return resolved.ok ? (filesByName.get(resolved.value) ?? null) : null;
+  };
   const requiredFiles = (sf: ts.SourceFile, node: Node): ts.SourceFile[] => {
     const out: ts.SourceFile[] = [];
     const visit = (n: Node): void => {
@@ -618,19 +664,65 @@ export function planStaticObjectRewrites(
         n.arguments.nodes.length === 1 &&
         ts.isStringLiteral(n.arguments.nodes[0]!)
       ) {
-        let target: Node | undefined;
-        try {
-          target = checker.getSymbolAtLocation(n.arguments.nodes[0]!)?.declarations[0];
-        } catch {
-          target = undefined;
-        }
-        if (target !== undefined && ts.isSourceFile(target)) out.push(target);
+        const target = requireTarget(sf, n.arguments.nodes[0] as ts.StringLiteral);
+        if (target !== null) out.push(target);
       }
       ts.forEachChild(n, visit);
     };
     visit(node);
-    void sf;
     return out;
+  };
+  /** The files `sf` requires, directly or through the files they require. */
+  const requireClosures = new Map<ts.SourceFile, Set<ts.SourceFile>>();
+  const requiredClosure = (sf: ts.SourceFile): Set<ts.SourceFile> => {
+    let seen = requireClosures.get(sf);
+    if (seen !== undefined) return seen;
+    seen = new Set();
+    const work = [sf];
+    while (work.length > 0) {
+      const f = work.pop()!;
+      for (const t of requiredFiles(f, f))
+        if (!seen.has(t)) {
+          seen.add(t);
+          work.push(t);
+        }
+    }
+    requireClosures.set(sf, seen);
+    return seen;
+  };
+  /** Whether a top-level statement requires `target` each time it runs:
+   * the statement is `require(…)`, an assignment of it, or declarations
+   * one of which it initializes, optionally followed by member reads. A
+   * require inside a function, a condition or another expression runs only
+   * when that does. */
+  const requiresWhenRun = (sf: ts.SourceFile, st: ts.Statement, target: ts.SourceFile): boolean => {
+    const values: ts.Expression[] = [];
+    if (ts.isVariableStatement(st)) {
+      for (const d of st.declarationList.declarations.nodes)
+        if (d.initializer !== undefined) values.push(d.initializer);
+    } else if (ts.isExpressionStatement(st)) {
+      const e = st.expression;
+      values.push(
+        ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          ? e.right
+          : e,
+      );
+    }
+    return values.some((v) => {
+      let e = v;
+      for (;;) {
+        if (ts.isParenthesizedExpression(e)) e = e.expression;
+        else if (ts.isPropertyAccessExpression(e) && e.questionDotToken === undefined)
+          e = e.expression;
+        else break;
+      }
+      return (
+        ts.isCallExpression(e) &&
+        ts.isIdentifier(e.expression) &&
+        e.expression.text === "require" &&
+        requiredFiles(sf, e).includes(target)
+      );
+    });
   };
   const moduleBindings = new Map<string, string>();
   const exportAdds = new Map<ts.SourceFile, Set<string>>();
@@ -642,10 +734,20 @@ export function planStaticObjectRewrites(
     if (process.env["SCRIPTC_SHAPE_CROSS_FILE_REFS"] === "0") return null;
     const sf = node.getSourceFile();
     if (!fileSet.has(sf) || exportLiteralOf(defining) === null) return null;
-    if (requiredFiles(defining, defining).includes(sf)) return null;
-    // The reading file's top-level statement that requires the module.
+    // A cycle back to the reading file, directly or through other files,
+    // could run the reading file's code before the module finished.
+    if (requiredClosure(defining).has(sf)) return null;
+    // A class is declared at its constructor's statement: an exports
+    // literal before it would read the class before its declaration.
+    const classStmt = classStatements.get(name);
+    if (classStmt !== undefined) {
+      const ds = defining.statements.nodes;
+      const exportsAt = ds.indexOf(topStatement(exportLiteralOf(defining)!)!);
+      if (exportsAt < ds.indexOf(classStmt)) return null;
+    }
+    // The reading file's top-level statement that loads the module.
     const stmts = sf.statements.nodes;
-    const at = stmts.findIndex((st) => requiredFiles(sf, st).includes(defining));
+    const at = stmts.findIndex((st) => requiresWhenRun(sf, st, defining));
     if (at < 0) return null;
     const top = topStatement(node)!;
     const inFunction = ((): boolean => {
@@ -704,6 +806,12 @@ export function planStaticObjectRewrites(
     if (parent === undefined || ts.isDeleteExpression(parent)) continue;
     if (!ts.isPropertyAccessExpression(node)) continue;
     if (topStatement(node) === null) continue;
+    // The reference replaces the whole member expression: its receiver
+    // must be one that evaluating runs no code.
+    if (!effectFree(node.expression)) {
+      kept.push(`reference ${node.getText()}: the receiver may have effects`);
+      continue;
+    }
     if (node.getSourceFile() !== field.values[0]!.node!.getSourceFile()) {
       const text = crossFileReference(node, field.values[0]!.node!.getSourceFile(), name);
       if (text === null) continue;
@@ -742,6 +850,10 @@ export function planStaticObjectRewrites(
     const node = op.node;
     if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) continue;
     if (!isPlainRead(node) || topStatement(node) === null) continue;
+    if (!effectFree(node.expression)) {
+      kept.push(`constant read ${node.getText()}: the receiver may have effects`);
+      continue;
+    }
     callEdits.push({
       sf: node.getSourceFile(),
       edit: { start: ts.tokenStartOfNode(node), end: node.end, text: `(${literal})` },
@@ -791,6 +903,11 @@ export function planStaticObjectRewrites(
     const o = constantAtoms.get([...atoms][0]!);
     if (o === undefined || o.fields.length === 0 || o.fields.length > MAX_TABLE_ARMS) {
       kept.push(`${where}: not a constant object of at most ${MAX_TABLE_ARMS} members`);
+      continue;
+    }
+    // The arms call a member without evaluating the table expression.
+    if (!effectFree(node.expression)) {
+      kept.push(`${where}: the table expression may have effects`);
       continue;
     }
     const key = node.argumentExpression;
