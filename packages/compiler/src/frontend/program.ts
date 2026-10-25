@@ -1291,10 +1291,9 @@ export function loadProgram(
  * packages whose declarations the boundary projects from. */
 function declBoundaryUserFiles(program: ts.Program, packages: readonly string[]): string[] {
   const out: string[] = [];
-  for (const sf of program.getSourceFiles()) {
+  for (const sf of program.getImplementationSourceFiles()) {
     const name = sf.fileName.split("\\").join("/");
-    if (sf.isDeclarationFile || name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name))
-      continue;
+    if (name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name)) continue;
     if (name.endsWith(".tsx")) continue; // JSX files: not projected yet
     const text = sf.text;
     if (
