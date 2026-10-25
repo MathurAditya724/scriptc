@@ -2139,7 +2139,9 @@ function declareAliasScopes(emitter: LlEmitter, scopes: readonly string[]): void
  * fast copy is only emitted when every resume point exists. */
 /** A typed-array loop version: the guard, then the checked copy, which
  * runs whenever the guard fails, and the copy whose accesses the guard
- * proves in bounds (or thread-owned). */
+ * proves in bounds (or thread-owned). In worker programs a version that
+ * proves both also has a copy for views with shared storage, in bounds but
+ * not owned. */
 function emitVersionedLoop(
   emitter: LlEmitter,
   s: IrStmt & { kind: "for" | "while" },
@@ -2151,7 +2153,11 @@ function emitVersionedLoop(
     done = B.newLabel("bytes.version.done");
   const unitsFast =
     version.unitsReceiver !== null ? B.newLabel("bytes.version.fast.units") : undefined;
-  const guard = emitBytesLoopVersionGuard(emitter, version, fast, slow, unitsFast);
+  const sharedFast =
+    version.sharedCopy && unitsFast === undefined
+      ? B.newLabel("bytes.version.fast.shared")
+      : undefined;
+  const guard = emitBytesLoopVersionGuard(emitter, version, fast, slow, unitsFast, sharedFast);
   const units = guard?.units ?? null;
   const originalBounds = emitter.bytesBounds,
     originalOwned = emitter.bytesOwned,
@@ -2190,6 +2196,16 @@ function emitVersionedLoop(
       ]);
     emitter.emitStmt(s);
     B.br(done);
+    if (sharedFast !== undefined) {
+      // The bounds hold and a view has shared storage: the accesses skip
+      // their bounds checks and stay shared-safe, without alias scopes
+      // (which worker programs give only thread-owned views).
+      B.startBlock(sharedFast);
+      emitter.bytesOwned = originalOwned;
+      emitter.bytesAliasScopes = originalScopes;
+      emitter.emitStmt(s);
+      B.br(done);
+    }
     if (unitsFast !== undefined && units !== null) {
       // The string reads take the receiver's UTF-16 units.
       B.startBlock(unitsFast);
