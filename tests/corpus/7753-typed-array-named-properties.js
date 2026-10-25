@@ -27,6 +27,23 @@ function expandos(TA) {
   const got = [];
   Object.defineProperty(a, "1", { get value() { got.push("value"); return 6; }, get enumerable() { got.push("enumerable"); return true; } });
   console.log(a[1], got);
+  // Each field is read once, through its getter; the stored value is the
+  // getter's result, and a getter-produced `writable: false` is refused.
+  let valueReads = 0;
+  Object.defineProperty(a, "1", { get value() { valueReads++; return 40 + valueReads; } });
+  console.log(a[1], valueReads);
+  const order = [];
+  try {
+    Object.defineProperty(a, "1", {
+      get writable() { order.push("writable"); return false; },
+      get value() { order.push("value"); return 2; },
+      get configurable() { order.push("configurable"); return true; },
+    });
+  } catch (e) { console.log(e.constructor.name, e.message); }
+  console.log(a[1], order);
+  for (const bad of [null, true, 1n, Symbol("d")]) {
+    try { Object.defineProperty(a, "1", bad); } catch (e) { console.log(e.constructor.name); }
+  }
   for (const bad of [5, "x", undefined]) {
     try { Object.defineProperty(a, "0", bad); } catch (e) { console.log(e.constructor.name); }
   }
