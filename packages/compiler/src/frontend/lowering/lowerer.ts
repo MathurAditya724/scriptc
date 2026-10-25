@@ -10617,8 +10617,8 @@ export class Lowerer {
     return unionRetagHelper(this, fromId, toId, loc, trappable);
   }
 
-  narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc): string | null {
-    return narrowedArmHelper(this, fromId, target, loc);
+  narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {
+    return narrowedArmHelper(this, fromId, target, loc, message);
   }
 
   checkedNarrowCall(helper: string, value: IrExpr, type: IrType, loc: SrcLoc): IrExpr {

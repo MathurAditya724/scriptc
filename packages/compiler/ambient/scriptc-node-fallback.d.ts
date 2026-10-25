@@ -2914,6 +2914,8 @@ declare module "crypto" {
   export interface AsymmetricKeyExportOptions<T extends KeyFormat> {
     type: "pkcs1" | "spki" | "pkcs8" | "sec1";
     format: T;
+    cipher?: string | undefined;
+    passphrase?: string | Buffer | undefined;
   }
   export interface AsymmetricKeyDetails {
     modulusLength?: number;
@@ -2938,6 +2940,7 @@ declare module "crypto" {
     format?: "pem" | "der" | undefined;
     type?: "pkcs1" | "pkcs8" | "sec1" | undefined;
     encoding?: string | undefined;
+    passphrase?: string | Buffer | undefined;
   }
   export interface PublicKeyInput {
     key: string | Buffer;
@@ -2974,12 +2977,22 @@ declare module "crypto" {
     modulusLength: number;
     publicExponent?: number | undefined;
     publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs1" | "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export interface ECKeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     namedCurve: string;
     publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
-    privateKeyEncoding: { type: "sec1" | "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "sec1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "rsa",
@@ -3007,7 +3020,12 @@ declare module "crypto" {
   ): KeyPairKeyObjectResult;
   export interface ED25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     publicKeyEncoding: { type: "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "ed25519",
@@ -3020,7 +3038,12 @@ declare module "crypto" {
   export function generateKeyPairSync(type: "ed25519", options?: {}): KeyPairKeyObjectResult;
   export interface X25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     publicKeyEncoding: { type: "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "x25519",
@@ -5322,10 +5345,10 @@ declare module "node:zlib" {
  * with the real port discoverable as address().port (the composed read
  * is the lowered form — bare address() has no lowering); close([cb])
  * firing once connections drain; socket write/end/destroy/pipe and the
- * data/end/close/error/connect events (on and once — listeners take at
- * most the declared parameter). write/end return void here (Node returns
- * the backpressure boolean / the socket); on/once return void (chaining
- * is fenced). connect's host is a numeric IP or "localhost" (pinned to
+ * data/end/close/error/connect/drain events (on and once — listeners
+ * take at most the declared parameter). write returns Node's
+ * backpressure boolean; end returns void here (Node returns the socket);
+ * on/once return void (chaining is fenced). connect's host is a numeric IP or "localhost" (pinned to
  * 127.0.0.1 — SEMANTICS.md); every failure is the async 'error' event,
  * and an 'error' with no listener exits 1 like an unhandled EventEmitter
  * 'error'. */
@@ -5357,7 +5380,13 @@ declare module "net" {
     readonly bytesWritten: number;
     /* write's callback runs once the data is flushed, with null; end's
      * once the socket finishes. */
-    write(data: string | Uint8Array, callback?: (err?: Error | null) => void): void;
+    /* false when the bytes this write left unsent reach the 65536-byte
+     * high-water mark, as in Node; 'drain' fires when they are all sent. */
+    write(data: string | Uint8Array, callback?: (err?: Error | null) => void): boolean;
+    /* the bytes written and not yet sent */
+    readonly writableLength: number;
+    /* a write answered false and 'drain' has not fired yet */
+    readonly writableNeedDrain: boolean;
     end(callback?: () => void): void;
     end(data: string | Uint8Array, callback?: () => void): void;
     destroy(): void;
@@ -5405,6 +5434,7 @@ declare module "net" {
         | "connect"
         | "ready"
         | "timeout"
+        | "drain"
         | "readable"
         | "finish"
         | "secureConnect"
@@ -5429,6 +5459,7 @@ declare module "net" {
         | "connect"
         | "ready"
         | "timeout"
+        | "drain"
         | "readable"
         | "finish"
         | "secureConnect"
@@ -5452,6 +5483,7 @@ declare module "net" {
         | "connect"
         | "ready"
         | "timeout"
+        | "drain"
         | "readable"
         | "finish"
         | "secureConnect"

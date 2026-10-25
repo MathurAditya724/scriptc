@@ -66,7 +66,7 @@ import {
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
-import { LIB_FN_SIGS, pipelinePumpedRuns } from "./builtin-signatures.js";
+import { libFnSignatures, pipelinePumpedRuns } from "./builtin-signatures.js";
 import { ALWAYS_THROW_LIB_FNS } from "./builtin-effects.js";
 
 /** The promisified crypto calls' value kinds besides checked-dynamic. */
@@ -4110,7 +4110,7 @@ function validateFunction(
     }
     if (e.fn === "worker.new" && !workers)
       errors.push({ message: "Worker construction requires worker execution mode", loc: e.loc });
-    const sig = LIB_FN_SIGS[e.fn];
+    const sig = libFnSignatures()[e.fn];
     if (!sig) {
       err(`libCall of unknown library function "${e.fn as string}"`, e.loc);
       return;

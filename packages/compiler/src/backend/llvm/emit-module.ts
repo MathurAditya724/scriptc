@@ -134,6 +134,7 @@ function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] |
       let code = 1;
       try {
         emitter.journal = new EmitJournal();
+        emitter.debug?.record();
         const texts: string[] = [];
         for (const fn of functions.slice(range * size, (range + 1) * size)) {
           texts.push(emitter.emitFunction(fn));
@@ -230,13 +231,10 @@ const PARTITION_GROUP_END = "; scriptc-group";
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
-  // Debug metadata is numbered per emitter and not journaled, so a debug
-  // build emits every body here.
-  const ranges = emitter.debug === null;
   const chunks = emitter.targetOptions.functionChunks ?? 1;
   const fnDefs =
-    (ranges && chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
-    (ranges ? emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) : null) ??
+    (chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
+    emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) ??
     [];
   if (fnDefs.length === 0)
     for (const fn of emitter.mod.functions) {

@@ -30,6 +30,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `record-boundaries` | cpu | records built from unchecked array reads passed to and returned from annotated functions |
 | `records-sort` | cpu | comparator sorts, group-by, `reduce`/`filter` |
 | `regex-logs` | cpu | regex `exec` with groups, `test`, global `replace` |
+| `regex-replacers` | cpu | regex `replace`/`replaceAll` with inline callbacks whose parameters have no annotations: dictionary placeholders, snake_case to camelCase, date reordering, optional captures, capitalization, and a string search that reads the offset |
 | `region-builds` | cpu | a watch-mode build loop over `LifetimeRegion`: each build binds a program in a new region and releases the previous one, which a cache keeps referenced for two builds |
 | `template-render` | cpu | template literals, escaping, `map`/`join` |
 | `throw-chains` | cpu | exceptions caught 2, 5 and 20 recursive calls above the throw, through direct calls and through a callback, and a backtracking parser that throws on a failed alternative |

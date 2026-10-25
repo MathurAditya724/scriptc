@@ -1165,8 +1165,20 @@ static bool scr_dyn_to_primitive_result_is_object(const ScrDyn *d);
  * are never the native records the kept-source table is keyed by. */
 static SCR_TL bool scr_weak_observing;
 static void scr_weak_disposed(void *key);
+/* One bit per key address, set when a key enters the weak-key table: a
+ * disposed object whose bit is clear was never a key, so its disposal makes
+ * no call. Bits are cleared when the table empties. */
+#define SCR_WEAK_KEY_FILTER_BITS ((size_t)1 << 16)
+static SCR_TL uint64_t scr_weak_key_filter[SCR_WEAK_KEY_FILTER_BITS / 64];
+static inline size_t scr_weak_key_filter_bit(const void *key) {
+  return ((uintptr_t)key >> 4) & (SCR_WEAK_KEY_FILTER_BITS - 1);
+}
+static inline bool scr_weak_maybe_key(const void *key) {
+  size_t bit = scr_weak_key_filter_bit(key);
+  return scr_weak_observing && (scr_weak_key_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)));
+}
 static inline void scr_dyn_weak_dispose(ScrDyn *d) {
-  if (scr_weak_observing) scr_weak_disposed(d);
+  if (scr_weak_maybe_key(d)) scr_weak_disposed(d);
 }
 
 /* A disposed node's child: most getters, setters, prototypes and symbol
@@ -3479,7 +3491,7 @@ static void scr_record_source_disposed(void *rec) {
 /* The single native dispose hook serves weak collections and the table
  * above; each observer runs only while it has entries to forget. */
 static void scr_dispose_observers(void *object) {
-  if (scr_weak_observing) scr_weak_disposed(object);
+  if (scr_weak_maybe_key(object)) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
 }
 
@@ -17413,6 +17425,8 @@ static ScrWeakKeySlot *scr_weak_key_slot_put(void *key) {
     scr_weak_keys[j].key = key;
     scr_weak_keys[j].head = NULL;
     scr_weak_keys_used++;
+    size_t bit = scr_weak_key_filter_bit(key);
+    scr_weak_key_filter[bit >> 6] |= UINT64_C(1) << (bit & 63);
   }
   return &scr_weak_keys[j];
 }
@@ -17422,6 +17436,7 @@ static void scr_weak_key_slot_delete(ScrWeakKeySlot *slot) {
   if (--scr_weak_keys_used == 0) {
     free(scr_weak_keys);
     scr_weak_keys = NULL;
+    memset(scr_weak_key_filter, 0, sizeof scr_weak_key_filter);
     return;
   }
   for (size_t k = i;;) {

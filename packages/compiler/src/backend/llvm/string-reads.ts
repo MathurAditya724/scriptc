@@ -25,9 +25,11 @@ import { literalCapWord, literalCapWord32 } from "./string-key-hash.js";
 export const STRING_UTF16_LEN_DECL = "declare double @scr_str_utf16_len(ptr)";
 export const STRING_CHAR_CODE_AT_DECL = "declare double @scr_str_char_code_at(ptr, double)";
 /** Converts a string to UTF-16 units and publishes it as the scan receiver
- * (bytes-loop-versions.ts). Like the fallbacks below, it can evict an
- * index entry, so it carries no memory restriction. */
-export const STRING_SCAN_UNITS_DECL = "declare void @scr_str_scan_units(ptr)";
+ * when the loop about to read it can read enough of it (the other two
+ * operands are the range of indexes it reads; bytes-loop-versions.ts).
+ * Like the fallbacks below, it can evict an index entry, so it carries no
+ * memory restriction. */
+export const STRING_SCAN_UNITS_DECL = "declare void @scr_str_scan_units_for(ptr, double, double)";
 /** The runtime fallbacks are cold: both common cases read inline. They
  * carry no
  * memory restriction: a fallback can evict an index entry, which resets

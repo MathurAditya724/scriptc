@@ -1337,6 +1337,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "net.sockResetAndDestroy": "scr_net_sock_reset_and_destroy",
   "net.sockAddress": "scr_net_sock_address",
   "net.sockBytesWritten": "scr_net_sock_bytes_written",
+  "net.sockWritableLength": "scr_net_sock_writable_length",
+  "net.sockWritableNeedDrain": "scr_net_sock_writable_need_drain",
   "net.sockAddrField": "scr_net_sock_addr_field",
   "net.sockBytesRead": "scr_net_sock_bytes_read",
   "net.sockConnecting": "scr_net_sock_connecting",

@@ -91,6 +91,7 @@ import {
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
+import { loopAccessesTypedArrays } from "../loop-polls.js";
 
 /** A callback loop version copies the loop; keep the copies small. */
 const MAX_CALLBACK_VERSION_COST = 400;
@@ -1211,9 +1212,68 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.line(`store ptr ${fresh}, ptr ${slot}`);
         }
       };
-      const workerBudget = emitter.workerLoopBudget(s);
+      // A counted loop over typed arrays, or a loop to a typed array's
+      // length, polls between blocks of WORKER_POLL_BLOCK iterations instead
+      // of counting a budget in its body: the inner loop over a block then
+      // has no exit besides its own bound, which LLVM can vectorize. A typed
+      // array's length is fixed, so each block can take it as its limit when
+      // the loop does not assign the array's binding.
+      const stripMined =
+        capturedLets.length === 0 &&
+        integerSlot !== null &&
+        ((countedLoop !== null &&
+          countedLimit !== null &&
+          Math.abs(countedLoop.step) * WORKER_POLL_BLOCK <= 2 ** 52) ||
+          (integerLoop !== null && integerArrayLoop === null && integerLoop.stableReceiver)) &&
+        emitter.workerLoopPolls(s) &&
+        loopAccessesTypedArrays(s);
+      const workerBudget = stripMined ? null : emitter.workerLoopBudget(s);
+      // One slot for every copy of the loop: a speculative copy resumes an
+      // iteration in another copy's body, which then reads this bound.
+      let blockBound: string | null = null;
+      if (stripMined) {
+        blockBound = B.slot();
+        B.entryAllocas.push(
+          `${blockBound} = alloca ${countedLoop ? "i64" : emitter.sizeType} ; cancellation poll block bound`,
+        );
+      }
       freshenBindings();
       emitter.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
+        if (stripMined) {
+          const counter: StripMinedCounter = countedLoop
+            ? {
+                slot: integerSlot!,
+                type: "i64",
+                signed: true,
+                step: countedLoop.step,
+                followers: countedLoop.followers.map((f, i) => ({
+                  slot: followerSlots[i]!,
+                  step: f.step,
+                })),
+                limit: () => countedLimit!,
+              }
+            : {
+                slot: integerSlot!,
+                type: emitter.sizeType,
+                signed: false,
+                step: 1,
+                followers: [],
+                limit: () => {
+                  const receiver = emitter.emitStableReceiver(integerLoop!.limitReceiver, []);
+                  const lenPtr = B.tmp();
+                  const len = B.tmp();
+                  B.line(
+                    `${lenPtr} = getelementptr inbounds %ScrBytes, ptr ${receiver.name}, i64 0, i32 1`,
+                  );
+                  B.line(
+                    `${len} = load ${emitter.sizeType}, ptr ${lenPtr}${bytesHeaderAlias(emitter)}`,
+                  );
+                  return len;
+                },
+              };
+          emitStripMinedCountedLoop(emitter, s, counter, blockBound!, exit);
+          return;
+        }
         const lc = B.newLabel("loop.c");
         const lb = B.newLabel("loop.b");
         const lu =
@@ -2139,7 +2199,9 @@ function declareAliasScopes(emitter: LlEmitter, scopes: readonly string[]): void
  * fast copy is only emitted when every resume point exists. */
 /** A typed-array loop version: the guard, then the checked copy, which
  * runs whenever the guard fails, and the copy whose accesses the guard
- * proves in bounds (or thread-owned). */
+ * proves in bounds (or thread-owned). In worker programs a version that
+ * proves both also has a copy for views with shared storage, in bounds but
+ * not owned. */
 function emitVersionedLoop(
   emitter: LlEmitter,
   s: IrStmt & { kind: "for" | "while" },
@@ -2151,7 +2213,11 @@ function emitVersionedLoop(
     done = B.newLabel("bytes.version.done");
   const unitsFast =
     version.unitsReceiver !== null ? B.newLabel("bytes.version.fast.units") : undefined;
-  const guard = emitBytesLoopVersionGuard(emitter, version, fast, slow, unitsFast);
+  const sharedFast =
+    version.sharedCopy && unitsFast === undefined
+      ? B.newLabel("bytes.version.fast.shared")
+      : undefined;
+  const guard = emitBytesLoopVersionGuard(emitter, version, fast, slow, unitsFast, sharedFast);
   const units = guard?.units ?? null;
   const originalBounds = emitter.bytesBounds,
     originalOwned = emitter.bytesOwned,
@@ -2190,6 +2256,16 @@ function emitVersionedLoop(
       ]);
     emitter.emitStmt(s);
     B.br(done);
+    if (sharedFast !== undefined) {
+      // The bounds hold and a view has shared storage: the accesses skip
+      // their bounds checks and stay shared-safe, without alias scopes
+      // (which worker programs give only thread-owned views).
+      B.startBlock(sharedFast);
+      emitter.bytesOwned = originalOwned;
+      emitter.bytesAliasScopes = originalScopes;
+      emitter.emitStmt(s);
+      B.br(done);
+    }
     if (unitsFast !== undefined && units !== null) {
       // The string reads take the receiver's UTF-16 units.
       B.startBlock(unitsFast);
@@ -2549,6 +2625,102 @@ function emitInt32KindLoop(
 
 /** At the top of a loop copy's header: lets a speculative loop find its
  * ordinary copy's header, and keeps its third copy out of the loop. */
+/** Iterations between cancellation polls of a strip-mined counted loop. */
+const WORKER_POLL_BLOCK = 64;
+
+/** The counter of a strip-mined loop: its slot, the LLVM integer type and
+ * signedness of its values, its step, the counters stepped beside it, and
+ * the limit, emitted in the outer header before each block. */
+interface StripMinedCounter {
+  slot: string;
+  type: string;
+  signed: boolean;
+  step: number;
+  followers: { slot: string; step: number }[];
+  limit: () => string;
+}
+
+/** A counted `for` loop of a worker program as blocks of WORKER_POLL_BLOCK
+ * iterations, with the cancellation poll between blocks: the outer header
+ * tests the counter against the loop's limit, each block runs the body up
+ * to the nearer of the limit and WORKER_POLL_BLOCK steps on, and the poll
+ * follows the block. It polls as often as the budget it replaces, and the
+ * inner loop's only exit besides `break` and `return` is its bound. */
+function emitStripMinedCountedLoop(
+  emitter: LlEmitter,
+  s: Extract<IrStmt, { kind: "for" }>,
+  counter: StripMinedCounter,
+  boundSlot: string,
+  exit: string,
+): void {
+  const B = emitter.B;
+  const { slot, type, signed, step } = counter;
+  const ascending = step > 0;
+  const compare = !signed ? "ult" : ascending ? "slt" : "sgt";
+  const saturating = `llvm.${signed ? "sadd" : "uadd"}.sat.${type}`;
+  const nearer = `llvm.${!signed ? "umin" : ascending ? "smin" : "smax"}.${type}`;
+  const wrap = signed ? "nsw" : "nuw";
+  const lc = B.newLabel("loop.c");
+  const block = B.newLabel("loop.block");
+  const bc = B.newLabel("loop.bc");
+  const lb = B.newLabel("loop.b");
+  const lu = B.newLabel("loop.u");
+  const poll = B.newLabel("loop.poll");
+  emitter.declare(`declare ${type} @${saturating}(${type}, ${type})`);
+  emitter.declare(`declare ${type} @${nearer}(${type}, ${type})`);
+  B.br(lc);
+  B.startBlock(lc);
+  enterLoopHeader(emitter, lc);
+  const start = B.tmp();
+  const open = B.tmp();
+  B.line(`${start} = load ${type}, ptr ${slot}`);
+  const limit = counter.limit();
+  B.line(`${open} = icmp ${compare} ${type} ${start}, ${limit}`);
+  B.condBr(open, block, exit);
+  B.startBlock(block);
+  const stepped = B.tmp();
+  const bound = B.tmp();
+  B.line(
+    `${stepped} = call ${type} @${saturating}(${type} ${start}, ${type} ${step * WORKER_POLL_BLOCK})`,
+  );
+  B.line(`${bound} = call ${type} @${nearer}(${type} ${stepped}, ${type} ${limit})`);
+  B.line(`store ${type} ${bound}, ptr ${boundSlot}`);
+  B.br(bc);
+  B.startBlock(bc);
+  const index = B.tmp();
+  const end = B.tmp();
+  const inBlock = B.tmp();
+  B.line(`${index} = load ${type}, ptr ${slot}`);
+  B.line(`${end} = load ${type}, ptr ${boundSlot}`);
+  B.line(`${inBlock} = icmp ${compare} ${type} ${index}, ${end}`);
+  B.condBr(inBlock, lb, poll);
+  B.startBlock(lb);
+  emitter.jumpTargets.push({
+    kind: "loop",
+    brkLabel: exit,
+    contLabel: lu,
+    labels: s.labels,
+    frameDepth: emitter.frames.length,
+    scopeDepth: emitter.scopes.length,
+    finallyDepth: emitter.finallyStack.length,
+  });
+  emitter.emitBlock(s.body);
+  emitter.jumpTargets.pop();
+  B.br(lu);
+  B.startBlock(lu);
+  for (const { slot: stepSlot, step: by } of [{ slot, step }, ...counter.followers]) {
+    const old = B.tmp();
+    const next = B.tmp();
+    B.line(`${old} = load ${type}, ptr ${stepSlot}`);
+    B.line(`${next} = add ${wrap} ${type} ${old}, ${by}`);
+    B.line(`store ${type} ${next}, ptr ${stepSlot}`);
+  }
+  B.br(bc);
+  B.startBlock(poll);
+  emitter.emitWorkerPoll();
+  B.br(lc);
+}
+
 function enterLoopHeader(emitter: LlEmitter, header: string): void {
   const dispatch = emitter.speculationHeader;
   emitter.speculationHeader = null;
