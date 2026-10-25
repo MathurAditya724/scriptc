@@ -355,6 +355,9 @@ bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJ
 /* ── keyed loads ──────────────────────────────────────────────────────── */
 
 ScrDyn *scr_js_index_probe(ScrDyn *receiver, double index) {
+  /* A native array passed in from typed code answers its elements in
+   * place, without forming the index's key string. */
+  if (receiver->kind == SCR_DYN_TYPED_REF) return scr_dyn_index_get(receiver, index);
   if (receiver->kind != SCR_DYN_ARR || !(index >= 0) || index >= (double)receiver->v.arr.len)
     return NULL;
   size_t i = (size_t)index;
