@@ -1282,6 +1282,11 @@ export interface TypeMapperCtx {
    * checker type its signature instantiates, or null. Consulted only when
    * the symbolic form does not map. */
   resolveBoundAliasTs?: TypeParamTsResolver;
+  /** Localized failure: the lenient mapping of a type whose strict mapping
+   * failed at a committed slot (Lowerer.degradedTypes), or null. Consulted
+   * only after the strict mapping (and its bound-alias retry) returns null,
+   * at every depth, so every occurrence of a degraded type maps alike. */
+  degradedType?: (type: ts.Type) => IrType | null;
   /** GENERIC program classes (monomorphization by flow): the mapping of a
    * concrete instantiation reference (`Box<number>`) — the Lowerer
    * registers/reuses the instantiation (`Box%0`) and answers its object
@@ -1854,6 +1859,16 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       if (concrete !== null && concrete !== type) {
         mapped = mapType(concrete, ctx);
         if (mapped !== null) contextResolutions++;
+      }
+    }
+    // Localized failure: a type that failed at a committed slot maps to its
+    // lenient form. It counts as a context resolution so neither it nor a
+    // type containing it is memoized: the strict form may map elsewhere.
+    if (mapped === null && ctx.degradedType) {
+      const lenient = ctx.degradedType(type);
+      if (lenient !== null) {
+        mapped = lenient;
+        contextResolutions++;
       }
     }
     if (

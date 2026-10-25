@@ -208,8 +208,10 @@ import type {
   ScrDiagnostic,
   TypeFailure,
   TypeFailureFamily,
+  TypeFailureSlot,
 } from "../../diagnostics/diagnostic.js";
 import { declarationGroupKey, typeFailureOf } from "./type-failure.js";
+import { dynamicSlotDiag, type DynamicSlotEntry } from "../../diagnostics/dynamic-slots.js";
 import {
   unsupportedAnyOperationDiag,
   blockedBindingUseDiag,
@@ -718,14 +720,27 @@ interface GenericDemandOwner {
   classDemands: ClassInfo[];
 }
 
+/** A slot the localized-failure commit points turned into a checked
+ * dynamic slot (SC6104): where it is, what its declared type is, and the
+ * diagnostic it would have failed with. */
+export interface DynamicSlot {
+  loc: SrcLoc;
+  failure: TypeFailure;
+  code: string;
+  reason: string;
+}
+
 export class PoisonError extends Error {
   /** Set when a type with no static lowering poisoned a slot (badType and
    * the dyn class field policy): what failed, for the localized-failure
    * commit points. Report-only in stage L0. */
   readonly failure: TypeFailure | undefined;
-  constructor(failure?: TypeFailure) {
+  /** The checker type that failed (with `failure`). */
+  readonly failedType: ts.Type | undefined;
+  constructor(failure?: TypeFailure, failedType?: ts.Type) {
     super();
     this.failure = failure;
+    this.failedType = failedType;
   }
 }
 
@@ -842,6 +857,9 @@ export interface LowerResult {
   /** Performance warnings (SC61xx): the likely-hot functions the source
    * leaves untyped (lowering/dynamic-tier.ts). Never failures. */
   performance?: ScrDiagnostic[];
+  /** Localized failure: the checked dynamic slots the commit points
+   * created (each also an SC6104 in `performance`), present when any. */
+  dynamicSlots?: DynamicSlotEntry[];
   /** Functions lowering placed in the dynamic tier (ir/tiers.ts), present
    * when there are any. */
   dynamicFunctions?: DynamicFunction[];
@@ -1256,6 +1274,22 @@ export function lowerToIr(
     const hotDynamic = dynamicTierWarning(resultLowerer, result.module, dirname(entry.fileName));
     timing("dynamic-tier-scan", { found: hotDynamic === null ? 0 : 1 });
     if (hotDynamic !== null) result = { ...result, performance: [hotDynamic] };
+  }
+  // Localized failure (SC6104): one performance warning per dynamic slot.
+  if (resultLowerer.dynamicSlots.length > 0) {
+    const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot) => ({
+      loc: slot.loc,
+      name: slot.failure.name,
+      slot: slot.failure.slot,
+      declaredType: slot.failure.declaredType,
+      code: slot.code,
+      reason: slot.reason,
+    }));
+    result = {
+      ...result,
+      performance: [...(result.performance ?? []), ...dynamicSlots.map(dynamicSlotDiag)],
+      dynamicSlots,
+    };
   }
   // Contract types (@scriptc/types): written annotations, checked against
   // the IR by the compile pipeline (contracts/check.ts).
@@ -3720,6 +3754,13 @@ export class Lowerer {
    * its lowering touched. A statement that then poisons attributes its
    * diagnostics to them (ScrDiagnostic.cause). */
   readonly failureTouches: Set<string>[] = [];
+  /** Localized failure: checker types (by id) whose strict mapping failed
+   * at a committed slot, with their lenient mapping. Filled only at the
+   * commit points (degradeAtCommit), so a program that compiles today
+   * never fills it. */
+  readonly degradedTypes = new Map<number, { lenient: IrType; code: string; reason: string }>();
+  /** The dynamic slots the commit points created: one SC6104 each. */
+  readonly dynamicSlots: DynamicSlot[] = [];
   /** True while collectProgram runs: resolution helpers must not flush
    * deferred diagnostics (collection itself resolves symbols — extends
    * clauses — and collection order must not decide what reports). */
@@ -3837,6 +3878,10 @@ export class Lowerer {
       resolveTypeParam: this.typeParamResolver,
       resolveTypeParamTs: this.typeParamTsResolver,
       resolveBoundAliasTs: this.boundAliasTsResolver,
+      degradedType: (type) => {
+        const id = (type as { id?: number }).id;
+        return id === undefined ? null : (this.degradedTypes.get(id)?.lenient ?? null);
+      },
       isErasing: () => this.erasingDepth > 0,
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
@@ -9270,7 +9315,65 @@ export class Lowerer {
     const failure = typeFailureOf(node, this.checker.typeToString(type), family);
     diag.typeFailure = failure;
     this.pushDiag(diag);
-    throw new PoisonError(failure);
+    throw new PoisonError(failure, type);
+  }
+
+  /** Localized failure's commit point (design §3.3): `e` poisoned a unit
+   * whose failure is about to enter the build. When it is a degradable type
+   * failure at a slot kind in `slots`, the failing type joins
+   * degradedTypes (its lenient mapping is the checked dynamic, whole slot),
+   * the failure's own diagnostic leaves the build, and the caller lowers
+   * the unit again. Returns the slot to record once that retry succeeds,
+   * or null to commit as today. Never inside a capture buffer (a probe or a
+   * deferred collection) and never under --tier=static-only. */
+  degradeAtCommit(e: unknown, slots: ReadonlySet<TypeFailureSlot>): DynamicSlot | null {
+    if (this.tierMode !== "auto" || this.diagSink !== null) return null;
+    if (!(e instanceof PoisonError)) return null;
+    const failure = e.failure;
+    const type = e.failedType;
+    if (failure === undefined || type === undefined) return null;
+    if (!failure.degradable || failure.family === "dyn-field-policy") return null;
+    if (!slots.has(failure.slot)) return null;
+    const id = (type as { id?: number }).id;
+    // Already degraded and still failing: no progress, commit as today.
+    if (id === undefined || this.degradedTypes.has(id)) return null;
+    let committed: ScrDiagnostic | undefined;
+    for (let i = this.diags.length - 1; i >= 0; i--) {
+      if (this.diags[i]!.typeFailure !== failure) continue;
+      committed = this.diags[i];
+      this.diags.splice(i, 1);
+    }
+    if (committed === undefined) return null;
+    this.degradedTypes.set(id, { lenient: DYN, code: committed.code, reason: committed.message });
+    return { loc: committed.loc, failure, code: committed.code, reason: committed.message };
+  }
+
+  /** A declaration slot whose type maps through degradedTypes is a
+   * dynamic slot too, though only the first such slot failed: record it
+   * (outside probes; the lookup is skipped while nothing is degraded). */
+  noteDegradedSlot(node: ts.Node, type: ts.Type): void {
+    if (this.diagSink !== null) return;
+    const degraded = this.degradedTypes.get((type as { id?: number }).id ?? -1);
+    if (degraded === undefined) return;
+    const failure = typeFailureOf(node, this.checker.typeToString(type), "unsupported");
+    if (failure.slot === "expression" || failure.slot === "member") return;
+    this.noteDynamicSlot({
+      loc: locOf(node),
+      failure,
+      code: degraded.code,
+      reason: degraded.reason,
+    });
+  }
+
+  /** Records a dynamic slot whose unit lowered with it (one per site). */
+  noteDynamicSlot(slot: DynamicSlot): void {
+    const seen = this.dynamicSlots.some(
+      (s) =>
+        s.loc.file === slot.loc.file &&
+        s.loc.start === slot.loc.start &&
+        s.loc.end === slot.loc.end,
+    );
+    if (!seen) this.dynamicSlots.push(slot);
   }
 
   /** The SC1090 refusal of checked-dynamic class fields in TypeScript
@@ -9285,7 +9388,7 @@ export class Lowerer {
     );
     diag.typeFailure = failure;
     this.pushDiag(diag);
-    throw new PoisonError(failure);
+    throw new PoisonError(failure, this.typeOf(node));
   }
 
   badType(node: ts.Node, type: ts.Type): never {
@@ -9969,6 +10072,7 @@ export class Lowerer {
     // f64 — but must not: pre-empt the mapping so the JS fallback below
     // answers instead.
     const mapped = neverTaintedJsType(this, node, t) ? null : this.mapTypeOf(t);
+    if (mapped !== null && this.degradedTypes.size > 0) this.noteDegradedSlot(node, t);
     if (!mapped) {
       const argumentsType = jsArgumentsFunctionType(this, t);
       if (argumentsType !== null) return argumentsType;
@@ -12686,6 +12790,8 @@ export class Lowerer {
   /* ── scoping and captures ─────────────────────────────────────────── */
 
   declareLocal(nameNode: ts.Node, name: string, type: IrType, mutable: boolean): IrLocal {
+    if (type.kind === "dyn" && this.degradedTypes.size > 0)
+      this.noteDegradedSlot(nameNode, this.typeOf(nameNode));
     const symbol = this.checker.getSymbolAtLocation(nameNode);
     const local = declareContextLocal(
       this.ctx,

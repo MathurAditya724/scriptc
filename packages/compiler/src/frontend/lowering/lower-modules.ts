@@ -1,3 +1,4 @@
+import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -2048,7 +2049,15 @@ export function collectGlobals(
       // Destructuring declarations register EVERY bound identifier (the
       // desugar in the init function assigns the pre-registered globals,
       // exactly like plain declarations).
-      for (const nameNode of boundIdentifiersOf(decl.name)) {
+      const names = boundIdentifiersOf(decl.name);
+      // Localized failure: a degradable type failure at a module global
+      // degrades that type and the same name registers again
+      // (globalSlotRetry), at most MAX_GLOBAL_RETRIES times.
+      let retries = 0;
+      let retriedIndex = -1;
+      for (let nameIndex = 0; nameIndex < names.length; nameIndex++) {
+        const nameNode = names[nameIndex]!;
+        if (nameIndex !== retriedIndex) retries = 0;
         const diagsBefore = lowerer.diags.length;
         try {
           // Checked JavaScript factories can expose inferred callables by
@@ -2700,6 +2709,12 @@ export function collectGlobals(
           }
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
+          if (retries < MAX_GLOBAL_RETRIES && globalSlotRetry(lowerer, sf, e)) {
+            retries++;
+            retriedIndex = nameIndex;
+            nameIndex--;
+            continue;
+          }
           // diagnostic already recorded; lowering the statement poisons
           // too — and in a JS file BOTH defer to the statement's
           // runtime fence (deferJsCollectionDiags).
@@ -2709,6 +2724,20 @@ export function collectGlobals(
     }
   }
 }
+
+/** Localized failure's commit point for module globals (design §3.3):
+ * collectGlobals commits a global's type failure directly, before any body
+ * lowers, so it degrades here and the registration runs again. */
+function globalSlotRetry(lowerer: Lowerer, sf: ts.SourceFile, e: PoisonError): boolean {
+  if (isJsSourceFile(sf)) return false;
+  const slot = lowerer.degradeAtCommit(e, GLOBAL_SLOTS);
+  if (slot === null) return false;
+  lowerer.noteDynamicSlot(slot);
+  return true;
+}
+
+const MAX_GLOBAL_RETRIES = 16;
+const GLOBAL_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>(["global"]);
 
 /** Registers the entry-init note for a `var` module global: JS hoists
  * module vars to `undefined` at module entry, so an undefined-armed slot

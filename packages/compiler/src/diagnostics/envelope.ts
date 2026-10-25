@@ -164,6 +164,15 @@ export interface DiagnosticsEnvelope {
   };
   /** build only: the produced artifact path. */
   artifact?: string;
+  /** coverage only, when there are any: the checked dynamic slots
+   * (localized failure, SC6104). */
+  dynamicSlots?: (SourcePosition & {
+    name: string;
+    kind: string;
+    declaredType: string;
+    code: string;
+    reason: string;
+  })[];
   /** coverage --explain-dynamic only: the report-only tier assignment. */
   tiers?: TiersEnvelope;
   /** coverage only: the WebAssembly modules the build can see, with their
