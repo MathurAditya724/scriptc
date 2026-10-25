@@ -122,7 +122,6 @@ const counted = (
   guarded: false,
   limitGuarded: false,
   startGuarded: false,
-  startBound: Number.MAX_SAFE_INTEGER,
   guardLimit: 0,
   followers: [],
   ...fields,

@@ -1889,21 +1889,6 @@ static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
   return true;
 }
 
-/* A loop about to read every unit of s (bytes-loop-versions.ts) converts it
- * at once instead of after the threshold's reads, and publishes it as the
- * scan's receiver. ASCII receivers and receivers past SCR_SIDX_UNITS_MAX
- * publish nothing; the caller compares scr_str_scan.s with s. */
-void scr_str_scan_units(ScrStr *s) {
-  if (s->ascii || s->len > SCR_SIDX_UNITS_MAX) return;
-  ScrSidx *e = scr_sidx(s);
-  if (!e->units) e->units = scr_str_units(s, &e->nunits);
-  if (scr_str_scan.s != s) {
-    scr_str_scan.s = s;
-    scr_str_scan.units = e->units;
-    scr_str_scan.n = e->nunits;
-  }
-}
-
 typedef enum { SCR_UNIT_FIRST, SCR_UNIT_LAST, SCR_UNIT_AT } ScrUnitSearch;
 
 /* The UTF-16 index of needle in s: the first match at or after `from`,
@@ -2225,17 +2210,6 @@ static void scr_str_slice_bounds(ScrStr *s, ScrSidx *e, double start, double end
 
 void scr_str_slice_range(ScrStr *s, double start, double end, bool substring,
                          ScrStringSlice *out) {
-  if (__builtin_expect(s->ascii, 1)) {
-    /* Units are bytes: no index entry, and no boundary splits a pair. */
-    size_t length = s->len;
-    size_t from = scr_slice_unit(start, length, substring);
-    size_t to = scr_slice_unit(end, length, substring);
-    if (substring && from > to) { size_t swap = from; from = to; to = swap; }
-    out->start = from;
-    out->length = to > from ? to - from : 0;
-    out->split = 0;
-    return;
-  }
   ScrSidx *e = scr_sidx_for(s);
   size_t from, to;
   scr_str_slice_bounds(s, e, start, end, substring, &from, &to);

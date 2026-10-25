@@ -95,7 +95,6 @@ import { createNativeLinkPlan } from "./backend/link-plan.js";
 import {
   nativeProfileKey,
   nativeProfileRefusal,
-  type NativeProfileMatch,
   type NativeProfileOptions,
 } from "./backend/native-profile.js";
 import {
@@ -605,7 +604,6 @@ async function compileExecutableNative(
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
-    ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,
@@ -651,7 +649,6 @@ async function compileExecutableNative(
     dh: features.dh,
     pki: features.pki,
     ed25519: features.ed25519,
-    x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
@@ -671,7 +668,6 @@ interface NativeProgramObject {
   partitionPaths: string[];
   artifactPath: string;
   dependencies: NativeArtifactDependency[];
-  profileMatch?: NativeProfileMatch;
 }
 
 async function emitNativeProgramObject(
@@ -707,7 +703,6 @@ async function emitNativeProgramObject(
       partitionPaths: artifact.outputPaths.slice(1),
       artifactPath,
       dependencies: artifact.dependencies,
-      ...(artifact.profileMatch === undefined ? {} : { profileMatch: artifact.profileMatch }),
     };
   } catch (error) {
     await removeNativeProgramObject(linkPath, nativePartitionPaths(linkPath, partitions));
@@ -819,9 +814,6 @@ async function prepareExecutableInput(
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
         wasi: buildPlatform === "wasi",
         runtimeAbiMarker: outputKind === "obj",
-        // Textual output shows the code an executable gets; objects keep
-        // the pending flag, since their link may not add an unwinder.
-        unwindAbi: buildPlatform === "linux" && outputKind !== "obj",
         objectAudit: opts.sanitize === true,
         lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
         ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
@@ -892,7 +884,6 @@ async function prepareExecutableInput(
       pointerBits: buildPlatform === "wasi" ? 32 : 64,
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
-      unwindAbi: buildPlatform === "linux",
       objectAudit: opts.sanitize === true,
       lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
@@ -1872,7 +1863,6 @@ async function compileTracked(
   }
   await pruneBuildCache(cacheRoot);
   timing("complete");
-  const profileMatch = nativeProgramObject?.profileMatch;
   return {
     ok: true,
     artifact: {
@@ -1880,7 +1870,6 @@ async function compileTracked(
       path: opts.outPath,
       translationUnitPath: llvmPath,
       backend,
-      ...(profileMatch === undefined ? {} : { profileMatch }),
     },
     binaryPath: opts.outPath,
     llvmPath,
@@ -1909,7 +1898,6 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     searchParams: features.searchParams,
     emitter: features.emitter,
     zlib: features.zlib,
-    x509: features.x509,
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
     dynInvoke: features.dynInvoke,
@@ -2005,7 +1993,6 @@ async function compileLibraryNative(
     searchParams: features.searchParams,
     emitter: features.emitter,
     zlib: features.zlib,
-    x509: features.x509,
     copying: features.copying,
     textDecoderLegacy: features.textDecoderLegacy,
     dynInvoke: features.dynInvoke,

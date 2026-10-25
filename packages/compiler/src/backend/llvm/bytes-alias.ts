@@ -18,10 +18,8 @@ export function bytesHeaderAlias(host: LlvmEmitterContext): string {
   return tag === "" ? "" : `${tag}, !invariant.load !{}`;
 }
 
-/** Element storage's tag, and the alias scope of the access being emitted
- * in a loop version's fast copy (bytesAccessScope). */
 export function bytesElementAlias(host: LlvmEmitterContext): string {
-  return host.memoryAliasAttachment("bytes:elements") + host.bytesAccessScope;
+  return host.memoryAliasAttachment("bytes:elements");
 }
 
 /** A module global's slot is its own category for whole-slot loads of a

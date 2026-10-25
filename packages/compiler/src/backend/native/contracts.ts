@@ -147,9 +147,6 @@ export interface CcOptions {
   warningReplace?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
-  /** Module namespace objects as checked-dynamic values: compiles
-   * scr_module_namespace.c. */
-  moduleNamespace?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -275,8 +272,6 @@ export interface CcOptions {
   /** Ed25519 with pki: compiles scr_ed25519.c (the vendored libsodium
    * Ed25519). */
   ed25519?: boolean;
-  /** X509Certificate fields: compiles scr_x509.c. */
-  x509?: boolean;
   /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
   webcrypto?: boolean;
   /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */
@@ -362,8 +357,6 @@ export interface LibArchiveOptions {
   searchParams?: boolean;
   emitter?: boolean;
   zlib?: boolean;
-  /** X509Certificate fields: scr_x509.c. */
-  x509?: boolean;
   copying?: boolean;
   textDecoderLegacy?: boolean;
 }

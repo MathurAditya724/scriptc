@@ -9,7 +9,6 @@ import {
   callbackType,
   finishRuntimeCall,
   ptr,
-  caBytes,
   rawBytes,
   requestHandler,
 } from "./lib-abi.js";
@@ -205,7 +204,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
             );
       return finishRuntimeCall(host, e, "scr_http2_connect", [
         ...a.slice(0, 2),
-        ...caBytes(host, args[2]!),
+        ...rawBytes(host, args[2]!),
         ...handler,
       ]);
     }

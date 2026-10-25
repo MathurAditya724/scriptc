@@ -30,11 +30,8 @@ import {
   verifyNativeHelper,
 } from "../backend/native-tools.js";
 import {
-  type NativeRuntimeSelection,
   selectNativeRuntimePack,
-  runtimePackManifest,
   stageNativeRuntimeSelection,
-  type RuntimePackStore,
 } from "../backend/runtime-pack-native.js";
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
 import {
@@ -162,17 +159,6 @@ export class NativeCompiler {
       () => this.analyze(entry, options),
     );
     return result;
-  }
-
-  /** Runtime pack selections and verified artifact identities, kept in the
-   * cache. */
-  private runtimePackStore(): RuntimePackStore | undefined {
-    const cache = this.cache;
-    if (cache === null) return undefined;
-    return {
-      read: (key) => cache.read("runtime-pack", key)?.toString("utf8") ?? null,
-      write: (key, text) => cache.write("runtime-pack", key, text),
-    };
   }
 
   private emitObject(
@@ -401,33 +387,32 @@ export class NativeCompiler {
         outputKind === "exe"
           ? join(inputDirectory, "program" + target.outputSuffixes.obj)
           : stagedOutput;
-      let executablePack: NativeRuntimeSelection | null = null;
-      const selectPack = (): NativeRuntimeSelection =>
-        (executablePack ??= selectNativeRuntimePack(
-          toolchain.runtimePackRoot,
-          target,
-          toolchain.compilerVersion,
-          features,
-          optimization,
-          "executable",
-          this.runtimePackStore(),
-        ));
-      const executableCache =
+      const executablePack =
         outputKind === "exe"
-          ? openNativeExecutableCache(this.cache, toolchain, digestLlvm, options, ffi, {
-              root: toolchain.runtimePackRoot,
+          ? selectNativeRuntimePack(
+              toolchain.runtimePackRoot,
+              target,
+              toolchain.compilerVersion,
               features,
-              flavor: optimization,
-              select: selectPack,
-            })
+              optimization,
+            )
           : null;
+      const executableCache =
+        executablePack === null
+          ? null
+          : openNativeExecutableCache(
+              this.cache,
+              toolchain,
+              digestLlvm,
+              options,
+              ffi,
+              executablePack,
+            );
       // An unchanged rebuild keeps the executable the last build left.
       const kept = executableCache?.keep(output) ?? false;
       const restored = kept || (executableCache?.restore(stagedOutput) ?? false);
       timing(restored ? "executable-cache-hit" : "executable-cache-miss");
       if (!restored) {
-        // A missing or invalid runtime pack fails before code generation.
-        if (outputKind === "exe") selectPack();
         let programObjects = [object];
         if (options.sanitize) {
           runNativeTool(sanitizerDriver(toolchain), [
@@ -467,24 +452,16 @@ export class NativeCompiler {
                   toolchain.compilerVersion,
                   features,
                   optimization,
-                  "executable",
-                  this.runtimePackStore(),
                 )
               : null;
-          if (pack !== null)
-            stageNativeRuntimeSelection(pack, join(stage, "runtime"), this.runtimePackStore());
+          if (pack !== null) stageNativeRuntimeSelection(pack, join(stage, "runtime"));
           const info =
             pack === null
               ? undefined
               : formatNativeLinkInfo(
                   { programObject: output, target, ffi },
                   toolchain.compilerVersion,
-                  {
-                    root: pack.root,
-                    manifest: runtimePackManifest(pack),
-                    selected: pack.selected,
-                    flavor: pack.flavor,
-                  },
+                  pack,
                 );
           renameSync(stagedOutput, output);
           return {
@@ -496,10 +473,10 @@ export class NativeCompiler {
             },
           };
         }
-        const pack = selectPack();
+        const pack = executablePack!;
         const runtime = options.sanitize
           ? buildSanitizedRuntime(toolchain, pack, join(stage, "runtime"), "executable", this.cache)
-          : stageNativeRuntimeSelection(pack, join(stage, "runtime"), this.runtimePackStore());
+          : stageNativeRuntimeSelection(pack, join(stage, "runtime"));
         timing("runtime-stage");
         const plan = executableLinkInputs({
           target,
@@ -661,7 +638,6 @@ export class NativeCompiler {
         features,
         profile.optimization,
         profile.instancePerThread ? "library-thread" : "library",
-        this.runtimePackStore(),
       );
       const runtime = options.sanitize
         ? buildSanitizedRuntime(
@@ -671,7 +647,7 @@ export class NativeCompiler {
             profile.instancePerThread ? "library-thread" : "library",
             this.cache,
           )
-        : stageNativeRuntimeSelection(pack, join(stage, "runtime"), this.runtimePackStore());
+        : stageNativeRuntimeSelection(pack, join(stage, "runtime"));
       timing("runtime-stage");
       const stagedArchive = join(stage, wasm ? "output.wasm" : "output.a");
       const localizeSymbols = libraryLocalizeSymbols(profile);

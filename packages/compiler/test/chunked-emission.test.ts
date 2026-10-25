@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -25,7 +25,6 @@ const PROGRAMS = [
   "6305-json-discriminant-dispatch.ts",
   "7321-speculative-loop-bail-sites.ts",
   "7360-worker-typed-records.ts",
-  "7110-als-completion-callbacks.ts",
   "node24-text-utilities-coercion.js",
 ];
 
@@ -70,38 +69,6 @@ test("function bodies emitted in chunks merge into the text one emitter gives", 
     await rm(dir, { recursive: true, force: true });
   }
 }, 600_000);
-
-// Thunks a range creates are journaled, so the merging emitter defines
-// them: here Promise.all's tuple adapter, requested by a function that is
-// not async (async functions are emitted again when the merging emitter
-// selects stackless bodies).
-test("a Promise.all tuple adapter requested in a range is defined", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "scriptc-chunked-tuple-"));
-  try {
-    const entry = join(dir, "main.ts");
-    await writeFile(
-      entry,
-      [
-        "function both(a: Promise<number>, b: Promise<string>): Promise<[number, string]> {",
-        "  return Promise.all([a, b]);",
-        "}",
-        'both(Promise.resolve(1), Promise.resolve("x")).then((v) => console.log(v[0], v[1]));',
-        "",
-      ].join("\n"),
-    );
-    const outPath = join(dir, "main.ir.json");
-    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
-    if (!result.ok)
-      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    const ir = await readFile(outPath, "utf8");
-    const serial = text(emitLlvmModuleSource(deserializeModule(ir), {}));
-    expect(serial).toContain("define internal void @sc_all_tuple_0(");
-    const chunked = text(emitLlvmModuleSource(deserializeModule(ir), { functionChunks: 2 }));
-    expect(chunked === serial).toBe(true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}, 60_000);
 
 // Debug metadata is numbered per emitter (debug-info.ts) and not journaled:
 // a debug build emits its function bodies in one emitter.

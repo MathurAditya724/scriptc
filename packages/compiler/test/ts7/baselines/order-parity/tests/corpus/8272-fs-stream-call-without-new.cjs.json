@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/8272-fs-stream-call-without-new.cjs"
- ],
- "diags": []
-}

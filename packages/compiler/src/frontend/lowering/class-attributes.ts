@@ -39,14 +39,8 @@ import { runtimeRooted } from "./class-descriptors.js";
 type ClassObjectType = Extract<IrType, { kind: "object" }>;
 
 function attributeClass(lowerer: Lowerer, target: IrExpr): ClassInfo | null {
-  return isDynTypedRefType(target.type)
-    ? attributeClassNamed(lowerer, target.type.className)
-    : null;
-}
-
-/** The compiled class `className`, when its instances can carry attributes. */
-function attributeClassNamed(lowerer: Lowerer, className: string): ClassInfo | null {
-  const info = lowerer.classes.get(className);
+  if (!isDynTypedRefType(target.type)) return null;
+  const info = lowerer.classes.get(target.type.className);
   if (!info || runtimeRooted(info) || info.decl == null) return null;
   return info;
 }
@@ -66,20 +60,6 @@ function addHiddenField(info: ClassInfo, name: string): void {
     current.subclasses.forEach(add);
   };
   add(root);
-}
-
-/** In a program that freezes, seals or prevents extensions of untyped
- * values, gives every hierarchy whose instances can be held there the
- * integrity word. The runtime applies the operation to the instance's
- * checked view, whose commit stores the view's integrity state in the word
- * (backend streamTypedRefCommitAdapter), and the write checks below read
- * it. */
-export function addUntypedIntegrityWords(lowerer: Lowerer): void {
-  if (!lowerer.untypedIntegrity) return;
-  for (const [className, info] of lowerer.classes) {
-    if (isDynTypedRefType({ kind: "object", className }) && attributeClassNamed(lowerer, className))
-      addHiddenField(info, CLASS_ATTRIBUTES);
-  }
 }
 
 function hiddenFieldGet(receiver: IrExpr, className: string, field: string, loc: SrcLoc): IrExpr {
@@ -303,32 +283,6 @@ export function lowerClassFieldDefine(
   };
 }
 
-/** The property key of `field` when it is the storage of a symbol-keyed
- * field of `info`, as the read-only TypeError names it: the symbol's
- * String() form ("Symbol(tag)"), read from the module global that holds
- * the symbol. Null for other fields. */
-function symbolFieldKey(
-  lowerer: Lowerer,
-  info: ClassInfo,
-  field: string,
-  loc: SrcLoc,
-): IrExpr | null {
-  if (info.symbolFields === undefined) return null;
-  for (const [symbol, name] of info.symbolFields) {
-    if (name !== field) continue;
-    const global = lowerer.globalsBySymbol.get(symbol);
-    if (global?.type.kind !== "symbol") return null;
-    return {
-      kind: "libCall",
-      fn: "sym.toString",
-      args: [varRef(global.id, global.type, loc)],
-      type: STRING,
-      loc,
-    };
-  }
-  return null;
-}
-
 function classDisplayName(info: ClassInfo): string {
   return info.def.jsName ?? info.decl?.name?.text ?? info.def.name.replace(/^%/, "");
 }
@@ -393,15 +347,12 @@ export function guardClassAttributeWrites(lowerer: Lowerer, functions: IrFunctio
         if (
           statement.kind !== "fieldSet" ||
           statement.attributesChecked ||
-          !guarded.has(statement.className)
+          !guarded.has(statement.className) ||
+          !isClassOwnEnumerableFieldName(statement.field)
         )
           return statement;
         const info = lowerer.classes.get(statement.className)!;
         const loc = statement.loc;
-        // A symbol-keyed field is an own property under its symbol.
-        const symbolKey = symbolFieldKey(lowerer, info, statement.field, loc);
-        if (!symbolKey && !isClassOwnEnumerableFieldName(statement.field)) return statement;
-        const key = (): IrExpr => symbolKey ?? strLit(statement.field, loc);
         const receiver = local(statement.obj.type, loc);
         const value = local(statement.value.type, loc);
         const masked = (field: string, bit: number): IrExpr => ({
@@ -434,7 +385,7 @@ export function guardClassAttributeWrites(lowerer: Lowerer, functions: IrFunctio
                 expr: {
                   kind: "libCall",
                   fn: "class.throwNotExtensible",
-                  args: [key()],
+                  args: [strLit(statement.field, loc)],
                   type: VOID,
                   loc,
                 },
@@ -449,7 +400,10 @@ export function guardClassAttributeWrites(lowerer: Lowerer, functions: IrFunctio
                   expr: {
                     kind: "libCall",
                     fn: "class.throwReadOnly",
-                    args: [key(), instanceClassName(lowerer, info, receiver, helpers, loc)],
+                    args: [
+                      strLit(statement.field, loc),
+                      instanceClassName(lowerer, info, receiver, helpers, loc),
+                    ],
                     type: VOID,
                     loc,
                   },

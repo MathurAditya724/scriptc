@@ -28,44 +28,16 @@
  * guard excludes. for-of starts at scr_map_iter_start, past a deleted
  * prefix.
  */
-import type { IrExpr, IrType } from "../../ir/ir.js";
-import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
-import { exactInteger, widenInteger } from "./integer-values.js";
+import type { IrType } from "../../ir/ir.js";
+import type { LlvmEmitterContext } from "./expr-context.js";
 import { mapKeyAccess } from "./shapes.js";
 
 export const NUMBER_MAP_ENTRY_DECL = "declare ptr @scr_map_entry_f64(ptr, double)";
-/** Record the integer view of a number Map/Set key operand for the entry
- * lookups of that key, when the view needs no instruction of its own: the
- * value's integer or uint32 view, defined with the value, or an integral
- * literal. A view exactInteger converts at this lookup is not recorded: the
- * key cache spans the function, and a later lookup of the same operand (a
- * constant, say) can be in a block the conversion does not dominate. */
-export function noteNumberMapKey(host: LlvmEmitterContext, key: LlValue, expr: IrExpr): void {
-  if (key.type.kind !== "f64" || host.numberMapKeyIntegers.has(key.name)) return;
-  if (!key.integer && key.uint32 === undefined && expr.kind !== "numLit") return;
-  const integer = exactInteger(host, key, expr);
-  if (!integer) return;
-  const defined =
-    integer.name === key.integer?.name ||
-    integer.name === key.uint32 ||
-    /^-?\d+$/.test(integer.name);
-  if (defined) host.numberMapKeyIntegers.set(key.name, integer);
-}
 
-/** The entry for `key`, or null when absent. Valid until the next mutation.
- * A key with an integer view (noteNumberMapKey) tests the direct index on
- * that integer instead of converting the double back. */
+/** The entry for `key`, or null when absent. Valid until the next mutation. */
 export function emitNumberMapEntry(host: LlvmEmitterContext, map: string, key: string): string {
   host.declare(NUMBER_MAP_ENTRY_DECL);
   const entry = host.B.tmp();
-  const integer = host.numberMapKeyIntegers.get(key);
-  if (integer) {
-    const wide = widenInteger(host, integer);
-    host.B.line(
-      `${entry} = call ptr @sc_map_entry_f64_int(ptr ${map}, i64 ${wide}, double ${key})`,
-    );
-    return entry;
-  }
   host.B.line(`${entry} = call ptr @sc_map_entry_f64(ptr ${map}, double ${key})`);
   return entry;
 }

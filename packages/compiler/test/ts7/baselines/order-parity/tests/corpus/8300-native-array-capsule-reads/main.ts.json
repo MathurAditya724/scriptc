@@ -1,7 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/8300-native-array-capsule-reads/lib.cjs",
-  "<repo>/tests/corpus/8300-native-array-capsule-reads/main.ts"
- ],
- "diags": []
-}

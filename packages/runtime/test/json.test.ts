@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -83,33 +83,4 @@ test("json runtime: parser, dyn, dynCheck failure path, stringify buffer", async
       ``,
     ].join("\n"),
   );
-});
-
-function zigOnPath(): boolean {
-  try {
-    execFileSync("zig", ["version"], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// 32-bit uintptr_t: the weak-collection hashes mix in 64 bits, so no shift
-// exceeds the width of its operand on wasm32.
-test.skipIf(!zigOnPath())("json runtime builds for wasm32 without oversized shifts", async () => {
-  await execFileAsync("zig", [
-    "cc",
-    "-target",
-    "wasm32-wasi",
-    "-std=c11",
-    "-O2",
-    "-D_GNU_SOURCE",
-    "-D_WASI_EMULATED_SIGNAL",
-    "-D_WASI_EMULATED_PROCESS_CLOCKS",
-    "-Werror=shift-count-overflow",
-    "-c",
-    "-o",
-    join(testDir, "build", "scr_json.wasm32.o"),
-    join(testDir, "../src/scr_json.c"),
-  ]);
 });

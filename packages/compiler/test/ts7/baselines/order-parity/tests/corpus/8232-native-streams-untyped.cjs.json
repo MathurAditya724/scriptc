@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/8232-native-streams-untyped.cjs"
- ],
- "diags": []
-}

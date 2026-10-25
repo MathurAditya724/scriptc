@@ -1,6 +1,0 @@
-{
-  "entry": "workloads/date-math.ts",
-  "args": [
-    "40"
-  ]
-}

@@ -141,24 +141,3 @@ test("constant graphs: constructors, apply calls and callbacks that one site run
       new RegExp(`near miss ns-fixture/index\\.js:10 \\.${field}: written-after-init`),
     );
 });
-
-// A prototype method stored under a computed key and called on instances.
-const computedMethodSource = `
-var lib = {};
-lib.touched = { count: 0 };
-lib.Widget = function () {};
-var methodName = ["to", "uch"].join("");
-lib.Widget.prototype[methodName] = function () { lib.touched.count++; };
-lib.useWidget = function () { new lib.Widget().touch(); };
-module.exports = { lib };
-`;
-
-test("constant graphs: prototype methods stored under computed keys run on their instances", async () => {
-  await writeFile(join(dir, "node_modules", "ns-fixture", "index.js"), computedMethodSource);
-  await writeFile(
-    join(dir, "main.cjs"),
-    'const { lib } = require("ns-fixture");\nfor (let i = 0; i < 3; i++) lib.useWidget();\nconsole.log(lib.touched.count);\n',
-  );
-  const text = (await report()).join("\n");
-  expect(text).toMatch(/near miss ns-fixture\/index\.js:3 \.count: written-after-init/);
-});

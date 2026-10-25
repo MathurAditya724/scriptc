@@ -30,9 +30,6 @@ export interface WideInteger {
   name: string;
   below: number;
   bound: number;
-  /** The double is the integer rounded once: the result of one operation on
-   * operands that always equal their doubles. */
-  single?: true;
 }
 
 export type ExprOf<K extends IrExpr["kind"]> = Extract<IrExpr, { kind: K }>;

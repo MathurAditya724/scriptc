@@ -21,5 +21,5 @@ module.exports = function run() {
     console.log(e instanceof TypeError, e.message.length, e.message.slice(0, 30), e.message.slice(-40));
   }
   child.on("close", (code) => console.log("close", code, child.killedBy));
-  child.stdout.once("data", () => child.kill("SIGTERM"));
+  child.kill("SIGTERM");
 };

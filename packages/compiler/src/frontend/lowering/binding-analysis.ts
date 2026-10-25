@@ -19,18 +19,6 @@ export function bindingNeverReassigned(
 ): boolean {
   const cached = lowerer.neverReassignedCache.get(sym);
   if (cached !== undefined) return cached;
-  const written = fileWritesBinding(sym, ts.getSourceFileOfNode(decl), resolve);
-  lowerer.neverReassignedCache.set(sym, !written);
-  return !written;
-}
-
-/** True when something in `file` writes `sym` (the writes
- * bindingNeverReassigned counts), resolving identifiers with `resolve`. */
-export function fileWritesBinding(
-  sym: ts.Symbol,
-  file: ts.SourceFile,
-  resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined,
-): boolean {
   let written = false;
   // Text pre-check keeps the file walk cheap: only same-named
   // identifiers pay a symbol resolution.
@@ -74,8 +62,9 @@ export function fileWritesBinding(
     }
     ts.forEachChild(n, visit);
   };
-  ts.forEachChild(file, visit);
-  return written;
+  ts.forEachChild(ts.getSourceFileOfNode(decl), visit);
+  lowerer.neverReassignedCache.set(sym, !written);
+  return !written;
 }
 
 /** Strips the value-preserving wrappers off an expression: parens,

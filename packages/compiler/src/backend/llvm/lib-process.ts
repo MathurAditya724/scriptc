@@ -6,7 +6,6 @@ import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js
 import { f64Lit } from "./common.js";
 import { mockTimerSym } from "./lib-shared.js";
 import { FN_ATTRS } from "./shapes.js";
-import { registerReplay } from "./emit-journal.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -499,7 +498,6 @@ function boundCallbackThunk(host: LlvmEmitterContext, cbT: IrType & { kind: "fun
   if (sym) return sym;
   sym = `sc_alsbound_${host.resolveThunks.size}`;
   host.resolveThunks.set(key, sym);
-  host.journal?.allocated(sym, "boundCallbackThunk", [cbT]);
   host.declare("declare ptr @scr_als_bound_target(ptr)");
   host.declare("declare ptr @scr_als_bound_enter(ptr)");
   host.declare("declare void @scr_als_bound_leave(ptr, ptr)");
@@ -519,13 +517,8 @@ function boundCallbackThunk(host: LlvmEmitterContext, cbT: IrType & { kind: "fun
     `}`,
     ``,
   );
-  host.journal?.built();
   return sym;
 }
-
-registerReplay("boundCallbackThunk", (host, args) =>
-  boundCallbackThunk(host, args[0] as IrType & { kind: "func" }),
-);
 
 export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;

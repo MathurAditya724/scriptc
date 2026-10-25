@@ -168,7 +168,6 @@ export class NativeCache {
         "sanitizer",
         "executable",
         "kept",
-        "runtime-pack",
         "binary",
         "dsym",
         "coverage",

@@ -89,7 +89,7 @@ export function emitDynamicExpr(
       // Bytes already box their shared mutable storage directly. A second
       // capsule would split identity between checked and native views.
       const errorRef = v.type.kind === "object" && host.shapeHost.isErrorClass(v.type.className);
-      // A TextEncoder, TextDecoder or StringDecoder record boxes as its own handle, which
+      // A TextEncoder or TextDecoder record boxes as its own handle, which
       // keeps the record's identity (toDynHelper).
       const codecRef = textCodecRecordClass(v.type, (id) => host.recordsById.get(id)) !== null;
       if (!errorRef && !codecRef && ((e.liveRef && v.type.kind !== "bytes") || identityRef)) {
@@ -121,10 +121,6 @@ export function emitDynamicExpr(
         const box = host.dyn.dynFuncBoxHelper(v.type);
         const t = B.tmp();
         B.line(`${t} = call ptr @${box}(ptr ${v.name}, ptr ${name})`);
-        if (e.fnLength !== undefined) {
-          host.declare(`declare void @scr_dyn_function_set_length(ptr, i32)`);
-          B.line(`call void @scr_dyn_function_set_length(ptr ${t}, i32 ${e.fnLength})`);
-        }
         return host.own({ name: t, type: e.type });
       }
       const conv = host.dyn.toDynHelper(v.type);

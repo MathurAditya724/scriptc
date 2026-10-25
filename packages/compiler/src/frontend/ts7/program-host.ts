@@ -122,9 +122,6 @@ export interface Ts7ApiOptions {
   cwd: string;
   fs: Ts7FileSystem;
   collectTiming: boolean;
-  /** False for a connection that should not use the shared checker server
-   * (`SCRIPTC_CHECKER_SERVER`), such as the syntax-only source parser's. */
-  shared?: boolean;
 }
 
 export type Ts7ApiFactory = (options: Ts7ApiOptions) => Ts7Api;

@@ -43,7 +43,7 @@ import {
   isDynTypedRefType,
   isRefCounted,
   isUnitType,
-  recordHandleCodecClass,
+  recordTextCodecClass,
   textCodecRecordClass,
   typeKey,
 } from "../../ir/ir.js";
@@ -98,16 +98,14 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
 
 /** The handle tags of TextEncoder and TextDecoder records boxed as dyn
  * (scr_dyn.h; scr_text_codec_dyn.c boxes and unboxes them). */
-export const TEXT_CODEC_TAG_NUM: Record<"TextEncoder" | "TextDecoder" | "StringDecoder", number> = {
+export const TEXT_CODEC_TAG_NUM: Record<"TextEncoder" | "TextDecoder", number> = {
   TextDecoder: 76,
   TextEncoder: 77,
-  StringDecoder: 78,
 };
 
 /** The decoder record fields scr_text_decoder_to_dyn reads, in its
  * parameter order. */
 const TEXT_DECODER_FIELDS = ["%TextDecoder", "%fatal", "%ignoreBOM", "%state"] as const;
-const STRING_DECODER_FIELDS = ["%enc", "%pending"] as const;
 
 /** Handle kinds whose runtime unit boxes them through its own function,
  * which installs the tag's ops on first use (scr_crypto.h). Programs that
@@ -176,10 +174,6 @@ export interface DynHost extends WalkerHost {
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
   classSubtypes(className: string): readonly string[];
-  /** The strict subclasses whose class-value constructor takes the same
-   * arguments as `className`'s (classValueAbiEquals): the class values a
-   * checked `classval` slot accepts besides its own class. */
-  classValueSubtypes(className: string): readonly string[];
   /** emitter.ts's pendingTestLines: the inline pending-exception test. */
   pendingTestLines(dest: string): string[];
 }
@@ -1480,9 +1474,8 @@ export class LlDyn {
    * fields, and at least one unless an index signature collects the
    * members), record members typed as unions of those leaves, records and
    * arrays, null and undefined (optional and nullable members; see
-   * jsonUnionSupported), discriminated unions of records anywhere (see
-   * jsonDiscriminatedSupported), and index signatures whose value type is
-   * not a union. Everything else keeps the checked-dynamic route alone. */
+   * jsonUnionSupported), and index signatures whose value type is not a
+   * union. Everything else keeps the checked-dynamic route alone. */
   private jsonSchemaSupported(t: IrType, visiting: Set<string>, member = false): boolean {
     switch (t.kind) {
       case "f64":
@@ -1509,40 +1502,11 @@ export class LlDyn {
           (!index || this.jsonSchemaSupported(index, visiting))
         );
       }
-      case "union": {
-        const def = this.host.unionsById.get(t.unionId);
-        if (def?.discriminant) return this.jsonDiscriminatedSupported(def, visiting);
+      case "union":
         return member && this.jsonUnionSupported(t, visiting);
-      }
       default:
         return false;
     }
-  }
-
-  /** A discriminated union the one-pass parser writes directly, as a record
-   * member, an array element or the whole document: record arms that each
-   * name the string literals their discriminant member holds, every
-   * literal naming one arm, plus null and undefined arms. An object then
-   * selects the one arm whose literal its discriminant member holds, the
-   * only arm the checked route's literal tests leave to match
-   * (unionArmsByDiscriminant); an object holding no such literal declines. */
-  private jsonDiscriminatedSupported(def: IrUnionDef, visiting: Set<string>): boolean {
-    const discriminant = def.discriminant!;
-    const literals = new Set<string>();
-    let records = 0;
-    const supported = def.arms.every((arm, tag) => {
-      if (arm.kind === "nullT" || arm.kind === "undefinedT") return true;
-      if (arm.kind !== "record") return false;
-      records++;
-      const guard = discriminant.cases.find((candidate) => candidate.tag === tag);
-      if (!guard || guard.values.length === 0) return false;
-      for (const value of guard.values) {
-        if (typeof value !== "string" || literals.has(value)) return false;
-        literals.add(value);
-      }
-      return this.jsonSchemaSupported(arm, visiting);
-    });
-    return supported && records >= 2;
   }
 
   /** A union record member the one-pass parser writes directly: every arm
@@ -1649,15 +1613,9 @@ export class LlDyn {
         body = `${S} 3, ${S} ${entries.length}, ptr ${fields}, ptr ${overflow.elem}, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}, ptr null, ${S} ${overflow.offset}`;
         break;
       }
-      case "union": {
-        // A discriminated union can be a whole document, whose value the
-        // parser releases when text follows it.
-        const release = host.unionsById.get(t.unionId)?.discriminant
-          ? vAdapters(host, t).release
-          : "null";
-        body = `${S} 5, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr ${release}, ptr @${this.jsonUnionSchema(t, name)}, ${S} 0`;
+      case "union":
+        body = `${S} 5, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null, ptr @${this.jsonUnionSchema(t, name)}, ${S} 0`;
         break;
-      }
       default:
         throw new InternalCompilerError(`llvm emitter bug: JSON schema of ${t.kind}`);
     }
@@ -1672,11 +1630,7 @@ export class LlDyn {
   /** The ScrJsonUnion descriptor of a union member (scr_json.h layout):
    * its slot representation, the arm each JSON value kind selects, and the
    * values the runtime stores for null and for a missing member. Boxed
-   * unions build their boxes through `<name>_box`. A discriminated union
-   * also lists its object arms by discriminant literal (`<name>_cases`),
-   * and, because it can be an array element or a whole document, whose
-   * values are boxes unless the union is a pointer union, it keeps its null
-   * value and box whatever its field representation. */
+   * unions build their boxes through `<name>_box`. */
   private jsonUnionSchema(t: IrType & { kind: "union" }, name: string): string {
     const host = this.host;
     const S = host.sizeType;
@@ -1695,11 +1649,10 @@ export class LlDyn {
     );
     const nullTag = tags[0]!;
     const absentTag = tags[6]!;
-    const values = !inline || def.discriminant !== undefined;
-    const nullValue = values && nullTag >= 0 ? host.unitInstanceRef(t.unionId, nullTag) : "null";
-    const absentValue = values && absentTag >= 0 ? host.absentInstanceRef(t.unionId) : "null";
+    const nullValue = !inline && nullTag >= 0 ? host.unitInstanceRef(t.unionId, nullTag) : "null";
+    const absentValue = !inline && absentTag >= 0 ? host.absentInstanceRef(t.unionId) : "null";
     let box = "null";
-    if (repr === 2 || (def.discriminant && !nullable)) {
+    if (repr === 2) {
       box = `@${name}_box`;
       const lines = [`define internal ptr ${box}(i32 %tag, i64 %bits) ${FN_ATTRS} {`, `entry:`];
       const cases: string[] = [];
@@ -1740,27 +1693,9 @@ export class LlDyn {
         ``,
       );
     }
-    let cases = "null";
-    if (def.discriminant) {
-      const discriminant = def.discriminant;
-      const caseTy = `{ ptr, ${S}, ${S}, ptr }`;
-      const entries = discriminant.cases.flatMap((guard) =>
-        guard.values.map(
-          (value) =>
-            `${caseTy} { ptr ${host.cstr(String(value))}, ${S} ${Buffer.byteLength(String(value), "utf8")}, ${S} ${guard.tag}, ptr @${this.jsonSchema(def.arms[guard.tag]!)} }`,
-        ),
-      );
-      const table = `@${name}_case_table`;
-      cases = `@${name}_cases`;
-      this.defs.push(
-        `${table} = internal constant [${entries.length} x ${caseTy}] [${entries.join(", ")}]`,
-        `${cases} = internal constant { ptr, ${S}, ${S}, ptr } { ptr ${host.cstr(discriminant.field)}, ${S} ${Buffer.byteLength(discriminant.field, "utf8")}, ${S} ${entries.length}, ptr ${table} }`,
-        ``,
-      );
-    }
     const descriptor = `${name}_union`;
     this.defs.push(
-      `@${descriptor} = internal constant { ${S}, [7 x ${S}], [7 x ptr], ptr, ptr, ptr, ptr } { ${S} ${repr}, [7 x ${S}] [${tags.map((tag) => `${S} ${tag}`).join(", ")}], [7 x ptr] [${arms.join(", ")}], ptr ${nullValue}, ptr ${absentValue}, ptr ${box}, ptr ${cases} }`,
+      `@${descriptor} = internal constant { ${S}, [7 x ${S}], [7 x ptr], ptr, ptr, ptr } { ${S} ${repr}, [7 x ${S}] [${tags.map((tag) => `${S} ${tag}`).join(", ")}], [7 x ptr] [${arms.join(", ")}], ptr ${nullValue}, ptr ${absentValue}, ptr ${box} }`,
       ``,
     );
     return descriptor;
@@ -1810,12 +1745,7 @@ export class LlDyn {
    * dynCheck builder — which reports the exact error. Returns +1, or null
    * with the pending flag set. */
   jsonParseHelper(t: IrType): string | null {
-    if (
-      t.kind !== "record" &&
-      t.kind !== "array" &&
-      !(t.kind === "union" && this.host.unionsById.get(t.unionId)?.discriminant)
-    )
-      return null;
+    if (t.kind !== "record" && t.kind !== "array") return null;
     const key = typeKey(t);
     const existing = this.jsonParsers.get(key);
     if (existing) return existing;
@@ -1878,26 +1808,6 @@ export class LlDyn {
     const B = new BlockBuilder();
     if (t.kind === "classval") {
       host.declare(`declare ptr @scr_dyn_class_check(ptr, ptr, ptr)`);
-      // A subclass's class value checks into the base class's slot when
-      // construction through the slot can call its thunk with the base
-      // constructor's arguments; any other subclass fails the check.
-      const subclasses = host.classValueSubtypes(t.className);
-      if (subclasses.length > 0) {
-        host.declare(`declare zeroext i1 @scr_dyn_class_is(ptr, ptr)`);
-        for (const className of subclasses) {
-          const subKey = host.cstr(typeKey({ kind: "classval", className }));
-          const matched = B.tmp();
-          B.line(`${matched} = call zeroext i1 @scr_dyn_class_is(ptr %d, ptr ${subKey})`);
-          const yes = B.newLabel("sub.yes");
-          const no = B.newLabel("sub.no");
-          B.condBr(matched, yes, no);
-          B.startBlock(yes);
-          const sub = B.tmp();
-          B.line(`${sub} = call ptr @scr_dyn_class_check(ptr %d, ptr ${subKey}, ptr %path)`);
-          B.terminate(`ret ptr ${sub}`);
-          B.startBlock(no);
-        }
-      }
       const checked = B.tmp();
       B.line(
         `${checked} = call ptr @scr_dyn_class_check(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,
@@ -1915,18 +1825,11 @@ export class LlDyn {
     const codec = textCodecRecordClass(t, (id) => host.recordsById.get(id));
     if (codec !== null) {
       // The record the codec's handle box holds (+1), or the path TypeError.
+      host.declare(`declare ptr @scr_text_codec_from_dyn(ptr, i1 zeroext, ptr, ptr)`);
       const checked = B.tmp();
-      if (codec === "StringDecoder") {
-        host.declare(`declare ptr @scr_string_decoder_from_dyn(ptr, ptr, ptr)`);
-        B.line(
-          `${checked} = call ptr @scr_string_decoder_from_dyn(ptr %d, ptr %path, ptr ${want})`,
-        );
-      } else {
-        host.declare(`declare ptr @scr_text_codec_from_dyn(ptr, i1 zeroext, ptr, ptr)`);
-        B.line(
-          `${checked} = call ptr @scr_text_codec_from_dyn(ptr %d, i1 ${codec === "TextDecoder"}, ptr %path, ptr ${want})`,
-        );
-      }
+      B.line(
+        `${checked} = call ptr @scr_text_codec_from_dyn(ptr %d, i1 ${codec === "TextDecoder"}, ptr %path, ptr ${want})`,
+      );
       B.terminate(`ret ptr ${checked}`);
       this.defs.push(
         `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} {`,
@@ -3014,14 +2917,14 @@ export class LlDyn {
     return matched;
   }
 
-  /** A TextEncoder, TextDecoder or StringDecoder record boxes as its
-   * handle (+1), which holds the record by reference. The decoders pass
-   * the byte offsets of the fields their boxed methods read. */
+  /** A TextEncoder or TextDecoder record boxes as its handle (+1), which
+   * holds the record by reference. A decoder passes the byte offsets of the
+   * fields its boxed decode reads. */
   private textCodecToDyn(
     B: BlockBuilder,
     t: IrType & { kind: "record" },
     shape: IrRecordShape,
-    codec: "TextEncoder" | "TextDecoder" | "StringDecoder",
+    codec: "TextEncoder" | "TextDecoder",
   ): void {
     const host = this.host;
     const rc = vAdapters(host, t);
@@ -3036,12 +2939,10 @@ export class LlDyn {
       const base = host.nullableUnions.fieldBase(t.shapeId);
       const start = B.tmp();
       B.line(`${start} = ptrtoint ptr %v to ${this.S}`);
-      const fields: readonly string[] =
-        codec === "StringDecoder" ? STRING_DECODER_FIELDS : TEXT_DECODER_FIELDS;
-      const offsets = fields.map((field) => {
+      const offsets = TEXT_DECODER_FIELDS.map((field) => {
         const index = shape.fields.findIndex((f) => f.name === field);
         if (index < 0)
-          throw new InternalCompilerError(`llvm emitter bug: ${codec} record lacks ${field}`);
+          throw new InternalCompilerError(`llvm emitter bug: TextDecoder record lacks ${field}`);
         const p = B.tmp();
         const at = B.tmp();
         const offset = B.tmp();
@@ -3052,11 +2953,11 @@ export class LlDyn {
         B.line(`${offset} = sub ${this.S} ${at}, ${start}`);
         return `${this.S} ${offset}`;
       });
-      const fn =
-        codec === "StringDecoder" ? "scr_string_decoder_to_dyn" : "scr_text_decoder_to_dyn";
-      host.declare(`declare ptr @${fn}(ptr, ptr, ptr, ${fields.map(() => this.S).join(", ")})`);
+      host.declare(
+        `declare ptr @scr_text_decoder_to_dyn(ptr, ptr, ptr, ${this.S}, ${this.S}, ${this.S}, ${this.S})`,
+      );
       B.line(
-        `${r} = call ptr @${fn}(ptr %v, ptr ${rc.retain}, ptr ${rc.release}, ${offsets.join(", ")})`,
+        `${r} = call ptr @scr_text_decoder_to_dyn(ptr %v, ptr ${rc.retain}, ptr ${rc.release}, ${offsets.join(", ")})`,
       );
     }
     B.terminate(`ret ptr ${r}`);
@@ -3236,7 +3137,7 @@ export class LlDyn {
         const shape = host.recordsById.get(t.shapeId);
         if (!shape)
           throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
-        const codec = recordHandleCodecClass(shape);
+        const codec = recordTextCodecClass(shape);
         if (codec !== null) {
           this.textCodecToDyn(B, t, shape, codec);
           break;

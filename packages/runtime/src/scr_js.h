@@ -231,10 +231,6 @@ typedef struct ScrJsIc {
 
 /* `receiver.key` for a plain data property: +1 value, or NULL. */
 ScrDyn *scr_js_load_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic);
-/* The same for a property read site, which also answers (+1) undefined for
- * a key that the receiver and its plain prototype chain lack, and caches
- * that answer. A method read uses scr_js_load_probe. */
-ScrDyn *scr_js_get_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic);
 /* `receiver.key = value` (value borrowed) when it replaces a writable own
  * data property or adds one the prototype chain lacks: true when done. */
 bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic);

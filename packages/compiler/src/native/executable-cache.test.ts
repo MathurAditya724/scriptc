@@ -300,34 +300,3 @@ test("a Linux build whose output changed links again, and then stores the execut
   expect(open().restore(f.destination)).toBe(true);
   expect(readFileSync(f.destination)).toEqual(readFileSync(f.output));
 });
-
-test("a Linux build that keeps its output does not read the deferred inputs", () => {
-  const f = fixture();
-  const artifact = join(f.root, "inputs", "artifact.o");
-  writeFileSync(artifact, "runtime pack artifact");
-  const deferred = vi.fn(() => [artifact]);
-  const open = () =>
-    new NativeExecutableCache(f.cache, f.key, "clang", false, [f.runtime], true, deferred);
-  const first = open();
-  expect(first.trace(["-o", f.output], f.stage)).toBe(true);
-  first.recordOutput(f.output);
-  expect(deferred).toHaveBeenCalledTimes(1);
-  const recorded = (
-    JSON.parse(f.cache.read("kept", f.key)!.toString()) as { inputs: { path: string }[] }
-  ).inputs.map((saved) => saved.path);
-  expect(recorded).toContain(artifact);
-  // The unchanged rebuild checks the recorded identities, the artifact's
-  // among them, without asking for the deferred inputs.
-  expect(open().keep(f.output)).toBe(true);
-  expect(deferred).toHaveBeenCalledTimes(1);
-  // A replaced artifact misses.
-  writeFileSync(artifact, "another runtime pack artifact");
-  expect(open().keep(f.output)).toBe(false);
-  expect(deferred).toHaveBeenCalledTimes(1);
-  // restore() adds the deferred inputs before it checks an entry.
-  const second = open();
-  expect(second.trace(["-o", f.output], f.stage)).toBe(true);
-  second.publish(f.output);
-  expect(open().restore(f.destination)).toBe(true);
-  expect(deferred).toHaveBeenCalledTimes(3);
-});

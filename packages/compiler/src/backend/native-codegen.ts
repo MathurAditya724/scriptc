@@ -30,8 +30,6 @@ import { compilerReleaseVersion } from "../library/sidecar.js";
 import {
   nativeProfileHelperArgs,
   nativeProfileKey,
-  parseNativeProfileMatch,
-  type NativeProfileMatch,
   type NativeProfileOptions,
 } from "./native-profile.js";
 import { writeTextParts } from "../text-parts.js";
@@ -71,8 +69,6 @@ export interface NativeCodegenArtifact {
   dependencies: NativeArtifactDependency[];
   /** Every emitted file, starting with the requested output path. */
   outputPaths: string[];
-  /** How the build's profile matched, when it used one and the helper ran. */
-  profileMatch?: NativeProfileMatch;
 }
 
 const resolvedHelperCache = new Map<string, Promise<ResolvedHelper>>();
@@ -462,7 +458,7 @@ export async function emitNativeArtifact(
   try {
     if (isLlvmFile(options.llvm)) await copyFile(options.llvm.file, input);
     else await writeLlvmSource(input, options.llvm, 0o600);
-    const { stdout } = await invoke(helper.binaryPath, [
+    await invoke(helper.binaryPath, [
       "emit",
       "--input",
       input,
@@ -506,9 +502,7 @@ export async function emitNativeArtifact(
     for (let index = 0; index < stages.length; index++)
       await rename(stages[index]!, outputs[index]!);
     await pruneBuildCache(root);
-    const profileMatch =
-      options.profile?.use === undefined ? null : parseNativeProfileMatch(stdout);
-    return profileMatch === null ? artifact : { ...artifact, profileMatch };
+    return artifact;
   } finally {
     await Promise.all([
       ...stages.map((stage) => rm(stage, { force: true }).catch(() => undefined)),

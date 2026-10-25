@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/8243-json-parse-discriminated-unions.ts"
- ],
- "diags": []
-}

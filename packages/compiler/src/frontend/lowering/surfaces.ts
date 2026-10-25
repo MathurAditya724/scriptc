@@ -819,9 +819,6 @@ export interface BuiltinModuleFn {
    * direct-call row's `fn` (a direct call picks an arity-specific entry
    * point; the value accepts every arity through one). */
   valueFn?: IrLibFn;
-  /** The function value's `length` when it is not the count of its
-   * required value parameters (`Math.max`'s 2 over its rest pack). */
-  valueLength?: number;
 }
 
 export type BuiltinValueParam =
@@ -874,12 +871,6 @@ export const OBJECT_CALLABLE_VALUES: Record<string, BuiltinModuleFn | undefined>
     fn: "dyn.defineProps",
     params: [DYN, DYN],
     result: DYN,
-    valueParams: exactValueParams(DYN, DYN),
-  },
-  hasOwn: {
-    fn: "dyn.hasOwnComputed",
-    params: [DYN, DYN],
-    result: BOOL,
     valueParams: exactValueParams(DYN, DYN),
   },
   keys: { fn: "dyn.objKeys", params: [DYN], result: DYN, valueParams: exactValueParams(DYN) },
@@ -2136,8 +2127,6 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     // The utf8 string overload; the table row is the Buffer-window form.
     writeSync: ["fs.writeStrSync"],
-    // The form whose arguments Node checks at run time.
-    readSync: ["fs.readSyncDyn"],
     // The { recursive, mode } option lowerings.
     mkdirSync: ["fs.mkdirModeSync", "fs.mkdirRecursiveSync", "fs.mkdirRecursiveModeSync"],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.
@@ -2348,13 +2337,6 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
       "date.classOperation",
     ],
     note: "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice",
-  },
-  {
-    id: "stdlib.date.setters",
-    kind: "stdlib",
-    name: "Date.prototype setters",
-    fns: ["date.setFields", "date.timeClip", "date.store"],
-    note: "setTime and the local and UTC field setters, with their optional arguments",
   },
   {
     id: "stdlib.date.UTC",
