@@ -34,7 +34,6 @@ const DEGRADABLE_FAMILIES: ReadonlySet<TypeFailureFamily> = new Set<TypeFailureF
   "component",
   "record-member",
   "unsupported",
-  "dyn-field-policy",
 ]);
 
 function nameText(name: ts.Node | undefined): string | null {

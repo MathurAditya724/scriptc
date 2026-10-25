@@ -2297,11 +2297,17 @@ export function collectClassShapeInner(
       base = named;
       if (!base) {
         if (adoptCallableBase(t.expression)) continue;
-        lowerer.unsupported(
+        // A base whose own collection deferred can still register later
+        // (a flush retry with dynamic slots): the derived class retries
+        // with it (Lowerer.retryDeferred).
+        const diag = unsupportedDiag(
           "SC1090",
-          t,
+          locOf(t),
           `extending classes not declared in the program ('${t.expression.text}')`,
         );
+        lowerer.retriableDiags.add(diag);
+        lowerer.pushDiag(diag);
+        throw new PoisonError();
       }
     }
 
@@ -2535,18 +2541,6 @@ export function collectClassShapeInner(
           if (initializerSymbol && (initializerSymbol.flags & ts.SymbolFlags.Enum) !== 0) continue;
           const type = lowerer.irTypeOf(member.name);
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
-          if (
-            type.kind === "dyn" &&
-            !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
-            !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name)) &&
-            (member.type !== undefined ||
-              (lowerer.typeOf(member.name).flags & ts.TypeFlags.Any) === 0)
-          ) {
-            lowerer.dynFieldPolicyFence(
-              member.name,
-              `${dynFieldTypeSpelling(lowerer, member.name)}-typed static fields`,
-            );
-          }
           staticFields.push({
             name: member.name.text,
             type,
@@ -3050,19 +3044,9 @@ export function collectClassShapeInner(
           if (base && !fields.has(member.name.text) && lowerer.dynConvertible(type)) type = DYN;
         }
         if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
-        // Bundled JS declares fields without annotations before assigning
-        // them in the constructor. Use the same native checked-dynamic
-        // storage as implicit constructor-assigned JS fields.
-        if (
-          type.kind === "dyn" &&
-          !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
-          !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name))
-        ) {
-          lowerer.dynFieldPolicyFence(
-            member.name,
-            `${dynFieldTypeSpelling(lowerer, member.name)}-typed class fields`,
-          );
-        }
+        // A field whose type maps to the checked dynamic (`any`, an
+        // option bag, a degraded type) stores it natively, as JavaScript
+        // classes and constructor-assigned fields do.
         const undefinedInitializer =
           type.kind === "dyn" && !member.initializer ? locOf(member) : undefined;
         if (fields.has(member.name.text)) {
@@ -3193,13 +3177,6 @@ export function collectClassShapeInner(
           const shape = lowerer.paramShape(p);
           const type = shape.bodyType ?? shape.type;
           if (type.kind === "void") lowerer.badType(p.name, lowerer.typeOf(p.name));
-          // The class-field dyn rule verbatim (KEEP NARROW).
-          if (type.kind === "dyn" && !lowerer.classFieldStoresDyn(lowerer.typeOf(p))) {
-            lowerer.dynFieldPolicyFence(
-              p.name,
-              `${dynFieldTypeSpelling(lowerer, p)}-typed class fields`,
-            );
-          }
           // `override x` (and any same-named inherited member) would
           // redeclare a base slot — the declared-field rule verbatim.
           if (fields.has(name)) {
@@ -8942,14 +8919,6 @@ export function throwingSetterFn(lowerer: Lowerer, info: ClassInfo, prop: string
   };
 }
 
-/** The declared type a refused checked-dynamic class field names in its
- * diagnostic (`'any'`, `'WeakMap<object, string>'`): `unknown` and
- * `object` fields store checked-dynamic values, so the refusal is about
- * whatever else the declaration spells. */
-function dynFieldTypeSpelling(lowerer: Lowerer, node: ts.Node): string {
-  return `'${lowerer.checker.typeToString(lowerer.typeOf(node))}'`;
-}
-
 /** The base a constructor chain actually CALLS into: generic FAMILIES are
  * never constructed (no `%<family>.constructor` exists), so an
  * instantiation's construction-relevant base is the family's own base —
@@ -11312,12 +11281,13 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         );
         info = lowerer.classes.get(calleeT.className);
       }
+      // The TYPE world names a class the lowering never registered — a
+      // fenced class expression, an abstract/deferred declaration: flush
+      // its own diagnostics (they tell the real story, unless the flush
+      // registers it with dynamic slots) and poison this construction
+      // site, never an ICE.
+      if (!info) info = lowerer.flushDeferredClass(calleeT.className);
       if (!info) {
-        // The TYPE world names a class the lowering never registered —
-        // a fenced class expression, an abstract/deferred declaration:
-        // flush its own diagnostics (they tell the real story) and
-        // poison this construction site, never an ICE.
-        lowerer.flushDeferredClass(calleeT.className);
         lowerer.unsupported(
           "SC1090",
           expr,

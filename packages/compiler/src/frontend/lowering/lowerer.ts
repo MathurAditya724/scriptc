@@ -730,6 +730,19 @@ export interface DynamicSlot {
   reason: string;
 }
 
+/** Localized failure: rounds of the declaration flush retry. */
+const MAX_DECLARATION_RETRIES = 16;
+
+/** The slot kinds the declaration flush retry degrades (stage L2). */
+const DECLARATION_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>([
+  "field",
+  "param",
+  "return",
+  "local",
+  "global",
+  "loop",
+]);
+
 export class PoisonError extends Error {
   /** Set when a type with no static lowering poisoned a slot (badType and
    * the dyn class field policy): what failed, for the localized-failure
@@ -971,6 +984,10 @@ export interface LowererMode {
   /** Symbols whose deferred diagnostics reachable emit already flushed —
    * the remainder must not report them a second time. */
   alreadyFlushed?: ReadonlySet<ts.Symbol>;
+  /** Localized failure: the types reachable emit degraded (the coverage
+   * remainder maps them alike, so the declarations reachable emit
+   * registered with dynamic slots collect there too). */
+  degradedTypes?: ReadonlyMap<number, { lenient: IrType; code: string; reason: string }>;
   /** LowerOptions.externalTypes, threaded through every lowering pass. */
   externalTypes?: ReadonlyMap<string, string>;
   /** LowerOptions.externalTypeSpecifiersByFile, shared by every pass. */
@@ -1378,6 +1395,7 @@ export function lowerToIr(
       reachable,
       remainder: true,
       alreadyFlushed: resultLowerer.flushedSymbols,
+      degradedTypes: resultLowerer.degradedTypes,
       inlineRequireCycleCalls,
       targetPlatform,
       ffiImports,
@@ -3761,6 +3779,22 @@ export class Lowerer {
   readonly degradedTypes = new Map<number, { lenient: IrType; code: string; reason: string }>();
   /** The dynamic slots the commit points created: one SC6104 each. */
   readonly dynamicSlots: DynamicSlot[] = [];
+  /** Bodies run() skipped because their declaration had not registered. */
+  readonly skippedBodies = new Set<ts.Node>();
+  /** Declarations retryDeferred registered, in order: run() lowers the
+   * bodies it had skipped. */
+  readonly retriedDeclarations: ts.Node[] = [];
+  /** Deferred declarations' collections, for the flush retry
+   * (retryDeferred). */
+  readonly deferredCollectors = new Map<
+    ts.Symbol,
+    { symbolOf: () => ts.Symbol | undefined; collect: () => void }
+  >();
+  /** Collection diagnostics that a flush retry may simply run again (a
+   * derived class whose base had not registered yet). */
+  readonly retriableDiags = new WeakSet<ScrDiagnostic>();
+  /** The checker type behind each type failure badType committed. */
+  readonly failedTypes = new WeakMap<TypeFailure, ts.Type>();
   /** True while collectProgram runs: resolution helpers must not flush
    * deferred diagnostics (collection itself resolves symbols — extends
    * clauses — and collection order must not decide what reports). */
@@ -3814,12 +3848,12 @@ export class Lowerer {
   /** Bumps the per-file attribution counter (no-op unless provenance is
    * active and this is the emit/discovery lane — mirror the CALLER's
    * suppressStats guard, this method only gates remainder). */
-  bumpFileStat(file: string, kind: "total" | "failed"): void {
+  bumpFileStat(file: string, kind: "total" | "failed", by = 1): void {
     if (this.remainder || !provenanceActive()) return;
     let s = this.statsByFile.get(file);
     if (!s) this.statsByFile.set(file, (s = { total: 0, failed: 0 }));
-    if (kind === "total") s.total += 1;
-    else if (kind === "failed") s.failed += 1;
+    if (kind === "total") s.total += by;
+    else if (kind === "failed") s.failed += by;
   }
 
   /** The program holds the declaration-typed boundary's projection
@@ -3843,6 +3877,7 @@ export class Lowerer {
   ) {
     // The mode's options, sorted by name; the values derived from them follow.
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
+    for (const [id, degraded] of mode.degradedTypes ?? []) this.degradedTypes.set(id, degraded);
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
     this.ffiImports = mode.ffiImports ?? [];
@@ -8151,9 +8186,12 @@ export class Lowerer {
         if (sig && !this.wantBody(sig.name)) continue;
         const fn = this.lowerFunction(decl);
         if (fn) functions.push(fn);
-        else if (this.countsSkips()) {
-          this.countSkippedBody(decl);
-          if (this.remainder) this.reportBlockedBody(decl);
+        else {
+          this.skippedBodies.add(decl);
+          if (this.countsSkips()) {
+            this.countSkippedBody(decl);
+            if (this.remainder) this.reportBlockedBody(decl);
+          }
         }
       }
       for (const decl of fp.classDecls) {
@@ -8162,7 +8200,10 @@ export class Lowerer {
           functions.push(
             ...this.withClosureRoot(info.def.name, () => this.lowerClassMembers(info)),
           );
-        else if (this.countsSkips()) this.countSkippedBody(decl);
+        else {
+          this.skippedBodies.add(decl);
+          if (this.countsSkips()) this.countSkippedBody(decl);
+        }
       }
     }
 
@@ -8197,15 +8238,38 @@ export class Lowerer {
       let gc = 0;
       let gi = 0;
       let es = 0;
+      let rd = 0;
       const classDispatch = new ClassDynamicDispatch();
       let dispatchChanged = !this.remainder;
       while (
         dispatchChanged ||
+        rd < this.retriedDeclarations.length ||
         ec < this.exprClasses.length ||
         gc < this.genericClassInstances.length ||
         gi < this.instantiationQueue.length ||
         es < this.emitSpecQueue.length
       ) {
+        // Localized failure: declarations a flush registered with dynamic
+        // slots (retryDeferred) after the loops above skipped their bodies.
+        while (rd < this.retriedDeclarations.length) {
+          const decl = this.retriedDeclarations[rd++]!;
+          if (!this.skippedBodies.delete(decl)) continue;
+          if (this.countsSkips()) this.uncountSkippedBody(decl);
+          if (ts.isFunctionDeclaration(decl)) {
+            const fn = this.lowerFunction(decl);
+            if (fn) functions.push(fn);
+            else {
+              this.skippedBodies.add(decl);
+              if (this.countsSkips()) this.countSkippedBody(decl);
+            }
+          } else if (ts.isClassDeclaration(decl)) {
+            const info = this.classes.get(this.classNamer(decl));
+            if (info)
+              functions.push(
+                ...this.withClosureRoot(info.def.name, () => this.lowerClassMembers(info)),
+              );
+          }
+        }
         while (ec < this.exprClasses.length) {
           functions.push(...this.lowerClassMembers(this.exprClasses[ec++]!));
         }
@@ -8485,6 +8549,22 @@ export class Lowerer {
    * percentage would overstate how much of the program compiles. Count
    * every statement the body holds as attempted and failed, in addition to
    * the skipped-function tally. */
+  /** countSkippedBody undone: a flush registered the declaration after
+   * its body was skipped, and the body lowers now. */
+  private uncountSkippedBody(decl: ts.Node): void {
+    this.stats.functionsSkipped--;
+    if (this.suppressStats) return;
+    const n = countBodyStatements(decl);
+    if (n === 0) return;
+    this.stats.statementsTotal -= n;
+    this.stats.statementsFailed -= n;
+    const file = ts.getSourceFileOfNode(decl).fileName;
+    for (let i = 0; i < n; i++) {
+      this.bumpFileStat(file, "total", -1);
+      this.bumpFileStat(file, "failed", -1);
+    }
+  }
+
   private countSkippedBody(decl: ts.Node): void {
     this.stats.functionsSkipped++;
     if (this.suppressStats) return;
@@ -8806,6 +8886,27 @@ export class Lowerer {
         }
       for (const prop of info.throwingSetters) {
         register(`%${cName}.set:${prop}`, [], () => this.throwingSetterFn(info, prop));
+      }
+    };
+    // Localized failure: a declaration a flush registered with dynamic
+    // slots (retryDeferred) registers its units like a class expression.
+    this.onDeclarationRegistered = (decl: ts.Node): void => {
+      if (ts.isFunctionDeclaration(decl)) {
+        if (!decl.body) return;
+        const symbol = declSymbolOf(this, decl);
+        const sig = symbol ? this.fnSigsBySymbol.get(symbol) : undefined;
+        if (!sig || units.has(sig.name)) return;
+        units.set(sig.name, {
+          order: unitOrder++,
+          roots: functionRoots(decl),
+          lower: () => this.lowerFunction(decl),
+        });
+        if (reachable.has(sig.name)) queue.push(sig.name);
+        metadataPriority.set(sig.name, [3, expressionMetadataOrder++]);
+      } else if (ts.isClassDeclaration(decl)) {
+        const info = this.classes.get(this.classNamer(decl));
+        if (info && !info.generic && !units.has(`%${info.def.name}.constructor`))
+          this.onExprClassCollected?.(info);
       }
     };
     const onEdge = this.onEdge;
@@ -9314,6 +9415,7 @@ export class Lowerer {
   ): never {
     const failure = typeFailureOf(node, this.checker.typeToString(type), family);
     diag.typeFailure = failure;
+    this.failedTypes.set(failure, type);
     this.pushDiag(diag);
     throw new PoisonError(failure, type);
   }
@@ -9332,7 +9434,7 @@ export class Lowerer {
     const failure = e.failure;
     const type = e.failedType;
     if (failure === undefined || type === undefined) return null;
-    if (!failure.degradable || failure.family === "dyn-field-policy") return null;
+    if (!failure.degradable) return null;
     if (!slots.has(failure.slot)) return null;
     const id = (type as { id?: number }).id;
     // Already degraded and still failing: no progress, commit as today.
@@ -9374,21 +9476,6 @@ export class Lowerer {
         s.loc.end === slot.loc.end,
     );
     if (!seen) this.dynamicSlots.push(slot);
-  }
-
-  /** The SC1090 refusal of checked-dynamic class fields in TypeScript
-   * (classFieldStoresDyn): a policy fence, not a missing representation,
-   * so its failure is recorded as degradable. */
-  dynFieldPolicyFence(node: ts.Node, feature: string): never {
-    const diag = unsupportedDiag("SC1090", locOf(node), feature);
-    const failure = typeFailureOf(
-      node,
-      this.checker.typeToString(this.typeOf(node)),
-      "dyn-field-policy",
-    );
-    diag.typeFailure = failure;
-    this.pushDiag(diag);
-    throw new PoisonError(failure, this.typeOf(node));
   }
 
   badType(node: ts.Node, type: ts.Type): never {
@@ -12252,6 +12339,7 @@ export class Lowerer {
       const list = this.deferredDiags.get(symbol) ?? [];
       list.push(...sink);
       this.deferredDiags.set(symbol, list);
+      this.deferredCollectors.set(symbol, { symbolOf, collect });
       return symbol;
     } finally {
       this.diagSink = previousSink;
@@ -12302,10 +12390,13 @@ export class Lowerer {
       return;
     }
     if (this.diagSink === null) {
+      if (this.retryDeferred(symbol, diags)) return;
+      // A failed retry leaves the last attempt's diagnostics deferred.
+      const committed = this.deferredDiags.get(symbol) ?? diags;
       this.deferredDiags.delete(symbol);
       this.flushedSymbols.add(symbol);
-      this.noteRejected(symbol, diags);
-      for (const d of diags) this.pushDiag(d);
+      this.noteRejected(symbol, committed);
+      for (const d of committed) this.pushDiag(d);
       this.touchRejected(symbol);
       return;
     }
@@ -12331,9 +12422,73 @@ export class Lowerer {
     if (list.length === 0) this.deferredDiags.delete(symbol);
   }
 
-  flushDeferredClass(className: string): void {
+  /** Flushes a deferred class known by its IR name, and answers the class
+   * when the flush registered it (retryDeferred). */
+  flushDeferredClass(className: string): ClassInfo | undefined {
     const symbol = this.deferredClassByName.get(className);
     if (symbol) this.flushDeferred(symbol);
+    return this.classes.get(className);
+  }
+
+  /** Localized failure's declaration commit point (design §3.3): a
+   * reference is flushing a deferred declaration into the build. When
+   * every deferred diagnostic is a degradable type failure at one of the
+   * declaration's slots, the failing types degrade and the collection
+   * runs again (up to MAX_DECLARATION_RETRIES rounds, each degrading the
+   * types the previous round still failed on). On success the
+   * declaration registers, each degraded slot is an SC6104, and nothing
+   * reports. Otherwise the last round's diagnostics stay deferred for the
+   * caller to commit. */
+  private retryDeferred(symbol: ts.Symbol, diags: readonly ScrDiagnostic[]): boolean {
+    if (this.tierMode !== "auto") return false;
+    const collector = this.deferredCollectors.get(symbol);
+    if (collector === undefined) return false;
+    const slots: DynamicSlot[] = [];
+    let current = diags;
+    for (let round = 0; round < MAX_DECLARATION_RETRIES; round++) {
+      const failing: { diag: ScrDiagnostic; failure: TypeFailure; id: number }[] = [];
+      let retriable = false;
+      for (const diag of current) {
+        if (this.retriableDiags.has(diag)) {
+          retriable = true;
+          continue;
+        }
+        const failure = diag.typeFailure;
+        const type = failure === undefined ? undefined : this.failedTypes.get(failure);
+        const id = (type as { id?: number } | undefined)?.id;
+        if (
+          failure === undefined ||
+          id === undefined ||
+          !failure.degradable ||
+          !DECLARATION_SLOTS.has(failure.slot) ||
+          this.degradedTypes.has(id)
+        )
+          return false;
+        failing.push({ diag, failure, id });
+      }
+      // A round makes progress by degrading a type, or (once) by running
+      // a collection that only waited for another declaration.
+      if (failing.length === 0 && !(retriable && round === 0)) return false;
+      for (const { diag, failure, id } of failing) {
+        this.degradedTypes.set(id, { lenient: DYN, code: diag.code, reason: diag.message });
+        slots.push({ loc: diag.loc, failure, code: diag.code, reason: diag.message });
+      }
+      this.deferredDiags.delete(symbol);
+      if (this.collectDeferring(collector.symbolOf, collector.collect) === null) {
+        this.deferredCollectors.delete(symbol);
+        for (const [name, deferred] of this.deferredClassByName)
+          if (deferred === symbol) this.deferredClassByName.delete(name);
+        for (const slot of slots) this.noteDynamicSlot(slot);
+        for (const decl of symbol.declarations)
+          if (ts.isFunctionDeclaration(decl) || ts.isClassDeclaration(decl)) {
+            this.retriedDeclarations.push(decl);
+            this.onDeclarationRegistered?.(decl);
+          }
+        return true;
+      }
+      current = this.deferredDiags.get(symbol) ?? [];
+    }
+    return false;
   }
 
   collectSignature(decl: ts.FunctionDeclaration): void {
@@ -12612,6 +12767,9 @@ export class Lowerer {
    * bodies as worklist units (the units map is otherwise built before
    * lowering starts). Null in the emit pass. */
   onExprClassCollected: ((info: ClassInfo) => void) | null = null;
+  /** emitReachable's unit registration for a declaration retryDeferred
+   * registered after collection. */
+  onDeclarationRegistered: ((decl: ts.Node) => void) | null = null;
 
   /** Mixin functions (`(Base: T) => class extends Base {…}`) by their
    * function-like node: recognized shape, or null for checked

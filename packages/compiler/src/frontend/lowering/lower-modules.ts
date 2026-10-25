@@ -1036,13 +1036,11 @@ export function moduleArtifacts(
     }
     while (pendingClasses.length > 0) {
       const name = pendingClasses.pop()!;
-      const info = lowerer.classes.get(name);
-      if (!info) {
-        // Referenced by an emitted type but never registered: collection
-        // deferred its diagnostics — a reached reference makes them count.
-        lowerer.flushDeferredClass(name);
-        continue;
-      }
+      // Referenced by an emitted type but never registered: collection
+      // deferred its diagnostics — a reached reference makes them count
+      // (or registers the class with dynamic slots, retryDeferred).
+      const info = lowerer.classes.get(name) ?? lowerer.flushDeferredClass(name);
+      if (!info) continue;
       for (const field of info.def.fields) visitType(field.type);
       if (info.base) visitClass(info.base.def.name);
       if (info.def.genericOf) visitClass(info.def.genericOf);

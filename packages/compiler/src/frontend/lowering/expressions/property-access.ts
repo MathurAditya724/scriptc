@@ -3644,13 +3644,13 @@ export function classFieldTarget(
   ) {
     return { container: "dynamic", obj: represented, field: fieldName, fieldType: DYN };
   }
-  const info = lowerer.classes.get(receiverType.className);
-  if (!info) {
-    // A receiver typed as a class whose collection deferred: the
-    // deferred diagnostics are what explains the miss.
+  // A receiver typed as a class whose collection deferred: the deferred
+  // diagnostics are what explains the miss (unless the flush registers
+  // the class with dynamic slots, retryDeferred).
+  const info =
+    lowerer.classes.get(receiverType.className) ??
     lowerer.flushDeferredClass(receiverType.className);
-    return null;
-  }
+  if (!info) return null;
   const fieldType = info.fields.get(fieldName);
   const lowerObjectReceiver = (): IrExpr => {
     let obj = represented;
