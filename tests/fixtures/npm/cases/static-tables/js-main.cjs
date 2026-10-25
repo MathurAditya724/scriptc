@@ -14,7 +14,7 @@ lib.register("b", function () {
 });
 console.log(lib.dispatch("b"), lib.limit());
 lib.bump();
-console.log(lib.limit(), new lib.Pair(2, 3).sum());
+console.log(lib.limit(), new lib.Pair(2, 3).sum(), lib.inits());
 try {
   lib.apply("missing", 1, 2);
 } catch (e) {
