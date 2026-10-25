@@ -26,3 +26,23 @@ try {
 } catch (e) {
   console.log((e as Error).name, (e as Error).message);
 }
+// A class value checked into a `typeof Shape` slot: a subclass whose
+// constructor takes the same arguments constructs, and one whose constructor
+// takes an argument the slot does not pass throws a TypeError (Node's from
+// reading the missing argument, the compiled program's from the check).
+class Sized extends Shape {
+  label: string;
+  constructor(side: number) {
+    super();
+    this.label = side.toFixed(1);
+  }
+}
+const values: any[] = [Square, Sized, Shape];
+for (const value of values) {
+  try {
+    const S: typeof Shape = value;
+    console.log(new S().area());
+  } catch (e) {
+    console.log((e as Error).name);
+  }
+}

@@ -9782,6 +9782,75 @@ function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType
   return lowerer.currentClass?.fields.get(parent.left.name.text) ?? null;
 }
 
+/** An array element read that construction narrows to a class value with a
+ * check (`%new.callee`, which throws "is not a constructor"). */
+interface NarrowedConstructorRead {
+  read: IrExpr;
+  check: string;
+  unionT: IrType & { kind: "union" };
+  calleeT: IrType & { kind: "classval" };
+  message: IrExpr;
+}
+
+/** `new arr[i](args)` through a narrowed element read: an interned lifted
+ * function takes the read and the completed arguments, which evaluate in
+ * that order as call arguments, then runs the check and constructs. JS
+ * evaluates the arguments before it checks that the callee constructs, and
+ * the arguments stay in the one call, where a spread's argument pack lives
+ * until every argument has read it. */
+function checkedElementConstruction(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  narrowed: NarrowedConstructorRead,
+  args: IrExpr[],
+  loc: SrcLoc,
+): IrExpr {
+  const type: IrType = { kind: "object", className: info.def.name };
+  const key = `newChecked:${narrowed.check}:${info.def.name}:${args.map((a) => typeKey(a.type)).join(",")}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = keyedHelperName(lowerer, "%new.checked", key);
+    lowerer.valueHelpers.set(key, name);
+    const params: IrParam[] = [
+      { localId: "value", name: "value", type: narrowed.unionT },
+      { localId: "message", name: "message", type: STRING },
+      ...args.map((arg, i) => ({ localId: `arg.${i}`, name: `arg${i}`, type: arg.type })),
+    ];
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: type,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "newValue",
+            callee: {
+              kind: "call",
+              callee: narrowed.check,
+              args: [varRef("value", narrowed.unionT, loc), varRef("message", STRING, loc)],
+              type: narrowed.calleeT,
+              loc,
+            },
+            args: params.slice(2).map((p) => varRef(p.localId, p.type, loc)),
+            type,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return {
+    kind: "call",
+    callee: name,
+    args: [narrowed.read, narrowed.message, ...args],
+    type,
+    loc,
+  };
+}
 /** Map, Set and the error classes construct in lowerNew's identifier
  * branch, which a module member alias of one (`new mod.M()`) also takes. */
 function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
@@ -11045,6 +11114,9 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       }
       let callee = lowerer.lowerExpr(expr.expression);
       if (callee.type.kind === "dyn") return lowerCheckedConstructor(lowerer, expr, callee);
+      /** The union-typed element read a narrowing check guards, and the
+       * check (`%new.callee`) that yields the class value or throws. */
+      let narrowedCallee: NarrowedConstructorRead | null = null;
       // An array element read (`new T[0]()` over `[Dog, Animal]`, whose
       // checker type is the common base) keeps the undefined an index past
       // the end reads: the class value is narrowed out with a check, which
@@ -11118,18 +11190,25 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
                 loc,
               });
             }
+            // JavaScript evaluates the arguments before it checks that the
+            // callee constructs, so the check runs at the construction
+            // (checkedElementConstruction).
+            narrowedCallee = {
+              read: callee,
+              check: name,
+              unionT,
+              calleeT,
+              message: {
+                kind: "strLit",
+                value: `${expr.expression.getText()} is not a constructor`,
+                type: STRING,
+                loc,
+              },
+            };
             callee = {
               kind: "call",
               callee: name,
-              args: [
-                callee,
-                {
-                  kind: "strLit",
-                  value: `${expr.expression.getText()} is not a constructor`,
-                  type: STRING,
-                  loc,
-                },
-              ],
+              args: [callee, narrowedCallee.message],
               type: calleeT,
               loc,
             };
@@ -11175,13 +11254,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       const built = constructedFromValue(
         lowerer,
         info,
-        {
-          kind: "newValue",
-          callee,
-          args,
-          type: { kind: "object", className: info.def.name },
-          loc,
-        },
+        narrowedCallee !== null
+          ? checkedElementConstruction(lowerer, info, narrowedCallee, args, loc)
+          : {
+              kind: "newValue",
+              callee,
+              args,
+              type: { kind: "object", className: info.def.name },
+              loc,
+            },
         expr,
       );
       // A runtime class slot widened from a union (`[Readable, Writable]`'s

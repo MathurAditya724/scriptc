@@ -58,7 +58,12 @@ import {
   unionContainerArmsOk,
   VOID,
 } from "./ir.js";
-import { DYN_CLASS_PROPERTIES, callSiteReturnType, classValueConstructor } from "./ir.js";
+import {
+  DYN_CLASS_PROPERTIES,
+  callSiteReturnType,
+  classValueAbiEquals,
+  classValueConstructor,
+} from "./ir.js";
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
@@ -2997,19 +3002,13 @@ function validateFunction(
           }
           const subClass = classes.get(sub);
           const supClass = classes.get(sup);
-          const subValueCtor = subClass ? classValueConstructor(subClass) : null;
-          const supValueCtor = supClass ? classValueConstructor(supClass) : null;
-          const subCtor = subValueCtor ? functions.get(subValueCtor.fn) : undefined;
-          const supCtor = supValueCtor ? functions.get(supValueCtor.fn) : undefined;
-          if (!subCtor || !supCtor || !subValueCtor || !supValueCtor) {
+          const subCtor = subClass ? functions.get(classValueConstructor(subClass).fn) : undefined;
+          const supCtor = supClass ? functions.get(classValueConstructor(supClass).fn) : undefined;
+          if (!subClass || !supClass || !subCtor || !supCtor) {
             err(`classval upcast: "${sub}"/"${sup}" lack constructor functions`, e.loc);
             break;
           }
-          const subArgs = subCtor.params.slice(subValueCtor.firstArg);
-          const supArgs = supCtor.params.slice(supValueCtor.firstArg);
-          const abiEqual =
-            subArgs.length === supArgs.length &&
-            subArgs.every((p, i) => typeEquals(p.type, supArgs[i]!.type));
+          const abiEqual = classValueAbiEquals(subClass, supClass, functions);
           if (!abiEqual) {
             err(`classval upcast: "${sub}" and "${sup}" constructor ABIs differ`, e.loc);
           }

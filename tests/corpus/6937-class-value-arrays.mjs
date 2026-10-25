@@ -28,3 +28,26 @@ try {
 }
 const byName = { dog: Dog, cat: Cat };
 console.log(new byName.dog().speak(), new byName["cat"]().speak());
+// The arguments are evaluated before the missing element throws.
+class Point {
+  constructor(x, y) {
+    this.sum = x + y;
+  }
+}
+class Point3 extends Point {}
+const points = [Point3, Point];
+const evaluated = [];
+const arg = (v) => (evaluated.push(v), v);
+console.log(new points[0](arg(1), arg(2)).sum, evaluated.join());
+try {
+  new points[2](arg(3), arg(4));
+} catch (e) {
+  console.log(e.name, e.message, evaluated.join());
+}
+// Spread arguments too, through a valid index and past the end.
+console.log(new points[1](...[5, 6]).sum);
+try {
+  new points[3](...[arg(7), arg(8)]);
+} catch (e) {
+  console.log(e.name, e.message, evaluated.join());
+}

@@ -55,6 +55,7 @@ import {
   typeKey,
   VOID,
   classJsName,
+  classValueAbiEquals,
 } from "../../ir/ir.js";
 import { moduleRuntimeFeatures, type RuntimeFeatures } from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
@@ -1895,14 +1896,14 @@ export class LlEmitter {
         const meta = this.classMeta.get(t.className);
         return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
       },
-      classSubtypes: (name) => {
-        const target = this.classMetaOf(name);
-        const intervals = classMembershipIntervals(this.classMeta, target.def.name);
-        return [...this.classMeta.values()]
-          .filter((meta) =>
-            intervals.some((range) => range.pre <= meta.pre && meta.pre <= range.post),
-          )
-          .map((meta) => meta.def.name);
+      classSubtypes: (name) => this.classSubtypes(name),
+      classValueSubtypes: (name) => {
+        const target = this.classMetaOf(name).def;
+        return this.classSubtypes(name).filter(
+          (sub) =>
+            sub !== target.name &&
+            classValueAbiEquals(this.classMetaOf(sub).def, target, this.fnByName),
+        );
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
@@ -3964,6 +3965,15 @@ export class LlEmitter {
   }
 
   // ── class plumbing ──────────────────────────────────────────────────────
+
+  /** `name` and every class whose membership interval falls in its own. */
+  private classSubtypes(name: string): string[] {
+    const target = this.classMetaOf(name);
+    const intervals = classMembershipIntervals(this.classMeta, target.def.name);
+    return [...this.classMeta.values()]
+      .filter((meta) => intervals.some((range) => range.pre <= meta.pre && meta.pre <= range.post))
+      .map((meta) => meta.def.name);
+  }
 
   classMetaOf(className: string): LlClassMeta {
     const meta = this.classMeta.get(className);
