@@ -35,6 +35,27 @@ interface Edit {
   readonly text: string;
   /** Replaces pos..end instead of inserting at pos. */
   readonly end?: number;
+  /** The annotation (or dead branch) the edit belongs to. */
+  readonly id?: number;
+}
+
+/** The overlay before annotation exclusions apply: per file, its text,
+ * edits and appended typedefs. It depends only on the analysis, so a build
+ * that drops refused annotations renders it again instead of analyzing
+ * again (renderShapeOverlay). */
+export interface ShapeOverlayPlan {
+  readonly parts: Map<string, OverlayPart>;
+}
+
+interface OverlayPart {
+  readonly text: string;
+  readonly edits: Edit[];
+  readonly suffix: string;
+  /** The leading trivia of each annotated declaration, by annotation id:
+   * the package's own JSDoc there is neutralized while the annotation is
+   * kept (package JSDoc is a hint; elsewhere it types the code as it does
+   * without the overlay). */
+  readonly docRanges: { lo: number; hi: number; id: number }[];
 }
 
 /** Marks the overlay's own comments (an unknown JSDoc tag, ignored). */
@@ -76,7 +97,7 @@ export function planShapeOverlay(
   verdicts: readonly SiteVerdict[],
   packageFiles: readonly ts.SourceFile[],
   exclusions: OverlayExclusions = NO_EXCLUSIONS,
-): ShapeOverlay {
+): ShapeOverlayPlan {
   const pSites = new Map<Atom, SiteVerdict>();
   const siteVerdicts = new Set<Atom>(verdicts.map((v) => v.site.atom));
   // Records and arrays print only for sites whose objects never escape: a
@@ -93,11 +114,9 @@ export function planShapeOverlay(
     siteKeys.set(v.site.atom, keys);
     pSites.set(v.site.atom, v);
   }
-  const files = new Map<string, string>();
+  const parts = new Map<string, OverlayPart>();
   const overlaid = new Set<ts.SourceFile>(packageFiles);
   const exportedClasses = new Map<ts.SourceFile, Set<string>>();
-  let annotations = 0;
-  let deadBranches = 0;
   debugIndex = 0;
   // `if` branches no condition value allowed, per file: the overlay
   // replaces each with a throwing check, so the checker and the lowering
@@ -118,15 +137,18 @@ export function planShapeOverlay(
     const typedefs = new Map<string, string>();
     const typedefText: string[] = [];
     const edits: Edit[] = [];
-    const dropped = exclusions.annotations.get(sf.fileName);
     // One annotation: a JSDoc comment at `pos` carrying MARK and the
     // annotation's id (its position), so a refused lowering can name it and
     // the next load drop it. `close`: the text that closes a type cast.
-    const annotate = (pos: number, tags: string, close?: number): void => {
-      if (dropped?.has(pos) === true) return;
-      edits.push({ pos, text: `/** ${tags} ${MARK} #${pos} */ ${close !== undefined ? "(" : ""}` });
-      if (close !== undefined) edits.push({ pos: close, text: ")" });
-      annotations++;
+    const docRanges: { lo: number; hi: number; id: number }[] = [];
+    const annotate = (pos: number, tags: string, close?: number, from?: number): void => {
+      if (from !== undefined && from < pos) docRanges.push({ lo: from, hi: pos, id: pos });
+      edits.push({
+        pos,
+        id: pos,
+        text: `/** ${tags} ${MARK} #${pos} */ ${close !== undefined ? "(" : ""}`,
+      });
+      if (close !== undefined) edits.push({ pos: close, id: pos, text: ")" });
     };
 
     const className = (decl: ts.Node): string | null => {
@@ -461,7 +483,12 @@ export function planShapeOverlay(
           p.questionToken !== undefined
         )
           return;
-        const t = typeOf(paramValues(fn, index), false, 0);
+        const values = paramValues(fn, index);
+        const t = typeOf(values, false, 0);
+        // A `typeof p === "…"` test the proven values never pass would
+        // narrow the typed parameter to never inside the branch, which the
+        // lowering refuses: such a parameter stays untyped.
+        if (t !== null && typeofTestsOutside(fn, p.name.text, values)) return;
         if (t !== null) tags.push(`@param {${t}} ${p.name.text}`);
       });
       return tags.length > 0 ? tags.join(" ") : null;
@@ -482,7 +509,7 @@ export function planShapeOverlay(
       ) {
         if (node.body !== undefined) {
           const tags = paramTags(node);
-          if (tags !== null) annotate(ts.tokenStartOfNode(node), tags);
+          if (tags !== null) annotate(ts.tokenStartOfNode(node), tags, undefined, node.pos);
         }
         // `this.f = …` fields of a constructor's top-level statements.
         if (ts.isConstructorDeclaration(node) && node.body !== undefined) {
@@ -505,7 +532,7 @@ export function planShapeOverlay(
             if (seen.has(name)) continue;
             seen.add(name);
             const t = cls !== undefined ? fieldType(cls, name) : null;
-            if (t !== null) annotate(ts.tokenStartOfNode(st), `@type {${t}}`);
+            if (t !== null) annotate(ts.tokenStartOfNode(st), `@type {${t}}`, undefined, st.pos);
           }
         }
       }
@@ -521,7 +548,7 @@ export function planShapeOverlay(
         const init = d.initializer;
         if (ts.isIdentifier(d.name) && init !== undefined && !literalInitializer(init)) {
           const t = typeOf(analysis.declValues(d), false, 0);
-          if (t !== null) annotate(ts.tokenStartOfNode(node), `@type {${t}}`);
+          if (t !== null) annotate(ts.tokenStartOfNode(node), `@type {${t}}`, undefined, node.pos);
         }
       }
       ts.forEachChild(node, (c) => {
@@ -551,7 +578,6 @@ export function planShapeOverlay(
     const ranges: [number, number][] = [];
     for (const branch of dead) {
       const start = ts.tokenStartOfNode(branch);
-      if (dropped?.has(start) === true) continue;
       if (ranges.some(([lo, hi]) => start >= lo && start < hi)) continue;
       ranges.push([start, branch.end]);
     }
@@ -570,9 +596,9 @@ export function planShapeOverlay(
         edits.push({
           pos: lo,
           end: hi,
+          id: lo,
           text: `{ /** ${MARK} #${lo} */ throw new Error(${JSON.stringify(message)}); }`,
         });
-        deadBranches++;
       }
     }
     // Debugging: SCRIPTC_SHAPE_OVERLAY_ONLY=a-b keeps the annotations
@@ -589,7 +615,7 @@ export function planShapeOverlay(
       edits.push(...kept);
     }
     if (edits.length === 0) continue;
-    files.set(sf.fileName, neutralizeDocTags(applyEdits(sf.text, edits)) + typedefText.join(""));
+    parts.set(sf.fileName, { text: sf.text, edits, suffix: typedefText.join(""), docRanges });
   }
   // Type aliases other files name these files' classes through.
   for (const [other, names] of exportedClasses) {
@@ -597,12 +623,96 @@ export function planShapeOverlay(
       .sort()
       .map((n) => `/** @typedef {${n}} __shape_class_${n} ${MARK} */`)
       .join("");
-    files.set(
-      other.fileName,
-      (files.get(other.fileName) ?? neutralizeDocTags(other.text)) + "\n" + aliases,
-    );
+    const part = parts.get(other.fileName);
+    if (part !== undefined)
+      parts.set(other.fileName, { ...part, suffix: `${part.suffix}\n${aliases}` });
+    else
+      parts.set(other.fileName, {
+        text: other.text,
+        edits: [],
+        suffix: `\n${aliases}`,
+        docRanges: [],
+      });
+  }
+  return { parts };
+}
+
+/** The overlay's files with the annotations a build dropped left out. */
+export function renderShapeOverlay(
+  plan: ShapeOverlayPlan,
+  exclusions: OverlayExclusions = NO_EXCLUSIONS,
+): ShapeOverlay {
+  const files = new Map<string, string>();
+  let annotations = 0;
+  let deadBranches = 0;
+  for (const [file, part] of plan.parts) {
+    const dropped = exclusions.annotations.get(file);
+    const edits = part.edits.filter((e) => e.id === undefined || dropped?.has(e.id) !== true);
+    for (const e of edits) {
+      if (e.id === undefined || e.text === ")") continue;
+      if (e.end !== undefined) deadBranches++;
+      else annotations++;
+    }
+    if (edits.length === 0 && part.suffix === "") continue;
+    let text = part.text;
+    for (const r of part.docRanges)
+      if (dropped?.has(r.id) !== true)
+        text = text.slice(0, r.lo) + neutralizeDocTags(text.slice(r.lo, r.hi)) + text.slice(r.hi);
+    files.set(file, applyEdits(text, edits) + part.suffix);
   }
   return { files, annotations, deadBranches };
+}
+
+/** The `typeof` results the values can have. */
+function typeofResults(values: ReadonlySet<Atom>): Set<string> {
+  const out = new Set<string>();
+  for (const a of values) {
+    if (a.kind === "prim")
+      out.add(a.label === "null" ? "object" : a.label === "symbol" ? "symbol" : a.label);
+    else if (a.kind === "function" || a.kind === "class") out.add("function");
+    else out.add("object");
+  }
+  return out;
+}
+
+/** Whether the function's body compares `typeof name` with a result the
+ * values never have. */
+function typeofTestsOutside(
+  fn: ts.FunctionLikeDeclaration,
+  name: string,
+  values: ReadonlySet<Atom>,
+): boolean {
+  const results = typeofResults(values);
+  let outside = false;
+  const visit = (n: ts.Node): void => {
+    if (outside) return;
+    if (
+      ts.isBinaryExpression(n) &&
+      (n.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        n.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+        n.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+        n.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken)
+    ) {
+      for (const [op, lit] of [
+        [n.left, n.right],
+        [n.right, n.left],
+      ] as const)
+        if (
+          ts.isTypeOfExpression(op) &&
+          ts.isIdentifier(op.expression) &&
+          op.expression.text === name &&
+          ts.isStringLiteral(lit) &&
+          !results.has(lit.text)
+        )
+          outside = true;
+    }
+    ts.forEachChild(n, (c) => {
+      visit(c);
+      return undefined;
+    });
+  };
+  if (fn.body !== undefined) visit(fn.body);
+  return outside;
 }
 
 function packageNameOf(fileName: string): string {

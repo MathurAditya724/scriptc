@@ -6,10 +6,17 @@ import type { IrFunction } from "../../ir/ir.js";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { isShapelessPackage } from "../package-shims.js";
-import { analyzeShapes, isPackageJsFile } from "./analyze.js";
-import { OVERLAY_MARK, planShapeOverlay, type OverlayExclusions } from "./overlay.js";
+import { analyzeShapes, isPackageJsFile, type ShapeAnalysis } from "./analyze.js";
+import { createHash } from "node:crypto";
+import {
+  OVERLAY_MARK,
+  planShapeOverlay,
+  renderShapeOverlay,
+  type OverlayExclusions,
+  type ShapeOverlayPlan,
+} from "./overlay.js";
 import { attributeOverlayRefusals } from "./fallback.js";
-import { planStaticObjectRewrites } from "./static-objects.js";
+import { planStaticObjectRewrites, type StaticObjectRewrites } from "./static-objects.js";
 import { isJsSourceFile } from "../program.js";
 import { buildShapeReport } from "./report.js";
 import { computeConstantGraphs, constantGraphReport } from "./constant-graphs.js";
@@ -93,6 +100,7 @@ let droppedAnnotations = 0;
 
 /** Starts a build: no annotation is excluded yet. */
 export function beginShapeOverlayBuild(): void {
+  overlayCache = new Map();
   exclusions = { annotations: new Map(), files: new Set() };
   overlayDropped = false;
   droppedAnnotations = 0;
@@ -127,7 +135,12 @@ export function excludeRefusedOverlay(
     droppedAnnotations = overlayAnnotations;
     return true;
   }
-  const blame = attributeOverlayRefusals(program, diagnostics, files);
+  const blame = attributeOverlayRefusals(program, diagnostics, files, level !== "fences");
+  if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] === "all")
+    for (const [file, ids] of blame.annotations)
+      process.stderr.write(
+        `[shape-fallback] ${level} blames ${file.split("/").slice(-2).join("/")}: ${[...ids].join(",")}\n`,
+      );
   let changed = false;
   for (const file of blame.files) {
     const ids = blame.annotations.get(file);
@@ -158,6 +171,44 @@ function overlayExclusions(): OverlayExclusions {
   return exclusions;
 }
 
+/* Per build, the overlay's analysis-dependent results by program text and
+ * excluded files: a reload that only drops refused annotations renders the
+ * cached plan instead of analyzing again (fallback.ts). */
+interface OverlayCacheEntry {
+  budgetExceeded?: true;
+  rewrites?: StaticObjectRewrites;
+  plan?: ShapeOverlayPlan;
+}
+let overlayCache = new Map<string, OverlayCacheEntry>();
+
+function programTextKey(program: ts.Program): string {
+  const hash = createHash("sha256");
+  for (const sf of program.getSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    hash.update(sf.fileName).update("\0").update(sf.text).update("\0");
+  }
+  return hash.digest("hex");
+}
+
+/** Per-call-site clones serve the constant-graph facts (stage 3); the
+ * overlay's rewrites and types do not use them yet, so its analyses run
+ * without them unless SCRIPTC_SHAPE_SITE_CLONES asks. */
+function overlaySiteClones(): number {
+  const env = process.env["SCRIPTC_SHAPE_SITE_CLONES"];
+  return env === undefined ? 0 : Number(env);
+}
+
+function overlayJsFiles(analysis: ShapeAnalysis): ts.SourceFile[] {
+  // Package JavaScript of packages that keep shapes on, and the program's
+  // own JavaScript files.
+  return analysis.files.filter((sf) => {
+    if (sf.isDeclarationFile || !isJsSourceFile(sf)) return false;
+    if (!isPackageJsFile(sf)) return !sf.fileName.includes("/node_modules/");
+    const pkg = npmStaticPackageOfPath(sf.fileName);
+    return pkg === null || !isShapelessPackage(pkg);
+  });
+}
+
 /** loadProgram7's overlayer: analyze, plan, and register the overlay files. */
 export function shapeOverlayer(
   program: ts.Program,
@@ -165,23 +216,34 @@ export function shapeOverlayer(
 ): ReadonlyMap<string, string> | null {
   if (round === 0) resetShapeOverlay();
   if (overlayDropped) return null;
-  const analysis = analyzeShapes(program, program.getTypeChecker());
-  if (analysis.budgetExceeded) return null;
-  // Package JavaScript of packages that keep shapes on, and the program's
-  // own JavaScript files.
-  const jsFiles = analysis.files.filter((sf) => {
-    if (sf.isDeclarationFile || !isJsSourceFile(sf)) return false;
-    if (!isPackageJsFile(sf)) return !sf.fileName.includes("/node_modules/");
-    const pkg = npmStaticPackageOfPath(sf.fileName);
-    return pkg === null || !isShapelessPackage(pkg);
-  });
+  const key = `${programTextKey(program)}|${[...exclusions.files].sort().join(",")}`;
+  const cached = overlayCache.get(key);
+  const entry: OverlayCacheEntry = cached ?? {};
+  if (cached === undefined) overlayCache.set(key, entry);
+  if (entry.budgetExceeded === true) return null;
+  let analysis: ShapeAnalysis | null = null;
+  const analyzed = (): ShapeAnalysis | null => {
+    analysis ??= analyzeShapes(program, program.getTypeChecker(), {
+      siteClones: overlaySiteClones(),
+    });
+    if (analysis.budgetExceeded) {
+      entry.budgetExceeded = true;
+      return null;
+    }
+    return analysis;
+  };
   // Round 0: the structural rewrites (static-objects.ts); the program is
   // rebuilt from them and analyzed again before the typed overlay.
   if (round === 0 && process.env["SCRIPTC_SHAPE_STATIC_OBJECTS"] !== "0") {
-    const rewrites = planStaticObjectRewrites(
-      analysis,
-      jsFiles.filter((sf) => !exclusions.files.has(sf.fileName)),
-    );
+    if (entry.rewrites === undefined) {
+      const a = analyzed();
+      if (a === null) return null;
+      entry.rewrites = planStaticObjectRewrites(
+        a,
+        overlayJsFiles(a).filter((sf) => !exclusions.files.has(sf.fileName)),
+      );
+    }
+    const rewrites = entry.rewrites;
     staticRewriteFiles = new Set(rewrites.files.keys());
     staticObjectStats = {
       classes: rewrites.classes,
@@ -198,8 +260,16 @@ export function shapeOverlayer(
     if (rewrites.files.size > 0) return rewrites.files;
   }
   if (round > 1) return null;
-  const report = buildShapeReport(analysis, "1");
-  const overlay = planShapeOverlay(analysis, report.sites, jsFiles, overlayExclusions());
+  if (entry.plan === undefined) {
+    const a = analyzed();
+    if (a === null) return null;
+    const report = buildShapeReport(a, "1");
+    entry.plan = planShapeOverlay(a, report.sites, overlayJsFiles(a), {
+      annotations: new Map(),
+      files: exclusions.files,
+    });
+  }
+  const overlay = renderShapeOverlay(entry.plan, overlayExclusions());
   overlayFiles = new Set(overlay.files.keys());
   overlayAnnotations = overlay.annotations;
   overlayDeadBranches = overlay.deadBranches;

@@ -739,23 +739,35 @@ function loadFrontend(
             level = level === "annotations" ? "files" : "all";
             changed = excludeRefusedOverlay(finalLoad.program, refusals, level);
           }
+          // The same round also drops what the deferred refusals blame,
+          // saving a reload.
+          if (level !== "all" && lowered.runtimeFences.length > 0)
+            changed =
+              excludeRefusedOverlay(finalLoad.program, lowered.runtimeFences, "fences") || changed;
         }
         if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
           process.stderr.write(
             `[shape-fallback] round ${round} level ${level}: ${refusals.length} refusals (${refusals
-              .slice(0, 3)
+              .slice(0, process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] === "all" ? undefined : 3)
               .map((d) => `${d.loc.file.split("/").pop()}:${d.loc.start} ${d.message.slice(0, 60)}`)
               .join("; ")}), changed ${changed}\n`,
           );
         if (!changed) break;
+        const t0 = performance.now();
         finalLoad.dispose();
         finalLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
+        const t1 = performance.now();
         // The preflight fills the module order; the tsc world reads the
         // files as written, so it answers as the first load did.
         const reloadPreflight = checkPreflight(finalLoad);
         if (reloadPreflight.length > 0)
           return { ...lowered, module: null, diagnostics: reloadPreflight };
+        const t2 = performance.now();
         lowered = lowerOnce();
+        if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+          process.stderr.write(
+            `[shape-fallback] reload ${(t1 - t0).toFixed(0)} ms, preflight ${(t2 - t1).toFixed(0)} ms, lower ${(performance.now() - t2).toFixed(0)} ms\n`,
+          );
       }
       // The declaration-typed boundary's notes (SC6102) join the
       // performance warnings; they never fail a build.
