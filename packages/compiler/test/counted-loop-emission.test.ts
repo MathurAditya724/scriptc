@@ -175,6 +175,18 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
         "  for (let r = 0; r < n; r++) for (let j = 0; j < 5000; j++) t = (t * 31 + j) % 1000003;",
         "  return t;",
         "}",
+        "export function exact(n: number): number {",
+        "  let t = 0;",
+        "  for (let r = 0; r < n; r++)",
+        "    for (let j = 9007199254740900; j < 9007199254740950; j++) t = (t + (j % 7)) % 1000003;",
+        "  return t;",
+        "}",
+        "export function stalled(n: number): number {",
+        "  let t = 0;",
+        "  for (let r = 0; r < n; r++)",
+        "    for (let j = 9007199254740990; j < 9007199254741002; j++) t = (t + (j % 7)) % 1000003;",
+        "  return t;",
+        "}",
         "export function single(): number {",
         "  let t = 0;",
         "  for (let j = 0; j < 50; j++) t = (t * 31 + j) % 1000003;",
@@ -182,7 +194,7 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
         "}",
         "const cr = new Float64Array(8).fill(0.5);",
         'const k = Number(process.argv[2] ?? "50");',
-        "console.log(rows(cr, 3), open(cr, 3, k), wide(2), single());",
+        "console.log(rows(cr, 3), open(cr, 3, k), wide(2), exact(2), stalled(0), single());",
         "if (!isMainThread) new Worker(new URL(import.meta.url));",
       ].join("\n"),
     );
@@ -219,6 +231,11 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
     // A run of up to 16384 iterations is one block, polled as it leaves when
     // it took more than 64.
     expect(open).toMatch(/^loop\.poll\.run\d+:$/m);
+    // Steps of 1 below 2^53 are exact, so 50 runs near it are bounded. From
+    // 2^53, `j + 1 === j`: a counter ranging up to it can run without end
+    // and keeps its poll.
+    expect(polls(body("exact"))).toBe(polls(body("single")));
+    expect(polls(body("stalled"))).toBeGreaterThan(polls(body("exact")));
     // A nest over the bound, or a loop no other loop encloses, polls.
     expect(polls(body("wide"))).toBeGreaterThan(0);
     expect(body("wide")).toMatch(/^loop\.poll\d+:$/m);

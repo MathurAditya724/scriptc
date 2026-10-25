@@ -2655,6 +2655,14 @@ const WORKER_POLL_BLOCK = 64;
  * only as it leaves. */
 const WORKER_UNPOLLED_RUN = 16384;
 
+/** Whether a step of `step` from every value in `range` gives a different
+ * value. Beyond 2^53 a double can stop changing (`j + 1 === j` from 2^53),
+ * so a counter there can run without end inside a range of a few values. */
+function exactSteps(range: { min: number; max: number }, step: number): boolean {
+  const size = Math.abs(step);
+  return range.min >= size - 2 ** 53 && range.max <= 2 ** 53 - size;
+}
+
 /** At most how many times a `for` loop and the loops in its body run their
  * bodies per entry, from the counters' proven ranges: its iterations times
  * one plus the nested loops' runs. Infinity when a count has no bound, or
@@ -2668,12 +2676,12 @@ function boundedLoopRuns(emitter: LlEmitter, loop: IrStmt): number {
     LOOPS.of(emitter).unaliasedArrays,
   );
   let trips = Infinity;
-  if (counted && !counted.guarded)
+  if (counted && !counted.guarded && exactSteps(counted.range, counted.step))
     trips = Math.floor((counted.range.max - counted.range.min) / Math.abs(counted.step)) + 1;
   else if (!counted) {
     // Each iteration closes the gap between the two counters by at least two.
     const paired = matchIntegerPairedForLoop(loop, emitter.numericLocals, emitter.integerRanges);
-    if (paired && !paired.guarded)
+    if (paired && !paired.guarded && exactSteps(paired.range, 1))
       trips = Math.floor((paired.range.max - paired.range.min) / 2) + 1;
   }
   if (trips === Infinity) {
@@ -2681,7 +2689,8 @@ function boundedLoopRuns(emitter: LlEmitter, loop: IrStmt): number {
     // one compared with a module constant.
     const stepped = steppedLoopCounter(loop, emitter.currentLocals);
     const range = stepped && emitter.integerRanges.get(stepped.ref);
-    if (stepped && range) trips = Math.floor((range.max - range.min) / Math.abs(stepped.step)) + 1;
+    if (stepped && range && exactSteps(range, stepped.step))
+      trips = Math.floor((range.max - range.min) / Math.abs(stepped.step)) + 1;
   }
   if (!(trips <= WORKER_POLL_BLOCK * WORKER_POLL_BLOCK)) return Infinity;
   let nested = 0;

@@ -1,7 +1,8 @@
 // worker.terminate() stops a worker whose loop runs short inner loops:
 // counted loops of a few iterations, a two-counter loop, an inner loop
 // whose length grows past 64 iterations, an inner loop too long to finish,
-// and a nest of loops with constant bounds.
+// a nest of loops with constant bounds, and an inner loop whose counter
+// stops changing at 2 ** 53 (`j + 1 === j` there), so it never ends.
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 function counted(values: number[]): number {
@@ -66,8 +67,17 @@ function constant(row: Float64Array): number {
   return acc;
 }
 
+function stalled(): number {
+  let acc = 0;
+  for (let round = 0; ; round++) {
+    if (round === 0) parentPort!.postMessage("ready");
+    for (let j = 9007199254740990; j < 9007199254741002; j++) acc = (acc + (j % 7)) % 1000003;
+  }
+  return acc;
+}
+
 if (isMainThread) {
-  for (const kind of ["counted", "paired", "growing", "long", "constant"]) {
+  for (const kind of ["counted", "paired", "growing", "long", "constant", "stalled"]) {
     await new Promise<void>((resolve) => {
       const worker = new Worker(new URL(import.meta.url), { workerData: kind });
       worker.once("message", () => {
@@ -86,6 +96,7 @@ if (isMainThread) {
   else if (workerData === "paired") result = paired(values);
   else if (workerData === "growing") result = growing();
   else if (workerData === "long") result = long(1e15);
+  else if (workerData === "stalled") result = stalled();
   else result = constant(new Float64Array(8).fill(0.25));
   console.log("unexpected result", result);
 }
