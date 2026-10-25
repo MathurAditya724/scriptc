@@ -2317,8 +2317,8 @@ function lowerNetServerMethodCall(
 function socketEncodingReachable(lowerer: Lowerer): boolean {
   if (lowerer.socketEncodingReachable !== null) return lowerer.socketEncodingReachable;
   let reachable = false;
-  for (const file of lowerer.program.getSourceFiles()) {
-    if (file.isDeclarationFile || !file.text.includes("setEncoding")) continue;
+  for (const file of lowerer.program.getImplementationSourceFiles()) {
+    if (!file.text.includes("setEncoding")) continue;
     ts.walkPreorder(file, (node) => {
       if (reachable) return "skip";
       if (!ts.isCallExpression(node)) return undefined;
@@ -2349,8 +2349,8 @@ function socketEncodingReachable(lowerer: Lowerer): boolean {
 function unixListenReachable(lowerer: Lowerer): boolean {
   if (lowerer.unixListenReachable !== null) return lowerer.unixListenReachable;
   let reachable = false;
-  for (const file of lowerer.program.getSourceFiles()) {
-    if (file.isDeclarationFile || !file.text.includes("listen")) continue;
+  for (const file of lowerer.program.getImplementationSourceFiles()) {
+    if (!file.text.includes("listen")) continue;
     ts.walkPreorder(file, (node) => {
       if (reachable) return "skip";
       if (!ts.isCallExpression(node) || node.arguments.nodes.length === 0) return undefined;

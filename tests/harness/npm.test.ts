@@ -104,6 +104,8 @@ const KNOWN: Record<string, Known> = {
   "self-name": { build: "SC2013" },
   "stream-shims": { run: "SC2020" },
   "util-shims": { run: "SC2020" },
+  // The package redeclares the var it exported: Node copies the first value.
+  "var-export-redeclared": { run: "SC1090" },
   "web-streams": { run: "SC1090" },
   "workspace-copied": { build: "SC2013" },
   "workspace-unclean": { build: "SC2013" },

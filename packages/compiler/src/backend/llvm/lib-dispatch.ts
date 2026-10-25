@@ -25,6 +25,7 @@ import { DYN_KIND } from "./dyn.js";
 import { caBytes } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
+import { registerReplay } from "./emit-journal.js";
 
 /** ScrDyn.v.typed_ref.type_key_len: the low 27 bits of its bit-field word. */
 const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
@@ -1130,6 +1131,36 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   }
 }
 
+/** The settlement adapter of Promise.all's tuple form for the builder
+ * `fnName`, which fulfills the result with the builder's tuple. */
+function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrType): string {
+  const key = `allTuple:${fnName}`;
+  let adapter = host.resolveThunks.get(key);
+  if (adapter !== undefined) return adapter;
+  adapter = `sc_all_tuple_${host.resolveThunks.size}`;
+  host.resolveThunks.set(key, adapter);
+  host.journal?.allocated(adapter, "allTupleAdapterFor", [fnName, tuple]);
+  const rc = vAdapters(host.shapeHost, tuple);
+  host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
+  host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
+  host.resolveThunkDefs.push(
+    `define internal void @${adapter}(ptr %dst, ptr %src) ${FN_ATTRS} { ; Promise.all tuple`,
+    `entry:`,
+    `  %entries = call ptr @scr_promise_payload_ref(ptr %src) ; +1, moves into the builder`,
+    `  %tuple = call ptr @${host.callTarget(fnName)}(ptr %entries)`,
+    `  call void @scr_promise_fulfill_ref(ptr %dst, ptr %tuple, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, tuple)})`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  host.journal?.built();
+  return adapter;
+}
+
+registerReplay("allTupleAdapterFor", (host, args) =>
+  allTupleAdapterFor(host, args[0] as string, args[1] as IrType),
+);
+
 /** Promise.all's tuple form (promise.allTuple): the combinator over the
  * entries stores each fulfilled entry promise, and a settlement adapter on
  * the combinator calls the builder with them and fulfills the result with
@@ -1142,26 +1173,7 @@ function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue 
     throw new InternalCompilerError("llvm emitter bug: promise.allTuple shape");
   const entriesT = e.args[0]!.type;
   const entries = host.emitExpr(e.args[0]!);
-  const tuple = e.type.inner;
-  const key = `allTuple:${build.fnName}`;
-  let adapter = host.resolveThunks.get(key);
-  if (adapter === undefined) {
-    adapter = `sc_all_tuple_${host.resolveThunks.size}`;
-    host.resolveThunks.set(key, adapter);
-    const rc = vAdapters(host.shapeHost, tuple);
-    host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
-    host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
-    host.resolveThunkDefs.push(
-      `define internal void @${adapter}(ptr %dst, ptr %src) ${FN_ATTRS} { ; Promise.all tuple`,
-      `entry:`,
-      `  %entries = call ptr @scr_promise_payload_ref(ptr %src) ; +1, moves into the builder`,
-      `  %tuple = call ptr @${host.callTarget(build.fnName)}(ptr %entries)`,
-      `  call void @scr_promise_fulfill_ref(ptr %dst, ptr %tuple, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, tuple)})`,
-      `  ret void`,
-      `}`,
-      ``,
-    );
-  }
+  const adapter = allTupleAdapterFor(host, build.fnName, e.type.inner);
   host.declare(`declare ptr @scr_promise_all(ptr, ptr, ptr)`);
   host.declare(`declare void @scr_promise_all_store_promise(ptr, double, ptr)`);
   host.declare(`declare ptr @scr_promise_new()`);

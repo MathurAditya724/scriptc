@@ -20,6 +20,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `json-records` | cpu | `JSON.stringify`, typed `JSON.parse`, Map aggregation |
 | `json-unions` | cpu | `JSON.parse` into discriminated unions: an event log with eight kinds and nested expression trees with nine, evaluated after the cast |
 | `keyed-option-writes` | cpu | class methods whose names are also keys of option records written through element accesses: `enabled[name] = true` over a union of literal names and `totals["count"] = n` |
+| `line-reader` | cpu | `readline` over a file stream: 'line' events for a 67 MB access log (every 50th line not ASCII), with a status count, a path tally and byte totals |
 | `log-lines` | cpu | 200k immediate `console.log`/`process.stdout.write` lines into the runner's pipe |
 | `log-summary`, `inventory-report` | cpu | the multi-module applications from `benchmarks/builds`, on 300k-line inputs |
 | `number-maps` | cpu | number-keyed Map/Set: a dense-id table, sparse ids in many small maps, get/has/set mixes |

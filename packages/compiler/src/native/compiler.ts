@@ -30,6 +30,7 @@ import {
   verifyNativeHelper,
 } from "../backend/native-tools.js";
 import {
+  type NativeRuntimeSelection,
   selectNativeRuntimePack,
   runtimePackManifest,
   stageNativeRuntimeSelection,
@@ -111,7 +112,7 @@ export class NativeCompiler {
     private readonly cache: NativeCache | null = null,
   ) {
     const evaluator = toolchain.comptimeExecutable;
-    this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic) =>
+    this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
       runNativeFrontend(
         entry,
         toolchain.ts7Executable,
@@ -122,6 +123,7 @@ export class NativeCompiler {
           : (source, timeout) =>
               evaluateNativeComptime(source, timeout, toolchain.ts7Executable, evaluator),
         libraryNpmStatic,
+        options,
       );
   }
 
@@ -294,7 +296,7 @@ export class NativeCompiler {
     for (const [index, shard] of split.shards.entries()) {
       const shardInput = join(stage, `shard-${index}.ll`);
       const shardOutput = join(stage, `shard-${index}` + this.toolchain.target.outputSuffixes.obj);
-      writeFileSync(shardInput, shard.source);
+      writeFileSync(shardInput, shard.source());
       this.emitObject(shardInput, shardOutput, source + "." + shard.name, optimization, "obj");
       objects.push(shardOutput);
     }
@@ -400,34 +402,33 @@ export class NativeCompiler {
         outputKind === "exe"
           ? join(inputDirectory, "program" + target.outputSuffixes.obj)
           : stagedOutput;
-      const executablePack =
-        outputKind === "exe"
-          ? selectNativeRuntimePack(
-              toolchain.runtimePackRoot,
-              target,
-              toolchain.compilerVersion,
-              features,
-              optimization,
-              "executable",
-              this.runtimePackStore(),
-            )
-          : null;
+      let executablePack: NativeRuntimeSelection | null = null;
+      const selectPack = (): NativeRuntimeSelection =>
+        (executablePack ??= selectNativeRuntimePack(
+          toolchain.runtimePackRoot,
+          target,
+          toolchain.compilerVersion,
+          features,
+          optimization,
+          "executable",
+          this.runtimePackStore(),
+        ));
       const executableCache =
-        executablePack === null
-          ? null
-          : openNativeExecutableCache(
-              this.cache,
-              toolchain,
-              digestLlvm,
-              options,
-              ffi,
-              executablePack,
-            );
+        outputKind === "exe"
+          ? openNativeExecutableCache(this.cache, toolchain, digestLlvm, options, ffi, {
+              root: toolchain.runtimePackRoot,
+              features,
+              flavor: optimization,
+              select: selectPack,
+            })
+          : null;
       // An unchanged rebuild keeps the executable the last build left.
       const kept = executableCache?.keep(output) ?? false;
       const restored = kept || (executableCache?.restore(stagedOutput) ?? false);
       timing(restored ? "executable-cache-hit" : "executable-cache-miss");
       if (!restored) {
+        // A missing or invalid runtime pack fails before code generation.
+        if (outputKind === "exe") selectPack();
         let programObjects = [object];
         if (options.sanitize) {
           runNativeTool(sanitizerDriver(toolchain), [
@@ -496,7 +497,7 @@ export class NativeCompiler {
             },
           };
         }
-        const pack = executablePack!;
+        const pack = selectPack();
         const runtime = options.sanitize
           ? buildSanitizedRuntime(toolchain, pack, join(stage, "runtime"), "executable", this.cache)
           : stageNativeRuntimeSelection(pack, join(stage, "runtime"), this.runtimePackStore());

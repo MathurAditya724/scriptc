@@ -104,7 +104,11 @@ import {
   platformLinkerSupportsPersistentCache,
   resolvePlatformLinker,
 } from "./backend/linker.js";
-import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
+import {
+  splitLlvmLibraryProgram,
+  splitLlvmProgram,
+  splitLlvmProgramFile,
+} from "./backend/llvm/split.js";
 import {
   emitLibraryIdentityLines,
   replaceLibraryIdentity,
@@ -211,11 +215,14 @@ export {
 export {
   renderCoverage,
   renderExplainDynamic,
+  renderExplainIsland,
   coverageEnvelope,
   coveragePasses,
   type CoverageInput,
   type CoverageFailOn,
 } from "./coverage/report.js";
+export type { NodeIslandReport, NodeIslandEntry } from "./node-islands/summary.js";
+export type { NodeIslandOptions, NodeIslandsMode } from "./node-islands/policy.js";
 export {
   TIER_MODES,
   type DemotedUnit,
@@ -413,8 +420,13 @@ export async function analyzeCached(
   return result;
 }
 
-const nodeFrontend: FrontendFactory = (entry, npmStatic, externalTypes, libraryNpmStatic) =>
-  runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic);
+const nodeFrontend: FrontendFactory = (
+  entry,
+  npmStatic,
+  externalTypes,
+  libraryNpmStatic,
+  options,
+) => runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
 
 /** The checker's part of the executable cache key (`checkerCacheIdentity`), as the CLI's startup route computes it. */
 function checkerField(): { checker?: string } {
@@ -575,8 +587,8 @@ async function compileExecutableNative(
   }
   const effectiveProgramSplit =
     programSplit ??
-    (!programIsObject && features.optimization === "dev" && features.backend === "llvm" && !sanitize
-      ? splitLlvmProgram(await readFile(llvmPath, "utf8"))
+    (!programIsObject && features.optimization === "dev" && features.backend === "llvm"
+      ? splitLlvmProgramFile(llvmPath)
       : null);
   if (programIsObject)
     throw new InternalCompilerError("program objects must link against a precompiled runtime pack");
@@ -921,7 +933,6 @@ async function prepareExecutableInput(
     !useRuntimePack &&
     backend === "llvm" &&
     (opts.optimization ?? "release") === "dev" &&
-    !(opts.sanitize ?? false) &&
     typeof llvmSource === "string"
       ? splitLlvmProgram(llvmSource)
       : null;

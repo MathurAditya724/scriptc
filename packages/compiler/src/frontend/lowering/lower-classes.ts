@@ -7028,8 +7028,8 @@ function capturesEnclosingScope(
  * reflection: the member a runtime lookup finds can then differ. */
 function memberAssigned(lowerer: Lowerer, member: ts.MethodDeclaration, name: string): boolean {
   let found = false;
-  for (const sf of lowerer.program.getSourceFiles()) {
-    if (sf.isDeclarationFile || found) continue;
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (found) continue;
     if (!sf.text.includes(name)) continue;
     ts.walkPreorder(sf, (node) => {
       if (found) return "skip";

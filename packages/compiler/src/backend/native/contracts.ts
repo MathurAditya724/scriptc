@@ -29,7 +29,7 @@ export interface CcOptions {
   windowsSubsystem?: WindowsSubsystem;
   /** Optional equivalent LLVM modules for dev compilation. Unsupported
    * targets or merge failures fall back to the canonical cPath TU. */
-  programShards?: readonly { name: string; source: string }[];
+  programShards?: readonly { name: string; source: () => string }[];
   /** Canonical externally visible definitions retained while shard merging
    * demotes generated cross-shard linkage back to local symbols. */
   programPublicSymbols?: readonly string[];
@@ -306,7 +306,7 @@ export interface LibArchiveOptions {
    * `programSource` remains the canonical TU/cache identity; these stable
    * shards compile independently and are relocatably merged into one program
    * object before archive assembly. */
-  programShards?: readonly { name: string; source: string }[];
+  programShards?: readonly { name: string; source: () => string }[];
   /** Canonical externally visible definitions retained while the shard merge
    * demotes generated cross-shard linkage back to local symbols. */
   programPublicSymbols?: readonly string[];

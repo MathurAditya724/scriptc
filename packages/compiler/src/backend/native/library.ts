@@ -485,7 +485,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
                 .update("\0")
                 .update(shard.name)
                 .update("\0")
-                .update(shard.source)
+                .update(shard.source())
                 .digest("hex");
               cachePath = join(persistentCache.root, "program-shard", key);
             }
@@ -495,7 +495,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           for (let i = 0; i < shardEntries.length; i += shardWidth) {
             await Promise.all(
               shardEntries.slice(i, i + shardWidth).map(async (entry) => {
-                await writeFile(entry.sourcePath, entry.source);
+                await writeFile(entry.sourcePath, entry.source());
                 if (
                   entry.cachePath !== null &&
                   (await copyValidCachedFile(entry.cachePath, entry.staged))

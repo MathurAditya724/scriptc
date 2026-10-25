@@ -4,7 +4,7 @@
  * prints; the shapeOverlay: false option (the CLI's --no-shape-overlay)
  * turns it off. */
 import { execFile } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
@@ -88,5 +88,38 @@ test(
       encoding: "utf8",
     });
     expect(native.stdout).toBe(node.stdout);
+  },
+);
+
+// `"scriptc": { "packages": { "<name>": { "shapes": false } } }` in the
+// project's package.json compiles that package without the overlay.
+test(
+  "a package with shapes: false compiles without the overlay",
+  { timeout: 900_000 },
+  async () => {
+    const project = join(outDir, "facts-shapeless");
+    rmSync(project, { recursive: true, force: true });
+    cpSync(dirname(factsEntry), project, { recursive: true });
+    writeFileSync(
+      join(project, "package.json"),
+      JSON.stringify({
+        name: "shape-overlay-facts-case",
+        private: true,
+        type: "module",
+        scriptc: { packages: { "shape-facts": { shapes: false } } },
+      }),
+    );
+    const result = await withOverlay(() =>
+      compile(join(project, "main.ts"), {
+        outPath: join(outDir, "facts-shapeless-bin"),
+        outDir,
+        sanitize,
+      }),
+    );
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    expect((result.warnings ?? []).some((w) => w.code === "SC6103" || w.code === "SC8004")).toBe(
+      false,
+    );
   },
 );
