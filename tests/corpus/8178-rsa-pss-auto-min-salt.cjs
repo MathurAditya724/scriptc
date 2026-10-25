@@ -1,6 +1,8 @@
 // Verifying with RSA_PSS_SALTLEN_AUTO against an RSA-PSS key whose
-// parameters set a minimum salt length still enforces that minimum, as in
-// Node: a valid signature with a shorter salt does not verify. The keys use
+// parameters set a minimum salt length recovers the salt length from the
+// signature and does not enforce that minimum, as in Node: a valid
+// signature with a shorter salt verifies. The default salt length (the
+// key's minimum) accepts only that length. The keys use
 // an MGF1 digest equal to the message digest and a different one. The
 // stricter public key is the generated one with its minimum salt length
 // raised from 16 to 32 in its DER.

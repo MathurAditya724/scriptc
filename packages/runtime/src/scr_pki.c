@@ -3255,6 +3255,9 @@ static bool sp_pss_key_rules(SpSigKey *key, mbedtls_md_type_t md, size_t hash_le
     return false;
   }
   key->mgf1 = k->pss_mgf1;
+  /* RSA_PSS_SALTLEN_AUTO (-2) is exempt from the key's minimum, as in
+   * OpenSSL: verification recovers the salt length from the signature and
+   * accepts any length (corpus 8178). */
   if (!key->salt_given) {
     key->salt = k->pss_salt;
   } else if (key->salt != -2 && (key->salt == -1 ? (int)hash_len : key->salt) < k->pss_salt) {
