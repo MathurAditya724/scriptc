@@ -22,6 +22,8 @@ export interface LlValue {
    * use it in place of a round trip (integer-values.ts `indexInteger`). */
   wideInteger?: WideInteger;
   slot?: boolean;
+  /** A frame slot that usually stays NULL: its release tests it first. */
+  rarelyFilled?: boolean;
   /** A sequence local held in a capture box; release the box itself. */
   boxed?: boolean;
 }

@@ -24,6 +24,7 @@ import { emitDowncastGuard, emitUnionNarrowGuard } from "./narrow-guards.js";
 import { emitScalarOptional, isScalarOptionalSource } from "./local-union-storage.js";
 import { borrowableInputs } from "./borrowed-inputs.js";
 import {
+  borrowedRecordKeyGetOr,
   emitBorrowedRecordKeyGet,
   emitStackRecordKeyGet,
   pointerRecordKeyGet,
@@ -104,6 +105,10 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   if (arrayRead) return emitProjectedArrayRead(emitter, arrayRead);
   if (e.kind === "recordKeyGet" && emitter.canBorrowReceiver(e))
     return emitBorrowedRecordKeyGet(emitter, e);
+  if (e.kind === "nullish" && emitter.canBorrowReceiver(e)) {
+    const read = borrowedRecordKeyGetOr(emitter, e);
+    if (read) return emitBorrowedRecordKeyGet(emitter, read, e.right);
+  }
   if (e.kind === "mapIntrinsic" && emitter.canBorrowReceiver(e))
     return emitBorrowedMapGet(emitter, e);
   const narrow = emitter.checkedNarrows.get(e);
@@ -315,6 +320,12 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
         emitter.canBorrowReceiver(e.obj) &&
         emitter.referenceEffects.preserves(e.key)
       );
+    // `r[k] ?? inherited(r, k)` lends a hit the same way; its default is
+    // owned by the statement frame (so never by a longer-lived alias).
+    case "nullish": {
+      const read = borrowedRecordKeyGetOr(emitter, e);
+      return read !== null && emitter.canBorrowReceiver(read);
+    }
     // So does a Map.get while the map keeps it.
     case "mapIntrinsic":
       return (

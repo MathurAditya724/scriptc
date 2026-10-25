@@ -499,7 +499,8 @@ function builtinAnswer(
         type: BOOL,
         loc,
       });
-      if (arg === undefined || !mayBeSymbol(arg.type)) return has(propertyKeyOf(lowerer, arg, loc));
+      if (arg === undefined || !mayBeSymbol(lowerer, arg.type))
+        return has(propertyKeyOf(lowerer, arg, loc));
       const id = declare("%protoKey", DYN);
       const held = varRef(id, DYN, loc);
       return {
@@ -520,13 +521,16 @@ function builtinAnswer(
   }
 }
 
-/** Whether a value of `type` may be a symbol at run time. */
-function mayBeSymbol(type: IrType): boolean {
-  return !(
-    isUnitType(type) ||
-    type.kind === "string" ||
-    type.kind === "f64" ||
-    type.kind === "bool"
+/** Whether a value of `type` may be a symbol at run time: a checked value
+ * or a union with a symbol or checked arm. Records, class instances,
+ * arrays and functions never are, and their keys convert without running
+ * dynamic-tier code (which would make every indirect call a heap writer to
+ * ReferenceWrites). */
+function mayBeSymbol(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "dyn" || type.kind === "symbol") return true;
+  if (type.kind !== "union") return false;
+  return (lowerer.unions.get(type.unionId)?.arms ?? []).some(
+    (arm) => arm.kind === "dyn" || arm.kind === "symbol",
   );
 }
 
@@ -540,16 +544,43 @@ function propertyKeyOf(lowerer: Lowerer, arg: IrExpr | undefined, loc: SrcLoc): 
       type: STRING,
       loc,
     };
-  if (arg.type.kind === "string") return arg;
-  if (arg.type.kind === "f64" || arg.type.kind === "bool")
+  const type = arg.type;
+  if (type.kind === "string") return arg;
+  if (type.kind === "f64" || type.kind === "bool")
     return { kind: "toString", operand: arg, type: STRING, loc };
-  return {
-    kind: "libCall",
-    fn: "dyn.toStringCoerce",
-    args: [lowerer.coerceToExpected(arg, DYN)],
-    type: STRING,
-    loc,
-  };
+  // Unions of scalars convert through the union's own ToString.
+  if (
+    type.kind === "union" &&
+    (lowerer.unions.get(type.unionId)?.arms ?? []).every(
+      (arm) =>
+        isUnitType(arm) || arm.kind === "string" || arm.kind === "f64" || arm.kind === "bool",
+    )
+  )
+    return { kind: "toString", operand: arg, type: STRING, loc };
+  // A record, or a class instance without its own toString, spells
+  // "[object Object]" without running any code.
+  if (
+    type.kind === "record" ||
+    (type.kind === "object" && defaultToString(lowerer, type.className))
+  )
+    return { kind: "strLit", value: "[object Object]", type: STRING, loc };
+  // A checked value converts through the dynamic tier it already lives in.
+  if (type.kind === "dyn")
+    return { kind: "libCall", fn: "dyn.toStringCoerce", args: [arg], type: STRING, loc };
+  // Other keys (arrays, functions, class instances with toString) would run
+  // code; the built-in answers the checked-conversion TypeError for them.
+  return nodeThrowExpr(1, "", OTHER_ARM_FAILURE_MESSAGE, STRING, loc);
+}
+
+/** A source class whose instances answer Object.prototype.toString. */
+function defaultToString(lowerer: Lowerer, className: string): boolean {
+  const info = lowerer.classes.get(className);
+  return (
+    info !== undefined &&
+    info.decl !== undefined &&
+    lowerer.findMethodOn(info, "toString") === null &&
+    !lowerer.overrideBelow(info, "toString")
+  );
 }
 
 /** `value` returned as `ret`: as is, wrapped into a union arm or a checked

@@ -292,8 +292,10 @@ import {
   emitBytesIntrinsic,
 } from "./expr-bytes.js";
 import {
+  borrowedRecordKeyGetOr,
   emitRecordKeyGet,
   emitRegexIntrinsic,
+  immortalDefault,
   keyedRecordReadInto,
   pointerRecordKeyGet,
 } from "./expr-records.js";
@@ -3377,8 +3379,14 @@ export class LlEmitter {
 
   /** Registers a SLOT whose current contents the frame owns (conditional
    * results: optional chains, branch joins that park ownership). */
-  ownSlot(slot: string, type: IrType): void {
-    if (isRefCounted(type)) this.currentFrame().push({ name: slot, type, slot: true });
+  ownSlot(slot: string, type: IrType, rarelyFilled = false): void {
+    if (isRefCounted(type))
+      this.currentFrame().push({
+        name: slot,
+        type,
+        slot: true,
+        ...(rarelyFilled ? { rarelyFilled: true } : {}),
+      });
   }
 
   /** The innermost lexical scope releases a frame object's reference
@@ -3489,6 +3497,17 @@ export class LlEmitter {
         this.B.line(`${t} = load ptr, ptr ${v.name}`);
         if (v.boxed) {
           this.B.line(`call void ${boxReleaseSym(this.shapeHost)}(ptr ${t})`);
+        } else if (v.rarelyFilled && !this.B.isTerminated()) {
+          // Skip the release call on the common empty path.
+          const filled = this.B.tmp();
+          this.B.line(`${filled} = icmp ne ptr ${t}, null`);
+          const release = this.B.newLabel("slot.release"),
+            join = this.B.newLabel("slot.release.j");
+          this.B.condBr(filled, release, join);
+          this.B.startBlock(release);
+          this.releaseFrame(t, v.type);
+          this.B.br(join);
+          this.B.startBlock(join);
         } else {
           this.releaseFrame(t, v.type);
         }
@@ -6038,6 +6057,11 @@ export class LlEmitter {
       case "recordGet":
       case "recordKeyGet":
         return this.borrowsWithoutOwning(e) && this.unownedWalk(e.obj);
+      // `r[k] ?? inherited(r, k)` whose default is immortal.
+      case "nullish": {
+        const read = borrowedRecordKeyGetOr(this, e);
+        return read !== null && immortalDefault(this, e.right) && this.unownedWalk(read);
+      }
       case "mapIntrinsic": {
         // A Map binding's own pointer (maps are not plainReference types).
         if (!this.borrowsWithoutOwning(e) || e.receiver.kind !== "varRef") return false;
@@ -7313,6 +7337,8 @@ export class LlEmitter {
         return pointerRecordKeyGet(this, e);
       case "mapIntrinsic":
         return pointerMapGet(this, e);
+      case "nullish":
+        return borrowedRecordKeyGetOr(this, e) !== null;
       // emitReadReceiver lends a required element of a borrowed array when
       // computing the index removes no edge.
       case "arrayGet":
