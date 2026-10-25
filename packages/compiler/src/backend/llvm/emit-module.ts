@@ -196,15 +196,17 @@ function readRange(dir: string, range: number): { result: ChunkResult; texts: st
 
 /** The attribute groups of the emitted functions: #0 for every function,
  * #1 for coroutine bodies and #2 for out-of-line record clones. Each carries
- * the build's `--target-cpu` level. */
+ * the build's `--target-cpu` level, and `sanitize_address` in sanitized
+ * builds. A group needs one attribute: without either, #0 holds a string
+ * attribute that LLVM ignores. */
 function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean): string[] {
   const cpu = targetCpuAttribute(emitter.targetCpu);
+  const asan = emitter.sanitizeAttributes ? " sanitize_address" : "";
+  const base = `${asan}${cpu}` || ` "scriptc-function"`;
   return [
-    `attributes #0 = { sanitize_address${cpu} }`,
-    ...(emitter.usesCoroutines
-      ? [`attributes #1 = { sanitize_address presplitcoroutine${cpu} }`]
-      : []),
-    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address${cpu} }`] : []),
+    `attributes #0 = {${base} }`,
+    ...(emitter.usesCoroutines ? [`attributes #1 = {${asan} presplitcoroutine${cpu} }`] : []),
+    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline${asan}${cpu} }`] : []),
   ];
 }
 
@@ -1179,9 +1181,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   );
   for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
   out.push(
-    // sanitize_address is inert under the plain pipeline; the sanitized
-    // lane's -fsanitize=address link activates instrumentation over the
-    // emitted functions too (the runtime TUs get theirs from clang).
+    // The sanitized lane's -fsanitize=address link instruments the
+    // functions marked sanitize_address (the runtime TUs get theirs from
+    // clang).
     ...functionAttributes(emitter, hasNoInlineRecordClone),
     ``,
   );
