@@ -12,6 +12,9 @@ import { preservesArrayLength } from "./array-length-stability.js";
 export interface IntegerBytesForLoop {
   localId: string;
   limitReceiver: IrExpr;
+  /** The receiver is a local of the function that the body never assigns
+   * (a typed array's length is then the same on every iteration). */
+  stableReceiver: boolean;
 }
 
 export interface IntegerCountedForLoop {
@@ -682,7 +685,12 @@ export function matchIntegerBytesForLoop(
   if (!isUnitIncrement(stmt.update, init.localId)) return null;
   if (writesLocal(stmt.body, init.localId)) return null;
 
-  return { localId: init.localId, limitReceiver: cond.right.receiver };
+  return {
+    localId: init.localId,
+    limitReceiver: cond.right.receiver,
+    stableReceiver:
+      receiverLocal !== undefined && !writesLocal(stmt.body, cond.right.receiver.localId),
+  };
 }
 
 /** Array lengths are uint32, so zero-based loops and nested `j = i + 1`
@@ -729,5 +737,11 @@ export function matchIntegerArrayForLoop(
     writesLocal(stmt.body, local.id)
   )
     return null;
-  return { localId: local.id, limitReceiver: cond.right.receiver };
+  return {
+    localId: local.id,
+    limitReceiver: cond.right.receiver,
+    stableReceiver:
+      locals.has(cond.right.receiver.localId) &&
+      !writesLocal(stmt.body, cond.right.receiver.localId),
+  };
 }
