@@ -249,3 +249,20 @@ console.log(out.join(","), hit);
 ${postlude}`);
   expect(helperCalls(init(mod))).toEqual(["%arr.loop", "%arr.loop"]);
 });
+
+test("a lone call in a local class's method keeps its helper for the class's captures", async () => {
+  const mod = await lowerSource(`${prelude}
+let k = 1;
+class Box {
+  set(v: number): void { k = v; }
+  go(): number[] {
+    const b = new Box();
+    return rows.map((r) => { b.set(r.id); return r.value + k; });
+  }
+}
+console.log(new Box().go().join(","));
+${postlude}`);
+  const go = mod.functions.find((f) => f.name.endsWith(".Box.go"));
+  expect(go).toBeDefined();
+  expect(helperCalls(go!)).toEqual(["%arr.map"]);
+});

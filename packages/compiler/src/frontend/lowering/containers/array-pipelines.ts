@@ -950,11 +950,14 @@ class PipelineFusion {
    * nothing assigns after their declaration: `fn`'s own locals and
    * parameters, written neither by `fn` nor by any closure that shares
    * them, and not by the callback body. A binding a local class captures
-   * counts as written, since its methods may assign it. The callback must
+   * counts as written, since its methods may assign it; so does a binding
+   * a method reads through its class's captures. The callback must
    * not observe the ambient receiver (AmbientReceiverReaders). */
   private stableTarget(fn: IrFunction): InlineTarget {
     const locals = new Map(fn.locals.map((l) => [l.id, l]));
-    const inherited = new Set((fn.captures ?? []).map((c) => c.localId));
+    const inherited = new Set(
+      [...(fn.captures ?? []), ...(fn.classCaptures ?? [])].map((c) => c.localId),
+    );
     const written = this.written.get(fn.name);
     const classCaptured = this.classCaptured(fn);
     return (arg) => {
