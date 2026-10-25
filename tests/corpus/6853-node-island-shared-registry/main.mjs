@@ -9,11 +9,13 @@
 import fs from "node:fs";
 import { requireModule } from "@scriptc/node";
 import * as reg from "registry";
+import { show } from "banner";
 
 const { run } = requireModule("./scenario.mjs");
 const log = (s) => fs.writeSync(1, `${s}\n`);
 reg.register(new reg.Plugin("owner-a"));
 run(log);
+log(`owner banner: ${show()}`);
 log(`owner list: ${reg.list().join(",")}`);
 log(`owner counter: ${reg.counter}`);
 log(`owner describeAll: ${reg.describeAll()}`);

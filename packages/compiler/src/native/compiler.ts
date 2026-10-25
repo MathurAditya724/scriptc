@@ -56,7 +56,7 @@ import { clearFenceEvalCaches } from "../library/fence-eval.js";
 import { archiveNativeLibrary, localizeNativeLibrary, linkNativeWasmLibrary } from "./library.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { evaluateNativeComptime } from "./comptime.js";
-import { contentDigest, fileDigest, type NativeCache } from "./cache.js";
+import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cache.js";
 import {
   nativeProfileKey,
   nativeProfileRefusal,
@@ -108,7 +108,7 @@ export class NativeCompiler {
     private readonly cache: NativeCache | null = null,
   ) {
     const evaluator = toolchain.comptimeExecutable;
-    this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic) =>
+    this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
       runNativeFrontend(
         entry,
         toolchain.ts7Executable,
@@ -119,6 +119,7 @@ export class NativeCompiler {
           : (source, timeout) =>
               evaluateNativeComptime(source, timeout, toolchain.ts7Executable, evaluator),
         libraryNpmStatic,
+        options,
       );
   }
 
@@ -168,6 +169,7 @@ export class NativeCompiler {
     outputKind: "obj" | "asm",
     partitions = 1,
     profile?: NativeProfileOptions,
+    llvmDigest: () => string = () => fileDigest(input),
   ): string[] {
     const toolchain = this.toolchain;
     const outputs = nativePartitionPaths(output, partitions);
@@ -186,7 +188,7 @@ export class NativeCompiler {
         key = contentDigest(
           JSON.stringify({
             schema: 1,
-            llvm: fileDigest(input),
+            llvm: llvmDigest(),
             outputKind,
             optimization,
             source,
@@ -253,6 +255,7 @@ export class NativeCompiler {
     stage: string,
     library: boolean,
     profile?: NativeProfileOptions,
+    llvmDigest?: () => string,
   ): string[] {
     // Library archives merge dev shards relocatably; executables link the
     // helper's program partitions directly.
@@ -263,7 +266,16 @@ export class NativeCompiler {
     const split = llvm === null ? null : splitLlvmLibraryProgram(llvm);
     if (split === null) {
       const partitions = library ? 1 : nativeProgramPartitions(statSync(input).size);
-      return this.emitObject(input, output, source, optimization, "obj", partitions, profile);
+      return this.emitObject(
+        input,
+        output,
+        source,
+        optimization,
+        "obj",
+        partitions,
+        profile,
+        llvmDigest,
+      );
     }
     const objects: string[] = [];
     for (const [index, shard] of split.shards.entries()) {
@@ -358,6 +370,9 @@ export class NativeCompiler {
         return { ok: true, artifact: { kind: "ir", path: output } };
       }
       const { llvm, features } = prepared;
+      // The executable and object caches key the same LLVM text.
+      let llvmDigest: string | undefined;
+      const digestLlvm = (): string => (llvmDigest ??= partsDigest(llvm));
       const inputDirectory = join(stage, "input");
       mkdirSync(inputDirectory);
       const llvmInput = outputKind === "llvm" ? stagedOutput : join(inputDirectory, "program.ll");
@@ -385,8 +400,17 @@ export class NativeCompiler {
       const executableCache =
         executablePack === null
           ? null
-          : openNativeExecutableCache(this.cache, toolchain, llvm, options, ffi, executablePack);
-      const restored = executableCache?.restore(stagedOutput) ?? false;
+          : openNativeExecutableCache(
+              this.cache,
+              toolchain,
+              digestLlvm,
+              options,
+              ffi,
+              executablePack,
+            );
+      // An unchanged rebuild keeps the executable the last build left.
+      const kept = executableCache?.keep(output) ?? false;
+      const restored = kept || (executableCache?.restore(stagedOutput) ?? false);
       timing(restored ? "executable-cache-hit" : "executable-cache-miss");
       if (!restored) {
         let programObjects = [object];
@@ -408,6 +432,7 @@ export class NativeCompiler {
             stage,
             false,
             profile,
+            digestLlvm,
           );
         else
           this.emitObject(
@@ -502,7 +527,10 @@ export class NativeCompiler {
         irPath = join(options.outDir, `${stem}.ir.json`);
         writeTextPartsSync(irPath, prepared.ir!);
       }
-      renameSync(stagedOutput, output);
+      if (!kept) {
+        renameSync(stagedOutput, output);
+        executableCache?.recordOutput(output);
+      }
       if (target.platform === "darwin" && (optimization !== "dev" || options.strip))
         rmSync(output + ".dSYM", { recursive: true, force: true });
       return {

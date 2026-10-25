@@ -39,9 +39,14 @@ import {
   sharedClassExtendedDiag,
   sharedModuleDuplicatedDiag,
 } from "../../diagnostics/diagnostic.js";
-import { classConstructHelper, classMethodsBuilder } from "./lower-node-island.js";
+import {
+  classConstructHelper,
+  classMethodsBuilder,
+  islandSharedPath,
+} from "./lower-node-island.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
+import { stripTypeWrappers } from "./typed-arguments.js";
 
 type ExportKind = "function" | "class" | "let" | "const" | "var";
 
@@ -245,6 +250,70 @@ const MUTATING_METHODS = new Set([
  * module-level binding reachable from its exports is written after
  * evaluation, no exported class (its instances may cross or meet
  * instanceof in island code), and no top-level effect beyond declarations. */
+/** Whether evaluating a module-level initializer runs no code: literals,
+ * names, functions and classes it creates, `require()` of a module (which
+ * is judged on its own), and object, array and operator expressions over
+ * those. */
+function inertInitializer(node: ts.Expression): boolean {
+  const e = stripTypeWrappers(node);
+  if (
+    ts.isIdentifier(e) ||
+    ts.isLiteralExpression(e) ||
+    ts.isNoSubstitutionTemplateLiteral(e) ||
+    ts.isArrowFunction(e) ||
+    ts.isFunctionExpression(e) ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    e.kind === ts.SyntaxKind.NullKeyword
+  )
+    return true;
+  if (ts.isClassExpression(e))
+    return !e.members.nodes.some(
+      (m) =>
+        ts.isClassStaticBlockDeclaration(m) ||
+        (ts.isPropertyDeclaration(m) &&
+          m.initializer !== undefined &&
+          !inertInitializer(m.initializer)),
+    );
+  if (ts.isParenthesizedExpression(e)) return inertInitializer(e.expression);
+  if (ts.isPrefixUnaryExpression(e))
+    return (
+      e.operator !== ts.SyntaxKind.PlusPlusToken &&
+      e.operator !== ts.SyntaxKind.MinusMinusToken &&
+      inertInitializer(e.operand)
+    );
+  if (ts.isBinaryExpression(e))
+    return (
+      !ts.isAssignmentOperator(e.operatorToken.kind) &&
+      e.operatorToken.kind !== ts.SyntaxKind.CommaToken &&
+      inertInitializer(e.left) &&
+      inertInitializer(e.right)
+    );
+  if (ts.isConditionalExpression(e))
+    return (
+      inertInitializer(e.condition) && inertInitializer(e.whenTrue) && inertInitializer(e.whenFalse)
+    );
+  if (ts.isArrayLiteralExpression(e))
+    return e.elements.nodes.every((el) => !ts.isSpreadElement(el) && inertInitializer(el));
+  if (ts.isObjectLiteralExpression(e))
+    return e.properties.nodes.every(
+      (p) =>
+        ts.isShorthandPropertyAssignment(p) ||
+        ts.isMethodDeclaration(p) ||
+        (ts.isPropertyAssignment(p) &&
+          !ts.isComputedPropertyName(p.name) &&
+          inertInitializer(p.initializer)),
+    );
+  if (ts.isCallExpression(e))
+    return (
+      ts.isIdentifier(e.expression) &&
+      e.expression.text === "require" &&
+      e.arguments.nodes.length === 1 &&
+      ts.isStringLiteralLike(e.arguments.nodes[0]!)
+    );
+  return false;
+}
+
 export function statefulReason(sf: ts.SourceFile): string | null {
   const moduleLevel = new Map<string, string>(); // name -> kind
   for (const stmt of sf.statements.nodes) {
@@ -253,6 +322,9 @@ export function statefulReason(sf: ts.SourceFile): string | null {
     if (ts.isVariableStatement(stmt)) {
       const flags = stmt.declarationList.flags;
       for (const d of stmt.declarationList.declarations.nodes) {
+        // A copy would run the initializer a second time.
+        if (d.initializer !== undefined && !inertInitializer(d.initializer))
+          return "its variable initializers run code";
         if (!ts.isIdentifier(d.name)) continue;
         if ((flags & ts.NodeFlags.Const) === 0) {
           if (isExported(stmt)) return `it exports the mutable binding '${d.name.text}'`;
@@ -328,15 +400,20 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
     if (sf.isDeclarationFile) continue;
     compiled.set(real(sf.fileName), sf);
   }
-  // Island roots: requireModule() targets and island package files.
+  // Island roots: requireModule() targets and island package files. A
+  // target the program compiles itself is loaded in Node as well: shared.
   const queue: string[] = [];
+  const candidates = new Set<ts.SourceFile>();
   for (const sf of lowerer.moduleOrder) {
     const text = sf.text;
     if (!text.includes("requireModule")) continue;
     const from = real(sf.fileName);
     for (const m of text.matchAll(REQUIRE_MODULE)) {
       try {
-        queue.push(real(resolveFrom(from, m[1]!)));
+        const target = real(resolveFrom(from, m[1]!));
+        const own = compiled.get(target);
+        if (own !== undefined) candidates.add(own);
+        else queue.push(target);
       } catch {
         /* lowering reports it */
       }
@@ -344,9 +421,8 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
   }
   for (const island of lowerer.nodeIslands?.packages.values() ?? [])
     packageJsFiles(island.dir, queue);
-  if (queue.length === 0) return plans;
+  if (queue.length === 0 && candidates.size === 0) return plans;
   const seen = new Set<string>();
-  const candidates = new Set<ts.SourceFile>();
   // Classes island code extends, by the compiled module that exports them.
   const extended = new Map<ts.SourceFile, string>();
   while (queue.length > 0 && seen.size < MAX_ISLAND_FILES) {
@@ -511,7 +587,7 @@ export function sharedModuleRegistrations(lowerer: Lowerer): IrStmt[] {
         kind: "libCall",
         fn: "nodeIsland.share",
         args: [
-          { kind: "strLit", value: plan.path, type: STRING, loc },
+          islandSharedPath(lowerer, plan.path, loc),
           { kind: "strLit", value: exportsJson, type: STRING, loc },
           lowerer.coerceToExpected(
             {

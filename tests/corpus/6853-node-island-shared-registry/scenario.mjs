@@ -2,9 +2,11 @@
 import { createRequire } from 'node:module';
 import * as ns from 'registry';
 import { counter, bump, Plugin, register, list, find, describeAll, noop } from 'registry';
+import { show } from 'banner';
 const require = createRequire(import.meta.url);
 
 export function run(log) {
+  log(`island banner: ${show()}`);
   log(`island list: ${list().join(',')}`);
   log(`island counter: named=${counter} ns=${ns.counter}`);
   bump();

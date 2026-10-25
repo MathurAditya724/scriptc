@@ -27,6 +27,7 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -36,6 +37,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { resolveBuildCacheRoot } from "../backend/cache-root.js";
 import type { IrExpr, IrModule } from "../ir/ir.js";
 import { readProjectConfig } from "../project-config.js";
 import { effectGate } from "./effect-gate.js";
@@ -67,6 +69,13 @@ function pathOf(call: DeferCall): string {
   return arg !== undefined && arg.kind === "strLit" ? arg.value : "";
 }
 
+/** The build machine's file of a load's path: a `./` path names a file of
+ * the shipped module tree (node-islands/modules.ts), under its root. */
+function fileOf(mod: IrModule, path: string): string {
+  const tree = mod.nodeIsland?.modules;
+  return tree !== undefined && path.startsWith("./") ? join(tree.root, path.slice(2)) : path;
+}
+
 function makeEager(call: DeferCall): void {
   (call as { fn: string }).fn = "nodeIsland.require";
   call.args.length = 1;
@@ -96,7 +105,7 @@ export function finalizeDeferredIslands(
   if (calls.length === 0) return [];
   const decisions: DeferralDecision[] = [];
   const decide = (call: DeferCall, deferred: boolean, reason: string): void => {
-    const d = { path: pathOf(call), deferred, reason };
+    const d = { path: fileOf(mod, pathOf(call)), deferred, reason };
     decisions.push(d);
     traceDecision(d);
     if (!deferred) makeEager(call);
@@ -108,7 +117,7 @@ export function finalizeDeferredIslands(
   const config = readProjectConfig(entryPath);
   const candidates: { call: DeferCall; path: string; lazy: boolean; files: string[] }[] = [];
   for (const call of calls) {
-    const path = pathOf(call);
+    const path = fileOf(mod, pathOf(call));
     const pkg = packageDirOf(path);
     const evaluate = pkg === null ? "auto" : (config.packages.get(pkg.name)?.evaluate ?? "auto");
     if (evaluate === "eager") {
@@ -134,6 +143,10 @@ export function finalizeDeferredIslands(
     return decisions;
   }
   const packGuards = packGuardLines(packDir);
+  // The shipped tree's files are the executable's own (the tree is checked
+  // against its digests when it opens): only files outside it need guards.
+  const tree = mod.nodeIsland?.modules;
+  const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
   for (const c of candidates) {
     const result = probe.results.find((r) => r.path === c.path);
     if (result?.throws !== undefined) {
@@ -148,7 +161,16 @@ export function finalizeDeferredIslands(
       decide(c.call, false, `the probe saw ${result.effects.join(", ")}`);
       continue;
     }
-    const text = encodeSnapshot(probe, result.root, [...packGuards, ...fileGuardLines(c.files)]);
+    if (
+      tree !== undefined &&
+      tree.root.length > 1 &&
+      snapshotNames(probe, result.root, tree.root)
+    ) {
+      decide(c.call, false, "its exports hold a path of the build machine");
+      continue;
+    }
+    const files = c.files.filter((f) => !shipped.has(f));
+    const text = encodeSnapshot(probe, result.root, [...packGuards, ...fileGuardLines(files)]);
     const arg = c.call.args[1];
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
     decide(c.call, true, "");
@@ -228,6 +250,24 @@ function encodeValue(v: ProbeValue): string | null {
   return null;
 }
 
+/** Whether a string the snapshot holds names a path under `dir`. The
+ * probe loads the modules from the build machine, and the program from the
+ * module tree it ships, so such a value would not be the one the program
+ * sees (a module's own `__dirname`, say). */
+function snapshotNames(probe: ProbeOutput, root: number, dir: string): boolean {
+  const seen = new Set<number>();
+  const visit = (oid: number): boolean => {
+    if (seen.has(oid) || probe.objects[oid] === undefined) return false;
+    seen.add(oid);
+    for (const [, v] of probe.objects[oid]!.m) {
+      if ("s" in v && v.s.includes(dir)) return true;
+      if ("o" in v && visit(v.o)) return true;
+    }
+    return false;
+  };
+  return visit(root);
+}
+
 function encodeSnapshot(probe: ProbeOutput, root: number, guards: string[]): string {
   const lines = [...guards];
   const reached: number[] = [];
@@ -280,6 +320,11 @@ function isConstructor(f) {
   try { Reflect.construct(String, [], f); return true; } catch { return false; }
 }
 function plainClass(f) {
+  // instanceof reads the prototype: without an object there, it throws.
+  const proto = Object.getOwnPropertyDescriptor(f, "prototype");
+  if (proto === undefined || !("value" in proto)) return false;
+  if (proto.value === null || (typeof proto.value !== "object" && typeof proto.value !== "function"))
+    return false;
   let source = "";
   try { source = fnToString.call(f); } catch { return false; }
   if (/\[native code\]\s*\}$/.test(source)) return false;
@@ -376,9 +421,35 @@ function runtimeSrc(): string {
   return join(dirname(require.resolve("@scriptc/runtime/package.json")), "src");
 }
 
+/** Whether only the current user can write `path` (and it is theirs). */
+function writableByUserOnly(path: string): boolean {
+  const info = statSync(path);
+  const uid = process.getuid?.();
+  return (uid === undefined || info.uid === uid) && (info.mode & 0o022) === 0;
+}
+
+/** Where the probe host is built. The build runs it with the compiler's
+ * privileges, so it never comes from a directory another user can write:
+ * it is kept in the user's build cache when that and the directories below
+ * it are the user's own, else built in a fresh private temporary directory
+ * the probe removes when it ends. */
+export function probeHostDirectory(hash: string): { dir: string; kept: boolean } {
+  const root = resolveBuildCacheRoot();
+  if (root !== null) {
+    const dir = join(root, "node-island-probe", hash);
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if ([root, dirname(dir), dir].every(writableByUserOnly)) return { dir, kept: true };
+    } catch {
+      /* not usable: a temporary directory instead */
+    }
+  }
+  return { dir: mkdtempSync(join(tmpdir(), "scriptc-node-probe-")), kept: false };
+}
+
 /** The probe host executable, built once per probe source and bridge
- * header (cached under the temporary directory). */
-function probeHost(): string | string[] {
+ * header (in the directory probeHostDirectory picks). */
+function probeHost(): { exe: string; bootstrap: string; kept: boolean } | string {
   const src = runtimeSrc();
   const source = join(src, "tools", "scr_node_island_probe.c");
   const header = join(src, "scr_node_bridge.h");
@@ -388,33 +459,39 @@ function probeHost(): string | string[] {
     .update(PROBE_BOOTSTRAP)
     .digest("hex")
     .slice(0, 16);
-  const dir = join(tmpdir(), `scriptc-node-probe-${process.getuid?.() ?? 0}`, hash);
+  const { dir, kept } = probeHostDirectory(hash);
   const exe = join(dir, "scr-node-probe");
   const bootstrap = join(dir, "bootstrap.js");
-  if (existsSync(exe) && existsSync(bootstrap)) return [exe, bootstrap];
-  mkdirSync(dir, { recursive: true });
+  if (
+    kept &&
+    existsSync(exe) &&
+    existsSync(bootstrap) &&
+    [exe, bootstrap].every(writableByUserOnly)
+  )
+    return { exe, bootstrap, kept };
   const tmp = `${exe}.${process.pid}`;
   const errors: string[] = [];
   for (const cc of [process.env["CC"], "clang", "cc"]) {
     if (cc === undefined || cc === "") continue;
     const r = spawnSync(cc, ["-O1", "-I", src, source, "-o", tmp, "-ldl"], { encoding: "utf8" });
     if (r.status === 0) {
-      writeFileSync(`${bootstrap}.${process.pid}`, PROBE_BOOTSTRAP);
+      writeFileSync(`${bootstrap}.${process.pid}`, PROBE_BOOTSTRAP, { mode: 0o600 });
       renameSync(`${bootstrap}.${process.pid}`, bootstrap);
       renameSync(tmp, exe);
-      return [exe, bootstrap];
+      return { exe, bootstrap, kept };
     }
     errors.push(`${cc}: ${r.error?.message ?? r.stderr.trim().split("\n")[0]}`);
   }
+  if (!kept) rmSync(dir, { recursive: true, force: true });
   return `cannot build the probe host (${errors.join("; ")})`;
 }
 
 function runProbe(packDir: string, modules: string[]): ProbeOutput | string {
   const host = probeHost();
   if (typeof host === "string") return host;
-  const [exe, bootstrap] = host as [string, string];
+  const { exe, bootstrap, kept } = host;
   const input = join(dirname(exe), `input.${process.pid}.${Date.now()}.json`);
-  writeFileSync(input, JSON.stringify({ modules }));
+  writeFileSync(input, JSON.stringify({ modules }), { mode: 0o600 });
   let out: string;
   try {
     out = execFileSync(exe, [packDir, bootstrap, input], {
@@ -426,11 +503,12 @@ function runProbe(packDir: string, modules: string[]): ProbeOutput | string {
   } catch (e) {
     const err = e as { stderr?: string; message: string };
     return `the probe failed: ${(err.stderr ?? "").trim().split("\n")[0] || err.message}`;
-  }
-  try {
-    rmSync(input);
-  } catch {
-    /* best effort */
+  } finally {
+    try {
+      rmSync(kept ? input : dirname(exe), { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
   }
   if (!out.startsWith("R")) return `the probe threw: ${out.slice(1, 400)}`;
   return JSON.parse(out.slice(1)) as ProbeOutput;

@@ -199,3 +199,81 @@ test("globMatch", () => {
   expect(globMatch("/a/?.js", "/a/x.js")).toBe(true);
   expect(globMatch("/a/x.js", "/a/x.js")).toBe(true);
 });
+
+describe("reachability", () => {
+  const userEdge = (fromFile: string, to: string): PackageEdge => ({
+    ...edge(null, to),
+    fromFile,
+    loc: { file: fromFile, start: 0, end: 1 },
+  });
+  const codeFromString = (pkg: string) =>
+    mod(pkg, `${NM}/${pkg}/index.js`, [
+      marker(`${NM}/${pkg}/index.js`, "R1.1", "code-from-string"),
+    ]);
+  const build = (scan: Omit<NodeIslandScan, "refusals">, options: NodeIslandOptions = {}) =>
+    buildNodeIslandReport({
+      entry: "/app/main.ts",
+      scan: { ...scan, refusals: [] },
+      npm: [],
+      diagnostics: [],
+      fences: [],
+      policy: nodeIslandPolicy(emptyProjectConfig(), options),
+    });
+
+  test("a marked user module owns the packages only it imports", () => {
+    const r = build(
+      {
+        modules: [
+          mod(null, "/app/main.ts"),
+          mod(null, "/app/plugin.ts"),
+          mod("x", `${NM}/x/index.js`),
+          mod("y", `${NM}/y/index.js`),
+        ],
+        edges: [userEdge("/app/plugin.ts", "x"), userEdge("/app/plugin.ts", "y"), edge(null, "y")],
+      },
+      { islands: ["/app/plugin.ts"] },
+    );
+    expect(r.packages.map((p) => [p.package, p.status, p.islands])).toEqual([
+      ["x", "inside", ["/app/plugin.ts"]],
+      ["y", "shared", ["/app/plugin.ts"]],
+    ]);
+  });
+
+  test("an island imported by a native package lists that import site", () => {
+    const r = build({
+      modules: [mod(null, "/app/main.ts"), mod("n", `${NM}/n/index.js`), codeFromString("i")],
+      edges: [edge(null, "n"), edge("n", "i")],
+    });
+    expect(r.islands.map((i) => [i.package, i.importedFrom.map((l) => l.file)])).toEqual([
+      ["i", [`${NM}/n/index.js`]],
+    ]);
+  });
+
+  test("the dependencies of a shared package are shared with the island", () => {
+    const r = build({
+      modules: [
+        mod(null, "/app/main.ts"),
+        codeFromString("a"),
+        mod("s", `${NM}/s/index.js`),
+        mod("d", `${NM}/d/index.js`),
+      ],
+      edges: [edge(null, "a"), edge(null, "s"), edge("a", "s"), edge("s", "d")],
+    });
+    expect(r.packages.map((p) => [p.package, p.status, p.islands])).toEqual([
+      ["d", "shared", ["a"]],
+      ["s", "shared", ["a"]],
+    ]);
+  });
+
+  test("with islands off, a marked user module is SC8002 and keeps the user JavaScript rules", () => {
+    const file = "/app/legacy.js";
+    const r = build(
+      { modules: [mod(null, file, [marker(file, "R2.1", "constructor-function")])], edges: [] },
+      { mode: "off", islands: [file], strictUserJs: true },
+    );
+    expect(r.userModules).toEqual([]);
+    expect(r.violations.map((v) => v.code)).toEqual(["SC8002"]);
+    expect(r.violations[0]!.message).toContain(`user module '${file}'`);
+    expect(r.userJs.map((d) => d.code)).toEqual(["SC8101"]);
+  });
+});

@@ -350,7 +350,8 @@ export function locateDiagnostic(
     severity:
       isDivergenceCode(diag.code) ||
       isPerformanceCode(diag.code) ||
-      isNodeIslandNoticeCode(diag.code)
+      isNodeIslandNoticeCode(diag.code) ||
+      diag.code === "SC8004"
         ? "warning"
         : "error",
     scope,

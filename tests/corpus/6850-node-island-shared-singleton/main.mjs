@@ -5,6 +5,7 @@
 // exported `let` is a live binding in the island too.
 import { requireModule } from "@scriptc/node";
 import { config, count, entries, record, reset } from "./state.mjs";
+import { bumpTally, tally } from "./tally.mjs";
 
 record("main-1");
 console.log("main before island", count, entries());
@@ -26,3 +27,14 @@ console.log("island sees config", plugin.describeConfig());
 console.log("same functions", plugin.sameRecord(record), plugin.requireSees());
 reset();
 console.log("after reset", count, entries(), plugin.report());
+
+// A module loaded straight into Node is the program's own instance, and
+// its members called as methods are the program's functions.
+const direct = requireModule("./state.mjs");
+const { record: directRecord, entries: directEntries } = direct;
+directRecord("direct-1");
+console.log("direct load", count, entries(), directEntries() === entries());
+console.log("direct methods", direct.record("direct-2"), direct.record(String(count + 1)), direct.entries());
+bumpTally();
+const { bumpTally: islandBump } = requireModule("./tally.mjs");
+console.log("tally", islandBump(), tally);
