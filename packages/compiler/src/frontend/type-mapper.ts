@@ -2057,6 +2057,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           return viaConditional;
         }
       }
+      const viaDistribution = mapDistributedConditional(type, ctx);
+      if (viaDistribution !== null) {
+        contextResolutions++;
+        return viaDistribution;
+      }
     }
   }
   const widened = checker.getBaseTypeOfLiteralType(type);
@@ -5011,11 +5016,19 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
             !checker.isNeverType(part) &&
             !isEmptyObjectLiteralType(part, ctx),
         );
+      let neverConditionalPart = false;
+      let undefinedPart: ts.Type | undefined;
       for (const part of parts) {
         if (hasArrayPart && emptyTuple(part)) continue;
         // TypeScript's client can retain impossible intersections in a
         // distributed union. They have no inhabitants and no runtime tag.
         if (checker.isNeverType(part)) continue;
+        // A conditional over a bound parameter whose every member selects
+        // `never` contributes no arm either.
+        if (distributedConditionalParts(part, ctx)?.length === 0) {
+          neverConditionalPart = true;
+          continue;
+        }
         // A `void` PART is inhabited only by undefined (`Promise<void> |
         // void` return types, `string | void`): it becomes the undefinedT
         // unit arm, exactly like an undefined part — the value either
@@ -5023,6 +5036,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         // void stays VOID (the return-position mapping above).
         if (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) {
           byKey.set(typeKey(UNDEFINED_T), UNDEFINED_T);
+          undefinedPart ??= part;
           continue;
         }
         if (part.flags & ts.TypeFlags.Null) {
@@ -5065,6 +5079,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       }
       const arms = [...byKey.values()];
       if (arms.length === 0) return F64; // same unreachable placeholder as standalone never
+      // `Cond<T> | undefined` whose conditional selects never for the
+      // instance's binding is the plain `undefined` the concrete
+      // instantiation's optional member has.
+      if (neverConditionalPart && arms.length === 1 && undefinedPart !== undefined)
+        return mapType(undefinedPart, ctx);
       // A single surviving UNIT arm cannot stand alone (degenerate — the
       // checker collapsed everything else away); anything else single is
       // just that type. A single arm UNDER A MINTED PLACEHOLDER cannot
@@ -6132,6 +6151,81 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
     }
   }
   if (arms.length === 1) return arms[0]!;
+  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  return { kind: "union", unionId: ctx.unions.intern(arms) };
+}
+
+/** A distributive conditional (`T extends "a" ? A : T extends "b" ? B :
+ * never`, its check type a naked type parameter) over a parameter the
+ * instance binds: evaluated once per member of the binding (`"a" | "b"`,
+ * or the open `"a" | (string & {})` spelling), as the checker distributes
+ * it. Answers the non-never results (empty when every member selects
+ * never, so an optional member of that type holds only undefined, as in
+ * the concrete instantiation), or null when the conditional is another
+ * shape or a member does not evaluate. */
+function distributedConditionalParts(type: ts.Type, ctx: TypeMapperCtx): ts.Type[] | null {
+  const { checker, resolveTypeParamTs } = ctx;
+  if (!resolveTypeParamTs || !type.isConditionalType()) return null;
+  const checkType = type.getCheckType();
+  if (!checkType || !(checkType.flags & ts.TypeFlags.TypeParameter)) return null;
+  const symbol = checkType.getSymbol();
+  const bound = resolveTypeParamTs(checkType);
+  if (!symbol || !bound) return null;
+  const parts: ts.Type[] = [];
+  for (const member of bound.isUnionType() ? ts.constituentTypes(bound) : [bound]) {
+    // `string & {}` (the open-union spelling) extends exactly what `string`
+    // extends: the empty object adds nothing to a primitive.
+    const emptyObject = (part: ts.Type): boolean =>
+      (part.flags & ts.TypeFlags.Object) !== 0 &&
+      checker.getPropertiesOfType(part).length === 0 &&
+      checker.getIndexInfosOfType(part).length === 0 &&
+      checker.getCallSignatures(part).length === 0 &&
+      checker.getConstructSignatures(part).length === 0;
+    const primitive = member.isIntersectionType()
+      ? ts.constituentTypes(member).filter((part) => !emptyObject(part))
+      : [member];
+    if (primitive.length !== 1) return null;
+    const evaluated = evalMappedTemplate(type, new Map(), new Map([[symbol, primitive[0]!]]), ctx);
+    if (!evaluated) return null;
+    if (checker.isNeverType(evaluated)) continue;
+    if (!parts.includes(evaluated)) parts.push(evaluated);
+  }
+  return parts;
+}
+
+/** A unit-only type once its conditionals over bound parameters are
+ * distributed: `Cond<T> | undefined` where every member of T's binding
+ * selects never (the optional member's type in a generic body). */
+function neverConditionalUnitOnly(t: ts.Type, ctx: TypeMapperCtx): boolean {
+  const UNIT = ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null;
+  if (!t.isUnionType()) return false;
+  let conditional = false;
+  for (const part of ts.constituentTypes(t)) {
+    if ((part.flags & UNIT) !== 0) continue;
+    if (distributedConditionalParts(part, ctx)?.length !== 0) return false;
+    conditional = true;
+  }
+  return conditional;
+}
+
+/** mapType of a distributed conditional (distributedConditionalParts): the
+ * union of its members' results. Null when it does not distribute, when a
+ * result does not map, or when every member selects never (the enclosing
+ * union drops such a part). */
+function mapDistributedConditional(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const parts = distributedConditionalParts(type, ctx);
+  if (!parts || parts.length === 0) return null;
+  const arms: IrType[] = [];
+  for (const part of parts) {
+    const mapped = mapType(part, ctx);
+    if (!mapped) return null;
+    const members =
+      mapped.kind === "union" ? (ctx.unions.get(mapped.unionId)?.arms ?? null) : [mapped];
+    if (!members) return null;
+    for (const arm of members) if (!arms.some((a) => typeEquals(a, arm))) arms.push(arm);
+  }
+  if (arms.length === 1) return arms[0]!;
+  if (!unionContainerArmsOk(arms)) return null;
   arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
   return { kind: "union", unionId: ctx.unions.intern(arms) };
 }
@@ -8242,7 +8336,10 @@ function mapRecordTypeInner(
       // absent-field idiom — and `{ p: undefined }` spellings): the
       // unit-only union. The runtime value is the interned unit, JSON
       // omits the undefined arm exactly like an omitted optional.
-      if (pt?.kind === "void" && isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam))
+      if (
+        pt?.kind === "void" &&
+        (isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam) || neverConditionalUnitOnly(fieldTs, ctx))
+      )
         pt = unitOnlyUnion(ctx.unions);
       if (pt !== null && isUnitOnlyIr(pt, ctx) && jsObjectLiteralProperty(p)) pt = DYN;
       if (pt?.kind === "array" && jsNeverArrayProp(p, fieldTs, checker)) pt = DYN;
