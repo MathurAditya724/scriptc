@@ -1139,6 +1139,13 @@ static void scr_net_sock_buffer(ScrNetSocket *s, const char *data, size_t len, s
   }
   memcpy(s->wbuf + s->wlen, data, len);
   s->wlen += len;
+  if (s->wq_n == s->wq_cap && s->wq_head > 0) {
+    /* reclaim the completed writes before growing: a buffer that never
+     * empties completes old writes while new ones arrive */
+    memmove(s->wq, s->wq + s->wq_head, (s->wq_n - s->wq_head) * sizeof *s->wq);
+    s->wq_n -= s->wq_head;
+    s->wq_head = 0;
+  }
   if (s->wq_n == s->wq_cap) {
     s->wq_cap = s->wq_cap ? s->wq_cap * 2 : 8;
     s->wq = realloc(s->wq, s->wq_cap * sizeof *s->wq);
