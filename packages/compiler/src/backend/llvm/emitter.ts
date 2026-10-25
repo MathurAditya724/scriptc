@@ -1633,6 +1633,9 @@ export class LlEmitter {
    * commit back into their objects. Library builds keep their commits:
    * their values cross a native boundary. */
   readonly liveViewsReadOnly: boolean;
+  /** IrModule.foreignElementKeys: element keys whose arrays can hold
+   * SCR_ARR_FOREIGN elements. */
+  readonly foreignElementKeys: ReadonlySet<string>;
   /** The program freezes, seals or prevents extensions of untyped values
    * (IrModule.untypedIntegrity): the commits of class views store the
    * view's integrity state in the instance's integrity word. */
@@ -1925,6 +1928,7 @@ export class LlEmitter {
       !this.untypedIntegrity &&
       !dynamicStores.all &&
       dynamicStores.names.size === 0;
+    this.foreignElementKeys = new Set(mod.foreignElementKeys ?? []);
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
@@ -2219,6 +2223,7 @@ export class LlEmitter {
       declare: (decl) => this.declare(decl),
       needOom: () => this.needOom(),
       needBadTag: () => this.needBadTag(),
+      mayHoldForeign: (elem) => this.mayHoldForeign(elem),
       internLiteral: (text) => this.internLiteral(text),
       cstr: (text) => this.cstr(text),
       mapOps: (operands) => this.mapOps(operands),
@@ -6714,6 +6719,12 @@ export class LlEmitter {
       default:
         throw new InternalCompilerError(`llvm emitter bug: unknown intrinsic ${e.name}`);
     }
+  }
+
+  /** Arrays of this element type can hold SCR_ARR_FOREIGN elements. */
+  mayHoldForeign(elem: IrType): boolean {
+    if (this.foreignElementKeys.size === 0) return false;
+    return this.foreignElementKeys.has("*") || this.foreignElementKeys.has(typeKey(elem));
   }
 
   /** Lifetime regions in modules with lifetimeRegions (llvm/regions.ts).

@@ -4348,6 +4348,7 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
   double state = scr_arr_state(arr, (double)index);
   if (state == (double)SCR_ARR_VALUE) return scr_dyn_typed_ref_array_ops(d)->get(arr, (double)index);
   if (state == (double)SCR_ARR_UNDEFINED) return scr_dyn_retain(scr_dyn_undefined());
+  if (state == (double)SCR_ARR_FOREIGN) return scr_arr_get_foreign(arr, (double)index);
   return NULL;
 }
 
@@ -14400,6 +14401,13 @@ void scr_jb_put_dyn_entries(ScrJsonBuf *b, void *rec, ScrMap *map, bool *first) 
 void scr_jb_put_dyn(ScrJsonBuf *b, const ScrDyn *d) {
   if (scr_json_omitted(d)) scr_jb_puts(b, "null");
   else scr_json_replaced_write(b, d, scr_dyn_undefined(), NULL, &scr_json_compact_gap, b->seen_len);
+}
+
+void scr_jb_put_dyn_element(ScrJsonBuf *b, const ScrDyn *d, double index) {
+  ScrDyn *value = scr_json_to_json_at(scr_dyn_retain((ScrDyn *)d), NULL, (size_t)index);
+  if (!value) return;
+  scr_jb_put_dyn(b, value);
+  scr_dyn_release(value);
 }
 
 /* Untyped RC adapters (box/promise/exception-cell currency). */
