@@ -203,7 +203,7 @@ function copy(
 }
 
 const bin = (
-  op: "+" | "-" | "&" | "|",
+  op: "+" | "-" | "/" | "&" | "|",
   left: IrExpr,
   right: IrExpr,
   loc: IrExpr["loc"],
@@ -374,9 +374,10 @@ function pairRows(
     ],
     loc,
   };
-  // Every bound is an integer in [0, SMALL_BOUND], so `row < end - 1` is
-  // `row + 1 < end` (and the same for the columns), and the masks in
-  // `bounds` leave the bounds unchanged while proving both counters' ranges.
+  // Every bound is an integer in [0, SMALL_BOUND] and not -0, so `row <
+  // end - 1` is `row + 1 < end` (and the same for the columns), and the
+  // masks in `bounds` leave the bounds unchanged while proving both
+  // counters' ranges.
   // The nest has at least two rows. The column bounds' tests and the
   // overlap tests run only then, so they never read an array the program
   // assigns only when there are rows. Rows are
@@ -398,9 +399,11 @@ function pairRows(
     type: BOOL,
     loc,
   });
+  // `1 / e > 0` holds for +0 and every positive bound, but not for -0:
+  // masking would turn a -0 start into +0, which a term can tell apart.
   const small = (e: IrExpr): IrExpr[] => [
     int32(e),
-    compare(">=", e, 0),
+    { kind: "bin", op: ">", left: bin("/", num(1), again(e), loc), right: num(0), type: BOOL, loc },
     compare("<=", e, SMALL_BOUND),
   ];
   const tests: IrExpr[] = [

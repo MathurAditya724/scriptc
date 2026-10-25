@@ -2,8 +2,9 @@
 // and two columns, column ranges that start above zero or at or past their
 // end, fractional, negative, NaN and very large column bounds, a column
 // bound read from an array's length, terms that read two elements per
-// column, and row bounds at and past 2^25. Every sum adds its columns in
-// order, so each has the bits of the loop as written.
+// column, row bounds at and past 2^25, and row and column starts of -0
+// with terms that tell -0 from +0. Every sum adds its columns in order,
+// so each has the bits of the loop as written.
 function rows(u: Float64Array, v: Float64Array, start: number, end: number, from: number, to: number): void {
   for (let i = start; i < end; i++) {
     let t = 0;
@@ -16,6 +17,16 @@ function pairs(u: Float64Array, w: Float32Array, v: Float64Array, end: number): 
   for (let i = 0; i < end; i++) {
     let t = -0.25;
     for (let j = 0; j < u.length; j++) t += u[j]! * w[j + 1]! - (i + 1) / (j + 3);
+    v[i] = t;
+  }
+}
+
+// 1 / (i * 4 - j) is -Infinity at a -0 row and +0 column, and
+// 1 / (j - i * 4) at a -0 column and +0 row: the first pass sees the sign.
+function signs(v: Float64Array, start: number, end: number, from: number, to: number): void {
+  for (let i = start; i < end; i++) {
+    let t = 0;
+    for (let j = from; j < to; j++) t += 1 / (i * 4 - j) + 1 / (j - i * 4) + 1 / (i * 4 + j + 1);
     v[i] = t;
   }
 }
@@ -71,3 +82,13 @@ const short = new Float64Array(4).map((_, k) => k * 2.5);
 const out = new Float64Array(5);
 pairs(short, w, out, 5);
 show("two reads short", out);
+for (const [start, from] of [
+  [0, 0],
+  [-0, 0],
+  [0, -0],
+  [-0, -0],
+]) {
+  const v = new Float64Array(4);
+  signs(v, start!, 4, from!, 5);
+  show(`signs ${Object.is(start, -0) ? "-0" : start} ${Object.is(from, -0) ? "-0" : from}`, v);
+}
