@@ -33,6 +33,25 @@ import { computeConstantGraphs } from "./constant-graphs.js";
 
 type Node = ts.Node;
 
+/** One read, call or write site, with the receivers of every context it
+ * was analyzed in. `nullish`: a receiver may also be null or undefined,
+ * which `atoms` leaves out (see planStaticObjectRewrites). */
+interface MergedOp {
+  op: ShapeAnalysis["ops"][number];
+  atoms: Set<Atom>;
+  nullish: boolean;
+}
+
+/** The replacement text of the read `node`: `text`, or, when the receiver
+ * may be nullish, the read as written followed by `text` in a comma
+ * expression, so a nullish receiver still throws Node's TypeError and any
+ * other receiver yields `text`'s value. */
+function keepRead(node: ts.Node, text: string, nullish: boolean): string {
+  if (!nullish) return text;
+  const sf = node.getSourceFile();
+  return `(${sf.text.slice(ts.tokenStartOfNode(node), node.end)}, ${text})`;
+}
+
 interface Edit {
   readonly start: number;
   readonly end: number;
@@ -328,9 +347,9 @@ export function planStaticObjectRewrites(
   // One entry per (kind, syntax node): a node the analysis walked in
   // several contexts (receiver classes, per-site clones) is rewritten only
   // when the receivers of every context together satisfy the conditions.
-  const mergedOps: { op: (typeof analysis.ops)[number]; atoms: Set<Atom> }[] = [];
+  const mergedOps: MergedOp[] = [];
   {
-    const byKey = new Map<string, { op: (typeof analysis.ops)[number]; atoms: Set<Atom> }>();
+    const byKey = new Map<string, MergedOp>();
     const ids = new Map<Node, number>();
     for (const op of analysis.ops) {
       let id = ids.get(op.node);
@@ -338,17 +357,21 @@ export function planStaticObjectRewrites(
       const key = `${op.kind}:${op.name ?? ""}:${id}`;
       let entry = byKey.get(key);
       if (entry === undefined) {
-        byKey.set(key, (entry = { op, atoms: new Set() }));
+        byKey.set(key, (entry = { op, atoms: new Set(), nullish: false }));
         mergedOps.push(entry);
       }
       // A nullish receiver makes the read throw, so the rewrites decide on
       // the other receivers (absent keys read undefined in the analysis:
-      // `ns.util` before `ns.util = {…}` runs). In an optional chain a
-      // nullish receiver short-circuits instead, so it counts.
+      // `ns.util` before `ns.util = {…}` runs), and `nullish` keeps the
+      // throw: a rewrite of such a read evaluates the read first. In an
+      // optional chain a nullish receiver short-circuits instead, so it
+      // counts.
       const optional = (op.node.flags & ts.NodeFlags.OptionalChain) !== 0;
-      for (const a of analysis.nodes[op.recv]!.atoms)
+      for (const a of analysis.nodes[op.recv]!.atoms) {
         if (optional || !(a.kind === "prim" && (a.label === "undefined" || a.label === "null")))
           entry.atoms.add(a);
+        else entry.nullish = true;
+      }
     }
   }
   const forIns: ts.Expression[] = [];
@@ -712,7 +735,7 @@ export function planStaticObjectRewrites(
   // Direct references: `e.k` (called, constructed or read) in the same file
   // whose receiver is exactly the constant object holding a hoisted
   // function or class.
-  for (const { op, atoms } of mergedOps) {
+  for (const { op, atoms, nullish } of mergedOps) {
     if (op.kind !== "read" || op.name === null) continue;
     if (atoms.size !== 1) continue;
     const recv = [...atoms][0]!;
@@ -734,14 +757,22 @@ export function planStaticObjectRewrites(
       if (text === null) continue;
       callEdits.push({
         sf: node.getSourceFile(),
-        edit: { start: ts.tokenStartOfNode(node), end: node.end, text },
+        edit: {
+          start: ts.tokenStartOfNode(node),
+          end: node.end,
+          text: keepRead(node, text, nullish),
+        },
       });
       directCalls++;
       continue;
     }
     callEdits.push({
       sf: node.getSourceFile(),
-      edit: { start: ts.tokenStartOfNode(node), end: node.end, text: name },
+      edit: {
+        start: ts.tokenStartOfNode(node),
+        end: node.end,
+        text: keepRead(node, name, nullish),
+      },
     });
     directCalls++;
   }
@@ -754,7 +785,7 @@ export function planStaticObjectRewrites(
   // member stored after the object was created could be read before the
   // store; those stay reads.)
   let foldedReads = 0;
-  for (const { op, atoms } of mergedOps) {
+  for (const { op, atoms, nullish } of mergedOps) {
     if (op.kind !== "read" || op.name === null) continue;
     if (atoms.size !== 1) continue;
     const o = constantAtoms.get([...atoms][0]!);
@@ -777,7 +808,7 @@ export function planStaticObjectRewrites(
       edit: {
         start: ts.tokenStartOfNode(node),
         end: node.end,
-        text: key ? literal : `(${literal})`,
+        text: nullish ? keepRead(node, literal, true) : key ? literal : `(${literal})`,
       },
     });
     foldedReads++;
@@ -808,8 +839,13 @@ export function planStaticObjectRewrites(
   // key reads the table as written. The members do not use `this`, the
   // table has no accessors, and comparing a string runs no code, so only
   // the representation of the call changes.
-  const tableCalls: { sf: ts.SourceFile; call: ts.CallExpression; arms: [string, string][] }[] = [];
-  for (const { op, atoms } of mergedOps) {
+  const tableCalls: {
+    sf: ts.SourceFile;
+    call: ts.CallExpression;
+    arms: [string, string][];
+    nullish: boolean;
+  }[] = [];
+  for (const { op, atoms, nullish } of mergedOps) {
     if (op.kind !== "computedRead") continue;
     const node = op.node;
     if (!ts.isElementAccessExpression(node) || node.questionDotToken !== undefined) continue;
@@ -849,9 +885,9 @@ export function planStaticObjectRewrites(
       kept.push(`${where}: a member is not a hoisted function of this file`);
       continue;
     }
-    tableCalls.push({ sf: call.getSourceFile(), call, arms });
+    tableCalls.push({ sf: call.getSourceFile(), call, arms, nullish });
   }
-  for (const { sf, call, arms } of tableCalls) {
+  for (const { sf, call, arms, nullish } of tableCalls) {
     const node = call.expression as ts.ElementAccessExpression;
     const key = node.argumentExpression.getText();
     const args = call.arguments.nodes.map((a) => sliceWithCalls(sf, a)).join(", ");
@@ -864,7 +900,10 @@ export function planStaticObjectRewrites(
       edit: {
         start: ts.tokenStartOfNode(call),
         end: call.end,
-        text: `(${text}${table}[${key}](${args}))`,
+        // A table that may be nullish is read first, where the call reads
+        // it, so the read throws before the arguments run; on the constant
+        // object it reads a plain member with a string key.
+        text: `(${nullish ? `${table}[${key}], ` : ""}${text}${table}[${key}](${args}))`,
       },
     });
     tableDispatches++;
