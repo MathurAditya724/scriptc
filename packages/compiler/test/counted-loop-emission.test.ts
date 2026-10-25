@@ -58,6 +58,14 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
         "export function codes(a: Uint8Array): void {",
         "  for (let i = 0; i < a.length; ++i) a[i] = a[i] === 97 ? 0 : 3;",
         "}",
+        "export function shrink(a: Uint8Array): number {",
+        "  let t = 0;",
+        "  for (let i = 0; i < a.length; ++i) {",
+        "    t += a[i]!;",
+        "    if (i === 2) a = a.subarray(0, 3);",
+        "  }",
+        "  return t;",
+        "}",
         "export function mix(n: number): number {",
         "  let t = 0;",
         "  for (let i = 0; i < n; i++) t = (t * 31 + i) % 1000003;",
@@ -68,7 +76,7 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
         "scale(a, b, 8);",
         "const c = new Uint8Array(8).fill(97);",
         "codes(c);",
-        "console.log(b[7], mix(8), c[0]);",
+        "console.log(b[7], mix(8), c[0], shrink(new Uint8Array(8).fill(1)));",
         workers ? "if (!isMainThread) new Worker(new URL(import.meta.url));" : "",
       ].join("\n");
     const emit = async (workers: boolean): Promise<string> => {
@@ -113,6 +121,11 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
     expect(codes).toMatch(/@llvm\.uadd\.sat\.i64\(i64 %\w+, i64 64\)/);
     expect(codes).toMatch(/@llvm\.umin\.i64\(i64 %\w+, i64 %\w+\)/);
     expect(codes).toMatch(/^loop\.poll\d+:$/m);
+    // A loop that assigns its array reads the new length on the next
+    // iteration: it keeps the budget.
+    const shrink = bodies(workerModule, "shrink");
+    expect(shrink).toContain("worker cancellation budget");
+    expect(shrink).not.toMatch(/^loop\.poll\d+:$/m);
     const mix = bodies(workerModule, "mix");
     expect(mix).toContain("worker cancellation budget");
     expect(mix).not.toContain("loop.poll");

@@ -1216,14 +1216,15 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // length, polls between blocks of WORKER_POLL_BLOCK iterations instead
       // of counting a budget in its body: the inner loop over a block then
       // has no exit besides its own bound, which LLVM can vectorize. A typed
-      // array's length is fixed, so each block can take it as its limit.
+      // array's length is fixed, so each block can take it as its limit when
+      // the loop does not assign the array's binding.
       const stripMined =
         capturedLets.length === 0 &&
         integerSlot !== null &&
         ((countedLoop !== null &&
           countedLimit !== null &&
           Math.abs(countedLoop.step) * WORKER_POLL_BLOCK <= 2 ** 52) ||
-          (integerLoop !== null && integerArrayLoop === null)) &&
+          (integerLoop !== null && integerArrayLoop === null && integerLoop.stableReceiver)) &&
         emitter.workerLoopPolls(s) &&
         loopAccessesTypedArrays(s);
       const workerBudget = stripMined ? null : emitter.workerLoopBudget(s);
