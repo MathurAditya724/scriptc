@@ -187,6 +187,37 @@ function exactPowerOfTwo(value: number): number | null {
   return k >= 0 && k <= 52 && 2 ** k === value ? k : null;
 }
 
+/** The same speculated operand written twice: a local, a literal, or a
+ * power of two of the same exponent. */
+function sameOperand(a: IrExpr, b: IrExpr): boolean {
+  if (a.kind === "varRef") return b.kind === "varRef" && a.localId === b.localId;
+  if (a.kind === "numLit") return b.kind === "numLit" && Object.is(a.value, b.value);
+  return (
+    a.kind === "libCall" &&
+    b.kind === "libCall" &&
+    a.fn === "math.pow" &&
+    b.fn === "math.pow" &&
+    powerOfTwo(a) &&
+    powerOfTwo(b) &&
+    sameOperand(a.args[1]!, b.args[1]!)
+  );
+}
+
+/** `a - Math.floor(a / p) * p` (either factor order) with p a power of two
+ * and `a` a local or literal: the floor-mod of `a` by p. */
+function floorModPowerOfTwo(e: IrExpr): { value: IrExpr; power: IrExpr } | null {
+  if (e.kind !== "bin" || e.op !== "-" || e.right.kind !== "bin" || e.right.op !== "*") return null;
+  const { left, right } = e.right;
+  const [floor, power] =
+    left.kind === "libCall" && left.fn === "math.floor" ? [left, right] : [right, left];
+  if (floor.kind !== "libCall" || floor.fn !== "math.floor" || floor.args.length !== 1) return null;
+  const quotient = floor.args[0]!;
+  if (quotient.kind !== "bin" || quotient.op !== "/") return null;
+  if (!powerOfTwo(power) || !sameOperand(quotient.right, power)) return null;
+  if (e.left.kind !== "varRef" && e.left.kind !== "numLit") return null;
+  return sameOperand(quotient.left, e.left) ? { value: e.left, power } : null;
+}
+
 /** Whether `e` is a power of two speculation can shift by:
  * `Math.pow(2, n)` or a literal 2^k with k in [0, 52]. */
 function powerOfTwo(e: IrExpr): boolean {
@@ -950,6 +981,37 @@ export function emitSpeculativeInteger(
     }
     case "bin": {
       if (e.op !== "+" && e.op !== "-" && e.op !== "*" && e.op !== "%") break;
+      // The floor-mod of a safe integer by 2^n (n in [0, 52]) is its low n
+      // bits, also for a negative value: in [0, 2^n), and never -0.
+      const mod = floorModPowerOfTwo(e);
+      if (mod) {
+        const value = emitSpeculativeInteger(host, mod.value, bail, reads, integral);
+        const n = exponentOf(host, mod.power, bail, reads, integral);
+        const mask = B.tmp(),
+          low = B.tmp();
+        B.line(`${mask} = sub i64 ${shiftOne(host, n)}, 1`);
+        B.line(`${low} = and i64 ${value}, ${mask}`);
+        return low;
+      }
+      // A product with 2^n shifts: it is safe iff the other factor's
+      // magnitude is at most (2^53 - 1) >> n, and a zero product of a safe
+      // integer and a positive power is +0.
+      if (e.op === "*" && (powerOfTwo(e.right) || powerOfTwo(e.left))) {
+        const [factor, power] = powerOfTwo(e.right) ? [e.left, e.right] : [e.right, e.left];
+        const value = emitSpeculativeInteger(host, factor, bail, reads, integral);
+        const n = exponentOf(host, power, bail, reads, integral);
+        const limit = B.tmp(),
+          magnitude = B.tmp(),
+          outside = B.tmp(),
+          product = B.tmp();
+        B.line(`${limit} = ashr i64 ${SAFE}, ${n}`);
+        host.declare("declare i64 @llvm.abs.i64(i64, i1)");
+        B.line(`${magnitude} = call i64 @llvm.abs.i64(i64 ${value}, i1 true)`);
+        B.line(`${outside} = icmp ugt i64 ${magnitude}, ${limit}`);
+        bail(outside);
+        B.line(`${product} = shl nsw i64 ${value}, ${n}`);
+        return product;
+      }
       const a = emitSpeculativeInteger(host, e.left, bail, reads, integral);
       const b = emitSpeculativeInteger(host, e.right, bail, reads, integral);
       const result = B.tmp();
