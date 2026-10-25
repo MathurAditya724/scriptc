@@ -565,6 +565,11 @@ struct ScrNetSocket {
   ScrNetLs lookup_ls;
   struct ScrNetLookupEv *lookup_evs;
   ScrNetLs data_ls, end_ls, close_ls, err_ls, conn_ls, timeout_ls, readable_ls;
+  /* Writable backpressure: a user write answered false (the bytes it left
+   * unsent reached SCR_NET_WRITE_HWM), so 'drain' fires once the write
+   * buffer empties */
+  ScrNetLs drain_ls;
+  bool need_drain;
   /* Flow control (pause()/resume()): user_paused holds reads OFF even
    * with consumers (kernel/TCP backpressure is the buffer); flowing
    * counts as a consumer even with no 'data' listener
@@ -747,6 +752,7 @@ void scr_net_sock_release(ScrNetSocket *s) {
     scr_net_ls_drop(&s->conn_ls);
     scr_net_ls_drop(&s->timeout_ls);
     scr_net_ls_drop(&s->readable_ls);
+    scr_net_ls_drop(&s->drain_ls);
     scr_net_ls_drop(&s->finish_ls);
     scr_net_ls_drop(&s->wcb_ls);
     scr_net_ls_drop(&s->ready_ls);
@@ -1103,6 +1109,40 @@ static void scr_net_sock_buffer(ScrNetSocket *s, const char *data, size_t len) {
   s->wlen += len;
 }
 
+/* Node's net.Socket writableHighWaterMark (the Writable default,
+ * getDefaultHighWaterMark()). */
+#define SCR_NET_WRITE_HWM 65536
+
+/* 'drain' once a false write's bytes are all out: Node's afterWrite emits
+ * it when needDrain is set and nothing is pending, unless the stream is
+ * ending or destroyed. */
+static void scr_net_sock_maybe_drain(ScrNetSocket *s) {
+  if (!s->need_drain || s->wlen > s->whead) return;
+  if (s->wr_ending || s->close_emitted || s->fd < 0) return;
+  s->need_drain = false;
+  scr_net_fire0_this(&s->drain_ls, s, SCR_DYNH_NET_SOCKET);
+}
+
+static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len);
+
+/* A user write: Writable.write's answer, as Node 24's writeOrBuffer
+ * computes it after the socket writes — the bytes the write path left
+ * unsent below the high-water mark — with needDrain set when it is false.
+ * A write the kernel takes at once answers true whatever its size; the
+ * buffered bytes of a false one drain from the flush. A write to an ended
+ * or closed socket answers false. */
+static bool scr_net_sock_user_write(ScrNetSocket *s, const char *data, size_t len) {
+  ScrNetSocket *w = s->adopted_by != NULL ? s->adopted_by : s;
+  bool pre_dial = w->fd < 0 && (w->dial_deferred || w->lookup_wait) && !w->wr_ending &&
+                  !w->close_emitted;
+  bool live = pre_dial || !(w->fd < 0 || w->wr_ending || w->close_emitted);
+  scr_net_sock_write_raw(s, data, len);
+  if (!live) return false;
+  bool ok = w->wlen - w->whead < SCR_NET_WRITE_HWM;
+  if (!ok) w->need_drain = true;
+  return ok;
+}
+
 /* The write path shared by write()/end(data)/pipe delivery. Ignored on a
  * dead or ended write half (Node fires 'error' there; this slice drops —
  * SEMANTICS.md documents the bound). */
@@ -1252,6 +1292,9 @@ static void scr_net_sock_flush(ScrNetSocket *s) {
     s->whead = s->wlen = 0;
     scr_net_sock_update_write(s);
     scr_net_sock_maybe_finish_write(s);
+    /* Node's afterWrite for a write the socket completed later: 'drain'
+     * now, unless the write half is ending or the socket is gone */
+    scr_net_sock_maybe_drain(s);
   }
 }
 
@@ -3150,16 +3193,40 @@ void scr_net_lookup_answer(ScrClosure *self, bool has_err, ScrStr *msg /*borrowe
 
 /* ── the socket surface ──────────────────────────────────────────────── */
 
-void scr_net_sock_write_str(ScrNetSocket *s, ScrStr *data /*borrowed*/) {
+bool scr_net_sock_write_str(ScrNetSocket *s, ScrStr *data /*borrowed*/) {
   char *owned;
   const char *bytes = scr_str_utf8(data, &owned);
-  scr_net_sock_write_raw(s, bytes, data->len);
+  bool ok = scr_net_sock_user_write(s, bytes, data->len);
   scr_str_utf8_end(owned);
+  return ok;
 }
 
-void scr_net_sock_write_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/) {
+bool scr_net_sock_write_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/) {
   SCR_BYTES_SNAPSHOT(data);
-  scr_net_sock_write_raw(s, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
+  return scr_net_sock_user_write(s, (const char *)data->data,
+                                 (data->len * scr_bytes_elem_size(data->elem)));
+}
+
+/* socket.writableLength: the bytes written and not yet sent. */
+double scr_net_sock_writable_length(ScrNetSocket *s) {
+  ScrNetSocket *w = s->adopted_by != NULL ? s->adopted_by : s;
+  return (double)(w->wlen - w->whead);
+}
+
+/* socket.writableNeedDrain: a write answered false and 'drain' has not
+ * fired, on a socket whose write half is open. */
+bool scr_net_sock_writable_need_drain(ScrNetSocket *s) {
+  ScrNetSocket *w = s->adopted_by != NULL ? s->adopted_by : s;
+  return w->need_drain && !w->wr_ending && !w->close_emitted && w->fd >= 0;
+}
+
+/* on('drain') / once('drain'). */
+void scr_net_sock_on_drain(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->drain_ls, cb, NULL, once);
 }
 
 void scr_net_sock_end(ScrNetSocket *s) {
@@ -5860,6 +5927,7 @@ static void scr_net_cleanup_atexit(void) {
     scr_net_ls_drop(&s->conn_ls);
     scr_net_ls_drop(&s->timeout_ls);
     scr_net_ls_drop(&s->readable_ls);
+    scr_net_ls_drop(&s->drain_ls);
     scr_net_ls_drop(&s->lookup_ls);
     /* Tear down the protocol layer's parser NOW: an in-flight http
      * exchange (a handler that threw before res.end()) holds req/res,
@@ -5984,8 +6052,7 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
       /* fires once when the FIN goes out — once either way */
       scr_net_sock_on_finish(s, scr_dyn_listener_closure0(cb));
     } else if (scr_net_dynh_name_is(name, "drain")) {
-      /* This surface never backpressures (write answers true) — an
-       * accepted, never-fired registration is the consistent answer. */
+      scr_net_sock_on_drain(s, scr_dyn_listener_closure0(cb), once);
     } else if (scr_net_dynh_tls != NULL && name->kind == SCR_DYN_STR &&
                scr_net_dynh_tls->on(s, name->v.str->data, cb, once)) {
       /* a TLS event name ('secureConnect'), handled by the TLS unit */
@@ -6008,13 +6075,13 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
       scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", chunk);
       return NULL;
     }
-    if (chunk->kind == SCR_DYN_STR) scr_net_sock_write_str(s, chunk->v.str);
-    else scr_net_sock_write_bytes(s, chunk->v.bytes);
+    bool ok = chunk->kind == SCR_DYN_STR ? scr_net_sock_write_str(s, chunk->v.str)
+                                         : scr_net_sock_write_bytes(s, chunk->v.bytes);
     if (argc > 1 && args[1]->kind == SCR_DYN_FUNC) {
       /* write(chunk, cb): fires when the buffer drains (sweep-deferred) */
       scr_net_sock_on_write_flush(s, scr_dyn_listener_closure0(args[1]));
     }
-    return scr_dyn_new_bool(true); /* backpressure is not modeled (SEMANTICS.md) */
+    return scr_dyn_new_bool(ok);
   }
   if (strcmp(method, "end") == 0) {
     const ScrDyn *chunk = argc > 0 ? args[0] : scr_dyn_undefined();
@@ -6500,10 +6567,11 @@ void scr_net_dyn_install(void) {
  * STR/BYTES dispatch onto the typed entries; undefined/null end()s plain
  * (Node accepts them); anything else throws Node's ERR_INVALID_ARG_TYPE
  * chunk TypeError. Both borrowed. */
-void scr_net_sock_write_dynv(ScrNetSocket *s, const ScrDyn *d) {
-  if (d->kind == SCR_DYN_STR) scr_net_sock_write_str(s, d->v.str);
-  else if (d->kind == SCR_DYN_BYTES) scr_net_sock_write_bytes(s, d->v.bytes);
-  else scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
+bool scr_net_sock_write_dynv(ScrNetSocket *s, const ScrDyn *d) {
+  if (d->kind == SCR_DYN_STR) return scr_net_sock_write_str(s, d->v.str);
+  if (d->kind == SCR_DYN_BYTES) return scr_net_sock_write_bytes(s, d->v.bytes);
+  scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
+  return false;
 }
 
 void scr_net_sock_end_dynv(ScrNetSocket *s, const ScrDyn *d) {

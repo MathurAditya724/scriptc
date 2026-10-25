@@ -1543,15 +1543,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * true } and a callback taking an address string or list, then dials
    * the answers in order. MAY THROW (host validation, a lookup throw). */
   "net.connectLookupDyn": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
-  "net.sockWrite": { argTypes: [NETSOCKET_T, STRING], result: VOID },
-  "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
+  /** socket.write: Node's Writable answer — false when the bytes the write
+   * left unsent reach the 65536-byte high-water mark ('drain' follows),
+   * and on an ended or closed socket. */
+  "net.sockWrite": { argTypes: [NETSOCKET_T, STRING], result: BOOL },
+  "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: BOOL },
   "net.sockEnd": { argTypes: [NETSOCKET_T], result: VOID },
   "net.sockEndStr": { argTypes: [NETSOCKET_T, STRING], result: VOID },
   "net.sockEndBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
   /** write/end with a CHECKED-DYNAMIC chunk (an untyped JS payload into a
    * typed socket): the runtime dispatches STR/BYTES and throws Node's
    * ERR_INVALID_ARG_TYPE chunk TypeError on any other kind. */
-  "net.sockWriteDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
+  "net.sockWriteDyn": { argTypes: [NETSOCKET_T, DYN], result: BOOL },
   "net.sockEndDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
   "net.sockDestroy": { argTypes: [NETSOCKET_T], result: VOID },
   "net.sockPipe": { argTypes: [NETSOCKET_T, NETSOCKET_T], result: VOID },
@@ -2009,6 +2012,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
     result: VOID,
   },
+  /** on('drain') / once('drain'): fires after a write answered false, once
+   * the write buffer empties. */
+  "net.sockOnDrain": {
+    argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
+    result: VOID,
+  },
   "net.sockRemoteAddress": { argTypes: [NETSOCKET_T], result: VOID },
   /** socket.encrypted — `boolean | undefined`: the true arm iff the
    * socket carries a TLS transport (Node types `encrypted: true` on
@@ -2135,6 +2144,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** socket.address(): { address, family, port } or {} as a dyn. */
   "net.sockAddress": { argTypes: [NETSOCKET_T], result: DYN },
   "net.sockBytesWritten": { argTypes: [NETSOCKET_T], result: F64 },
+  /** socket.writableLength: the bytes written and not yet sent. */
+  "net.sockWritableLength": { argTypes: [NETSOCKET_T], result: F64 },
+  /** socket.writableNeedDrain: a write answered false and 'drain' has not
+   * fired, with the write half open. */
+  "net.sockWritableNeedDrain": { argTypes: [NETSOCKET_T], result: BOOL },
   /** remotePort (0), remoteFamily (1), localAddress (2), localPort (3),
    * localFamily (4): dyn values, undefined when unknown. */
   "net.sockAddrField": { argTypes: [NETSOCKET_T, F64], result: DYN },
