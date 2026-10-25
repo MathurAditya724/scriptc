@@ -974,10 +974,20 @@ export function wrapEmitterListener(
 export function unwrapNullableClosure(
   host: LlvmEmitterContext,
   u: string,
+  unionId: string,
   funcTag: number,
 ): string {
   const B = host.B;
   host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
+  const nullable = host.nullableUnions.get(unionId);
+  if (nullable !== null) {
+    // The union is the closure pointer itself (NULL for the unit arm).
+    if (nullable.repr !== "single" || nullable.nullTag >= 0 || nullable.refTag !== funcTag)
+      throw new InternalCompilerError("llvm emitter bug: nullable callback union shape");
+    const r = B.tmp();
+    B.line(`${r} = call ptr ${retainSym(host.shapeHost, { kind: "union", unionId })}(ptr ${u})`);
+    return r;
+  }
   const slot = B.slot();
   B.entryAllocas.push(`${slot} = alloca ptr`);
   B.line(`store ptr null, ptr ${slot}`);
@@ -1026,9 +1036,9 @@ export function closeBindThunkFor(
       "llvm emitter bug: bound-close callback union lacks its func arm",
     );
   const oneParam = funcArm.params.length === 1;
+  const cbNullable = host.nullableUnions.get(cbUnion.unionId);
   host.declare(`declare ptr @scr_box_get_ref(ptr)`);
   host.declare(`declare void @scr_closure_release(ptr)`);
-  host.declare(`declare void @scr_union_release(ptr)`);
   host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
   host.declare(`declare void @scr_net_server_close_direct(ptr, ptr)`);
   let trampoline: string | null = null;
@@ -1072,13 +1082,11 @@ export function closeBindThunkFor(
     `  %capsp = getelementptr inbounds %ScrClosure, ptr %self, i64 1`,
     `  %bx = load ptr, ptr %capsp`,
     `  %srv = call ptr @scr_box_get_ref(ptr %bx) ; +1`,
-    `  %tagp = getelementptr inbounds %ScrUnion, ptr %cbu, i64 0, i32 1`,
-    `  %tag = load i32, ptr %tagp`,
+    ...unionTagLines(cbNullable, "%cbu", "%tag"),
     `  %isfn = icmp eq i32 %tag, ${funcTag}`,
     `  br i1 %isfn, label %fn, label %go`,
     `fn:`,
-    `  %pp = getelementptr inbounds %ScrUnion, ptr %cbu, i64 0, i32 5`,
-    `  %pv = load ptr, ptr %pp`,
+    ...unionPeekLines(cbNullable, "%cbu", "%pv"),
   ];
   if (oneParam) {
     d.push(
@@ -1097,7 +1105,7 @@ export function closeBindThunkFor(
     `  br label %go`,
     `go:`,
     `  %regv = load ptr, ptr %regslot`,
-    `  call void @scr_union_release(ptr %cbu) ; the callee owns its +1 param`,
+    `  call void ${releaseSym(host.shapeHost, cbUnion)}(ptr %cbu) ; the callee owns its +1 param`,
     `  call void @scr_net_server_close_direct(ptr %srv, ptr %regv) ; reg moves`,
   );
   if (retServer) {

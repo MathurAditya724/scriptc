@@ -183,14 +183,14 @@ import {
   unionBoxBits,
 } from "./inline-unions.js";
 import { OptionalArrayReads, type LocalArrayRead } from "./local-array-reads.js";
-import { CheckedNarrows } from "./checked-narrows.js";
+import { borrowsCheckedNarrow, CheckedNarrows } from "./checked-narrows.js";
 import {
   emitDenseArraySet,
   emitDenseSlotUnlink,
   SCR_ELEM_I32,
   type ArrayAccess,
 } from "./dense-array-access.js";
-import { matchMapRead, type MapReadLifetimes } from "./map-read-lifetimes.js";
+import { matchMapRead, pointerMapGet, type MapReadLifetimes } from "./map-read-lifetimes.js";
 import { type MapEntryFusion } from "./map-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
@@ -213,7 +213,13 @@ import {
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
 import { StackCaptures } from "./stack-captures.js";
-import { emitFieldAbsentTest, f64Lit, SCR_ARR_FIELD, SCR_ARR_FROZEN } from "./common.js";
+import {
+  CLOSURE_RECEIVER_FREE,
+  emitFieldAbsentTest,
+  f64Lit,
+  SCR_ARR_FIELD,
+  SCR_ARR_FROZEN,
+} from "./common.js";
 import { ffiExtendsNarrowIntegers } from "../targets.js";
 import {
   emitLiteralExpr,
@@ -285,7 +291,12 @@ import {
   emitBytesSet,
   emitBytesIntrinsic,
 } from "./expr-bytes.js";
-import { emitRegexIntrinsic, emitRecordKeyGet, keyedRecordReadInto } from "./expr-records.js";
+import {
+  emitRecordKeyGet,
+  emitRegexIntrinsic,
+  keyedRecordReadInto,
+  pointerRecordKeyGet,
+} from "./expr-records.js";
 import {
   dynPromiseAdapter,
   streamTypedRefCommitAdapter,
@@ -2560,7 +2571,7 @@ export class LlEmitter {
         ret === "void" ? `  ${call}` : `  %r = ${call}`,
         ret === "void" ? `  ret void` : `  ret ${ret} %r`,
         `}`,
-        `@${mangleFnClosure(name)} = internal ${this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${(fn.generator ? 1 : 0) + (fn.async ? 2 : 0) + (fn.ownsPrototype ? 4 : 0)}, i32 0, ptr null, ptr ${lending ? `@${mangleBorrowingWrapper(name)}` : "null"} }`,
+        `@${mangleFnClosure(name)} = internal ${this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${this.closureFunctionKind(fn)}, i32 0, ptr null, ptr ${lending ? `@${mangleBorrowingWrapper(name)}` : "null"} }`,
         ``,
       );
       if (lending)
@@ -5737,7 +5748,10 @@ export class LlEmitter {
   unwrittenRead(e: IrExpr, writes: Writes): boolean {
     const rw = this.referenceWrites;
     if (rw === null) return false;
-    const keys = rw.readKeys(e, (call) => this.borrowedReturnKeys(call.callee));
+    // A checked extraction reads nothing besides the union it narrows.
+    const keys = rw.readKeys(e, (call) =>
+      borrowsCheckedNarrow(this, call) ? [] : this.borrowedReturnKeys(call.callee),
+    );
     return keys !== null && !rw.conflicts(keys, writes);
   }
 
@@ -6014,7 +6028,21 @@ export class LlEmitter {
       }
       case "fieldGet":
       case "recordGet":
+      case "recordKeyGet":
         return this.borrowsWithoutOwning(e) && this.unownedWalk(e.obj);
+      case "mapIntrinsic": {
+        // A Map binding's own pointer (maps are not plainReference types).
+        if (!this.borrowsWithoutOwning(e) || e.receiver.kind !== "varRef") return false;
+        const binding = this.binding(e.receiver.localId);
+        return (
+          binding.kind === "global" ||
+          (binding.kind === "local" &&
+            binding.local !== undefined &&
+            !binding.local.boxed &&
+            !binding.local.tdz &&
+            !this.localUnionStorage.has(e.receiver.localId))
+        );
+      }
       case "unionNarrow":
       case "downcast":
       case "upcast":
@@ -7272,6 +7300,11 @@ export class LlEmitter {
         return this.nullableFieldGet(e) === null;
       case "recordGet":
         return true;
+      // A keyed read whose hits are all the result's own pointer.
+      case "recordKeyGet":
+        return pointerRecordKeyGet(this, e);
+      case "mapIntrinsic":
+        return pointerMapGet(this, e);
       // emitReadReceiver lends a required element of a borrowed array when
       // computing the index removes no edge.
       case "arrayGet":
@@ -7417,8 +7450,20 @@ export class LlEmitter {
     return wrapEmitterListener(this, target, adapterFn);
   }
 
-  unwrapNullableClosure(u: string, funcTag: number): string {
-    return unwrapNullableClosure(this, u, funcTag);
+  /** ScrClosure.function_kind for a closure over `fn`: generator 1, async
+   * 2, own prototype 4, and SCR_FN_RECEIVER_FREE (16) when its body never
+   * observes the ambient receiver, so indirect callers skip the bracket. */
+  closureFunctionKind(fn: IrFunction): number {
+    return (
+      (fn.generator ? 1 : 0) +
+      (fn.async ? 2 : 0) +
+      (fn.ownsPrototype ? 4 : 0) +
+      (this.receiverReaders.ignores(fn) ? CLOSURE_RECEIVER_FREE : 0)
+    );
+  }
+
+  unwrapNullableClosure(u: string, unionId: string, funcTag: number): string {
+    return unwrapNullableClosure(this, u, unionId, funcTag);
   }
 
   closeBindThunkFor(cbUnion: IrType, retServer: boolean): string {

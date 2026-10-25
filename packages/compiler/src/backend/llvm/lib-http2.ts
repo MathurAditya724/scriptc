@@ -95,11 +95,12 @@ export function sniCallbackArgs(host: LlvmEmitterContext, cb: LlValue): AbiArgum
   let type = cb.type,
     value = cb.name;
   if (type.kind === "union") {
-    const arms = host.unionsById.get(type.unionId)?.arms ?? [];
+    const unionId = type.unionId;
+    const arms = host.unionsById.get(unionId)?.arms ?? [];
     const tag = arms.findIndex((arm) => arm.kind === "func");
     if (tag < 0) throw new InternalCompilerError("SNI callback union lacks its function arm");
     type = arms[tag]!;
-    value = host.unwrapNullableClosure(value, tag);
+    value = host.unwrapNullableClosure(value, unionId, tag);
   } else host.toHeap(cb);
   if (type.kind !== "func" || type.params[1] === undefined)
     throw new InternalCompilerError("SNI callback lacks its answer function");
