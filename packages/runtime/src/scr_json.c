@@ -7989,6 +7989,37 @@ void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored) {
   scr_dyn_release(receiver);
 }
 
+/* scr_dyn_obj_set_field for a symbol-keyed field of a class instance's
+ * view: the view takes the native value whatever the attributes copied into
+ * it from the instance's property bag (a frozen instance's view is built the
+ * same way as any other). An accessor entry takes the ordinary assignment.
+ * Does not consume value. */
+void scr_dyn_symbol_field_set(ScrDyn *obj, ScrDyn *key, ScrDyn *value) {
+  ScrDynEntry *entry = obj->kind == SCR_DYN_OBJ && obj->symbol_properties
+                           ? scr_dyn_symbol_entry(obj, key, true)
+                           : NULL;
+  if (entry && !entry->accessor) {
+    scr_dyn_region_store(obj->symbol_properties, value);
+    ScrDyn *old = entry->value;
+    entry->value = scr_dyn_retain(value);
+    scr_dyn_release(old);
+    return;
+  }
+  if (entry || obj->kind != SCR_DYN_OBJ) {
+    scr_dyn_symbol_key_set(obj, key, value);
+    return;
+  }
+  bool non_extensible = obj->non_extensible;
+  ScrDyn *table = obj->symbol_properties;
+  bool table_non_extensible = table && table->non_extensible;
+  obj->non_extensible = false;
+  if (table) table->non_extensible = false;
+  scr_dyn_symbol_key_set(obj, key, value);
+  obj->non_extensible = non_extensible;
+  if (obj->symbol_properties)
+    obj->symbol_properties->non_extensible = table ? table_non_extensible : non_extensible;
+}
+
 static ScrDyn *scr_dyn_define_symbol(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
   ScrDyn *receiver = scr_dyn_symbol_receiver(target);
   if (!receiver) {

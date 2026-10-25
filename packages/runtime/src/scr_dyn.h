@@ -870,6 +870,10 @@ bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
 bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
+/* scr_dyn_obj_set_field for a symbol-keyed field of a class instance's
+ * view: replaces the value whatever the attributes copied into the view.
+ * Does not consume stored. */
+void scr_dyn_symbol_field_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key);
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key);
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key);

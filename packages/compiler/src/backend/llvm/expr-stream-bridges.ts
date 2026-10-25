@@ -1004,9 +1004,15 @@ export function streamTypedRefMaterializeAdapter(
         host.declare(`declare void @scr_union_release(ptr)`);
         B.line(`call void @scr_union_release(ptr ${fieldValue})`);
       }
-      host.declare(`declare void @scr_dyn_symbol_key_set(ptr, ptr, ptr)`);
+      // As for string-keyed fields, attributes copied from the bag (a frozen
+      // instance's) do not stop the view taking the value.
+      const symbolSetter =
+        meta.def.tracksOwnFields || withAttributes
+          ? "scr_dyn_symbol_field_set"
+          : "scr_dyn_symbol_key_set";
+      host.declare(`declare void @${symbolSetter}(ptr, ptr, ptr)`);
       host.declare(`declare void @scr_dyn_release_v(ptr)`);
-      B.line(`call void @scr_dyn_symbol_key_set(ptr ${out}, ptr ${key}, ptr ${value})`);
+      B.line(`call void @${symbolSetter}(ptr ${out}, ptr ${key}, ptr ${value})`);
       B.line(`call void @scr_dyn_release_v(ptr ${value})`);
       if (afterSymbol) {
         B.terminate(`br label %${afterSymbol}`);
