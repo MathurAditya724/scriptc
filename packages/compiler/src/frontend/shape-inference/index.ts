@@ -7,7 +7,8 @@ import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { isShapelessPackage } from "../package-shims.js";
 import { analyzeShapes, isPackageJsFile } from "./analyze.js";
-import { OVERLAY_MARK, planShapeOverlay } from "./overlay.js";
+import { OVERLAY_MARK, planShapeOverlay, type OverlayExclusions } from "./overlay.js";
+import { attributeOverlayRefusals } from "./fallback.js";
 import { planStaticObjectRewrites } from "./static-objects.js";
 import { isJsSourceFile } from "../program.js";
 import { buildShapeReport } from "./report.js";
@@ -58,6 +59,7 @@ export function shapeOverlayAnnotationCount(): number {
 }
 
 export function resetShapeOverlay(): void {
+  staticRewriteFiles = new Set();
   staticObjectStats = { classes: 0, functions: 0, directCalls: 0 };
   overlayDone = false;
   overlayFiles = new Set();
@@ -73,12 +75,90 @@ export function shapeOverlayEnabled(): boolean {
   return process.env["SCRIPTC_SHAPE_OVERLAY"] === "1";
 }
 
+/* The build's fallback state (fallback.ts): annotations and files whose
+ * lowering was refused, and whether the build dropped the overlay. It
+ * outlives the loads of one build. */
+let exclusions: { annotations: Map<string, Set<number>>; files: Set<string> } = {
+  annotations: new Map(),
+  files: new Set(),
+};
+let overlayDropped = false;
+let droppedAnnotations = 0;
+
+/** Starts a build: no annotation is excluded yet. */
+export function beginShapeOverlayBuild(): void {
+  exclusions = { annotations: new Map(), files: new Set() };
+  overlayDropped = false;
+  droppedAnnotations = 0;
+}
+
+/** Whether the current load has overlay files or structural rewrites. */
+export function shapeOverlayActive(): boolean {
+  const { classes, functions } = staticObjectStats;
+  return overlayFiles.size > 0 || classes + functions > 0;
+}
+
+/** The overlay's answer to refused lowering diagnostics: it excludes what
+ * the refusals depend on, at the given level, and says whether a reload
+ * can change anything.
+ * - "annotations": the blamed annotations (or, for a blamed file without
+ *   blamed annotations, that file);
+ * - "fences": like "annotations", for refusals deferred to run time, and
+ *   never a whole file;
+ * - "files": every overlay file involved;
+ * - "all": the whole overlay. */
+export function excludeRefusedOverlay(
+  program: ts.Program,
+  diagnostics: readonly ScrDiagnostic[],
+  level: "annotations" | "files" | "all" | "fences",
+): boolean {
+  if (overlayDropped) return false;
+  const files = new Set(overlayFiles);
+  // Files with structural rewrites only also count as overlay files.
+  for (const f of staticRewriteFiles) files.add(f);
+  if (level === "all") {
+    overlayDropped = true;
+    droppedAnnotations = overlayAnnotations;
+    return true;
+  }
+  const blame = attributeOverlayRefusals(program, diagnostics, files);
+  let changed = false;
+  for (const file of blame.files) {
+    const ids = blame.annotations.get(file);
+    // Deferred refusals drop only the annotations they are blamed on.
+    if (level === "fences" && ids === undefined) continue;
+    if (level === "files" || ids === undefined) {
+      if (!exclusions.files.has(file)) {
+        exclusions.files.add(file);
+        changed = true;
+      }
+      continue;
+    }
+    let set = exclusions.annotations.get(file);
+    if (set === undefined) exclusions.annotations.set(file, (set = new Set()));
+    for (const id of ids) {
+      if (set.has(id)) continue;
+      set.add(id);
+      droppedAnnotations++;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+let staticRewriteFiles: ReadonlySet<string> = new Set();
+
+function overlayExclusions(): OverlayExclusions {
+  return exclusions;
+}
+
 /** loadProgram7's overlayer: analyze, plan, and register the overlay files. */
 export function shapeOverlayer(
   program: ts.Program,
   round: number,
 ): ReadonlyMap<string, string> | null {
   if (round === 0) resetShapeOverlay();
+  if (overlayDropped) return null;
   const analysis = analyzeShapes(program, program.getTypeChecker());
   if (analysis.budgetExceeded) return null;
   // Package JavaScript of packages that keep shapes on, and the program's
@@ -92,7 +172,11 @@ export function shapeOverlayer(
   // Round 0: the structural rewrites (static-objects.ts); the program is
   // rebuilt from them and analyzed again before the typed overlay.
   if (round === 0 && process.env["SCRIPTC_SHAPE_STATIC_OBJECTS"] !== "0") {
-    const rewrites = planStaticObjectRewrites(analysis, jsFiles);
+    const rewrites = planStaticObjectRewrites(
+      analysis,
+      jsFiles.filter((sf) => !exclusions.files.has(sf.fileName)),
+    );
+    staticRewriteFiles = new Set(rewrites.files.keys());
     staticObjectStats = {
       classes: rewrites.classes,
       functions: rewrites.functions,
@@ -107,7 +191,7 @@ export function shapeOverlayer(
   }
   if (round > 1) return null;
   const report = buildShapeReport(analysis, "1");
-  const overlay = planShapeOverlay(analysis, report.sites, jsFiles);
+  const overlay = planShapeOverlay(analysis, report.sites, jsFiles, overlayExclusions());
   overlayFiles = new Set(overlay.files.keys());
   overlayAnnotations = overlay.annotations;
   overlayDeadBranches = overlay.deadBranches;
@@ -181,6 +265,26 @@ export function shapeInferredFactCheckCount(): number {
  * checks of inferred facts the build inserted. A note, never a failure. */
 export function shapeOverlayReport(entryFile: string): ScrDiagnostic[] {
   const { classes, functions, directCalls } = staticObjectStats;
+  // Annotations whose lowering was refused (fallback.ts); they compile
+  // untyped.
+  const fallback = overlayDropped
+    ? "the lowering refused code the overlay typed, so the build compiles without it"
+    : droppedAnnotations + exclusions.files.size > 0
+      ? `it dropped ${droppedAnnotations} annotation${droppedAnnotations === 1 ? "" : "s"}` +
+        (exclusions.files.size > 0
+          ? ` and the overlay of ${exclusions.files.size} file${exclusions.files.size === 1 ? "" : "s"}`
+          : "") +
+        " whose lowering was refused"
+      : null;
+  if (overlayDropped)
+    return [
+      {
+        code: "SC6103",
+        message: `shape inference: ${fallback}`,
+        loc: { file: entryFile, start: 0, end: 0 },
+        hint: "--no-shape-overlay compiles without the overlay",
+      },
+    ];
   if (overlayFiles.size === 0 && classes + functions === 0) return [];
   const packages = new Set(
     [...overlayFiles].map((f) => npmStaticPackageOfPath(f) ?? "the program"),
@@ -197,7 +301,8 @@ export function shapeOverlayReport(entryFile: string): ScrDiagnostic[] {
           : "") +
         (classes + functions > 0
           ? `; it compiled ${classes} constructor function${classes === 1 ? "" : "s"} as classes and ${functions} namespace function${functions === 1 ? "" : "s"} as direct functions (${directCalls} direct call${directCalls === 1 ? "" : "s"})`
-          : ""),
+          : "") +
+        (fallback !== null ? `; ${fallback}` : ""),
       loc: { file: entryFile, start: 0, end: 0 },
       hint: "a failing check reports a scriptc analysis bug; --no-shape-overlay compiles without the overlay",
     },

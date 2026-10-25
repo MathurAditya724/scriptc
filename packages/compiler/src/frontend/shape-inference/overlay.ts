@@ -54,10 +54,28 @@ function list<T extends ts.Node>(arr: { readonly nodes: readonly T[] } | undefin
 
 let debugIndex = 0;
 
+/** Annotations a build dropped because their lowering was refused: per
+ * file, the annotation ids (positions in the overlay's input text); a file
+ * in `files` gets no overlay at all. */
+export interface OverlayExclusions {
+  readonly annotations: ReadonlyMap<string, ReadonlySet<number>>;
+  readonly files: ReadonlySet<string>;
+}
+
+export const NO_EXCLUSIONS: OverlayExclusions = { annotations: new Map(), files: new Set() };
+
+/** The ids of the overlay annotations in a comment or trivia text. */
+export function overlayAnnotationIds(text: string): number[] {
+  const ids: number[] = [];
+  for (const m of text.matchAll(/@scriptcShape #(\d+)/g)) ids.push(Number(m[1]));
+  return ids;
+}
+
 export function planShapeOverlay(
   analysis: ShapeAnalysis,
   verdicts: readonly SiteVerdict[],
   packageFiles: readonly ts.SourceFile[],
+  exclusions: OverlayExclusions = NO_EXCLUSIONS,
 ): ShapeOverlay {
   const pSites = new Map<Atom, SiteVerdict>();
   const siteVerdicts = new Set<Atom>(verdicts.map((v) => v.site.atom));
@@ -96,9 +114,20 @@ export function planShapeOverlay(
       }
     }
   for (const sf of packageFiles) {
+    if (exclusions.files.has(sf.fileName)) continue;
     const typedefs = new Map<string, string>();
     const typedefText: string[] = [];
     const edits: Edit[] = [];
+    const dropped = exclusions.annotations.get(sf.fileName);
+    // One annotation: a JSDoc comment at `pos` carrying MARK and the
+    // annotation's id (its position), so a refused lowering can name it and
+    // the next load drop it. `close`: the text that closes a type cast.
+    const annotate = (pos: number, tags: string, close?: number): void => {
+      if (dropped?.has(pos) === true) return;
+      edits.push({ pos, text: `/** ${tags} ${MARK} #${pos} */ ${close !== undefined ? "(" : ""}` });
+      if (close !== undefined) edits.push({ pos: close, text: ")" });
+      annotations++;
+    };
 
     const className = (decl: ts.Node): string | null => {
       const own = (decl as ts.ClassLikeDeclaration).name;
@@ -111,7 +140,8 @@ export function planShapeOverlay(
           own === undefined ||
           !ts.isClassDeclaration(decl) ||
           decl.parent !== other ||
-          !overlaid.has(other)
+          !overlaid.has(other) ||
+          exclusions.files.has(other.fileName)
         )
           return null;
         const alias = `__shape_class_${own.text}`;
@@ -171,6 +201,15 @@ export function planShapeOverlay(
           case "array": {
             objects++;
             if (analysis.escaped.has(a) || (siteVerdicts.has(a) && !pSites.has(a)))
+              return inner ? "any" : null;
+            // Only arrays the program writes as literals: a builtin's array
+            // (a match result, `new Array(n)`) may have holes, and the
+            // checker already types it from the library.
+            if (
+              a.node === undefined ||
+              !ts.isArrayLiteralExpression(a.node) ||
+              a.node.elements.nodes.some((e) => e.kind === ts.SyntaxKind.OmittedExpression)
+            )
               return inner ? "any" : null;
             const el = analysis.elements.get(a);
             if (el !== undefined) for (const x of analysis.nodes[el]!.atoms) elements.add(x);
@@ -334,9 +373,7 @@ export function planShapeOverlay(
           !declaresMember(cls, node.expression.name.text)
         ) {
           const self = node.expression.expression;
-          edits.push({ pos: ts.tokenStartOfNode(self), text: `/** @type {${t}} ${MARK} */ (` });
-          edits.push({ pos: self.end, text: ")" });
-          annotations++;
+          annotate(ts.tokenStartOfNode(self), `@type {${t}}`, self.end);
         }
         ts.forEachChild(node, (c) => {
           scan(c);
@@ -429,7 +466,7 @@ export function planShapeOverlay(
         const t = typeOf(paramValues(fn, index), false, 0);
         if (t !== null) tags.push(`@param {${t}} ${p.name.text}`);
       });
-      return tags.length > 0 ? `${tags.join(" ")} ${MARK}` : null;
+      return tags.length > 0 ? tags.join(" ") : null;
     };
 
     const visit = (node: ts.Node): void => {
@@ -447,10 +484,7 @@ export function planShapeOverlay(
       ) {
         if (node.body !== undefined) {
           const tags = paramTags(node);
-          if (tags !== null) {
-            edits.push({ pos: ts.tokenStartOfNode(node), text: `/** ${tags} */ ` });
-            annotations++;
-          }
+          if (tags !== null) annotate(ts.tokenStartOfNode(node), tags);
         }
         // `this.f = …` fields of a constructor's top-level statements.
         if (ts.isConstructorDeclaration(node) && node.body !== undefined) {
@@ -473,10 +507,7 @@ export function planShapeOverlay(
             if (seen.has(name)) continue;
             seen.add(name);
             const t = cls !== undefined ? fieldType(cls, name) : null;
-            if (t !== null) {
-              edits.push({ pos: ts.tokenStartOfNode(st), text: `/** @type {${t}} ${MARK} */ ` });
-              annotations++;
-            }
+            if (t !== null) annotate(ts.tokenStartOfNode(st), `@type {${t}}`);
           }
         }
       }
@@ -492,10 +523,7 @@ export function planShapeOverlay(
         const init = d.initializer;
         if (ts.isIdentifier(d.name) && init !== undefined && !literalInitializer(init)) {
           const t = typeOf(analysis.declValues(d), false, 0);
-          if (t !== null) {
-            edits.push({ pos: ts.tokenStartOfNode(node), text: `/** @type {${t}} ${MARK} */ ` });
-            annotations++;
-          }
+          if (t !== null) annotate(ts.tokenStartOfNode(node), `@type {${t}}`);
         }
       }
       ts.forEachChild(node, (c) => {
@@ -525,6 +553,7 @@ export function planShapeOverlay(
     const ranges: [number, number][] = [];
     for (const branch of dead) {
       const start = ts.tokenStartOfNode(branch);
+      if (dropped?.has(start) === true) continue;
       if (ranges.some(([lo, hi]) => start >= lo && start < hi)) continue;
       ranges.push([start, branch.end]);
     }
@@ -540,7 +569,11 @@ export function planShapeOverlay(
           `scriptc internal error: shape inference proved the branch at ${rel}:${line} unreachable, but it ran. ` +
           `This is a bug in scriptc's shape analysis, not in the program. Rebuild with --no-shape-overlay, ` +
           `or set "scriptc": {"packages": {"${pkg}": {"shapes": false}}} in package.json.`;
-        edits.push({ pos: lo, end: hi, text: `{ throw new Error(${JSON.stringify(message)}); }` });
+        edits.push({
+          pos: lo,
+          end: hi,
+          text: `{ /** ${MARK} #${lo} */ throw new Error(${JSON.stringify(message)}); }`,
+        });
         deadBranches++;
       }
     }
