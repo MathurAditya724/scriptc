@@ -16,6 +16,7 @@ import {
   emitCountedLoopLimit,
   emitCountedLoopSafety,
   emitExactIntegerTest,
+  emitStartIntegerTest,
 } from "./counted-loops.js";
 import { emitBytesData, emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
 import { f64Lit } from "./common.js";
@@ -1324,8 +1325,8 @@ export function emitBytesLoopVersionGuard(
     // access at either one is in bounds when `lo >= 0` and `hi < length`.
     const { loop } = version.paired;
     const [low, high] = [loop.low.start, loop.high.start].map((expr) => {
-      const tested = emitExactIntegerTest(host, host.emitExpr(expr).name, -SAFE, SAFE);
-      conditions.push(tested.ok);
+      const tested = emitStartIntegerTest(host, expr, -SAFE, SAFE);
+      if (tested.ok !== "true") conditions.push(tested.ok);
       return tested.integer;
     });
     const nonNegative = B.tmp();
