@@ -201,7 +201,9 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
         }
         let valid = true;
         for (const key of Object.keys(value)) {
-          const allowed = PACKAGE_OBJECT_KEYS[key];
+          const allowed = Object.hasOwn(PACKAGE_OBJECT_KEYS, key)
+            ? PACKAGE_OBJECT_KEYS[key]
+            : undefined;
           if (allowed === undefined) {
             problem(
               ["packages", name, key],

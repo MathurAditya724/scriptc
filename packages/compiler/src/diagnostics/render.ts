@@ -104,19 +104,17 @@ export function renderDiagnostic(
       c(DIM, `  ${" ".repeat(gutterWidth)} | `) +
         " ".repeat(caretCol) +
         c(
-          /^SC6\d{3}$/.test(diag.code) || isNodeIslandNoticeCode(diag.code) ? YELLOW : RED,
+          isWarningCode(diag.code) || isNodeIslandNoticeCode(diag.code) ? YELLOW : RED,
           "^" + "~".repeat(spanOnLine - 1),
         ),
     );
     emitLine(lineNum + 1);
   }
 
-  // The divergence band (SC6xxx) is the one warning severity: the program
-  // compiles, and the site can behave differently from Node.
   // Node island notices of a successful build: SC8020 warns, SC8001 and
   // SC8021 are notes.
   const note = isNodeIslandNoteCode(diag.code);
-  const warning = /^SC6\d{3}$/.test(diag.code) || diag.code === "SC8020" || diag.code === "SC8023";
+  const warning = isWarningCode(diag.code) || diag.code === "SC8020" || diag.code === "SC8023";
   const severity = note ? c(CYAN, "note") : warning ? c(YELLOW, "warning") : c(RED, "error");
   out.push(
     `${c(BOLD, `${diag.loc.file}:${lineNum}:${colNum}`)} - ${severity} ${c(BOLD, diag.code)}: ${diag.message}`,
@@ -162,6 +160,27 @@ export function renderDiagnostics(
 
 /** Divergence warnings after a successful build: the rendered sites plus a
  * one-line count, on stderr. */
+/** The warning severities: the divergence band (SC6xxx), where the program
+ * compiles and the site can behave differently from Node, and unknown
+ * settings in the project's scriptc configuration (SC8004), which builds do
+ * not use. */
+export function isWarningCode(code: string): boolean {
+  return /^SC6\d{3}$/.test(code) || code === "SC8004";
+}
+
+/** A build's SC8004 warnings: the unknown scriptc settings it ignored. */
+export function renderConfigWarnings(
+  diags: readonly ScrDiagnostic[],
+  sourceTextByFile: Map<string, string>,
+  opts: RenderOptions = {},
+): string {
+  const n = diags.length;
+  return (
+    renderDiagnostics([...diags], sourceTextByFile, opts) +
+    `\n\n${n} warning${n === 1 ? "" : "s"}: the build does not use ${n === 1 ? "this setting" : "these settings"}; scriptc coverage reports Node islands once they are valid.`
+  );
+}
+
 export function renderWarnings(
   diags: readonly ScrDiagnostic[],
   sourceTextByFile: Map<string, string>,

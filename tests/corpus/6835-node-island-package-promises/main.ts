@@ -2,7 +2,17 @@
 // Promises both ways on one microtask queue: island promises awaited
 // natively and native promises awaited in the island interleave with
 // both sides' reactions exactly as in Node.
-import { catches, chain, consume, isPromise, later, rejectsWith, resolved, timer } from "async-pkg";
+import {
+  catches,
+  chain,
+  consume,
+  isPromise,
+  later,
+  rejectsWith,
+  resolved,
+  samePromise,
+  timer,
+} from "async-pkg";
 
 async function nativeValue(n: number): Promise<number> {
   await null;
@@ -32,6 +42,9 @@ async function main(): Promise<void> {
   console.log("chain", await chain(nativeValue(1)));
   console.log("catches", await catches(Promise.reject(new RangeError("native rejection"))));
   console.log("catches", await catches(nativeValue(2)));
+  const twice = nativeValue(3);
+  console.log("same promise", samePromise(twice, twice));
+  await twice;
 
   const [x, y] = await Promise.all([timer(10, "slow"), timer(1, "fast")]);
   console.log("all", x, y);

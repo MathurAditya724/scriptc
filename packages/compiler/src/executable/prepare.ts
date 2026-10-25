@@ -51,7 +51,10 @@ export function prepareExecutableModule(
   lowerIslands: ReadonlyMap<string, IslandPackage> = new Map(),
   retryFences = true,
 ): PreparedExecutableModule | CompileFailure {
-  let fe = createFrontend(entryPath, opts.npmStatic);
+  // The island decision reads the detector's scan unless islands are off.
+  const islandScan =
+    nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands).mode !== "off";
+  let fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
   timing("frontend-load");
   // Node islands (scope-B NI-4): packages refused natively run in Node,
   // unless the policy says otherwise. The frontend reloads without them,
@@ -59,13 +62,10 @@ export function prepareExecutableModule(
   const islandDecision = decideNodeIslands(entryPath, opts, fe, lowerIslands);
   if (islandDecision !== null) {
     fe.dispose();
-    fe = createFrontend(
-      entryPath,
-      opts.npmStatic,
-      undefined,
-      undefined,
-      new Set(islandDecision.packages.keys()),
-    );
+    fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
+      islandPackages: new Set(islandDecision.packages.keys()),
+      islandScan,
+    });
     timing("frontend-island-reload");
   }
   let lowered: LowerResult;
@@ -226,6 +226,7 @@ export function prepareExecutableModule(
     stats: lowered.stats,
     warnings: [
       ...(islandDecision?.notes ?? []),
+      ...(fe.warnings ?? []),
       ...(lowered.divergences ?? []),
       ...(lowered.performance ?? []),
     ],
@@ -281,9 +282,13 @@ function decideNodeIslands(
 ): (NodeIslandSet & { notes: ScrDiagnostic[] }) | null {
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
   if (policy.mode === "off" || fe.nodeIslandScan === undefined) return null;
+  // A package marked native stays refused: the build reports it rather
+  // than running it in Node.
   const refused = new Set(
     policy.mode === "auto"
-      ? fe.npmStatic.filter((e) => e.status === "refused").map((e) => e.package)
+      ? fe.npmStatic
+          .filter((e) => e.status === "refused" && !policy.forcedNative.has(e.package))
+          .map((e) => e.package)
       : [],
   );
   for (const name of lowerIslands.keys()) refused.add(name);

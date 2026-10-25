@@ -5,7 +5,8 @@
 // spread and method members cross in by reference; a `string | Buffer`
 // member reads back from an island object; a rejection's error is read in
 // a native callback.
-import { twice } from "wraplib";
+import { localName, swapped, twice } from "wraplib";
+import * as lib from "islandlib";
 import {
   countFiles,
   describeFile,
@@ -19,6 +20,7 @@ import {
 } from "islandlib";
 
 console.log("twice", twice(5));
+console.log("swapped", swapped(), localName(), "ns call", lib.getValue());
 
 const files: Files = {};
 files["a.txt"] = { mode: 420, data: "alpha" };

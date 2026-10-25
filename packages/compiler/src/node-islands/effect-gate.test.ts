@@ -70,8 +70,30 @@ exports.mode = typeof window === "undefined" ? "node" : "browser";
     ["a static block", `class A { static { console.log(1); } }`],
     ["a getter with effects", `Object.defineProperty(exports, "x", { get() { return 1; } });`],
     ["a template substitution", "const s = `${{}}`;"],
+    [
+      "a read of a class's static getter",
+      `class C { static get x() { return require("fs").readFileSync("/etc/hostname"); } }
+const v = C.x;`,
+    ],
+    [
+      "a read through a class expression's static getter",
+      `const C = class { static get x() { return 1; } };
+const v = C.x;`,
+    ],
   ])("refuses %s", (_what, text) => {
     expect(effectGate(pkg({ "index.js": text })).ok).toBe(false);
+  });
+
+  test("refuses a read of a static member that a base class defines with a getter", () => {
+    const entry = pkg({
+      "base.js": `class Base { static get x() { return require("fs").readFileSync("/etc/hostname"); } }
+exports.Base = Base;`,
+      "index.js": `const { Base } = require("./base");
+class D extends Base {}
+const v = D.x;`,
+    });
+    expect(effectGate(join(entry, "..", "base.js")).ok).toBe(true);
+    expect(effectGate(entry).ok).toBe(false);
   });
 
   test("refuses when a required file is effectful", () => {

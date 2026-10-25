@@ -88,6 +88,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
+  ["scr_brotli.c", all("zlib", "brotli")],
   ["scr_events.c", "events"],
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
@@ -153,6 +154,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dns_promises.c", all("dgram", "dnsPromises")],
   // Sockets as untyped values run over the dgram unit.
   ["scr_dgram_dyn.c", all("dgram", "dgramDyn")],
+  // TextEncoder and TextDecoder records boxed as untyped values.
+  ["scr_text_codec_dyn.c", "textCodecDyn"],
   ["scr_watch.c", "watch"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
@@ -281,6 +284,7 @@ export function createRuntimePackMatrix({
     { id: "quickjs", predicate: false },
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
+    { id: "brotli", predicate: all("zlib", "brotli") },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];
   const matrix = withLibraryRuntimeFlavors(

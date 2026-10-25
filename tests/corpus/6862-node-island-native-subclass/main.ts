@@ -26,6 +26,14 @@ class StrictConfigError extends ConfigError {
   }
 }
 
+// A derived constructor that returns another object: `new` gives that one.
+class Replaced extends KitError {
+  constructor() {
+    super({ code: "R", message: "replaced" });
+    return { replaced: true } as unknown as Replaced;
+  }
+}
+
 class TimedSema extends Sema {
   waits = 0;
   async acquire(): Promise<void> {
@@ -61,6 +69,9 @@ async function task(i: number): Promise<void> {
   console.log("end", i);
   sema.release();
 }
+
+const r = new Replaced() as unknown as { replaced?: boolean };
+console.log("replaced", r.replaced, r instanceof KitError);
 
 async function main(): Promise<void> {
   await Promise.all([task(1), task(2), task(3), task(4)]);

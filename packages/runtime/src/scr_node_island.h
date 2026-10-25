@@ -14,6 +14,15 @@
  * before %main. */
 void scr_node_island_install(const char *libnode, const char *node_version);
 
+/* Records the island module tree (node-islands/modules.ts): its manifest,
+ * and its files concatenated in manifest order when the executable carries
+ * them (NULL when they ship beside it at `location`, a `$ORIGIN/` path; ""
+ * otherwise). All static. The emitted main calls it after
+ * scr_node_island_install. */
+void scr_node_island_install_modules(const char *manifest, size_t manifest_len,
+                                     const unsigned char *data, size_t data_len,
+                                     const char *location);
+
 /* @scriptc/node callSync(specifier, name, ...args): `file` is the calling
  * module's path (relative specifiers resolve from it), `args` the boxed
  * argument array, copied as JSON. Returns the JSON copy of the result, +1,
@@ -111,6 +120,10 @@ uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 struct ScrNodeValue;
 const struct ScrNodeBridge *scr_ni_bridge(void);        /* loads Node */
 const struct ScrNodeBridge *scr_ni_bridge_loaded(void); /* NULL until loaded */
+/* The file a module load names, +1 malloc'd: `./<path>` is a path in the
+ * program's module tree, under its root once Node is loaded; anything else
+ * (a built-in module) as it is. */
+char *scr_ni_module_path(const ScrStr *path);
 void scr_ni_on_node_stack(void (*job)(void *), void *arg);
 void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
 void scr_ni_bytes_free(void *owner);
@@ -189,6 +202,8 @@ extern void (*scr_ni_started_hook)(void);
 
 /* Island operations the compiler emits (lib-shared.ts adapters). */
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);
+/* fn called with `this` (a method read before its arguments ran). */
+ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrDyn *args);
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args);
 void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value);
 ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key);
