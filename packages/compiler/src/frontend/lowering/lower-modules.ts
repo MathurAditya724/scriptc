@@ -350,24 +350,28 @@ function dynamicImportProgramTargetOf(
 }
 
 /** Every distinct program module a file's `import("literal")` sites name
- * (source order, deduped). */
+ * (source order, deduped). The parser lists the specifier of every such call
+ * in the file's module references, in source order after the static imports,
+ * so the file's nodes need no walk. */
 function dynamicProgramImportsOf(program: ts.Program, sf: ts.SourceFile): ts.SourceFile[] {
   const out: ts.SourceFile[] = [];
   const seen = new Set<ts.SourceFile>();
-  ts.walkPreorder(sf, (node) => {
+  for (const specifier of sf.imports) {
+    const call = specifier.parent;
     if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.nodes[0] !== undefined &&
-      ts.isStringLiteralLike(node.arguments.nodes[0])
-    ) {
-      const dep = dynamicImportProgramTargetOf(program, sf, node.arguments.nodes[0].text);
-      if (dep && !seen.has(dep)) {
-        seen.add(dep);
-        out.push(dep);
-      }
+      call === undefined ||
+      !ts.isCallExpression(call) ||
+      call.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+      call.arguments.nodes[0] !== specifier ||
+      !ts.isStringLiteralLike(specifier)
+    )
+      continue;
+    const dep = dynamicImportProgramTargetOf(program, sf, specifier.text);
+    if (dep && !seen.has(dep)) {
+      seen.add(dep);
+      out.push(dep);
     }
-  });
+  }
   return out;
 }
 
@@ -1346,25 +1350,6 @@ export function collectGlobals(
   // "m<i>.<name>".
   const rawTag = lowerer.fileTag.get(sf) ?? "";
   const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
-  // A `return` at the top level of a CommonJS module ends its evaluation
-  // (preflight admits it). In the entry module that ends the program's
-  // top-level code. A module the program requires would leave the exports
-  // assigned after the return undefined, which its typed export storage
-  // cannot hold, so it is refused there.
-  if (rawTag !== "" && isJsSourceFile(sf)) {
-    const early = topLevelReturnOf(sf);
-    if (early !== null) {
-      try {
-        lowerer.unsupported(
-          "SC1090",
-          early,
-          "top-level return statements in CommonJS modules the program requires (only the entry module can end its evaluation early)",
-        );
-      } catch (e) {
-        if (!(e instanceof PoisonError)) throw e;
-      }
-    }
-  }
   // Expando function members (`foo.bar = 12` anywhere in the file)
   // register their module globals first — reads inside function bodies
   // collected earlier in this pass must resolve them (lower-expando.ts).
@@ -3597,21 +3582,4 @@ export function buildMain(lowerer: Lowerer): IrFunction {
     ...(isAsync ? { async: true as const } : {}),
     loc,
   };
-}
-
-/** The first `return` statement at the top level of `sf` (outside every
- * function body and class), which a CommonJS module may contain. */
-function topLevelReturnOf(sf: ts.SourceFile): ts.ReturnStatement | null {
-  let found: ts.ReturnStatement | null = null;
-  const visit = (node: ts.Node): void => {
-    if (found !== null || ts.isFunctionLike(node)) return;
-    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) return;
-    if (ts.isReturnStatement(node)) {
-      found = node;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  for (const stmt of sf.statements.nodes) visit(stmt);
-  return found;
 }

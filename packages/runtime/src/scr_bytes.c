@@ -755,12 +755,29 @@ void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
   }
   size_t width = scr_bytes_elem_size(dst->elem);
   if (dst->shared || src->shared) {
-    /* Convert a private copy of the source, then publish the target range. */
     SCR_BYTES_SNAPSHOT(src);
     size_t bytes = src->len * width;
+    uint8_t *target = dst->data + (size_t)t * width;
+    if (dst->elem == src->elem) {
+      /* The same element kind copies the source's bytes, NaN payloads
+       * included. A source range that overlaps the target range (views of
+       * one buffer, where no snapshot was taken) is copied out first. */
+      uintptr_t to = (uintptr_t)target, from = (uintptr_t)src->data;
+      bool overlap = to <= from ? from - to < bytes : to - from < bytes;
+      if (!overlap) {
+        scr_bytes_raw_out(dst, target, src->data, bytes);
+        return;
+      }
+      uint8_t *copy = scr_bytes_scratch(bytes);
+      scr_bytes_raw_in(src, copy, src->data, bytes);
+      scr_bytes_raw_out(dst, target, copy, bytes);
+      free(copy);
+      return;
+    }
+    /* Convert a private copy of the source, then publish the target range. */
     uint8_t *scratch = scr_bytes_scratch(bytes);
     scr_bytes_convert_span(scratch, dst->elem, src->data, src->elem, src->len);
-    scr_bytes_raw_out(dst, dst->data + (size_t)t * width, scratch, bytes);
+    scr_bytes_raw_out(dst, target, scratch, bytes);
     free(scratch);
     return;
   }
