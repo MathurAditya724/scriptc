@@ -39,6 +39,8 @@ export function buildUnionNarrow(
   /** The target's package-declared origin (decl-origin.ts): each arm's
    * message names the declaration and the patch admitting that arm. */
   origin: string | null = null,
+  /** The program targets Windows (the patch command's quoting). */
+  windows = false,
 ): IrFunction | null {
   if (isUnitType(target) || target.kind === "void") return null;
   const targetTag = from.arms.findIndex((arm) => typeEquals(arm, target));
@@ -102,6 +104,7 @@ export function buildUnionNarrow(
                             ? "undefined"
                             : "null"
                           : formatType(arm),
+                        windows,
                       )),
                 type: STRING,
                 loc,

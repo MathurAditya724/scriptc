@@ -445,6 +445,7 @@ export function narrowedArmHelper(
     message ?? null,
     null,
     origin,
+    lowerer.targetPlatform === "win32",
   );
   if (!fn) throw new InternalCompilerError("lowerer bug: invalid checked union extraction");
   lowerer.coercions.checkedNarrowArms.set(name, {
@@ -549,6 +550,7 @@ export function checkedNarrowCall(
                 ? "undefined"
                 : "null"
               : lowerer.fmt(failing),
+            lowerer.targetPlatform === "win32",
           ));
     const thrown = nodeThrowExpr(1, "", message, type, loc);
     failure =

@@ -42,6 +42,65 @@ static void scr_origin_put(ScrOriginBuf *b, const char *s, size_t n) {
 
 static void scr_origin_puts(ScrOriginBuf *b, const char *s) { scr_origin_put(b, s, strlen(s)); }
 
+/* One argument of the suggested `scriptc types patch` command, quoted as
+ * the shell passes it as written (decl-origin.ts's shellArgument quotes the
+ * same way): bare when it has only characters no shell treats specially;
+ * otherwise, for a POSIX shell, in single quotes with each ' as '\'', and
+ * on Windows (cmd and PowerShell), in double quotes when it has none of the
+ * characters either shell expands, escapes or ends a string with there.
+ * Package names, selectors and types come from package declarations.
+ * Returns false, writing nothing, when no quoting is inert. */
+static bool scr_origin_bare(const char *s, size_t n) {
+  if (n == 0) return false;
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    bool plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                 strchr("_@+=:,./-", c) != NULL;
+#ifndef _WIN32
+    plain = plain || c == '%';
+#endif
+    if (!plain || c == 0) return false;
+  }
+  return true;
+}
+
+static bool scr_origin_quotable(const char *s, size_t n) {
+#ifdef _WIN32
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    if (c < 0x20 || c == 0x7f || (c != 0 && strchr("\"%!^$`", c) != NULL)) return false;
+    /* PowerShell also takes the typographic quotes U+2018-U+201F (UTF-8
+     * E2 80 98..9F) as quotes. */
+    if (c == 0xe2 && i + 2 < n && (unsigned char)s[i + 1] == 0x80 &&
+        (unsigned char)s[i + 2] >= 0x98 && (unsigned char)s[i + 2] <= 0x9f)
+      return false;
+  }
+#else
+  (void)s;
+  (void)n;
+#endif
+  return true;
+}
+
+static void scr_origin_put_arg(ScrOriginBuf *b, const char *s, size_t n) {
+  if (scr_origin_bare(s, n)) {
+    scr_origin_put(b, s, n);
+    return;
+  }
+#ifdef _WIN32
+  scr_origin_puts(b, "\"");
+  scr_origin_put(b, s, n);
+  scr_origin_puts(b, "\"");
+#else
+  scr_origin_puts(b, "'");
+  for (size_t i = 0; i < n; i++) {
+    if (s[i] == '\'') scr_origin_puts(b, "'\\''");
+    else scr_origin_put(b, s + i, 1);
+  }
+  scr_origin_puts(b, "'");
+#endif
+}
+
 /* Field `index` of the origin string (not terminated: [*out, *out+len)). */
 static size_t scr_origin_field(const char *origin, int index, const char **out) {
   const char *p = origin;
@@ -116,29 +175,40 @@ void scr_type_origin_note(const char *origin) {
   }
   scr_origin_puts(&b, " (");
   scr_origin_put(&b, where, where_len);
-  scr_origin_puts(&b, ")\n    if that declaration is wrong, patch it: scriptc types patch ");
-  scr_origin_put(&b, pkg, pkg_len);
-  scr_origin_puts(&b, " \"");
-  scr_origin_put(&b, selector, selector_len);
+  scr_origin_puts(&b, ")\n    ");
+  ScrOriginBuf sel = {0}, type = {0};
+  scr_origin_put(&sel, selector, selector_len);
   /* $[3].email extends the selector as [].email: elements of an array
    * share one declared type. */
   for (size_t i = 1; path != NULL && i < path_len; i++) {
     if (path[i] == '[') {
-      scr_origin_puts(&b, "[]");
+      scr_origin_puts(&sel, "[]");
       while (i < path_len && path[i] != ']') i++;
     } else {
-      scr_origin_put(&b, path + i, 1);
+      scr_origin_put(&sel, path + i, 1);
     }
   }
-  scr_origin_puts(&b, "\" \"| ");
+  scr_origin_puts(&type, "| ");
   if (got != NULL) {
     const char *arm = scr_origin_arm(got, got_len);
-    if (arm != NULL) scr_origin_puts(&b, arm);
-    else scr_origin_put(&b, got, got_len);
+    if (arm != NULL) scr_origin_puts(&type, arm);
+    else scr_origin_put(&type, got, got_len);
   } else {
-    scr_origin_puts(&b, "undefined");
+    scr_origin_puts(&type, "undefined");
   }
-  scr_origin_puts(&b, "\"");
+  if (scr_origin_quotable(pkg, pkg_len) && scr_origin_quotable(sel.data, sel.len) &&
+      scr_origin_quotable(type.data, type.len)) {
+    scr_origin_puts(&b, "if that declaration is wrong, patch it: scriptc types patch ");
+    scr_origin_put_arg(&b, pkg, pkg_len);
+    scr_origin_puts(&b, " ");
+    scr_origin_put_arg(&b, sel.data, sel.len);
+    scr_origin_puts(&b, " ");
+    scr_origin_put_arg(&b, type.data, type.len);
+  } else {
+    scr_origin_puts(&b, "if that declaration is wrong, patch it with scriptc types patch");
+  }
+  free(sel.data);
+  free(type.data);
 
   ScrStr *next = scr_str_new(b.data, b.len);
   free(b.data);
