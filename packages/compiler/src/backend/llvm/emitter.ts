@@ -1624,6 +1624,14 @@ export class LlEmitter {
   /** Worker programs: typed-array accesses whose views an enclosing version
    * guard proved thread-owned. */
   bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
+  /** The alias-scope attachment of each typed-array element read and write
+   * in the current loop version's fast copy (emitVersionedLoop), and the
+   * one the element access being emitted carries (bytesElementAlias). */
+  bytesAliasScopes: ReadonlyMap<IrExpr | IrStmt, string> = new Map();
+  bytesAccessScope = "";
+  /** Loop versions with alias scopes in the current function; it names
+   * their scopes. */
+  aliasScopedVersions = 0;
   integerViews = new Map<string, string>();
   /** Module globals the current function owns outright (initializer
    * bindings): their function-local slot, which stands in for the global. */
@@ -7275,8 +7283,9 @@ export class LlEmitter {
     inBounds = false,
     invalidNaN = false,
     owned = false,
+    scope = "",
   ): LlValue {
-    return emitBytesGet(this, elem, receiver, index, expr, inBounds, invalidNaN, owned);
+    return emitBytesGet(this, elem, receiver, index, expr, inBounds, invalidNaN, owned, scope);
   }
 
   emitToUint32(value: string, expr?: IrExpr, uint32?: string): string {
@@ -7340,8 +7349,20 @@ export class LlEmitter {
     expr?: IrExpr,
     inBounds = false,
     owned = false,
+    scope = "",
   ): void {
-    return emitBytesSet(this, elem, receiver, index, value, indexExpr, expr, inBounds, owned);
+    return emitBytesSet(
+      this,
+      elem,
+      receiver,
+      index,
+      value,
+      indexExpr,
+      expr,
+      inBounds,
+      owned,
+      scope,
+    );
   }
 
   emitBytesIntrinsic(e: IrExpr & { kind: "bytesIntrinsic" }): LlValue {

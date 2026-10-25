@@ -570,6 +570,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         s.value,
         emitter.bytesBounds.has(s),
         emitter.bytesOwned.has(s),
+        emitter.bytesAliasScopes.get(s),
       );
       break;
     }
@@ -2080,6 +2081,46 @@ function emitSlowCopy(emitter: LlEmitter, s: IrStmt): void {
  * stops trying it. */
 const SPECULATION_BAILS = 8;
 
+/** The attachment of each scoped access in a version's fast copy: the
+ * scope of its own view, and no alias with the scopes of the other views,
+ * whose bytes the guard proved disjoint. The scopes are named after the
+ * function and the version, so every copy of a loop has its own, and
+ * written inline (string-named scopes need no numbered metadata). Also
+ * the scopes, which each fast copy declares on entry (declareAliasScopes). */
+function bytesAliasScopes(
+  emitter: LlEmitter,
+  scopes: NonNullable<BytesLoopVersion["scopes"]>,
+): { attachments: Map<IrExpr | IrStmt, string>; scopes: string[] } {
+  const version = emitter.aliasScopedVersions++;
+  const name = emitter.currentFunctionName.replace(/[^A-Za-z0-9_.$%]/g, "_");
+  const domain = '!{!"scriptc typed-array views"}';
+  const scope = (receiver: number): string => `!{!"${name}.${version}.${receiver}", ${domain}}`;
+  const attachments = new Map<number, string>();
+  for (const receiver of scopes.receivers) {
+    const others = scopes.receivers.filter((other) => other !== receiver).map(scope);
+    attachments.set(
+      receiver,
+      `, !alias.scope !{${scope(receiver)}}, !noalias !{${others.join(", ")}}`,
+    );
+  }
+  const result = new Map<IrExpr | IrStmt, string>();
+  for (const [node, receiver] of scopes.nodes) result.set(node, attachments.get(receiver)!);
+  return { attachments: result, scopes: scopes.receivers.map(scope) };
+}
+
+/** Declares a version's scopes where a fast copy starts. The guard proves
+ * the views disjoint for this entry only: an enclosing loop may pass other
+ * views on its next pass (`[cur, next] = [next, cur]`). A declared scope
+ * holds from its declaration, and LLVM gives each copy of the declaration
+ * its own scopes when it unrolls or duplicates the enclosing code, so the
+ * no-alias facts of one entry never apply to the accesses of another. */
+function declareAliasScopes(emitter: LlEmitter, scopes: readonly string[]): void {
+  if (scopes.length === 0) return;
+  emitter.declare("declare void @llvm.experimental.noalias.scope.decl(metadata)");
+  for (const scope of scopes)
+    emitter.B.line(`call void @llvm.experimental.noalias.scope.decl(metadata !{${scope}})`);
+}
+
 /** Emit a loop's condition, body and update through `emitCopy`, twice
  * when speculative-integers.ts plans a fast integer copy. Both copies
  * share the loop's setup and exit; the ordinary copy comes first so the
@@ -2104,7 +2145,8 @@ function emitVersionedLoop(
     originalOwned = emitter.bytesOwned,
     originalRanges = emitter.integerRanges,
     originalUnitReads = emitter.stringUnitReads,
-    originalLengthReads = emitter.stringLengthReads;
+    originalLengthReads = emitter.stringLengthReads,
+    originalScopes = emitter.bytesAliasScopes;
   LOOPS.of(emitter).bytesLoopVersioning.add(s);
   try {
     B.startBlock(slow);
@@ -2113,9 +2155,15 @@ function emitVersionedLoop(
     if (version.owned.size > 0) emitter.bytesOwned = new Set([...originalOwned, ...version.owned]);
     if (version.ranges.size > 0)
       emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
+    // Both fast copies run under the guard's span test, so they share the
+    // version's scopes, and each declares them on entry.
+    const scoped =
+      version.scopes && emitter.debug === null ? bytesAliasScopes(emitter, version.scopes) : null;
+    if (scoped) emitter.bytesAliasScopes = new Map([...originalScopes, ...scoped.attachments]);
     if (version.counted?.guarded || version.paired?.loop.guarded)
       LOOPS.of(emitter).provenCountedGuards.add(s);
     B.startBlock(fast);
+    declareAliasScopes(emitter, scoped?.scopes ?? []);
     emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
     // Both fast copies read the string's length the guard took.
     const length = guard?.length;
@@ -2129,6 +2177,7 @@ function emitVersionedLoop(
     if (unitsFast !== undefined && units !== null) {
       // The string reads take the receiver's UTF-16 units.
       B.startBlock(unitsFast);
+      declareAliasScopes(emitter, scoped?.scopes ?? []);
       emitter.bytesBounds = new Set([
         ...originalBounds,
         ...[...version.bounds].filter((node) => !version.stringReads.has(node)),
@@ -2146,6 +2195,7 @@ function emitVersionedLoop(
     emitter.integerRanges = originalRanges;
     emitter.stringUnitReads = originalUnitReads;
     emitter.stringLengthReads = originalLengthReads;
+    emitter.bytesAliasScopes = originalScopes;
     LOOPS.of(emitter).provenCountedGuards.delete(s);
     LOOPS.of(emitter).bytesLoopVersioning.delete(s);
   }

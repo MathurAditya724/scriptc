@@ -64,6 +64,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.currentFunctionName = fn.name;
   emitter.currentUnwindAbi = emitter.unwindAbi.has(fn.name);
   emitter.usesLandingPads = false;
+  emitter.aliasScopedVersions = 0;
   emitter.findInt32Allocations(fn);
   emitter.currentTier = fn.tier;
   // Fiber switches restore the active exception cell before control
