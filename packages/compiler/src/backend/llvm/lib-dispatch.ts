@@ -1196,7 +1196,7 @@ function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrT
   const key = `allTuple:${fnName}`;
   let adapter = host.resolveThunks.get(key);
   if (adapter !== undefined) return adapter;
-  adapter = `sc_all_tuple_${host.resolveThunks.size}`;
+  adapter = host.contentSymbol("sc_all_tuple_", key);
   host.resolveThunks.set(key, adapter);
   host.journal?.allocated(adapter, "allTupleAdapterFor", [fnName, tuple]);
   const rc = vAdapters(host.shapeHost, tuple);
