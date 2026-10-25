@@ -34,12 +34,22 @@ import { exactInteger, widenInteger } from "./integer-values.js";
 import { mapKeyAccess } from "./shapes.js";
 
 export const NUMBER_MAP_ENTRY_DECL = "declare ptr @scr_map_entry_f64(ptr, double)";
-/** Record the integer view of a number Map/Set key operand, when the
- * emitter has one (exactInteger), for the entry lookups of that key. */
+/** Record the integer view of a number Map/Set key operand for the entry
+ * lookups of that key, when the view needs no instruction of its own: the
+ * value's integer or uint32 view, defined with the value, or an integral
+ * literal. A view exactInteger converts at this lookup is not recorded: the
+ * key cache spans the function, and a later lookup of the same operand (a
+ * constant, say) can be in a block the conversion does not dominate. */
 export function noteNumberMapKey(host: LlvmEmitterContext, key: LlValue, expr: IrExpr): void {
   if (key.type.kind !== "f64" || host.numberMapKeyIntegers.has(key.name)) return;
+  if (!key.integer && key.uint32 === undefined && expr.kind !== "numLit") return;
   const integer = exactInteger(host, key, expr);
-  if (integer) host.numberMapKeyIntegers.set(key.name, integer);
+  if (!integer) return;
+  const defined =
+    integer.name === key.integer?.name ||
+    integer.name === key.uint32 ||
+    /^-?\d+$/.test(integer.name);
+  if (defined) host.numberMapKeyIntegers.set(key.name, integer);
 }
 
 /** The entry for `key`, or null when absent. Valid until the next mutation.

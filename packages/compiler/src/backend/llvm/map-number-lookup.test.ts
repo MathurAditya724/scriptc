@@ -206,6 +206,55 @@ test("a key with an integer view tests the direct index on the integer", () => {
   }
 });
 
+test("a key view converted in a branch is not reused by a later lookup of the same constant", () => {
+  // work(map, k, taken): if (taken) return map.has((k = 2 ** 40)); return map.has(2 ** 40).
+  const wide = 2 ** 40;
+  const mod = lookupFixture();
+  const work = mod.functions[1]!;
+  const map = work.params[0]!.type;
+  const has = (key: IrExpr): IrExpr => ({
+    kind: "mapIntrinsic",
+    method: "has",
+    receiver: ref("map", map),
+    args: [key],
+    type: BOOL,
+    loc,
+  });
+  const literal: IrExpr = { kind: "numLit", value: wide, type: F64, loc };
+  const taken = { localId: "taken", name: "taken", type: BOOL };
+  work.params.push(taken);
+  work.locals.push({ id: "taken", name: "taken", type: BOOL, mutable: true });
+  work.body = [
+    {
+      kind: "if",
+      cond: ref("taken", BOOL),
+      then: [
+        {
+          kind: "return",
+          value: has({
+            kind: "assignExpr",
+            localId: "k",
+            value: literal,
+            type: F64,
+            loc,
+          }),
+          loc,
+        },
+      ],
+      else_: null,
+      loc,
+    },
+    { kind: "return", value: has(literal), loc },
+  ];
+  for (const bits of [32, 64] as const) {
+    const { work: text } = emitted(mod, bits);
+    // The lookup after the branch takes the literal, not a conversion made
+    // inside the branch.
+    expect(text).toMatch(/call ptr @sc_map_entry_f64_int\(ptr %\S+, i64 1099511627776, double /);
+    expect(text).not.toMatch(/@sc_map_entry_f64_int\(ptr %\S+, i64 %/);
+  }
+});
+
 /** work(map): map.size, and keep(map): map returned as an owned value. */
 function sizeFixture(): IrModule {
   const map: IrType = { kind: "map", key: F64, value: F64 };

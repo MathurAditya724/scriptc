@@ -60,3 +60,18 @@ for (let i = 0; i < 5; i++) {
   key = key * 2 - 1;
 }
 console.log([...wide.keys()].join(" "), wide.get(2 ** 52), wide.get(2 ** 53 - 1));
+
+// A lookup whose key is an assignment of a wide integer constant, in a
+// branch, then a lookup of the same constant after the branch.
+const far = new Map<number, number>();
+far.set(1099511627776, 7);
+function probeFar(taken: boolean): number {
+  let k = 0;
+  let hits = 0;
+  if (taken) {
+    if (far.has((k = 1099511627776))) hits += 1;
+  }
+  hits += far.get(1099511627776) ?? -1;
+  return hits + k;
+}
+console.log(probeFar(true), probeFar(false));
