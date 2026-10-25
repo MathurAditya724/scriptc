@@ -1032,6 +1032,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.openSync",
   "fs.openNumericSync",
   "fs.readSync",
+  "fs.readSyncDyn",
   "fs.writeSync",
   "fs.writeStrSync",
   "fs.closeSync",

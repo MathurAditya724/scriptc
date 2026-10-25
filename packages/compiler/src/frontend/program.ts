@@ -1374,9 +1374,16 @@ function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
     return ts.flattenDiagnosticMessageText(d, "\n").includes("'any'");
   }
   // The deprecated Buffer(...) call without `new`, which Node's Buffer
-  // function accepts (containers/bytes.ts lowers it).
+  // function accepts (containers/bytes.ts lowers it), and fs.ReadStream(...)
+  // and fs.WriteStream(...), which construct their stream
+  // (builtins/fs-streams.ts).
   if (d.code === 2348) {
-    return ts.flattenDiagnosticMessageText(d, "\n").includes("'BufferConstructor'");
+    const text = ts.flattenDiagnosticMessageText(d, "\n");
+    return (
+      text.includes("'BufferConstructor'") ||
+      text.includes("'typeof ReadStream'") ||
+      text.includes("'typeof WriteStream'")
+    );
   }
   return false;
 }
