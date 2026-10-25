@@ -139,10 +139,12 @@ void scriptc_native_bound_cycle_growth(void) {
 /* The runtime's nursery trigger (scr_rc.h). */
 void scr_cyc_set_nursery_threshold(long threshold);
 
-/* Runs nursery passes every 1024 new candidates instead of every 256. It
- * has to be in place before the compiler's modules initialize: set from
- * main it leaves the build's collection work as it is. SCR_CYCLE_THRESHOLD
- * still overrides it. */
+/* Runs nursery passes every 1024 new candidates instead of every 256. Much
+ * of a build's cyclic garbage outlives 256 releases: in the shorter window
+ * it survives a nursery pass, is promoted, and only full passes over the
+ * whole live heap find it. A constructor sets it before the compiler's
+ * modules initialize, so every pass of a build uses it.
+ * SCR_CYCLE_THRESHOLD still overrides it. */
 __attribute__((constructor)) static void scriptc_native_widen_cycle_nursery(void) {
   scr_cyc_set_nursery_threshold(1024);
 }
