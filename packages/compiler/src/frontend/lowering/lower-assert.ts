@@ -1355,7 +1355,7 @@ function lowerAssertMatch(
     lowerer.noLowering(`${surface} with ${expr.arguments.nodes.length} arguments`, expr);
   }
   const s = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
-  const re = lowerer.lowerExpr(expr.arguments.nodes[1]!);
+  const re = lowerExpectedValue(lowerer, expr.arguments.nodes[1]!);
   if (re.type.kind !== "regex") {
     lowerer.noLowering(
       `${surface} with a non-regex pattern`,
@@ -1420,6 +1420,18 @@ function inErrorHierarchy(lowerer: Lowerer, className: string): boolean {
   return false;
 }
 
+/** An expected string or regex: a value JavaScript stores checked-dynamic
+ * (an object literal's field, an untyped binding) converts to the string
+ * or regex its checker type names, so the comparison takes that arm. */
+function lowerExpectedValue(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind !== "dyn") return value;
+  const expected = lowerer.mapTypeOf(lowerer.typeOf(node));
+  return expected?.kind === "string" || expected?.kind === "regex"
+    ? lowerer.coerceToExpected(value, expected)
+    : value;
+}
+
 /** Classify the expected argument: string → message, regex value → the
  * regex test over String(error), an error-class identifier → instanceof,
  * an object LITERAL over name/message/code (string or regex values) →
@@ -1436,7 +1448,7 @@ function classifyThrowsExpected(
     return { form: "message", msg: m.msg, hasMsg: m.hasMsg };
   }
   if (expectedT?.kind === "regex") {
-    return { form: "regex", value: lowerer.lowerExpr(node) };
+    return { form: "regex", value: lowerExpectedValue(lowerer, node) };
   }
   const sym = ts.isIdentifier(node) ? lowerer.resolveValueSymbol(node) : null;
   const info =
@@ -1509,7 +1521,7 @@ function classifyThrowsExpected(
         );
       }
       const valueNode = ts.isPropertyAssignment(named) ? named.initializer : named.name;
-      const value = lowerer.lowerExpr(valueNode);
+      const value = lowerExpectedValue(lowerer, valueNode);
       if (value.type.kind === "string") {
         byId.set(id, { id, kind: "str", value, enameBake: null });
       } else if (value.type.kind === "regex") {

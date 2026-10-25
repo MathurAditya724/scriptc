@@ -34,7 +34,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "mbedtls";
+  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "mbedtls";
   predicate: RuntimePredicate;
 }
 
@@ -94,6 +94,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   warningReplace: boolean;
   stdioExtended: boolean;
   nodeIsland: boolean;
+  brotli: boolean;
   nativeFetch: boolean;
   netEffective: boolean;
   httpEffective: boolean;
@@ -293,6 +294,7 @@ export function effectiveRuntimeFeatures(
     warningReplace: features.warningReplace === true,
     stdioExtended: features.stdioExtended === true,
     nodeIsland: features.nodeIsland === true,
+    brotli: features.brotli === true,
     nativeFetch,
     netEffective,
     httpEffective,

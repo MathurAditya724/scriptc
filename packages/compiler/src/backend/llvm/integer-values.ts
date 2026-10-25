@@ -65,6 +65,22 @@ function magnitude(range: IntegerRange): number {
   return Math.max(Math.abs(range.min), Math.abs(range.max));
 }
 
+/** The bounds of a sum and a product of two magnitude bounds, as doubles.
+ * Below 2^53 the double result is the integer; above it the result is past
+ * every exactness limit either way, and rounding moves it far less than the
+ * margin from WIDE_BOUND to the i64 range. A result of exactly 2^53 may
+ * stand for 2^53 + 1 (2^53 - 1 + 2 rounds to 2^53), so it moves to the next
+ * double up unless the sum is exactly 2^53. */
+function sumBound(a: number, b: number): number {
+  const sum = a + b;
+  return sum === EXACT_DOUBLES && EXACT_DOUBLES - a !== b ? sum + 2 : sum;
+}
+
+function productBound(a: number, b: number): number {
+  const product = a * b;
+  return product === EXACT_DOUBLES ? product + 2 : product;
+}
+
 /** The wide view of `l op r` for `+`, `-` and `*` when the exact operands
  * have no proven result range (their product or sum may pass 2^53).
  *
@@ -98,14 +114,14 @@ export function wideArithmetic(
   if (op === "*") {
     if (lv.below !== Infinity || rv.below !== Infinity) return null;
     below = EXACT_DOUBLES;
-    bound = lv.bound * rv.bound;
+    bound = productBound(lv.bound, rv.bound);
   } else if (lv.below === Infinity && rv.below === Infinity) {
     below = EXACT_DOUBLES;
-    bound = lv.bound + rv.bound;
+    bound = sumBound(lv.bound, rv.bound);
   } else if (lv.below === Infinity || rv.below === Infinity) {
     const [exact, wide] = lv.below === Infinity ? [lv, rv] : [rv, lv];
     below = Math.min(wide.below - exact.bound, EXACT_DOUBLES);
-    bound = exact.bound + wide.bound;
+    bound = sumBound(exact.bound, wide.bound);
   } else return null;
   if (!(bound <= WIDE_BOUND) || below < INDEX_LIMIT) return null;
   const operand = (value: LlValue, integer: LlInteger | null): string =>
@@ -132,6 +148,20 @@ export function indexInteger(
   if (integer) return widenInteger(host, integer);
   const wide = value.wideInteger;
   return wide && wide.below >= INDEX_LIMIT ? wide.name : null;
+}
+
+/** An i64 equal to a value's double wherever the value can be: its exact
+ * integer, or a wide view whose magnitude bound is within the magnitude below
+ * which the view is exact. Every integer of magnitude at most 2^53 is a
+ * double, so a bound equal to that limit is exact too. Null otherwise. */
+export function alwaysExactInteger(
+  host: LlvmEmitterContext,
+  value: LlValue,
+  integer: LlInteger | null,
+): string | null {
+  if (integer) return widenInteger(host, integer);
+  const wide = value.wideInteger;
+  return wide && wide.bound <= wide.below ? wide.name : null;
 }
 
 export function widenInteger(host: LlvmEmitterContext, value: LlInteger): string {

@@ -32,7 +32,9 @@ on:
       - ".github/workflows/libnode-packs.yml"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A fixed name: under workflow_call, github.workflow is the caller's, and
+  # sharing the caller's group would cancel the run as a deadlock.
+  group: libnode-packs-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

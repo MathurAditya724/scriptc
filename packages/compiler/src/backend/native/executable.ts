@@ -82,15 +82,18 @@ import {
   currentVendorCacheBuildIdentity,
   vendorBuildCacheRoot,
   tlsArchivePath,
+  brotliArchivePath,
   lreObjectPaths,
   zlibObjectPaths,
   stageVendorInputs,
   ensureTlsArchive,
+  ensureBrotliArchive,
   ensureLreObjects,
   ensureZlibObjects,
   vendorEngineDir,
   vendorZlibDir,
   vendorTlsDir,
+  vendorBrotliDir,
 } from "./vendor.js";
 import { execFileAsync, subprocessFailureDetail, CcCompileError } from "./process.js";
 import { implicitLinkerFingerprint } from "./linker-fingerprint.js";
@@ -119,6 +122,7 @@ interface RuntimeUnitContext {
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
   tlsArchive: string | null;
+  brotliArchive: string | null;
 }
 
 /** An optional runtime input: runtime sources compiled when `when` holds,
@@ -224,6 +228,18 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           : []
         : [],
   ),
+  // Brotli (scr_brotli.c) plugs into the zlib engine and links the
+  // vendored brotli archive.
+  unitArgs((u) =>
+    u.brotliArchive
+      ? [
+          "-I",
+          join(vendorBrotliDir(), "include"),
+          u.rt(join(u.rtDir, "scr_brotli.c")),
+          u.brotliArchive,
+        ]
+      : [],
+  ),
   unit((u) => u.opts.events, "scr_events.c", "scr_readline.c"),
   // readline's terminal mode: rl.terminal sets the regex unit it
   // measures with.
@@ -304,6 +320,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dgram, "scr_dgram.c"),
   unit((u) => u.opts.dgram && u.opts.dnsPromises, "scr_dns_promises.c"),
   unit((u) => u.opts.dgram && u.opts.dgramDyn, "scr_dgram_dyn.c"),
+  unit((u) => u.opts.textCodecDyn, "scr_text_codec_dyn.c"),
   unit((u) => u.opts.watch, "scr_watch.c"),
   unit((u) => u.opts.foreignFfi, "scr_ffi_queue.c"),
   unit((u) => u.opts.nodeTest, "scr_test.c"),
@@ -401,6 +418,7 @@ export async function compileCInternal(
   const dh = opts.dh ?? false;
   const pki = opts.pki ?? false;
   const mbedtls = tls || cipher || ecdh || dh || pki;
+  const brotli = (opts.zlib ?? false) && opts.brotli === true;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -640,6 +658,9 @@ export async function compileCInternal(
   let tlsArchive = mbedtls
     ? tlsArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
+  let brotliArchive = brotli
+    ? brotliArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : null;
 
   // ours would collide; see scr_regex.c) — the standalone objects are for
   // static builds only.
@@ -676,6 +697,23 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "tls"));
       tlsArchive = paths[0]!;
+    }
+    if (brotli) {
+      const cachedArchive = brotliArchivePath(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      );
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureBrotliArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
+      ];
+      const paths =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "brotli"));
+      brotliArchive = paths[0]!;
     }
     if (regex) {
       for (const object of lreObjectPaths(
@@ -763,6 +801,7 @@ export async function compileCInternal(
       lreObjects,
       zlibObjects,
       tlsArchive,
+      brotliArchive,
     }),
     // A .ll program TU (the LLVM backend) deliberately carries no target
     // triple (byte-stable output; clang supplies the host/SCRIPTC_TARGET

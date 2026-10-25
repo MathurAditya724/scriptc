@@ -1,6 +1,8 @@
-import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { targetCpuField, targetCpuTargetRefusal } from "../backend/target-cpu.js";
+import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { CompilationTiming } from "../timing.js";
 import { readFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
   CompileFailure,
@@ -30,7 +32,10 @@ import {
 import { compilerOwnedFileRoots } from "../frontend/dts-paths.js";
 import { provenanceSources } from "../frontend/provenance-registry.js";
 import { processFork } from "../frontend/process-fork.js";
-import { tokenEquivalentSource } from "../frontend/token-equivalence.js";
+import {
+  tokenEquivalentSource,
+  tokenPositionEquivalentSource,
+} from "../frontend/token-equivalence.js";
 import { llvmBytes, wtf8Bytes } from "../backend/literals.js";
 import { prepareLibrary } from "../library/prepare.js";
 import type { LibraryProfile } from "../library/library-profile.js";
@@ -59,7 +64,7 @@ export interface NativeExecutableInput {
 
 /** The two large artifacts follow the input metadata as separate members so
  * an entry can be written as parts instead of one JSON string; the stored
- * input carries empty placeholders (`""`, `null`) for them. */
+ * input carries empty placeholders (`[]`, `null`) for them. */
 interface FrontendCacheEntry {
   schema: "scriptc.native-frontend.v3";
   probes: FrontendInputSnapshot;
@@ -78,7 +83,7 @@ function* frontendCacheParts(
   const metadata = JSON.stringify({
     schema: "scriptc.native-frontend.v3",
     probes,
-    input: { ...input, llvm: "", ir: null },
+    input: { ...input, llvm: [], ir: null },
   });
   yield metadata.slice(0, metadata.length - 1) + ',"llvm":"';
   for (const part of joinedParts(input.llvm))
@@ -141,9 +146,11 @@ function readFrontendCache(
 /** The stale entry's input when every changed source is token-equivalent to
  * the text the entry was built from (edits to whitespace and to comments
  * that cannot affect compilation; see token-equivalence.ts). Equivalent
- * sources lower to the same IR apart from source locations, which only dev
- * builds' debug information and the serialized IR carry. Diagnostics carry
- * locations too, so an entry that reported warnings is rebuilt. A changed
+ * sources lower to the same IR apart from source locations, which only the
+ * debug information of dev builds and the serialized IR carry. A build
+ * with debug information accepts only edits that keep every token's line
+ * and column, the positions the debug information records. Diagnostics
+ * carry locations too, so an entry that reported warnings is rebuilt. A changed
  * source whose raw text or line positions the frontend read (call-site text
  * in messages, comptime callbacks, test locations) is rebuilt as well:
  * frontendInputsSemanticallyMatch refuses its `text` probe. */
@@ -153,17 +160,17 @@ function equivalentFrontendInput(
   exclusions: FrontendInputExclusions,
 ): { input: NativeExecutableInput; probes: FrontendInputSnapshot } | null {
   if (
-    options.optimization === "dev" ||
     options.sanitize === true ||
     options.emitIr === true ||
     stale.ir !== null ||
     (stale.input.warnings?.length ?? 0) > 0
   )
     return null;
+  const debugInfo = options.optimization === "dev" && !options.strip;
   const match = frontendInputsSemanticallyMatch(
     stale.probes,
     new Map(stale.input.sources),
-    tokenEquivalentSource,
+    debugInfo ? tokenPositionEquivalentSource : tokenEquivalentSource,
     exclusions,
   );
   if (match === null || match.changed.length === 0) return null;
@@ -239,6 +246,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "dgram",
     "dnsPromises",
     "dgramDyn",
+    "textCodecDyn",
     "watch",
     "foreignFfi",
     "nodeTest",
@@ -315,6 +323,17 @@ export function prepareNativeExecutable(
   timing: CompilationTiming = () => {},
 ): NativeExecutableInput | CompileFailure {
   const outputKind = options.outputKind ?? "exe";
+  const targetCpuRefusal = targetCpuTargetRefusal(
+    options.targetCpu,
+    toolchain.target.platform,
+    toolchain.target.architecture,
+  );
+  if (targetCpuRefusal !== null)
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag("SC3002", targetCpuRefusal, entry)],
+      sourceTexts: new Map(),
+    };
   const stem = basename(entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const outputPaths = [
     resolve(options.outPath),
@@ -395,6 +414,7 @@ export function prepareNativeExecutable(
           forkPrimitives: emitForkPrimitives(),
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
+          ...targetCpuField(options.targetCpu),
           ...(options.optimization === "dev" && !options.strip
             ? { debugSources: prepared.sourceTexts }
             : {}),
@@ -532,10 +552,12 @@ export function prepareNativeLibrary(
   return input;
 }
 
-/** Worker processes that emit function bodies at a time
- * (SCRIPTC_EMIT_WORKERS; 0 or 1 emits in this process). */
+/** Worker processes that emit function bodies at a time: up to eight, one
+ * per available core (SCRIPTC_EMIT_WORKERS sets the count; 0 or 1 emits in
+ * this process). */
 function emitWorkers(): number {
-  const value = Number(process.env["SCRIPTC_EMIT_WORKERS"] ?? "4");
+  const configured = process.env["SCRIPTC_EMIT_WORKERS"];
+  const value = configured === undefined ? Math.min(8, availableParallelism()) : Number(configured);
   return Number.isFinite(value) && value > 1 ? Math.floor(value) : 1;
 }
 

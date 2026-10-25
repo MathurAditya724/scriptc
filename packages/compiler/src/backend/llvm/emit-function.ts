@@ -159,6 +159,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           emitter.optionalArrayReads,
           emitter.referenceWrites,
           emitter.fnByName,
+          emitter.nodeIndex,
         )
       : new Set();
   emitter.localArrayReads = findLocalArrayReads(
@@ -304,11 +305,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     // ScrGen owns the frame), so its OUT slot address is fixed.
     let out: string | null = null;
     const yieldKind = fn.generator?.yieldT.kind;
-    if (
-      !emitter.wasi &&
-      fn.async !== true &&
-      (yieldKind === "f64" || yieldKind === "date" || yieldKind === "bool")
-    ) {
+    if (!emitter.wasi && fn.async !== true && (yieldKind === "f64" || yieldKind === "bool")) {
       emitter.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
       const gen = B.tmp();
       B.line(`${gen} = call ptr @scr_gen_of_fiber(ptr ${self})`);
@@ -328,7 +325,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
 
   const paramIds = new Set(fn.params.map((p) => p.localId));
   if (emitter.debug === null) {
-    for (const id of findIntegerViews(numericFn)) {
+    for (const id of findIntegerViews(numericFn, emitter.nodeIndex)) {
       // An i32 slot is its own view.
       if (emitter.int32Locals.has(id)) continue;
       const slot = B.slot();
@@ -704,7 +701,6 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
           tr.push(`  br label %done ; void body: the done value is undefined (NONE)`);
           break;
         case "f64":
-        case "date":
           emitter.declare(`declare void @scr_gen_out_f64(ptr, double)`);
           tr.push(`  call void @scr_gen_out_f64(ptr %g, double %r)`, `  br label %done`);
           break;
@@ -1053,7 +1049,6 @@ export function emitAsyncAwaitCall(
         emitter.declare(`declare void @scr_await_void(ptr)`);
         return `  call void @scr_await_void(ptr ${promise})`;
       case "f64":
-      case "date":
         emitter.declare(`declare double @scr_await_f64(ptr)`);
         return `  ${dest} = call double @scr_await_f64(ptr ${promise})`;
       case "bool":
@@ -1108,7 +1103,7 @@ export function emitAsyncAwaitCall(
     const kind =
       ret.kind === "void"
         ? "void"
-        : ret.kind === "f64" || ret.kind === "date"
+        : ret.kind === "f64"
           ? "f64"
           : ret.kind === "bool"
             ? "bool"
@@ -1187,7 +1182,6 @@ export function emitWasiFulfill(emitter: LlEmitter, v: LlValue | null): void {
       case "void":
         return;
       case "f64":
-      case "date":
         emitter.declare(`declare void @scr_gen_out_f64(ptr, double)`);
         emitter.B.line(`call void @scr_gen_out_f64(ptr ${gen}, double ${v!.name})`);
         return;
@@ -1212,7 +1206,6 @@ export function emitWasiFulfill(emitter: LlEmitter, v: LlValue | null): void {
       emitter.B.line(`call void @scr_promise_fulfill_void(ptr ${pr})`);
       break;
     case "f64":
-    case "date":
       emitter.declare(`declare void @scr_promise_fulfill_f64(ptr, double)`);
       emitter.B.line(`call void @scr_promise_fulfill_f64(ptr ${pr}, double ${v!.name})`);
       break;
@@ -1315,8 +1308,10 @@ export function emitArgPackAndTrampolinePrologue(
  * code. */
 export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
   if (emitter.wasi || emitter.mod.workers === true) return null;
-  for (const decl of emitter.decls) if (/@scr_test_sub\b/.test(decl)) return null;
-  for (const text of emitter.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return null;
+  const testSub = (text: string): boolean =>
+    text.includes("@scr_test_sub") && /@scr_test_sub\b/.test(text);
+  for (const decl of emitter.decls) if (testSub(decl)) return null;
+  for (const text of emitter.fnDefText.values()) if (testSub(text)) return null;
   // Reverse mention edges, then propagate "may park" to every mentioner.
   const mentionedBy = new Map<string, Set<string>>();
   const parks = new Set<string>();

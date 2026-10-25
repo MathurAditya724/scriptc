@@ -8,13 +8,17 @@
  * Semantics, shared with packages/node/index.js (the Node implementation):
  * the arguments are copied with JSON.stringify of the argument array; the
  * module loads with require() from the calling module, so relative
- * specifiers resolve from it; the result crosses as its JSON copy and is
+ * specifiers resolve from it. The specifier is a string literal: the build
+ * collects the module and what it loads into the executable
+ * (node-islands/modules.ts), and the call names its caller by its path in
+ * that tree, never by a path on the build machine. The result crosses as
+ * its JSON copy and is
  * checked against the declared result type, like `JSON.parse(s) as T`; a
  * thrown Error crosses as its nearest intrinsic class with its message and
  * string `code`. */
 import { readFileSync, realpathSync } from "node:fs";
 import { resolveFrom } from "../../node-islands/resolve.js";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
 import type { NodeApiMember } from "../node-api-import.js";
@@ -32,7 +36,7 @@ import {
 } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
 import { resolveBareModule } from "../resolve.js";
-import { nodeIslandBoundaryDiag } from "../../diagnostics/diagnostic.js";
+import { nodeIslandBoundaryDiag, nodeIslandModuleDiag } from "../../diagnostics/diagnostic.js";
 import {
   crossingOf,
   isForeignType,
@@ -113,7 +117,26 @@ export function lowerNodeApiCall(
       "pass the module specifier, the export name and each argument explicitly",
     );
   }
-  const specifier = lowerer.lowerExprExpecting(argNodes[0]!, STRING);
+  const specifierNode = argNodes[0]!;
+  if (!ts.isStringLiteral(specifierNode) && !ts.isNoSubstitutionTemplateLiteral(specifierNode)) {
+    lowerer.pushDiag(
+      nodeIslandModuleDiag(`${surface} with a computed module specifier`, locOf(specifierNode)),
+    );
+    throw new PoisonError();
+  }
+  const caller = callerPath(call);
+  const problem = lowerer.nodeIslandModules.add(caller, specifierNode.text);
+  if (problem !== null) {
+    lowerer.pushDiag(nodeIslandModuleDiag(`${surface}: ${problem}`, locOf(specifierNode)));
+    throw new PoisonError();
+  }
+  const specifier = lowerer.lowerExprExpecting(specifierNode, STRING);
+  // An absolute specifier names a file of the build machine: the call names
+  // the shipped copy, relative to the caller inside the tree.
+  if (isAbsolute(specifierNode.text) && specifier.kind === "strLit") {
+    const target = lowerer.nodeIslandModules.resolvedPath(caller, specifierNode.text);
+    if (target !== null) lowerer.nodeIslandSpecifiers.push({ literal: specifier, caller, target });
+  }
   const name = lowerer.lowerExprExpecting(argNodes[1]!, STRING);
   const values = argNodes.slice(2).map((arg) => {
     const value = lowerer.lowerExpr(arg);
@@ -133,15 +156,18 @@ export function lowerNodeApiCall(
       lowerer.noLowering(`'${lowerer.fmt(bad)}' results of ${surface}`, call, JSON_HINT);
   }
   lowerer.usesNodeIsland = true;
+  // The caller's tree path is known once every call is collected (Lowerer).
+  const callerLiteral: IrExpr & { kind: "strLit" } = {
+    kind: "strLit",
+    value: caller,
+    type: STRING,
+    loc,
+  };
+  lowerer.nodeIslandCallers.push({ literal: callerLiteral, caller });
   const raw: IrExpr = {
     kind: "libCall",
     fn: member === "call" ? "nodeIsland.call" : "nodeIsland.callSync",
-    args: [
-      { kind: "strLit", value: callerPath(call), type: STRING, loc },
-      specifier,
-      name,
-      { kind: "dynArrLit", elems: values, type: DYN, loc },
-    ],
+    args: [callerLiteral, specifier, name, { kind: "dynArrLit", elems: values, type: DYN, loc }],
     type: member === "call" ? { kind: "promise", inner: DYN } : DYN,
     loc,
   };
@@ -156,7 +182,8 @@ export function lowerNodeApiCall(
  * in the island; the exports cross by reference (scope-B NI-4: an island
  * handle the program uses as an `any` value). The specifier must be a
  * string literal: it resolves at build time exactly as require.resolve
- * resolves it from the caller, and the island loads that absolute path. */
+ * resolves it from the caller, and the island loads that file, shipped
+ * with the program (islandLoadPath). */
 function lowerRequireModule(lowerer: Lowerer, call: ts.CallExpression, surface: string): IrExpr {
   const loc = locOf(call);
   const argNodes = call.arguments.nodes;
@@ -188,7 +215,7 @@ function lowerRequireModule(lowerer: Lowerer, call: ts.CallExpression, surface: 
   const raw: IrExpr = {
     kind: "libCall",
     fn: "nodeIsland.require",
-    args: [{ kind: "strLit", value: path, type: STRING, loc }],
+    args: [islandLoadPath(lowerer, path, loc)],
     type: DYN,
     loc,
   };
@@ -285,11 +312,33 @@ function islandModuleGlobal(lowerer: Lowerer, path: string): IslandModuleBinding
   return binding;
 }
 
-function loadIslandModule(path: string, loc: SrcLoc): IrExpr {
+/** The path literal of a load of the file at `path`. The build ships the
+ * file with the program (node-islands/modules.ts): the literal names it by
+ * its path in the shipped tree once lowering ends. A built-in module keeps
+ * its name. */
+function islandLoadPath(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
+  const literal: IrExpr & { kind: "strLit" } = { kind: "strLit", value: path, type: STRING, loc };
+  if (!isAbsolute(path)) return literal;
+  let real = path;
+  try {
+    real = realpathSync(path);
+  } catch {
+    /* the resolved path */
+  }
+  const problem = lowerer.nodeIslandModules.addLoaded(real);
+  if (problem !== null) {
+    lowerer.pushDiag(nodeIslandModuleDiag(problem, loc));
+    throw new PoisonError();
+  }
+  lowerer.nodeIslandLoads.push({ literal, path: real });
+  return literal;
+}
+
+function loadIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
   return {
     kind: "libCall",
     fn: "nodeIsland.require",
-    args: [{ kind: "strLit", value: path, type: STRING, loc }],
+    args: [islandLoadPath(lowerer, path, loc)],
     type: DYN,
     loc,
   };
@@ -322,7 +371,7 @@ export function collectIslandImport(
   actions.push({
     kind: "assign",
     localId: binding.global.id,
-    value: loadIslandModule(path, loc),
+    value: loadIslandModule(lowerer, path, loc),
     loc,
   });
   // CommonJS named imports: Node's namespace snapshots them once the
@@ -581,6 +630,44 @@ function freshLiteral(
   return { kind: "dynObjLit", fields, type: DYN, loc };
 }
 
+/** Whether evaluating an argument runs no code that could change the
+ * receiver: literals, names, `this`, functions it creates, object and
+ * array literals of those, and operators over those. */
+function inertArgument(node: ts.Expression): boolean {
+  const e = stripTypeWrappers(node);
+  if (
+    ts.isIdentifier(e) ||
+    ts.isLiteralExpression(e) ||
+    ts.isNoSubstitutionTemplateLiteral(e) ||
+    ts.isArrowFunction(e) ||
+    ts.isFunctionExpression(e) ||
+    e.kind === ts.SyntaxKind.ThisKeyword ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    e.kind === ts.SyntaxKind.NullKeyword
+  )
+    return true;
+  if (ts.isParenthesizedExpression(e)) return inertArgument(e.expression);
+  if (ts.isArrayLiteralExpression(e))
+    return e.elements.nodes.every((el) => !ts.isSpreadElement(el) && inertArgument(el));
+  if (ts.isObjectLiteralExpression(e))
+    return e.properties.nodes.every(
+      (p) =>
+        ts.isShorthandPropertyAssignment(p) ||
+        ts.isMethodDeclaration(p) ||
+        (ts.isPropertyAssignment(p) &&
+          !ts.isComputedPropertyName(p.name) &&
+          inertArgument(p.initializer)),
+    );
+  if (ts.isPrefixUnaryExpression(e))
+    return (
+      e.operator !== ts.SyntaxKind.PlusPlusToken &&
+      e.operator !== ts.SyntaxKind.MinusMinusToken &&
+      inertArgument(e.operand)
+    );
+  return false;
+}
+
 function argsOf(lowerer: Lowerer, args: readonly ts.Expression[], loc: SrcLoc): IrExpr {
   for (const a of args) if (ts.isSpreadElement(a)) boundaryFail(lowerer, "spread arguments", a);
   return { kind: "dynArrLit", elems: args.map((a) => toIsland(lowerer, a)), type: DYN, loc };
@@ -644,21 +731,42 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
           expr,
         );
       }
-      return fromIsland(
-        lowerer,
-        {
-          kind: "libCall",
-          fn: "nodeIsland.invoke",
-          args: [
-            target.value,
-            { kind: "strLit", value: callee.name.text, type: STRING, loc },
-            argsOf(lowerer, args, loc),
-          ],
-          type: DYN,
-          loc,
-        },
-        expr,
-      );
+      const name: IrExpr = { kind: "strLit", value: callee.name.text, type: STRING, loc };
+      if (args.every((a) => inertArgument(a))) {
+        return fromIsland(
+          lowerer,
+          {
+            kind: "libCall",
+            fn: "nodeIsland.invoke",
+            args: [target.value, name, argsOf(lowerer, args, loc)],
+            type: DYN,
+            loc,
+          },
+          expr,
+        );
+      }
+      // An argument that runs code could replace the method: JavaScript
+      // reads the method first, then evaluates the arguments.
+      const stmts: IrStmt[] = [];
+      const receiver = lowerer.declareHiddenLocal("%islandRecv", target.value.type);
+      stmts.push({ kind: "varDecl", localId: receiver.id, init: target.value, loc });
+      const recv = varRef(receiver.id, target.value.type, loc);
+      const method = lowerer.declareHiddenLocal("%islandMethod", DYN);
+      stmts.push({
+        kind: "varDecl",
+        localId: method.id,
+        init: { kind: "libCall", fn: "nodeIsland.get", args: [recv, name], type: DYN, loc },
+        loc,
+      });
+      const call: IrExpr = {
+        kind: "libCall",
+        fn: "nodeIsland.applyTo",
+        args: [varRef(method.id, DYN, loc), recv, argsOf(lowerer, args, loc)],
+        type: DYN,
+        loc,
+      };
+      const result = fromIsland(lowerer, call, expr);
+      return { kind: "seqExpr", stmts, result, type: result.type, loc };
     }
     if (!isForeignExpr(lowerer, callee)) return null;
     lowerer.usesNodeIsland = true;
@@ -707,28 +815,46 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
       ) {
         if (!isForeignExpr(lowerer, left.expression)) return null;
         lowerer.usesNodeIsland = true;
+        // JavaScript's order: the receiver, then the key, then the value.
+        const stmts: IrStmt[] = [];
+        const hold = (name: string, init: IrExpr, type: IrType): IrExpr => {
+          const local = lowerer.declareHiddenLocal(name, type);
+          stmts.push({ kind: "varDecl", localId: local.id, init, loc });
+          return varRef(local.id, type, loc);
+        };
         const target = lowerer.lowerExpr(left.expression);
-        const value = toIsland(lowerer, expr.right);
-        const tmp = lowerer.declareHiddenLocal("%islandSet", DYN);
-        const stmts: IrStmt[] = [{ kind: "varDecl", localId: tmp.id, init: value, loc }];
-        const v = varRef(tmp.id, DYN, loc);
+        const receiver = hold("%islandSetTarget", target, target.type);
+        const key = ts.isPropertyAccessExpression(left)
+          ? null
+          : hold("%islandSetKey", toIsland(lowerer, left.argumentExpression), DYN);
+        const v = hold("%islandSet", toIsland(lowerer, expr.right), DYN);
         stmts.push({
           kind: "exprStmt",
-          expr: ts.isPropertyAccessExpression(left)
-            ? {
-                kind: "libCall",
-                fn: "nodeIsland.set",
-                args: [target, { kind: "strLit", value: left.name.text, type: STRING, loc }, v],
-                type: { kind: "void" },
-                loc,
-              }
-            : {
-                kind: "libCall",
-                fn: "nodeIsland.setKey",
-                args: [target, toIsland(lowerer, left.argumentExpression), v],
-                type: { kind: "void" },
-                loc,
-              },
+          expr:
+            key === null
+              ? {
+                  kind: "libCall",
+                  fn: "nodeIsland.set",
+                  args: [
+                    receiver,
+                    {
+                      kind: "strLit",
+                      value: (left as ts.PropertyAccessExpression).name.text,
+                      type: STRING,
+                      loc,
+                    },
+                    v,
+                  ],
+                  type: { kind: "void" },
+                  loc,
+                }
+              : {
+                  kind: "libCall",
+                  fn: "nodeIsland.setKey",
+                  args: [receiver, key, v],
+                  type: { kind: "void" },
+                  loc,
+                },
           loc,
         });
         const result = fromIsland(lowerer, v, expr);
@@ -793,15 +919,14 @@ function lowerIslandLoadCall(
   const path = islandModuleFile(islands, file, arg.text, isImport ? "import" : "require");
   if (path === null) return undefined;
   lowerer.usesNodeIsland = true;
-  const pathLit: IrExpr = { kind: "strLit", value: path, type: STRING, loc };
   if (isImport) {
     return {
       kind: "libCall",
       fn: "nodeIsland.import",
-      args: [pathLit],
+      args: [islandLoadPath(lowerer, path, loc)],
       type: { kind: "promise", inner: DYN },
       loc,
     };
   }
-  return fromIsland(lowerer, loadIslandModule(path, loc), expr);
+  return fromIsland(lowerer, loadIslandModule(lowerer, path, loc), expr);
 }

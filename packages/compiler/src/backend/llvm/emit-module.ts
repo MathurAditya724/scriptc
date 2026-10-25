@@ -17,6 +17,7 @@ import {
 } from "../mangle.js";
 import {
   type IrGlobal,
+  type IrNodeIslandModules,
   type IrType,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_EVENT_CLASS,
@@ -57,13 +58,16 @@ import {
   ffiNativeTypeLl,
 } from "./common.js";
 import { literalCapWord, literalCapWord32 } from "./string-key-hash.js";
-import { hasLoneSurrogate, wtf8Bytes } from "../literals.js";
+import { hasLoneSurrogate, llvmBytes, wtf8Bytes } from "../literals.js";
+import { nodeIslandManifest } from "../../node-islands/modules.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
 import { NULLABLE_ABSENT, NULLABLE_NULL } from "./nullable-unions.js";
 import { literalEqualityDefinition } from "./string-literal-equality.js";
 import { STRING_READ_HELPERS, stringScanDecl } from "./string-reads.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import { InternalCompilerError } from "../../errors.js";
+import { targetCpuAttribute } from "../target-cpu.js";
+import type { IrFunction } from "../../ir/ir.js";
 
 /** The function bodies emitted in `chunks` contiguous ranges, each by its
  * own emitter (LlEmitter.chunkEmitter), then merged in function order: the
@@ -190,6 +194,40 @@ function readRange(dir: string, range: number): { result: ChunkResult; texts: st
     return null;
   }
 }
+
+/** The attribute groups of the emitted functions: #0 for every function,
+ * #1 for coroutine bodies and #2 for out-of-line record clones. Each carries
+ * the build's `--target-cpu` level. */
+function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean): string[] {
+  const cpu = targetCpuAttribute(emitter.targetCpu);
+  return [
+    `attributes #0 = { sanitize_address${cpu} }`,
+    ...(emitter.usesCoroutines
+      ? [`attributes #1 = { sanitize_address presplitcoroutine${cpu} }`]
+      : []),
+    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address${cpu} }`] : []),
+  ];
+}
+
+/** The group line written before each function's text. Functions from one
+ * source file share a group, which the LLVM helper keeps in the same
+ * partitions so that their calls to each other stay inside a partition
+ * (native/llvm-codegen/src/partition.h). A group is numbered by the first
+ * function of its file in the module's function order, which does not depend
+ * on the host. Functions without a source file get no group. */
+function partitionGroupLines(functions: readonly IrFunction[]): string[] {
+  const groups = new Map<string, number>();
+  return functions.map((fn) => {
+    const file = fn.loc.file;
+    if (file === "") return PARTITION_GROUP_END;
+    let group = groups.get(file);
+    if (group === undefined) groups.set(file, (group = groups.size));
+    return `${PARTITION_GROUP_END} ${group}`;
+  });
+}
+
+/** Ends the group of the definitions that follow. */
+const PARTITION_GROUP_END = "; scriptc-group";
 
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
@@ -332,6 +370,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
+  // URL programs give the host parser the IDNA unit's ToASCII.
+  const usesUrlIdna = runtimeFeatures.urlIdna;
   const snapshotsTlsCa = runtimeFeatures.tls || runtimeFeatures.tlsCa;
   // The process verdict has the same precedence as the C reference
   // emitter: node:test owns the final status when present; otherwise an
@@ -381,6 +421,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
         emitter.cstr(emitter.mod.nodeIsland?.nodeVersion ?? ""),
       ]
     : null;
+  // The island module tree: its manifest, and its files unless they ship
+  // beside the executable (node-islands/modules.ts).
+  const nodeIslandModules = usesNodeIsland ? emitter.mod.nodeIsland?.modules : undefined;
+  const nodeIslandModulesCall =
+    nodeIslandModules === undefined ? null : nodeIslandModulesInstall(emitter, nodeIslandModules);
   if (emitter.ffiHasForeignCallback) emitter.declare(`declare void @scr_ffi_install()`);
   if (usesStream) emitter.declare(`declare void @scr_stream_install()`);
   if (usesNetLookup) emitter.declare(`declare void @scr_net_lookup_install()`);
@@ -392,6 +437,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
+  if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
@@ -642,7 +688,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // class-object shape { rc, pre, post, ctor, name } — field reads on
     // builtin errors and classval loads GEP through these.
     `%ScrError = type { ${emitter.sizeType}, ptr, ptr, ptr, ptr, ptr, i8, i8, i8, i8, i8, ptr, ptr }`,
-    `%ScrClassObj = type { ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr }`,
+    `%ScrClassObj = type { ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ptr, ${emitter.sizeType} }`,
     // The runtime emitter prefix { rc, vt, reg, cls } — user subclasses
     // embed it (classes.ts), and bare-emitter GEPs address through it.
     `%ScrEmitter = type { ${emitter.sizeType}, ptr, ptr, ptr }`,
@@ -732,6 +778,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     for (let site = 0; site < emitter.jsIcSiteCount; site++)
       out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
   }
+  if (nodeIslandModulesCall !== null) out.push(...nodeIslandModulesCall.globals);
   for (const table of emitter.constantNumericTables.values()) {
     const n = table.values.length;
     let tableTmp = 0;
@@ -908,9 +955,13 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   for (const line of wrappers) out.push(line);
   for (const line of asyncDefs) out.push(line);
   for (const line of emitter.resolveThunkDefs) out.push(line);
-  out.push(fnDefs[0] ?? "");
-  for (let i = 1; i < fnDefs.length; i++) out.push("", fnDefs[i]!);
-  out.push("");
+  const groups = partitionGroupLines(emitter.mod.functions);
+  for (let i = 0; i < fnDefs.length; i++) {
+    if (i > 0) out.push("");
+    out.push(groups[i] ?? PARTITION_GROUP_END, fnDefs[i]!);
+  }
+  if (fnDefs.length === 0) out.push("");
+  out.push(PARTITION_GROUP_END, "");
   // WebAssembly modules translated into this program, and the registry.
   for (const line of emitWasmModules(emitter.mod, flushedDecls, emitter.wasmBoundsChecks))
     out.push(line);
@@ -983,9 +1034,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // symbols specified by the library IR instead.
     for (const line of emitter.emitLibDefs(globals, globalReleaseLines, stamps)) out.push(line);
     out.push(...emitter.inlineRcTail(flushedDecls));
-    out.push(`attributes #0 = { sanitize_address }`);
-    if (emitter.usesCoroutines) out.push(`attributes #1 = { sanitize_address presplitcoroutine }`);
-    if (hasNoInlineRecordClone) out.push(`attributes #2 = { noinline sanitize_address }`);
+    out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
     out.push(``);
     out.push(...emitter.fieldAliasMetadata());
     if (emitter.debug !== null) out.push(emitter.debug.render());
@@ -1027,9 +1076,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
           `  call void @scr_node_island_install(ptr ${nodeIslandConfig[0]}, ptr ${nodeIslandConfig[1]})`,
         ]
       : []),
+    ...(nodeIslandModulesCall === null ? [] : [nodeIslandModulesCall.call]),
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
+    ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
@@ -1138,9 +1189,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // sanitize_address is inert under the plain pipeline; the sanitized
     // lane's -fsanitize=address link activates instrumentation over the
     // emitted functions too (the runtime TUs get theirs from clang).
-    `attributes #0 = { sanitize_address }`,
-    ...(emitter.usesCoroutines ? [`attributes #1 = { sanitize_address presplitcoroutine }`] : []),
-    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address }`] : []),
+    ...functionAttributes(emitter, hasNoInlineRecordClone),
     ``,
   );
   if (emitter.mod.workers) {
@@ -1171,6 +1220,33 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
 /** The shared abort helpers (emitted only when referenced): the OOM
  * abort of untraced shape allocation and the invalid-union-tag abort —
  * both print the runtime ABI’s exact message on fd 2 and abort. */
+/** The island module tree's install call before %main, and the constant
+ * that carries its files when the executable ships them itself
+ * (scr_node_island.c: scr_node_island_install_modules). */
+function nodeIslandModulesInstall(
+  emitter: LlEmitter,
+  modules: IrNodeIslandModules,
+): { call: string; globals: string[] } {
+  emitter.declare(
+    `declare void @scr_node_island_install_modules(ptr, ${emitter.sizeType}, ptr, ${emitter.sizeType}, ptr)`,
+  );
+  const manifest = nodeIslandManifest(modules);
+  const manifestPtr = emitter.cstr(manifest);
+  const location = emitter.cstr(modules.location ?? "");
+  const data = modules.location === undefined ? emitter.nodeIslandModuleData : null;
+  const globals =
+    data === null || data.length === 0
+      ? []
+      : [
+          `@sc_node_island_modules = private unnamed_addr constant [${data.length} x i8] c"${llvmBytes(data, false)}", align 16`,
+        ];
+  const st = emitter.sizeType;
+  return {
+    call: `  call void @scr_node_island_install_modules(ptr ${manifestPtr}, ${st} ${Buffer.byteLength(manifest, "utf8")}, ptr ${globals.length > 0 ? "@sc_node_island_modules" : "null"}, ${st} ${globals.length > 0 ? data!.length : 0}, ptr ${location})`,
+    globals,
+  };
+}
+
 export function helperDefs(emitter: LlEmitter): string[] {
   const defs: string[] = [];
   const msgHelper = (fnName: string, msgSym: string, msg: string): void => {
