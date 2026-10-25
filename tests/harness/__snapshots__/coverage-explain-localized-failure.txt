@@ -1,0 +1,49 @@
+  dynamic tier   (tier assignment, report-only; --tier=auto)
+    0 functions already operate on dynamic values (0 statements)
+
+    11 demotion requests (refusals and fences the dynamic tier would replace)
+
+    4 would-be dynamic slots (localized failure, report-only: type failures a checked dynamic slot would hold)
+      11 errors: 9 clear with declaration slots (L1-L2), 9 with member and expression slots too (L3-L4); 6 cascades attributed; 1 type failure stays refused
+      L2 field tools: Tool[]  tests/coverage-fixtures/localized-failure.ts:13:11 (SC2009 component, clears 2)
+        rejects class Session
+      L2 param progress: Callbacks | undefined  tests/coverage-fixtures/localized-failure.ts:23:31 (SC2009 component, clears 1)
+        rejects function listAll
+      L2 field state: any  tests/coverage-fixtures/localized-failure.ts:29:3 (SC1090 dyn-field-policy, clears 1)
+        rejects class Holder
+      L1 local callbacks: Callbacks | undefined  tests/coverage-fixtures/localized-failure.ts:37:9 (SC2009 component, clears 1)
+        rejects statement
+    class Session  tests/coverage-fixtures/localized-failure.ts:12:1 (1 request)
+      <- SC1090 reflection at tests/coverage-fixtures/localized-failure.ts:49:11: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+      -> function <top level> turns dynamic
+    class Holder  tests/coverage-fixtures/localized-failure.ts:28:1 (1 request)
+      <- SC1090 reflection at tests/coverage-fixtures/localized-failure.ts:52:13: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+      -> function <top level> turns dynamic
+    class Cache  tests/coverage-fixtures/localized-failure.ts:42:1 (1 request)
+      <- SC1090 reflection at tests/coverage-fixtures/localized-failure.ts:53:22: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+      -> function <top level> turns dynamic
+    field Session.tools  tests/coverage-fixtures/localized-failure.ts:13:3 (1 request)
+      <- SC2009 type at tests/coverage-fixtures/localized-failure.ts:13:11: values of type 'Tool[]' cannot be compiled: the array shape is supported, but its element type 'Tool' does not compile
+      -> function <top level> turns dynamic
+    field Holder.state  tests/coverage-fixtures/localized-failure.ts:29:3 (1 request)
+      <- SC1090 operation at tests/coverage-fixtures/localized-failure.ts:29:3: 'any'-typed class fields are not supported yet
+      -> function <top level> turns dynamic
+    field Cache.tokens  tests/coverage-fixtures/localized-failure.ts:43:3 (1 request)
+      <- SC2020 operation at tests/coverage-fixtures/localized-failure.ts:43:3: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
+      -> function <top level> turns dynamic
+    function <top level>  tests/coverage-fixtures/localized-failure.ts:1:1 (8 sites inside)
+    function listAll  tests/coverage-fixtures/localized-failure.ts:23:1 (1 request, 1 site inside)
+      <- SC2004 cascade at tests/coverage-fixtures/localized-failure.ts:51:13: uses of 'listAll' inherit the blocker on its declaration
+      -> function <top level> turns dynamic
+    function pick  tests/coverage-fixtures/localized-failure.ts:36:1 (2 sites inside)
+    binding progress in listAll  tests/coverage-fixtures/localized-failure.ts:23:31 (1 request)
+      <- SC2009 type at tests/coverage-fixtures/localized-failure.ts:23:31: values of type 'Callbacks | undefined' cannot be compiled: the union shape is supported, and unions in the 'string | object' family ride the checked-dynamic representation wholesale, but 'Map<string,…
+      -> function listAll turns dynamic
+    binding callbacks in pick  tests/coverage-fixtures/localized-failure.ts:37:9 (2 requests)
+      <- SC2009 type at tests/coverage-fixtures/localized-failure.ts:37:9: values of type 'Callbacks | undefined' cannot be compiled: the union shape is supported, and unions in the 'string | object' family ride the checked-dynamic representation wholesale, but 'Map<string,…
+      -> function pick turns dynamic
+      <- SC2004 cascade at tests/coverage-fixtures/localized-failure.ts:38:10: uses of 'callbacks' inherit the blocker on its declaration
+      -> function pick turns dynamic
+    binding s  tests/coverage-fixtures/localized-failure.ts:49:7 (1 request)
+      <- SC2004 cascade at tests/coverage-fixtures/localized-failure.ts:50:13: uses of 's' inherit the blocker on its declaration
+      -> function <top level> turns dynamic

@@ -24,7 +24,11 @@ import {
 import { renderDiagnostics } from "../diagnostics/render.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
-import type { DemotionUnit, TierReport } from "../frontend/tier-analysis.js";
+import type {
+  DemotionUnit,
+  LocalizedFailureReport,
+  TierReport,
+} from "../frontend/tier-analysis.js";
 import type { WasmModuleReport } from "../wasm/discover.js";
 import {
   describe as describeReason,
@@ -668,6 +672,26 @@ function tiersEnvelope(tiers: TierReport, locator: SourceLocator): TiersEnvelope
       ...at(r.loc),
     })),
     units: tiers.units.map((u) => ({ ...unit(u), requests: u.requests, sites: u.sites })),
+    localizedFailure: {
+      errors: tiers.localizedFailure.errors,
+      typeFailures: tiers.localizedFailure.typeFailures,
+      cascades: tiers.localizedFailure.cascades,
+      clearedThroughL2: tiers.localizedFailure.clearedThroughL2,
+      clearedThroughL4: tiers.localizedFailure.clearedThroughL4,
+      remainingByCode: tiers.localizedFailure.remainingByCode,
+      slots: tiers.localizedFailure.slots.map((slot) => ({
+        ...at(slot.loc),
+        slot: slot.slot,
+        name: slot.name,
+        declaredType: slot.declaredType,
+        family: slot.family,
+        code: slot.code,
+        message: slot.message,
+        stage: slot.stage,
+        ...(slot.rejects !== null ? { rejects: slot.rejects } : {}),
+        cascade: slot.cascade,
+      })),
+    },
   };
 }
 
@@ -693,6 +717,39 @@ function unitMatches(u: DemotionUnit, query: string): boolean {
     u.name.split(" ")[0] === query ||
     `${u.owner ?? ""}:${u.name}` === query
   );
+}
+
+const SLOTS_SHOWN = 40;
+
+/** The localized-failure section of --explain-dynamic (report-only): the
+ * committed type failures that would become checked dynamic slots, and
+ * the cascade each one causes today. */
+function renderLocalizedFailure(
+  report: LocalizedFailureReport,
+  out: string[],
+  c: (code: string, s: string) => string,
+  where: (loc: { file: string; start: number }) => string,
+): void {
+  if (report.typeFailures.degradable === 0 && report.typeFailures.refused === 0) return;
+  out.push("");
+  out.push(
+    `    ${report.slots.length} would-be dynamic slot${report.slots.length === 1 ? "" : "s"} ${c(DIM, "(localized failure, report-only: type failures a checked dynamic slot would hold)")}`,
+  );
+  out.push(
+    `      ${c(DIM, `${report.errors} errors: ${report.clearedThroughL2} clear with declaration slots (L1-L2), ${report.clearedThroughL4} with member and expression slots too (L3-L4); ${report.cascades} cascade${report.cascades === 1 ? "" : "s"} attributed; ${report.typeFailures.refused} type failure${report.typeFailures.refused === 1 ? " stays" : "s stay"} refused`)}`,
+  );
+  for (const slot of report.slots.slice(0, SLOTS_SHOWN)) {
+    const cascade = slot.cascade > 0 ? `, clears ${slot.cascade}` : "";
+    out.push(
+      `      ${slot.stage} ${slot.slot} ${slot.name}: ${capMessage(slot.declaredType)}  ${c(DIM, `${where(slot.loc)} (${slot.code} ${slot.family}${cascade})`)}`,
+    );
+    if (slot.rejects !== null)
+      out.push(`        ${c(DIM, `rejects ${slot.rejects.split(" @")[0]}`)}`);
+  }
+  if (report.slots.length > SLOTS_SHOWN)
+    out.push(
+      `      ${c(DIM, `${report.slots.length - SLOTS_SHOWN} more (--print=diagnostics lists all)`)}`,
+    );
 }
 
 /** `scriptc coverage --explain-dynamic[=<unit>]`: the dynamic tier today
@@ -735,6 +792,7 @@ export function renderExplainDynamic(
         (excluded > 0 ? c(DIM, `, ${excluded} excluded by policy`) : ""),
     );
   }
+  if (query === undefined) renderLocalizedFailure(tiers.localizedFailure, out, c, where);
   const units = tiers.units.filter((u) => query === undefined || unitMatches(u, query));
   if (query !== undefined && units.length === 0) {
     out.push(`    no demoted unit matches '${query}'`);

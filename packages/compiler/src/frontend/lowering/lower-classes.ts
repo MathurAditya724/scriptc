@@ -2542,8 +2542,7 @@ export function collectClassShapeInner(
             (member.type !== undefined ||
               (lowerer.typeOf(member.name).flags & ts.TypeFlags.Any) === 0)
           ) {
-            lowerer.unsupported(
-              "SC1090",
+            lowerer.dynFieldPolicyFence(
               member.name,
               `${dynFieldTypeSpelling(lowerer, member.name)}-typed static fields`,
             );
@@ -3059,8 +3058,7 @@ export function collectClassShapeInner(
           !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
           !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name))
         ) {
-          lowerer.unsupported(
-            "SC1090",
+          lowerer.dynFieldPolicyFence(
             member.name,
             `${dynFieldTypeSpelling(lowerer, member.name)}-typed class fields`,
           );
@@ -3197,8 +3195,7 @@ export function collectClassShapeInner(
           if (type.kind === "void") lowerer.badType(p.name, lowerer.typeOf(p.name));
           // The class-field dyn rule verbatim (KEEP NARROW).
           if (type.kind === "dyn" && !lowerer.classFieldStoresDyn(lowerer.typeOf(p))) {
-            lowerer.unsupported(
-              "SC1090",
+            lowerer.dynFieldPolicyFence(
               p.name,
               `${dynFieldTypeSpelling(lowerer, p)}-typed class fields`,
             );

@@ -204,7 +204,12 @@ import { isBundledShimForwarder } from "../package-shims.js";
 import { erasedTypeOnlyImport } from "../type-only-imports.js";
 import { literalValues } from "../literal-values.js";
 import { discriminantOwners, literalUnionArm, type UnionLiteral } from "../union-discriminants.js";
-import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
+import type {
+  ScrDiagnostic,
+  TypeFailure,
+  TypeFailureFamily,
+} from "../../diagnostics/diagnostic.js";
+import { declarationGroupKey, typeFailureOf } from "./type-failure.js";
 import {
   unsupportedAnyOperationDiag,
   blockedBindingUseDiag,
@@ -713,7 +718,16 @@ interface GenericDemandOwner {
   classDemands: ClassInfo[];
 }
 
-export class PoisonError extends Error {}
+export class PoisonError extends Error {
+  /** Set when a type with no static lowering poisoned a slot (badType and
+   * the dyn class field policy): what failed, for the localized-failure
+   * commit points. Report-only in stage L0. */
+  readonly failure: TypeFailure | undefined;
+  constructor(failure?: TypeFailure) {
+    super();
+    this.failure = failure;
+  }
+}
 
 /** A function-shaped value that exists only in the compiler's static
  * projection graph. Declared-function aliases point at the original
@@ -3697,6 +3711,15 @@ export class Lowerer {
    * the fallthroughs report the inherited-blocker cascade (SC2004)
    * instead of misattributing the reference. */
   readonly blockedBindings = new Set<ts.Symbol>();
+  /** Localized failure, report-only: the failure group (type-failure.ts)
+   * of each declaration whose rejection reached the build — a flushed
+   * deferred declaration, or a binding of a poisoned declaration
+   * statement. */
+  readonly rejectedGroups = new Map<ts.Symbol, string>();
+  /** One frame per statement lowerStmts is lowering: the failure groups
+   * its lowering touched. A statement that then poisons attributes its
+   * diagnostics to them (ScrDiagnostic.cause). */
+  readonly failureTouches: Set<string>[] = [];
   /** True while collectProgram runs: resolution helpers must not flush
    * deferred diagnostics (collection itself resolves symbols — extends
    * clauses — and collection order must not decide what reports). */
@@ -9177,7 +9200,11 @@ export class Lowerer {
       this.diagSink.push(d);
       return;
     }
-    if (pending) this.commitFlush(pending.symbol, pending.source);
+    if (pending) {
+      this.commitFlush(pending.symbol, pending.source);
+      const group = this.rejectedGroups.get(pending.symbol);
+      if (group !== undefined) d.rejects ??= group;
+    }
     // One site, one report: some declarations map a type twice (module
     // globals pre-register before their initializers lower) — an exact
     // duplicate (code + span + message) adds noise, not information.
@@ -9232,6 +9259,35 @@ export class Lowerer {
     return (this.typeOf(node).flags & ts.TypeFlags.Any) !== 0;
   }
 
+  /** badType's commit: the diagnostic carries the structured type
+   * failure (report-only in stage L0), and so does the poison. */
+  private typeFail(
+    node: ts.Node,
+    type: ts.Type,
+    family: TypeFailureFamily,
+    diag: ScrDiagnostic,
+  ): never {
+    const failure = typeFailureOf(node, this.checker.typeToString(type), family);
+    diag.typeFailure = failure;
+    this.pushDiag(diag);
+    throw new PoisonError(failure);
+  }
+
+  /** The SC1090 refusal of checked-dynamic class fields in TypeScript
+   * (classFieldStoresDyn): a policy fence, not a missing representation,
+   * so its failure is recorded as degradable. */
+  dynFieldPolicyFence(node: ts.Node, feature: string): never {
+    const diag = unsupportedDiag("SC1090", locOf(node), feature);
+    const failure = typeFailureOf(
+      node,
+      this.checker.typeToString(this.typeOf(node)),
+      "dyn-field-policy",
+    );
+    diag.typeFailure = failure;
+    this.pushDiag(diag);
+    throw new PoisonError(failure);
+  }
+
   badType(node: ts.Node, type: ts.Type): never {
     const widened = this.checker.getBaseTypeOfLiteralType(type);
     // Types declared by the ADOPTED @types/node (Buffer, NodeJS.Timeout,
@@ -9243,8 +9299,12 @@ export class Lowerer {
     // applies to node-typed values.
     const typeSym = widened.getAliasSymbol() ?? widened.getSymbol();
     if (this.nodeTypesOnlySymbol(typeSym)) {
-      this.pushDiag(noLoweringDiag(this.checker.typeToString(type), locOf(node), undefined, true));
-      throw new PoisonError();
+      this.typeFail(
+        node,
+        type,
+        "node-types",
+        noLoweringDiag(this.checker.typeToString(type), locOf(node), undefined, true),
+      );
     }
     // Engine-backed ambient TYPES in a STATIC build report the per-site
     // SC2012 rather than the generic supported-types recitation. Native
@@ -9255,10 +9315,12 @@ export class Lowerer {
       (FETCH_AMBIENT_TYPES as readonly string[]).includes(ts.symbolName(typeSym)) &&
       this.isStdlibSymbol(typeSym)
     ) {
-      this.pushDiag(
+      this.typeFail(
+        node,
+        type,
+        "fetch-ambient",
         unsupportedNativeApiDiag(`a value of type '${ts.symbolName(typeSym)}'`, locOf(node)),
       );
-      throw new PoisonError();
     }
     // ENUM OBJECTS (`typeof e` — a numeric enum's type carries the
     // reverse-map index signature, a string enum's just its members):
@@ -9267,14 +9329,16 @@ export class Lowerer {
     // as the per-site identifier fence — never the index-signature
     // recitation.
     if (typeSym && (typeSym.flags & ts.SymbolFlags.Enum) !== 0) {
-      this.pushDiag(
+      this.typeFail(
+        node,
+        type,
+        "enum-object",
         unsupportedDiag(
           "SC1090",
           locOf(node),
           `enum objects as values ('${ts.symbolName(typeSym)}' — member reads like '${ts.symbolName(typeSym)}.X' compile to constants; the object itself has no runtime representation)`,
         ),
       );
-      throw new PoisonError();
     }
     // Would-be records with INDEX SIGNATURES (`Record<string, T>`,
     // `{ [k: string]: T }`) get the index-signature fence (SC2006) naming
@@ -9304,19 +9368,26 @@ export class Lowerer {
             this.isStdlibFile(ts.getSourceFileOfNode(d)),
         )
       ) {
-        this.pushDiag(noLoweringDiag(this.checker.typeToString(type), locOf(node)));
-        throw new PoisonError();
+        this.typeFail(
+          node,
+          type,
+          "stdlib-index",
+          noLoweringDiag(this.checker.typeToString(type), locOf(node)),
+        );
       }
 
-      this.pushDiag(indexSignatureTypeDiag(this.checker.typeToString(type), locOf(node)));
-      throw new PoisonError();
+      this.typeFail(
+        node,
+        type,
+        "index-signature",
+        indexSignatureTypeDiag(this.checker.typeToString(type), locOf(node)),
+      );
     }
     // Attribute an unsupported package type to its package.
     {
       const pkg = this.npmPackageOf(widened);
       if (pkg) {
-        this.pushDiag(unsupportedPackageValueDiag(pkg, locOf(node)));
-        throw new PoisonError();
+        this.typeFail(node, type, "package", unsupportedPackageValueDiag(pkg, locOf(node)));
       }
     }
     // A type that keeps a GENERIC call signature (`<T>(x: T) => T` slots,
@@ -9332,8 +9403,12 @@ export class Lowerer {
           this.checker.getCallSignatures(p).some((s) => s.getTypeParameters().length > 0),
         )
       ) {
-        this.pushDiag(genericSignatureTypeDiag(this.checker.typeToString(type), locOf(node)));
-        throw new PoisonError();
+        this.typeFail(
+          node,
+          type,
+          "generic-signature",
+          genericSignatureTypeDiag(this.checker.typeToString(type), locOf(node)),
+        );
       }
     }
     // STANDARD-LIBRARY nominal provenance, decided once: interface/class
@@ -9353,16 +9428,24 @@ export class Lowerer {
     // generic overload set keeps the monomorphization story: a value of a
     // multi-signature type has no single compiled signature to hold.
     if (!stdlibNominal && this.checker.getCallSignatures(widened).length > 1) {
-      this.pushDiag(overloadedSignatureTypeDiag(this.checker.typeToString(type), locOf(node)));
-      throw new PoisonError();
+      this.typeFail(
+        node,
+        type,
+        "overloads",
+        overloadedSignatureTypeDiag(this.checker.typeToString(type), locOf(node)),
+      );
     }
     // INTERSECTIONS that resolved to no lowering (SC2008). The ones that
     // compile never get here: member intersections intern through the
     // record path, callable hybrids map to '%call' records, and pinned
     // mixin instantiations resolve by chain structure.
     if (widened.isIntersectionType()) {
-      this.pushDiag(intersectionTypeDiag(this.checker.typeToString(type), locOf(node)));
-      throw new PoisonError();
+      this.typeFail(
+        node,
+        type,
+        "intersection",
+        intersectionTypeDiag(this.checker.typeToString(type), locOf(node)),
+      );
     }
     // SUPPORTED shapes over a component outside its slot (SC2009): the
     // Map/Set domains, array/tuple elements, union arms, function
@@ -9374,8 +9457,12 @@ export class Lowerer {
     {
       const detail = describeComponentBlocker(widened, this.typeCtx);
       if (detail !== null) {
-        this.pushDiag(componentTypeDiag(this.checker.typeToString(type), detail, locOf(node)));
-        throw new PoisonError();
+        this.typeFail(
+          node,
+          type,
+          "component",
+          componentTypeDiag(this.checker.typeToString(type), detail, locOf(node)),
+        );
       }
     }
     // STANDARD-LIBRARY nominal types with no lowering at all: the SC2020
@@ -9405,26 +9492,36 @@ export class Lowerer {
         TextDecoder:
           "TextDecoder instances support recognized labels, fatal/ignoreBOM option literals, and streaming UTF-8/UTF-16/single-byte decode; runtime option objects remain unsupported",
       };
-      this.pushDiag(
+      this.typeFail(
+        node,
+        type,
+        "stdlib-nominal",
         noLoweringDiag(
           this.checker.typeToString(type),
           locOf(node),
           typeHints[ts.symbolNameOf(stdlibOwnSym) ?? ""],
         ),
       );
-      throw new PoisonError();
     }
     // USER record shapes blocked by ONE member (SC2009's record arm):
     // name the member and its type.
     {
       const detail = describeRecordMemberBlocker(widened, this.typeCtx);
       if (detail !== null) {
-        this.pushDiag(componentTypeDiag(this.checker.typeToString(type), detail, locOf(node)));
-        throw new PoisonError();
+        this.typeFail(
+          node,
+          type,
+          "record-member",
+          componentTypeDiag(this.checker.typeToString(type), detail, locOf(node)),
+        );
       }
     }
-    this.pushDiag(unsupportedTypeDiag(this.checker.typeToString(type), locOf(node)));
-    throw new PoisonError();
+    this.typeFail(
+      node,
+      type,
+      "unsupported",
+      unsupportedTypeDiag(this.checker.typeToString(type), locOf(node)),
+    );
   }
 
   /** The lib fence (SC2020): a reached use of standard-library surface
@@ -12067,12 +12164,35 @@ export class Lowerer {
     this.reportDeferred(symbol);
   }
 
+  /** A statement's lowering used a declaration: if that declaration was
+   * rejected, the statement's own failure (if any) is its cascade. */
+  touchRejected(symbol: ts.Symbol): void {
+    const group = this.rejectedGroups.get(symbol);
+    if (group === undefined) return;
+    const frame = this.failureTouches[this.failureTouches.length - 1];
+    if (frame !== undefined) frame.add(group);
+  }
+
+  /** Records a declaration whose deferred diagnostics reached the build:
+   * its failure group, on the group's diagnostics too. */
+  private noteRejected(symbol: ts.Symbol, diags: readonly ScrDiagnostic[]): void {
+    let group = this.rejectedGroups.get(symbol);
+    if (group === undefined) {
+      group = declarationGroupKey(symbol);
+      this.rejectedGroups.set(symbol, group);
+    }
+    for (const d of diags) d.rejects ??= group;
+  }
+
   /** flushDeferred without the collection-pass guard: for declarations
    * whose diagnostics must report eagerly (class statements with
    * declaration-time code, extended bases — collectClassShapeDeferring). */
   reportDeferred(symbol: ts.Symbol): void {
     const diags = this.deferredDiags.get(symbol);
-    if (!diags) return;
+    if (!diags) {
+      this.touchRejected(symbol);
+      return;
+    }
     if (this.alreadyFlushed.has(symbol)) {
       this.deferredDiags.delete(symbol); // the emit pass reported these
       return;
@@ -12080,7 +12200,9 @@ export class Lowerer {
     if (this.diagSink === null) {
       this.deferredDiags.delete(symbol);
       this.flushedSymbols.add(symbol);
+      this.noteRejected(symbol, diags);
       for (const d of diags) this.pushDiag(d);
+      this.touchRejected(symbol);
       return;
     }
     // A capture buffer is active (a probe, or another declaration's
@@ -12097,6 +12219,7 @@ export class Lowerer {
    * (the declaration counts as flushed for the coverage remainder). */
   private commitFlush(symbol: ts.Symbol, source: ScrDiagnostic): void {
     this.flushedSymbols.add(symbol);
+    this.noteRejected(symbol, [source]);
     const list = this.deferredDiags.get(symbol);
     if (!list) return;
     const index = list.indexOf(source);
@@ -13222,8 +13345,8 @@ export class Lowerer {
     return lowerStmts(this, stmts);
   }
 
-  noteBlockedBindings(stmt: ts.Statement): void {
-    return noteBlockedBindings(this, stmt);
+  noteBlockedBindings(stmt: ts.Statement, diags?: readonly ScrDiagnostic[]): void {
+    return noteBlockedBindings(this, stmt, diags);
   }
 
   isBlockedBinding(symbol: ts.Symbol | null): boolean {
