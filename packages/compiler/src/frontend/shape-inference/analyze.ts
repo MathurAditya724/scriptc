@@ -2596,6 +2596,7 @@ class Analyzer {
         else this.expr(callee.argumentExpression);
       }
       if (name !== null) this.ops.push({ kind: "read", recv, name, node: callee });
+      else this.ops.push({ kind: "computedRead", recv, name: null, node: callee });
       // Per receiver atom: the member it resolves to runs with that atom as `this`.
       const member = name;
       this.on(recv, (a) => {

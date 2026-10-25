@@ -60,7 +60,13 @@ export function shapeOverlayAnnotationCount(): number {
 
 export function resetShapeOverlay(): void {
   staticRewriteFiles = new Set();
-  staticObjectStats = { classes: 0, functions: 0, directCalls: 0 };
+  staticObjectStats = {
+    classes: 0,
+    functions: 0,
+    directCalls: 0,
+    tableDispatches: 0,
+    foldedReads: 0,
+  };
   overlayDone = false;
   overlayFiles = new Set();
   overlayAnnotations = 0;
@@ -181,6 +187,8 @@ export function shapeOverlayer(
       classes: rewrites.classes,
       functions: rewrites.functions,
       directCalls: rewrites.directCalls,
+      tableDispatches: rewrites.tableDispatches,
+      foldedReads: rewrites.foldedReads,
     };
     if (process.env["SCRIPTC_DEBUG_SHAPE_OVERLAY"] !== undefined) {
       for (const k of rewrites.kept) process.stderr.write(`[static-objects] kept ${k}\n`);
@@ -204,7 +212,13 @@ export function shapeOverlayer(
   return overlay.files.size > 0 ? overlay.files : null;
 }
 
-let staticObjectStats = { classes: 0, functions: 0, directCalls: 0 };
+let staticObjectStats = {
+  classes: 0,
+  functions: 0,
+  directCalls: 0,
+  tableDispatches: 0,
+  foldedReads: 0,
+};
 let overlayDone = false;
 
 /** Whether the overlay has written its last round for this load. */
@@ -264,7 +278,7 @@ export function shapeInferredFactCheckCount(): number {
 /** SC6103, the overlay's build report: what the overlay typed and how many
  * checks of inferred facts the build inserted. A note, never a failure. */
 export function shapeOverlayReport(entryFile: string): ScrDiagnostic[] {
-  const { classes, functions, directCalls } = staticObjectStats;
+  const { classes, functions, directCalls, tableDispatches, foldedReads } = staticObjectStats;
   // Annotations whose lowering was refused (fallback.ts); they compile
   // untyped.
   const fallback = overlayDropped
@@ -300,7 +314,7 @@ export function shapeOverlayReport(entryFile: string): ScrDiagnostic[] {
           ? ` and replaces ${overlayDeadBranches} branch${overlayDeadBranches === 1 ? "" : "es"} it proved unreachable with checks`
           : "") +
         (classes + functions > 0
-          ? `; it compiled ${classes} constructor function${classes === 1 ? "" : "s"} as classes and ${functions} namespace function${functions === 1 ? "" : "s"} as direct functions (${directCalls} direct call${directCalls === 1 ? "" : "s"})`
+          ? `; it compiled ${classes} constructor function${classes === 1 ? "" : "s"} as classes and ${functions} namespace function${functions === 1 ? "" : "s"} as direct functions (${directCalls} direct call${directCalls === 1 ? "" : "s"}${tableDispatches > 0 ? `, ${tableDispatches} function table call${tableDispatches === 1 ? "" : "s"}` : ""}${foldedReads > 0 ? `, ${foldedReads} constant read${foldedReads === 1 ? "" : "s"}` : ""})`
           : "") +
         (fallback !== null ? `; ${fallback}` : ""),
       loc: { file: entryFile, start: 0, end: 0 },

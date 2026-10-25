@@ -136,7 +136,7 @@ export function planShapeOverlay(
       if (decl.getSourceFile() !== sf) {
         const other = decl.getSourceFile();
         if (
-          process.env["SCRIPTC_SHAPE_CROSS_FILE"] !== "1" ||
+          process.env["SCRIPTC_SHAPE_CROSS_FILE"] === "0" ||
           own === undefined ||
           !ts.isClassDeclaration(decl) ||
           decl.parent !== other ||
@@ -476,7 +476,7 @@ export function planShapeOverlay(
         ts.isConstructorDeclaration(node) ||
         ts.isFunctionDeclaration(node) ||
         // Functions stored as object members (`run: function (…) {…}`).
-        (process.env["SCRIPTC_SHAPE_MEMBER_FUNCTIONS"] === "1" &&
+        (process.env["SCRIPTC_SHAPE_MEMBER_FUNCTIONS"] !== "0" &&
           ts.isFunctionExpression(node) &&
           node.parent !== undefined &&
           ts.isPropertyAssignment(node.parent) &&
