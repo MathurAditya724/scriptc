@@ -175,22 +175,49 @@ export function renameChunk(
   };
 }
 
-/** Renames metadata references `!N` outside string literals. Debug builds
- * attach no alias tags, so every such reference in a function's text is a
- * debug metadata id. */
+/** Renames metadata references `!N` outside string literals and comments.
+ * Debug builds attach no alias tags, so every such reference in a
+ * function's text is a debug metadata id. A string literal or a comment
+ * (`;` outside a string literal) ends at the end of its line; a quote
+ * inside a string literal is escaped (`\22`). */
 function renameDebugIds(text: string, ids: ReadonlyMap<string, string>): string {
   const parts: string[] = [];
   let copied = 0;
-  // The next quote at or after the scan, and whether the scan is inside a
-  // string literal.
-  let quote = text.indexOf('"');
+  // The line of the reference being looked at, and whether the reference
+  // is inside a string literal or a comment there. The next quote and
+  // semicolon positions only move forward, so each is found once.
+  let lineEnd = -1;
   let quoted = false;
+  let comment = false;
+  let quote = text.indexOf('"');
+  let semicolon = text.indexOf(";");
   for (let at = text.indexOf("!"); at >= 0; at = text.indexOf("!", at + 1)) {
-    while (quote >= 0 && quote < at) {
-      quoted = !quoted;
-      quote = text.indexOf('"', quote + 1);
+    if (at > lineEnd) {
+      lineEnd = text.indexOf("\n", at);
+      if (lineEnd < 0) lineEnd = text.length;
+      quoted = false;
+      comment = false;
+      // Quotes and semicolons of earlier lines end with them.
+      if ((quote >= 0 && quote < at) || (semicolon >= 0 && semicolon < at)) {
+        const lineStart = text.lastIndexOf("\n", at) + 1;
+        while (quote >= 0 && quote < lineStart) quote = text.indexOf('"', quote + 1);
+        while (semicolon >= 0 && semicolon < lineStart)
+          semicolon = text.indexOf(";", semicolon + 1);
+      }
     }
-    if (quoted) continue;
+    while (!comment) {
+      const nextQuote = quote >= 0 && quote < at ? quote : -1;
+      const nextSemicolon = semicolon >= 0 && semicolon < at ? semicolon : -1;
+      if (nextQuote < 0 && nextSemicolon < 0) break;
+      if (nextQuote >= 0 && (nextSemicolon < 0 || nextQuote < nextSemicolon)) {
+        quoted = !quoted;
+        quote = text.indexOf('"', quote + 1);
+      } else {
+        if (!quoted) comment = true;
+        semicolon = text.indexOf(";", semicolon + 1);
+      }
+    }
+    if (quoted || comment) continue;
     if (at > 0 && isNameChar(text.charCodeAt(at - 1))) continue;
     let end = at + 1;
     while (end < text.length && isDigit(text.charCodeAt(end))) end++;

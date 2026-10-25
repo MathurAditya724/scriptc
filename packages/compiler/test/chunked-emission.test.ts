@@ -177,3 +177,52 @@ test("debug builds emitted in ranges merge into the text one emitter gives", asy
     await rm(dir, { recursive: true, force: true });
   }
 }, 300_000);
+
+// A method name holding a double quote is written into a comment after the
+// function's `!dbg` attachment; the rename of the range's debug ids reads
+// comments and string literals as ending at the end of their line.
+test("debug ids after a comment that holds a quote are renamed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-chunked-debug-quote-"));
+  try {
+    const entry = join(dir, "main.ts");
+    const source = [
+      "class Greeter {",
+      "  ['say \"hi'](n: number): number {",
+      "    return n + 1;",
+      "  }",
+      "}",
+      "const greeter = new Greeter();",
+      "function twice(x: number): number {",
+      "  return x * 2;",
+      "}",
+      "function report(label: string, value: number): void {",
+      "  console.log(label, value);",
+      "}",
+      'report("method", greeter[\'say "hi\'](1));',
+      'report("twice", twice(3));',
+      "",
+    ].join("\n");
+    await writeFile(entry, source);
+    const outPath = join(dir, "main.ir.json");
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath,
+      outputKind: "ir",
+      optimization: "dev",
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const ir = await readFile(outPath, "utf8");
+    const options: LlvmTargetOptions = { debugSources: new Map([[entry, source]]) };
+    const serial = text(emitLlvmModuleSource(deserializeModule(ir), options));
+    expect(serial).toMatch(/!dbg ![0-9]+ \{ ;[^\n]*"/);
+    for (const functionChunks of [2, 3]) {
+      const chunked = text(
+        emitLlvmModuleSource(deserializeModule(ir), { ...options, functionChunks }),
+      );
+      expect(chunked === serial, `${functionChunks} chunks`).toBe(true);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
