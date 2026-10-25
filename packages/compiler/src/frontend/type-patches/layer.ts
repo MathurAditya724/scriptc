@@ -64,6 +64,8 @@ interface MatchRecord extends PatchMatch {
 
 interface State {
   manifest: string;
+  /** The directory of the project's package.json. */
+  projectDir: string;
   manifestText: string;
   parse: TypePatchParse;
   byPackage: Map<string, { entries: TypePatchEntry[]; requests: Request[] }>;
@@ -112,6 +114,7 @@ export function configureTypePatches(entryPath: string, parse: TypePatchParse): 
   }
   state = {
     manifest: config.manifest,
+    projectDir: dirname(config.manifest),
     manifestText: config.manifestText ?? "",
     parse,
     byPackage,
@@ -151,6 +154,22 @@ function versionAt(dir: string): string | null {
   }
 }
 
+/** The version of the runtime package `pkg` an `@types` twin under
+ * `nodeModules` describes: the copy installed beside it, else the one the
+ * project resolves (pnpm keeps each package in its own directory, so a
+ * twin has no runtime package beside it), else null. */
+function twinRuntimeVersion(s: State, nodeModules: string, pkg: string): string | null {
+  const beside = versionAt(nodeModules + pkg);
+  if (beside !== null) return beside;
+  for (let dir = s.projectDir; ;) {
+    const version = versionAt(`${dir}/node_modules/${pkg}`);
+    if (version !== null) return version;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 /** The installed package copy a file belongs to, with the requests that
  * apply to it; null for files outside node_modules or of unpatched
  * packages. */
@@ -172,9 +191,9 @@ function copyOf(s: State, path: string, touch = true): { copy: CopyInfo; rel: st
     const pkg = twin ? unmangleTypesName(name) : name;
     const patches = s.byPackage.get(pkg);
     if (patches !== undefined) {
-      // A twin describes the runtime package installed beside it.
+      // A twin is matched by the runtime package's version, never its own.
       const version = twin
-        ? (versionAt(path.slice(0, at + marker.length) + pkg) ?? versionAt(root))
+        ? twinRuntimeVersion(s, path.slice(0, at + marker.length), pkg)
         : versionAt(root);
       const applicable = patches.entries.filter(
         (e) => version !== null && satisfies(version, e.range),

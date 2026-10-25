@@ -4948,6 +4948,19 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const record = mapRecordType(widened, ctx);
     if (record) return record;
   }
+  // An intersection whose constituents all map to ONE representation is
+  // that representation. An intersection that restates an optional member
+  // as required (`Opts & { files: Array<{ path: string }> }` over
+  // `files?: Array<{ path: string }>`) gives the member the type `A[] & B[]`
+  // with two separately written but structurally equal element literals;
+  // the checker keeps both, while their arrays (tuples, maps, ...) intern
+  // to one IR type. Reached only after every other intersection rule
+  // declined, so intersections that already mapped keep their mapping. A
+  // dynamic result stays unmapped: two opaque types are not one type.
+  if (widened.isIntersectionType()) {
+    const same = mapEqualConstituentsIntersection(widened, ctx);
+    if (same) return same;
+  }
   // Unions. `boolean` is internally `true | false`, and narrowing produces
   // literal unions like `"a" | "b"` — parts that map to the SAME IR type
   // collapse (deduplicated by typeKey), so a single surviving arm is just
@@ -6813,6 +6826,19 @@ export function withUnitArm(
  * assigned keys, which is also Node's answer for Object.assign(fn, obj)
  * (a function's own length/name are non-enumerable). Null whenever the
  * shape doesn't fit — the caller falls through to the plain-func mapping. */
+/** The IR type every constituent of an intersection maps to, or null when a
+ * constituent is unmappable or dynamic, or two constituents differ. */
+function mapEqualConstituentsIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  let same: IrType | null = null;
+  for (const part of ts.constituentTypes(widened)) {
+    const mapped = mapType(part, ctx);
+    if (mapped === null || mapped.kind === "dyn") return null;
+    if (same === null) same = mapped;
+    else if (!typeEquals(same, mapped)) return null;
+  }
+  return same;
+}
+
 function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, shapes } = ctx;
   if (!widened.isIntersectionType()) return null;
