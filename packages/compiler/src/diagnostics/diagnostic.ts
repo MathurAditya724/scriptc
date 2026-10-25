@@ -153,7 +153,8 @@ export type TypeFailureFamily =
   | "component"
   | "stdlib-nominal"
   | "record-member"
-  | "unsupported";
+  | "unsupported"
+  | "dyn-field-policy";
 
 /** A type failure's structured payload: what the commit points of the
  * localized-failure design inspect (PoisonError.failure carries the same

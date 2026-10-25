@@ -988,6 +988,9 @@ export interface LowererMode {
    * remainder maps them alike, so the declarations reachable emit
    * registered with dynamic slots collect there too). */
   degradedTypes?: ReadonlyMap<number, { lenient: IrType; code: string; reason: string }>;
+  /** Localized failure: the declarations reachable emit registered with
+   * dynamic slots (the coverage remainder registers them too). */
+  retriedSymbols?: ReadonlySet<ts.Symbol>;
   /** LowerOptions.externalTypes, threaded through every lowering pass. */
   externalTypes?: ReadonlyMap<string, string>;
   /** LowerOptions.externalTypeSpecifiersByFile, shared by every pass. */
@@ -1396,6 +1399,7 @@ export function lowerToIr(
       remainder: true,
       alreadyFlushed: resultLowerer.flushedSymbols,
       degradedTypes: resultLowerer.degradedTypes,
+      retriedSymbols: resultLowerer.retriedSymbols,
       inlineRequireCycleCalls,
       targetPlatform,
       ffiImports,
@@ -3779,6 +3783,10 @@ export class Lowerer {
   readonly degradedTypes = new Map<number, { lenient: IrType; code: string; reason: string }>();
   /** The dynamic slots the commit points created: one SC6104 each. */
   readonly dynamicSlots: DynamicSlot[] = [];
+  /** Declarations retryDeferred registered. */
+  readonly retriedSymbols = new Set<ts.Symbol>();
+  /** LowererMode.retriedSymbols. */
+  readonly priorRetriedSymbols: ReadonlySet<ts.Symbol>;
   /** Bodies run() skipped because their declaration had not registered. */
   readonly skippedBodies = new Set<ts.Node>();
   /** Declarations retryDeferred registered, in order: run() lowers the
@@ -3790,6 +3798,9 @@ export class Lowerer {
     ts.Symbol,
     { symbolOf: () => ts.Symbol | undefined; collect: () => void }
   >();
+  /** True while a flush retry collects a declaration: the dyn class
+   * field policy (dynFieldPolicyFence) is lifted for reached classes. */
+  liftDynFieldPolicy = false;
   /** Collection diagnostics that a flush retry may simply run again (a
    * derived class whose base had not registered yet). */
   readonly retriableDiags = new WeakSet<ScrDiagnostic>();
@@ -3878,6 +3889,7 @@ export class Lowerer {
     // The mode's options, sorted by name; the values derived from them follow.
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
     for (const [id, degraded] of mode.degradedTypes ?? []) this.degradedTypes.set(id, degraded);
+    this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
     this.ffiImports = mode.ffiImports ?? [];
@@ -4949,7 +4961,14 @@ export class Lowerer {
   }
 
   collectProgram(parts: FileParts[]): void {
-    return collectProgram(this, parts);
+    collectProgram(this, parts);
+    // The coverage remainder registers the declarations reachable emit
+    // registered with dynamic slots (retryDeferred), so it neither reports
+    // them as unreached nor blocks their uses.
+    for (const symbol of this.priorRetriedSymbols) {
+      const diags = this.deferredDiags.get(symbol);
+      if (diags !== undefined) this.retryDeferred(symbol, diags);
+    }
   }
 
   /** Names every file's %init and registers the run-once guard globals
@@ -9346,6 +9365,9 @@ export class Lowerer {
       this.diagSink.push(d);
       return;
     }
+    // A probe's copy of a declaration's flushed diagnostics, committed
+    // after a flush retry registered the declaration: nothing to report.
+    if (pending && this.retriedSymbols.has(pending.symbol)) return;
     if (pending) {
       this.commitFlush(pending.symbol, pending.source);
       const group = this.rejectedGroups.get(pending.symbol);
@@ -9434,7 +9456,7 @@ export class Lowerer {
     const failure = e.failure;
     const type = e.failedType;
     if (failure === undefined || type === undefined) return null;
-    if (!failure.degradable) return null;
+    if (!failure.degradable || failure.family === "dyn-field-policy") return null;
     if (!slots.has(failure.slot)) return null;
     const id = (type as { id?: number }).id;
     // Already degraded and still failing: no progress, commit as today.
@@ -9467,6 +9489,51 @@ export class Lowerer {
     });
   }
 
+  /** Localized failure, statement commit point for declarations a probe
+   * flushed: a statement committing the flushed diagnostics of a deferred
+   * declaration (inside a capture buffer the flush could not retry) reopens
+   * it here, outside every probe. When the declaration's diagnostics are
+   * all retriable, they leave the build, the declaration retries
+   * (retryDeferred), and on success the caller lowers the statement again.
+   * Returns whether some declaration registered. */
+  reopenFlushedAtCommit(diagsBefore: number): boolean {
+    if (this.tierMode !== "auto" || this.diagSink !== null) return false;
+    const groups = new Set<string>();
+    for (let i = diagsBefore; i < this.diags.length; i++) {
+      const group = this.diags[i]!.rejects;
+      if (group !== undefined && !group.startsWith("statement @")) groups.add(group);
+    }
+    if (groups.size === 0) return false;
+    let registered = false;
+    for (const [symbol, group] of [...this.rejectedGroups]) {
+      if (!groups.has(group) || !this.deferredCollectors.has(symbol)) continue;
+      const committed = this.diags.filter((d) => d.rejects === group);
+      this.diags.splice(0, this.diags.length, ...this.diags.filter((d) => d.rejects !== group));
+      this.flushedSymbols.delete(symbol);
+      this.rejectedGroups.delete(symbol);
+      if (this.retryDeferred(symbol, committed)) {
+        registered = true;
+        continue;
+      }
+      // Not retriable: the declaration's diagnostics commit as before.
+      const last = this.deferredDiags.get(symbol) ?? committed;
+      this.deferredDiags.delete(symbol);
+      this.flushedSymbols.add(symbol);
+      this.noteRejected(symbol, last);
+      for (const d of last) this.pushDiag(d);
+    }
+    return registered;
+  }
+
+  /** A failed attempt's own diagnostics leave the build before its unit
+   * lowers again; flushed declaration diagnostics (`rejects`) stay, since
+   * the retry will not flush them a second time. */
+  dropAttemptDiags(diagsBefore: number): void {
+    const kept = this.diags.slice(diagsBefore).filter((d) => d.rejects !== undefined);
+    this.diags.length = diagsBefore;
+    this.diags.push(...kept);
+  }
+
   /** Records a dynamic slot whose unit lowered with it (one per site). */
   noteDynamicSlot(slot: DynamicSlot): void {
     const seen = this.dynamicSlots.some(
@@ -9476,6 +9543,22 @@ export class Lowerer {
         s.loc.end === slot.loc.end,
     );
     if (!seen) this.dynamicSlots.push(slot);
+  }
+
+  /** The SC1090 refusal of checked-dynamic class fields in TypeScript
+   * (classFieldStoresDyn): a policy fence, not a missing representation.
+   * A flush retry lifts it (liftDynFieldPolicy), so a reached class with
+   * an 'any' field registers. */
+  dynFieldPolicyFence(node: ts.Node, feature: string): never {
+    const diag = unsupportedDiag("SC1090", locOf(node), feature);
+    const failure = typeFailureOf(
+      node,
+      this.checker.typeToString(this.typeOf(node)),
+      "dyn-field-policy",
+    );
+    diag.typeFailure = failure;
+    this.pushDiag(diag);
+    throw new PoisonError(failure, this.typeOf(node));
   }
 
   badType(node: ts.Node, type: ts.Type): never {
@@ -12454,6 +12537,12 @@ export class Lowerer {
           continue;
         }
         const failure = diag.typeFailure;
+        // The dyn class field policy lifts during the retry; nothing to
+        // degrade.
+        if (failure?.family === "dyn-field-policy") {
+          retriable = true;
+          continue;
+        }
         const type = failure === undefined ? undefined : this.failedTypes.get(failure);
         const id = (type as { id?: number } | undefined)?.id;
         if (
@@ -12474,7 +12563,16 @@ export class Lowerer {
         slots.push({ loc: diag.loc, failure, code: diag.code, reason: diag.message });
       }
       this.deferredDiags.delete(symbol);
-      if (this.collectDeferring(collector.symbolOf, collector.collect) === null) {
+      const lifted = this.liftDynFieldPolicy;
+      this.liftDynFieldPolicy = true;
+      let registered: boolean;
+      try {
+        registered = this.collectDeferring(collector.symbolOf, collector.collect) === null;
+      } finally {
+        this.liftDynFieldPolicy = lifted;
+      }
+      if (registered) {
+        this.retriedSymbols.add(symbol);
         this.deferredCollectors.delete(symbol);
         for (const [name, deferred] of this.deferredClassByName)
           if (deferred === symbol) this.deferredClassByName.delete(name);

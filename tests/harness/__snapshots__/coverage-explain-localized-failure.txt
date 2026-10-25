@@ -1,8 +1,8 @@
   dynamic tier   (tier assignment, report-only; --tier=auto)
     4 functions already operate on dynamic values (3 statements)
-      Holder.constructor  tests/coverage-fixtures/localized-failure.ts:28:1: dynObjLit at tests/coverage-fixtures/localized-failure.ts:29:16
       Session.constructor  tests/coverage-fixtures/localized-failure.ts:12:1: dynArrLit at tests/coverage-fixtures/localized-failure.ts:13:27
       Session.count  tests/coverage-fixtures/localized-failure.ts:14:3: %dyn.class.property at tests/coverage-fixtures/localized-failure.ts:15:12
+      Holder.constructor  tests/coverage-fixtures/localized-failure.ts:28:1: dynObjLit at tests/coverage-fixtures/localized-failure.ts:29:16
       %dyn.class.property.0  tests/coverage-fixtures/localized-failure.ts:15:12: %dyn.class.readPropertiesOrEmpty at tests/coverage-fixtures/localized-failure.ts:15:12
 
     2 demotion requests (refusals and fences the dynamic tier would replace)

@@ -764,15 +764,16 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             // Localized failure's statement commit point (design §3.3): a
             // degradable type failure at a local, loop variable or module
             // global degrades that type and the statement lowers again.
-            const slot =
-              attempt < MAX_DEGRADE_RETRIES && !deferFences
-                ? lowerer.degradeAtCommit(e, STATEMENT_SLOTS)
-                : null;
-            if (slot === null) throw e;
+            // A declaration this statement flushed inside a probe (where
+            // no retry runs) can retry here too.
+            if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw e;
+            const slot = lowerer.degradeAtCommit(e, STATEMENT_SLOTS);
+            if (slot === null && !lowerer.reopenFlushedAtCommit(diagsBefore)) throw e;
             // A failed attempt adds nothing to `out` but the TDZ boxes
             // forward captures declared (they stay declared), so the
             // retry appends after them.
-            pendingSlots.push(slot);
+            lowerer.dropAttemptDiags(diagsBefore);
+            if (slot !== null) pendingSlots.push(slot);
           }
         }
         for (const slot of pendingSlots) lowerer.noteDynamicSlot(slot);
