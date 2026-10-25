@@ -10,7 +10,11 @@
  * The good-code set: the runtime benchmark workloads (and benchmarks/builds
  * applications), the self-hosted compiler (IR and LLVM), and the TypeScript
  * corpus programs. A program whose sources match --allow (the change's
- * pattern signature) may differ; any other difference fails the gate. */
+ * pattern signature) may differ. A program whose IR and LLVM are identical
+ * and whose executable differs only through changed runtime objects is
+ * "runtime-only", and a difference the baseline reproduces against itself is
+ * "nondeterministic": both pass with a note unless --strict. Any other
+ * difference fails the gate. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -30,17 +34,23 @@ import { parseArgs } from "node:util";
 import { readWorkloads } from "../benchmarks/runtime/workloads.mjs";
 import {
   cachegrindCounts,
+  changedFunctions,
   compareArtifact,
   compareCounts,
   compareExecutables,
+  confinedToRuntime,
   DYNAMIC_WORKLOADS,
   definedFunctionNames,
   dynamicTierSymbols,
+  llvmFunctionHashes,
   median,
   nmOutput,
+  parseNm,
   programVerdict,
+  runtimePackDiff,
   timeRatio,
 } from "./zero-cost-compare.mjs";
+import { createHash } from "node:crypto";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const { values } = parseArgs({
@@ -54,6 +64,7 @@ const { values } = parseArgs({
     shard: { type: "string" },
     only: { type: "string" },
     allow: { type: "string" },
+    strict: { type: "boolean", default: false },
     "timing-runs": { type: "string" },
     "self-timing-runs": { type: "string", default: "0" },
     "max-time-growth": { type: "string", default: "2" },
@@ -69,7 +80,7 @@ if (values.help || values.baseline === undefined) {
   console.log(`Usage: node scripts/zero-cost-gate.mjs --baseline=<checkout> [--candidate=<checkout>]
        [--programs=baseline|candidate|<dir>] [--set=bench,self,corpus] [--quick]
        [--corpus=ts|all] [--shard=i/n] [--only=<regex>] [--allow=<regex>]
-       [--timing-runs=N] [--self-timing-runs=N] [--max-time-growth=2]
+       [--strict] [--timing-runs=N] [--self-timing-runs=N] [--max-time-growth=2]
        [--max-size-growth=0]
        [--cachegrind] [--jobs=N] [--json=<file>] [--keep]
 
@@ -84,8 +95,20 @@ JavaScript entries). --quick is --set=bench --timing-runs=0, for CI.
 --shard=i/n keeps every n-th corpus program; --only filters program ids.
 
 --allow=<regex> is the change's pattern signature: programs whose source
-files match it may differ (reported as "allowed"). Any other difference in
-IR, LLVM or the release executable fails the gate.
+files match it may differ (reported as "allowed").
+
+Other differences are classified:
+  runtime-only      IR and LLVM identical; the executable differs only
+                    through runtime objects that differ between the two
+                    checkouts' runtime packs (every symbol the executable
+                    gains, loses or resizes is defined by one of them), with
+                    the same LLVM helper. Reported with the changed runtime
+                    functions it links and its size change.
+  nondeterministic  the baseline, building the program a second time,
+                    differs from its own first build in the same artifacts.
+  differs           anything else, in IR, LLVM or the executable.
+"differs" fails the gate. runtime-only and nondeterministic pass with a
+note; --strict fails them too, so any difference fails as before.
 
 --timing-runs=N (default 5) times N paired --emit=llvm builds per bench
 program, baseline and candidate side by side. The self-hosted compiler's
@@ -260,10 +283,9 @@ function compile(tree, args) {
  * keeping the LLVM and IR beside the release executable. The self-hosted
  * compiler emits LLVM only: each of its frontend runs takes minutes, and its
  * LLVM names the first differing function as well as its IR would. */
-async function buildProgram(program, label) {
+async function buildProgram(program, label, tree = trees[label]) {
   const dir = join(work, label, program.id.replace(/[^\w.-]+/g, "_"));
   mkdirSync(dir, { recursive: true });
-  const tree = trees[label];
   const failure = (result) => ({
     ok: false,
     error: (result.stderr || result.stdout || `exit ${result.status ?? result.signal}`)
@@ -400,6 +422,111 @@ async function instructionCounts(binary, args, out) {
   return cachegrindCounts(readFileSync(out, "utf8"), new Set(definedFunctions(binary)));
 }
 
+/* ── runtime changes ───────────────────────────────────────────────────── */
+
+const sha256 = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+
+/** llvm-dis from PATH or the pinned LLVM install, or null. */
+function llvmDis() {
+  for (const candidate of ["llvm-dis", "llvm-dis-22", "/usr/lib/llvm-22/bin/llvm-dis"])
+    if (spawnSync(candidate, ["--version"]).status === 0) return candidate;
+  const config = spawnSync("llvm-config", ["--bindir"], { encoding: "utf8" });
+  const fromConfig = config.status === 0 ? join(config.stdout.trim(), "llvm-dis") : null;
+  return fromConfig !== null && existsSync(fromConfig) ? fromConfig : null;
+}
+
+/** What differs between the two checkouts' runtime packs for this host, or
+ * null when no object or archive does: the changed pack files, whether the
+ * LLVM helper is the same, the symbols the changed objects define (on either
+ * side), and the functions that changed in the bitcode of the changed
+ * release and speed objects. Bitcode alone is not a change: it records the
+ * checkout's source path, so it differs between any two checkouts. */
+function runtimeChanges() {
+  const pack = (root) =>
+    readdirSync(join(root, "packages"))
+      .filter((name) => name.startsWith("runtime-"))
+      .filter((name) => existsSync(join(root, "packages", name, "runtime-pack.json")));
+  const shared = pack(trees.candidate).filter((name) => pack(trees.baseline).includes(name));
+  if (shared.length !== 1) return null;
+  const packDir = (root) => join(root, "packages", shared[0]);
+  const manifest = (root) =>
+    JSON.parse(readFileSync(join(packDir(root), "runtime-pack.json"), "utf8"));
+  const linked = (paths) => paths.filter((path) => !path.endsWith(".bc"));
+  const all = runtimePackDiff(manifest(trees.baseline), manifest(trees.candidate));
+  const diff = {
+    changed: linked(all.changed),
+    added: linked(all.added),
+    removed: linked(all.removed),
+  };
+  if (diff.changed.length + diff.added.length + diff.removed.length === 0) return null;
+  const helper = (root) => {
+    const file = join(
+      root,
+      "packages",
+      shared[0].replace(/^runtime-/, "llvm-"),
+      "bin/scriptc-llvm-codegen",
+    );
+    return existsSync(file) ? sha256(file) : null;
+  };
+  const helperSame =
+    helper(trees.baseline) !== null && helper(trees.baseline) === helper(trees.candidate);
+  const symbols = new Set();
+  const objects = [...diff.changed, ...diff.added, ...diff.removed].filter((path) =>
+    path.endsWith(".o"),
+  );
+  for (const path of objects)
+    for (const root of [trees.baseline, trees.candidate]) {
+      const file = join(packDir(root), path);
+      if (!existsSync(file)) continue;
+      const listed = spawnSync("nm", ["--defined-only", file], {
+        encoding: "utf8",
+        maxBuffer: 1 << 28,
+      });
+      for (const symbol of parseNm(listed.stdout ?? "")) symbols.add(symbol.name);
+    }
+  // Changed functions, by unit, from the bitcode of the release and speed
+  // flavors (the ones the gate builds with).
+  const dis = llvmDis();
+  const functions = { changed: new Set(), added: new Set(), removed: new Set(), units: new Set() };
+  for (const object of objects)
+    functions.units.add(object.replace(/^.*\//, "").replace(/\.o$/, ".c"));
+  const bitcode = objects
+    .filter((path) => /^artifacts\/(release|speed)\//.test(path))
+    .map((path) => path.replace(/\.o$/, ".bc"));
+  for (const path of bitcode) {
+    if (dis === null) continue;
+    const text = (root) => {
+      const file = join(packDir(root), path);
+      if (!existsSync(file)) return new Map();
+      const out = spawnSync(dis, [file, "-o", "-"], { encoding: "utf8", maxBuffer: 1 << 30 });
+      return llvmFunctionHashes(out.stdout ?? "");
+    };
+    const delta = changedFunctions(text(trees.baseline), text(trees.candidate));
+    for (const kind of ["changed", "added", "removed"])
+      for (const name of delta[kind]) functions[kind].add(name);
+  }
+  return {
+    pack: shared[0],
+    diff,
+    helperSame,
+    symbols,
+    disassembler: dis,
+    functions: Object.fromEntries(
+      Object.entries(functions).map(([kind, names]) => [kind, [...names].sort()]),
+    ),
+  };
+}
+
+/** The changed runtime functions an executable defines. */
+function linkedRuntimeChanges(runtime, binary) {
+  const defined = new Set(definedFunctions(binary));
+  const pick = (names) => names.filter((name) => defined.has(name));
+  return {
+    changed: pick(runtime.functions.changed),
+    added: pick(runtime.functions.added),
+  };
+}
+
 /* ── main ──────────────────────────────────────────────────────────────── */
 
 function revision(root) {
@@ -416,6 +543,7 @@ const pct = (ratio) => `${ratio >= 1 ? "+" : ""}${((ratio - 1) * 100).toFixed(2)
 
 const programs = goodCodeSet();
 assert.ok(programs.length > 0, "the selected good-code set is empty");
+const runtime = runtimeChanges();
 const report = {
   schema: 1,
   date: new Date().toISOString(),
@@ -425,6 +553,16 @@ const report = {
   ),
   programsRoot,
   allow: values.allow ?? null,
+  strict: values.strict,
+  runtime:
+    runtime === null
+      ? null
+      : {
+          pack: runtime.pack,
+          ...runtime.diff,
+          helperSame: runtime.helperSame,
+          functions: runtime.functions,
+        },
   programs: [],
   timing: null,
   failures: [],
@@ -433,6 +571,24 @@ console.log(
   `zero-cost gate: ${programs.length} programs (${[...sets].join(", ")}), ` +
     `baseline ${trees.baseline}, candidate ${trees.candidate}, programs from ${programsRoot}`,
 );
+if (runtime !== null) {
+  const { changed, added, removed } = runtime.diff;
+  console.log(
+    `runtime pack ${runtime.pack} differs: ${changed.length} changed, ${added.length} added, ` +
+      `${removed.length} removed files; units ${runtime.functions.units.join(", ") || "none"}` +
+      (runtime.helperSame ? "" : "; the LLVM helper differs too, so nothing is runtime-only"),
+  );
+  if (runtime.disassembler === null)
+    console.log("runtime functions: llvm-dis not found, so changed functions are not listed");
+  else
+    console.log(
+      `runtime functions: ${runtime.functions.changed.length} changed` +
+        (runtime.functions.changed.length
+          ? ` (${runtime.functions.changed.slice(0, 20).join(", ")})`
+          : "") +
+        `, ${runtime.functions.added.length} added, ${runtime.functions.removed.length} removed`,
+    );
+}
 
 let failed = false;
 const started = Date.now();
@@ -450,13 +606,39 @@ await pool(
       const artifacts = baseline.ok && candidate.ok ? compareBuilds(baseline, candidate) : {};
       // The benchmark workloads and the self-hosted compiler always build.
       const required = !program.id.startsWith("corpus/");
-      const { verdict, fails } = programVerdict({
-        baseline,
-        candidate,
-        artifacts,
-        allowed,
-        required,
-      });
+      const runtimeOnly =
+        runtime !== null &&
+        runtime.helperSame &&
+        artifacts.exe !== undefined &&
+        !artifacts.exe.identical &&
+        confinedToRuntime(artifacts.exe, runtime.symbols);
+      const judge = (nondeterministic) =>
+        programVerdict({
+          baseline,
+          candidate,
+          artifacts,
+          allowed,
+          required,
+          runtimeOnly,
+          nondeterministic,
+          strict: values.strict,
+        });
+      let { verdict, fails } = judge(false);
+      // Build a difference the change cannot explain once more with the
+      // baseline: when the baseline's two builds differ in the same
+      // artifacts, the difference is the build's, not the change's.
+      let recheck = null;
+      if (verdict === "differs") {
+        const again = await buildProgram(program, "recheck", trees.baseline);
+        if (again.ok) {
+          const self = compareBuilds(baseline, again);
+          recheck = Object.keys(artifacts).filter(
+            (kind) => !artifacts[kind].identical && !self[kind]?.identical,
+          );
+          if (again.dir && !values.keep) rmSync(again.dir, { recursive: true, force: true });
+        }
+        if (recheck?.length) ({ verdict, fails } = judge(true));
+      }
       const entry = {
         id: program.id,
         verdict,
@@ -464,6 +646,8 @@ await pool(
         buildMs: { baseline: baseline.ms ?? null, candidate: candidate.ms ?? null },
         artifacts,
       };
+      if (verdict === "runtime-only") entry.runtime = linkedRuntimeChanges(runtime, candidate.exe);
+      if (verdict === "nondeterministic") entry.nondeterministic = recheck;
       if (!baseline.ok) entry.baselineError = baseline.error;
       if (!candidate.ok) entry.candidateError = candidate.error;
       const size = artifacts.exe?.bytes;
@@ -517,6 +701,8 @@ function printProgram(entry) {
     identical: "identical",
     allowed: "allowed  ",
     differs: "DIFFERS  ",
+    "runtime-only": "runtime  ",
+    nondeterministic: "nondet   ",
     "build-error": "ERROR    ",
     "both-fail": "both-fail",
   }[entry.verdict];
@@ -543,6 +729,17 @@ function printProgram(entry) {
     );
   } else if (entry.cachegrind?.skipped)
     notes.push(`cachegrind skipped: ${entry.cachegrind.skipped}`);
+  if (entry.runtime) {
+    const linked = [...entry.runtime.changed, ...entry.runtime.added];
+    notes.push(
+      `runtime-only: links ${linked.length} changed runtime function${linked.length === 1 ? "" : "s"}` +
+        (linked.length
+          ? ` (${linked.slice(0, 8).join(", ")}${linked.length > 8 ? ", ..." : ""})`
+          : ""),
+    );
+  }
+  if (entry.nondeterministic)
+    notes.push(`the baseline's own rebuild differs in ${entry.nondeterministic.join(", ")}`);
   for (const failure of entry.dynamicTier?.failures ?? []) notes.push(`SYMBOLS: ${failure}`);
   console.log(`${label}  ${entry.id}${notes.length ? `  ${notes.join("; ")}` : ""}`);
   // A build error's first line is often a warning; print all of it.
@@ -631,7 +828,8 @@ if (timingRuns > 0) {
 
 const counts = {};
 for (const p of report.programs) counts[p.verdict] = (counts[p.verdict] ?? 0) + 1;
-if (!report.programs.some((p) => ["identical", "allowed", "differs"].includes(p.verdict))) {
+const compared = ["identical", "allowed", "runtime-only", "nondeterministic", "differs"];
+if (!report.programs.some((p) => compared.includes(p.verdict))) {
   failed = true;
   report.failures.push("no program built with both checkouts, so nothing was compared");
 }
@@ -644,10 +842,37 @@ if (values.json) {
 }
 if (!values.keep) rmSync(work, { recursive: true, force: true });
 else console.log(`artifacts kept in ${work}`);
+const noted = report.programs.filter((p) =>
+  ["runtime-only", "nondeterministic"].includes(p.verdict),
+);
 console.log(
-  `zero-cost gate: ${failed ? "FAIL" : "PASS"} — ${Object.entries(counts)
+  `zero-cost gate: ${failed ? "FAIL" : noted.length ? "PASS with notes" : "PASS"} — ${Object.entries(
+    counts,
+  )
     .map(([k, v]) => `${v} ${k}`)
     .join(", ")} in ${fmtMs(report.elapsedMs)}`,
 );
+const runtimeOnlyPrograms = report.programs.filter((p) => p.verdict === "runtime-only");
+if (runtimeOnlyPrograms.length > 0) {
+  const deltas = runtimeOnlyPrograms.map(
+    (p) => p.artifacts.exe.bytes.candidate - p.artifacts.exe.bytes.baseline,
+  );
+  const signed = (n) => `${n > 0 ? "+" : ""}${n}`;
+  const linked = new Set(
+    runtimeOnlyPrograms.flatMap((p) => [...p.runtime.changed, ...p.runtime.added]),
+  );
+  console.log(
+    `  note: ${runtimeOnlyPrograms.length} runtime-only programs (IR and LLVM identical); ` +
+      `executable size ${signed(Math.min(...deltas))} to ${signed(Math.max(...deltas))} bytes; ` +
+      `changed runtime functions linked: ${[...linked].sort().join(", ") || "none listed"}` +
+      (values.strict ? "" : " (--strict fails these)"),
+  );
+}
+const nondeterministicPrograms = report.programs.filter((p) => p.verdict === "nondeterministic");
+if (nondeterministicPrograms.length > 0)
+  console.log(
+    `  note: ${nondeterministicPrograms.length} nondeterministic programs, whose baseline rebuild differs too: ` +
+      nondeterministicPrograms.map((p) => p.id).join(", "),
+  );
 for (const failure of report.failures) console.log(`  ${failure}`);
 process.exit(failed ? 1 : 0);

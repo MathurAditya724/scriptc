@@ -2,13 +2,17 @@ import { spawnSync } from "node:child_process";
 import { expect, test } from "vitest";
 import {
   cachegrindCounts,
+  changedFunctions,
   compareArtifact,
   compareCounts,
   compareExecutables,
+  confinedToRuntime,
   definedFunctionNames,
   dynamicTierSymbols,
+  llvmFunctionHashes,
   nmOutput,
   programVerdict,
+  runtimePackDiff,
 } from "../../scripts/zero-cost-compare.mjs";
 
 const ir = (functions: object[], globals: object[]) =>
@@ -190,4 +194,93 @@ test("the zero-cost gate fails differing programs unless they match the signatur
   // was never compared.
   expect(verdict({}, false, failed, failed, true)).toEqual({ verdict: "both-fail", fails: true });
   expect(verdict({}, true, ok, failed)).toEqual({ verdict: "build-error", fails: true });
+});
+
+test("the zero-cost gate classifies runtime-only and nondeterministic differences", () => {
+  const ok = { ok: true };
+  const exeOnly = { ir: { identical: true }, llvm: { identical: true }, exe: { identical: false } };
+  const llvmToo = {
+    ir: { identical: true },
+    llvm: { identical: false },
+    exe: { identical: false },
+  };
+  const verdict = (artifacts: object, flags: object) =>
+    programVerdict({ baseline: ok, candidate: ok, artifacts, allowed: false, ...flags });
+  expect(verdict(exeOnly, { runtimeOnly: true })).toEqual({
+    verdict: "runtime-only",
+    fails: false,
+  });
+  expect(verdict(exeOnly, { runtimeOnly: true, strict: true })).toEqual({
+    verdict: "runtime-only",
+    fails: true,
+  });
+  // A changed runtime cannot explain different LLVM.
+  expect(verdict(llvmToo, { runtimeOnly: true })).toEqual({ verdict: "differs", fails: true });
+  expect(verdict(llvmToo, { nondeterministic: true })).toEqual({
+    verdict: "nondeterministic",
+    fails: false,
+  });
+  expect(verdict(llvmToo, { nondeterministic: true, strict: true })).toEqual({
+    verdict: "nondeterministic",
+    fails: true,
+  });
+});
+
+test("the zero-cost gate names the runtime pack files and functions that changed", () => {
+  const unit = (sha: string, bc: string) => ({
+    path: "artifacts/release/runtime/default/scr_a.o",
+    sha256: sha,
+    bitcode: { path: "artifacts/release/runtime/default/scr_a.bc", sha256: bc },
+  });
+  const pack = (a: object, extra: object[] = []) => ({
+    flavors: { release: { runtime_units: [{ source: "scr_a.c", variants: [a, ...extra] }] } },
+    archives: [{ path: "artifacts/vendor/libz.a", sha256: "z" }],
+  });
+  const other = { path: "artifacts/release/runtime/default/scr_b.o", sha256: "b" };
+  expect(runtimePackDiff(pack(unit("1", "2")), pack(unit("1", "2")))).toEqual({
+    changed: [],
+    added: [],
+    removed: [],
+  });
+  expect(runtimePackDiff(pack(unit("1", "2")), pack(unit("3", "4"), [other]))).toEqual({
+    changed: [
+      "artifacts/release/runtime/default/scr_a.bc",
+      "artifacts/release/runtime/default/scr_a.o",
+    ],
+    added: ["artifacts/release/runtime/default/scr_b.o"],
+    removed: [],
+  });
+
+  const ll = (body: string, attrs: number) =>
+    [
+      `define i32 @scr_same(i32 %x) #${attrs} {`,
+      "  ret i32 %x, !dbg !" + attrs,
+      "}",
+      "define internal void @scr_changed() {",
+      `  ${body}`,
+      "}",
+      "",
+    ].join("\n");
+  const before = llvmFunctionHashes(ll("ret void", 0));
+  const after = llvmFunctionHashes(
+    ll("call void @f()\n  ret void", 7) + 'define void @"scr new"() {\n}\n',
+  );
+  // Renumbered attribute groups and metadata are not changes.
+  expect(changedFunctions(before, after)).toEqual({
+    changed: ["scr_changed"],
+    added: ["scr new"],
+    removed: [],
+  });
+});
+
+test("the zero-cost gate confines runtime-only differences to runtime symbols", () => {
+  const exe = (added: string[], removed: string[], resized: string[]) => ({
+    added,
+    removed,
+    resized: resized.map((name) => ({ name, baseline: 1, candidate: 2 })),
+  });
+  const runtime = new Set(["scr_a", "scr_b"]);
+  expect(confinedToRuntime(exe([], [], ["scr_a"]), runtime)).toBe(true);
+  expect(confinedToRuntime(exe(["scr_b"], ["scr_a"], []), runtime)).toBe(true);
+  expect(confinedToRuntime(exe([], [], ["main.$1"]), runtime)).toBe(false);
 });

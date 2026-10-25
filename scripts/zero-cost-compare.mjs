@@ -487,6 +487,78 @@ export function compareCounts(baseline, candidate) {
   };
 }
 
+/* ── runtime packs ─────────────────────────────────────────────────────── */
+
+/** Every file a runtime-pack.json lists (each flavor's runtime unit
+ * variants, their bitcode, and the vendor archives), as path → sha256. */
+export function runtimePackFiles(manifest) {
+  const files = new Map();
+  const visit = (value) => {
+    if (Array.isArray(value)) value.forEach(visit);
+    else if (value !== null && typeof value === "object") {
+      if (typeof value.path === "string" && typeof value.sha256 === "string")
+        files.set(value.path, value.sha256);
+      Object.values(value).forEach(visit);
+    }
+  };
+  visit(manifest.flavors ?? {});
+  visit(manifest.archives ?? {});
+  return files;
+}
+
+/** The runtime pack files that differ between two runtime-pack.json
+ * manifests: changed, added and removed paths, each sorted. */
+export function runtimePackDiff(baseline, candidate) {
+  const before = runtimePackFiles(baseline);
+  const after = runtimePackFiles(candidate);
+  const changed = [...before].filter(([path, sha]) => after.has(path) && after.get(path) !== sha);
+  return {
+    changed: changed.map(([path]) => path).sort(),
+    added: [...after.keys()].filter((path) => !before.has(path)).sort(),
+    removed: [...before.keys()].filter((path) => !after.has(path)).sort(),
+  };
+}
+
+/** Defined functions of textual LLVM IR (llvm-dis output) as name → hash of
+ * the body. Attribute group and metadata numbers are dropped first, since
+ * an unrelated change elsewhere in the unit renumbers them. */
+export function llvmFunctionHashes(text) {
+  const functions = new Map();
+  const lines = text.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const head = /^define\b[^@]*@("(?:[^"\\]|\\.)*"|[\w.$-]+)\(/.exec(lines[index]);
+    if (head === null) continue;
+    const body = [];
+    for (; index < lines.length && lines[index] !== "}"; index++) body.push(lines[index]);
+    const normalized = body.join("\n").replace(/ #\d+/g, "").replace(/!\d+/g, "!");
+    functions.set(head[1].replace(/^"|"$/g, ""), hash(normalized));
+  }
+  return functions;
+}
+
+/** Names whose hashes differ between two function maps, and the names only
+ * one side defines. */
+export function changedFunctions(before, after) {
+  return {
+    changed: [...before]
+      .filter(([name, h]) => after.has(name) && after.get(name) !== h)
+      .map(([name]) => name)
+      .sort(),
+    added: [...after.keys()].filter((name) => !before.has(name)).sort(),
+    removed: [...before.keys()].filter((name) => !after.has(name)).sort(),
+  };
+}
+
+/** Whether every symbol an executable comparison added, removed or resized
+ * is one of `runtimeSymbols`, the symbols the changed runtime objects
+ * define. Mach-O nm prints no sizes, so there only additions and removals
+ * are checked. */
+export function confinedToRuntime(exe, runtimeSymbols) {
+  return [...exe.added, ...exe.removed, ...exe.resized.map((s) => s.name)].every((name) =>
+    runtimeSymbols.has(name),
+  );
+}
+
 /* ── verdicts ──────────────────────────────────────────────────────────── */
 
 /** One program's verdict from its build results and artifact comparisons.
@@ -494,7 +566,21 @@ export function compareCounts(baseline, candidate) {
 /** `required` programs must build with both checkouts: a failure both share
  * means the gate compared nothing for them. Other programs may fail the same
  * way on both sides, as a corpus program the compiler refuses does. */
-export function programVerdict({ baseline, candidate, artifacts, allowed, required = false }) {
+/** A difference in the release executable alone, with identical IR and
+ * LLVM, is "runtime-only" when `runtimeOnly` says the changed runtime
+ * objects explain it (the gate checks the runtime packs and the symbols).
+ * A difference the baseline also shows when it builds the program again is
+ * "nondeterministic". Neither fails the gate unless `strict` is set. */
+export function programVerdict({
+  baseline,
+  candidate,
+  artifacts,
+  allowed,
+  required = false,
+  runtimeOnly = false,
+  nondeterministic = false,
+  strict = false,
+}) {
   if (!baseline.ok || !candidate.ok) {
     if (!baseline.ok && !candidate.ok && baseline.error === candidate.error)
       return { verdict: "both-fail", fails: required };
@@ -502,7 +588,11 @@ export function programVerdict({ baseline, candidate, artifacts, allowed, requir
   }
   const differing = Object.entries(artifacts).filter(([, r]) => !r.identical);
   if (differing.length === 0) return { verdict: "identical", fails: false };
-  return allowed ? { verdict: "allowed", fails: false } : { verdict: "differs", fails: true };
+  if (allowed) return { verdict: "allowed", fails: false };
+  if (runtimeOnly && differing.every(([kind]) => kind === "exe"))
+    return { verdict: "runtime-only", fails: strict };
+  if (nondeterministic) return { verdict: "nondeterministic", fails: strict };
+  return { verdict: "differs", fails: true };
 }
 
 export function median(values) {
