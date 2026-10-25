@@ -1441,6 +1441,10 @@ class Analyzer {
     // clone is its own context root, so it would resolve them in the
     // default context instead, and their writes would be lost.
     if (info.root !== null && info.root !== info.node) return null;
+    // A class's constructor and methods run in receiver contexts of their
+    // own, rooted at each member: inside a clone they too would resolve the
+    // function's bindings in the default context.
+    if (this.declaresClass(info.node)) return null;
     const sc = this.argsFrom.get(args);
     if (sc === undefined || sc.inLoop || this.forceLoop || this.repeatingSites.has(site))
       return null;
@@ -1466,6 +1470,19 @@ class Analyzer {
     const clone = this.functionInfo(info.node, info.ownerClass, ctx, info.thisNode);
     if (!clone.isArrow) this.edge(info.thisNode, clone.thisNode);
     return clone;
+  }
+
+  private readonly classDeclarers = new Map<Node, boolean>();
+  /** Whether a class declaration or expression is anywhere inside `node`. */
+  private declaresClass(node: Node): boolean {
+    let r = this.classDeclarers.get(node);
+    if (r === undefined) {
+      const visit = (n: Node): true | undefined =>
+        ts.isClassLikeDeclaration(n) ? true : ts.forEachChild(n, visit);
+      r = ts.forEachChild(node, visit) === true;
+      this.classDeclarers.set(node, r);
+    }
+    return r;
   }
 
   private readonly factories = new Map<Node, boolean>();
