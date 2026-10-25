@@ -20,7 +20,10 @@ export function unionNarrowFailureMessage(
  *
  * Deferred scalar fields can supply the established undefined default:
  * false for booleans or NaN for numbers. No other tag receives that default,
- * and reference-bearing targets always use checked extraction. */
+ * and reference-bearing targets always use checked extraction.
+ *
+ * `failureMessage` replaces the TypeError message of every other tag (the
+ * error Node raises for the operation consuming the value). */
 export function buildUnionNarrow(
   name: string,
   from: IrUnionDef,
@@ -28,6 +31,7 @@ export function buildUnionNarrow(
   loc: SrcLoc,
   formatType: (type: IrType) => string,
   undefinedDefault: IrExpr | null = null,
+  failureMessage: string | null = null,
   /** Converts another arm's payload into the target (a record arm that is
    * a width subtype of a record target), or null to throw. */
   convert: ((tag: number, payload: IrExpr) => IrExpr | null) | null = null,
@@ -83,7 +87,7 @@ export function buildUnionNarrow(
             args: [
               {
                 kind: "strLit",
-                value: unionNarrowFailureMessage(arm, formatType),
+                value: failureMessage ?? unionNarrowFailureMessage(arm, formatType),
                 type: STRING,
                 loc,
               },

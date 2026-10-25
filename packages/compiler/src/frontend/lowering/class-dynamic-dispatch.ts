@@ -1,4 +1,5 @@
 import { primitiveConstructorOr } from "./lower-exprs.js";
+import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js";
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { constructedValue } from "./constructor-returns.js";
@@ -26,6 +27,7 @@ import {
   isUnitType,
   typeEquals,
   typeKey,
+  type IrClassDef,
   type IrExpr,
   type IrFunction,
   type IrParam,
@@ -52,6 +54,7 @@ import {
 import {
   classPrototypeData,
   hasClassPrototypeData,
+  prototypeReflectedFlag,
   observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
@@ -153,6 +156,41 @@ const STREAM_NUM_PROPERTIES = new Set([
 const streamProperty = (name: string): boolean =>
   STREAM_BOOL_PROPERTIES.has(name) || STREAM_NUM_PROPERTIES.has(name);
 
+/** `(instance) => string`, the string a class's inherited
+ * Symbol.toStringTag getter answers, which the runtime reads for
+ * Object.prototype.toString and util.inspect of an instance seen as
+ * `unknown`. None for a class without a string getter, or whose own tag
+ * field shadows it. */
+function stringTagHelper(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): IrFunction | null {
+  if (info.fields.has(TO_STRING_TAG_FIELD)) return null;
+  const getter = findMethodOn(lowerer, info, "get:sym:toStringTag");
+  if (getter?.sig.ret.kind !== "string") return null;
+  const type: IrType = { kind: "object", className: info.def.name };
+  const owner = getter.declarer.def.name;
+  return {
+    name: `%class.stringTag:${info.def.name}`,
+    params: [{ localId: "this", name: "this", type }],
+    locals: [{ id: "this", name: "this", type, mutable: false }],
+    returnType: STRING,
+    body: [
+      {
+        kind: "return",
+        value: accessorCall(
+          lowerer,
+          owner,
+          "get:sym:toStringTag",
+          lowerer.upcastTo(varRef("this", type, loc), owner),
+          [],
+          STRING,
+          loc,
+        ),
+        loc,
+      },
+    ],
+    loc,
+  };
+}
+
 function symbolMemberKey(
   lowerer: Lowerer,
   info: ClassInfo,
@@ -225,6 +263,7 @@ const KEY_CALLS = new Map<string, "object" | "any" | "value">([
   ["dyn.propertyIsEnumerableComputed", "any"],
   ["dyn.hasOwnComputed", "value"],
   ["dyn.keyDeleteComputed", "value"],
+  ["dyn.reflectDeleteProperty", "object"],
   ["dyn.keySetComputed", "value"],
 ]);
 
@@ -1375,10 +1414,27 @@ export class ClassDynamicDispatch {
       const info = lowerer.classes.get(className);
       if (!info || info.builtinEmitter || info.builtinStream || info.builtinError) continue;
       if (info.symbolFields && info.def.symbolFields === undefined) {
-        info.def.symbolFields = [...info.symbolFields].flatMap(([symbol, field]) => {
-          const global = lowerer.globalsBySymbol.get(symbol);
-          return global?.type.kind === "symbol" ? [{ field, globalId: global.id }] : [];
-        });
+        info.def.symbolFields = [...info.symbolFields].flatMap(
+          ([symbol, field]): NonNullable<IrClassDef["symbolFields"]> => {
+            const global = lowerer.globalsBySymbol.get(symbol);
+            if (global?.type.kind === "symbol") return [{ field, globalId: global.id }];
+            const wellKnown = wellKnownSymbolOfField(field);
+            return wellKnown === null ? [] : [{ field, wellKnown }];
+          },
+        );
+      }
+      const tagged = (current: ClassInfo): ClassInfo[] => [
+        current,
+        ...current.subclasses.flatMap(tagged),
+      ];
+      for (const current of tagged(info)) {
+        if (current.def.stringTagHelper !== undefined) continue;
+        const fn = stringTagHelper(lowerer, current, functions[0]!.loc);
+        if (!fn) continue;
+        current.def.stringTagHelper = fn.name;
+        this.generated.add(fn);
+        lowerer.liftedFns.push(fn);
+        changed = true;
       }
       if (this.prototypeHelper && !this.prototypeClasses.has(className)) {
         this.prototypeClasses.add(className);
@@ -2874,15 +2930,19 @@ export class ClassDynamicDispatch {
           }
           const iterator =
             expr.kind === "libCall" &&
-            (expr.fn === "dyn.iterator" || expr.fn === "dyn.arrayFromIterator")
+            (expr.fn === "dyn.iterator" ||
+              expr.fn === "dyn.arrayFromIterator" ||
+              expr.fn === "dyn.asyncIteratorOpen")
               ? expr
               : null;
+          // `for await` opens a class instance's [Symbol.asyncIterator]().
+          const asyncOpen = iterator?.fn === "dyn.asyncIteratorOpen";
           const invoke: Invoke | null = iterator
             ? {
                 kind: "dynInvoke",
                 recv: iterator.args[0]!,
-                method: "sym:iterator",
-                calleeName: "value[Symbol.iterator]",
+                method: asyncOpen ? "sym:asyncIterator" : "sym:iterator",
+                calleeName: asyncOpen ? "value[Symbol.asyncIterator]" : "value[Symbol.iterator]",
                 args: [],
                 type: DYN,
                 loc: iterator.loc,
@@ -3662,10 +3722,29 @@ export class ClassDynamicDispatch {
                   name,
                   lowerer.coerceToExpected(varRef(global.id, global.type, loc), DYN),
                 );
+            } else if (wellKnownSymbolOfField(name) !== null) {
+              // A field keyed by a well-known symbol (Symbol.toStringTag).
+              symbols.set(name, {
+                kind: "dynFrom",
+                type: DYN,
+                loc,
+                value: {
+                  kind: "libCall",
+                  fn: "sym.wellKnown",
+                  args: [
+                    { kind: "strLit", value: wellKnownSymbolOfField(name)!, type: STRING, loc },
+                  ],
+                  type: SYMBOL_T,
+                  loc,
+                },
+              });
             }
           }
           for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
-            for (const name of [...owner.methods.keys()])
+            for (const method of [...owner.methods.keys()]) {
+              // Accessors key by the property they define (`get [Symbol.toStringTag]`).
+              const name =
+                method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
               if (name.startsWith("sym:")) {
                 symbols.set(name, {
                   kind: "dynFrom",
@@ -3680,6 +3759,7 @@ export class ClassDynamicDispatch {
                   },
                 });
               }
+            }
           }
           const branches: IrStmt[] = [];
           if (!dispatch.write && !dispatch.reflect && !info.def.tracksOwnFields) {
@@ -4103,6 +4183,103 @@ export class ClassDynamicDispatch {
     }
     this.generated.add(helper);
     return { kind: "call", callee: name, args: [bag, key], type: BOOL, loc };
+  }
+
+  /** `%dyn.class.bagHasOwn`: whether an instance's property bag holds `key`
+   * as its own property. False before the instance has a bag. */
+  private readBagHasOwn(lowerer: Lowerer, bag: IrExpr, key: IrExpr, loc: SrcLoc): IrExpr {
+    const name = "%dyn.class.bagHasOwn";
+    let helper = lowerer.liftedFnNamed(name);
+    if (!helper) {
+      const value = varRef("p.0", DYN, loc);
+      helper = {
+        name,
+        params: [
+          { localId: "p.0", name: "bag", type: DYN },
+          { localId: "p.1", name: "key", type: STRING },
+        ],
+        returnType: BOOL,
+        locals: [
+          { id: "p.0", name: "bag", type: DYN, mutable: false },
+          { id: "p.1", name: "key", type: STRING, mutable: false },
+        ],
+        body: [
+          {
+            kind: "if",
+            cond: { kind: "dynTest", test: "undefined", value, type: BOOL, loc },
+            then: [
+              { kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc },
+            ],
+            else_: null,
+            loc,
+          },
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.hasOwn",
+              args: [value, varRef("p.1", STRING, loc)],
+              type: BOOL,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      };
+      lowerer.liftedFns.push(helper);
+    }
+    this.generated.add(helper);
+    return { kind: "call", callee: name, args: [bag, key], type: BOOL, loc };
+  }
+
+  /** The `constructor` an instance of `info` inherits when it has no own
+   * one. The class's prototype view answers its own `constructor` (a
+   * replacement, or the class once reflection installed it). A view
+   * without one answers the class itself unless reflection had populated it
+   * (prototypeReflectedFlag, set when the view initializes): then the
+   * program deleted the property, and the read continues to the base
+   * class's prototype and past the last one to Object.prototype, as in
+   * Node. A prototype's own `constructor` is read with the instance
+   * `receiver` as `this`, so an accessor's getter runs on the instance. */
+  private inheritedConstructor(
+    lowerer: Lowerer,
+    info: ClassInfo,
+    key: IrExpr,
+    receiver: IrExpr,
+    loc: SrcLoc,
+  ): IrExpr {
+    const cls = lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl!), DYN);
+    const prototype = hasClassPrototypeData(info) ? classPrototypeData(lowerer, info, loc) : null;
+    if (!prototype) return cls;
+    const base = info.base;
+    const read = (): IrExpr => ({
+      kind: "libCall",
+      fn: "dyn.reflectGet",
+      args: [prototype, lowerer.coerceToExpected(key, DYN), receiver],
+      type: DYN,
+      loc,
+    });
+    // Past the last class prototype, the read continues to Object.prototype's data property.
+    const next: IrExpr =
+      base && !base.builtinError && base.decl && !base.generic && !base.localClass
+        ? this.inheritedConstructor(lowerer, base, key, receiver, loc)
+        : { kind: "dynKeyGet", value: prototype, key, type: DYN, loc };
+    return {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "dyn.hasOwn", args: [prototype, key], type: BOOL, loc },
+      then: read(),
+      else_: {
+        kind: "ternary",
+        cond: varRef(prototypeReflectedFlag(lowerer, info), BOOL, loc),
+        then: next,
+        else_: cls,
+        type: DYN,
+        loc,
+      },
+      type: DYN,
+      loc,
+    };
   }
 
   /** The hints for which some boxed class declares a conversion method. A
@@ -5863,15 +6040,19 @@ export class ClassDynamicDispatch {
         !info.classDecorators
       ) {
         this.constructors.set(info.def.name, info);
-        const cls = lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl), DYN);
         const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+        // `constructor` is an own property of every class prototype, so an
+        // ancestor's prototype answers for an instance of this class only
+        // after the program deletes the class's own: the instance's own
+        // property answers, then the class's prototype (inheritedConstructor).
+        const answered = this.readBagHasOwn(lowerer, bag, key, loc);
         return [
           {
             kind: "return",
             value: {
               kind: "ternary",
-              cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
+              cond: answered,
               then: {
                 kind: "libCall",
                 fn: "dyn.bagGet",
@@ -5879,7 +6060,13 @@ export class ClassDynamicDispatch {
                 type: DYN,
                 loc,
               },
-              else_: cls,
+              else_: this.inheritedConstructor(
+                lowerer,
+                info,
+                key,
+                lowerer.coerceToExpected(receiver, DYN),
+                loc,
+              ),
               type: DYN,
               loc,
             },

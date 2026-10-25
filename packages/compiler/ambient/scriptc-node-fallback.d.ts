@@ -2796,8 +2796,9 @@ declare var URLSearchParams: {
  * slashes, non-empty host); pathToFileURL resolves the path and percent-
  * encodes it into a file: URL. The legacy API: parse() answers a Url
  * object, format() serializes a Url-shaped object, a string, or a URL,
- * resolve() resolves one URL string against another, and the domain pair
- * converts a hostname to and from its Punycode form. */
+ * resolve() resolves one URL string against another, the domain pair
+ * converts a hostname to and from its Punycode form, and urlToHttpOptions
+ * builds http.request options from a URL. */
 declare module "url" {
   export type URL = globalThis.URL;
   export type URLSearchParams = globalThis.URLSearchParams;
@@ -2865,6 +2866,19 @@ declare module "url" {
   export function resolve(from: string, to: string): string;
   export function domainToASCII(domain: string): string;
   export function domainToUnicode(domain: string): string;
+  /** urlToHttpOptions's null-prototype request options. */
+  export interface UrlHttpOptions {
+    protocol: string;
+    hostname: string;
+    hash: string;
+    search: string;
+    pathname: string;
+    path: string;
+    href: string;
+    port?: number;
+    auth?: string;
+  }
+  export function urlToHttpOptions(url: URL): UrlHttpOptions;
 }
 declare module "node:url" {
   export * from "url";
@@ -2900,6 +2914,8 @@ declare module "crypto" {
   export interface AsymmetricKeyExportOptions<T extends KeyFormat> {
     type: "pkcs1" | "spki" | "pkcs8" | "sec1";
     format: T;
+    cipher?: string | undefined;
+    passphrase?: string | Buffer | undefined;
   }
   export interface AsymmetricKeyDetails {
     modulusLength?: number;
@@ -2924,6 +2940,7 @@ declare module "crypto" {
     format?: "pem" | "der" | undefined;
     type?: "pkcs1" | "pkcs8" | "sec1" | undefined;
     encoding?: string | undefined;
+    passphrase?: string | Buffer | undefined;
   }
   export interface PublicKeyInput {
     key: string | Buffer;
@@ -2960,12 +2977,22 @@ declare module "crypto" {
     modulusLength: number;
     publicExponent?: number | undefined;
     publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs1" | "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export interface ECKeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     namedCurve: string;
     publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
-    privateKeyEncoding: { type: "sec1" | "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "sec1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "rsa",
@@ -2993,7 +3020,12 @@ declare module "crypto" {
   ): KeyPairKeyObjectResult;
   export interface ED25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     publicKeyEncoding: { type: "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "ed25519",
@@ -3006,7 +3038,12 @@ declare module "crypto" {
   export function generateKeyPairSync(type: "ed25519", options?: {}): KeyPairKeyObjectResult;
   export interface X25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     publicKeyEncoding: { type: "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "x25519",
@@ -3537,17 +3574,45 @@ declare module "crypto" {
     keylen: number,
     callback: (error: Error | null, derivedKey: ArrayBuffer) => void,
   ): void;
-  /* The lowered X509Certificate surface is the data-record slice:
-   * fingerprint (the SHA-1 of the DER, uppercase colon-separated) and
-   * the validFrom/validTo validity window (Node's ASN1_TIME_print
-   * strings — "Jul  1 00:00:00 2026 GMT"; the cert-expiry idiom composes
-   * them with new Date(...).getTime()). All compute at construction;
-   * unparseable input throws Node's ERR_OSSL_PEM_NO_START_LINE Error. */
+  /* The lowered X509Certificate surface is the data-record slice: the
+   * fields below, all computed at construction (raw decodes the input,
+   * and the others read raw). validFrom/validTo are Node's
+   * ASN1_TIME_print strings ("Jul  1 00:00:00 2026 GMT"). Unparseable
+   * input throws Node's ERR_OSSL_PEM_NO_START_LINE Error. */
   export class X509Certificate {
     constructor(buffer: Uint8Array | string);
+    readonly ca: boolean;
     readonly fingerprint: string;
+    readonly fingerprint256: string;
+    readonly fingerprint512: string;
+    readonly subject: string;
+    readonly subjectAltName: string | undefined;
+    readonly infoAccess: string | undefined;
+    readonly issuer: string;
+    readonly raw: Buffer;
+    readonly serialNumber: string;
+    readonly signatureAlgorithm: string | undefined;
+    readonly signatureAlgorithmOid: string;
     readonly validFrom: string;
+    readonly validFromDate: Date;
     readonly validTo: string;
+    readonly validToDate: Date;
+    /* the certificate's public key; every read answers the same KeyObject */
+    readonly publicKey: KeyObject;
+    verify(publicKey: KeyObject): boolean;
+    checkPrivateKey(privateKey: KeyObject): boolean;
+    checkIssued(otherCert: X509Certificate): boolean;
+    checkHost(name: string, options?: X509CheckOptions): string | undefined;
+    checkEmail(email: string, options?: X509CheckOptions): string | undefined;
+    checkIP(ip: string): string | undefined;
+    toLegacyObject(): import("tls").PeerCertificate;
+  }
+  export interface X509CheckOptions {
+    subject?: "always" | "default" | "never";
+    wildcards?: boolean;
+    partialWildcards?: boolean;
+    multiLabelWildcards?: boolean;
+    singleLabelSubdomains?: boolean;
   }
   /* The crypto introspection statics: getFips() answers 0 (a compiled
    * binary is never a FIPS build), the three name lists bake as fresh
@@ -4858,9 +4923,9 @@ declare module "node:readline/promises" {
  * inputs with Node's default options; libz links only into zlib-using
  * binaries. Callback forms use the executable worker pool. Options stay
  * declared so reached uses receive a named SC2020 refusal. The Deflate,
- * Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw and Unzip streams are
- * runtime Transform streams; Brotli and Zstd remain outside the lowered
- * surface. */
+ * Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, Unzip, BrotliCompress
+ * and BrotliDecompress streams are runtime Transform streams; Zstd remains
+ * outside the lowered surface. */
 declare module "zlib" {
   import { Transform } from "stream";
   export interface ZlibOptions {
@@ -4917,50 +4982,66 @@ declare module "zlib" {
   ): void;
   export function unzipSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
   export function crc32(data: string | Uint8Array, value?: number): number;
-  export function brotliCompressSync(data: string | Uint8Array): Buffer;
-  export function brotliDecompressSync(data: Uint8Array): Buffer;
-  /* Brotli needs a codec the static runtime does not vendor: these are
-   * declared so their uses receive the named refusal. */
+  /* Brotli over the vendored brotli 1.2.0 (scr_brotli.c): `params` keys
+   * are the numeric BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* constants. */
+  export interface BrotliOptions {
+    [option: string]: unknown;
+  }
   export function brotliCompress(data: string | Uint8Array, callback: ZlibCallback): void;
-  export function brotliDecompress(data: Uint8Array, callback: ZlibCallback): void;
-  export function createBrotliCompress(options?: ZlibOptions): Transform;
-  export function createBrotliDecompress(options?: ZlibOptions): Transform;
-  export class BrotliCompress extends Transform {
-    constructor(options?: ZlibOptions);
-  }
-  export class BrotliDecompress extends Transform {
-    constructor(options?: ZlibOptions);
-  }
+  export function brotliCompress(
+    data: string | Uint8Array,
+    options: BrotliOptions,
+    callback: ZlibCallback,
+  ): void;
+  export function brotliCompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
+  export function brotliDecompress(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function brotliDecompress(
+    data: string | Uint8Array,
+    options: BrotliOptions,
+    callback: ZlibCallback,
+  ): void;
+  export function brotliDecompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
   /* The stream classes: runtime Transform streams over the zlib engine
    * (scr_zlib_stream.c). createGzip(options) and new Gzip(options) build
-   * the same stream; options are validated at runtime with Node's rules. */
+   * the same stream; options are validated at runtime with Node's rules.
+   * Brotli streams have no params(), as in Node. */
   class ZlibBase extends Transform {
     readonly bytesWritten: number;
     flush(kind?: number, callback?: () => void): void;
     flush(callback: () => void): void;
-    params(level: number, strategy: number, callback?: () => void): void;
     close(callback?: () => void): void;
     reset(): void;
   }
-  export class Deflate extends ZlibBase {
+  class Zlib extends ZlibBase {
+    params(level: number, strategy: number, callback?: () => void): void;
+  }
+  export class BrotliCompress extends ZlibBase {
+    constructor(options?: BrotliOptions);
+  }
+  export class BrotliDecompress extends ZlibBase {
+    constructor(options?: BrotliOptions);
+  }
+  export function createBrotliCompress(options?: BrotliOptions): BrotliCompress;
+  export function createBrotliDecompress(options?: BrotliOptions): BrotliDecompress;
+  export class Deflate extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Inflate extends ZlibBase {
+  export class Inflate extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Gzip extends ZlibBase {
+  export class Gzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Gunzip extends ZlibBase {
+  export class Gunzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class DeflateRaw extends ZlibBase {
+  export class DeflateRaw extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class InflateRaw extends ZlibBase {
+  export class InflateRaw extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Unzip extends ZlibBase {
+  export class Unzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
   export function createDeflate(options?: ZlibOptions): Deflate;
@@ -5443,6 +5524,11 @@ declare module "net" {
     /* The demux route: hand an accepted socket to another server. */
     emit(event: "connection", socket: Socket): boolean;
     on(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: a handshake that failed */
+    on(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
     on(event: "close" | "listening", listener: () => void): void;
     on(event: "drop", listener: (data?: DropArgument) => void): void;
     on(event: "timeout", listener: (socket: Socket) => void): void;
@@ -5462,6 +5548,11 @@ declare module "net" {
     ): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: a handshake that failed */
+    addListener(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
     addListener(event: "close" | "listening", listener: () => void): void;
     addListener(event: "drop", listener: (data?: DropArgument) => void): void;
     addListener(event: "timeout", listener: (socket: Socket) => void): void;
@@ -5475,6 +5566,11 @@ declare module "net" {
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
     once(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: a handshake that failed */
+    once(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
     once(event: "close" | "listening", listener: () => void): void;
     once(event: "drop", listener: (data?: DropArgument) => void): void;
     once(event: "timeout", listener: (socket: Socket) => void): void;
@@ -5928,8 +6024,15 @@ declare module "node:http" {
  * are PEM strings or Buffers. Handshake failures tear the socket down
  * without emitting an event, Node's default for 'tlsClientError' with no listener. */
 declare module "tls" {
-  import { Server, Socket } from "net";
-  export { Server };
+  import { Server as NetServer, Socket } from "net";
+  /** tls.Server: a net server whose connections handshake first. */
+  export interface Server extends NetServer {
+    /* serve `context` to clients whose SNI name matches `hostname` ('*'
+     * matches within one label); the newest match wins */
+    addContext(hostname: string, context: TlsOptions | SecureContext): void;
+    /* new connections serve a context made from `options` */
+    setSecureContext(options: TlsOptions): void;
+  }
   export interface TlsOptions {
     /* Optional in the DECLARATION only (real Node programs build these
      * literals with every TLS knob): the lowering still requires both —
@@ -5963,7 +6066,47 @@ declare module "tls" {
     getCipher(): CipherNameAndProtocol;
     /* whether the handshake resumed a cached session */
     isSessionReused(): boolean;
+    /* the peer's certificate: {} before the handshake or without one,
+     * null once the socket is destroyed; detailed adds issuerCertificate */
+    getPeerCertificate(detailed: true): DetailedPeerCertificate;
+    getPeerCertificate(detailed?: false): PeerCertificate;
+    getPeerCertificate(detailed?: boolean): PeerCertificate | DetailedPeerCertificate;
+    /* the certificate this socket serves, the same way */
+    getCertificate(): PeerCertificate | object | null;
+    /* a new X509Certificate on each call, or undefined without one */
+    getPeerX509Certificate(): import("crypto").X509Certificate | undefined;
+    getX509Certificate(): import("crypto").X509Certificate | undefined;
   }
+  /* A certificate as getPeerCertificate() and X509Certificate's
+   * toLegacyObject() answer it: subject and issuer map attribute short
+   * names to values, infoAccess its "<method> - <type>" keys to values. */
+  export interface PeerCertificate {
+    subject: { [attribute: string]: string | string[] };
+    issuer: { [attribute: string]: string | string[] };
+    subjectaltname?: string;
+    infoAccess?: { [key: string]: string[] };
+    ca: boolean;
+    modulus?: string;
+    exponent?: string;
+    pubkey?: Buffer;
+    bits?: number;
+    valid_from: string;
+    valid_to: string;
+    fingerprint: string;
+    fingerprint256: string;
+    fingerprint512: string;
+    ext_key_usage?: string[];
+    serialNumber: string;
+    raw: Buffer;
+    asn1Curve?: string;
+    nistCurve?: string;
+  }
+  /* getPeerCertificate(true): each certificate links to its issuer; a
+   * self-issued root is its own issuerCertificate */
+  export interface DetailedPeerCertificate extends PeerCertificate {
+    issuerCertificate: DetailedPeerCertificate;
+  }
+
   /** new tls.TLSSocket(socket, options): the server-mode wrap of an open
    * socket (a server connection or an http CONNECT socket). The options
    * record reads at runtime; isServer, cert, key, secureContext,
@@ -6018,6 +6161,8 @@ declare module "tls" {
   /** An opaque parsed cert/key pair — what an SNI callback answers with
    * (the value is a runtime handle; the members are runtime-internal). */
   export interface SecureContext {}
+  /* @types/node's name for createSecureContext's options */
+  export type SecureContextOptions = TlsOptions;
   export function createSecureContext(options: TlsOptions): SecureContext;
   /** The CA-store introspection surface (scr_tls_ca.c): per-type cached
    * PEM string arrays. The host bundle stands in for Node's compiled-in

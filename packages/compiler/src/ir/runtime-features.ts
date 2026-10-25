@@ -2,6 +2,7 @@ import type { IrClassDef, IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } 
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   isDirentShape,
+  recordHandleCodecClass,
   recordTextCodecClass,
   RUNTIME_EMITTER_CLASS,
   RUNTIME_EVENT_CLASS,
@@ -144,6 +145,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.debuglog",
   "util.deprecate",
   "util.inherits",
+  "util.inheritsPrototype",
   "util.styleText",
 ]);
 
@@ -173,6 +175,7 @@ const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.debuglog",
   "util.deprecate",
   "util.inherits",
+  "util.inheritsPrototype",
 ]);
 
 /** Entry points that link the regex unit: the regex and glob matchers (fs.glob's walk compiles its patterns with the glob matcher), and readline's terminal unit (scr_readline_tty.c), which measures with the regex unit's stripVTControlCharacters. */
@@ -263,6 +266,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.prop",
   "stream.stdioWritable",
   "stream.unboxDyn",
+  "stream.dynIterableSource",
   "stream.handleStream",
   "stream.unpipeDyn",
   "stream.workerStdio",
@@ -316,6 +320,8 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.definePrototypeProps",
   "dyn.functionApply",
   "dyn.globalConstructor",
+  "dyn.namespaceDefine",
+  "dyn.namespaceNew",
   "dyn.objCreateWithProperties",
   "dyn.objectTag",
   "stream.dynNative",
@@ -586,7 +592,7 @@ function mentionsDgramSocket(t: IrType, tables: TypeTables): boolean {
 const textCodecLeaf: CarrierLeaf = (t, tables) => {
   if (t.kind !== "record") return false;
   const shape = tables.records.get(t.shapeId);
-  return shape !== undefined && recordTextCodecClass(shape) !== null;
+  return shape !== undefined && recordHandleCodecClass(shape) !== null;
 };
 
 const textDecoderLeaf: CarrierLeaf = (t, tables) => {
@@ -596,7 +602,7 @@ const textDecoderLeaf: CarrierLeaf = (t, tables) => {
 };
 
 /** Whether converting a value of type `t` to or from dyn converts a
- * TextEncoder or TextDecoder record, which boxes it as a handle of
+ * TextEncoder, TextDecoder or StringDecoder record, which boxes it as a handle of
  * scr_text_codec_dyn.c (the same carrier walk as dgram sockets). */
 function mentionsTextCodec(t: IrType, tables: TypeTables): boolean {
   tables.textCodecCarriers ??= leafCarriers(tables, textCodecLeaf);
@@ -715,6 +721,10 @@ interface RuntimeFeatureRule {
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
+/* The node:url and WHATWG URL entry points: every URL value comes from
+ * one, and parsing one can reach the UTS #46 host processing. */
+const URL_PREFIXES: readonly string[] = ["url."];
+
 /* The HTTP, HTTPS, HTTP/2 and TLS surfaces, which link the net unit. */
 const NET_PREFIXES: readonly string[] = ["net.", "http.", "tls.", "https.", "http2."];
 
@@ -738,6 +748,9 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.x509PublicKey",
+  "crypto.x509Verify",
+  "crypto.x509CheckPrivateKey",
   "crypto.diffieHellman",
 ]);
 
@@ -854,7 +867,7 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "dynFrom" && mentionsDgramSocket(node.value.type, tables())) ||
       (node.kind === "dynCheck" && mentionsDgramSocket(node.type, tables())),
   }),
-  /** A TextEncoder or TextDecoder record converts to or from an untyped
+  /** A TextEncoder, TextDecoder or StringDecoder record converts to or from an untyped
    * value (its handle box, or a boxed function, record or collection that
    * carries one): scr_text_codec_dyn.c. */
   textCodecDyn: rule({
@@ -871,10 +884,11 @@ const RUNTIME_FEATURE_RULES = {
       mod.functions.some(
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
-    // The legacy url functions, crypto.createCipheriv and
-    // ecdh.setPublicKey emit their deprecation warnings through the
-    // dyn-async unit (WebCrypto's encrypt and decrypt link scr_cipher.c
-    // too); scr_wasm.c boxes its handles and promises through it.
+    // The legacy url functions, crypto.createCipheriv,
+    // ecdh.setPublicKey and generateKeyPair's rsa-pss options emit their
+    // deprecation warnings through the dyn-async unit (WebCrypto's
+    // encrypt and decrypt link scr_cipher.c too); scr_wasm.c boxes its
+    // handles and promises through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
@@ -885,6 +899,8 @@ const RUNTIME_FEATURE_RULES = {
       "webcrypto.wrapKey",
       "webcrypto.unwrapKey",
       "crypto.ecdhNew",
+      "crypto.generateKeyPairCb",
+      "crypto.generateKeyPairSync",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
@@ -1063,9 +1079,10 @@ const RUNTIME_FEATURE_RULES = {
   /** scr_url_legacy.c parses and stringifies queries. */
   qs: rule({ fns: [...QS_LIB_FNS, ...LEGACY_URL_LIB_FNS] }),
   /** scr_url_legacy.c lowercases and normalizes hostnames with the regex
-   * unit's libunicode, NODE_DEBUG matching in scr_util_callable.c and
-   * readline's terminal unit use the regex unit, and locale case mapping
-   * runs its default conversion. */
+   * unit's libunicode, the WHATWG URL host parser runs UTS #46 through
+   * scr_idna.c (which links with the regex unit), NODE_DEBUG matching in
+   * scr_util_callable.c and readline's terminal unit use the regex unit,
+   * and locale case mapping runs its default conversion. */
   regex: rule({
     fns: [
       ...REGEX_LIB_FNS,
@@ -1074,13 +1091,17 @@ const RUNTIME_FEATURE_RULES = {
       "rl.terminal",
       "str.localeCase",
     ],
+    prefixes: URL_PREFIXES,
     expr: (node, _tables) =>
       node.kind === "regexLit" ||
       node.kind === "regexIntrinsic" ||
       (node.kind === "strIntrinsic" && CASE_MAPPING_STR_METHODS.has(node.method)),
-    types: ["regex"],
+    types: ["regex", "url"],
   }),
   searchParams: rule({ fns: ["url.searchParams"], prefixes: ["sp."], types: ["searchParams"] }),
+  /** URL programs install the IDNA unit's ToASCII for the WHATWG host
+   * parser (scr_url_idna_install). */
+  urlIdna: rule({ prefixes: URL_PREFIXES, types: ["url"] }),
   /** stdin setEncoding / string data listeners / stdio 'resize' events. A
    * typed string 'data' listener takes setEncoding-decoded chunks; the
    * process stream object's setEncoding and 'resize' members are reached
@@ -1115,12 +1136,46 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** Module namespace objects as checked-dynamic values
+   * (scr_module_namespace.c). */
+  moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
    * scr_webcrypto.c. */
   webcrypto: rule({ prefixes: ["webcrypto."] }),
+  /** scr_x509.c: the X509Certificate fields beyond the validity window and
+   * fingerprint, which stay in scr_lib.c. */
+  x509: rule({
+    fns: [
+      "crypto.x509Ca",
+      "crypto.x509Fingerprint256",
+      "crypto.x509Fingerprint512",
+      "crypto.x509InfoAccess",
+      "crypto.x509Issuer",
+      "crypto.x509Raw",
+      "crypto.x509RawDer",
+      "crypto.x509RawStr",
+      "crypto.x509SerialNumber",
+      "crypto.x509SignatureAlgorithm",
+      "crypto.x509SignatureAlgorithmOid",
+      "crypto.x509Subject",
+      "crypto.x509SubjectAltName",
+      "crypto.x509CheckHost",
+      "crypto.x509CheckEmail",
+      "crypto.x509CheckIP",
+      "crypto.x509CheckIssued",
+      "crypto.x509LegacyObject",
+      "crypto.x509Pem",
+      // getPeerCertificate and getCertificate build with scr_x509.c too.
+      "tls.sockGetPeerCertificate",
+      "tls.sockGetCertificate",
+    ],
+  }),
   zlib: rule({ prefixes: ["zlib."] }),
+  /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
+   * the program uses Brotli (scr_brotli.c). */
+  brotli: rule({ fns: ["zlib.brotliInstall"] }),
 };
 
 type RuntimeFeatureName = keyof typeof RUNTIME_FEATURE_RULES;
@@ -1151,6 +1206,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynInvoke: false,
     dynTier: false,
     ecdh: false,
+    x509: false,
     dh: false,
     emitter: false,
     eventTarget: false,
@@ -1174,7 +1230,9 @@ function noRuntimeFeatures(): RuntimeFeatures {
     qs: false,
     regex: false,
     searchParams: false,
+    urlIdna: false,
     stdioExtended: false,
+    moduleNamespace: false,
     stream: false,
     streamDyn: false,
     handleProps: false,
@@ -1190,6 +1248,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     wasm: false,
     webcrypto: false,
     zlib: false,
+    brotli: false,
   };
 }
 

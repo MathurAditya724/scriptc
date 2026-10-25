@@ -19,7 +19,9 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
+    ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     zlib: features.zlib,
+    ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,
@@ -61,6 +63,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     dh: features.dh,
     pki: features.pki,
     ed25519: features.ed25519,
+    x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
   };

@@ -10,7 +10,7 @@ import { FN_ATTRS, arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import { InternalCompilerError } from "../../errors.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
-import { F64, type IrExpr, type IrType } from "../../ir/ir.js";
+import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
@@ -22,9 +22,10 @@ import {
 } from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
-import { rawBytes } from "./lib-abi.js";
+import { caBytes } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
+import { registerReplay } from "./emit-journal.js";
 
 /** ScrDyn.v.typed_ref.type_key_len: the low 27 bits of its bit-field word. */
 const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
@@ -595,7 +596,8 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     // The https URL row is the http one with the TLS entry point — same
     // three arguments, same response-callback adapter. The https options
     // row is wider: rejectUnauthorized stays an i1, while its ScrStr or
-    // ScrBytes CA value expands to the runtime's raw pointer + length.
+    // ScrBytes CA value expands to the runtime's raw pointer + length
+    // (caBytes: a null pointer for none).
     const isTls = e.fn.startsWith("https.");
     const isUrl = e.fn.includes("requestUrl");
     const isTlsOptions = isTls && !isUrl;
@@ -629,7 +631,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (isTlsOptions) {
       callArgs = [
         ...callArgs.slice(0, 8),
-        ...rawBytes(host, args[8]!).map((arg) => `${arg.type} ${arg.name}`),
+        ...caBytes(host, args[8]!).map((arg) => `${arg.type} ${arg.name}`),
       ];
       host.declare(
         `declare ptr @scr_https_request(ptr, double, ptr, ptr, double, ptr, i1 zeroext, i1 zeroext, ptr, ${host.sizeType}, ptr, ptr)`,
@@ -648,6 +650,15 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   }
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
+  }
+  // A setter's write: the time value into the Date object (ScrDate.ms).
+  if (e.fn === "date.store") {
+    const date = emitBorrowedInput(host, e.args[0]!).name;
+    const ms = host.emitExpr(e.args[1]!).name;
+    const field = B.tmp();
+    B.line(`${field} = getelementptr inbounds i8, ptr ${date}, i64 8 ; ->ms`);
+    B.line(`store double ${ms}, ptr ${field}`);
+    return { name: ms, type: e.type };
   }
   // queueMicrotask's checked-dynamic form carries the AsyncLocalStorage
   // context like the static one (lib-process.ts).
@@ -832,35 +843,68 @@ function emitAssertFailing(
  * `a.name.localeCompare(b.name)` reads both fields without retaining). */
 const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set(["str.localeCompare"]);
 
-/** The parameter count of a replace callback the runtime can call through
- * the closure ABI (scr_regex_replace_fn), or null when it needs the dyn
- * box. Each declared parameter must receive a value of its declared kind
- * in every match: the match string at 0; with more than one parameter the
+/** The most parameters scr_regex_replace_fn calls a replacer with
+ * (SCR_REPLACER_MAX_ARITY), the first bit of its string-or-undefined
+ * parameters (SCR_REPLACER_OPTIONAL), and its flag for a checked-dynamic
+ * result (SCR_REPLACER_BOXED_RESULT). */
+const REPLACER_MAX_ARITY = 6;
+const REPLACER_OPTIONAL = 2 ** 8;
+const REPLACER_BOXED_RESULT = 2 ** 31;
+
+/** `string | undefined` held as the string pointer, NULL for undefined. */
+function optionalStringType(host: LlvmEmitterContext, type: IrType): boolean {
+  if (type.kind !== "union") return false;
+  const nullable = host.nullableUnions.get(type.unionId);
+  if (nullable?.repr !== "single" || nullable.arm.kind !== "string" || nullable.nullTag >= 0)
+    return false;
+  return host.unionsById.get(type.unionId)?.arms[nullable.unitTag]?.kind === "undefinedT";
+}
+
+/** The parameter count and kinds (scr_regex_replace_fn's `kinds`) of a
+ * replace callback the runtime can call through the closure ABI, or null
+ * when it needs the dyn box. A checked-dynamic parameter receives whatever
+ * Node passes at its position. Each typed parameter must receive a value of
+ * its declared kind in every match: the match string at 0; past 0 the
  * pattern must be a literal whose captures are known, so position i is a
- * capture that every match sets (a string), the offset (a number) right
- * after the captures, or the subject (a string) after that. */
-function typedReplacerArity(callback: IrType, pattern: IrExpr): number | null {
+ * capture (a string when every match sets it, otherwise `string |
+ * undefined`), the offset (a number) right after the captures, or the
+ * subject (a string) after that. The result is a string or a
+ * checked-dynamic value. */
+function typedReplacerShape(
+  host: LlvmEmitterContext,
+  callback: IrType,
+  pattern: IrExpr,
+): { arity: number; kinds: number } | null {
   if (callback.kind !== "func" || callback.rest || callback.argumentsAll) return null;
-  if (callback.ret.kind !== "string") return null;
+  if (callback.ret.kind !== "string" && callback.ret.kind !== "dyn") return null;
   const params = callback.params;
-  if (params.length > 4) return null;
-  if (params.length === 0) return 0;
-  if (params[0]!.kind !== "string") return null;
-  if (params.length === 1) return 1;
-  if (pattern.kind !== "regexLit") return null;
-  const captures = regexLiteralCaptures(pattern.pattern, pattern.flags);
-  if (!captures) return null;
-  for (let i = 1; i < params.length; i++) {
+  if (params.length > REPLACER_MAX_ARITY) return null;
+  let kinds = callback.ret.kind === "dyn" ? REPLACER_BOXED_RESULT : 0;
+  let captures: { count: number; always: boolean[] } | null | undefined;
+  for (let i = 0; i < params.length; i++) {
     const kind = params[i]!.kind;
+    if (kind === "dyn") {
+      kinds += 2 ** i;
+      continue;
+    }
+    const optional = optionalStringType(host, params[i]!);
+    if (i === 0) {
+      if (kind !== "string") return null;
+      continue;
+    }
+    if (pattern.kind !== "regexLit") return null;
+    captures ??= regexLiteralCaptures(pattern.pattern, pattern.flags);
+    if (!captures) return null;
     const ok =
       i < captures.count
-        ? kind === "string" && captures.always[i] === true
+        ? (kind === "string" && captures.always[i] === true) || optional
         : i === captures.count
           ? kind === "f64"
           : i === captures.count + 1 && kind === "string";
     if (!ok) return null;
+    if (optional) kinds += REPLACER_OPTIONAL * 2 ** i;
   }
-  return params.length;
+  return { arity: params.length, kinds };
 }
 
 /** `s.replace(re, fn)` / `replaceAll` with a typed callback the runtime can
@@ -870,16 +914,16 @@ function typedReplacerArity(callback: IrType, pattern: IrExpr): number | null {
 function emitTypedRegexReplace(host: LlvmEmitterContext, e: LibCallExpr): LlValue | null {
   const [subject, pattern, callback, all] = e.args;
   if (!subject || !pattern || callback?.kind !== "dynFrom" || all?.kind !== "boolLit") return null;
-  const arity = typedReplacerArity(callback.value.type, pattern);
-  if (arity === null) return null;
+  const shape = typedReplacerShape(host, callback.value.type, pattern);
+  if (shape === null) return null;
   const B = host.B;
   const s = host.emitExpr(subject);
   const re = host.emitExpr(pattern);
   const fn = host.emitExpr(callback.value);
-  host.declare(`declare ptr @scr_regex_replace_fn(ptr, ptr, ptr, i32, i1 zeroext)`);
+  host.declare(`declare ptr @scr_regex_replace_fn(ptr, ptr, ptr, i32, i32, i1 zeroext)`);
   const result = B.tmp();
   B.line(
-    `${result} = call ptr @scr_regex_replace_fn(ptr ${s.name}, ptr ${re.name}, ptr ${fn.name}, i32 ${arity}, i1 zeroext ${all.value})`,
+    `${result} = call ptr @scr_regex_replace_fn(ptr ${s.name}, ptr ${re.name}, ptr ${fn.name}, i32 ${shape.arity}, i32 ${shape.kinds | 0}, i1 zeroext ${all.value})`,
   );
   const output = host.own({ name: result, type: e.type });
   host.emitPendingCheck();
@@ -927,6 +971,57 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     return { name: t, type: e.type };
   }
   if (e.fn === "bytes.absent") return host.own({ name: "null", type: e.type });
+  if (e.fn === "bytes.disjoint") {
+    // [data, data + len * size) of each view, compared as addresses. A view
+    // that is not there (a binding the nest never assigned, NULL) answers
+    // false without reading its header, so the caller keeps its loop.
+    const B = host.B;
+    const values = e.args.map((arg) => ({ arg, value: host.emitReadReceiver(arg) }));
+    const present = values.map(({ value }) => {
+      const t = B.tmp();
+      B.line(`${t} = icmp ne ptr ${value.name}, null`);
+      return t;
+    });
+    const both = B.tmp();
+    B.line(`${both} = and i1 ${present[0]}, ${present[1]}`);
+    const compare = B.newLabel("disjoint.compare"),
+      done = B.newLabel("disjoint.done");
+    const from = B.currentLabel();
+    B.condBr(both, compare, done);
+    B.startBlock(compare);
+    const range = (arg: IrExpr, pointer: string): { start: string; end: string } => {
+      const size = arg.type.kind === "bytes" ? BYTES_ELEMENT_SIZE[arg.type.elem] : 1;
+      const dataSlot = B.tmp(),
+        data = B.tmp(),
+        lenSlot = B.tmp(),
+        len = B.tmp(),
+        bytes = B.tmp(),
+        start = B.tmp(),
+        end = B.tmp();
+      B.line(`${dataSlot} = getelementptr inbounds %ScrBytes, ptr ${pointer}, i64 0, i32 3`);
+      B.line(`${data} = load ptr, ptr ${dataSlot}`);
+      B.line(`${lenSlot} = getelementptr inbounds %ScrBytes, ptr ${pointer}, i64 0, i32 1`);
+      B.line(`${len} = load ${host.sizeType}, ptr ${lenSlot}`);
+      B.line(`${bytes} = mul ${host.sizeType} ${len}, ${size}`);
+      B.line(`${start} = ptrtoint ptr ${data} to ${host.sizeType}`);
+      B.line(`${end} = add ${host.sizeType} ${start}, ${bytes}`);
+      return { start, end };
+    };
+    const left = range(values[0]!.arg, values[0]!.value.name),
+      right = range(values[1]!.arg, values[1]!.value.name);
+    const before = B.tmp(),
+      after = B.tmp(),
+      apart = B.tmp(),
+      t = B.tmp();
+    B.line(`${before} = icmp ule ${host.sizeType} ${left.end}, ${right.start}`);
+    B.line(`${after} = icmp ule ${host.sizeType} ${right.end}, ${left.start}`);
+    B.line(`${apart} = or i1 ${before}, ${after}`);
+    const compared = B.currentLabel();
+    B.br(done);
+    B.startBlock(done);
+    B.line(`${t} = phi i1 [ false, %${from} ], [ ${apart}, %${compared} ]`);
+    return { name: t, type: e.type };
+  }
   if (e.fn === "record.isFrozen") {
     // The frozen bit of the record's rc word (scr_rc.h SCR_RC_FROZEN) is
     // its second-highest bit; an immortal word sets the highest one too.
@@ -1069,6 +1164,36 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   }
 }
 
+/** The settlement adapter of Promise.all's tuple form for the builder
+ * `fnName`, which fulfills the result with the builder's tuple. */
+function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrType): string {
+  const key = `allTuple:${fnName}`;
+  let adapter = host.resolveThunks.get(key);
+  if (adapter !== undefined) return adapter;
+  adapter = `sc_all_tuple_${host.resolveThunks.size}`;
+  host.resolveThunks.set(key, adapter);
+  host.journal?.allocated(adapter, "allTupleAdapterFor", [fnName, tuple]);
+  const rc = vAdapters(host.shapeHost, tuple);
+  host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
+  host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
+  host.resolveThunkDefs.push(
+    `define internal void @${adapter}(ptr %dst, ptr %src) ${FN_ATTRS} { ; Promise.all tuple`,
+    `entry:`,
+    `  %entries = call ptr @scr_promise_payload_ref(ptr %src) ; +1, moves into the builder`,
+    `  %tuple = call ptr @${host.callTarget(fnName)}(ptr %entries)`,
+    `  call void @scr_promise_fulfill_ref(ptr %dst, ptr %tuple, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, tuple)})`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  host.journal?.built();
+  return adapter;
+}
+
+registerReplay("allTupleAdapterFor", (host, args) =>
+  allTupleAdapterFor(host, args[0] as string, args[1] as IrType),
+);
+
 /** Promise.all's tuple form (promise.allTuple): the combinator over the
  * entries stores each fulfilled entry promise, and a settlement adapter on
  * the combinator calls the builder with them and fulfills the result with
@@ -1081,26 +1206,7 @@ function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue 
     throw new InternalCompilerError("llvm emitter bug: promise.allTuple shape");
   const entriesT = e.args[0]!.type;
   const entries = host.emitExpr(e.args[0]!);
-  const tuple = e.type.inner;
-  const key = `allTuple:${build.fnName}`;
-  let adapter = host.resolveThunks.get(key);
-  if (adapter === undefined) {
-    adapter = `sc_all_tuple_${host.resolveThunks.size}`;
-    host.resolveThunks.set(key, adapter);
-    const rc = vAdapters(host.shapeHost, tuple);
-    host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
-    host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
-    host.resolveThunkDefs.push(
-      `define internal void @${adapter}(ptr %dst, ptr %src) ${FN_ATTRS} { ; Promise.all tuple`,
-      `entry:`,
-      `  %entries = call ptr @scr_promise_payload_ref(ptr %src) ; +1, moves into the builder`,
-      `  %tuple = call ptr @${host.callTarget(build.fnName)}(ptr %entries)`,
-      `  call void @scr_promise_fulfill_ref(ptr %dst, ptr %tuple, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, tuple)})`,
-      `  ret void`,
-      `}`,
-      ``,
-    );
-  }
+  const adapter = allTupleAdapterFor(host, build.fnName, e.type.inner);
   host.declare(`declare ptr @scr_promise_all(ptr, ptr, ptr)`);
   host.declare(`declare void @scr_promise_all_store_promise(ptr, double, ptr)`);
   host.declare(`declare ptr @scr_promise_new()`);

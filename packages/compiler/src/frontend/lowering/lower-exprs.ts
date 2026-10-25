@@ -89,7 +89,7 @@ import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
-import { lowerTernary } from "./expressions/narrowing.js";
+import { lowerTernary, v8CalleeText } from "./expressions/narrowing.js";
 import {
   classFieldTarget,
   lowerPropertyAccessExpr,
@@ -433,7 +433,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const operand = assertionOperand(lowerer, expr, inner, target ?? null, loc);
       if (operand) return operand;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
-        const helper = lowerer.narrowedArmHelper(inner.type.unionId, target, loc);
+        const helper = lowerer.narrowedArmHelper(
+          inner.type.unionId,
+          target,
+          loc,
+          assertedCalleeMessage(expr, target),
+        );
         if (helper) {
           return lowerer.checkedNarrowCall(helper, inner, target, loc);
         }
@@ -975,6 +980,18 @@ function assertionDestinationHoldsNullish(
   return constituentTypes(contextual).some((type) => (type.flags & nullish) !== 0);
 }
 
+/** Whether `declaration` is TextDecoder's `decode` method. */
+function isTextDecoderDecode(declaration: ts.Node): boolean {
+  if (!ts.isMethodSignatureDeclaration(declaration) && !ts.isMethodDeclaration(declaration))
+    return false;
+  if (!ts.isIdentifier(declaration.name) || declaration.name.text !== "decode") return false;
+  const owner = declaration.parent;
+  return (
+    (ts.isInterfaceDeclaration(owner) || ts.isClassDeclaration(owner)) &&
+    owner.name?.text === "TextDecoder"
+  );
+}
+
 /** Whether `argument` of `call` binds an optional parameter of a standard
  * library declaration (`decoder.decode(input?)`). The undefined such a
  * parameter's type holds comes from its optionality, and the builtin
@@ -989,6 +1006,9 @@ function optionalStdlibParameter(
   const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
   if (declaration === undefined || !lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration)))
     return false;
+  // TextDecoder.decode reads an undefined input as no bytes, as Node does
+  // (builtins/text-codecs.ts lowerDecodeInput).
+  if (isTextDecoderDecode(declaration)) return false;
   const index = call.arguments?.nodes.indexOf(argument) ?? -1;
   const parameter = declaration.parameters?.nodes[index];
   return (
@@ -1024,13 +1044,14 @@ function assertionOperand(
     )
   )
     return null;
-  // Array and typed-array element reads keep their own handling of a
-  // missing element.
+  // Array element reads keep their own handling of a missing element. A
+  // typed-array read is optional here only where its use tells undefined
+  // from NaN (assertedReadObservesUndefined).
   let operand: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
   if (ts.isElementAccessExpression(operand)) {
     const kind = lowerer.mapTypeOf(lowerer.typeOf(operand.expression))?.kind;
-    if (kind === "array" || kind === "bytes") return null;
+    if (kind === "array") return null;
   }
   const use = convertingUseOf(lowerer, expr);
   if (use === null) return null;
@@ -1047,6 +1068,7 @@ function convertingUseOf(lowerer: Lowerer, expr: ts.NonNullExpression): "number"
   while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
   const parent = outer.parent;
   if (ts.isTemplateSpan(parent)) return parent.expression === outer ? "value" : null;
+  if (ts.isTypeOfExpression(parent)) return "value";
   if (ts.isPrefixUnaryExpression(parent)) {
     if (parent.operator === ts.SyntaxKind.ExclamationToken) return "value";
     return parent.operator === ts.SyntaxKind.MinusToken ||
@@ -1142,6 +1164,36 @@ const NUMERIC_COMPOUNDS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
   ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
 ]);
+
+/** The TypeError Node raises when an asserted callee (`t[k]!(…)`, `o.f!()`)
+ * holds no function: `!` is erased, so the call itself throws "<callee> is
+ * not a function" in V8's spelling of the callee. */
+function assertedCalleeMessage(expr: ts.NonNullExpression, target: IrType): string | undefined {
+  if (target.kind !== "func") return undefined;
+  let child: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(child.parent)) child = child.parent;
+  const call = child.parent;
+  if (!ts.isCallExpression(call) || call.expression !== child || call.questionDotToken)
+    return undefined;
+  return `${v8CalleeText(expr.expression)} is not a function`;
+}
+
+/** Whether the use of `t[i]!` tells undefined from NaN: a converting use
+ * that takes the value itself (see convertingUseOf), or a destination that
+ * holds a missing element (see assertedElementKeepsUndefined) other than a
+ * return, whose slot has the function's number type. */
+export function assertedReadObservesUndefined(
+  lowerer: Lowerer,
+  node: ts.NonNullExpression,
+): boolean {
+  if (convertingUseOf(lowerer, node) === "value") return true;
+  let outer: ts.Expression = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  if (ts.isReturnStatement(parent) || (ts.isArrowFunction(parent) && parent.body === outer))
+    return false;
+  return assertedElementKeepsUndefined(lowerer, node);
+}
 
 export function runtimeOptionalAssertionErases(
   lowerer: Lowerer,
@@ -2320,6 +2372,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "set":
     case "generator":
     case "regex":
+    case "date":
     case "bytes":
     case "url":
     case "searchParams":

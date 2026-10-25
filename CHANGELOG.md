@@ -6,6 +6,31 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.4.4
+
+### Highlights
+
+- **Fixes for 0.4.3:**
+  - Unchanged rebuilds hit the frontend cache again. An unchanged rebuild of a 23-module program takes 93 ms instead of 1.26 s, and of tsc-ts (dev) 1.6 s instead of 58.2 s.
+  - The native compiler builds programs with several typed-array accesses at one masked index in a loop again, including tsc-ts's release build, which failed with SC3004.
+  - `x!` returned from a function, used as an arrow function's result, or passed as an argument keeps null or undefined when the destination type holds it, as JavaScript does. `x!` operands of `+`, `+=` and other conversions that hold undefined or null convert as Node does.
+  - Effect 4 programs whose generators yield clients built by other generators run again.
+  - The cache for untyped property access in programs that declare classes is reverted, fixing a crash in Effect 4 observability programs.
+- **Faster:**
+  - Number compares and typed-array indexes use the exact integer of sums like `i + 1`: a heap sift-down over an `Int32Array` runs 17.5% faster.
+  - glibc's per-thread heaps use huge pages: the VS Code type-check runs 3.4% faster.
+  - Mid-size executables (over 1 MiB of LLVM text) build in at least eight partitions: the LLVM backend phase takes 34 to 74% less time for three.js programs of 1.4 to 7.8 MB.
+  - JavaScript class instances are boxed at their exact class, and stores into nested string-keyed dictionaries keep class method calls direct.
+  - `--target-cpu` selects an x86-64 microarchitecture level.
+- **Node.js parity:**
+  - X25519 keys and `crypto.diffieHellman`; `existsSync` and `fs.promises` accept `file:` URLs; `Buffer.from` ranges over ArrayBuffers, the deprecated `Buffer()` constructor and `Buffer` as a value.
+  - Dates are objects with identity; `Promise.all` over different entry types settles on Node's turns; completion callbacks run in their call's AsyncLocalStorage context.
+  - TypedArray methods run on typed arrays held as untyped values, and unions of typed-array classes compile. Borrowed `TypedArray.prototype.set` calls compile and throw Node's TypeError for other targets.
+  - Split CommonJS `require` bindings, `__`-prefixed exports, string-key destructuring of `any` values, and record key order for values JavaScript built.
+- **npm packages:** zod 4 and `@hono/zod-validator` values are projected at the declaration boundary.
+
+<!-- release:end -->
+
 ## 0.4.3
 
 ### Highlights
@@ -25,8 +50,6 @@ All notable changes to scriptc will be documented in this file.
   - Records enumerate in the key order their object literal wrote, and objects converting to a union with an empty-record arm keep every field.
 - **npm packages:** zod 3 compiles natively and zod 4's core runs, minified packages such as marked compile, chalk 5 and hot-shots 8 build from built-in shims, and `@hono/node-server` 2.x is built in. User code types npm package declarations at a checked, identity-preserving boundary.
 - **Builds:** the cached build is reused after whitespace and comment edits, function bodies are emitted on forked workers, and the LLVM emitter reads its analyses from one recorded walk of each module.
-
-<!-- release:end -->
 
 ## 0.4.2
 

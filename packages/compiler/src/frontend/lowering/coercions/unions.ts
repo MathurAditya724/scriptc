@@ -394,18 +394,21 @@ export function unionRetagHelper(
  * the catchable TypeError — divergence 38's lying-assertion stance (an
  * unchecked unionNarrow would misread the payload where JS lets the
  * impossible value flow on). Null when the target isn't a non-unit arm
- * of the union — those uses keep their erasure/fences. */
+ * of the union — those uses keep their erasure/fences. `message` replaces
+ * the failure message (the TypeError of the operation consuming the
+ * value, such as a call's "f is not a function"). */
 export function narrowedArmHelper(
   lowerer: Lowerer,
   fromId: string,
   target: IrType,
   loc: SrcLoc,
+  message?: string,
 ): string | null {
   const from = lowerer.unions.get(fromId);
   if (!from || isUnitType(target)) return null;
   const tag = lowerer.armTag(fromId, target);
   if (tag < 0) return null;
-  const key = `${fromId}:${tag}`;
+  const key = message === undefined ? `${fromId}:${tag}` : `${fromId}:${tag}:${message}`;
   const existing = lowerer.coercions.narrows.get(key);
   if (existing) {
     lowerer.coercions.checkedNarrows.add(existing);
@@ -414,9 +417,22 @@ export function narrowedArmHelper(
   const name = keyedHelperName(lowerer, "%union.narrow", key);
   lowerer.coercions.narrows.set(key, name);
   lowerer.coercions.checkedNarrows.add(name);
-  const fn = buildUnionNarrow(name, from, target, loc, (type) => lowerer.fmt(type));
+  const fn = buildUnionNarrow(
+    name,
+    from,
+    target,
+    loc,
+    (type) => lowerer.fmt(type),
+    null,
+    message ?? null,
+  );
   if (!fn) throw new InternalCompilerError("lowerer bug: invalid checked union extraction");
-  lowerer.coercions.checkedNarrowArms.set(name, { unionId: fromId, tag, target: from.arms[tag]! });
+  lowerer.coercions.checkedNarrowArms.set(name, {
+    unionId: fromId,
+    tag,
+    target: from.arms[tag]!,
+    ...(message === undefined ? {} : { message }),
+  });
   lowerer.liftedFns.push(fn);
   return name;
 }
@@ -447,6 +463,7 @@ export function widthNarrowHelper(
     target,
     loc,
     (type) => lowerer.fmt(type),
+    null,
     null,
     (armTag, payload) => widthSubtypeConversion(lowerer, from.arms[armTag]!, target, payload, loc),
   );
@@ -499,7 +516,8 @@ export function checkedNarrowCall(
   let failure: IrExpr | null = null;
   for (let tag = from.arms.length - 1; tag >= 0; tag--) {
     if (tag === arm.tag) continue;
-    const message = unionNarrowFailureMessage(from.arms[tag]!, (t) => lowerer.fmt(t));
+    const message =
+      arm.message ?? unionNarrowFailureMessage(from.arms[tag]!, (t) => lowerer.fmt(t));
     const thrown = nodeThrowExpr(1, "", message, type, loc);
     failure =
       failure === null

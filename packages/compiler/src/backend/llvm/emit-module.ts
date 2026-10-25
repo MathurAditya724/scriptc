@@ -61,10 +61,11 @@ import { hasLoneSurrogate, wtf8Bytes } from "../literals.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
 import { NULLABLE_ABSENT, NULLABLE_NULL } from "./nullable-unions.js";
 import { literalEqualityDefinition } from "./string-literal-equality.js";
-import { STRING_READ_HELPERS, stringScanDecl } from "./string-reads.js";
+import { STRING_READ_HELPERS, stringScanDecl, stringScanInline } from "./string-reads.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import { InternalCompilerError } from "../../errors.js";
 import { targetCpuAttribute } from "../target-cpu.js";
+import type { IrFunction } from "../../ir/ir.js";
 
 /** The function bodies emitted in `chunks` contiguous ranges, each by its
  * own emitter (LlEmitter.chunkEmitter), then merged in function order: the
@@ -101,10 +102,10 @@ function emitFunctionsInChunks(emitter: LlEmitter, chunks: number): string[] {
   return fnDefs;
 }
 
-/** Modules with fewer functions emit in one process: forking and merging
- * would cost more than the workers save (SCRIPTC_EMIT_WORKER_FUNCTIONS
- * lowers it, for tests). */
-function workerMinFunctions(): number {
+/** Modules with fewer functions emit in one process, and compute their
+ * analyses in it: forking and merging would cost more than the workers save
+ * (SCRIPTC_EMIT_WORKER_FUNCTIONS lowers it, for tests). */
+export function workerMinFunctions(): number {
   const value = Number(process.env["SCRIPTC_EMIT_WORKER_FUNCTIONS"] ?? "2000");
   return Number.isFinite(value) && value > 0 ? value : 2000;
 }
@@ -133,6 +134,7 @@ function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] |
       let code = 1;
       try {
         emitter.journal = new EmitJournal();
+        emitter.debug?.record();
         const texts: string[] = [];
         for (const fn of functions.slice(range * size, (range + 1) * size)) {
           texts.push(emitter.emitFunction(fn));
@@ -206,16 +208,33 @@ function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean)
   ];
 }
 
+/** The group line written before each function's text. Functions from one
+ * source file share a group, which the LLVM helper keeps in the same
+ * partitions so that their calls to each other stay inside a partition
+ * (native/llvm-codegen/src/partition.h). A group is numbered by the first
+ * function of its file in the module's function order, which does not depend
+ * on the host. Functions without a source file get no group. */
+function partitionGroupLines(functions: readonly IrFunction[]): string[] {
+  const groups = new Map<string, number>();
+  return functions.map((fn) => {
+    const file = fn.loc.file;
+    if (file === "") return PARTITION_GROUP_END;
+    let group = groups.get(file);
+    if (group === undefined) groups.set(file, (group = groups.size));
+    return `${PARTITION_GROUP_END} ${group}`;
+  });
+}
+
+/** Ends the group of the definitions that follow. */
+const PARTITION_GROUP_END = "; scriptc-group";
+
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
-  // Debug metadata is numbered per emitter and not journaled, so a debug
-  // build emits every body here.
-  const ranges = emitter.debug === null;
   const chunks = emitter.targetOptions.functionChunks ?? 1;
   const fnDefs =
-    (ranges && chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
-    (ranges ? emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) : null) ??
+    (chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
+    emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) ??
     [];
   if (fnDefs.length === 0)
     for (const fn of emitter.mod.functions) {
@@ -344,6 +363,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
+  // URL programs give the host parser the IDNA unit's ToASCII.
+  const usesUrlIdna = runtimeFeatures.urlIdna;
   const snapshotsTlsCa = runtimeFeatures.tls || runtimeFeatures.tlsCa;
   // The process verdict has the same precedence as the C reference
   // emitter: node:test owns the final status when present; otherwise an
@@ -396,6 +417,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
+  if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
@@ -646,7 +668,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // class-object shape { rc, pre, post, ctor, name } — field reads on
     // builtin errors and classval loads GEP through these.
     `%ScrError = type { ${emitter.sizeType}, ptr, ptr, ptr, ptr, ptr, i8, i8, i8, i8, i8, ptr, ptr }`,
-    `%ScrClassObj = type { ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr }`,
+    `%ScrClassObj = type { ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ptr, ${emitter.sizeType} }`,
     // The runtime emitter prefix { rc, vt, reg, cls } — user subclasses
     // embed it (classes.ts), and bare-emitter GEPs address through it.
     `%ScrEmitter = type { ${emitter.sizeType}, ptr, ptr, ptr }`,
@@ -912,9 +934,13 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   for (const line of wrappers) out.push(line);
   for (const line of asyncDefs) out.push(line);
   for (const line of emitter.resolveThunkDefs) out.push(line);
-  out.push(fnDefs[0] ?? "");
-  for (let i = 1; i < fnDefs.length; i++) out.push("", fnDefs[i]!);
-  out.push("");
+  const groups = partitionGroupLines(emitter.mod.functions);
+  for (let i = 0; i < fnDefs.length; i++) {
+    if (i > 0) out.push("");
+    out.push(groups[i] ?? PARTITION_GROUP_END, fnDefs[i]!);
+  }
+  if (fnDefs.length === 0) out.push("");
+  out.push(PARTITION_GROUP_END, "");
   // WebAssembly modules translated into this program, and the registry.
   for (const line of emitWasmModules(emitter.mod, flushedDecls, emitter.wasmBoundsChecks))
     out.push(line);
@@ -986,7 +1012,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // LIBRARY mode: no @main — the profile-declared external
     // symbols specified by the library IR instead.
     for (const line of emitter.emitLibDefs(globals, globalReleaseLines, stamps)) out.push(line);
-    out.push(...emitter.inlineRcTail(flushedDecls));
+    for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
     out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
     out.push(``);
     out.push(...emitter.fieldAliasMetadata());
@@ -1027,6 +1053,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
+    ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
@@ -1131,7 +1158,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       : [`  %native_exit = call i32 @scr_exit_code_hint_get()`, `  ret i32 %native_exit`]),
     `}`,
     ``,
-    ...emitter.inlineRcTail(flushedDecls),
+  );
+  for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
+  out.push(
     // sanitize_address is inert under the plain pipeline; the sanitized
     // lane's -fsanitize=address link activates instrumentation over the
     // emitted functions too (the runtime TUs get theirs from clang).
@@ -1264,6 +1293,42 @@ export function helperDefs(emitter: LlEmitter): string[] {
       `  ret ptr null`,
       `outside:`,
       `  %dense.any = icmp ne ${sz} %nd, 0`,
+      `  br i1 %dense.any, label %miss, label %slow`,
+      `slow:`,
+      `  %hashed = call ptr @sc_map_entry_f64_hashed(ptr %m, double %k)`,
+      `  ret ptr %hashed`,
+      `}`,
+      ``,
+      // The same lookup for a key the emitter knows is an integer (`%ki`,
+      // the double `%k`'s exact value): the direct index tests the integer
+      // itself, so the double is converted only by the hashed probe. A
+      // negative key is not below the index's size as an unsigned value.
+      `define internal ptr @sc_map_entry_f64_int(ptr %m, i64 %ki, double %k) ${FN_ATTRS} {`,
+      `entry:`,
+      `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
+      `  %nd32 = load i32, ptr %ndp`,
+      `  %nd = zext i32 %nd32 to i64`,
+      `  %inside = icmp ult i64 %ki, %nd`,
+      `  br i1 %inside, label %slot, label %outside`,
+      `slot:`,
+      sz === "i64" ? `  %i = add i64 %ki, 0` : `  %i = trunc i64 %ki to ${sz}`,
+      `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
+      `  %dense = load ptr, ptr %dp`,
+      `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,
+      `  %s = load i32, ptr %sp`,
+      `  %empty = icmp eq i32 %s, 0`,
+      `  br i1 %empty, label %miss, label %hit`,
+      `hit:`,
+      `  %e32 = sub i32 %s, 1`,
+      sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
+      `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+      `  %entries = load ptr, ptr %ep`,
+      `  %found = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %e`,
+      `  ret ptr %found`,
+      `miss:`,
+      `  ret ptr null`,
+      `outside:`,
+      `  %dense.any = icmp ne i64 %nd, 0`,
       `  br i1 %dense.any, label %miss, label %slow`,
       `slow:`,
       `  %hashed = call ptr @sc_map_entry_f64_hashed(ptr %m, double %k)`,
@@ -1586,9 +1651,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
   // A scan's receiver reads inline too (ScrStrScan): from ordinary global
   // storage, or, in worker executables, from the thread's static TLS block,
   // one thread-pointer-relative load (see executableTls).
-  const scanInline =
-    emitter.executableTls ||
-    (emitter.mod.workers !== true && emitter.mod.lib?.threadInstances !== true);
+  const scanInline = stringScanInline(emitter);
   let scanDeclared = false;
   for (const helper of STRING_READ_HELPERS) {
     if (!emitter.decls.has(helper.decl)) continue;
@@ -1612,8 +1675,8 @@ export function helperDefs(emitter: LlEmitter): string[] {
   // order; other differing words decide by their first differing byte,
   // and strings shorter than a word by their first byte. Otherwise a
   // proven-ASCII string on either side orders by bytes (scr_str_cmp), and
-  // other pairs call scr_str_cmp_u16_bytes, which only reads the two
-  // strings, so LLVM can merge repeated comparisons of one pair. Callers
+  // other pairs call scr_str_cmp_u16_bytes. Both only read the two strings,
+  // so LLVM can merge repeated comparisons of one pair. Callers
   // only test the sign of the result.
   if (emitter.decls.has(`declare i32 @scr_str_cmp_u16(ptr, ptr)`)) {
     const fn = "scr_str_cmp_u16";
@@ -1743,7 +1806,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
       `  %anyascii = icmp slt i32 %cws, 0`,
       `  br i1 %anyascii, label %memorder, label %units`,
       `memorder:`,
-      `  %m = call i32 @scr_str_cmp(ptr %a, ptr %b)`,
+      `  %m = call i32 @scr_str_cmp(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)`,
       `  ret i32 %m`,
       `units:`,
       `  %c = call i32 @scr_str_cmp_u16_bytes(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)`,

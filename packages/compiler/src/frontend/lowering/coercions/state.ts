@@ -16,7 +16,7 @@ export class CoercionState {
   // The extracted arm of each checked (non-defaulting) extraction helper.
   readonly checkedNarrowArms = new Map<
     string,
-    { unionId: string; tag: number; target: IrType; widens?: true }
+    { unionId: string; tag: number; target: IrType; widens?: true; message?: string }
   >();
   readonly retags = new Map<string, string>();
   readonly narrows = new Map<string, string>();
