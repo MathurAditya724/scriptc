@@ -383,6 +383,10 @@ export function emitShapeUnionHelpers(host: ShapeHost): string[] {
     // release that may free dispatches on the arm. The release stays a call:
     // inlined at every release site, it grows code more than it saves.
     const traced = union.arms.map((arm) => host.tracedShapes.has(`record:${arm.shapeId}`));
+    // A freezable arm's count is the word without its frozen bit, as in
+    // releaseFastPath: a frozen record's last reference takes the slow path.
+    const frozen = union.arms.some((arm) => host.recordsById.get(arm.shapeId)?.freezable === true);
+    const notFrozen = ~recordFrozenBit(S);
     const release = shapeReleaseFn(union.unionId);
     if (traced.every((t) => t === traced[0]))
       out.push(
@@ -390,8 +394,13 @@ export function emitShapeUnionHelpers(host: ShapeHost): string[] {
         `entry:`,
         ...units,
         `  %rc = load ${S}, ptr %o`,
-        `  %rcm2 = sub ${S} %rc, 2`,
-        `  %shared = icmp ult ${S} %rcm2, -3`,
+        ...(frozen
+          ? [
+              `  %refs = and ${S} %rc, ${sizeLiteral(S, notFrozen)}`,
+              `  %rcm2 = sub ${S} %refs, 2`,
+              `  %shared = icmp ult ${S} %rcm2, ${sizeLiteral(S, notFrozen - 2n)}`,
+            ]
+          : [`  %rcm2 = sub ${S} %rc, 2`, `  %shared = icmp ult ${S} %rcm2, -3`]),
         `  br i1 %shared, label %dec, label %slow`,
         `dec:`,
         `  %n = sub ${S} %rc, 1`,

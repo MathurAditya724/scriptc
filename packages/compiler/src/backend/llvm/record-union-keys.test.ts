@@ -146,3 +146,24 @@ test("unions over the same records share one release", () => {
   expect(ir).toMatch(/^define internal void @sc_srelease\.wide\(/m);
   expect(ir).not.toMatch(/^define internal void @sc_srelease\.same\(/m);
 });
+
+test("a union with a freezable arm compares its count without the frozen bit", async () => {
+  const ir = await llvmFor(`
+type Name = { kind: "name"; text: string };
+type Count = { kind: "count"; value: number };
+type Key = Name | Count;
+function name(text: string): Key {
+  const built: Name = { kind: "name", text };
+  return Object.freeze(built);
+}
+const seen = new Set<Key>();
+seen.add(name("a"));
+seen.add({ kind: "count", value: 1 });
+console.log(seen.size);
+`);
+  const release = /^define internal void @sc_srelease\.[^\n]*\n[^]*?^}/m.exec(ir);
+  expect(release).not.toBeNull();
+  // SCR_RC_FROZEN is bit 62: a frozen record's last reference has count 1.
+  expect(release![0]).toContain("and i64 %rc, -4611686018427387905");
+  expect(release![0]).toContain("icmp ult i64 %rcm2, -4611686018427387907");
+});
