@@ -221,10 +221,10 @@ test("deferred fences in a module's top-level code report as running at startup"
   ]);
   const out = report(fixture("startup-fences.js"));
   expect(out).toMatch(
-    /runs at startup {3}1 site .*\n.*instanceof against this native constructor\n\s+at tests\/coverage-fixtures\/startup-fences\.js:5:13/,
+    /runs at startup {3}1 site .*\n.*'instanceof' right-hand sides other than classes declared in the program\n\s+at tests\/coverage-fixtures\/startup-fences\.js:5:30/,
   );
   expect(out).toMatch(
-    /deferred to runtime {3}1 site .*\n.*instanceof against this native constructor\n\s+at tests\/coverage-fixtures\/startup-fences\.js:7:10/,
+    /deferred to runtime {3}1 site .*\n.*'instanceof' right-hand sides other than classes declared in the program\n\s+at tests\/coverage-fixtures\/startup-fences\.js:7:27/,
   );
   const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
   expect(envelope.diagnostics.map((d) => [d.scope, d.line, d.startup])).toEqual([
@@ -541,6 +541,32 @@ test("settled generic rest-order fences count each source statement once", () =>
   const { coverage } = analyze(join(repoRoot, "tests/diagnostics/retained-generic-rest-order.ts"));
   expect(coverage.diagnostics.map((d) => d.code)).toEqual(["SC1031", "SC2004"]);
   expect(coverage.stats.statementsFailed).toBe(2);
+});
+
+test("CommonJS var and let exports that can change after the export keep their refusal", () => {
+  // JavaScript refusals defer to run time: they are the runtime fences.
+  const { coverage } = analyze(fixture("cjs-mutable-exports/main.js"));
+  const refused = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
+    .map((d) => /exporting the mutable 'let' binding '(\w+)'/.exec(d.message)?.[1])
+    .filter((name) => name !== undefined)
+    .sort();
+  expect(refused).toEqual(["counter", "tab", "twice"]);
+});
+
+test("CommonJS namespace reads of exports a re-exported module assigns later keep their refusal", () => {
+  // wrapper.cjs re-exports impl.cjs, whose set() assigns `current` after
+  // evaluation; `version` never changes.
+  const { coverage } = analyze(fixture("cjs-namespace-reexports/main.mjs"));
+  const refused = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
+    .map(
+      (d) =>
+        /reads of '(\w+)' through namespace imports of CommonJS modules whose functions assign exports/.exec(
+          d.message,
+        )?.[1],
+    )
+    .filter((name) => name !== undefined)
+    .sort();
+  expect(refused).toEqual(["current"]);
 });
 
 test("inferred JavaScript compiles natively", async () => {
