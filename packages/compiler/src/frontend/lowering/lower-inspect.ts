@@ -1,5 +1,7 @@
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
+import { elementMayBeForeign } from "./array-values.js";
+import { classPrototypeView } from "./class-prototypes.js";
 import {
   dynUndefinedExpr,
   boolLit,
@@ -1420,11 +1422,29 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       const i = (): IrExpr => varRef("i.0", F64, loc);
       const next = (): IrExpr => varRef("next.0", F64, loc);
       const hasMore = (): IrExpr => lt(i(), n());
+      // A foreign element (state 3) holds a value outside the element type.
+      const foreignElements = elementMayBeForeign(lowerer, t.elem);
+      const foreign = (): IrExpr => ({
+        kind: "libCall",
+        fn: "array.foreign",
+        args: [v(), i()],
+        type: DYN,
+        loc,
+      });
       const isNumber = (): IrExpr => ({
         kind: "ternary",
         cond: eq(state(i()), numLit(1, loc)),
         then: isNumberFlag(lowerer, t.elem, () => at(i()), loc),
-        else_: boolLit(false, loc),
+        else_: foreignElements
+          ? {
+              kind: "ternary",
+              cond: eq(state(i()), numLit(3, loc)),
+              then: isNumberFlag(lowerer, DYN, foreign, loc),
+              else_: boolLit(false, loc),
+              type: BOOL,
+              loc,
+            }
+          : boolLit(false, loc),
         type: BOOL,
         loc,
       });
@@ -1503,7 +1523,16 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
                     kind: "ternary",
                     cond: eq(state(i()), numLit(1, loc)),
                     then: child(t.elem, at(i())),
-                    else_: strLit("undefined", loc),
+                    else_: foreignElements
+                      ? {
+                          kind: "ternary",
+                          cond: eq(state(i()), numLit(3, loc)),
+                          then: child(DYN, foreign()),
+                          else_: strLit("undefined", loc),
+                          type: STRING,
+                          loc,
+                        }
+                      : strLit("undefined", loc),
                     type: STRING,
                     loc,
                   },
@@ -3527,8 +3556,14 @@ function lowerUtilCallableCall(
     member === "inherits" && expr.arguments.nodes[1] !== undefined
       ? builtinClassKindOf(lowerer, expr.arguments.nodes[1])
       : null;
+  // A superCtor class whose prototype has a complete view (a module-level
+  // JavaScript class named directly) passes that view to the runtime.
+  const superView =
+    member === "inherits" && builtinBase === null && expr.arguments.nodes[1] !== undefined
+      ? classPrototypeView(lowerer, expr.arguments.nodes[1], loc)
+      : null;
   for (const [index, arg] of expr.arguments.nodes.slice(0, classArgs).entries()) {
-    if (index === 1 && builtinBase !== null) continue;
+    if (index === 1 && (builtinBase !== null || superView !== null)) continue;
     if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "classval")
       lowerer.noLowering(
         `util.${member} over a class constructor`,
@@ -3560,7 +3595,9 @@ function lowerUtilCallableCall(
   for (const arg of expr.arguments.nodes.slice(arity))
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc });
   const type = fn === "util.inherits" ? VOID : DYN;
-  const result: IrExpr = { kind: "libCall", fn, args, type, loc };
+  const result: IrExpr = superView
+    ? { kind: "libCall", fn: "util.inheritsPrototype", args: [...args, superView], type, loc }
+    : { kind: "libCall", fn, args, type, loc };
   return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 

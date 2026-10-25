@@ -46,11 +46,13 @@ export type {
   AnalyzeResult,
 } from "./compile-types.js";
 import { compilePackedLibrary } from "./backend/library-pack.js";
+import { node24FetchCompatProfile } from "./compat/fetch-profile.js";
+import { libFnSignatures } from "./ir/builtin-signatures.js";
 import { InternalCompilerError } from "./errors.js";
 import { frontendProcessExecArgv } from "./frontend-process-args.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -94,6 +96,7 @@ import { createNativeLinkPlan } from "./backend/link-plan.js";
 import {
   nativeProfileKey,
   nativeProfileRefusal,
+  type NativeProfileMatch,
   type NativeProfileOptions,
 } from "./backend/native-profile.js";
 import {
@@ -102,7 +105,11 @@ import {
   platformLinkerSupportsPersistentCache,
   resolvePlatformLinker,
 } from "./backend/linker.js";
-import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
+import {
+  splitLlvmLibraryProgram,
+  splitLlvmProgram,
+  splitLlvmProgramFile,
+} from "./backend/llvm/split.js";
 import {
   emitLibraryIdentityLines,
   replaceLibraryIdentity,
@@ -114,6 +121,7 @@ import {
   nativeCodegenDiag,
   nodeIslandNodeDiag,
   nodeIslandModuleDiag,
+  isTypePatchCode,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
 import { libnodeCacheKey, libnodeRecord } from "./node-islands/libnode.js";
@@ -248,7 +256,7 @@ export {
   type SurfaceManifestEntry,
 } from "./coverage/surface-manifest.js";
 export {
-  NODE24_FETCH_COMPAT_PROFILE,
+  node24FetchCompatProfile,
   type FetchCompatEvidence,
   type FetchCompatFacet,
   type FetchCompatInventory,
@@ -260,7 +268,13 @@ export {
   type FetchCompatOption,
   type FetchCompatProfile,
 } from "./compat/fetch-profile.js";
-export { LIB_FN_SIGS } from "./ir/builtin-signatures.js";
+export { libFnSignatures } from "./ir/builtin-signatures.js";
+/** @deprecated Use `libFnSignatures()`. Built when this module loads; the
+ * native compiler does not load this module. */
+export const LIB_FN_SIGS = libFnSignatures();
+/** @deprecated Use `node24FetchCompatProfile()`. Built when this module
+ * loads; the native compiler does not load this module. */
+export const NODE24_FETCH_COMPAT_PROFILE = node24FetchCompatProfile();
 export { validateModule } from "./ir/validate.js";
 export {
   assignLegacyTiers,
@@ -476,12 +490,31 @@ interface CompileWarningSink {
   sourceTexts: Map<string, string> | null;
 }
 
+/** The package.json texts type patch warnings point into, re-read for a
+ * cache hit's code frames (performance warnings need none). */
+function cachedWarningSources(warnings: readonly ScrDiagnostic[]): Map<string, string> {
+  const texts = new Map<string, string>();
+  for (const w of warnings) {
+    if (!isTypePatchCode(w.code) || texts.has(w.loc.file)) continue;
+    try {
+      texts.set(w.loc.file, readFileSync(w.loc.file, "utf8"));
+    } catch {
+      // The frame is omitted; the message stands alone.
+    }
+  }
+  return texts;
+}
+
 /** The build's performance warnings (SC61xx), stored with its cache entry
  * so a cache hit repeats them. */
 function performanceWarnings(sink: CompileWarningSink | undefined): {
   performance?: ScrDiagnostic[];
 } {
-  const performance = (sink?.warnings ?? []).filter((d) => isPerformanceCode(d.code));
+  // Type patch warnings (SC8030–SC8033) describe the same unchanged inputs,
+  // so a hit repeats them too.
+  const performance = (sink?.warnings ?? []).filter(
+    (d) => isPerformanceCode(d.code) || isTypePatchCode(d.code),
+  );
   return performance.length === 0 ? {} : { performance };
 }
 
@@ -577,8 +610,8 @@ async function compileExecutableNative(
   }
   const effectiveProgramSplit =
     programSplit ??
-    (!programIsObject && features.optimization === "dev" && features.backend === "llvm" && !sanitize
-      ? splitLlvmProgram(await readFile(llvmPath, "utf8"))
+    (!programIsObject && features.optimization === "dev" && features.backend === "llvm"
+      ? splitLlvmProgramFile(llvmPath)
       : null);
   if (programIsObject)
     throw new InternalCompilerError("program objects must link against a precompiled runtime pack");
@@ -608,6 +641,7 @@ async function compileExecutableNative(
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
+    ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,
@@ -653,6 +687,7 @@ async function compileExecutableNative(
     dh: features.dh,
     pki: features.pki,
     ed25519: features.ed25519,
+    x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
@@ -672,6 +707,7 @@ interface NativeProgramObject {
   partitionPaths: string[];
   artifactPath: string;
   dependencies: NativeArtifactDependency[];
+  profileMatch?: NativeProfileMatch;
 }
 
 async function emitNativeProgramObject(
@@ -707,6 +743,7 @@ async function emitNativeProgramObject(
       partitionPaths: artifact.outputPaths.slice(1),
       artifactPath,
       dependencies: artifact.dependencies,
+      ...(artifact.profileMatch === undefined ? {} : { profileMatch: artifact.profileMatch }),
     };
   } catch (error) {
     await removeNativeProgramObject(linkPath, nativePartitionPaths(linkPath, partitions));
@@ -856,6 +893,9 @@ async function prepareExecutableInput(
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
         wasi: buildPlatform === "wasi",
         runtimeAbiMarker: outputKind === "obj",
+        // Textual output shows the code an executable gets; objects keep
+        // the pending flag, since their link may not add an unwinder.
+        unwindAbi: buildPlatform === "linux" && outputKind !== "obj",
         objectAudit: opts.sanitize === true,
         lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
         ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
@@ -927,6 +967,7 @@ async function prepareExecutableInput(
       pointerBits: buildPlatform === "wasi" ? 32 : 64,
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
+      unwindAbi: buildPlatform === "linux",
       objectAudit: opts.sanitize === true,
       lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
@@ -956,7 +997,6 @@ async function prepareExecutableInput(
     !useRuntimePack &&
     backend === "llvm" &&
     (opts.optimization ?? "release") === "dev" &&
-    !(opts.sanitize ?? false) &&
     typeof llvmSource === "string"
       ? splitLlvmProgram(llvmSource)
       : null;
@@ -1637,7 +1677,7 @@ async function compileTracked(
     // names is just as untyped as when it was built.
     if (warningSink !== undefined && earlyHit.performance !== undefined) {
       warningSink.warnings = earlyHit.performance;
-      warningSink.sourceTexts = new Map();
+      warningSink.sourceTexts = cachedWarningSources(earlyHit.performance);
     }
     const executableCacheOptions = earlyCacheOptions;
     // Route/proof metadata is independently evictable. A full-compiler
@@ -1914,6 +1954,7 @@ async function compileTracked(
   }
   await pruneBuildCache(cacheRoot);
   timing("complete");
+  const profileMatch = nativeProgramObject?.profileMatch;
   return {
     ok: true,
     artifact: {
@@ -1921,6 +1962,7 @@ async function compileTracked(
       path: opts.outPath,
       translationUnitPath: llvmPath,
       backend,
+      ...(profileMatch === undefined ? {} : { profileMatch }),
     },
     binaryPath: opts.outPath,
     llvmPath,
@@ -1949,6 +1991,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     searchParams: features.searchParams,
     emitter: features.emitter,
     zlib: features.zlib,
+    x509: features.x509,
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
     dynInvoke: features.dynInvoke,
@@ -2044,6 +2087,7 @@ async function compileLibraryNative(
     searchParams: features.searchParams,
     emitter: features.emitter,
     zlib: features.zlib,
+    x509: features.x509,
     copying: features.copying,
     textDecoderLegacy: features.textDecoderLegacy,
     dynInvoke: features.dynInvoke,
