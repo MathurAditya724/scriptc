@@ -320,6 +320,8 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.definePrototypeProps",
   "dyn.functionApply",
   "dyn.globalConstructor",
+  "dyn.namespaceDefine",
+  "dyn.namespaceNew",
   "dyn.objCreateWithProperties",
   "dyn.objectTag",
   "stream.dynNative",
