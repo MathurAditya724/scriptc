@@ -176,6 +176,9 @@ struct ScrStreamState {
     size_t n, cap, head;
     int corked;
     bool writing, wsync, need_drain, after_scheduled;
+    /* the queued SCR_ST_AFTER_WRITE tick later synchronous writes with
+     * the same callback join (Node's afterWriteTickInfo), or NULL */
+    struct ScrStreamTick *after_tick;
     /* Deferred afterWrites Node also defers (a user callback, a 'drain'
      * or a destroyed stream): its pendingcb, which holds the finish until
      * they ran — afterWrite's finishMaybe then puts 'finish' on a tick
@@ -543,6 +546,9 @@ typedef struct ScrStreamTick {
   ScrError *err;   /* owned or NULL (SCR_ST_ERROR) */
   ScrClosure *cb;  /* owned or NULL (SCR_ST_AFTER_WRITE / SCR_ST_WCB_ERR / SCR_ST_WRITE_ERR) */
   bool hold;       /* SCR_ST_AFTER_WRITE: counted in w.after_holds */
+  /* SCR_ST_AFTER_WRITE: the synchronous writes it completes, which share
+   * cb (Node's afterWriteTickInfo.count) */
+  size_t count;
   /* The AsyncLocalStorage context active when the tick was scheduled (+1,
    * NULL outside a store): Node schedules these steps with
    * process.nextTick, so their events and callbacks run in it. */
@@ -557,7 +563,7 @@ static void scr_stream_dispatch_one(void);
 
 static void scr_st_tick(ScrStream *s, ScrStreamTickOp op, ScrError *err /*moves*/,
                         ScrClosure *cb /*moves*/) {
-  ScrStreamTick *t = calloc(1, sizeof *t);
+  ScrStreamTick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_stream_oom();
   t->s = scr_stream_retain(s);
   t->op = op;
@@ -580,15 +586,57 @@ static bool scr_stream_ticks_pending(void) { return scr_st_head != NULL; }
 
 /* ── emit helpers ─────────────────────────────────────────────────────── */
 
+/* The event names the stream unit emits, as immortal strings (the layout
+ * of an emitted string literal), so an emit allocates no name. */
+#define SCR_STREAM_EVENT_NAME(name)                                                     \
+  static const struct {                                                                 \
+    size_t rc;                                                                          \
+    size_t len;                                                                         \
+    size_t cap;                                                                         \
+    char data[sizeof #name];                                                            \
+  } scr_stream_lit_##name = {SIZE_MAX, sizeof #name - 1,                                \
+                             SCR_STR_CAP_WORD(sizeof #name - 1, 0, 1), #name}
+SCR_STREAM_EVENT_NAME(data);
+SCR_STREAM_EVENT_NAME(error);
+SCR_STREAM_EVENT_NAME(close);
+SCR_STREAM_EVENT_NAME(drain);
+SCR_STREAM_EVENT_NAME(end);
+SCR_STREAM_EVENT_NAME(finish);
+SCR_STREAM_EVENT_NAME(pause);
+SCR_STREAM_EVENT_NAME(prefinish);
+SCR_STREAM_EVENT_NAME(readable);
+SCR_STREAM_EVENT_NAME(resume);
+SCR_STREAM_EVENT_NAME(pipe);
+SCR_STREAM_EVENT_NAME(unpipe);
+#undef SCR_STREAM_EVENT_NAME
+
+static ScrStr *const scr_stream_event_names[] = {
+    (ScrStr *)&scr_stream_lit_data,      (ScrStr *)&scr_stream_lit_error,
+    (ScrStr *)&scr_stream_lit_close,     (ScrStr *)&scr_stream_lit_drain,
+    (ScrStr *)&scr_stream_lit_end,       (ScrStr *)&scr_stream_lit_finish,
+    (ScrStr *)&scr_stream_lit_pause,     (ScrStr *)&scr_stream_lit_prefinish,
+    (ScrStr *)&scr_stream_lit_readable,  (ScrStr *)&scr_stream_lit_resume,
+    (ScrStr *)&scr_stream_lit_pipe,      (ScrStr *)&scr_stream_lit_unpipe,
+};
+
+/* The event name as a string: an immortal one for the names above, else a
+ * new string (+1 either way; releasing an immortal string does nothing). */
+static ScrStr *scr_stream_event_name(const char *name) {
+  for (size_t i = 0; i < sizeof scr_stream_event_names / sizeof *scr_stream_event_names; i++) {
+    if (strcmp(scr_stream_event_names[i]->data, name) == 0) return scr_stream_event_names[i];
+  }
+  return scr_str_new(name, strlen(name));
+}
+
 static bool scr_stream_emit0(ScrStream *s, const char *name) {
-  ScrStr *n = scr_str_new(name, strlen(name));
+  ScrStr *n = scr_stream_event_name(name);
   bool had = scr_emitter_emit((ScrEmitter *)s, n);
   scr_str_release(n);
   return had;
 }
 
 static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *payload) {
-  ScrStr *n = scr_str_new(name, strlen(name));
+  ScrStr *n = scr_stream_event_name(name);
   scr_emitter_emit((ScrEmitter *)s, n, payload);
   scr_str_release(n);
 }
@@ -596,7 +644,7 @@ static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *pa
 /* 'error': unhandled throws the payload (Node's crash), via the emitter's
  * error contract. Borrows err. */
 static void scr_stream_emit_error(ScrStream *s, ScrError *err) {
-  ScrStr *n = scr_str_new("error", 5);
+  ScrStr *n = (ScrStr *)&scr_stream_lit_error;
   scr_emitter_emit_error((ScrEmitter *)s, n, err);
   scr_str_release(n);
 }
@@ -765,7 +813,7 @@ static void scr_stream_emit_data(ScrStream *s, void *chunk, ScrEntryKind kind) {
   } else {
     b = chunk;
   }
-  ScrStr *n = scr_str_new("data", 4);
+  ScrStr *n = (ScrStr *)&scr_stream_lit_data;
   scr_emitter_emit((ScrEmitter *)s, n, b, str, value);
   scr_str_release(n);
   if (scr_exc_pending()) return;
@@ -2075,7 +2123,7 @@ static void scr_stream_error_buffer(ScrStream *s) {
  * empty), THEN the user's write(chunk, cb) callback, then finishMaybe.
  * The buffered queue was already restarted by write_done (Node's onwrite
  * calls clearBuffer before afterWrite). cb moves. */
-static void scr_stream_after_write(ScrStream *s, ScrClosure *cb) {
+static void scr_stream_after_write(ScrStream *s, ScrClosure *cb, size_t count) {
   ScrStreamState *st = s->st;
   if (st->w.length == 0 && st->w.need_drain && !st->w.ending && !st->destroyed) {
     st->w.need_drain = false;
@@ -2095,7 +2143,11 @@ static void scr_stream_after_write(ScrStream *s, ScrClosure *cb) {
     }
   }
   if (cb) {
-    ((void (*)(ScrClosure *))cb->fn)(cb);
+    /* afterWrite: the callback once per write the tick completes */
+    for (size_t i = 0; i < count; i++) {
+      ((void (*)(ScrClosure *))cb->fn)(cb);
+      if (scr_exc_pending()) break;
+    }
     scr_closure_release(cb);
     if (scr_exc_pending()) return;
   }
@@ -6872,10 +6924,12 @@ static bool scr_stream_write_chunk_enc(ScrStream *s, ScrBytes *chunk /*borrowed*
     scr_stream_do_write(s, scr_stream_wchunk_retain(st, chunk), cb, enc);
   }
   /* Node computes the answer AFTER the (possibly synchronous) write:
-   * a sync completion has already drained its bytes from length. */
-  bool ret = st->w.length < st->w.hwm && !st->destroyed && !st->errored;
-  if (!ret) st->w.need_drain = true;
-  return ret;
+   * a sync completion has already drained its bytes from length. Only
+   * the length sets needDrain; an errored or destroyed stream answers
+   * false without waiting for 'drain'. */
+  bool below = st->w.length < st->w.hwm;
+  if (!below) st->w.need_drain = true;
+  return below && !st->destroyed && !st->errored;
 }
 
 static bool scr_stream_write_chunk(ScrStream *s, ScrBytes *chunk /*borrowed*/, ScrClosure *cb /*moves*/) {
@@ -7126,13 +7180,24 @@ void scr_stream_write_done(ScrStream *s, ScrError *err /*moves*/) {
   }
   if (was_sync) {
     bool hold = ucb != NULL || (st->w.need_drain && st->w.length == 0) || st->destroyed;
-    scr_st_tick(s, SCR_ST_AFTER_WRITE, NULL, ucb);
-    if (hold) {
-      scr_st_tail->hold = true;
+    ScrStreamTick *pending = st->w.after_tick;
+    if (pending && pending->cb == ucb) {
+      /* Node's onwrite: a synchronous write with the callback of the
+       * afterWrite tick already queued joins it (count++) */
+      pending->count++;
+      if (ucb) scr_closure_release(ucb);
+    } else {
+      scr_st_tick(s, SCR_ST_AFTER_WRITE, NULL, ucb);
+      pending = scr_st_tail;
+      pending->count = 1;
+      st->w.after_tick = pending;
+    }
+    if (hold && !pending->hold) {
+      pending->hold = true;
       st->w.after_holds++;
     }
   } else {
-    scr_stream_after_write(s, ucb);
+    scr_stream_after_write(s, ucb, 1);
   }
 }
 
@@ -7678,13 +7743,19 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
     case SCR_ST_AFTER_WRITE: {
       st->w.after_scheduled = false;
       if (t->hold) st->w.after_holds--;
+      /* afterWriteTick: the batch closes when any afterWrite tick runs, so
+       * a write its callback makes queues a new tick */
+      st->w.after_tick = NULL;
       ScrClosure *cb = t->cb;
       t->cb = NULL;
       if (!st->destroyed) {
-        scr_stream_after_write(s, cb);
+        scr_stream_after_write(s, cb, t->count);
       } else {
         if (cb) {
-          ((void (*)(ScrClosure *))cb->fn)(cb);
+          for (size_t i = 0; i < t->count; i++) {
+            ((void (*)(ScrClosure *))cb->fn)(cb);
+            if (scr_exc_pending()) break;
+          }
           scr_closure_release(cb);
           if (scr_exc_pending()) break;
         }
@@ -7854,11 +7925,12 @@ static void scr_stream_run_tick_in_context(ScrStreamTick *t) {
 }
 
 static void scr_stream_tick_free(ScrStreamTick *t) {
+  if (t->s->st && t->s->st->w.after_tick == t) t->s->st->w.after_tick = NULL;
   scr_stream_release(t->s);
   if (t->err) scr_error_release(t->err);
   if (t->cb) scr_closure_release(t->cb);
   scr_als_ctx_release(t->ctx);
-  free(t);
+  scr_mem_free(t);
 }
 
 /* One tick-marker's dispatch: the queue's FIFO head (markers and entries
@@ -8513,4 +8585,32 @@ ScrStream *scr_stream_unbox_dyn(const ScrDyn *value, const ScrStr *message) {
   if (stream) return stream;
   scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
   return NULL;
+}
+
+/* pipeline.js's first stage: a value with pipe() and on() methods is a
+ * readable node stream, which the stage ladder tests before isIterable;
+ * a string, or a value with a Symbol.asyncIterator or Symbol.iterator
+ * method, is an iterable the pipeline pumps into the next stage. */
+bool scr_stream_dyn_iterable_source(const ScrDyn *value) {
+  ScrStream *stream = scr_stream_of_handle(value);
+  if (!stream) stream = scr_stream_boxed(value);
+  if (stream) {
+    scr_stream_release(stream);
+    return false;
+  }
+  if (value->kind == SCR_DYN_STR) return true;
+  if (value->kind == SCR_DYN_OBJ) {
+    ScrDyn *pipe = scr_dyn_obj_read(value, "pipe", 4);
+    if (!pipe) return false;
+    bool streamish = pipe->kind == SCR_DYN_FUNC;
+    scr_dyn_release(pipe);
+    if (streamish) {
+      ScrDyn *on = scr_dyn_obj_read(value, "on", 2);
+      if (!on) return false;
+      streamish = on->kind == SCR_DYN_FUNC;
+      scr_dyn_release(on);
+      if (streamish) return false;
+    }
+  }
+  return scr_dyn_iterable_kind(value) > 0;
 }

@@ -1014,7 +1014,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // LIBRARY mode: no @main — the profile-declared external
     // symbols specified by the library IR instead.
     for (const line of emitter.emitLibDefs(globals, globalReleaseLines, stamps)) out.push(line);
-    out.push(...emitter.inlineRcTail(flushedDecls));
+    for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
     out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
     out.push(``);
     out.push(...emitter.fieldAliasMetadata());
@@ -1160,7 +1160,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       : [`  %native_exit = call i32 @scr_exit_code_hint_get()`, `  ret i32 %native_exit`]),
     `}`,
     ``,
-    ...emitter.inlineRcTail(flushedDecls),
+  );
+  for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
+  out.push(
     // sanitize_address is inert under the plain pipeline; the sanitized
     // lane's -fsanitize=address link activates instrumentation over the
     // emitted functions too (the runtime TUs get theirs from clang).
@@ -1293,6 +1295,42 @@ export function helperDefs(emitter: LlEmitter): string[] {
       `  ret ptr null`,
       `outside:`,
       `  %dense.any = icmp ne ${sz} %nd, 0`,
+      `  br i1 %dense.any, label %miss, label %slow`,
+      `slow:`,
+      `  %hashed = call ptr @sc_map_entry_f64_hashed(ptr %m, double %k)`,
+      `  ret ptr %hashed`,
+      `}`,
+      ``,
+      // The same lookup for a key the emitter knows is an integer (`%ki`,
+      // the double `%k`'s exact value): the direct index tests the integer
+      // itself, so the double is converted only by the hashed probe. A
+      // negative key is not below the index's size as an unsigned value.
+      `define internal ptr @sc_map_entry_f64_int(ptr %m, i64 %ki, double %k) ${FN_ATTRS} {`,
+      `entry:`,
+      `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
+      `  %nd32 = load i32, ptr %ndp`,
+      `  %nd = zext i32 %nd32 to i64`,
+      `  %inside = icmp ult i64 %ki, %nd`,
+      `  br i1 %inside, label %slot, label %outside`,
+      `slot:`,
+      sz === "i64" ? `  %i = add i64 %ki, 0` : `  %i = trunc i64 %ki to ${sz}`,
+      `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
+      `  %dense = load ptr, ptr %dp`,
+      `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,
+      `  %s = load i32, ptr %sp`,
+      `  %empty = icmp eq i32 %s, 0`,
+      `  br i1 %empty, label %miss, label %hit`,
+      `hit:`,
+      `  %e32 = sub i32 %s, 1`,
+      sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
+      `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+      `  %entries = load ptr, ptr %ep`,
+      `  %found = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %e`,
+      `  ret ptr %found`,
+      `miss:`,
+      `  ret ptr null`,
+      `outside:`,
+      `  %dense.any = icmp ne i64 %nd, 0`,
       `  br i1 %dense.any, label %miss, label %slow`,
       `slow:`,
       `  %hashed = call ptr @sc_map_entry_f64_hashed(ptr %m, double %k)`,

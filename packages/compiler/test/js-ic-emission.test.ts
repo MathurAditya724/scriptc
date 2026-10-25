@@ -134,3 +134,44 @@ console.log(len2({ x: 3, y: 4 }), typeof parsed);
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("keyed and length sites read native number arrays in place", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-native-"));
+  try {
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(join(dir, "package.json"), `{ "type": "module" }`);
+    await writeFile(
+      join(dir, "lib.cjs"),
+      `exports.total = function (xs) {
+  let s = 0;
+  for (let i = 0; i < xs.length; i++) s += xs[i];
+  return s;
+};
+`,
+    );
+    await writeFile(
+      entry,
+      `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const lib: { total(xs: number[]): number } = require("./lib.cjs");
+console.log(lib.total([1, 2, 3]));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const llvm = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    const fn = llvm.split("\ndefine ").find((f) => f.includes("ica.f64")) ?? "";
+    // The keyed read tests the capsule's element kind and loads the double
+    // in place; other receivers keep the probe.
+    expect(fn).toMatch(/icmp eq i8 %t\d+, 0 ; SCR_ELEM_F64/);
+    expect(fn).toMatch(/load double, ptr %t\d+/);
+    expect(fn).toContain("@scr_js_keyed_probe(");
+    // The length read answers from the native array's length.
+    expect(fn).toContain("icg.rest");
+    expect(fn).toContain("@scr_js_load_probe(");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

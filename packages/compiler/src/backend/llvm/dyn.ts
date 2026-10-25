@@ -176,6 +176,10 @@ export interface DynHost extends WalkerHost {
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
   classSubtypes(className: string): readonly string[];
+  /** The strict subclasses whose class-value constructor takes the same
+   * arguments as `className`'s (classValueAbiEquals): the class values a
+   * checked `classval` slot accepts besides its own class. */
+  classValueSubtypes(className: string): readonly string[];
   /** emitter.ts's pendingTestLines: the inline pending-exception test. */
   pendingTestLines(dest: string): string[];
 }
@@ -1891,6 +1895,26 @@ export class LlDyn {
     const B = new BlockBuilder();
     if (t.kind === "classval") {
       host.declare(`declare ptr @scr_dyn_class_check(ptr, ptr, ptr)`);
+      // A subclass's class value checks into the base class's slot when
+      // construction through the slot can call its thunk with the base
+      // constructor's arguments; any other subclass fails the check.
+      const subclasses = host.classValueSubtypes(t.className);
+      if (subclasses.length > 0) {
+        host.declare(`declare zeroext i1 @scr_dyn_class_is(ptr, ptr)`);
+        for (const className of subclasses) {
+          const subKey = host.cstr(typeKey({ kind: "classval", className }));
+          const matched = B.tmp();
+          B.line(`${matched} = call zeroext i1 @scr_dyn_class_is(ptr %d, ptr ${subKey})`);
+          const yes = B.newLabel("sub.yes");
+          const no = B.newLabel("sub.no");
+          B.condBr(matched, yes, no);
+          B.startBlock(yes);
+          const sub = B.tmp();
+          B.line(`${sub} = call ptr @scr_dyn_class_check(ptr %d, ptr ${subKey}, ptr %path)`);
+          B.terminate(`ret ptr ${sub}`);
+          B.startBlock(no);
+        }
+      }
       const checked = B.tmp();
       B.line(
         `${checked} = call ptr @scr_dyn_class_check(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,

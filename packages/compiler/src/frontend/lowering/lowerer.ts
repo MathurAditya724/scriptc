@@ -1,6 +1,6 @@
 import { isDeclBoundaryFile } from "../decl-projection.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
-import { moduleNamespaceObject } from "./module-namespace-elements.js";
+import { moduleNamespaceObject, moduleNamespaceValue } from "./module-namespace-elements.js";
 import { keyedHelperName } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import { onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
@@ -155,7 +155,8 @@ import {
   boxClassInstancesExactly,
   trackClassFieldCreation,
 } from "./class-dynamic-dispatch.js";
-import { guardClassAttributeWrites } from "./class-attributes.js";
+import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-attributes.js";
+import { inferredCollectionType } from "./js-collection-types.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
@@ -269,6 +270,9 @@ import {
   type StartupCrash,
   cjsExportAssignmentOf,
   cjsExportDiscardReason,
+  cjsExportsAssignedInFunctions,
+  cjsReexportedModules,
+  cjsNamespaceExportNames,
   fallbackDtsPath,
   isCheckedJsSourceFile,
   isCjsExportTableLiteral,
@@ -363,6 +367,7 @@ import {
   type ClassInfo,
   type ClassMethodSignature,
   type ClassIteratorInfo,
+  type ClassIteratorOptions,
   type GenericClassInfo,
   registerBuiltinErrorClasses,
   defineClassValueConstruct,
@@ -374,7 +379,9 @@ import {
   builtinStreamInfoOf,
   analyzeClassDecoration,
   classIteratorDrainCall,
+  classIteratorMethodCall,
   classIteratorNextCall,
+  classIteratorNextRead,
   classIteratorOf,
   classIteratorOpenCall,
   classIteratorRestDrainCall,
@@ -2377,6 +2384,9 @@ export class Lowerer {
    * every name destructured from a present source optional. */
   readonly runtimeOptionalPatternTypes = new Map<ts.Node, IrType>();
   readonly runtimeOptionalReduceTypes = new Map<ts.CallExpression, IrType>();
+  /** Each function declaration's `arguments.length` count slot, or null
+   * (argument-counts.ts argumentCountSlot). */
+  readonly argumentCountSlots = new Map<ts.FunctionDeclaration, string | null>();
   /** Non-null assertions whose value is forwarded into a slot promoted to
    * hold undefined. `x!` has no runtime effect, so these keep the stored
    * undefined state instead of trapping before any dereference. */
@@ -2858,6 +2868,9 @@ export class Lowerer {
   /** Parameters read as `any` in the error-path copy of an error-first
    * callback. */
   readonly anySymbols = new Set<ts.Symbol>();
+  /** The collection types that uses prove for untyped JavaScript bindings,
+   * by every identifier naming one (js-collection-types.ts). */
+  inferredCollectionTypes: Map<ts.Node, ts.Type> | undefined = undefined;
   /** overload-choice's answers per call, binding and function. */
   readonly dynamicOverloadAnswers = new Map<ts.Node, boolean>();
   /** Error parameters of an error-first callback with a known value in
@@ -3015,6 +3028,9 @@ export class Lowerer {
   readonly builtinCallableValueFns = new Map<string, string>();
   /** Each builtin function-value adapter's Node name, for boxed values. */
   readonly builtinCallableValueNames = new Map<string, string>();
+  /** Builtin function values whose `length` differs from their adapter's
+   * parameter count (BuiltinModuleFn.valueLength), by adapter name. */
+  readonly builtinCallableValueLengths = new Map<string, number>();
   /** Optional-chain lowering state. While a chain body lowers, the guarded
    * receiver NODE reads as a chainRecv (typed by the narrowed arm) instead
    * of re-lowering, its checker type reads non-nullish (typeOf), and the
@@ -3179,6 +3195,14 @@ export class Lowerer {
    * (builtins/fs-paths.ts): each lowers to the hidden local that holds its
    * value, which is null until the path's lowering has saved it. */
   readonly stagedArguments = new Map<ts.Expression, { localId: string; type: IrType } | null>();
+  /** Closure arguments an implicit-any call already lowered to learn their
+   * type (storedImplicitArgumentType), by node: the argument's own lowering
+   * in the same function and with the same type bindings takes that value
+   * once instead of lowering the closure again. */
+  readonly speculatedClosures = new Map<
+    ts.Expression,
+    { ctx: FnCtx; bindings: Map<ts.Symbol, IrType> | null; value: IrExpr }
+  >();
   /** What each fs path argument of a URL-path call lowers to (the plans
    * of builtins/fs-paths.ts). */
   readonly fsPathPlans = new Map<ts.Expression, FsPathPlan>();
@@ -3315,6 +3339,9 @@ export class Lowerer {
   readonly recordFieldDeletes = new Set<string>();
   /** typeKeys of the array types the program may freeze (IrModule.freezableArrays). */
   readonly freezableArrays = new Set<string>();
+  /** Whether the program freezes, seals or prevents extensions of untyped
+   * values other than fresh literals (noteUntypedIntegrity). */
+  untypedIntegrity = false;
   readonly liftedFns: IrFunction[] = [];
   /** The first lifted function of each name (liftedFnNamed), for the
    * liftedFns indexed so far. liftedFns only grows. */
@@ -4009,6 +4036,42 @@ export class Lowerer {
       }
     }
     return null;
+  }
+
+  /** For each CommonJS module read through a JavaScript namespace import:
+   * the property names of Node's namespace object
+   * (cjsNamespaceExportNames), and the exports the module assigns inside
+   * functions, which the namespace does not see
+   * (cjsExportsAssignedInFunctions). */
+  private readonly cjsNamespaces = new Map<
+    ts.SourceFile,
+    { names: ReadonlySet<string>; assignedLater: ReadonlySet<string> | "all" }
+  >();
+
+  cjsNamespaceOf(dep: ts.SourceFile): {
+    names: ReadonlySet<string>;
+    assignedLater: ReadonlySet<string> | "all";
+  } {
+    let namespace = this.cjsNamespaces.get(dep);
+    if (namespace === undefined) {
+      // A re-exported name reads the module that assigns it, so the writes
+      // after evaluation of every re-exported module count too.
+      let assignedLater: Set<string> | "all" = new Set();
+      for (const mod of cjsReexportedModules(this.program, dep)) {
+        const later = cjsExportsAssignedInFunctions(mod);
+        if (later === "all") {
+          assignedLater = "all";
+          break;
+        }
+        for (const name of later) assignedLater.add(name);
+      }
+      namespace = {
+        names: cjsNamespaceExportNames(this.program, dep),
+        assignedLater,
+      };
+      this.cjsNamespaces.set(dep, namespace);
+    }
+    return namespace;
   }
 
   sourceFileOfModuleNamespace(type: IrType): ts.SourceFile | null {
@@ -8059,6 +8122,7 @@ export class Lowerer {
     finalizePrivateBrands(this, functions);
     trackClassFieldCreation(this, functions);
     boxClassInstancesExactly(this, functions);
+    addUntypedIntegrityWords(this);
     guardClassAttributeWrites(this, functions);
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
@@ -8176,6 +8240,7 @@ export class Lowerer {
             ...(this.freezableArrays.size > 0
               ? { freezableArrays: [...this.freezableArrays].sort() }
               : {}),
+            ...(this.untypedIntegrity ? { untypedIntegrity: true as const } : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
@@ -9338,6 +9403,10 @@ export class Lowerer {
   }
 
   typeOf(node: ts.Node): ts.Type {
+    if (ts.isIdentifier(node)) {
+      const inferred = inferredCollectionType(this, node);
+      if (inferred) return inferred;
+    }
     if (this.anySymbols.size > 0 && this.readsAnySymbol(node)) return this.checker.getAnyType();
     // A checked-dynamic argument that another overload could take at run
     // time leaves the resolved overload's return a guess, and JS bindings
@@ -10063,10 +10132,8 @@ export class Lowerer {
       // so its module binding is too (`ReleaseEmitter = EventEmitter` over
       // `const EventEmitter = require("events")`).
       if (expr.type.kind === "moduleNs" && isJsSourceFileName(expr.loc.file)) {
-        const object = moduleNamespaceObject(
-          this,
-          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
-        );
+        const ns = expr as IrExpr & { type: IrType & { kind: "moduleNs" } };
+        const object = moduleNamespaceObject(this, ns) ?? moduleNamespaceValue(this, ns);
         if (object) return object;
       }
       if (
@@ -10116,6 +10183,8 @@ export class Lowerer {
         // name Node's function carries (`[Function: randomUUID]`).
         const builtinName =
           expr.kind === "closure" ? this.builtinCallableValueNames.get(expr.fnName) : undefined;
+        const builtinLength =
+          expr.kind === "closure" ? this.builtinCallableValueLengths.get(expr.fnName) : undefined;
         return {
           kind: "dynFrom",
           value: expr,
@@ -10123,6 +10192,7 @@ export class Lowerer {
           loc: expr.loc,
           ...(liveRef ? { liveRef: true as const } : {}),
           ...(builtinName !== undefined ? { fnName: builtinName } : {}),
+          ...(builtinLength !== undefined ? { fnLength: builtinLength } : {}),
         };
       }
       return expr;
@@ -13201,10 +13271,28 @@ export class Lowerer {
   /* ── expressions ──────────────────────────────────────────────────── */
 
   lowerExpr(expr: ts.Expression): IrExpr {
+    if (this.speculatedClosures.size > 0) {
+      const speculated = this.speculatedClosure(expr);
+      if (speculated !== null) {
+        this.speculatedClosures.delete(expr);
+        return speculated;
+      }
+    }
     const streamValue = this.valueStreamReceivers.get(expr);
     if (streamValue)
       return valueStreamOf(varRef(streamValue.localId, streamValue.type, locOf(expr)));
     return this.stagedArgument(expr) ?? lowerExpr(this, expr);
+  }
+
+  /** The value storedImplicitArgumentType lowered for `expr` in the active
+   * function and type bindings (speculatedClosures), or null. */
+  speculatedClosure(expr: ts.Expression): IrExpr | null {
+    const entry = this.speculatedClosures.get(expr);
+    return entry !== undefined &&
+      entry.ctx === this.ctx &&
+      entry.bindings === this.typeParamBindings
+      ? entry.value
+      : null;
   }
 
   /** The saved value of a staged fs argument (stagedArguments, keyed
@@ -13729,16 +13817,29 @@ export class Lowerer {
     return accessorCall(this, className, member, obj, extraArgs, ret, loc);
   }
 
-  classIteratorOf(t: IrType): ClassIteratorInfo | null {
-    return classIteratorOf(this, t);
+  classIteratorOf(t: IrType, options?: ClassIteratorOptions): ClassIteratorInfo | null {
+    return classIteratorOf(this, t, options);
+  }
+
+  classIteratorReturnCall(cit: ClassIteratorInfo, it: IrExpr, loc: SrcLoc): IrExpr {
+    return classIteratorMethodCall(this, cit, "return", it, loc);
   }
 
   classIteratorOpenCall(cit: ClassIteratorInfo, recv: IrExpr, loc: SrcLoc): IrExpr {
     return classIteratorOpenCall(this, cit, recv, loc);
   }
 
-  classIteratorNextCall(cit: ClassIteratorInfo, itRef: IrExpr, loc: SrcLoc): IrExpr {
-    return classIteratorNextCall(this, cit, itRef, loc);
+  classIteratorNextRead(cit: ClassIteratorInfo, itRef: IrExpr, loc: SrcLoc): IrExpr | null {
+    return classIteratorNextRead(this, cit, itRef, loc);
+  }
+
+  classIteratorNextCall(
+    cit: ClassIteratorInfo,
+    itRef: IrExpr,
+    next: IrExpr | null,
+    loc: SrcLoc,
+  ): IrExpr {
+    return classIteratorNextCall(this, cit, itRef, next, loc);
   }
 
   classIteratorDrainCall(src: IrExpr, loc: SrcLoc, elemT?: IrType): IrExpr | null {
@@ -14308,6 +14409,8 @@ export class Lowerer {
       fnName = keyedHelperName(this, `%builtin.value.${fn.valueFn ?? fn.fn}`, key);
       this.builtinCallableValueFns.set(key, fnName);
       this.builtinCallableValueNames.set(fnName, display.slice(display.lastIndexOf(".") + 1));
+      if (fn.valueLength !== undefined)
+        this.builtinCallableValueLengths.set(fnName, fn.valueLength);
       const params = funcType.params.map((type, index) => ({
         localId: `arg.${index}`,
         name: `arg${index}`,

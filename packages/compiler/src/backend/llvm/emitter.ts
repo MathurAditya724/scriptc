@@ -55,6 +55,7 @@ import {
   typeKey,
   VOID,
   classJsName,
+  classValueAbiEquals,
 } from "../../ir/ir.js";
 import { moduleRuntimeFeatures, type RuntimeFeatures } from "../../ir/runtime-features.js";
 import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
@@ -68,7 +69,7 @@ import {
   type StoredSplitSnapshot,
   type StringSplit,
 } from "./split-loops.js";
-import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
+import { scalarizeLiteralResults, scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { addRecordResultEntries, resultEntryName } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import {
@@ -81,6 +82,7 @@ import {
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
+import { pairRowSums } from "../../ir/row-pairs.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
@@ -121,7 +123,7 @@ import {
 } from "./int32-abi.js";
 import { type Int32Local } from "./int32-locals.js";
 import { findIntegerClones, NO_INTEGER_CLONES, type IntegerClones } from "./integer-clones.js";
-import { exactInteger, narrowInteger, widenInteger } from "./integer-values.js";
+import { exactInteger, narrowInteger, widenInteger, type LlInteger } from "./integer-values.js";
 import { findInitializerBindings } from "../../ir/initializer-bindings.js";
 import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
 import {
@@ -199,8 +201,10 @@ import { StackCallbacks } from "./stack-callbacks.js";
 import { findAppendedArrayLiterals } from "./appended-array-literals.js";
 import { AmbientReceiverReaders, findConstantCallbacks } from "./constant-callbacks.js";
 import {
+  findLentRecordFields,
   findLentStringParameters,
-  type LentStringParameters,
+  findRecordFieldProducers,
+  type LendingFacts,
   type StringSliceSnapshot,
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
@@ -356,6 +360,13 @@ import {
 } from "./shapes.js";
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
 import { INLINE_LITERAL_BYTES } from "./string-literal-equality.js";
+import {
+  inlinableNumberFunction,
+  withSpeculativeValue,
+  type InlinableFunction,
+  type SpeculationContext,
+  type SpeculativeValue,
+} from "./speculative-integers.js";
 import {
   emitFfiCallbackDefs,
   emitLibDefs,
@@ -578,27 +589,31 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
       ? selectInt32Arrays(
           versionParameters(
             addRecordResultEntries(
-              scalarizeNumericRecords(
-                specializeCallbackCalls(
-                  specializeNumericCalls(
-                    inlineExpressionFunctions(
-                      foldConstantGlobals(
-                        copyStableCaptures(
-                          resolveSelfCaptures(
-                            hoistFinalFieldReads(
-                              freezeInitOnlyGlobals(
-                                holdCharLocalsAsUnits(
-                                  dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+              scalarizeLiteralResults(
+                scalarizeNumericRecords(
+                  specializeCallbackCalls(
+                    specializeNumericCalls(
+                      pairRowSums(
+                        inlineExpressionFunctions(
+                          foldConstantGlobals(
+                            copyStableCaptures(
+                              resolveSelfCaptures(
+                                hoistFinalFieldReads(
+                                  freezeInitOnlyGlobals(
+                                    holdCharLocalsAsUnits(
+                                      dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
                           ),
                         ),
                       ),
+                      mangleFunction,
                     ),
                     mangleFunction,
                   ),
-                  mangleFunction,
                 ),
               ),
             ),
@@ -789,8 +804,9 @@ export class LlEmitter {
   readonly stringSlices = new Map<string, StringSliceSnapshot>();
   /** Slices written into stack buffers (findScratchStringSlices). */
   scratchStringSlices: ReadonlySet<IrExpr> = new Set();
-  /** String parameters a caller may lend scratch slices to. */
-  lentStringParameters: LentStringParameters = new Map();
+  /** String parameters, record fields and record producers a caller may
+   * lend scratch slices to. */
+  lendingFacts: LendingFacts = { strings: new Map(), records: new Map(), producers: new Map() };
   localStackUnions = new Map<string, IrExpr & { kind: "unionWrap" }>();
   localStackObjects = new Map<string, StackObjectSource>();
   reassignedStackObjects = new Set<string>();
@@ -1225,6 +1241,9 @@ export class LlEmitter {
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
   readNumberMapWrites: ReadonlySet<IrExpr> = new Set();
+  /** The integer views of the current function's number Map/Set keys, by
+   * the key's double operand (noteNumberMapKey, map-number-lookup.ts). */
+  numberMapKeyIntegers = new Map<string, LlInteger>();
   /** The current function's fused string-key Map get-then-set pairs (map-entry-fusion.ts). */
   mapEntryFusion: MapEntryFusion | null = null;
   readonly callLifetimes: CallLifetimes;
@@ -1473,6 +1492,10 @@ export class LlEmitter {
   /** IrModule.foreignElementKeys: element keys whose arrays can hold
    * SCR_ARR_FOREIGN elements. */
   readonly foreignElementKeys: ReadonlySet<string>;
+  /** The program freezes, seals or prevents extensions of untyped values
+   * (IrModule.untypedIntegrity): the commits of class views store the
+   * view's integrity state in the instance's integrity word. */
+  readonly untypedIntegrity: boolean;
   /** Functions whose direct calls use i32 parameters or results. */
   readonly int32Abis: ReadonlyMap<string, Int32Abi>;
   /** Pure number functions with speculative integer clones. */
@@ -1524,11 +1547,50 @@ export class LlEmitter {
      * integer loop has neither. */
     bails?: string;
     ran?: string;
+    /** Writes that speculate a rewritten value (rewriteSpeculable). */
+    values?: ReadonlyMap<IrStmt, SpeculativeValue>;
   } | null = null;
   /** Speculative loop sites numbered so far in the module. */
   speculativeLoopSites = 0;
   /** The ordinary copy being emitted: resume labels still to place. */
   speculationResume: Map<IrStmt, { label: string; placed: boolean }> | null = null;
+  /** The rewritten values of the writes `speculationResume` resumes at. */
+  speculationResumeValues: ReadonlyMap<IrStmt, SpeculativeValue> | null = null;
+  /** Hoisted speculative leaves numbered so far in the function being
+   * emitted (emitFunction resets it): a function's local names must not
+   * depend on which functions the same emitter emitted before it, since
+   * function workers each emit a share of the module. */
+  speculativeLeaves = 0;
+  private readonly inlinableFunctions = new Map<string, InlinableFunction | undefined>();
+
+  /** What speculative loop planning may assume here (SpeculationContext). */
+  speculationContext(): SpeculationContext {
+    const inlinable = (callee: string): InlinableFunction | undefined => {
+      if (!this.inlinableFunctions.has(callee)) {
+        // Unset while its body is checked: a recursive helper is not inlinable.
+        this.inlinableFunctions.set(callee, undefined);
+        const fn = this.fnByName.get(callee);
+        this.inlinableFunctions.set(
+          callee,
+          fn ? inlinableNumberFunction(fn, inlinable) : undefined,
+        );
+      }
+      return this.inlinableFunctions.get(callee);
+    };
+    return {
+      inlinable,
+      unaliased: (id) => {
+        const local = this.currentLocals.get(id);
+        return (
+          local !== undefined &&
+          !local.boxed &&
+          !this.captureIds.has(id) &&
+          !this.lazyCaptureBoxes.has(id)
+        );
+      },
+      leafId: () => `%spec.leaf.${this.speculativeLeaves++}`,
+    };
+  }
   /** Run once at the top of the next loop copy's header
    * (`enterLoopHeader`): records the ordinary copy's header, or sends the
    * third copy's header there. */
@@ -1575,6 +1637,14 @@ export class LlEmitter {
   /** Worker programs: typed-array accesses whose views an enclosing version
    * guard proved thread-owned. */
   bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
+  /** The alias-scope attachment of each typed-array element read and write
+   * in the current loop version's fast copy (emitVersionedLoop), and the
+   * one the element access being emitted carries (bytesElementAlias). */
+  bytesAliasScopes: ReadonlyMap<IrExpr | IrStmt, string> = new Map();
+  bytesAccessScope = "";
+  /** Loop versions with alias scopes in the current function; it names
+   * their scopes. */
+  aliasScopedVersions = 0;
   integerViews = new Map<string, string>();
   /** Module globals the current function owns outright (initializer
    * bindings): their function-local slot, which stands in for the global. */
@@ -1699,8 +1769,12 @@ export class LlEmitter {
         initializerBindings: this.initializerBindings,
         nodes: this.nodeIndex,
       });
+    this.untypedIntegrity = mod.untypedIntegrity === true;
     this.liveViewsReadOnly =
-      mod.lib === undefined && !dynamicStores.all && dynamicStores.names.size === 0;
+      mod.lib === undefined &&
+      !this.untypedIntegrity &&
+      !dynamicStores.all &&
+      dynamicStores.names.size === 0;
     this.foreignElementKeys = new Set(mod.foreignElementKeys ?? []);
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
@@ -1894,8 +1968,14 @@ export class LlEmitter {
       },
       (wrap) => this.borrowableNullableWrap(wrap) === "ref",
     );
-    this.lentStringParameters =
-      this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
+    if (this.debug === null) {
+      const strings = findLentStringParameters(this.fnByName, this.callLifetimes);
+      this.lendingFacts = {
+        strings,
+        records: findLentRecordFields(this.fnByName, this.callLifetimes, strings),
+        producers: findRecordFieldProducers(this.fnByName),
+      };
+    }
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes, this.nodeIndex);
     // Integer clones signal a stack overflow through their result, which
     // needs the single-threaded guard; worker programs also poll for
@@ -2010,14 +2090,14 @@ export class LlEmitter {
         const meta = this.classMeta.get(t.className);
         return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
       },
-      classSubtypes: (name) => {
-        const target = this.classMetaOf(name);
-        const intervals = classMembershipIntervals(this.classMeta, target.def.name);
-        return [...this.classMeta.values()]
-          .filter((meta) =>
-            intervals.some((range) => range.pre <= meta.pre && meta.pre <= range.post),
-          )
-          .map((meta) => meta.def.name);
+      classSubtypes: (name) => this.classSubtypes(name),
+      classValueSubtypes: (name) => {
+        const target = this.classMetaOf(name).def;
+        return this.classSubtypes(name).filter(
+          (sub) =>
+            sub !== target.name &&
+            classValueAbiEquals(this.classMetaOf(sub).def, target, this.fnByName),
+        );
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
@@ -4142,6 +4222,15 @@ export class LlEmitter {
 
   // ── class plumbing ──────────────────────────────────────────────────────
 
+  /** `name` and every class whose membership interval falls in its own. */
+  private classSubtypes(name: string): string[] {
+    const target = this.classMetaOf(name);
+    const intervals = classMembershipIntervals(this.classMeta, target.def.name);
+    return [...this.classMeta.values()]
+      .filter((meta) => intervals.some((range) => range.pre <= meta.pre && meta.pre <= range.post))
+      .map((meta) => meta.def.name);
+  }
+
   classMetaOf(className: string): LlClassMeta {
     const meta = this.classMeta.get(className);
     if (!meta) throw new InternalCompilerError(`llvm emitter bug: unknown class ${className}`);
@@ -5801,6 +5890,22 @@ export class LlEmitter {
     if (resume && !resume.placed && !this.B.isTerminated()) {
       // The fast copy's failed checks re-execute this statement here.
       resume.placed = true;
+      // A write with hoisted leaves resumed from its own failed check
+      // re-executes its arithmetic over the leaves' stored doubles: each
+      // leaf ran once, in the fast copy. Reached from an earlier statement
+      // of this copy (a failed check before it), its leaves never ran, so
+      // it runs as written.
+      const rewritten = this.speculationResumeValues?.get(s);
+      if (rewritten !== undefined && rewritten.leaves.length > 0) {
+        const join = this.B.newLabel("spec.resume.join");
+        this.emitStmt(s);
+        if (!this.B.isTerminated()) this.B.br(join);
+        this.B.startBlock(resume.label);
+        this.emitStmt(withSpeculativeValue(s, rewritten.value));
+        if (!this.B.isTerminated()) this.B.br(join);
+        this.B.startBlock(join);
+        return;
+      }
       this.B.br(resume.label);
       this.B.startBlock(resume.label);
     }
@@ -7203,8 +7308,9 @@ export class LlEmitter {
     inBounds = false,
     invalidNaN = false,
     owned = false,
+    scope = "",
   ): LlValue {
-    return emitBytesGet(this, elem, receiver, index, expr, inBounds, invalidNaN, owned);
+    return emitBytesGet(this, elem, receiver, index, expr, inBounds, invalidNaN, owned, scope);
   }
 
   emitToUint32(value: string, expr?: IrExpr, uint32?: string): string {
@@ -7268,8 +7374,20 @@ export class LlEmitter {
     expr?: IrExpr,
     inBounds = false,
     owned = false,
+    scope = "",
   ): void {
-    return emitBytesSet(this, elem, receiver, index, value, indexExpr, expr, inBounds, owned);
+    return emitBytesSet(
+      this,
+      elem,
+      receiver,
+      index,
+      value,
+      indexExpr,
+      expr,
+      inBounds,
+      owned,
+      scope,
+    );
   }
 
   emitBytesIntrinsic(e: IrExpr & { kind: "bytesIntrinsic" }): LlValue {
