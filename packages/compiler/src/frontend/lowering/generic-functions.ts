@@ -921,27 +921,6 @@ function bindDefaultTypeParams(
   });
 }
 
-/** Generic alias references of a call-keyed instance's declared signature
- * (`Catalog<G, P>`), each paired with the same alias as the call's resolved
- * signature instantiates it (`Catalog<{ g1: … }, "acme">`). The checker
- * keeps the alias symbolic inside the generic body and offers no way to
- * instantiate it with the bound arguments, but alias instantiations are
- * interned: the body's `x as Catalog<G, P>` is the very type the signature
- * declares, so the pair recorded during unification is that re-instantiation.
- * Keyed by the instance's ts-level bindings map, which every scope that
- * lowers the instance installs (typeParamTsBindings). */
-const boundAliasInstances = new WeakMap<Map<ts.Symbol, ts.Type>, Map<ts.Type, ts.Type>>();
-
-/** The concrete instantiation of a generic alias reference inside the
- * instance whose ts-level bindings are `tsBindings` (boundAliasInstances),
- * or null when its signature never instantiated that reference. */
-export function boundAliasInstance(
-  tsBindings: Map<ts.Symbol, ts.Type>,
-  type: ts.Type,
-): ts.Type | null {
-  return boundAliasInstances.get(tsBindings)?.get(type) ?? null;
-}
-
 /** The structural half of binding inference: unify the DECLARED signature
  * (whose types mention the type parameters) against a TARGET signature
  * with the substitution applied — a call's resolved signature, or the
@@ -1062,8 +1041,8 @@ function unifySignatureBindings(
       iAliasArgs.length === dAliasArgs.length
     ) {
       if (tsBindings && declared !== inst) {
-        let pairs = boundAliasInstances.get(tsBindings);
-        if (!pairs) boundAliasInstances.set(tsBindings, (pairs = new Map()));
+        let pairs = lowerer.boundAliasInstances.get(tsBindings);
+        if (!pairs) lowerer.boundAliasInstances.set(tsBindings, (pairs = new Map()));
         // A body forwarding its own alias (`inner(g)` returning `Catalog<G,
         // "x">` inside an instance) resolves through the enclosing one.
         if (!pairs.has(declared)) pairs.set(declared, lowerer.boundAliasTsResolver(inst) ?? inst);

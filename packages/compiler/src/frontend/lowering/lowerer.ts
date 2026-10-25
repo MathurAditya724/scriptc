@@ -456,7 +456,6 @@ import {
   inferTypeParamBindings,
   lowerGenericInstance,
   genericLocalClassBinding,
-  boundAliasInstance,
 } from "./generic-functions.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import type { InstantiationPath } from "./instantiation-path.js";
@@ -2234,6 +2233,16 @@ export class Lowerer {
    * the body needs — indexed accesses (`T[K]` needs K's literal key) and
    * keyed record reads (`o[k]` where k's type is a literal-bound K). */
   typeParamTsBindings: Map<ts.Symbol, ts.Type> | null = null;
+  /** Generic alias references of a call-keyed instance's declared signature
+   * (`Catalog<G, P>`), each paired with the same alias as the call's
+   * resolved signature instantiates it (`Catalog<{ g1: … }, "acme">`),
+   * keyed by the instance's ts-level bindings (typeParamTsBindings). The
+   * checker keeps the alias symbolic inside the generic body and offers no
+   * way to instantiate it with the bound arguments, but alias
+   * instantiations are interned: the body's `x as Catalog<G, P>` is the
+   * very type the signature declares, so the pair recorded during binding
+   * unification is that re-instantiation. */
+  readonly boundAliasInstances = new Map<Map<ts.Symbol, ts.Type>, Map<ts.Type, ts.Type>>();
   /** Non-null while an IMPLICIT-ANY instance body lowers (npm-static JS;
    * see generic-functions.ts): bound param symbol →
    * the call site's checker type, consulted by typeOf for identifier
@@ -9554,10 +9563,10 @@ export class Lowerer {
 
   /** The concrete instantiation of a generic alias reference (`Catalog<G,
    * P>`) the current call-keyed instance's signature declares
-   * (boundAliasInstance). Inert outside generic function instantiation. */
+   * (boundAliasInstances). Inert outside generic function instantiation. */
   readonly boundAliasTsResolver = (t: ts.Type): ts.Type | null => {
     if (!this.typeParamTsBindings || t.getAliasTypeArguments().length === 0) return null;
-    return boundAliasInstance(this.typeParamTsBindings, t);
+    return this.boundAliasInstances.get(this.typeParamTsBindings)?.get(t) ?? null;
   };
 
   irTypeOf(node: ts.Node): IrType {
