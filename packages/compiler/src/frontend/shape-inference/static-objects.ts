@@ -149,7 +149,8 @@ function literalMemberFunction(fn: Node): { stmt: ts.Statement; path: string } |
 /** The text of a primitive literal an object literal itself gives `key`
  * (`{ K: 1 }`, `{ "k": "v" }`, `-1`, `true`, `null`), or null. */
 function ownLiteralMember(literal: Node, key: string): string | null {
-  if (!ts.isObjectLiteralExpression(literal)) return null;
+  // `__proto__: v` in a literal sets the prototype and makes no property.
+  if (!ts.isObjectLiteralExpression(literal) || key === "__proto__") return null;
   let found: string | null = null;
   for (const m of literal.properties.nodes) {
     const name = (m as { name?: Node }).name;
@@ -695,35 +696,43 @@ export function planStaticObjectRewrites(
    * one of which it initializes, optionally followed by member reads. A
    * require inside a function, a condition or another expression runs only
    * when that does. */
-  const requiresWhenRun = (sf: ts.SourceFile, st: ts.Statement, target: ts.SourceFile): boolean => {
-    const values: ts.Expression[] = [];
-    if (ts.isVariableStatement(st)) {
-      for (const d of st.declarationList.declarations.nodes)
-        if (d.initializer !== undefined) values.push(d.initializer);
-    } else if (ts.isExpressionStatement(st)) {
-      const e = st.expression;
-      values.push(
-        ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken
-          ? e.right
-          : e,
+  /** The values a top-level statement computes: its declarations'
+   * initializers, or its expression (an assignment's right side). */
+  const statementValues = (st: ts.Statement): ts.Expression[] | null => {
+    if (ts.isVariableStatement(st))
+      return st.declarationList.declarations.nodes.flatMap((d) =>
+        d.initializer !== undefined ? [d.initializer] : [],
       );
-    }
-    return values.some((v) => {
-      let e = v;
-      for (;;) {
-        if (ts.isParenthesizedExpression(e)) e = e.expression;
-        else if (ts.isPropertyAccessExpression(e) && e.questionDotToken === undefined)
-          e = e.expression;
-        else break;
-      }
-      return (
-        ts.isCallExpression(e) &&
-        ts.isIdentifier(e.expression) &&
-        e.expression.text === "require" &&
-        requiredFiles(sf, e).includes(target)
-      );
-    });
+    if (!ts.isExpressionStatement(st)) return null;
+    const e = st.expression;
+    return [
+      ts.isBinaryExpression(e) &&
+      e.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(e.left)
+        ? e.right
+        : e,
+    ];
   };
+  /** The require call `v` is, followed by member reads, or null. */
+  const requireValue = (v: ts.Expression): ts.CallExpression | null => {
+    let e = v;
+    for (;;) {
+      if (ts.isParenthesizedExpression(e)) e = e.expression;
+      else if (ts.isPropertyAccessExpression(e) && e.questionDotToken === undefined)
+        e = e.expression;
+      else break;
+    }
+    return ts.isCallExpression(e) &&
+      ts.isIdentifier(e.expression) &&
+      e.expression.text === "require"
+      ? e
+      : null;
+  };
+  const requiresWhenRun = (sf: ts.SourceFile, st: ts.Statement, target: ts.SourceFile): boolean =>
+    (statementValues(st) ?? []).some((v) => {
+      const call = requireValue(v);
+      return call !== null && requiredFiles(sf, call).includes(target);
+    });
   const moduleBindings = new Map<string, string>();
   const exportAdds = new Map<ts.SourceFile, Set<string>>();
   const crossFileReference = (
@@ -756,6 +765,14 @@ export function planStaticObjectRewrites(
       return false;
     })();
     if (!inFunction && stmts.indexOf(top) <= at) return null;
+    // A function may run before the binding below is initialized if the
+    // statement that loads the module, or one before it, runs other code
+    // (`var m = require("lib"), x = f();`): then its reads stay as written.
+    if (inFunction) {
+      const values = statementValues(stmts[at]!);
+      const onlyLoads = values !== null && values.every((v) => requireValue(v) !== null);
+      if (!onlyLoads || !stmts.slice(0, at).every(definitionOnly)) return null;
+    }
     const key = `${sf.fileName}\0${defining.fileName}`;
     let binding = moduleBindings.get(key);
     if (binding === undefined) {
