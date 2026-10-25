@@ -5345,9 +5345,12 @@ static ScrDyn *scr_bytes_species(ScrDyn *recv, bool *failed) {
     *failed = true;
     return NULL;
   }
-  ScrDyn *species = scr_species_symbol ? scr_dyn_symbol_key_get(constructor, scr_species_symbol, true) : NULL;
+  /* Before the program creates the species symbol, no constructor can have
+   * a Symbol.species property of its own. */
+  ScrDyn *species = scr_species_symbol ? scr_dyn_symbol_key_get(constructor, scr_species_symbol, true)
+                                       : scr_dyn_retain(scr_dyn_undefined());
   if (species && species->kind == SCR_DYN_UNDEF && scr_bytes_ctor_elem(constructor) >= 0 &&
-      !scr_bytes_ctor_own_species(constructor)) {
+      (!scr_species_symbol || !scr_bytes_ctor_own_species(constructor))) {
     /* A built-in typed-array constructor inherits %TypedArray%'s species
      * getter, which returns the constructor itself. */
     scr_dyn_release(species);
