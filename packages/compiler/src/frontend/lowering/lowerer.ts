@@ -10397,6 +10397,31 @@ export class Lowerer {
           }
         }
       }
+      // A promise or function value against a union whose ONLY arm of
+      // that kind differs from it (`Promise<T>` into `Promise<unknown> |
+      // undefined`, `() => Promise<string | null>` into an optional
+      // `() => Promise<string | null | undefined>` member): convert into
+      // that arm with the arm-level conversion (the checked payload
+      // widening, the function adapter), then wrap. Several arms of the
+      // kind stay ambiguous and fall through to the union fence.
+      if (expr.type.kind === "promise" || expr.type.kind === "func") {
+        const arms = this.unions.get(expected.unionId)?.arms ?? [];
+        const candidates = arms.filter((arm) => arm.kind === expr.type.kind);
+        const arm = candidates.length === 1 ? candidates[0]! : null;
+        if (arm) {
+          const converted = this.coerceToExpected(expr, arm);
+          if (converted !== expr && typeEquals(converted.type, arm)) {
+            return {
+              kind: "unionWrap",
+              unionId: expected.unionId,
+              tag: arms.indexOf(arm),
+              value: converted,
+              type: expected,
+              loc: expr.loc,
+            };
+          }
+        }
+      }
       // A width-coercible value against a union: coerce into the SINGLE
       // width-liftable arm, then wrap like any arm value (widthLiftPlan's
       // liftWrap — several candidate arms are ambiguous and decline).

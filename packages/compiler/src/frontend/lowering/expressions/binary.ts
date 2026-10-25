@@ -2388,6 +2388,31 @@ export function lowerStrictEquality(
         loc,
       };
     }
+    // A plain promise against a union whose promise arm has a different
+    // payload (`chains.get(id) === tail` with a `Map<K, Promise<unknown>>`):
+    // wrapping would convert the promise into that arm, and the converted
+    // promise is a new object. Promises are objects to ===, so compare both
+    // sides as untyped values, where a converted promise answers with its
+    // origin's identity (the plain promise-vs-promise rule below).
+    const plainPromise =
+      left.type.kind === "promise" ? left : right.type.kind === "promise" ? right : null;
+    if (
+      !bothUnion &&
+      plainPromise !== null &&
+      lowerer.armTag(ut.unionId, plainPromise.type) < 0 &&
+      unionArms.some((arm) => arm.kind === "promise") &&
+      lowerer.dynConvertible(left.type) &&
+      lowerer.dynConvertible(right.type)
+    ) {
+      return {
+        kind: "dynScalarEq",
+        left: lowerer.coerceToExpected(left, DYN),
+        right: lowerer.coerceToExpected(right, DYN),
+        ...(negated ? { negated: true as const } : {}),
+        type: BOOL,
+        loc,
+      };
+    }
     if ((sameUnion || !bothUnion) && lowerer.eqComparableUnion(ut.unionId)) {
       aliasRefusal(ut);
       return {
