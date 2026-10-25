@@ -156,7 +156,8 @@ const PURE_STRING = new Set<string>([
   "toUpperCase",
   "isWellFormed",
   "toWellFormed",
-  "cpAt",
+  "byteLength",
+  "cpAtByte",
 ]);
 
 function primitive(t: IrType): boolean {

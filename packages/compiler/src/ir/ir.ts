@@ -2447,10 +2447,13 @@ export type IrStrIntrinsicMethod =
   // surrogate, and the copy with each one replaced by U+FFFD.
   | "isWellFormed"
   | "toWellFormed"
-  // The string iterator's step: the full code-POINT character at a UTF-16
-  // index (astral chars come back whole where charAt truncates) — for-of
-  // over strings desugars onto it, advancing by the result's length.
-  | "cpAt";
+  // The string iterator over the WTF-8 bytes: the byte count of a string,
+  // and the code-point character that starts at a byte offset (a lone
+  // surrogate is a one-unit character). for-of, spread and Array.from of a
+  // string walk a byte cursor with them, advancing by the character's
+  // byte count; the cursor is always a character start below the count.
+  | "byteLength"
+  | "cpAtByte";
 
 /** The typed-array/Buffer method surface (bytesIntrinsic). Receiver/arg
  * conventions (validated): `length`/`byteLength` are property reads → f64;

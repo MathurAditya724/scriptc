@@ -104,6 +104,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "str.localeCase": "scr_str_locale_case",
   "str.replaceLiteral": "scr_str_replace_literal",
   "str.replaceChars": "scr_str_replace_chars",
+  "str.codePoints": "scr_str_code_points",
   "num.fromString": "scr_string_to_number",
   "math.round": "scr_math_round",
   "math.sin": "sin",

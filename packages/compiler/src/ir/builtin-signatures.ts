@@ -848,6 +848,7 @@ function buildLibFnSignatures() {
     // (subject, characters, NUL-separated replacement texts): the fused
     // chain of global one-character replacements.
     "str.replaceChars": { argTypes: [STRING, STRING, STRING], result: STRING },
+    "str.codePoints": { argTypes: [STRING], result: arrayOf(STRING) },
     /* ToNumber(string) — ECMA-262 7.1.4.1 StringToNumber (scr_string.c):
      * trim the JS StrWhiteSpace set, empty/whitespace-only → +0, then the
      * whole span must be one StrNumericLiteral — signed decimal (Infinity
