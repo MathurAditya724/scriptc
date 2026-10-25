@@ -29,3 +29,10 @@ const streaming = new TextDecoder();
 let text = "";
 for (const chunk of chunks) text += streaming.decode(chunk.value, { stream: !chunk.done });
 console.log(JSON.stringify(text), text.length);
+
+// Other typed arrays decode their bytes, with or without the assertion.
+const wide = new Map<string, Uint16Array | undefined>([["present", new Uint16Array([0x6968])]]);
+const asserted = wide.get("present")!;
+console.log(JSON.stringify(decoder.decode(asserted)), JSON.stringify(decoder.decode(wide.get("present")!)));
+console.log(JSON.stringify(decoder.decode(wide.get("present"))), JSON.stringify(decoder.decode(wide.get("absent"))));
+console.log(JSON.stringify(new TextDecoder("utf-8").decode(wide.get("absent")!)));
