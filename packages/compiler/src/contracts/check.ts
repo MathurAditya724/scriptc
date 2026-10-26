@@ -519,8 +519,10 @@ class ContractChecker {
           for (const fn of this.fnByLoc.get(key) ?? []) targets.push({ fn, note });
     if (targets.length === 0) return;
     // Target-independent: the native stack guard (Linux, macOS) counts, so a
-    // contract holds on every platform.
-    const mt = computeMayThrow(this.mod, { stackChecks: true, explain: true });
+    // contract holds on every platform. Every function on a call cycle counts
+    // as checking it, a superset of the functions the backend picks, so the
+    // answer does not depend on that choice.
+    const mt = computeMayThrow(this.mod, { stackChecks: "everyCycleMember", explain: true });
     const proven: string[] = [];
     for (const { fn, note } of targets) {
       if (fn.async === true || fn.generator !== undefined) {
