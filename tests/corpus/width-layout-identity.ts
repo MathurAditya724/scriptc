@@ -53,3 +53,16 @@ const moduleSource: Entry[] = [{ key: "m", hits: 1 }];
 const moduleView: Counted[] = moduleSource;
 track(moduleView, "n");
 console.log(moduleView.length, moduleSource.length, moduleView === moduleSource);
+
+// The same function body lowered for a wider argument and for its own type:
+// each lowering passes its own binding on.
+function addTwice(list: Counted[], key: string): number {
+  const alias: Counted[] = list;
+  track(alias, key);
+  track(alias, `${key}2`);
+  return list.length;
+}
+const wideList: Entry[] = [{ key: "w", hits: 1, note: "n" }];
+const plainList: Counted[] = [{ key: "p", hits: 1 }];
+console.log(addTwice(wideList, "a"), addTwice(plainList, "b"), addTwice(wideList, "c"));
+console.log(wideList.length, plainList.length);

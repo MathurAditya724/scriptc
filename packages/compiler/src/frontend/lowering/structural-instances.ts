@@ -249,13 +249,20 @@ export function layoutReturnType(
 
 /** The initializer type of a const the argument names when the const kept
  * that initializer's layout (keepsInitializerLayout): the checker types the
- * binding by its annotation, but its value has the initializer's layout. */
+ * binding by its annotation, but its value has the initializer's layout. A
+ * declaration lowers once per function instance, and only some instances
+ * keep a layout, so the recorded type applies only while it maps to the
+ * layout of the binding the current lowering resolves. */
 function preservedLayoutOf(lowerer: Lowerer, arg: ts.Expression): ts.Type | undefined {
   let e = arg;
   while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
   if (!ts.isIdentifier(e)) return undefined;
   const symbol = lowerer.resolveValueSymbol(e);
-  return symbol ? lowerer.preservedLayoutTypes.get(symbol) : undefined;
+  const recorded = symbol ? lowerer.preservedLayoutTypes.get(symbol) : undefined;
+  if (recorded === undefined) return undefined;
+  const binding = lowerer.peekLocal(e)?.type ?? lowerer.globalOf(e)?.type;
+  const layout = lowerer.mapTypeOf(recorded);
+  return binding && layout && typeEquals(binding, layout) ? recorded : undefined;
 }
 
 /** Whether a `const` binding typed `declared` keeps the record or array
