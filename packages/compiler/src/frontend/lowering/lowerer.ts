@@ -3792,6 +3792,14 @@ export class Lowerer {
   /** Declarations retryDeferred registered, in order: run() lowers the
    * bodies it had skipped. */
   readonly retriedDeclarations: ts.Node[] = [];
+  /** Diagnostics of lowering that a statement's retry does not repeat (a
+   * function-local class's member bodies, lowered once and kept):
+   * dropAttemptDiags keeps them. */
+  readonly loweredOnceDiags = new Set<ScrDiagnostic>();
+  /** Deferred classes whose static field initializers' place in %init
+   * has been lowered (retryDeferredAtDeclaration): a later flush must not
+   * register them, since their initializers would never run. */
+  readonly staticInitsPassed = new Set<ts.Symbol>();
   /** Deferred declarations' collections, for the flush retry
    * (retryDeferred). */
   readonly deferredCollectors = new Map<
@@ -3803,9 +3811,9 @@ export class Lowerer {
   liftDynFieldPolicy = false;
   /** Collection diagnostics that a flush retry may simply run again (a
    * derived class whose base had not registered yet). */
-  readonly retriableDiags = new WeakSet<ScrDiagnostic>();
+  readonly retriableDiags = new Set<ScrDiagnostic>();
   /** The checker type behind each type failure badType committed. */
-  readonly failedTypes = new WeakMap<TypeFailure, ts.Type>();
+  readonly failedTypes = new Map<TypeFailure, ts.Type>();
   /** True while collectProgram runs: resolution helpers must not flush
    * deferred diagnostics (collection itself resolves symbols — extends
    * clauses — and collection order must not decide what reports). */
@@ -3888,7 +3896,8 @@ export class Lowerer {
   ) {
     // The mode's options, sorted by name; the values derived from them follow.
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
-    for (const [id, degraded] of mode.degradedTypes ?? []) this.degradedTypes.set(id, degraded);
+    if (mode.degradedTypes)
+      for (const [id, degraded] of mode.degradedTypes) this.degradedTypes.set(id, degraded);
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
@@ -8921,8 +8930,25 @@ export class Lowerer {
         metadataPriority.set(sig.name, [3, expressionMetadataOrder++]);
       } else if (ts.isClassDeclaration(decl)) {
         const info = this.classes.get(this.classNamer(decl));
-        if (info && !info.generic && !units.has(`%${info.def.name}.constructor`))
-          this.onExprClassCollected?.(info);
+        if (!info) return;
+        if (!info.generic) {
+          if (!units.has(`%${info.def.name}.constructor`)) this.onExprClassCollected?.(info);
+          return;
+        }
+        // A generic class FAMILY's only units are its statics; its
+        // instantiations lower in the instance drain.
+        if (!info.staticMethods) return;
+        for (const [name, entry] of info.staticMethods) {
+          const unit = `%${info.def.name}.static:${name}`;
+          if (units.has(unit)) continue;
+          units.set(unit, {
+            order: unitOrder++,
+            roots: functionRoots(entry.member),
+            lower: () => lowerStaticMethod(this, info, name),
+          });
+          if (reachable.has(unit)) queue.push(unit);
+          metadataPriority.set(unit, [3, expressionMetadataOrder++]);
+        }
       }
     };
     const onEdge = this.onEdge;
@@ -9525,7 +9551,9 @@ export class Lowerer {
    * lowers again; flushed declaration diagnostics (`rejects`) stay, since
    * the retry will not flush them a second time. */
   dropAttemptDiags(diagsBefore: number): void {
-    const kept = this.diags.slice(diagsBefore).filter((d) => d.rejects !== undefined);
+    const kept = this.diags
+      .slice(diagsBefore)
+      .filter((d) => d.rejects !== undefined || this.loweredOnceDiags.has(d));
     this.diags.length = diagsBefore;
     this.diags.push(...kept);
   }
@@ -12544,9 +12572,27 @@ export class Lowerer {
    * caller to commit. */
   private retryDeferred(symbol: ts.Symbol, diags: readonly ScrDiagnostic[]): boolean {
     if (this.tierMode !== "auto") return false;
+    if (this.staticInitsPassed.has(symbol)) return false;
     const collector = this.deferredCollectors.get(symbol);
     if (collector === undefined) return false;
     const slots: DynamicSlot[] = [];
+    // The types this retry degraded (not those of retries its collections
+    // ran), for retryDeferredAtDeclaration to restore when it fails.
+    const degraded: number[] = [];
+    try {
+      return this.retryDeferredRounds(symbol, collector, diags, slots, degraded);
+    } finally {
+      this.retryDegraded = degraded;
+    }
+  }
+
+  private retryDeferredRounds(
+    symbol: ts.Symbol,
+    collector: { symbolOf: () => ts.Symbol | undefined; collect: () => void },
+    diags: readonly ScrDiagnostic[],
+    slots: DynamicSlot[],
+    degraded: number[],
+  ): boolean {
     let current = diags;
     for (let round = 0; round < MAX_DECLARATION_RETRIES; round++) {
       const failing: { diag: ScrDiagnostic; failure: TypeFailure; id: number }[] = [];
@@ -12580,6 +12626,7 @@ export class Lowerer {
       if (failing.length === 0 && !(retriable && round === 0)) return false;
       for (const { diag, failure, id } of failing) {
         this.degradedTypes.set(id, { lenient: DYN, code: diag.code, reason: diag.message });
+        degraded.push(id);
         slots.push({ loc: diag.loc, failure, code: diag.code, reason: diag.message });
       }
       this.deferredDiags.delete(symbol);
@@ -12607,6 +12654,31 @@ export class Lowerer {
       current = this.deferredDiags.get(symbol) ?? [];
     }
     return false;
+  }
+
+  private retryDegraded: number[] = [];
+
+  /** A deferred class with static field initializers is reached where its
+   * statement evaluates: Node runs the initializers there, referenced or
+   * not. Its file's %init calls this at that place, which retries the class
+   * as a flush would, so the initializers lower in place. A failed retry
+   * reports nothing and leaves the class deferred as it was, and from here
+   * on no flush registers it (staticInitsPassed): it reports instead.
+   * Returns whether the class has registered. */
+  retryDeferredAtDeclaration(symbol: ts.Symbol): boolean {
+    const diags = this.deferredDiags.get(symbol);
+    let registered = !this.deferredCollectors.has(symbol);
+    if (!registered && diags !== undefined) {
+      this.retryDegraded = [];
+      registered = this.retryDeferred(symbol, diags);
+      if (!registered) {
+        for (const id of this.retryDegraded) this.degradedTypes.delete(id);
+        this.deferredDiags.set(symbol, [...diags]);
+      }
+      this.retryDegraded = [];
+    }
+    this.staticInitsPassed.add(symbol);
+    return registered;
   }
 
   collectSignature(decl: ts.FunctionDeclaration): void {

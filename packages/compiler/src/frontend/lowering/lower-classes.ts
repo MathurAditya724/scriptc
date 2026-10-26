@@ -6216,6 +6216,7 @@ function lowerClassValue(
     const context = newFnCtx(true, null, null, VOID);
     info.localClass.context = context;
     lowerer.fnStack.push(context);
+    const diagsBefore = lowerer.diags.length;
     try {
       const bodies = lowerClassMembers(lowerer, info);
       for (const body of bodies) info.localClass.bodies.set(body.name, body);
@@ -6230,6 +6231,8 @@ function lowerClassValue(
         });
       }
       info.localClass.ready = true;
+      // A retry of the enclosing statement reuses these bodies.
+      for (const d of lowerer.diags.slice(diagsBefore)) lowerer.loweredOnceDiags.add(d);
       lowerer.onExprClassCollected?.(info);
     } finally {
       lowerer.fnStack.pop();
