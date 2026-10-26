@@ -106,12 +106,21 @@ test(
           join(packageDirectory, "package.json"),
         );
         cpSync(distribution, join(packageDirectory, "dist"), { recursive: true });
-        // The npm package depends on its LLVM helper and runtime pack.
+        // The npm package depends on its LLVM helper and runtime pack. Link
+        // them into its node_modules, as pnpm links a workspace package's
+        // dependencies, so the package checks resolve them.
         unbundlePlatformPackages(
           join(packageDirectory, "dist"),
           join(packageDirectory, "dist/bin/scriptc.json"),
           "@scriptc/llvm-linux-x64-gnu",
         );
+        mkdirSync(join(packageDirectory, "node_modules/@scriptc"), { recursive: true });
+        for (const name of ["llvm-linux-x64-gnu", "runtime-linux-x64-gnu"])
+          symlinkSync(
+            join(root, "packages", name),
+            join(packageDirectory, "node_modules/@scriptc", name),
+            "dir",
+          );
         writeFileSync(packageDirectory + ".ready", "ready\n");
       }
       // All compiler assets must survive moving the complete distribution.
