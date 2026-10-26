@@ -284,6 +284,9 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
+      # Node island tests load Node from a libnode pack, and fail rather
+      # than skip on macOS CI when none is configured.
+      - uses: ./.github/actions/libnode-dev-pack
       - name: Tests (${{ (github.event_name != 'schedule' && inputs.macos_suite != 'full') && 'darwin suite' || 'corpus and integration suites' }})
         run: node scripts/ci-test.mjs
 
@@ -704,6 +707,12 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
+      # Node island tests load Node from a libnode pack, and fail rather
+      # than skip on macOS CI when none is configured.
+      - uses: ./.github/actions/libnode-dev-pack
+      - name: Node island harness
+        if: matrix.shard == 1
+        run: pnpm test tests/harness/node-island packages/libnode-common
       - name: No-clang assembly/object contract
         if: matrix.shard == 1
         run: pnpm test packages/cli/test/native-output.test.ts
@@ -761,7 +770,8 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (macOS x64 LLVM artifacts, no clang)
     runs-on: macos-15-intel
-    timeout-minutes: 20
+    # The Node island tests take most of it.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -776,6 +786,15 @@ jobs:
         with:
           target: darwin-x64
       - run: pnpm build
+      # Node island tests load Node from a libnode pack, and fail rather
+      # than skip on macOS CI when none is configured.
+      - uses: ./.github/actions/libnode-dev-pack
+      - name: Node islands (Intel)
+        run: >-
+          pnpm test tests/harness/node-island packages/libnode-common
+          && pnpm test tests/harness/differential.test.ts -t ' (68[0-9][0-9]|7661|7662)-'
+        env:
+          SCRIPTC_TEST_WORKERS: "3"
       - name: Intel Mach-O no-clang object contract
         run: |
           mkdir -p "$RUNNER_TEMP/traps"

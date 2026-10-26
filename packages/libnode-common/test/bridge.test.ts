@@ -1,7 +1,7 @@
 /* The libnode bridge against a real pack, without the compiler: the C host
  * in bridge-smoke.c loads the pack the way scr_node_island.c does and makes
  * calls through the bridge with the runtime's embedded bootstrap. Needs a
- * pack in SCRIPTC_LIBNODE; required in the Linux x64 CI lanes
+ * pack in SCRIPTC_LIBNODE; required in the Linux x64 and macOS CI lanes
  * (tests/harness/libnode.ts). */
 import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
