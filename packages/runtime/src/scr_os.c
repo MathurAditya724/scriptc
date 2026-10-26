@@ -1327,7 +1327,7 @@ ScrDyn *scr_os_constants(void) {
   scr_os_constant(os, "UV_UDP_REUSEADDR", 4);
   scr_dyn_obj_set(os, "dlopen", 6, dlopen);
   scr_dyn_obj_set(os, "errno", 5, errnos);
-  scr_dyn_release(scr_dyn_freeze(signals));
+  scr_dyn_release(scr_dyn_freeze_data(signals));
   scr_dyn_obj_set(os, "signals", 7, signals);
   scr_dyn_obj_set(os, "priority", 8, priority);
   scr_os_constants_value = os;
@@ -1521,7 +1521,7 @@ ScrDyn *scr_node_constants(const ScrDyn *crypto_table) {
     }
   }
   scr_dyn_release(crypto);
-  scr_dyn_release(scr_dyn_freeze(o));
+  scr_dyn_release(scr_dyn_freeze_data(o));
   scr_node_constants_value = o;
   scr_atexit(scr_node_constants_clear);
   return scr_dyn_retain(o);
@@ -1700,4 +1700,34 @@ ScrDyn *scr_fs_constants_object(void) {
   scr_fs_constants_value = o;
   scr_atexit(scr_fs_constants_clear);
   return scr_dyn_retain(o);
+}
+
+/* util.convertProcessSignalToExitCode(signalCode): 128 plus the number of
+ * the os.constants.signals entry, and validateOneOf's
+ * ERR_INVALID_ARG_VALUE, listing every name, for anything else. NaN with
+ * the exception pending. */
+double scr_util_signal_exit_code(const ScrDyn *code) {
+  ScrDyn *signals = scr_dyn_new_obj();
+  scr_os_signal_constants(signals);
+  const ScrDyn *number =
+      code->kind == SCR_DYN_STR ? scr_dyn_obj_get(signals, code->v.str->data, code->v.str->len) : NULL;
+  double result = NAN;
+  if (number && number->kind == SCR_DYN_NUM) {
+    result = 128 + number->v.num;
+  } else {
+    ScrJsonBuf reason;
+    scr_jb_init(&reason);
+    scr_jb_puts(&reason, "must be one of: ");
+    for (size_t i = 0; i < signals->v.obj.len; i++) {
+      if (i > 0) scr_jb_puts(&reason, ", ");
+      scr_jb_putc(&reason, '\'');
+      scr_jb_write(&reason, signals->v.obj.entries[i].key, signals->v.obj.entries[i].key_len);
+      scr_jb_putc(&reason, '\'');
+    }
+    ScrStr *text = scr_jb_finish(&reason);
+    scr_dyn_arg_value_fail("signalCode", text->data, code);
+    scr_str_release(text);
+  }
+  scr_dyn_release(signals);
+  return result;
 }

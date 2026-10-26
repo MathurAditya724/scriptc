@@ -1,3 +1,5 @@
+import { keyedHelperName } from "../stable-names.js";
+import { primitiveElement } from "../array-values.js";
 import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -21,6 +23,7 @@ import {
   isPrimitiveCollectionKey,
   isUnitType,
   typeEquals,
+  UNDEFINED_T,
 } from "../../../ir/ir.js";
 import {
   COLLECTION_ITERATOR_METHODS,
@@ -41,9 +44,10 @@ import {
 } from "../collection-ingestion.js";
 import { strCharsCall } from "./array-construction.js";
 import { arrayElementRead } from "./array-iteration.js";
+import { isMimeParamsIterable } from "../builtins/mime.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { classGeneratorIterable } from "../class-iterables.js";
-import { generatorDrain } from "../iterator-adapters.js";
+import { generatorDrain, lowerCollectionIteratorValue } from "../iterator-adapters.js";
 
 /** Ambient Map method calls. `get`/`set`/`has`/`delete`/`clear` lower to
  * mapIntrinsic; `forEach` desugars to a direct call of a synthetic loop
@@ -232,7 +236,7 @@ function lowerMapIterDrainCall(
   const key = `${method}:${typeKey(mapT.key)}:${typeKey(mapT.value)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = `%map.${method}.${lowerer.mapHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%map.${method}`, key);
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildMapIterDrainFn(helper, mapT, method, elemT, tupleT, loc));
   }
@@ -348,7 +352,7 @@ export function mapEntriesArray(lowerer: Lowerer, receiver: IrExpr): IrExpr {
   const key = `entries:${typeKey(mapT.key)}:${typeKey(mapT.value)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = `%map.entries.${lowerer.mapHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%map.entries", key);
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(
       buildMapIterDrainFn(helper, mapT, "entries", tupleT, tupleT, receiver.loc),
@@ -519,7 +523,7 @@ export function lowerMapForEachCall(
   const key = `${typeKey(mapT.key)}:${typeKey(mapT.value)}:${arity}:${typeKey(fnRet)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = `%map.forEach.${lowerer.mapHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%map.forEach", key);
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildCollectionForEachFn(helper, mapT, arity, fnRet, loc));
   }
@@ -693,7 +697,7 @@ export function lowerSetForEachCall(
   const key = `${typeKey(setT.elem)}:${arity}:${typeKey(fnRet)}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
-    helper = `%set.forEach.${lowerer.setHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%set.forEach", key);
     lowerer.setHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildCollectionForEachFn(helper, setT, arity, fnRet, loc));
   }
@@ -745,7 +749,7 @@ function lowerSetCombineCall(
   const key = `${name}:${typeKey(setT.elem)}:${typeKey(otherT)}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
-    helper = `%set.${name}.${lowerer.setHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%set.${name}`, key);
     lowerer.setHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildSetCombineFn(helper, name, setT, otherT, loc));
   }
@@ -1132,9 +1136,20 @@ function setFromSeedValue(
   if (source.type.kind === "set" && typeEquals(source.type, setT)) {
     return { kind: "setIntrinsic", method: "clone", receiver: source, args: [], type: setT, loc };
   } else if (source.type.kind === "string" && setT.elem.kind === "string") {
-    seed = strCharsCall(lowerer, source, loc);
+    seed = strCharsCall(source, loc);
   } else if (source.type.kind === "array" && typeEquals(source.type.elem, setT.elem)) {
     seed = source;
+  } else if (
+    source.type.kind === "array" &&
+    primitiveElement(source.type.elem) &&
+    setT.elem.kind === "union" &&
+    lowerer.armTag(setT.elem.unionId, UNDEFINED_T) >= 0 &&
+    typeEquals(lowerer.stripUndefinedArm(setT.elem), source.type.elem)
+  ) {
+    // A `(T | undefined)[]` stores T elements: its present undefined
+    // elements copy as the Set's undefined.
+    seed = lowerer.coerceToExpected(source, arrayOf(setT.elem));
+    if (!typeEquals(seed.type, arrayOf(setT.elem))) return null;
   } else if (source.type.kind === "record") {
     const shape = lowerer.shapes.get(source.type.shapeId);
     if (!shape?.tuple || !shape.fields.every((field) => typeEquals(field.type, setT.elem)))
@@ -1257,8 +1272,8 @@ export function lowerMapSeedNew(
     );
   }
   // new Map(sp) / new Map(sp.entries()): the checked-dynamic view's live
-  // pairs seed the map in order.
-  if (isSearchParamsIterable(lowerer, argNode)) {
+  // pairs seed the map in order, and so do a MIMEParams's entries.
+  if (isSearchParamsIterable(lowerer, argNode) || isMimeParamsIterable(lowerer, argNode)) {
     return mapFromSeedValue(lowerer, lowerer.lowerExprExpecting(argNode, DYN), mapT);
   }
   const input = collectionInput(lowerer, argNode);
@@ -1344,6 +1359,17 @@ export function mapFromSeedValue(
     const drained = generatorDrain(lowerer, generator, entry, loc);
     return drained ? mapFromSeedValue(lowerer, drained, mapT) : null;
   }
+  // A Set of [key, value] pairs walks its values like a generator of them.
+  if (seed.type.kind === "set" && seed.type.elem.kind === "record") {
+    const walk = lowerCollectionIteratorValue(
+      lowerer,
+      seed,
+      "values",
+      { kind: "generator", yieldT: seed.type.elem, retT: VOID, nextT: UNDEFINED_T },
+      loc,
+    );
+    return walk ? mapFromSeedValue(lowerer, walk, mapT) : null;
+  }
   if (seed.type.kind === "map") {
     if (!typeEquals(seed.type, mapT)) return null;
     return { kind: "mapIntrinsic", method: "clone", receiver: seed, args: [], type: mapT, loc };
@@ -1357,7 +1383,7 @@ export function mapFromSeedValue(
     const key = `checked-seed:${typeKey(mapT)}`;
     let name = lowerer.mapHofHelpers.get(key);
     if (!name) {
-      name = `%map.checkedSeed.${lowerer.mapHofHelpers.size}`;
+      name = keyedHelperName(lowerer, "%map.checkedSeed", key);
       lowerer.mapHofHelpers.set(key, name);
       const source = varRef("source.0", DYN, loc);
       const entries = varRef("entries.0", DYN, loc);
@@ -1457,7 +1483,7 @@ export function mapFromSeedValue(
   const key = `seed:${typeKey(mapT.key)}:${typeKey(mapT.value)}:${elem.shapeId}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = `%map.seed.${lowerer.mapHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%map.seed", key);
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildMapSeedFn(mapT, helper, seed.type, elem, kT, vT, loc));
   }

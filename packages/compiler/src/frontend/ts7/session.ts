@@ -55,6 +55,13 @@ interface ProgramQuery {
   snapshot?: number;
   project?: string;
   file?: SemanticDocument;
+  files?: string[];
+}
+
+/** The answer of getDiagnosticsOfCheckedFiles, as the server sends it. */
+export interface Ts7CheckedFileDiagnosticData {
+  files: Ts7DiagnosticData[][];
+  global: Ts7DiagnosticData[];
 }
 
 /** Platform-independent session over an already connected transport. The
@@ -298,9 +305,13 @@ export class Ts7SessionProgram {
     if (source === undefined) {
       const bytes = this.session.binary("getSourceFile", JSON.stringify(this.query(file)));
       if (bytes.length !== 0) {
-        const ast = new AstFile(bytes, () => {
-          this.session.timing.materialized();
-        });
+        const ast = new AstFile(
+          bytes,
+          () => {
+            this.session.timing.materialized();
+          },
+          { writeTargets: true },
+        );
         this.session.timing.fetched(Math.max(0, ast.wire.nodeCount - 2));
         source = this.session.cache.set(path, ast.sourceFile, this.snapshot.id, this.project.id);
       }
@@ -339,6 +350,29 @@ export class Ts7SessionProgram {
       [])
       result.push(ts7Diagnostic(data));
     return result;
+  }
+  /** The diagnostics of `method` for `file`, or for the whole program, as
+   * the server sends them. */
+  diagnosticData(method: string, file?: SemanticDocument): Ts7DiagnosticData[] {
+    return this.session.request<Ts7DiagnosticData[] | null>(method, this.query(file)) ?? [];
+  }
+  /** The semantic diagnostics of each of `files` and the global diagnostics,
+   * after the server checks only those files (getDiagnosticsOfCheckedFiles),
+   * or null when the server does not answer that method. */
+  checkedFileDiagnosticData(files: readonly string[]): Ts7CheckedFileDiagnosticData | null {
+    try {
+      return this.session.request<Ts7CheckedFileDiagnosticData>("getDiagnosticsOfCheckedFiles", {
+        ...this.query(),
+        files: [...files],
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes('unknown API method "getDiagnosticsOfCheckedFiles"')
+      )
+        return null;
+      throw error;
+    }
   }
   getSyntacticDiagnostics(file?: SemanticDocument): Ts7Diagnostic[] {
     return this.diagnostics("getSyntacticDiagnostics", file);

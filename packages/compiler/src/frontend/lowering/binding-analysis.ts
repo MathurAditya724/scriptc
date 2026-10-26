@@ -10,15 +10,33 @@ import { isGenericCallableMemberType } from "../type-mapper.js";
  * Sound file-locally for module-scope bindings because ESM import
  * bindings are read-only — no other file can write one. Cached per
  * symbol (the scan walks the whole file once). */
-export function bindingNeverReassigned(lowerer: Lowerer, sym: ts.Symbol, decl: ts.Node): boolean {
+export function bindingNeverReassigned(
+  lowerer: Lowerer,
+  sym: ts.Symbol,
+  decl: ts.Node,
+  resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined = (ident) =>
+    lowerer.resolveValueSymbol(ident),
+): boolean {
   const cached = lowerer.neverReassignedCache.get(sym);
   if (cached !== undefined) return cached;
+  const written = fileWritesBinding(sym, ts.getSourceFileOfNode(decl), resolve);
+  lowerer.neverReassignedCache.set(sym, !written);
+  return !written;
+}
+
+/** True when something in `file` writes `sym` (the writes
+ * bindingNeverReassigned counts), resolving identifiers with `resolve`. */
+export function fileWritesBinding(
+  sym: ts.Symbol,
+  file: ts.SourceFile,
+  resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined,
+): boolean {
   let written = false;
   // Text pre-check keeps the file walk cheap: only same-named
   // identifiers pay a symbol resolution.
   const symText = ts.symbolName(sym);
   const namesSym = (e: ts.Node): boolean =>
-    ts.isIdentifier(e) && e.text === symText && lowerer.resolveValueSymbol(e) === sym;
+    ts.isIdentifier(e) && e.text === symText && resolve(e) === sym;
   const scanTarget = (t: ts.Expression): void => {
     let e: ts.Expression = t;
     while (ts.isParenthesizedExpression(e)) e = e.expression;
@@ -56,9 +74,8 @@ export function bindingNeverReassigned(lowerer: Lowerer, sym: ts.Symbol, decl: t
     }
     ts.forEachChild(n, visit);
   };
-  ts.forEachChild(ts.getSourceFileOfNode(decl), visit);
-  lowerer.neverReassignedCache.set(sym, !written);
-  return !written;
+  ts.forEachChild(file, visit);
+  return written;
 }
 
 /** Strips the value-preserving wrappers off an expression: parens,

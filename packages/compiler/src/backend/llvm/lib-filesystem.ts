@@ -1,7 +1,7 @@
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { DYN, F64, STATS_T, STRING } from "../../ir/ir.js";
+import { DYN, F64, STATS_T, STRING, type IrExpr } from "../../ir/ir.js";
 import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
@@ -163,7 +163,7 @@ function emitObjEntryPairs(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   B.line(`${row} = call ptr @${mangleRecordNew(rowT.shapeId)}()`);
   host.storeField(host.recordFieldPtr(row, rowT.shapeId, "0").ptr, STRING, key, false);
   host.storeField(host.recordFieldPtr(row, rowT.shapeId, "1").ptr, DYN, item, false);
-  host.arrPush(arr, "ref", row); // push takes ownership of the row
+  host.arrPush(arr, "ref", row, null); // push takes ownership of the row
   const next = B.tmp();
   B.line(`${next} = add ${size} ${i}, 1`);
   B.line(`store ${size} ${next}, ptr ${iSlot}`);
@@ -536,7 +536,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const parent = B.tmp();
     B.line(`${parent} = call ptr @scr_fs_glob_parent(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
     B.line(`store ptr ${parent}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`);
-    host.arrPush(arr, "ref", row); // push takes ownership of the row
+    host.arrPush(arr, "ref", row, null); // push takes ownership of the row
     const i2 = B.tmp();
     B.line(`${i2} = add ${host.sizeType} ${i}, 1`);
     B.line(`store ${host.sizeType} ${i2}, ptr ${iSlot}`);
@@ -620,7 +620,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(
       `store ptr ${host.retainHeap(path.name, STRING)}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`,
     );
-    host.arrPush(arr, "ref", row); // push takes ownership of the row
+    host.arrPush(arr, "ref", row, null); // push takes ownership of the row
     const i2 = B.tmp();
     B.line(`${i2} = add ${host.sizeType} ${i}, 1`);
     B.line(`store ${host.sizeType} ${i2}, ptr ${iSlot}`);
@@ -955,7 +955,7 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.startBlock(lj);
     const rows = B.tmp();
     B.line(`${rows} = load ptr, ptr ${rowsSlot}`);
-    host.arrPush(rows, "ref", row); // push takes ownership of the row
+    host.arrPush(rows, "ref", row, null); // push takes ownership of the row
     B.line(`call void @scr_arr_release(ptr ${rows})`);
     B.line(`call void @scr_str_release(ptr ${nm})`);
     const i2 = B.tmp();
@@ -967,6 +967,163 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     return out;
   }
   return host.emitGenericLibCall(e);
+}
+
+/** Math.pow(2, n): for an integer n from -1074 to 1023 the result is the
+ * power of two whose bits are its exponent field (or, below -1022, one
+ * mantissa bit of a subnormal), the value pow returns. Other exponents call
+ * scr_math_pow. */
+function emitPowerOfTwo(host: LlvmEmitterContext, n: string): string {
+  const B = host.B;
+  const check = B.newLabel("pow2.check");
+  const exact = B.newLabel("pow2.exact");
+  const call = B.newLabel("pow2.call");
+  const join = B.newLabel("pow2.join");
+  const low = B.tmp();
+  const high = B.tmp();
+  const inRange = B.tmp();
+  B.line(`${low} = fcmp oge double ${n}, ${f64Lit(-1074)}`);
+  B.line(`${high} = fcmp ole double ${n}, ${f64Lit(1023)}`);
+  B.line(`${inRange} = and i1 ${low}, ${high}`);
+  B.condBr(inRange, check, call);
+  B.startBlock(check);
+  const int = B.tmp();
+  const back = B.tmp();
+  const integral = B.tmp();
+  B.line(`${int} = fptosi double ${n} to i32`);
+  B.line(`${back} = sitofp i32 ${int} to double`);
+  B.line(`${integral} = fcmp oeq double ${back}, ${n}`);
+  B.condBr(integral, exact, call);
+  B.startBlock(exact);
+  const normal = B.tmp();
+  const biased = B.tmp();
+  const biasedWide = B.tmp();
+  const normalBits = B.tmp();
+  const shift = B.tmp();
+  const shiftWide = B.tmp();
+  const subnormalBits = B.tmp();
+  const bits = B.tmp();
+  const power = B.tmp();
+  B.line(`${normal} = icmp sge i32 ${int}, -1022`);
+  B.line(`${biased} = add i32 ${int}, 1023`);
+  B.line(`${biasedWide} = zext i32 ${biased} to i64`);
+  B.line(`${normalBits} = shl i64 ${biasedWide}, 52`);
+  B.line(`${shift} = add i32 ${int}, 1074`);
+  B.line(`${shiftWide} = zext i32 ${shift} to i64`);
+  B.line(`${subnormalBits} = shl i64 1, ${shiftWide}`);
+  B.line(`${bits} = select i1 ${normal}, i64 ${normalBits}, i64 ${subnormalBits}`);
+  B.line(`${power} = bitcast i64 ${bits} to double`);
+  const exactEnd = B.currentLabel();
+  B.br(join);
+  B.startBlock(call);
+  host.declare(`declare double @scr_math_pow(double, double)`);
+  const called = B.tmp();
+  B.line(`${called} = call double @scr_math_pow(double ${f64Lit(2)}, double ${n})`);
+  const callEnd = B.currentLabel();
+  B.br(join);
+  B.startBlock(join);
+  const out = B.tmp();
+  B.line(`${out} = phi double [ ${power}, %${exactEnd} ], [ ${called}, %${callEnd} ]`);
+  return out;
+}
+
+/** `base ** exponent` and `Math.pow(base, exponent)` as V8's math::pow
+ * answers them: a literal exponent 2 is `base * base`, a literal 0.5 is
+ * `sqrt(base + 0)` (+Infinity for an infinite base), and every other
+ * exponent calls scr_math_pow, which applies V8's other special cases
+ * before the platform pow. The platform pow is never called by its libm
+ * name, which LLVM would rewrite (pow(2, x) to exp2(x), pow(x, -1) to 1/x)
+ * into answers that can differ from V8's. */
+export function emitPowF64(
+  host: LlvmEmitterContext,
+  base: string,
+  exponent: string,
+  exponentExpr: IrExpr,
+): string {
+  const B = host.B;
+  const literal =
+    exponentExpr.kind === "numLit"
+      ? exponentExpr.value
+      : exponentExpr.kind === "unary" &&
+          exponentExpr.op === "-" &&
+          exponentExpr.operand.kind === "numLit"
+        ? -exponentExpr.operand.value
+        : null;
+  const out = B.tmp();
+  if (literal === 2) {
+    B.line(`${out} = fmul double ${base}, ${base}`);
+    return out;
+  }
+  if (literal === 0.5) {
+    host.declare(`declare double @llvm.sqrt.f64(double)`);
+    host.declare(`declare double @llvm.fabs.f64(double)`);
+    const plus = B.tmp(),
+      root = B.tmp(),
+      magnitude = B.tmp(),
+      infinite = B.tmp();
+    B.line(`${plus} = fadd double ${base}, ${f64Lit(0)}`);
+    B.line(`${root} = call double @llvm.sqrt.f64(double ${plus})`);
+    B.line(`${magnitude} = call double @llvm.fabs.f64(double ${base})`);
+    B.line(`${infinite} = fcmp oeq double ${magnitude}, 0x7FF0000000000000`);
+    B.line(`${out} = select i1 ${infinite}, double 0x7FF0000000000000, double ${root}`);
+    return out;
+  }
+  host.declare(`declare double @scr_math_pow(double, double)`);
+  B.line(
+    `${out} = call double @scr_math_pow(double ${base}, double ${exponent}) nounwind willreturn`,
+  );
+  return out;
+}
+
+/** `Math.pow(2, n)`, the divisor emitPowerOfTwoQuotient takes. */
+export function isPowerOfTwoCall(e: IrExpr): boolean {
+  return (
+    e.kind === "libCall" &&
+    e.fn === "math.pow" &&
+    e.args.length === 2 &&
+    e.args[0]!.kind === "numLit" &&
+    e.args[0]!.value === 2
+  );
+}
+
+/** `left / divisor` for a divisor that is usually a power of two
+ * (`x / Math.pow(2, n)`). A positive power of two from 2^-1022 to 2^1022
+ * has a reciprocal that is a power of two too, whose bits are
+ * 0x7FE0000000000000 minus the divisor's, and the product with it is the
+ * quotient for every `left`: both are `left` scaled by the same power of
+ * two, rounded once. Any other divisor divides. */
+export function emitPowerOfTwoQuotient(
+  host: LlvmEmitterContext,
+  left: string,
+  divisor: string,
+): string {
+  const B = host.B;
+  const bits = B.tmp(),
+    mantissa = B.tmp(),
+    plain = B.tmp(),
+    biased = B.tmp(),
+    offset = B.tmp(),
+    normal = B.tmp(),
+    power = B.tmp(),
+    inverseBits = B.tmp(),
+    inverse = B.tmp(),
+    scaled = B.tmp(),
+    divided = B.tmp(),
+    out = B.tmp();
+  B.line(`${bits} = bitcast double ${divisor} to i64`);
+  B.line(`${mantissa} = and i64 ${bits}, ${2n ** 52n - 1n}`);
+  B.line(`${plain} = icmp eq i64 ${mantissa}, 0`);
+  // Biased exponents 1 to 2045 with a clear sign bit.
+  B.line(`${biased} = lshr i64 ${bits}, 52`);
+  B.line(`${offset} = sub i64 ${biased}, 1`);
+  B.line(`${normal} = icmp ult i64 ${offset}, 2045`);
+  B.line(`${power} = and i1 ${plain}, ${normal}`);
+  B.line(`${inverseBits} = sub i64 ${0x7fe0000000000000n}, ${bits}`);
+  B.line(`${inverse} = bitcast i64 ${inverseBits} to double`);
+  B.line(`${scaled} = fmul double ${left}, ${inverse}`);
+  B.line(`${divided} = fdiv double ${left}, ${divisor}`);
+  B.line(`${out} = select i1 ${power}, double ${scaled}, double ${divided}`);
+  return out;
 }
 
 export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
@@ -985,6 +1142,15 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
   if (e.fn === "math.trunc") {
     const v = host.emitExpr(e.args[0]!);
     return { name: emitTruncF64(host, v.name), type: e.type };
+  }
+  if (e.fn === "math.pow" && e.args[0]!.kind === "numLit" && e.args[0]!.value === 2) {
+    const v = host.emitExpr(e.args[1]!);
+    return { name: emitPowerOfTwo(host, v.name), type: e.type };
+  }
+  if (e.fn === "math.pow") {
+    const base = host.emitExpr(e.args[0]!);
+    const exponent = host.emitExpr(e.args[1]!);
+    return { name: emitPowF64(host, base.name, exponent.name, e.args[1]!), type: e.type };
   }
   if (e.fn === "math.floor" || e.fn === "math.ceil") {
     const intr = e.fn === "math.floor" ? "floor" : "ceil";

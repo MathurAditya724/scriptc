@@ -36,6 +36,10 @@ typedef struct {
 } ScrNetLs;
 
 void scr_net_ls_add(ScrNetLs *l, ScrClosure *cb, void *fn, bool once);
+/* The AsyncLocalStorage context a socket's events run in from now on
+ * (borrowed; scr_net.c keeps the creation context otherwise). */
+struct ScrAlsCtx;
+void scr_net_sock_set_context(ScrNetSocket *s, struct ScrAlsCtx *ctx);
 ScrNetOnce *scr_net_once_new(void); /* +1 */
 ScrNetOnce *scr_net_once_retain(ScrNetOnce *once); /* +1 */
 void scr_net_once_release(ScrNetOnce *once);
@@ -182,6 +186,14 @@ void scr_net_server_close_direct(ScrNetServer *s, ScrClosure *cb /*moves, nullab
  * zero-arg wrapper); reassignment releases the old one. */
 void scr_net_server_set_close_override(ScrNetServer *s, ScrClosure *ov /*moves*/);
 void scr_net_server_on_error(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
+/* tls/https servers' 'tlsClientError': registration (fn is one of the
+ * thunks below, by the listener's arity) and the TLS unit's fire. */
+void scr_net_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once);
+void scr_net_server_fire_client_error(ScrNetServer *s, ScrError *err /*borrowed*/,
+                                      ScrNetSocket *sock /*borrowed*/);
+void scr_net_client_error_thunk0(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
+void scr_net_client_error_thunk1(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
+void scr_net_client_error_thunk2(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
 void scr_net_server_on_close(ScrNetServer *s, ScrClosure *cb /*moves*/, bool once);
 /* server.on('listening', cb): the deferred 'listening' list listen(port,
  * cb) rides — fires once per successful bind; late registrations on an
@@ -215,15 +227,21 @@ ScrNetSocket *scr_net_connect_lookup(double port, ScrStr *host /*borrowed*/,
                                       ScrClosure *lookup /*moves*/, void *answer_fn); /* +1 */
 void scr_net_lookup_answer(ScrClosure *self, bool has_err, ScrStr *msg /*borrowed, nullable*/,
                             ScrArr *ips /*borrowed, nullable*/);
-void scr_net_sock_write_str(ScrNetSocket *s, ScrStr *data /*borrowed*/);
-void scr_net_sock_write_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/);
+/* write(): Node's Writable answer — false when the bytes the write left
+ * unsent reach the 65536-byte high-water mark, after which 'drain' fires
+ * when the write buffer empties; false on an ended or closed socket. */
+bool scr_net_sock_write_str(ScrNetSocket *s, ScrStr *data /*borrowed*/);
+bool scr_net_sock_write_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/);
+double scr_net_sock_writable_length(ScrNetSocket *s);
+bool scr_net_sock_writable_need_drain(ScrNetSocket *s);
+void scr_net_sock_on_drain(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 void scr_net_sock_end(ScrNetSocket *s);
 void scr_net_sock_end_str(ScrNetSocket *s, ScrStr *data /*borrowed*/);
 void scr_net_sock_end_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/);
 /* Checked-dynamic chunk forms (an untyped JS payload into a typed
  * socket): STR/BYTES dispatch; end() takes undefined/null as no chunk;
  * anything else throws Node's ERR_INVALID_ARG_TYPE chunk TypeError. */
-void scr_net_sock_write_dynv(ScrNetSocket *s, const ScrDyn *d /*borrowed*/);
+bool scr_net_sock_write_dynv(ScrNetSocket *s, const ScrDyn *d /*borrowed*/);
 void scr_net_sock_end_dynv(ScrNetSocket *s, const ScrDyn *d /*borrowed*/);
 void scr_net_sock_destroy(ScrNetSocket *s);
 /* Flow control (pause/resume — see the struct's flag comments), the
@@ -232,6 +250,7 @@ void scr_net_sock_destroy(ScrNetSocket *s);
  * counters/flags the compat surface reads. */
 ScrNetSocket *scr_net_sock_pause(ScrNetSocket *s);            /* +1: chaining */
 ScrNetSocket *scr_net_sock_resume(ScrNetSocket *s);           /* +1: chaining */
+void scr_net_sock_hold(ScrNetSocket *s, bool hold); /* protocol read hold (not pause) */
 ScrNetSocket *scr_net_sock_set_nodelay(ScrNetSocket *s, bool enable); /* +1: chaining */
 void scr_net_sock_set_keepalive(ScrNetSocket *s, bool enable, double delay_ms);
 void scr_net_sock_destroy_soon(ScrNetSocket *s);
@@ -351,8 +370,25 @@ typedef struct ScrNetTransportOps {
   bool (*pending)(void *tctx);
   void (*shutdown_write)(void *tctx);
   void (*free)(void *tctx);
+  /* nullable: runs after the established socket's 'connect' listeners
+   * (the TLS 'secure' event, which Node emits after secureConnect) */
+  void (*after_established)(void *tctx);
+  /* nullable: runs when the closed socket settles, after its own
+   * listeners drop; the transport drops the listeners it holds */
+  void (*settle)(void *tctx);
+  /* nullable: the established socket's fd is writable; the transport
+   * writes what it holds back (TLS holds its final handshake flight) */
+  void (*drain)(void *tctx);
 } ScrNetTransportOps;
 void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, void *tctx);
+/* new tls.TLSSocket(socket) and tls.connect({ socket }): a fresh socket
+ * takes over an open connection (fd, buffered bytes, peer identity); the
+ * old socket stays open without I/O, forwards end() and destroy(), and
+ * fires 'close' just before the new one. +1, or NULL when the socket has
+ * no open, idle connection to give. Set the transport on the result, then
+ * call scr_net_sock_adopt_start. */
+ScrNetSocket *scr_net_sock_adopt(ScrNetSocket *raw);
+void scr_net_sock_adopt_start(ScrNetSocket *t);
 /* Routes a client socket through an HTTP CONNECT proxy. Call it right
  * after the dial (scr_net_connect to the proxy) and before any transport
  * is set: once TCP is up, `request` (the CONNECT head, copied) is sent
@@ -366,6 +402,9 @@ void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len);
 int scr_net_tunnel_status(const char *head, size_t len);
 void scr_net_tunnel_failure(int status, char *msg, size_t cap);
 int scr_net_sock_fd(ScrNetSocket *s);
+/* The host a client socket was told to dial (Node's socket._host). +1;
+ * NULL on server sockets. */
+ScrStr *scr_net_sock_dial_name(ScrNetSocket *s);
 /* Drain up to n bytes of the socket's receive buffer (peeked/unshifted
  * bytes — the demux path); consumers call it before the fd. */
 size_t scr_net_sock_take_buffered(ScrNetSocket *s, char *buf, size_t n);
@@ -384,7 +423,24 @@ void scr_net_sock_replay(ScrNetSocket *s, const char *data, size_t len);
 /* Transport-level failure: msg (borrowed, Node's message shape) defers
  * 'error' + teardown to the sweep; NULL tears down without an 'error'
  * event, Node's default for an unhandled server-side handshake failure. */
+/* The peer ended the stream before the transport's handshake finished:
+ * 'end' fires now, ahead of the failure the transport reports next. */
+void scr_net_sock_transport_ended(ScrNetSocket *s);
 void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg);
+/* An error that leaves the socket open: 'error' fires from the sweep with
+ * `code` (static storage), and the socket ends when the peer closes, as
+ * Node's TLS socket reports a fatal alert after its handshake. */
+void scr_net_sock_transport_report(ScrNetSocket *s, const char *msg, const char *code);
+/* The same with the error's code given (static storage), for messages
+ * whose text does not name it. */
+void scr_net_sock_transport_error_code(ScrNetSocket *s, const char *msg, const char *code);
+/* The peer closed before the handshake finished on a wrapped socket:
+ * 'end', then 'close' without an error. */
+void scr_net_sock_transport_eof(ScrNetSocket *s);
+/* Registers a listener that fires when the transport establishes, once
+ * TCP is up (a socket that took over an open connection is up from the
+ * start). */
+void scr_net_sock_on_established(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 /* Defer the server's 'connection' listeners to handshake completion —
  * tls.createServer's handler is the 'secureConnection' event, fired with
  * the socket only once the TLS layer stands (Node's timing). */

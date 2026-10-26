@@ -33,6 +33,7 @@ export async function compilePackedLibrary(
     assert: options.assert ?? false,
     inspect: options.inspect ?? false,
     dynInvoke: options.dynInvoke ?? false,
+    ...(options.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(options.dynTier === true ? { dynTier: true } : {}),
     dc: false,
     dynAsync: false,
@@ -53,12 +54,17 @@ export async function compilePackedLibrary(
     dgram: false,
     dnsPromises: false,
     dgramDyn: false,
+    textCodecDyn: false,
     watch: false,
     foreignFfi: false,
     nodeTest: false,
     tls: false,
     cipher: false,
     ecdh: false,
+    dh: false,
+    pki: false,
+    ed25519: false,
+    x509: options.x509 ?? false,
     webcrypto: false,
     perfLoop: false,
     tlsCa: false,
@@ -147,7 +153,7 @@ export async function compilePackedLibrary(
             ...(await Promise.all(
               shards
                 .slice(start, start + 4)
-                .map((shard, offset) => emit(shard.source, `shard-${start + offset}.o`)),
+                .map((shard, offset) => emit(shard.source(), `shard-${start + offset}.o`)),
             )),
           );
         }

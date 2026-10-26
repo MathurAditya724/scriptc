@@ -6,6 +6,10 @@ export interface CcOptions {
    * LLVM backend's .ll — clang compiles IR text natively on the same
    * command line, so both ride this one seat. */
   cPath: string;
+  /** Where the program TU's bytes are read from, when that is not `cPath`: an invocation-private
+   * copy that a concurrent build of another program cannot replace. `cPath` stays the spelling
+   * clang sees (`__FILE__`, debug file names) and the one cache keys name. */
+  cSourcePath?: string;
   /** Path of the native executable to produce. */
   outPath: string;
   /** Additional identity for a translation unit whose complete non-system
@@ -25,7 +29,7 @@ export interface CcOptions {
   windowsSubsystem?: WindowsSubsystem;
   /** Optional equivalent LLVM modules for dev compilation. Unsupported
    * targets or merge failures fall back to the canonical cPath TU. */
-  programShards?: readonly { name: string; source: string }[];
+  programShards?: readonly { name: string; source: () => string }[];
   /** Canonical externally visible definitions retained while shard merging
    * demotes generated cross-shard linkage back to local symbols. */
   programPublicSymbols?: readonly string[];
@@ -81,6 +85,9 @@ export interface CcOptions {
    * compares round-trips and fixed-blob inflation, never raw deflate
    * output. */
   zlib?: boolean;
+  /** The program uses node:zlib's Brotli forms (with zlib): compiles
+   * scr_brotli.c and links the vendored brotli archive. */
+  brotli?: boolean;
   /** The program uses node:assert (index.ts detects assert.* libCalls on
    * the IR): compiles scr_assert.c — the zlib gating precedent, so
    * assert-free binaries keep their exact size class. scr_regex.c calls
@@ -118,14 +125,23 @@ export interface CcOptions {
   streamDyn?: boolean;
   /** Own properties JavaScript adds to children: compiles scr_dyn_handle_props.c. */
   handleProps?: boolean;
+  declAdopt?: boolean;
+  typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
-  /** Fixed-width Buffer methods called on checked-dynamic values:
+  /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
+  mime?: boolean;
+  /** util.debounce and util.throttle: compiles scr_util_timing.c. */
+  utilTiming?: boolean;
+  /** Buffer.prototype methods called on checked-dynamic values:
    * compiles scr_bytes_dyn.c. */
-  dynBufferNum?: boolean;
+  dynBuffer?: boolean;
+  /** createRequire's computed require and require.resolve: compiles
+   * scr_require.c. */
+  computedRequire?: boolean;
   /** Builtin functions read as values: compiles scr_builtin_values.c. */
   builtinValues?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
@@ -139,6 +155,9 @@ export interface CcOptions {
   warningReplace?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
+  /** Module namespace objects as checked-dynamic values: compiles
+   * scr_module_namespace.c. */
+  moduleNamespace?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -215,6 +234,10 @@ export interface CcOptions {
    * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
    * their exact link line. */
   dgramDyn?: boolean;
+  /** A TextEncoder or TextDecoder record converts to or from an untyped
+   * value: compiles scr_text_codec_dyn.c, so typed codec binaries keep
+   * their exact link line. */
+  textCodecDyn?: boolean;
 
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free
@@ -243,12 +266,25 @@ export interface CcOptions {
    * The unit also compiles whenever `tls` does — scr_tls.c consults its
    * default-set override and shared Windows-certificate enumerator. */
   tlsCa?: boolean;
-  /** crypto.createCipheriv/createDecipheriv: compiles scr_cipher.c and links
-   * the mbedTLS archive (shared with tls). */
+  /** crypto.createCipheriv/createDecipheriv and WebCrypto's encrypt and
+   * decrypt: compiles scr_cipher.c (and, with webcrypto,
+   * scr_webcrypto_aes.c) and links the mbedTLS archive (shared with tls). */
   cipher?: boolean;
   /** crypto.createECDH and ECDH.convertKey: compiles scr_ecdh.c and links
    * the mbedTLS archive (shared with tls). */
   ecdh?: boolean;
+  /** crypto.createDiffieHellman, getDiffieHellman and
+   * createDiffieHellmanGroup: compiles scr_dh.c and links the mbedTLS
+   * archive (shared with tls). */
+  dh?: boolean;
+  /** Asymmetric KeyObjects and signatures: compiles scr_pki.c and links
+   * the mbedTLS archive. */
+  pki?: boolean;
+  /** Ed25519 with pki: compiles scr_ed25519.c (the vendored libsodium
+   * Ed25519). */
+  ed25519?: boolean;
+  /** X509Certificate fields: compiles scr_x509.c. */
+  x509?: boolean;
   /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
   webcrypto?: boolean;
   /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */
@@ -278,7 +314,7 @@ export interface LibArchiveOptions {
    * `programSource` remains the canonical TU/cache identity; these stable
    * shards compile independently and are relocatably merged into one program
    * object before archive assembly. */
-  programShards?: readonly { name: string; source: string }[];
+  programShards?: readonly { name: string; source: () => string }[];
   /** Canonical externally visible definitions retained while the shard merge
    * demotes generated cross-shard linkage back to local symbols. */
   programPublicSymbols?: readonly string[];
@@ -321,6 +357,9 @@ export interface LibArchiveOptions {
   threadInstances?: boolean;
   /** IR-detected link gates (the compileC precedent, refusal-narrowed). */
   dynInvoke?: boolean;
+  /** Buffer.prototype methods on checked-dynamic values: scr_bytes_dyn.c,
+   * with dynInvoke. */
+  dynBuffer?: boolean;
   /** See CompileOptions.dynTier: the scr_js_* units. */
   dynTier?: boolean;
   regex?: boolean;
@@ -331,6 +370,8 @@ export interface LibArchiveOptions {
   searchParams?: boolean;
   emitter?: boolean;
   zlib?: boolean;
+  /** X509Certificate fields: scr_x509.c. */
+  x509?: boolean;
   copying?: boolean;
   textDecoderLegacy?: boolean;
 }

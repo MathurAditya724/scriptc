@@ -41,6 +41,13 @@ for (const name of [
     throw new Error(`native toolchain needs a relative ${name}`);
   within(resolve(dirname(binary), hostPath(value)));
 }
+// Optional: a compiler this host could not run while building ships without it.
+if (toolchain.lib_diagnostics !== undefined) {
+  const value = toolchain.lib_diagnostics;
+  if (typeof value !== "string" || absolutePath(value))
+    throw new Error("native toolchain needs a relative lib_diagnostics");
+  within(resolve(dirname(binary), hostPath(value)));
+}
 const pack = JSON.parse(
   readFileSync(
     resolve(dirname(binary), hostPath(toolchain.runtime_pack), "runtime-pack.json"),
@@ -94,5 +101,15 @@ if (process.argv.includes("--run")) {
   }).trim();
   if (version !== identity.version)
     throw new Error(`native command reported ${version}, expected ${identity.version}`);
+  // tsc-ts, the default checker, runs on the distribution's own platform.
+  const tscTs = resolve(dirname(binary), hostPath(toolchain.tsc_ts));
+  if (windows && !tscTs.endsWith("tsc-ts.exe"))
+    throw new Error(`tsc_ts is not tsc-ts.exe: ${tscTs}`);
+  const tscTsVersion = execFileSync(tscTs, ["--version"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: "" },
+  }).trim();
+  if (!tscTsVersion.startsWith("Version "))
+    throw new Error(`the distribution's tsc-ts reported ${JSON.stringify(tscTsVersion)}`);
 }
 console.log(`${identity.name}@${identity.version}: native distribution verified`);

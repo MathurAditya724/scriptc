@@ -536,6 +536,122 @@ static void check_mixed_dead_structure_narrows(void) {
   check(live <= narrowed, "a pass that freed a dead mature and old structure did not narrow the growth fraction");
 }
 
+/* scr_cyc_set_growth_cap sets the cap SCR_CYCLE_GROWTH_CAP sets, and a
+ * fraction already widened past it starts at it: after passes that found
+ * nothing widened the old level's fraction to the configured cap, a cap of
+ * 1 has the next dead cycle go once the heap has doubled past the floor.
+ * Restores the configured cap. */
+static void check_program_growth_cap(void) {
+  enum { FLOOR = 4096 };
+  if (getenv("SCR_CYCLE_GROWTH_CAP") != NULL) return; /* it takes precedence */
+  size_t slack = 2 * configured_nursery_threshold() + 2;
+  size_t live = 0;
+  for (int i = 0; i < 4; i++) live = grow_dead_cycle_until_full_pass(0, false);
+  check(live > FLOOR + FLOOR * configured_growth_cap(),
+        "passes that found nothing did not widen the growth fraction to the cap");
+  scr_cyc_set_growth_cap(1);
+  for (int i = 0; i < 4; i++) {
+    live = grow_dead_cycle_until_full_pass(0, false);
+    check(live <= FLOOR + FLOOR + slack, "a program's growth cap of 1 did not bound the heap");
+  }
+  scr_cyc_set_growth_cap(0);
+}
+
+/* scr_cyc_set_nursery_threshold sets the trigger SCR_CYCLE_THRESHOLD sets,
+ * from the end of the next pass: with a trigger of 1024, dead rings released
+ * after a full pass wait until the 1024th, which collects them all. 0
+ * restores the default. */
+static void check_program_nursery_threshold(void) {
+  enum { THRESHOLD = 1024 };
+  if (getenv("SCR_CYCLE_THRESHOLD") != NULL) return; /* it takes precedence */
+  scr_cyc_set_nursery_threshold(THRESHOLD);
+  scr_collect_cycles(); /* re-arm with the new trigger */
+  size_t before = freed;
+  for (size_t i = 0; i < THRESHOLD - 1; i++) release_live(make_ring(1));
+  check(freed == before, "a program's nursery trigger did not hold the pass back");
+  release_live(make_ring(1));
+  check(freed - before == THRESHOLD, "a program's nursery trigger did not run the pass");
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+}
+
+/* How many dead rings the release path takes to run its next pass, from
+ * the end of the previous one: the nursery trigger in effect. */
+static size_t nursery_window(void) {
+  size_t before = freed, n = 0;
+  while (freed == before && n < 65536) {
+    release_live(make_ring(1));
+    n++;
+  }
+  check(freed - before == n, "a nursery pass left dead rings behind");
+  return n;
+}
+
+/* A scheduled full pass that reclaims nothing: its only candidate is an
+ * older live leaf. */
+static void scheduled_pass_finding_nothing(Node *leaf) {
+  size_t before = freed;
+  read_live(leaf);
+  for (size_t i = 0; i < configured_nursery_threshold(); i++)
+    scr_cyc_collect_scheduled();
+  check(freed == before, "a scheduled pass over a live leaf freed something");
+}
+
+/* Unpinned, the nursery trigger starts at 256 candidates. Each scheduled
+ * full pass that reclaims promoted rings doubles it, up to 4096; each one
+ * that reclaims nothing after the nursery passes freed rings halves it,
+ * down to 256. */
+static void check_adaptive_nursery_threshold(void) {
+  if (getenv("SCR_CYCLE_THRESHOLD") != NULL) return; /* it pins the trigger */
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+  check(nursery_window() == 256, "the unpinned nursery trigger did not start at 256");
+  static const size_t widened[] = { 512, 1024, 2048, 4096, 4096 };
+  for (size_t i = 0; i < sizeof(widened) / sizeof(widened[0]); i++) {
+    collect_dead_mature_rings();
+    check(nursery_window() == widened[i],
+          "a full pass reclaiming promoted rings did not double the nursery trigger");
+  }
+
+  static const size_t narrowed[] = { 2048, 1024, 512, 256, 256 };
+  Node *leaf = make_leaf();
+  read_live(leaf);
+  scr_collect_cycles(); /* promote */
+  for (size_t i = 0; i < sizeof(narrowed) / sizeof(narrowed[0]); i++) {
+    scheduled_pass_finding_nothing(leaf);
+    check(nursery_window() == narrowed[i],
+          "a full pass reclaiming nothing did not halve the nursery trigger");
+  }
+  leaf->rc--;
+  scr_cyc_on_dead(leaf);
+  node_free(leaf);
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+}
+
+/* The phase sweep (scr_collect_cycles_phase) is for a caller that knows a
+ * phase's data has just died: it sweeps, and the growth schedule starts
+ * over. After passes that find nothing have widened the old level's
+ * fraction to the cap, the plain sweep leaves the next dead cycle to the
+ * cap, while after the phase sweep it goes once the heap has grown the base
+ * quarter past the floor. */
+static void check_phase_sweep_restarts_schedule(void) {
+  enum { FLOOR = 4096 };
+  size_t cap = configured_growth_cap();
+  if (cap < 2) return; /* the base fraction is already the cap */
+  size_t slack = 2 * configured_nursery_threshold() + 2;
+  size_t due = FLOOR + FLOOR * cap;
+  size_t live = 0;
+  for (int i = 0; i < 4; i++) live = grow_dead_cycle_until_full_pass(0, false);
+  check(live > due, "passes that found nothing did not widen the growth fraction to the cap");
+  scr_collect_cycles();
+  live = grow_dead_cycle_until_full_pass(0, false);
+  check(live > due, "the plain sweep changed the growth schedule");
+  scr_collect_cycles_phase();
+  live = grow_dead_cycle_until_full_pass(0, false);
+  check(live <= FLOOR + FLOOR / 4 + slack, "the phase sweep did not restart the growth schedule");
+}
+
 static void check_deep_ring(void) {
   enum { DEPTH = 100000 };
   size_t before = freed;
@@ -1411,7 +1527,42 @@ static void check_death_brings_full_pass(void) {
   free(keep);
 }
 
+/* An object whose type's trace is scr_cyc_no_children starts out
+ * SCR_CYC_ACYCLIC and is never buffered. A pass that reaches it from a dead
+ * cycle frees it with the cycle when the cycle held its last reference, and
+ * otherwise leaves it SCR_CYC_ACYCLIC with its outside count. */
+static void check_acyclic_objects(void) {
+  static ScrCycType leaf_type = { &scr_cyc_no_children, &node_free, 0 };
+  size_t before = freed;
+  Node *leaf = scr_cyc_alloc(sizeof(*leaf), &leaf_type);
+  ScrCycHdr *h = scr_cyc_hdr(leaf);
+  check(h->buf == SCR_CYC_ACYCLIC && !scr_cyc_is_buffered(h), "acyclic object did not start acyclic");
+  leaf->rc = 2; /* an outside owner and a temporary reference */
+  release_live(leaf);
+  check(h->buf == SCR_CYC_ACYCLIC, "release buffered an acyclic object");
+
+  Node *first = make_ring(2);
+  first->other = leaf;
+  leaf->rc++;
+  release_live(first);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+  check(freed == before + 2, "nursery pass did not free the ring");
+  check(leaf->rc == 1 && h->buf == SCR_CYC_ACYCLIC, "acyclic survivor lost its count or its mark");
+
+  Node *second = make_ring(2);
+  second->next->other = leaf;
+  leaf->rc++;
+  release_live(leaf); /* the outside owner lets go: only the ring holds it */
+  check(h->buf == SCR_CYC_ACYCLIC, "release buffered an acyclic object");
+  release_live(second);
+  scr_collect_cycles();
+  check(freed == before + 5, "acyclic object held only by a dead ring was not freed with it");
+}
+
 int main(void) {
+  /* The scheduling checks count candidates against a fixed nursery trigger;
+   * check_adaptive_nursery_threshold covers the unpinned one. */
+  scr_cyc_set_nursery_threshold((long)configured_nursery_threshold());
   check_inline_buffering();
   check_old_garbage_reclaimed_while_growing();
   check_older_rings_into_old();
@@ -1433,6 +1584,7 @@ int main(void) {
   check_growth_cap_bounds_floating_garbage();
   check_mixed_dead_structure_narrows();
   check_death_waits_for_idle();
+  check_phase_sweep_restarts_schedule();
   check_death_brings_full_pass();
   check_nursery_bypass();
   check_mature_bypass();
@@ -1443,6 +1595,10 @@ int main(void) {
   check_limited_pass();
   check_large_old_buffer_with_nursery_candidates();
   check_unjudged_backlog_follows_growth();
+  check_acyclic_objects();
+  check_program_growth_cap();
+  check_program_nursery_threshold();
+  check_adaptive_nursery_threshold();
   printf("cycle collection checks passed: threshold=%zu growth_cap=%zu\n",
          configured_nursery_threshold(), configured_growth_cap());
   return 0;

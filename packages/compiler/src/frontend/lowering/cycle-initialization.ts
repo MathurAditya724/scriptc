@@ -233,6 +233,38 @@ function earlyHeritageReference(lowerer: Lowerer, binding: CycleEarlyBinding): t
   return null;
 }
 
+/** The identifiers of `sf` by text, each with its position in the file's
+ * preorder walk: one walk per file serves every class's reference scan. */
+function fileIdentifiers(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+): ReadonlyMap<string, readonly { order: number; node: ts.Identifier }[]> {
+  const memo = lowerer.program.analysis.fileIdentifiers;
+  const known = memo.get(sf);
+  if (known !== undefined) return known;
+  const byText = new Map<string, { order: number; node: ts.Identifier }[]>();
+  let order = 0;
+  ts.walkPreorder(sf, (node) => {
+    order++;
+    if (!ts.isIdentifier(node)) return undefined;
+    const list = byText.get(node.text);
+    if (list === undefined) byText.set(node.text, [{ order, node }]);
+    else list.push({ order, node });
+    return undefined;
+  });
+  memo.set(sf, byText);
+  return byText;
+}
+
+/** Whether `node` lies inside `ancestor` (or is it): the reference scans
+ * skip the class's own declaration. */
+function within(node: ts.Node, ancestor: ts.Node | undefined): boolean {
+  if (ancestor === undefined) return false;
+  for (let current: ts.Node | undefined = node; current !== undefined; current = current.parent)
+    if (current === ancestor) return true;
+  return false;
+}
+
 /** Whether `node` names `symbol`, through import aliases when `aliases`. */
 function resolvesTo(
   lowerer: Lowerer,
@@ -294,12 +326,14 @@ function classReferences(
     // the class's name or a local one.
     const names = classLocalNames(lowerer, sf, symbol, name.text, cycle);
     if (names.size === 0) continue;
-    ts.walkPreorder(sf, (node) => {
-      if (node === declaration) return "skip";
-      if (ts.isIdentifier(node) && names.has(node.text) && resolvesTo(lowerer, node, symbol, cycle))
+    // The file's identifiers under those names, in walk order.
+    const identifiers = fileIdentifiers(lowerer, sf);
+    const named: { order: number; node: ts.Identifier }[] = [];
+    for (const text of names) for (const entry of identifiers.get(text) ?? []) named.push(entry);
+    if (names.size > 1) named.sort((a, b) => a.order - b.order);
+    for (const { node } of named)
+      if (!within(node, declaration) && resolvesTo(lowerer, node, symbol, cycle))
         out.push({ loc: locOf(node), name: node.text });
-      return undefined;
-    });
   }
   return out;
 }
@@ -463,16 +497,38 @@ export function checkCycleBindingAccesses(lowerer: Lowerer, mod: IrModule): void
 /** Writes to a binding declared without an initializer that run after its
  * declaration store into an initialized binding whose slot may still be
  * empty: the pointer guard must not refuse them. Writes that can run
- * earlier carry the flag check rewriteFunction inserted. */
+ * earlier carry the flag check rewriteFunction inserted. An assignment in
+ * expression position (`(f = v)`) becomes an initializing `assign` whose
+ * value a temp holds and yields. */
 function markUninitializedWrites(lowerer: Lowerer, mod: IrModule): void {
   const ids = new Set<string>();
   for (const [id, flag] of lowerer.cycleInitFlags) if (flag.uninitialized) ids.add(id);
   if (ids.size === 0) return;
   const mark = (s: IrStmt): IrStmt =>
     s.kind === "assign" && !s.initializes && ids.has(s.localId) ? { ...s, initializes: true } : s;
-  const rewriteExpr = (e: IrExpr): IrExpr => mapExprChildren(e, rewriteExpr, rewriteStmt);
-  const rewriteStmt = (s: IrStmt): IrStmt => mark(mapStmtChildren(s, rewriteExpr, rewriteStmt));
-  for (const fn of mod.functions) fn.body = fn.body.map(rewriteStmt);
+  for (const fn of mod.functions) {
+    let temps = 0;
+    const markExpr = (e: IrExpr): IrExpr => {
+      if (e.kind !== "assignExpr" || !ids.has(e.localId)) return e;
+      const t = `%uninitWrite.${temps++}`;
+      fn.locals.push({ id: t, name: "%uninitWrite", type: e.value.type, mutable: false });
+      const value: IrExpr = { kind: "varRef", localId: t, type: e.value.type, loc: e.loc };
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: t, init: e.value, loc: e.loc },
+          { kind: "assign", localId: e.localId, value, initializes: true, loc: e.loc },
+        ],
+        result: value,
+        type: e.type,
+        loc: e.loc,
+      };
+    };
+    const rewriteExpr = (e: IrExpr): IrExpr =>
+      markExpr(mapExprChildren(e, rewriteExpr, rewriteStmt));
+    const rewriteStmt = (s: IrStmt): IrStmt => mark(mapStmtChildren(s, rewriteExpr, rewriteStmt));
+    fn.body = fn.body.map(rewriteStmt);
+  }
 }
 
 function rewriteFunction(
@@ -685,11 +741,17 @@ function rewriteFunction(
  * unchecked. */
 export function refuseUncheckedCycleReads(
   lowerer: Lowerer,
-  classes: readonly { baseValueGlobal?: string; symbolFields?: { globalId: string }[] }[],
+  classes: readonly {
+    baseValueGlobal?: string;
+    symbolFields?: readonly ({ globalId: string } | { wellKnown: string })[];
+  }[],
 ): void {
   if (lowerer.cycleInitFlags.size === 0) return;
   for (const cls of classes) {
-    const ids = [cls.baseValueGlobal, ...(cls.symbolFields ?? []).map((f) => f.globalId)];
+    const ids = [
+      cls.baseValueGlobal,
+      ...(cls.symbolFields ?? []).map((f) => ("globalId" in f ? f.globalId : undefined)),
+    ];
     for (const id of ids) {
       const flag = id === undefined ? undefined : lowerer.cycleInitFlags.get(id);
       if (flag === undefined) continue;

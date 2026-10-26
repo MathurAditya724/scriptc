@@ -12,7 +12,12 @@ typedef struct ScrMailEvent {
   unsigned char *data; /* raw bytes (a worker's captured stdout or stderr), owned */
   size_t length;
   struct ScrMailEvent *next;
+  bool in_message; /* the event is the one message's block holds (scr_message_mail_event) */
 } ScrMailEvent;
+
+/* The event that carries `message`, in the message's own block: a queued
+ * message is then one allocation. Freeing the event frees the message. */
+ScrMailEvent *scr_message_mail_event(ScrMessage *message);
 
 ScrMailbox *scr_mailbox_new(void);
 ScrMailbox *scr_mailbox_retain(ScrMailbox *mailbox);
@@ -26,6 +31,11 @@ ScrMailEvent *scr_mailbox_take_kind(ScrMailbox *mailbox, unsigned kind, uint64_t
 void scr_mail_event_free(ScrMailEvent *event);
 void scr_mailbox_close(ScrMailbox *mailbox);
 bool scr_mailbox_pending(ScrMailbox *mailbox);
+/* The kind of the first queued event, or 0 when none is queued. */
+unsigned scr_mailbox_head_kind(ScrMailbox *mailbox);
+/* The number of queued events of this kind, kept as events are posted and
+ * taken; 0 for kinds of 16 and above. */
+size_t scr_mailbox_count_kind(ScrMailbox *mailbox, unsigned kind);
 void scr_mailbox_wait(ScrMailbox *mailbox, double milliseconds);
 int scr_mailbox_pollfd(const ScrMailbox *mailbox);
 

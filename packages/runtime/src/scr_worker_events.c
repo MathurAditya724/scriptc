@@ -57,6 +57,28 @@ static SCR_TL uint64_t scr_channel_poll_gen;
 /* the loop pass continues a phase (scr_channel_more answered true) */
 static SCR_TL bool scr_channel_continuing;
 static SCR_TL bool scr_channel_closing_phase;
+/* Messages from the thread's workers and its parent are delivered in
+ * batches, as Node's MessagePort delivers them: one callback takes the
+ * messages queued when it starts, and those that arrive meanwhile until it
+ * has taken SCR_WORKER_BATCH_MIN, with a microtask checkpoint after each,
+ * before the loop goes on to timers and immediates. A delivered message
+ * starts a batch; the loop pass continues it (scr_workers_more) while the
+ * next event is a message and the batch has room. Port messages that a
+ * listener posts meanwhile wait for the batch to end, and the pass then
+ * continues once more so they are delivered before immediates, as in Node. */
+#define SCR_WORKER_BATCH_MIN 1000
+static SCR_TL size_t scr_worker_batch_left;
+static SCR_TL bool scr_worker_batch_ended;
+/* scr_workers_more found the batch's next message at the head of the
+ * mailbox. Only this thread takes events and others append them, so it is
+ * still there when the pass dispatches. */
+static SCR_TL bool scr_worker_batch_queued;
+
+/* Whether a batch is open and its next message is queued. */
+static bool scr_worker_batch_next(void) {
+  return scr_worker_batch_left > 0 && scr_worker_events &&
+         scr_mailbox_head_kind(scr_worker_events) == SCR_WORKER_MESSAGE;
+}
 static const char *const scr_worker_method_names[] = {
   "ref", "unref", "hasRef", "terminate", "postMessage", "on", "once", "addListener",
   "prependListener", "prependOnceListener", "off", "removeListener", "removeAllListeners",
@@ -332,17 +354,23 @@ static bool scr_worker_transfer_has(const ScrDyn *transfer, const ScrWorkerView 
   return false;
 }
 
+/* Whether a method name is `name`: first characters compare inline, so
+ * the dispatch ladders below call strcmp only for names that can match. */
+static inline bool method_is(const char *method, const char *name) {
+  return method[0] == name[0] && strcmp(method, name) == 0;
+}
+
 static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *method,
                                      ScrDyn *const *args, size_t argc, const char *what) {
   (void)what;
   ScrWorkerView *view = ptr;
-  if (!strcmp(method, "ref") || !strcmp(method, "unref")) {
-    view->referenced = !strcmp(method, "ref");
+  if (method_is(method, "ref") || method_is(method, "unref")) {
+    view->referenced = method_is(method, "ref");
     return scr_dyn_retain(scr_dyn_undefined());
   }
-  if (view->port && !strcmp(method, "hasRef"))
+  if (view->port && method_is(method, "hasRef"))
     return scr_dyn_new_bool(view->referenced && (!view->closed || (view->channel && view->closing)));
-  if (!view->port && !strcmp(method, "terminate")) {
+  if (!view->port && method_is(method, "terminate")) {
     if (!view->termination) {
       view->termination = scr_promise_new();
       if (view->closed) scr_promise_fulfill_ref(view->termination,
@@ -351,7 +379,7 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     }
     return scr_dyn_new_promise(view->termination);
   }
-  if (!strcmp(method, "postMessage")) {
+  if (method_is(method, "postMessage")) {
     /* Worker drops messages after exit before validating or cloning. A
      * closed MessagePort still validates its payload, as Node does. */
     if (!view->port && view->closed) return scr_dyn_retain(scr_dyn_undefined());
@@ -383,9 +411,9 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     else scr_worker_thread_post(view->thread, message);
     return scr_dyn_retain(scr_dyn_undefined());
   }
-  bool once = !strcmp(method, "once") || !strcmp(method, "prependOnceListener");
-  bool prepend = !strcmp(method, "prependListener") || !strcmp(method, "prependOnceListener");
-  if (once || prepend || !strcmp(method, "on") || !strcmp(method, "addListener")) {
+  bool once = method_is(method, "once") || method_is(method, "prependOnceListener");
+  bool prepend = method_is(method, "prependListener") || method_is(method, "prependOnceListener");
+  if (once || prepend || method_is(method, "on") || method_is(method, "addListener")) {
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     scr_dyn_check_listener(listener, "listener");
     if (scr_exc_pending()) return NULL;
@@ -394,7 +422,7 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     scr_emitter_release(scr_emitter_on_flex(view->events, args[0]->v.str, listener, once, prepend));
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
-  if (!strcmp(method, "off") || !strcmp(method, "removeListener")) {
+  if (method_is(method, "off") || method_is(method, "removeListener")) {
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     scr_dyn_check_listener(listener, "listener");
     if (scr_exc_pending()) return NULL;
@@ -403,21 +431,21 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     scr_emitter_release(scr_emitter_off_dyn(view->events, args[0]->v.str, listener));
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
-  if (!strcmp(method, "removeAllListeners")) {
+  if (method_is(method, "removeAllListeners")) {
     bool all = !argc || args[0]->kind == SCR_DYN_UNDEF;
     if (!all && args[0]->kind != SCR_DYN_STR)
       return scr_worker_refusal("Worker event names must be strings");
     scr_emitter_release(scr_emitter_remove_all(view->events, all ? NULL : args[0]->v.str, all));
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
-  if (!strcmp(method, "listenerCount")) {
+  if (method_is(method, "listenerCount")) {
     if (!argc || args[0]->kind != SCR_DYN_STR)
       return scr_worker_refusal("Worker event names must be strings");
     return scr_dyn_new_num(argc > 1 && args[1]->kind != SCR_DYN_UNDEF
       ? scr_emitter_listener_count_dyn(view->events, args[0]->v.str, args[1])
       : scr_emitter_listener_count(view->events, args[0]->v.str));
   }
-  if (view->port && !strcmp(method, "close")) {
+  if (view->port && method_is(method, "close")) {
     if (argc && args[0]->kind != SCR_DYN_UNDEF) {
       scr_dyn_check_listener(args[0], "callback");
       if (scr_exc_pending()) return NULL;
@@ -438,7 +466,7 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     }
     return scr_dyn_retain(scr_dyn_undefined());
   }
-  if (view->port && !strcmp(method, "start")) {
+  if (view->port && method_is(method, "start")) {
     view->started = true;
     return scr_dyn_retain(scr_dyn_undefined());
   }
@@ -643,6 +671,17 @@ static bool scr_channel_dispatch(void) {
       continue;
     }
     scr_worker_view_retain(view);
+    if (event->message && !view->broadcast && scr_message_readable(event->message)) {
+      /* Compiled listeners with a typed message entry read the message. */
+      ScrStr *name = scr_str_new("message", 7);
+      scr_dyn_this_push(view, SCR_DYNH_MESSAGE_PORT);
+      scr_emitter_emit_message(view->events, name, event->message, scr_message_decode);
+      scr_dyn_this_pop();
+      scr_str_release(name);
+      scr_mail_event_free(event);
+      scr_worker_view_release(view);
+      return true;
+    }
     ScrDyn *argument = event->message ? scr_message_decode(event->message) : NULL;
     if (argument && view->broadcast) {
       ScrDyn *self = scr_dyn_new_handle(view, SCR_DYNH_BROADCAST_CHANNEL);
@@ -700,8 +739,30 @@ static bool scr_channel_more(void) {
   return more;
 }
 
+static bool scr_workers_more(void) {
+  if (scr_worker_batch_left > 0) {
+    if (scr_worker_batch_next()) {
+      scr_worker_batch_queued = true;
+      return true;
+    }
+    scr_worker_batch_left = 0;
+    scr_worker_batch_ended = true;
+  }
+  if (scr_channel_more()) return true;
+  /* One more pass after a batch when a port has something to deliver: the
+   * ports' poll phase for what its listeners posted. */
+  bool ended = scr_worker_batch_ended;
+  scr_worker_batch_ended = false;
+  if (ended)
+    for (ScrWorkerView *view = scr_channel_ports; view; view = view->next)
+      if (scr_channel_port_ready(view)) return true;
+  return false;
+}
+
 static void scr_worker_dispatch(void) {
-  if (scr_channel_dispatch()) return;
+  bool batch = scr_worker_batch_queued;
+  scr_worker_batch_queued = false;
+  if (!batch && scr_channel_dispatch()) return;
   ScrWorkerView *port = scr_worker_port;
   if (port && port->closing) {
     port->closing = false;
@@ -718,7 +779,16 @@ static void scr_worker_dispatch(void) {
     port->queued_head = event->next;
     if (!port->queued_head) port->queued_tail = NULL;
     event->next = NULL;
-  } else event = scr_mailbox_take(scr_worker_events);
+  } else {
+    event = scr_mailbox_take(scr_worker_events);
+    if (event && event->kind == SCR_WORKER_MESSAGE) {
+      if (scr_worker_batch_left == 0) {
+        size_t queued = 1 + scr_mailbox_count_kind(scr_worker_events, SCR_WORKER_MESSAGE);
+        scr_worker_batch_left = queued > SCR_WORKER_BATCH_MIN ? queued : SCR_WORKER_BATCH_MIN;
+      }
+      scr_worker_batch_left--;
+    }
+  }
   if (!event) return;
   if (event->kind == SCR_WORKER_WAKE) { scr_mail_event_free(event); return; }
   if (event->kind == SCR_WORKER_STDIN) {
@@ -762,6 +832,19 @@ static void scr_worker_dispatch(void) {
     }
   }
   scr_worker_view_retain(view);
+  if (event->kind == SCR_WORKER_MESSAGE && event->message && scr_message_readable(event->message)) {
+    /* Compiled listeners with a typed message entry read the message. */
+    if (!scr_exc_pending()) {
+      ScrStr *name = scr_str_new("message", 7);
+      scr_dyn_this_push(view, view->port ? SCR_DYNH_MESSAGE_PORT : SCR_DYNH_WORKER);
+      scr_emitter_emit_message(view->events, name, event->message, scr_message_decode);
+      scr_dyn_this_pop();
+      scr_str_release(name);
+    }
+    scr_worker_view_release(view);
+    scr_mail_event_free(event);
+    return;
+  }
   const char *event_name = event->kind == SCR_WORKER_ONLINE ? "online" :
     event->kind == SCR_WORKER_EXIT ? "exit" : event->kind == SCR_WORKER_ERROR ? "error" : "message";
   ScrDyn *argument = event->message ? scr_message_decode(event->message) :
@@ -869,7 +952,7 @@ static bool scr_worker_events_install(void) {
   if (scr_context_atexit(scr_worker_events_cleanup) != 0) scr_trap("scriptc: out of memory\n");
   scr_loop_set_workers(scr_workers_pending, scr_worker_events_ready, scr_worker_dispatch,
     scr_worker_events_pollfd, scr_worker_events_wait);
-  scr_loop_set_workers_more(scr_channel_more);
+  scr_loop_set_workers_more(scr_workers_more);
   return true;
 }
 
@@ -944,7 +1027,7 @@ static ScrDyn *scr_broadcast_invoke(void *ptr, ScrDyn *self, const char *method,
                                     ScrDyn *const *args, size_t argc, const char *what) {
   (void)what;
   ScrWorkerView *view = ptr;
-  if (!strcmp(method, "postMessage")) {
+  if (method_is(method, "postMessage")) {
     if (view->closed) {
       scr_throw_domex("InvalidStateError", "BroadcastChannel is closed.");
       return NULL;
@@ -968,7 +1051,7 @@ static ScrDyn *scr_broadcast_invoke(void *ptr, ScrDyn *self, const char *method,
     scr_message_free(first);
     return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
   }
-  if (!strcmp(method, "close")) {
+  if (method_is(method, "close")) {
     if (!view->closed) {
       view->closed = true;
       scr_broadcast_leave(view->channel);
@@ -976,8 +1059,8 @@ static ScrDyn *scr_broadcast_invoke(void *ptr, ScrDyn *self, const char *method,
     }
     return scr_dyn_retain(scr_dyn_undefined());
   }
-  if (!strcmp(method, "ref") || !strcmp(method, "unref")) {
-    view->referenced = !strcmp(method, "ref");
+  if (method_is(method, "ref") || method_is(method, "unref")) {
+    view->referenced = method_is(method, "ref");
     return scr_dyn_retain(self);
   }
   ScrDyn *out = NULL;

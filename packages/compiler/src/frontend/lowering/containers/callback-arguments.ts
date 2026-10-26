@@ -1,11 +1,15 @@
+import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { primitiveElement } from "../array-values.js";
 import { varRef } from "../../../ir/build.js";
 import { typeKey } from "../../type-mapper.js";
 import {
   BOOL,
+  DYN,
   F64,
+  STRING,
   type IrExpr,
   type IrType,
   type SrcLoc,
@@ -50,6 +54,8 @@ export function lowerArrayCallback(
   bindUntyped = false,
   expectedReturn?: IrType,
 ): { fnArg: IrExpr & { type: IrType & { kind: "func" } }; arity: number } {
+  // `xs.map(((x) => x))`: a parenthesized callback is the function itself.
+  while (ts.isParenthesizedExpression(argNode)) argNode = argNode.expression;
   // The ambient `Boolean` as the callback (`flags.every(Boolean)`,
   // `xs.some(Boolean)`, `xs.map(Boolean)`): Boolean(value) answers the
   // ToBoolean of its FIRST argument and ignores the rest, so the callback
@@ -67,6 +73,20 @@ export function lowerArrayCallback(
       lowerer.badType(argNode, lowerer.typeOf(argNode));
     if (valueT.kind === "union") lowerer.requireTruthyUnion(valueT.unionId, argNode);
     return { fnArg: truthyFilterCallback(lowerer, valueT, locOf(argNode)), arity: 1 };
+  }
+  // The ambient `String` (`values.map(String)`): String(value) converts its
+  // first argument as a direct call does, whatever the element type; the
+  // constructor's own value form takes a string.
+  if (
+    ts.isIdentifier(argNode) &&
+    argNode.text === "String" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(argNode)) &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(argNode) ?? undefined)
+  ) {
+    const valueT = lead[0];
+    if (valueT === undefined || valueT.kind === "void")
+      lowerer.badType(argNode, lowerer.typeOf(argNode));
+    return { fnArg: stringConversionCallback(lowerer, valueT, argNode), arity: 1 };
   }
   const full = [...lead, F64, arrT];
   // A DYN-receiver HOF's callback (`parsed.flatMap((value) => ...)`):
@@ -125,12 +145,22 @@ export function lowerArrayCallback(
       const untyped = (checkerType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
       const raw = untyped ? null : lowerer.mapTypeOf(checkerType);
       const mapped = raw ? lowerer.runtimeOptionalBindingType(param.name, raw) : null;
+      // A helper that passes present number, string or boolean elements
+      // (a `(T | undefined)[]` stores T elements) binds a `T | undefined`
+      // parameter to T, so the callback takes them without an adapter.
+      const presentElement =
+        mapped !== null &&
+        primitiveElement(expected) &&
+        mapped.kind === "union" &&
+        lowerer.armTag(mapped.unionId, UNDEFINED_T) >= 0 &&
+        typeEquals(lowerer.stripUndefinedArm(mapped), expected);
       if (
         untyped
           ? !bindUntyped
           : mapped === null ||
             (lowerer.coercibleValue(expected, mapped) &&
-              !runtimeOptionalPairVariant(lowerer, expected, mapped))
+              !runtimeOptionalPairVariant(lowerer, expected, mapped) &&
+              !presentElement)
       )
         return;
       const symbol = lowerer.checker.getSymbolAtLocation(param.name);
@@ -273,6 +303,49 @@ function runtimeOptionalPairVariant(lowerer: Lowerer, expected: IrType, mapped: 
   return lowerer.isRuntimeOptionalRecordVariant(strip(expected), strip(mapped));
 }
 
+/** `String` as a one-parameter callback over `valueT`: the conversion a
+ * direct `String(value)` call lowers to (the runtime's String() for unknown
+ * values and unions holding a symbol, ToString otherwise), interned per
+ * value type. */
+function stringConversionCallback(
+  lowerer: Lowerer,
+  valueT: IrType,
+  node: ts.Expression,
+): IrExpr & { type: IrType & { kind: "func" } } {
+  const loc = locOf(node);
+  const fnT: IrType & { kind: "func" } = { kind: "func", params: [valueT], ret: STRING };
+  const key = `mapString:${typeKey(valueT)}`;
+  let name = lowerer.arrHofHelpers.get(key);
+  if (!name) {
+    name = `%arr.mapString.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(key, name);
+    const value = varRef("v.0", valueT, loc);
+    const runtimeString =
+      valueT.kind === "dyn" ||
+      (valueT.kind === "union" &&
+        lowerer.unions.get(valueT.unionId)?.arms.some((arm) => arm.kind === "symbol") === true &&
+        lowerer.dynConvertible(valueT));
+    const converted: IrExpr = runtimeString
+      ? {
+          kind: "libCall",
+          fn: "dyn.stringConstructor",
+          args: [lowerer.coerceToExpected(value, DYN)],
+          type: STRING,
+          loc,
+        }
+      : lowerer.ensureString(value, node);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "v.0", name: "v", type: valueT }],
+      returnType: STRING,
+      locals: [{ id: "v.0", name: "v", type: valueT, mutable: false }],
+      body: [{ kind: "return", value: converted, loc }],
+      loc,
+    });
+  }
+  return { kind: "closure", fnName: name, captures: [], type: fnT, loc };
+}
+
 /** A native closure for the ambient Boolean callback. Reifying the
  * JavaScript constructor itself is unnecessary; Array#filter only observes
  * its one-argument ToBoolean result. */
@@ -285,7 +358,7 @@ export function truthyFilterCallback(
   const key = `filterBoolean:${typeKey(valueT)}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (!name) {
-    name = `%arr.filterBoolean.${lowerer.arrHofHelpers.size}`;
+    name = keyedHelperName(lowerer, "%arr.filterBoolean", key);
     lowerer.arrHofHelpers.set(key, name);
     const value = varRef("v.0", valueT, loc);
     lowerer.liftedFns.push({

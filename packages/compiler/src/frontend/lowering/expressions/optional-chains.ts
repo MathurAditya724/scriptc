@@ -1,3 +1,4 @@
+import { isNavigatorGlobal } from "../builtins/navigator.js";
 import { isSafeToDiscard } from "./evaluation-safety.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
@@ -223,6 +224,16 @@ export function lowerOptionalChain(
   // Native handle methods have no first-class value to guard; when the
   // method read itself has no lowering, re-dispatch the plain call (which
   // reports its own diagnostics) instead of failing on the value read.
+  // `navigator?.userAgent`: Node's navigator global is never nullish and
+  // has no value form, so the guarded step is the plain member read.
+  if (isNavigatorGlobal(lowerer, recvNode)) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
   let loweredReceiver: IrExpr | null;
   if (dotNode === expr && alwaysPresentStdlibMethod(lowerer, recvNode)) {
     loweredReceiver = tryLowerExpression(lowerer, recvNode);
@@ -240,7 +251,7 @@ export function lowerOptionalChain(
   const receiver = lowerer.runtimeOptionalSourceValue(recvNode, loweredReceiver) ?? loweredReceiver;
   if (receiver.type.kind === "dyn") {
     if (dotNode === expr && ts.isCallExpression(expr)) {
-      const id = `chain.${lowerer.chainCounter++}`;
+      const id = lowerer.closureName(loc, "", "chain");
       const callee: IrExpr = { kind: "chainRecv", id, type: DYN, loc };
       const stmts: IrStmt[] = [];
       let guarded = receiver;
@@ -298,7 +309,7 @@ export function lowerOptionalChain(
       );
     }
     if (dotNode === expr && ts.isElementAccessExpression(expr)) {
-      const id = `chain.${lowerer.chainCounter++}`;
+      const id = lowerer.closureName(loc, "", "chain");
       const reference: IrExpr = { kind: "chainRecv", id, type: DYN, loc };
       lowerer.chainRecvByNode.set(recvNode, reference);
       lowerer.chainHandled.add(dotNode);
@@ -331,7 +342,7 @@ export function lowerOptionalChain(
       dotNode === expr.expression
     ) {
       const m = dotNode.name.text;
-      const id = `chain.${lowerer.chainCounter++}`;
+      const id = lowerer.closureName(loc, "", "chain");
       const recvRef: IrExpr = { kind: "chainRecv", id, type: DYN, loc: locOf(recvNode) };
       lowerer.chainRecvByNode.set(recvNode, recvRef);
       lowerer.chainHandled.add(dotNode);
@@ -358,7 +369,7 @@ export function lowerOptionalChain(
       }
       return { kind: "optChain", id, receiver, body, type: DYN, loc };
     }
-    const id = `chain.${lowerer.chainCounter++}`;
+    const id = lowerer.closureName(loc, "", "chain");
     const reference: IrExpr = { kind: "chainRecv", id, type: DYN, loc };
     lowerer.chainRecvByNode.set(recvNode, reference);
     lowerer.chainHandled.add(dotNode);
@@ -420,7 +431,7 @@ export function lowerOptionalChain(
     rest.length === 1
       ? rest[0]!
       : { kind: "union" as const, unionId: lowerer.unions.transform(def, rest) };
-  const id = `chain.${lowerer.chainCounter++}`;
+  const id = lowerer.closureName(loc, "", "chain");
   // A single present arm binds its payload. Multiple present arms bind
   // the original tagged value, then retag inside the guarded body. The
   // nullish arms never enter that body, and each record keeps its identity.

@@ -226,6 +226,11 @@ static pthread_cond_t scr_sa_pf_cond = PTHREAD_COND_INITIALIZER;
 static ScrSaPfRange scr_sa_pf_ring[SCR_SA_PF_RING];
 static unsigned scr_sa_pf_head, scr_sa_pf_tail; /* under the lock */
 static bool scr_sa_pf_started, scr_sa_pf_waiting;
+/* The range the helper is faulting in, and the threads that wait for it to
+ * finish (scr_sa_pf_forget); under the lock. */
+static ScrSaPfRange scr_sa_pf_busy;
+static unsigned scr_sa_pf_forgetting;
+static pthread_cond_t scr_sa_pf_done = PTHREAD_COND_INITIALIZER;
 /* 0 = not decided yet, 1 = on, -1 = off (environment, no thread, or a
  * kernel without MADV_POPULATE_WRITE). */
 static _Atomic(int) scr_sa_pf_state;
@@ -323,8 +328,9 @@ static void *scr_sa_pf_main(void *arg) {
       scr_sa_pf_waiting = false;
     }
     ScrSaPfRange r = scr_sa_pf_ring[scr_sa_pf_tail++ % SCR_SA_PF_RING];
+    scr_sa_pf_busy = r;
     pthread_mutex_unlock(&scr_sa_pf_lock);
-    scr_sa_pf_populate(r.lo, r.hi);
+    if (r.hi > r.lo) scr_sa_pf_populate(r.lo, r.hi);
 #ifdef SCR_SA_PF_HEAP
     if (scr_sa_pf_heap_mode) {
       (void)scr_sa_pf_heap();
@@ -332,8 +338,24 @@ static void *scr_sa_pf_main(void *arg) {
     }
 #endif
     pthread_mutex_lock(&scr_sa_pf_lock);
+    scr_sa_pf_busy = (ScrSaPfRange){NULL, NULL};
+    if (scr_sa_pf_forgetting) pthread_cond_broadcast(&scr_sa_pf_done);
   }
   return NULL;
+}
+
+/* Drops the requests that overlap [lo, hi) and waits for the one the helper
+ * is faulting in if it overlaps, so pages returned there stay returned. */
+static void scr_sa_pf_forget(char *lo, char *hi) {
+  pthread_mutex_lock(&scr_sa_pf_lock);
+  for (unsigned k = scr_sa_pf_tail; k != scr_sa_pf_head; k++) {
+    ScrSaPfRange *r = &scr_sa_pf_ring[k % SCR_SA_PF_RING];
+    if (r->lo < hi && r->hi > lo) r->hi = r->lo;
+  }
+  scr_sa_pf_forgetting++;
+  while (scr_sa_pf_busy.lo < hi && scr_sa_pf_busy.hi > lo) pthread_cond_wait(&scr_sa_pf_done, &scr_sa_pf_lock);
+  scr_sa_pf_forgetting--;
+  pthread_mutex_unlock(&scr_sa_pf_lock);
 }
 
 static bool scr_sa_pf_on(void) {
@@ -545,7 +567,128 @@ static _Atomic(uintptr_t) scr_sa_heap_page; /* the page size, read with the mode
  * These loads run only on blocks too large for the small allocator, next to
  * a glibc malloc call: plain loads on x86-64, LDAR (or LDAPR) on arm64. */
 
+#if defined(SCR_WORKERS) && !defined(SCR_LIB)
+#if defined(__aarch64__)
+#include <sys/prctl.h>
+#endif
+/* glibc's per-thread heaps (worker executables; library archives run on
+ * their embedder's threads and leave its heaps alone). glibc serves a thread's
+ * blocks from a heap of its own: a 64 MiB mapping, aligned to its size,
+ * that it makes accessible with mprotect as it grows, a page-rounded step
+ * at a time, so every 2 MiB range is first touched while part of it is
+ * still inaccessible and gets small pages. Once a thread has allocated
+ * SCR_SA_THREAD_HUGE_AFTER bytes of large blocks (threads with few keep
+ * small pages), the heap of each large block it gets is made accessible
+ * whole and advised huge pages, once per heap; glibc's calloc still clears
+ * only what lies below its own high-water mark, so this touches nothing.
+ * glibc's mmap and trim thresholds are fixed at SCR_SA_THREAD_MMAP_THRESHOLD
+ * and SCR_SA_THREAD_TRIM_THRESHOLD: lower than the maxima glibc's adaptive
+ * thresholds reach, so that blocks of 4 MiB and more get mappings of their
+ * own and a heap's free top goes back once it passes 8 MiB, while huge
+ * pages keep resident memory that a heap would otherwise leave untouched.
+ * The brk heap policy below sets its own (higher) values when the main heap
+ * grows past SCR_SA_HEAP_HUGE_AFTER, and those take precedence. The
+ * policy is off unless THP is in madvise mode, when the glibc.malloc.hugetlb
+ * tunable is set (glibc then advises its heaps itself, or sizes them by
+ * hugetlbfs pages), when the system forbids overcommit (making a heap
+ * accessible would commit all of it), when malloc is not glibc's (a
+ * sanitizer or a preloaded allocator: blocks have no glibc chunk header),
+ * and when memory tagging is on (arm64 MTE, the glibc.mem.tagging tunable):
+ * a chunk header then carries another tag than the block's pointer, and
+ * reading it through that pointer faults.
+ * A heap is only advised when /proc/self/maps shows the anonymous mappings
+ * of exactly its range. */
+#define SCR_SA_GLIBC_HEAP ((uintptr_t)64 << 20) /* glibc's heap size and alignment */
+#define SCR_SA_THREAD_HUGE_AFTER ((size_t)16 << 20)
+#define SCR_SA_THREAD_MMAP_THRESHOLD (4 << 20)
+#define SCR_SA_THREAD_TRIM_THRESHOLD (8 << 20)
+static _Thread_local size_t scr_sa_thread_large_bytes;
+static _Thread_local uintptr_t scr_sa_thread_heap; /* the heap this thread advised last */
+static _Atomic(int) scr_sa_thread_heaps; /* 0 undecided, 1 advised, 2 off */
+extern void *__libc_malloc(size_t);
+
+/* Whether glibc tags heap memory: the glibc.mem.tagging tunable is set to a
+ * nonzero value, or (arm64) the kernel checks tags for this process. */
+static bool scr_sa_mem_tagging(const char *tunables) {
+  const char *t = tunables ? strstr(tunables, "glibc.mem.tagging=") : NULL;
+  if (t && t[sizeof "glibc.mem.tagging=" - 1] != '0') return true;
+#if defined(__aarch64__)
+  /* PR_GET_TAGGED_ADDR_CTRL (56); PR_MTE_TCF_MASK is bits 1-2. A kernel
+   * without the call returns -1: no tag checks. */
+  long ctrl = prctl(56, 0, 0, 0, 0);
+  if (ctrl > 0 && (ctrl & (3L << 1))) return true;
+#endif
+  return false;
+}
+
+/* Whether [heap, heap + SCR_SA_GLIBC_HEAP) is covered exactly by anonymous
+ * mappings, as a glibc heap is (its accessible part and the rest). */
+static bool scr_sa_glibc_heap_mapped(uintptr_t heap) {
+  FILE *f = fopen("/proc/self/maps", "r");
+  if (!f) return false;
+  char line[512];
+  uintptr_t next = heap, end = heap + SCR_SA_GLIBC_HEAP;
+  while (next < end && fgets(line, sizeof line, f)) {
+    unsigned long lo, hi, inode;
+    char path[2] = {0};
+    if (sscanf(line, "%lx-%lx %*s %*s %*s %lu %1s", &lo, &hi, &inode, path) < 3) continue;
+    if (hi <= next) continue;
+    if (lo != next || inode != 0 || path[0]) break;
+    next = hi;
+  }
+  fclose(f);
+  return next == end;
+}
+
+static void scr_sa_thread_heap_note(void *p, size_t n) {
+  if (scr_sa_thread_large_bytes < SCR_SA_THREAD_HUGE_AFTER) {
+    scr_sa_thread_large_bytes += n;
+    return;
+  }
+  int mode = atomic_load_explicit(&scr_sa_thread_heaps, memory_order_relaxed);
+  if (mode == 2) return;
+  if (mode == 0) {
+    int undecided = 0;
+    const char *tunables = getenv("GLIBC_TUNABLES");
+    FILE *f = fopen("/proc/sys/vm/overcommit_memory", "r");
+    int overcommit = f ? fgetc(f) : '0';
+    if (f) fclose(f);
+    /* Loaded through volatile: the compiler takes two declared functions
+     * to have different addresses. */
+    void *(*volatile used)(size_t) = malloc, *(*volatile own)(size_t) = __libc_malloc;
+    bool glibc_malloc = used == own;
+    mode = glibc_malloc && scr_sa_thp_mode() == 'm' && !(tunables && strstr(tunables, "glibc.malloc.hugetlb")) &&
+                   overcommit != '2' && !scr_sa_mem_tagging(tunables)
+               ? 1
+               : 2;
+    if (atomic_compare_exchange_strong(&scr_sa_thread_heaps, &undecided, mode) && mode == 1 &&
+        atomic_load_explicit(&scr_sa_heap_state, memory_order_relaxed) != 1) {
+      (void)mallopt(M_MMAP_THRESHOLD, SCR_SA_THREAD_MMAP_THRESHOLD);
+      (void)mallopt(M_TRIM_THRESHOLD, SCR_SA_THREAD_TRIM_THRESHOLD);
+      /* The brk heap policy marks itself on before it sets its values: if it
+       * did so meanwhile, its values are set again. */
+      if (atomic_load(&scr_sa_heap_state) == 1) {
+        (void)mallopt(M_MMAP_THRESHOLD, SCR_SA_HEAP_MMAP_THRESHOLD);
+        (void)mallopt(M_TRIM_THRESHOLD, SCR_SA_HEAP_TRIM_THRESHOLD);
+      }
+    }
+    mode = atomic_load_explicit(&scr_sa_thread_heaps, memory_order_relaxed);
+    if (mode != 1) return;
+  }
+  /* glibc's chunk header: NON_MAIN_ARENA (4) set, IS_MMAPPED (2) clear. */
+  if ((((const size_t *)p)[-1] & 6) != 4) return;
+  uintptr_t heap = (uintptr_t)p & ~(SCR_SA_GLIBC_HEAP - 1);
+  if (heap == scr_sa_thread_heap) return;
+  scr_sa_thread_heap = heap;
+  if (scr_sa_glibc_heap_mapped(heap) && mprotect((void *)heap, SCR_SA_GLIBC_HEAP, PROT_READ | PROT_WRITE) == 0)
+    (void)madvise((void *)heap, SCR_SA_GLIBC_HEAP, MADV_HUGEPAGE);
+}
+#endif
+
 static void scr_sa_large_note(void *p, size_t n) {
+#if defined(SCR_WORKERS) && !defined(SCR_LIB)
+  if (p) scr_sa_thread_heap_note(p, n);
+#endif
   int state = atomic_load_explicit(&scr_sa_heap_state, memory_order_relaxed);
   if (state == 2 || !p) return;
   uintptr_t top = (uintptr_t)sbrk(0);
@@ -1482,6 +1625,38 @@ void scr_sa_thread_park(void) {
 #endif
 }
 
+#if defined(SCR_SA_TRIM) && defined(MADV_DONTNEED)
+/* Returns the pages past each slice's frontier that a parking thread leaves
+ * faulted in but never carved: the rest of the huge page the frontier is in
+ * (huge pages fault in whole) and the steps faulted ahead of it. The
+ * thread's objects stay where they are; the next thread to claim the arena
+ * faults the pages in again as it carves, and they read as zero, as fresh
+ * pages do. Until then, a program that does its remaining work on threads
+ * that never claim the arena (parse threads ahead of a check on the main
+ * thread) does not keep them. */
+static void scr_sa_release_frontiers(void) {
+  uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
+  if (page == 0 || page == (uintptr_t)-1) page = 4096;
+#ifdef SCR_SA_THP
+  const uintptr_t ahead = SCR_SA_HUGE_PAGE;
+#else
+  const uintptr_t ahead = page;
+#endif
+  for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
+    if (!scr_sa.lim[c]) continue;
+    const ScrSaHoles *h = &scr_sa_holes[scr_sa_arena][c];
+    char *bump = h->lim ? h->bump : scr_sa.bump[c];
+    char *lim = h->lim ? h->lim : scr_sa.lim[c];
+    char *end = (char *)scr_sa.base + ((size_t)(c + 1) << scr_sa.shift);
+    char *from = (char *)(((uintptr_t)bump + page - 1) & ~(page - 1));
+    /* At most one step of `ahead` is faulted in past the limit. */
+    char *to = (char *)((((uintptr_t)lim + ahead - 1) & ~(ahead - 1)) + ahead);
+    if (to > end) to = end;
+    if (to > from) scr_mem_release_ahead(from, to);
+  }
+}
+#endif
+
 static void scr_sa_park_arena(void) {
   if (scr_sa_arena < 0) return;
   unsigned i = (unsigned)scr_sa_arena;
@@ -1503,6 +1678,9 @@ static void scr_sa_park_arena(void) {
     return;
   }
   if (k) scr_sa_keep_merge(k);
+#ifdef MADV_DONTNEED
+  scr_sa_release_frontiers();
+#endif
   if (scr_sa_trim_worth()) {
     if (scr_sa_start_helper(i)) {
       /* Later frees on this thread take the foreign path into the arena's
@@ -1748,6 +1926,18 @@ void scr_mem_prefault(void *lo, void *hi) {
 #endif
 }
 
+void scr_mem_release_ahead(void *lo, void *hi) {
+#if SCR_SMALL_ALLOC && defined(SCR_SA_PREFAULT)
+  if (atomic_load_explicit(&scr_sa_pf_state, memory_order_relaxed) > 0) scr_sa_pf_forget(lo, hi);
+#endif
+#if defined(__linux__) && defined(MADV_DONTNEED)
+  if ((char *)hi > (char *)lo) (void)madvise(lo, (size_t)((char *)hi - (char *)lo), MADV_DONTNEED);
+#else
+  (void)lo;
+  (void)hi;
+#endif
+}
+
 /* Free order. Free lists are LIFO, so blocks freed in descending address
  * order come back in ascending order, the order the bump pointers carve
  * fresh memory in, and the order the program then touches them in. The
@@ -1861,6 +2051,10 @@ void scr_mem_order_for_free(void **ptrs, size_t n, size_t offset) {
  * mallinfo2, the Darwin malloc zones, the Windows CRT heap, or the
  * sanitizer's allocator in sanitized builds). Walks the free lists, so
  * the cost grows with the number of free blocks. */
+#if defined(__linux__) && SCR_SMALL_ALLOC
+static void scr_plr_heap_stats(size_t *held, size_t *used);
+#endif
+
 void scr_heap_stats(double *total, double *used) {
   size_t held = 0, idle = 0;
 #if SCR_SMALL_ALLOC
@@ -1911,6 +2105,240 @@ void scr_heap_stats(double *total, double *used) {
     sys_used = s.allocated;
   }
 #endif
+#if defined(__linux__) && SCR_SMALL_ALLOC
+  /* Compact class instances (the program-lifetime region below). */
+  size_t region_held, region_used;
+  scr_plr_heap_stats(&region_held, &region_used);
+  sys_held += region_held;
+  sys_used += region_used;
+#endif
   *total = (double)(held + sys_held);
   *used = (double)(held - (idle < held ? idle : held) + sys_used);
 }
+
+/* ── program-lifetime region ────────────────────────────────────────────
+ * Instances of compact classes (llvm/classes.ts LlClassMeta.compact) in
+ * programs built for Linux without sanitizers (runtimes with the size-class
+ * allocator, SCR_SMALL_ALLOC) live in one address range
+ * reserved for the whole process below 32 GiB, so a field that holds one
+ * can store its address over 8 in 32 bits (0 stays NULL). The instances
+ * are never freed. Each thread carves them from its own chunks of
+ * SCR_PLR_CHUNK bytes; a chunk is taken from the range with one atomic add.
+ * Pages are committed by first touch and start zeroed. Its strings are
+ * arrays rather than literals: programs without compact classes then link
+ * none of this, where literals would stay in the unit's merged strings. */
+#if defined(__linux__) && SCR_SMALL_ALLOC
+#include <sys/mman.h>
+
+#define SCR_PLR_CHUNK ((size_t)1 << 20)
+/* References are 32-bit addresses of 8-byte units, so the range ends by
+ * SCR_PLR_END. It starts at 4 GiB or above, clear of executables loaded low
+ * and their heaps; a refused size is halved down to SCR_PLR_MIN. */
+#define SCR_PLR_END ((size_t)32 << 30)
+#define SCR_PLR_MIN ((size_t)1 << 30)
+/* Past its first SCR_PLR_HUGE_AFTER bytes the range uses transparent huge
+ * pages, as the allocator's slices do (SCR_SA_HUGE_AFTER): a large heap of
+ * instances takes 512 times fewer page faults and TLB entries, and a small
+ * program stays on small pages. */
+#define SCR_PLR_HUGE_AFTER ((size_t)8 << 20)
+
+static char *scr_plr_base; /* the range's start, once reserved */
+static size_t scr_plr_size;
+static size_t scr_plr_top; /* atomic */
+/* Bytes of the chunks threads hold, and of the tails they left unused when
+ * they moved to a new chunk (scr_heap_stats); atomic. */
+static size_t scr_plr_held, scr_plr_waste;
+#if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
+_Thread_local ScrPlrChunk scr_plr_chunk = {NULL, NULL};
+#else
+ScrPlrChunk scr_plr_chunk = {NULL, NULL};
+#endif
+
+/* Reserves `size` bytes at `at` exactly; NULL if refused. */
+static char *scr_plr_map(void *at, size_t size) {
+  int flags = MAP_PRIVATE | MAP_ANON | MAP_NORESERVE;
+#ifdef MAP_FIXED_NOREPLACE
+  flags |= MAP_FIXED_NOREPLACE;
+#endif
+  char *p = mmap(at, size, PROT_READ | PROT_WRITE, flags, -1, 0);
+  if (p == MAP_FAILED) return NULL;
+  if (p != (char *)at) {
+    /* The system took `at` as a hint only (no MAP_FIXED_NOREPLACE). */
+    (void)munmap(p, size);
+    return NULL;
+  }
+  return p;
+}
+
+static __attribute__((noinline)) void scr_plr_reserve(void) {
+  static char lock;
+  while (__atomic_test_and_set(&lock, __ATOMIC_ACQUIRE)) {
+  }
+  if (!__atomic_load_n(&scr_plr_base, __ATOMIC_ACQUIRE)) {
+    char *p = NULL;
+    size_t size = 0;
+    for (size_t start = (size_t)4 << 30; !p && start <= (size_t)16 << 30; start *= 2) {
+      size = SCR_PLR_END - start;
+      while (size >= SCR_PLR_MIN && !(p = scr_plr_map((void *)start, size))) size /= 2;
+    }
+    if (p) {
+#ifdef MADV_HUGEPAGE
+      (void)madvise(p + SCR_PLR_HUGE_AFTER, size - SCR_PLR_HUGE_AFTER, MADV_HUGEPAGE);
+#endif
+      scr_plr_size = size;
+      /* The first chunk is never handed out, so every chunk is
+       * page-aligned. */
+      __atomic_store_n(&scr_plr_top, SCR_PLR_CHUNK, __ATOMIC_RELAXED);
+      __atomic_store_n(&scr_plr_base, p, __ATOMIC_RELEASE);
+    }
+  }
+  __atomic_clear(&lock, __ATOMIC_RELEASE);
+  /* scr_trap is the runtime's failure path (scr_exception.c); the
+   * allocator's standalone test defines its own (scr_alloc.test.c). */
+  if (!scr_plr_base) {
+    static const char message[] =
+        "scriptc: cannot reserve address space below 32 GiB for program-lifetime objects\n";
+    scr_trap(message);
+  }
+}
+
+#ifdef SCR_SA_TRIM
+/* A worker whose memory goes back when it exits (scr_sa_park_arena: it
+ * shared nothing) returns its chunks too, when the thread ends, and later
+ * chunks reuse them. A thread's chunks are linked through their first two
+ * words (the next chunk and the chunk's size) from scr_plr_mine; the first
+ * chunk a thread takes registers scr_plr_thread_end. */
+#define SCR_PLR_LINK 16
+static _Thread_local char *scr_plr_mine;
+static _Thread_local size_t scr_plr_mine_waste; /* this thread's part of scr_plr_waste */
+static pthread_key_t scr_plr_end_key;
+static pthread_once_t scr_plr_end_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t scr_plr_free_lock = PTHREAD_MUTEX_INITIALIZER;
+static char **scr_plr_free; /* returned chunks of SCR_PLR_CHUNK bytes */
+static size_t scr_plr_nfree, scr_plr_free_cap;
+
+/* Thread exit, after scr_sa_thread_park decided whether the thread's memory
+ * goes back. SCR_SA_DISCARD=poison makes the chunks inaccessible instead. */
+static void scr_plr_thread_end(void *unused) {
+  (void)unused;
+  char *c = scr_plr_mine;
+  scr_plr_mine = NULL;
+  if (!scr_sa_discarded) return;
+  bool poison = scr_sa_discard_mode() == 2;
+  size_t returned = 0;
+  while (c) {
+    char *next = ((char **)c)[0];
+    size_t size = ((size_t *)c)[1];
+    returned += size;
+    if (poison) {
+      (void)mprotect(c, size, PROT_NONE);
+    } else {
+      (void)madvise(c, size, MADV_DONTNEED); /* reads as zero again */
+      if (size == SCR_PLR_CHUNK) {
+        pthread_mutex_lock(&scr_plr_free_lock);
+        if (scr_plr_nfree == scr_plr_free_cap) {
+          size_t cap = scr_plr_free_cap ? 2 * scr_plr_free_cap : 64;
+          char **grown = realloc(scr_plr_free, cap * sizeof *grown);
+          if (grown) {
+            scr_plr_free = grown;
+            scr_plr_free_cap = cap;
+          }
+        }
+        if (scr_plr_nfree < scr_plr_free_cap) scr_plr_free[scr_plr_nfree++] = c;
+        pthread_mutex_unlock(&scr_plr_free_lock);
+      }
+    }
+    c = next;
+  }
+  static const char stats_line[] = "scr_sa: thread returned %zu MB of program-lifetime objects\n";
+  __atomic_fetch_sub(&scr_plr_held, returned, __ATOMIC_RELAXED);
+  __atomic_fetch_sub(&scr_plr_waste, scr_plr_mine_waste, __ATOMIC_RELAXED);
+  scr_plr_mine_waste = 0;
+  const char *stats = getenv("SCR_SA_STATS");
+  if (stats && stats[0] == '1') fprintf(stderr, stats_line, returned >> 20);
+}
+
+static void scr_plr_end_key_init(void) {
+  (void)pthread_key_create(&scr_plr_end_key, scr_plr_thread_end);
+}
+
+/* Records the calling thread's new chunk `p` of `size` bytes. */
+static void scr_plr_own(char *p, size_t size) {
+  if (!scr_plr_mine) {
+    (void)pthread_once(&scr_plr_end_once, scr_plr_end_key_init);
+    (void)pthread_setspecific(scr_plr_end_key, p);
+  }
+  ((char **)p)[0] = scr_plr_mine;
+  ((size_t *)p)[1] = size;
+  scr_plr_mine = p;
+}
+
+static char *scr_plr_reuse(void) {
+  char *c = NULL;
+  pthread_mutex_lock(&scr_plr_free_lock);
+  if (scr_plr_nfree) c = scr_plr_free[--scr_plr_nfree];
+  pthread_mutex_unlock(&scr_plr_free_lock);
+  return c;
+}
+#else
+#define SCR_PLR_LINK 0
+#endif
+
+static __attribute__((noinline)) void *scr_plr_refill(size_t n) {
+  if (!__atomic_load_n(&scr_plr_base, __ATOMIC_ACQUIRE)) scr_plr_reserve();
+  size_t need = n + SCR_PLR_LINK;
+  size_t chunk =
+      need > SCR_PLR_CHUNK ? (need + SCR_PLR_CHUNK - 1) & ~(SCR_PLR_CHUNK - 1) : SCR_PLR_CHUNK;
+  char *p = NULL;
+#ifdef SCR_SA_TRIM
+  if (chunk == SCR_PLR_CHUNK) p = scr_plr_reuse();
+#endif
+  if (!p) {
+    size_t at = __atomic_fetch_add(&scr_plr_top, chunk, __ATOMIC_RELAXED);
+    if (at + chunk > scr_plr_size || at + chunk < at) {
+      static const char message[] = "scriptc: out of address space for program-lifetime objects\n";
+      scr_trap(message);
+    }
+    p = scr_plr_base + at;
+  }
+#ifdef SCR_SA_TRIM
+  scr_plr_own(p, chunk);
+#endif
+  if (scr_plr_chunk.next) {
+    size_t left = (size_t)(scr_plr_chunk.limit - scr_plr_chunk.next);
+    __atomic_fetch_add(&scr_plr_waste, left, __ATOMIC_RELAXED);
+#ifdef SCR_SA_TRIM
+    scr_plr_mine_waste += left;
+#endif
+  }
+  /* process.memoryUsage() counts the chunk in heapTotal and heapUsed
+   * (scr_heap_stats, scr_plr_heap_stats). */
+  __atomic_fetch_add(&scr_plr_held, chunk, __ATOMIC_RELAXED);
+  scr_plr_chunk.next = p + SCR_PLR_LINK + n;
+  scr_plr_chunk.limit = p + chunk;
+  return p + SCR_PLR_LINK;
+}
+
+/* Called before compiled code runs (emitted main), so the region exists
+ * before any reference into it does. */
+void scr_plr_init(void) {
+  if (!__atomic_load_n(&scr_plr_base, __ATOMIC_ACQUIRE)) scr_plr_reserve();
+}
+
+static void scr_plr_heap_stats(size_t *held, size_t *used) {
+  size_t h = __atomic_load_n(&scr_plr_held, __ATOMIC_RELAXED);
+  size_t w = __atomic_load_n(&scr_plr_waste, __ATOMIC_RELAXED);
+  *held = h;
+  *used = w < h ? h - w : 0;
+}
+
+void *scr_plr_alloc(size_t n) {
+  n = (n + 7) & ~(size_t)7;
+  char *p = scr_plr_chunk.next;
+  if (p && n <= (size_t)(scr_plr_chunk.limit - p)) {
+    scr_plr_chunk.next = p + n;
+    return p;
+  }
+  return scr_plr_refill(n);
+}
+#endif

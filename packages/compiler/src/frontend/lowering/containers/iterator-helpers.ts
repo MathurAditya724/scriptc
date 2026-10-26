@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import { boolLit, numLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -966,7 +967,7 @@ function lowerFusedChain(
   const key = `iter:${srcKey}:${stageKeys.join(",")}:${terminal}:${termArgs.map((a) => typeKey(a.type)).join(",")}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%iter.${terminal}.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%iter.${terminal}`, key);
     lowerer.arrHofHelpers.set(key, helper);
     lowerer.liftedFns.push(
       buildIterChainFn(
@@ -1038,7 +1039,7 @@ function lowerHelperObject(
   const key = `iterHelper:${stage.kind}:${srcKey}:${typeKey(srcElem)}:${typeKey(arg.type)}:${typeKey(outT)}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (!name) {
-    name = `%iter.${stage.kind}.${lowerer.arrHofHelpers.size}`;
+    name = keyedHelperName(lowerer, `%iter.${stage.kind}`, key);
     lowerer.arrHofHelpers.set(key, name);
     lowerer.liftedFns.push(
       buildHelperGenFn(lowerer, name, source, srcElem, stage, arg.type, outT, resultType, loc),
@@ -1058,7 +1059,7 @@ function internBudgetChecker(lowerer: Lowerer, loc: SrcLoc, srcT: GenType | null
   const key = srcT === null ? "iter:budget" : `iter:budget:close:${typeKey(srcT)}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (name !== undefined) return name;
-  name = srcT === null ? "%iter.budget" : `%iter.budget.close.${lowerer.arrHofHelpers.size}`;
+  name = srcT === null ? "%iter.budget" : keyedHelperName(lowerer, "%iter.budget.close", key);
   lowerer.arrHofHelpers.set(key, name);
   const v = (): IrExpr => ({ kind: "varRef", localId: "v.0", type: F64, loc });
 
@@ -1181,10 +1182,10 @@ function bindSource(
 
 /** Where chain code allocates its locals: a lifted helper function's own
  * frame, or hidden locals of the function being lowered (a fused for-of). */
-interface ChainFrame {
-  local(base: string, type: IrType, mutable: boolean): string;
+abstract class ChainFrame {
+  abstract local(base: string, type: IrType, mutable: boolean): string;
   /** `id = id + 1` over a number local. */
-  bump(id: string): IrStmt;
+  abstract bump(id: string): IrStmt;
 }
 
 /** `id = id + 1` over a number local. */
@@ -1205,11 +1206,13 @@ function bumpLocal(id: string, loc: SrcLoc): IrStmt {
 }
 
 /** Hidden locals of the function being lowered. */
-class HostFrame implements ChainFrame {
+class HostFrame extends ChainFrame {
   constructor(
     private readonly lowerer: Lowerer,
     private readonly loc: SrcLoc,
-  ) {}
+  ) {
+    super();
+  }
   local(base: string, type: IrType, mutable: boolean): string {
     const local = this.lowerer.declareHiddenLocal(`%${base}`, type);
     local.mutable = mutable;
@@ -1222,11 +1225,13 @@ class HostFrame implements ChainFrame {
 
 /** The locals and parameters of a lifted helper function under
  * construction. */
-class LiftedFrame implements ChainFrame {
+export class LiftedFrame extends ChainFrame {
   readonly locals: IrLocal[] = [];
   readonly params: IrParam[] = [];
   private n = 0;
-  constructor(private readonly loc: SrcLoc) {}
+  constructor(private readonly loc: SrcLoc) {
+    super();
+  }
   local(base: string, type: IrType, mutable: boolean): string {
     const id = `${base}.${this.n++}`;
     this.locals.push({ id, name: base, type, mutable });
@@ -1252,7 +1257,7 @@ class LiftedFrame implements ChainFrame {
  * step leave it unclosed, as in Node. The generator counts as unfinished
  * before the first step, so a `pre` that breaks at once (take(0)) closes
  * a source it never pulled. `genT` must be stepDrivable. */
-function driveGenerator(
+export function driveGenerator(
   lowerer: Lowerer,
   frame: ChainFrame,
   genId: string,

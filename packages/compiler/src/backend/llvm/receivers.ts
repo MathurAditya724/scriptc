@@ -11,13 +11,24 @@ import type { LlValue } from "./expr-context.js";
 import { guardedValue } from "./borrowed-receivers.js";
 import { InternalCompilerError } from "../../errors.js";
 import { emitBorrowedArrayRead, emitProjectedArrayRead } from "./local-array-reads.js";
-import { emitStackMapRead, matchMapRead } from "./map-read-lifetimes.js";
+import {
+  emitBorrowedMapGet,
+  emitStackMapRead,
+  matchMapRead,
+  pointerMapGet,
+} from "./map-read-lifetimes.js";
 import { emitBorrowedResultCall, emitCallExpr } from "./expr-calls.js";
-import { emitCheckedNarrowReceiver } from "./checked-narrows.js";
+import { borrowsCheckedNarrow, emitCheckedNarrowReceiver } from "./checked-narrows.js";
 import { canStackUnion, emitStackUnion } from "./stack-unions.js";
 import { emitDowncastGuard, emitUnionNarrowGuard } from "./narrow-guards.js";
 import { emitScalarOptional, isScalarOptionalSource } from "./local-union-storage.js";
 import { borrowableInputs } from "./borrowed-inputs.js";
+import {
+  emitBorrowedRecordKeyGet,
+  emitStackRecordKeyGet,
+  pointerRecordKeyGet,
+  scalarRecordKeyGet,
+} from "./expr-records.js";
 import { type WalkBorrowHost, analyzeWalks } from "./walk-borrows.js";
 
 /** Read a receiver whose value is consumed immediately by a field or tag
@@ -91,10 +102,16 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
     return emitBorrowedResultCall(emitter, e);
   const arrayRead = emitter.optionalArrayReads.get(e);
   if (arrayRead) return emitProjectedArrayRead(emitter, arrayRead);
+  if (e.kind === "recordKeyGet" && emitter.canBorrowReceiver(e))
+    return emitBorrowedRecordKeyGet(emitter, e);
+  if (e.kind === "mapIntrinsic" && emitter.canBorrowReceiver(e))
+    return emitBorrowedMapGet(emitter, e);
   const narrow = emitter.checkedNarrows.get(e);
   const narrowed = narrow ? emitCheckedNarrowReceiver(emitter, narrow) : null;
   if (narrowed) return narrowed;
   if (canStackUnion(e, emitter.boxedUnionsById)) return emitStackUnion(emitter, e).value;
+  if (e.kind === "recordKeyGet" && scalarRecordKeyGet(emitter, e))
+    return { name: emitStackRecordKeyGet(emitter, e), type: e.type };
   if (e.kind === "unionNarrow") {
     const union = emitter.emitUnionProjection(e.value);
     emitUnionNarrowGuard(emitter, union.name, e.unionId, e.tag);
@@ -118,7 +135,12 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
       const { ptr, type, inline } = emitter.recordFieldPtr(receiver.name, e.shapeId, e.field);
       return { name: emitter.loadRecordField(ptr, type, inline), type: e.type };
     }
-    const { ptr, type, inline } = emitter.classFieldPtr(receiver.name, e.className, e.field);
+    const { ptr, type, inline } = emitter.classFieldPtr(
+      receiver.name,
+      e.className,
+      e.field,
+      "compressed",
+    );
     if (emitter.int32Slots.isField(e.className, e.field))
       return emitter.loadInt32Field(ptr, e.type);
     return { name: emitter.loadField(ptr, type, inline), type: e.type };
@@ -286,7 +308,27 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
     // snapshot, so neither the callee nor a later argument may replace
     // what it was read from: a callee that preserves every edge cannot,
     // and any other one must leave the argument's locations unwritten.
+    // A keyed read lends the stored pointer while the record keeps it.
+    case "recordKeyGet":
+      return (
+        pointerRecordKeyGet(emitter, e) &&
+        emitter.canBorrowReceiver(e.obj) &&
+        emitter.referenceEffects.preserves(e.key)
+      );
+    // So does a Map.get while the map keeps it.
+    case "mapIntrinsic":
+      return (
+        pointerMapGet(emitter, e) &&
+        emitter.canBorrowReceiver(e.receiver) &&
+        emitter.referenceEffects.preserves(e.args[0]!)
+      );
     case "call": {
+      // A checked extraction lends the payload of the union it narrows
+      // (emitCheckedNarrowReceiver).
+      if (borrowsCheckedNarrow(emitter, e)) {
+        const narrow = emitter.checkedNarrows.get(e)!;
+        return emitter.canBorrowReceiver(narrow.value);
+      }
       if (!emitter.borrowedReturns.has(e.callee)) return false;
       if (!e.args.every((arg) => emitter.referenceEffects.preserves(arg))) return false;
       const preserving = emitter.referenceEffects.functions.has(e.callee);
@@ -337,6 +379,7 @@ export function analyzeBorrowedReturns(emitter: LlEmitter): void {
       borrowsWithoutOwning: (e: IrExpr) => emitter.borrowsWithoutOwning(e),
       borrowedReturn: (callee: string) => emitter.borrowedReturns.has(callee),
       parameterAllowed: (id: string) => allowed.has(id),
+      nodes: emitter.nodeIndex,
     };
     return emitter.referenceEffects.functions.has(fn.name)
       ? host
@@ -404,6 +447,7 @@ export function isStackUnionSource(emitter: LlEmitter, e: IrExpr): boolean {
     emitter.optionalArrayReads.get(e) !== null ||
     isScalarOptionalSource(e, emitter.unionSources) ||
     emitter.scalarResultCall(e) ||
-    emitter.inlineFieldGet(e)
+    emitter.inlineFieldGet(e) ||
+    scalarRecordKeyGet(emitter, e)
   );
 }

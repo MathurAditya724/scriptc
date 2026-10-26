@@ -1,3 +1,5 @@
+import { widensReducedRecords } from "../function-returns.js";
+import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -95,7 +97,14 @@ export function lowerJsonMethodCall(
       !isDateJsonSource(lowerer, argNode)
     ) {
       const narrowed = lowerer.mapTypeOf(lowerer.typeOf(argNode));
-      if (narrowed && !isUnitType(narrowed) && narrowed.kind !== "void") {
+      // A union of record types the checker's subtype reduction spelled as
+      // one of them serializes each value by its own layout.
+      if (
+        narrowed &&
+        !isUnitType(narrowed) &&
+        narrowed.kind !== "void" &&
+        !widensReducedRecords(lowerer, narrowed, value.type)
+      ) {
         const helper =
           narrowed.kind === "union"
             ? lowerer.narrowedRetagHelper(argNode, value.type.unionId, narrowed.unionId, loc)
@@ -253,7 +262,7 @@ function lowerOptionalStringifyRoot(
   const key = `json.optionalString:${value.type.unionId}:${JSON.stringify(indent)}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%json.optionalString.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%json.optionalString", key);
     lowerer.valueHelpers.set(key, helper);
     const input = varRef("value.0", value.type, loc);
     const serialized: IrExpr = {
@@ -605,8 +614,15 @@ export function lowerJsonProperty(
 ): IrExpr | null {
   const member = lowerer.stdlibGlobalMember(expr, "JSON");
   if (member === null) return null;
+  const value = jsonMemberValue(lowerer, member, locOf(expr));
+  if (value !== null) return value;
+  lowerer.unsupported("SC1090", expr, `JSON methods as values (call '${member}' directly)`);
+}
+
+/** The function value of the JSON member `member` (stringify and parse),
+ * or null for members without one. */
+export function jsonMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
   if (member === "stringify") {
-    const loc = locOf(expr);
     const name = "%builtin.JSON.stringify";
     if (!lowerer.builtinCallableValueFns.has(name)) {
       lowerer.builtinCallableValueFns.set(name, name);
@@ -653,7 +669,6 @@ export function lowerJsonProperty(
   if (member === "parse") {
     // JSON.parse as a value: ToString of the text, then the reviver form
     // (a reviver that is not a function is ignored, as in Node).
-    const loc = locOf(expr);
     const name = "%builtin.JSON.parse";
     if (!lowerer.builtinCallableValueFns.has(name)) {
       lowerer.builtinCallableValueFns.set(name, name);
@@ -702,5 +717,5 @@ export function lowerJsonProperty(
       loc,
     };
   }
-  lowerer.unsupported("SC1090", expr, `JSON methods as values (call '${member}' directly)`);
+  return null;
 }

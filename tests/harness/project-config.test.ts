@@ -100,6 +100,13 @@ for (const [name, title] of [
     "eventLoopUtilization and monitorEventLoopDelay follow @types/node's types",
   ],
   ["timeout-type", "NodeJS.Timeout fields, ref/unref/hasRef and clearInterval under @types/node"],
+  ["x509-methods", "X509Certificate's methods and the legacy object under @types/node"],
+  ["tls-peer-certificates", "TLS socket certificate accessors under @types/node"],
+  ["tls-client-certificates", "mutual TLS with client certificates under @types/node"],
+  [
+    "tls-server-contexts",
+    "tls.Server addContext, setSecureContext and tlsClientError under @types/node",
+  ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
     const outDir = outDirFor(name);
@@ -294,6 +301,24 @@ test("node-types: TLSSocket.isSessionReused and keyed ??= timings under @types/n
       outDir,
       process.platform === "win32" ? "tls-session-timings.exe" : "tls-session-timings",
     ),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: new tls.TLSSocket and tls.connect({ socket }) under @types/node", async () => {
+  const outDir = outDirFor("tls-socket-wrap");
+  const entry = join(nodeTypesDir, "tls-socket-wrap.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, process.platform === "win32" ? "tls-socket-wrap.exe" : "tls-socket-wrap"),
     outDir,
     sanitize,
   });
@@ -764,6 +789,32 @@ test("node-types: exec's numeric ExecException.code remains a named fence", asyn
   }
 });
 
+test("node-types: fs functions take URL paths under @types/node's PathLike", async () => {
+  const dir = outDirFor("node-fs-url-paths");
+  const result = await compile(join(nodeTypesDir, "fs-url-paths.ts"), {
+    outPath: join(dir, "fs-url-paths"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe("hello 5 5\n");
+});
+
+test("node-types: existsSync and fs.promises answer false or reject for unconvertible URLs", async () => {
+  const dir = outDirFor("node-fs-url-fallible");
+  const result = await compile(join(nodeTypesDir, "fs-url-fallible.ts"), {
+    outPath: join(dir, "fs-url-fallible"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe("true false\nhi\nERR_INVALID_FILE_URL_HOST\n");
+});
+
 test("node-types: path and os lower statically under @types/node's shapes", async () => {
   const outDir = outDirFor("node-path-os");
   const result = await compile(join(nodeTypesDir, "path-os.ts"), {
@@ -1085,11 +1136,93 @@ test("node-types: ECDH matches Node under @types/node", async () => {
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: DiffieHellman matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-dh");
+  const entry = join(nodeTypesDir, "dh.ts");
+  const result = await compile(entry, { outPath: join(outDir, "dh"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: asymmetric keys and signatures match Node under @types/node", async () => {
+  const outDir = outDirFor("node-keys");
+  const entry = join(nodeTypesDir, "keys.ts");
+  const result = await compile(entry, { outPath: join(outDir, "keys"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: X25519 keys and diffieHellman match Node under @types/node", async () => {
+  const outDir = outDirFor("node-diffie-hellman");
+  const entry = join(nodeTypesDir, "diffie-hellman.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "diffie-hellman"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: WebCrypto ECDSA, Ed25519 and RSA match Node under @types/node", async () => {
+  const outDir = outDirFor("node-webcrypto-ecdsa");
+  const entry = join(nodeTypesDir, "webcrypto-ecdsa.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "webcrypto-ecdsa"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: WebCrypto HMAC matches Node under @types/node", async () => {
   const outDir = outDirFor("node-webcrypto-hmac");
   const entry = join(nodeTypesDir, "webcrypto-hmac.ts");
   const result = await compile(entry, {
     outPath: join(outDir, "webcrypto-hmac"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: WebCrypto secret keys match Node under @types/node", async () => {
+  const outDir = outDirFor("node-webcrypto-keys");
+  const entry = join(nodeTypesDir, "webcrypto-keys.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "webcrypto-keys"),
     outDir,
     sanitize,
   });

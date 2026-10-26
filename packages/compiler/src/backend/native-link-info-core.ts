@@ -34,7 +34,12 @@ export interface NativeLinkFeatures {
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
+  /** Module namespace objects as checked-dynamic values link
+   * scr_module_namespace.c; absent (false) otherwise. */
+  moduleNamespace?: boolean;
   zlib: boolean;
+  /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
+  brotli?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -49,18 +54,27 @@ export interface NativeLinkFeatures {
   /** Own properties JavaScript adds to children: scr_dyn_handle_props.c.
    * Absent (false) for programs without them. */
   handleProps?: boolean;
+  declAdopt?: boolean;
+  typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
-  /** Fixed-width Buffer methods called on checked-dynamic values link
+  /** util.MIMEType and util.MIMEParams: scr_mime.c. */
+  mime?: boolean;
+  /** util.debounce and util.throttle: scr_util_timing.c. */
+  utilTiming?: boolean;
+  /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
-  dynBufferNum?: boolean;
+  dynBuffer?: boolean;
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;
+  /** createRequire's computed require and require.resolve link
+   * scr_require.c; absent (false) otherwise. */
+  computedRequire?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
@@ -80,16 +94,32 @@ export interface NativeLinkFeatures {
   dnsPromises: boolean;
   /** dgram sockets as untyped values: scr_dgram_dyn.c. */
   dgramDyn: boolean;
+  /** TextEncoder and TextDecoder records as untyped values:
+   * scr_text_codec_dyn.c. */
+  textCodecDyn: boolean;
   watch: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
-  /** crypto.createCipheriv/createDecipheriv: scr_cipher.c plus the mbedTLS
-   * archive. */
+  /** crypto.createCipheriv/createDecipheriv and WebCrypto's encrypt and
+   * decrypt: scr_cipher.c plus the mbedTLS archive (and, with webcrypto,
+   * scr_webcrypto_aes.c). */
   cipher: boolean;
   /** crypto.createECDH and ECDH.convertKey: scr_ecdh.c plus the mbedTLS
    * archive. */
   ecdh: boolean;
+  /** crypto.createDiffieHellman, getDiffieHellman and
+   * createDiffieHellmanGroup: scr_dh.c plus the mbedTLS archive. */
+  dh: boolean;
+  /** Asymmetric KeyObjects, crypto.sign/verify and Sign/Verify: scr_pki.c
+   * plus the mbedTLS archive. */
+  pki: boolean;
+  /** Ed25519 keys and signatures with pki: scr_ed25519.c (the vendored
+   * libsodium Ed25519). */
+  ed25519: boolean;
+  /** X509Certificate fields beyond the validity window and fingerprint:
+   * scr_x509.c. */
+  x509: boolean;
   /** perf_hooks event-loop metrics: scr_perf_loop.c. */
   perfLoop: boolean;
   tlsCa: boolean;

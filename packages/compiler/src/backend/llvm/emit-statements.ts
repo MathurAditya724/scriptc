@@ -32,24 +32,46 @@ import { allocateLocalUnion, storeLocalUnion } from "./local-union-storage.js";
 import { boxAccess, boxNewCall, elemAccess } from "./shapes.js";
 import { dynHoleRead } from "./loop-array-borrows.js";
 import { endsWithJump, matchStringSelfConcat } from "../../ir/analysis.js";
-import { emitDiscardedSplice } from "./expr-containers.js";
+import { charAtUnitRead, emitBorrowedMapGet, emitDiscardedSplice } from "./expr-containers.js";
 import { InternalCompilerError } from "../../errors.js";
-import { emitDenseArrayGet, emitDenseArrayPop, emitDenseArraySet } from "./dense-array-access.js";
+import {
+  emitDenseArrayGet,
+  emitDenseArrayPop,
+  emitDenseArraySet,
+  SCR_ELEM_I32,
+} from "./dense-array-access.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
-import { f64Lit, llvmCommentText, loadArrCount, sizeToDouble } from "./common.js";
-import { RESULT_DST_ID, RESULT_ENTRY_PREFIX } from "./record-results.js";
+import { f64Lit, llvmCommentText, loadArrCount, SCR_ARR_FIELD, sizeToDouble } from "./common.js";
+import { planInt32KindLoop, type Int32KindLoopPlan } from "./int32-kind-loops.js";
+import { withinInt32 } from "../../ir/integer-ranges.js";
+import { resultSlotStore } from "../result-slots.js";
 import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
   matchIntegerCountedForLoop,
+  matchIntegerPairedForLoop,
+  steppedLoopCounter,
 } from "../../ir/integer-loops.js";
 import { emitByteWindowGuard, matchByteWindow } from "./byte-windows.js";
-import { countedDenseShape, emitDenseLoopGuard, matchDenseArrayLoop } from "./dense-array-loops.js";
-import { emitCountedLoopLimit, emitCountedLoopSafety } from "./counted-loops.js";
-import { emitBytesLoopVersionGuard } from "./bytes-loop-versions.js";
+import {
+  countedDenseShape,
+  emitDenseLoopGuard,
+  matchDenseArrayLoop,
+  pairedDenseShape,
+} from "./dense-array-loops.js";
+import {
+  emitCountedLoopLimit,
+  emitCountedLoopSafety,
+  emitCountedStart,
+  emitPairedLoopSafety,
+} from "./counted-loops.js";
+import { emitBytesLoopVersionGuard, type BytesLoopVersion } from "./bytes-loop-versions.js";
+import { bytesHeaderAlias } from "./bytes-alias.js";
 import { mangleLocal } from "../mangle.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlValue } from "./expr-context.js";
+import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
+import { widenInteger } from "./integer-values.js";
 import { SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { emitLiteralSwitch } from "./switch-dispatch.js";
 import {
@@ -69,6 +91,11 @@ import {
   stringParts,
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
+import { LOOPS } from "./loop-state.js";
+import { loopAccessesTypedArrays } from "../loop-polls.js";
+
+/** A callback loop version copies the loop; keep the copies small. */
+const MAX_CALLBACK_VERSION_COST = 400;
 
 export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
   const B = emitter.B;
@@ -80,6 +107,19 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       const b = emitter.binding(s.localId);
+      if (
+        emitter.borrowedMapGets.has(s.localId) &&
+        b.kind === "local" &&
+        s.init?.kind === "mapIntrinsic"
+      ) {
+        // The map entry's own reference: no retain now, no release at scope
+        // exit (findMapReadBorrows).
+        const borrowed = emitBorrowedMapGet(emitter, s.init);
+        if (borrowed) {
+          B.line(`store ptr ${borrowed.name}, ptr ${b.slot}`);
+          break;
+        }
+      }
       if (emitter.walkBorrows.has(s.localId) && b.kind === "local") {
         // A borrowed walk pointer: no retain now, no release at scope exit.
         const v = s.init === null ? "null" : emitter.emitReadReceiver(s.init).name;
@@ -267,6 +307,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       else emitter.toFrame(v);
       B.line(`store ${emitter.llType(b.type)} ${v.name}, ptr ${b.slot}`);
       emitter.storeIntegerView(s.localId, v, s.init);
+      storeIntegerTemp(emitter, s.localId, b, v);
       if (isRefCounted(b.type)) {
         emitter.scopes[emitter.scopes.length - 1]!.push({ slot: b.slot, type: b.type });
         emitter.noteLastUseMove(s, b);
@@ -399,7 +440,21 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       const v = emitter.emitExpr(s.value);
       if (s.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arraySet on non-array");
-      const acc = elemAccess(s.arr.type.elem);
+      if (emitter.checkedInt32Array(s.arr)) {
+        // An int32 array with checked stores: the int32 arm stores an int32
+        // value, and widens the array for any other first.
+        emitter.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
+        const elem = s.arr.type.elem;
+        const proven = emitter.provenDenseIndex(s.arr, s.index);
+        emitter.emitByElementKind(arr.name, null, (acc, widened) => {
+          if (acc === "i32") emitter.emitCheckedInt32Store(arr.name, v.name, s.value, widened);
+          emitDenseArraySet(emitter, arr.name, idx, s.index, acc, elem, v.name, proven);
+          return null;
+        });
+        break;
+      }
+      const acc = emitter.arrayAccess(s.arr, s.arr.type.elem);
+      const int32 = emitter.emitInt32KindStoreCheck(s.arr, v, s.value);
       emitter.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
       if (acc === "ref") emitter.toHeap(v);
       emitDenseArraySet(
@@ -411,6 +466,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         s.arr.type.elem,
         v.name,
         emitter.provenDenseIndex(s.arr, s.index),
+        int32,
       );
       break;
     }
@@ -424,10 +480,18 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         emitter.publishedTypes?.containerGuarded(s.arr.type) !== true
       )
         break;
+      // The literal it follows was constructed with this capacity
+      // (reservedArrayLength).
+      if (emitter.consumedReserves.delete(s)) break;
       const arr = emitBorrowedInput(emitter, s.arr);
       const length = emitter.emitExpr(s.length);
       if (s.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arraySetLength on non-array");
+      if (s.reserve === true) {
+        emitter.declare(`declare void @scr_arr_reserve_len(ptr, double)`);
+        B.line(`call void @scr_arr_reserve_len(ptr ${arr.name}, double ${length.name})`);
+        break;
+      }
       emitter.emitPublishedArrayGuard(arr.name, s.arr.type, s.pop === true ? 2 : 3);
       emitter.declare(`declare void @scr_arr_set_len(ptr, double)`);
       // Assigning the current length (a reused work array reset to where
@@ -461,12 +525,19 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.condBr(dropsLast, pop, call);
         B.startBlock(pop);
         const elem = s.arr.type.elem;
-        const acc = elemAccess(elem);
-        const raw = emitDenseArrayPop(emitter, arr.name, acc, call, call);
-        if (acc === "ref" && isRefCounted(elem)) {
-          const old = B.tmp();
-          B.line(`${old} = inttoptr i64 ${raw} to ptr`);
-          emitter.releaseHeap(old, elem);
+        if (emitter.checkedInt32Array(s.arr)) {
+          emitter.emitByElementKind(arr.name, null, (acc) => {
+            emitDenseArrayPop(emitter, arr.name, acc, elem, call, call);
+            return null;
+          });
+        } else {
+          const acc = emitter.arrayAccess(s.arr, elem);
+          const raw = emitDenseArrayPop(emitter, arr.name, acc, elem, call, call);
+          if (acc === "ref" && isRefCounted(elem)) {
+            const old = B.tmp();
+            B.line(`${old} = inttoptr i64 ${raw} to ptr`);
+            emitter.releaseHeap(old, elem);
+          }
         }
         B.br(done);
         B.startBlock(call);
@@ -517,6 +588,8 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         s.index,
         s.value,
         emitter.bytesBounds.has(s),
+        emitter.bytesOwned.has(s),
+        emitter.bytesAliasScopes.get(s),
       );
       break;
     }
@@ -558,16 +631,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         emitter.emitPublishedFieldGuard(obj.name, null, s.field);
       const { ptr, type, inline } =
         s.kind === "fieldSet"
-          ? emitter.classFieldPtr(obj.name, s.className, s.field)
+          ? emitter.classFieldPtr(obj.name, s.className, s.field, "compressed")
           : emitter.recordFieldPtr(obj.name, s.shapeId, s.field);
       // A result-slot entry fills zeroed caller storage, each field once.
-      if (
-        s.kind === "recordSet" &&
-        s.obj.kind === "varRef" &&
-        s.obj.localId === RESULT_DST_ID &&
-        emitter.currentFunctionName.startsWith(RESULT_ENTRY_PREFIX)
-      )
-        emitter.initField(ptr, type, inline, v);
+      if (resultSlotStore(emitter.currentFunctionName, s)) emitter.initField(ptr, type, inline, v);
       else emitter.replaceField(ptr, type, inline, v);
       if (
         s.kind === "fieldSet" &&
@@ -774,7 +841,12 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       const trueLabel = B.newLabel("if.t");
       const joinLabel = B.newLabel("if.j");
       const falseLabel = s.else_ ? B.newLabel("if.f") : joinLabel;
-      B.condBr(cond, trueLabel, falseLabel);
+      // A running maximum or minimum is rarely updated; the weights keep
+      // the branch, where a select would make each element wait on the last.
+      const weights = emitter.runningExtrema.has(s)
+        ? `, !prof !{!"branch_weights", i32 1, i32 1000}`
+        : "";
+      B.condBr(cond, trueLabel, falseLabel, weights);
       B.startBlock(trueLabel);
       emitter.emitBlock(s.then);
       B.br(joinLabel);
@@ -787,6 +859,21 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "while": {
+      const callbacks = callbackVersionBindings(emitter, s);
+      if (callbacks) {
+        emitCallbackVersionedLoop(emitter, s, callbacks);
+        break;
+      }
+      const version =
+        LOOPS.of(emitter).bytesLoopVersionsEnabled &&
+        LOOPS.of(emitter).bytesLoopVersioning.size < MAX_BYTES_LOOP_VERSION_DEPTH &&
+        !LOOPS.of(emitter).bytesLoopVersioning.has(s)
+          ? emitter.matchBytesLoopVersion(s, null)
+          : null;
+      if (version) {
+        emitVersionedLoop(emitter, s, version);
+        break;
+      }
       const workerBudget = emitter.workerLoopBudget(s);
       const le = B.newLabel("loop.e");
       emitter.emitLoopCopies(s, true, le, (exit) => {
@@ -795,6 +882,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         const lp = workerBudget !== null ? B.newLabel("loop.p") : lc;
         B.br(lc);
         B.startBlock(lc);
+        enterLoopHeader(emitter, lc);
         B.condBr(emitter.emitCondition(s.cond), lb, exit);
         B.startBlock(lb);
         emitter.jumpTargets.push({
@@ -819,6 +907,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "doWhile": {
+      const callbacks = callbackVersionBindings(emitter, s);
+      if (callbacks) {
+        emitCallbackVersionedLoop(emitter, s, callbacks);
+        break;
+      }
       const workerBudget = emitter.workerLoopBudget(s);
       // Body first (runs at least once); continue jumps to the CONDITION.
       const le = B.newLabel("loop.e");
@@ -827,6 +920,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         const lc = B.newLabel("loop.c");
         B.br(lb);
         B.startBlock(lb);
+        enterLoopHeader(emitter, lb);
         emitter.jumpTargets.push({
           kind: "loop",
           brkLabel: exit,
@@ -847,6 +941,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "for": {
+      const callbacks = callbackVersionBindings(emitter, s);
+      if (callbacks) {
+        emitCallbackVersionedLoop(emitter, s, callbacks);
+        break;
+      }
       // The init's scope wraps the whole loop (break/continue must NOT
       // release it — scopeDepth captured after the push, C parity).
       const integerArrayLoop =
@@ -857,26 +956,33 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         integerArrayLoop ??
         (emitter.debug === null ? matchIntegerBytesForLoop(s, emitter.numericLocals) : null);
       const countedLoop =
-        !integerLoop && emitter.countedLoopsEnabled
+        !integerLoop && LOOPS.of(emitter).countedLoopsEnabled
           ? matchIntegerCountedForLoop(
               s,
               emitter.numericLocals,
               emitter.integerRanges,
-              emitter.unaliasedArrays,
+              LOOPS.of(emitter).unaliasedArrays,
             )
           : null;
+      // Two counters closing in on each other (`lo++, hi--`) take the same
+      // integer storage as a counted loop's one.
+      const pairedLoop =
+        !integerLoop && !countedLoop && LOOPS.of(emitter).countedLoopsEnabled
+          ? matchIntegerPairedForLoop(s, emitter.numericLocals, emitter.integerRanges)
+          : null;
+      // Byte windows and dense loops reason about one counter.
       const window =
-        countedLoop && emitter.byteWindowsEnabled
+        countedLoop && countedLoop.followers.length === 0 && LOOPS.of(emitter).byteWindowsEnabled
           ? matchByteWindow(
               s,
               countedLoop,
               emitter.numericLocals,
               emitter.captureIds,
               emitter.integerRanges,
-              emitter.byteWindowEntries.get(s) ?? new Set(),
+              LOOPS.of(emitter).byteWindowEntries.get(s) ?? new Set(),
             )
           : null;
-      const denseShape = !emitter.denseLoopsEnabled
+      const denseShape = !LOOPS.of(emitter).denseLoopsEnabled
         ? null
         : integerArrayLoop
           ? {
@@ -884,17 +990,19 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               length: integerArrayLoop.limitReceiver as IrExpr & { kind: "varRef" },
               range: { min: 0, max: 4294967294 },
             }
-          : countedLoop && !countedLoop.guarded
+          : countedLoop && !countedLoop.guarded && countedLoop.followers.length === 0
             ? countedDenseShape(s, countedLoop)
-            : null;
+            : pairedLoop
+              ? pairedDenseShape(pairedLoop)
+              : null;
       const dense =
         denseShape && !window
           ? matchDenseArrayLoop(
               s,
               denseShape,
               emitter.numericLocals,
-              emitter.unaliasedArrays,
-              emitter.denseLoopEntries.get(s) ?? new Set(),
+              LOOPS.of(emitter).unaliasedArrays,
+              LOOPS.of(emitter).denseLoopEntries.get(s) ?? new Set(),
             )
           : null;
       if (dense) {
@@ -903,18 +1011,18 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           slow = B.newLabel("dense.loop.slow"),
           done = B.newLabel("dense.loop.done");
         B.condBr(valid, fast, slow);
-        emitter.denseLoopsEnabled = false;
+        LOOPS.of(emitter).denseLoopsEnabled = false;
         try {
           B.startBlock(slow);
-          emitter.emitStmt(s);
+          emitSlowCopy(emitter, s);
           B.br(done);
           B.startBlock(fast);
-          emitter.denseLoop = dense;
+          LOOPS.of(emitter).denseLoop = dense;
           emitter.emitStmt(s);
           B.br(done);
         } finally {
-          emitter.denseLoop = null;
-          emitter.denseLoopsEnabled = true;
+          LOOPS.of(emitter).denseLoop = null;
+          LOOPS.of(emitter).denseLoopsEnabled = true;
         }
         B.startBlock(done);
         break;
@@ -927,10 +1035,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.condBr(valid, fast, slow);
         const originalRanges = emitter.integerRanges,
           originalBounds = emitter.bytesBounds;
-        emitter.byteWindowsEnabled = false;
+        LOOPS.of(emitter).byteWindowsEnabled = false;
         try {
           B.startBlock(slow);
-          emitter.emitStmt(s);
+          emitSlowCopy(emitter, s);
           B.br(done);
           B.startBlock(fast);
           emitter.integerRanges = window.ranges;
@@ -940,62 +1048,60 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         } finally {
           emitter.integerRanges = originalRanges;
           emitter.bytesBounds = originalBounds;
-          emitter.byteWindowsEnabled = true;
+          LOOPS.of(emitter).byteWindowsEnabled = true;
         }
         B.startBlock(done);
         break;
       }
-      const version =
-        emitter.bytesLoopVersionsEnabled &&
-        emitter.bytesLoopVersioning.size < MAX_BYTES_LOOP_VERSION_DEPTH &&
-        !emitter.bytesLoopVersioning.has(s)
-          ? emitter.matchBytesLoopVersion(s, countedLoop)
-          : null;
+      const versionable =
+        LOOPS.of(emitter).bytesLoopVersionsEnabled &&
+        LOOPS.of(emitter).bytesLoopVersioning.size < MAX_BYTES_LOOP_VERSION_DEPTH &&
+        !LOOPS.of(emitter).bytesLoopVersioning.has(s);
+      // A loop to a typed array's or an array's length keeps its integer
+      // induction. Its counted form only gives the version guard the
+      // counter's iteration space, so the guard also covers accesses of
+      // other typed arrays at the counter, such as `x[i]` and `y[i]` in
+      // `for (let i = 0; i < out.length; i++) out[i] = x[i] * y[i]`.
+      const versionCounted =
+        versionable && !countedLoop && integerLoop && LOOPS.of(emitter).countedLoopsEnabled
+          ? matchIntegerCountedForLoop(
+              s,
+              emitter.numericLocals,
+              emitter.integerRanges,
+              LOOPS.of(emitter).unaliasedArrays,
+            )
+          : countedLoop;
+      const version = versionable
+        ? emitter.matchBytesLoopVersion(s, versionCounted, versionCounted ? null : pairedLoop)
+        : null;
       if (version) {
-        const fast = B.newLabel("bytes.version.fast"),
-          slow = B.newLabel("bytes.version.slow"),
-          done = B.newLabel("bytes.version.done");
-        emitBytesLoopVersionGuard(emitter, version, fast, slow);
-        const originalBounds = emitter.bytesBounds,
-          originalRanges = emitter.integerRanges;
-        emitter.bytesLoopVersioning.add(s);
-        try {
-          B.startBlock(slow);
-          emitter.emitStmt(s);
-          B.br(done);
-          B.startBlock(fast);
-          emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
-          if (version.ranges.size > 0)
-            emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
-          if (version.counted?.guarded) emitter.provenCountedGuards.add(s);
-          emitter.emitStmt(s);
-          B.br(done);
-        } finally {
-          emitter.bytesBounds = originalBounds;
-          emitter.integerRanges = originalRanges;
-          emitter.provenCountedGuards.delete(s);
-          emitter.bytesLoopVersioning.delete(s);
-        }
-        B.startBlock(done);
+        emitVersionedLoop(emitter, s, version);
         break;
       }
       let countedJoin: string | null = null;
-      if (countedLoop?.guarded && !emitter.provenCountedGuards.has(s)) {
-        const safe = emitCountedLoopSafety(emitter, countedLoop);
+      if (
+        (countedLoop?.guarded || pairedLoop?.guarded) &&
+        !LOOPS.of(emitter).provenCountedGuards.has(s)
+      ) {
+        const safe = countedLoop
+          ? emitCountedLoopSafety(emitter, countedLoop)
+          : emitPairedLoopSafety(emitter, pairedLoop!);
         const fast = B.newLabel("counted.fast");
         const slow = B.newLabel("counted.slow");
         countedJoin = B.newLabel("counted.done");
         B.condBr(safe, fast, slow);
         B.startBlock(slow);
-        emitter.countedLoopsEnabled = false;
-        emitter.emitStmt(s);
-        emitter.countedLoopsEnabled = true;
+        LOOPS.of(emitter).countedLoopsEnabled = false;
+        emitSlowCopy(emitter, s);
+        LOOPS.of(emitter).countedLoopsEnabled = true;
         B.br(countedJoin);
         B.startBlock(fast);
       }
       emitter.scopes.push([]);
       let integerSlot: string | null = null;
       let countedLimit: string | null = null;
+      const pairedSlots: string[] = [];
+      const followerSlots: string[] = [];
       if (integerLoop) {
         integerSlot = B.slot();
         B.entryAllocas.push(
@@ -1017,8 +1123,8 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           slot: integerSlot,
           type: emitter.sizeType,
           range:
-            emitter.denseLoop?.counter === integerLoop.localId
-              ? emitter.denseLoop.range
+            LOOPS.of(emitter).denseLoop?.counter === integerLoop.localId
+              ? LOOPS.of(emitter).denseLoop!.range
               : { min: 0, max: integerArrayLoop ? 4294967294 : Number.MAX_SAFE_INTEGER - 1 },
         });
       } else if (countedLoop) {
@@ -1026,20 +1132,53 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.entryAllocas.push(
           `${integerSlot} = alloca i64 ; integer induction ${emitter.currentLocals.get(countedLoop.localId)!.name}`,
         );
-        const startNumber = emitter.emitExpr(countedLoop.start);
-        const start = B.tmp();
-        B.line(`${start} = fptosi double ${startNumber.name} to i64`);
+        const start = emitCountedStart(emitter, countedLoop.start);
         B.line(`store i64 ${start}, ptr ${integerSlot}`);
         emitter.integerLoopBindings.set(countedLoop.localId, {
           slot: integerSlot,
           type: "i64",
           signed: true,
           range:
-            emitter.denseLoop?.counter === countedLoop.localId
-              ? emitter.denseLoop.range
+            LOOPS.of(emitter).denseLoop?.counter === countedLoop.localId
+              ? LOOPS.of(emitter).denseLoop!.range
               : countedLoop.range,
         });
+        for (const follower of countedLoop.followers) {
+          const slot = B.slot();
+          B.entryAllocas.push(
+            `${slot} = alloca i64 ; integer induction ${emitter.currentLocals.get(follower.localId)!.name}`,
+          );
+          const followerStart = emitCountedStart(emitter, follower.start);
+          B.line(`store i64 ${followerStart}, ptr ${slot}`);
+          followerSlots.push(slot);
+          emitter.integerLoopBindings.set(follower.localId, {
+            slot,
+            type: "i64",
+            signed: true,
+            range: follower.range,
+          });
+        }
         countedLimit = emitCountedLoopLimit(emitter, countedLoop);
+      } else if (pairedLoop) {
+        for (const counter of [pairedLoop.low, pairedLoop.high]) {
+          const slot = B.slot();
+          B.entryAllocas.push(
+            `${slot} = alloca i64 ; integer induction ${emitter.currentLocals.get(counter.localId)!.name}`,
+          );
+          const start = emitCountedStart(emitter, counter.start);
+          B.line(`store i64 ${start}, ptr ${slot}`);
+          pairedSlots.push(slot);
+          const dense = LOOPS.of(emitter).denseLoop;
+          emitter.integerLoopBindings.set(counter.localId, {
+            slot,
+            type: "i64",
+            signed: true,
+            range:
+              dense?.pair && dense.counter === pairedLoop.low.localId
+                ? dense.range
+                : pairedLoop.range,
+          });
+        }
       } else if (s.init) {
         // A multi-declarator head shares the loop's scope. Emitting its
         // IR block as an ordinary block would release captured/ref locals
@@ -1074,15 +1213,97 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.line(`store ptr ${fresh}, ptr ${slot}`);
         }
       };
-      const workerBudget = emitter.workerLoopBudget(s);
+      // A counted loop over typed arrays, or a loop to a typed array's
+      // length, polls between blocks of WORKER_POLL_BLOCK iterations instead
+      // of counting a budget in its body: the inner loop over a block then
+      // has no exit besides its own bound, which LLVM can vectorize. A typed
+      // array's length is fixed, so each block can take it as its limit when
+      // the loop does not assign the array's binding.
+      //
+      // Inside another loop of this function, which polls at least once
+      // every WORKER_POLL_BLOCK of its own iterations, a loop needs less:
+      // - a loop whose counters' ranges bound its runs, and those of the
+      //   loops in its body, to WORKER_POLL_BLOCK^2 needs no poll;
+      // - an innermost counted loop is strip-mined, typed arrays or not,
+      //   and does not poll after its last block. A run of at most
+      //   WORKER_POLL_BLOCK iterations then never polls, and the countdown
+      //   leaves its body. A run of at most WORKER_UNPOLLED_RUN iterations
+      //   is one block, polled once as it leaves.
+      const enclosed =
+        emitter.mod.workers === true &&
+        emitter.jumpTargets.some((target) => target.kind === "loop");
+      const bounded =
+        enclosed && boundedLoopRuns(emitter, s) <= WORKER_POLL_BLOCK * WORKER_POLL_BLOCK;
+      const innermost = enclosed && !containsLoop(s.body);
+      const stripMined =
+        !bounded &&
+        capturedLets.length === 0 &&
+        integerSlot !== null &&
+        ((countedLoop !== null &&
+          countedLimit !== null &&
+          Math.abs(countedLoop.step) * WORKER_POLL_BLOCK <= 2 ** 52) ||
+          (integerLoop !== null && integerArrayLoop === null && integerLoop.stableReceiver)) &&
+        emitter.workerLoopPolls(s) &&
+        (loopAccessesTypedArrays(s) || (countedLoop !== null && innermost));
+      const workerBudget = stripMined || bounded ? null : emitter.workerLoopBudget(s);
+      // One slot for every copy of the loop: a speculative copy resumes an
+      // iteration in another copy's body, which then reads this bound.
+      let blockBound: string | null = null;
+      let runSlot: string | null = null;
+      if (stripMined) {
+        blockBound = B.slot();
+        B.entryAllocas.push(
+          `${blockBound} = alloca ${countedLoop ? "i64" : emitter.sizeType} ; cancellation poll block bound`,
+        );
+        if (innermost) {
+          runSlot = B.slot();
+          B.entryAllocas.push(`${runSlot} = alloca i1 ; cancellation poll after the run`);
+        }
+      }
       freshenBindings();
       emitter.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
+        if (stripMined) {
+          const counter: StripMinedCounter = countedLoop
+            ? {
+                slot: integerSlot!,
+                type: "i64",
+                signed: true,
+                step: countedLoop.step,
+                followers: countedLoop.followers.map((f, i) => ({
+                  slot: followerSlots[i]!,
+                  step: f.step,
+                })),
+                limit: () => countedLimit!,
+              }
+            : {
+                slot: integerSlot!,
+                type: emitter.sizeType,
+                signed: false,
+                step: 1,
+                followers: [],
+                limit: () => {
+                  const receiver = emitter.emitStableReceiver(integerLoop!.limitReceiver, []);
+                  const lenPtr = B.tmp();
+                  const len = B.tmp();
+                  B.line(
+                    `${lenPtr} = getelementptr inbounds %ScrBytes, ptr ${receiver.name}, i64 0, i32 1`,
+                  );
+                  B.line(
+                    `${len} = load ${emitter.sizeType}, ptr ${lenPtr}${bytesHeaderAlias(emitter)}`,
+                  );
+                  return len;
+                },
+              };
+          emitStripMinedCountedLoop(emitter, s, counter, blockBound!, exit, runSlot);
+          return;
+        }
         const lc = B.newLabel("loop.c");
         const lb = B.newLabel("loop.b");
         const lu =
           s.update || capturedLets.length > 0 || workerBudget !== null ? B.newLabel("loop.u") : lc;
         B.br(lc);
         B.startBlock(lc);
+        enterLoopHeader(emitter, lc);
         if (integerLoop && integerSlot) {
           const receiver = emitter.emitStableReceiver(integerLoop.limitReceiver, []);
           const lenPtr = B.tmp();
@@ -1106,10 +1327,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
             }
             B.line(`${inBounds} = icmp ult i32 ${narrow}, ${len}`);
           } else {
-            emitter.markMemoryPointer(lenPtr, "bytes:header");
-            B.line(
-              `${len} = load ${emitter.sizeType}, ptr ${lenPtr}${emitter.fieldAliasAttachment(lenPtr)}`,
-            );
+            B.line(`${len} = load ${emitter.sizeType}, ptr ${lenPtr}${bytesHeaderAlias(emitter)}`);
             B.line(`${inBounds} = icmp ult ${emitter.sizeType} ${index}, ${len}`);
           }
           B.condBr(inBounds, lb, exit);
@@ -1121,6 +1339,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
             `${inBounds} = icmp ${countedLoop.step > 0 ? "slt" : "sgt"} i64 ${index}, ${countedLimit}`,
           );
           B.condBr(inBounds, lb, exit);
+        } else if (pairedLoop) {
+          const low = B.tmp(),
+            high = B.tmp(),
+            open = B.tmp();
+          B.line(`${low} = load i64, ptr ${pairedSlots[0]}`);
+          B.line(`${high} = load i64, ptr ${pairedSlots[1]}`);
+          B.line(`${open} = icmp ${pairedLoop.inclusive ? "sle" : "slt"} i64 ${low}, ${high}`);
+          B.condBr(open, lb, exit);
         } else if (s.cond) B.condBr(emitter.emitCondition(s.cond), lb, exit);
         else B.br(lb);
         B.startBlock(lb);
@@ -1152,6 +1378,21 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
             B.line(`${old} = load i64, ptr ${integerSlot}`);
             B.line(`${next} = add nsw i64 ${old}, ${countedLoop.step}`);
             B.line(`store i64 ${next}, ptr ${integerSlot}`);
+            countedLoop.followers.forEach((follower, i) => {
+              const was = B.tmp();
+              const now = B.tmp();
+              B.line(`${was} = load i64, ptr ${followerSlots[i]}`);
+              B.line(`${now} = add nsw i64 ${was}, ${follower.step}`);
+              B.line(`store i64 ${now}, ptr ${followerSlots[i]}`);
+            });
+          } else if (pairedLoop) {
+            [pairedLoop.low, pairedLoop.high].forEach((counter, i) => {
+              const old = B.tmp();
+              const next = B.tmp();
+              B.line(`${old} = load i64, ptr ${pairedSlots[i]}`);
+              B.line(`${next} = add nsw i64 ${old}, ${counter.step}`);
+              B.line(`store i64 ${next}, ptr ${pairedSlots[i]}`);
+            });
           } else if (s.update) emitter.emitStmt(s.update);
           B.br(lc);
         }
@@ -1159,7 +1400,15 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       B.startBlock(le);
       emitter.releaseScope(emitter.scopes.pop()!);
       if (integerLoop) emitter.integerLoopBindings.delete(integerLoop.localId);
-      if (countedLoop) emitter.integerLoopBindings.delete(countedLoop.localId);
+      if (countedLoop) {
+        emitter.integerLoopBindings.delete(countedLoop.localId);
+        for (const follower of countedLoop.followers)
+          emitter.integerLoopBindings.delete(follower.localId);
+      }
+      if (pairedLoop) {
+        emitter.integerLoopBindings.delete(pairedLoop.low.localId);
+        emitter.integerLoopBindings.delete(pairedLoop.high.localId);
+      }
       if (integerArrayLoop) emitter.integerArrayBindings.delete(integerArrayLoop.localId);
       if (countedJoin) {
         B.br(countedJoin);
@@ -1526,6 +1775,48 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
  * Abrupt completions inside tryBody/catchBody ride the finallyStack:
  * returns inline copies at the return site, while break/continue use the
  * shared region walk before branching to their resolved target. */
+/** A constant number local whose initializer has an exact integer form
+ * (such as `const j = i * 4` in a typed-array loop version) keeps that
+ * integer in an i64 slot beside the double, so reads such as `px[j + 1]`
+ * index with integer arithmetic instead of converting the double back.
+ * Every other declaration of the local drops the integer: the same
+ * declaration is emitted once per loop copy, and a copy must not read the
+ * integer another copy stored. */
+function storeIntegerTemp(
+  emitter: LlEmitter,
+  localId: string,
+  b: ReturnType<LlEmitter["binding"]>,
+  v: LlValue,
+): void {
+  const local = b.local;
+  if (
+    !emitter.integerTempsEnabled ||
+    b.kind !== "local" ||
+    !local ||
+    local.type.kind !== "f64" ||
+    local.mutable ||
+    local.tdz === true ||
+    emitter.captureIds.has(localId) ||
+    !v.integer
+  ) {
+    emitter.integerTemps.delete(localId);
+    return;
+  }
+  const B = emitter.B;
+  let slot = emitter.integerTemps.get(localId)?.slot;
+  if (slot === undefined) {
+    slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i64 ; integer ${local.name}`);
+  }
+  B.line(`store i64 ${widenInteger(emitter, v.integer)}, ptr ${slot}`);
+  emitter.integerTemps.set(localId, {
+    slot,
+    type: "i64",
+    signed: true,
+    range: v.integer.range,
+  });
+}
+
 export function emitTryCatch(emitter: LlEmitter, s: IrStmt & { kind: "tryCatch" }): void {
   const B = emitter.B;
   const hasCatch = s.catchBody !== null;
@@ -1670,7 +1961,7 @@ export function emitTryCatch(emitter: LlEmitter, s: IrStmt & { kind: "tryCatch" 
  * case, refcounted/boxed case-body locals are NULL-reset up front and
  * the scope-exit releases rely on NULL tolerance. */
 export function emitSwitch(emitter: LlEmitter, s: IrStmt & { kind: "switch" }): void {
-  const unitSwitch = charAtUnitSwitch(s);
+  const unitSwitch = charAtUnitSwitch(emitter, s);
   if (unitSwitch !== null) return emitSwitch(emitter, unitSwitch);
   const B = emitter.B;
   const discKind = s.disc.type.kind;
@@ -1771,10 +2062,261 @@ export function emitSwitch(emitter: LlEmitter, s: IrStmt & { kind: "switch" }): 
   B.startBlock(end);
 }
 
+/** The loop copies a callback loop version needs: the bindings the loop
+ * calls that the constant-callback census resolves to one function, each
+ * with that function's direct entry. Only small loops of optimized
+ * synchronous functions, and only bindings declared before the loop,
+ * qualify: the guard reads each binding before the loop runs. Versions do
+ * not nest: a loop inside either copy of a version (including the
+ * versioned loop itself, emitted again for each copy) keeps its calls as
+ * they are, so a loop nest is emitted at most twice. */
+function callbackVersionBindings(
+  emitter: LlEmitter,
+  s: IrStmt & { kind: "for" | "while" | "doWhile" },
+): { ref: IrExpr & { kind: "varRef" }; direct: string }[] | null {
+  if (
+    !emitter.callbackVersionsEnabled ||
+    emitter.currentConstantCallbacks.size === 0 ||
+    emitter.callbackVersioning.size > 0
+  )
+    return null;
+  const found = new Map<string, { ref: IrExpr & { kind: "varRef" }; direct: string }>();
+  // Bindings the loop declares or writes (a callback declared in its body).
+  const bound = new Set<string>();
+  let cost = 0;
+  const expr = (e: IrExpr): boolean => {
+    if (++cost > MAX_CALLBACK_VERSION_COST) return false;
+    if (e.kind === "assignExpr") bound.add(e.localId);
+    if (e.kind === "callValue" && e.callee.kind === "varRef" && !found.has(e.callee.localId)) {
+      const local = emitter.currentLocals.get(e.callee.localId);
+      const target =
+        local && local.tdz !== true ? emitter.knownCallbackTarget(e.callee) : undefined;
+      if (target) found.set(e.callee.localId, { ref: e.callee, direct: target.direct });
+    }
+    return everyExprChild(e, expr, stmt);
+  };
+  const stmt = (x: IrStmt): boolean => {
+    if (++cost > MAX_CALLBACK_VERSION_COST) return false;
+    if (x.kind === "varDecl" || x.kind === "assign" || x.kind === "forOf") bound.add(x.localId);
+    else if (x.kind === "tryCatch" && x.catchLocalId !== null) bound.add(x.catchLocalId);
+    return everyStmtChild(x, expr, stmt);
+  };
+  if (!stmt(s)) return null;
+  const bindings = [...found.values()].filter(({ ref }) => !bound.has(ref.localId));
+  return bindings.length > 0 ? bindings : null;
+}
+
+/** A callback loop version. The guard tests, once before the loop, that
+ * each binding's closure holds its known function: a closure's code
+ * pointer is written only when the closure is built, and the census
+ * resolves only bindings the function never rebinds. The copy where the
+ * guard holds calls those functions directly, with no indirect fallback
+ * that could rewrite the closure or what it captures, so LLVM can keep a
+ * captured scalar the callback updates in a register. The other copy is the
+ * ordinary loop. */
+function emitCallbackVersionedLoop(
+  emitter: LlEmitter,
+  s: IrStmt & { kind: "for" | "while" | "doWhile" },
+  bindings: { ref: IrExpr & { kind: "varRef" }; direct: string }[],
+): void {
+  const B = emitter.B;
+  let ok = "true";
+  for (const { ref, direct } of bindings) {
+    // A borrowed read: the guard only compares the code pointer.
+    const closure = emitter.emitReadReceiver(ref).name;
+    const fnp = B.tmp(),
+      fn = B.tmp(),
+      same = B.tmp();
+    B.line(`${fnp} = getelementptr inbounds %ScrClosure, ptr ${closure}, i64 0, i32 1`);
+    B.line(`${fn} = load ptr, ptr ${fnp}`);
+    B.line(`${same} = icmp eq ptr ${fn}, ${direct}`);
+    if (ok === "true") ok = same;
+    else {
+      const both = B.tmp();
+      B.line(`${both} = and i1 ${ok}, ${same}`);
+      ok = both;
+    }
+  }
+  const fast = B.newLabel("callback.version.fast"),
+    slow = B.newLabel("callback.version.slow"),
+    done = B.newLabel("callback.version.done");
+  B.condBr(ok, fast, slow);
+  emitter.callbackVersioning.add(s);
+  try {
+    B.startBlock(slow);
+    emitSlowCopy(emitter, s);
+    B.br(done);
+    B.startBlock(fast);
+    for (const { ref } of bindings) emitter.knownCallbacks.add(ref.localId);
+    emitter.emitStmt(s);
+    B.br(done);
+  } finally {
+    for (const { ref } of bindings) emitter.knownCallbacks.delete(ref.localId);
+    emitter.callbackVersioning.delete(s);
+  }
+  B.startBlock(done);
+}
+
+/** The copy of a versioned loop that runs when its guard fails. Its loops
+ * get no speculative or int32 kind copies, which would emit each loop again
+ * for a path that rarely runs. Proven integer loops, which emit one copy,
+ * are kept. A typed-array version whose guard requires thread-owned
+ * storage does not use it (emitVersionedLoop). */
+function emitSlowCopy(emitter: LlEmitter, s: IrStmt): void {
+  const copies = emitter.loopCopiesEnabled;
+  emitter.loopCopiesEnabled = false;
+  try {
+    emitter.emitStmt(s);
+  } finally {
+    emitter.loopCopiesEnabled = copies;
+  }
+}
+
+/** Entries in a row whose fast copy bailed before a speculative loop site
+ * stops trying it. */
+const SPECULATION_BAILS = 8;
+
+/** The attachment of each scoped access in a version's fast copy: the
+ * scope of its own view, and no alias with the scopes of the other views,
+ * whose bytes the guard proved disjoint. The scopes are named after the
+ * function and the version, so every copy of a loop has its own, and
+ * written inline (string-named scopes need no numbered metadata). Also
+ * the scopes, which each fast copy declares on entry (declareAliasScopes). */
+function bytesAliasScopes(
+  emitter: LlEmitter,
+  scopes: NonNullable<BytesLoopVersion["scopes"]>,
+): { attachments: Map<IrExpr | IrStmt, string>; scopes: string[] } {
+  const version = emitter.aliasScopedVersions++;
+  const name = emitter.currentFunctionName.replace(/[^A-Za-z0-9_.$%]/g, "_");
+  const domain = '!{!"scriptc typed-array views"}';
+  const scope = (receiver: number): string => `!{!"${name}.${version}.${receiver}", ${domain}}`;
+  const attachments = new Map<number, string>();
+  for (const receiver of scopes.receivers) {
+    const others = scopes.receivers.filter((other) => other !== receiver).map(scope);
+    attachments.set(
+      receiver,
+      `, !alias.scope !{${scope(receiver)}}, !noalias !{${others.join(", ")}}`,
+    );
+  }
+  const result = new Map<IrExpr | IrStmt, string>();
+  for (const [node, receiver] of scopes.nodes) result.set(node, attachments.get(receiver)!);
+  return { attachments: result, scopes: scopes.receivers.map(scope) };
+}
+
+/** Declares a version's scopes where a fast copy starts. The guard proves
+ * the views disjoint for this entry only: an enclosing loop may pass other
+ * views on its next pass (`[cur, next] = [next, cur]`). A declared scope
+ * holds from its declaration, and LLVM gives each copy of the declaration
+ * its own scopes when it unrolls or duplicates the enclosing code, so the
+ * no-alias facts of one entry never apply to the accesses of another. */
+function declareAliasScopes(emitter: LlEmitter, scopes: readonly string[]): void {
+  if (scopes.length === 0) return;
+  emitter.declare("declare void @llvm.experimental.noalias.scope.decl(metadata)");
+  for (const scope of scopes)
+    emitter.B.line(`call void @llvm.experimental.noalias.scope.decl(metadata !{${scope}})`);
+}
+
 /** Emit a loop's condition, body and update through `emitCopy`, twice
  * when speculative-integers.ts plans a fast integer copy. Both copies
  * share the loop's setup and exit; the ordinary copy comes first so the
  * fast copy is only emitted when every resume point exists. */
+/** A typed-array loop version: the guard, then the checked copy, which
+ * runs whenever the guard fails, and the copy whose accesses the guard
+ * proves in bounds (or thread-owned). In worker programs a version that
+ * proves both also has a copy for views with shared storage, in bounds but
+ * not owned. */
+function emitVersionedLoop(
+  emitter: LlEmitter,
+  s: IrStmt & { kind: "for" | "while" },
+  version: BytesLoopVersion,
+): void {
+  const B = emitter.B;
+  const fast = B.newLabel("bytes.version.fast"),
+    slow = B.newLabel("bytes.version.slow"),
+    done = B.newLabel("bytes.version.done");
+  const unitsFast =
+    version.unitsReceiver !== null ? B.newLabel("bytes.version.fast.units") : undefined;
+  const sharedFast =
+    version.sharedCopy && unitsFast === undefined
+      ? B.newLabel("bytes.version.fast.shared")
+      : undefined;
+  const guard = emitBytesLoopVersionGuard(emitter, version, fast, slow, unitsFast, sharedFast);
+  const units = guard?.units ?? null;
+  const originalBounds = emitter.bytesBounds,
+    originalOwned = emitter.bytesOwned,
+    originalRanges = emitter.integerRanges,
+    originalUnitReads = emitter.stringUnitReads,
+    originalLengthReads = emitter.stringLengthReads,
+    originalScopes = emitter.bytesAliasScopes;
+  LOOPS.of(emitter).bytesLoopVersioning.add(s);
+  try {
+    B.startBlock(slow);
+    // A guard that requires thread-owned storage fails for every view of
+    // shared memory, which worker programs pass routinely: that checked
+    // copy keeps its loops' speculative and int32 kind copies.
+    if (version.ownedReceivers.length > 0) emitter.emitStmt(s);
+    else emitSlowCopy(emitter, s);
+    B.br(done);
+    if (version.owned.size > 0) emitter.bytesOwned = new Set([...originalOwned, ...version.owned]);
+    if (version.ranges.size > 0)
+      emitter.integerRanges = new Map([...originalRanges, ...version.ranges]);
+    // Both fast copies run under the guard's span test, so they share the
+    // version's scopes, and each declares them on entry.
+    const scoped =
+      version.scopes && emitter.debug === null ? bytesAliasScopes(emitter, version.scopes) : null;
+    if (scoped) emitter.bytesAliasScopes = new Map([...originalScopes, ...scoped.attachments]);
+    if (version.counted?.guarded || version.paired?.loop.guarded)
+      LOOPS.of(emitter).provenCountedGuards.add(s);
+    B.startBlock(fast);
+    declareAliasScopes(emitter, scoped?.scopes ?? []);
+    emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
+    // Both fast copies read the string's length the guard took.
+    const length = guard?.length;
+    if (length != null && version.unitLengths.size > 0)
+      emitter.stringLengthReads = new Map([
+        ...originalLengthReads,
+        ...[...version.unitLengths].map((node) => [node, length] as const),
+      ]);
+    emitter.emitStmt(s);
+    B.br(done);
+    if (sharedFast !== undefined) {
+      // The bounds hold and a view has shared storage: the accesses skip
+      // their bounds checks and stay shared-safe, without alias scopes
+      // (which worker programs give only thread-owned views).
+      B.startBlock(sharedFast);
+      emitter.bytesOwned = originalOwned;
+      emitter.bytesAliasScopes = originalScopes;
+      emitter.emitStmt(s);
+      B.br(done);
+    }
+    if (unitsFast !== undefined && units !== null) {
+      // The string reads take the receiver's UTF-16 units.
+      B.startBlock(unitsFast);
+      declareAliasScopes(emitter, scoped?.scopes ?? []);
+      emitter.bytesBounds = new Set([
+        ...originalBounds,
+        ...[...version.bounds].filter((node) => !version.stringReads.has(node)),
+      ]);
+      emitter.stringUnitReads = new Map([
+        ...originalUnitReads,
+        ...[...version.stringReads].map((node) => [node, units] as const),
+      ]);
+      emitter.emitStmt(s);
+      B.br(done);
+    }
+  } finally {
+    emitter.bytesBounds = originalBounds;
+    emitter.bytesOwned = originalOwned;
+    emitter.integerRanges = originalRanges;
+    emitter.stringUnitReads = originalUnitReads;
+    emitter.stringLengthReads = originalLengthReads;
+    emitter.bytesAliasScopes = originalScopes;
+    LOOPS.of(emitter).provenCountedGuards.delete(s);
+    LOOPS.of(emitter).bytesLoopVersioning.delete(s);
+  }
+  B.startBlock(done);
+}
+
 export function emitLoopCopies(
   emitter: LlEmitter,
   loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" }>,
@@ -1785,6 +2327,7 @@ export function emitLoopCopies(
   const plan =
     allowed &&
     emitter.speculativeLoopsEnabled &&
+    emitter.loopCopiesEnabled &&
     emitter.speculation === null &&
     emitter.speculationResume === null
       ? planSpeculativeLoop(
@@ -1801,12 +2344,31 @@ export function emitLoopCopies(
             );
           },
           (id) => emitter.speculativeLocal(id) || emitter.speculativeInvariantGlobal(id),
+          emitter.speculationContext(),
         )
       : null;
   if (!plan) {
-    const proven = allowed ? planProvenLoop(emitter, loop) : null;
-    if (proven) emitProvenLoop(emitter, proven, exit, emitCopy);
-    else emitCopy(exit);
+    const ordinary = (exit: string): void => {
+      const proven = allowed ? planProvenLoop(emitter, loop) : null;
+      if (proven) emitProvenLoop(emitter, proven, exit, emitCopy);
+      else emitCopy(exit);
+    };
+    const kinds =
+      allowed &&
+      emitter.speculativeLoopsEnabled &&
+      emitter.loopCopiesEnabled &&
+      emitter.int32Slots.checkedInt32Arrays.size > 0 &&
+      emitter.int32Kinds === null &&
+      emitter.speculation === null &&
+      emitter.speculationResume === null
+        ? planInt32KindLoop(
+            loop,
+            (id) => emitter.checkedInt32Local(id),
+            (e) => withinInt32(emitter.integerRanges.get(e)),
+          )
+        : null;
+    if (kinds) emitInt32KindLoop(emitter, kinds, exit, kinds.writes.size > 0 ? emitCopy : ordinary);
+    else ordinary(exit);
     return;
   }
   const B = emitter.B;
@@ -1825,23 +2387,81 @@ export function emitLoopCopies(
       ok = both;
     }
   }
+  // Each entry whose fast copy bails counts at the loop site, and a fast
+  // copy that completes a speculated write and leaves the loop clears the
+  // count. After SPECULATION_BAILS bailing entries in a row, the site runs
+  // the ordinary copy only. The count is a hint: both copies give the same
+  // results, and a race between workers loses at most an update.
+  const bails = emitter.speculativeLoopSite();
+  const count = B.tmp(),
+    trying = B.tmp();
+  B.line(`${count} = load atomic i8, ptr ${bails} unordered, align 1`);
+  B.line(`${trying} = icmp ult i8 ${count}, ${SPECULATION_BAILS}`);
+  if (ok === "true") ok = trying;
+  else {
+    const both = B.tmp();
+    B.line(`${both} = and i1 ${ok}, ${trying}`);
+    ok = both;
+  }
+  // Hoisted leaves live in locals of their own, which the resume copy of
+  // their write reads (see SpeculativeValue).
+  for (const { leaves } of plan.values.values())
+    for (const leaf of leaves) {
+      emitter.currentLocals.set(leaf.localId, {
+        id: leaf.localId,
+        name: "speculated leaf",
+        type: leaf.expr.type,
+        mutable: true,
+      });
+      B.entryAllocas.push(
+        `${emitter.binding(leaf.localId).slot} = alloca double ; speculated leaf`,
+      );
+    }
   const fast = B.newLabel("spec.fast"),
     slow = B.newLabel("spec.slow");
   B.condBr(ok, fast, slow);
   const resume = new Map<IrStmt, { label: string; placed: boolean }>();
   for (const s of plan.writes) resume.set(s, { label: B.newLabel("spec.resume"), placed: false });
+  // A failed check finishes its iteration in a third copy, entered only
+  // there: it re-executes the statement and the rest of the body and the
+  // update, then enters the ordinary copy through its header. Jumping
+  // into the middle of the ordinary copy instead would give that loop a
+  // second entry, and LLVM does not optimize an irreducible loop.
+  const points = [...resume.values()];
+  let header: string | null = null;
   B.startBlock(slow);
+  emitter.speculationHeader = (label) => {
+    header = label;
+  };
+  try {
+    emitCopy(exit);
+  } finally {
+    emitter.speculationHeader = null;
+  }
+  if (header === null)
+    throw new InternalCompilerError("llvm emitter bug: speculative loop copy without a header");
+  B.startBlock(B.newLabel("spec.tail"));
   emitter.speculationResume = resume;
+  emitter.speculationResumeValues = plan.values;
+  emitter.speculationHeader = () => {
+    B.br(header!);
+    B.startBlock(B.newLabel("spec.unused"));
+  };
   try {
     emitCopy(exit);
   } finally {
     emitter.speculationResume = null;
+    emitter.speculationResumeValues = null;
+    emitter.speculationHeader = null;
   }
   B.startBlock(fast);
-  if (![...resume.values()].every((r) => r.placed)) {
+  if (!points.every((r) => r.placed)) {
     B.br(slow);
     return;
   }
+  const ran = B.slot();
+  B.entryAllocas.push(`${ran} = alloca i1 ; speculated write completed`);
+  B.line(`store i1 false, ptr ${ran}`);
   for (const id of plan.locals.keys()) {
     const shadow = B.slot();
     B.entryAllocas.push(
@@ -1878,20 +2498,372 @@ export function emitLoopCopies(
     writes: plan.writes,
     resume: new Map([...resume].map(([s, r]) => [s, r.label])),
     deferred,
+    bails,
+    ran,
+    values: plan.values,
   };
   try {
-    if (deferred.size === 0) emitCopy(exit);
-    else {
-      const leave = B.newLabel("spec.leave");
-      emitCopy(leave);
-      B.startBlock(leave);
-      emitter.writeBackDeferred(deferred);
-      B.br(exit);
-    }
+    const leave = B.newLabel("spec.leave");
+    emitCopy(leave);
+    B.startBlock(leave);
+    emitter.writeBackDeferred(deferred);
+    // An entry that never ran a speculated write (a loop of no iterations)
+    // says nothing about the site.
+    const wrote = B.tmp(),
+      left = B.tmp(),
+      counted = B.tmp(),
+      both = B.tmp(),
+      clear = B.newLabel("spec.clear");
+    B.line(`${wrote} = load i1, ptr ${ran}`);
+    B.line(`${left} = load atomic i8, ptr ${bails} unordered, align 1`);
+    B.line(`${counted} = icmp ne i8 ${left}, 0`);
+    B.line(`${both} = and i1 ${wrote}, ${counted}`);
+    B.condBr(both, clear, exit);
+    B.startBlock(clear);
+    B.line(`store atomic i8 0, ptr ${bails} unordered, align 1`);
+    B.br(exit);
   } finally {
     emitter.speculation = null;
     for (const id of plan.locals.keys()) emitter.integerLoopBindings.delete(id);
   }
+}
+
+/** An int32 kind loop (int32-kind-loops.ts). The entry test reads the kind
+ * of each of the plan's arrays: when every one holds int32 slots the fast
+ * copy runs, when every one holds doubles the wide copy, which reads and
+ * writes them as double arrays, and otherwise (a plan with several arrays)
+ * the mixed copy, which tests their kinds at each access. A failed store of
+ * the fast copy re-executes in the third copy, which finishes its
+ * iteration with kind tests and then enters the mixed copy, or the wide
+ * copy when the plan has one array (it just widened). Each copy is emitted
+ * by `ordinary`: the loop's plain copy when a store may fail, since a
+ * proven integer loop keeps locals in shadows of its own copy that another
+ * copy cannot resume from. */
+function emitInt32KindLoop(
+  emitter: LlEmitter,
+  plan: Int32KindLoopPlan,
+  exit: string,
+  ordinary: (exit: string) => void,
+): void {
+  const B = emitter.B;
+  const fn = emitter.currentFunctionName;
+  const keys = new Set([...plan.arrays.keys()].map((id) => `${fn}\0${id}`));
+  const several = keys.size > 1;
+  let allInt32 = "true",
+    allWide = "true";
+  const and = (all: string, next: string): string => {
+    if (all === "true") return next;
+    const both = B.tmp();
+    B.line(`${both} = and i1 ${all}, ${next}`);
+    return both;
+  };
+  for (const ref of plan.arrays.values()) {
+    const arr = emitter.emitStableReceiver(ref, []);
+    const kindPtr = B.tmp(),
+      kind = B.tmp(),
+      isInt32 = B.tmp();
+    B.line(
+      `${kindPtr} = getelementptr inbounds %ScrArr, ptr ${arr.name}, i32 0, i32 ${SCR_ARR_FIELD.elem}`,
+    );
+    emitter.markMemoryPointer(kindPtr, "array:header");
+    B.line(`${kind} = load i8, ptr ${kindPtr}${emitter.fieldAliasAttachment(kindPtr)}`);
+    B.line(`${isInt32} = icmp eq i8 ${kind}, ${SCR_ELEM_I32}`);
+    allInt32 = and(allInt32, isInt32);
+    if (several) {
+      const isWide = B.tmp();
+      B.line(`${isWide} = xor i1 ${isInt32}, true`);
+      allWide = and(allWide, isWide);
+    }
+  }
+  const fast = B.newLabel("kind.fast"),
+    wide = B.newLabel("kind.wide"),
+    mixed = several ? B.newLabel("kind.mixed") : null;
+  if (mixed === null) B.condBr(allInt32, fast, wide);
+  else {
+    const other = B.newLabel("kind.other");
+    B.condBr(allInt32, fast, other);
+    B.startBlock(other);
+    B.condBr(allWide, wide, mixed);
+  }
+  const resume = new Map<IrStmt, { label: string; placed: boolean }>();
+  for (const s of plan.writes) resume.set(s, { label: B.newLabel("kind.resume"), placed: false });
+  // The header the third copy enters: the mixed copy's, or the wide copy's.
+  let header: string | null = null;
+  const capture = (label: string): void => {
+    header = label;
+  };
+  B.startBlock(wide);
+  if (resume.size > 0 && mixed === null) emitter.speculationHeader = capture;
+  emitter.int32Kinds = { int32: new Set(), wide: keys, resume: new Map() };
+  try {
+    ordinary(exit);
+  } finally {
+    emitter.speculationHeader = null;
+    emitter.int32Kinds = null;
+  }
+  if (mixed !== null) {
+    B.startBlock(mixed);
+    if (resume.size > 0) emitter.speculationHeader = capture;
+    try {
+      ordinary(exit);
+    } finally {
+      emitter.speculationHeader = null;
+    }
+  }
+  if (resume.size > 0) {
+    if (header === null)
+      throw new InternalCompilerError("llvm emitter bug: int32 kind loop copy without a header");
+    // A failed store finishes its iteration here, as in a speculative
+    // integer loop's third copy.
+    B.startBlock(B.newLabel("kind.tail"));
+    emitter.speculationResume = resume;
+    emitter.speculationHeader = () => {
+      B.br(header!);
+      B.startBlock(B.newLabel("kind.unused"));
+    };
+    try {
+      ordinary(exit);
+    } finally {
+      emitter.speculationResume = null;
+      emitter.speculationHeader = null;
+    }
+  }
+  B.startBlock(fast);
+  if (![...resume.values()].every((r) => r.placed)) {
+    // A write the third copy never reached: this copy tests the kinds.
+    ordinary(exit);
+    return;
+  }
+  emitter.int32Kinds = {
+    int32: keys,
+    wide: new Set(),
+    resume: new Map([...resume].map(([s, r]) => [s, r.label])),
+  };
+  try {
+    ordinary(exit);
+  } finally {
+    emitter.int32Kinds = null;
+  }
+}
+
+/** At the top of a loop copy's header: lets a speculative loop find its
+ * ordinary copy's header, and keeps its third copy out of the loop. */
+/** Iterations between cancellation polls of a strip-mined counted loop. */
+const WORKER_POLL_BLOCK = 64;
+
+/** The longest run of a strip-mined loop inside another loop that polls
+ * only as it leaves. */
+const WORKER_UNPOLLED_RUN = 16384;
+
+/** Whether a step of `step` from every value in `range` gives a different
+ * value. Beyond 2^53 a double can stop changing (`j + 1 === j` from 2^53),
+ * so a counter there can run without end inside a range of a few values. */
+function exactSteps(range: { min: number; max: number }, step: number): boolean {
+  const size = Math.abs(step);
+  return range.min >= size - 2 ** 53 && range.max <= 2 ** 53 - size;
+}
+
+/** At most how many times a `for` loop and the loops in its body run their
+ * bodies per entry, from the counters' proven ranges: its iterations times
+ * one plus the nested loops' runs. Infinity when a count has no bound, or
+ * depends on a run-time guard (the guard's slow copy steps a double). */
+function boundedLoopRuns(emitter: LlEmitter, loop: IrStmt): number {
+  if (loop.kind !== "for") return Infinity;
+  const counted = matchIntegerCountedForLoop(
+    loop,
+    emitter.numericLocals,
+    emitter.integerRanges,
+    LOOPS.of(emitter).unaliasedArrays,
+  );
+  let trips = Infinity;
+  if (counted && !counted.guarded && exactSteps(counted.range, counted.step))
+    trips = Math.floor((counted.range.max - counted.range.min) / Math.abs(counted.step)) + 1;
+  else if (!counted) {
+    // Each iteration closes the gap between the two counters by at least two.
+    const paired = matchIntegerPairedForLoop(loop, emitter.numericLocals, emitter.integerRanges);
+    if (paired && !paired.guarded && exactSteps(paired.range, 1))
+      trips = Math.floor((paired.range.max - paired.range.min) / 2) + 1;
+  }
+  if (trips === Infinity) {
+    // A counter with a proven range where the condition reads it, such as
+    // one compared with a module constant.
+    const stepped = steppedLoopCounter(loop, emitter.currentLocals);
+    const range = stepped && emitter.integerRanges.get(stepped.ref);
+    if (stepped && range && exactSteps(range, stepped.step))
+      trips = Math.floor((range.max - range.min) / Math.abs(stepped.step)) + 1;
+  }
+  if (!(trips <= WORKER_POLL_BLOCK * WORKER_POLL_BLOCK)) return Infinity;
+  let nested = 0;
+  const visit = (s: IrStmt): boolean => {
+    if (s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf") {
+      nested += boundedLoopRuns(emitter, s);
+      return nested !== Infinity;
+    }
+    return everyStmtChild(s, () => true, visit);
+  };
+  if (!loop.body.every(visit)) return Infinity;
+  return trips * (1 + nested);
+}
+
+/** The counter of a strip-mined loop: its slot, the LLVM integer type and
+ * signedness of its values, its step, the counters stepped beside it, and
+ * the limit, emitted in the outer header before each block. */
+interface StripMinedCounter {
+  slot: string;
+  type: string;
+  signed: boolean;
+  step: number;
+  followers: { slot: string; step: number }[];
+  limit: () => string;
+}
+
+/** A counted `for` loop of a worker program as blocks of WORKER_POLL_BLOCK
+ * iterations, with the cancellation poll between blocks: the outer header
+ * tests the counter against the loop's limit, each block runs the body up
+ * to the nearer of the limit and WORKER_POLL_BLOCK steps on, and the poll
+ * follows the block. It polls as often as the budget it replaces, and the
+ * inner loop's only exit besides `break` and `return` is its bound.
+ *
+ * With `runSlot` (for a loop that another loop of the function encloses), a
+ * block that ends at the limit leaves the loop without polling, and a run
+ * of at most WORKER_UNPOLLED_RUN iterations is one block, polled once as
+ * it leaves when it took more than WORKER_POLL_BLOCK iterations. `runSlot`
+ * holds whether the current block is such a run. */
+function emitStripMinedCountedLoop(
+  emitter: LlEmitter,
+  s: Extract<IrStmt, { kind: "for" }>,
+  counter: StripMinedCounter,
+  boundSlot: string,
+  exit: string,
+  runSlot: string | null,
+): void {
+  const B = emitter.B;
+  const { slot, type, signed, step } = counter;
+  const ascending = step > 0;
+  const compare = !signed ? "ult" : ascending ? "slt" : "sgt";
+  const saturating = `llvm.${signed ? "sadd" : "uadd"}.sat.${type}`;
+  const nearer = `llvm.${!signed ? "umin" : ascending ? "smin" : "smax"}.${type}`;
+  const wrap = signed ? "nsw" : "nuw";
+  const lc = B.newLabel("loop.c");
+  const block = B.newLabel("loop.block");
+  const bc = B.newLabel("loop.bc");
+  const lb = B.newLabel("loop.b");
+  const lu = B.newLabel("loop.u");
+  const poll = B.newLabel("loop.poll");
+  emitter.declare(`declare ${type} @${saturating}(${type}, ${type})`);
+  emitter.declare(`declare ${type} @${nearer}(${type}, ${type})`);
+  B.br(lc);
+  B.startBlock(lc);
+  enterLoopHeader(emitter, lc);
+  const start = B.tmp();
+  const open = B.tmp();
+  B.line(`${start} = load ${type}, ptr ${slot}`);
+  const limit = counter.limit();
+  B.line(`${open} = icmp ${compare} ${type} ${start}, ${limit}`);
+  B.condBr(open, block, exit);
+  B.startBlock(block);
+  const stepped = B.tmp();
+  const bound = B.tmp();
+  B.line(
+    `${stepped} = call ${type} @${saturating}(${type} ${start}, ${type} ${step * WORKER_POLL_BLOCK})`,
+  );
+  B.line(`${bound} = call ${type} @${nearer}(${type} ${stepped}, ${type} ${limit})`);
+  if (runSlot === null) B.line(`store ${type} ${bound}, ptr ${boundSlot}`);
+  else {
+    // The steps left to the limit: positive, as the header tested.
+    const left = B.tmp(),
+      whole = B.tmp(),
+      long = B.tmp(),
+      polled = B.tmp(),
+      end = B.tmp();
+    const stride = Math.abs(step);
+    B.line(
+      ascending
+        ? `${left} = sub ${wrap} ${type} ${limit}, ${start}`
+        : `${left} = sub ${wrap} ${type} ${start}, ${limit}`,
+    );
+    B.line(`${whole} = icmp ule ${type} ${left}, ${stride * WORKER_UNPOLLED_RUN}`);
+    B.line(`${long} = icmp ugt ${type} ${left}, ${stride * WORKER_POLL_BLOCK}`);
+    B.line(`${polled} = and i1 ${whole}, ${long}`);
+    B.line(`${end} = select i1 ${whole}, ${type} ${limit}, ${type} ${bound}`);
+    B.line(`store ${type} ${end}, ptr ${boundSlot}`);
+    B.line(`store i1 ${polled}, ptr ${runSlot}`);
+  }
+  B.br(bc);
+  B.startBlock(bc);
+  const index = B.tmp();
+  const end = B.tmp();
+  const inBlock = B.tmp();
+  B.line(`${index} = load ${type}, ptr ${slot}`);
+  B.line(`${end} = load ${type}, ptr ${boundSlot}`);
+  B.line(`${inBlock} = icmp ${compare} ${type} ${index}, ${end}`);
+  const after = runSlot === null ? poll : B.newLabel("loop.end");
+  B.condBr(inBlock, lb, after);
+  B.startBlock(lb);
+  emitter.jumpTargets.push({
+    kind: "loop",
+    brkLabel: exit,
+    contLabel: lu,
+    labels: s.labels,
+    frameDepth: emitter.frames.length,
+    scopeDepth: emitter.scopes.length,
+    finallyDepth: emitter.finallyStack.length,
+  });
+  emitter.emitBlock(s.body);
+  emitter.jumpTargets.pop();
+  B.br(lu);
+  B.startBlock(lu);
+  for (const { slot: stepSlot, step: by } of [{ slot, step }, ...counter.followers]) {
+    const old = B.tmp();
+    const next = B.tmp();
+    B.line(`${old} = load ${type}, ptr ${stepSlot}`);
+    B.line(`${next} = add ${wrap} ${type} ${old}, ${by}`);
+    B.line(`store ${type} ${next}, ptr ${stepSlot}`);
+  }
+  B.br(bc);
+  if (runSlot !== null) {
+    // A speculative copy may enter the body without passing the header, so
+    // the limit is read again here.
+    B.startBlock(after);
+    const at = B.tmp();
+    const more = B.tmp();
+    const run = B.tmp();
+    const done = B.newLabel("loop.done");
+    const last = B.newLabel("loop.poll.run");
+    B.line(`${at} = load ${type}, ptr ${slot}`);
+    B.line(`${more} = icmp ${compare} ${type} ${at}, ${counter.limit()}`);
+    B.condBr(more, poll, done);
+    B.startBlock(done);
+    B.line(`${run} = load i1, ptr ${runSlot}`);
+    B.condBr(run, last, exit);
+    B.startBlock(last);
+    emitter.emitWorkerPoll();
+    B.br(exit);
+  }
+  B.startBlock(poll);
+  emitter.emitWorkerPoll();
+  B.br(lc);
+}
+
+/** Whether `body` holds a loop outside its closures. */
+function containsLoop(body: IrStmt[]): boolean {
+  const inStmt = (s: IrStmt): boolean =>
+    s.kind === "while" ||
+    s.kind === "doWhile" ||
+    s.kind === "for" ||
+    s.kind === "forOf" ||
+    !everyStmtChild(
+      s,
+      () => true,
+      (child) => !inStmt(child),
+    );
+  return body.some(inStmt);
+}
+
+function enterLoopHeader(emitter: LlEmitter, header: string): void {
+  const dispatch = emitter.speculationHeader;
+  emitter.speculationHeader = null;
+  dispatch?.(header);
 }
 
 /** A proven integer loop (speculative-integers.ts) for this loop, or null.
@@ -1904,7 +2876,7 @@ function planProvenLoop(
   loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" }>,
 ): ProvenLoopPlan | null {
   if (
-    loop.kind !== "for" ||
+    loop.kind === "doWhile" ||
     !emitter.speculativeLoopsEnabled ||
     emitter.speculation !== null ||
     emitter.speculationResume !== null ||
@@ -1998,9 +2970,22 @@ export function emitSpeculativeWrite(
   // at once: a bailing path then owns nothing, and reads have no effect
   // whose reordering before the arithmetic could be observed.
   const reads = new Map<IrExpr, LlValue>();
-  if (target.value !== null) {
+  const rewritten = emitter.speculation!.values?.get(s);
+  const value = rewritten?.value ?? target.value;
+  if (rewritten !== undefined) {
+    // Hoisted leaves run first, in the write's order, and keep their
+    // doubles for the resume copy.
     emitter.frames.push([]);
-    for (const read of speculativeReads(target.value)) reads.set(read, emitter.emitExpr(read));
+    for (const leaf of rewritten.leaves) {
+      const evaluated = emitter.emitExpr(leaf.expr);
+      B.line(`store double ${evaluated.name}, ptr ${emitter.binding(leaf.localId).slot}`);
+      reads.set(leaf.ref, evaluated);
+    }
+    emitter.releaseTemps(emitter.frames.pop()!);
+  }
+  if (value !== null) {
+    emitter.frames.push([]);
+    for (const read of speculativeReads(value)) reads.set(read, emitter.emitExpr(read));
     emitter.releaseTemps(emitter.frames.pop()!);
   }
   emitter.frames.push([]);
@@ -2015,12 +3000,13 @@ export function emitSpeculativeWrite(
     B.line(`${biased} = add i64 ${result}, ${Number.MAX_SAFE_INTEGER}`);
     B.line(`${outside} = icmp ugt i64 ${biased}, ${2 * Number.MAX_SAFE_INTEGER}`);
     bail(outside);
-  } else result = emitSpeculativeInteger(emitter, target.value, bail, reads, resume === undefined);
+  } else result = emitSpeculativeInteger(emitter, value!, bail, reads, resume === undefined);
   // Speculable values read only numbers past this point.
   if (emitter.frames.pop()!.length > 0)
     throw new InternalCompilerError("llvm emitter bug: speculative write owns a temporary");
   B.line(`store i64 ${result}, ptr ${binding.slot}`);
-  const deferred = emitter.speculation!.deferred;
+  const { deferred, bails: site, ran } = emitter.speculation!;
+  if (ran !== undefined) B.line(`store i1 true, ptr ${ran}`);
   if (!deferred.has(target.localId)) {
     const number = B.tmp();
     B.line(`${number} = sitofp i64 ${result} to double`);
@@ -2031,6 +3017,14 @@ export function emitSpeculativeWrite(
   B.br(done);
   B.startBlock(failed);
   emitter.writeBackDeferred(deferred);
+  if (site !== undefined) {
+    const count = B.tmp(),
+      next = B.tmp();
+    emitter.declare("declare i8 @llvm.uadd.sat.i8(i8, i8)");
+    B.line(`${count} = load atomic i8, ptr ${site} unordered, align 1`);
+    B.line(`${next} = call i8 @llvm.uadd.sat.i8(i8 ${count}, i8 1)`);
+    B.line(`store atomic i8 ${next}, ptr ${site} unordered, align 1`);
+  }
   B.br(resume!);
   B.startBlock(done);
 }
@@ -2152,7 +3146,10 @@ function nullableStringSwitch(
  * one-unit string literals, as a switch on `s.charCodeAt(i)` with the units
  * as cases: no character string is built. An index out of range answers
  * NaN, which matches no case, as "" matches no one-unit literal. */
-function charAtUnitSwitch(s: IrStmt & { kind: "switch" }): (IrStmt & { kind: "switch" }) | null {
+function charAtUnitSwitch(
+  emitter: LlEmitter,
+  s: IrStmt & { kind: "switch" },
+): (IrStmt & { kind: "switch" }) | null {
   const disc = s.disc;
   if (disc.kind !== "strIntrinsic" || disc.method !== "charAt" || disc.args.length !== 1)
     return null;
@@ -2165,7 +3162,7 @@ function charAtUnitSwitch(s: IrStmt & { kind: "switch" }): (IrStmt & { kind: "sw
     return null;
   return {
     ...s,
-    disc: { ...disc, method: "charCodeAt", type: F64 },
+    disc: charAtUnitRead(emitter, disc),
     cases: s.cases.map((c) =>
       c.test?.kind === "strLit"
         ? {

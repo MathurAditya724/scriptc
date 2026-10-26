@@ -30,6 +30,7 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_object.c",
   "scr_union.c",
   "scr_exception.c",
+  "scr_unwind.c",
   "scr_error.c",
   "scr_console.c",
   "scr_lib.c",
@@ -49,6 +50,12 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_itable.c",
   "scr_slots.c",
   "scr_alloc.c",
+  // crypto.getCipherInfo's table; it links only into programs that call it.
+  "scr_cipher_info.c",
+  // Math's transcendental functions as V8 computes them, and on glibc the
+  // exact libm functions that let a program link without libm.so.
+  "scr_ieee754.c",
+  "scr_glibc_math.c",
 ];
 
 export const OPTIONAL_RUNTIME_SOURCES = [
@@ -61,10 +68,12 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch")],
-  // Fixed-width Buffer methods called on checked-dynamic values.
-  ["scr_bytes_dyn.c", all("dynBufferNum", "dynInvoke")],
+  // Buffer.prototype methods called on checked-dynamic values.
+  ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
   ["scr_builtin_values.c", "builtinValues"],
+  // createRequire's computed require and require.resolve.
+  ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],
   // The dynamic tier's jsval values (two-tier design I3): linked only into
   // programs whose IR has dynamic-tier operations.
@@ -72,19 +81,26 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_js_object.c", "dynTier"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch")],
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
+  // The crypto global's object extends scr_async_dyn.c's crypto object.
+  ["scr_webcrypto_object.c", all("webcrypto", "dynAsync")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
   ["scr_perf.c", "dynAsync"],
   // perf_hooks event-loop metrics, only for programs that read them.
   ["scr_perf_loop.c", "perfLoop"],
+  // Module namespace objects as checked-dynamic values.
+  ["scr_module_namespace.c", "moduleNamespace"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
+  ["scr_brotli.c", all("zlib", "brotli")],
   ["scr_events.c", "events"],
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
   ["scr_events_emitter.c", "emitter"],
   // events.once with options registers through the emitter and event-target units.
   ["scr_events_once_signal.c", "eventsOnceSignal"],
+  ["scr_mime.c", "mime"],
+  ["scr_util_timing.c", "utilTiming"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   ["scr_symbol.c", "symbol"],
   ["scr_bigint_assert.c", all("assert", "bigint")],
@@ -125,8 +141,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_dyn.c", "streamDyn"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
+  ["scr_decl_adopt.c", "declAdopt"],
+  ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
+  ["scr_dyn_for_await_stream.c", all("dynForAwait", "stream", "dynAsync")],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],
   // FileHandle streams reference both the stream unit and FileHandle.
@@ -142,6 +161,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dns_promises.c", all("dgram", "dnsPromises")],
   // Sockets as untyped values run over the dgram unit.
   ["scr_dgram_dyn.c", all("dgram", "dgramDyn")],
+  // TextEncoder and TextDecoder records boxed as untyped values.
+  ["scr_text_codec_dyn.c", "textCodecDyn"],
   ["scr_watch.c", "watch"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
@@ -149,9 +170,19 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_tls.c", "tlsEffective"],
   ["scr_cipher.c", "cipher"],
   ["scr_ecdh.c", "ecdh"],
+  ["scr_dh.c", "dh"],
+  ["scr_pki.c", "pki"],
   ["scr_wasm.c", "wasm"],
   ["scr_webcrypto.c", "webcrypto"],
+  ["scr_webcrypto_pki.c", all("webcrypto", "pki")],
+  ["scr_ed25519.c", all("pki", "ed25519")],
+  ["scr_x509.c", "x509"],
+  // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
+  ["scr_tls_x509.c", all("tlsEffective", "x509")],
+  // WebCrypto's AES ciphers run over the cipher feature's mbedTLS archive.
+  ["scr_webcrypto_aes.c", all("cipher", "webcrypto")],
   ["scr_fetch.c", "nativeFetch"],
+  ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
 export function variantsFor(source) {
@@ -212,7 +243,8 @@ export function createRuntimePackMatrix({
     { id: "quickjs", predicate: false },
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
-    { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh") },
+    { id: "brotli", predicate: all("zlib", "brotli") },
+    { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];
   const matrix = withLibraryRuntimeFlavors(
     withWorkerRuntimeVariants({

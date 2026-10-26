@@ -15,13 +15,15 @@ import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { NpmStaticStatus } from "./report.js";
 import type { WasmModuleReport } from "../wasm/discover.js";
+import type { NodeIslandReport } from "../node-islands/summary.js";
+import { nodeIslandOptionsKey } from "../node-islands/policy.js";
 import {
   FrontendInputTracker,
   frontendInputsStillMatch,
   type FrontendInputSnapshot,
 } from "../frontend/input-tracker.js";
 
-const SCHEMA = "scriptc.coverage-verdict.v2";
+const SCHEMA = "scriptc.coverage-verdict.v3";
 
 /** Key-value storage for verdict entries (best effort: failures miss). */
 export interface VerdictStore {
@@ -38,8 +40,10 @@ export interface CachedCoverage {
   runtimeFences?: ScrDiagnostic[];
   unreached?: { stats: LowerStats; diagnostics: ScrDiagnostic[]; runtimeFences?: ScrDiagnostic[] };
   divergences?: ScrDiagnostic[];
+  performance?: ScrDiagnostic[];
   npmStatic?: NpmStaticStatus[];
   wasmModules?: WasmModuleReport[];
+  nodeIslands?: NodeIslandReport;
   preflightFailed: boolean;
 }
 
@@ -129,6 +133,10 @@ export function verdictKey(
       ...(opts.tier === "static-only" ? ["tier=static-only"] : []),
       // The module files' contents are probes; their names are options.
       ...(opts.wasm !== undefined && opts.wasm.length > 0 ? [`wasm=${opts.wasm.join("\n")}`] : []),
+      // The Node island policy's command-line half shapes the report.
+      ...(opts.nodeIslands !== undefined
+        ? [`node-islands=${nodeIslandOptionsKey(opts.nodeIslands)}`]
+        : []),
     ].join("\0"),
   );
 }
@@ -149,8 +157,10 @@ function cacheable(coverage: AnalyzeResult["coverage"]): CachedCoverage | null {
   if (coverage.runtimeFences !== undefined) out.runtimeFences = coverage.runtimeFences;
   if (coverage.unreached !== undefined) out.unreached = coverage.unreached;
   if (coverage.divergences !== undefined) out.divergences = coverage.divergences;
+  if (coverage.performance !== undefined) out.performance = coverage.performance;
   if (coverage.npmStatic !== undefined) out.npmStatic = coverage.npmStatic;
   if (coverage.wasmModules !== undefined) out.wasmModules = coverage.wasmModules;
+  if (coverage.nodeIslands !== undefined) out.nodeIslands = coverage.nodeIslands;
   return out;
 }
 
@@ -166,8 +176,10 @@ function restore(cached: CachedCoverage, sources: CachedSource[]): AnalyzeResult
   if (cached.runtimeFences !== undefined) coverage.runtimeFences = cached.runtimeFences;
   if (cached.unreached !== undefined) coverage.unreached = cached.unreached;
   if (cached.divergences !== undefined) coverage.divergences = cached.divergences;
+  if (cached.performance !== undefined) coverage.performance = cached.performance;
   if (cached.npmStatic !== undefined) coverage.npmStatic = cached.npmStatic;
   if (cached.wasmModules !== undefined) coverage.wasmModules = cached.wasmModules;
+  if (cached.nodeIslands !== undefined) coverage.nodeIslands = cached.nodeIslands;
   return { coverage, sourceTexts };
 }
 

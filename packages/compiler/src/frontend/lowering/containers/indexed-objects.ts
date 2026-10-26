@@ -1,5 +1,7 @@
+import { keyedHelperName } from "../stable-names.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
+import { arrayValueStore, optionalElementValue, primitiveElement } from "../array-values.js";
 import { objectEnumerationReceiver } from "../object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -155,7 +157,14 @@ export function objectIterOverIndexShape(
   // also holds numbers): each overflow value checks into the element type,
   // so a value of a dropped arm throws instead of mistyping.
   let ivNarrows = false;
-  if (valueT) {
+  // `T | undefined` values into a `(T | undefined)[]`, which stores T
+  // elements (primitiveElement): each value is stored with its present
+  // undefined.
+  const optionalValues =
+    member === "values" &&
+    valueT !== null &&
+    optionalElementValue(lowerer, { kind: "unitLit", unit: "undefined", type: iv, loc }, valueT);
+  if (valueT && !optionalValues) {
     const ivSurfaces =
       typeEquals(iv, valueT) ||
       (valueT.kind === "union" && lowerer.armTag(valueT.unionId, iv) >= 0) ||
@@ -184,7 +193,7 @@ export function objectIterOverIndexShape(
   const key = `obj.${member}:ovf:${argIr.shapeId}:${typeKey(resultT)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%obj.${member}.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%obj.${member}`, key);
 
     const outRef = varRef("out.0", resultT, loc);
     const rRef = varRef("r.0", argIr, loc);
@@ -349,7 +358,25 @@ export function objectIterOverIndexShape(
               loc,
             },
             then: [fieldStmt],
-            else_: undefinedElement ? [push(pushedOf(undefinedElement))] : null,
+            else_: undefinedElement
+              ? [push(pushedOf(undefinedElement))]
+              : member === "values" && valueT && primitiveElement(valueT)
+                ? [
+                    {
+                      kind: "arraySetUndefined",
+                      arr: outRef,
+                      index: {
+                        kind: "arrIntrinsic",
+                        method: "length",
+                        receiver: outRef,
+                        args: [],
+                        type: F64,
+                        loc,
+                      },
+                      loc,
+                    },
+                  ]
+                : null,
             loc,
           };
         }
@@ -373,35 +400,45 @@ export function objectIterOverIndexShape(
     const kRef = varRef("k.0", STRING, loc);
     const readValue: IrExpr | null = !valueT
       ? null
-      : ivNarrows
+      : optionalValues
         ? {
-            kind: "dynCheck",
-            value: {
-              kind: "dynFrom",
-              value: {
-                kind: "recordKeyGet",
-                obj: rRef,
-                shapeId: argIr.shapeId,
-                key: kRef,
-                overflowOnly: true,
-                type: iv,
-                loc,
-              },
-              type: DYN,
-              loc,
-            },
-            type: valueT,
-            loc,
-          }
-        : {
             kind: "recordKeyGet",
             obj: rRef,
             shapeId: argIr.shapeId,
             key: kRef,
             overflowOnly: true,
-            type: valueT,
+            type: iv,
             loc,
-          };
+          }
+        : ivNarrows
+          ? {
+              kind: "dynCheck",
+              value: {
+                kind: "dynFrom",
+                value: {
+                  kind: "recordKeyGet",
+                  obj: rRef,
+                  shapeId: argIr.shapeId,
+                  key: kRef,
+                  overflowOnly: true,
+                  type: iv,
+                  loc,
+                },
+                type: DYN,
+                loc,
+              },
+              type: valueT,
+              loc,
+            }
+          : {
+              kind: "recordKeyGet",
+              obj: rRef,
+              shapeId: argIr.shapeId,
+              key: kRef,
+              overflowOnly: true,
+              type: valueT,
+              loc,
+            };
     const loopPushed: IrExpr =
       member === "keys"
         ? kRef
@@ -439,7 +476,26 @@ export function objectIterOverIndexShape(
             },
             loc,
           },
-          push(loopPushed),
+          ...(optionalValues
+            ? [
+                { kind: "varDecl" as const, localId: "v.0", init: readValue!, loc },
+                arrayValueStore(
+                  lowerer,
+                  outRef,
+                  {
+                    kind: "arrIntrinsic",
+                    method: "length",
+                    receiver: outRef,
+                    args: [],
+                    type: F64,
+                    loc,
+                  },
+                  varRef("v.0", iv, loc),
+                  valueT!,
+                  loc,
+                ),
+              ]
+            : [push(loopPushed)]),
         ],
       ),
       { kind: "return", value: outRef, loc },
@@ -456,6 +512,7 @@ export function objectIterOverIndexShape(
         { id: "ks.0", name: "ks", type: ksT, mutable: false },
         { id: "i.0", name: "i", type: F64, mutable: true },
         { id: "k.0", name: "k", type: STRING, mutable: false },
+        ...(optionalValues ? [{ id: "v.0", name: "v", type: iv, mutable: false }] : []),
       ],
       body,
       loc,
@@ -608,7 +665,7 @@ function lowerTypedObjectFromEntriesCall(
   const key = `obj.fromEntries:${argIr.elem.shapeId}:${resultT.shapeId}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%obj.fromEntries.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%obj.fromEntries", key);
 
     const tupleT = argIr.elem as IrType & { kind: "record" };
     const tRef = varRef("t.0", tupleT, loc);
@@ -712,7 +769,7 @@ function lowerFromEntriesStringRows(
   const key = `obj.fromEntries:strrows:${resultT.shapeId}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%obj.fromEntries.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%obj.fromEntries", key);
 
     const tRef = varRef("t.0", rowT, loc);
     const rowLen: IrExpr = {
@@ -931,7 +988,7 @@ export function lowerRecordOvfCaptureHelper(
   const key = `ovf:${fromId}:${toId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%rec.capture.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%rec.capture", key);
   lowerer.valueHelpers.set(key, name);
   const fromT: IrType = { kind: "record", shapeId: fromId };
   const toT: IrType = { kind: "record", shapeId: toId };
@@ -1204,7 +1261,7 @@ export function lowerObjectAssignIndexShape(
     const key = `assign:${targetIr.shapeId}:${plan.fromId}`;
     const existing = lowerer.valueHelpers.get(key);
     if (existing) return existing;
-    const name = `%obj.assign.${lowerer.valueHelpers.size}`;
+    const name = keyedHelperName(lowerer, "%obj.assign", key);
     lowerer.valueHelpers.set(key, name);
     const toT: IrType = { kind: "record", shapeId: targetIr.shapeId };
     const fromT: IrType = { kind: "record", shapeId: plan.fromId };
@@ -1387,6 +1444,15 @@ export type IndexMergeContributor =
  * JS own-key order. Explicit values arrive pre-coerced to the target's
  * value slot. Null when a spread source is outside that matrix (the
  * caller keeps its fence). */
+/** A value of an index slot's type that holds a key's place until a later
+ * write replaces it, or null for slot types without a literal. */
+function indexSlotPlaceholder(slot: IrType, loc: SrcLoc): IrExpr | null {
+  if (slot.kind === "string") return { kind: "strLit", value: "", type: STRING, loc };
+  if (slot.kind === "f64") return { kind: "numLit", value: 0, type: slot, loc };
+  if (slot.kind === "bool") return { kind: "boolLit", value: false, type: slot, loc };
+  return null;
+}
+
 export function lowerIndexMergeHelper(
   lowerer: Lowerer,
   toId: string,
@@ -1409,9 +1475,9 @@ export function lowerIndexMergeHelper(
     shapeId: string;
     wrapTag: number;
     retag: string | null;
-    fields: Map<string, WidthLift | "dyn"> | null;
+    fields: Map<string, WidthLift | "dyn" | "placeholder"> | null;
   }[] = [];
-  for (const c of contributors) {
+  for (const [ci, c] of contributors.entries()) {
     // A conditional spread needs the undefined arm as its "absent"
     // value — a target slot without one can't carry the empty arm.
     if (
@@ -1425,15 +1491,26 @@ export function lowerIndexMergeHelper(
     if (!from || from.tuple) return null;
     if (!from.indexValue) {
       if (from.fields.some((f) => f.name.startsWith("%"))) return null;
-      const fields = new Map<string, WidthLift | "dyn">();
+      const fields = new Map<string, WidthLift | "dyn" | "placeholder">();
       for (const ff of from.fields) {
         const lift = typeEquals(ff.type, tIv)
           ? ({ how: "copy" } as WidthLift)
           : tIv.kind === "dyn" && (ff.type.kind === "dyn" || lowerer.dynConvertible(ff.type))
             ? "dyn"
             : lowerer.widthLiftPlan(ff.type, tIv);
-        if (lift === null) return null;
-        fields.set(ff.name, lift);
+        if (lift !== null) {
+          fields.set(ff.name, lift);
+          continue;
+        }
+        // A field a later plain property overrides (`{ ...tags, status:
+        // String(tags.status) }`): its value never survives, but its key
+        // keeps the spread's position, so a placeholder of the slot's
+        // type holds the place until the override writes.
+        const overridden = contributors
+          .slice(ci + 1)
+          .some((later) => later.kind === "field" && later.name === ff.name);
+        if (!overridden || indexSlotPlaceholder(tIv, loc) === null) return null;
+        fields.set(ff.name, "placeholder");
       }
       srcPlans.push({ shapeId: c.shapeId, wrapTag: -1, retag: null, fields });
       continue;
@@ -1474,7 +1551,7 @@ export function lowerIndexMergeHelper(
       .join(",");
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%rec.merge.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%rec.merge", key);
   lowerer.valueHelpers.set(key, name);
   const toT: IrType = { kind: "record", shapeId: toId };
   const ksT = arrayOf(STRING);
@@ -1568,6 +1645,11 @@ export function lowerIndexMergeHelper(
     // own planned lift (absent optionals skip — the unset convention);
     // no overflow exists to walk.
     if (plan.fields !== null) {
+      // Keys enter in the source's enumeration order, as its own keys do.
+      // That order settles only after lowering (key-order witnesses), so
+      // the writes go into one block that a finalizer orders.
+      lowerer.keyOrder.observed.add(from.id);
+      const fieldStmts = new Map<string, IrStmt>();
       for (const ff of from.fields) {
         const lift = plan.fields.get(ff.name)!;
         const raw: IrExpr = {
@@ -1585,13 +1667,16 @@ export function lowerIndexMergeHelper(
           shapeId: toId,
           key: { kind: "strLit", value: ff.name, type: STRING, loc },
           value:
-            lift === "dyn"
-              ? { kind: "dynFrom", value: raw, type: DYN, loc }
-              : lowerer.applyWidthLift(lift, raw, tIv, loc),
+            lift === "placeholder"
+              ? indexSlotPlaceholder(tIv, loc)!
+              : lift === "dyn"
+                ? { kind: "dynFrom", value: raw, type: DYN, loc }
+                : lowerer.applyWidthLift(lift, raw, tIv, loc),
           overflowOnly: true,
           loc,
         };
-        body.push(
+        fieldStmts.set(
+          ff.name,
           utag >= 0 && ff.type.kind === "union"
             ? {
                 kind: "if",
@@ -1603,6 +1688,17 @@ export function lowerIndexMergeHelper(
             : write,
         );
       }
+      // declaredOrder omits internal '%'-fields, which never copy.
+      const ordered = (shape: IrRecordShape): IrStmt[] =>
+        (shape.declaredOrder ?? shape.fields.map((f) => f.name)).flatMap((field) => {
+          const stmt = fieldStmts.get(field);
+          return stmt ? [stmt] : [];
+        });
+      const group: IrStmt & { kind: "block" } = { kind: "block", body: ordered(from), loc };
+      lowerer.shapeOrderHelperFinalizers.push(() => {
+        group.body = ordered(lowerer.shapes.get(plan.shapeId) ?? from);
+      });
+      body.push(group);
       return;
     }
     const fIv = from.indexValue!;
@@ -1805,7 +1901,7 @@ export function lowerEnvToPairsHelper(
   const key = `env.pairs:${shapeId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%env.pairs.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%env.pairs", key);
   lowerer.valueHelpers.set(key, name);
   const recT: IrType = { kind: "record", shapeId };
   const arrT = arrayOf(STRING);

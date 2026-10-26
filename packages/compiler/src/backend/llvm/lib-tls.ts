@@ -8,9 +8,11 @@ import {
   finishRuntimeCall,
   nullableReference,
   ptr,
+  caBytes,
   rawBytes,
   requestHandler,
 } from "./lib-abi.js";
+import { sniCallbackArgs } from "./lib-http2.js";
 import { emitAlwaysThrowLibCall } from "./lib-shared.js";
 
 export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
@@ -42,6 +44,27 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
         e.fn === "https.createServer" ? "scr_https_create_server" : "scr_tls_create_server",
         [...rawBytes(host, args[0]!), ...rawBytes(host, args[1]!), ...handler],
       );
+    }
+    case "tls.createServerSni":
+    case "tls.createServerSniCb": {
+      const cb = args[3];
+      const handler =
+        cb === undefined
+          ? [ptr(), ptr()]
+          : callbackAdapter(
+              host,
+              cb,
+              callbackType(cb).params.length === 0
+                ? "scr_net_conn_thunk0"
+                : "scr_net_conn_thunk_sock",
+              ["ptr", "ptr"],
+            );
+      return finishRuntimeCall(host, e, "scr_tls_create_server_sni", [
+        ...rawBytes(host, args[0]!),
+        ...rawBytes(host, args[1]!),
+        ...handler,
+        ...sniCallbackArgs(host, args[2]!),
+      ]);
     }
     case "tls.createServerDyn":
     case "tls.createServerDynCb":
@@ -88,6 +111,31 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_sock_get_cipher", a);
     case "tls.sockAlpnProtocol":
       return finishRuntimeCall(host, e, "scr_tls_sock_alpn_protocol", a);
+    case "tls.serverAddContext":
+      return finishRuntimeCall(host, e, "scr_tls_server_add_context", [...a, ptr()]);
+    case "tls.serverAddContextCtx":
+      return finishRuntimeCall(host, e, "scr_tls_server_add_context", [a[0]!, a[1]!, ptr(), a[2]!]);
+    case "tls.serverSetSecureContext":
+      return finishRuntimeCall(host, e, "scr_tls_server_set_secure_context", a);
+    case "tls.serverOnClientError": {
+      // (err, tlsSocket) listeners by arity: the adapter retains what the
+      // listener takes.
+      const cb = args[1]!;
+      const thunk = `scr_net_client_error_thunk${callbackType(cb).params.length}`;
+      return finishRuntimeCall(host, e, "scr_net_server_on_client_error", [
+        a[0]!,
+        ...callbackAdapter(host, cb, thunk, ["ptr", "ptr", "ptr"]),
+        a[2]!,
+      ]);
+    }
+    case "tls.sockGetPeerCertificate":
+      return finishRuntimeCall(host, e, "scr_tls_sock_get_peer_certificate", a);
+    case "tls.sockGetCertificate":
+      return finishRuntimeCall(host, e, "scr_tls_sock_get_certificate", a);
+    case "tls.sockPeerCertDer":
+      return finishRuntimeCall(host, e, "scr_tls_sock_peer_cert_der", a);
+    case "tls.sockOwnCertDer":
+      return finishRuntimeCall(host, e, "scr_tls_sock_own_cert_der", a);
     case "tls.sockAuthError": {
       const result = callRuntime(host, "scr_tls_sock_auth_error", "ptr", a);
       return nullableReference(host, e.type, result, "string", "nullT");
@@ -99,6 +147,13 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
     case "tls.sockOnSecureConnect":
       host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure_connect", a);
+    case "tls.sockOnSecure":
+      host.toHeap(args[1]!);
+      return finishRuntimeCall(host, e, "scr_tls_sock_on_secure", a);
+    case "tls.wrapSocket":
+      return finishRuntimeCall(host, e, "scr_tls_wrap_socket", [a[0]!, a[1]!, ptr()]);
+    case "tls.wrapSocketCtx":
+      return finishRuntimeCall(host, e, "scr_tls_wrap_socket", a);
     case "tls.sockOnSession": {
       const cb = args[1]!,
         type = callbackType(cb);
@@ -130,7 +185,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
             );
       return finishRuntimeCall(host, e, "scr_https_request_agent", [
         ...a.slice(0, 8),
-        ...rawBytes(host, args[8]!),
+        ...caBytes(host, args[8]!),
         a[9]!,
         ...handler,
       ]);
@@ -150,7 +205,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
               ["ptr", "ptr"],
             );
       // Evaluate arguments once before selecting which transport consumes the callback.
-      const pem = rawBytes(host, args[9]!);
+      const pem = caBytes(host, args[9]!);
       const B = host.B,
         tls = B.newLabel("request.tls"),
         plain = B.newLabel("request.plain"),

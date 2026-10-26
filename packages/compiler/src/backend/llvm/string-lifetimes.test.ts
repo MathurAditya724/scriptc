@@ -311,7 +311,8 @@ const methodCases: {
   // enters through the double ABI.
   { method: "charCodeAt", args: [num(1)], result: F64, target: "char_code_at_int", inline: true },
   { method: "charCodeAt", args: [num(1.5)], result: F64, target: "char_code_at", inline: true },
-  { method: "charAt", args: [num(1)], result: STRING, target: "char_at" },
+  { method: "charAt", args: [num(1)], result: STRING, target: "char_at_int", inline: true },
+  { method: "charAt", args: [num(1.5)], result: STRING, target: "char_at", inline: true },
   { method: "indexOf", args: [ref("argument"), num(1)], result: F64, target: "index_of" },
   { method: "includes", args: [ref("argument")], result: BOOL, target: "includes" },
   {
@@ -340,7 +341,7 @@ const methodCases: {
   { method: "normalize", args: [ref("argument")], result: STRING, target: "normalize" },
   { method: "isWellFormed", args: [], result: BOOL, target: "is_well_formed" },
   { method: "toWellFormed", args: [], result: STRING, target: "to_well_formed" },
-  { method: "cpAt", args: [num(1)], result: STRING, target: "cp_at" },
+  { method: "cpAtByte", args: [num(1)], result: STRING, target: "cp_at_byte", inline: true },
 ];
 
 test.each(methodCases)(
@@ -477,7 +478,9 @@ test("string comparisons decide identity, lengths and leading bytes before the r
     expect(units).toContain("%below = icmp ult i8 %bx, %by");
     expect(units).toContain("%tailable = and i1 %samelen, %short");
     expect(units).toContain("%anyascii = icmp slt i32 %cws, 0");
-    expect(units).toContain("call i32 @scr_str_cmp(ptr %a, ptr %b)");
+    expect(units).toContain(
+      "call i32 @scr_str_cmp(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)",
+    );
     expect(units).toContain(
       "call i32 @scr_str_cmp_u16_bytes(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)",
     );

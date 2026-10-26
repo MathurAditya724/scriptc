@@ -10,6 +10,9 @@ export class ClassProtocols {
   private readonly accepted = new Map<ts.Type, ts.Symbol[]>();
   /** What markIdentityFlows learned about the program, while it runs. */
   private facts: FlowFacts | null = null;
+  /** The value types of the string-keyed dictionaries that keep checked
+   * identity (see markDictionaryViews). */
+  private readonly dictionaryViews = new Set<ts.Type>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
@@ -98,7 +101,13 @@ export class ClassProtocols {
    * could read a stale value. A view of readonly data that nothing
    * observes stays a native record. */
   private markIdentityFlows(protocols: Set<ts.Symbol>): void {
-    const sites: { source: ts.Expression; target: () => ts.Type | undefined }[] = [];
+    const sites: {
+      source: ts.Expression;
+      target: () => ts.Type | undefined;
+      /** The node whose contextual type `target` answers. */
+      contextual?: ts.Expression;
+      assertion?: true;
+    }[] = [];
     /** Expressions whose values are observed as whole objects. */
     const observed: ts.Expression[] = [];
     /** Receivers whose type arguments or elements are observed (Set and Map
@@ -118,7 +127,8 @@ export class ClassProtocols {
     const callbackParams: { fn: ts.SignatureDeclaration; index: number; name: ts.Node }[] = [];
     const contextual = (expr: ts.Expression) => () => this.checker.getContextualType(expr);
     const flow = (expr: ts.Expression | undefined): void => {
-      if (expr !== undefined) sites.push({ source: expr, target: contextual(expr) });
+      if (expr !== undefined)
+        sites.push({ source: expr, target: contextual(expr), contextual: expr });
     };
     const write = (target: ts.Expression): void => {
       while (ts.isParenthesizedExpression(target) || ts.isNonNullExpression(target))
@@ -233,6 +243,7 @@ export class ClassProtocols {
         sites.push({
           source: node.expression,
           target: () => this.checker.getTypeFromTypeNode(typeNode),
+          assertion: true,
         });
       }
       if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
@@ -315,6 +326,7 @@ export class ClassProtocols {
         else if (names !== "all") names.add(name);
       }
     }
+    this.markDictionaryViews(sites, sourceNodes, observedNodes, writeNodes);
     for (let i = 0; i < looseArguments.length; i++) {
       const type = typeOf(looseNodes[i]!);
       if (type === undefined) continue;
@@ -324,12 +336,38 @@ export class ClassProtocols {
         facts.loose.push({ node: looseArguments[i]!, call: looseCalls[i]!, symbols });
     }
     this.facts = facts;
-    const pending: { sourceType: ts.Type; target: () => ts.Type | undefined }[] = [];
+    const pending: {
+      sourceType: ts.Type;
+      target: () => ts.Type | undefined;
+      contextual?: ts.Expression;
+    }[] = [];
+    /** Views a value of unknown origin is asserted to and that expose a
+     * method of a class the view accepts (see methodViewSources). */
+    const methodViews = new Set<ts.Symbol>();
     for (let i = 0; i < sites.length; i++) {
       const site = sites[i]!;
       const source = sourceNodes[i]!;
       const sourceType = attempt(() => this.checker.getTypeAtLocation(source));
-      if (sourceType !== undefined) pending.push({ sourceType, target: site.target });
+      if (sourceType === undefined) continue;
+      if (
+        site.assertion &&
+        (sourceType.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !== 0 &&
+        this.methods.size > 0
+      ) {
+        const target = attempt(site.target);
+        if (target !== undefined)
+          for (const { classType, view } of attempt(() => this.methodViewSources(target)) ?? []) {
+            pending.push({ sourceType: classType, target: () => view });
+            const symbol = view.getSymbol();
+            if (symbol !== undefined) methodViews.add(symbol);
+          }
+        continue;
+      }
+      pending.push(
+        site.contextual === undefined
+          ? { sourceType, target: site.target }
+          : { sourceType, target: site.target, contextual: site.contextual },
+      );
     }
     for (const { fn, index, name } of callbackParams) {
       attempt(() => {
@@ -354,6 +392,19 @@ export class ClassProtocols {
     // flows and origins are complete.
     const before = new Set(marked);
     const targets = new Map<number, ts.Type | undefined>();
+    // The fixpoint asks the target of each site whose source carries
+    // identity: one batch asks those of the sites that carry it now, and a
+    // site that starts to as marks grow asks its own.
+    attempt(() =>
+      this.checker.prefetchContextualTypes(
+        pending.flatMap((entry) =>
+          entry.contextual !== undefined &&
+          attempt(() => this.carriesIdentity(entry.sourceType, marked)) === true
+            ? [entry.contextual]
+            : [],
+        ),
+      ),
+    );
     let changed = true;
     while (changed) {
       changed = false;
@@ -372,7 +423,12 @@ export class ClassProtocols {
     // Keep the marks a copy would be told apart from, and the marks whose
     // values flow into a kept view or another live protocol.
     const added = [...marked].filter((symbol) => !before.has(symbol));
-    const kept = new Set(added.filter((symbol) => this.needsView(symbol, marked, facts)));
+    // A copy of an instance drops the methods its class defines, so a view
+    // that exposes one of them stays live wherever such an instance may
+    // arrive.
+    const kept = new Set(
+      added.filter((symbol) => methodViews.has(symbol) || this.needsView(symbol, marked, facts)),
+    );
     let grew = true;
     while (grew) {
       grew = false;
@@ -389,6 +445,33 @@ export class ClassProtocols {
     }
     for (const symbol of added) if (!kept.has(symbol)) marked.delete(symbol);
     this.facts = null;
+  }
+
+  /** The program classes a value asserted from `unknown` or `any` to
+   * `target` may be an instance of while `target` exposes one of their
+   * methods: for each structural part of `target` with a callable member,
+   * the instance type of every class that declares a method of that name
+   * and is assignable to the part. A record copy of such an instance would
+   * drop the method, which Node reads from the instance's prototype. */
+  private methodViewSources(target: ts.Type): { classType: ts.Type; view: ts.Type }[] {
+    const parts = target.isUnionType() ? ts.constituentTypes(target) : [target];
+    const out: { classType: ts.Type; view: ts.Type }[] = [];
+    for (const part of parts) {
+      if (!this.isStructuralTarget(part)) continue;
+      for (const property of this.checker.getPropertiesOfType(part)) {
+        const memberType = this.checker.getNonNullableType(this.checker.getTypeOfSymbol(property));
+        if (this.checker.getCallSignatures(memberType).length === 0) continue;
+        for (const declaration of this.methods.get(ts.symbolName(property)) ?? []) {
+          const classSymbol = declaration.name
+            ? this.checker.getSymbolAtLocation(declaration.name)
+            : undefined;
+          if (classSymbol === undefined) continue;
+          const classType = this.checker.getDeclaredTypeOfSymbol(classSymbol);
+          if (this.checker.isTypeAssignableTo(classType, part)) out.push({ classType, view: part });
+        }
+      }
+    }
+    return out;
   }
 
   /** The symbols of `type`'s object parts: union and intersection members,
@@ -618,6 +701,163 @@ export class ClassProtocols {
     return source !== undefined && this.isProgramClassInstance(source);
   }
 
+  /** String-keyed dictionaries (`Record<string, V>`, `{ [key: string]: V }`)
+   * that receive an existing record or class instance. Natively a
+   * dictionary is a key/value record, and converting another object into
+   * one copies its fields, so writes through the dictionary and identity
+   * checks would miss the original. When the program writes through, or
+   * observes, a value of such a dictionary type, every dictionary with that
+   * value type keeps checked identity instead (records with the same value
+   * type share one native layout, so values pass between them). A source
+   * counts when it is an existing object (a binding, member, element or
+   * `this`, not a fresh literal or call result) whose type is a program
+   * class instance or a record with declared properties, or a constant
+   * `{}`, `object` or `unknown` binding initialized with one. */
+  private markDictionaryViews(
+    sites: readonly {
+      source: ts.Expression;
+      target: () => ts.Type | undefined;
+      contextual?: ts.Expression;
+    }[],
+    sourceNodes: readonly ts.Expression[],
+    observedNodes: readonly ts.Expression[],
+    writeNodes: readonly ts.Expression[],
+  ): void {
+    // The calls the sites' arguments belong to, by callee name, built on
+    // first use.
+    let calls: Map<string, (ts.CallExpression | ts.NewExpression)[]> | null = null;
+    const callsNamed = (name: string): readonly (ts.CallExpression | ts.NewExpression)[] => {
+      if (calls === null) {
+        calls = new Map();
+        for (const site of sites) {
+          const call = site.contextual?.parent;
+          if (call === undefined || (!ts.isCallExpression(call) && !ts.isNewExpression(call)))
+            continue;
+          const callee = call.expression;
+          const named = ts.isIdentifier(callee)
+            ? callee.text
+            : ts.isPropertyAccessExpression(callee)
+              ? callee.name.text
+              : undefined;
+          if (named === undefined) continue;
+          const list = calls.get(named) ?? [];
+          if (!list.includes(call)) list.push(call);
+          calls.set(named, list);
+        }
+      }
+      return calls.get(name) ?? [];
+    };
+    const candidates: { index: number; sourceType: ts.Type }[] = [];
+    for (let i = 0; i < sites.length; i++) {
+      const source = sourceNodes[i]!;
+      if (!isExistingObject(source)) continue;
+      const sourceType = attempt(() => this.checker.getTypeAtLocation(source));
+      if (sourceType !== undefined && this.dictionarySource(source, sourceType, callsNamed))
+        candidates.push({ index: i, sourceType });
+    }
+    if (candidates.length === 0) return;
+    // One batch for the contextual targets of the candidate sites.
+    attempt(() =>
+      this.checker.prefetchContextualTypes(
+        candidates.flatMap(({ index }) => {
+          const contextual = sites[index]!.contextual;
+          return contextual === undefined ? [] : [contextual];
+        }),
+      ),
+    );
+    const received = new Set<ts.Type>();
+    for (const { index, sourceType } of candidates) {
+      const target = attempt(sites[index]!.target);
+      const parts =
+        target === undefined ? [] : target.isUnionType() ? ts.constituentTypes(target) : [target];
+      for (const part of parts) {
+        const value = this.dictionaryValueType(part);
+        // A dictionary of `unknown` or `any` values is checked-dynamic already.
+        if (
+          value !== undefined &&
+          (value.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) === 0 &&
+          this.dictionaryValueType(sourceType) !== value
+        )
+          received.add(value);
+      }
+    }
+    if (received.size === 0) return;
+    // The dictionary values the program writes through or observes.
+    const seen = new Set<ts.Type>();
+    for (const node of [...writeNodes, ...observedNodes]) {
+      const type = attempt(() => this.checker.getTypeAtLocation(node));
+      const parts =
+        type === undefined ? [] : type.isUnionType() ? ts.constituentTypes(type) : [type];
+      for (const part of parts) {
+        const value = this.dictionaryValueType(part);
+        if (value !== undefined) seen.add(value);
+      }
+    }
+    for (const value of received) if (seen.has(value)) this.dictionaryViews.add(value);
+  }
+
+  /** Whether `source` holds an existing object that a dictionary
+   * conversion would copy. */
+  private dictionarySource(
+    source: ts.Expression,
+    type: ts.Type,
+    callsNamed: (name: string) => readonly (ts.CallExpression | ts.NewExpression)[],
+  ): boolean {
+    if (this.isProgramClassInstance(type) || this.isRecordWithFields(type)) return true;
+    if (!isDynamicView(this.checker, type) || !ts.isIdentifier(source)) return false;
+    const decl = attempt(() => this.checker.getSymbolAtLocation(source))?.valueDeclaration;
+    if (decl === undefined) return false;
+    const holdsObject = (expr: ts.Expression): boolean => {
+      const held = attempt(() => this.checker.getTypeAtLocation(this.flowSourceNode(expr)));
+      return (
+        held !== undefined && (this.isProgramClassInstance(held) || this.isRecordWithFields(held))
+      );
+    };
+    if (ts.isParameter(decl)) {
+      // A parameter holds what its callers pass: the calls of the function
+      // by name whose signature resolves to it.
+      const fn = decl.parent;
+      if (fn === undefined || !ts.isFunctionLike(fn)) return false;
+      const index = fn.parameters.nodes.indexOf(decl);
+      const name = functionName(fn);
+      if (name === undefined || index < 0) return false;
+      return callsNamed(name).some((call) => {
+        const argument = call.arguments?.nodes[index];
+        return (
+          argument !== undefined &&
+          !ts.isSpreadElement(argument) &&
+          attempt(() => this.checker.getResolvedSignature(call)?.declaration) === fn &&
+          holdsObject(argument)
+        );
+      });
+    }
+    return (
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer !== undefined &&
+      ts.isVariableDeclarationList(decl.parent) &&
+      (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
+      holdsObject(decl.initializer)
+    );
+  }
+
+  /** A program object type with declared properties that is not a class
+   * instance, array, tuple, function or library type. */
+  private isRecordWithFields(type: ts.Type): boolean {
+    return this.isStructuralTarget(type) && this.checker.getPropertiesOfType(type).length > 0;
+  }
+
+  /** The value type of a string-keyed dictionary with no declared
+   * properties, or undefined for any other type. */
+  private dictionaryValueType(type: ts.Type): ts.Type | undefined {
+    if ((type.flags & ts.TypeFlags.Object) === 0) return undefined;
+    if (this.checker.isArrayType(type) || this.checker.isTupleType(type)) return undefined;
+    if (this.checker.getCallSignatures(type).length > 0) return undefined;
+    if (this.checker.getPropertiesOfType(type).length > 0) return undefined;
+    return this.checker
+      .getIndexInfosOfType(type)
+      .find((index) => (index.keyType.flags & ts.TypeFlags.String) !== 0)?.type;
+  }
+
   private isProgramClassInstance(type: ts.Type): boolean {
     const symbol = type.getSymbol();
     return (
@@ -743,7 +983,13 @@ export class ClassProtocols {
     if ((type.flags & ts.TypeFlags.Object) === 0) return false;
     const previous = this.answers.get(type);
     if (previous !== undefined) return previous;
-    const answer = this.protocol(type);
+    // A dictionary keeps checked identity when the protocols already mark
+    // it (a literal whose methods read `this`) or when it receives existing
+    // objects (markDictionaryViews).
+    const dictionaryValue = this.dictionaryValueType(type);
+    const answer =
+      this.protocol(type) ||
+      (dictionaryValue !== undefined && this.dictionaryViews.has(dictionaryValue));
     this.answers.set(type, answer);
     return answer;
   }
@@ -842,6 +1088,44 @@ const IDENTITY_METHODS = new Set([
   "lastIndexOf",
   "includes",
 ]);
+
+/** An expression that denotes an object that already exists, not a fresh
+ * literal or call result. */
+function isExistingObject(node: ts.Expression): boolean {
+  return (
+    ts.isIdentifier(node) ||
+    ts.isPropertyAccessExpression(node) ||
+    ts.isElementAccessExpression(node) ||
+    node.kind === ts.SyntaxKind.ThisKeyword
+  );
+}
+
+/** `{}`, `object` and `unknown`: types whose values are checked-dynamic
+ * and keep the original object. */
+function isDynamicView(checker: ts.TypeChecker, type: ts.Type): boolean {
+  if (type.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive)) return true;
+  return (
+    (type.flags & ts.TypeFlags.Object) !== 0 &&
+    checker.getPropertiesOfType(type).length === 0 &&
+    checker.getIndexInfosOfType(type).length === 0 &&
+    checker.getCallSignatures(type).length === 0 &&
+    checker.getConstructSignatures(type).length === 0
+  );
+}
+
+/** The name calls use for a function, method or function-valued binding. */
+function functionName(fn: ts.Node): string | undefined {
+  if ((ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) && fn.name !== undefined)
+    return ts.isIdentifier(fn.name) ? fn.name.text : undefined;
+  if (
+    (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) &&
+    fn.parent !== undefined &&
+    ts.isVariableDeclaration(fn.parent) &&
+    ts.isIdentifier(fn.parent.name)
+  )
+    return fn.parent.name.text;
+  return undefined;
+}
 
 function isNullishLiteral(node: ts.Expression): boolean {
   while (ts.isParenthesizedExpression(node)) node = node.expression;

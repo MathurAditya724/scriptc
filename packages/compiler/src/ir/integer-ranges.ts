@@ -2,6 +2,7 @@ import type { IrExpr, IrFunction, IrStmt } from "./ir.js";
 import { everyExprChild, everyStmtChild, everyStmtList } from "./traverse.js";
 import { byteNumberAccess, byteNumberRange } from "./byte-numbers.js";
 import {
+  BYTES_LENGTH_RANGE,
   boundedIntegerLoopFacts,
   guardedLoopCounterFacts,
   integerPathFallsThrough,
@@ -220,6 +221,11 @@ export interface IntegerSlotFacts {
   /** Number arrays whose every present element is an int32 (Int32[]
    * contracts): an element read that found a value reads an int32. */
   elements?: (arr: IrExpr) => boolean;
+  /** Element reads narrowed out of a union (`xs[i]!`, also when a union
+   * local holds the read) keep the element's range, and a ternary arm that
+   * always throws yields no value. Only modules with int32 array candidates
+   * (ir/int32-arrays.ts) set it, so no other program's ranges change. */
+  narrowedReads?: boolean;
 }
 
 /** A local read, or a numeric local plus or minus an integer literal
@@ -238,6 +244,50 @@ function offsetRef(e: IrExpr): { localId: string; offset: number } | null {
   if (e.op === "+" && e.right.kind === "varRef" && e.right.type.kind === "f64" && left !== null)
     return { localId: e.right.localId, offset: left };
   return null;
+}
+
+/** Library calls that always throw. */
+const THROWING_LIB = /^error\.\w*Throw$/;
+
+function throws(e: IrExpr): boolean {
+  return e.kind === "libCall" && THROWING_LIB.test(e.fn);
+}
+
+/** The values written to each union-typed local of `fn` by declarations
+ * and assignments; null for a local that another write reaches or that a
+ * closure captures. */
+function unionLocalWrites(
+  fn: IrFunction,
+  captures: ReadonlySet<string>,
+): Map<string, IrExpr[] | null> {
+  const unionLocals = new Set(
+    fn.locals
+      .filter((l) => l.type.kind === "union" && !l.boxed && !captures.has(l.id))
+      .map((l) => l.id),
+  );
+  const result = new Map<string, IrExpr[] | null>();
+  const add = (id: string, value: IrExpr | null): void => {
+    if (!unionLocals.has(id)) return;
+    const list = result.get(id);
+    if (list === null) return;
+    if (value === null) result.set(id, null);
+    else if (list) list.push(value);
+    else result.set(id, [value]);
+  };
+  everyStmtList(fn.body, {
+    stmt: (s) => {
+      if (s.kind === "varDecl" && s.init) add(s.localId, s.init);
+      else if (s.kind === "assign") add(s.localId, s.value);
+      else if (s.kind === "forOf") add(s.localId, null);
+      else if (s.kind === "tryCatch" && s.catchLocalId) add(s.catchLocalId, null);
+      return true;
+    },
+    expr: (e) => {
+      if (e.kind === "assignExpr") add(e.localId, null);
+      return true;
+    },
+  });
+  return result;
 }
 
 /** Structured local dataflow. Calls cannot write uncaptured local slots,
@@ -272,6 +322,10 @@ export function analyzeIntegerRangeFacts(
       .map((l) => l.id),
   );
   const loopLocals = new Map(fn.locals.filter((l) => !captures.has(l.id)).map((l) => [l.id, l]));
+  // With narrowed reads, the values written to union locals (an element
+  // read held before it is narrowed), or null for a local some other write
+  // (assignExpr, for-of, catch, capture) reaches.
+  const unionWrites = slots.narrowedReads ? unionLocalWrites(fn, captures) : null;
   // A captured binding has no local dataflow: only a proof that covers
   // every write of the shared box anywhere applies to its reads.
   const boxedRange = (localId: string): IntegerRange | null => {
@@ -427,6 +481,7 @@ export function analyzeIntegerRangeFacts(
             return boxedRange(e.localId);
           }
           case "fieldGet":
+          case "arrayGet":
           case "call":
             return slotRange(e);
           default:
@@ -490,6 +545,45 @@ export function analyzeIntegerRangeFacts(
     return range;
   }
 
+  /** narrowedRange through a union local: every value written to it. */
+  function narrowedValue(
+    value: IrExpr,
+    unionId: string,
+    tag: number,
+  ): IntegerRange | null | "never" {
+    if (value.kind !== "varRef") return narrowedRange(value, unionId, tag);
+    const written = unionWrites?.get(value.localId);
+    if (!written || written.length === 0) return null;
+    let result: IntegerRange | null | "never" = "never";
+    for (const w of written) {
+      const arm = narrowedRange(w, unionId, tag);
+      if (arm === "never") continue;
+      if (arm === null) return null;
+      result = result === "never" ? arm : union(result, arm);
+    }
+    return result;
+  }
+  /** The range of the values of union tag `tag` that `value` (already
+   * analyzed) can hold: "never" when no arm holds that tag. */
+  function narrowedRange(
+    value: IrExpr,
+    unionId: string,
+    tag: number,
+  ): IntegerRange | null | "never" {
+    if (value.kind === "seqExpr") return narrowedRange(value.result, unionId, tag);
+    if (value.kind === "ternary") {
+      const yes = narrowedRange(value.then, unionId, tag),
+        no = narrowedRange(value.else_, unionId, tag);
+      if (yes === "never") return no;
+      if (no === "never") return yes;
+      return yes && no ? union(yes, no) : null;
+    }
+    if (value.kind === "unionWrap" && value.unionId === unionId) {
+      if (value.tag !== tag) return "never";
+      return value.value.kind === "arrayGet" ? (ranges.get(value.value) ?? null) : null;
+    }
+    return null;
+  }
   function remember(e: IrExpr, range: IntegerRange | null): IntegerRange | null {
     // Shared IR objects have to satisfy the proof at every occurrence.
     const previous = ranges.get(e);
@@ -683,6 +777,10 @@ export function analyzeIntegerRangeFacts(
           right = expr(e.else_, no);
         merge(facts, yes, no);
         if (left && right) range = union(left, right);
+        // With narrowed reads: an arm that always throws yields no value,
+        // so the other arm's range is the result's.
+        else if (slots.narrowedReads && throws(e.then)) range = right;
+        else if (slots.narrowedReads && throws(e.else_)) range = left;
         break;
       }
       case "logical": {
@@ -724,7 +822,7 @@ export function analyzeIntegerRangeFacts(
         const numeric = byteNumberAccess(e);
         if (numeric && !numeric.write) range = byteNumberRange(numeric);
         else if (e.method === "length" || e.method === "byteLength" || e.method === "byteOffset")
-          range = { min: 0, max: Number.MAX_SAFE_INTEGER };
+          range = BYTES_LENGTH_RANGE;
         else if (e.method === "get" && e.invalidNaN !== true && e.receiver.type.kind === "bytes") {
           const elem = e.receiver.type.elem;
           if (elem === "u8" || elem === "u8c") range = { min: 0, max: 255 };
@@ -769,6 +867,8 @@ export function analyzeIntegerRangeFacts(
         );
         if (e.type.kind === "f64") {
           if (e.method === "length") range = { min: 0, max: STRING_MAX_UNITS };
+          // A string holds at most SCR_STR_MAX_CAP (0x7fffffff) bytes.
+          else if (e.method === "byteLength") range = { min: 0, max: STRING_MAX_UNITS };
           // An empty needle is found at the clamped position, up to the length.
           else if (e.method === "indexOf") range = { min: -1, max: STRING_MAX_UNITS };
         }
@@ -777,26 +877,44 @@ export function analyzeIntegerRangeFacts(
         expr(e.obj, facts);
         range = slotRange(e);
         break;
+      case "unionNarrow":
+        // Only modules with narrowed reads take this rule: the narrow
+        // evaluates its operand first, and throws for every arm of another
+        // tag, so an element read `xs[i]!` (a ternary of the wrapped
+        // element and a wrapped undefined) has the element's range.
+        if (!slots.narrowedReads || e.type.kind !== "f64") {
+          range = conservative(e, facts);
+          break;
+        }
+        expr(e.value, facts);
+        {
+          const arm = narrowedValue(e.value, e.unionId, e.tag);
+          range = arm === "never" ? null : arm;
+        }
+        break;
       default:
-        // Do not assume the traversal order is an evaluation order for an
-        // unknown node. Every child gets the same conservative entry state.
-        havoc(facts, [e], facts);
-        everyExprChild(
-          e,
-          (child) => {
-            expr(child, new Map(facts));
-            return true;
-          },
-          (child) => {
-            body([child], new Map(facts));
-            return true;
-          },
-        );
-        // A direct call's result carries its whole-program return proof.
-        range = slotRange(e);
+        range = conservative(e, facts);
         break;
     }
     return remember(e, range);
+  }
+  /** An unknown node: do not assume the traversal order is an evaluation
+   * order. Every child gets the same conservative entry state. */
+  function conservative(e: IrExpr, facts: Facts): IntegerRange | null {
+    havoc(facts, [e], facts);
+    everyExprChild(
+      e,
+      (child) => {
+        expr(child, new Map(facts));
+        return true;
+      },
+      (child) => {
+        body([child], new Map(facts));
+        return true;
+      },
+    );
+    // A direct call's result carries its whole-program return proof.
+    return slotRange(e);
   }
   function induction(
     s: IrStmt & { kind: "for" },
@@ -960,6 +1078,19 @@ export function analyzeIntegerRangeFacts(
           // inside and after the loop.
           const guarded =
             s.kind === "while" ? guardedLoopCounterFacts(s, loopLocals, facts) : noInvariants;
+          // The same bounds hold on entry and at every write in the loop,
+          // which is what a proven integer loop needs (loopRanges). A loop
+          // analyzed again keeps the bindings every analysis bounds.
+          if (s.kind === "while") {
+            const previous = loopRanges.get(s);
+            if (!previous) loopRanges.set(s, new Map(guarded));
+            else
+              for (const [id, range] of previous) {
+                const other = guarded.get(id);
+                if (other) previous.set(id, union(range, other));
+                else previous.delete(id);
+              }
+          }
           const loop = new Map(facts);
           havocWith(loop, [s], loop, guarded);
           for (const [id, range] of guarded) set(loop, id, range);

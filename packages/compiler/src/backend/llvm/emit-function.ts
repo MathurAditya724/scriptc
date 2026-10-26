@@ -16,13 +16,16 @@ import {
   withInitializerBindings,
   withInitializerLocals,
 } from "../../ir/initializer-bindings.js";
-import { findUnaliasedLocalArrays } from "../../ir/array-length-stability.js";
 import { constructorClass } from "../../ir/final-fields.js";
-import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findCallArrayReads, findLocalArrayReads } from "./local-array-reads.js";
 import { findScalarStringSlices, findScratchStringSlices } from "./string-slices.js";
-import { findMapReadLifetimes, findReadNumberMapWrites } from "./map-read-lifetimes.js";
+import {
+  findMapReadBorrows,
+  findMapReadLifetimes,
+  findReadNumberMapWrites,
+} from "./map-read-lifetimes.js";
+import { borrowableMapGet } from "./expr-containers.js";
 import { findMapEntryFusions } from "./map-entry-fusion.js";
 import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
@@ -35,6 +38,7 @@ import {
   mangleArgPack,
   mangleAsyncAdoptCall,
   mangleAsyncAwaitCall,
+  mangleAsyncDirectSpawn,
   mangleAsyncSpawn,
   mangleBorrowedFunction,
   mangleClassStruct,
@@ -54,11 +58,20 @@ import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { f64Lit } from "./common.js";
 import { RESULT_ENTRY_PREFIX } from "./record-results.js";
 import { emitIntegerClone, emitIntegerDispatcher } from "./integer-clones.js";
+import { beginFunctionLoops, LOOPS } from "./loop-state.js";
+import { runningExtremumUpdates } from "./running-extrema.js";
+import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
+import { UNWIND_PERSONALITY, UNWIND_SLOT } from "./unwind-abi.js";
 
 export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const B = new BlockBuilder();
   emitter.B = B;
   emitter.currentFunctionName = fn.name;
+  emitter.currentUnwindAbi = emitter.unwindAbi.has(fn.name);
+  emitter.usesLandingPads = false;
+  emitter.aliasScopedVersions = 0;
+  emitter.findInt32Allocations(fn);
+  emitter.speculativeLeaves = 0;
   emitter.currentTier = fn.tier;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
@@ -80,8 +93,11 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     emitter.currentLocals.set(id, plain);
     emitter.lazyCaptureBoxes.set(id, "");
   }
+  emitter.runningExtrema = emitter.debug === null ? runningExtremumUpdates(fn) : new Set();
   emitter.currentConstantCallbacks =
     emitter.debug === null ? (emitter.constantCallbacks.get(fn.name) ?? new Map()) : new Map();
+  emitter.knownCallbacks.clear();
+  emitter.callbackVersionsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   // Preserve concrete source bindings for debugger inspection. Suspended
   // functions keep the established array lifetime across continuations.
   emitter.streamingSplitsEnabled = emitter.debug === null && !fn.async && !fn.generator;
@@ -96,7 +112,6 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const initializerBindings = emitter.initializerBindings.get(fn.name) ?? [];
   const numericFn = withInitializerBindings(fn, initializerBindings);
   emitter.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
-  emitter.unaliasedArrays = findUnaliasedLocalArrays(fn);
   emitter.borrowedParameters.clear();
   emitter.referenceWrites?.enter(fn);
   emitter.reboundOwnerSlots.clear();
@@ -127,32 +142,24 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.stableCaptureIds =
     fn.captures !== undefined ? emitter.lazyCaptures.stableCaptures(fn.name) : new Set();
   emitter.integerLoopBindings.clear();
-  emitter.countedLoopsEnabled = emitter.debug === null && !fn.async && !fn.generator;
-  emitter.speculativeLoopsEnabled = emitter.countedLoopsEnabled;
+  emitter.integerTemps.clear();
+  emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
+  beginFunctionLoops(emitter, fn, numericFn);
+  emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
+  emitter.loopCopiesEnabled = true;
   emitter.speculativeFunction = fn.name;
   emitter.speculation = null;
   emitter.speculationResume = null;
+  emitter.int32Kinds = null;
+  emitter.int32KindResume = null;
   emitter.finalFieldBorrows =
     !fn.async &&
     !fn.generator &&
     constructorClass(fn.name) === null &&
     emitter.finalFields.size > 0;
-  emitter.byteWindowsEnabled = emitter.countedLoopsEnabled;
-  emitter.bytesLoopVersionsEnabled = emitter.countedLoopsEnabled;
-  emitter.bytesLoopEntries = null;
-  emitter.bytesLoopFunction = fn;
-  emitter.denseLoopsEnabled = emitter.countedLoopsEnabled;
-  emitter.denseLoop = null;
-  emitter.denseLoopEntries =
-    emitter.denseLoopsEnabled && numericFn.locals.some((l) => l.type.kind === "array")
-      ? findInitializedByteLoopBindings(fn)
-      : new Map();
-  emitter.byteWindowEntries =
-    emitter.byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === "bytes")
-      ? findInitializedByteLoopBindings(fn)
-      : new Map();
   emitter.integerViews.clear();
   emitter.fieldPointerTags.clear();
+  emitter.compressedFieldPtrs.clear();
   emitter.integerArrayBindings.clear();
   emitter.loopArrayBorrows =
     emitter.debug === null
@@ -163,6 +170,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           emitter.optionalArrayReads,
           emitter.referenceWrites,
           emitter.fnByName,
+          emitter.nodeIndex,
         )
       : new Set();
   emitter.localArrayReads = findLocalArrayReads(
@@ -190,15 +198,27 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           fn,
           emitter.callLifetimes,
           emitter.scalarStringSlices,
-          emitter.lentStringParameters,
+          emitter.lendingFacts,
         )
       : new Set();
   emitter.mapReadLifetimes = findMapReadLifetimes(
     fn,
     emitter.boxedUnionsById,
     emitter.callLifetimes,
+    emitter.referenceEffects,
+  );
+  const stable = emitter.callLifetimes.bindings.get(fn.name);
+  emitter.borrowedMapGets = findMapReadBorrows(
+    fn,
+    emitter.referenceEffects,
+    (decl) =>
+      decl.init !== null &&
+      stable?.has(decl.localId) === true &&
+      !emitter.mapReadLifetimes.locals.has(decl.localId) &&
+      borrowableMapGet(emitter, decl.init),
   );
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
+  emitter.numberMapKeyIntegers = new Map();
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;
   emitter.localStackUnions = findLocalStackUnions(
     fn,
@@ -225,7 +245,9 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerRanges = rangeFacts.ranges;
   emitter.integerLoopRanges = rangeFacts.loopRanges;
   emitter.int32Elements = slotFacts.elements ?? null;
+  emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
   emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
+  emitter.bytesOwned = new Set();
   // Debug builds keep every number local a double for the debugger's
   // variable view. Lazily boxed captured parameters keep their double,
   // which the box is created from, and so do plain copies of a capture or
@@ -306,11 +328,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     // ScrGen owns the frame), so its OUT slot address is fixed.
     let out: string | null = null;
     const yieldKind = fn.generator?.yieldT.kind;
-    if (
-      !emitter.wasi &&
-      fn.async !== true &&
-      (yieldKind === "f64" || yieldKind === "date" || yieldKind === "bool")
-    ) {
+    if (!emitter.wasi && fn.async !== true && (yieldKind === "f64" || yieldKind === "bool")) {
       emitter.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
       const gen = B.tmp();
       B.line(`${gen} = call ptr @scr_gen_of_fiber(ptr ${self})`);
@@ -330,7 +348,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
 
   const paramIds = new Set(fn.params.map((p) => p.localId));
   if (emitter.debug === null) {
-    for (const id of findIntegerViews(numericFn)) {
+    for (const id of findIntegerViews(numericFn, emitter.nodeIndex)) {
       // An i32 slot is its own view.
       if (emitter.int32Locals.has(id)) continue;
       const slot = B.slot();
@@ -406,7 +424,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
       if (local.boxed || emitter.captureIds.has(local.id)) slots.add(`%${mangleLocal(local.id)}`);
     B.volatileSlots = slots;
     // Without optimization a versioned copy only adds code.
-    emitter.bytesLoopVersionsEnabled = false;
+    LOOPS.of(emitter).bytesLoopVersionsEnabled = false;
   }
   // Captured bindings come in through the environment — borrowed for the
   // whole call (the closure owns them): bound here, never released here.
@@ -601,6 +619,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     B.terminate(cleanup.terminator);
   }
 
+  if (emitter.usesLandingPads && emitter.currentUnwindAbi)
+    B.entryAllocas.push(`${UNWIND_SLOT} = alloca { ptr, i32 }`);
   if (emitter.logArgSlots > 0) {
     B.entryAllocas.push(`%logargs = alloca [${emitter.logArgSlots} x %ScrLogArg]`);
   }
@@ -641,7 +661,10 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const debug = emitter.debugScope === null ? "" : ` !dbg ${emitter.debugScope}`;
   const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
   emitter.privateGlobalSlots.clear();
-  let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
+  // Landing pads (emitDirectCall) need the personality.
+  const personality = emitter.usesLandingPads ? ` ${UNWIND_PERSONALITY}` : "";
+  if (emitter.usesLandingPads) emitter.declare(`declare i32 @__gcc_personality_v0(...)`);
+  let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${personality}${debug} { ; ${fn.name}\n${B.render()}\n}`;
   if (int32Abi) body += "\n" + emitter.emitInt32AbiWrapper(fn, symbol, int32Abi);
   if (emitter.integerClones.members.has(fn.name)) {
     body += "\n" + emitIntegerClone(fn, emitter, emitter.stackChecks?.has(fn.name) === true);
@@ -706,7 +729,6 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
           tr.push(`  br label %done ; void body: the done value is undefined (NONE)`);
           break;
         case "f64":
-        case "date":
           emitter.declare(`declare void @scr_gen_out_f64(ptr, double)`);
           tr.push(`  call void @scr_gen_out_f64(ptr %g, double %r)`, `  br label %done`);
           break;
@@ -910,6 +932,20 @@ export function emitAsyncScaffolding(emitter: LlEmitter): string[] {
       for (const line of emitter.emitAsyncAwaitCall(fn, argPackLines, true)) out.push(line);
     }
     const stackless = emitter.stacklessAsync.has(fn.name);
+    if (stackless && emitter.directAwaitCallees.has(fn.name)) {
+      // A coroutine's direct await: the same prefix, with the promise kept
+      // inside the returned fiber record.
+      emitter.declare(`declare ptr @scr_async_spawn_direct(ptr, ptr)`);
+      out.push(
+        `define internal ptr @${mangleAsyncDirectSpawn(fn.name)}(${spawnParams.join(", ")}) ${FN_ATTRS} { ; direct spawn ${fn.name}`,
+        `entry:`,
+        ...argPackLines,
+        `  %f = call ptr @scr_async_spawn_direct(ptr @${mangleTrampoline(fn.name)}, ptr %ap)`,
+        `  ret ptr %f`,
+        `}`,
+        ``,
+      );
+    }
     const spawn = stackless ? "scr_async_spawn_stackless" : "scr_async_spawn";
     emitter.declare(`declare ptr @scr_fiber_promise(ptr)`);
     emitter.declare(`declare ptr @${spawn}(ptr, ptr)`);
@@ -1041,7 +1077,6 @@ export function emitAsyncAwaitCall(
         emitter.declare(`declare void @scr_await_void(ptr)`);
         return `  call void @scr_await_void(ptr ${promise})`;
       case "f64":
-      case "date":
         emitter.declare(`declare double @scr_await_f64(ptr)`);
         return `  ${dest} = call double @scr_await_f64(ptr ${promise})`;
       case "bool":
@@ -1096,7 +1131,7 @@ export function emitAsyncAwaitCall(
     const kind =
       ret.kind === "void"
         ? "void"
-        : ret.kind === "f64" || ret.kind === "date"
+        : ret.kind === "f64"
           ? "f64"
           : ret.kind === "bool"
             ? "bool"
@@ -1117,8 +1152,11 @@ export function emitAsyncAwaitCall(
       ``,
     ];
   }
-  emitter.declare(`declare void @scr_async_inline_enter(ptr)`);
-  emitter.declare(`declare void @scr_async_inline_exit(ptr)`);
+  const framed = emitter.fiberlessFrames;
+  if (framed) {
+    emitter.declare(`declare void @scr_async_inline_enter(ptr)`);
+    emitter.declare(`declare void @scr_async_inline_exit(ptr)`);
+  }
   emitter.declare(`declare void @scr_await_hop()`);
   emitter.declare(`declare ptr @scr_promise_new()`);
   emitter.declare(`declare void @scr_promise_reject_pending(ptr)`);
@@ -1127,11 +1165,12 @@ export function emitAsyncAwaitCall(
   const out = [
     head,
     `entry:`,
-    `  %frame = alloca { ptr, ptr }`,
-    `  call void @scr_async_inline_enter(ptr %frame)`,
+    ...(framed
+      ? [`  %frame = alloca { ptr, ptr }`, `  call void @scr_async_inline_enter(ptr %frame)`]
+      : []),
     retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`,
     ...emitter.pendingTestLines("%pend"),
-    `  call void @scr_async_inline_exit(ptr %frame)`,
+    ...(framed ? [`  call void @scr_async_inline_exit(ptr %frame)`] : []),
     // Adopting: the then job's turn comes before the settled promise's
     // own reaction, whichever way the body completed.
     ...(adopt ? [`  call void @scr_await_hop()`] : []),
@@ -1171,7 +1210,6 @@ export function emitWasiFulfill(emitter: LlEmitter, v: LlValue | null): void {
       case "void":
         return;
       case "f64":
-      case "date":
         emitter.declare(`declare void @scr_gen_out_f64(ptr, double)`);
         emitter.B.line(`call void @scr_gen_out_f64(ptr ${gen}, double ${v!.name})`);
         return;
@@ -1196,7 +1234,6 @@ export function emitWasiFulfill(emitter: LlEmitter, v: LlValue | null): void {
       emitter.B.line(`call void @scr_promise_fulfill_void(ptr ${pr})`);
       break;
     case "f64":
-    case "date":
       emitter.declare(`declare void @scr_promise_fulfill_f64(ptr, double)`);
       emitter.B.line(`call void @scr_promise_fulfill_f64(ptr ${pr}, double ${v!.name})`);
       break;
@@ -1299,8 +1336,10 @@ export function emitArgPackAndTrampolinePrologue(
  * code. */
 export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
   if (emitter.wasi || emitter.mod.workers === true) return null;
-  for (const decl of emitter.decls) if (/@scr_test_sub\b/.test(decl)) return null;
-  for (const text of emitter.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return null;
+  const testSub = (text: string): boolean =>
+    text.includes("@scr_test_sub") && /@scr_test_sub\b/.test(text);
+  for (const decl of emitter.decls) if (testSub(decl)) return null;
+  for (const text of emitter.fnDefText.values()) if (testSub(text)) return null;
   // Reverse mention edges, then propagate "may park" to every mentioner.
   const mentionedBy = new Map<string, Set<string>>();
   const parks = new Set<string>();

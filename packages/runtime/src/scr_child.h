@@ -23,6 +23,11 @@ ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args); /* +1, never throws */
 ScrSpawnRes *scr_spawn_sync_opts(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                   ScrStr *killsignal, double in_mode,
                                   double out_mode, double err_mode);
+/* scr_spawn_sync_opts with an `env` option: [k,v,...] pairs replace the
+ * child's environment (NULL inherits the parent's). */
+ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
+                                ScrStr *killsignal, double in_mode, double out_mode,
+                                double err_mode, ScrArr *env_pairs);
 /* The runtime-string stdio entry: the compiler proved the value is
  * "pipe" | "ignore" | "inherit" by type; the mode mapping happens here. */
 ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_ms,
@@ -171,6 +176,7 @@ void scr_child_release_v(void *p);
 void scr_child_on_exit(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn);
 void scr_child_on_close(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn);
 void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn);
+bool scr_child_ipc_present(ScrChild *c);
 bool scr_child_ipc_connected(ScrChild *c);
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json);
 bool scr_child_ipc_send_cb(ScrChild *c, ScrStr *json,

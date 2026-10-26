@@ -14,6 +14,7 @@ import {
  */
 
 const any = (...features) => ({ any: features });
+const all = (...features) => ({ all: features });
 
 // ld64 dead-strips Mach-O symbol subsections without an ELF-style compile
 // flag. Keep this checked-in metadata alongside the matrix so pack build and
@@ -43,7 +44,8 @@ export const RUNTIME_PACK_MATRIX = withLibraryRuntimeFlavors(
       { id: "quickjs", predicate: false },
       { id: "libregexp", predicate: "regex" },
       { id: "zlib", predicate: "zlibEffective" },
-      { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh") },
+      { id: "brotli", predicate: all("zlib", "brotli") },
+      { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
     ],
     system_libraries: [{ name: "System", predicate: true }],
   }),

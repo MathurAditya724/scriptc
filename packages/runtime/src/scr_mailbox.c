@@ -21,15 +21,20 @@
 #include <time.h>
 #include <unistd.h>
 #ifdef __linux__
+#include <poll.h>
 #include <sched.h>
 #endif
 #endif
+
+/* Event kinds below this have their queued events counted (scr_mailbox_count_kind). */
+#define SCR_MAILBOX_COUNTED_KINDS 16u
 
 struct ScrMailbox {
   atomic_size_t references;
   ScrMailEvent *head;
   ScrMailEvent **tail;
   bool closed;
+  size_t queued[SCR_MAILBOX_COUNTED_KINDS]; /* under the lock */
   /* head != NULL || closed, written under the lock, read without it by
    * scr_mailbox_wait's spin. */
   atomic_bool ready;
@@ -136,9 +141,11 @@ ScrMailbox *scr_mailbox_retain(ScrMailbox *mailbox) {
 
 void scr_mail_event_free(ScrMailEvent *event) {
   if (!event) return;
-  scr_message_free(event->message);
   free(event->data);
-  free(event);
+  ScrMessage *message = event->message;
+  /* An event in its message's block goes with the message. */
+  if (!event->in_message) free(event);
+  scr_message_free(message);
 }
 
 void scr_mailbox_release(ScrMailbox *mailbox) {
@@ -167,6 +174,7 @@ bool scr_mailbox_post(ScrMailbox *mailbox, ScrMailEvent *event) {
   event->next = NULL;
   *mailbox->tail = event;
   mailbox->tail = &event->next;
+  if (event->kind < SCR_MAILBOX_COUNTED_KINDS) mailbox->queued[event->kind]++;
   atomic_store_explicit(&mailbox->ready, true, memory_order_release);
   scr_mailbox_unlock(mailbox);
   /* Signaled after the unlock: a woken or spinning taker then finds the
@@ -182,6 +190,7 @@ ScrMailEvent *scr_mailbox_take(ScrMailbox *mailbox) {
   if (event) {
     mailbox->head = event->next;
     event->next = NULL;
+    if (event->kind < SCR_MAILBOX_COUNTED_KINDS) mailbox->queued[event->kind]--;
   }
   if (!mailbox->head) {
     mailbox->tail = &mailbox->head;
@@ -201,6 +210,7 @@ ScrMailEvent *scr_mailbox_take_kind(ScrMailbox *mailbox, unsigned kind, uint64_t
     *slot = event->next;
     if (mailbox->tail == &event->next) mailbox->tail = slot;
     event->next = NULL;
+    if (event->kind < SCR_MAILBOX_COUNTED_KINDS) mailbox->queued[event->kind]--;
   }
   if (!mailbox->head) {
     mailbox->tail = &mailbox->head;
@@ -224,6 +234,20 @@ bool scr_mailbox_pending(ScrMailbox *mailbox) {
   bool pending = mailbox->head != NULL;
   scr_mailbox_unlock(mailbox);
   return pending;
+}
+
+unsigned scr_mailbox_head_kind(ScrMailbox *mailbox) {
+  scr_mailbox_lock(mailbox);
+  unsigned kind = mailbox->head ? mailbox->head->kind : 0;
+  scr_mailbox_unlock(mailbox);
+  return kind;
+}
+
+size_t scr_mailbox_count_kind(ScrMailbox *mailbox, unsigned kind) {
+  scr_mailbox_lock(mailbox);
+  size_t count = kind < SCR_MAILBOX_COUNTED_KINDS ? mailbox->queued[kind] : 0;
+  scr_mailbox_unlock(mailbox);
+  return count;
 }
 
 /* A taker that finds the mailbox empty spins this long before it blocks.
@@ -298,7 +322,32 @@ void scr_mailbox_wait(ScrMailbox *mailbox, double milliseconds) {
   if (!(milliseconds > 0)) return;
   if (scr_mailbox_spin(mailbox, milliseconds)) return;
   scr_mailbox_lock(mailbox);
-  if (!mailbox->head && !mailbox->closed) {
+  bool waiting = !mailbox->head && !mailbox->closed;
+#ifdef __linux__
+  /* Linux sleeps in ppoll(2) on the wake pipe rather than on the
+   * condition: a pipe write wakes its reader as a synchronous wakeup,
+   * which the scheduler can run on the writer's CPU when the writer is
+   * about to block. A worker that posts its result and then waits frees
+   * that CPU, so the thread it woke runs there at once instead of queueing
+   * behind another busy thread until the scheduler preempts it. Bytes left
+   * by signals whose events were already taken are drained first, under
+   * the lock: an event posted after the unlock writes a new byte. */
+  if (waiting) scr_mailbox_drain(mailbox);
+  scr_mailbox_unlock(mailbox);
+  if (!waiting) return;
+  struct pollfd wake = {mailbox->read_fd, POLLIN, 0};
+  if (isinf(milliseconds)) (void)ppoll(&wake, 1, NULL, NULL);
+  else {
+    /* The event loop rechecks its monotonic deadlines after every wake,
+     * including spurious ones. Bound conversion before casting time_t. */
+    if (milliseconds > 86400000) milliseconds = 86400000;
+    struct timespec timeout = {(time_t)(milliseconds / 1000),
+        (long)ceil(fmod(milliseconds, 1000) * 1000000)};
+    if (timeout.tv_nsec == 1000000000) { timeout.tv_sec++; timeout.tv_nsec = 0; }
+    (void)ppoll(&wake, 1, &timeout, NULL);
+  }
+#else
+  if (waiting) {
 #ifdef _WIN32
     DWORD timeout = milliseconds >= INFINITE ? INFINITE : (DWORD)ceil(milliseconds);
     (void)SleepConditionVariableSRW(&mailbox->condition, &mailbox->lock, timeout, 0);
@@ -325,6 +374,7 @@ void scr_mailbox_wait(ScrMailbox *mailbox, double milliseconds) {
 #endif
   }
   scr_mailbox_unlock(mailbox);
+#endif
 }
 
 int scr_mailbox_pollfd(const ScrMailbox *mailbox) {
@@ -439,7 +489,7 @@ void scr_channel_set_owner(ScrChannel *channel, int side, ScrMailbox *owner, uns
  * messages as ready, so it does not wait while the queue is non-empty. */
 bool scr_channel_post(ScrChannel *channel, int side, ScrMessage *message, unsigned message_kind,
                       unsigned wake_kind) {
-  ScrMailEvent *event = calloc(1, sizeof(*event));
+  ScrMailEvent *event = message ? scr_message_mail_event(message) : calloc(1, sizeof(*event));
   if (!event) scr_trap("scriptc: out of memory\n");
   event->kind = message_kind;
   event->message = message;

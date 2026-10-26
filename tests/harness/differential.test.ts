@@ -23,6 +23,7 @@ import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { oracleEnvKey } from "./oracle-env.js";
+import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -122,6 +123,7 @@ function wantsTscDecorators(file: string): boolean {
  * test cache — a pure function of the program bytes and the typescript
  * version (both in the oracle cache key). */
 function nodeOracleFile(file: string): string {
+  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {
@@ -146,9 +148,9 @@ function nodeOracleFile(file: string): string {
 }
 
 /** `// @no-deprecation` in the directive head: the Node oracle runs with
- * --no-deprecation — for programs exercising deprecated-API ERROR paths
- * (new Buffer's ctor ladder) whose DEP warnings carry a pid and can never
- * byte-compare; the compiled runtime emits no process warnings at all. */
+ * --no-deprecation, for programs whose DEP warnings carry a pid and cannot
+ * compare. The compiled program does not read the directive; a program
+ * whose compiled form reports the warning sets process.noDeprecation. */
 function wantsNoDeprecation(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l));
 }
@@ -241,7 +243,7 @@ const comptimeShim = pathToFileURL(join(import.meta.dirname, "comptime-shim.mjs"
 function programInputs(file: string): string[] {
   if (!/\/main\.(ts|js|mjs|cjs)$/.test(file)) return [file];
   return [
-    ...ENTRY_EXTS.flatMap((ext) => globSync(join(file, `../**/*.${ext}`))),
+    ...[...ENTRY_EXTS, "tsx", "jsx"].flatMap((ext) => globSync(join(file, `../**/*.${ext}`))),
     ...globSync(join(file, "../**/tsconfig.json")),
     ...globSync(join(file, "../**/package.json")),
   ].sort();

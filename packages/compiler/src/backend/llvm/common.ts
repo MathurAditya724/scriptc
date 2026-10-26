@@ -10,9 +10,10 @@ import type {
 import type { LlvmEmitterContext } from "./expr-context.js";
 
 /** Field numbers of %ScrArr, which mirrors scr_runtime.h's ScrArr field for
- * field (its static assertions pin `len`, `cap`, `cyc`, `filled` and
- * `data`). `len` and `cap` are i32 on every target; the dense states end
- * the allocation after the `cap` value slots at `data` (scrArrStates). */
+ * field (its static assertions pin `len`, `cap`, `cyc`, `spare`, `filled`
+ * and `data`). `len` and `cap` are i32 on every target; the dense states of
+ * an array with states (SCR_ARR_STATES in `spare`) end the allocation after
+ * the `cap` value slots at `data` (scrArrStates). */
 export const SCR_ARR_FIELD = {
   rc: 0,
   len: 1,
@@ -21,10 +22,15 @@ export const SCR_ARR_FIELD = {
   cyc: 4,
   spare: 5,
   filled: 6,
-  ops: 7,
-  data: 8,
-  ext: 9,
+  data: 7,
 } as const;
+
+/** The `spare` flag of a %ScrArr whose dense slots carry state bytes
+ * (SCR_ARR_STATES in scr_array.h). */
+export const SCR_ARR_STATES = 16;
+
+/** The `spare` flag of a frozen %ScrArr (SCR_ARR_FROZEN in scr_array.h). */
+export const SCR_ARR_FROZEN = 32;
 
 /** Loads the i32 `len` or `cap` of a %ScrArr at `ptr` into `dest` as a
  * size-type count. */
@@ -270,6 +276,10 @@ export function emitFieldAbsentTest(B: BlockBuilder, value: string, undefinedTag
   B.line(`${absent} = and i1 ${isUndef}, ${marked}`);
   return absent;
 }
+
+/** ScrClosure.function_kind's SCR_FN_RECEIVER_FREE bit (scr_closure.h):
+ * the body never observes the ambient receiver. */
+export const CLOSURE_RECEIVER_FREE = 16;
 
 /** The right-hand side of a JS function-identity comparison: two closures
  * are one function when their identity roots match (a signature adapter

@@ -422,12 +422,14 @@ static void test_live_iteration_indices(void) {
 /* A small (linear) map that must grow its lookup index while an iteration
  * is active may not compact: entry indices, tombstones and the append
  * position stay put. Integer keys in a compact range move to the direct
- * index (dense) from the fifth entry, any other number keys to the bucket
+ * index (dense) from the second entry, any other number keys to the bucket
  * table from the ninth; both transitions are covered by running the same
- * script with `offset` 0 and 0.5. */
+ * script with `offset` 0 and 0.5. The walk deletes `victim`, an existing
+ * key, then appends the key that makes the index grow. */
 static void run_small_storage_transitions(double offset) {
   bool dense = offset == 0;
-  int n = dense ? 4 : 8; /* entries a linear map holds before its index grows */
+  int n = dense ? 1 : 8; /* entries a linear map holds before its index grows */
+  int victim = dense ? 0 : 1;
   ScrMap *m = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   for (int i = 0; i < n; i++) scr_map_set_f64_f64(m, i + offset, i + 10);
   check(m->nbuckets == 0 && m->buckets == NULL && m->ndense == 0,
@@ -441,22 +443,23 @@ static void run_small_storage_transitions(double offset) {
   ScrMap *copy = scr_map_clone(m, false, NULL);
   check(copy->nbuckets == 0 && copy->ndense == 0, "small clone preserves compact storage");
   scr_map_iter_enter(m);
-  scr_map_delete_f64(m, 1 + offset);
+  scr_map_delete_f64(m, victim + offset);
   scr_map_set_f64_f64(m, n + offset, 14);
   check(dense ? m->ndense > 0 && m->nbuckets == 0 : m->nbuckets > 0 && m->ndense == 0,
         "live iteration promotes without moving entry indices");
-  check(m->nentries == (uint32_t)n + 1 && !scr_map_iter_live(m, 1) &&
+  check(m->nentries == (uint32_t)n + 1 && !scr_map_iter_live(m, victim) &&
             scr_map_iter_key_f64(m, n) == n + offset,
         "promotion preserves tombstones and append position");
   for (int i = n + 1; i < 64; i++) scr_map_set_f64_f64(m, i + offset, i + 10);
-  check(m->nentries == 64 && !scr_map_iter_live(m, 1) && scr_map_iter_key_f64(m, 63) == 63 + offset,
+  check(m->nentries == 64 && !scr_map_iter_live(m, victim) && scr_map_iter_key_f64(m, 63) == 63 + offset,
         "growth during iteration keeps entry indices");
   double out = 0;
-  check(scr_map_get_f64_f64(m, offset, &out) && out == 10,
-        "original key survives promotion and growth");
-  check(!scr_map_has_f64(m, 1 + offset), "deleted small key stays absent after rehash");
+  check(dense ? scr_map_get_f64_f64(m, n + offset, &out) && out == 14
+              : scr_map_get_f64_f64(m, offset, &out) && out == 10,
+        "keys written before the promotion survive it and the growth");
+  check(!scr_map_has_f64(m, victim + offset), "deleted small key stays absent after rehash");
   scr_map_iter_exit(m);
-  check(scr_map_has_f64(copy, 1 + offset) && !scr_map_has_f64(copy, n + offset),
+  check(scr_map_has_f64(copy, victim + offset) && !scr_map_has_f64(copy, n + offset),
         "small clone remains independent");
   scr_map_clear(copy);
   scr_map_iter_enter(copy);
@@ -636,7 +639,7 @@ static void test_value_keys_and_copies(void) {
 }
 
 #ifdef SCR_RC_AUDIT
-static const ScrArrOps map_arr_ops = { scr_map_retain_v, scr_map_release_v, scr_map_trace_v };
+static ScrArrOps map_arr_ops = { scr_map_retain_v, scr_map_release_v, scr_map_trace_v };
 
 static void test_identity_cycles(void) {
   scr_collect_cycles();
@@ -826,11 +829,96 @@ static void test_absent_key_filter(void) {
   for (int i = 0; i < UNIVERSE; i++) scr_str_release(names[i]);
 }
 
+/* SCR_MAP_VAL_CREF: string keys with compact class values in 16-byte
+ * entries (a 32-bit hash, the value as an address over 8). The values here
+ * are stand-in addresses, never dereferenced. */
+static uint64_t cref_val(size_t i) { return (uint64_t)(i + 1) * 8; }
+
+static void test_compact_values(void) {
+  ScrMap *m = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_CREF, NULL);
+  enum { N = 2000 };
+  char buf[32];
+  ScrStr *keys[N];
+  for (size_t i = 0; i < N; i++) {
+    snprintf(buf, sizeof buf, "k%zu", i);
+    keys[i] = S(buf);
+    scr_map_set_str_ref(m, keys[i], (void *)(uintptr_t)cref_val(i));
+  }
+  check(scr_map_size(m) == N, "cref: size after inserts");
+  bool all = true;
+  for (size_t i = 0; i < N; i++) {
+    all &= scr_map_get_str_ref(m, keys[i]) == (void *)(uintptr_t)cref_val(i);
+    const ScrMapCEntry *e = scr_map_entry_str_c(m, keys[i]);
+    all &= e && ((uint64_t)e->val << 3) == cref_val(i) && e->key == (uint64_t)(uintptr_t)keys[i];
+  }
+  check(all, "cref: get and entry_str_c find every value");
+  ScrStr *missing = S("absent");
+  check(!scr_map_get_str_ref(m, missing) && !scr_map_entry_str_c(m, missing), "cref: absent key");
+  check(scr_map_get_span_ref(m, "k7", 2) == (void *)(uintptr_t)cref_val(7), "cref: span lookup");
+  /* A key object other than the stored one, equal bytes. */
+  ScrStr *again = S("k42");
+  check(scr_map_entry_str_c(m, again) && scr_map_get_str_ref(m, again) == (void *)(uintptr_t)cref_val(42),
+        "cref: equal key bytes, other object");
+  scr_str_release(again);
+  for (size_t i = 0; i < N; i += 2) scr_map_set_str_ref(m, keys[i], (void *)(uintptr_t)cref_val(i + N));
+  all = true;
+  for (size_t i = 0; i < N; i++)
+    all &= scr_map_get_str_ref(m, keys[i]) == (void *)(uintptr_t)cref_val(i % 2 ? i : i + N);
+  check(all && scr_map_size(m) == N, "cref: overwrite keeps the entry");
+  for (size_t i = 0; i < N; i++)
+    if (i % 4) scr_map_delete_str(m, keys[i]);
+  check(scr_map_size(m) == N / 4, "cref: deletes");
+  all = true;
+  for (size_t i = 0; i < N; i++) {
+    bool want = i % 4 == 0;
+    all &= scr_map_has_str(m, keys[i]) == want;
+    if (want) all &= scr_map_get_str_ref(m, keys[i]) == (void *)(uintptr_t)cref_val(i + N);
+  }
+  check(all, "cref: lookups after compaction");
+  /* Iteration order and values. */
+  size_t seen = 0;
+  all = true;
+  scr_map_iter_enter(m);
+  for (double i = scr_map_iter_start(m); i < scr_map_iter_count(m); i = scr_map_iter_skip(m, i + 1)) {
+    ScrStr *k = scr_map_iter_key_str(m, i);
+    void *v = scr_map_iter_val_ref(m, i);
+    size_t want = seen * 4;
+    all &= k->len == keys[want]->len && memcmp(k->data, keys[want]->data, k->len) == 0;
+    all &= v == (void *)(uintptr_t)cref_val(want + N);
+    scr_str_release(k);
+    seen++;
+  }
+  scr_map_iter_exit(m);
+  check(all && seen == N / 4, "cref: iteration order and values");
+  /* Copies keep the layout; a key-only copy takes the 24-byte one. */
+  ScrMap *copy = scr_map_clone(m, false, NULL);
+  ScrMap *set = scr_map_clone(m, true, NULL);
+  all = scr_map_size(copy) == N / 4 && scr_map_size(set) == N / 4;
+  for (size_t i = 0; i < N; i += 4) {
+    all &= scr_map_get_str_ref(copy, keys[i]) == (void *)(uintptr_t)cref_val(i + N);
+    all &= scr_map_has_str(set, keys[i]);
+  }
+  all &= !scr_map_has_str(set, keys[1]);
+  check(all, "cref: clone and key-only clone");
+  scr_map_set_str_ref(copy, keys[1], (void *)(uintptr_t)cref_val(1));
+  check(!scr_map_has_str(m, keys[1]) && scr_map_size(copy) == N / 4 + 1, "cref: copies are independent");
+  scr_map_clear(m);
+  check(scr_map_size(m) == 0 && !scr_map_has_str(m, keys[0]), "cref: clear");
+  scr_map_set_str_ref(m, keys[3], (void *)(uintptr_t)cref_val(3));
+  check(scr_map_get_str_ref(m, keys[3]) == (void *)(uintptr_t)cref_val(3), "cref: reuse after clear");
+  scr_map_release(copy);
+  scr_map_release(set);
+  scr_map_release(m);
+  scr_str_release(missing);
+  for (size_t i = 0; i < N; i++) scr_str_release(keys[i]);
+}
+
 int main(void) {
   test_key_bytes();
   test_string_bucket_collisions();
   test_string_keys();
   test_string_entries();
+  test_compact_values();
   test_same_value_zero();
   test_span_keys();
   test_scratch_keys();

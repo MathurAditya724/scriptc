@@ -1,4 +1,5 @@
 /* Type narrowing of lowered values, conditional and as-expressions, and runtime-optional receiver reads. */
+import { declBoundaryOrigin } from "../../decl-projection.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, dynFallbackType } from "../lowerer.js";
 import {
@@ -13,6 +14,7 @@ import {
   STRING,
   type SrcLoc,
   UNDEFINED_T,
+  VOID,
   arrayOf,
   canAdaptDynFuncTo,
   canDynCheckTo,
@@ -32,6 +34,7 @@ import {
   isOptionalProcessVersionsRead,
 } from "../builtins/process.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
+import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
@@ -46,6 +49,8 @@ import {
 } from "../lower-exprs.js";
 import { isConstAssertionTypeNode, unitOnlyUnion } from "../../type-mapper.js";
 import { assertsGlobalObject, extractionCopiesReference } from "../assertion-identity.js";
+import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
+import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
 
 /** `c ? a : b`. An explicit destination constructs each branch at that
  * layout before joining it. Without one, retain the expression's inferred
@@ -614,6 +619,8 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
   if (ts.isPropertyAccessExpression(node) && isOptionalProcessStreamProperty(lowerer, node))
     return expr;
   if (isOptionalProcessVersionsRead(lowerer, node)) return expr;
+  if (ts.isPropertyAccessExpression(node) && isOptionalReadlineCursorRead(lowerer, node))
+    return expr;
 
   // Represented fields and index values can include undefined even when
   // checker inference or lib.d.ts declares strings (RegExp captures).
@@ -691,6 +698,18 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
   if (narrowed?.kind === "union") {
     const hosted = hostedStorageView(lowerer, expr, narrowed, expr.loc);
     if (hosted) return hosted;
+  }
+  // An optional Iterable narrowed to the iterable union (`xs !== undefined`):
+  // re-tag into it, so for-of, spread and the other consumers see the
+  // Iterable itself.
+  if (
+    narrowed?.kind === "union" &&
+    narrowed.unionId !== expr.type.unionId &&
+    iterableUnionOf(lowerer, narrowed)
+  ) {
+    const helper = lowerer.narrowedRetagHelper(node, expr.type.unionId, narrowed.unionId, expr.loc);
+    if (helper)
+      return { kind: "call", callee: helper, args: [expr], type: narrowed, loc: expr.loc };
   }
   // A checker type narrowed to a UNIT arm (the `=== undefined` branch)
   // also stays union-typed: a unit arm has no payload to extract, and
@@ -857,8 +876,15 @@ function checkedStaleArm(
 
 /** V8's spelling of a callee in "is not a function": a string-literal
  * element key reads as a property name (`o["a"]` is `o.a`), other keys
- * keep their brackets. */
+ * keep their brackets, parentheses and non-null assertions disappear, and
+ * a call result reads `f(...)`. */
 export function v8CalleeText(node: ts.Node): string {
+  // `!` is type-only syntax: the running JavaScript has no trace of it.
+  if (ts.isNonNullExpression(node) || ts.isParenthesizedExpression(node))
+    return v8CalleeText(node.expression);
+  // A call result prints with its arguments elided.
+  if (ts.isCallExpression(node) && !node.questionDotToken)
+    return `${v8CalleeText(node.expression)}(...)`;
   if (ts.isElementAccessExpression(node)) {
     const key = node.argumentExpression;
     const object = v8CalleeText(node.expression);
@@ -985,11 +1011,41 @@ export function runtimeOptionalReceiverRead(
       loc,
     };
   }
+  // An array hole in a slot with more than two arms fails the member
+  // access with Node's TypeError before the checked extraction runs.
+  const holeGuarded = (extracted: IrExpr): IrExpr => {
+    if (local.type.kind !== "union") return extracted;
+    const holeTag = lowerer.armTag(local.type.unionId, UNDEFINED_T);
+    if (holeTag < 0) return extracted;
+    return {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId: local.type.unionId,
+        tag: holeTag,
+        negated: false,
+        value: varRef(local.id, local.type, loc),
+        type: BOOL,
+        loc,
+      },
+      then: nodeThrowExpr(
+        1,
+        "",
+        runtimeOptionalReceiverMessage(expr, property),
+        extracted.type,
+        loc,
+      ),
+      else_: extracted,
+      type: extracted.type,
+      loc,
+    };
+  };
   if (narrowed.kind === "object") {
     const view = checkedClassAssertion(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
     // Preserve the member-specific missing-value error on the two-arm
     // path below; mixed storage also needs to validate its concrete class.
-    if (view && (lowerer.unions.get(local.type.unionId)?.arms.length ?? 0) > 2) return view;
+    if (view && (lowerer.unions.get(local.type.unionId)?.arms.length ?? 0) > 2)
+      return holeGuarded(view);
   }
   if (narrowed.kind === "record" && lowerer.armTag(local.type.unionId, narrowed) < 0) {
     const hosted = hostedStorageView(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
@@ -1014,7 +1070,9 @@ export function runtimeOptionalReceiverRead(
         "a direct read from a runtime-optional capture with multiple value arms",
       );
     }
-    return lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), narrowed, loc);
+    return holeGuarded(
+      lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), narrowed, loc),
+    );
   }
   // A predicate can strengthen a record's fields or narrow a base class
   // to a subclass without changing the slot's stored value arm. Extract
@@ -1029,10 +1087,7 @@ export function runtimeOptionalReceiverRead(
       "a runtime-optional receiver without a representable value arm",
     );
   }
-  const message =
-    property === null
-      ? `${expr.text} is not a function`
-      : `Cannot read properties of undefined (reading '${property}')`;
+  const message = runtimeOptionalReceiverMessage(expr, property);
   return lowerer.maybeNarrow(
     {
       kind: "ternary",
@@ -1059,6 +1114,14 @@ export function runtimeOptionalReceiverRead(
     },
     narrowedNode,
   );
+}
+
+/** Node's TypeError message for a member read (`property`) or a call
+ * (`property` null) through an undefined runtime-optional receiver. */
+function runtimeOptionalReceiverMessage(expr: ts.Identifier, property: string | null): string {
+  return property === null
+    ? `${expr.text} is not a function`
+    : `Cannot read properties of undefined (reading '${property}')`;
 }
 
 export function runtimeOptionalTrueIds(lowerer: Lowerer, node: ts.Expression): IrLocal[] {
@@ -1419,6 +1482,7 @@ export function lowerAsExpression(
       target?.kind === "record" &&
       inner.type.shapeId !== target.shapeId
     ) {
+      lowerer.assertedValues.set(inner, target);
       return lowerer.coerceInto(expr, inner, target);
     }
     // `u as Arm` on a UNION value is `u!`'s spelling with a named arm
@@ -1453,6 +1517,15 @@ export function lowerAsExpression(
       const asserted = checkedClassUnionAssertion(lowerer, inner, target, locOf(expr));
       if (asserted) return asserted;
     }
+    // The erased value still answers to the assertion: a slot it cannot
+    // reach by an ordinary conversion converts it as asserted
+    // (assertedConversion).
+    if (
+      target &&
+      (target.kind === "union" || target.kind === "record" || target.kind === "array") &&
+      (inner.type.kind === "union" || inner.type.kind === "array")
+    )
+      lowerer.assertedValues.set(inner, target);
     return inner; // erasure, unchanged
   }
 
@@ -1466,6 +1539,12 @@ export function lowerAsExpression(
   const target = lowerer.mapTypeOf(targetTs) ?? dynFallbackType(lowerer, expr.type, targetTs);
   if (!target) lowerer.badType(expr.type, targetTs);
   if (target.kind === "dyn") return inner; // `as unknown`: erasure
+  // The declaration-typed boundary (decl-projection.ts): an identity-
+  // preserving checked conversion of a value package code produced.
+  if (isDeclBoundaryTypeNode(expr.type)) {
+    const adopted = declBoundaryCast(lowerer, inner, target, locOf(expr), expr);
+    if (adopted) return adopted;
+  }
   // An all-`unknown`-fields record target (`err as { code?: unknown }`
   // — the errno-probing idiom): there is nothing to validate (every
   // field is unknown, exactly what the dyn value already answers) and
@@ -1487,6 +1566,10 @@ export function lowerAsExpression(
   // reach it (assertion-identity.ts).
   if (extractionCopiesReference(lowerer, target) && assertsGlobalObject(lowerer, expr))
     return inner;
+  // `value as Iterable<T>`: the value's own iterator, stepped lazily with
+  // each element checked against T (the generator arm's adapter).
+  const iterable = iterableSlotValue(lowerer, inner, target);
+  if (iterable) return iterable;
   if (
     target.kind === "void" ||
     !canDynCheckTo(
@@ -1548,4 +1631,131 @@ export function lowerAsExpression(
     );
   }
   return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
+}
+
+/** True when a type holds a record or an array somewhere (values whose
+ * identity can be observed). */
+function holdsReference(lowerer: Lowerer, t: IrType, seen = new Set<string>()): boolean {
+  if (t.kind === "record" || t.kind === "array") return true;
+  if (t.kind !== "union" || seen.has(t.unionId)) return false;
+  seen.add(t.unionId);
+  return (
+    lowerer.unions.get(t.unionId)?.arms.some((arm) => holdsReference(lowerer, arm, seen)) ?? false
+  );
+}
+
+/** `(<package expr> as __scriptc_decl_N)`: check the dynamic value against
+ * the projected type and build the native value (dynCheck), then adopt:
+ * every source object or array that something else still references
+ * becomes a live capsule of the value built from it
+ * (scr_dyn_decl_adopt), so identity and mutation visibility hold on both
+ * sides. Scalar targets are ordinary checked casts. */
+/** The origin the projection recorded for a boundary cast (the package
+ * declaration its type comes from, decl-projection.ts), found by the
+ * cast's position among the file's boundary casts in source order. */
+function recordedBoundaryOrigin(lowerer: Lowerer, cast: ts.Node): string | null {
+  const sf = ts.getSourceFileOfNode(cast);
+  let order = lowerer.boundaryCastOrder.get(sf);
+  if (order === undefined) {
+    const found = new Map<ts.Node, number>();
+    const visit = (node: ts.Node): void => {
+      if (ts.isAsExpression(node) && isDeclBoundaryTypeNode(node.type)) found.set(node, found.size);
+      ts.forEachChild(
+        node,
+        (child) => {
+          visit(child);
+          return undefined;
+        },
+        (list) => {
+          for (const child of list.nodes) visit(child);
+          return undefined;
+        },
+      );
+    };
+    visit(sf);
+    order = found;
+    lowerer.boundaryCastOrder.set(sf, order);
+  }
+  const index = order.get(cast);
+  return index === undefined ? null : declBoundaryOrigin(sf.fileName, index);
+}
+
+function declBoundaryCast(
+  lowerer: Lowerer,
+  inner: IrExpr,
+  target: IrType,
+  loc: SrcLoc,
+  cast: ts.Node,
+): IrExpr | null {
+  if (
+    !canDynCheckTo(
+      target,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    ) &&
+    !(target.kind === "union" && lowerer.dynConvertible(target))
+  )
+    return null;
+  // The package call or read the value comes from (decl-origin.ts): a
+  // failing check names it and the patch admitting the value.
+  let originText: string | null = null;
+  try {
+    originText = recordedBoundaryOrigin(lowerer, cast);
+  } catch {
+    originText = null;
+  }
+  const originId = originText === null ? undefined : lowerer.declOriginIndex(originText);
+  if (!holdsReference(lowerer, target)) {
+    return {
+      kind: "dynCheck",
+      value: inner,
+      type: target,
+      loc,
+      ...(originId === undefined ? {} : { origin: originId }),
+    };
+  }
+  const source = lowerer.declareHiddenLocal("%boundarySource", DYN);
+  const value = lowerer.declareHiddenLocal("%boundaryValue", target);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: source.id, init: inner, loc },
+      {
+        kind: "varDecl",
+        localId: value.id,
+        init: {
+          kind: "dynCheck",
+          value: varRef(source.id, DYN, loc),
+          adopt: true,
+          type: target,
+          loc,
+          ...(originId === undefined ? {} : { origin: originId }),
+        },
+        loc,
+      },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.declAdopt",
+          args: [
+            varRef(source.id, DYN, loc),
+            {
+              kind: "dynFrom",
+              value: varRef(value.id, target, loc),
+              liveRef: true,
+              type: DYN,
+              loc,
+            },
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: varRef(value.id, target, loc),
+    type: target,
+    loc,
+  };
 }

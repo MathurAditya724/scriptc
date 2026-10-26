@@ -1078,6 +1078,10 @@ bool scr_fs_path_ok(const ScrStr *path, const char *name) {
   return false;
 }
 
+void scr_fs_check_path(ScrStr *path, ScrStr *name) {
+  (void)scr_fs_path_ok(path, name->data);
+}
+
 void scr_process_load_env_file(const ScrDyn *value) {
   ScrStr *path;
   if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) path = scr_str_new("./.env", 6);
@@ -4232,27 +4236,35 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
-  /* Node returns after the offset and position validation when the
-   * requested length normalizes to zero: buffer-window bounds and fd are
-   * not consulted. Preserve the existing size_t coercion's [0, 1) case. */
-  if (length >= 0 && length < 1) return 0;
-  if (offset > (double)bytelen) {
-    numbuf[scr_f64_to_str(offset, numbuf)] = 0;
+  /* `length |= 0`, then Node's order: a zero length reads nothing after
+   * the offset and position checks; otherwise the buffer must not be
+   * empty and the window must fit it (validateOffsetLengthRead). */
+  if (!isfinite(length)) {
+    length = 0;
+  } else {
+    double wrapped = fmod(trunc(length), 4294967296.0);
+    if (wrapped < 0) wrapped += 4294967296.0;
+    length = wrapped >= 2147483648.0 ? wrapped - 4294967296.0 : wrapped;
+  }
+  if (length == 0) return 0;
+  if (bytelen == 0) {
+    static const char empty[] =
+        "The argument 'buffer' is empty and cannot be written. Received <Buffer >";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, empty, sizeof empty - 1, "ERR_INVALID_ARG_VALUE");
+    return 0;
+  }
+  if (length < 0 || offset + length > (double)bytelen) {
+    char recv[48], range[48];
+    scr_num_received(length, recv);
+    if (length < 0) snprintf(range, sizeof range, ">= 0");
+    else snprintf(range, sizeof range, "<= %.0f", (double)bytelen - offset);
     mlen = snprintf(msg, sizeof msg,
-                    "The value of \"offset\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s",
-                    numbuf);
+                    "The value of \"length\" is out of range. It must be %s. Received %s", range,
+                    recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
   size_t off = (size_t)offset;
-  if (length < 0 || (double)length > (double)(bytelen - off)) {
-    numbuf[scr_f64_to_str(length, numbuf)] = 0;
-    mlen = snprintf(msg, sizeof msg,
-                    "The value of \"length\" is out of range. It must be <= %zu. Received %s",
-                    bytelen - off, numbuf);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
-    return 0;
-  }
   size_t want = (size_t)length;
   uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
   if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
@@ -4596,6 +4608,13 @@ void scr_fs_rename(ScrStr *oldpath, ScrStr *newpath) {
 
 static int scr_rm_unlink(const char *path, size_t len);
 
+/* Node's ERR_FS_EISDIR for rm on a directory without `recursive`. */
+static void scr_fs_rm_throw_eisdir(const ScrStr *path) {
+  ScrStr *message = scr_str_new("is a directory", 14);
+  scr_fs_throw_system_error("ERR_FS_EISDIR", "Path is a directory", EISDIR, "rm", message, path);
+  scr_str_release(message);
+}
+
 void scr_fs_rm(ScrStr *path) {
   if (!scr_fs_path_ok(path, "path")) return;
 #ifdef _WIN32
@@ -4603,16 +4622,15 @@ void scr_fs_rm(ScrStr *path) {
   if (link != 0) { if (link < 0) scr_fs_throw(errno, "unlink", path); return; }
 #endif
   /* Node's rmSync: lstat first (a missing path reports the lstat syscall),
-   * refuse directories (Node requires `recursive`, which the scriptc
-   * surface doesn't declare — the message wording diverges from Node's
-   * ERR_FS_EISDIR, see SEMANTICS.md), then unlink. */
+   * refuse directories (ERR_FS_EISDIR: removing one requires `recursive`),
+   * then unlink. */
   struct stat st;
   if (lstat(path->data, &st) != 0) {
     scr_fs_throw(errno, "lstat", path);
     return;
   }
   if (S_ISDIR(st.st_mode)) {
-    scr_fs_throw(EISDIR, "rm", path);
+    scr_fs_rm_throw_eisdir(path);
     return;
   }
   if (scr_rm_unlink(path->data, path->len) != 0) scr_fs_throw(errno, "unlink", path);
@@ -4766,6 +4784,13 @@ typedef struct {
   ScrStr *path;
 } ScrRmFail;
 
+/* Throws the recorded failure and releases its path. */
+static void scr_rm_fail_throw(ScrRmFail *f) {
+  if (f->err == EISDIR && strcmp(f->op, "rm") == 0) scr_fs_rm_throw_eisdir(f->path);
+  else scr_fs_throw(f->err, f->op, f->path);
+  scr_str_release(f->path);
+}
+
 static void scr_rm_fail_set(ScrRmFail *f, int err, const char *op, const char *path, size_t len) {
   if (f->err != 0) return; /* first failure wins, exactly like the old unwind */
   f->err = err;
@@ -4861,8 +4886,6 @@ static void scr_fs_rm_attempt(ScrStr *path, bool recursive, bool force, ScrRmFai
   }
   if (S_ISDIR(st.st_mode)) {
     if (!recursive) {
-      /* Node throws ERR_FS_EISDIR here; the EISDIR-prefixed wording is
-       * divergence 13's documented difference. */
       scr_rm_fail_set(f, EISDIR, "rm", path->data, path->len);
       return;
     }
@@ -4876,18 +4899,24 @@ void scr_fs_rm_opts(ScrStr *path, bool recursive, bool force) {
   if (!scr_fs_path_ok(path, "path")) return;
   ScrRmFail f = {0, NULL, NULL};
   scr_fs_rm_attempt(path, recursive, force, &f);
-  if (f.err != 0) {
-    scr_fs_throw(f.err, f.op, f.path);
-    scr_str_release(f.path);
-  }
+  if (f.err != 0) scr_rm_fail_throw(&f);
+}
+
+/* Node's validateRmdirOptions range checks: retryDelay is an int32 >= 0,
+ * then maxRetries is a uint32 (ERR_OUT_OF_RANGE). */
+bool scr_fs_rm_retry_options_ok(double max_retries, double retry_delay) {
+  return scr_bytes_validate_off("options.retryDelay", retry_delay, 2147483647.0) &&
+         scr_bytes_validate_off("options.maxRetries", max_retries, 4294967295.0);
 }
 
 /* rmSync(p, { recursive, force, maxRetries, retryDelay }): Node retries
  * the operation on EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM up to maxRetries
  * times, waiting retryDelay ms LONGER on each try (linear backoff — the
  * fs.rmSync documented semantics). Everything else throws immediately
- * with the failing path, exactly like the plain options form. */
+ * with the failing path, exactly like the plain options form. rmSync
+ * validates the options before the path. */
 void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries, double retry_delay) {
+  if (!scr_fs_rm_retry_options_ok(max_retries, retry_delay)) return;
   if (!scr_fs_path_ok(path, "path")) return;
   long tries = max_retries > 0 ? (long)max_retries : 0;
   double delay_ms = retry_delay > 0 ? retry_delay : 0;
@@ -4912,8 +4941,7 @@ void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_r
       nanosleep(&ts, NULL);
     }
   }
-  scr_fs_throw(f.err, f.op, f.path);
-  scr_str_release(f.path);
+  scr_rm_fail_throw(&f);
 }
 
 #if defined(_WIN32) || defined(__wasi__)
@@ -5772,7 +5800,7 @@ void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind) {
   if (!scr_fs_path_ok(target, "target")) return;
   if (!scr_fs_path_ok(destination, "path")) return;
 #ifdef _WIN32
-  static const ScrArrOps str_ops = { scr_str_retain_v, scr_str_release_v, NULL };
+  static ScrArrOps str_ops = { scr_str_retain_v, scr_str_release_v, NULL };
   ScrArr *parts = scr_arr_new_ops(&str_ops, 3);
   scr_arr_push_ref(parts, scr_str_retain(destination));
   scr_arr_push_ref(parts, scr_str_new("..", 2));
@@ -6800,11 +6828,28 @@ double scr_math_round(double x) {
   return (r == 0.0 && x < 0.0) ? -0.0 : r;
 }
 
-/* IEEE pow(±1, ±Infinity) and pow(1, NaN) return 1; ECMAScript requires
- * NaN. The other special cases, including signed zero and odd integer
- * powers, follow libm. */
+/* V8's math::pow: the platform pow, as Node's Math.pow and ** call it,
+ * after the cases V8 answers itself. IEEE pow(±1, ±Infinity) and
+ * pow(1, NaN) return 1; ECMAScript requires NaN. A NaN base becomes the
+ * quiet NaN, and the exponents 2 and 0.5 answer base * base and
+ * sqrt(base + 0) (+Infinity for an infinite base), as V8's optimizing
+ * compilers do; pow can differ from those in the last bit. */
 double scr_math_pow(double base, double exponent) {
   if (isnan(exponent) || (isinf(exponent) && fabs(base) == 1.0)) return NAN;
+  if (isnan(base)) base = NAN;
+  if (exponent == 2.0) return base * base;
+  if (exponent == 0.5) return isinf(base) ? INFINITY : sqrt(base + 0.0);
+  /* 2 ** n for an integer n in the double range is an exact power of two,
+   * the value pow returns; its bits are the exponent alone. */
+  if (base == 2.0 && exponent >= -1074.0 && exponent <= 1023.0) {
+    int32_t n = (int32_t)exponent;
+    if ((double)n == exponent) {
+      uint64_t bits = n >= -1022 ? (uint64_t)(n + 1023) << 52 : UINT64_C(1) << (n + 1074);
+      double result;
+      memcpy(&result, &bits, sizeof result);
+      return result;
+    }
+  }
   return pow(base, exponent);
 }
 
@@ -8106,6 +8151,11 @@ static bool scr_digest_alg(const char *name, size_t len, ScrDigestAlg *out) {
   return false;
 }
 
+bool scr_digest_known(const char *name, size_t len) {
+  ScrDigestAlg alg;
+  return scr_digest_alg(name, len, &alg);
+}
+
 /* createHash() and crypto.hash() also accept "dss1" in any case. */
 static bool scr_hash_alg(const char *name, size_t len, ScrDigestAlg *out) {
   if (scr_digest_alg(name, len, out)) return true;
@@ -9198,6 +9248,10 @@ ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options
   if (key_object) {
     bytes = scr_bytes_new(SCR_BYTES_U8, (double)key_object_len);
     if (key_object_len) memcpy(bytes->data, key_object, key_object_len);
+  } else if (scr_crypto_is_key_object(key)) {
+    /* A private or public KeyObject: scr_pki.c reports Node's error. */
+    scr_crypto_reject_asymmetric_secret(key);
+    return NULL;
   } else if (key->kind == SCR_DYN_STR) {
     ScrStr *utf8 = encoding ? NULL : scr_str_new("utf8", 4);
     bytes = scr_bytes_from_str_checked(key->v.str, encoding ? encoding : utf8);
@@ -9829,9 +9883,15 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
   return key->data;
 }
 
-/* `value instanceof KeyObject`. */
+void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
+
+/* `value instanceof KeyObject`: a secret key, or a private or public key
+ * (scr_pki.c, matched by its handle tags so this unit does not link it). */
 bool scr_crypto_is_key_object(const ScrDyn *value) {
   size_t len;
+  if (value->kind == SCR_DYN_HANDLE &&
+      (value->v.handle.tag == SCR_DYNH_PRIVATE_KEY || value->v.handle.tag == SCR_DYNH_PUBLIC_KEY))
+    return true;
   return scr_key_object_bytes(value, &len) != NULL;
 }
 
@@ -10485,10 +10545,29 @@ static bool scr_x509_der(const uint8_t *in, size_t n, const uint8_t **der, size_
   *der = NULL;
   *der_len = 0;
   *decoded = NULL;
+  /* One whole DER SEQUENCE is the certificate itself: these members read
+   * the DER the constructor already decoded, whose extensions can carry
+   * PEM armor as text. */
+  if (n >= 2 && in[0] == 0x30) {
+    size_t len = in[1], head = 2;
+    if (len & 0x80) {
+      size_t k = len & 0x7f;
+      len = 0;
+      head = 2 + k;
+      for (size_t i = 0; i < k && k <= 4 && head <= n; i++) len = (len << 8) | in[2 + i];
+      if (k == 0 || k > 4) head = n + 1;
+    }
+    if (head <= n && len == n - head) {
+      *der = in;
+      *der_len = n;
+      return true;
+    }
+  }
   /* PEM: base64-decode the armor's body. */
   const uint8_t *b = NULL;
+  /* OpenSSL's PEM reader looks for the armor at the start of a line. */
   for (size_t i = 0; i + sizeof begin - 1 <= n; i++) {
-    if (memcmp(in + i, begin, sizeof begin - 1) == 0) {
+    if ((i == 0 || in[i - 1] == '\n') && memcmp(in + i, begin, sizeof begin - 1) == 0) {
       b = in + i + sizeof begin - 1;
       break;
     }
@@ -11515,8 +11594,8 @@ double scr_date_get_timezone_offset(double ms) {
  * from local fields reads those fields back. */
 
 /* The host zone's offset (local - UTC) in ms at UTC instant `ms` (an
- * integral time value within about ±8.65e15). */
-static bool scr_date_offset_at(double ms, double *out) {
+ * integral time value within about ±8.65e15), from the host's localtime. */
+static bool scr_date_offset_at_uncached(double ms, double *out) {
   long long cms = (long long)ms;
   double secd = (double)(cms / 1000 - (cms % 1000 < 0));
   struct tm tmv;
@@ -11536,6 +11615,60 @@ static bool scr_date_offset_at(double ms, double *out) {
     tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
   *out = (local_as_utc - basis_secd) * 1000.0;
   return true;
+}
+
+/* Offsets at UTC midnights, for scr_date_offset_at. A day whose two
+ * midnights have the same offset has that offset throughout, given at most
+ * one transition per day (scr_date_local_to_utc already takes transitions
+ * to be at least a day apart). Each local setter asks for three to five
+ * offsets around one time value, and consecutive ones land on the same or
+ * neighbouring days, so most answers come from here instead of a
+ * localtime(3) call: glibc takes its zone lock in each and, for dates past
+ * the zone file's last transition, parses the zone's rule string again. A
+ * change of process.env.TZ starts a new generation. */
+#define SCR_DATE_MIDNIGHTS 64
+typedef struct {
+  long long day;
+  double offset;
+  bool valid;
+} ScrDateMidnight;
+typedef struct {
+  bool valid;
+  unsigned generation;
+  ScrDateMidnight entries[SCR_DATE_MIDNIGHTS];
+} ScrDateMidnightCache;
+static SCR_TL ScrDateMidnightCache scr_date_midnight_cache;
+
+static bool scr_date_midnight_offset(ScrDateMidnightCache *c, long long day, double *out) {
+  ScrDateMidnight *e = &c->entries[(unsigned long long)day % SCR_DATE_MIDNIGHTS];
+  if (e->valid && e->day == day) {
+    *out = e->offset;
+    return true;
+  }
+  if (!scr_date_offset_at_uncached((double)day * 86400000.0, out)) return false;
+  e->valid = true;
+  e->day = day;
+  e->offset = *out;
+  return true;
+}
+
+static bool scr_date_offset_at(double ms, double *out) {
+  ScrDateMidnightCache *c = &scr_date_midnight_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (!c->valid || c->generation != generation) {
+    memset(c, 0, sizeof *c);
+    c->valid = true;
+    c->generation = generation;
+  }
+  long long cms = (long long)ms;
+  long long day = cms / 86400000 - (cms % 86400000 < 0);
+  double start, end;
+  if (scr_date_midnight_offset(c, day, &start) && scr_date_midnight_offset(c, day + 1, &end) &&
+      start == end) {
+    *out = start;
+    return true;
+  }
+  return scr_date_offset_at_uncached(ms, out);
 }
 
 static volatile const double scr_date_day_ms = 86400000.0;
@@ -11617,6 +11750,56 @@ double scr_date_new_local(double y, double mo, double d,
     if (yi >= 0 && yi <= 99) y = 1900 + yi;
   }
   return scr_date_from_local(scr_date_v8_make_day(y, mo, d), scr_date_v8_make_time(h, mi, s, ms));
+}
+
+/* Date.prototype's setters over a time value, as V8's builtins-date.cc
+ * computes them: the fields of `t` (local fields for the local setters)
+ * with the first `argc` of them replaced, in the order the setter names
+ * them, by `a`..`d`, through MakeDay/MakeTime/MakeDate, then UTC(t) for
+ * the local setters and TimeClip. An invalid `t` stays invalid, except
+ * that setFullYear and setUTCFullYear start from +0: January 1 of the
+ * epoch year at midnight (local midnight for setFullYear). Returns the new
+ * time value; the caller stores it into the Date. Never throws. */
+double scr_date_set_fields(double t, double setter_code, double argc_count,
+                           double a, double b, double c, double d) {
+  int32_t setter = (int32_t)setter_code, argc = (int32_t)argc_count;
+  bool utc = (setter & SCR_DATE_SET_UTC) != 0;
+  int32_t field = setter & ~SCR_DATE_SET_UTC;
+  ScrDateParts p;
+  if (isnan(t)) {
+    if (field != SCR_DATE_SET_FULL_YEAR) return NAN;
+    p = (ScrDateParts){1970, 0, 1, 4, 0, 0, 0, 0, 0};
+  } else if (utc) {
+    if (!scr_date_utc_parts(t, &p)) return NAN;
+  } else if (!scr_date_local_parts(t, &p)) {
+    return NAN;
+  }
+  double y = (double)p.year, mo = p.month, dt = p.date;
+  double h = p.hours, mi = p.minutes, s = p.seconds, ms = p.milliseconds;
+  double args[4] = {a, b, c, d};
+  double *slots[7] = {&y, &mo, &dt, &h, &mi, &s, &ms};
+  /* The first field each setter names, in slots' order. */
+  int first;
+  switch (field) {
+  case SCR_DATE_SET_MILLISECONDS: first = 6; break;
+  case SCR_DATE_SET_SECONDS: first = 5; break;
+  case SCR_DATE_SET_MINUTES: first = 4; break;
+  case SCR_DATE_SET_HOURS: first = 3; break;
+  case SCR_DATE_SET_DATE: first = 2; break;
+  case SCR_DATE_SET_MONTH: first = 1; break;
+  case SCR_DATE_SET_FULL_YEAR: first = 0; break;
+  default: return NAN;
+  }
+  /* Each setter takes at most the fields from its own down to the next
+   * larger unit's end: setHours up to milliseconds, setMonth up to the
+   * date, setFullYear up to the date. */
+  int last = first <= 2 ? 2 : 6;
+  for (int i = 0; i < argc && first + i <= last && i < 4; i++) *slots[first + i] = args[i];
+  double day = scr_date_v8_make_day(y, mo, dt);
+  double time = scr_date_v8_make_time(h, mi, s, ms);
+  if (!utc) return scr_date_from_local(day, time);
+  if (!isfinite(day) || !isfinite(time)) return NAN;
+  return scr_date_new_ms(day * 86400000.0 + time);
 }
 
 /* ── V8's date-string parser, the fallback ─────────────────────────────
@@ -12512,6 +12695,39 @@ static ScrStr *scr_date_text(double ms, int mode) {
 }
 
 ScrStr *scr_date_to_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_FULL); }
+
+/* JSON.stringify of a Date object: its toJSON(), the quoted
+ * toISOString() text, or null for an invalid date. */
+void scr_jb_put_date(ScrJsonBuf *b, const ScrDate *date) {
+  if (isnan(date->ms)) {
+    scr_jb_puts(b, "null");
+    return;
+  }
+  ScrStr *iso = scr_date_to_iso(date->ms);
+  scr_jb_put_json_str(b, iso);
+  scr_str_release(iso);
+}
+
+/* String(date) of a Date object: Date arrays' default ordering key. +1. */
+ScrStr *scr_date_object_to_string(void *date) {
+  return scr_date_text(((ScrDate *)date)->ms, SCR_DATE_TEXT_FULL);
+}
+
+/* Array.prototype.join over Date objects: each element's String() text,
+ * holes empty. Both borrowed; +1. */
+ScrStr *scr_date_arr_join(ScrArr *dates, const ScrStr *sep) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  double len = scr_arr_len(dates);
+  for (double i = 0; i < len; i++) {
+    if (i > 0) scr_jb_put_str(&b, sep);
+    if (scr_arr_state(dates, i) != 1) continue;
+    ScrStr *text = scr_date_object_to_string(scr_arr_peek_ref(dates, i));
+    scr_jb_put_str(&b, text);
+    scr_str_release(text);
+  }
+  return scr_jb_finish(&b);
+}
 ScrStr *scr_date_to_date_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_DATE); }
 ScrStr *scr_date_to_time_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_TIME); }
 
@@ -12605,8 +12821,15 @@ ScrStr *scr_num_to_string_radix_f64(double value, double requested) {
   bool negative = value < 0;
   value = fabs(value);
   double integer = floor(value), fraction = value - integer;
-  double tolerance = 0.5 * (nextafter(value, INFINITY) - value);
-  if (tolerance <= 0) tolerance = nextafter(0, INFINITY);
+  /* The next double above the positive finite value: its bits plus one
+   * (Infinity above the largest double). */
+  uint64_t value_bits;
+  memcpy(&value_bits, &value, sizeof value_bits);
+  value_bits += 1;
+  double next;
+  memcpy(&next, &value_bits, sizeof next);
+  double tolerance = 0.5 * (next - value);
+  if (tolerance <= 0) tolerance = 0x1p-1074;
   if (fraction >= tolerance) {
     buffer[end++] = '.';
     do {
@@ -12924,66 +13147,204 @@ static bool scr_set_to_arr_sparse(const ScrMap *s, ScrArr *out) {
 ScrArr *scr_set_to_arr_f64(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_F64, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
-    out->data[out->len] = scr_map_entry_at(s, i)->key;
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    out->data[out->len++] = scr_map_entry_at(s, i)->key;
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_bool(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_BOOL, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
-    scr_arr_dense_put(out, out->len, scr_map_entry_at(s, i)->key != 0);
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    scr_arr_dense_put(out, out->len++, scr_map_entry_at(s, i)->key != 0);
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_str(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
     scr_str_retain((ScrStr *)(uintptr_t)scr_map_entry_at(s, i)->key);
-    out->data[out->len] = scr_map_entry_at(s, i)->key;
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    out->data[out->len++] = scr_map_entry_at(s, i)->key;
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_ref(const ScrMap *s, const ScrArrOps *ops) {
   ScrArr *out = scr_arr_new_ops(ops, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
-  uint8_t *states = scr_arr_states_end(out);
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!scr_map_entry_live(s, i)) continue;
     ops->retain((void *)(uintptr_t)scr_map_entry_at(s, i)->key);
-    out->data[out->len] = scr_map_entry_at(s, i)->key;
-    *scr_arr_state_in(states, out->len++) = SCR_ARR_VALUE;
+    scr_arr_dense_put(out, out->len, scr_map_entry_at(s, i)->key);
+    out->len++;
   }
+  scr_arr_refill(out);
   return out;
 }
 
-/* JS Date storage owns an identity; the typed read-only Date ABI continues
- * to use milliseconds and explicitly extracts them for native getters. */
-typedef struct { size_t rc; double milliseconds; } ScrNativeDate;
-static void *scr_native_date_retain(void *ptr) { ((ScrNativeDate *)ptr)->rc++; return ptr; }
-static void scr_native_date_release(void *ptr) { if (--((ScrNativeDate *)ptr)->rc == 0) free(ptr); }
+/* A Date object: one time value, and its identity. Compiled code and
+ * checked-dynamic Date handles share these objects, so a Date keeps its
+ * identity across `unknown` conversions. */
+ScrDate *scr_date_new(double ms) {
+  ScrDate *date = malloc(sizeof *date);
+  if (!date) scr_trap("scriptc: out of memory\n");
+  date->rc = 1;
+  date->ms = ms;
+  return date;
+}
+
+ScrDate *scr_date_retain(ScrDate *date) {
+  if (date->rc != SIZE_MAX) date->rc++;
+  return date;
+}
+
+void scr_date_release(ScrDate *date) {
+  if (!date || date->rc == SIZE_MAX) return;
+  if (--date->rc == 0) free(date);
+}
+
+void *scr_date_retain_v(void *p) { return scr_date_retain(p); }
+void scr_date_release_v(void *p) { scr_date_release(p); }
 
 bool scr_dyn_native_date_is(const ScrDyn *value) {
   return value && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE;
 }
 
+/* Instances of program classes declared `extends Date` keep their time
+ * value in a compiled field. In checked-dynamic code such an instance is a
+ * typed reference, and the runtime reaches its time value and methods
+ * through the functions %main installs (builtins/date-classes.ts), called
+ * as (op, value, argument): for op 0 the time function answers the time
+ * value, or undefined for any other value, and for op 1 sets it; for ops 2
+ * to 5 the method function calls the instance's toISOString,
+ * toJSON(argument), toString and valueOf. */
+enum {
+  SCR_DATE_CLASS_TIME,
+  SCR_DATE_CLASS_SET_TIME,
+  SCR_DATE_CLASS_TO_ISO_STRING,
+  SCR_DATE_CLASS_TO_JSON,
+  SCR_DATE_CLASS_TO_STRING,
+  SCR_DATE_CLASS_VALUE_OF,
+  SCR_DATE_CLASS_NAME,
+};
+static SCR_TL ScrDyn *scr_date_class_operation;
+static SCR_TL ScrDyn *scr_date_class_methods;
+
+static void scr_date_class_operation_cleanup(void) {
+  ScrDyn *operation = scr_date_class_operation;
+  ScrDyn *methods = scr_date_class_methods;
+  scr_date_class_operation = scr_date_class_methods = NULL;
+  scr_dyn_release(operation);
+  scr_dyn_release(methods);
+}
+
+static bool scr_date_class_time_of(const ScrDyn *value, double *time);
+static ScrDyn *scr_date_class_to_json(const ScrDyn *value, const ScrDyn *key);
+static ScrDyn *scr_date_class_to_string(const ScrDyn *value);
+static ScrDyn *scr_date_class_value_of(const ScrDyn *value);
+static ScrStr *scr_date_class_name(const ScrDyn *value);
+static ScrDyn *scr_date_class_method(const ScrDyn *value, const char *key, size_t key_len);
+
+/* The installation also publishes these functions to the rest of the
+ * runtime (scr_date_class_hooks), so only a program that declares a class
+ * extending Date links them. */
+static const ScrDateClassHooks scr_date_class_hook_table = {
+  scr_date_class_time_of, scr_date_class_to_json, scr_date_class_to_string,
+  scr_date_class_value_of, scr_date_class_name, scr_date_class_method,
+};
+
+void scr_date_class_operation_install(ScrDyn *time, ScrDyn *methods) {
+  scr_date_class_hooks = &scr_date_class_hook_table;
+  if (!scr_date_class_operation) scr_atexit(scr_date_class_operation_cleanup);
+  scr_dyn_release(scr_date_class_operation);
+  scr_dyn_release(scr_date_class_methods);
+  scr_date_class_operation = scr_dyn_retain(time);
+  scr_date_class_methods = scr_dyn_retain(methods);
+}
+
+/* The installed operation `op` on `value`: +1, or NULL with an exception
+ * pending. */
+static ScrDyn *scr_date_class_call(int op, const ScrDyn *value, const ScrDyn *argument) {
+  ScrDyn *code = scr_dyn_new_num(op);
+  ScrDyn *args[] = { code, (ScrDyn *)value, (ScrDyn *)(argument ? argument : scr_dyn_undefined()) };
+  bool time = op < SCR_DATE_CLASS_TO_ISO_STRING || op == SCR_DATE_CLASS_NAME;
+  ScrDyn *result = scr_dyn_call(time ? scr_date_class_operation : scr_date_class_methods, args, 3, "Date");
+  scr_dyn_release(code);
+  return result;
+}
+
+/* True, with the time value in *time, when `value` holds an instance of a
+ * class declared `extends Date`. */
+static bool scr_date_class_time_of(const ScrDyn *value, double *time) {
+  if (!scr_date_class_operation || !value || value->kind != SCR_DYN_TYPED_REF) return false;
+  ScrDyn *result = scr_date_class_call(SCR_DATE_CLASS_TIME, value, NULL);
+  bool found = result && result->kind == SCR_DYN_NUM;
+  if (found) *time = result->v.num;
+  scr_dyn_release(result);
+  return found;
+}
+
+/* `value instanceof Date`: a Date, or an instance of a class declared
+ * `extends Date`. */
+bool scr_dyn_date_instance_is(const ScrDyn *value) {
+  double time;
+  return scr_dyn_native_date_is(value) || scr_dyn_date_class_time(value, &time);
+}
+
+/* toJSON(key), toString() or valueOf() of an instance of a class declared
+ * `extends Date` (scr_dyn_date_class_time answered true): the class's
+ * declaration or the Date method. +1, or NULL with an exception pending. */
+static ScrDyn *scr_date_class_to_json(const ScrDyn *value, const ScrDyn *key) {
+  return scr_date_class_call(SCR_DATE_CLASS_TO_JSON, value, key);
+}
+static ScrDyn *scr_date_class_to_string(const ScrDyn *value) {
+  return scr_date_class_call(SCR_DATE_CLASS_TO_STRING, value, NULL);
+}
+static ScrDyn *scr_date_class_value_of(const ScrDyn *value) {
+  return scr_date_class_call(SCR_DATE_CLASS_VALUE_OF, value, NULL);
+}
+
+/* The name of the class of an instance of a class declared `extends
+ * Date`: +1, or NULL for any other value. */
+static ScrStr *scr_date_class_name(const ScrDyn *value) {
+  if (!scr_date_class_operation || !value || value->kind != SCR_DYN_TYPED_REF) return NULL;
+  ScrDyn *result = scr_date_class_call(SCR_DATE_CLASS_NAME, value, NULL);
+  ScrStr *name = result && result->kind == SCR_DYN_STR ? scr_str_retain(result->v.str) : NULL;
+  scr_dyn_release(result);
+  return name;
+}
+
 double scr_dyn_native_date_value(const ScrDyn *value) {
-  if (!scr_dyn_native_date_is(value)) { scr_dyn_check_fail(NULL, "Date", value); return NAN; }
-  return ((ScrNativeDate *)value->v.handle.ptr)->milliseconds;
+  if (scr_dyn_native_date_is(value)) return ((ScrDate *)value->v.handle.ptr)->ms;
+  double time;
+  if (scr_dyn_date_class_time(value, &time)) return time;
+  scr_dyn_check_fail(NULL, "Date", value);
+  return NAN;
+}
+
+/* The Date object a checked-dynamic Date value holds, +1: the Date itself,
+ * or a new Date with the time value of an instance of a class declared
+ * `extends Date`. NULL with the check failure pending for any other
+ * value. */
+ScrDate *scr_dyn_native_date_check(const ScrDyn *value, const ScrDynPath *path) {
+  if (scr_dyn_native_date_is(value)) return scr_date_retain(value->v.handle.ptr);
+  double time;
+  if (scr_dyn_date_class_time(value, &time)) return scr_date_new(time);
+  scr_dyn_check_fail(path, "Date", value);
+  return NULL;
 }
 
 /* Method names without another use in this file, in named arrays (see
@@ -12991,15 +13352,37 @@ double scr_dyn_native_date_value(const ScrDyn *value) {
 static const char scr_date_to_date_string_name[] = "toDateString";
 static const char scr_date_to_time_string_name[] = "toTimeString";
 
+/* The field setters a checked-dynamic Date answers (scr_date_set_fields). */
+static const struct {
+  const char *name;
+  int code, max;
+} scr_native_date_setters[] = {
+  {"setMilliseconds", SCR_DATE_SET_MILLISECONDS, 1},
+  {"setSeconds", SCR_DATE_SET_SECONDS, 2},
+  {"setMinutes", SCR_DATE_SET_MINUTES, 3},
+  {"setHours", SCR_DATE_SET_HOURS, 4},
+  {"setDate", SCR_DATE_SET_DATE, 1},
+  {"setMonth", SCR_DATE_SET_MONTH, 2},
+  {"setFullYear", SCR_DATE_SET_FULL_YEAR, 3},
+  {"setUTCMilliseconds", SCR_DATE_SET_UTC | SCR_DATE_SET_MILLISECONDS, 1},
+  {"setUTCSeconds", SCR_DATE_SET_UTC | SCR_DATE_SET_SECONDS, 2},
+  {"setUTCMinutes", SCR_DATE_SET_UTC | SCR_DATE_SET_MINUTES, 3},
+  {"setUTCHours", SCR_DATE_SET_UTC | SCR_DATE_SET_HOURS, 4},
+  {"setUTCDate", SCR_DATE_SET_UTC | SCR_DATE_SET_DATE, 1},
+  {"setUTCMonth", SCR_DATE_SET_UTC | SCR_DATE_SET_MONTH, 2},
+  {"setUTCFullYear", SCR_DATE_SET_UTC | SCR_DATE_SET_FULL_YEAR, 3},
+};
+
 static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *method,
     ScrDyn *const *args, size_t argc, const char *what) {
-  (void)self; (void)args; (void)argc; (void)what;
-  double ms = ((ScrNativeDate *)ptr)->milliseconds;
+  (void)self; (void)what;
+  double ms = ((ScrDate *)ptr)->ms;
   if (!strcmp(method, "getTime") || !strcmp(method, "valueOf")) return scr_dyn_new_num(ms);
   if (!strcmp(method, "toString") || !strcmp(method, scr_date_to_date_string_name) ||
-      !strcmp(method, scr_date_to_time_string_name)) {
+      !strcmp(method, scr_date_to_time_string_name) || !strcmp(method, "toUTCString")) {
     ScrStr *text = !strcmp(method, "toString")                     ? scr_date_to_string(ms)
                    : !strcmp(method, scr_date_to_date_string_name) ? scr_date_to_date_string(ms)
+                   : !strcmp(method, "toUTCString")                ? scr_date_to_utc_string(ms)
                                                                    : scr_date_to_time_string(ms);
     ScrDyn *result = scr_dyn_new_str(text);
     scr_str_release(text);
@@ -13012,6 +13395,31 @@ static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *metho
     ScrDyn *result = scr_dyn_new_str(text);
     scr_str_release(text);
     return result;
+  }
+  if (!strcmp(method, "setTime")) {
+    double time = NAN;
+    if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &time)) return NULL;
+    ((ScrDate *)ptr)->ms = scr_date_new_ms(time);
+    return scr_dyn_new_num(((ScrDate *)ptr)->ms);
+  }
+  for (size_t i = 0; i < sizeof scr_native_date_setters / sizeof *scr_native_date_setters; i++) {
+    if (strcmp(method, scr_native_date_setters[i].name)) continue;
+    /* V8's order: ToNumber of the first argument, then the time value,
+     * then (unless the date is invalid) ToNumber of the optional ones the
+     * setter takes. */
+    int code = scr_native_date_setters[i].code, max = scr_native_date_setters[i].max;
+    double values[4] = {NAN, 0, 0, 0};
+    if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &values[0])) return NULL;
+    double t = ((ScrDate *)ptr)->ms;
+    int used = argc < (size_t)max ? (int)argc : max;
+    if (used < 1) used = 1;
+    if (!isnan(t) || (code & ~SCR_DATE_SET_UTC) == SCR_DATE_SET_FULL_YEAR) {
+      for (int k = 1; k < used; k++)
+        if (!scr_dyn_number_coerce_js(args[k], &values[k])) return NULL;
+    }
+    double next = scr_date_set_fields(t, code, used, values[0], values[1], values[2], values[3]);
+    ((ScrDate *)ptr)->ms = next;
+    return scr_dyn_new_num(next);
   }
 #define DATE_GET(name, fn) if (!strcmp(method, name)) return scr_dyn_new_num(fn(ms))
   DATE_GET("getFullYear", scr_date_get_full_year_local);
@@ -13043,11 +13451,23 @@ ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
   else {
     ScrDyn *value = arguments->v.arr.items[0];
     if (scr_dyn_native_date_is(value)) ms = scr_dyn_native_date_value(value);
-    else if (value->kind == SCR_DYN_STR) ms = scr_date_parse_get_time(value->v.str);
+    else if (scr_dyn_date_class_time(value, &ms)) {
+    } else if (value->kind == SCR_DYN_STR) ms = scr_date_parse_get_time(value->v.str);
     else if (!scr_dyn_number_coerce_js(value, &ms)) return NULL;
     ms = scr_date_new_ms(ms);
   }
   return scr_dyn_native_date_from_ms(ms);
+}
+
+/* The time value `new Date(...arguments)` constructs (super(...) in a
+ * class declared `extends Date`), or NaN with an exception pending. */
+double scr_dyn_date_arguments_time(const ScrDyn *arguments) {
+  ScrDyn *date = arguments->v.arr.len > 1 ? scr_dyn_native_date_new_fields(arguments)
+                                          : scr_dyn_native_date_new_value(arguments);
+  if (!date) return NAN;
+  double time = ((ScrDate *)date->v.handle.ptr)->ms;
+  scr_dyn_release(date);
+  return time;
 }
 
 /* new Date(value) in JavaScript: a string parses with the full parser;
@@ -13076,11 +13496,13 @@ ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments) {
 /* The Date.prototype methods scr_native_date_invoke answers. */
 static const char *const scr_native_date_methods[] = {
   "getTime", "valueOf", "toISOString", "toJSON", "toString", scr_date_to_date_string_name,
-  scr_date_to_time_string_name,
+  scr_date_to_time_string_name, "toUTCString",
   "getFullYear", "getUTCFullYear", "getMonth",
   "getUTCMonth", "getDate", "getUTCDate", "getDay", "getUTCDay", "getHours", "getUTCHours",
   "getMinutes", "getUTCMinutes", "getSeconds", "getUTCSeconds", "getMilliseconds",
-  "getUTCMilliseconds", "getTimezoneOffset",
+  "getUTCMilliseconds", "getTimezoneOffset", "setTime", "setMilliseconds", "setSeconds",
+  "setMinutes", "setHours", "setDate", "setMonth", "setFullYear", "setUTCMilliseconds",
+  "setUTCSeconds", "setUTCMinutes", "setUTCHours", "setUTCDate", "setUTCMonth", "setUTCFullYear",
 };
 #define SCR_NATIVE_DATE_METHODS (sizeof scr_native_date_methods / sizeof scr_native_date_methods[0])
 static SCR_TL ScrDyn *scr_native_date_method_values[SCR_NATIVE_DATE_METHODS];
@@ -13095,19 +13517,55 @@ static void scr_native_date_methods_cleanup(void) {
 }
 
 /* A Date method read as a value and called later: the closure's function
- * slot holds the method's name, and the receiver must be a Date. */
+ * slot holds the method's name, and the receiver must be a Date. On an
+ * instance of a class declared `extends Date` the method runs over its
+ * time value; toJSON calls the instance's toISOString. */
 static ScrDyn *scr_native_date_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   const char *method = closure->fn;
   ScrDyn *self = scr_dyn_this_get();
   ScrDyn *result = NULL;
+  double time;
   if (scr_dyn_native_date_is(self)) {
     result = scr_native_date_invoke(self->v.handle.ptr, self, method, args, argc, method);
+  } else if (scr_dyn_date_class_time(self, &time)) {
+    if (!strcmp(method, "toJSON")) {
+      result = isfinite(time) ? scr_date_class_call(SCR_DATE_CLASS_TO_ISO_STRING, self, NULL)
+                              : scr_dyn_new_null();
+    } else {
+      ScrDate date = { 1, time };
+      result = scr_native_date_invoke(&date, self, method, args, argc, method);
+      if (result && date.ms != time && !(isnan(date.ms) && isnan(time))) {
+        ScrDyn *stored = scr_dyn_new_num(date.ms);
+        ScrDyn *set = scr_date_class_call(SCR_DATE_CLASS_SET_TIME, self, stored);
+        scr_dyn_release(stored);
+        if (!set) {
+          scr_dyn_release(result);
+          result = NULL;
+        }
+        scr_dyn_release(set);
+      }
+    }
   } else {
     static const char message[] = "this is not a Date object.";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
   }
   scr_dyn_release(self);
   return result;
+}
+
+static ScrDyn *scr_native_date_get(void *ptr, const char *key, size_t key_len);
+
+/* The Date method `key` as a function value when `value` holds an instance
+ * of a class declared `extends Date`, or NULL. The class's own members are
+ * read first, by the caller. */
+static ScrDyn *scr_date_class_method(const ScrDyn *value, const char *key, size_t key_len) {
+  if (!scr_date_class_operation) return NULL;
+  bool named = false;
+  for (size_t i = 0; i < SCR_NATIVE_DATE_METHODS && !named; i++)
+    named = strlen(scr_native_date_methods[i]) == key_len && !memcmp(scr_native_date_methods[i], key, key_len);
+  double time;
+  if (!named || !scr_dyn_date_class_time(value, &time)) return NULL;
+  return scr_native_date_get(NULL, key, key_len);
 }
 
 /* Property reads of a Date: its methods as function values, one per name
@@ -13130,19 +13588,50 @@ static ScrDyn *scr_native_date_get(void *ptr, const char *key, size_t key_len) {
   return NULL;
 }
 
-/* A Date handle holding the time value `ms` (already TimeClip'd). */
-ScrDyn *scr_dyn_native_date_from_ms(double ms) {
+/* structuredClone of a Date: a new Date with the same time value. */
+static ScrDyn *scr_native_date_clone(void *h) {
+  return scr_dyn_native_date_from_ms(((ScrDate *)h)->ms);
+}
+
+/* A Date crossing threads (postMessage, workerData) carries its time value
+ * in a plain allocation any thread may read and free. */
+static void *scr_native_date_share(void *h) {
+  double *ms = malloc(sizeof *ms);
+  if (!ms) scr_trap("scriptc: out of memory\n");
+  *ms = ((ScrDate *)h)->ms;
+  return ms;
+}
+
+static ScrDyn *scr_native_date_adopt(void *payload) {
+  return scr_dyn_native_date_from_ms(*(double *)payload);
+}
+
+static void scr_native_date_drop(void *payload) { free(payload); }
+
+static const ScrDynHandleTransfer scr_native_date_transfer = {
+  .share = scr_native_date_share, .adopt = scr_native_date_adopt, .drop = scr_native_date_drop};
+
+/* A checked-dynamic handle for the Date object `date` (borrowed; the
+ * handle retains it), so the value stays the same object. */
+ScrDyn *scr_dyn_native_date(ScrDate *date) {
   static const ScrDynHandleOps ops = {
-    "Date", &scr_native_date_retain, &scr_native_date_release, &scr_native_date_invoke,
-    &scr_native_date_get, NULL, NULL, NULL,
+    .cls = "Date",
+    .retain = &scr_date_retain_v,
+    .release = &scr_date_release_v,
+    .invoke = &scr_native_date_invoke,
+    .get = &scr_native_date_get,
+    .clone = &scr_native_date_clone,
+    .transfer = &scr_native_date_transfer,
   };
   scr_dyn_handle_install(SCR_DYNH_DATE, &ops);
-  ScrNativeDate *date = malloc(sizeof *date);
-  if (!date) scr_trap("scriptc: out of memory\n");
-  date->rc = 1;
-  date->milliseconds = ms;
-  ScrDyn *result = scr_dyn_new_handle(date, SCR_DYNH_DATE);
-  scr_native_date_release(date);
+  return scr_dyn_new_handle(date, SCR_DYNH_DATE);
+}
+
+/* A Date handle holding the time value `ms` (already TimeClip'd). */
+ScrDyn *scr_dyn_native_date_from_ms(double ms) {
+  ScrDate *date = scr_date_new(ms);
+  ScrDyn *result = scr_dyn_native_date(date);
+  scr_date_release(date);
   return result;
 }
 

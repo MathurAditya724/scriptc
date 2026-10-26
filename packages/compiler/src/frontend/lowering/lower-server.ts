@@ -1,3 +1,5 @@
+import { keyedHelperName } from "./stable-names.js";
+import { lowerTlsCertificateCall } from "./builtins/x509.js";
 import {
   dynUndefinedExpr,
   nodeThrowExpr,
@@ -183,7 +185,7 @@ export function voidizedCallback(lowerer: Lowerer, cb: IrExpr, loc: SrcLoc): IrE
   const toT = funcOf([...fromT.params], VOID);
   const key = `server.voidcb:${typeKey(fromT)}`;
   const existing = lowerer.arrHofHelpers.get(key);
-  const name = existing ?? `%server.voidcb.${lowerer.arrHofHelpers.size}`;
+  const name = existing ?? keyedHelperName(lowerer, "%server.voidcb", key);
   if (!existing) {
     lowerer.arrHofHelpers.set(key, name);
     const impl = `${name}.impl`;
@@ -279,7 +281,7 @@ function receiverReturningCall(
 ): IrExpr {
   const key = `server.recvret:${fn}:${opts?.prefix?.fn ?? ""}:${(opts?.mainArgIndices ?? []).join(".")}:${callArgs.map((a) => typeKey(a.type)).join(",")}`;
   const existing = lowerer.arrHofHelpers.get(key);
-  const name = existing ?? `%server.recvret.${lowerer.arrHofHelpers.size}`;
+  const name = existing ?? keyedHelperName(lowerer, "%server.recvret", key);
   if (!existing) {
     lowerer.arrHofHelpers.set(key, name);
     const params = callArgs.map((a, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: a.type }));
@@ -590,7 +592,7 @@ function h2HeadersCallbackAdapter(
   );
   const key = `h2.hdrcb:${handleKind}:${withStatus}:${typeKey(fromT)}:${shapeId ?? ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
-  const name = existing ?? `%h2.hdrcb.${lowerer.arrHofHelpers.size}`;
+  const name = existing ?? keyedHelperName(lowerer, "%h2.hdrcb", key);
   if (!existing) {
     lowerer.arrHofHelpers.set(key, name);
     const impl = `${name}.impl`;
@@ -1764,12 +1766,82 @@ function lowerNetServerMethodCall(
     );
     return { kind: "libCall", fn: "net.serverCloseCb", args: [receiver, cb], type: VOID, loc };
   }
+  if (name === "addContext" || name === "setSecureContext") {
+    // tls.Server's SNI table and default context (scr_tls.c): addContext
+    // takes a SecureContext or createSecureContext's options; the runtime
+    // throws Node's errors and the fence on a non-TLS server.
+    requireStatementPosition(lowerer, call, `server.${name}(...)`);
+    const want = name === "addContext" ? 2 : 1;
+    if (args.length !== want || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(
+        `${name} with ${args.length} arguments`,
+        call,
+        name === "addContext"
+          ? "the form is addContext(servername, context)"
+          : "the form is setSecureContext(options)",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    if (name === "setSecureContext") {
+      const options = lowerer.lowerExprExpecting(args[0]!, DYN);
+      return {
+        kind: "libCall",
+        fn: "tls.serverSetSecureContext",
+        args: [receiver, options],
+        type: VOID,
+        loc,
+      };
+    }
+    const servername = lowerer.lowerExprExpecting(args[0]!, DYN);
+    const context = lowerer.lowerExpr(args[1]!);
+    if (context.type.kind === "secureCtx") {
+      return {
+        kind: "libCall",
+        fn: "tls.serverAddContextCtx",
+        args: [receiver, servername, context],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "tls.serverAddContext",
+      args: [receiver, servername, lowerer.coerceInto(args[1]!, context, DYN)],
+      type: VOID,
+      loc,
+    };
+  }
   if ((name === "on" || name === "once" || name === "addListener") && args.length === 2) {
     requireStatementPosition(lowerer, call, `server.${name}(...)`);
     const once = boolLit(name === "once", loc);
     const evT = lowerer.typeOf(args[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    if (event === "tlsClientError") {
+      // A failed handshake on a tls or https server: (err, tlsSocket).
+      const listener = args[1]!;
+      const { cb } = lowerCallbackArgShared(
+        lowerer,
+        listener,
+        "tlsClientError listeners",
+        2,
+        (p, i) =>
+          i === 0 ? p.kind === "object" && p.className === "%Error" : p.kind === "netSocket",
+        "use (err, tlsSocket), (err) or ()",
+        {
+          dynTuple: [ERROR_T, NETSOCKET_T],
+          checkAllParams: true,
+          adapt: (c) => voidizedCallback(lowerer, c, locOf(listener)),
+        },
+      );
+      return {
+        kind: "libCall",
+        fn: "tls.serverOnClientError",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "connection" || event === "secureConnection") {
       // 'secureConnection' rides the same list: a TLS server's
       // 'connection' listeners are DEFERRED to handshake completion
@@ -2245,8 +2317,8 @@ function lowerNetServerMethodCall(
 function socketEncodingReachable(lowerer: Lowerer): boolean {
   if (lowerer.socketEncodingReachable !== null) return lowerer.socketEncodingReachable;
   let reachable = false;
-  for (const file of lowerer.program.getSourceFiles()) {
-    if (file.isDeclarationFile || !file.text.includes("setEncoding")) continue;
+  for (const file of lowerer.program.getImplementationSourceFiles()) {
+    if (!file.text.includes("setEncoding")) continue;
     ts.walkPreorder(file, (node) => {
       if (reachable) return "skip";
       if (!ts.isCallExpression(node)) return undefined;
@@ -2277,8 +2349,8 @@ function socketEncodingReachable(lowerer: Lowerer): boolean {
 function unixListenReachable(lowerer: Lowerer): boolean {
   if (lowerer.unixListenReachable !== null) return lowerer.unixListenReachable;
   let reachable = false;
-  for (const file of lowerer.program.getSourceFiles()) {
-    if (file.isDeclarationFile || !file.text.includes("listen")) continue;
+  for (const file of lowerer.program.getImplementationSourceFiles()) {
+    if (!file.text.includes("listen")) continue;
     ts.walkPreorder(file, (node) => {
       if (reachable) return "skip";
       if (!ts.isCallExpression(node) || node.arguments.nodes.length === 0) return undefined;
@@ -2353,7 +2425,9 @@ function lowerNetSocketMethodCall(
     };
   }
   if (name === "write" || name === "end") {
-    requireStatementPosition(lowerer, call, `socket.${name}(...)`);
+    // write() answers Node's backpressure boolean; end() stays a statement
+    if (name === "end") requireStatementPosition(lowerer, call, `socket.${name}(...)`);
+    const resultT = name === "write" ? BOOL : VOID;
     // write(chunk, encoding) — the two-argument encoding form: 'buffer'
     // beside a string chunk is Writable's encoding check (a synchronous
     // ERR_UNKNOWN_ENCODING TypeError, "Unknown encoding: buffer" — the
@@ -2379,7 +2453,7 @@ function lowerNetSocketMethodCall(
           const socket = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
           const chunk = lowerer.lowerExpr(args[0]!);
           const fn: IrLibFn = chunk.type.kind === "string" ? "net.sockWrite" : "net.sockWriteBytes";
-          return { kind: "libCall", fn, args: [socket, chunk], type: VOID, loc };
+          return { kind: "libCall", fn, args: [socket, chunk], type: BOOL, loc };
         }
       }
     }
@@ -2438,7 +2512,7 @@ function lowerNetSocketMethodCall(
             NARROW_DATA_HINT,
           );
         }
-        main = { kind: "libCall", fn, args: [receiver(), data], type: VOID, loc };
+        main = { kind: "libCall", fn, args: [receiver(), data], type: resultT, loc };
       }
       const cb = lowerer.lowerExpr(last);
       let register: IrExpr;
@@ -2459,8 +2533,24 @@ function lowerNetSocketMethodCall(
           loc,
         };
       }
-      stmts.push({ kind: "exprStmt", expr: main, loc });
-      return { kind: "seqExpr", stmts, result: register, type: VOID, loc };
+      if (resultT.kind === "void") {
+        stmts.push({ kind: "exprStmt", expr: main, loc });
+        return { kind: "seqExpr", stmts, result: register, type: VOID, loc };
+      }
+      // write(data, cb): the data is written, the callback registered, and
+      // the write's answer is the value
+      const okLocal = lowerer.declareHiddenLocal("%sockWriteOk", BOOL);
+      stmts.push(
+        { kind: "varDecl", localId: okLocal.id, init: main, loc },
+        { kind: "exprStmt", expr: register, loc },
+      );
+      return {
+        kind: "seqExpr",
+        stmts,
+        result: { kind: "varRef", localId: okLocal.id, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      };
     }
     const maxArgs = name === "write" ? 1 : 1;
     const minArgs = name === "write" ? 1 : 0;
@@ -2480,17 +2570,17 @@ function lowerNetSocketMethodCall(
     const data = lowerer.lowerExpr(args[0]!);
     if (data.type.kind === "string") {
       const fn: IrLibFn = name === "write" ? "net.sockWrite" : "net.sockEndStr";
-      return { kind: "libCall", fn, args: [receiver, data], type: VOID, loc };
+      return { kind: "libCall", fn, args: [receiver, data], type: resultT, loc };
     }
     if (data.type.kind === "bytes" && data.type.elem === "u8") {
       const fn: IrLibFn = name === "write" ? "net.sockWriteBytes" : "net.sockEndBytes";
-      return { kind: "libCall", fn, args: [receiver, data], type: VOID, loc };
+      return { kind: "libCall", fn, args: [receiver, data], type: resultT, loc };
     }
     if (data.type.kind === "dyn") {
       // An untyped JS payload (a helper's parameter): the runtime
       // dispatches STR/BYTES and throws Node's chunk TypeError otherwise.
       const fn: IrLibFn = name === "write" ? "net.sockWriteDyn" : "net.sockEndDyn";
-      return { kind: "libCall", fn, args: [receiver, data], type: VOID, loc };
+      return { kind: "libCall", fn, args: [receiver, data], type: resultT, loc };
     }
     lowerer.noLowering(
       `${name} of '${lowerer.fmt(data.type)}' data`,
@@ -2630,6 +2720,12 @@ function lowerNetSocketMethodCall(
     return declared === null || declared.kind === "dyn"
       ? value
       : lowerer.coerceInto(call, value, declared);
+  }
+  {
+    const certificate = lowerTlsCertificateCall(lowerer, call, name, () =>
+      coerceToHandle(lowerer, access.expression, NETSOCKET_T),
+    );
+    if (certificate) return certificate;
   }
   if (name === "isSessionReused" && args.length === 0) {
     // TLSSocket.isSessionReused(): the client never offers a cached
@@ -2866,6 +2962,7 @@ function lowerNetSocketMethodCall(
       event === "connect" ||
       event === "ready" ||
       event === "timeout" ||
+      event === "drain" ||
       event === "readable"
     ) {
       const { cb } = lowerCallbackArg(
@@ -2884,11 +2981,13 @@ function lowerNetSocketMethodCall(
             ? "net.sockOnClose"
             : event === "timeout"
               ? "net.sockOnTimeout"
-              : event === "readable"
-                ? "net.sockOnReadable"
-                : event === "ready"
-                  ? "net.sockOnReady"
-                  : "net.sockOnConnect";
+              : event === "drain"
+                ? "net.sockOnDrain"
+                : event === "readable"
+                  ? "net.sockOnReadable"
+                  : event === "ready"
+                    ? "net.sockOnReady"
+                    : "net.sockOnConnect";
       return { kind: "libCall", fn, args: [receiver, cb, once], type: VOID, loc };
     }
     if (event === "lookup") {
@@ -2938,6 +3037,26 @@ function lowerNetSocketMethodCall(
         loc,
       };
     }
+    if (event === "secure") {
+      // The handshake's completion on a TLS socket (after secureConnect on
+      // a client); plain sockets never fire it.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "secure listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "tls.sockOnSecure",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "session") {
       // The received-ticket event: fires once per TLS client socket with
       // the serialized session (a Buffer); plain sockets never fire it.
@@ -2961,7 +3080,7 @@ function lowerNetSocketMethodCall(
     lowerer.noLowering(
       `socket.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"data", "end", "close", "error", "connect", "lookup", "ready", "timeout", "readable", "secureConnect", and "session" are the supported socket events (as literals)',
+      '"data", "end", "close", "error", "connect", "lookup", "ready", "timeout", "readable", "secureConnect", "secure", and "session" are the supported socket events (as literals)',
     );
   }
   lowerer.noLowering(
@@ -3583,7 +3702,7 @@ export function lowerCompatReqStreamOptionalCall(
     type: unionT,
     loc,
   };
-  const id = `chain.${lowerer.chainCounter++}`;
+  const id = lowerer.closureName(loc, "", "chain");
   const body = lowerH2StreamMethodCall(lowerer, call, call.expression, {
     kind: "chainRecv",
     id,
@@ -3858,6 +3977,18 @@ export function lowerServerProperty(
     // counts those too; plaintext on TLS sockets).
     const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
     return { kind: "libCall", fn: "net.sockBytesWritten", args: [receiver], type: F64, loc };
+  }
+  if (
+    recvKind === "netSocket" &&
+    lowerer.isStdlibMember(expr) &&
+    (expr.name.text === "writableLength" || expr.name.text === "writableNeedDrain")
+  ) {
+    // The write buffer's unsent bytes, and whether a write answered false
+    // and 'drain' has not fired yet.
+    const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+    return expr.name.text === "writableLength"
+      ? { kind: "libCall", fn: "net.sockWritableLength", args: [receiver], type: F64, loc }
+      : { kind: "libCall", fn: "net.sockWritableNeedDrain", args: [receiver], type: BOOL, loc };
   }
   if (recvKind === "netSocket" && lowerer.isStdlibMember(expr) && expr.name.text === "readable") {
     // true until the read half is done (peer FIN / destroy).
@@ -4424,7 +4555,7 @@ function lowerHttpCreateServerForms(
   const hasMax = opts.maxHeaderSize !== null;
   const key = `server.opts:${opts.joinDup ? 1 : 0}:${opts.allowMissingHost ? 1 : 0}:${hasBuffer ? 1 : 0}:${hasMax ? 1 : 0}`;
   const existing = lowerer.arrHofHelpers.get(key);
-  const name = existing ?? `%server.opts.${lowerer.arrHofHelpers.size}`;
+  const name = existing ?? keyedHelperName(lowerer, "%server.opts", key);
   if (!existing) {
     lowerer.arrHofHelpers.set(key, name);
     const params = [
@@ -4675,6 +4806,125 @@ export function lowerHttpServerNew(lowerer: Lowerer, expr: ts.NewExpression): Ir
   return lowerHttpCreateServerForms(lowerer, expr, "new http.Server", locOf(expr));
 }
 
+/** `new tls.TLSSocket(socket, options)` in server mode: a new TLS socket
+ * takes over the socket's connection and runs the server handshake
+ * (scr_tls_wrap_socket). The options record reads at runtime, the
+ * tls.connect precedent. A literal's secureContext member is a
+ * SecureContext handle, which the checked-dynamic record cannot hold, so
+ * it passes as its own argument; members after it must be free of side
+ * effects, because it is read after them. Node never starts the handshake
+ * of a client-mode TLSSocket, so a literal without isServer: true fences
+ * here. */
+export function lowerTlsSocketNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
+  const callee = expr.expression;
+  const isTlsSocket =
+    (ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "TLSSocket" &&
+      lowerer.builtinMemberOf(callee)?.module === "tls") ||
+    (ts.isIdentifier(callee) &&
+      lowerer.builtinImportOf(callee)?.module === "tls" &&
+      lowerer.builtinImportOf(callee)?.member === "TLSSocket");
+  if (!isTlsSocket) return null;
+  const loc = locOf(expr);
+  const HINT =
+    "the supported forms are new tls.TLSSocket(socket, { isServer: true, cert, key }) and new tls.TLSSocket(socket, { isServer: true, secureContext })";
+  const args = expr.arguments?.nodes ?? [];
+  if (args.length !== 2 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`new tls.TLSSocket with ${args.length} argument(s)`, expr, HINT);
+  }
+  const socket = lowerer.lowerExpr(args[0]!);
+  if (socket.type.kind !== "netSocket") {
+    lowerer.noLowering(
+      `new tls.TLSSocket over a '${lowerer.fmt(socket.type)}' value`,
+      args[0]!,
+      "the wrapped value must be a net.Socket (a server connection or an http CONNECT socket)",
+    );
+  }
+  let optsNode: ts.Expression = args[1]!;
+  while (ts.isParenthesizedExpression(optsNode)) optsNode = optsNode.expression;
+  if (!ts.isObjectLiteralExpression(optsNode)) {
+    const o = lowerer.lowerExpr(optsNode);
+    const opts: IrExpr =
+      o.type.kind === "dyn"
+        ? o
+        : canConvertToDyn(
+              o.type,
+              (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
+            )
+          ? { kind: "dynFrom", value: o, type: DYN, loc }
+          : lowerer.noLowering(
+              `new tls.TLSSocket with a '${lowerer.fmt(o.type)}' options record`,
+              optsNode,
+              `${HINT} — a secureContext member lowers in an options object literal`,
+            );
+    return { kind: "libCall", fn: "tls.wrapSocket", args: [socket, opts], type: NETSOCKET_T, loc };
+  }
+  const props = optsNode.properties.nodes;
+  const nameOf = (p: ts.ObjectLiteralElementLike): string | null =>
+    (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+    (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
+      ? p.name.text
+      : null;
+  const isServer = props.find((p) => nameOf(p) === "isServer");
+  if (
+    isServer === undefined ||
+    (ts.isPropertyAssignment(isServer) && isServer.initializer.kind === ts.SyntaxKind.FalseKeyword)
+  ) {
+    lowerer.noLowering(
+      "new tls.TLSSocket in client mode",
+      optsNode,
+      "Node starts no handshake for a client-mode TLSSocket — pass isServer: true for the server side; tls.connect makes client sockets",
+    );
+  }
+  const ctxIndex = props.findIndex((p) => nameOf(p) === "secureContext");
+  if (ctxIndex < 0) {
+    const opts = lowerDynObjectLiteral(lowerer, optsNode);
+    return { kind: "libCall", fn: "tls.wrapSocket", args: [socket, opts], type: NETSOCKET_T, loc };
+  }
+  const ctxProp = props[ctxIndex]!;
+  const ctxNode = ts.isShorthandPropertyAssignment(ctxProp)
+    ? ctxProp.name
+    : (ctxProp as ts.PropertyAssignment).initializer;
+  for (const p of props.slice(ctxIndex + 1)) {
+    const pure =
+      ts.isShorthandPropertyAssignment(p) ||
+      (ts.isPropertyAssignment(p) && sideEffectFreeOptionValue(p.initializer));
+    if (!pure) {
+      lowerer.noLowering(
+        "a new tls.TLSSocket options literal with side effects after secureContext",
+        p,
+        "secureContext is read after the other members — move it to the end of the object",
+      );
+    }
+  }
+  let ctx: IrExpr | null = null;
+  const opts = lowerDynObjectLiteral(lowerer, optsNode, (node, value) => {
+    if (node !== ctxNode) return lowerer.coerceToExpected(value, DYN);
+    if (value.type.kind !== "secureCtx") {
+      lowerer.noLowering(
+        `a '${lowerer.fmt(value.type)}' secureContext`,
+        node,
+        "pass a tls.createSecureContext({ cert, key }) result",
+      );
+    }
+    ctx = value;
+    return {
+      kind: "dynFrom",
+      value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+      type: DYN,
+      loc,
+    };
+  });
+  return {
+    kind: "libCall",
+    fn: "tls.wrapSocketCtx",
+    args: [socket, opts, ctx!],
+    type: NETSOCKET_T,
+    loc,
+  };
+}
+
 /** Module-function calls on http import bindings: createServer([options][,
  * handler]) and the call-form Server (Node's constructor works without
  * `new` — test/parallel's http.Server(fn) spelling). The handler takes
@@ -4749,7 +4999,8 @@ function lowerTlsServerOptions(
   lowerer: Lowerer,
   node: ts.Expression,
   what: string,
-): { cert: IrExpr; key: IrExpr } {
+  allowSni = false,
+): { cert: IrExpr; key: IrExpr; sni?: IrExpr } {
   if (!ts.isObjectLiteralExpression(node)) {
     lowerer.noLowering(
       `${what} with a non-literal options argument`,
@@ -4760,6 +5011,8 @@ function lowerTlsServerOptions(
   const loc = locOf(node);
   let cert: IrExpr | null = null;
   let key: IrExpr | null = null;
+  let sni: IrExpr | undefined;
+  let pendingSni: IrStmt | null = null;
   for (const prop of node.properties.nodes) {
     let initializer: ts.Expression | null;
     if (
@@ -4777,20 +5030,32 @@ function lowerTlsServerOptions(
       );
     }
     const k = (prop.name as ts.Identifier | ts.StringLiteral).text;
+    if (k === "SNICallback" && allowSni) {
+      const value =
+        initializer !== null
+          ? lowerer.lowerExpr(initializer)
+          : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+      const checked = checkSniCallbackValue(lowerer, value, prop, what);
+      if (cert !== null && key !== null) {
+        sni = checked;
+      } else {
+        // The runtime call reads cert and key first. A cert or key entry
+        // after the callback can change the binding the callback reads,
+        // so the callback is saved ahead of the next of them, in source
+        // order.
+        const saved = lowerer.declareHiddenLocal("%sniCallback", checked.type);
+        pendingSni = { kind: "varDecl", localId: saved.id, init: checked, loc: locOf(prop) };
+        sni = varRef(saved.id, checked.type, locOf(prop));
+      }
+      continue;
+    }
     if (k !== "cert" && k !== "key") {
       const init = ts.isPropertyAssignment(prop) ? prop.initializer : null;
-      if (
-        (k === "ca" || k === "rejectUnauthorized") &&
-        (init === null || sideEffectFreeOptionValue(init))
-      ) {
-        // Both are inert without requestCert (which fences): the server's
-        // `ca` verifies CLIENT certificates and rejectUnauthorized only
-        // gates that verification — Node-observably droppable, matching
+      if (k === "rejectUnauthorized" && (init === null || sideEffectFreeOptionValue(init))) {
+        // Without requestCert (a literal with requestCert or ca rides the
+        // runtime walk) rejectUnauthorized gates nothing — droppable, like
         // the runtime walk's split (effectful values keep the fence).
         continue;
-      }
-      if (k === "requestCert" && (init === null || init.kind === ts.SyntaxKind.FalseKeyword)) {
-        continue; // Node's false default, spelled out
       }
       fenceOrDropOptionKey(
         lowerer,
@@ -4801,9 +5066,7 @@ function lowerTlsServerOptions(
         "cert and key (PEM strings or Buffers) are the supported options",
         {
           SNICallback:
-            "SNICallback lowers only on http2.createSecureServer({ allowHTTP1: true, ... }) — serve one cert/key pair here",
-          requestCert:
-            "client-certificate handshakes are not modeled (SEMANTICS.md divergence 55) — requestCert: false is the lowered value",
+            "SNICallback lowers on tls.createServer and http2.createSecureServer({ allowHTTP1: true, ... }) — serve one cert/key pair here",
         },
       );
       continue; // an undocumented key, dropped like Node drops it
@@ -4838,6 +5101,10 @@ function lowerTlsServerOptions(
         "cert/key are PEM strings or Buffers here",
       );
     }
+    if (pendingSni !== null) {
+      v = { kind: "seqExpr", stmts: [pendingSni], result: v, type: v.type, loc };
+      pendingSni = null;
+    }
     if (k === "cert") cert = v;
     else key = v;
   }
@@ -4848,7 +5115,7 @@ function lowerTlsServerOptions(
       "the supported options object is { cert, key } (PEM strings or Buffers)",
     );
   }
-  return { cert, key };
+  return sni === undefined ? { cert, key } : { cert, key, sni };
 }
 
 /** The options argument of tls/https createServer, split three ways: an
@@ -4877,12 +5144,14 @@ const TLS_VALIDATED_OPTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /** True when a literal options bag must ride the runtime walker: JS uses
- * it for the typed TLS validation ladders, and HTTPS uses it for
+ * it for the typed TLS validation ladders, HTTPS uses it for
  * keepAliveTimeoutBuffer so the HTTP option is consumed without losing
- * the literal's evaluation order. */
+ * the literal's evaluation order, and `runtimeKeys` names options only the
+ * runtime walk implements (tls.createServer's ALPNProtocols). */
 function tlsLiteralNeedsRuntimeWalk(
   node: ts.ObjectLiteralExpression,
   includeHttpTimeoutOptions = false,
+  runtimeKeys: ReadonlySet<string> = new Set(),
 ): boolean {
   const jsSource = isJsSourceFile(ts.getSourceFileOfNode(node));
   return node.properties.nodes.some(
@@ -4890,21 +5159,50 @@ function tlsLiteralNeedsRuntimeWalk(
       (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
       (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
       ((includeHttpTimeoutOptions && p.name.text === "keepAliveTimeoutBuffer") ||
+        runtimeKeys.has(p.name.text) ||
         (jsSource && TLS_VALIDATED_OPTIONS.has(p.name.text))),
   );
 }
+
+/** The client-certificate options (requestCert, and ca, which also
+ * completes the server's own chain): the runtime walk implements them for
+ * tls.createServer and https.createServer, and the literal cert/key
+ * lowering does not. */
+const TLS_CLIENT_AUTH_OPTIONS: ReadonlySet<string> = new Set(["requestCert", "ca"]);
+
+/** tls.createServer options the runtime walk implements and the literal
+ * cert/key lowering does not. */
+const TLS_SERVER_RUNTIME_OPTIONS: ReadonlySet<string> = new Set([
+  "ALPNProtocols",
+  "minVersion",
+  "maxVersion",
+  ...TLS_CLIENT_AUTH_OPTIONS,
+]);
 
 function lowerTlsServerOptionsOrDyn(
   lowerer: Lowerer,
   node: ts.Expression,
   what: string,
   includeHttpTimeoutOptions = false,
-): { cert: IrExpr; key: IrExpr; dyn?: undefined } | { dyn: IrExpr } {
-  if (
-    ts.isObjectLiteralExpression(node) &&
-    !tlsLiteralNeedsRuntimeWalk(node, includeHttpTimeoutOptions)
-  ) {
-    return lowerTlsServerOptions(lowerer, node, what);
+  runtimeKeys: ReadonlySet<string> = new Set(),
+  allowSni = false,
+): { cert: IrExpr; key: IrExpr; sni?: IrExpr; dyn?: undefined } | { dyn: IrExpr } {
+  if (ts.isObjectLiteralExpression(node)) {
+    if (!tlsLiteralNeedsRuntimeWalk(node, includeHttpTimeoutOptions, runtimeKeys))
+      return lowerTlsServerOptions(lowerer, node, what, allowSni);
+    const sniOption = node.properties.nodes.find(
+      (p) =>
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+        (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+        p.name.text === "SNICallback",
+    );
+    if (allowSni && sniOption !== undefined) {
+      lowerer.noLowering(
+        `${what} with SNICallback and options the runtime walk reads`,
+        sniOption,
+        "SNICallback lowers with cert and key; ALPNProtocols, minVersion, maxVersion, requestCert, ca and the validated options are not combined with it yet",
+      );
+    }
   }
   const v = lowerer.lowerExpr(node);
   if (v.type.kind === "dyn") return { dyn: v };
@@ -4934,14 +5232,14 @@ function lowerTlsServerOptionsOrDyn(
  * connect(options[, cb]) and connect(port[, host][, options][, cb]) with
  * a RUNTIME options record (the checked-dynamic JS lane's shape — a dyn
  * value, or a record that converts): the runtime walk implements
- * port/host/rejectUnauthorized/ca/servername and throws the catchable
+ * port/host/socket/rejectUnauthorized/ca/cert/key/servername/ALPNProtocols/minVersion/maxVersion/timeout and throws the catchable
  * fence for other documented members (the divergence-66 stance). The
  * callback (and 'secureConnect'/'connect' listeners) fires
  * post-handshake — Node's secureConnect timing. */
 function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = expr.arguments.nodes;
   const FORMS_HINT =
-    "the supported forms are connect(options[, cb]) and connect(port[, host][, options][, cb]) — options implement port/host/rejectUnauthorized/ca/servername";
+    "the supported forms are connect(options[, cb]) and connect(port[, host][, options][, cb]) — options implement port/host/socket/rejectUnauthorized/ca/cert/key/servername/ALPNProtocols/minVersion/maxVersion/timeout";
   if (args.length < 1 || args.length > 4 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`tls.connect with ${args.length} arguments`, expr, FORMS_HINT);
   }
@@ -4992,7 +5290,22 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
   // The options value rides whole to the runtime walk: dyn passes
   // directly; a typed record that converts boxes into the checked-dynamic tree.
   let opts: IrExpr;
-  if (optsNode !== null) {
+  let literal: ts.Expression | null = optsNode;
+  while (literal !== null && ts.isParenthesizedExpression(literal)) literal = literal.expression;
+  if (
+    literal !== null &&
+    ts.isObjectLiteralExpression(literal) &&
+    literal.properties.nodes.some(
+      (p) =>
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+        ts.isIdentifier(p.name) &&
+        p.name.text === "socket",
+    )
+  ) {
+    // A socket member is a handle the record form cannot box: the literal
+    // builds the checked-dynamic object member by member.
+    opts = lowerDynObjectLiteral(lowerer, literal);
+  } else if (optsNode !== null) {
     const o = lowerer.lowerExpr(optsNode);
     if (o.type.kind === "dyn") {
       opts = o;
@@ -5060,10 +5373,31 @@ function lowerTlsModuleCall(
         "the supported form is createServer({ cert, key }, socket => ...)",
       );
     }
-    const opts = lowerTlsServerOptionsOrDyn(lowerer, args[0]!, "tls.createServer");
+    const opts = lowerTlsServerOptionsOrDyn(
+      lowerer,
+      args[0]!,
+      "tls.createServer",
+      false,
+      TLS_SERVER_RUNTIME_OPTIONS,
+      true,
+    );
     if (args.length === 1) {
-      return opts.dyn !== undefined
-        ? { kind: "libCall", fn: "tls.createServerDyn", args: [opts.dyn], type: NETSERVER_T, loc }
+      if (opts.dyn !== undefined)
+        return {
+          kind: "libCall",
+          fn: "tls.createServerDyn",
+          args: [opts.dyn],
+          type: NETSERVER_T,
+          loc,
+        };
+      return opts.sni !== undefined
+        ? {
+            kind: "libCall",
+            fn: "tls.createServerSni",
+            args: [opts.cert, opts.key, opts.sni],
+            type: NETSERVER_T,
+            loc,
+          }
         : {
             kind: "libCall",
             fn: "tls.createServer",
@@ -5081,11 +5415,19 @@ function lowerTlsModuleCall(
       "use (socket) or ()",
       [NETSOCKET_T],
     );
-    return opts.dyn !== undefined
+    if (opts.dyn !== undefined)
+      return {
+        kind: "libCall",
+        fn: "tls.createServerDynCb",
+        args: [opts.dyn, cb],
+        type: NETSERVER_T,
+        loc,
+      };
+    return opts.sni !== undefined
       ? {
           kind: "libCall",
-          fn: "tls.createServerDynCb",
-          args: [opts.dyn, cb],
+          fn: "tls.createServerSniCb",
+          args: [opts.cert, opts.key, opts.sni, cb],
           type: NETSERVER_T,
           loc,
         }
@@ -5134,7 +5476,13 @@ function lowerTlsModuleCall(
         "the supported form is createSecureContext({ cert, key })",
       );
     }
-    const opts = lowerTlsServerOptionsOrDyn(lowerer, args[0]!, "tls.createSecureContext");
+    const opts = lowerTlsServerOptionsOrDyn(
+      lowerer,
+      args[0]!,
+      "tls.createSecureContext",
+      false,
+      TLS_CLIENT_AUTH_OPTIONS,
+    );
     if (opts.dyn !== undefined) {
       return {
         kind: "libCall",
@@ -5391,7 +5739,13 @@ function lowerHttpsModuleCall(
         "the supported form is createServer({ cert, key }, (req, res) => ...)",
       );
     }
-    const opts = lowerTlsServerOptionsOrDyn(lowerer, args[0]!, "https.createServer", true);
+    const opts = lowerTlsServerOptionsOrDyn(
+      lowerer,
+      args[0]!,
+      "https.createServer",
+      true,
+      TLS_CLIENT_AUTH_OPTIONS,
+    );
     if (args.length === 1) {
       // The handler-less form: 'request' listeners arrive later via
       // server.on("request", ...) — the createSecureServer emission's
@@ -5462,6 +5816,44 @@ const SNI_HINT =
   "SNICallback lowers as a direct option or the conditional spread " +
   "...(x ? { SNICallback: x } : {}) — the callback is (servername, cb) => void " +
   "with cb: (err: Error | null, ctx?: tls.SecureContext) => void";
+
+/** An SNICallback option value: (servername: string, cb) => void where cb
+ * is (err: Error | null, ctx?: SecureContext) => void, or that function
+ * unioned with undefined (no callback). cb may declare fewer params (the
+ * emitted answer thunk matches its ABI), but what it does declare must
+ * carry the arms the thunk decodes. */
+function lowerSniCallbackValue(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  blame: ts.Node,
+  what: string,
+): IrExpr {
+  return checkSniCallbackValue(lowerer, lowerer.lowerExpr(node), blame, what);
+}
+
+function checkSniCallbackValue(lowerer: Lowerer, v: IrExpr, blame: ts.Node, what: string): IrExpr {
+  const shapeOk = (t: IrType): boolean => {
+    if (t.kind !== "func" || t.ret.kind !== "void" || t.params.length !== 2) return false;
+    if (t.params[0]!.kind !== "string") return false;
+    const cbT = t.params[1]!;
+    if (cbT.kind !== "func" || cbT.ret.kind !== "void" || cbT.params.length > 2) return false;
+    const armKinds = (u: IrType): string[] =>
+      u.kind === "union" ? (lowerer.unions.get(u.unionId)?.arms ?? []).map((a) => a.kind) : [];
+    const p0 = cbT.params[0];
+    if (p0 !== undefined && !armKinds(p0).includes("nullT")) return false;
+    const p1 = cbT.params[1];
+    if (p1 !== undefined && !armKinds(p1).includes("secureCtx")) return false;
+    return true;
+  };
+  const arms = v.type.kind === "union" ? (lowerer.unions.get(v.type.unionId)?.arms ?? []) : [];
+  const funcArm = v.type.kind === "func" ? v.type : arms.find((a) => a.kind === "func");
+  const unionOk =
+    v.type.kind !== "union" || (arms.length === 2 && arms.some((a) => a.kind === "undefinedT"));
+  if (funcArm === undefined || !unionOk || !shapeOk(funcArm)) {
+    lowerer.noLowering(`a ${what} SNICallback of '${lowerer.fmt(v.type)}' values`, blame, SNI_HINT);
+  }
+  return v;
+}
 
 /** Strips parentheses and type assertions: the portless spelling wraps
  * an options spread as `...({ ... } as Record<string, unknown>)`. */
@@ -5715,43 +6107,8 @@ function lowerHttp2ModuleCall(
     let sni: IrExpr | null = null;
     let allowHttp1 = false;
     let enableConnectProtocol = false;
-    // The SNICallback value shape: (servername: string, cb) => void where
-    // cb is (err: Error | null, ctx?: SecureContext) => void — cb may
-    // declare fewer params (the emitted answer thunk matches its ABI),
-    // but what it does declare must carry the arms the thunk decodes.
-    const sniShapeOk = (t: IrType): boolean => {
-      if (t.kind !== "func" || t.ret.kind !== "void" || t.params.length !== 2) return false;
-      if (t.params[0]!.kind !== "string") return false;
-      const cbT = t.params[1]!;
-      if (cbT.kind !== "func" || cbT.ret.kind !== "void" || cbT.params.length > 2) return false;
-      const armKinds = (u: IrType): string[] =>
-        u.kind === "union" ? (lowerer.unions.get(u.unionId)?.arms ?? []).map((a) => a.kind) : [];
-      const p0 = cbT.params[0];
-      if (p0 !== undefined && !armKinds(p0).includes("nullT")) return false;
-      const p1 = cbT.params[1];
-      if (p1 !== undefined && !armKinds(p1).includes("secureCtx")) return false;
-      return true;
-    };
     const lowerSniValue = (node: ts.Expression, blame: ts.Node): void => {
-      const v = lowerer.lowerExpr(node);
-      const funcArm =
-        v.type.kind === "func"
-          ? v.type
-          : v.type.kind === "union"
-            ? (lowerer.unions.get(v.type.unionId)?.arms ?? []).find((a) => a.kind === "func")
-            : undefined;
-      const unionOk =
-        v.type.kind !== "union" ||
-        ((lowerer.unions.get(v.type.unionId)?.arms ?? []).length === 2 &&
-          (lowerer.unions.get(v.type.unionId)?.arms ?? []).some((a) => a.kind === "undefinedT"));
-      if (funcArm === undefined || !unionOk || !sniShapeOk(funcArm)) {
-        lowerer.noLowering(
-          `a createSecureServer SNICallback of '${lowerer.fmt(v.type)}' values`,
-          blame,
-          SNI_HINT,
-        );
-      }
-      sni = v;
+      sni = lowerSniCallbackValue(lowerer, node, blame, "createSecureServer");
     };
     const lowerOption = (prop: ts.ObjectLiteralElementLike): void => {
       if (ts.isSpreadAssignment(prop)) {
@@ -6044,7 +6401,9 @@ function runtimeRequestOptions(
       return (
         (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
         (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
-        prop.name.text === "socketPath"
+        (prop.name.text === "socketPath" ||
+          // a client certificate: the runtime request walk reads cert and key
+          (secureish && (prop.name.text === "cert" || prop.name.text === "key")))
       );
     });
     if (!needsRuntime) return null;
@@ -7344,7 +7703,7 @@ function lowerHttpReqMethodCall(
       loc,
     };
   }
-  if (name === "resume" || name === "destroy") {
+  if (name === "resume" || name === "pause" || name === "destroy") {
     requireStatementPosition(lowerer, call, `req.${name}()`);
     if (args.length !== 0) {
       lowerer.noLowering(
@@ -7354,7 +7713,8 @@ function lowerHttpReqMethodCall(
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPREQ_T);
-    const fn: IrLibFn = name === "resume" ? "http.reqResume" : "http.reqDestroy";
+    const fn: IrLibFn =
+      name === "resume" ? "http.reqResume" : name === "pause" ? "http.reqPause" : "http.reqDestroy";
     return { kind: "libCall", fn, args: [receiver], type: VOID, loc };
   }
   if (name === "setEncoding") {
@@ -7927,7 +8287,7 @@ function lowerHttpResMethodCall(
       const all = [...callArgs, cb];
       const key = `server.endcb:${fn}:${all.map((a) => typeKey(a.type)).join(",")}`;
       const existing = lowerer.arrHofHelpers.get(key);
-      const helper = existing ?? `%server.endcb.${lowerer.arrHofHelpers.size}`;
+      const helper = existing ?? keyedHelperName(lowerer, "%server.endcb", key);
       if (!existing) {
         lowerer.arrHofHelpers.set(key, helper);
         const params = all.map((a, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: a.type }));

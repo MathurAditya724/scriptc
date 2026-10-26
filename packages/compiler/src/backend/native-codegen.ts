@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { createHash, type Hash } from "node:crypto";
+import { closeSync, constants, openSync, readSync } from "node:fs";
 import { createRequire } from "node:module";
-import { access, chmod, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -30,6 +30,8 @@ import { compilerReleaseVersion } from "../library/sidecar.js";
 import {
   nativeProfileHelperArgs,
   nativeProfileKey,
+  parseNativeProfileMatch,
+  type NativeProfileMatch,
   type NativeProfileOptions,
 } from "./native-profile.js";
 import { writeTextParts } from "../text-parts.js";
@@ -69,13 +71,37 @@ export interface NativeCodegenArtifact {
   dependencies: NativeArtifactDependency[];
   /** Every emitted file, starting with the requested output path. */
   outputPaths: string[];
+  /** How the build's profile matched, when it used one and the helper ran. */
+  profileMatch?: NativeProfileMatch;
 }
 
 const resolvedHelperCache = new Map<string, Promise<ResolvedHelper>>();
 
+/** LLVM text already written to `file`, of `bytes` bytes, which a build passes on without reading it. */
+export interface LlvmFile {
+  readonly file: string;
+  readonly bytes: number;
+}
+
+/** LLVM text as a string, as parts to concatenate, or as a file. */
+export type LlvmInput = string | readonly string[] | LlvmFile;
+
+export function isLlvmFile(llvm: LlvmInput): llvm is LlvmFile {
+  return typeof llvm === "object" && !Array.isArray(llvm);
+}
+
+/** The size of `llvm` in bytes. */
+export function llvmInputBytes(llvm: LlvmInput): number {
+  if (isLlvmFile(llvm)) return llvm.bytes;
+  return (typeof llvm === "string" ? [llvm] : llvm).reduce(
+    (bytes, part) => bytes + Buffer.byteLength(part),
+    0,
+  );
+}
+
 export interface NativeCodegenOptions {
   outputPath: string;
-  llvm: string | readonly string[];
+  llvm: LlvmInput;
   outputKind: NativeCodegenOutputKind;
   sourcePath: string;
   optimization?: "0" | "1" | "2" | "3" | "s" | "z";
@@ -89,8 +115,6 @@ export interface NativeCodegenOptions {
   cacheRoot?: string | null;
   /** Program partitions, written to nativePartitionPaths(outputPath). */
   partitions?: number;
-  /** Runtime bitcode whose small functions the helper imports for inlining. */
-  importBitcode?: { paths: readonly string[]; digests: readonly string[] };
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
 }
@@ -278,14 +302,31 @@ async function resolveHelper(
   return pending;
 }
 
+/** Adds the bytes of `file` to `hash`, as `hash.update` of the text written there would. */
+function updateHashFromFile(hash: Hash, file: string): void {
+  const fd = openSync(file, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
+    for (;;) {
+      const read = readSync(fd, buffer, 0, buffer.length, null);
+      if (read === 0) break;
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function cacheKey(
   options: NativeCodegenOptions,
   target: NativeTargetSpec,
   helper: HelperIdentity,
 ): string {
   const hash = createHash("sha256").update("scriptc-native-codegen-v1\0");
-  for (const part of typeof options.llvm === "string" ? [options.llvm] : options.llvm)
-    hash.update(part);
+  if (isLlvmFile(options.llvm)) updateHashFromFile(hash, options.llvm.file);
+  else
+    for (const part of typeof options.llvm === "string" ? [options.llvm] : options.llvm)
+      hash.update(part);
   return hash
     .update("\0")
     .update(JSON.stringify(target))
@@ -300,11 +341,6 @@ function cacheKey(
     .update("\0")
     .update(options.sourcePath)
     .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
-    .update(
-      options.importBitcode === undefined
-        ? ""
-        : `\0import:${options.importBitcode.digests.join(",")}`,
-    )
     .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
     .digest("hex");
 }
@@ -424,8 +460,9 @@ export async function emitNativeArtifact(
   // concurrent build of another entry that has the same output stem.
   const input = privateSiblingPath(options.outputPath, "native-input");
   try {
-    await writeLlvmSource(input, options.llvm, 0o600);
-    await invoke(helper.binaryPath, [
+    if (isLlvmFile(options.llvm)) await copyFile(options.llvm.file, input);
+    else await writeLlvmSource(input, options.llvm, 0o600);
+    const { stdout } = await invoke(helper.binaryPath, [
       "emit",
       "--input",
       input,
@@ -442,7 +479,6 @@ export async function emitNativeArtifact(
       "json",
       "--source-path",
       options.sourcePath,
-      ...(options.importBitcode?.paths ?? []).flatMap((path) => ["--import-bitcode", path]),
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
       ...nativeProfileHelperArgs(options.profile),
     ]);
@@ -470,7 +506,9 @@ export async function emitNativeArtifact(
     for (let index = 0; index < stages.length; index++)
       await rename(stages[index]!, outputs[index]!);
     await pruneBuildCache(root);
-    return artifact;
+    const profileMatch =
+      options.profile?.use === undefined ? null : parseNativeProfileMatch(stdout);
+    return profileMatch === null ? artifact : { ...artifact, profileMatch };
   } finally {
     await Promise.all([
       ...stages.map((stage) => rm(stage, { force: true }).catch(() => undefined)),

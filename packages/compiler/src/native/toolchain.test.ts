@@ -54,6 +54,40 @@ test("native toolchain installation paths relocate with the manifest", () => {
   }
 });
 
+test("prebuilt lib diagnostics apply while the checker is the distribution's tsc-ts", () => {
+  const root = realpathSync(
+    mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-native-tools-")),
+  );
+  const path = join(root, "toolchain.json");
+  const manifest: NativeToolchainManifest = {
+    schema: "scriptc.native-toolchain.v1",
+    compiler_version: "1.2.3",
+    target: "macos-arm64",
+    ts7: "typescript/tsc",
+    tsc_ts: "tsc-ts/lib/tsc-ts",
+    llvm_package: "llvm",
+    runtime_pack: "runtime",
+    linker: "tools/linker",
+    linker_args: [],
+    dsymutil: "dsymutil",
+    lib_diagnostics: "declarations/lib-diagnostics.json",
+  };
+  try {
+    writeFileSync(path, JSON.stringify(manifest));
+    expect(loadNativeToolchain(path).prebuiltLibDiagnostics).toBe(
+      join(root, "declarations/lib-diagnostics.json"),
+    );
+    // tsgo checks without them.
+    expect(
+      loadNativeToolchain(path, { SCRIPTC_CHECKER: "tsgo" }).prebuiltLibDiagnostics,
+    ).toBeUndefined();
+    writeFileSync(path, JSON.stringify({ ...manifest, lib_diagnostics: "" }));
+    expect(() => loadNativeToolchain(path)).toThrow();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("native toolchain assets resolve from the physical manifest through package links", () => {
   const root = realpathSync(
     mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-linked-tools-")),
@@ -99,11 +133,11 @@ test("native toolchain assets resolve from the physical manifest through package
     const direct = loadNativeToolchain(path);
     const viaLink = loadNativeToolchain(join(linked, "bin", "scriptc.exe.json"));
     expect(viaLink).toEqual(direct);
-    expect(viaLink.ts7Executable).toBe(join(assets, "typescript/lib/tsc.exe"));
+    expect(viaLink.ts7Executable).toBe(join(assets, "tsc-ts/lib/tsc-ts.exe"));
     expect(
-      loadNativeToolchain(join(linked, "bin", "scriptc.exe.json"), { SCRIPTC_CHECKER: "tsc-ts" })
+      loadNativeToolchain(join(linked, "bin", "scriptc.exe.json"), { SCRIPTC_CHECKER: "tsgo" })
         .ts7Executable,
-    ).toBe(join(assets, "tsc-ts/lib/tsc-ts.exe"));
+    ).toBe(join(assets, "typescript/lib/tsc.exe"));
     expect(viaLink.helperExecutable).toBe(join(assets, "llvm/bin/scriptc-llvm-codegen.exe"));
     expect(
       loadNativeToolchain(join(linked, "bin", "scriptc.exe.json"), {

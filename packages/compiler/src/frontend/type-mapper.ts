@@ -1,4 +1,5 @@
 import { InternalCompilerError } from "../errors.js";
+import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -9,6 +10,7 @@ import {
   isDynTypedRefType,
   BOOL,
   bytesOf,
+  canBoxFuncIntoDyn,
   canConvertToDyn,
   canDynCheckTo,
   CHILD_T,
@@ -23,6 +25,7 @@ import {
   isSupportedMapKey,
   isSupportedMapValue,
   isSupportedSetElem,
+  iterableArmsElem,
   isUnitType,
   mapOf,
   NULL_T,
@@ -41,11 +44,12 @@ import {
   UNDEFINED_T,
   VOID,
 } from "../ir/ir.js";
-import { BIGINT_T } from "../ir/ir.js";
+import { BIGINT_T, KEY_ORDER_FIELD } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
 
 import { isJsSourceFile, isNodeTypesPath } from "./program.js";
+import { isProvenanceSourceFile } from "./provenance-registry.js";
 import { functionCanReturnUndefined } from "./function-completion.js";
 import { accessorSlotProp, recordTextCodecClass } from "../ir/ir.js";
 // typeKey moved to ir/ir.ts (the backend needs it too, for per-type
@@ -145,6 +149,50 @@ export const WEBCRYPTO_DYN_TYPES: ReadonlySet<string> = new Set([
   "KeyAlgorithm",
   "HmacImportParams",
   "HmacKeyAlgorithm",
+  "CryptoKeyPair",
+  "EcKeyAlgorithm",
+  "RsaHashedKeyAlgorithm",
+  "EcKeyGenParams",
+  "EcKeyImportParams",
+  "EcdsaParams",
+  "RsaHashedKeyGenParams",
+  "RsaHashedImportParams",
+  "RsaPssParams",
+  "HmacKeyGenParams",
+  "AesKeyGenParams",
+  "AesKeyAlgorithm",
+  "JsonWebKey",
+  "AesGcmParams",
+  "AesCbcParams",
+  "AesCtrParams",
+  "Pbkdf2Params",
+  "HkdfParams",
+  "AesDerivedKeyParams",
+]);
+
+/** node:crypto's key, signature and X509Certificate check option
+ * interfaces: the key functions, KeyObject.export, sign/verify and the
+ * X509Certificate checks take them as checked-dynamic arguments
+ * (scr_lib.c, scr_pki.c, scr_x509.c). */
+export const CRYPTO_KEY_OPTION_DYN_TYPES: ReadonlySet<string> = new Set([
+  "AsymmetricKeyExportOptions",
+  "ECKeyPairKeyObjectOptions",
+  "ECKeyPairOptions",
+  "ED25519KeyPairOptions",
+  "JsonWebKeyInput",
+  "JwkKeyExportOptions",
+  "KeyExportOptions",
+  "PrivateKeyInput",
+  "PublicKeyInput",
+  "RSAKeyPairKeyObjectOptions",
+  "X25519KeyPairOptions",
+  "RSAKeyPairOptions",
+  "SignKeyObjectInput",
+  "SignPrivateKeyInput",
+  "SigningOptions",
+  "VerifyKeyObjectInput",
+  "VerifyPublicKeyInput",
+  "X509CheckOptions",
 ]);
 
 export const FETCH_AMBIENT_TYPES = [
@@ -169,6 +217,9 @@ export const FETCH_AMBIENT_TYPES = [
   "ReadableStreamReadResult",
   "ReadableStreamReadValueResult",
   "ReadableStreamReadDoneResult",
+  "TransformStream",
+  "WritableStream",
+  "WritableStreamDefaultWriter",
   "Blob",
   "File",
   "BlobPropertyBag",
@@ -251,6 +302,8 @@ function comparePriority(left: DeclaredOrderPriority, right: DeclaredOrderPriori
 export class ShapeRegistry {
   /** Existing layouts change only when a recursive placeholder closes. */
   revision = 0;
+  /** Each shape id with a second hash of its key (keyedHelperName). */
+  readonly keyedNameKeys = new Map<string, number>();
   private readonly byKey = new Map<string, string>();
   private readonly byId = new Map<string, IrRecordShape>();
   /** Historical emit-order rank of the declaration-order metadata each
@@ -269,7 +322,7 @@ export class ShapeRegistry {
    * writer after all priority candidates have closed. */
   private readonly derivedDeclaredOrderFinalizers: (() => void)[] = [];
   private currentDeclaredOrderPriority: DeclaredOrderPriority = [0, 0];
-  /** All interned shapes in first-seen (`r0`, `r1`, ...) order. */
+  /** All interned shapes in first-seen order. */
   readonly shapes: IrRecordShape[] = [];
   /** ts.Types currently being mapped — a BACK-REFERENCE to one of these is
    * the recursive knot (`interface TreeNode { children: TreeNode[] }`):
@@ -389,11 +442,12 @@ export class ShapeRegistry {
 
   /** The shape id a back-reference to an in-progress type resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
-   * entry (empty fields) the outer frame finalizes. */
-  recursiveRef(t: ts.Type): string {
+   * entry (empty fields) the outer frame finalizes. `describe` names a new
+   * placeholder (checkerTypeDescription). */
+  recursiveRef(t: ts.Type, describe: () => string): string {
     let id = this.recIds.get(t);
     if (id === undefined) {
-      id = `r${this.shapes.length}`;
+      id = recursivePlaceholderName(this, "r", describe(), (name) => this.byId.has(name));
       const shape: IrRecordShape = { id, fields: [] };
       this.byId.set(id, shape);
       this.shapes.push(shape);
@@ -462,7 +516,7 @@ export class ShapeRegistry {
     const key = this.keyOf(fields, tuple, indexValue);
     let id = this.byKey.get(key);
     if (id === undefined) {
-      id = `r${this.shapes.length}`;
+      id = keyedHelperName(this, "r", key, "");
       const shape: IrRecordShape = {
         id,
         fields,
@@ -508,6 +562,21 @@ export class ShapeRegistry {
     return missing.length === 0 ? order : [...order, ...missing];
   }
 
+  /** Gives a shape with orderVariants its KEY_ORDER_FIELD, in place,
+   * after the bodies lowered (key-order-witness.ts adds the field to each
+   * of the shape's literals). Allocation zeroes it, which every other
+   * construction keeps. */
+  addKeyOrderField(shapeId: string): void {
+    const shape = this.byId.get(shapeId);
+    if (!shape || shape.fields.some((f) => f.name === KEY_ORDER_FIELD)) return;
+    shape.fields = [...shape.fields, { name: KEY_ORDER_FIELD, type: F64 }].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    );
+    this.revision++;
+    const key = this.keyOf(shape.fields, false, shape.indexValue);
+    if (!this.byKey.has(key)) this.byKey.set(key, shapeId);
+  }
+
   /** Adds optional fields to an interned shape in place: members a type
    * assertion attaches to the shape's values (`r as R & { tag: string }`
    * followed by `view.tag = ...`; see assertion-members.ts). Every value
@@ -540,6 +609,58 @@ export class ShapeRegistry {
   }
 }
 
+/** The id of a recursive placeholder described by `description`. Two
+ * different types can still share a description (checkerTypeDescription stops
+ * after a few levels of type arguments); the later one takes the first free
+ * name with a numbered suffix. */
+function recursivePlaceholderName(
+  owner: KeyedNameOwner,
+  prefix: string,
+  description: string,
+  taken: (name: string) => boolean,
+): string {
+  let name = keyedHelperName(owner, prefix, `recursive:${description}`, "");
+  for (let n = 1; taken(name); n++)
+    name = keyedHelperName(owner, prefix, `recursive:${description}#${n}`, "");
+  return name;
+}
+
+/** How many levels of type arguments checkerTypeDescription describes. */
+const RECURSIVE_NAME_DEPTH = 3;
+
+/** A checker type's description for names that must not depend on checker
+ * type ids (a recursive placeholder, a generic class instance keyed by a
+ * literal): its printed form, the structural position of its first
+ * declaration, and the same for its type arguments (two instantiations
+ * print the same when their type arguments are type parameters or classes
+ * of the same name from different declarations). */
+export function checkerTypeDescription(
+  t: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "positionOf">,
+  depth = 0,
+): string {
+  const symbol = t.getAliasSymbol() ?? t.getSymbol();
+  const declaration = symbol?.declarations[0];
+  const where = declaration
+    ? (ctx.positionOf?.(declaration) ??
+      `${ts.getSourceFileOfNode(declaration).fileName}:${declaration.pos}`)
+    : "";
+  let description = `${ctx.checker.typeToString(t)}@${where}`;
+  if (depth < RECURSIVE_NAME_DEPTH) {
+    const aliasArguments =
+      t.getAliasSymbol() !== undefined ? (t.getAliasTypeArguments() ?? []) : [];
+    const typeArguments =
+      aliasArguments.length > 0
+        ? aliasArguments
+        : t.isTypeReference()
+          ? ctx.checker.getTypeArguments(t)
+          : [];
+    if (typeArguments.length > 0)
+      description += `<${typeArguments.map((arg) => checkerTypeDescription(arg, ctx, depth + 1)).join(",")}>`;
+  }
+  return description;
+}
+
 /** The frontend's union interner — mirrors ShapeRegistry. A union's
  * canonical identity includes its typeKey-sorted arms and literal
  * discriminator contract. An arm's index in that list IS its runtime tag.
@@ -547,10 +668,12 @@ export class ShapeRegistry {
 export class UnionRegistry {
   /** Existing arm/discriminator contracts change when a placeholder closes. */
   revision = 0;
+  /** Each union id with a second hash of its key (keyedHelperName). */
+  readonly keyedNameKeys = new Map<string, number>();
   private readonly byKey = new Map<string, string>();
   private readonly byId = new Map<string, IrUnionDef>();
   private readonly armTags = new Map<string, Map<string, number[]>>();
-  /** All interned unions in first-seen (`u0`, `u1`, ...) order. */
+  /** All interned unions in first-seen order. */
   readonly unions: IrUnionDef[] = [];
   /** ts.Types currently being mapped — a back-reference to one is the
    * recursive knot passing through a union (`type Tree = Leaf | Branch`
@@ -566,11 +689,12 @@ export class UnionRegistry {
 
   /** The union id a back-reference to an in-progress union resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
-   * entry (empty arms) the outer frame finalizes. */
-  recursiveRef(t: ts.Type): string {
+   * entry (empty arms) the outer frame finalizes. `describe` names a new
+   * placeholder (checkerTypeDescription). */
+  recursiveRef(t: ts.Type, describe: () => string): string {
     let id = this.recIds.get(t);
     if (id === undefined) {
-      id = `u${this.unions.length}`;
+      id = recursivePlaceholderName(this, "u", describe(), (name) => this.byId.has(name));
       const def: IrUnionDef = { id, arms: [] };
       this.byId.set(id, def);
       this.unions.push(def);
@@ -592,6 +716,12 @@ export class UnionRegistry {
   recursivePending(t: ts.Type): boolean {
     const id = this.recIds.get(t);
     return id !== undefined && this.pendingRec.has(id);
+  }
+
+  /** True when `unionId` is a recursive placeholder whose arms are not
+   * known yet (its outer frame is still mapping, or failed). */
+  isPendingPlaceholder(unionId: string): boolean {
+    return this.pendingRec.has(unionId);
   }
 
   /** Completes a recursive placeholder with its canonical arm list and
@@ -620,7 +750,7 @@ export class UnionRegistry {
     const key = JSON.stringify([arms.map(typeKey), discriminant]);
     let id = this.byKey.get(key);
     if (id === undefined) {
-      id = `u${this.unions.length}`;
+      id = keyedHelperName(this, "u", key, "");
       const def: IrUnionDef = { id, arms, ...(discriminant ? { discriminant } : {}) };
       this.byKey.set(key, id);
       this.byId.set(id, def);
@@ -1108,7 +1238,22 @@ export type TypeParamTsResolver = (t: ts.Type) => ts.Type | null;
  * once per Lowerer and threaded through the recursion — adding a hook means
  * one new field here, not a new parameter at every call site. */
 export interface TypeMapperCtx {
+  /** Set only while a union maps an arm that is the type inferred from an
+   * empty object literal, beside another non-nullish arm: that arm holds
+   * only the literal's objects, so it maps to the empty record (see the
+   * empty object type rule in the object mapping). */
+  emptyLiteralArm?: boolean;
+  /** The class value a generic factory's result type names when the factory
+   * returns one of its own local classes through a constructor type
+   * (`function struct<S>(v: S): Struct<S> { class Base {}; return Base as
+   * Struct<S>; }`), by the checker type: the declared result inside the
+   * instance being lowered, the instantiated result at its calls. */
+  localClassValue?: (type: ts.Type) => IrType | null;
   checker: ts.TypeChecker;
+  /** The structural position of a declaration (structural-positions.ts),
+   * which names recursive placeholders independently of where unrelated
+   * code sits. The Lowerer supplies it. */
+  positionOf?: (node: ts.Node) => string;
   /** JavaScript declarations whose instance or object-literal types only
    * the checked-dynamic representation holds (js-dynamic-objects.ts).
    * Absent when the program has none: every mapping is unchanged. */
@@ -1117,6 +1262,10 @@ export interface TypeMapperCtx {
    * (erasedGenericMemberType): the signature's own type parameters
    * resolve to `unknown` instead of refusing the mapping. */
   erasingSignature?: ts.Signature;
+  /** Set with erasingSignature: the signature's own type parameters, and
+   * whether the erasure consulted an enclosing binding. An erasure that
+   * resolved only its own parameters answers the same in every context. */
+  erasedMember?: { own: ReadonlySet<ts.Type>; outerConsulted: boolean };
   /** True while an erased generic body lowers (its type parameters are
    * bound to `unknown`). */
   isErasing?: () => boolean;
@@ -1128,6 +1277,11 @@ export interface TypeMapperCtx {
    * only where literal identity matters — indexed accesses (`T[K]`) inside
    * generic bodies whose K is bound to a literal key. */
   resolveTypeParamTs?: TypeParamTsResolver;
+  /** A generic alias reference inside a generic body (`Catalog<G, P>`)
+   * re-instantiated with the instance's bound type arguments: the concrete
+   * checker type its signature instantiates, or null. Consulted only when
+   * the symbolic form does not map. */
+  resolveBoundAliasTs?: TypeParamTsResolver;
   /** GENERIC program classes (monomorphization by flow): the mapping of a
    * concrete instantiation reference (`Box<number>`) — the Lowerer
    * registers/reuses the instantiation (`Box%0`) and answers its object
@@ -1258,9 +1412,17 @@ function genChannels(
   if (!nextT || nextT.kind === "void" || nextT.kind === "nullT") return null;
   const ownChannel = (t: IrType): boolean =>
     t.kind === "f64" || t.kind === "bool" || t.kind === "string";
+  // A record yield channel keeps its type beside a dyn return (an
+  // `IterableIterator<Row>`). A record return channel beside a dyn yield
+  // does not: the value a delegating `yield*` answers (Effect.gen's
+  // generators) is often an object whose methods a record would drop.
   const dynMix =
     (yieldT.kind === "dyn" && retT.kind !== "dyn" && retT.kind !== "void" && !ownChannel(retT)) ||
-    (retT.kind === "dyn" && yieldT.kind !== "dyn" && yieldT.kind !== "void" && !ownChannel(yieldT));
+    (retT.kind === "dyn" &&
+      yieldT.kind !== "dyn" &&
+      yieldT.kind !== "void" &&
+      !ownChannel(yieldT) &&
+      yieldT.kind !== "record");
   if (dynMix) return { yieldT: DYN, retT: DYN, nextT };
   return { yieldT, retT, nextT };
 }
@@ -1287,16 +1449,18 @@ let mapTypeDepth = 0;
 let contextResolutions = 0;
 
 /** node:url's legacy record interfaces: url.parse()'s Url instance (and
- * its two query-typed refinements), url.format()'s UrlObject input, and the
- * URL form's URLFormatOptions. The values are checked-dynamic objects —
- * Node's Url instance carries its class name and null fields, and format()
- * reads any object's fields with JS truthiness. */
+ * its two query-typed refinements), url.format()'s UrlObject input, the
+ * URL form's URLFormatOptions, and urlToHttpOptions's result. The values
+ * are checked-dynamic objects — Node's Url instance carries its class name
+ * and null fields, format() reads any object's fields with JS truthiness,
+ * and urlToHttpOptions answers a null-prototype object. */
 const LEGACY_URL_TYPES = new Set([
   "Url",
   "UrlObject",
   "UrlWithParsedQuery",
   "UrlWithStringQuery",
   "URLFormatOptions",
+  "UrlHttpOptions",
 ]);
 
 export function isLegacyUrlType(
@@ -1601,9 +1765,17 @@ export function mapAsyncGeneratorAnnotation(type: ts.Type, ctx: TypeMapperCtx): 
   return { kind: "generator", async: true, ...channels };
 }
 
-/** The native fetch handles (Headers, Request, Response), optionally in
- * arrays or with null/undefined: checked-dynamic handles wherever they are
- * stored, like the worker handles above. */
+const FETCH_HANDLE_NAMES: ReadonlySet<string> = new Set([
+  "Headers",
+  "Request",
+  "Response",
+  "AbortController",
+  "AbortSignal",
+]);
+
+/** The native fetch handles (Headers, Request, Response, AbortController,
+ * AbortSignal), optionally in arrays or with null/undefined: checked-dynamic
+ * handles wherever they are stored, like the worker handles above. */
 export function isFetchHandleType(
   type: ts.Type,
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
@@ -1619,9 +1791,7 @@ export function isFetchHandleType(
       const symbol = member.getSymbol();
       if (
         !symbol ||
-        (ts.symbolName(symbol) !== "Headers" &&
-          ts.symbolName(symbol) !== "Request" &&
-          ts.symbolName(symbol) !== "Response") ||
+        !FETCH_HANDLE_NAMES.has(ts.symbolName(symbol)) ||
         !symbol.declarations.some(
           (d) =>
             (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
@@ -1647,10 +1817,18 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return STRING;
     if (flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) return BOOL;
   }
+  const localValue = ctx.localClassValue?.(type);
+  if (localValue) {
+    contextResolutions++;
+    return localValue;
+  }
   const topLevel = mapTypeDepth === 0;
   const typeId = (type as { id?: number }).id;
   const memoizable = typeId !== undefined && (ctx.canMemoizeType?.() ?? true);
-  const memoKey = memoizable ? `${0}:${typeId}` : null;
+  // An empty literal's type maps to the empty record as an unreduced union's
+  // arm (emptyLiteralArm) and to the checked-dynamic value elsewhere: the two
+  // answers keep separate memo entries.
+  const memoKey = memoizable ? `${ctx.emptyLiteralArm ? 1 : 0}:${typeId}` : null;
   if (memoKey !== null) {
     const memo = ctx.typeMemo?.get(memoKey);
     if (memo !== undefined) return memo;
@@ -1668,11 +1846,22 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       if (!topLevel || !ts.isUnreadableConstituentsPanic(e)) throw e;
       mapped = null;
     }
+    // A generic alias the body spells over its own type parameters (`x as
+    // Catalog<G, P>`) stays symbolic in the checker; when that form does not
+    // map, the instance's concrete instantiation of the same alias does.
+    if (mapped === null && ctx.resolveBoundAliasTs) {
+      const concrete = ctx.resolveBoundAliasTs(type);
+      if (concrete !== null && concrete !== type) {
+        mapped = mapType(concrete, ctx);
+        if (mapped !== null) contextResolutions++;
+      }
+    }
     if (
       mapped !== null &&
       memoKey !== null &&
       topLevel &&
       contextResolutions === sensitivityAtEntry &&
+      ctx.erasingSignature === undefined &&
       (ctx.canMemoizeType?.() ?? true)
     ) {
       ctx.typeMemo?.set(memoKey, mapped);
@@ -1720,10 +1909,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
   // reference needs native object identity, including var's undefined state.
   const intrinsic = type.getSymbol();
+  const isIntrinsicGlobal = (symbol: ts.Symbol | undefined): boolean =>
+    symbol !== undefined &&
+    ts.symbolName(symbol) === "globalThis" &&
+    symbol.declarations.length === 0;
+  if (isIntrinsicGlobal(intrinsic)) return DYN;
+  // `typeof globalThis & { key?: T }` (the global-singleton spelling) is the
+  // same global object with declared extra members.
   if (
-    intrinsic !== undefined &&
-    ts.symbolName(intrinsic) === "globalThis" &&
-    intrinsic.declarations.length === 0
+    type.isIntersectionType() &&
+    ts.constituentTypes(type).some((part) => isIntrinsicGlobal(part.getSymbol()))
   )
     return DYN;
   if (ctx.jsDynamicDeclaration !== undefined && intrinsic !== undefined) {
@@ -1823,7 +2018,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     !ERASURE_KEPT_CONTAINERS.has(ts.symbolNameOf(type.getSymbol()) ?? "") &&
     mentionsErasedTypeParam(type, ctx, 0)
   ) {
-    contextResolutions++;
+    if (!ctx.erasedMember || ctx.erasedMember.outerConsulted) contextResolutions++;
     return DYN;
   }
   // Readonly<C> over a program class (Object.freeze's result type) is the
@@ -1833,7 +2028,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (resolveTypeParam && type.flags & ts.TypeFlags.TypeParameter) {
     const bound = resolveTypeParam(type);
     if (bound) {
-      contextResolutions++;
+      if (!ctx.erasedMember?.own.has(type)) contextResolutions++;
       return bound;
     }
   }
@@ -2181,6 +2376,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       elem = unitOnlyUnion(unions);
 
     if (!elem) return null;
+    // `(T | undefined)[]` of a number, string or boolean T stores T
+    // elements: an array slot holds a present undefined by its own state,
+    // so a T[] seen as `(T | undefined)[]` stays the same array.
+    let optionalElements = false;
+    if (elem.kind === "union") {
+      const arms = unions.get(elem.unionId)?.arms;
+      const present =
+        arms?.length === 2 ? arms.find((arm) => arm.kind !== "undefinedT") : undefined;
+      if (
+        present !== undefined &&
+        arms!.some((arm) => arm.kind === "undefinedT") &&
+        (present.kind === "f64" || present.kind === "string" || present.kind === "bool")
+      ) {
+        elem = present;
+        optionalElements = true;
+      }
+    }
     // A dyn ELEMENT makes the WHOLE array the checked-dynamic value:
     // `unknown[]`, `object[]`, and the collapsed `(string | object)[]`
     // (the plugins-slot shape) — the checked-dynamic tree has real arrays, so length/
@@ -2202,7 +2414,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // drain of the auxiliary-server registries): handles are ordinary
     // refcounted REF elements (their `_v` adapters, no trace — both drop
     // their closures at their terminal event).
-    return arrayOf(elem);
+    return optionalElements ? { kind: "array", elem, optionalElements: true } : arrayOf(elem);
   }
   // Tuples: `[string, string]` maps to an interned RECORD shape flagged
   // `tuple`, with one field per position named by its index ("0", "1", ...)
@@ -2237,6 +2449,27 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const args = checker.getTypeArguments(ref);
     if (args.length === 0) return arrayOf(unitOnlyUnion(unions));
     if (tupleShape?.elementFlags === undefined) return null;
+    // A leading-required tuple ending in a rest element whose positions
+    // all share one type (`[string, ...string[]]`, the non-empty list)
+    // is an array of that type: every read, write and method behaves as
+    // the array's, and tsc already proves the required positions exist.
+    const flags = tupleShape.elementFlags;
+    if (
+      flags.length >= 2 &&
+      (flags[flags.length - 1]! & ts.ElementFlags.Rest) !== 0 &&
+      flags.slice(0, -1).every((f) => (f & ts.ElementFlags.Required) !== 0)
+    ) {
+      const elems = args.map((a) => mapType(a, ctx));
+      const first = elems[0];
+      if (
+        first &&
+        first.kind !== "void" &&
+        isSupportedArrayElem(first) &&
+        elems.every((e) => e !== null && typeEquals(e, first))
+      )
+        return arrayOf(first);
+      return null;
+    }
     // Optional/rest elements have no fixed native tuple layout.
     if (tupleShape.elementFlags.some((f) => !(f & ts.ElementFlags.Required))) {
       return null;
@@ -2458,6 +2691,27 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ) {
         return { kind: "classval", className: inst.className };
       }
+    }
+    // A constructable declared in the program whose instances are not one
+    // program class's (`new () => unknown`, `abstract new () => S` over a
+    // record, a type that also names static members such as `{ readonly
+    // schema: unknown; new (): unknown }`, construct overloads): the class
+    // value rides the checked-dynamic tree, as an `unknown` slot already
+    // holds one. `new` through it and static reads dispatch at run time,
+    // and the constructed value checks into the signature's instance type.
+    // Lib and package constructables keep their fences, and so do those of
+    // fetched provenance sources (third-party code under its own policies:
+    // an unused `@__PURE__` const typed `{ new (): any }` elides there).
+    if (
+      ctorSigs.length > 0 &&
+      checker.getCallSignatures(widened).length === 0 &&
+      (widened.getSymbol()?.declarations.length ?? 0) > 0 &&
+      widened.getSymbol()!.declarations.every((d) => {
+        const sf = ts.getSourceFileOfNode(d);
+        return ctx.isProgramFile(sf) && !isProvenanceSourceFile(sf.fileName);
+      })
+    ) {
+      return DYN;
     }
   }
   // Map<K, V>: a reference to the standard library's Map interface —
@@ -2782,6 +3036,30 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // util.inspect as a value (a custom inspect method's third parameter is
+  // `typeof inspect`): the runtime's inspect function, called through the
+  // checked-dynamic boundary.
+  if (
+    psym !== undefined &&
+    ts.symbolName(psym) === "inspect" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isFunctionDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "util"),
+    )
+  )
+    return DYN;
+  // util.inspect's options bag, which inspect and formatWithOptions read
+  // at run time (its sorted option can be a comparator function), and the
+  // options custom inspect functions receive.
+  if (
+    (isStdlibInterface("InspectOptions") || isStdlibInterface("InspectOptionsStylized")) &&
+    psym!.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "util"),
+    )
+  )
+    return DYN;
   // dns.LookupAllOptions (`all: true`, the overload whose callback takes
   // an address list): a lookup option bag dns.lookup reads at run time.
   // It rides checked-dynamic storage, so the lookup function type that
@@ -2845,15 +3123,30 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!elem) return null;
     return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
   }
-  // node:net's SocketAddress and BlockList: native handles (scr_net.c)
-  // whose getters and methods dispatch through the handle.
+  // node:net's SocketAddress and BlockList (scr_net.c) and node:util's
+  // MIMEType and MIMEParams (scr_mime.c): native handles whose getters and
+  // methods dispatch through the handle.
   if (
     ((psym !== undefined && ts.symbolName(psym) === "SocketAddress") ||
-      (psym !== undefined && ts.symbolName(psym) === "BlockList")) &&
+      (psym !== undefined && ts.symbolName(psym) === "BlockList") ||
+      (psym !== undefined && ts.symbolName(psym) === "MIMEType") ||
+      (psym !== undefined && ts.symbolName(psym) === "MIMEParams")) &&
     psym.declarations.some(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  ) {
+    return DYN;
+  }
+  // The functions node:util's debounce and throttle return
+  // (scr_util_timing.c): native functions with their own members and
+  // getters.
+  if (
+    psym !== undefined &&
+    (ts.symbolName(psym) === "DebouncedFunction" || ts.symbolName(psym) === "ThrottledFunction") &&
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
     )
   ) {
     return DYN;
@@ -2873,9 +3166,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return DYN;
   }
-  // node:crypto's KeyObject: secret keys are native handles (scr_lib.c)
-  // whose getters and methods dispatch through the handle. The JsonWebKey
-  // that export() returns is a plain checked-dynamic object.
+  // node:crypto's KeyObject: secret keys (scr_lib.c) and private and
+  // public keys (scr_pki.c) are native handles whose getters and methods
+  // dispatch through the handle. The JsonWebKey that export() returns is a
+  // plain checked-dynamic object.
   if (
     ((psym !== undefined && ts.symbolName(psym) === "KeyObject") ||
       (psym !== undefined && ts.symbolName(psym) === "JsonWebKey")) &&
@@ -2887,11 +3181,40 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return DYN;
   }
+  // node:crypto's key and signature options are plain checked-dynamic
+  // objects, so a value asserted to one (`opts as
+  // crypto.AsymmetricKeyExportOptions<"pem">`) reaches the call unchanged.
+  if (
+    psym !== undefined &&
+    CRYPTO_KEY_OPTION_DYN_TYPES.has(ts.symbolName(psym)) &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    return DYN;
+  }
+  // node:crypto's Sign and Verify (createSign/createVerify): native
+  // handles over the digest state (scr_pki.c).
+  if (
+    psym !== undefined &&
+    (ts.symbolName(psym) === "Sign" || ts.symbolName(psym) === "Verify") &&
+    psym.declarations.some(
+      (d) =>
+        ts.isClassDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    return DYN;
+  }
   if (
     psym &&
     (FETCH_AMBIENT_TYPES as readonly string[]).includes(ts.symbolName(psym)) &&
     !(
-      ts.symbolName(psym) === "ReadableStream" &&
+      (ts.symbolName(psym) === "ReadableStream" || ts.symbolName(psym) === "WritableStream") &&
       psym.declarations.some(
         (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientNamespace(d, "NodeJS"),
       )
@@ -2943,6 +3266,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return DYN;
   }
+  // node:crypto DiffieHellman values, and @types/node's DiffieHellmanGroup
+  // alias over them, are native handles carried by the checked-dynamic
+  // representation; lowerDiffieHellmanCall dispatches their methods.
+  {
+    const dhSym = widened.getAliasSymbol() ?? psym;
+    if (
+      dhSym !== undefined &&
+      (ts.symbolName(dhSym) === "DiffieHellman" || ts.symbolName(dhSym) === "DiffieHellmanGroup") &&
+      dhSym.declarations.some(
+        (d) =>
+          (ts.isClassDeclaration(d) || ts.isTypeAliasDeclaration(d)) &&
+          ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+      )
+    ) {
+      return DYN;
+    }
+  }
   // ReadonlyMap/ReadonlySet are the SAME runtime values as Map/Set — the
   // readonly-ness is a checker-only view (no mutating members on the
   // interface), so both map to the identical IR kinds and the read-side
@@ -2963,6 +3303,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Native WeakMap keeps reference identities in checked-dynamic storage.
   // The runtime rejects reference kinds without a weak lifetime contract.
   if (isStdlibInterface("WeakMap") || isStdlibInterface("WeakSet")) return DYN;
+  // FinalizationRegistry is a native handle with register and unregister.
+  if (isStdlibInterface("FinalizationRegistry")) return DYN;
   // Set<T>: Map's sibling — same provenance rule and key domain.
   // Anything else stays unmapped;
   // the `new Set` lowering names the offending element type specifically.
@@ -2982,10 +3324,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   const collectionView = mapCollectionView(widened, ctx);
   if (collectionView) return collectionView;
-  // Date: a TimeClip'd epoch-millisecond scalar in the static runtime.
-  // This supports stored/passed values and the read-only getter slice;
-  // identity and mutation stay fenced because the scalar deliberately
-  // carries no object identity.
+  // Date: a refcounted object holding its TimeClip'd time value (ScrDate),
+  // shared with the checked-dynamic Date handle, so it keeps its identity
+  // through every slot and through `unknown`. Setters stay fenced.
   if (isStdlibInterface("Date")) return DATE_T;
   // RegExp: a reference to the lib RegExp interface — provenance, not the
   // name (a user's own `interface RegExp` maps as a record). Regex values
@@ -3718,8 +4059,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Mixed dyn/concrete value channels share checked storage, so either
   // branch of the result record has the same representation. A number,
   // boolean or string channel keeps its own type beside a dyn one (the
-  // `Generator<number>` defaults): its values ride OUT typed and box only
-  // when the result record is built.
+  // `Generator<number>` default), and so does a record yield channel beside
+  // a dyn return (`IterableIterator<Row>`): its values ride OUT typed and box
+  // only when the result record is built, so for-of and spread read them
+  // back unchecked.
   if (
     isStdlibInterface("Generator") ||
     isStdlibInterface("AsyncGenerator") ||
@@ -3742,6 +4085,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ...(isStdlibInterface("AsyncGenerator") ? { async: true as const } : {}),
       ...channels,
     };
+  }
+  // Iterable<T>: the iterable union (iterableUnionType) — the source value
+  // itself in its own arm, so an array stays the same multi-pass object and
+  // a generator stays single-pass.
+  if (isStdlibInterface("Iterable")) {
+    const arg = checker.getTypeArguments(widened as ts.TypeReference)[0];
+    const elem = arg ? mapType(arg, ctx) : null;
+    return elem ? iterableUnionType(elem, ctx.shapes, unions) : null;
   }
   // IteratorResult<T, TReturn> — the checker's type of `g.next()` (an
   // alias for IteratorYieldResult<T> | IteratorReturnResult<TReturn>):
@@ -3882,6 +4233,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     return { kind: "record", shapeId: ctx.shapes.intern(fields, false, undefined, order) };
   }
+  // crypto.getCipherInfo's result is Node's info object itself, read as a
+  // checked-dynamic value: Node leaves out the fields a cipher lacks,
+  // including the nid the declaration requires, so a record cannot hold
+  // every result.
+  if (
+    isStdlibInterface("CipherInfo") &&
+    psym!.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "crypto"),
+    )
+  )
+    return DYN;
   // Filesystem options are data records. Keep their declared optional fields
   // instead of allowing arbitrary standard-library interfaces into records.
   if (
@@ -4153,13 +4515,60 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       };
     }
   }
-  // crypto.X509Certificate — the Dirent-style data record: THREE visible
-  // fields (fingerprint and the validFrom/validTo validity window, all
-  // computed at construction by the new-expression lowering). Module-
-  // checked like SecureContext; @types/node declares the class inside
-  // `declare module "crypto"`, the shipped fallback mirrors it.
-  // JSON.stringify of one shows the three fields where Node's
-  // internal-slot object shows {} — the Dirent %dtype edge's cousin.
+  // crypto.generateKeyPairSync's results: KeyPairKeyObjectResult and
+  // KeyPairSyncResult<T1, T2> as { publicKey, privateKey } records over the
+  // mapped property types (KeyObjects, PEM strings or DER Buffers), in
+  // Node's key order.
+  if (
+    psym !== undefined &&
+    (ts.symbolName(psym) === "KeyPairKeyObjectResult" ||
+      ts.symbolName(psym) === "KeyPairSyncResult") &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    const field = (name: string): IrType | null => {
+      const prop = ctx.checker.getPropertyOfType(type, name);
+      return prop ? mapType(ctx.checker.getTypeOfSymbol(prop), ctx) : null;
+    };
+    const publicKey = field("publicKey");
+    const privateKey = field("privateKey");
+    if (!publicKey || !privateKey) return null;
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "privateKey", type: privateKey },
+          { name: "publicKey", type: publicKey },
+        ],
+        false,
+        undefined,
+        ["publicKey", "privateKey"],
+      ),
+    };
+  }
+  // X509Certificate.toLegacyObject()'s PeerCertificate (and tls's detailed
+  // form) is a plain checked-dynamic object.
+  if (
+    psym !== undefined &&
+    (ts.symbolName(psym) === "PeerCertificate" ||
+      ts.symbolName(psym) === "DetailedPeerCertificate") &&
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  ) {
+    return DYN;
+  }
+  // crypto.X509Certificate — the Dirent-style data record: its fields are
+  // the certificate's lowered members, all computed at construction by the
+  // new-expression lowering (raw decodes the input once, and the others
+  // read raw). Module-checked like SecureContext; @types/node declares the
+  // class inside `declare module "crypto"`, the shipped fallback mirrors
+  // it. JSON.stringify of one shows the fields where Node's internal-slot
+  // object shows {} — the Dirent %dtype edge's cousin.
   if (
     psym !== undefined &&
     ts.symbolName(psym) === "X509Certificate" &&
@@ -4170,17 +4579,19 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         isDeclaredInAmbientModule(d, "crypto"),
     )
   ) {
+    const optionalString = withUndefinedArm(STRING, ctx.unions);
+    if (!optionalString) return null;
+    const fields = X509_FIELDS.map(([name, type]) => ({
+      name,
+      type: type === "string?" ? optionalString : type,
+    }));
     return {
       kind: "record",
       shapeId: ctx.shapes.intern(
-        [
-          { name: "fingerprint", type: STRING },
-          { name: "validFrom", type: STRING },
-          { name: "validTo", type: STRING },
-        ],
+        [...fields].sort((a, b) => (a.name < b.name ? -1 : 1)),
         false,
         undefined,
-        ["fingerprint", "validFrom", "validTo"],
+        fields.map((f) => f.name),
       ),
     };
   }
@@ -4464,6 +4875,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (hybrid) return hybrid;
   }
   const callSigs = checker.getCallSignatures(widened);
+  // AsyncLocalStorage.snapshot()'s generic runner is a dyn function value
+  // (als.snapshot), called through the dyn call path.
+  if (callSigs.length === 1 && isAsyncLocalStorageSnapshot(callSigs[0]!, ctx)) return DYN;
   if (callSigs.length === 1) return mapCallSignature(callSigs[0]!, ctx);
   // Records: object types whose members are all data properties (shorthand
   // methods in type position count — they're func-typed fields) with
@@ -4600,6 +5014,19 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const record = mapRecordType(widened, ctx);
     if (record) return record;
   }
+  // An intersection whose constituents all map to ONE representation is
+  // that representation. An intersection that restates an optional member
+  // as required (`Opts & { files: Array<{ path: string }> }` over
+  // `files?: Array<{ path: string }>`) gives the member the type `A[] & B[]`
+  // with two separately written but structurally equal element literals;
+  // the checker keeps both, while their arrays (tuples, maps, ...) intern
+  // to one IR type. Reached only after every other intersection rule
+  // declined, so intersections that already mapped keep their mapping. A
+  // dynamic result stays unmapped: two opaque types are not one type.
+  if (widened.isIntersectionType()) {
+    const same = mapEqualConstituentsIntersection(widened, ctx);
+    if (same) return same;
+  }
   // Unions. `boolean` is internally `true | false`, and narrowing produces
   // literal unions like `"a" | "b"` — parts that map to the SAME IR type
   // collapse (deduplicated by typeKey), so a single surviving arm is just
@@ -4621,7 +5048,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const knownRecursive = unions.recursiveUnionFor(widened);
     if (knownRecursive !== undefined) return { kind: "union", unionId: knownRecursive };
     if (unions.inProgress.has(widened)) {
-      return { kind: "union", unionId: unions.recursiveRef(widened) };
+      return {
+        kind: "union",
+        unionId: unions.recursiveRef(widened, () => checkerTypeDescription(widened, ctx)),
+      };
     }
     unions.inProgress.add(widened);
     const sensitivityAtEntry = contextResolutions;
@@ -4648,6 +5078,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         );
       };
       const hasArrayPart = parts.some((part) => checker.isArrayType(part) || matchArray(part));
+      // Subtype reduction removes every arm assignable to `{}`, so a union
+      // that keeps another non-nullish arm beside an empty literal's `{}`
+      // was not reduced: that `{}` arm holds only the literal's objects.
+      const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+      const literalEmptyArms =
+        parts.some((part) => isEmptyObjectLiteralType(part, ctx)) &&
+        parts.some(
+          (part) =>
+            (part.flags & nullish) === 0 &&
+            !checker.isNeverType(part) &&
+            !isEmptyObjectLiteralType(part, ctx),
+        );
       for (const part of parts) {
         if (hasArrayPart && emptyTuple(part)) continue;
         // TypeScript's client can retain impossible intersections in a
@@ -4666,7 +5108,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           byKey.set(typeKey(NULL_T), NULL_T);
           continue;
         }
-        const mapped = mapType(part, ctx);
+        let mapped: IrType | null;
+        if (literalEmptyArms && isEmptyObjectLiteralType(part, ctx)) {
+          ctx.emptyLiteralArm = true;
+          try {
+            mapped = mapType(part, ctx);
+          } finally {
+            ctx.emptyLiteralArm = false;
+          }
+        } else {
+          mapped = mapType(part, ctx);
+        }
 
         if (!mapped) {
           return null;
@@ -4735,9 +5187,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           (a) =>
             a.kind === "void" ||
             a.kind === "union" ||
-            a.kind === "date" ||
             a.kind === "dyn" ||
-            a.kind === "generator",
+            // A generator arm only comes from an Iterable<T> (an optional
+            // one keeps its unit arms beside the iterable union's).
+            (a.kind === "generator" && iterableArmsElem(arms) === null),
         ) ||
         !maybePromiseUnionOk(parts, arms, ctx)
       ) {
@@ -4769,6 +5222,26 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
 /** One non-overloaded call signature's func type (mapTypeInner's
  * single-signature rule; erasedOverloadMemberType maps each overload of a
  * member through it). */
+/** Whether `sig` is the function type AsyncLocalStorage.snapshot() returns:
+ * declared as that static method's return type in the async_hooks module
+ * of the standard library declarations. */
+function isAsyncLocalStorageSnapshot(sig: ts.Signature, ctx: TypeMapperCtx): boolean {
+  const decl = sig.declaration;
+  if (decl === undefined || !ts.isFunctionTypeNode(decl)) return false;
+  const method = decl.parent;
+  return (
+    method !== undefined &&
+    ts.isMethodDeclaration(method) &&
+    ts.isIdentifier(method.name) &&
+    method.name.text === "snapshot" &&
+    method.parent !== undefined &&
+    ts.isClassDeclaration(method.parent) &&
+    method.parent.name?.text === "AsyncLocalStorage" &&
+    ctx.isStdlibFile(ts.getSourceFileOfNode(decl)) &&
+    isDeclaredInAmbientModule(decl, "async_hooks")
+  );
+}
+
 function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null {
   const { checker } = ctx;
   if (sig.getTypeParameters().length && ctx.erasingSignature !== sig) return null;
@@ -4824,10 +5297,12 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
     // A parameter a TypeScript program types `any` takes whatever the
     // caller passes: the checked-dynamic slot, as an `any`-typed binding
     // already is (dynFallbackType). Declaration files keep their paths.
-    // Only function declarations, spelled function types and lambda
-    // parameters whose default is the only source of their type (`(n =
-    // lookup() ?? 5) => ...` with an `any` lookup): other lambdas and
-    // methods in object literals keep their existing checked-dynamic story.
+    // Only function declarations, spelled function types, method and call
+    // signatures of interfaces and type literals (`execute(params: any):
+    // Promise<R>`), and lambda parameters whose default is the only source
+    // of their type (`(n = lookup() ?? 5) => ...` with an `any` lookup):
+    // other lambdas and methods in object literals keep their existing
+    // checked-dynamic story.
     if (
       !pt &&
       !rest &&
@@ -4836,6 +5311,8 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
       decl.parent !== undefined &&
       (ts.isFunctionDeclaration(decl.parent) ||
         ts.isFunctionTypeNode(decl.parent) ||
+        ts.isMethodSignatureDeclaration(decl.parent) ||
+        ts.isCallSignatureDeclaration(decl.parent) ||
         ((ts.isArrowFunction(decl.parent) || ts.isFunctionExpression(decl.parent)) &&
           decl.initializer !== undefined &&
           decl.type === undefined &&
@@ -4908,8 +5385,19 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
     if (pt) pt = jsOpenObjectType(decl, pt, ctx.shapes, ctx.unions);
     // Belt and braces for non-strict type worlds: an optional param's
     // ABI slot is always the undefined-armed union (strictNullChecks
-    // already spells it that way; arm it here if the world didn't).
-    if (optional && pt && pt.kind !== "void" && pt.kind !== "dyn") {
+    // already spells it that way; arm it here if the world didn't). A
+    // back-reference to a union still being mapped (`options?: { then?:
+    // (ctx: Sub) => void }` where Sub extends the interface declaring the
+    // method) is a recursive placeholder with no arms yet; when the checker
+    // spelled the parameter `X | undefined`, the placeholder receives that
+    // undefined arm when its frame finishes.
+    const pendingOptional =
+      pt?.kind === "union" &&
+      ctx.unions.isPendingPlaceholder(pt.unionId) &&
+      ts
+        .constituentTypes(checker.getTypeOfSymbol(p))
+        .some((part) => (part.flags & ts.TypeFlags.Undefined) !== 0);
+    if (optional && pt && pt.kind !== "void" && pt.kind !== "dyn" && !pendingOptional) {
       const armed = withUndefinedArm(pt, ctx.unions);
       if (!armed) return null;
       pt = armed;
@@ -5592,6 +6080,60 @@ function constAssertedEmptyArrayProp(p: ts.Symbol): boolean {
   return underConstAssertion(d);
 }
 
+/** A TypeScript property assignment `name: []` whose type is `never[]`. */
+function emptyNeverArrayProp(p: ts.Symbol, fieldTs: ts.Type, checker: ts.TypeChecker): boolean {
+  const d = p.valueDeclaration;
+  if (d === undefined || !ts.isPropertyAssignment(d)) return false;
+  if (isJsSourceFile(ts.getSourceFileOfNode(d))) return false;
+  if (!ts.isArrayLiteralExpression(d.initializer) || d.initializer.elements.nodes.length > 0)
+    return false;
+  return (
+    checker.isArrayType(fieldTs) &&
+    (checker.getTypeArguments(fieldTs as ts.TypeReference)[0]!.flags & ts.TypeFlags.Never) !== 0
+  );
+}
+
+/** A JavaScript object literal's property typed `never[]` (`{ issues: [] }`).
+ * Nothing checks a JavaScript file's later writes, which can push any value
+ * onto it (`ctx.common.issues.push(issue)`), so it holds the checked-dynamic
+ * array rather than never's f64 element array. */
+function jsNeverArrayProp(p: ts.Symbol, fieldTs: ts.Type, checker: ts.TypeChecker): boolean {
+  return (
+    jsObjectLiteralProperty(p) &&
+    checker.isArrayType(fieldTs) &&
+    (checker.getTypeArguments(fieldTs as ts.TypeReference)[0]!.flags & ts.TypeFlags.Never) !== 0
+  );
+}
+
+/** A JavaScript object literal's property (`{ lastComponent: undefined }`,
+ * `{ user: null }`). Nothing checks a JavaScript file's later writes, which
+ * can store any value in it (`path.lastComponent = { ... }`), so a
+ * property whose only initializer is a unit holds the checked-dynamic value
+ * rather than the unit-only union. */
+function isUnitOnlyIr(t: IrType, ctx: TypeMapperCtx): boolean {
+  if (t.kind !== "union") return false;
+  const def = ctx.unions.get(t.unionId);
+  return def !== undefined && def.arms.every((arm) => isUnitType(arm));
+}
+
+/** A property a JavaScript object literal declares. The checker also adds
+ * each missing property, optional and `undefined`, to every literal of a
+ * union of literals (`{ _tag, value } | { _tag, error }` gains
+ * `error?: undefined` and `value?: undefined`); those keep their unit-only
+ * type, so a literal still converts to the one arm whose properties it
+ * has. */
+function jsObjectLiteralProperty(p: ts.Symbol): boolean {
+  const d = p.valueDeclaration;
+  // `__proto__: null` sets the literal's prototype; it declares no property.
+  return (
+    d !== undefined &&
+    (ts.isPropertyAssignment(d) || ts.isShorthandPropertyAssignment(d)) &&
+    ts.symbolName(p) !== "__proto__" &&
+    (p.flags & ts.SymbolFlags.Optional) === 0 &&
+    isJsSourceFile(ts.getSourceFileOfNode(d))
+  );
+}
+
 function mapGenericAwaitedAlias(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { resolveTypeParam } = ctx;
   if (!resolveTypeParam) return null;
@@ -5836,13 +6378,39 @@ function evalMappedTemplate(
     if (!checkType || !extendsType) return null;
     const checked = evalMappedTemplate(checkType, keys, scope, ctx);
     if (!checked) return null;
-    const inferred = matchInferReference(checked, extendsType, ctx);
+    const inferred =
+      primitiveExtendsCheck(checked, extendsType, ctx) ??
+      matchInferReference(checked, extendsType, ctx);
     if (inferred === undefined) return null;
     const branch = inferred ? type.getTrueType() : type.getFalseType();
     const branchScope = inferred ? new Map([...scope, ...inferred]) : scope;
     return evalMappedTemplate(branch, keys, branchScope, ctx);
   }
   return mentionsMappedParams(type, keys, aliases) ? null : type;
+}
+
+/** `checked extends X` where X is a primitive or literal type, or a union of
+ * them (`K extends "required" ? ...`), and `checked` is one such type:
+ * X has no infer positions, so assignability decides the branch (an empty
+ * binding map for the true branch). A union `checked` distributes and stays
+ * undecided here (undefined), as do other shapes. */
+function primitiveExtendsCheck(
+  checked: ts.Type,
+  extendsType: ts.Type,
+  ctx: TypeMapperCtx,
+): Map<ts.Symbol, ts.Type> | false | undefined {
+  const primitive =
+    ts.TypeFlags.StringLike |
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.BigIntLike |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Undefined;
+  const isPrimitive = (t: ts.Type): boolean =>
+    !t.isUnionType() && (t.flags & primitive) !== 0 && (t.flags & ts.TypeFlags.TypeParameter) === 0;
+  const extendsParts = extendsType.isUnionType() ? ts.constituentTypes(extendsType) : [extendsType];
+  if (!isPrimitive(checked) || !extendsParts.every(isPrimitive)) return undefined;
+  return ctx.checker.isTypeAssignableTo(checked, extendsType) ? new Map() : false;
 }
 
 /** `checked extends G<..., infer T, ...>`: the infer bindings when
@@ -6119,6 +6687,46 @@ export function unitOnlyUnion(unions: UnionRegistry): IrType {
   return { kind: "union", unionId: unions.intern(arms) };
 }
 
+/** `Iterable<T>`: a union whose arms are the sources that keep their own
+ * representation — `T[]`, a `Set<T>`, a `Map<K, V>` (T the `[K, V]`
+ * tuple), a string (T string) — and a generator over T, which also holds
+ * every other iterator (Map/Set and array iterators adapt into one). The
+ * generator arm marks the union as iterable (iterableArmsElem): no other
+ * union has one. Null when T has no array or generator form. */
+export function iterableUnionType(
+  elem: IrType,
+  shapes: ShapeRegistry,
+  unions: UnionRegistry,
+): IrType | null {
+  if (elem.kind === "void" || elem.kind === "generator" || !isSupportedArrayElem(elem)) return null;
+  if (!genResultRecord(elem, VOID, shapes, unions)) return null;
+  const arms: IrType[] = [
+    { kind: "array", elem },
+    { kind: "generator", yieldT: elem, retT: VOID, nextT: UNDEFINED_T },
+  ];
+  const elemArms = elem.kind === "union" ? unions.get(elem.unionId)?.arms : undefined;
+  if (isSupportedSetElem(elem, elemArms)) arms.push({ kind: "set", elem });
+  if (elem.kind === "string") arms.push(STRING);
+  if (elem.kind === "record") {
+    const shape = shapes.get(elem.shapeId);
+    const [k, v] = shape?.fields ?? [];
+    if (
+      shape?.tuple &&
+      shape.fields.length === 2 &&
+      k?.name === "0" &&
+      v?.name === "1" &&
+      isSupportedMapKey(
+        k.type,
+        k.type.kind === "union" ? unions.get(k.type.unionId)?.arms : undefined,
+      ) &&
+      isSupportedMapValue(v.type)
+    )
+      arms.push({ kind: "map", key: k.type, value: v.type });
+  }
+  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  return { kind: "union", unionId: unions.intern(arms) };
+}
+
 /** The IteratorResult record of a generator's value channels: `{ done:
  * boolean, value: V }` where V is dyn (an any/unknown channel) or the
  * canonical union of the yield arms, the return arms (when the return
@@ -6146,7 +6754,7 @@ export function genResultRecord(
         for (const a of unions.get(t.unionId)?.arms ?? []) byKey.set(typeKey(a), a);
         return true;
       }
-      if (t.kind === "regex" || t.kind === "date" || t.kind === "generator") {
+      if (t.kind === "regex" || t.kind === "generator") {
         return false; // no legal union arm exists for these kinds
       }
       byKey.set(typeKey(t), t);
@@ -6220,6 +6828,39 @@ function boundVoidReturnType(p: ts.Type, resolveTypeParam?: TypeParamResolver): 
  * result is exactly the nullable-callback shape mapType's union branch
  * admits, `(() => void) | undefined`) so the interned union is IDENTICAL
  * to what mapping the checker's own `T | undefined` produces. */
+/** The X509Certificate record's hidden slot for its publicKey KeyObject,
+ * filled on the first read (builtins/x509.ts). */
+export const X509_PUBLIC_KEY_FIELD = "%publicKey";
+
+/** The X509Certificate record's hidden copy of its DER, which its methods
+ * read: a program can write into the Buffer `raw` answers, and in Node
+ * that changes neither the certificate's checks nor its PEM. */
+export const X509_DER_FIELD = "%der";
+
+/** The X509Certificate record's fields in @types/node's declaration order
+ * ("string?" is string | undefined), then the hidden publicKey and DER
+ * slots. */
+export const X509_FIELDS: readonly (readonly [string, IrType | "string?"])[] = [
+  ["ca", BOOL],
+  ["fingerprint", STRING],
+  ["fingerprint256", STRING],
+  ["fingerprint512", STRING],
+  ["subject", STRING],
+  ["subjectAltName", "string?"],
+  ["infoAccess", "string?"],
+  ["issuer", STRING],
+  ["raw", { kind: "bytes", elem: "u8" }],
+  ["serialNumber", STRING],
+  ["signatureAlgorithm", "string?"],
+  ["signatureAlgorithmOid", STRING],
+  ["validFrom", STRING],
+  ["validFromDate", DATE_T],
+  ["validTo", STRING],
+  ["validToDate", DATE_T],
+  [X509_PUBLIC_KEY_FIELD, DYN],
+  [X509_DER_FIELD, { kind: "bytes", elem: "u8" }],
+];
+
 export function withUndefinedArm(t: IrType, unions: UnionRegistry): IrType | null {
   return withUnitArm(t, "undefinedT", unions);
 }
@@ -6235,15 +6876,15 @@ export function withUnitArm(
   if (t.kind === "union") {
     const def = unions.get(t.unionId);
     if (!def) return null;
-    if (def.arms.some((a) => a.kind === "date")) return null;
     if (def.arms.some((a) => a.kind === kind)) return t;
     const arms = [...def.arms, unit];
+    // Date and Promise arms beside other data arms have no union home.
+    if (!unionContainerArmsOk(arms)) return null;
     arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
     return { kind: "union", unionId: unions.transform(def, arms) };
   }
   if (
     t.kind === "void" ||
-    t.kind === "date" ||
     t.kind === "dyn" ||
     // A bare unit field type cannot occur (units live only inside unions),
     // but guard against constructing a single-arm union from one.
@@ -6266,6 +6907,19 @@ export function withUnitArm(
  * assigned keys, which is also Node's answer for Object.assign(fn, obj)
  * (a function's own length/name are non-enumerable). Null whenever the
  * shape doesn't fit — the caller falls through to the plain-func mapping. */
+/** The IR type every constituent of an intersection maps to, or null when a
+ * constituent is unmappable or dynamic, or two constituents differ. */
+function mapEqualConstituentsIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  let same: IrType | null = null;
+  for (const part of ts.constituentTypes(widened)) {
+    const mapped = mapType(part, ctx);
+    if (mapped === null || mapped.kind === "dyn") return null;
+    if (same === null) same = mapped;
+    else if (!typeEquals(same, mapped)) return null;
+  }
+  return same;
+}
+
 function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, shapes } = ctx;
   if (!widened.isIntersectionType()) return null;
@@ -6540,6 +7194,43 @@ function immutableSourceType(type: ts.Type, ctx: TypeMapperCtx): ts.Type | null 
   return null;
 }
 
+/** A mapped type reached through a type alias whose arguments mention no
+ * type parameter (`Record<never, number>`, `Catalog<typeof data, "image">`,
+ * a module-level alias without arguments):
+ * the checker computed its members from concrete inputs, so an empty
+ * result really is the empty object type, unlike `Partial<T>` inside a
+ * generic body. */
+function resolvedMappedAlias(t: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (!isMappedShape(t) || t.getAliasSymbol() === undefined) return false;
+  const args = t.getAliasTypeArguments();
+  const seen = new Set<ts.Type>();
+  const concrete = (part: ts.Type): boolean => {
+    if (part.flags & (ts.TypeFlags.TypeParameter | ts.TypeFlags.Index)) return false;
+    if (part.flags & (ts.TypeFlags.IndexedAccess | ts.TypeFlags.Conditional)) return false;
+    if (seen.has(part)) return true;
+    seen.add(part);
+    if (part.isUnionType() || part.isIntersectionType())
+      return ts.constituentTypes(part).every(concrete);
+    if (!part.getAliasTypeArguments().every(concrete)) return false;
+    return (
+      (part.flags & ts.TypeFlags.Object) === 0 ||
+      ((part as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) === 0 ||
+      ctx.checker.getTypeArguments(part as ts.TypeReference).every(concrete)
+    );
+  };
+  // An alias without type arguments is concrete when it is declared at
+  // module level (a function body's alias may mention that function's type
+  // parameters).
+  if (args.length === 0)
+    return t
+      .getAliasSymbol()!
+      .declarations.every(
+        (d) =>
+          ts.isTypeAliasDeclaration(d) && (ts.isSourceFile(d.parent) || ts.isModuleBlock(d.parent)),
+      );
+  return args.every(concrete);
+}
+
 /** True for MAPPED-type results — `Partial<Config>`, `Record<"a", n>`,
  * whatever `Pick`/`Omit` reduce to. Their shape is computed by the checker,
  * not declared anywhere: the only declaration behind them is the utility
@@ -6725,10 +7416,21 @@ export function erasedGenericMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType 
   const sig = sigs[0]!;
   const own = new Set<ts.Type>(sig.getTypeParameters());
   const outer = ctx.resolveTypeParam;
+  // Resolving only the member's own parameters does not make the erasure
+  // context-sensitive, so a recursive record holding a generic method
+  // (`interface Sub extends Base { send<T>(m: Msg<T>): void }` reached
+  // from Base) still closes its knot. Consulting an enclosing binding does.
+  const erasedMember = { own, outerConsulted: false };
   const erased = mapType(t, {
     ...ctx,
     erasingSignature: sig,
-    resolveTypeParam: (param) => (own.has(param) ? DYN : (outer?.(param) ?? null)),
+    erasedMember,
+    resolveTypeParam: (param) => {
+      if (own.has(param)) return DYN;
+      if (outer === undefined) return null;
+      erasedMember.outerConsulted = true;
+      return outer(param);
+    },
   });
   return erased?.kind === "func" ? erased : undefined;
 }
@@ -6917,7 +7619,10 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // frame completes (finalizeRecursive below). Backends represent records
   // as heap references, so the self-reference is an ordinary pointer.
   if (shapes.inProgress.has(widened)) {
-    return { kind: "record", shapeId: shapes.recursiveRef(widened) };
+    return {
+      kind: "record",
+      shapeId: shapes.recursiveRef(widened, () => checkerTypeDescription(widened, ctx)),
+    };
   }
   shapes.inProgress.add(widened);
   const sensitivityAtEntry = contextResolutions;
@@ -7311,6 +8016,22 @@ function wideningAddedProperties(
   return added;
 }
 
+/** Whether `type` is an interface one of whose `extends` clauses names a
+ * type the checker answers `any` (or an error type) for. */
+function interfaceExtendsAny(type: ts.Type, checker: ts.TypeChecker): boolean {
+  const symbol = type.getSymbol();
+  if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Interface) === 0) return false;
+  for (const decl of symbol.declarations) {
+    if (!ts.isInterfaceDeclaration(decl)) continue;
+    for (const clause of decl.heritageClauses?.nodes ?? []) {
+      for (const base of clause.types.nodes) {
+        if ((checker.getTypeAtLocation(base).flags & ts.TypeFlags.Any) !== 0) return true;
+      }
+    }
+  }
+  return false;
+}
+
 function mapRecordTypeInner(
   widened: ts.Type,
   ctx: TypeMapperCtx,
@@ -7326,6 +8047,13 @@ function mapRecordTypeInner(
   // names the construct.
   const widenedSym = widened.getSymbol();
   if (widenedSym !== undefined && (widenedSym.flags & ts.SymbolFlags.Enum) !== 0) return null;
+  // An interface extending a type the checker answers `any` for (in the
+  // compiled world, a package type computed from members only its .d.ts
+  // declares, such as `interface P extends z.infer<typeof S>`) has members
+  // the checker cannot list: its own declared fields are not the whole
+  // object. The value is checked-dynamic, never a record of the declared
+  // fields alone.
+  if (interfaceExtendsAny(widened, checker)) return DYN;
   // An index signature maps to a hybrid shape: declared fields keep
   // struct slots, undeclared keys ride the shape's overflow map, valued
   // uniformly by the signature's value type (`unknown` → dyn — a model-pricing table's
@@ -7468,27 +8196,35 @@ function mapRecordTypeInner(
     // still unknown there) — interning `{}` would give a wrong type. The
     // degenerate empties (`Partial<{}>`, `Omit<C, keyof C>`) go with it.
     // An INDEX-SIGNATURE shape is exempt: `Record<string, T>` legitimately
-    // has zero declared members — the signature is the shape.
-    if (computed && props.length === 0 && !indexValue) return null;
-    // A DECLARED empty object type — `{}` (spelled or the checker's shared
-    // intrinsic), `interface Empty {}` — is tsc's TOP type over non-nullish
-    // values: every number, string, record, array, function, or class
-    // instance is assignable into the slot, so the exact-record stance
-    // cannot hold it. It lowers like `unknown` (the dyn), the same rule
-    // as `object` and the lib's `Object`: assignments convert at the site
-    // (sources outside the checked-dynamic tree fence there, exactly as unknown does), reads
-    // narrow back out through the same checked casts. The type INFERRED
-    // from an empty object literal (`const o = {}`) stays the empty record
-    // — it describes a value the program built, not an annotation that
-    // admits everything — and computed empties (`Partial<T>` in a generic
-    // body) returned null above. Empty shapes WITH an index signature
-    // (`Record<string, T>`) are not empty: the signature is the shape.
+    // has zero declared members — the signature is the shape. So is a mapped
+    // alias instantiated over concrete arguments (`Record<never, T>`, a
+    // catalog type whose key filter keeps no key): the checker resolved it,
+    // and it is the empty object type below.
+    if (computed && props.length === 0 && !indexValue && !resolvedMappedAlias(widened, ctx))
+      return null;
+    // An empty object type — `{}` (spelled, the checker's shared
+    // intrinsic, or inferred from an empty object literal), `interface
+    // Empty {}` — is tsc's TOP type over non-nullish values: every number,
+    // string, record, array, function, or class instance is assignable
+    // into the slot, so the exact-record stance cannot hold it. It lowers
+    // like `unknown` (the dyn), the same rule as `object` and the lib's
+    // `Object`: assignments convert at the site (sources outside the
+    // checked-dynamic tree fence there, exactly as unknown does), reads
+    // narrow back out through the same checked casts. A literal's inferred
+    // `{}` is no exception: union subtype reduction folds primitives into
+    // it (`["12", {}]` is `{}[]`, `flag ? "x" : {}` is `{}`), and `let o =
+    // {}` admits `o = "x"`. As an arm beside another non-nullish arm (the
+    // union was not reduced, `string | {} | DataView`) it holds only the
+    // literal's objects and stays the empty record (emptyLiteralArm).
+    // Computed empties (`Partial<T>` in a generic body) returned null
+    // above. Empty shapes WITH an index signature (`Record<string, T>`) are
+    // not empty: the signature is the shape.
     if (
       props.length === 0 &&
       indexValue === undefined &&
       checker.getCallSignatures(widened).length === 0 &&
       checker.getConstructSignatures(widened).length === 0 &&
-      !(anonSym !== undefined && anonSym.declarations.some((d) => ts.isObjectLiteralExpression(d)))
+      !(ctx.emptyLiteralArm && isEmptyObjectLiteralType(widened, ctx))
     ) {
       return DYN;
     }
@@ -7595,6 +8331,14 @@ function mapRecordTypeInner(
       ) {
         pt = arrayOf(unitOnlyUnion(ctx.unions));
       }
+      // A TypeScript property initialized with an empty literal and typed
+      // `never[]` (`const out = { files: [] }`) holds no element, so it maps
+      // like the empty tuple: the unit-only element array, which a
+      // destination's typed array field (`files: string[]`) receives through
+      // the checked empty-array lift. never's f64 element would make it a
+      // `number[]` field.
+      if (pt?.kind === "array" && emptyNeverArrayProp(p, fieldTs, checker))
+        pt = arrayOf(unitOnlyUnion(ctx.unions));
       if (pt === null && (fieldTs.flags & ts.TypeFlags.Any) !== 0) pt = DYN;
       // An `any[]` field (`list: any[]` in an SDK's message type, also
       // optional or nullable) is the checked-dynamic array, exactly as
@@ -7618,6 +8362,8 @@ function mapRecordTypeInner(
       // omits the undefined arm exactly like an omitted optional.
       if (pt?.kind === "void" && isUnitOnlyTsType(fieldTs, ctx.resolveTypeParam))
         pt = unitOnlyUnion(ctx.unions);
+      if (pt !== null && isUnitOnlyIr(pt, ctx) && jsObjectLiteralProperty(p)) pt = DYN;
+      if (pt?.kind === "array" && jsNeverArrayProp(p, fieldTs, checker)) pt = DYN;
       // dyn FIELDS map now (`{ v: unknown }`, `[string, unknown]` tuples):
       // the slot carries a dyn value exactly like an `unknown`-valued
       // overflow entry — same RC adapters, same dynFrom conversion on the
@@ -7713,6 +8459,16 @@ function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
     // `string | URL | Request`, fetch's own input type under @types/node.
     case "url":
       return true;
+    // A function the checked-dynamic tree can box (each parameter checks
+    // in, the result converts out) is held by reference there, and
+    // `typeof x === "function"` narrows it back out: `Progress | AbortSignal`
+    // beside fetch's handles.
+    case "func":
+      return canBoxFuncIntoDyn(
+        arm,
+        (id) => ctx.shapes.get(id),
+        (id) => ctx.unions.get(id),
+      );
     case "record":
     case "array":
     // `T | Promise<T>` with T bound to `unknown`: the checked-dynamic value
@@ -7793,7 +8549,6 @@ function armHasUnionHome(arm: IrType): boolean {
     case "void":
     case "union":
     case "regex":
-    case "date":
     case "generator":
     case "dyn":
       return false;
@@ -8127,4 +8882,20 @@ function innerBlockedMember(
     return step(`.${ts.symbolName(p)}`, fieldTs);
   }
   return here;
+}
+
+/** The type tsc infers from an empty object literal (`{}` written as a
+ * value): no members, index signatures or signatures, declared by an object
+ * literal expression. */
+function isEmptyObjectLiteralType(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  const { checker } = ctx;
+  const symbol = type.getSymbol();
+  return (
+    symbol !== undefined &&
+    symbol.declarations.some((d) => ts.isObjectLiteralExpression(d)) &&
+    checker.getPropertiesOfType(type).length === 0 &&
+    checker.getIndexInfosOfType(type).length === 0 &&
+    checker.getCallSignatures(type).length === 0 &&
+    checker.getConstructSignatures(type).length === 0
+  );
 }

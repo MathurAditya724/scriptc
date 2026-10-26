@@ -45,9 +45,8 @@ console.log(win32.sep);
 const u = new URL("https://example.com/x?a=1");
 console.log(URL.createObjectURL(new Blob(["data"])));
 u.searchParams.get("a");
-/* The one-shot zlib/raw/gzip codecs take Node's options (the deflateSync
- * call lowers), while Brotli remains a member-qualified fence with the
- * lowered family named. */
+/* The one-shot zlib/raw/gzip and Brotli codecs take Node's options (the
+ * deflateSync and brotliCompressSync calls lower). */
 import { brotliCompressSync, deflateSync } from "zlib";
 deflateSync("data", { level: 9, strategy: 1 });
 brotliCompressSync(Buffer.from("data"));
@@ -69,13 +68,13 @@ http2.createSecureServer({
 http2.createSecureServer({ allowHTTP1: true, cert: "pem", key: "pem", streamResetBurst: 1 + 0 });
 http2.connect("https://localhost");
 /* The crypto surface beyond the lowered slice (randomness, the hash
- * chain, the introspection statics): asymmetric-key operations name the
- * missing public-key stack, symmetric ciphers the missing cipher stack,
- * prime checks theirs, and setFips the FIPS truth (getFips() lowers to 0). */
-import { checkPrimeSync, createCipheriv, generateKeyPair, setFips } from "node:crypto";
-generateKeyPair("rsa", { modulusLength: 2048 }, () => {});
-createCipheriv("aes-128-ccm", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
-checkPrimeSync(7n);
+ * chain, the introspection statics): RSA encryption names the lowered
+ * asymmetric surface, symmetric ciphers the missing cipher stack, the
+ * secure heap the generic hint, and setFips the FIPS truth (getFips() lowers to 0). */
+import { createCipheriv, publicEncrypt, secureHeapUsed, setFips } from "node:crypto";
+publicEncrypt("key", Buffer.alloc(1));
+createCipheriv("aes-128-ocb", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
+secureHeapUsed();
 setFips(false);
 fetch("https://example.invalid/", {
   integrity: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -93,23 +92,22 @@ void inspectReadableStream;
 import { callbackify } from "node:util";
 const callbackified = callbackify(async (n: number) => n);
 void callbackified;
-/* Cipheriv values support update(), final(), setAAD(), setAutoPadding(),
- * getAuthTag(), and setAuthTag(); the stream.Transform members are fenced. */
-const cipherStream = createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
-cipherStream.on("data", () => {});
 /* ECDH on a curve Node knows but the runtime does not implement, and
  * computeSecret(view, encoding), which answers a Buffer where @types/node
  * declares a string. */
 import { createECDH } from "node:crypto";
 createECDH("sect163k1");
 createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
-/* WebCrypto beyond the HMAC slice: @types/node declares the whole
- * SubtleCrypto surface, and the methods outside importKey, sign, verify
- * and digest fence by name. */
-async function encryptWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
-  await crypto.subtle.encrypt({ name: "AES-GCM", iv: new Uint8Array(12) }, key, new Uint8Array(1));
+/* DiffieHellman's Object.prototype members. */
+import { createDiffieHellman } from "node:crypto";
+createDiffieHellman(Buffer.from([23])).toString();
+/* WebCrypto beyond the secret-key slice: @types/node declares the whole
+ * SubtleCrypto surface, and the methods outside the slice, such as
+ * getPublicKey, fence by name. */
+async function publicKeyWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
+  await crypto.subtle.getPublicKey(key, ["verify"]);
 }
-void encryptWithWebCrypto;
+void publicKeyWithWebCrypto;
 /* Node's navigator global: typeof navigator and navigator.userAgent
  * compile; the other members fence by name. */
 const cores = navigator.hardwareConcurrency;

@@ -200,6 +200,10 @@ test("identity bitwise forms over a proven int32 return the operand's number", (
   }
   // Unproven operands keep the full ToInt32; other operators still compute.
   expect(body("unknown_or")).toContain("uint32.coerce.slow");
+  // The i64 conversion covers every magnitude below 2^63; only NaN, the
+  // infinities and larger magnitudes take the slow block.
+  expect(body("unknown_or")).toMatch(/ = fcmp oge double %\S+, 0xC3E0000000000000$/m);
+  expect(body("unknown_or")).toMatch(/ = fcmp olt double %\S+, 0x43E0000000000000$/m);
   expect(body("length_and")).toMatch(/ = and i32 .*, 255$/m);
 });
 
@@ -274,6 +278,18 @@ test("sums that only feed a bitwise conversion of int32 operands add in 32 bits"
     returning("float_read_add", bin("|", bin("+", length, read("floats")), zero)),
     returning("product", bin("|", bin("*", length, length), zero)),
     returning("number_add", bin("+", length, read("bytes"))),
+    returning(
+      "read_products",
+      bin(
+        ">>>",
+        bin(
+          "+",
+          bin("*", read("bytes"), { kind: "numLit", value: 77, type: F64, loc }),
+          bin("*", read("bytes"), { kind: "numLit", value: 150, type: F64, loc }),
+        ),
+        zero,
+      ),
+    ),
   ];
   const llvm = emitLlvmModule(mod);
   const body = (name: string): string =>
@@ -288,8 +304,10 @@ test("sums that only feed a bitwise conversion of int32 operands add in 32 bits"
     expect(body(name), name).not.toContain("uint32.coerce");
   }
   // A NaN-coded read converts to 0 through the sum: the result selects 0
-  // unless every NaN-coded operand is ordered.
-  expect(body("read_add")).toMatch(/ = fcmp ord double .*, 0\.0$/m);
+  // unless every NaN-coded operand is ordered. A read's own validity bit
+  // tells, so the number is not compared.
+  expect(body("read_add")).toMatch(/ = phi i1 \[ true, /);
+  expect(body("read_add")).not.toMatch(/fcmp ord/);
   expect(body("read_add")).toMatch(/ = add i32 /);
   expect(body("read_add")).toMatch(/ = select i1 .*, i32 .*, i32 0$/m);
   expect(body("read_chain")).toMatch(/ = and i1 /);
@@ -305,10 +323,16 @@ test("sums that only feed a bitwise conversion of int32 operands add in 32 bits"
     expect(body(name), name).not.toMatch(/ = (add|mul) i32 /);
   }
   expect(body("number_add")).not.toMatch(/ = add i32 |fcmp ord/);
+  // Products of NaN-coded reads and constants are exact integers or NaN, so
+  // their sum adds in 32 bits too, selected by the reads' validity bits.
+  expect(body("read_products")).toMatch(/ = mul i32 /);
+  expect(body("read_products")).toMatch(/ = add i32 /);
+  expect(body("read_products")).not.toContain("uint32.coerce");
+  expect(body("read_products")).not.toMatch(/fcmp ord/);
 });
 
 test.each([32, 64] as const)(
-  "tagged-template string arrays keep 8-byte slots before their states on %i-bit targets",
+  "tagged-template string arrays keep 8-byte slots without states on %i-bit targets",
   (bits) => {
     const strings: IrExpr = {
       kind: "templateStrings",
@@ -321,14 +345,17 @@ test.each([32, 64] as const)(
     mod.functions[0]!.body = [{ kind: "exprStmt", expr: strings, loc }];
     const llvm = emitLlvmModule(mod, { pointerBits: bits });
     const data = /^@sc_tsa_0_data = internal constant .*$/m.exec(llvm)![0];
-    // The runtime reads each slot as 8 bytes and finds the states after
-    // cap * 8 bytes of slots (scr_arr_states_end).
-    if (bits === 64) expect(data).toContain("<{ [3 x ptr], [3 x i8] }>");
+    // The runtime reads each slot as 8 bytes; an array without states
+    // (`spare` 0 in its header) has no state bytes after them.
+    if (bits === 64) expect(data).toMatch(/^\S+ = internal constant \[3 x ptr\] /);
     else {
-      expect(data).toContain("<{ [3 x <{ ptr, i32 }>], [3 x i8] }>");
+      expect(data).toMatch(/^\S+ = internal constant \[3 x <\{ ptr, i32 \}>\] /);
       expect(data.match(/<\{ ptr @\S+, i32 0 \}>/g)).toHaveLength(3);
     }
-    expect(data).toContain("[3 x i8] [ i8 1, i8 1, i8 1 ]");
+    expect(data).not.toContain("x i8]");
+    expect(llvm).toMatch(
+      /^@sc_tsa_0 = internal global %ScrArr \{ i\d+ -1, i32 3, i32 3, i8 2, i8 0, i16 0, i32 3, /m,
+    );
   },
 );
 

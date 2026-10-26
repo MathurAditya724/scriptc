@@ -1,10 +1,12 @@
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { F64, RUNTIME_ERROR_CLASSES, STRING } from "../../ir/ir.js";
+import { F64, type IrType, RUNTIME_ERROR_CLASSES, STRING, typeKey } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
 import { mockTimerSym } from "./lib-shared.js";
+import { FN_ATTRS } from "./shapes.js";
+import { registerReplay } from "./emit-journal.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -117,6 +119,13 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     host.declare(`declare void @scr_child_on_error(ptr, ptr, ptr)`);
     B.line(`call void @scr_child_on_error(ptr ${child.name}, ptr ${cb.name}, ptr @${adapter})`);
     return { name: "", type: e.type };
+  }
+  if (e.fn === "child.hasChannel") {
+    const child = host.emitExpr(e.args[0]!);
+    host.declare(`declare zeroext i1 @scr_child_ipc_present(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call i1 @scr_child_ipc_present(ptr ${child.name})`);
+    return { name: out, type: e.type };
   }
   if (e.fn === "child.connected") {
     const child = host.emitExpr(e.args[0]!);
@@ -460,8 +469,63 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
     for (const a of e.args) host.emitExpr(a);
     return { name: "", type: e.type };
   }
+  if (e.fn === "als.bindCallback") {
+    // The closure moves into the bound closure, whose entry is the
+    // per-signature thunk; with nothing to bind the runtime answers the
+    // closure itself.
+    if (e.type.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: als.bindCallback on non-func");
+    const cb = host.emitExpr(e.args[0]!);
+    const always = host.emitExpr(e.args[1]!);
+    host.toHeap(cb);
+    const thunk = boundCallbackThunk(host, e.type);
+    host.declare("declare ptr @scr_als_bind_closure(ptr, ptr, i1 zeroext)");
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_als_bind_closure(ptr ${cb.name}, ptr @${thunk}, i1 ${always.name})`,
+    );
+    return host.own({ name: t, type: e.type });
+  }
   return host.emitGenericLibCall(e);
 }
+
+/** The entry of a callback bound to an AsyncLocalStorage context, one per
+ * callback signature: enters the captured context, calls the target with
+ * the same arguments (the callValue ABI) and restores the caller's
+ * context, also when the target leaves an exception pending. */
+function boundCallbackThunk(host: LlvmEmitterContext, cbT: IrType & { kind: "func" }): string {
+  const key = `alsbound:${typeKey(cbT)}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = host.contentSymbol("sc_alsbound_", key);
+  host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "boundCallbackThunk", [cbT]);
+  host.declare("declare ptr @scr_als_bound_target(ptr)");
+  host.declare("declare ptr @scr_als_bound_enter(ptr)");
+  host.declare("declare void @scr_als_bound_leave(ptr, ptr)");
+  const ret = host.llType(cbT.ret);
+  const params = cbT.params.map((p, i) => `${host.llType(p)} %a${i}`);
+  const call = `call ${ret} %fn(${["ptr %cb", ...params].join(", ")})`;
+  host.resolveThunkDefs.push(
+    `define internal ${ret} @${sym}(${["ptr %self", ...params].join(", ")}) ${FN_ATTRS} { ; AsyncLocalStorage-bound callback ${typeKey(cbT)}`,
+    `entry:`,
+    `  %cb = call ptr @scr_als_bound_target(ptr %self)`,
+    `  %prev = call ptr @scr_als_bound_enter(ptr %self)`,
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+    ret === "void" ? `  ${call}` : `  %r = ${call}`,
+    `  call void @scr_als_bound_leave(ptr %prev, ptr %cb)`,
+    ret === "void" ? `  ret void` : `  ret ${ret} %r`,
+    `}`,
+    ``,
+  );
+  host.journal?.built();
+  return sym;
+}
+
+registerReplay("boundCallbackThunk", (host, args) =>
+  boundCallbackThunk(host, args[0] as IrType & { kind: "func" }),
+);
 
 export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -853,7 +917,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     host.emitPendingCheck();
     return { name: t, type: e.type };
   }
-  if (e.fn === "emitter.emitFlex") {
+  if (e.fn === "emitter.emitFlex" || e.fn === "emitter.emitAny") {
     const args = e.args.map((a) => host.emitExpr(a));
     const n = args.length - 2;
     let payload = "null";
@@ -867,42 +931,98 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       }
       payload = arr;
     }
-    host.declare(`declare zeroext i1 @scr_emitter_emit_flex(ptr, ptr, ptr, ${host.sizeType})`);
+    const sym = e.fn === "emitter.emitAny" ? "scr_emitter_emit_any" : "scr_emitter_emit_flex";
+    host.declare(`declare zeroext i1 @${sym}(ptr, ptr, ptr, ${host.sizeType})`);
     const t = B.tmp();
     B.line(
-      `${t} = call i1 @scr_emitter_emit_flex(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${payload}, ${host.sizeType} ${n})`,
+      `${t} = call i1 @${sym}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${payload}, ${host.sizeType} ${n})`,
+    );
+    host.emitPendingCheck();
+    return { name: t, type: e.type };
+  }
+  if (e.fn === "emitter.emitMixed") {
+    // (recv, name, k, ...k dyn arguments, ...converted tuple): the dyn
+    // arguments ride an exact-length array like emitFlex, the tuple the
+    // pointer-classed variadic tail like emitter.emit. Borrowed; may throw.
+    const count = e.args[2]!;
+    const k = count.kind === "numLit" ? count.value : 0;
+    const args = [e.args[0]!, e.args[1]!, ...e.args.slice(3)].map((a) => host.emitExpr(a));
+    let payload = "null";
+    if (k > 0) {
+      const arr = B.slot();
+      B.entryAllocas.push(`${arr} = alloca [${k} x ptr]`);
+      for (let i = 0; i < k; i++) {
+        const slot = B.tmp();
+        B.line(`${slot} = getelementptr inbounds [${k} x ptr], ptr ${arr}, i64 0, i64 ${i}`);
+        B.line(`store ptr ${args[i + 2]!.name}, ptr ${slot}`);
+      }
+      payload = arr;
+    }
+    const tuple = args.slice(2 + k).map((a) => {
+      const ty = host.llType(a.type);
+      if (ty === "double" || ty === "i1") {
+        const slot = B.slot();
+        B.entryAllocas.push(`${slot} = alloca ${ty} ; EventEmitter scalar argument`);
+        B.line(`store ${ty} ${a.name}, ptr ${slot}`);
+        return `ptr ${slot}`;
+      }
+      return `ptr ${a.name}`;
+    });
+    host.declare(
+      `declare zeroext i1 @scr_emitter_emit_mixed(ptr, ptr, ptr, ${host.sizeType}, ...)`,
+    );
+    const t = B.tmp();
+    B.line(
+      `${t} = call zeroext i1 (ptr, ptr, ptr, ${host.sizeType}, ...) @scr_emitter_emit_mixed(` +
+        [
+          `ptr ${args[0]!.name}`,
+          `ptr ${args[1]!.name}`,
+          `ptr ${payload}`,
+          `${host.sizeType} ${k}`,
+          ...tuple,
+        ].join(", ") +
+        `)`,
     );
     host.emitPendingCheck();
     return { name: t, type: e.type };
   }
   if (e.fn === "emitter.emitData") {
     // A user emit('data', chunk) on a stream-rooted receiver: fill the
-    // matching payload slot of the two-slot 'data' ABI, NULL the other.
+    // matching payload slot of the three-slot 'data' ABI (bytes, string,
+    // object-mode value), NULL the others; a checked-dynamic chunk fills
+    // them by tag (scr_stream_emit_value).
     const args = e.args.map((a) => host.emitExpr(a));
     const chunkT = e.args[2]!.type;
-    const both =
-      chunkT.kind === "string"
-        ? [`ptr null`, `ptr ${args[2]!.name}`]
-        : [`ptr ${args[2]!.name}`, `ptr null`];
-    host.declare(`declare zeroext i1 @scr_emitter_emit(ptr, ptr, ...)`);
     const t = B.tmp();
-    B.line(
-      `${t} = call zeroext i1 (ptr, ptr, ...) @scr_emitter_emit(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ${both.join(", ")})`,
-    );
+    if (chunkT.kind === "dyn") {
+      host.declare(`declare zeroext i1 @scr_stream_emit_value(ptr, ptr, ptr)`);
+      B.line(
+        `${t} = call zeroext i1 @scr_stream_emit_value(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name})`,
+      );
+    } else {
+      const slots =
+        chunkT.kind === "string"
+          ? [`ptr null`, `ptr ${args[2]!.name}`, `ptr null`]
+          : [`ptr ${args[2]!.name}`, `ptr null`, `ptr null`];
+      host.declare(`declare zeroext i1 @scr_emitter_emit(ptr, ptr, ...)`);
+      B.line(
+        `${t} = call zeroext i1 (ptr, ptr, ...) @scr_emitter_emit(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ${slots.join(", ")})`,
+      );
+    }
     host.emitPendingCheck();
     return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
   }
   if (e.fn === "emitter.onData" || e.fn === "emitter.onDataDyn") {
     // The stream-'data' registration: same runtime entries as
-    // emitter.on/onDyn, but the DATA adapter (the two-slot payload ABI
-    // — scr_stream_emit_data) behind the arity-2 fixed shim.
+    // emitter.on/onDyn, but the DATA adapter (the three-slot payload ABI
+    // — scr_stream_emit_data) behind the arity-3 fixed shim.
     const isDyn = e.fn === "emitter.onDataDyn";
     const cbT = e.args[isDyn ? 3 : 2]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);
     const args = e.args.map((a) => host.emitExpr(a));
     const adapterFn = host.streamDataAdapter(cbT);
-    host.declare(`declare void @scr_ee_inv_fixed2(ptr, ptr)`);
+    host.declare(`declare void @scr_ee_inv_fixed3(ptr, ptr)`);
     const t = B.tmp();
     if (isDyn) {
       host.toHeap(args[3]!);
@@ -912,7 +1032,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       );
       B.line(
         `${t} = call ptr @scr_emitter_on_dyn(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
-          `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @scr_ee_inv_fixed2, i1 ${args[4]!.name}, i1 ${args[5]!.name})`,
+          `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @scr_ee_inv_fixed3, i1 ${args[4]!.name}, i1 ${args[5]!.name})`,
       );
     } else {
       host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
@@ -925,7 +1045,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       );
       B.line(
         `${t} = call ptr @scr_emitter_on_via(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
-          `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @scr_ee_inv_fixed2, i1 ${args[3]!.name}, i1 ${args[4]!.name})`,
+          `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @scr_ee_inv_fixed3, i1 ${args[3]!.name}, i1 ${args[4]!.name})`,
       );
     }
     const out = host.own({ name: t, type: e.type });

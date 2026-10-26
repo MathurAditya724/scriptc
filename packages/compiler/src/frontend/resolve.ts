@@ -38,9 +38,11 @@ import {
   trackedRealpath,
 } from "./input-tracker.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "./workspace-registry.js";
+import { typePatchFileExists } from "./type-patches/layer.js";
 
 function isFile(path: string): boolean {
-  return trackedFileExists(path);
+  // A declaration entry a project type patch supplies (type-patches/layer.ts).
+  return trackedFileExists(path) || typePatchFileExists(path);
 }
 
 function isDirectory(path: string): boolean {
@@ -561,6 +563,12 @@ export function resolvePackageImports(
 export function nearestPkgJsonPath(fromFile: string): string | null {
   const dir = nearestPkgDir(dirname(resolve(fromFile)));
   return dir === null ? null : join(dir, "package.json");
+}
+
+/** The nearest package scope's "imports" field (undefined without one). */
+export function nearestPackageImports(fromFile: string): unknown {
+  const dir = nearestPkgDir(dirname(resolve(fromFile)));
+  return dir === null ? undefined : pkgJsonOf(dir)?.imports;
 }
 
 /** The target the nearest package scope's "imports" field maps a '#'

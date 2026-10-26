@@ -34,6 +34,7 @@ import {
   cycTypeDescriptor,
   emitObjectAlloc,
   emitObjectFree,
+  emitSegmentFree,
   CYC_APPEND,
   cycleAppendDecls,
   cycleAppendHelper,
@@ -68,9 +69,26 @@ const CYC_MAX_TYPES = 32768;
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
+  /** Chunk emitters only (emit-journal.ts): EmitJournal's allocated, built,
+   * opened, used and entry. */
+  journalAllocated?: ((name: string, op: string, args: readonly unknown[]) => void) | undefined;
+  journalBuilt?: (() => void) | undefined;
+  journalOpened?: ((op: string) => void) | undefined;
+  journalUsed?: ((name: string, op: string, args: readonly unknown[]) => void) | undefined;
+  journalEntry?: ((table: string, key: string, value: unknown) => void) | undefined;
   /** The hierarchy root of a class (a program class or a runtime base),
    * or undefined for classes outside the class graph. */
   classRootOf?(className: string): string | undefined;
+  /** Whether releasing a value of this type does nothing: instances of a
+   * program-lifetime class without lifetime regions (classes.ts
+   * programLifetimeClass). */
+  releasesNothing?(t: IrType): boolean;
+  /** Whether arrays of `elem` hold 32-bit references to compact class
+   * instances (SCR_ELEM_CREF; LlEmitter.compactArrayElem). */
+  compactArrayElem?(elem: IrType): boolean;
+  /** Whether compact class instances live in the program-lifetime region
+   * (LlEmitter.compactRegion). */
+  compactRegion?(): boolean;
   /** Byte offset from an object pointer back to ScrCycHdr.buf. */
   readonly cycleBufOffset: number;
   declare(decl: string): void;
@@ -198,8 +216,9 @@ export interface RegionHooks {
   classDefinitions(cls: IrClassDef, sizeOf: string): string[];
 }
 
-/** Every emitted function/helper carries #0 = { sanitize_address } — see
- * the emitter header. */
+/** Every emitted function/helper carries attribute group #0: the build's
+ * target CPU level, and `sanitize_address` in sanitized builds (see
+ * emit-module.ts functionAttributes). */
 export const FN_ATTRS = "#0";
 
 export { computeTraced } from "../cycle-analysis.js";
@@ -215,7 +234,7 @@ export { computeTraced } from "../cycle-analysis.js";
  * `_v`-shaped. */
 export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release: string } {
   const nullable = host.nullableUnions.of(t);
-  if (nullable?.repr === "shapes") return shapeUnionRc(nullable);
+  if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable);
   if (nullable) {
     const arm = vAdapters(host, nullable.arm);
     return { retain: nullableRetainSym(host, nullable.arm), release: arm.release };
@@ -272,7 +291,7 @@ export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release
 export function retainSym(host: ShapeHost, t: IrType): string {
   if (t.kind === "jsval") return jsvalRcSym(host, "retain");
   const nullable = host.nullableUnions.of(t);
-  if (nullable?.repr === "shapes") return shapeUnionRc(nullable).retain;
+  if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable).retain;
   if (nullable) return nullableRetainSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "retain") !== null) {
@@ -287,26 +306,53 @@ export function retainSym(host: ShapeHost, t: IrType): string {
 /** A shape union's RC entry points: every record retain is the same
  * NULL- and immortal-skipping increment (the null sentinel is immortal),
  * so the first arm's serves; release dispatches on the arm. */
-function shapeUnionRc(union: ShapeUnion): { retain: string; release: string } {
+function shapeUnionRc(host: ShapeHost, union: ShapeUnion): { retain: string; release: string } {
   return {
     retain: `@${mangleRecordRetain(union.arms[0]!.shapeId)}`,
-    release: shapeReleaseFn(union.unionId),
+    release: shapeReleaseFn(host.nullableUnions.helperOwner(union.unionId)),
   };
 }
+
+/** The widest span of shape numbers a union's arms may cover for its tag
+ * helper to switch on the shape word (emitShapeUnionHelpers). */
+const SHAPE_TAG_SWITCH_SPAN = 32;
 
 /** The tag, release and trace helpers of every shape union
  * (nullable-unions.ts). The tag helper maps a value to its arm: NULL and
  * the null sentinel are the unit arms, anything else a tagged record whose
- * shape word names its arm (the switch folds to a lookup table). */
+ * shape word names its arm.
+ * - Arms within SHAPE_TAG_SWITCH_SPAN shape numbers: the helper switches on
+ *   the shape word. Inlined, the switch folds into the caller's branch on
+ *   the arm, one indirect jump with a jump table of at most that many
+ *   entries per site.
+ * - Wider unions: the shape word indexes the union's arm table, one entry
+ *   per shape number from the arms' lowest to highest, and callers branch
+ *   on the small arm tag. Folded switches would give every site of such a
+ *   union a jump table spanning all of its arms' shape numbers. */
 export function emitShapeUnionHelpers(host: ShapeHost): string[] {
   const out: string[] = [];
   const S = host.sizeType;
   for (const union of host.nullableUnions.allShapeUnions()) {
     const header = shapeWordHeader(S);
     const tagFn = shapeTagFn(union.unionId);
-    const cases = union.arms
-      .map((arm) => `i32 ${host.nullableUnions.shapeNumber(arm.shapeId)}, label %a${arm.tag}`)
-      .join(" ");
+    const numbers = union.arms.map((arm) => host.nullableUnions.shapeNumber(arm.shapeId));
+    const lo = Math.min(...numbers);
+    const span = Math.max(...numbers) - lo + 1;
+    const byTable = span > SHAPE_TAG_SWITCH_SPAN;
+    // Entries are bytes, or 16-bit words for a union of 255 arms or more.
+    // A shape number that names no arm maps to the all-ones entry, which is
+    // above every arm tag, so callers take their path for no arm as they do
+    // for the -1 of a shape number outside the table.
+    const wide = union.arms.some((arm) => arm.tag >= 255);
+    const entry = wide ? "i16" : "i8";
+    const none = wide ? 65535 : 255;
+    const table = new Array<number>(span).fill(none);
+    union.arms.forEach((arm, i) => (table[numbers[i]! - lo] = arm.tag));
+    const tableName = tagFn.replace("@sc_stag.", "@sc_stagtab.");
+    if (byTable)
+      out.push(
+        `${tableName} = private unnamed_addr constant [${span} x ${entry}] [${table.map((t) => `${entry} ${t}`).join(", ")}]`,
+      );
     out.push(
       `define internal i32 ${tagFn}(ptr %u) alwaysinline ${FN_ATTRS} { ; shape union tag`,
       `entry:`,
@@ -324,48 +370,110 @@ export function emitShapeUnionHelpers(host: ShapeHost): string[] {
         `  ret i32 ${union.nullTag}`,
         `rec:`,
       );
-    out.push(
-      `  %wp = getelementptr inbounds ${header}, ptr %u, i32 0, i32 ${SHAPE_WORD_INDEX}`,
+    const cases = union.arms.map((arm, i) => `i32 ${numbers[i]}, label %a${arm.tag}`).join(" ");
+    if (!byTable)
+      out.push(
+        `  %wp = getelementptr inbounds ${header}, ptr %u, i32 0, i32 ${SHAPE_WORD_INDEX}`,
+        `  %w = load i32, ptr %wp`,
+        `  switch i32 %w, label %bad [ ${cases} ]`,
+        ...union.arms.flatMap((arm) => [`a${arm.tag}:`, `  ret i32 ${arm.tag}`]),
+        `bad:`,
+        `  ret i32 -1`,
+        `}`,
+        ``,
+      );
+    else
+      out.push(
+        `  %wp = getelementptr inbounds ${header}, ptr %u, i32 0, i32 ${SHAPE_WORD_INDEX}`,
+        `  %w = load i32, ptr %wp`,
+        `  %i = sub i32 %w, ${lo}`,
+        `  %inrange = icmp ult i32 %i, ${span}`,
+        `  br i1 %inrange, label %look, label %bad`,
+        `look:`,
+        `  %tp = getelementptr inbounds [${span} x ${entry}], ptr ${tableName}, i32 0, i32 %i`,
+        `  %t8 = load ${entry}, ptr %tp`,
+        `  %tag = zext ${entry} %t8 to i32`,
+        `  ret i32 %tag`,
+        `bad:`,
+        `  ret i32 -1`,
+        `}`,
+        ``,
+      );
+    // Release and trace: one definition for the unions over the same
+    // record arms (helperOwner). Unit encodings are NULL or the immortal
+    // null sentinel; the shape word picks the arm.
+    if (host.nullableUnions.helperOwner(union.unionId) !== union.unionId) continue;
+    const units = [
+      `  %isnull = icmp eq ptr %o, null`,
+      `  br i1 %isnull, label %done, label %${host.nullableUnions.usesNullSentinel ? "notnull" : "rec"}`,
+      ...(host.nullableUnions.usesNullSentinel
+        ? [
+            `notnull:`,
+            `  %isnullarm = icmp eq ptr %o, ${NULLABLE_NULL}`,
+            `  br i1 %isnullarm, label %done, label %rec`,
+          ]
+        : []),
+      `rec:`,
+    ];
+    const armSwitch = (call: (shapeId: string) => string): string[] => [
+      `  %wp = getelementptr inbounds ${header}, ptr %o, i32 0, i32 ${SHAPE_WORD_INDEX}`,
       `  %w = load i32, ptr %wp`,
-      `  switch i32 %w, label %bad [ ${cases} ]`,
-      ...union.arms.flatMap((arm) => [`a${arm.tag}:`, `  ret i32 ${arm.tag}`]),
-      `bad:`,
-      `  ret i32 -1`,
-      `}`,
-      ``,
-    );
-    // release: unit encodings are NULL or immortal; each arm releases
-    // through its own (NULL- and immortal-tolerant) helper.
-    out.push(
-      `define internal void ${shapeReleaseFn(union.unionId)}(ptr %u) ${FN_ATTRS} { ; shape union release`,
-      `entry:`,
-      `  %t = call i32 ${tagFn}(ptr %u)`,
-      `  switch i32 %t, label %done [ ${union.arms.map((arm) => `i32 ${arm.tag}, label %a${arm.tag}`).join(" ")} ]`,
-      ...union.arms.flatMap((arm) => [
-        `a${arm.tag}:`,
-        `  call void @${mangleRecordRelease(arm.shapeId)}(ptr %u)`,
-        `  br label %done`,
-      ]),
+      `  switch i32 %w, label %done [ ${union.arms.map((arm) => `i32 ${host.nullableUnions.shapeNumber(arm.shapeId)}, label %a${arm.tag}`).join(" ")} ]`,
+      ...union.arms.flatMap((arm) => [`a${arm.tag}:`, call(arm.shapeId), `  br label %done`]),
       `done:`,
       `  ret void`,
       `}`,
       ``,
-    );
+    ];
+    // Every record arm shares the release fast path (the count at the same
+    // offset, one collector header choice for the whole union), so only a
+    // release that may free dispatches on the arm. The release stays a call:
+    // inlined at every release site, it grows code more than it saves.
+    const traced = union.arms.map((arm) => host.tracedShapes.has(`record:${arm.shapeId}`));
+    // A freezable arm's count is the word without its frozen bit, as in
+    // releaseFastPath: a frozen record's last reference takes the slow path.
+    const frozen = union.arms.some((arm) => host.recordsById.get(arm.shapeId)?.freezable === true);
+    const notFrozen = ~recordFrozenBit(S);
+    const release = shapeReleaseFn(union.unionId);
+    if (traced.every((t) => t === traced[0]))
+      out.push(
+        `define internal void ${release}(ptr %o) noinline ${FN_ATTRS} { ; shape union release`,
+        `entry:`,
+        ...units,
+        `  %rc = load ${S}, ptr %o`,
+        ...(frozen
+          ? [
+              `  %refs = and ${S} %rc, ${sizeLiteral(S, notFrozen)}`,
+              `  %rcm2 = sub ${S} %refs, 2`,
+              `  %shared = icmp ult ${S} %rcm2, ${sizeLiteral(S, notFrozen - 2n)}`,
+            ]
+          : [`  %rcm2 = sub ${S} %rc, 2`, `  %shared = icmp ult ${S} %rcm2, -3`]),
+        `  br i1 %shared, label %dec, label %slow`,
+        `dec:`,
+        `  %n = sub ${S} %rc, 1`,
+        `  store ${S} %n, ptr %o`,
+        ...(traced[0] ? cycleRootLines(host, "done") : [`  br label %done`]),
+        `slow:`,
+        `  %imm = icmp eq ${S} %rc, -1`,
+        `  br i1 %imm, label %done, label %free`,
+        `free:`,
+        ...armSwitch((shapeId) => `  call void @${mangleRecordRelease(shapeId)}_slow(ptr %o)`),
+      );
+    else
+      out.push(
+        `define internal void ${release}(ptr %o) ${FN_ATTRS} { ; shape union release`,
+        `entry:`,
+        ...units,
+        ...armSwitch((shapeId) => `  call void @${mangleRecordRelease(shapeId)}(ptr %o)`),
+      );
     if (shapeUnionTraced(host, union))
       out.push(
-        `define internal void ${shapeTraceFn(union.unionId)}(ptr %u, ptr %visit, ptr %ctx) ${FN_ATTRS} { ; shape union trace`,
+        `define internal void ${shapeTraceFn(union.unionId)}(ptr %o, ptr %visit, ptr %ctx) ${FN_ATTRS} { ; shape union trace`,
         `entry:`,
-        `  %t = call i32 ${tagFn}(ptr %u)`,
-        `  switch i32 %t, label %done [ ${union.arms.map((arm) => `i32 ${arm.tag}, label %a${arm.tag}`).join(" ")} ]`,
-        ...union.arms.flatMap((arm) => [
-          `a${arm.tag}:`,
-          `  call void @${mangleRecordTrace(arm.shapeId)}(ptr %u, ptr %visit, ptr %ctx)`,
-          `  br label %done`,
-        ]),
-        `done:`,
-        `  ret void`,
-        `}`,
-        ``,
+        ...units,
+        ...armSwitch(
+          (shapeId) => `  call void @${mangleRecordTrace(shapeId)}(ptr %o, ptr %visit, ptr %ctx)`,
+        ),
       );
   }
   return out;
@@ -386,6 +494,7 @@ function nullableRetainSym(host: ShapeHost, arm: IrType): string {
   const sym = `@sc_nretain_${arm.kind}`;
   if (!host.nullableUnions.retainWrappers.has(sym))
     host.nullableUnions.retainWrappers.set(sym, retainSym(host, arm));
+  host.journalEntry?.("retainWrapper", sym, host.nullableUnions.retainWrappers.get(sym));
   return sym;
 }
 
@@ -416,7 +525,7 @@ export function emitNullableRetainWrappers(host: ShapeHost): string[] {
 export function releaseSym(host: ShapeHost, t: IrType): string {
   if (t.kind === "jsval") return jsvalRcSym(host, "release");
   const nullable = host.nullableUnions.of(t);
-  if (nullable?.repr === "shapes") return shapeUnionRc(nullable).release;
+  if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable).release;
   if (nullable) return releaseSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "release") !== null) {
@@ -527,21 +636,21 @@ interface InlineRcFamily {
  * repeats its own checks, so the fast path never duplicates it.
  *
  * The dyn release buffers a surviving value by kind (scr_dyn_release):
- * the fast path decides the always and never cases and calls
- * scr_dyn_release_survivor for kinds whose candidacy is per value,
- * including arrays and objects of intact documents (ScrDynRegion).
+ * the fast path skips scalars and values already in a candidate buffer or
+ * never candidates, and calls scr_dyn_release_survivor for the rest, which
+ * decides per value (intact documents, ScrDynRegion; capsules and handles
+ * without edges).
  *
- * Releases stay plain calls for:
- * - arr: array releases are the most numerous release sites and the
- *   least hot (at most 1% self time across the benchmark suite), and
- *   inlining them roughly doubled the code growth for no measured speedup.
- *   Array retains are inlined. */
+ * The array release inlines the decrement of an array that stays alive
+ * and is not headered (`a->cyc`): those are most array releases in
+ * type-checker workloads, where scr_arr_release's own prologue and checks
+ * took about half of its time. */
 export const INLINE_RC_FAMILIES: Readonly<Record<string, InlineRcFamily>> = {
   str: { cycle: "none", retainNull: false, release: "scr_str_release" },
   bytes: { cycle: "none", retainNull: false, release: "scr_bytes_release" },
   regex: { cycle: "none", retainNull: false, release: "scr_regex_release" },
   bigint: { cycle: "none", retainNull: true, release: "scr_bigint_release" },
-  arr: { cycle: "arr", retainNull: false, release: null },
+  arr: { cycle: "arr", retainNull: false, release: "scr_arr_release" },
   map: { cycle: "map", retainNull: false, release: "scr_map_release" },
   union: { cycle: "always", retainNull: false, release: "scr_union_release" },
   closure: { cycle: "always", retainNull: false, release: "scr_closure_release" },
@@ -564,14 +673,18 @@ export function inlineRcFamily(host: ShapeHost, stem: string, op: RcOp): InlineR
 }
 
 /** Which RC fast paths an emission inlines. `speed` mirrors every family
- * with a fast path. `release` mirrors only the string retain and the dyn
- * retain and release: the operations that dominate dynamic-value and string
- * code, at almost no size cost. String releases stay calls in `release`
- * because string-heavy programs have many release sites. */
+ * with a fast path. `release` mirrors only the string retain and release,
+ * the Map retain and the dyn retain and release: the operations that
+ * dominate dynamic-value, string and Map code (a Map read from an array or
+ * another Map). String-heavy programs have many string release sites, so a
+ * function with more than INLINE_STR_RELEASES_PER_FUNCTION of them calls the
+ * runtime release at each (limitInlineReleases). */
 export type InlineRcMode = "release" | "speed";
 
 const RELEASE_RC_OPS = new Set([
   "str:retain",
+  "str:release",
+  "map:retain",
   "dyn:retain",
   "dyn:release",
   "js:retain",
@@ -633,9 +746,10 @@ function requestRcHelper(host: ShapeHost, family: string, op: RcOp): string {
   for (const decl of rcHelperDecls(family, op)) host.declare(decl);
   // Its body is written last (emitInlineRcHelpers), after the requests are
   // collected: a release that can buffer a candidate requests the append
-  // helper now. The jsval row (JS_RC_ROW) has no collector header; its
-  // cells release through dyn's helper, which makes its own request.
-  if (op === "release" && row.cycle === "always") requestCycleAppend(host);
+  // helper now. The dyn release buffers through scr_dyn_release_survivor
+  // instead. The jsval row (JS_RC_ROW) has no collector header; its cells
+  // release through dyn's helper.
+  if (op === "release" && row.cycle === "always" && family !== "dyn") requestCycleAppend(host);
   return `@${inlineRcName(family, op)}`;
 }
 
@@ -654,27 +768,47 @@ function inlineRcName(family: string, op: RcOp): string {
  * the inline helper mirrors, at every site. */
 export const INLINE_DYN_RELEASES_PER_FUNCTION = 256;
 
-/** Apply {@link INLINE_DYN_RELEASES_PER_FUNCTION} to each function of an
- * emitted module, given as parts joined by newlines. A function can span
- * parts (main's lines) and a part can hold several functions. */
-export function limitInlineDynReleases(parts: readonly string[]): string[] {
-  const call = `call void @${inlineRcName("dyn", "release")}(`;
-  const runtime = `call void @${INLINE_RC_FAMILIES["dyn"]!.release}(`;
+/** Inlined string releases one function body keeps in `release` emission,
+ * which inlines string releases (RELEASE_RC_OPS); the bodies with the most of them, such as
+ * builders of string-heavy records and module initializers, would grow the
+ * most for the least gain, so a body with more calls scr_str_release at
+ * every site. */
+export const INLINE_STR_RELEASES_PER_FUNCTION = 8;
+
+/** Apply {@link INLINE_DYN_RELEASES_PER_FUNCTION}, and in `release` emission
+ * {@link INLINE_STR_RELEASES_PER_FUNCTION}, to each function of an emitted
+ * module, given as parts joined by newlines. A function can span parts
+ * (main's lines) and a part can hold several functions. */
+export function limitInlineReleases(
+  parts: readonly string[],
+  mode: InlineRcMode | undefined,
+): string[] {
+  const families: readonly ("dyn" | "str")[] = mode === "release" ? ["dyn", "str"] : ["dyn"];
+  const limits = families.map((family) =>
+    family === "dyn" ? INLINE_DYN_RELEASES_PER_FUNCTION : INLINE_STR_RELEASES_PER_FUNCTION,
+  );
+  const calls = families.map((family) => `${inlineRcName(family, "release")}(`);
+  const runtimes = families.map((family) => `call void @${INLINE_RC_FAMILIES[family]!.release}(`);
+  const head = "call void @";
+  const prefix = `${head}${inlineRcName("", "release")}`;
   // The function each release site belongs to: the last `define` line
-  // before it, counted over the joined text.
+  // before it, counted over the joined text. One walk over each part finds
+  // the sites of every family.
   const sites = (
     part: string,
-    each: (offset: number, fn: number) => void,
+    each: (offset: number, family: number, fn: number) => void,
     first: number,
   ): number => {
     let fn = first;
     let define = part.startsWith("define ") ? 0 : part.indexOf("\ndefine ");
-    for (let at = part.indexOf(call); at >= 0; at = part.indexOf(call, at + call.length)) {
+    for (let at = part.indexOf(prefix); at >= 0; at = part.indexOf(prefix, at + prefix.length)) {
+      const family = calls.findIndex((call) => part.startsWith(call, at + head.length));
+      if (family < 0) continue;
       while (define >= 0 && define < at) {
         fn++;
         define = part.indexOf("\ndefine ", define + 1);
       }
-      each(at, fn);
+      each(at, family, fn);
     }
     while (define >= 0) {
       fn++;
@@ -682,31 +816,47 @@ export function limitInlineDynReleases(parts: readonly string[]): string[] {
     }
     return fn;
   };
-  const counts = new Map<number, number>();
+  const counts = families.map(() => new Map<number, number>());
+  // The functions each part's sites can belong to.
+  const spans: number[] = [];
   let fn = 0;
-  for (const part of parts) fn = sites(part, (_, f) => counts.set(f, (counts.get(f) ?? 0) + 1), fn);
-  const over = new Set(
-    [...counts].filter(([, n]) => n > INLINE_DYN_RELEASES_PER_FUNCTION).map(([f]) => f),
-  );
-  if (over.size === 0) return [...parts];
-  fn = 0;
-  return parts.map((part) => {
-    const cuts: number[] = [];
+  for (const part of parts) {
+    spans.push(fn);
     fn = sites(
       part,
-      (at, f) => {
-        if (over.has(f)) cuts.push(at);
-      },
+      (_, family, f) => counts[family]!.set(f, (counts[family]!.get(f) ?? 0) + 1),
       fn,
+    );
+    spans.push(fn);
+  }
+  const over = counts.map(
+    (count, family) => new Set([...count].filter(([, n]) => n > limits[family]!).map(([f]) => f)),
+  );
+  if (over.every((set) => set.size === 0)) return [...parts];
+  const anyOver = new Set(over.flatMap((set) => [...set]));
+  const touches = (from: number, to: number): boolean => {
+    for (let f = from; f <= to; f++) if (anyOver.has(f)) return true;
+    return false;
+  };
+  return parts.map((part, index) => {
+    const from = spans[2 * index]!;
+    if (!touches(from, spans[2 * index + 1]!)) return part;
+    const cuts: { at: number; family: number }[] = [];
+    sites(
+      part,
+      (at, family, f) => {
+        if (over[family]!.has(f)) cuts.push({ at, family });
+      },
+      from,
     );
     if (cuts.length === 0) return part;
     let out = "";
-    let from = 0;
-    for (const at of cuts) {
-      out += part.slice(from, at) + runtime;
-      from = at + call.length;
+    let next = 0;
+    for (const cut of cuts) {
+      out += part.slice(next, cut.at) + runtimes[cut.family]!;
+      next = cut.at + head.length + calls[cut.family]!.length;
     }
-    return out + part.slice(from);
+    return out + part.slice(next);
   });
 }
 
@@ -719,8 +869,11 @@ function rcHelperDecls(family: string, op: RcOp): string[] {
   if (op === "retain" || row.release === null) return [];
   return [
     `declare void @${row.release}(ptr)`,
-    ...(row.cycle === "always" ? [`declare void @scr_cyc_on_release(ptr)`] : []),
-    ...(family === "dyn" ? [`declare void @scr_dyn_release_survivor(ptr)`] : []),
+    ...(family === "dyn"
+      ? [`declare void @scr_dyn_release_survivor(ptr)`]
+      : row.cycle === "always"
+        ? [`declare void @scr_cyc_on_release(ptr)`]
+        : []),
   ];
 }
 
@@ -830,21 +983,21 @@ function releaseHelper(host: ShapeHost, family: string, row: InlineRcFamily): st
             // scr_dyn_release buffers a surviving value by kind: always for
             // functions and proxies, per value for arrays and objects (not
             // while their document is intact, ScrDynRegion), capsules and
-            // handles (scr_dyn_release_survivor), never for scalars. An
-            // array or object already in a candidate buffer stays inline.
+            // handles, never for scalars. Every kind that can be buffered
+            // takes one path, which keeps each inlined site small: a value
+            // already in a candidate buffer (or never one) stays inline, and
+            // scr_dyn_release_survivor decides the rest.
             `  %kp = getelementptr i8, ptr %o, ${S} ${S === "i64" ? 8 : 4} ; ScrDyn.kind`,
             `  %kind = load i32, ptr %kp`,
-            // SCR_DYN_ARR 4, OBJ 5, FUNC 8, PROXY 13; HANDLE 9, TYPED_REF 12.
-            `  switch i32 %kind, label %done [ i32 4, label %container i32 5, label %container i32 8, label %root i32 13, label %root i32 9, label %survivor i32 12, label %survivor ]`,
-            `container:`,
+            // SCR_DYN_ARR 4, OBJ 5, FUNC 8, HANDLE 9, TYPED_REF 12, PROXY 13.
+            `  switch i32 %kind, label %done [ i32 4, label %candidate i32 5, label %candidate i32 8, label %candidate i32 9, label %candidate i32 12, label %candidate i32 13, label %candidate ]`,
+            `candidate:`,
             `  %cbufp = getelementptr i8, ptr %o, ${S} -${host.cycleBufOffset}`,
             `  %cbuf = load i32, ptr %cbufp`,
             `  %cqueued = icmp slt i32 %cbuf, 0`,
             `  br i1 %cqueued, label %done, label %survivor`,
             `survivor:`,
             `  call void @scr_dyn_release_survivor(ptr %o)`,
-            `  br label %done`,
-            `root:`,
           ]
         : family === "box"
           ? [
@@ -863,7 +1016,9 @@ function releaseHelper(host: ShapeHost, family: string, row: InlineRcFamily): st
               `root:`,
             ]
           : []),
-    ...(cycle === "always" ? cycleRootLines(host, "done") : [`  br label %done`]),
+    ...(cycle === "always" && family !== "dyn"
+      ? cycleRootLines(host, "done")
+      : [`  br label %done`]),
     `done:`,
     `  ret void`,
     `}`,
@@ -927,7 +1082,9 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
     case "union": {
       const nullable = host.nullableUnions.get(t.unionId);
       if (nullable?.repr === "shapes")
-        return shapeUnionTraced(host, nullable) ? shapeTraceFn(nullable.unionId) : null;
+        return shapeUnionTraced(host, nullable)
+          ? shapeTraceFn(host.nullableUnions.helperOwner(nullable.unionId))
+          : null;
       if (nullable) return traceAdapter(host, nullable.arm);
       if (!host.tracedUnions.has(t.unionId)) return null;
       host.declare(`declare void @scr_union_trace_v(ptr, ptr, ptr)`);
@@ -1057,6 +1214,7 @@ export function arrNewCall(
     elem.kind === "stats" || // fs.Stats snapshots: scr_stats_* adapters, no trace
     elem.kind === "dyn" || // native collection seeds/drains: traced REF
     elem.kind === "regex" || // RegExp values: scr_regex_* adapters, no trace (no refs inside)
+    elem.kind === "date" || // Date objects: scr_date_* adapters, no trace (no refs inside)
     (elem.kind === "array" && traceAdapter(host, elem) !== null);
   if (!useRef) {
     if (small) {
@@ -1074,18 +1232,42 @@ export function arrNewCall(
   return `call ptr @scr_arr_new_ops(ptr ${arrOps(host, elem)}, ${host.sizeType} ${capText})`;
 }
 
-/** The constant %ScrArrOps descriptor (retain, release, trace) of a REF
- * element type, defined once per module and shared by all its arrays. */
+/** The %ScrArrOps descriptor (retain, release, trace, registry id) of a REF
+ * element type, defined once per module and shared by all its arrays. It is
+ * writable: the runtime stores its registry id on the first array. Its tail
+ * padding is the runtime's flags word (0); arrays of compact class
+ * references (ShapeHost.compactArrayElem) spell the word out as
+ * SCR_ARR_OPS_COMPACT, and on 64-bit targets arrays whose element release
+ * does nothing (ShapeHost.releasesNothing) as SCR_ARR_OPS_RELEASE_NOTHING,
+ * so that destroying them only frees their storage. */
 export function arrOps(host: ShapeHost, elem: IrType): string {
   const v = vAdapters(host, elem);
   const trace = traceArg(host, elem);
   const part = (sym: string): string => sym.replace(/^@/, "").replace(/[^A-Za-z0-9_.]/g, "_");
   const name = `@sc_arrops.${part(v.retain)}.${part(v.release)}.${part(trace)}`;
+  if (host.compactArrayElem?.(elem) === true) {
+    host.declare(
+      `${name}.c = internal global { ptr, ptr, ptr, i32, i32 } { ptr ${v.retain}, ptr ${v.release}, ptr ${trace}, i32 0, i32 ${SCR_ARR_OPS_COMPACT} }`,
+    );
+    return `${name}.c`;
+  }
+  const nullable = host.nullableUnions.of(elem);
+  const payload = nullable?.repr === "single" ? nullable.arm : elem;
+  if (host.sizeType === "i64" && host.releasesNothing?.(payload) === true) {
+    host.declare(
+      `${name}.n = internal global { ptr, ptr, ptr, i32, i32 } { ptr ${v.retain}, ptr ${v.release}, ptr ${trace}, i32 0, i32 ${SCR_ARR_OPS_RELEASE_NOTHING} }`,
+    );
+    return `${name}.n`;
+  }
   host.declare(
-    `${name} = internal constant %ScrArrOps { ptr ${v.retain}, ptr ${v.release}, ptr ${trace} }`,
+    `${name} = internal global %ScrArrOps { ptr ${v.retain}, ptr ${v.release}, ptr ${trace}, i32 0 }`,
   );
   return name;
 }
+
+/** scr_array.h SCR_ARR_OPS_COMPACT and SCR_ARR_OPS_RELEASE_NOTHING. */
+const SCR_ARR_OPS_COMPACT = 1;
+const SCR_ARR_OPS_RELEASE_NOTHING = 2;
 
 /* ── capture boxes ────────────────────────────────────────────────────── */
 
@@ -1096,7 +1278,6 @@ export function arrOps(host: ShapeHost, elem: IrType): string {
 export function boxNewCall(host: ShapeHost, t: IrType): string {
   const plain: Partial<Record<IrType["kind"], number>> = {
     f64: 0,
-    date: 0,
     procStream: 0,
     bool: 1,
     string: 2,
@@ -1121,11 +1302,7 @@ export function boxNewCall(host: ShapeHost, t: IrType): string {
 
 /** Box accessor suffix (boxAccess): scalars unboxed, ref kinds pointers. */
 export function boxAccess(t: IrType): "f64" | "bool" | "ref" {
-  return t.kind === "f64" || t.kind === "date" || t.kind === "procStream"
-    ? "f64"
-    : t.kind === "bool"
-      ? "bool"
-      : "ref";
+  return t.kind === "f64" || t.kind === "procStream" ? "f64" : t.kind === "bool" ? "bool" : "ref";
 }
 
 /* ── record shapes ────────────────────────────────────────────────────── */
@@ -1141,7 +1318,6 @@ export function llFieldType(
   if (POINTER_KINDS.has(t.kind)) return "ptr";
   switch (t.kind) {
     case "f64":
-    case "date":
     case "procStream":
       return "double";
     case "bool":
@@ -1339,17 +1515,23 @@ export interface DirectDestroy {
 /** The release of child `value` (a loaded field, possibly NULL) inside a
  * teardown whose chain length is `%d`: the child's own release for a shared
  * or immortal reference, its teardown for the last one. Labels use `tag`;
- * the lines end in the open block `${tag}.next`. */
+ * the lines end in the open block `${tag}.next`.
+ *
+ * With `segment` (the child has the teardown's own type, in a segmented
+ * teardown; segmentPrologueLines), the child's teardown appends its blocks
+ * to the teardown's segment. */
 export function directChildReleaseLines(
   host: ShapeHost,
   tag: string,
   value: string,
   target: DirectDestroy,
   comment: string,
+  segment = false,
 ): string[] {
   const S = host.sizeType;
   const C = target.count ?? S;
-  host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
+  if (segment) host.declare(`declare ptr @scr_rc_destroy_seg(ptr, ptr, ptr, ptr)`);
+  else host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
   const lines = [
     `  %${tag}.nn = icmp ne ptr ${value}, null`,
     `  br i1 %${tag}.nn, label %${tag}.chk, label %${tag}.next`,
@@ -1368,7 +1550,7 @@ export function directChildReleaseLines(
     lines.push(
       `  %${tag}.bufp = getelementptr i8, ptr ${value}, ${S} -${host.cycleBufOffset}`,
       `  %${tag}.buf = load i32, ptr %${tag}.bufp`,
-      `  %${tag}.queued = icmp slt i32 %${tag}.buf, 0`,
+      `  %${tag}.queued = icmp slt i32 %${tag}.buf, -1 ; buffered, not SCR_CYC_ACYCLIC`,
       `  br i1 %${tag}.queued, label %${tag}.unbuffer, label %${tag}.teardown`,
       `${tag}.unbuffer:`,
       `  call void @scr_cyc_on_dead(ptr ${value})`,
@@ -1381,14 +1563,137 @@ export function directChildReleaseLines(
     `  br i1 %${tag}.short, label %${tag}.direct, label %${tag}.bounded`,
     `${tag}.direct:`,
     `  %${tag}.d = add i32 %d, 1`,
-    `  call void @${target.destroy}_d(ptr ${value}, i32 %${tag}.d)`,
+  );
+  if (!segment) {
+    lines.push(
+      `  call void @${target.destroy}_d(ptr ${value}, i32 %${tag}.d)`,
+      `  br label %${tag}.next`,
+      `${tag}.bounded:`,
+      `  call void @scr_rc_destroy(ptr ${value}, ptr @${target.destroy})`,
+      `  br label %${tag}.next`,
+      `${tag}.next:`,
+    );
+    return lines;
+  }
+  lines.push(
+    `  %${tag}.t = load ptr, ptr %sg.t`,
+    `  %${tag}.dt = call ptr @${target.destroy}_s(ptr ${value}, i32 %${tag}.d, ptr %${tag}.t)`,
+    `  store ptr %${tag}.dt, ptr %sg.t`,
     `  br label %${tag}.next`,
     `${tag}.bounded:`,
-    `  call void @scr_rc_destroy(ptr ${value}, ptr @${target.destroy})`,
+    `  %${tag}.bt = load ptr, ptr %sg.t`,
+    `  %${tag}.rt = call ptr @scr_rc_destroy_seg(ptr ${value}, ptr @${target.destroy}_sc, ptr @${target.destroy}, ptr %${tag}.bt)`,
+    `  store ptr %${tag}.rt, ptr %sg.t`,
     `  br label %${tag}.next`,
     `${tag}.next:`,
   );
   return lines;
+}
+
+/* Teardown segments. A typed teardown that frees each block onto its free
+ * list as it goes frees a tree in walk order, and the free lists, which are
+ * LIFO, hand the blocks to the next allocations in the reverse order: a tree
+ * built again in the same order as the last (each generation of a structure
+ * a loop rebuilds) is laid out mirrored, and every walk over it, the next
+ * teardown included, runs through memory backwards, which defeats the
+ * hardware prefetchers. The runtime frees large dead sets of the cycle
+ * collector in address order for the same reason (scr_mem_order_for_free).
+ *
+ * So the teardown of a type with children of its own type (the `_s` form,
+ * segmentedTeardown) keeps the blocks it frees in a segment, linked through
+ * their first words, which it builds in order through a tail pointer: the
+ * `_s` form takes the segment's last link (the first word of its last block,
+ * or the head slot of an empty segment) and returns the new one. A node
+ * first releases its own block (emitObjectFree, keeping it), then appends it
+ * ahead of its children's blocks when its address is the lower, behind them
+ * otherwise (segmentTeardownLines), and the children append theirs in field
+ * order, so a structure
+ * built parent first (object literals allocate before their fields) or
+ * children first (constructor arguments) comes back in ascending order. The
+ * chain's first teardown (`_d`) frees the whole segment onto the class's
+ * free list in one step (emitSegmentFree), and the walks over the next
+ * generation run forward. A teardown past DIRECT_DESTROY_CHAIN appends
+ * through scr_rc_destroy_seg, under the same depth budget as
+ * scr_rc_destroy. Blocks outside the calling thread's arena are freed as
+ * before; one type's blocks are all of one class. */
+
+/** Whether the teardown of a type whose reference fields have `fieldTypes`
+ * (with direct targets `targets`) and whose own teardown is `destroy` keeps
+ * a segment: a child field has its own type, and the inline allocation paths
+ * are in use. */
+export function segmentedTeardown(
+  host: ShapeHost,
+  destroy: string,
+  fieldTypes: readonly IrType[],
+  targets: ReadonlyMap<string, DirectDestroy>,
+): boolean {
+  if (host.inlineAlloc !== true) return false;
+  return fieldTypes.some((t) => directDestroyTarget(host, t, targets)?.destroy === destroy);
+}
+
+/** The first lines of a segmented teardown, in its entry block: the
+ * segment's last link (`%sg.t`, from the `%tail` argument) and the kept own
+ * block (`%sg.own`, for emitObjectFree). */
+export function segmentPrologueLines(): string[] {
+  return [
+    `  %sg.t = alloca ptr`,
+    `  %sg.own = alloca ptr`,
+    `  store ptr %tail, ptr %sg.t`,
+    `  store ptr null, ptr %sg.own`,
+  ];
+}
+
+/** The rest of a segmented teardown after emitObjectFree kept (or freed)
+ * its own block: the block goes ahead of its children's when its address is
+ * below the first non-NULL one of `children` (loaded fields of the
+ * teardown's own type, which stand for their blocks) or there is none, and
+ * behind them otherwise; then the children's releases (`releases`, given a
+ * label prefix), and the segment's last link is returned. Each order has its
+ * own copy of the releases, so neither keeps the decision, or the block once
+ * it is appended, across the children's teardowns. */
+export function segmentTeardownLines(
+  children: readonly string[],
+  releases: (prefix: string) => string[],
+): string[] {
+  const lines = [`  %sg.o = load ptr, ptr %sg.own`, `  %sg.kept = icmp ne ptr %sg.o, null`];
+  let ref = "null";
+  [...children].reverse().forEach((child, i) => {
+    lines.push(
+      `  %sg.nn${i} = icmp ne ptr ${child}, null`,
+      `  %sg.r${i} = select i1 %sg.nn${i}, ptr ${child}, ptr ${ref}`,
+    );
+    ref = `%sg.r${i}`;
+  });
+  lines.push(
+    `  %sg.leaf = icmp eq ptr ${ref}, null`,
+    `  %sg.lower = icmp ult ptr %sg.o, ${ref}`,
+    `  %sg.first = or i1 %sg.leaf, %sg.lower`,
+    `  %sg.ahead = and i1 %sg.kept, %sg.first`,
+    `  br i1 %sg.ahead, label %sg.front, label %sg.back`,
+    `sg.front:`,
+    ...segmentAppendLines("a"),
+    ...releases("ta"),
+    `  br label %sg.ret`,
+    `sg.back:`,
+    ...releases("tb"),
+    `  %sg.keep = icmp ne ptr %sg.o, null`,
+    `  br i1 %sg.keep, label %sg.last, label %sg.ret`,
+    `sg.last:`,
+    ...segmentAppendLines("l"),
+    `  br label %sg.ret`,
+    `sg.ret:`,
+    `  %sg.tr = load ptr, ptr %sg.t`,
+    `  ret ptr %sg.tr`,
+  );
+  return lines;
+}
+
+function segmentAppendLines(tag: string): string[] {
+  return [
+    `  %sg.t${tag} = load ptr, ptr %sg.t`,
+    `  store ptr %sg.o, ptr %sg.t${tag}`,
+    `  store ptr %sg.o, ptr %sg.t`,
+  ];
 }
 
 /** The direct-teardown target of a reference of `type`, if `targets` (keyed
@@ -1433,12 +1738,42 @@ export function usedDirectTargets(
 
 /** The teardown definitions for `destroy`: with `chained`, the body takes
  * the chain length `%d` (directChildReleaseLines) and the runtime's
- * one-argument entry starts a chain. */
+ * one-argument entry starts a chain. With `segment` (the host, for a
+ * segmented teardown), the body is a segment teardown's
+ * (segmentPrologueLines to segmentTeardownLines), defined as `_s`, with
+ * `_sc` for scr_rc_destroy_seg, and `_d` starts a segment and frees it. */
 export function destroyDefinitions(
   destroy: string,
   body: readonly string[],
   chained: boolean,
+  segment: ShapeHost | null = null,
 ): string[] {
+  if (segment !== null)
+    return [
+      `define internal ptr @${destroy}_s(ptr %o, i32 %d, ptr %tail) ${FN_ATTRS} {`,
+      `entry:`,
+      ...body,
+      `}`,
+      `define internal ptr @${destroy}_sc(ptr %o, ptr %tail) ${FN_ATTRS} {`,
+      `entry:`,
+      `  %t = call ptr @${destroy}_s(ptr %o, i32 0, ptr %tail)`,
+      `  ret ptr %t`,
+      `}`,
+      `define internal void @${destroy}_d(ptr %o, i32 %d) ${FN_ATTRS} {`,
+      `entry:`,
+      `  %head = alloca ptr`,
+      `  store ptr null, ptr %head`,
+      `  %last = call ptr @${destroy}_s(ptr %o, i32 %d, ptr %head)`,
+      `  %first = load ptr, ptr %head`,
+      ...emitSegmentFree(segment, "sgf", "%first", "%last"),
+      `  ret void`,
+      `}`,
+      `define internal void @${destroy}(ptr %o) ${FN_ATTRS} {`,
+      `entry:`,
+      `  call void @${destroy}_d(ptr %o, i32 0)`,
+      `  ret void`,
+      `}`,
+    ];
   if (!chained)
     return [
       `define internal void @${destroy}(ptr %o) ${FN_ATTRS} {`,
@@ -1461,6 +1796,17 @@ export function destroyDefinitions(
   ];
 }
 
+/** The frozen bit of a freezable record's rc word (scr_rc.h SCR_RC_FROZEN):
+ * bit 62 on 64-bit targets, bit 30 on 32-bit ones. */
+function recordFrozenBit(sizeType: RcCount): bigint {
+  return 1n << (sizeType === "i64" ? 62n : 30n);
+}
+
+/** `value` as a signed LLVM integer literal of `sizeType`. */
+function sizeLiteral(sizeType: RcCount, value: bigint): string {
+  return BigInt.asIntN(sizeType === "i64" ? 64 : 32, value).toString();
+}
+
 /** Common NULL/immortal/decrement skeleton for ordinary object releases.
  * `freeBody` owns the zero-ref teardown and must leave the current block at
  * its end; traced objects also get the possible-cycle-root branch.
@@ -1477,13 +1823,17 @@ export function releaseBody(
   bounded = true,
   immortal = false,
   chained = false,
+  segmented = false,
+  frozen = false,
 ): string[] {
   const S = host.sizeType;
   if (bounded) host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
   const destroy = `${fnName}_destroy`;
+  // A freezable record's count is the word without its frozen bit.
+  const notFrozen = sizeLiteral(S, ~recordFrozenBit(S));
   const lines = [
-    ...(bounded ? destroyDefinitions(destroy, freeBody, chained) : []),
-    ...releaseFastPath(host, fnName, `${fnName}_slow`, traced, comment, immortal),
+    ...(bounded ? destroyDefinitions(destroy, freeBody, chained, segmented ? host : null) : []),
+    ...releaseFastPath(host, fnName, `${fnName}_slow`, traced, comment, immortal, S, frozen),
     `define internal void @${fnName}_slow(ptr %o) noinline ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
     `entry:`,
     `  %isnull = icmp eq ptr %o, null`,
@@ -1495,7 +1845,9 @@ export function releaseBody(
     `dec:`,
     `  %n = sub ${S} %rc, 1`,
     `  store ${S} %n, ptr %o`,
-    `  %dead = icmp eq ${S} %n, 0`,
+    ...(frozen
+      ? [`  %refs = and ${S} %n, ${notFrozen}`, `  %dead = icmp eq ${S} %refs, 0`]
+      : [`  %dead = icmp eq ${S} %n, 0`]),
     `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
     `free:`,
     ...(traced ? cycleDeadLines(host, "teardown") : []),
@@ -1525,9 +1877,14 @@ export function releaseFastPath(
   comment = "",
   immortal = false,
   count: RcCount = host.sizeType,
+  frozen = false,
 ): string[] {
   const S = count;
   if (immortal) return immortalRcBody(host, fnName, "void", comment);
+  // A freezable record compares its count without the frozen bit: an
+  // immortal word's count is then ~FROZEN, which the same compare sends to
+  // `slow`.
+  const notFrozen = ~recordFrozenBit(S);
   return [
     `define internal void @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment} (fast path)` : ""}`,
     `entry:`,
@@ -1535,8 +1892,13 @@ export function releaseFastPath(
     `  br i1 %isnull, label %done, label %check`,
     `check:`,
     `  %rc = load ${S}, ptr %o`,
-    `  %rcm2 = sub ${S} %rc, 2`,
-    `  %shared = icmp ult ${S} %rcm2, -3`,
+    ...(frozen
+      ? [
+          `  %refs = and ${S} %rc, ${sizeLiteral(S, notFrozen)}`,
+          `  %rcm2 = sub ${S} %refs, 2`,
+          `  %shared = icmp ult ${S} %rcm2, ${sizeLiteral(S, notFrozen - 2n)}`,
+        ]
+      : [`  %rcm2 = sub ${S} %rc, 2`, `  %shared = icmp ult ${S} %rcm2, -3`]),
     `  br i1 %shared, label %dec, label %slow`,
     `dec:`,
     `  %n = sub ${S} %rc, 1`,
@@ -1594,8 +1956,9 @@ function requestCycleAppend(host: ShapeHost): boolean {
 
 /** The possible-cycle-root step of a release that left a headered object
  * alive: scr_cyc_on_release with its early return inlined. Test the sign
- * of `buf` (the i32 at obj-4; negative for a queued candidate or a tenured
- * object), and buffer a new candidate: through the module's
+ * of `buf` (the i32 at obj-4; negative for a queued candidate, a young
+ * object, or an object that is never a candidate, SCR_CYC_ACYCLIC), and
+ * buffer a new candidate: through the module's
  * cycleAppendHelper in optimized builds that support it, through
  * scr_cyc_on_release otherwise. Every emitted release of a headered object
  * shares this sequence (scr_runtime.h asserts the offsets); it ends by
@@ -1618,16 +1981,16 @@ export function cycleRootLines(host: ShapeHost, done: string): string[] {
 }
 
 /** The death of a headered object: scr_cyc_on_dead with its early return
- * inlined. Only an object still in a candidate buffer
- * (`buffered` nonzero) has an entry to remove; the sequence continues at
- * the new block `next`. */
+ * inlined. Only an object still in a candidate buffer (`buf` negative and
+ * not SCR_CYC_ACYCLIC, which is -1) has an entry to remove; the sequence
+ * continues at the new block `next`. */
 export function cycleDeadLines(host: ShapeHost, next: string): string[] {
   const S = host.sizeType;
   host.declare(`declare void @scr_cyc_on_dead(ptr)`);
   return [
     `  %dbufp = getelementptr i8, ptr %o, ${S} -${host.cycleBufOffset}`,
     `  %dbuf = load i32, ptr %dbufp`,
-    `  %dqueued = icmp slt i32 %dbuf, 0`,
+    `  %dqueued = icmp slt i32 %dbuf, -1 ; buffered, not SCR_CYC_ACYCLIC`,
     `  br i1 %dqueued, label %unbuffer, label %${next}`,
     `unbuffer:`,
     `  call void @scr_cyc_on_dead(ptr %o)`,
@@ -1713,26 +2076,58 @@ export function emitRecordShapes(
     const chained =
       directTargets.has(`record:${shape.id}`) ||
       refMembers.some((m) => directDestroyTarget(host, m.type, directTargets) !== null);
-    for (const m of refMembers) {
-      freeBody.push(
-        `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${m.index}`,
-        `  %v${t} = load ptr, ptr %f${t}`,
+    const destroy = `${mangleRecordRelease(shape.id)}_destroy`;
+    const bounded = refMembers.some((member) => needsBoundedRelease(member.type));
+    const segmented =
+      bounded &&
+      segmentedTeardown(
+        host,
+        destroy,
+        refMembers.map((m) => m.type),
+        directTargets,
       );
-      const direct = directDestroyTarget(host, m.type, directTargets);
-      if (direct) {
-        freeBody.push(
-          ...directChildReleaseLines(host, `td${t}`, `%v${t}`, direct, llvmCommentText(m.name)),
-        );
-      } else {
-        freeBody.push(
-          `  call void ${releaseSym(host, m.type)}(ptr %v${t}) ; ${llvmCommentText(m.name)}`,
-        );
-      }
-      t++;
-    }
     // Closed layouts can carry a kept record source (record-sources.ts).
     const observers = recordMayKeepSource(shape) ? "weak-or-source" : "weak";
-    freeBody.push(...emitObjectFree(host, traced, observers));
+    // A segmented teardown loads its fields, releases its own block, and
+    // then releases the fields (segmentTeardownLines).
+    const loads: string[] = [];
+    const ownType: string[] = [];
+    const release = (prefix: string, m: (typeof refMembers)[number], i: number): string[] => {
+      const direct = directDestroyTarget(host, m.type, directTargets);
+      if (direct === null)
+        return [`  call void ${releaseSym(host, m.type)}(ptr %v${i}) ; ${llvmCommentText(m.name)}`];
+      const own = segmented && direct.destroy === destroy;
+      return directChildReleaseLines(
+        host,
+        `${prefix}${i}`,
+        `%v${i}`,
+        direct,
+        llvmCommentText(m.name),
+        own,
+      );
+    };
+    for (const m of refMembers) {
+      const fieldLines = [
+        `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${m.index}`,
+        `  %v${t} = load ptr, ptr %f${t}`,
+      ];
+      if (segmented) {
+        loads.push(...fieldLines);
+        if (directDestroyTarget(host, m.type, directTargets)?.destroy === destroy)
+          ownType.push(`%v${t}`);
+      } else freeBody.push(...fieldLines, ...release("td", m, t));
+      t++;
+    }
+    if (segmented)
+      freeBody.push(
+        ...segmentPrologueLines(),
+        ...loads,
+        ...emitObjectFree(host, traced, observers, "%sg.own"),
+        ...segmentTeardownLines(ownType, (prefix) =>
+          refMembers.flatMap((m, i) => release(prefix, m, i)),
+        ),
+      );
+    else freeBody.push(...emitObjectFree(host, traced, observers));
     defs.push(
       ...releaseBody(
         host,
@@ -1740,9 +2135,11 @@ export function emitRecordShapes(
         traced,
         freeBody,
         "",
-        refMembers.some((member) => needsBoundedRelease(member.type)),
+        bounded,
         false,
         chained,
+        segmented,
+        shape.freezable === true,
       ),
       ``,
     );

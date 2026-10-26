@@ -184,9 +184,11 @@ static void iterate_while_mutating(void) {
 
 static void modes(void) {
   ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
-  for (int i = 1; i <= 4; i++) scr_map_set_f64_f64(map, i, i);
-  assert(!map->ndense && !map->nbuckets); /* still a linear scan */
-  scr_map_set_f64_f64(map, 5, 5);
+  scr_map_set_f64_f64(map, 1, 1);
+  assert(!map->ndense && !map->nbuckets); /* one key: still a linear scan */
+  scr_map_set_f64_f64(map, 2, 2);
+  assert(map->ndense >= 16 && !map->nbuckets); /* from the second small integer key */
+  for (int i = 3; i <= 5; i++) scr_map_set_f64_f64(map, i, i);
   assert(map->ndense >= 16 && !map->nbuckets);
   for (int i = 6; i < 1000; i++) scr_map_set_f64_f64(map, i, i);
   assert(map->ndense >= 1000 && map->ndense <= 1000 + 1000 / 4 + 64); /* near the largest key */
@@ -242,17 +244,17 @@ static void modes(void) {
   scr_map_release(set);
 }
 
-/* Small maps keep compact storage: the entries array starts with one slot
- * and grows to four, and maps of up to 8 entries keep no bucket table. */
+/* Small maps keep compact storage: the entries array grows through 1, 2,
+ * 3, 4, 6 and 8 slots, and maps of up to 8 entries keep no bucket table. */
 static void small_storage(void) {
   ScrMap *map = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_F64, NULL);
   assert(!map->entries && map->ecap == 0);
-  scr_map_set_f64_f64(map, 100000, 1);
-  assert(map->ecap == 1);
-  scr_map_set_f64_f64(map, 200000, 2);
-  assert(map->ecap == 4);
-  for (int i = 3; i <= 8; i++) scr_map_set_f64_f64(map, i * 100000.0, i);
-  assert(map->ecap == 8 && !map->nbuckets && !map->ndense);
+  static const uint32_t caps[] = {1, 2, 3, 4, 6, 6, 8, 8};
+  for (int i = 1; i <= 8; i++) {
+    scr_map_set_f64_f64(map, i * 100000.0, i);
+    assert(map->ecap == caps[i - 1]);
+  }
+  assert(!map->nbuckets && !map->ndense);
   double out;
   for (int i = 1; i <= 8; i++) assert(scr_map_get_f64_f64(map, i * 100000.0, &out) && out == i);
   assert(!scr_map_has_f64(map, 50000) && !scr_map_has_f64(map, 0));

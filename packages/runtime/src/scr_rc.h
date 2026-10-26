@@ -8,13 +8,27 @@
 
 /* ── reference counts ─────────────────────────────────────────────────
  * Every heap object's first member is its `size_t rc` word. On 64-bit
- * targets the reference count is the word's low 32 bits: an emitted
- * instance of a class in a program-rooted hierarchy keeps its class id (its
- * class's preorder number + 1) in the high 32 bits (llvm/classes.ts
- * classIdRcWord), and no other object's count reaches 2^32. A count of SCR_RC_IMMORTAL marks
- * an immortal object; for every object but those class instances the whole
- * word is then SIZE_MAX. Code that reads or writes the count of an object of
- * any kind goes through SCR_RC_COUNT. */
+ * targets the word is
+ *
+ *     bits  0-31  the reference count (SCR_RC_COUNT)
+ *     bit  62     F: a frozen record (SCR_RC_FROZEN)
+ *     bit  63     P: a program-lifetime record (llvm/classes.ts
+ *                 programLifetimeRc)
+ *     bits 32-61  the layout id (scr_rc_layout_id)
+ *
+ * and no object's count reaches 2^32. The layout id names the object's
+ * layout in the single object model (scr_layout.h); 0 means the object
+ * never needed one. An emitted instance of a class in a program-rooted
+ * hierarchy keeps its class id (its class's preorder number + 1) there
+ * (llvm/classes.ts classIdRcWord): a class id is the layout id of its
+ * class's canonical layout. A count of SCR_RC_IMMORTAL marks an immortal
+ * object. Publication and the runtime's own immortal objects write the
+ * whole word as SIZE_MAX when the object has no layout id, and write only
+ * the count when it has one, so an immortal object keeps its layout id
+ * (scr_rc_immortal tests the count; a high half of all ones reads as no
+ * layout id). Code that reads or writes the count of an object of any
+ * kind goes through SCR_RC_COUNT; code that may see an object with a layout
+ * id tests immortality with scr_rc_immortal, never against SIZE_MAX. */
 #if SIZE_MAX > UINT32_MAX
 typedef uint32_t ScrRcCount;
 #ifdef __BYTE_ORDER__
@@ -27,18 +41,76 @@ typedef size_t ScrRcCount;
 #define SCR_RC_IMMORTAL ((ScrRcCount)-1)
 #define SCR_RC_COUNT(obj) (*(ScrRcCount *)(obj))
 
-/* The class id in the high half of `obj`'s rc word, or 0 for an object
- * without one: the high half of any other object's word is 0, or 0xffffffff
- * (immortal) or 0x80000000 (program-lifetime), and a class id is never one of
- * these. */
-static inline uint32_t scr_rc_class_id(const void *obj) {
+/* Compact class instances (64-bit targets; llvm/classes.ts
+ * LlClassMeta.compact): the instances of a ProgramLifetime hierarchy count
+ * nothing, so their header is one 32-bit word instead of the rc word, and
+ * their fields start at offset 4. The word is SCR_RC_COMPACT_TAG, the class
+ * id (0 outside a hierarchy) in the low 28 bits, and SCR_RC_COMPACT_PUBLISHED
+ * once publication marks it. No count reaches the tag, so a word read through
+ * SCR_RC_COUNT tells the two apart, and a count or word of
+ * SCR_RC_PUBLISHED_MIN and up is published for every object. Only emitted
+ * code holds compact instances in typed slots; the runtime reaches them
+ * through their emitted adapters, publication walkers (SCR_PUB_COMPACT) and
+ * the published test. */
+#define SCR_RC_COMPACT_TAG UINT32_C(0x70000000)
+#define SCR_RC_COMPACT_PUBLISHED UINT32_C(0x80000000)
+#define SCR_RC_COMPACT_ID_MASK UINT32_C(0x0fffffff)
+#define SCR_RC_PUBLISHED_MIN ((ScrRcCount)UINT32_C(0xf0000000))
+/* Whether `obj`, an object of any kind, is published (immortal). */
+#define SCR_RC_PUBLISHED(obj) (SCR_RC_COUNT(obj) >= SCR_RC_PUBLISHED_MIN)
+
+/* Frozen records (Object.freeze). The rc word of a record a program may
+ * freeze (llvm/shapes.ts) carries SCR_RC_FROZEN beside its count, and that
+ * record's emitted release ignores the bit. On 64-bit targets the bit is in
+ * the high half, outside the count; on 32-bit targets it is the count's bit
+ * 30, which SCR_RC_REFS masks. An immortal word has the bit set too; it
+ * does not read as frozen. */
+#if SIZE_MAX > UINT32_MAX
+#define SCR_RC_FROZEN ((size_t)1 << 62)
+#define SCR_RC_REFS(obj) SCR_RC_COUNT(obj)
+#else
+#define SCR_RC_FROZEN ((size_t)1 << 30)
+#define SCR_RC_REFS(obj) (SCR_RC_COUNT(obj) == SCR_RC_IMMORTAL ? SCR_RC_IMMORTAL : SCR_RC_COUNT(obj) & ~SCR_RC_FROZEN)
+#endif
+/* Whether `obj`, an object whose rc word is a count (not a compact class
+ * instance), is immortal: its count is SCR_RC_IMMORTAL, whatever its high
+ * half holds. */
+static inline bool scr_rc_immortal(const void *obj) {
+  return SCR_RC_COUNT(obj) == SCR_RC_IMMORTAL;
+}
+
+static inline bool scr_rc_frozen(const void *obj) {
+  return !scr_rc_immortal(obj) && (*(const size_t *)obj & SCR_RC_FROZEN) != 0;
+}
+
+/* The high half of the rc word on 64-bit targets: the program-lifetime
+ * bit, the frozen bit and the layout id (see the layout above). 32-bit
+ * targets have no high half; their objects keep a layout id elsewhere when
+ * they need one (scr_layout.h). */
+#define SCR_RC_HIGH_LIFETIME UINT32_C(0x80000000)
+#define SCR_RC_HIGH_FROZEN UINT32_C(0x40000000)
+#define SCR_RC_LAYOUT_ID_MASK UINT32_C(0x3fffffff)
+/* Layout ids are below this bound: 2^30 - 1 is the id bits of an all-ones
+ * high half, which reads as no id. */
+#define SCR_RC_LAYOUT_ID_LIMIT SCR_RC_LAYOUT_ID_MASK
+
+/* The layout id in the high half of `obj`'s rc word, or 0 for an object
+ * without one. The whole-word immortal encoding (SIZE_MAX) has no id. */
+static inline uint32_t scr_rc_layout_id(const void *obj) {
 #if SIZE_MAX > UINT32_MAX
   uint32_t high = (uint32_t)(*(const size_t *)obj >> 32);
-  return high == UINT32_MAX || high == UINT32_C(0x80000000) ? 0 : high;
+  return high == UINT32_MAX ? 0 : high & SCR_RC_LAYOUT_ID_MASK;
 #else
   (void)obj;
   return 0;
 #endif
+}
+
+/* The class id in the high half of `obj`'s rc word, or 0 for an object
+ * without one. A class id is the layout id of the class's canonical
+ * layout, and no object of any other kind has a layout id yet. */
+static inline uint32_t scr_rc_class_id(const void *obj) {
+  return scr_rc_layout_id(obj);
 }
 
 /* ── cycle collection (scr_cycle.c) ───────────────────────────────────
@@ -123,6 +195,11 @@ typedef struct ScrCycType {
    * Emitted allocation paths read it and take the slow path while it is 0. */
   uint32_t id;
 } ScrCycType;
+/* The trace of a type that holds nothing cycle-capable: it visits nothing.
+ * Emitted classes whose fields hold no cycle-capable value but whose
+ * hierarchy is traced name it (llvm/classes.ts); their objects are
+ * allocated with `buf` SCR_CYC_ACYCLIC. */
+void scr_cyc_no_children(void *obj, ScrTraceVisit visit, void *ctx);
 /* Runtime families' kinds. Emitted descriptors count from
  * SCR_CYC_KIND_EMITTED (llvm/alloc.ts FIRST_EMITTED_CYC_KIND). */
 enum {
@@ -151,7 +228,7 @@ enum {
  * collector color (SCR_CYC_*) and generation (SCR_CYC_NURSERY..SCR_CYC_OLD,
  * the walk filter), and `buf`: SCR_CYC_BUFFERED_BIT while the object sits in
  * its generation's candidate buffer, with its position there below it (O(1)
- * removal when rc hits 0). */
+ * removal when rc hits 0), or SCR_CYC_ACYCLIC. */
 typedef struct ScrCycHdr {
   uint16_t id;
   uint8_t color;
@@ -159,13 +236,25 @@ typedef struct ScrCycHdr {
   uint32_t buf;
 } ScrCycHdr;
 #define SCR_CYC_BUFFERED_BIT 0x80000000u
+/* `buf` of an object whose type's trace is scr_cyc_no_children: it has no
+ * cycle-capable children, so it is never on a cycle and never a candidate.
+ * Such a type still carries the header when it shares a hierarchy with
+ * cycle-capable classes (headers are uniform per hierarchy). The value has
+ * the buffered bit set, so a release that leaves the object alive returns
+ * at the buffered test and makes no call; scr_cyc_is_buffered is false for
+ * it. No buffer position reaches it (scr_cyc_grow caps the buffers well
+ * below 2^31 entries). */
+#define SCR_CYC_ACYCLIC 0xffffffffu
 
 /* This layout is an ABI, not an implementation detail. The emitted
- * allocation stores the id and zeroes the rest; every emitted release of a
+ * allocation stores the id and zeroes the rest (`buf` SCR_CYC_ACYCLIC for a
+ * class whose trace is scr_cyc_no_children); every emitted release of a
  * headered object (llvm/shapes.ts cycleRootLines, used by the record, class
  * and inline RC helpers) mirrors scr_cyc_on_release's early return by
- * testing the sign of `buf` as an i32 at obj-4, and the emitted inline free
- * reads the generation as an i8 at obj-5. Hence the assertions. */
+ * testing the sign of `buf` as an i32 at obj-4, the emitted death mirrors
+ * scr_cyc_on_dead's by testing `buf` below -1 (cycleDeadLines), and the
+ * emitted inline free reads the generation as an i8 at obj-5. Hence the
+ * assertions. */
 _Static_assert(sizeof(ScrCycHdr) == 8, "LLVM backend expects an 8-byte cycle header");
 _Static_assert(offsetof(ScrCycHdr, id) == 0 && sizeof(((ScrCycHdr *)0)->id) == 2,
                "the emitted allocation stores the registry id as an i16 at the block start");
@@ -197,6 +286,11 @@ static inline void scr_cyc_set_color(ScrCycHdr *h, unsigned color) { h->color = 
 static inline unsigned scr_cyc_gen(const ScrCycHdr *h) { return h->gen; }
 static inline void scr_cyc_set_gen(ScrCycHdr *h, unsigned gen) { h->gen = (uint8_t)gen; }
 static inline bool scr_cyc_is_buffered(const ScrCycHdr *h) {
+  return (h->buf & SCR_CYC_BUFFERED_BIT) != 0 && h->buf != SCR_CYC_ACYCLIC;
+}
+/* A release that leaves the object alive has nothing to buffer: it is a
+ * candidate already, or it is never one (SCR_CYC_ACYCLIC). */
+static inline bool scr_cyc_release_done(const ScrCycHdr *h) {
   return (h->buf & SCR_CYC_BUFFERED_BIT) != 0;
 }
 static inline uint32_t scr_cyc_buf_index(const ScrCycHdr *h) {
@@ -268,11 +362,39 @@ void scr_cyc_free(void *obj); /* frees the block, header included */
 
 void *scr_mem_realloc(void *p, size_t n);
 void *scr_rt_calloc(size_t n); /* emitted-code entry points */
+#if defined(__linux__) && SCR_SMALL_ALLOC
+/* The program-lifetime region (scr_alloc.c): compact class instances of
+ * programs built for Linux without sanitizers (llvm/emitter.ts
+ * lowRegionTarget), which are never freed, at 8-byte aligned addresses below
+ * 32 GiB, so their fields can hold address >> 3 in 32 bits (0 is NULL).
+ * scr_plr_init reserves it before compiled code runs; scr_plr_alloc returns
+ * zeroed memory. */
+void scr_plr_init(void);
+void *scr_plr_alloc(size_t n);
+/* The calling script thread's part of the region: emitted allocation fast
+ * paths take [next, limit) in 8-byte multiples and call scr_plr_alloc when
+ * it is exhausted (llvm/classes.ts addresses both fields). */
+typedef struct ScrPlrChunk {
+  char *next;
+  char *limit;
+} ScrPlrChunk;
+#if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
+extern _Thread_local ScrPlrChunk scr_plr_chunk;
+#else
+extern ScrPlrChunk scr_plr_chunk;
+#endif
+_Static_assert(offsetof(ScrPlrChunk, next) == 0 && offsetof(ScrPlrChunk, limit) == 8,
+               "llvm/classes.ts addresses ScrPlrChunk fields at these offsets");
+#endif
 void scr_rt_free(void *p);
 /* Asks the allocator's pre-fault helper (scr_alloc.c) to fault the pages
  * of [lo, hi), aligned to 256 KiB, in ahead of use; builds without the
  * helper ignore it. */
 void scr_mem_prefault(void *lo, void *hi);
+/* Returns the pages of [lo, hi) (page aligned), which hold no data, to the
+ * system (Linux): pre-fault requests for them are dropped first, so they
+ * stay returned. Other builds ignore it. */
+void scr_mem_release_ahead(void *lo, void *hi);
 /* Reorders ptrs, distinct pointers `offset` bytes into blocks that are
  * about to be freed in array order, so that the free lists hand the blocks
  * back in ascending address order (scr_alloc.c). Builds without the
@@ -484,6 +606,14 @@ _Static_assert(sizeof(((ScrCycHdr *)0)->gen) == 1 && SCR_CYC_OLD == 2,
  * depth; deeper objects wait until the outer disposal drains the worklist.
  * The callback owns the object and must release its children and free it. */
 void scr_rc_destroy(void *obj, void (*destroy)(void *));
+/* scr_rc_destroy for an emitted teardown that keeps the blocks it frees in
+ * a segment, linked through their first words, instead of freeing them onto
+ * the free list (llvm/shapes.ts): destroy_seg tears obj down, appending its
+ * blocks after the segment's last link `tail`, and returns the new last
+ * link, which this returns. A disposal past the depth budget is queued with
+ * `destroy`, which frees its own blocks, and leaves `tail` as it was. */
+void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
+                         void (*destroy)(void *), void *tail);
 
 /* RC hooks for cycle-headered types. on_release: rc was decremented and
  * stayed above zero — buffer the object as a possible cycle root (may run
@@ -586,7 +716,7 @@ static inline bool scr_cyc_append(ScrCycHdr *h, void *obj) {
  * Most releases of long-lived containers take the first early return. */
 static inline void scr_cyc_released(void *obj) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
-  if (scr_cyc_is_buffered(h)) return;
+  if (scr_cyc_release_done(h)) return;
 #if SCR_CYC_INLINE_BUFFERING
   if (scr_cyc_append(h, obj)) return;
 #endif
@@ -601,6 +731,18 @@ static inline void scr_cyc_dead(void *obj) {
  * after and wants nothing reclaimable left), and it costs a walk of the
  * live heap — do not put it on a per-turn path. */
 void scr_collect_cycles(void);
+void scr_collect_cycles_phase(void);
+/* Sets the growth cap SCR_CYCLE_GROWTH_CAP sets (scr_cycle.c), for a program
+ * that knows its own memory profile; the environment variable takes
+ * precedence. Call it before the program allocates much. */
+void scr_cyc_set_growth_cap(long cap);
+/* Sets the nursery trigger SCR_CYCLE_THRESHOLD sets (scr_cycle.c): the
+ * number of new candidates at which the release path runs a pass, for a
+ * program that knows its own collection profile. The environment variable
+ * takes precedence; 0 restores the default, which starts at 256 and adapts
+ * to the program. The trigger re-arms with it at the end of the next pass.
+ * Call it before the program allocates much. */
+void scr_cyc_set_nursery_threshold(long threshold);
 void scr_cyc_context_cleanup(void);
 
 /* One pass on the normal generational schedule, for callers that reach a
@@ -636,6 +778,10 @@ enum {
    * the high half (SCR_RC_COUNT). The mark, and a refusal's restore, write
    * only the count. */
   SCR_PUB_CLASS_ID = 0x100,
+  /* Or'ed into a kind: a compact class instance (SCR_RC_COMPACT_TAG). The
+   * mark sets SCR_RC_COMPACT_PUBLISHED; a refusal's restore writes the
+   * logged word back. */
+  SCR_PUB_COMPACT = 0x200,
 };
 void scr_publish(void *root, ScrPubFn fn);
 void scr_pub_push(ScrPub *ctx, void *v, ScrPubFn fn);
@@ -648,12 +794,14 @@ void scr_pub_dyn_fn(void *v, ScrPub *ctx);
 void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem);
 void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val);
 void scr_publish_refuse(const char *message);
-/* Writes into published objects (emitted guards): Node's frozen-object
- * TypeErrors. scr_throw_published_array answers false (and throws nothing)
- * when Node's operation would not write the array. */
+/* Writes into published or frozen objects (emitted guards): Node's
+ * frozen-object TypeErrors. The array guards answer false (and throw
+ * nothing) when Node's operation would not write the array; their ops are
+ * scr_array_frozen_error's (scr_array.h). */
 struct ScrArr;
 SCR_COLD void scr_throw_published_field(const char *prop, const char *owner);
 bool scr_throw_published_array(int op, const struct ScrArr *a, double index, double n);
+bool scr_throw_published_array_range(int op, const struct ScrArr *a, double x, double y, double z);
 SCR_COLD void scr_throw_published_collection(bool set);
 
 /* Young-in nursery (scr_cycle.c built with SCR_YIN, linked by programs

@@ -1,4 +1,5 @@
 /* Array literals. */
+import { indexedUnionArms, lowerIndexedUnionToArray } from "../indexed-unions.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, neverTaintedJsType } from "../lowerer.js";
 import { notIterableSpelling } from "../iterable-spelling.js";
@@ -28,10 +29,12 @@ import { lowerTernary } from "./narrowing.js";
 import { lowerCollectionSpread } from "../containers/collection-methods.js";
 import { strCharsCall } from "../containers/array-construction.js";
 import { generatorDrain } from "../iterator-adapters.js";
+import { isMimeParamsIterable } from "../builtins/mime.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
-import { varRef } from "../../../ir/build.js";
-import { arrayValueStore } from "../array-values.js";
+import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import { arrayValueStore, primitiveElement } from "../array-values.js";
 import { classGeneratorIterable } from "../class-iterables.js";
+import { iteratorCanStep } from "../iterator-consumption.js";
 
 /** JavaScript: whether `expr` is or holds an existing checked-dynamic
  * object — a binding stored as a dyn value whose checker type is an
@@ -58,6 +61,41 @@ export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean
   return false;
 }
 
+/** The literal is the source of an array destructuring: an assignment's
+ * right side or a declaration's initializer under an array pattern. */
+function isPatternSource(expr: ts.ArrayLiteralExpression): boolean {
+  let node: ts.Node = expr;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (ts.isBinaryExpression(parent))
+    return (
+      parent.right === node &&
+      parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isArrayLiteralExpression(parent.left)
+    );
+  return (
+    ts.isVariableDeclaration(parent) &&
+    parent.initializer === node &&
+    ts.isArrayBindingPattern(parent.name)
+  );
+}
+
+/** An empty TypeScript literal whose own type is `never[]`: tsc's type for
+ * `[]` with no contextual array type (`return []` in an async function,
+ * whose contextual type is `string[] | PromiseLike<string[]>`; `{ files: [] }`).
+ * It holds no element, as the empty tuple does, so it builds as the
+ * unit-only element array, and an array slot receives it through the
+ * checked empty-array lift. never's f64 element mapping would make it a
+ * `number[]`, which no `string[]` slot accepts. */
+function emptyNeverLiteral(lowerer: Lowerer, expr: ts.ArrayLiteralExpression): boolean {
+  if (expr.elements.nodes.length > 0 || isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
+  const own = lowerer.typeOf(expr);
+  return (
+    lowerer.checker.isArrayType(own) &&
+    (lowerer.checker.getTypeArguments(own as ts.TypeReference)[0]!.flags & ts.TypeFlags.Never) !== 0
+  );
+}
+
 /** `[a, b, c]`. The element type comes from the contextual type when tsc
  * has one (`const a: number[] = []`, arguments, nested literals) and from
  * the literal's own inferred type otherwise. A bare `[]` with no context
@@ -66,6 +104,13 @@ export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean
  * tsc's API doesn't surface it (ternary arms under an array context —
  * tsc accepts the arm covariantly, but a tagged element representation
  * must be BUILT as the slot's element type). */
+/** The checker type of `node` admits undefined. */
+function mayHoldUndefined(lowerer: Lowerer, node: ts.Expression): boolean {
+  const type = lowerer.typeOf(node);
+  const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  return parts.some((part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0);
+}
+
 export function lowerArrayLiteral(
   lowerer: Lowerer,
   expr: ts.ArrayLiteralExpression,
@@ -80,6 +125,8 @@ export function lowerArrayLiteral(
     ? lowerer.typeOf(expr)
     : (ctxType ?? lowerer.typeOf(expr));
   let mapped = expected ?? lowerer.mapTypeOf(tsType);
+  if (expected === undefined && ctxType === undefined && emptyNeverLiteral(lowerer, expr))
+    mapped = arrayOf(unitOnlyUnion(lowerer.unions));
   // Inferred JavaScript arrays can contain unrelated constructors with
   // structurally equal checker types. Their native class ABIs still differ.
   if (
@@ -107,6 +154,22 @@ export function lowerArrayLiteral(
     )
       mapped = inferred;
   }
+  // A destructuring pattern's implied type ends in a rest element
+  // (`[h, ...t] = [1, 2, 3]` supplies `[number, ...number[]]`), which maps
+  // to an array. The literal keeps its own fixed tuple layout, read by
+  // position like any tuple source.
+  if (
+    expected === undefined &&
+    ctxType &&
+    isPatternSource(expr) &&
+    lowerer.checker.isTupleType(ctxType) &&
+    (
+      (ctxType as ts.TupleTypeReference).getTarget() as ts.TupleType | undefined
+    )?.elementFlags?.some((flag) => (flag & ts.ElementFlags.Rest) !== 0)
+  ) {
+    const own = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (own?.kind === "record" && lowerer.shapes.get(own.shapeId)?.tuple) mapped = own;
+  }
   // A JS literal whose OWN inferred type is never-tainted
   // (neverTaintedJsType — the evolving `const gb = []`, the mixed
   // command tuple `['pwd', []]`) carries no element information: route
@@ -131,11 +194,14 @@ export function lowerArrayLiteral(
   // the literal's own inferred type is the real tuple.
   if (!mapped || mapped.kind === "union" || mapped.kind === "dyn") {
     const ctxUnion = mapped?.kind === "union" ? mapped : null;
+    const ctxUnmapped = mapped === null;
     mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
     // The never-tainted own type carries no element information here
     // either (the JS story above) — only a contextual union's single
     // array arm below may still supply a static home.
     if (neverTaintedOwnJs) mapped = null;
+    if (ctxUnmapped && emptyNeverLiteral(lowerer, expr))
+      mapped = arrayOf(unitOnlyUnion(lowerer.unions));
     // An EMPTY literal in a union slot (`const t: string[] | undefined =
     // []`, the `[]` default argument against `string[] | undefined`) has
     // no useful own type — tsc infers `never[]`, whose f64-element
@@ -183,6 +249,21 @@ export function lowerArrayLiteral(
         );
         if (arms.length === 1) mapped = arms[0]!;
       }
+    }
+    // A NON-EMPTY literal whose own type is an array, under a union with
+    // exactly one array arm and no tuple arm (`[1, { n: true }]` in a
+    // `Json[]` arm of a recursive `Json`): the checker types each element
+    // from the arm, so its object literals lower as the arm's elements,
+    // and the literal's own element type (`number | { n: boolean }`)
+    // cannot hold them. Build it as the arm; its value only flows into the
+    // union slot.
+    if (ctxUnion && expr.elements.nodes.length > 0 && mapped?.kind === "array") {
+      const def = lowerer.unions.get(ctxUnion.unionId);
+      const arrayArms = def?.arms.filter((a) => a.kind === "array") ?? [];
+      const tupleArms =
+        def?.arms.filter((a) => a.kind === "record" && !!lowerer.shapes.get(a.shapeId)?.tuple) ??
+        [];
+      if (arrayArms.length === 1 && tupleArms.length === 0) mapped = arrayArms[0]!;
     }
   }
   // A Date's toJSON() element keeps its null in a literal with no declared
@@ -410,13 +491,21 @@ export function lowerArrayLiteral(
       if (src.type.kind === "object") {
         const drained = lowerer.classIteratorDrainCall(src, locOf(el), type.elem);
         if (drained) src = drained;
+        // In JavaScript an iterable class whose inferred iterator shape has
+        // no static protocol spreads through the runtime's iterator walk.
+        else if (
+          isJsSourceFile(ts.getSourceFileOfNode(el)) &&
+          lowerer.classes.get(src.type.className) &&
+          lowerer.findMethodOn(lowerer.classes.get(src.type.className)!, "sym:iterator")
+        )
+          src = lowerer.coerceInto(el.expression, src, DYN);
       }
       // `[...s]` on a STRING spreads its code-point characters (the
       // string iterator's walk — astral chars whole) through the same
       // interned helper as Array.from(s); the result rides the array
       // machinery below like any string[] source.
       if (src.type.kind === "string") {
-        src = strCharsCall(lowerer, src, locOf(el));
+        src = strCharsCall(src, locOf(el));
       }
       // `[...typedArray]`: represented typed arrays are dense numeric
       // iterables, so drain their elements into the fresh number[] that
@@ -433,19 +522,31 @@ export function lowerArrayLiteral(
           loc: locOf(el),
         };
       }
+      // A union of typed arrays and number arrays (indexed-unions.ts):
+      // each arm's elements as a number[].
+      const indexedArms = indexedUnionArms(lowerer, src.type);
+      if (indexedArms) src = lowerIndexedUnionToArray(lowerer, src, indexedArms, locOf(el));
       // `[...obj]` over a class whose [Symbol.iterator] is a generator
       // method spreads the generator that method returns.
       src = classGeneratorIterable(lowerer, src) ?? src;
       // `[...it]` over a generator (or an iterator adapted into one):
       // drain it once, in order, into a fresh element array.
       if (src.type.kind === "generator") {
-        const drained = generatorDrain(lowerer, src, type.elem, locOf(el));
+        const drained = generatorDrain(
+          lowerer,
+          src,
+          type.elem,
+          locOf(el),
+          type.optionalElements === true,
+        );
         if (drained) src = drained;
       }
       // `[...sp]` and `[...sp.entries()]` over a URLSearchParams: its
       // checked-dynamic view iterates the live pair list, and the drained
       // [name, value] pairs convert to the literal's tuple elements.
-      const searchParamsSource = isSearchParamsIterable(lowerer, el.expression);
+      const searchParamsSource =
+        isSearchParamsIterable(lowerer, el.expression) ||
+        isMimeParamsIterable(lowerer, el.expression);
       if (src.type.kind === "searchParams") src = lowerer.coerceInto(el.expression, src, DYN);
       // A native checked iterable can supply scalar elements even when
       // the checker inferred a typed array from its producer. Drain once
@@ -530,6 +631,9 @@ export function lowerArrayLiteral(
     let lowered: IrExpr;
     const directOptionalCandidate =
       runtimeOptionalElements.has(i) ||
+      // An element that can be undefined in a `(T | undefined)[]`
+      // (primitiveElement) is stored as a present undefined.
+      (primitiveElement(type.elem) && mayHoldUndefined(lowerer, el)) ||
       ts.isElementAccessExpression(el) ||
       (ts.isCallExpression(el) &&
         ts.isPropertyAccessExpression(el.expression) &&
@@ -607,7 +711,8 @@ export function lowerArrayLiteral(
       continue;
     }
     let value = el;
-    if (!typeEquals(value.type, type.elem)) {
+    // An undefined element is stored directly (arrayValueStore).
+    if (!typeEquals(value.type, type.elem) && value.type.kind !== "undefinedT") {
       const temp = lowerer.declareHiddenLocal("%arrayValue", value.type);
       body.push({ kind: "varDecl", localId: temp.id, init: value, loc });
       value = varRef(temp.id, temp.type, loc);
@@ -694,13 +799,17 @@ function lowerTupleSpreadLiteral(
   return { kind: "seqExpr", stmts, result: { kind: "recordLit", fields, type, loc }, type, loc };
 }
 
-/** Drain using checked dispatch so native class and generator iterators keep their methods.
- * `spell` is the TypeError message for a source that is not iterable
- * (notIterableSpelling). */
+/** Drain a checked-dynamic iterable: `next` is read once when the iterator
+ * opens, as JS keeps it in the iterator record, so a `next` the iterator
+ * assigns while it runs is not called. Runtime iterators step natively, and
+ * other iterators call the `next` read (class methods keep their emitted
+ * dispatch). `spell` is the TypeError message for a source that is not
+ * iterable (notIterableSpelling). */
 function checkedIteratorPack(lowerer: Lowerer, source: IrExpr, spell: string, loc: SrcLoc): IrExpr {
   const name = "%iterator.pack.checked";
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     const ref = (id: string): IrExpr => ({ kind: "varRef", localId: id, type: DYN, loc });
+    const flag = (id: string): IrExpr => ({ kind: "varRef", localId: id, type: BOOL, loc });
     const property = (key: string): IrExpr => ({
       kind: "dynKeyGet",
       value: ref("step"),
@@ -708,6 +817,7 @@ function checkedIteratorPack(lowerer: Lowerer, source: IrExpr, spell: string, lo
       type: DYN,
       loc,
     });
+    const finished: IrStmt = { kind: "return", value: ref("result"), loc };
     lowerer.liftedFns.push({
       name,
       params: [
@@ -716,12 +826,13 @@ function checkedIteratorPack(lowerer: Lowerer, source: IrExpr, spell: string, lo
       ],
       returnType: DYN,
       locals: [
-        ...["source", "iterator", "step", "result"].map((id) => ({
+        ...["source", "iterator", "next", "step", "value", "result"].map((id) => ({
           id,
           name: id,
           type: DYN,
           mutable: id !== "source",
         })),
+        { id: "fast", name: "fast", type: BOOL, mutable: false },
         { id: "spell", name: "spell", type: STRING, mutable: false },
       ],
       body: [
@@ -739,6 +850,24 @@ function checkedIteratorPack(lowerer: Lowerer, source: IrExpr, spell: string, lo
         },
         {
           kind: "varDecl",
+          localId: "next",
+          init: {
+            kind: "dynKeyGet",
+            value: ref("iterator"),
+            key: { kind: "strLit", value: "next", type: STRING, loc },
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: "fast",
+          init: iteratorCanStep(ref("iterator"), ref("next"), loc),
+          loc,
+        },
+        {
+          kind: "varDecl",
           localId: "result",
           init: { kind: "dynArrLit", elems: [], type: DYN, loc },
           loc,
@@ -747,25 +876,77 @@ function checkedIteratorPack(lowerer: Lowerer, source: IrExpr, spell: string, lo
           kind: "while",
           cond: { kind: "boolLit", value: true, type: BOOL, loc },
           body: [
-            {
-              kind: "varDecl",
-              localId: "step",
-              init: {
-                kind: "dynInvoke",
-                recv: ref("iterator"),
-                method: "next",
-                calleeName: "iterator.next",
-                args: [],
-                type: DYN,
-                loc,
-              },
-              loc,
-            },
+            // Declared before the branches, which each assign it: a local
+            // declared in a branch is released when the branch ends.
+            { kind: "varDecl", localId: "value", init: dynUndefinedExpr(loc), loc },
             {
               kind: "if",
-              cond: { kind: "dynTest", test: "truthy", value: property("done"), type: BOOL, loc },
-              then: [{ kind: "return", value: ref("result"), loc }],
-              else_: null,
+              cond: flag("fast"),
+              then: [
+                {
+                  kind: "assign",
+                  localId: "value",
+                  value: {
+                    kind: "libCall",
+                    fn: "dyn.iteratorStep",
+                    args: [ref("iterator")],
+                    type: DYN,
+                    loc,
+                  },
+                  loc,
+                },
+                {
+                  kind: "if",
+                  cond: {
+                    kind: "libCall",
+                    fn: "dyn.iteratorStepDone",
+                    args: [ref("iterator")],
+                    type: BOOL,
+                    loc,
+                  },
+                  then: [finished],
+                  else_: null,
+                  loc,
+                },
+              ],
+              else_: [
+                {
+                  kind: "varDecl",
+                  localId: "step",
+                  init: {
+                    kind: "libCall",
+                    fn: "dyn.iteratorResult",
+                    args: [
+                      {
+                        kind: "dynCall",
+                        callee: ref("next"),
+                        receiver: ref("iterator"),
+                        calleeName: "iterator.next",
+                        args: [],
+                        type: DYN,
+                        loc,
+                      },
+                    ],
+                    type: DYN,
+                    loc,
+                  },
+                  loc,
+                },
+                {
+                  kind: "if",
+                  cond: {
+                    kind: "dynTest",
+                    test: "truthy",
+                    value: property("done"),
+                    type: BOOL,
+                    loc,
+                  },
+                  then: [finished],
+                  else_: null,
+                  loc,
+                },
+                { kind: "assign", localId: "value", value: property("value"), loc },
+              ],
               loc,
             },
             {
@@ -773,7 +954,7 @@ function checkedIteratorPack(lowerer: Lowerer, source: IrExpr, spell: string, lo
               expr: {
                 kind: "libCall",
                 fn: "dyn.packPush",
-                args: [ref("result"), property("value")],
+                args: [ref("result"), ref("value")],
                 type: VOID,
                 loc,
               },

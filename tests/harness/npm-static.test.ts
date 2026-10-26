@@ -22,6 +22,9 @@ const fixturesRoot = join(repoRoot, "tests/fixtures");
 const pilotRoot = join(fixturesRoot, "npm-static");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
+/* Sanitized builds of the published Effect pilots alone take 290 to 330 s on a 16-vCPU host, most of it in
+ * the sanitized native link: near or past the suite's 300 s default. */
+const effectBuildTimeout = sanitize ? 900_000 : undefined;
 // Measured milliseconds per test on a CI runner (scripts/ci-test-costs.mjs).
 const testCosts = (
   JSON.parse(readFileSync(new URL("./npm-static-costs.json", import.meta.url), "utf8")) as {
@@ -420,13 +423,122 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     },
   );
 
+  test.each(["llvm"] as const)(
+    "a package probing for optional addons through createRequire resolves at run time (%s)",
+    async (backend) => {
+      const entry = join(pilotRoot, "addon-probe-cli.ts");
+      const { coverage } = analyze(entry, { npmStatic: "auto" });
+      expect(coverage.npmStatic).toEqual([{ package: "addon-probe", status: "static" }]);
+      expect(coverage.diagnostics).toHaveLength(0);
+      expect(
+        (coverage.runtimeFences ?? []).filter((f) => f.code === "SC2020").map((f) => f.message),
+      ).toEqual([
+        expect.stringContaining(
+          "createRequire's require with a computed specifier resolves at run time",
+        ),
+        expect.stringContaining(
+          "createRequire's require.resolve with a computed specifier resolves at run time",
+        ),
+        expect.stringContaining(
+          "createRequire's require.resolve with a computed specifier resolves at run time",
+        ),
+        expect.stringContaining(
+          "createRequire's require.resolve with a computed specifier resolves at run time",
+        ),
+      ]);
+      const outDir = join(cacheDir, "addon-probe", sanitize ? "san" : "plain", backend);
+      const result = await compile(entry, {
+        backend,
+        npmStatic: "auto",
+        sanitize,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [nodeRes, nativeRes] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(nativeRes.stdout.toString()).toBe(
+        "a/b absent,absent,unresolved\ncustom:other\nmissing after 1,missing after 2\n",
+      );
+      expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+      expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+      expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+    },
+  );
+
+  // Node would load the installed file, which the compiled program cannot:
+  // the require ends the program with the refusal instead of throwing, so
+  // the package's catch clause does not take its fallback.
   test.each([
     [
-      "computed specifier",
-      'const spec = "node:path"; const path = load(spec);',
-      "computed specifier",
+      "addon",
+      /^scriptc: native addon '.*[\\/]native[\\/]installed\.node' requires Node's addon runtime, which is unavailable in scriptc \[SC2020 at .*index\.js:\d+\]\n$/,
     ],
+    [
+      "module",
+      /^scriptc: createRequire's require of '.*[\\/]installed\.js' resolves to '.*[\\/]installed\.js', which is not part of the compiled program: the module graph is fixed at build time \[SC2020 at .*index\.js:\d+\]\n$/,
+    ],
+  ] as const)(
+    "a computed require of an installed %s ends the program with a refusal",
+    async (kind, stderr) => {
+      const entry = join(pilotRoot, "addon-probe-installed-cli.ts");
+      const outDir = join(cacheDir, "addon-probe-installed", sanitize ? "san" : "plain");
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: "auto",
+        sanitize,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const nativeRes = await runBinary(result.binaryPath, [kind]);
+      expect(nativeRes.stdout.toString()).toBe("before\n");
+      expect(comparableStderr(nativeRes.stderr).toString()).toMatch(stderr);
+      expect(nativeRes.exitCode).toBe(1);
+    },
+  );
+
+  test.each([
     ["escaped require", 'const alias = load; const path = alias("node:path");', "escapes"],
+    [
+      "computed resolve.paths request in a catch clause",
+      'try { load("node:path"); } catch { load.resolve.paths(String(1)); } const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "computed resolve.paths request in a function inside a try block",
+      'try { [1].map((n) => load.resolve.paths(String(n))); } catch {} const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "spread require arguments in a class field inside a try block",
+      'try { new (class { addon = load(...[String(1)]); })(); } catch {} const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "resolve.paths value outside a try block",
+      'const find = load.resolve.paths; const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "escaped require in a try block",
+      'try { const alias = load; alias("node:path"); } catch {} const path = load("node:path");',
+      "escapes",
+    ],
+    [
+      "computed resolve.paths request",
+      'const spec = "node:path"; load.resolve.paths(spec); const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "spread require arguments",
+      'const specs = ["node:path"]; load(...specs); const path = load("node:path");',
+      "outside a try block",
+    ],
     [
       "reassigned require",
       'let load = createLoader(import.meta.url); load = () => ({}); const path = load("node:path");',
@@ -518,6 +630,28 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("a word segmenter in a package constructs, and its segment() throws SC2020", async () => {
+    const entry = join(pilotRoot, "word-segments-cli.ts");
+    const { coverage } = analyze(entry, { npmStatic: "auto" });
+    expect(coverage.npmStatic).toEqual([{ package: "word-segments", status: "static" }]);
+    expect(coverage.diagnostics).toHaveLength(0);
+    const outDir = join(cacheDir, "word-segments", sanitize ? "san" : "plain");
+    const result = await compile(entry, {
+      backend: "llvm",
+      npmStatic: "auto",
+      sanitize,
+      outDir,
+      outPath: join(outDir, "program"),
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const nativeRes = await runBinary(result.binaryPath, []);
+    expect(nativeRes.stdout.toString()).toMatch(
+      /^SC2020: Intl\.Segmenter segmentation with granularity 'word' is not supported yet \[SC2020 at .*index\.js:1\]\n$/,
+    );
+    expect(nativeRes.exitCode).toBe(0);
   });
 
   test.each([
@@ -1119,6 +1253,18 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
+  test("package values cross at the members their declarations promise", async () => {
+    const entry = join(pilotRoot, "declared-members-cli.ts");
+    const binary = await buildStatic(entry, ["declared-members"]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+    expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
   test("the published Effect Function subpath initializes and runs statically", async () => {
     const entry = join(pilotRoot, "effect-function-cli.ts");
     const { coverage } = analyze(entry, { npmStatic: ["effect"] });
@@ -1135,34 +1281,74 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  test("the published Effect generator logs and completes statically", async () => {
-    const entry = join(pilotRoot, "effect-gen-cli.ts");
-    const binary = await buildStatic(entry, ["effect"]);
+  test(
+    "the published Effect generator logs and completes statically",
+    async () => {
+      const entry = join(pilotRoot, "effect-gen-cli.ts");
+      const binary = await buildStatic(entry, ["effect"]);
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(binary, []),
+      ]);
+      const log =
+        /^timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z level=INFO fiber=#0 message="Hello, world!"\n$/;
+      expect(reference.stdout.toString()).toMatch(log);
+      expect(native.stdout.toString()).toMatch(log);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+      expect(native.exitCode).toBe(0);
+    },
+    effectBuildTimeout,
+  );
+
+  test(
+    "the published Effect generator has deterministic native results",
+    async () => {
+      const entry = join(pilotRoot, "effect-gen-result-cli.ts");
+      const binary = await buildStatic(entry, ["effect"]);
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(binary, []),
+      ]);
+      expect(reference.stdout.toString()).toBe("Hello, world!\n42\n");
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+    },
+    effectBuildTimeout,
+  );
+
+  test("the published js-yaml loads, dumps and reports errors statically and matches Node", async () => {
+    const entry = join(pilotRoot, "js-yaml-cli.mjs");
+    const { coverage } = analyze(entry, { npmStatic: ["js-yaml"] });
+    expect(coverage.npmStatic).toEqual([{ package: "js-yaml", status: "static" }]);
+    expect(coverage.diagnostics).toHaveLength(0);
+    const binary = await buildStatic(entry, ["js-yaml"]);
     const [reference, native] = await Promise.all([
       runBinary(process.execPath, [entry]),
       runBinary(binary, []),
     ]);
-    const log =
-      /^timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z level=INFO fiber=#0 message="Hello, world!"\n$/;
-    expect(reference.stdout.toString()).toMatch(log);
-    expect(native.stdout.toString()).toMatch(log);
+    expect(native.stdout.toString()).toBe(reference.stdout.toString());
     expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
     expect(native.exitCode).toBe(reference.exitCode);
     expect(native.exitCode).toBe(0);
-  });
+  }, 300_000);
 
-  test("the published Effect generator has deterministic native results", async () => {
-    const entry = join(pilotRoot, "effect-gen-result-cli.ts");
-    const binary = await buildStatic(entry, ["effect"]);
+  test("the published smol-toml parses and stringifies statically and matches Node", async () => {
+    const entry = join(pilotRoot, "smol-toml-cli.mjs");
+    const { coverage } = analyze(entry, { npmStatic: ["smol-toml"] });
+    expect(coverage.npmStatic).toEqual([{ package: "smol-toml", status: "static" }]);
+    expect(coverage.diagnostics).toHaveLength(0);
+    const binary = await buildStatic(entry, ["smol-toml"]);
     const [reference, native] = await Promise.all([
       runBinary(process.execPath, [entry]),
       runBinary(binary, []),
     ]);
-    expect(reference.stdout.toString()).toBe("Hello, world!\n42\n");
-    expect(native.stdout).toEqual(reference.stdout);
+    expect(native.stdout.toString()).toBe(reference.stdout.toString());
     expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
     expect(native.exitCode).toBe(reference.exitCode);
-  });
+    expect(native.exitCode).toBe(0);
+  }, 300_000);
 
   test("inferred variadic factories preserve checked callable results", async () => {
     const entry = join(pilotRoot, "variadic-factory-cli.ts");
@@ -1444,6 +1630,24 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test("bundled chunk 2595-bundled-chunk-emitter builds its emitters through require bindings", async () => {
     await expectNodeParity(join(fixturesRoot, "npm/cases/2595-bundled-chunk-emitter/main.ts"), [
       "gtchunkee",
+    ]);
+  }, 180_000);
+
+  // 7546: a one-line minified ES module: a var statement whose later
+  // declarators spread earlier ones, regexes read through an untyped rules
+  // table, and a function instantiated with typed and untyped arguments.
+  test("the minified module 7546-minified-esm-rules compiles statically and matches Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/7546-minified-esm-rules/main.ts"), [
+      "gtminimark",
+    ]);
+  }, 180_000);
+
+  // 7547: an identifier-minified esbuild CommonJS bundle: the __commonJS
+  // helper and chunk parameters renamed, { value: !0 } stamps, and
+  // (0, ns.member)(...) calls of builtin module functions.
+  test("the identifier-minified bundle 7547-minified-cjs-chunks compiles statically and matches Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/7547-minified-cjs-chunks/main.ts"), [
+      "gtminicache",
     ]);
   }, 180_000);
 

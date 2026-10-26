@@ -28,6 +28,7 @@ import {
   SemanticSnapshot,
   SemanticType,
   symbolNameOf,
+  escapedSymbolName,
 } from "./semantic-model.js";
 import type { __String } from "./ast-types.js";
 import {
@@ -45,8 +46,9 @@ function harness() {
       if (!answers.has(method)) throw new Error(`Unexpected request ${method}`);
       return JSON.stringify(answers.get(method));
     },
-    binary() {
-      throw new Error("Unexpected binary request");
+    // Object replies are read as bytes; they carry the same JSON.
+    binary(method, payload) {
+      return Buffer.from(this.text(method, payload), "utf8");
     },
   });
   const first = snapshot.addProject("/first.json", () => undefined);
@@ -312,6 +314,11 @@ test("symbol tables keep escaped keys, display names, canonical context and cach
   const exports = parent.getExports();
   expect(symbolNameOf(members.get("___x" as __String))).toBe("__x");
   expect(symbolNameOf(exports.get("__x" as __String))).toBe("__x");
+  // A name that starts with `__` is keyed with an extra `_`.
+  expect(symbolNameOf(members.get(escapedSymbolName("__x")))).toBe("__x");
+  expect(escapedSymbolName("x")).toBe("x");
+  expect(escapedSymbolName("_x")).toBe("_x");
+  expect(escapedSymbolName("___y")).toBe("____y");
   expect(parent.getMembers()).toBe(members);
   expect(parent.getExports()).toBe(exports);
   expect(parent.getParent()).toBe(first.symbol(symbol(2)));

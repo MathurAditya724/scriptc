@@ -582,19 +582,29 @@ function publicDetail(tier) {
   if (/^surface-manifest:node-builtin\.crypto\.create(?:Cipheriv|Decipheriv)$/.test(source)) {
     return "Supports aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305 with Node's argument, IV, tag-length, and key-length errors; other OpenSSL ciphers and KeyObject keys are refused.";
   }
+  if (/^surface-manifest:node-builtin\.crypto\.createECDH$/.test(source)) {
+    return "Supports prime192v1, secp224r1, prime256v1, secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1 and brainpoolP512r1 with Node's curve, key, point, format and encoding errors; other curves Node knows are refused.";
+  }
+  if (
+    /^surface-manifest:node-builtin\.crypto\.(?:createDiffieHellman|createDiffieHellmanGroup|getDiffieHellman)$/.test(
+      source,
+    )
+  ) {
+    return "Supports the modp groups, explicit primes and generators, and generated safe primes up to 8192 bits with Node's argument, generator and modulus errors.";
+  }
   if (source.startsWith("surface-manifest:"))
     return "Implemented for the call shapes accepted by the compiler lowering.";
   if (/^compiler-dedicated:assert\.doesNot(?:Throw|Reject)$/.test(source)) {
     return "Supports callbacks or native promises with messages, Error classes, regular expressions, and validators accepting unknown values; object expectations and complete AssertionError metadata remain unsupported.";
   }
-  if (/^surface-manifest:node-builtin\.crypto\.createECDH$/.test(source)) {
-    return "Supports prime192v1, secp224r1, prime256v1, secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1 and brainpoolP512r1 with Node's curve, key, point, format and encoding errors; other curves Node knows are refused.";
-  }
   if (/^compiler-dedicated:(?:ECDH|ecdh\.)/.test(source)) {
     return "Matches Node's key formats, point encodings, private-key range checks, key-pair checks and errors on the supported curves; ECDH.convertKey is supported, and property reads and writes are refused.";
   }
+  if (/^compiler-dedicated:(?:DiffieHellman|diffieHellman\.)/.test(source)) {
+    return "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.";
+  }
   if (/^compiler-dedicated:(?:Cipheriv|Decipheriv|cipher\.|decipher\.)/.test(source)) {
-    return "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.";
+    return "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.";
   }
   if (source.startsWith("compiler-dedicated:"))
     return "Implemented by a dedicated static compiler/runtime path.";
@@ -642,7 +652,14 @@ function publicDetail(tier) {
         source,
       )
     ) {
-      return "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Brotli and Zstd streams remain unsupported.";
+      return "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.";
+    }
+    if (
+      /^compiler-feature:zlib\.(?:zlib\.(?:BrotliCompress|BrotliDecompress)|BrotliOptions)$/.test(
+        source,
+      )
+    ) {
+      return "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params().";
     }
     if (source === "compiler-feature:zlib.zlib.constants") {
       return "Each zlib.constants member and its module-level copy reads as Node's value; the constants object itself is not a runtime value.";

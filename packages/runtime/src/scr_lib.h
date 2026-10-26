@@ -63,6 +63,9 @@ bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
  * direct startup never filters user arguments. */
 bool scr_lib_should_collapse_reexec_arg(ScrStr *cmd, ScrArr *args);
 ScrStr *scr_process_platform(void); /* +1 interned ("darwin", "linux", ...) */
+/* Whether OpenSSL, as Node 24 links it, names a digest `name` (its names,
+ * aliases and object identifiers, case-insensitively). */
+bool scr_digest_known(const char *name, size_t len);
 ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 
 bool scr_stdio_write(int fd, const void *data, size_t len);
@@ -238,7 +241,8 @@ double scr_process_memory_usage_field(double k);
 double scr_process_rss(void);
 /* The runtime heap's footprint (scr_alloc.c): bytes held from the system
  * and bytes in live allocations, for the calling thread's allocator plus
- * the system allocator where it reports them. */
+ * the system allocator where it reports them, plus the program-lifetime
+ * region's chunks (compact class instances). */
 void scr_heap_stats(double *total, double *used);
 /* process.ppid: the parent's pid at the time of the read. */
 double scr_process_ppid(void);
@@ -306,6 +310,7 @@ void scr_fs_rm_opts(ScrStr *path, bool recursive, bool force);
  * EPERM failures up to maxRetries times with Node's linear backoff
  * (retryDelay ms longer per try); everything else throws immediately. */
 void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries, double retry_delay);
+bool scr_fs_rm_retry_options_ok(double max_retries, double retry_delay);
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix);
 ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix); /* the callback and promise error path */
 void scr_fs_access(ScrStr *path, double mode);
@@ -364,6 +369,9 @@ typedef struct ScrBytes ScrBytes;
 ScrStr *scr_atomics_wait(ScrBytes *, double, double, double);
 double scr_atomics_notify(ScrBytes *, double, double);
 double scr_atomics_op(ScrBytes *, double, double, double, double);
+double scr_atomics_op_dyn(const ScrDyn *, double, double, double, double);
+ScrStr *scr_atomics_wait_dyn(const ScrDyn *, double, double, double);
+double scr_atomics_notify_dyn(const ScrDyn *, double, double);
 
 /* isatty(3) over an fd (0/1/2): a real boolean — false where Node's
  * non-TTY streams expose undefined (SEMANTICS.md). stdin_destroy is a
@@ -404,6 +412,9 @@ void scr_fs_invalid_named_path(const ScrDyn *value, const ScrStr *path, const ch
 /* A string path argument: false after throwing Node's ERR_INVALID_ARG_VALUE
  * when it holds a null byte (`name` is the argument's name). */
 bool scr_fs_path_ok(const ScrStr *path, const char *name);
+/* scr_fs_path_ok as a statement: getValidatedPath's null-byte check on a
+ * path the call validates before converting a later URL path. */
+void scr_fs_check_path(ScrStr *path, ScrStr *name);
 void scr_fs_futimes(double fd, double atime, double mtime);
 void scr_fs_link(ScrStr *source, ScrStr *dest);
 void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind);
@@ -493,6 +504,9 @@ ScrPromise *scr_fsp_utimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn
 ScrPromise *scr_fsp_lutimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_fsp_readdir(ScrStr *path);
 ScrPromise *scr_fsp_rm(ScrStr *path);
+ScrPromise *scr_fsp_rm_opts(ScrStr *path, bool recursive, bool force);
+ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries,
+                                  double retry_delay);
 ScrPromise *scr_fsp_stat(ScrStr *path);
 ScrPromise *scr_fsp_realpath(ScrStr *path);
 ScrPromise *scr_fsp_lstat(ScrStr *path);

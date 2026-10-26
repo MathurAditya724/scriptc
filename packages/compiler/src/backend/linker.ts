@@ -21,6 +21,8 @@ import {
 import { type NativeArtifactDependency } from "./native/contracts.js";
 import { RuntimePackError, stageRuntimePackArtifacts } from "./runtime-pack.js";
 import type { NativeLinkPlan } from "./link-plan.js";
+import { lldLinkerArgs } from "./lld.js";
+import { systemLibraryLinkerArgs } from "./link-plan-core.js";
 import {
   createDarwinDebugSymbols,
   installDarwinDebugSymbols,
@@ -240,11 +242,14 @@ export async function linkNativeExecutable(
   try {
     const staged = await stageRuntimePackArtifacts(plan.runtimePack);
     stagedRoot = staged.root;
+    // Linux links with lld when the default driver finds it.
+    const lld = explicitLinker === undefined ? lldLinkerArgs(plan.target.platform, linker) : [];
     const args = [
       ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
+      ...lld,
       ...plan.driverFlags,
       ...plan.inputs.map((input) => staged.replacements.get(input) ?? input),
-      ...plan.systemLibraries.map((name) => `-l${name}`),
+      ...systemLibraryLinkerArgs(plan.target, plan.systemLibraries),
       "-o",
       privateOut,
     ];
@@ -276,7 +281,15 @@ export async function linkNativeExecutable(
               ...(await snapshotDependencies([...toolchain, ...additionalDependencyPaths])),
             ])
             .catch(() => null);
-    await execFileAsync(linker, args);
+    await execFileAsync(linker, args).catch(async (error: unknown) => {
+      // A failed link with lld runs again with the driver's default linker,
+      // whose error (if any) is the one reported.
+      if (lld.length === 0) throw error;
+      await execFileAsync(
+        linker,
+        args.filter((arg) => !lld.includes(arg)),
+      );
+    });
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
     if (plan.darwinDebugSymbols) {

@@ -544,12 +544,17 @@ declare var DOMException: {
   readonly prototype: DOMException;
 };
 
-/* WebCrypto's HMAC slice (scr_webcrypto.c): crypto.subtle's importKey for
- * raw HMAC keys, HMAC sign/verify and the SHA-1/SHA-2 digests, typed as
- * exactly that surface (the declarations mirror @types/node's webcrypto
- * shapes). Every other SubtleCrypto method and crypto member is absent,
- * so a use is an honest type error. CryptoKey values are native handles
- * whose four members read through the handle. */
+/* WebCrypto (scr_webcrypto.c): crypto.subtle's importKey, generateKey and
+ * exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF
+ * keys), AES-GCM/CBC/CTR encrypt and decrypt, wrapKey and unwrapKey of
+ * secret keys (AES-KW or those ciphers), PBKDF2 and HKDF deriveBits and
+ * deriveKey, HMAC sign/verify, generateKey, importKey, exportKey, sign
+ * and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and the
+ * SHA-1/SHA-2 digests, typed as exactly that surface (the declarations
+ * mirror @types/node's webcrypto shapes), plus the global's randomUUID and
+ * getRandomValues. Every other SubtleCrypto method and crypto member is
+ * absent, so a use is an honest type error. CryptoKey values are native
+ * handles whose four members read through the handle. */
 declare var crypto: Crypto;
 /* The Crypto and SubtleCrypto constructors (feature probes only) stay
  * `unknown`; the values keep this declaration order. */
@@ -582,8 +587,43 @@ interface HmacImportParams extends Algorithm {
   hash: HashAlgorithmIdentifier;
   length?: number;
 }
+interface HmacKeyGenParams extends Algorithm {
+  hash: HashAlgorithmIdentifier;
+  length?: number;
+}
+interface AesKeyGenParams extends Algorithm {
+  length: number;
+}
+interface AesGcmParams extends Algorithm {
+  additionalData?: BufferSource;
+  iv: BufferSource;
+  tagLength?: number;
+}
+interface AesCbcParams extends Algorithm {
+  iv: BufferSource;
+}
+interface AesCtrParams extends Algorithm {
+  counter: BufferSource;
+  length: number;
+}
+interface Pbkdf2Params extends Algorithm {
+  hash: HashAlgorithmIdentifier;
+  iterations: number;
+  salt: BufferSource;
+}
+interface HkdfParams extends Algorithm {
+  hash: HashAlgorithmIdentifier;
+  info: BufferSource;
+  salt: BufferSource;
+}
+interface AesDerivedKeyParams extends Algorithm {
+  length: number;
+}
 interface KeyAlgorithm {
   name: string;
+}
+interface AesKeyAlgorithm extends KeyAlgorithm {
+  length: number;
 }
 interface HmacKeyAlgorithm extends KeyAlgorithm {
   hash: KeyAlgorithm;
@@ -623,34 +663,136 @@ interface JsonWebKey {
   x?: string;
   y?: string;
 }
-/* The 'jwk' form type-checks like @types/node's; the compiler refuses it
- * (the JsonWebKey import is not implemented). */
+interface EcKeyGenParams extends Algorithm {
+  namedCurve: string;
+}
+interface EcKeyImportParams extends Algorithm {
+  namedCurve: string;
+}
+interface EcdsaParams extends Algorithm {
+  hash: HashAlgorithmIdentifier;
+}
+interface RsaHashedKeyGenParams extends Algorithm {
+  modulusLength: number;
+  publicExponent: Uint8Array;
+  hash: HashAlgorithmIdentifier;
+}
+interface RsaHashedImportParams extends Algorithm {
+  hash: HashAlgorithmIdentifier;
+}
+interface RsaPssParams extends Algorithm {
+  saltLength: number;
+}
+interface EcKeyAlgorithm extends KeyAlgorithm {
+  namedCurve: string;
+}
+interface RsaHashedKeyAlgorithm extends KeyAlgorithm {
+  modulusLength: number;
+  publicExponent: Uint8Array;
+  hash: KeyAlgorithm;
+}
+interface CryptoKeyPair {
+  privateKey: CryptoKey;
+  publicKey: CryptoKey;
+}
+/* HMAC and AES keys generate, import and export as 'raw' and 'jwk'
+ * (PBKDF2 and HKDF keys import as 'raw'); ECDSA and RSA keys generate,
+ * import and export as 'spki', 'pkcs8' and 'jwk', and ECDSA public keys as
+ * 'raw'. */
 interface SubtleCrypto {
+  decrypt(
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams,
+    key: CryptoKey,
+    data: BufferSource,
+  ): Promise<ArrayBuffer>;
+  deriveBits(
+    algorithm: Pbkdf2Params | HkdfParams,
+    baseKey: CryptoKey,
+    length?: number | null,
+  ): Promise<ArrayBuffer>;
+  deriveKey(
+    algorithm: Pbkdf2Params | HkdfParams,
+    baseKey: CryptoKey,
+    derivedKeyType: AlgorithmIdentifier | AesDerivedKeyParams | HmacImportParams,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKey>;
   digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
+  encrypt(
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams,
+    key: CryptoKey,
+    data: BufferSource,
+  ): Promise<ArrayBuffer>;
+  exportKey(format: "jwk", key: CryptoKey): Promise<JsonWebKey>;
+  exportKey(format: Exclude<KeyFormat, "jwk">, key: CryptoKey): Promise<ArrayBuffer>;
+  generateKey(
+    algorithm: EcKeyGenParams | RsaHashedKeyGenParams | "Ed25519" | { name: "Ed25519" },
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKeyPair>;
+  generateKey(
+    algorithm: AesKeyGenParams | HmacKeyGenParams,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKey>;
   importKey(
     format: "jwk",
     keyData: JsonWebKey,
-    algorithm: AlgorithmIdentifier | HmacImportParams,
+    algorithm: AlgorithmIdentifier | HmacImportParams | EcKeyImportParams | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   importKey(
     format: Exclude<KeyFormat, "jwk">,
     keyData: BufferSource,
-    algorithm: AlgorithmIdentifier | HmacImportParams,
+    algorithm: AlgorithmIdentifier | HmacImportParams | EcKeyImportParams | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
-  sign(algorithm: AlgorithmIdentifier, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer>;
+  sign(
+    algorithm: AlgorithmIdentifier | EcdsaParams | RsaPssParams,
+    key: CryptoKey,
+    data: BufferSource,
+  ): Promise<ArrayBuffer>;
+  unwrapKey(
+    format: KeyFormat,
+    wrappedKey: BufferSource,
+    unwrappingKey: CryptoKey,
+    unwrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams,
+    unwrappedKeyAlgorithm: AlgorithmIdentifier | HmacImportParams,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKey>;
   verify(
-    algorithm: AlgorithmIdentifier,
+    algorithm: AlgorithmIdentifier | EcdsaParams | RsaPssParams,
     key: CryptoKey,
     signature: BufferSource,
     data: BufferSource,
   ): Promise<boolean>;
+  wrapKey(
+    format: KeyFormat,
+    key: CryptoKey,
+    wrappingKey: CryptoKey,
+    wrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams,
+  ): Promise<ArrayBuffer>;
 }
 interface Crypto {
   readonly subtle: SubtleCrypto;
+  getRandomValues<
+    T extends
+      | Int8Array
+      | Uint8Array
+      | Uint8ClampedArray
+      | Int16Array
+      | Uint16Array
+      | Int32Array
+      | Uint32Array
+      | BigInt64Array
+      | BigUint64Array,
+  >(
+    typedArray: T,
+  ): T;
+  randomUUID(): `${string}-${string}-${string}-${string}-${string}`;
 }
 
 /* Capability-gated globals harness code probes behind feature guards
@@ -775,6 +917,14 @@ interface Buffer<
   readBigUint64LE(offset?: number): bigint;
 }
 interface BufferConstructor {
+  /** @deprecated since v10.0.0 - Use `Buffer.from(string[, encoding])` instead. */
+  new (str: string, encoding?: BufferEncoding): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.alloc()` instead. */
+  new (size: number): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.from(array)` instead. */
+  new (array: ArrayLike<number>): Buffer;
+  /** @deprecated since v10.0.0 - Use `Buffer.from(arrayBuffer[, byteOffset[, length]])` instead. */
+  new (arrayBuffer: ArrayBuffer | SharedArrayBuffer): Buffer;
   from(data: string, encoding?: BufferEncoding): Buffer;
   /* The ArrayBuffer form is the VIEW construction: x.buffer with an
    * optional byte offset/length shares x's storage (the subarray rule). */
@@ -963,6 +1113,34 @@ declare var ReadableStream: {
   from(iterable: Uint8Array): ReadableStream<number>;
   from(iterable: string): ReadableStream<string>;
   readonly prototype: ReadableStream<unknown>;
+};
+/* The writable side of a TransformStream and its writer. The
+ * WritableStream constructor has no native lowering; writable streams come
+ * from `new TransformStream()`. */
+interface WritableStreamDefaultWriter<W = unknown> {
+  readonly closed: Promise<void>;
+  readonly desiredSize: number | null;
+  readonly ready: Promise<void>;
+  abort(reason?: unknown): Promise<void>;
+  close(): Promise<void>;
+  releaseLock(): void;
+  write(chunk?: W): Promise<void>;
+}
+interface WritableStream<W = unknown> {
+  readonly locked: boolean;
+  abort(reason?: unknown): Promise<void>;
+  close(): Promise<void>;
+  getWriter(): WritableStreamDefaultWriter<W>;
+}
+/* The identity transform: chunks written to `writable` are read from
+ * `readable`, and a write completes when its chunk is read. */
+interface TransformStream<I = unknown, O = unknown> {
+  readonly readable: ReadableStream<O>;
+  readonly writable: WritableStream<I>;
+}
+declare var TransformStream: {
+  new <I = unknown, O = I>(): TransformStream<I, O>;
+  readonly prototype: TransformStream<unknown, unknown>;
 };
 
 /* fetch, typed as the native JSON + readable-stream slice: one URL, an
@@ -1379,13 +1557,13 @@ interface ImportMeta {
  * `recursive`); empty directories go through `rmdirSync`. */
 declare module "node:fs" {
   import { Readable, Writable } from "stream";
-  export function readFileSync(path: string | number, encoding: BufferEncoding): string;
+  export function readFileSync(path: string | number | URL, encoding: BufferEncoding): string;
   export function readFileSync(
-    path: string | number,
+    path: string | number | URL,
     options: { encoding: BufferEncoding },
   ): string;
-  export function readFileSync(path: string | number): Buffer;
-  export function readFileSync(path: string, options: unknown): string | Buffer;
+  export function readFileSync(path: string | number | URL): Buffer;
+  export function readFileSync(path: string | URL, options: unknown): string | Buffer;
   /* Error-first callbacks select string or Buffer data from their encoding.
    * Unknown options retain that union until the caller validates the value. */
   export function readFile(
@@ -1397,7 +1575,7 @@ declare module "node:fs" {
    * Node — an existing file keeps its permissions) and/or the utf8
    * encoding spelling. */
   export function writeFileSync(
-    path: string,
+    path: string | URL,
     data: string,
     /* The options-record stance (see http.RequestOptions): flag fences
      * by name at the call site; undocumented keys drop like Node. */
@@ -1409,14 +1587,17 @@ declare module "node:fs" {
     },
   ): void;
   /* The bare-encoding spelling — the options record's encoding key alone. */
-  export function writeFileSync(path: string, data: string, encoding: "utf8" | "utf-8"): void;
-  export function writeFileSync(path: string, data: string | Uint8Array): void;
-  export function appendFileSync(path: string, data: string | Uint8Array): void;
-  export function existsSync(path: string): boolean;
-  export function mkdirSync(path: string): void;
-  export function mkdirSync(path: string, options: { recursive?: boolean; mode?: number }): void;
-  export function unlinkSync(path: string): void;
-  export function chmodSync(path: string, mode: number): void;
+  export function writeFileSync(path: string | URL, data: string, encoding: "utf8" | "utf-8"): void;
+  export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
+  export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
+  export function existsSync(path: string | URL): boolean;
+  export function mkdirSync(path: string | URL): void;
+  export function mkdirSync(
+    path: string | URL,
+    options: { recursive?: boolean; mode?: number },
+  ): void;
+  export function unlinkSync(path: string | URL): void;
+  export function chmodSync(path: string | URL, mode: number): void;
   export function fchmodSync(fd: number, mode: number): void;
   export function fsyncSync(fd: number): void;
   export function linkSync(
@@ -1514,29 +1695,29 @@ declare module "node:fs" {
     path: string | Uint8Array | URL,
     options: string | { encoding?: string | null } | null,
   ): string | Buffer;
-  export function chownSync(path: string, uid: number, gid: number): void;
-  export function lchownSync(path: string, uid: number, gid: number): void;
+  export function chownSync(path: string | URL, uid: number, gid: number): void;
+  export function lchownSync(path: string | URL, uid: number, gid: number): void;
   export function fchownSync(fd: number, uid: number, gid: number): void;
-  export function truncateSync(path: string, len?: number): void;
+  export function truncateSync(path: string | URL, len?: number): void;
   /* The 2-argument form only (Node's mode flags have no lowering). The
    * destination is created or truncated carrying the SOURCE's mode. */
-  export function copyFileSync(src: string, dest: string): void;
+  export function copyFileSync(src: string | URL, dest: string | URL): void;
   export function rename(
     oldPath: string,
     newPath: string,
     callback: (err: NodeJS.ErrnoException | null) => void,
   ): void;
-  export function renameSync(oldPath: string, newPath: string): void;
-  export function rmSync(path: string): void;
+  export function renameSync(oldPath: string | URL, newPath: string | URL): void;
+  export function rmSync(path: string | URL): void;
   /* maxRetries/retryDelay are accepted no-ops (Node retries around
    * EBUSY-class races; the synchronous lowering has no re-entrancy that
    * needs them). */
   export function rmSync(
-    path: string,
+    path: string | URL,
     options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
   ): void;
-  export function rmdirSync(path: string): void;
-  export function readdirSync(path: string): string[];
+  export function rmdirSync(path: string | URL): void;
+  export function readdirSync(path: string | URL): string[];
   /* The withFileTypes form: Dirent rows (name + parentPath + the type
    * probes — the honest subset of Node's Dirent surface). The type is
    * interned explicitly in type-mapper.ts (the record's hidden %dtype field
@@ -1550,7 +1731,7 @@ declare module "node:fs" {
     isSymbolicLink(): boolean;
   }
   export function readdirSync(
-    path: string,
+    path: string | URL,
     /* The options-record stance (see http.RequestOptions): recursive
      * fences by name at the call site; undocumented keys drop like Node. */
     options: { withFileTypes: true; recursive?: boolean; [option: string]: unknown },
@@ -1599,7 +1780,7 @@ declare module "node:fs" {
     encoding?: "utf8" | "utf-8";
     bufferSize?: number;
   }
-  export function opendirSync(path: string, options?: OpenDirOptions): Dir;
+  export function opendirSync(path: string | URL, options?: OpenDirOptions): Dir;
   /* fs.ReadStream / fs.WriteStream: runtime Readable and Writable streams
    * over a file (scr_fs_stream.c). The options are checked at runtime
    * with Node's rules; flags and mode are checked when the file opens, so
@@ -1641,8 +1822,8 @@ declare module "node:fs" {
     path: string | Buffer | URL,
     options?: BufferEncoding | WriteStreamOptions,
   ): WriteStream;
-  export function accessSync(path: string, mode?: number): void;
-  export function mkdtempSync(prefix: string): string;
+  export function accessSync(path: string | URL, mode?: number): void;
+  export function mkdtempSync(prefix: string | URL): string;
   export const constants: {
     readonly F_OK: number;
     readonly R_OK: number;
@@ -1745,34 +1926,34 @@ declare module "node:fs" {
     bigint?: boolean;
     throwIfNoEntry?: boolean;
   }
-  export function statSync(path: string, options?: undefined): Stats;
+  export function statSync(path: string | URL, options?: undefined): Stats;
   export function statSync(
-    path: string,
+    path: string | URL,
     options: StatSyncOptions & { bigint?: false; throwIfNoEntry: false },
   ): Stats | undefined;
   export function statSync(
-    path: string,
+    path: string | URL,
     options: StatSyncOptions & { bigint?: false; throwIfNoEntry?: true },
   ): Stats;
   /* bigint: true type-checks so the lowering can name it as unsupported. */
-  export function statSync(path: string, options: StatSyncOptions & { bigint: true }): Stats;
-  export function statSync(path: string, options: StatSyncOptions): Stats | undefined;
-  export function lstatSync(path: string, options?: undefined): Stats;
+  export function statSync(path: string | URL, options: StatSyncOptions & { bigint: true }): Stats;
+  export function statSync(path: string | URL, options: StatSyncOptions): Stats | undefined;
+  export function lstatSync(path: string | URL, options?: undefined): Stats;
   export function lstatSync(
-    path: string,
+    path: string | URL,
     options: StatSyncOptions & { bigint?: false; throwIfNoEntry: false },
   ): Stats | undefined;
   export function lstatSync(
-    path: string,
+    path: string | URL,
     options: StatSyncOptions & { bigint?: false; throwIfNoEntry?: true },
   ): Stats;
   /* bigint: true type-checks so the lowering can name it as unsupported. */
-  export function lstatSync(path: string, options: StatSyncOptions & { bigint: true }): Stats;
-  export function lstatSync(path: string, options: StatSyncOptions): Stats | undefined;
+  export function lstatSync(path: string | URL, options: StatSyncOptions & { bigint: true }): Stats;
+  export function lstatSync(path: string | URL, options: StatSyncOptions): Stats | undefined;
   /* The fd pair behind spawn's fd-stdio form: openSync(path, flags) →
    * the raw fd. Numeric flags use an inline OR of the O_* constants. */
-  export function openSync(path: string, flags: string): number;
-  export function openSync(path: string, flags: number, mode?: number): number;
+  export function openSync(path: string | URL, flags: string): number;
+  export function openSync(path: string | URL, flags: number, mode?: number): number;
   export function closeSync(fd: number): void;
   export function fdatasyncSync(fd: number): void;
   export function ftruncateSync(fd: number, len?: number): void;
@@ -1853,9 +2034,9 @@ declare module "node:fs" {
   export function fstatSync(fd: number): Stats;
   /* realpath(3) — resolves symlinks, `.`/`..`, throwing Node's fs error
    * shapes for missing paths. */
-  export function realpathSync(path: string): string;
+  export function realpathSync(path: string | URL): string;
   export namespace realpathSync {
-    function native(path: string): string;
+    function native(path: string | URL): string;
   }
   /* statfs(2)/statvfs(3) — the filesystem-capacity snapshot (the fields
    * Node's statfsSync reports; bavail × bsize is the free-space probe). */
@@ -2050,7 +2231,7 @@ declare module "fs/promises" {
     stat(): Promise<import("node:fs").Stats>;
     [Symbol.asyncDispose](): Promise<void>;
   }
-  export function open(path: string, flags?: string, mode?: number): Promise<FileHandle>;
+  export function open(path: string | URL, flags?: string, mode?: number): Promise<FileHandle>;
   export function link(
     existingPath: string | Uint8Array | URL,
     newPath: string | Uint8Array | URL,
@@ -2087,14 +2268,14 @@ declare module "fs/promises" {
     atime: number | string | Date,
     mtime: number | string | Date,
   ): Promise<void>;
-  export function readFile(path: string, encoding: "utf8" | "utf-8"): Promise<string>;
+  export function readFile(path: string | URL, encoding: "utf8" | "utf-8"): Promise<string>;
   export function readFile(
-    path: string,
+    path: string | URL,
     options: BufferEncoding | { encoding: BufferEncoding },
   ): Promise<string>;
-  export function readFile(path: string): Promise<Buffer>;
+  export function readFile(path: string | URL): Promise<Buffer>;
   export function writeFile(
-    path: string,
+    path: string | URL,
     data: string,
     options?: {
       mode?: number;
@@ -2103,14 +2284,18 @@ declare module "fs/promises" {
       [option: string]: unknown;
     },
   ): Promise<void>;
-  export function writeFile(path: string, data: string, encoding: "utf8" | "utf-8"): Promise<void>;
+  export function writeFile(
+    path: string | URL,
+    data: string,
+    encoding: "utf8" | "utf-8",
+  ): Promise<void>;
   export function mkdir(
-    path: string,
+    path: string | URL,
     options?: { recursive?: boolean; mode?: number },
   ): Promise<void>;
-  export function readdir(path: string): Promise<string[]>;
+  export function readdir(path: string | URL): Promise<string[]>;
   export function readdir(
-    path: string,
+    path: string | URL,
     options: {
       encoding?: "utf8" | "utf-8";
       withFileTypes: true;
@@ -2127,8 +2312,12 @@ declare module "fs/promises" {
     pattern: string | readonly string[],
     options: import("node:fs").GlobOptionsWithFileTypes,
   ): AsyncIterableIterator<import("node:fs").Dirent>;
-  export function rm(path: string): Promise<void>;
-  export function stat(path: string): Promise<import("node:fs").Stats>;
+  export function rm(path: string | URL): Promise<void>;
+  export function rm(
+    path: string | URL,
+    options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
+  ): Promise<void>;
+  export function stat(path: string | URL): Promise<import("node:fs").Stats>;
   export function statfs(
     path: string | Uint8Array | URL,
     options?: import("node:fs").StatFsOptions & { bigint?: false },
@@ -2141,21 +2330,21 @@ declare module "fs/promises" {
     path: string | Uint8Array | URL,
     options?: import("node:fs").StatFsOptions,
   ): Promise<import("node:fs").StatsFs | import("node:fs").BigIntStatsFs>;
-  export function realpath(path: string): Promise<string>;
-  export function lstat(path: string): Promise<import("node:fs").Stats>;
-  export function unlink(path: string): Promise<void>;
-  export function chmod(path: string, mode: number): Promise<void>;
-  export function chown(path: string, uid: number, gid: number): Promise<void>;
-  export function lchown(path: string, uid: number, gid: number): Promise<void>;
-  export function access(path: string, mode?: number): Promise<void>;
-  export function truncate(path: string, len?: number): Promise<void>;
-  export function appendFile(path: string, data: string | Uint8Array): Promise<void>;
-  export function copyFile(src: string, dest: string): Promise<void>;
-  export function mkdtemp(prefix: string): Promise<string>;
-  export function rmdir(path: string): Promise<void>;
-  export function rename(oldPath: string, newPath: string): Promise<void>;
+  export function realpath(path: string | URL): Promise<string>;
+  export function lstat(path: string | URL): Promise<import("node:fs").Stats>;
+  export function unlink(path: string | URL): Promise<void>;
+  export function chmod(path: string | URL, mode: number): Promise<void>;
+  export function chown(path: string | URL, uid: number, gid: number): Promise<void>;
+  export function lchown(path: string | URL, uid: number, gid: number): Promise<void>;
+  export function access(path: string | URL, mode?: number): Promise<void>;
+  export function truncate(path: string | URL, len?: number): Promise<void>;
+  export function appendFile(path: string | URL, data: string | Uint8Array): Promise<void>;
+  export function copyFile(src: string | URL, dest: string | URL): Promise<void>;
+  export function mkdtemp(prefix: string | URL): Promise<string>;
+  export function rmdir(path: string | URL): Promise<void>;
+  export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;
   export function opendir(
-    path: string,
+    path: string | URL,
     options?: import("node:fs").OpenDirOptions,
   ): Promise<import("node:fs").Dir>;
 }
@@ -2607,8 +2796,9 @@ declare var URLSearchParams: {
  * slashes, non-empty host); pathToFileURL resolves the path and percent-
  * encodes it into a file: URL. The legacy API: parse() answers a Url
  * object, format() serializes a Url-shaped object, a string, or a URL,
- * resolve() resolves one URL string against another, and the domain pair
- * converts a hostname to and from its Punycode form. */
+ * resolve() resolves one URL string against another, the domain pair
+ * converts a hostname to and from its Punycode form, and urlToHttpOptions
+ * builds http.request options from a URL. */
 declare module "url" {
   export type URL = globalThis.URL;
   export type URLSearchParams = globalThis.URLSearchParams;
@@ -2676,6 +2866,19 @@ declare module "url" {
   export function resolve(from: string, to: string): string;
   export function domainToASCII(domain: string): string;
   export function domainToUnicode(domain: string): string;
+  /** urlToHttpOptions's null-prototype request options. */
+  export interface UrlHttpOptions {
+    protocol: string;
+    hostname: string;
+    hash: string;
+    search: string;
+    pathname: string;
+    path: string;
+    href: string;
+    port?: number;
+    auth?: string;
+  }
+  export function urlToHttpOptions(url: URL): UrlHttpOptions;
 }
 declare module "node:url" {
   export * from "url";
@@ -2686,8 +2889,20 @@ declare module "crypto" {
   import { Transform } from "stream";
   export type KeyObjectType = "secret" | "public" | "private";
   export interface JsonWebKey {
-    kty?: string;
+    crv?: string;
+    d?: string;
+    dp?: string;
+    dq?: string;
+    e?: string;
     k?: string;
+    kty?: string;
+    n?: string;
+    p?: string;
+    q?: string;
+    qi?: string;
+    x?: string;
+    y?: string;
+    [key: string]: unknown;
   }
   export interface JwkKeyExportOptions {
     format: "jwk";
@@ -2695,16 +2910,229 @@ declare module "crypto" {
   export interface KeyExportOptions {
     format?: "buffer" | undefined;
   }
-  /** Secret keys only; the asymmetric key types are not available. */
+  export type KeyFormat = "pem" | "der" | "jwk";
+  export interface AsymmetricKeyExportOptions<T extends KeyFormat> {
+    type: "pkcs1" | "spki" | "pkcs8" | "sec1";
+    format: T;
+    cipher?: string | undefined;
+    passphrase?: string | Buffer | undefined;
+  }
+  export interface AsymmetricKeyDetails {
+    modulusLength?: number;
+    publicExponent?: bigint;
+    namedCurve?: string;
+  }
+  /* Secret keys, and RSA and EC private and public keys. */
   export class KeyObject {
     private constructor();
     type: KeyObjectType;
     symmetricKeySize?: number;
     asymmetricKeyType?: string;
+    asymmetricKeyDetails?: AsymmetricKeyDetails;
+    export(options: AsymmetricKeyExportOptions<"pem">): string | Buffer;
+    export(options: AsymmetricKeyExportOptions<"der">): Buffer;
     export(options?: KeyExportOptions): Buffer;
     export(options: JwkKeyExportOptions): JsonWebKey;
     equals(otherKeyObject: KeyObject): boolean;
   }
+  export interface PrivateKeyInput {
+    key: string | Buffer;
+    format?: "pem" | "der" | undefined;
+    type?: "pkcs1" | "pkcs8" | "sec1" | undefined;
+    encoding?: string | undefined;
+    passphrase?: string | Buffer | undefined;
+  }
+  export interface PublicKeyInput {
+    key: string | Buffer;
+    format?: "pem" | "der" | undefined;
+    type?: "pkcs1" | "spki" | undefined;
+    encoding?: string | undefined;
+  }
+  export interface JsonWebKeyInput {
+    key: JsonWebKey;
+    format: "jwk";
+  }
+  export function createPrivateKey(
+    key: PrivateKeyInput | string | Buffer | JsonWebKeyInput,
+  ): KeyObject;
+  export function createPublicKey(
+    key: PublicKeyInput | string | Buffer | KeyObject | JsonWebKeyInput,
+  ): KeyObject;
+  export interface KeyPairKeyObjectResult {
+    publicKey: KeyObject;
+    privateKey: KeyObject;
+  }
+  export interface KeyPairSyncResult<T1 extends string | Buffer, T2 extends string | Buffer> {
+    publicKey: T1;
+    privateKey: T2;
+  }
+  export interface RSAKeyPairKeyObjectOptions {
+    modulusLength: number;
+    publicExponent?: number | undefined;
+  }
+  export interface ECKeyPairKeyObjectOptions {
+    namedCurve: string;
+  }
+  export interface RSAKeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    modulusLength: number;
+    publicExponent?: number | undefined;
+    publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
+    privateKeyEncoding: {
+      type: "pkcs1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
+  }
+  export interface ECKeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    namedCurve: string;
+    publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
+    privateKeyEncoding: {
+      type: "sec1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
+  }
+  export function generateKeyPairSync(
+    type: "rsa",
+    options: RSAKeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "rsa",
+    options: RSAKeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(
+    type: "rsa",
+    options: RSAKeyPairKeyObjectOptions,
+  ): KeyPairKeyObjectResult;
+  export function generateKeyPairSync(
+    type: "ec",
+    options: ECKeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "ec",
+    options: ECKeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(
+    type: "ec",
+    options: ECKeyPairKeyObjectOptions,
+  ): KeyPairKeyObjectResult;
+  export interface ED25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    publicKeyEncoding: { type: "spki"; format: PubF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
+  }
+  export function generateKeyPairSync(
+    type: "ed25519",
+    options: ED25519KeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "ed25519",
+    options: ED25519KeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(type: "ed25519", options?: {}): KeyPairKeyObjectResult;
+  export interface X25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    publicKeyEncoding: { type: "spki"; format: PubF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
+  }
+  export function generateKeyPairSync(
+    type: "x25519",
+    options: X25519KeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "x25519",
+    options: X25519KeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(type: "x25519", options?: {}): KeyPairKeyObjectResult;
+  export function generateKeyPair(
+    type: "x25519",
+    options: {} | undefined,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
+  export function generateKeyPair(
+    type: "ed25519",
+    options: {} | undefined,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
+  export function generateKeyPair(
+    type: "rsa",
+    options: RSAKeyPairKeyObjectOptions,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
+  export function generateKeyPair(
+    type: "ec",
+    options: ECKeyPairKeyObjectOptions,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
+  export interface SigningOptions {
+    padding?: number | undefined;
+    saltLength?: number | undefined;
+    dsaEncoding?: "der" | "ieee-p1363" | undefined;
+  }
+  export interface SignPrivateKeyInput extends PrivateKeyInput, SigningOptions {}
+  export interface SignKeyObjectInput extends SigningOptions {
+    key: KeyObject;
+  }
+  export interface VerifyPublicKeyInput extends PublicKeyInput, SigningOptions {}
+  export interface VerifyKeyObjectInput extends SigningOptions {
+    key: KeyObject;
+  }
+  export function diffieHellman(options: { privateKey: KeyObject; publicKey: KeyObject }): Buffer;
+  export function diffieHellman(
+    options: { privateKey: KeyObject; publicKey: KeyObject },
+    callback: (err: Error | null, secret: Buffer) => void,
+  ): void;
+  export function sign(
+    algorithm: string | null | undefined,
+    data: ArrayBufferView,
+    key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+  ): Buffer;
+  export function verify(
+    algorithm: string | null | undefined,
+    data: ArrayBufferView,
+    key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+    signature: ArrayBufferView,
+  ): boolean;
+  /* Sign and Verify accumulate update() data; they are not usable as
+   * writable streams. */
+  export class Sign {
+    private constructor();
+    update(data: string | ArrayBufferView): this;
+    update(data: string, inputEncoding: Encoding): this;
+    sign(
+      privateKey: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+    ): Buffer;
+    sign(
+      privateKey: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+      outputFormat: BinaryToTextEncoding,
+    ): string;
+  }
+  export class Verify {
+    private constructor();
+    update(data: string | ArrayBufferView): this;
+    update(data: string, inputEncoding: Encoding): this;
+    verify(
+      object: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+      signature: ArrayBufferView,
+    ): boolean;
+    verify(
+      object: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+      signature: string,
+      signatureEncoding?: BinaryToTextEncoding,
+    ): boolean;
+  }
+  export function createSign(algorithm: string): Sign;
+  export function createVerify(algorithm: string): Verify;
   export function createSecretKey(key: ArrayBufferView | ArrayBufferLike): KeyObject;
   export function createSecretKey(key: string, encoding: BufferEncoding): KeyObject;
   export function generateKeySync(type: "hmac" | "aes", options: { length: number }): KeyObject;
@@ -2777,8 +3205,7 @@ declare module "crypto" {
     b: ArrayBufferView | ArrayBufferLike,
   ): boolean;
   /* WebCrypto's getRandomValues (also the webcrypto object's): integer
-   * typed arrays, filled in place and returned. The crypto GLOBAL stays
-   * unknown in fallback builds. */
+   * typed arrays, filled in place and returned. */
   type RandomValuesArray =
     | Int8Array
     | Uint8Array
@@ -2790,9 +3217,9 @@ declare module "crypto" {
     | BigInt64Array
     | BigUint64Array;
   export function getRandomValues<T extends RandomValuesArray>(typedArray: T): T;
-  export const webcrypto: {
-    getRandomValues<T extends RandomValuesArray>(typedArray: T): T;
-  };
+  /* The WebCrypto global's object and its SubtleCrypto. */
+  export const webcrypto: Crypto;
+  export const subtle: SubtleCrypto;
   export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,
@@ -2844,18 +3271,24 @@ declare module "crypto" {
     callback: (error: Error | null, buffer: Buffer) => void,
   ): void;
   export type BinaryLike = string | ArrayBuffer | ArrayBufferView;
-  /* Cipheriv/Decipheriv: aes-128/192/256 in cbc, ctr, and gcm modes and
-   * chacha20-poly1305. The stream.Transform members are not declared. */
+  /* Cipheriv/Decipheriv: aes-128/192/256 in cbc, ctr, gcm, ccm, ecb, cfb,
+   * cfb8, cfb1, and ofb modes and their key wraps, des-ede3 and des-ede,
+   * chacha20, and chacha20-poly1305. Both are Transforms: written chunks go
+   * through update(), and the end pushes final(). */
+  export type CipherCCMTypes = "aes-128-ccm" | "aes-192-ccm" | "aes-256-ccm";
   export type CipherGCMTypes = "aes-128-gcm" | "aes-192-gcm" | "aes-256-gcm";
   export type CipherChaCha20Poly1305Types = "chacha20-poly1305";
   export type CipherKey = BinaryLike | KeyObject;
+  export interface CipherCCMOptions {
+    authTagLength: number;
+  }
   export interface CipherGCMOptions {
     authTagLength?: number;
   }
   export interface CipherChaCha20Poly1305Options {
     authTagLength?: number;
   }
-  export interface Cipheriv {
+  export interface Cipheriv extends Transform {
     update(data: string | ArrayBufferView): Buffer;
     update(data: string, inputEncoding: BufferEncoding): Buffer;
     update(data: ArrayBufferView, inputEncoding: undefined, outputEncoding: BufferEncoding): string;
@@ -2868,6 +3301,10 @@ declare module "crypto" {
     final(outputEncoding: BufferEncoding): string;
     setAutoPadding(autoPadding?: boolean): this;
   }
+  export interface CipherCCM extends Cipheriv {
+    setAAD(buffer: ArrayBufferView, options: { plaintextLength: number }): this;
+    getAuthTag(): Buffer;
+  }
   export interface CipherGCM extends Cipheriv {
     setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
     getAuthTag(): Buffer;
@@ -2876,7 +3313,7 @@ declare module "crypto" {
     setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
     getAuthTag(): Buffer;
   }
-  export interface Decipheriv {
+  export interface Decipheriv extends Transform {
     update(data: ArrayBufferView): Buffer;
     update(data: string, inputEncoding: BufferEncoding): Buffer;
     update(data: ArrayBufferView, inputEncoding: undefined, outputEncoding: BufferEncoding): string;
@@ -2889,6 +3326,10 @@ declare module "crypto" {
     final(outputEncoding: BufferEncoding): string;
     setAutoPadding(autoPadding?: boolean): this;
   }
+  export interface DecipherCCM extends Decipheriv {
+    setAuthTag(buffer: ArrayBufferView): this;
+    setAAD(buffer: ArrayBufferView, options: { plaintextLength: number }): this;
+  }
   export interface DecipherGCM extends Decipheriv {
     setAuthTag(buffer: ArrayBufferView): this;
     setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
@@ -2897,6 +3338,12 @@ declare module "crypto" {
     setAuthTag(buffer: ArrayBufferView): this;
     setAAD(buffer: ArrayBufferView, options?: { plaintextLength: number }): this;
   }
+  export function createCipheriv(
+    algorithm: CipherCCMTypes,
+    key: CipherKey,
+    iv: BinaryLike,
+    options: CipherCCMOptions,
+  ): CipherCCM;
   export function createCipheriv(
     algorithm: CipherGCMTypes,
     key: CipherKey,
@@ -2915,6 +3362,12 @@ declare module "crypto" {
     iv: BinaryLike | null,
     options?: { authTagLength?: number },
   ): Cipheriv;
+  export function createDecipheriv(
+    algorithm: CipherCCMTypes,
+    key: CipherKey,
+    iv: BinaryLike,
+    options: CipherCCMOptions,
+  ): DecipherCCM;
   export function createDecipheriv(
     algorithm: CipherGCMTypes,
     key: CipherKey,
@@ -2961,6 +3414,123 @@ declare module "crypto" {
     setPrivateKey(privateKey: string, encoding: BinaryToTextEncoding): void;
   }
   export function createECDH(curveName: string): ECDH;
+  export class DiffieHellman {
+    private constructor();
+    generateKeys(): Buffer;
+    generateKeys(encoding: BinaryToTextEncoding): string;
+    computeSecret(
+      otherPublicKey: ArrayBufferView,
+      inputEncoding?: null,
+      outputEncoding?: null,
+    ): Buffer;
+    computeSecret(
+      otherPublicKey: string,
+      inputEncoding: BinaryToTextEncoding,
+      outputEncoding?: null,
+    ): Buffer;
+    computeSecret(
+      otherPublicKey: ArrayBufferView,
+      inputEncoding: null,
+      outputEncoding: BinaryToTextEncoding,
+    ): string;
+    computeSecret(
+      otherPublicKey: string,
+      inputEncoding: BinaryToTextEncoding,
+      outputEncoding: BinaryToTextEncoding,
+    ): string;
+    getPrime(): Buffer;
+    getPrime(encoding: BinaryToTextEncoding): string;
+    getGenerator(): Buffer;
+    getGenerator(encoding: BinaryToTextEncoding): string;
+    getPublicKey(): Buffer;
+    getPublicKey(encoding: BinaryToTextEncoding): string;
+    getPrivateKey(): Buffer;
+    getPrivateKey(encoding: BinaryToTextEncoding): string;
+    setPublicKey(publicKey: ArrayBufferView): void;
+    setPublicKey(publicKey: string, encoding: BufferEncoding): void;
+    setPrivateKey(privateKey: ArrayBufferView): void;
+    setPrivateKey(privateKey: string, encoding: BufferEncoding): void;
+    verifyError: number;
+  }
+  export type DiffieHellmanGroup = Omit<DiffieHellman, "setPublicKey" | "setPrivateKey">;
+  export function createDiffieHellman(primeLength: number, generator?: number): DiffieHellman;
+  export function createDiffieHellman(
+    prime: ArrayBuffer | ArrayBufferView,
+    generator?: number | ArrayBuffer | ArrayBufferView,
+  ): DiffieHellman;
+  export function createDiffieHellman(
+    prime: ArrayBuffer | ArrayBufferView,
+    generator: string,
+    generatorEncoding: BinaryToTextEncoding,
+  ): DiffieHellman;
+  export function createDiffieHellman(
+    prime: string,
+    primeEncoding: BinaryToTextEncoding,
+    generator?: number | ArrayBuffer | ArrayBufferView,
+  ): DiffieHellman;
+  export function createDiffieHellman(
+    prime: string,
+    primeEncoding: BinaryToTextEncoding,
+    generator: string,
+    generatorEncoding: BinaryToTextEncoding,
+  ): DiffieHellman;
+  export function getDiffieHellman(groupName: string): DiffieHellmanGroup;
+  export function createDiffieHellmanGroup(name: string): DiffieHellmanGroup;
+  export type LargeNumberLike = ArrayBufferView | SharedArrayBuffer | ArrayBuffer | bigint;
+  export interface GeneratePrimeOptions {
+    add?: LargeNumberLike | undefined;
+    rem?: LargeNumberLike | undefined;
+    safe?: boolean | undefined;
+    bigint?: boolean | undefined;
+  }
+  export interface GeneratePrimeOptionsBigInt extends GeneratePrimeOptions {
+    bigint: true;
+  }
+  export interface GeneratePrimeOptionsArrayBuffer extends GeneratePrimeOptions {
+    bigint?: false | undefined;
+  }
+  export function generatePrime(
+    size: number,
+    callback: (err: Error | null, prime: ArrayBuffer) => void,
+  ): void;
+  export function generatePrime(
+    size: number,
+    options: GeneratePrimeOptionsBigInt,
+    callback: (err: Error | null, prime: bigint) => void,
+  ): void;
+  export function generatePrime(
+    size: number,
+    options: GeneratePrimeOptionsArrayBuffer,
+    callback: (err: Error | null, prime: ArrayBuffer) => void,
+  ): void;
+  export function generatePrime(
+    size: number,
+    options: GeneratePrimeOptions,
+    callback: (err: Error | null, prime: ArrayBuffer | bigint) => void,
+  ): void;
+  export function generatePrimeSync(size: number): ArrayBuffer;
+  export function generatePrimeSync(size: number, options: GeneratePrimeOptionsBigInt): bigint;
+  export function generatePrimeSync(
+    size: number,
+    options: GeneratePrimeOptionsArrayBuffer,
+  ): ArrayBuffer;
+  export function generatePrimeSync(
+    size: number,
+    options: GeneratePrimeOptions,
+  ): ArrayBuffer | bigint;
+  export interface CheckPrimeOptions {
+    checks?: number | undefined;
+  }
+  export function checkPrime(
+    value: LargeNumberLike,
+    callback: (err: Error | null, result: boolean) => void,
+  ): void;
+  export function checkPrime(
+    value: LargeNumberLike,
+    options: CheckPrimeOptions,
+    callback: (err: Error | null, result: boolean) => void,
+  ): void;
+  export function checkPrimeSync(candidate: LargeNumberLike, options?: CheckPrimeOptions): boolean;
   export interface ScryptOptions {
     N?: number;
     r?: number;
@@ -3004,17 +3574,45 @@ declare module "crypto" {
     keylen: number,
     callback: (error: Error | null, derivedKey: ArrayBuffer) => void,
   ): void;
-  /* The lowered X509Certificate surface is the data-record slice:
-   * fingerprint (the SHA-1 of the DER, uppercase colon-separated) and
-   * the validFrom/validTo validity window (Node's ASN1_TIME_print
-   * strings — "Jul  1 00:00:00 2026 GMT"; the cert-expiry idiom composes
-   * them with new Date(...).getTime()). All compute at construction;
-   * unparseable input throws Node's ERR_OSSL_PEM_NO_START_LINE Error. */
+  /* The lowered X509Certificate surface is the data-record slice: the
+   * fields below, all computed at construction (raw decodes the input,
+   * and the others read raw). validFrom/validTo are Node's
+   * ASN1_TIME_print strings ("Jul  1 00:00:00 2026 GMT"). Unparseable
+   * input throws Node's ERR_OSSL_PEM_NO_START_LINE Error. */
   export class X509Certificate {
     constructor(buffer: Uint8Array | string);
+    readonly ca: boolean;
     readonly fingerprint: string;
+    readonly fingerprint256: string;
+    readonly fingerprint512: string;
+    readonly subject: string;
+    readonly subjectAltName: string | undefined;
+    readonly infoAccess: string | undefined;
+    readonly issuer: string;
+    readonly raw: Buffer;
+    readonly serialNumber: string;
+    readonly signatureAlgorithm: string | undefined;
+    readonly signatureAlgorithmOid: string;
     readonly validFrom: string;
+    readonly validFromDate: Date;
     readonly validTo: string;
+    readonly validToDate: Date;
+    /* the certificate's public key; every read answers the same KeyObject */
+    readonly publicKey: KeyObject;
+    verify(publicKey: KeyObject): boolean;
+    checkPrivateKey(privateKey: KeyObject): boolean;
+    checkIssued(otherCert: X509Certificate): boolean;
+    checkHost(name: string, options?: X509CheckOptions): string | undefined;
+    checkEmail(email: string, options?: X509CheckOptions): string | undefined;
+    checkIP(ip: string): string | undefined;
+    toLegacyObject(): import("tls").PeerCertificate;
+  }
+  export interface X509CheckOptions {
+    subject?: "always" | "default" | "never";
+    wildcards?: boolean;
+    partialWildcards?: boolean;
+    multiLabelWildcards?: boolean;
+    singleLabelSubdomains?: boolean;
   }
   /* The crypto introspection statics: getFips() answers 0 (a compiled
    * binary is never a FIPS build), the three name lists bake as fresh
@@ -3022,6 +3620,34 @@ declare module "crypto" {
    * per member like http2.constants. */
   export function getFips(): 1 | 0;
   export function getCiphers(): string[];
+  export type CipherMode =
+    | "cbc"
+    | "ccm"
+    | "cfb"
+    | "ctr"
+    | "ecb"
+    | "gcm"
+    | "ocb"
+    | "ofb"
+    | "stream"
+    | "wrap"
+    | "xts";
+  export interface CipherInfoOptions {
+    keyLength?: number | undefined;
+    ivLength?: number | undefined;
+  }
+  export interface CipherInfo {
+    name: string;
+    nid: number;
+    blockSize?: number | undefined;
+    ivLength?: number | undefined;
+    keyLength: number;
+    mode: CipherMode;
+  }
+  export function getCipherInfo(
+    nameOrNid: string | number,
+    options?: CipherInfoOptions,
+  ): CipherInfo | undefined;
   export function getHashes(): string[];
   export function getCurves(): string[];
   /* Node v24 crypto.constants, literal-typed (the Http2Constants
@@ -3122,7 +3748,8 @@ declare module "child_process" {
    * killSignal at the deadline and the result carries error: ETIMEDOUT +
    * the signal, never a throw), killSignal (a signal NAME literal),
    * stdio ("ignore"/"inherit"/"pipe" or a 3-tuple of those — captures
-   * read "" for non-piped streams), and windowsHide (a POSIX no-op). */
+   * read "" for non-piped streams), env (replaces the child's
+   * environment), and windowsHide (a POSIX no-op). */
   export function spawnSync(
     command: string,
     args?: string[],
@@ -3131,6 +3758,7 @@ declare module "child_process" {
       timeout?: number;
       killSignal?: string;
       stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
+      env?: { [k: string]: string | undefined };
       windowsHide?: boolean;
     },
   ): SpawnSyncReturns;
@@ -3164,20 +3792,20 @@ declare module "child_process" {
 
   export interface ChildProcess extends Disposable {
     ref(): void;
-    on(event: "spawn", listener: () => void): void;
-    once(event: "spawn", listener: () => void): void;
+    on(event: "spawn", listener: () => void): this;
+    once(event: "spawn", listener: () => void): this;
     /* The exit listener may also take Node's second parameter — the
      * terminating signal's name, null for a normal exit. */
-    on(event: "exit", listener: (code: number | null, signal: string | null) => void): void;
-    on(event: "close", listener: (code: number | null, signal: string | null) => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
-    once(event: "exit", listener: (code: number | null, signal: string | null) => void): void;
-    once(event: "close", listener: (code: number | null, signal: string | null) => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
-    on(event: "message", listener: (message: any) => void): void;
-    on(event: "disconnect", listener: () => void): void;
-    once(event: "message", listener: (message: any) => void): void;
-    once(event: "disconnect", listener: () => void): void;
+    on(event: "exit", listener: (code: number | null, signal: string | null) => void): this;
+    on(event: "close", listener: (code: number | null, signal: string | null) => void): this;
+    on(event: "error", listener: (err: Error) => void): this;
+    once(event: "exit", listener: (code: number | null, signal: string | null) => void): this;
+    once(event: "close", listener: (code: number | null, signal: string | null) => void): this;
+    once(event: "error", listener: (err: Error) => void): this;
+    on(event: "message", listener: (message: any) => void): this;
+    on(event: "disconnect", listener: () => void): this;
+    once(event: "message", listener: (message: any) => void): this;
+    once(event: "disconnect", listener: () => void): this;
     /* The lifecycle members, Node's exact shapes: pid is undefined exactly
      * when the spawn failed; exitCode is null while running, the code
      * after a normal exit, null for a signal death, and -errno once a
@@ -3333,6 +3961,85 @@ declare module "util" {
   ): string;
   export function parseEnv(content: string): { [key: string]: string | undefined };
   export function inherits(constructor: unknown, superConstructor: unknown): void;
+  export class MIMEType {
+    constructor(input: string | { toString: () => string });
+    static parse(input: string | { toString: () => string }): MIMEType | null;
+    type: string;
+    subtype: string;
+    readonly essence: string;
+    readonly params: MIMEParams;
+    toString(): string;
+    toJSON(): string;
+  }
+  export class MIMEParams {
+    delete(name: string): void;
+    entries(): IterableIterator<[name: string, value: string]>;
+    get(name: string): string | null;
+    has(name: string): boolean;
+    keys(): IterableIterator<string>;
+    set(name: string, value: string): void;
+    values(): IterableIterator<string>;
+    toString(): string;
+    toJSON(): string;
+    [Symbol.iterator](): IterableIterator<[name: string, value: string]>;
+  }
+  export type DiffEntry = [operation: -1 | 0 | 1, value: string];
+  export function diff(
+    actual: string | readonly string[],
+    expected: string | readonly string[],
+  ): DiffEntry[];
+  export interface DebounceOptions {
+    leading?: boolean;
+    rejectOnCancel?: boolean;
+    signal?: AbortSignal;
+  }
+  /** Every call answers a promise of the result of the call it waits for. */
+  export interface DebouncedFunction<T extends (...args: any[]) => any> {
+    (...args: Parameters<T>): Promise<Awaited<ReturnType<T>>>;
+    cancel(reason?: unknown): void;
+    flush(): void;
+    ref(): this;
+    unref(): this;
+    readonly pending: Promise<Awaited<ReturnType<T>>> | null;
+    readonly pendingCount: number;
+  }
+  export function debounce<T extends (...args: any[]) => any>(
+    fn: T,
+    wait: number,
+    options?: DebounceOptions,
+  ): DebouncedFunction<T>;
+  export interface ThrottleOptions {
+    concurrency?: number;
+    maxPending?: number;
+    overflow?: "queue" | "drop";
+    signal?: AbortSignal;
+    strict?: boolean;
+  }
+  export interface ThrottledFunction<T extends (...args: any[]) => any> {
+    (...args: Parameters<T>): Promise<Awaited<ReturnType<T>>>;
+    cancel(reason?: unknown): void;
+    hasImmediateCapacity(): boolean;
+    ref(): this;
+    unref(): this;
+    readonly pending: Promise<Awaited<ReturnType<T>>> | null;
+    readonly pendingCount: number;
+    readonly activeCount: number;
+  }
+  export function throttle<T extends (...args: any[]) => any>(
+    fn: T,
+    limit: number,
+    interval: number,
+    options?: ThrottleOptions,
+  ): ThrottledFunction<T>;
+  /** Resolves with the abort event once `signal` aborts, or with undefined
+   * when it already has. */
+  export function aborted(signal: AbortSignal, resource: any): Promise<unknown>;
+  /** 128 plus the number of the signal, the exit code of a process it terminates. */
+  export function convertProcessSignalToExitCode(signalCode: string): number;
+  /** @deprecated Since v4.0.0 - Use `Array.isArray()` instead. */
+  export function isArray(object: unknown): object is unknown[];
+  /** @deprecated Since v6.0.0 - Use `Object.assign()` instead. Answers target itself. */
+  export function _extend<T extends object>(target: T, source: object | null | undefined): T;
   export interface DeprecateOptions {
     modifyPrototype?: boolean;
   }
@@ -3390,9 +4097,14 @@ declare module "util" {
   export type TextDecoder = globalThis.TextDecoder;
   export var TextEncoder: typeof globalThis.TextEncoder;
   export var TextDecoder: typeof globalThis.TextDecoder;
-  /* stream.pipeline's (...streams: unknown[]) => unknown is assignable to
-   * every other target's parameter type, so its overload comes first; no
-   * other target is assignable to it. */
+  /* An untyped function: an `any` value, or a function whose parameters
+   * are untyped (JavaScript's `(value, callback) => ...`), the only
+   * parameters that accept this object type. The promisified function is
+   * untyped too. It comes first because such functions match every other
+   * overload. */
+  export function promisify(fn: (...args: { readonly "scriptc:untyped": true }[]) => unknown): any;
+  /* stream.pipeline's overload comes next: its __promisify__ member keeps
+   * every other target out of it. */
   export function promisify(
     fn: typeof import("node:stream").pipeline,
   ): typeof import("node:stream/promises").pipeline;
@@ -3512,15 +4224,56 @@ declare module "util" {
   ): (address: string, port: number) => Promise<{ hostname: string; service: string }>;
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
-   * without a lowering fences at its site). inspect's options carry the
-   * documented knobs through an index signature. */
+   * without a lowering fences at its site). */
+  export interface InspectOptions {
+    showHidden?: boolean | undefined;
+    depth?: number | null | undefined;
+    colors?: boolean | undefined;
+    customInspect?: boolean | undefined;
+    showProxy?: boolean | undefined;
+    maxArrayLength?: number | null | undefined;
+    maxStringLength?: number | null | undefined;
+    breakLength?: number | undefined;
+    compact?: boolean | number | undefined;
+    sorted?: boolean | ((a: string, b: string) => number) | undefined;
+    getters?: "get" | "set" | boolean | undefined;
+    numericSeparator?: boolean | undefined;
+  }
+  export type Style =
+    | "special"
+    | "number"
+    | "bigint"
+    | "boolean"
+    | "undefined"
+    | "null"
+    | "string"
+    | "symbol"
+    | "date"
+    | "regexp"
+    | "module";
+  export interface InspectOptionsStylized extends InspectOptions {
+    stylize(text: string, styleType: Style): string;
+  }
+  export type CustomInspectFunction = (
+    depth: number,
+    options: InspectOptionsStylized,
+    inspect: typeof import("node:util").inspect,
+  ) => any;
   export function inspect(
     object: unknown,
-    options?: { depth?: number | null; colors?: boolean; [k: string]: unknown },
+    showHidden?: boolean,
+    depth?: number | null,
+    color?: boolean,
   ): string;
+  export function inspect(object: unknown, options?: InspectOptions): string;
+  export namespace inspect {
+    /* The key of an object's custom inspect function:
+     * Symbol.for('nodejs.util.inspect.custom'). */
+    const custom: unique symbol;
+  }
   export function format(format?: unknown, ...args: unknown[]): string;
   export function formatWithOptions(
-    inspectOptions: { depth?: number | null; colors?: boolean; [k: string]: unknown },
+    inspectOptions: InspectOptions,
     format?: unknown,
     ...args: unknown[]
   ): string;
@@ -4296,9 +5049,9 @@ declare module "node:readline/promises" {
  * inputs with Node's default options; libz links only into zlib-using
  * binaries. Callback forms use the executable worker pool. Options stay
  * declared so reached uses receive a named SC2020 refusal. The Deflate,
- * Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw and Unzip streams are
- * runtime Transform streams; Brotli and Zstd remain outside the lowered
- * surface. */
+ * Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, Unzip, BrotliCompress
+ * and BrotliDecompress streams are runtime Transform streams; Zstd remains
+ * outside the lowered surface. */
 declare module "zlib" {
   import { Transform } from "stream";
   export interface ZlibOptions {
@@ -4355,50 +5108,66 @@ declare module "zlib" {
   ): void;
   export function unzipSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
   export function crc32(data: string | Uint8Array, value?: number): number;
-  export function brotliCompressSync(data: string | Uint8Array): Buffer;
-  export function brotliDecompressSync(data: Uint8Array): Buffer;
-  /* Brotli needs a codec the static runtime does not vendor: these are
-   * declared so their uses receive the named refusal. */
+  /* Brotli over the vendored brotli 1.2.0 (scr_brotli.c): `params` keys
+   * are the numeric BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* constants. */
+  export interface BrotliOptions {
+    [option: string]: unknown;
+  }
   export function brotliCompress(data: string | Uint8Array, callback: ZlibCallback): void;
-  export function brotliDecompress(data: Uint8Array, callback: ZlibCallback): void;
-  export function createBrotliCompress(options?: ZlibOptions): Transform;
-  export function createBrotliDecompress(options?: ZlibOptions): Transform;
-  export class BrotliCompress extends Transform {
-    constructor(options?: ZlibOptions);
-  }
-  export class BrotliDecompress extends Transform {
-    constructor(options?: ZlibOptions);
-  }
+  export function brotliCompress(
+    data: string | Uint8Array,
+    options: BrotliOptions,
+    callback: ZlibCallback,
+  ): void;
+  export function brotliCompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
+  export function brotliDecompress(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function brotliDecompress(
+    data: string | Uint8Array,
+    options: BrotliOptions,
+    callback: ZlibCallback,
+  ): void;
+  export function brotliDecompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
   /* The stream classes: runtime Transform streams over the zlib engine
    * (scr_zlib_stream.c). createGzip(options) and new Gzip(options) build
-   * the same stream; options are validated at runtime with Node's rules. */
+   * the same stream; options are validated at runtime with Node's rules.
+   * Brotli streams have no params(), as in Node. */
   class ZlibBase extends Transform {
     readonly bytesWritten: number;
     flush(kind?: number, callback?: () => void): void;
     flush(callback: () => void): void;
-    params(level: number, strategy: number, callback?: () => void): void;
     close(callback?: () => void): void;
     reset(): void;
   }
-  export class Deflate extends ZlibBase {
+  class Zlib extends ZlibBase {
+    params(level: number, strategy: number, callback?: () => void): void;
+  }
+  export class BrotliCompress extends ZlibBase {
+    constructor(options?: BrotliOptions);
+  }
+  export class BrotliDecompress extends ZlibBase {
+    constructor(options?: BrotliOptions);
+  }
+  export function createBrotliCompress(options?: BrotliOptions): BrotliCompress;
+  export function createBrotliDecompress(options?: BrotliOptions): BrotliDecompress;
+  export class Deflate extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Inflate extends ZlibBase {
+  export class Inflate extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Gzip extends ZlibBase {
+  export class Gzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Gunzip extends ZlibBase {
+  export class Gunzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class DeflateRaw extends ZlibBase {
+  export class DeflateRaw extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class InflateRaw extends ZlibBase {
+  export class InflateRaw extends Zlib {
     constructor(options?: ZlibOptions);
   }
-  export class Unzip extends ZlibBase {
+  export class Unzip extends Zlib {
     constructor(options?: ZlibOptions);
   }
   export function createDeflate(options?: ZlibOptions): Deflate;
@@ -4702,10 +5471,10 @@ declare module "node:zlib" {
  * with the real port discoverable as address().port (the composed read
  * is the lowered form — bare address() has no lowering); close([cb])
  * firing once connections drain; socket write/end/destroy/pipe and the
- * data/end/close/error/connect events (on and once — listeners take at
- * most the declared parameter). write/end return void here (Node returns
- * the backpressure boolean / the socket); on/once return void (chaining
- * is fenced). connect's host is a numeric IP or "localhost" (pinned to
+ * data/end/close/error/connect/drain events (on and once — listeners
+ * take at most the declared parameter). write returns Node's
+ * backpressure boolean; end returns void here (Node returns the socket);
+ * on/once return void (chaining is fenced). connect's host is a numeric IP or "localhost" (pinned to
  * 127.0.0.1 — SEMANTICS.md); every failure is the async 'error' event,
  * and an 'error' with no listener exits 1 like an unhandled EventEmitter
  * 'error'. */
@@ -4737,7 +5506,13 @@ declare module "net" {
     readonly bytesWritten: number;
     /* write's callback runs once the data is flushed, with null; end's
      * once the socket finishes. */
-    write(data: string | Uint8Array, callback?: (err?: Error | null) => void): void;
+    /* false when the bytes this write left unsent reach the 65536-byte
+     * high-water mark, as in Node; 'drain' fires when they are all sent. */
+    write(data: string | Uint8Array, callback?: (err?: Error | null) => void): boolean;
+    /* the bytes written and not yet sent */
+    readonly writableLength: number;
+    /* a write answered false and 'drain' has not fired yet */
+    readonly writableNeedDrain: boolean;
     end(callback?: () => void): void;
     end(data: string | Uint8Array, callback?: () => void): void;
     destroy(): void;
@@ -4771,8 +5546,8 @@ declare module "net" {
      * unshift — read answers exactly n buffered bytes or null. */
     read(size?: number): Buffer | null;
     unshift(chunk: Uint8Array): void;
-    /* secureConnect/session are TLS-socket events declared on the shared
-     * socket surface (the lowering collapses TLSSocket onto this kind):
+    /* secureConnect/secure/session are TLS-socket events declared on the
+     * shared socket surface (the lowering collapses TLSSocket onto this kind):
      * the runtime gates on the transport, so a plain socket's
      * registration never fires — Node's exact split. 'session' fires
      * once with the serialized session (the received-ticket event). */
@@ -4780,7 +5555,16 @@ declare module "net" {
     /* After setEncoding the chunk is a string. */
     on(event: "data", listener: (chunk: string) => void): void;
     on(
-      event: "end" | "connect" | "ready" | "timeout" | "readable" | "finish" | "secureConnect",
+      event:
+        | "end"
+        | "connect"
+        | "ready"
+        | "timeout"
+        | "drain"
+        | "readable"
+        | "finish"
+        | "secureConnect"
+        | "secure",
       listener: () => void,
     ): void;
     on(event: "close", listener: (hadError: boolean) => void): void;
@@ -4796,7 +5580,16 @@ declare module "net" {
     /* After setEncoding the chunk is a string. */
     addListener(event: "data", listener: (chunk: string) => void): void;
     addListener(
-      event: "end" | "connect" | "ready" | "timeout" | "readable" | "finish" | "secureConnect",
+      event:
+        | "end"
+        | "connect"
+        | "ready"
+        | "timeout"
+        | "drain"
+        | "readable"
+        | "finish"
+        | "secureConnect"
+        | "secure",
       listener: () => void,
     ): void;
     addListener(event: "close", listener: (hadError: boolean) => void): void;
@@ -4811,7 +5604,16 @@ declare module "net" {
     /* After setEncoding the chunk is a string. */
     once(event: "data", listener: (chunk: string) => void): void;
     once(
-      event: "end" | "connect" | "ready" | "timeout" | "readable" | "finish" | "secureConnect",
+      event:
+        | "end"
+        | "connect"
+        | "ready"
+        | "timeout"
+        | "drain"
+        | "readable"
+        | "finish"
+        | "secureConnect"
+        | "secure",
       listener: () => void,
     ): void;
     once(event: "close", listener: (hadError: boolean) => void): void;
@@ -4857,14 +5659,20 @@ declare module "net" {
     /* The demux route: hand an accepted socket to another server. */
     emit(event: "connection", socket: Socket): boolean;
     on(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: a handshake that failed */
+    on(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
     on(event: "close" | "listening", listener: () => void): void;
     on(event: "drop", listener: (data?: DropArgument) => void): void;
     on(event: "timeout", listener: (socket: Socket) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     /* The WebSocket handover: fires INSTEAD of 'request' for
-     * Connection: upgrade requests, with the raw socket + head bytes. */
+     * Connection: upgrade requests, with the raw socket + head bytes;
+     * 'connect' is its twin for CONNECT requests (HTTP tunneling). */
     on(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
     /* http.createServer(handler)'s event twin (a no-parser net server
@@ -4875,12 +5683,17 @@ declare module "net" {
     ): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: a handshake that failed */
+    addListener(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
     addListener(event: "close" | "listening", listener: () => void): void;
     addListener(event: "drop", listener: (data?: DropArgument) => void): void;
     addListener(event: "timeout", listener: (socket: Socket) => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
     addListener(
@@ -4888,12 +5701,17 @@ declare module "net" {
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
     once(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: a handshake that failed */
+    once(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
     once(event: "close" | "listening", listener: () => void): void;
     once(event: "drop", listener: (data?: DropArgument) => void): void;
     once(event: "timeout", listener: (socket: Socket) => void): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
     ): void;
     once(
@@ -5089,6 +5907,7 @@ declare module "http" {
     readonly trailersDistinct: { [name: string]: string[] | undefined };
     readonly rawTrailers: string[];
     resume(): void;
+    pause(): void;
     destroy(): void;
     setTimeout(msecs: number, callback?: () => void): this;
     /* setEncoding('utf8'): 'data' delivers strings (other real encodings
@@ -5340,8 +6159,15 @@ declare module "node:http" {
  * are PEM strings or Buffers. Handshake failures tear the socket down
  * without emitting an event, Node's default for 'tlsClientError' with no listener. */
 declare module "tls" {
-  import { Server, Socket } from "net";
-  export { Server };
+  import { Server as NetServer, Socket } from "net";
+  /** tls.Server: a net server whose connections handshake first. */
+  export interface Server extends NetServer {
+    /* serve `context` to clients whose SNI name matches `hostname` ('*'
+     * matches within one label); the newest match wins */
+    addContext(hostname: string, context: TlsOptions | SecureContext): void;
+    /* new connections serve a context made from `options` */
+    setSecureContext(options: TlsOptions): void;
+  }
   export interface TlsOptions {
     /* Optional in the DECLARATION only (real Node programs build these
      * literals with every TLS knob): the lowering still requires both —
@@ -5364,6 +6190,7 @@ declare module "tls" {
    * split — authorizationError is the verify-failure CODE STRING
    * (DEPTH_ZERO_SELF_SIGNED_CERT, ...), or null. */
   export interface TLSSocket extends Socket {
+    readonly encrypted: true;
     authorized: boolean;
     authorizationError: string | null;
     /* null before the handshake, then the negotiated protocol or false */
@@ -5374,7 +6201,62 @@ declare module "tls" {
     getCipher(): CipherNameAndProtocol;
     /* whether the handshake resumed a cached session */
     isSessionReused(): boolean;
+    /* the peer's certificate: {} before the handshake or without one,
+     * null once the socket is destroyed; detailed adds issuerCertificate */
+    getPeerCertificate(detailed: true): DetailedPeerCertificate;
+    getPeerCertificate(detailed?: false): PeerCertificate;
+    getPeerCertificate(detailed?: boolean): PeerCertificate | DetailedPeerCertificate;
+    /* the certificate this socket serves, the same way */
+    getCertificate(): PeerCertificate | object | null;
+    /* a new X509Certificate on each call, or undefined without one */
+    getPeerX509Certificate(): import("crypto").X509Certificate | undefined;
+    getX509Certificate(): import("crypto").X509Certificate | undefined;
   }
+  /* A certificate as getPeerCertificate() and X509Certificate's
+   * toLegacyObject() answer it: subject and issuer map attribute short
+   * names to values, infoAccess its "<method> - <type>" keys to values. */
+  export interface PeerCertificate {
+    subject: { [attribute: string]: string | string[] };
+    issuer: { [attribute: string]: string | string[] };
+    subjectaltname?: string;
+    infoAccess?: { [key: string]: string[] };
+    ca: boolean;
+    modulus?: string;
+    exponent?: string;
+    pubkey?: Buffer;
+    bits?: number;
+    valid_from: string;
+    valid_to: string;
+    fingerprint: string;
+    fingerprint256: string;
+    fingerprint512: string;
+    ext_key_usage?: string[];
+    serialNumber: string;
+    raw: Buffer;
+    asn1Curve?: string;
+    nistCurve?: string;
+  }
+  /* getPeerCertificate(true): each certificate links to its issuer; a
+   * self-issued root is its own issuerCertificate */
+  export interface DetailedPeerCertificate extends PeerCertificate {
+    issuerCertificate: DetailedPeerCertificate;
+  }
+
+  /** new tls.TLSSocket(socket, options): the server-mode wrap of an open
+   * socket (a server connection or an http CONNECT socket). The options
+   * record reads at runtime; isServer, cert, key, secureContext,
+   * ALPNProtocols, minVersion and maxVersion are implemented. */
+  export interface TLSSocketOptions {
+    isServer?: boolean;
+    cert?: string | Uint8Array;
+    key?: string | Uint8Array;
+    secureContext?: SecureContext;
+    ALPNProtocols?: string[] | Uint8Array;
+    minVersion?: string;
+    maxVersion?: string;
+    [option: string]: unknown;
+  }
+  export const TLSSocket: new (socket: Socket, options: TLSSocketOptions) => TLSSocket;
   export interface CipherNameAndProtocol {
     name: string;
     standardName: string;
@@ -5383,12 +6265,14 @@ declare module "tls" {
   export const DEFAULT_MIN_VERSION: string;
   export const DEFAULT_MAX_VERSION: string;
   /** tls.connect options — the RUNTIME options record (members read at
-   * runtime; port/host/rejectUnauthorized/ca/servername are the
+   * runtime; port/host/socket/rejectUnauthorized/ca/servername are the
    * honestly-implemented set, every other documented member throws the
    * runtime fence — the options-record stance's divergence-66 shape). */
   export interface ConnectionOptions {
     port?: number;
     host?: string;
+    /* an open socket to run the client handshake over */
+    socket?: Socket;
     rejectUnauthorized?: boolean;
     ca?: string | Uint8Array | ReadonlyArray<string | Uint8Array>;
     servername?: string;
@@ -5412,6 +6296,8 @@ declare module "tls" {
   /** An opaque parsed cert/key pair — what an SNI callback answers with
    * (the value is a runtime handle; the members are runtime-internal). */
   export interface SecureContext {}
+  /* @types/node's name for createSecureContext's options */
+  export type SecureContextOptions = TlsOptions;
   export function createSecureContext(options: TlsOptions): SecureContext;
   /** The CA-store introspection surface (scr_tls_ca.c): per-type cached
    * PEM string arrays. The host bundle stands in for Node's compiled-in
@@ -5496,6 +6382,7 @@ declare module "http2" {
   export interface Http2Stream {
     on(event: "error" | "close", listener: (err: Error) => void): void;
     once(event: "error" | "close", listener: (err: Error) => void): void;
+    addListener(event: "error" | "close", listener: (err: Error) => void): void;
     destroy(): void;
   }
   export interface Http2ServerRequest {
@@ -5596,11 +6483,6 @@ declare module "http2" {
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
     ): void;
     on(event: "session", listener: (session: ServerHttp2Session) => void): void;
-    once(
-      event: "stream",
-      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
-    ): void;
-    once(event: "session", listener: (session: ServerHttp2Session) => void): void;
     /* HTTP CONNECT (and, in Node, the h2 extended CONNECT — which the
      * allowHTTP1 lowering never sees): the second argument is the raw
      * socket on HTTP/1.1 connections; narrow with instanceof. */
@@ -5618,6 +6500,42 @@ declare module "http2" {
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close", listener: () => void): void;
+    once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    once(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    once(event: "session", listener: (session: ServerHttp2Session) => void): void;
+    once(
+      event: "connect",
+      listener: (
+        req: Http2ServerRequest | import("http").IncomingMessage,
+        resOrSocket: Http2ServerResponse | Socket,
+      ) => void,
+    ): void;
+    addListener(event: "connection", listener: (socket: Socket) => void): void;
+    addListener(
+      event: "request",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(event: "close", listener: () => void): void;
+    addListener(
+      event: "sessionError",
+      listener: (err: Error, session: ServerHttp2Session) => void,
+    ): void;
+    addListener(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(event: "session", listener: (session: ServerHttp2Session) => void): void;
+    addListener(
+      event: "connect",
+      listener: (
+        req: Http2ServerRequest | import("http").IncomingMessage,
+        resOrSocket: Http2ServerResponse | Socket,
+      ) => void,
+    ): void;
   }
   export interface SecureServerOptions {
     allowHTTP1?: boolean;
@@ -5959,6 +6877,28 @@ declare module "http2" {
       listener: (errorCode: number, lastStreamID: number, opaqueData?: Uint8Array) => void,
     ): void;
     once(event: "localSettings" | "remoteSettings", listener: (settings: any) => void): void;
+    once(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
+    once(event: "ping", listener: (payload: Uint8Array) => void): void;
+    addListener(event: "close" | "timeout", listener: () => void): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(
+      event: "connect",
+      listener: (session: Http2Session, socket: import("net").Socket) => void,
+    ): void;
+    addListener(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(
+      event: "goaway",
+      listener: (errorCode: number, lastStreamID: number, opaqueData?: Uint8Array) => void,
+    ): void;
+    addListener(event: "localSettings" | "remoteSettings", listener: (settings: any) => void): void;
+    addListener(
+      event: "frameError",
+      listener: (type: number, code: number, id: number) => void,
+    ): void;
+    addListener(event: "ping", listener: (payload: Uint8Array) => void): void;
   }
 
   export interface ClientHttp2Session extends Http2Session {
@@ -6036,7 +6976,30 @@ declare module "http2" {
       listener: () => void,
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
     once(event: "trailers", listener: (trailers: IncomingHttpHeaders, flags: number) => void): void;
+    addListener(event: "data", listener: (chunk: any) => void): void;
+    addListener(
+      event:
+        | "end"
+        | "close"
+        | "aborted"
+        | "ready"
+        | "timeout"
+        | "drain"
+        | "finish"
+        | "wantTrailers",
+      listener: () => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(
+      event: "frameError",
+      listener: (type: number, code: number, id: number) => void,
+    ): void;
+    addListener(
+      event: "trailers",
+      listener: (trailers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
     respond(
       headers?: OutgoingHttpHeaders,
       options?: { endStream?: boolean; waitForTrailers?: boolean },
@@ -6086,6 +7049,7 @@ declare module "http2" {
     on(event: "trailers", listener: (trailers: IncomingHttpHeaders, flags: number) => void): void;
     once(event: "response", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
     once(event: "push", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
+    once(event: "headers", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
     once(event: "data", listener: (chunk: any) => void): void;
     once(
       event:
@@ -6100,6 +7064,42 @@ declare module "http2" {
       listener: () => void,
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
+    once(event: "trailers", listener: (trailers: IncomingHttpHeaders, flags: number) => void): void;
+    addListener(
+      event: "response",
+      listener: (headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(
+      event: "push",
+      listener: (headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(
+      event: "headers",
+      listener: (headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(event: "data", listener: (chunk: any) => void): void;
+    addListener(
+      event:
+        | "end"
+        | "close"
+        | "aborted"
+        | "ready"
+        | "timeout"
+        | "drain"
+        | "finish"
+        | "wantTrailers",
+      listener: () => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(
+      event: "frameError",
+      listener: (type: number, code: number, id: number) => void,
+    ): void;
+    addListener(
+      event: "trailers",
+      listener: (trailers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
   }
 
   export interface Http2Server {
@@ -6134,6 +7134,24 @@ declare module "http2" {
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close" | "listening" | "timeout", listener: () => void): void;
+    once(event: "connection", listener: (socket: import("net").Socket) => void): void;
+    once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    addListener(
+      event: "stream",
+      listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(event: "session", listener: (session: ServerHttp2Session) => void): void;
+    addListener(
+      event: "request",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    addListener(event: "close" | "listening" | "timeout", listener: () => void): void;
+    addListener(event: "connection", listener: (socket: import("net").Socket) => void): void;
+    addListener(
+      event: "sessionError",
+      listener: (err: Error, session: ServerHttp2Session) => void,
+    ): void;
   }
 
   export interface ServerOptions {
@@ -6532,9 +7550,18 @@ declare module "node:tty" {
 declare module "async_hooks" {
   /* AsyncLocalStorage: fiber-carried context snapshots — run/getStore/
    * exit/enterWith/disable lower onto the runtime's active-slot machinery
-   * (als.* libCalls); values cross as dyn values. */
+   * (als.* libCalls); values cross as dyn values. bind and snapshot bind
+   * functions to the active context; the options carry the store's
+   * default value and name. */
+  export interface AsyncLocalStorageOptions {
+    defaultValue?: any;
+    name?: string | undefined;
+  }
   export class AsyncLocalStorage<T = any> {
-    constructor();
+    constructor(options?: AsyncLocalStorageOptions);
+    static bind<Func extends (...args: any[]) => any>(fn: Func): Func;
+    static snapshot(): <R, TArgs extends any[]>(fn: (...args: TArgs) => R, ...args: TArgs) => R;
+    readonly name: string;
     run<R>(store: T, callback: (...args: any[]) => R, ...args: any[]): R;
     exit<R>(callback: (...args: any[]) => R, ...args: any[]): R;
     getStore(): T | undefined;
@@ -6623,11 +7650,10 @@ declare module "node:events" {
  * write(chunk, enc, cb) {} })`, Duplex/Transform/PassThrough, push/read,
  * flowing vs paused, write/end backpressure + 'drain', pipe/unpipe, and
  * destroy — with Node's event orderings. Chunks are BYTES (Buffer), with
- * utf8 strings converted at push/write like Node; objectMode and
- * setEncoding are declared so uses fence at their sites with their own
- * words. `class My extends Readable` (the _read override form) is a
- * separate feature and fences at the class declaration. The runtime-fired
- * events carry per-class FORCED argument tuples ('data' is one Buffer,
+ * strings converted at push/write like Node, and any value on an
+ * object-mode side (objectMode, readableObjectMode, writableObjectMode —
+ * the object-mode constructor overloads come first). The runtime-fired
+ * events carry per-class FORCED argument tuples ('data' is one chunk,
  * 'error' one Error, 'pipe'/'unpipe' one Readable, the rest empty) — the
  * overloads below hand tsc the same contract so unannotated listener
  * parameters contextually type in .js sources. */
@@ -6658,7 +7684,11 @@ declare module "stream" {
       encoding: string,
       callback: (error?: Error | null) => void,
     ): void;
-    writev?(this: Writable, chunks: unknown[], callback: (error?: Error | null) => void): void;
+    writev?(
+      this: Writable,
+      chunks: Array<{ chunk: any; encoding: string }>,
+      callback: (error?: Error | null) => void,
+    ): void;
     final?(this: Writable, callback: (error?: Error | null) => void): void;
     destroy?(this: Writable, error: Error | null, callback: (error?: Error | null) => void): void;
     construct?(this: Writable, callback: (error?: Error | null) => void): void;
@@ -6693,7 +7723,11 @@ declare module "stream" {
     readable?: boolean;
     writable?: boolean;
     defaultEncoding?: string;
-    writev?(this: Duplex, chunks: unknown[], callback: (error?: Error | null) => void): void;
+    writev?(
+      this: Duplex,
+      chunks: Array<{ chunk: any; encoding: string }>,
+      callback: (error?: Error | null) => void,
+    ): void;
     signal?: AbortSignal;
   }
   interface TransformOptions {
@@ -6733,6 +7767,81 @@ declare module "stream" {
     signal?: AbortSignal;
   }
 
+  /* Object-mode options (objectMode: true, or a Duplex's or Transform's
+   * readableObjectMode / writableObjectMode): chunks and completion data
+   * are any values, and an object-mode write's encoding argument reaches
+   * write/transform as passed (undefined when absent, null when a
+   * callback took its place). The constructors take these before the
+   * byte-mode options, so a byte-mode stream's callbacks keep Buffer
+   * chunks. */
+  type ObjectModeEncoding = string | null | undefined;
+  type ObjectModeFlag =
+    | { objectMode: true }
+    | { readableObjectMode: true }
+    | { writableObjectMode: true };
+  interface ObjectWritableOptions extends Omit<WritableOptions, "objectMode" | "write"> {
+    objectMode: true;
+    write?(
+      this: Writable,
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback: (error?: Error | null) => void,
+    ): void;
+  }
+  type ObjectDuplexOptions = Omit<DuplexOptions, "write"> & {
+    write?(
+      this: Duplex,
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback: (error?: Error | null) => void,
+    ): void;
+  } & ObjectModeFlag;
+  type ObjectTransformOptions = Omit<TransformOptions, "transform" | "flush" | "write"> & {
+    transform?(
+      this: Transform,
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback: (error?: Error | null, data?: any) => void,
+    ): void;
+    flush?(this: Transform, callback: (error?: Error | null, data?: any) => void): void;
+    write?(
+      this: Transform,
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback: (error?: Error | null) => void,
+    ): void;
+  } & ObjectModeFlag;
+
+  /* decodeStrings: false — a string write reaches write/transform as the
+   * string with its encoding (Buffers keep 'buffer'). */
+  interface StringWritableOptions extends Omit<WritableOptions, "decodeStrings" | "write"> {
+    decodeStrings: false;
+    write?(
+      this: Writable,
+      chunk: string | Buffer,
+      encoding: string,
+      callback: (error?: Error | null) => void,
+    ): void;
+  }
+  type StringDuplexOptions = Omit<DuplexOptions, "decodeStrings" | "write"> & {
+    decodeStrings: false;
+    write?(
+      this: Duplex,
+      chunk: string | Buffer,
+      encoding: string,
+      callback: (error?: Error | null) => void,
+    ): void;
+  };
+  type StringTransformOptions = Omit<TransformOptions, "decodeStrings" | "transform"> & {
+    decodeStrings: false;
+    transform?(
+      this: Transform,
+      chunk: string | Buffer,
+      encoding: string,
+      callback: (error?: Error | null, data?: Buffer | string) => void,
+    ): void;
+  };
+
   /* The operators' options: concurrency and highWaterMark bound map's
    * in-flight callbacks and queued results. */
   interface ArrayOptions {
@@ -6751,9 +7860,16 @@ declare module "stream" {
     _destroy(error: Error | null, callback: (error?: Error | null) => void): void;
     [Symbol.asyncIterator](): AsyncIterableIterator<any>;
     iterator(options?: { destroyOnReturn?: boolean }): AsyncIterableIterator<any>;
+    /* compose(this, stage), destroyed when options.signal aborts. */
+    compose(stage: ComposeStage, options?: { signal: AbortSignal }): Duplex;
     push(chunk: Buffer | string | null, encoding?: string): boolean;
+    /* An object-mode stream's values. */
+    push(chunk: any, encoding?: string): boolean;
     unshift(chunk: Buffer | string, encoding?: string): void;
-    read(size?: number): Buffer | null;
+    unshift(chunk: any, encoding?: string): void;
+    /* A Buffer, a string once encoded, an object-mode value, or null (as
+     * @types/node types it). */
+    read(size?: number): any;
     pause(): this;
     resume(): this;
     isPaused(): boolean;
@@ -6771,6 +7887,16 @@ declare module "stream" {
     readonly destroyed: boolean;
     readonly errored: Error | null;
     static from(iterable: unknown, options?: ReadableOptions): Readable;
+    /* A Readable over a web ReadableStream's reader. */
+    static fromWeb(
+      readableStream: globalThis.ReadableStream,
+      options?: {
+        encoding?: string;
+        highWaterMark?: number;
+        objectMode?: boolean;
+        signal?: AbortSignal;
+      },
+    ): Readable;
     /* The Readable operators: chunks are strings or Buffers, map and
      * flatMap callbacks return strings or Buffers (flatMap: arrays of
      * them, or strings), and callbacks that declare the options argument
@@ -6859,6 +7985,8 @@ declare module "stream" {
   }
 
   class Writable extends EventEmitter {
+    constructor(opts: ObjectWritableOptions);
+    constructor(opts: StringWritableOptions);
     constructor(opts?: WritableOptions);
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
@@ -6874,9 +8002,19 @@ declare module "stream" {
       encoding: string,
       callback?: (error?: Error | null) => void,
     ): boolean;
+    /* An object-mode stream's values (the encoding argument reaches
+     * _write as passed). */
+    write(chunk: any, callback?: (error?: Error | null) => void): boolean;
+    write(
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback?: (error?: Error | null) => void,
+    ): boolean;
     end(callback?: () => void): this;
     end(chunk: Buffer | string, callback?: () => void): this;
     end(chunk: Buffer | string, encoding: string, callback?: () => void): this;
+    end(chunk: any, callback?: () => void): this;
+    end(chunk: any, encoding: ObjectModeEncoding, callback?: () => void): this;
     cork(): void;
     uncork(): void;
     setDefaultEncoding(encoding: string): this;
@@ -6926,6 +8064,11 @@ declare module "stream" {
    * mirrors @types/node: extends Readable, the writable half declared
    * again. The lowering treats both halves as first-class. */
   class Duplex extends Readable {
+    /* Duplex.from: an async generator function, an iterable, a string or
+     * a stream (duplexify.js). */
+    static from(body: unknown): Duplex;
+    constructor(opts: ObjectDuplexOptions);
+    constructor(opts: StringDuplexOptions);
     constructor(opts?: DuplexOptions);
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
@@ -6940,9 +8083,19 @@ declare module "stream" {
       encoding: string,
       callback?: (error?: Error | null) => void,
     ): boolean;
+    /* An object-mode stream's values (the encoding argument reaches
+     * _write as passed). */
+    write(chunk: any, callback?: (error?: Error | null) => void): boolean;
+    write(
+      chunk: any,
+      encoding: ObjectModeEncoding,
+      callback?: (error?: Error | null) => void,
+    ): boolean;
     end(callback?: () => void): this;
     end(chunk: Buffer | string, callback?: () => void): this;
     end(chunk: Buffer | string, encoding: string, callback?: () => void): this;
+    end(chunk: any, callback?: () => void): this;
+    end(chunk: any, encoding: ObjectModeEncoding, callback?: () => void): this;
     cork(): void;
     uncork(): void;
     setDefaultEncoding(encoding: string): this;
@@ -7014,27 +8167,56 @@ declare module "stream" {
   }
 
   class Transform extends Duplex {
+    constructor(opts: ObjectTransformOptions);
+    constructor(opts: StringTransformOptions);
     constructor(opts?: TransformOptions);
     /* The underscore-method surface (see Readable). */
     _transform(
       chunk: any,
       encoding: string,
-      callback: (error?: Error | null, data?: Buffer | string) => void,
+      callback: (error?: Error | null, data?: any) => void,
     ): void;
-    _flush(callback: (error?: Error | null, data?: Buffer | string) => void): void;
+    _flush(callback: (error?: Error | null, data?: any) => void): void;
   }
   class PassThrough extends Transform {
+    constructor(opts: ObjectTransformOptions);
+    constructor(opts: StringTransformOptions);
     constructor(opts?: TransformOptions);
   }
 
   /* addAbortSignal(signal, stream): the stream, destroyed with an
    * AbortError (cause: signal.reason) when the signal aborts. */
   function addAbortSignal<T extends Readable | Writable>(signal: AbortSignal, stream: T): T;
-  /* Declared so requires typecheck; each fences at its use site. */
-  function pipeline(...streams: unknown[]): unknown;
-  /* compose(...streams): a Duplex that writes to the first stream and
-   * reads from the last, with the streams running as a pipeline. */
-  function compose(...streams: Array<Readable | Writable>): Duplex;
+  /* pipeline(...stages, callback): the last stream, or the object-mode
+   * PassThrough that a function destination feeds. */
+  type PipelineResult<T extends unknown[]> = T extends [
+    ...unknown[],
+    infer D,
+    (...args: any[]) => unknown,
+  ]
+    ? D extends (...args: any[]) => unknown
+      ? PassThrough
+      : D
+    : unknown;
+  function pipeline<T extends unknown[]>(...streams: T): PipelineResult<T>;
+  /* util.promisify's pipeline overload matches only pipeline itself: a
+   * generic signature alone admits every function. */
+  namespace pipeline {
+    const __promisify__: typeof promises.pipeline;
+  }
+  /* A compose stage: a stream, an async generator function over the
+   * previous stage, or (first) an iterable, async iterable or web
+   * ReadableStream. */
+  type ComposeStage =
+    | Readable
+    | Writable
+    | Iterable<unknown>
+    | AsyncIterable<unknown>
+    | globalThis.ReadableStream
+    | ((source: any, options?: { signal: AbortSignal }) => unknown);
+  /* compose(...streams): a Duplex that writes to the first stage and
+   * reads from the last, with the stages running as a pipeline. */
+  function compose(...streams: ComposeStage[]): Duplex;
   /* finished's options: readable/writable choose which ends count,
    * error: false ignores 'error' events, signal aborts the wait. */
   interface FinishedOptions {
@@ -7053,13 +8235,20 @@ declare module "stream" {
    * else 65536 — Node's own state.js split); literal argument only. */
   function getDefaultHighWaterMark(objectMode: boolean): number;
   /* The promise pipeline's result: a last stage that is an async
-   * function resolves the promise with its value. */
+   * function resolves the promise with its value (before the options
+   * argument, when one follows). */
   type PipelinePromise<T extends unknown[]> = T extends [
     ...unknown[],
     (...args: any[]) => Promise<infer P>,
   ]
     ? Promise<P>
-    : Promise<void>;
+    : T extends [
+          ...unknown[],
+          (...args: any[]) => Promise<infer P>,
+          { signal?: AbortSignal; end?: boolean },
+        ]
+      ? Promise<P>
+      : Promise<void>;
   namespace promises {
     function pipeline<T extends unknown[]>(...streams: T): PipelinePromise<T>;
     function finished(
@@ -7089,6 +8278,7 @@ declare module "stream" {
     DuplexOptions,
     TransformOptions,
     FinishedOptions,
+    PipelinePromise,
   };
 }
 declare module "node:stream" {
@@ -7103,9 +8293,7 @@ declare module "stream/promises" {
    * pipeline's trailing { signal, end } object and finished's options
    * (readable, writable, error, cleanup, signal) are supported. A last
    * stage that is an async function resolves the promise with its value. */
-  function pipeline<T extends unknown[]>(
-    ...streams: T
-  ): T extends [...unknown[], (...args: any[]) => Promise<infer P>] ? Promise<P> : Promise<void>;
+  function pipeline<T extends unknown[]>(...streams: T): import("stream").PipelinePromise<T>;
   function finished(
     stream: unknown,
     options?: {
