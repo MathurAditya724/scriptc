@@ -72,19 +72,34 @@ for (let k = 0; k < 4; k++) {
 }
 console.log("short", short.join(","));
 
-// The index is the compared local, and on the final else's path it is
-// past the end, also past 2^32: the store is ignored there.
-function indexed(flag: boolean, far: boolean): string {
+// The index is the compared local. Inside each arm the range analysis
+// proves its value there; on the final else's path it is past the end, also
+// past 2^32 and below -2^32, and the store is ignored.
+function indexed(flag: boolean): string {
   const a = new Uint8Array(4);
   let j = 0;
-  if (flag) j = far ? 4294967297 : 3;
+  if (flag) j = 4294967297;
   if (j === 0) a[j] = 11;
   else if (j === 1) a[j] = 22;
   else if (j === 2) a[j] = 33;
   else a[j] = 44;
   return a.join(",");
 }
-console.log("indexed", indexed(false, false), indexed(true, false), indexed(true, true));
+function indexedLoop(): string {
+  const a = new Uint8Array(8);
+  for (let k = 0; k < 4; k++) {
+    let j = 1;
+    if (k === 3) j = 5;
+    else if (k === 2) j = 4294967298;
+    else if (k === 1) j = -4294967294;
+    if (j === 1) a[j] = 11;
+    else if (j === 2) a[j] = 22;
+    else if (j === 3) a[j] = 33;
+    else a[j] = 44;
+  }
+  return a.join(",");
+}
+console.log("indexed", indexed(false), indexed(true), indexedLoop());
 
 // Chains that keep their arms: an arm with a second statement, no final
 // else, a different index, and a subject that is not a local.
