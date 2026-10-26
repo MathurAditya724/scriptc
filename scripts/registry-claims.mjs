@@ -14,7 +14,9 @@
  *   node scripts/registry-claims.mjs           every claim and every collision
  *   node scripts/registry-claims.mjs --check   only collisions with this branch;
  *                                              exits 1 when there is one
- */
+ *
+ * A pull request whose diff cannot be read is named in the output, and the
+ * run exits 2 (unless it found a collision), since its claims are missing. */
 import { execFile, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
@@ -119,16 +121,24 @@ const stacks = new Map();
 const claimant = (key) => stacks.get(key) ?? stacks.set(key, { names: [], claims: [] }).get(key);
 
 const queue = [...prs];
+// Pull requests whose diff could not be read: their claims are missing.
+const unread = [];
 await Promise.all(
   Array.from({ length: 8 }, async () => {
     for (let pr = queue.shift(); pr; pr = queue.shift()) {
       const diff = await run("gh", ["pr", "diff", String(pr.number)], { maxBuffer: 1 << 30 }).then(
         (r) => r.stdout,
-        () => "",
+        (error) => {
+          const reason = String(error.stderr || error.message)
+            .trim()
+            .split("\n")[0];
+          unread.push(`#${pr.number} (${reason})`);
+          return null;
+        },
       );
       const stack = claimant(stackOf(pr));
       stack.names.push({ number: pr.number, title: pr.title });
-      stack.claims.push(...claimsOf(diff));
+      if (diff !== null) stack.claims.push(...claimsOf(diff));
     }
   }),
 );
@@ -190,5 +200,14 @@ for (const [registry, numbers] of [...table].sort()) {
     for (const [label, who] of labels) console.log(`    ${label}\n      ${who.join("\n      ")}`);
   }
 }
-if (collisions === 0) console.log(check ? "no collisions with this branch" : "no collisions");
-process.exitCode = check && collisions > 0 ? 1 : 0;
+if (unread.length > 0) {
+  console.log(
+    `could not read the diff of ${unread.length} pull request${unread.length === 1 ? "" : "s"}; ${unread.length === 1 ? "its" : "their"} claims are missing:`,
+  );
+  for (const pr of unread.sort()) console.log(`    ${pr}`);
+}
+if (collisions === 0)
+  console.log(
+    `${check ? "no collisions with this branch" : "no collisions"}${unread.length > 0 ? " among the diffs read" : ""}`,
+  );
+process.exitCode = check && collisions > 0 ? 1 : unread.length > 0 ? 2 : 0;

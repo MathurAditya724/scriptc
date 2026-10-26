@@ -4,7 +4,7 @@ import { expect, test } from "vitest";
 import { DIAGNOSTIC_CODES, RESERVED_DIAGNOSTIC_CODES, RETIRED_DIAGNOSTIC_CODES } from "./codes.js";
 import { FENCE_CODES, UNSUPPORTED } from "./diagnostic.js";
 
-const here = new URL(".", import.meta.url).pathname;
+const here = import.meta.dirname;
 const packagesDir = join(here, "../../..");
 const codesSource = readFileSync(join(here, "codes.ts"), "utf8");
 

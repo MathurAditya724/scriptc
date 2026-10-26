@@ -73,6 +73,10 @@ beforeAll(() => {
     export type Loose = [string, number?, ...boolean[]];
     // Arrays of two instantiations of one generic class.
     export type Maps = Map<string, number>[] | Map<number, string>[];
+    // The same instantiations, each refined by an object type.
+    export type RefinedMaps =
+      | (Map<string, number> & { tag: number })[]
+      | (Map<number, string> & { tag: number })[];
   `,
   );
   load = loadProgram(entry);
@@ -263,6 +267,12 @@ describe("canon", () => {
 
   test("instantiations of one generic class stay distinct", () => {
     const maps = new Normalizer(checker).canon(aliases.get("Maps")!);
+    expect(maps.k === "union" && maps.arms.length).toBe(2);
+    expect(key(maps)).toBe("Map<string, number>[] | Map<number, string>[]");
+  });
+
+  test("a refined instantiation keeps its type arguments", () => {
+    const maps = new Normalizer(checker).canon(aliases.get("RefinedMaps")!);
     expect(maps.k === "union" && maps.arms.length).toBe(2);
     expect(key(maps)).toBe("Map<string, number>[] | Map<number, string>[]");
   });
