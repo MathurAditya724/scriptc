@@ -5876,6 +5876,16 @@ function preflight7(load: LoadResult): {
       // Node's startup crash with Node's exact message; what keeps a compile
       // fence is unsupported builtin or types-only surface.
       if (isBare && npmStaticDep === null) {
+        // A Node island package that tsconfig `paths` maps to its
+        // installed directory resolves to its declarations here: it loads
+        // in Node, typed by them, like an island package resolved through
+        // node_modules (scope-B NI-4).
+        if (
+          projDep !== null &&
+          projDep.isDeclarationFile &&
+          isFrontendIsland(packageNameOfSpecifier(spec))
+        )
+          continue;
         if (projDep !== null && projDep.isDeclarationFile) {
           diags.push(
             unsupportedDiag(
