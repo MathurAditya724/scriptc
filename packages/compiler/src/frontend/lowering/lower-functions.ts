@@ -1,5 +1,6 @@
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { declareTypedArguments } from "./typed-arguments.js";
+import { declareArgumentCount } from "./argument-counts.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
@@ -166,6 +167,23 @@ function declareFunctionArguments(
   }
 }
 
+/** The type parameters a lambda without its own takes from a generic
+ * contextual signature, unbound in the current scope. */
+function contextualTypeParameterSymbols(
+  lowerer: Lowerer,
+  node: ts.ArrowFunction | ts.FunctionExpression,
+): ts.Symbol[] {
+  const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(node));
+  if (signatures.length !== 1) return [];
+  const symbols: ts.Symbol[] = [];
+  for (const parameter of signatures[0]!.getTypeParameters()) {
+    const symbol = parameter.getSymbol();
+    if (!symbol || lowerer.typeParamBindings?.has(symbol)) return [];
+    symbols.push(symbol);
+  }
+  return symbols;
+}
+
 /** Lifts an arrow function / function expression / nested declaration /
  * object-literal shorthand method to a module-level function and yields
  * the `closure` expression creating it. */
@@ -199,6 +217,31 @@ export function lowerLambda(
       lowerer.erasingDepth--;
       lowerer.erasingLambdas.delete(node);
       lowerer.typeParamBindings = previous;
+    }
+  }
+  // A lambda contextually typed by a GENERIC signature (`send: (m) => …`
+  // for `send<T>(m: Msg<T>): string`) takes that signature's type
+  // parameters as its own; it lowers once, erased, like a generic lambda.
+  if (
+    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+    !node.typeParameters?.nodes.length &&
+    !lowerer.erasingLambdas.has(node)
+  ) {
+    const contextual = contextualTypeParameterSymbols(lowerer, node);
+    if (contextual.length > 0) {
+      const previous = lowerer.typeParamBindings;
+      const bindings = new Map(previous ?? []);
+      for (const symbol of contextual) bindings.set(symbol, DYN);
+      lowerer.typeParamBindings = bindings;
+      lowerer.erasingLambdas.add(node);
+      lowerer.erasingDepth++;
+      try {
+        return lowerLambda(lowerer, node, checkedReceiver);
+      } finally {
+        lowerer.erasingDepth--;
+        lowerer.erasingLambdas.delete(node);
+        lowerer.typeParamBindings = previous;
+      }
     }
   }
   const prepared =
@@ -534,12 +577,18 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
   const diagsBefore = lowerer.diags.length;
   lowerer.fnStack.push(ctx);
   try {
+    // The count a call through a value stored is taken (and its slot
+    // cleared) before the parameters bind: a destructuring default that
+    // throws must not leave the slot set for the next direct call.
+    const argumentCount: IrStmt[] = [];
+    declareArgumentCount(lowerer, decl, argumentCount);
     const receiver =
       decl.parameters.nodes.some(isThisParameter) || isJsSourceFile(ts.getSourceFileOfNode(decl))
         ? declareCallReceiver(lowerer, decl, sig.generator !== undefined)
         : null;
     const { params, prologue } = lowerer.declareParams(decl.parameters.nodes, sig.params);
     if (receiver) prologue.unshift(receiver);
+    prologue.unshift(...argumentCount);
     declareFunctionArguments(
       lowerer,
       decl,

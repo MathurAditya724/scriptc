@@ -870,8 +870,10 @@ static bool ni_stack_has(uintptr_t sp) {
   return ni_stack != NULL && sp > (uintptr_t)ni_stack && sp <= (uintptr_t)ni_stack + NI_STACK;
 }
 
-/* The lowest address of Node's stack its frames use while runtime code
- * they called runs (a host callback below), 0 outside them. Runtime code
+/* The lowest address of Node's stack in use while runtime code Node's
+ * frames called runs (a host callback below), 0 outside them: the
+ * callback's frame, or lower, where that code switched to a fiber's stack
+ * (scr_node_island_leave_stack) and left its own frames live. Runtime code
  * may resume an async fiber there, and the fiber may call into Node again:
  * that entry runs on Node's stack below this mark, so every frame of Node
  * stays on the one stack V8 scans (heap::base::Stack, bounded by
@@ -887,6 +889,10 @@ static uintptr_t ni_mark = 0;
     if (ni_stack_has(ni_here)) ni_mark = ni_here;                        \
   } while (0)
 #define NI_MARK_END (ni_mark = ni_saved_mark)
+
+void scr_node_island_leave_stack(uintptr_t sp) {
+  if (ni_mark != 0 && ni_stack_has(sp) && sp < ni_mark) ni_mark = sp;
+}
 
 /* A nested entry: job(arg) on Node's stack below the mark, from a fiber. */
 static void (*ni_nested_job)(void *) = NULL;

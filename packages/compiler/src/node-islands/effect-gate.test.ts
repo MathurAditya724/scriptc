@@ -80,8 +80,54 @@ const v = C.x;`,
       `const C = class { static get x() { return 1; } };
 const v = C.x;`,
     ],
+    [
+      "a computed key that converts an object",
+      `module.exports = { [{ toString() { return require("fs").readFileSync("/etc/hostname", "utf8"); } }]: 1 };`,
+    ],
+    [
+      "a computed key of a local object",
+      `const k = { toString() { return "k"; } };\nexports.o = { [k]: 1 };`,
+    ],
+    [
+      "a computed method name that converts an object",
+      `exports.o = { [{ valueOf() { return 1; } }]() {} };`,
+    ],
+    [
+      "a computed class member name that converts an object",
+      `class C { [{ toString() { return "m"; } }]() {} }`,
+    ],
+    ["a computed key of a let", `let k = "k";\nexports.o = { [k]: 1 };`],
+    [
+      "a symbol description that converts an object",
+      `const s = Symbol({ toString() { return "d"; } });`,
+    ],
+    [
+      "a symbol key that converts an object",
+      `const s = Symbol.for({ toString() { return "d"; } });`,
+    ],
   ])("refuses %s", (_what, text) => {
     expect(effectGate(pkg({ "index.js": text })).ok).toBe(false);
+  });
+
+  test("admits computed keys that are literals or symbols", () => {
+    const entry = pkg({
+      "index.js": `const kState = Symbol("state");
+const kName = "name";
+class C { [kState] = 1; [Symbol.iterator]() {} static [kName] = 2; }
+exports.C = C;
+exports.o = { ["a"]: 1, [kState]: 2, [kName]: 3, [Symbol.for("x")]: 4, [1n]() {} };
+`,
+    });
+    expect(effectGate(entry)).toEqual({ ok: true, files: [entry] });
+  });
+
+  test("refuses a destructured computed key that converts an object", () => {
+    const entry = pkg({
+      "lib.js": `exports.x = 1;`,
+      "index.js": `const { [{ toString() { return "x"; } }]: x } = require("./lib");\nexports.x = x;`,
+    });
+    expect(effectGate(join(entry, "..", "lib.js")).ok).toBe(true);
+    expect(effectGate(entry).ok).toBe(false);
   });
 
   test("refuses a read of a static member that a base class defines with a getter", () => {

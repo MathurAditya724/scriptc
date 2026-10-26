@@ -6,6 +6,7 @@ import {
   NodeIslandModuleCollector,
   nodeIslandManifest,
   readNodeIslandModules,
+  requireModuleSpecifiers,
   scanModuleSpecifiers,
 } from "./modules.js";
 
@@ -257,5 +258,55 @@ describe("the collected module tree", () => {
     expect(readNodeIslandModules(tree)).toEqual(new TextEncoder().encode("exports.f = () => 1;"));
     writeFileSync(join(root, "m.cjs"), "exports.f = () => 2;");
     expect(readNodeIslandModules(tree)).toBe(`${join(root, "m.cjs")} changed during the build`);
+  });
+});
+
+describe("modules the program provides", () => {
+  test("a shared program module ships as a placeholder, not its source", () => {
+    const source = "// internal pricing rules\nexport const margin = 0.37;\n";
+    const root = project({
+      "src/main.ts": "",
+      "src/pricing.ts": source,
+      "src/plugin.mjs": "export const x = 1;",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./plugin.mjs")).toBeNull();
+    collector.addProvided(join(root, "src/pricing.ts"));
+    const tree = collector.tree()!;
+    const entry = tree.files.find((f) => f.path.endsWith("pricing.ts"))!;
+    expect(entry.placeholder).toBe(true);
+    const data = readNodeIslandModules(tree);
+    if (typeof data === "string") throw new Error(data);
+    const shipped = new TextDecoder().decode(data);
+    expect(shipped).not.toContain("internal pricing rules");
+    expect(shipped).not.toContain("margin");
+    expect(shipped).toContain("export const x = 1;");
+  });
+
+  test("island code that imports a provided module ships neither its source nor its imports", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/plugin.mjs": 'import { y } from "./shared.mjs";\nexport const z = y;',
+      "src/shared.mjs": 'import { secret } from "./internal.mjs";\nexport const y = secret;',
+      "src/internal.mjs": "export const secret = 42;",
+    });
+    const collector = new NodeIslandModuleCollector();
+    collector.addProvided(join(root, "src/shared.mjs"));
+    expect(collector.add(join(root, "src/main.ts"), "./plugin.mjs")).toBeNull();
+    const files = collector.tree()!.files;
+    expect(files.find((f) => f.path.endsWith("shared.mjs"))!.placeholder).toBe(true);
+    expect(files.some((f) => f.path.endsWith("internal.mjs"))).toBe(false);
+  });
+
+  test("requireModule specifiers come from code, not comments or strings", () => {
+    expect(
+      requireModuleSpecifiers(`
+        // requireModule("./commented.mjs")
+        /* requireModule("./block.mjs") */
+        const s = 'requireModule("./in-string.mjs")';
+        const t = \`requireModule("./in-template.mjs")\`;
+        const p = requireModule("./plugin.mjs");
+      `),
+    ).toEqual(["./plugin.mjs"]);
   });
 });

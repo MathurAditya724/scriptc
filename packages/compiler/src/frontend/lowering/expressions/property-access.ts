@@ -1,12 +1,17 @@
+import { widensReducedRecords } from "../function-returns.js";
+import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { indexedUnionArms, lowerIndexedUnionMember } from "../indexed-unions.js";
 import { keyedHelperName } from "../stable-names.js";
+import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
+import { INSPECT_CUSTOM_DESCRIPTION, isInspectCustomAccess } from "../symbol-fields.js";
 import { isThisParameter } from "../call-signatures.js";
+import { argumentCountSlot, contextualCallCount, usedAsValue } from "../argument-counts.js";
 import {
   checkedPrivateValue,
   localPrivateBrandClass,
@@ -59,6 +64,8 @@ import {
   BYTES_ELEMENT_SIZE,
 } from "../../../ir/ir.js";
 import { lowerNavigatorMember } from "../builtins/navigator.js";
+import { lowerX509PublicKey } from "../builtins/x509.js";
+import { fenceMimeStaticRead } from "../builtins/mime.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
   inlineNamespaceRequireOf,
@@ -112,6 +119,8 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../.
 import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
+import { lowerRecordInheritedMember } from "../record-inherited.js";
+import { DATE_METHOD_HINT } from "../builtins/dates.js";
 import {
   cjsClassExprWholeExportOf,
   cjsExportAssignmentOf,
@@ -146,6 +155,8 @@ import { nullishGenericBindingUnitOf } from "../binding-analysis.js";
 import { blockedBindingUseDiag } from "../../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
+import { createRequireCalleeFileOf } from "../builtins/module-bindings.js";
+import { createRequireResolveFenceValue } from "../builtins/module-resolution.js";
 import {
   builtinPrototypeMethod,
   lowerArrayIsArrayValue,
@@ -160,6 +171,7 @@ import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
 import { arrayValueRead, arrayValueType } from "../array-values.js";
 import { lowerClassMethodValue } from "../class-method-values.js";
+import { reflectMemberValue } from "../builtins/reflection.js";
 import {
   objLitGenericFnInfoOf,
   objLitGenericFnNodeOf,
@@ -286,6 +298,21 @@ const DGRAM_METHOD_VALUES = new Set([
   "unref",
 ]);
 
+function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  let resolve: ts.Expression = expr;
+  if (
+    expr.name.text === "paths" &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    !expr.expression.questionDotToken
+  )
+    resolve = expr.expression;
+  return (
+    ts.isPropertyAccessExpression(resolve) &&
+    resolve.name.text === "resolve" &&
+    createRequireCalleeFileOf(lowerer, resolve.expression) !== null
+  );
+}
+
 export function lowerPropertyAccessExpr(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -313,6 +340,16 @@ export function lowerPropertyAccessExpr(
   // Cloudflare probe) folds like `navigator.userAgent`.
   const navigator = lowerNavigatorMember(lowerer, expr, NODE_COMPAT_VERSION);
   if (navigator) return navigator;
+  // util.inspect.custom: Symbol.for('nodejs.util.inspect.custom').
+  if (isInspectCustomAccess(lowerer, expr)) {
+    return {
+      kind: "libCall",
+      fn: "sym.for",
+      args: [{ kind: "strLit", value: INSPECT_CUSTOM_DESCRIPTION, type: STRING, loc }],
+      type: SYMBOL_T,
+      loc,
+    };
+  }
   {
     const member = lowerBufferPrototypeMember(lowerer, expr);
     if (member) return member;
@@ -347,6 +384,11 @@ export function lowerPropertyAccessExpr(
   {
     const reading = lowerHistogramProperty(lowerer, expr);
     if (reading) return reading;
+  }
+  // An X509Certificate's publicKey KeyObject.
+  {
+    const publicKey = lowerX509PublicKey(lowerer, expr);
+    if (publicKey) return publicKey;
   }
   // `.length` of a forwarded fixed tuple (a typed `arguments`, a tuple
   // rest parameter, an alias of either): the signature's arity.
@@ -499,6 +541,8 @@ export function lowerPropertyAccessExpr(
     };
   }
   if (lowerer.stdlibGlobalMember(expr, "Object") === "freeze") {
+    // Object.freeze as a value can freeze any untyped value it is passed.
+    lowerer.untypedIntegrity = true;
     const name = "%builtin.Object.freeze";
     if (!lowerer.liftedFns.some((fn) => fn.name === name))
       lowerer.liftedFns.push({
@@ -689,7 +733,31 @@ export function lowerPropertyAccessExpr(
         const declared = (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
           (p) => !isThisParameter(p),
         ).length;
-        const count = Math.max(declared, contextualArgumentCount(lowerer, fn) ?? 0);
+        const contextual = contextualArgumentCount(lowerer, fn);
+        if (contextual === "varies") {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            "'arguments.length' in function expressions passed where the expected function type has optional or rest parameters (the count varies per call)",
+          );
+        }
+        // A top-level declaration also used as a value reads the count its
+        // caller stored (argument-counts.ts).
+        if (ts.isFunctionDeclaration(fn) && lowerer.ctx.argumentCount !== undefined)
+          return varRef(lowerer.ctx.argumentCount.id, F64, loc);
+        if (
+          (ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) &&
+          usedAsValue(lowerer, fn)
+        ) {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            ts.isFunctionDeclaration(fn) && argumentCountSlot(lowerer, fn) !== null
+              ? "'arguments.length' in an arrow function inside a function that is also used as a value"
+              : "'arguments.length' in methods, nested, async and generator functions used as values (a caller of the value can pass more arguments than the function declares)",
+          );
+        }
+        const count = Math.max(declared, contextual ?? 0);
         // Calls through the expression's own name pass the declared count,
         // calls through the wider slot pass more: no constant answers both.
         if (count > declared && referencesOwnName(lowerer, fn)) {
@@ -878,6 +946,7 @@ export function lowerPropertyAccessExpr(
     // prototype that no lowering above claimed keeps the SC2020 fence
     // rather than reading undefined through the field and dynamic reads.
     fenceBuiltinConstructorStaticRead(lowerer, expr) ??
+    fenceMimeStaticRead(lowerer, expr) ??
     lowerer.lowerFieldRead(expr);
   // A union-typed field read narrows like an identifier when the
   // checker has narrowed this use to one arm.
@@ -1114,11 +1183,18 @@ export function lowerPropertyAccessExpr(
       )
     ) {
       const fnName = jsFuncNameOf(expr.expression);
+      // A builtin function value whose length is not its adapter's
+      // parameter count (`Math.max.length` is 2).
+      const fnLength =
+        probed.kind === "closure"
+          ? lowerer.builtinCallableValueLengths.get(probed.fnName)
+          : undefined;
       const boxed: IrExpr = {
         kind: "dynFrom",
         value: probed,
         type: DYN,
         ...(fnName !== null ? { fnName } : {}),
+        ...(fnLength !== undefined ? { fnLength } : {}),
         loc,
       };
       const key: IrExpr = {
@@ -1275,6 +1351,11 @@ export function lowerPropertyAccessExpr(
       return declared && declared.kind !== "void" ? lowerer.coerceToExpected(read, declared) : read;
     }
   }
+  // A createRequire loader's resolve read as a value (passed on, or
+  // picked by `??`): resolution happens at build time, so only calls
+  // with a literal specifier lower.
+  if (isCreateRequireResolveValue(lowerer, expr))
+    return createRequireResolveFenceValue(lowerer, expr, loc);
   // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
   // no lowering above claimed ([1,2].entries, Math.SQRT2, Promise.all,
   // re.exec as a value, ...) reports SC2020 here.
@@ -1299,7 +1380,23 @@ export function lowerPropertyAccessExpr(
   // honest one, not a generic recitation about the outer dot. A
   // receiver that lowers cleanly means the MEMBER is the gap — name
   // the property and the receiver's type instead of "property access".
-  const recvLowered = lowerer.lowerExpr(expr.expression);
+  let recvLowered = lowerer.lowerExpr(expr.expression);
+  // A receiver whose value union holds record types the checker's subtype
+  // reduction folded into its type (`{ status } | { status, value }` typed
+  // `{ status }`, a call of a function with an inferred return type): read
+  // through the checker's type, converting the wider arms.
+  if (recvLowered.type.kind === "union") {
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    if (
+      declared !== null &&
+      declared.kind === "record" &&
+      widensReducedRecords(lowerer, declared, recvLowered.type)
+    ) {
+      const helper = widthNarrowHelper(lowerer, recvLowered.type.unionId, declared, loc);
+      if (helper !== null)
+        recvLowered = lowerer.checkedNarrowCall(helper, recvLowered, declared, loc);
+    }
+  }
   // A dyn receiver — JSON.parse's `any`, or `unknown` the checker
   // narrowed to `object` — reads through the dyn keyed read: member
   // or undefined (JS's own-property answer), throwing JS's TypeError
@@ -1683,19 +1780,8 @@ export function lowerIntrinsicProperty(
       );
     }
   }
-  if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys") {
-    const value = lowerer.lowerNativeCallableValue(
-      {
-        fn: "dyn.ownKeys",
-        params: [DYN],
-        result: DYN,
-        valueParams: [{ mode: "required", type: DYN }],
-      },
-      "Reflect.ownKeys",
-      locOf(expr),
-    )!;
-    return { kind: "dynFrom", value, fnName: "ownKeys", type: DYN, loc: locOf(expr) };
-  }
+  if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys")
+    return reflectMemberValue(lowerer, "ownKeys", locOf(expr));
   if (lowerer.chainBlocked(expr)) return null;
   // Object.prototype.constructor: the Object constructor value.
   if (
@@ -2055,6 +2141,9 @@ export function lowerIntrinsicProperty(
     );
   }
   if (kind === "date") {
+    // A Date held as a checked-dynamic value (a Date a JavaScript file
+    // constructs) answers its method values at run time.
+    if (tryLowerExpression(lowerer, expr.expression)?.type.kind === "dyn") return null;
     const methods = new Set([
       "getTime",
       "valueOf",
@@ -2083,7 +2172,7 @@ export function lowerIntrinsicProperty(
     lowerer.noLowering(
       `Date.prototype.${name}`,
       expr,
-      "getTime(), valueOf(), toISOString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale/string formatters have no lowering",
+      DATE_METHOD_HINT,
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
@@ -3130,6 +3219,12 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
             type: field.type,
             loc: locOf(expr),
           };
+      }
+      // Object.prototype's methods read as values: an own entry of the
+      // member's function type, else the built-in.
+      if (actual?.type.kind === "record") {
+        const inherited = lowerRecordInheritedMember(lowerer, actual, expr);
+        if (inherited) return inherited;
       }
       // A member the checker declares on the receiver, stored in a pure
       // index-signature record (an object literal that spread one, see
@@ -4277,6 +4372,10 @@ export function builtinGlobalValueAt(
   loc: SrcLoc,
   js: boolean,
 ): IrExpr | null {
+  // A namespace object models its own properties, so member reads and
+  // reflection read it like any object.
+  const namespace = js ? builtinNamespaceValue(lowerer, canonical, loc) : null;
+  if (namespace !== null) return namespace;
   if (readsBuiltinGlobalMembers(expr)) return null;
   const value = builtinGlobalValue(canonical, loc, js);
   if (value === null) return null;
@@ -4558,26 +4657,9 @@ function referencesOwnName(lowerer: Lowerer, fn: ts.Node): boolean {
 }
 
 /** The argument count every caller passes a function expression whose
- * value flows into one fixed-arity function type, an array method's
- * callback or an annotated slot: that type's parameter count. Null when
- * there is no such type or its arity varies. */
-function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | null {
-  if (!ts.isFunctionExpression(fn)) return null;
-  const contextual = lowerer.checker.getContextualType(fn);
-  if (contextual === undefined) return null;
-  const signatures = lowerer.checker.getCallSignatures(
-    lowerer.checker.getNonNullableType(contextual),
-  );
-  if (signatures.length !== 1) return null;
-  const declaration = signatures[0]!.declaration;
-  if (declaration === undefined) return null;
-  let count = 0;
-  for (const parameter of (declaration.parameters?.nodes ?? []) as ts.ParameterDeclaration[]) {
-    if (isThisParameter(parameter)) continue;
-    if (parameter.questionToken || parameter.initializer || parameter.dotDotDotToken) return null;
-    count++;
-  }
-  return count;
+ * value flows into a function type (argument-counts.ts contextualCallCount). */
+function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | "varies" | null {
+  return ts.isFunctionExpression(fn) ? contextualCallCount(lowerer, fn) : null;
 }
 
 /** The property names the program assigns on the global object, through

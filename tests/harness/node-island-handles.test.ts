@@ -71,21 +71,108 @@ describe.skipIf(skip)("Node island handles", () => {
     expect(await runFixture("builtins", "builtins.ts")).toBe("a/b string\n");
   }, 300_000);
 
+  /** Runs a binary that refuses at run time: its stderr. */
+  async function refusal(binary: string): Promise<string> {
+    const run = await execFileAsync(binary, [], { encoding: "utf8" }).catch(
+      (e: { stderr?: string }) => e,
+    );
+    return String((run as { stderr?: string }).stderr ?? "");
+  }
+
   test("a package marked native never runs in a Node island", async () => {
-    // esmbridge's static compilation is refused, so by default it runs in a
-    // Node island; marked native, the build reports the refusal instead.
+    // esmbridge's native build has deferred refusals (its CommonJS exports
+    // object read as a value, an Object.keys form), so by default it runs in
+    // a Node island; marked native, it compiles natively and refuses at run
+    // time.
     const dir = join(outDir, "native-policy");
     mkdirSync(dir, { recursive: true });
     const entry = join(repoRoot, "tests/fixtures/npm/cases/cjs-esm-named/main.ts");
-    const options = { outPath: join(dir, "main"), outDir: dir, sanitize };
-    const islanded = await compile(entry, options);
+    const islanded = await compile(entry, { outPath: join(dir, "main"), outDir: dir, sanitize });
+    // The SC8001 notes that name esmbridge.
+    const islandNotes = (r: typeof islanded): string[] =>
+      r.ok
+        ? (r.warnings ?? [])
+            .filter((d) => d.code === "SC8001" && d.message.includes("'esmbridge@"))
+            .map((d) => d.message)
+        : [];
     expect(islanded.ok).toBe(true);
-    const marked = await compile(entry, { ...options, nodeIslands: { native: ["esmbridge"] } });
-    expect(marked.ok).toBe(false);
-    if (!marked.ok) {
-      const codes = marked.diagnostics.map((d) => d.code);
-      expect(codes).toContain("SC2013");
-      expect(codes).not.toContain("SC8001");
+    expect(islandNotes(islanded)).toHaveLength(1);
+    const marked = await compile(entry, {
+      outPath: join(dir, "marked"),
+      outDir: dir,
+      sanitize,
+      nodeIslands: { native: ["esmbridge"] },
+    });
+    expect(marked.ok).toBe(true);
+    expect(islandNotes(marked)).toEqual([]);
+    if (marked.ok)
+      expect(await refusal(marked.binaryPath)).toMatch(/\[SC\d{4} at [^\]]*\/esmbridge\//);
+  }, 300_000);
+
+  /** The SC8001 notes of a build that name `pkg`. */
+  async function islandNotesOf(entry: string, name: string, pkg: string): Promise<string[]> {
+    const dir = join(outDir, name);
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(repoRoot, entry), {
+      outPath: join(dir, name),
+      outDir: dir,
+      sanitize,
+    });
+    expect(result.ok, name).toBe(true);
+    if (!result.ok) return [];
+    return (result.warnings ?? [])
+      .filter((d) => d.code === "SC8001" && d.message.includes(`'${pkg}@`))
+      .map((d) => d.message);
+  }
+
+  test("a package whose fences may never run stays native", async () => {
+    // jose's run-time fences are inside function bodies, on paths a program
+    // may never call: only fences that surely fire make a Node island.
+    expect(
+      await islandNotesOf("tests/corpus/6331-jose-root-entry/main.ts", "jose-native", "jose"),
+    ).toEqual([]);
+  }, 300_000);
+
+  test("a fence in module code makes a Node island, with the ES modules importing it", async () => {
+    // cjszoo's module code sets its exports object's prototype (R2.2), so
+    // its fence fires when it loads; esmbridge's ES module imports names
+    // from it, which only Node's CommonJS facade gives as Node does.
+    const entry = "tests/fixtures/npm/cases/cjs-esm-named/main.ts";
+    const zoo = await islandNotesOf(entry, "fence-sure", "cjszoo");
+    expect(zoo).toHaveLength(1);
+    expect(zoo[0]).toContain("R2.2");
+    const bridge = await islandNotesOf(entry, "fence-sure", "esmbridge");
+    expect(bridge).toEqual([
+      "package 'esmbridge@1.0.0' runs in a Node island: packaging: an ES module of the package imports the CommonJS island package 'cjszoo'",
+    ]);
+  }, 300_000);
+
+  test("without islands, a package's deferred refusals refuse at run time", async () => {
+    // With --node-islands=off, packages whose native builds have deferred
+    // refusals compile natively and report them when they run: orderkit's
+    // createRequire call with a computed specifier (SC2020), and the first
+    // one cjs-esm-named reaches in its packages (esmbridge, cjszoo).
+    const cases = [
+      ["order-off", "tests/fixtures/node-island/order/main.ts", /\[SC2020 at [^\]]*\/orderkit\//],
+      [
+        "esm-named-off",
+        "tests/fixtures/npm/cases/cjs-esm-named/main.ts",
+        /\[SC\d{4} at [^\]]*\/node_modules\/(?:esmbridge|cjszoo)\//,
+      ],
+    ] as const;
+    for (const [name, entry, code] of cases) {
+      const dir = join(outDir, name);
+      mkdirSync(dir, { recursive: true });
+      const result = await compile(join(repoRoot, entry), {
+        outPath: join(dir, name),
+        outDir: dir,
+        sanitize,
+        nodeIslands: { mode: "off" },
+      });
+      expect(result.ok, name).toBe(true);
+      if (!result.ok) continue;
+      expect((result.warnings ?? []).map((d) => d.code)).not.toContain("SC8001");
+      expect(await refusal(result.binaryPath), name).toMatch(code);
     }
   }, 300_000);
 

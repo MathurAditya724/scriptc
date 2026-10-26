@@ -6,7 +6,8 @@ import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { f64Lit, llvmCommentText } from "./common.js";
 import { borrowableInputs, emitBorrowedInputs, emitBorrowedInput } from "./borrowed-inputs.js";
-import { regexLiteralTemplate } from "./expr-primitives.js";
+import { regexLiteralReplacer, regexLiteralTemplate } from "./expr-primitives.js";
+import { canReplaceWith, regexLiteralCompiles } from "./regex-matchers.js";
 import { isScalarUnionDef, loadInlineUnion, presentBits } from "./inline-unions.js";
 import { preservesRegexInputs } from "./reference-effects.js";
 
@@ -160,6 +161,39 @@ function directRegexOperandMethod(method: string): boolean {
   }
 }
 
+/** The build-time replacer of a substitution: a regex literal running on
+ * its template, with a literal replacement the replacer can write as is.
+ * Null when the substitution takes the runtime's loop. */
+function literalReplacer(
+  host: LlvmEmitterContext,
+  literal: IrExpr | null,
+  template: string | null,
+  replacement: IrExpr,
+): string | null {
+  if (literal === null || template === null || literal.kind !== "regexLit") return null;
+  if (replacement.kind !== "strLit") return null;
+  if (!canReplaceWith(literal.pattern, literal.flags, replacement.value)) return null;
+  if (!regexLiteralCompiles(literal.pattern, literal.flags)) return null;
+  return regexLiteralReplacer(host, literal, replacement.value);
+}
+
+/** scr_regex_replace_with: the runtime runs `replacer` on an ASCII subject
+ * and its own loop on any other. */
+function emitReplaceWith(
+  host: LlvmEmitterContext,
+  e: IrExpr,
+  r: LlValue,
+  args: LlValue[],
+  replacer: string,
+): LlValue {
+  host.declare(`declare ptr @scr_regex_replace_with(ptr, ptr, ptr, ptr)`);
+  const t = host.B.tmp();
+  host.B.line(
+    `${t} = call ptr @scr_regex_replace_with(ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${replacer})`,
+  );
+  return host.own({ name: t, type: e.type });
+}
+
 export function emitRegexIntrinsic(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "regexIntrinsic" },
@@ -234,11 +268,16 @@ export function emitRegexIntrinsic(
         "scr_regex_match_all_captures_into",
         `ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}`,
       );
-    case "replaceAll":
+    case "replaceAll": {
+      // A global literal (the only kind a replacer is built for) never takes
+      // replaceAll's non-global TypeError.
+      const replacer = literalReplacer(host, literal, template, e.args[1]!);
+      if (replacer !== null) return emitReplaceWith(host, e, r, args, replacer);
       return fallible(
         "scr_regex_replace_all",
         `ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}`,
       );
+    }
     case "split":
       host.declare(`declare ptr @scr_regex_split_limit(ptr, ptr, double)`);
       {
@@ -323,6 +362,8 @@ export function emitRegexIntrinsic(
       return host.own({ name: t, type: e.type });
     }
     case "replace": {
+      const replacer = literalReplacer(host, literal, template, e.args[1]!);
+      if (replacer !== null) return emitReplaceWith(host, e, r, args, replacer);
       host.declare(`declare ptr @scr_regex_replace(ptr, ptr, ptr)`);
       const t = B.tmp();
       B.line(
@@ -336,6 +377,39 @@ export function emitRegexIntrinsic(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** `r[k] ?? d` in its pass-through shape: a missing key evaluates `d`
+ * where the read would store undefined, so a hit costs nothing extra. */
+export function emitRecordKeyGetOr(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "recordKeyGet" },
+  fallback: IrExpr,
+): LlValue {
+  const B = host.B;
+  const obj = host.emitExpr(e.obj);
+  const k = host.emitExpr(e.key);
+  const ty = host.llType(e.type);
+  const slot = B.slot();
+  B.entryAllocas.push(`${slot} = alloca ${ty}`);
+  const join = B.newLabel("rkg.j");
+  keyedRecordReadInto(
+    host,
+    slot,
+    join,
+    obj.name,
+    k.name,
+    e.shapeId,
+    e.type,
+    e.overflowOnly === true,
+    e.loc,
+    false,
+    () => host.emitBranchInto(slot, fallback),
+  );
+  B.startBlock(join);
+  const t = B.tmp();
+  B.line(`${t} = load ${ty}, ptr ${slot}`);
+  return host.own({ name: t, type: e.type });
 }
 
 export function emitRecordKeyGet(
@@ -485,6 +559,7 @@ export function keyedRecordReadInto(
   overflowOnly: boolean,
   loc?: SrcLoc,
   missNaN = false,
+  missInto: (() => void) | null = null,
 ): void {
   const B = host.B;
   const shape = host.recordShape(shapeId);
@@ -687,8 +762,10 @@ export function keyedRecordReadInto(
     }
   }
   if (def !== null && resultType.kind === "union" && undefTag >= 0) {
-    // The miss path: the result union's undefined arm.
-    B.line(`store ptr ${host.unitInstanceRef(resultType.unionId, undefTag)}, ptr ${slot}`);
+    // The miss path: the result union's undefined arm, or the caller's
+    // own value for a miss (missInto stores it into the slot).
+    if (missInto !== null) missInto();
+    else B.line(`store ptr ${host.unitInstanceRef(resultType.unionId, undefTag)}, ptr ${slot}`);
     B.br(join);
     return;
   }
