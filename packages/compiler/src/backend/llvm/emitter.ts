@@ -431,6 +431,7 @@ import {
   fieldAliasMetadata,
   isStackUnionSource,
 } from "./receivers.js";
+import { findLoopCallees } from "./loop-callees.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -1502,6 +1503,9 @@ export class LlEmitter {
   /** Functions that check the native stack guard on entry
    * (stackCheckedFunctions); null where the runtime has no guard. */
   readonly stackChecks: ReadonlySet<string> | null;
+  /** Small leaf functions called only from loops, whose direct calls are
+   * `alwaysinline` (loop-callees.ts). */
+  readonly loopCallees: ReadonlySet<string>;
   /** Static types whose values can be published (@scriptc/threads): their
    * stores carry the frozen-object guard. Null without publish calls. */
   readonly publishedTypes: PublishedTypes | null;
@@ -2089,6 +2093,7 @@ export class LlEmitter {
         : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
+    this.loopCallees = findLoopCallees(mod);
     // A stackless call's eager prefix borrows its caller's stack; the
     // runtime moves deep prefix nests to a fresh stack using the guard,
     // which Windows lacks.
@@ -3948,6 +3953,15 @@ export class LlEmitter {
    * calls (unwindAbiFunctions excludes their callees). */
   emitDirectCall(line: string, callee: string): boolean {
     const B = this.B;
+    // A small leaf called only from loops inlines into each of them, past
+    // LLVM's cost threshold (loop-callees.ts). Debug builds keep the call.
+    if (this.debug === null && this.loopCallees.has(callee)) {
+      const comment = line.indexOf(" ; ");
+      line =
+        comment < 0
+          ? `${line} alwaysinline`
+          : `${line.slice(0, comment)} alwaysinline${line.slice(comment)}`;
+    }
     if (!this.unwindAbi.has(callee) || this.currentCoro !== null || B.isTerminated()) {
       B.line(line);
       return false;
