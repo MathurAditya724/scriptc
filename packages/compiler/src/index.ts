@@ -529,6 +529,14 @@ function performanceWarnings(sink: CompileWarningSink | undefined): {
   return performance.length === 0 ? {} : { performance };
 }
 
+/** The profile match of a --profile-use build's program object, for its
+ * artifact and its executable cache entry, which a cache hit reports again. */
+function profileMatchField(object: NativeProgramObject | null): {
+  profileMatch?: NativeProfileMatch;
+} {
+  return object?.profileMatch === undefined ? {} : { profileMatch: object.profileMatch };
+}
+
 function withCompileWarnings<T extends CompileRequestResult>(
   result: T,
   sink: CompileWarningSink,
@@ -1675,6 +1683,7 @@ async function compileTracked(
           path: opts.outPath,
           translationUnitPath: earlyHit.llvmPath,
           backend: earlyHit.native.backend,
+          ...(earlyHit.profileMatch === undefined ? {} : { profileMatch: earlyHit.profileMatch }),
         },
         binaryPath: opts.outPath,
         llvmPath: earlyHit.llvmPath,
@@ -1752,6 +1761,7 @@ async function compileTracked(
                 executableRestored: true,
                 nativeDependencies: dependencies,
                 frontend: earlyHit.frontend,
+                ...profileMatchField(nativeProgramObject),
               });
             },
         nativeProgramObject?.partitionPaths,
@@ -1797,6 +1807,7 @@ async function compileTracked(
         path: opts.outPath,
         translationUnitPath: earlyHit.llvmPath,
         backend: earlyHit.native.backend,
+        ...profileMatchField(nativeProgramObject),
       },
       binaryPath: opts.outPath,
       llvmPath: earlyHit.llvmPath,
@@ -1888,6 +1899,7 @@ async function compileTracked(
               frontend: frontendInputs.snapshot(),
               ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
               ...performanceWarnings(warningSink),
+              ...profileMatchField(nativeProgramObject),
             });
             publishedExecutable = true;
           },
@@ -1907,6 +1919,7 @@ async function compileTracked(
         frontend: frontendInputs.snapshot(),
         ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
         ...performanceWarnings(warningSink),
+        ...profileMatchField(nativeProgramObject),
       }).catch(() => undefined);
     }
   } catch (err) {
@@ -1935,7 +1948,6 @@ async function compileTracked(
   }
   await pruneBuildCache(cacheRoot);
   timing("complete");
-  const profileMatch = nativeProgramObject?.profileMatch;
   return {
     ok: true,
     artifact: {
@@ -1943,7 +1955,7 @@ async function compileTracked(
       path: opts.outPath,
       translationUnitPath: llvmPath,
       backend,
-      ...(profileMatch === undefined ? {} : { profileMatch }),
+      ...profileMatchField(nativeProgramObject),
     },
     binaryPath: opts.outPath,
     llvmPath,
