@@ -461,6 +461,8 @@ test("a local or module global whose declared type does not compile becomes a dy
     ["global", "all", "(number | Callbacks)[]", "SC2009"],
     ["local", "local", "Callbacks | undefined", "SC2009"],
   ]);
+  // The loop over `all` is top-level code: its dynamic operations count too.
+  expect(coverage.dynamicSlots?.find((s) => s.name === "all")?.operations).toBeGreaterThan(0);
   expect(coverage.performance?.filter((d) => d.code === "SC6104")).toHaveLength(3);
   expect(coveragePasses(coverage, "blockers")).toBe(true);
   expect(coveragePasses(coverage, "dynamic")).toBe(true);
@@ -483,6 +485,34 @@ test("a local or module global whose declared type does not compile becomes a dy
   const strict = analyze(program, { tier: "static-only" }).coverage;
   expect(strict.dynamicSlots).toBeUndefined();
   expect(strict.diagnostics.map((d) => d.code)).toContain("SC2009");
+});
+
+test("dynamic slots rank by their dynamic operations and name themselves in SC6101", () => {
+  const { coverage } = analyze(fixture("dynamic-slot-hot.ts"));
+  const slots = coverage.dynamicSlots ?? [];
+  expect(slots.find((s) => s.name === "plugins")?.partial).toBe(true);
+  expect(slots.some((s) => (s.operations ?? 0) > 0)).toBe(true);
+  const hot = coverage.performance?.find((d) => d.code === "SC6101");
+  expect(hot?.message).toContain("`hook` is a dynamic piece of `Plugin[]` (declared `Hook`");
+});
+
+test("a type that is a dynamic piece and a slot of its own counts toward its own slot", () => {
+  const { coverage } = analyze(fixture("dynamic-slot-shared.ts"));
+  const slots = coverage.dynamicSlots ?? [];
+  expect(slots.find((s) => s.name === "current")?.operations).toBeGreaterThan(0);
+  expect(slots.find((s) => s.name === "plugins")?.operations ?? 0).toBe(0);
+  const hot = coverage.performance?.find((d) => d.code === "SC6101");
+  expect(hot?.message).toContain("`current` is a dynamic slot (declared `Hook`");
+});
+
+test("dynamic slots of one declared type count their own operations", () => {
+  const { coverage } = analyze(fixture("dynamic-slot-same-type.ts"));
+  const slots = coverage.dynamicSlots ?? [];
+  const hot = slots.find((s) => s.name === "hot")?.operations ?? 0;
+  const cold = slots.find((s) => s.name === "cold")?.operations ?? 0;
+  expect(hot).toBeGreaterThan(cold);
+  const hotWarning = coverage.performance?.find((d) => d.code === "SC6101");
+  expect(hotWarning?.message).toContain("`hot` is a dynamic slot (declared `Hook`");
 });
 
 test("CLI: --tier and --explain-dynamic", () => {
