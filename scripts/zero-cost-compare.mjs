@@ -6,6 +6,7 @@
  * the first unit that differs. The self-hosted compiler's IR and LLVM exceed
  * V8's maximum string length, so splitting works on Buffers and hashes each
  * unit instead of decoding the artifact. */
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
 const hash = (bytes) => createHash("sha1").update(bytes).digest("hex");
@@ -487,6 +488,57 @@ export function compareCounts(baseline, candidate) {
   };
 }
 
+/** The report lines the gate prints for one program. */
+export function programLines(entry) {
+  const lines = [];
+  const pct = (ratio) => `${ratio >= 1 ? "+" : ""}${((ratio - 1) * 100).toFixed(2)}%`;
+  const label = {
+    identical: "identical",
+    allowed: "allowed  ",
+    differs: "DIFFERS  ",
+    "build-error": "ERROR    ",
+    "both-fail": "both-fail",
+  }[entry.verdict];
+  const notes = [];
+  for (const [kind, result] of Object.entries(entry.artifacts))
+    if (!result.identical) {
+      const counts = result.changed
+        ? ` (${result.changed.length} changed, ${result.added.length} added, ${result.removed.length} removed)`
+        : "";
+      notes.push(`${kind}: ${result.first}${counts}`);
+    }
+  const size = entry.artifacts.exe?.bytes;
+  if (size && size.baseline !== size.candidate)
+    notes.push(
+      `size ${size.baseline} -> ${size.candidate} B (${pct(size.candidate / size.baseline)})`,
+    );
+  if (entry.cachegrind?.total) {
+    const { total, deltas } = entry.cachegrind;
+    notes.push(
+      `Ir ${total.baseline} -> ${total.candidate} (${pct(total.candidate / Math.max(1, total.baseline))})` +
+        (deltas[0]
+          ? `, largest ${deltas[0].name} ${deltas[0].delta > 0 ? "+" : ""}${deltas[0].delta}`
+          : ""),
+    );
+  } else if (entry.cachegrind?.skipped)
+    notes.push(`cachegrind skipped: ${entry.cachegrind.skipped}`);
+  for (const failure of entry.dynamicTier?.failures ?? []) notes.push(`SYMBOLS: ${failure}`);
+  lines.push(`${label}  ${entry.id}${notes.length ? `  ${notes.join("; ")}` : ""}`);
+  // A build error's first line is often a warning; print all of it.
+  const errors =
+    entry.baselineError !== undefined && entry.baselineError === entry.candidateError
+      ? [["baseline and candidate", entry.baselineError]]
+      : [
+          ["baseline", entry.baselineError],
+          ["candidate", entry.candidateError],
+        ].filter(([, error]) => error !== undefined);
+  for (const [side, error] of errors) {
+    lines.push(`           ${side}:`);
+    for (const line of error.split("\n")) lines.push(`             ${line}`);
+  }
+  return lines;
+}
+
 /* ── verdicts ──────────────────────────────────────────────────────────── */
 
 /** One program's verdict from its build results and artifact comparisons.
@@ -538,4 +590,121 @@ export function timeRatio(rows, resamples = 2000) {
     low: ratios[Math.floor(resamples * 0.025)],
     high: ratios[Math.floor(resamples * 0.975)],
   };
+}
+
+/** The compile-time verdict for one group of timing rows (`bench` or
+ * `self`): it fails when the 95% interval lies entirely above the allowed
+ * growth, and is inconclusive when the interval straddles it. */
+export function timingVerdict(name, rows, maxGrowth) {
+  const result = timeRatio(rows);
+  const fails = result.low > 1 + maxGrowth;
+  const verdict = fails
+    ? "SLOWER"
+    : result.high > 1 + maxGrowth
+      ? "inconclusive (rerun with more runs)"
+      : "within tolerance";
+  const pct = (ratio) => `${ratio >= 1 ? "+" : ""}${((ratio - 1) * 100).toFixed(2)}%`;
+  return {
+    result,
+    fails,
+    line:
+      `time       ${name} ${rows.length > 1 ? "geomean " : ""}${pct(result.ratio)} ` +
+      `[95% CI ${pct(result.low)}, ${pct(result.high)}]: ${verdict}`,
+    failure: fails
+      ? `${name} compile time grew ${pct(result.ratio)} (CI low ${pct(result.low)})`
+      : null,
+  };
+}
+
+/** Timing rows grouped as the gate judges them. */
+export function timingGroups(rows) {
+  return {
+    bench: rows.filter((r) => r.id.startsWith("bench/")),
+    self: rows.filter((r) => r.id === "self/cli"),
+  };
+}
+
+/* ── baseline cache ────────────────────────────────────────────────────── */
+
+/** A content hash of one artifact file, as the baseline cache records it. */
+export const artifactHash = hash;
+
+/** The comparison a cached baseline entry settles without building the
+ * baseline, or null when the baseline must be built: identical artifacts
+ * (every recorded hash equals the candidate's) or the same build error on
+ * both sides. `candidate` holds the candidate's build result and `hashes`
+ * its artifact hashes. */
+export function cachedComparison(entry, candidate, hashes) {
+  if (entry === undefined) return null;
+  if (!entry.ok || !candidate.ok)
+    return !entry.ok && !candidate.ok && entry.error === candidate.error
+      ? {
+          baseline: { ok: false, error: entry.error, ms: entry.ms ?? null, cached: true },
+          artifacts: {},
+        }
+      : null;
+  const kinds = Object.keys(entry.hashes);
+  const differs = (kind) => entry.hashes[kind] === null || entry.hashes[kind] !== hashes[kind];
+  if (kinds.length === 0 || kinds.some(differs)) return null;
+  const artifacts = {};
+  for (const kind of kinds) artifacts[kind] = { identical: true };
+  if (artifacts.exe) artifacts.exe.bytes = { baseline: entry.exeBytes, candidate: entry.exeBytes };
+  return { baseline: { ok: true, ms: entry.ms ?? null }, artifacts };
+}
+
+/* ── sharded runs ──────────────────────────────────────────────────────── */
+
+/** Merge the --json reports of gate shards that split one good-code set
+ * (--shard, --set) into a single report with one verdict. Program entries
+ * and their failures are concatenated; the compile-time groups and the
+ * "nothing was compared" check are recomputed over all shards. */
+export function mergeReports(reports) {
+  assert(reports.length > 0, "no gate reports to merge");
+  const [first] = reports;
+  for (const report of reports) {
+    assert(report.schema === first.schema, "gate reports have different schemas");
+    for (const label of ["baseline", "candidate"])
+      assert(
+        report.trees[label].revision === first.trees[label].revision,
+        `gate reports compare different ${label} revisions`,
+      );
+  }
+  const globals = new Set(reports.flatMap((r) => r.globalFailures ?? []));
+  const merged = {
+    ...first,
+    shards: reports.length,
+    programs: reports.flatMap((r) => r.programs),
+    failures: reports.flatMap((r) => r.failures.filter((f) => !globals.has(f))),
+    globalFailures: [],
+    timing: null,
+    candidateSelf: reports.find((r) => r.candidateSelf)?.candidateSelf,
+    elapsedMs: Math.max(...reports.map((r) => r.elapsedMs ?? 0)),
+  };
+  const ids = new Set();
+  for (const p of merged.programs) {
+    assert(!ids.has(p.id), `program ${p.id} appears in more than one gate report`);
+    ids.add(p.id);
+  }
+  const timed = reports.filter((r) => r.timing !== null);
+  const lines = [];
+  if (timed.length > 0) {
+    const rows = timed.flatMap((r) => r.timing.rows);
+    const maxGrowth = timed[0].timing.maxGrowth;
+    merged.timing = { runs: timed[0].timing.runs, maxGrowth, rows, groups: {} };
+    for (const [name, group] of Object.entries(timingGroups(rows))) {
+      if (group.length === 0) continue;
+      const { result, line, failure } = timingVerdict(name, group, maxGrowth);
+      merged.timing.groups[name] = result;
+      lines.push(line);
+      if (failure !== null) merged.globalFailures.push(failure);
+    }
+  }
+  const counts = {};
+  for (const p of merged.programs) counts[p.verdict] = (counts[p.verdict] ?? 0) + 1;
+  if (!merged.programs.some((p) => ["identical", "allowed", "differs"].includes(p.verdict)))
+    merged.globalFailures.push("no program built with both checkouts, so nothing was compared");
+  merged.failures.push(...merged.globalFailures);
+  merged.counts = counts;
+  merged.verdict = merged.failures.length > 0 ? "fail" : "pass";
+  return { report: merged, timingLines: lines };
 }

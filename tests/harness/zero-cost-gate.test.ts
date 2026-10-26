@@ -1,14 +1,18 @@
 import { spawnSync } from "node:child_process";
 import { expect, test } from "vitest";
 import {
+  cachedComparison,
   cachegrindCounts,
   compareArtifact,
   compareCounts,
   compareExecutables,
   definedFunctionNames,
   dynamicTierSymbols,
+  mergeReports,
   nmOutput,
+  programLines,
   programVerdict,
+  timingVerdict,
 } from "../../scripts/zero-cost-compare.mjs";
 
 const ir = (functions: object[], globals: object[]) =>
@@ -190,4 +194,82 @@ test("the zero-cost gate fails differing programs unless they match the signatur
   // was never compared.
   expect(verdict({}, false, failed, failed, true)).toEqual({ verdict: "both-fail", fails: true });
   expect(verdict({}, true, ok, failed)).toEqual({ verdict: "build-error", fails: true });
+});
+
+test("a recorded baseline settles identical programs and shared build errors", () => {
+  const hashes = { ir: "a", llvm: "b", exe: "c" };
+  const entry = { ok: true, ms: 12, hashes, exeBytes: 100 };
+  expect(cachedComparison(entry, { ok: true }, { ...hashes })).toEqual({
+    baseline: { ok: true, ms: 12 },
+    artifacts: {
+      ir: { identical: true },
+      llvm: { identical: true },
+      exe: { identical: true, bytes: { baseline: 100, candidate: 100 } },
+    },
+  });
+  // Any other hash, a missing artifact or no record builds the baseline.
+  expect(cachedComparison(entry, { ok: true }, { ...hashes, exe: "d" })).toBeNull();
+  expect(
+    cachedComparison({ ...entry, hashes: { ...hashes, ir: null } }, { ok: true }, hashes),
+  ).toBeNull();
+  expect(cachedComparison(undefined, { ok: true }, hashes)).toBeNull();
+  expect(cachedComparison(entry, { ok: false, error: "SC1090" }, {})).toBeNull();
+  const failed = { ok: false, ms: 3, error: "SC1090" };
+  expect(cachedComparison(failed, { ok: false, error: "SC1090" }, {})).toEqual({
+    baseline: { ok: false, error: "SC1090", ms: 3, cached: true },
+    artifacts: {},
+  });
+  expect(cachedComparison(failed, { ok: false, error: "SC1091" }, {})).toBeNull();
+  expect(cachedComparison(failed, { ok: true }, hashes)).toBeNull();
+});
+
+test("merged gate shards judge compile time and comparisons over every shard", () => {
+  const trees = { baseline: { revision: "a" }, candidate: { revision: "b" } };
+  const row = (id: string, ratio: number) => ({
+    id,
+    baselineMs: [100, 100, 100],
+    candidateMs: [100 * ratio, 100 * ratio, 100 * ratio],
+    ratios: [ratio, ratio, ratio],
+  });
+  const shard = (
+    programs: object[],
+    rows: object[],
+    failures: string[] = [],
+    globals: string[] = [],
+  ) => ({
+    schema: 1,
+    trees,
+    programs,
+    failures: [...failures, ...globals],
+    globalFailures: globals,
+    timing: { runs: 3, maxGrowth: 0.02, rows, groups: {} },
+    elapsedMs: 10,
+  });
+  const identical = (id: string) => ({ id, verdict: "identical", artifacts: {} });
+  const fast = shard([identical("bench/a")], [row("bench/a", 1.0)]);
+  // Alone, this shard's bench is slower; with the other shard it is not.
+  const slow = shard(
+    [
+      {
+        id: "corpus/x.ts",
+        verdict: "differs",
+        artifacts: { exe: { identical: false, first: "resized f" } },
+      },
+    ],
+    [row("bench/b", 1.03)],
+    ["corpus/x.ts: differs"],
+    ["bench compile time grew +3.00% (CI low +3.00%)"],
+  );
+  const { report, timingLines } = mergeReports([fast, slow]);
+  expect(report.counts).toEqual({ identical: 1, differs: 1 });
+  expect(report.failures).toEqual(["corpus/x.ts: differs"]);
+  expect(report.verdict).toBe("fail");
+  expect(timingLines).toEqual([timingVerdict("bench", report.timing.rows, 0.02).line]);
+  expect(timingVerdict("bench", report.timing.rows, 0.02).fails).toBe(false);
+  expect(programLines(report.programs[1])).toEqual(["DIFFERS    corpus/x.ts  exe: resized f"]);
+  expect(mergeReports([fast]).report.verdict).toBe("pass");
+  expect(mergeReports([shard([], [])]).report.failures).toEqual([
+    "no program built with both checkouts, so nothing was compared",
+  ]);
+  expect(() => mergeReports([fast, fast])).toThrow(/more than one gate report/);
 });
