@@ -280,8 +280,31 @@ import {
 } from "./generic-functions.js";
 
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
+import { lowerRecordInheritedCall } from "./record-inherited.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
+
+/** The node:util member a `(0, member)` callee names, or null. */
+function indirectUtilCalleeOf(
+  lowerer: Lowerer,
+  callee: ts.Expression,
+): { module: string; member: string } | null {
+  let e = callee;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (
+    !ts.isBinaryExpression(e) ||
+    e.operatorToken.kind !== ts.SyntaxKind.CommaToken ||
+    !ts.isNumericLiteral(e.left)
+  )
+    return null;
+  const target = e.right;
+  const bi = ts.isIdentifier(target)
+    ? lowerer.builtinImportOf(target)
+    : ts.isPropertyAccessExpression(target) && !target.questionDotToken
+      ? lowerer.builtinMemberOf(target)
+      : null;
+  return bi?.module === "util" ? bi : null;
+}
 
 /** `Object.defineProperty(target, ...)`, `Object.defineProperties`,
  * `Reflect.defineProperty`, and `target.__defineGetter__/__defineSetter__`
@@ -375,6 +398,14 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   {
     const codeGeneration = codeGenerationCalleeOf(lowerer, expr.expression);
     if (codeGeneration !== null) return lowerCodeGenerationCall(lowerer, expr, codeGeneration);
+  }
+  // `(0, util_1.inspect)(value)`: TypeScript's CommonJS output calls a
+  // named import through a comma expression, which leaves the call's
+  // receiver undefined. node:util's functions do not read their receiver,
+  // so the call lowers as the direct one.
+  {
+    const util = indirectUtilCalleeOf(lowerer, expr.expression);
+    if (util) return lowerBuiltinCall(lowerer, expr, util, loc);
   }
   // The deprecated Buffer(...) call (containers/bytes.ts). The checker
   // types it `any`, so the bytes cross as a checked-dynamic value, which
@@ -1117,7 +1148,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       if (!argNode || (ts.isIdentifier(argNode) && argNode.text === "undefined")) {
         return { kind: "libCall", fn: "sym.newAnon", args: [], type: SYMBOL_T, loc };
       }
-      const desc = lowerer.lowerExpr(argNode);
+      let desc = lowerer.lowerExpr(argNode);
+      // A number or boolean description is its ToString.
+      if (desc.type.kind === "f64" || desc.type.kind === "bool")
+        desc = lowerer.ensureString(desc, argNode);
       if (desc.type.kind !== "string") {
         lowerer.noLowering(
           `Symbol with a '${lowerer.fmt(desc.type)}' description`,
@@ -1640,6 +1674,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // Union receivers whose every arm has a text — the ngrok
       // `(chunk: Buffer | string) => chunk.toString()` idiom.
       lowerUnionToStringCall(lowerer, expr, expr.expression) ??
+      // Object.prototype's methods called by name on records: an own
+      // callable entry, else the built-in with the record as receiver.
+      lowerRecordInheritedCall(lowerer, expr, expr.expression) ??
       // Object.prototype.toString's default answer on records and
       // override-free program classes — "[object Object]", folded.
       lowerDefaultToStringCall(lowerer, expr, expr.expression) ??
@@ -10070,7 +10107,13 @@ function lowerObjLitGenericMethodCall(
           type: DYN,
           loc,
         };
-        return lowerer.coerceInto(call, invoked, lowerer.irTypeOf(call));
+        const resultType = lowerer.irTypeOf(call);
+        // A void method's result stays the runtime's untyped value, as a
+        // call through a non-generic void member's dispatch keeps it: a class
+        // may implement the member with a method that returns a value, which
+        // JavaScript passes on (`console.log(c.publish(m))`).
+        if (resultType.kind === "void") return invoked;
+        return lowerer.coerceInto(call, invoked, resultType);
       }
     }
     if (onInterface) {
@@ -10192,8 +10235,8 @@ export function lowerObjectMethodCall(
       ? lowerer.coerceInto(access.expression, receiver, receiverIr)
       : receiver;
   };
-  const info = lowerer.classes.get(receiverIr.className);
-  if (!info) lowerer.flushDeferredClass(receiverIr.className);
+  const info =
+    lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
   const found = info ? lowerer.findMethodOn(info, access.name.text) : null;
   // The zlib stream members (flush/params/close/reset) are declared on
   // the zlib classes; their receivers are runtime Transform streams.
@@ -10546,11 +10589,8 @@ function lowerUnionObjectMethodCall(
     found: NonNullable<ReturnType<Lowerer["findMethodOn"]>>;
   }[] = [];
   for (const arm of def.arms as (IrType & { kind: "object" })[]) {
-    const info = lowerer.classes.get(arm.className);
-    if (!info) {
-      lowerer.flushDeferredClass(arm.className);
-      return null;
-    }
+    const info = lowerer.classes.get(arm.className) ?? lowerer.flushDeferredClass(arm.className);
+    if (!info) return null;
     const found = lowerer.findMethodOn(info, method);
     if (!found) return null;
     if (found.sig.abstract === true && !lowerer.overrideBelow(info, method)) return null;

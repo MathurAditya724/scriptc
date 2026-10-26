@@ -166,6 +166,7 @@ export async function compilePackedLibrary(
           options.programPublicSymbols,
           stem,
           target.platform,
+          { inProcessElf: true },
         );
       } else {
         program = await emit(

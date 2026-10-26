@@ -117,6 +117,7 @@ import {
   requireSpecOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
+import { declarationGroupKey } from "./type-failure.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
@@ -164,6 +165,7 @@ import {
 } from "./lower-event-emitter.js";
 import { declSymbolOf } from "./lower-modules.js";
 import {
+  INSPECT_CUSTOM_MEMBER,
   classSymbolKeyOf,
   classSymbolKeyOfSymbol,
   symbolFieldDisplayName,
@@ -2304,11 +2306,21 @@ export function collectClassShapeInner(
       base = named;
       if (!base) {
         if (adoptCallableBase(t.expression)) continue;
-        lowerer.unsupported(
+        // A base whose own collection deferred can still register later
+        // (a flush retry with dynamic slots): the derived class retries
+        // with it (Lowerer.retryDeferred).
+        const diag = unsupportedDiag(
           "SC1090",
-          t,
+          locOf(t),
           `extending classes not declared in the program ('${t.expression.text}')`,
         );
+        lowerer.retriableDiags.add(diag);
+        // A base the program declares but rejected: this rejection is its
+        // cascade (localized failure, report-only).
+        const rejectedBase = rejectedProgramClassGroup(lowerer, symbol);
+        if (rejectedBase !== null) diag.cause = [rejectedBase];
+        lowerer.pushDiag(diag);
+        throw new PoisonError();
       }
     }
 
@@ -2544,13 +2556,13 @@ export function collectClassShapeInner(
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           if (
             type.kind === "dyn" &&
+            !lowerer.liftDynFieldPolicy &&
             !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
             !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name)) &&
             (member.type !== undefined ||
               (lowerer.typeOf(member.name).flags & ts.TypeFlags.Any) === 0)
           ) {
-            lowerer.unsupported(
-              "SC1090",
+            lowerer.dynFieldPolicyFence(
               member.name,
               `${dynFieldTypeSpelling(lowerer, member.name)}-typed static fields`,
             );
@@ -3060,14 +3072,16 @@ export function collectClassShapeInner(
         if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
         // Bundled JS declares fields without annotations before assigning
         // them in the constructor. Use the same native checked-dynamic
-        // storage as implicit constructor-assigned JS fields.
+        // storage as implicit constructor-assigned JS fields. In
+        // TypeScript the refusal is a policy fence that a flush retry lifts
+        // (Lowerer.liftDynFieldPolicy).
         if (
           type.kind === "dyn" &&
+          !lowerer.liftDynFieldPolicy &&
           !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
           !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name))
         ) {
-          lowerer.unsupported(
-            "SC1090",
+          lowerer.dynFieldPolicyFence(
             member.name,
             `${dynFieldTypeSpelling(lowerer, member.name)}-typed class fields`,
           );
@@ -3203,9 +3217,12 @@ export function collectClassShapeInner(
           const type = shape.bodyType ?? shape.type;
           if (type.kind === "void") lowerer.badType(p.name, lowerer.typeOf(p.name));
           // The class-field dyn rule verbatim (KEEP NARROW).
-          if (type.kind === "dyn" && !lowerer.classFieldStoresDyn(lowerer.typeOf(p))) {
-            lowerer.unsupported(
-              "SC1090",
+          if (
+            type.kind === "dyn" &&
+            !lowerer.liftDynFieldPolicy &&
+            !lowerer.classFieldStoresDyn(lowerer.typeOf(p))
+          ) {
+            lowerer.dynFieldPolicyFence(
               p.name,
               `${dynFieldTypeSpelling(lowerer, p)}-typed class fields`,
             );
@@ -4463,6 +4480,9 @@ export function collectClassShapeInner(
         ...(methods.size > 0 ? { methods: [...methods.keys()] } : {}),
         ...((): { prototypeNames?: string[] } => {
           const names = classPrototypeNames(decl);
+          // A [util.inspect.custom] method, by its reserved slot name: the
+          // checked-dynamic inspect walk refuses instances that have one.
+          if (methods.has(INSPECT_CUSTOM_MEMBER)) names.push(INSPECT_CUSTOM_MEMBER);
           return names.length > 0 ? { prototypeNames: names } : {};
         })(),
         ...(abstractClass ? { abstract: true as const } : {}),
@@ -6210,6 +6230,7 @@ function lowerClassValue(
     const context = newFnCtx(true, null, null, VOID);
     info.localClass.context = context;
     lowerer.fnStack.push(context);
+    const diagsBefore = lowerer.diags.length;
     try {
       const bodies = lowerClassMembers(lowerer, info);
       for (const body of bodies) info.localClass.bodies.set(body.name, body);
@@ -6224,6 +6245,8 @@ function lowerClassValue(
         });
       }
       info.localClass.ready = true;
+      // A retry of the enclosing statement reuses these bodies.
+      for (const d of lowerer.diags.slice(diagsBefore)) lowerer.loweredOnceDiags.add(d);
       lowerer.onExprClassCollected?.(info);
     } finally {
       lowerer.fnStack.pop();
@@ -11330,12 +11353,13 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         );
         info = lowerer.classes.get(calleeT.className);
       }
+      // The TYPE world names a class the lowering never registered — a
+      // fenced class expression, an abstract/deferred declaration: flush
+      // its own diagnostics (they tell the real story, unless the flush
+      // registers it with dynamic slots) and poison this construction
+      // site, never an ICE.
+      if (!info) info = lowerer.flushDeferredClass(calleeT.className);
       if (!info) {
-        // The TYPE world names a class the lowering never registered —
-        // a fenced class expression, an abstract/deferred declaration:
-        // flush its own diagnostics (they tell the real story) and
-        // poison this construction site, never an ICE.
-        lowerer.flushDeferredClass(calleeT.className);
         lowerer.unsupported(
           "SC1090",
           expr,
@@ -11864,4 +11888,15 @@ function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaratio
     return undefined;
   });
   return found;
+}
+
+/** The failure group of a class the program declares but did not collect
+ * (its own declaration was rejected), or null for any other symbol. */
+function rejectedProgramClassGroup(lowerer: Lowerer, symbol: ts.Symbol | null): string | null {
+  if (symbol === null) return null;
+  const recorded = lowerer.rejectedGroups.get(symbol);
+  if (recorded !== undefined) return recorded;
+  const decl = symbol.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
+  if (decl === undefined || ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
+  return declarationGroupKey(symbol);
 }

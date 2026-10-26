@@ -85,6 +85,11 @@ ScrSym *scr_sym_well_known(ScrStr *name) {
   scr_str_release(description);
   symbol->reg_next = g_sym_well_known;
   g_sym_well_known = scr_sym_retain(symbol);
+  {
+    ScrDyn *key = scr_dyn_new_symbol(symbol);
+    scr_dyn_install_well_known_symbol(key);
+    scr_dyn_release(key);
+  }
   if (name->len == 8 && !memcmp(name->data, "iterator", 8)) {
     ScrDyn *key = scr_dyn_new_symbol(symbol);
     scr_dyn_install_iterator_symbol(key);
@@ -93,6 +98,11 @@ ScrSym *scr_sym_well_known(ScrStr *name) {
   if (name->len == 11 && !memcmp(name->data, "hasInstance", 11)) {
     ScrDyn *key = scr_dyn_new_symbol(symbol);
     scr_dyn_install_has_instance_symbol(key);
+    scr_dyn_release(key);
+  }
+  if (name->len == 7 && !memcmp(name->data, "species", 7)) {
+    ScrDyn *key = scr_dyn_new_symbol(symbol);
+    scr_dyn_install_species_symbol(key);
     scr_dyn_release(key);
   }
   if (name->len == 11 && !memcmp(name->data, "toStringTag", 11)) {
@@ -140,6 +150,11 @@ ScrSym *scr_sym_for(ScrStr *key) {
   s->reg_key = scr_str_retain(key);
   s->reg_next = g_sym_registry;
   g_sym_registry = scr_sym_retain(s);
+  if (key->len == 26 && !memcmp(key->data, "nodejs.util.inspect.custom", 26)) {
+    ScrDyn *custom = scr_dyn_new_symbol(s);
+    scr_dyn_install_inspect_custom_symbol(custom);
+    scr_dyn_release(custom);
+  }
   return s;
 }
 
