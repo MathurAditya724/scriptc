@@ -2,7 +2,7 @@
 // tsconfig `paths` maps an island package to its installed directory (a
 // monorepo pinning one copy): its import resolves to the package's
 // declarations, which type the program, and the package loads in Node.
-import { heavier, route, type Route } from "pathkit";
+import { Paths, heavier, route, type Route } from "pathkit";
 
 interface Table<T extends Route> {
   title: string;
@@ -18,3 +18,4 @@ const table: Table<Route> = { title: "routes", rows: routes };
 console.log(render(table));
 const top = heavier(routes[0]!, routes[1]!);
 console.log(top.rank, top.label(), top === routes[1], routes.length);
+console.log(Paths.join("api", "v1"));

@@ -5754,6 +5754,16 @@ function preflight7(load: LoadResult): {
           );
           continue;
         }
+        // A re-export from a Node island package that tsconfig `paths` maps
+        // to its installed directory: its declarations are no program
+        // module (the lowering reports the island boundary).
+        if (
+          projectReexport !== null &&
+          projectReexport.isDeclarationFile &&
+          !isRelativeSpecifier(fromSpec) &&
+          isFrontendIsland(packageNameOfSpecifier(fromSpec))
+        )
+          continue;
         const reDep = projectReexport;
         // `export * as ns from "./m"` re-exports the module NAMESPACE
         // object under a name: importers' `x.ns.member` reads resolve

@@ -354,3 +354,22 @@ test("recursive JSON types cross into Node", async () => {
   const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
   expect(ir).toContain("nodeIsland.callSync");
 }, 300_000);
+
+// Needs no libnode pack: the build fails before linking.
+test("re-exporting a path-mapped island package reports the island boundary", async () => {
+  const dir = join(outDir, "path-mapped-reexport");
+  rmSync(dir, { recursive: true, force: true });
+  const corpus = join(repoRoot, "tests/corpus/6839-node-island-path-mapped");
+  cpSync(join(corpus, "node_modules"), join(dir, "node_modules"), { recursive: true });
+  copyFileSync(join(corpus, "tsconfig.json"), join(dir, "tsconfig.json"));
+  copyFileSync(
+    join(repoRoot, "tests/fixtures/node-island/path-mapped-reexport.ts"),
+    join(dir, "main.ts"),
+  );
+  const result = await compile(join(dir, "main.ts"), { outPath: join(dir, "main"), outDir: dir });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((d) => `${d.code} ${d.loc.file.slice(dir.length + 1)}`)).toEqual([
+    "SC8010 main.ts",
+  ]);
+}, 300_000);
