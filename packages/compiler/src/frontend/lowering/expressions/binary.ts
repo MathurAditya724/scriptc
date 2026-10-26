@@ -58,6 +58,7 @@ import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-mod
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
+import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
 import { numLit, varRef } from "../../../ir/build.js";
 import { lowerUrlAssignment } from "../builtins/url.js";
@@ -799,6 +800,7 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
     // other record is Object.prototype.toString's constant.
     const shape = lowerer.shapes.get(e.type.shapeId);
     if (isPerfEntryType(lowerer, e.type)) return perfEntryTag(lowerer, e, e.type, e.loc);
+    if (isX509Type(lowerer, e.type)) return x509ToString(e, e.loc);
     if (shape && !shape.tuple && !shape.fields.some((f) => f.name === "toString")) {
       // A null-prototype record (Object.groupBy) has no toString or
       // valueOf: ToPrimitive throws Node's TypeError.
@@ -1549,6 +1551,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           reference.kind === "map" ||
           reference.kind === "set" ||
           reference.kind === "union" ||
+          // A promise of dyn boxes its own promise, so identity holds;
+          // other promise types box a fresh adapter.
+          (reference.kind === "promise" && reference.inner.kind === "dyn") ||
           DYN_HANDLE_KINDS.has(reference.kind)) &&
         lowerer.dynConvertible(reference)
       ) {
@@ -1590,6 +1595,19 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         ((scalarSide.type.kind === "moduleNs" && scalarSide.type.moduleId === "builtin:events") ||
           (scalarSide.kind === "classRef" && builtinClassKind(scalarSide.className) !== null))
       ) {
+        const boxed = lowerer.coerceToExpected(scalarSide, DYN);
+        return {
+          kind: "dynScalarEq",
+          left: scalarSide === left ? boxed : left,
+          right: scalarSide === right ? boxed : right,
+          ...(negated ? { negated: true as const } : {}),
+          type: BOOL,
+          loc,
+        };
+      }
+      // A Date against an untyped value: the same Date object, whose
+      // checked-dynamic handle the untyped value would hold.
+      if (dynSide.type.kind === "dyn" && scalarSide.type.kind === "date") {
         const boxed = lowerer.coerceToExpected(scalarSide, DYN);
         return {
           kind: "dynScalarEq",
@@ -2024,6 +2042,28 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       if (left.type.kind === "string" || right.type.kind === "string") {
+        // A Date on the left converts after the right operand is
+        // evaluated, which can run its setters.
+        if (left.type.kind === "date" && !isSafeToRepeat(right)) {
+          const date = lowerer.declareHiddenLocal("%plus", left.type);
+          const other = lowerer.declareHiddenLocal("%plus", right.type);
+          return {
+            kind: "seqExpr",
+            stmts: [
+              { kind: "varDecl", localId: date.id, init: left, loc },
+              { kind: "varDecl", localId: other.id, init: right, loc },
+            ],
+            result: {
+              kind: "strConcat",
+              left: concatOperand(lowerer, varRef(date.id, left.type, loc), expr.left),
+              right: concatOperand(lowerer, varRef(other.id, right.type, loc), expr.right),
+              type: STRING,
+              loc,
+            },
+            type: STRING,
+            loc,
+          };
+        }
         return {
           kind: "strConcat",
           left: concatOperand(lowerer, left, expr.left),
@@ -2347,6 +2387,34 @@ export function lowerStrictEquality(
         union: left.type.kind === "union" ? left : right,
         func: plainFunc,
         negated,
+        type: BOOL,
+        loc,
+      };
+    }
+    // A promise against a union with a promise arm, or two such unions:
+    // converting a promise into a union's promise arm of another payload
+    // (`chains.get(id) === tail` with a `Map<K, Promise<unknown>>`, or
+    // `a.pending === b.pending` after both were set to one promise) builds a
+    // new promise, so either side may hold a conversion of the other's
+    // promise, and a value narrowed out of the union may be one too.
+    // Promises are objects to ===, so compare both sides as untyped values,
+    // where a converted promise answers with its origin's identity (the plain
+    // promise-vs-promise rule below).
+    const holdsPromise = (type: IrType): boolean =>
+      type.kind === "promise" ||
+      (type.kind === "union" &&
+        (lowerer.unions.get(type.unionId)?.arms ?? []).some((arm) => arm.kind === "promise"));
+    if (
+      holdsPromise(left.type) &&
+      holdsPromise(right.type) &&
+      lowerer.dynConvertible(left.type) &&
+      lowerer.dynConvertible(right.type)
+    ) {
+      return {
+        kind: "dynScalarEq",
+        left: lowerer.coerceToExpected(left, DYN),
+        right: lowerer.coerceToExpected(right, DYN),
+        ...(negated ? { negated: true as const } : {}),
         type: BOOL,
         loc,
       };

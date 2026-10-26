@@ -309,6 +309,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "net.sockOnClose" ||
     e.fn === "net.sockOnConnect" ||
     e.fn === "net.sockOnTimeout" ||
+    e.fn === "net.sockOnDrain" ||
     e.fn === "net.sockOnReadable" ||
     e.fn === "net.sockOnReady" ||
     e.fn === "http.reqOnEnd" ||
@@ -329,6 +330,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "net.sockOnClose": "scr_net_sock_on_close",
       "net.sockOnConnect": "scr_net_sock_on_connect",
       "net.sockOnTimeout": "scr_net_sock_on_timeout",
+      "net.sockOnDrain": "scr_net_sock_on_drain",
       "net.sockOnReadable": "scr_net_sock_on_readable",
       "net.sockOnReady": "scr_net_sock_on_ready",
       "http.reqOnEnd": "scr_http_req_on_end",

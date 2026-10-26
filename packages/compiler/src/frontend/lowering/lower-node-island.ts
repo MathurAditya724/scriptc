@@ -261,7 +261,7 @@ function boundaryFail(lowerer: Lowerer, what: string, node: ts.Node): never {
 }
 
 /** Whether the JavaScript file is an ES module by Node's rules. */
-function isEsmFile(file: string): boolean {
+export function isEsmFile(file: string): boolean {
   if (file.endsWith(".mjs")) return true;
   if (file.endsWith(".cjs")) return false;
   for (let dir = dirname(file); ;) {

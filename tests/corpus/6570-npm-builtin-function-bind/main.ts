@@ -5,6 +5,10 @@
 // fs.realpath 1.0.0 (ISC) and value-forms read builtin functions as values:
 // fs.realpathSync stored and compared, Buffer.alloc aliased, and a String
 // method read for a feature probe.
+// package.json keeps bound-builtins native: a fence in its module code
+// would run it in a Node island, and this program iterates the array its
+// report() returns, which native code cannot iterate across the island
+// boundary yet.
 import truncate from 'truncate-utf8-bytes';
 import { report, badLength } from 'bound-builtins';
 import realpath from 'fs.realpath';
