@@ -32,9 +32,16 @@
 
 #include "scr_ieee754.h"
 
-/* Each operation rounds on its own, as in V8's build: no fused
- * multiply-add, which would change the results on targets that have one. */
+/* Floating-point contraction follows Node's build of this file. Node for
+ * macOS on arm64 is compiled by clang, which fuses a multiply and an add
+ * within one expression into a fused multiply-add; the results differ from
+ * the unfused ones in the last bit for some inputs. Other builds round each
+ * operation on its own, as Node's x86-64 builds do. */
+#if defined(__APPLE__) && defined(__aarch64__)
+#pragma STDC FP_CONTRACT ON
+#else
 #pragma STDC FP_CONTRACT OFF
+#endif
 
 static inline uint64_t scr_fd_bits(double d) {
   uint64_t bits;
