@@ -105,8 +105,11 @@ const MAX_CALLBACK_VERSION_COST = 400;
 export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
   const B = emitter.B;
   emitter.frames.push([]);
+  if (emitter.arenas !== null)
+    emitter.statementFrames.add(emitter.frames[emitter.frames.length - 1]!);
   switch (s.kind) {
     case "varDecl": {
+      emitter.ownArenasOf(s.localId);
       if (s.init && emitter.int32Locals.has(s.localId)) {
         emitter.storeInt32Local(s.localId, emitter.emitExpr(s.init), s.init);
         break;

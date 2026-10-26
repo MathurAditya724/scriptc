@@ -1104,7 +1104,7 @@ export function emitCallExpr(
           `llvm emitter bug: new ${e.className} without a constructor`,
         );
       const o = B.tmp();
-      B.line(`${o} = call ptr @${mangleClassNew(e.className)}()`);
+      B.line(`${o} = call ptr @${host.allocSym(mangleClassNew(e.className), e)}()`);
       const out = host.own({ name: o, type: e.type });
       emitConstruction(host, e, o, ctor);
       return out;

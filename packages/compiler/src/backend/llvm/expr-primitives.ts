@@ -1080,16 +1080,21 @@ export function emitContainerExpr(
           B.line(`${fits} = icmp ule ${host.sizeType} ${capacity}, ${SMALL_ARRAY_SLOTS}`);
           B.condBr(fits, smallLabel, sizedLabel);
           B.startBlock(smallLabel);
-          B.line(`${smallArr} = ${arrNewCall(host.shapeHost, elem, "0", true)}`);
+          B.line(`${smallArr} = ${arrNewCall(host.shapeHost, elem, "0", true, host.arenaSite(e))}`);
           B.br(joined);
           B.startBlock(sizedLabel);
-          B.line(`${sizedArr} = ${arrNewCall(host.shapeHost, elem, capacity)}`);
+          B.line(
+            `${sizedArr} = ${arrNewCall(host.shapeHost, elem, capacity, false, host.arenaSite(e))}`,
+          );
           B.br(joined);
           B.startBlock(joined);
           B.line(
             `${arr} = phi ptr [ ${smallArr}, %${smallLabel} ], [ ${sizedArr}, %${sizedLabel} ]`,
           );
-        } else B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small)}`);
+        } else
+          B.line(
+            `${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small, host.arenaSite(e))}`,
+          );
       }
       const out = host.own({ name: arr, type: e.type });
       const acc: ArrayAccess = int32 ? "i32" : elemAccess(elem);
@@ -1362,7 +1367,7 @@ export function emitRecordExpr(
         throw new InternalCompilerError("llvm emitter bug: recordLit of non-record type");
       const shapeId = e.type.shapeId;
       const rec = B.tmp();
-      B.line(`${rec} = call ptr @${mangleRecordNew(shapeId)}()`);
+      B.line(`${rec} = call ptr @${host.allocSym(mangleRecordNew(shapeId), e)}()`);
       const out = host.own({ name: rec, type: e.type });
       // A null-prototype record: SCR_MAP_NULL_PROTO on the fresh map.
       if (e.nullProto) B.line(`store i8 1, ptr ${host.recordMapFlagsPtr(rec, shapeId)}`);
