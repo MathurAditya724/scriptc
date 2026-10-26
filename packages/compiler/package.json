@@ -44,6 +44,9 @@
     "typescript": "7.0.2",
     "typescript5": "npm:typescript@5.9.3"
   },
+  "devDependencies": {
+    "typescript-7.1": "npm:typescript@7.1.0-beta"
+  },
   "optionalDependencies": {
     "@scriptc/llvm-darwin-arm64": "workspace:*",
     "@scriptc/llvm-darwin-x64": "workspace:*",
