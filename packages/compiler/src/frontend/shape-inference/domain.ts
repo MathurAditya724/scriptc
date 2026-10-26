@@ -38,6 +38,8 @@ export interface Atom {
   /** function atoms: the analysis context of the function's clone (a
    * method's receiver class), "" for the context-insensitive default. */
   readonly ctx?: string | undefined;
+  /** prim `boolean` atoms of a literal: its value. */
+  readonly literal?: boolean | undefined;
 }
 
 export class AtomTable {

@@ -97,6 +97,7 @@ export const DIAGNOSTIC_CODES = {
   SC6004: "divergence: cast to an unrelated class",
   SC6101: "performance: likely-hot function with untyped values",
   SC6102: "performance: declaration-typed boundary note",
+  SC6103: "performance: shape inference overlay report",
   SC6104: "localized failure: slot held as a checked-dynamic value",
   SC7001: "NoThrow contract on an async function or generator",
   SC7002: "Int32 contract value not provably int32",

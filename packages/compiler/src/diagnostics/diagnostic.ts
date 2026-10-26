@@ -65,7 +65,10 @@
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
  *            likely-hot functions that use untyped values (SC6101,
- *            diagnostics/dynamic-tier.ts)
+ *            diagnostics/dynamic-tier.ts), package files whose projected
+ *            declaration types were dropped (SC6102), and shape inference's
+ *            overlay report: what it typed and how many inferred facts the
+ *            build checks (SC6103, frontend/shape-inference)
  *   SC7xxx  contract types (@scriptc/types): a NoThrow, Int32, Immutable,
  *            Acyclic or ProgramLifetime contract that does not hold or
  *            cannot be checked (SC7001–SC7008, contracts/check.ts)

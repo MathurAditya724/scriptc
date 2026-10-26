@@ -44,7 +44,13 @@ export interface AliasRef {
   tsType: ts.Type;
 }
 
-export type Canon =
+export type Canon = CanonNode & {
+  /** The checker type the node was normalized from (a type parameter's
+   * binding for substituted parameters). */
+  src?: ts.Type;
+};
+
+type CanonNode =
   | { k: "prim"; p: CanonPrim }
   | { k: "lit"; value: string | number | boolean }
   | { k: "unit"; u: "undefined" | "null" | "void" | "never" }
@@ -67,8 +73,10 @@ export type Canon =
   | { k: "param"; name: string }
   | { k: "opaque"; ts: ts.Type; reason: string };
 
-/** Type-parameter bindings: the checker type a parameter is bound to. */
-export type CanonEnv = ReadonlyMap<ts.Symbol, ts.Type>;
+/** Type-parameter bindings: the checker type a parameter is bound to, by
+ * the parameter's symbol, or a resolver over the parameter type (the
+ * lowerer's resolveTypeParamTs). */
+export type CanonEnv = ReadonlyMap<ts.Symbol, ts.Type> | ((param: ts.Type) => ts.Type | null);
 
 const PRIM_FLAGS: readonly [number, CanonPrim][] = [
   [ts.TypeFlags.Number, "number"],
@@ -78,9 +86,23 @@ const PRIM_FLAGS: readonly [number, CanonPrim][] = [
   [ts.TypeFlags.ESSymbol | ts.TypeFlags.UniqueESSymbol, "symbol"],
 ];
 
-/** A stable key for a canonical node, for deduplication and tests. */
-export function canonKey(c: Canon, depth = 0): string {
-  if (depth > 6) return "…";
+/** A stable key for a canonical node, for deduplication and tests. Deep
+ * and wide types are cut off (depth 6, about 4,000 characters), so equal
+ * keys mean equal up to that horizon. */
+export function canonKey(c: Canon): string {
+  const budget = { left: 4000 };
+  return canonKeyAt(c, 0, budget);
+}
+
+function canonKeyAt(c: Canon, depth: number, budget: { left: number }): string {
+  const key = canonKeyInner(c, depth, budget);
+  budget.left -= key.length;
+  return key;
+}
+
+function canonKeyInner(c: Canon, depth: number, budget: { left: number }): string {
+  if (depth > 6 || budget.left <= 0) return "…";
+  const canonKey = (n: Canon, d: number) => canonKeyAt(n, d, budget);
   switch (c.k) {
     case "prim":
       return c.p;
@@ -259,11 +281,15 @@ export class Normalizer {
       if (known !== undefined) return known;
     }
     const node = this.build(type, env, key);
+    if (node.src === undefined && node.k !== "param") node.src = type;
     if (key !== null && !this.interned.has(key)) this.interned.set(key, node);
     return node;
   }
 
   private envKey(env: CanonEnv): string {
+    // A resolver's bindings are the caller's current instantiation: a
+    // normalizer is used for one instantiation at a time.
+    if (typeof env === "function") return "fn";
     if (env.size === 0) return "";
     const parts: string[] = [];
     for (const [param, bound] of env) {
@@ -294,7 +320,12 @@ export class Normalizer {
       for (const [flag, p] of PRIM_FLAGS) if (flags & flag) return { k: "prim", p };
     if (flags & ts.TypeFlags.TypeParameter) {
       const symbol = type.getSymbol();
-      const bound = symbol === undefined ? undefined : env.get(symbol);
+      const bound =
+        typeof env === "function"
+          ? (env(type) ?? undefined)
+          : symbol === undefined
+            ? undefined
+            : env.get(symbol);
       if (bound !== undefined && bound !== type) return this.canon(bound, env);
       return { k: "param", name: symbol === undefined ? "?" : ts.symbolName(symbol) };
     }
@@ -361,7 +392,8 @@ export class Normalizer {
       return arms.length === 1 ? arms[0]! : { k: "union", arms };
     }
     const prims = parts.filter((p) => p.k === "prim" || p.k === "lit");
-    if (prims.length === 1 && parts.every((p) => p === prims[0] || p.k === "obj")) return prims[0]!;
+    if (prims.length === 1 && parts.every((p) => p.k === "prim" || p.k === "lit" || p.k === "obj"))
+      return prims[0]!;
     if (parts.every((p) => p.k === "obj" || (p.k === "top" && p.t === "object")))
       return this.object(type, env, key);
     return { k: "opaque", ts: type, reason: "intersection" };
@@ -406,6 +438,14 @@ export class Normalizer {
       });
       return node;
     }
+    // A mapped type the checker could not resolve (over an unbound or
+    // symbolically bound parameter) shows no members: irreducible here.
+    if (
+      ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Mapped) !== 0 &&
+      checker.getPropertiesOfType(type).length === 0 &&
+      checker.getIndexInfosOfType(type).length === 0
+    )
+      return { k: "opaque", ts: type, reason: "unresolved mapped type" };
     const symbol = type.getSymbol();
     const decl = symbol?.declarations[0];
     const nominal =

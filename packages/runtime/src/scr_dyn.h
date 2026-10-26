@@ -1665,6 +1665,10 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
 /* The Date object a checked-dynamic Date handle holds, +1, or NULL with
  * the check failure pending. */
 ScrDate *scr_dyn_native_date_check(const ScrDyn *value, const ScrDynPath *path);
+/* Names the analysis-proven fact the next checked conversion checks
+ * (shape inference's overlay), or NULL: its failure then reports a compiler
+ * analysis bug ("<package> <file>:<line>"). */
+void scr_dyn_inferred_site(const char *site);
 
 /* Matchers and builders of recursive shapes (records and arrays whose type
  * reaches itself) track the dyn values they visit, so cyclic values match
