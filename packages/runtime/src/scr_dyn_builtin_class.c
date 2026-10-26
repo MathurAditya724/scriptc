@@ -1441,7 +1441,7 @@ static void bc_teardown(void) {
 
 static ScrDyn *bc_new_class(int kind, ScrDyn *parent) {
   ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->function_kind = 4; /* an ordinary function with its own prototype */
+  closure->function_kind = SCR_CLOSURE_KIND_OWN_PROTOTYPE;
   closure->caps[0] = scr_box_new(SCR_BOX_F64);
   scr_box_set_f64(closure->caps[0], kind);
   ScrDyn *ctor = scr_dyn_new_func(closure, bc_construct, 1, "native:events", bc_names[kind]);

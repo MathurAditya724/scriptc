@@ -7,6 +7,7 @@
  * variable and class field types, and the class markers (Acyclic,
  * ProgramLifetime) in heritage clauses. The IR-side checks live in
  * ir/contract-check.ts. */
+import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { SrcLoc } from "../ir/ir.js";
 import { locOf } from "./program.js";
@@ -134,7 +135,7 @@ function nameText(node: ts.Node | undefined): string {
 }
 
 function contractDiag(
-  code: `SC${number}`,
+  code: DiagnosticCode,
   loc: SrcLoc,
   message: string,
   hint: string,
