@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import * as ts from "./ts7/adapter.js";
 import {
   ambientDtsPath,
-  fallbackDtsPath,
+  isFallbackDtsPath,
   isNodeTypesPath,
   overridesDtsPath,
   tsgoPath,
@@ -22,7 +22,7 @@ export function isNodeGlobal(program: ts.Program, expression: ts.Identifier): bo
       const source = ts.getSourceFileOfNode(declaration);
       return (
         source.isDeclarationFile &&
-        (tsgoPath(source.fileName) === fallbackDtsPath() || isNodeTypesPath(source.fileName))
+        (isFallbackDtsPath(source.fileName) || isNodeTypesPath(source.fileName))
       );
     })
   );
@@ -333,7 +333,7 @@ const SPELLED_CHILD_PROCESS = new RegExp(
 function namesChildProcess(program: ts.Program): boolean {
   const known = program.analysis.namesChildProcess;
   if (known !== null) return known;
-  const own = new Set([ambientDtsPath(), overridesDtsPath(), fallbackDtsPath()]);
+  const own = new Set([ambientDtsPath(), overridesDtsPath()]);
   // Implementation files are already fetched; any other file is read as
   // the host serves it, without fetching its syntax tree.
   const texts = new Map<string, string>();
@@ -343,7 +343,7 @@ function namesChildProcess(program: ts.Program): boolean {
   let names = false;
   for (const fileName of program.getSourceFileNames()) {
     const path = tsgoPath(fileName);
-    if (isNodeTypesPath(fileName) || own.has(path)) continue;
+    if (isNodeTypesPath(fileName) || isFallbackDtsPath(fileName) || own.has(path)) continue;
     const text = texts.get(path) ?? program.getSourceText(fileName) ?? "";
     if (
       text.includes("child_process") ||

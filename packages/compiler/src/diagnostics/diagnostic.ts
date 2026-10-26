@@ -64,7 +64,10 @@
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
  *            likely-hot functions that use untyped values (SC6101,
- *            diagnostics/dynamic-tier.ts)
+ *            diagnostics/dynamic-tier.ts), package files whose projected
+ *            declaration types were dropped (SC6102), and shape inference's
+ *            overlay report: what it typed and how many inferred facts the
+ *            build checks (SC6103, frontend/shape-inference)
  *   SC8xxx  Node islands: packages and modules outside the native subset
  *            that run (or, in report-only mode, would run) in a Node
  *            island — unknown project configuration (SC8004), a package
@@ -117,6 +120,64 @@ export interface ScrDiagnostic {
    * and class member body: it throws when the module initializes, which is
    * program startup for a module the entry imports. */
   startup?: true;
+  /** Localized failure, report-only (stage L0): set where a type with no
+   * static lowering poisoned a slot (Lowerer.badType and the dyn class
+   * field policy). Never part of the rendered message. */
+  typeFailure?: TypeFailure;
+  /** Localized failure, report-only: the declaration this diagnostic
+   * rejected, as a failure-group key. Set when a reference flushes a
+   * deferred declaration's diagnostics, and on the diagnostics of a
+   * declaration statement whose bindings were blocked. */
+  rejects?: string;
+  /** Localized failure, report-only: the failure groups (rejected
+   * declarations, blocked statements) that the statement committing this
+   * diagnostic used. A cascade clears when every one of them would
+   * degrade instead of failing. */
+  cause?: readonly string[];
+}
+
+/** Where a type failure sits (localized-failure design §3.6): a
+ * declaration slot, a member of a declared type, or an expression's own
+ * type. */
+export type TypeFailureSlot =
+  | "field"
+  | "param"
+  | "return"
+  | "local"
+  | "global"
+  | "loop"
+  | "member"
+  | "expression";
+
+/** Which badType branch (or policy fence) refused the type. */
+export type TypeFailureFamily =
+  | "node-types"
+  | "fetch-ambient"
+  | "enum-object"
+  | "stdlib-index"
+  | "index-signature"
+  | "package"
+  | "generic-signature"
+  | "overloads"
+  | "intersection"
+  | "component"
+  | "stdlib-nominal"
+  | "record-member"
+  | "unsupported"
+  | "dyn-field-policy";
+
+/** A type failure's structured payload: what the commit points of the
+ * localized-failure design inspect (PoisonError.failure carries the same
+ * object). `degradable` is the §3.7 classification: a checked-dynamic slot
+ * would keep the program's meaning. */
+export interface TypeFailure {
+  slot: TypeFailureSlot;
+  /** The slot's name (`_customTools`, `listAll`, `x`), or the expression
+   * text for expression slots. */
+  name: string;
+  declaredType: string;
+  family: TypeFailureFamily;
+  degradable: boolean;
 }
 
 /** SC3002–SC3004 — native-helper target, installation, and execution
@@ -934,6 +995,21 @@ export function nativeAddonDiag(specifier: string, loc: SrcLoc): ScrDiagnostic {
     milestone: "later",
     hint: "expose the native operation as a plain C ABI function in an object or static archive, then bind a signature-only TypeScript declaration with --ffi; Node-API callbacks themselves require Node (https://scriptc.dev/ffi#replacing-a-node-api-addon)",
     reason: "native-addon",
+  };
+}
+
+/** A createRequire require or require.resolve call whose specifier is
+ * computed at run time, where the runtime resolves it like Node
+ * (scr_require.c). Coverage lists the call as deferred: a require whose
+ * specifier resolves to a module ends the program with this code, because
+ * the module graph is fixed at build time. */
+export function computedRequireDiag(surface: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `${surface} with a computed specifier resolves at run time; a require of a specifier that resolves to a module, such as a native addon, ends the program`,
+    loc,
+    milestone: "later",
+    hint: 'require("<static string literal>") compiles the module into the program; native addons need a replacement through native FFI (https://scriptc.dev/ffi#replacing-a-node-api-addon)',
   };
 }
 

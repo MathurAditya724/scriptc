@@ -1,17 +1,26 @@
 /** Build the production CLI seed and its relocatable compiler assets. */
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { compile } from "../packages/compiler/src/index.js";
-import { NATIVE_TARGETS, nativeCodegenTarget } from "../packages/compiler/src/backend/targets.js";
+import {
+  NATIVE_TARGETS,
+  executableStripLinkerArgs,
+  nativeCodegenTarget,
+} from "../packages/compiler/src/backend/targets.js";
 import { tsgoExecutable } from "../packages/compiler/src/frontend/ts7/rpc-api.js";
+import { prebuiltLibDiagnosticsText } from "../packages/compiler/src/frontend/ts7/lib-diagnostics.js";
 import { stageNativeCliAssets } from "./native-cli-assets.mjs";
 import type { NativeToolchainManifest } from "../packages/compiler/src/native/toolchain.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(process.argv[2] ?? join(root, ".scriptc/native-cli"));
+// --platform-packages builds an npm platform package's distribution, which
+// depends on the helper and runtime pack packages instead of bundling them.
+const platformPackages = process.argv.includes("--platform-packages");
 const optimization = process.env["SCRIPTC_NATIVE_OPTIMIZATION"] === "dev" ? "dev" : "release";
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 // SCRIPTC_NATIVE_PROFILE_GENERATE=<pattern> builds a compiler that writes a
@@ -35,6 +44,15 @@ const useProfile =
   !sanitize &&
   requestedProfile !== "" &&
   (requestedProfile !== undefined || existsSync(committedProfile));
+// Builds lay out the compiler's functions with the committed layout
+// (scripts/refresh-cli-layout.mjs), or the one SCRIPTC_NATIVE_LAYOUT names;
+// an empty SCRIPTC_NATIVE_LAYOUT, and instrumented builds, use none.
+const committedLayout = join(root, "packages/compiler/native/cli.layout.gz");
+const requestedLayout = process.env["SCRIPTC_NATIVE_LAYOUT"];
+const functionLayout =
+  profileGenerate !== undefined || requestedLayout === ""
+    ? undefined
+    : (requestedLayout ?? (existsSync(committedLayout) ? committedLayout : undefined));
 let target = nativeCodegenTarget();
 if (target === null || target.platform === "wasi")
   throw new Error("a supported native host is required to build the compiler");
@@ -92,12 +110,14 @@ const ffi = join(seed, "compiler.ffi.json");
 writeFileSync(ffi, JSON.stringify({ ffi_format: 6, functions, libraries }, null, 2) + "\n");
 const executable = join(bin, "scriptc" + target.outputSuffixes.exe);
 const comptime = join(lib, "scriptc-comptime" + target.outputSuffixes.exe);
+const strip = process.env["SCRIPTC_NATIVE_KEEP_SYMBOLS"] !== "1";
 execFileSync(
   compiler,
   [
     ...compilerArgs,
     ...cFlags,
     "-O2",
+    ...(strip ? ["-g0", ...executableStripLinkerArgs(target.platform, true)] : []),
     "-I",
     join(root, "packages/runtime/vendor/quickjs-ng"),
     join(nativeSources, "comptime.c"),
@@ -114,16 +134,20 @@ execFileSync(
   ],
   { stdio: "inherit" },
 );
+// The Windows link writes the debug database beside the executable.
+if (strip && target.platform === "win32")
+  rmSync(comptime.replace(/\.exe$/, ".pdb"), { force: true });
 const result = await compile(join(root, "packages/compiler/src/native/cli.ts"), {
   outDir: seed,
   outPath: executable,
   backend: "llvm",
   optimization,
-  strip: process.env["SCRIPTC_NATIVE_KEEP_SYMBOLS"] !== "1",
+  strip,
   ffiProfilePath: ffi,
   sanitize,
   ...(profileGenerate === undefined ? {} : { profileGenerate }),
   ...(profileUse === undefined ? {} : { profileUse }),
+  ...(functionLayout === undefined ? {} : { functionLayout }),
   emitIr: process.env["SCRIPTC_NATIVE_EMIT_IR"] === "1",
 });
 if (!result.ok)
@@ -165,6 +189,8 @@ const assets = stageNativeCliAssets({
   target,
   ts7: tsgoExecutable(),
   compilerVersion,
+  strip,
+  platformPackages,
 });
 // A cross-libc seed may use Zig on the build host. The installed compiler
 // selects the destination platform's ordinary linker and SDK.
@@ -181,4 +207,60 @@ const manifest: NativeToolchainManifest = {
   comptime: relative(bin, comptime),
 };
 writeFileSync(executable + ".json", JSON.stringify(manifest, null, 2) + "\n");
+// The prebuilt lib diagnostics (frontend/ts7/lib-diagnostics.ts): the
+// declaration file sets the distribution's tsc-ts reports no diagnostics in
+// for programs without a tsconfig, recorded by the built compiler itself. A
+// compiler this host cannot run ships without them.
+const prebuiltKeys = recordPrebuiltLibDiagnostics(executable);
+if (prebuiltKeys === null) {
+  console.warn(
+    "warning: the built compiler did not run here; it ships without prebuilt lib diagnostics",
+  );
+} else {
+  const prebuilt = join(lib, "declarations", "lib-diagnostics.json");
+  const checker = (
+    JSON.parse(readFileSync(join(lib, "tsc-ts", "package.json"), "utf8")) as { version: string }
+  ).version;
+  writeFileSync(prebuilt, prebuiltLibDiagnosticsText(checker, prebuiltKeys));
+  manifest.lib_diagnostics = relative(bin, prebuilt);
+  writeFileSync(executable + ".json", JSON.stringify(manifest, null, 2) + "\n");
+}
 console.log(executable);
+
+/** The content keys the built compiler records building, each in an empty
+ * cache, a module without imports (the program it lowers) and a module with
+ * a type error (which also checks the program without scriptc's overrides);
+ * null when it cannot run. */
+function recordPrebuiltLibDiagnostics(compiler: string): string[] | null {
+  const work = mkdtempSync(join(tmpdir(), "scriptc-lib-diagnostics-"));
+  try {
+    const record = join(work, "keys.txt");
+    const probes = [
+      { name: "clean", source: "export {};\n", status: 0 },
+      { name: "error", source: 'export const n: number = "x";\n', status: 1 },
+    ];
+    for (const probe of probes) {
+      const dir = join(work, probe.name);
+      mkdirSync(dir);
+      writeFileSync(join(dir, "main.ts"), probe.source);
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        SCRIPTC_CACHE_DIR: join(dir, "cache"),
+        SCRIPTC_LIB_DIAGNOSTICS_RECORD: record,
+      };
+      delete env["SCRIPTC_TIMING"];
+      const run = spawnSync(
+        compiler,
+        ["build", join(dir, "main.ts"), "--optimization", "dev", "-o", join(dir, "main")],
+        { cwd: dir, env, encoding: "utf8" },
+      );
+      if (run.status !== probe.status) return null;
+    }
+    if (!existsSync(record)) return null;
+    return readFileSync(record, "utf8")
+      .split("\n")
+      .filter((key) => key !== "");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}

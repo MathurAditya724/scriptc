@@ -320,16 +320,17 @@ test("worker programs test each receiver's shared storage once in the guard", ()
   const fast = /^bytes\.version\.fast\d+:$[^]*?^bytes\.version\.fast\.shared\d+:$/m.exec(body)![0];
   expect(fast).not.toContain("bytes.shared");
   expect(fast).not.toMatch(/(load|store) atomic double/);
-  // The checked copy keeps the shared-memory path for each access, and so
-  // does the copy for shared views whose bounds hold.
+  // The checked copy keeps the shared-memory path for each access. The copy
+  // for shared views whose bounds hold is a counted loop that polls between
+  // blocks, so its accesses at the counter are plain.
   const slow = body.slice(body.search(/^bytes\.version\.slow\d+:$/m), body.indexOf(fast));
   expect(slow).toContain("load atomic double");
   expect(slow).toContain("store atomic double");
   const shared = /^bytes\.version\.fast\.shared\d+:$[^]*?^bytes\.version\.done\d+:$/m.exec(
     body,
   )![0];
-  expect(shared).toContain("load atomic double");
-  expect(shared).toContain("store atomic double");
+  expect(shared).toMatch(/^loop\.poll\d+:$/m);
+  expect(shared).not.toMatch(/(load|store) atomic double/);
 });
 
 test("index temps of a version's counter are integers in the fast copy", () => {

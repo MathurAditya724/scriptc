@@ -54,6 +54,11 @@ export interface CompileBaseOptions {
    * Unset or `baseline`, the code runs on any x86-64 CPU. x86-64 targets
    * only; the runtime pack keeps its baseline code. */
   targetCpu?: TargetCpu;
+  /** Give the executable an x86-64-v3 copy of each program function, which
+   * it runs instead of the baseline code on CPUs that support that level
+   * (`SCRIPTC_CPU_LEVEL` caps the level at run time). Executables for x86-64
+   * targets without a `targetCpu` only; off by default. */
+  cpuDispatch?: boolean;
   /** Instrument the executable for profile-guided optimization. Each run
    * writes a raw profile to this path pattern (`%p` expands to the process
    * id; `LLVM_PROFILE_FILE` overrides the pattern at run time). Linux
@@ -63,9 +68,18 @@ export interface CompileBaseOptions {
    * merge-profiles`). Code the profile does not describe, or describes
    * from an older version of the program, is optimized as without one. */
   profileUse?: string;
+  /** A function layout (scripts/refresh-cli-layout.mjs; gzip-compressed when
+   * the name ends in .gz): the listed functions are written first, by tier,
+   * so the code that runs together sits together in the executable. The
+   * native compiler's build uses it. Executables and LLVM output. */
+  functionLayout?: string;
 
   /** Eligible packages compile automatically. Explicit names override automatic selection heuristics. */
   npmStatic?: readonly string[] | "auto";
+  /** Shape inference's typed overlay for opted-in packages' JavaScript.
+   * False disables it (`--no-shape-overlay`); a package opts out with
+   * `"scriptc": { "packages": { "<name>": { "shapes": false } } }`. */
+  shapeOverlay?: boolean;
   /** Outbound native FFI manifest. Its signature-only TypeScript bindings
    * lower to direct C ABI calls. Source outputs retain those declarations;
    * archive/system-library inputs join only an executable link. */
