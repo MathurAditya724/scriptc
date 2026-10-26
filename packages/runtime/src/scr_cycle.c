@@ -2350,7 +2350,9 @@ void scr_collect_cycles(void) {
  * finding anything, and the death rule's backoff then start over from the
  * heap the sweep leaves, as after a productive pass. Otherwise the next
  * phase's garbage would accumulate until the heap grew to that widened
- * fraction. */
+ * fraction. The freed memory then goes back to the system (scr_heap_trim):
+ * the next phase allocates other sizes than the dead data held, so it would
+ * reuse little of it and grow its resident memory on top. */
 void scr_collect_cycles_phase(void) {
   scr_collect_cycles();
   for (unsigned gen = SCR_CYC_MATURE; gen < SCR_CYC_NGENS; gen++) {
@@ -2358,6 +2360,7 @@ void scr_collect_cycles_phase(void) {
     scr_cyc_growth_streak[gen] = 0;
   }
   scr_cyc_death_shift = 0;
+  scr_heap_trim();
 }
 
 /* Worker TLS becomes unreachable when its OS thread returns. Release the

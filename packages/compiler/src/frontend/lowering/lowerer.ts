@@ -5,6 +5,13 @@ import {
   arrayRootOf,
   lowerWithArraySpecies,
 } from "./builtins/array-classes.js";
+import {
+  compactDeclOrigins,
+  inPackageFile,
+  recordOrigin,
+  slotOrigin,
+  type RecordOrigin,
+} from "./decl-origin.js";
 import { isDeclBoundaryFile } from "../decl-projection.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { moduleNamespaceObject, moduleNamespaceValue } from "./module-namespace-elements.js";
@@ -126,6 +133,7 @@ import {
   deferredReadHelper,
   widthNarrowHelper,
 } from "./coercions/unions.js";
+import { assertedConversion } from "./coercions/asserted.js";
 import {
   lowerUtilTypeValue,
   pathModuleValue,
@@ -135,7 +143,7 @@ import { devirtualizeVirtualCalls } from "./devirtualize.js";
 import { foldRegexSpanReads } from "./regex-span-reads.js";
 import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
 import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
-import { NarrowingStability } from "./narrowing-stability.js";
+import { NarrowingStability, widenedReceiver } from "./narrowing-stability.js";
 import { ArrayElementStates } from "./runtime-optional-elements.js";
 import { indexReadInBounds } from "./runtime-optional-bounds.js";
 import { ArrayOwnership } from "./runtime-optional-ownership.js";
@@ -211,7 +219,12 @@ import { isBundledShimForwarder } from "../package-shims.js";
 import { erasedTypeOnlyImport } from "../type-only-imports.js";
 import { literalValues } from "../literal-values.js";
 import { discriminantOwners, literalUnionArm, type UnionLiteral } from "../union-discriminants.js";
-import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
+import type {
+  ScrDiagnostic,
+  TypeFailure,
+  TypeFailureFamily,
+} from "../../diagnostics/diagnostic.js";
+import { declarationGroupKey, typeFailureOf } from "./type-failure.js";
 import {
   unsupportedAnyOperationDiag,
   blockedBindingUseDiag,
@@ -467,6 +480,7 @@ import {
   genericLocalClassBinding,
 } from "./generic-functions.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
+import { isMessageListenerCall } from "./expressions/message-listeners.js";
 import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import { completeArgs, wrappedUndefined, undefinedArgFor } from "./call-arguments.js";
@@ -720,7 +734,16 @@ interface GenericDemandOwner {
   classDemands: ClassInfo[];
 }
 
-export class PoisonError extends Error {}
+export class PoisonError extends Error {
+  /** Set when a type with no static lowering poisoned a slot (badType and
+   * the dyn class field policy): what failed, for the localized-failure
+   * commit points. Report-only in stage L0. */
+  readonly failure: TypeFailure | undefined;
+  constructor(failure?: TypeFailure) {
+    super();
+    this.failure = failure;
+  }
+}
 
 /** A function-shaped value that exists only in the compiler's static
  * projection graph. Declared-function aliases point at the original
@@ -2255,6 +2278,10 @@ export class Lowerer {
     ts.Type,
     { tsBindings: Map<ts.Symbol, ts.Type>; instance: ts.Type }[]
   >();
+  /** Values an erased type assertion produced, with the asserted type
+   * (`x as T` keeps x's representation): a slot that no ordinary
+   * conversion reaches converts them as asserted (assertedConversion). */
+  readonly assertedValues = new Map<IrExpr, IrType>();
   /** Non-null while an IMPLICIT-ANY instance body lowers (npm-static JS;
    * see generic-functions.ts): bound param symbol →
    * the call site's checker type, consulted by typeOf for identifier
@@ -2482,6 +2509,69 @@ export class Lowerer {
       }
     }
     return fallback ?? null;
+  }
+
+  /** An object or array literal in an untyped context: its contextual type
+   * is `unknown` or `any` from a slot the program declares (a variable,
+   * field, parameter, return type or `unknown[]` element; a library
+   * parameter typed `any` only through a type argument), it is thrown, or
+   * it is a member of such a literal, and it holds data only (no methods,
+   * accessors or function members). Its value is built as a dynamic
+   * object: no type the program wrote gives it a native layout, and a later
+   * checked cast adopts it (dyn.adoptShared), so every holder keeps one
+   * identity. A library parameter the declarations type `any` or `unknown`
+   * itself (`console.log`, `JSON.stringify`) only reads the value and keeps
+   * the native literal. */
+  untypedLiteralContext(x: ts.Expression): boolean {
+    if (isJsSourceFile(ts.getSourceFileOfNode(x))) return false;
+    // Data only: a literal with methods, accessors or function members is an
+    // object with behavior, which keeps its native layout (and boxed form).
+    if (
+      ts.isObjectLiteralExpression(x) &&
+      x.properties.nodes.some((p) => {
+        if (!ts.isPropertyAssignment(p))
+          return !ts.isShorthandPropertyAssignment(p) && !ts.isSpreadAssignment(p);
+        let init: ts.Expression = p.initializer;
+        while (ts.isParenthesizedExpression(init)) init = init.expression;
+        return (
+          ts.isFunctionExpression(init) || ts.isArrowFunction(init) || ts.isClassExpression(init)
+        );
+      })
+    )
+      return false;
+    let node: ts.Node = x;
+    while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent))
+      node = node.parent;
+    const parent = node.parent;
+    if (parent === undefined) return false;
+    if (ts.isThrowStatement(parent)) return true;
+    if (ts.isPropertyAssignment(parent) && parent.initializer === node) {
+      const literal = parent.parent;
+      if (ts.isObjectLiteralExpression(literal)) return this.untypedLiteralContext(literal);
+    }
+    if (ts.isArrayLiteralExpression(parent) && this.untypedLiteralContext(parent)) return true;
+    const contextual = this.checker.getContextualType(x);
+    if (!contextual || !(contextual.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)))
+      return false;
+    if (ts.isCallExpression(parent) || ts.isNewExpression(parent)) {
+      const signature = this.checker.getResolvedSignature(parent);
+      const decl = signature?.declaration;
+      if (decl && this.isStdlibFile(ts.getSourceFileOfNode(decl))) {
+        const index = (parent.arguments?.nodes ?? []).indexOf(node as ts.Expression);
+        const params = (decl as { parameters?: { nodes: readonly ts.ParameterDeclaration[] } })
+          .parameters?.nodes;
+        const param = params?.[Math.min(index, params.length - 1)];
+        let annotation = param?.type;
+        if (annotation && ts.isArrayTypeNode(annotation)) annotation = annotation.elementType;
+        if (
+          !annotation ||
+          annotation.kind === ts.SyntaxKind.AnyKeyword ||
+          annotation.kind === ts.SyntaxKind.UnknownKeyword
+        )
+          return false;
+      }
+    }
+    return true;
   }
 
   /** A fresh TypeScript data literal (`{ message: "m" }`) passed to a
@@ -3704,6 +3794,15 @@ export class Lowerer {
    * the fallthroughs report the inherited-blocker cascade (SC2004)
    * instead of misattributing the reference. */
   readonly blockedBindings = new Set<ts.Symbol>();
+  /** Localized failure, report-only: the failure group (type-failure.ts)
+   * of each declaration whose rejection reached the build — a flushed
+   * deferred declaration, or a binding of a poisoned declaration
+   * statement. */
+  readonly rejectedGroups = new Map<ts.Symbol, string>();
+  /** One frame per statement lowerStmts is lowering: the failure groups
+   * its lowering touched. A statement that then poisons attributes its
+   * diagnostics to them (ScrDiagnostic.cause). */
+  readonly failureTouches: Set<string>[] = [];
   /** True while collectProgram runs: resolution helpers must not flush
    * deferred diagnostics (collection itself resolves symbols — extends
    * clauses — and collection order must not decide what reports). */
@@ -3769,6 +3868,76 @@ export class Lowerer {
    * (decl-projection.ts): user-file record and array values crossing into
    * dynamic slots (package parameters) box as live capsules, so a value
    * that comes back through a boundary cast keeps its identity. */
+  /** Origins of package-declared types checked in this program
+   * (decl-origin.ts), by IrModule.declOrigins index. */
+  readonly declOrigins: string[] = [];
+  private readonly declOriginIds = new Map<string, number>();
+  private readonly packageFileMemo = new Map<ts.SourceFile, boolean>();
+  private readonly slotOriginMemo = new Map<ts.Node, string | null>();
+  /** The value whose slot coercion is being lowered, while that value is
+   * in a package file: union extractions built for it carry the slot's
+   * origin in their TypeError. */
+  coercionOriginNode: ts.Node | null = null;
+  /** Per user file, each declaration-boundary cast's index in source
+   * order (narrowing.ts recordedBoundaryOrigin). */
+  readonly boundaryCastOrder = new Map<ts.SourceFile, Map<ts.Node, number>>();
+  /** The union type of that value: only its own extraction is the slot's. */
+  coercionOriginUnion: string | null = null;
+  /** While a record projection into a package-declared type builds, the
+   * origin of the field being converted. */
+  coercionFieldOrigin: string | null = null;
+  private readonly recordOriginMemo = new Map<ts.Node, RecordOrigin | null>();
+
+  /** The package-declared record type the current coercion converts to. */
+  coercionRecordOrigin(): RecordOrigin | null {
+    const node = this.coercionOriginNode;
+    if (node === null) return null;
+    let origin = this.recordOriginMemo.get(node);
+    if (origin === undefined) {
+      try {
+        origin = recordOrigin(this.checker, node);
+      } catch {
+        origin = null;
+      }
+      this.recordOriginMemo.set(node, origin);
+    }
+    return origin;
+  }
+
+  declOriginIndex(origin: string): number {
+    let id = this.declOriginIds.get(origin);
+    if (id === undefined) {
+      id = this.declOrigins.length;
+      this.declOrigins.push(origin);
+      this.declOriginIds.set(origin, id);
+    }
+    return id;
+  }
+
+  /** The origin of the package-declared slot a value flows into. */
+  slotOriginOf(node: ts.Node): string | null {
+    let origin = this.slotOriginMemo.get(node);
+    if (origin === undefined) {
+      try {
+        origin = slotOrigin(this.checker, node);
+      } catch {
+        origin = null;
+      }
+      this.slotOriginMemo.set(node, origin);
+    }
+    return origin;
+  }
+
+  private inPackageFileOf(node: ts.Node): boolean {
+    const sf = ts.getSourceFileOfNode(node);
+    let inside = this.packageFileMemo.get(sf);
+    if (inside === undefined) {
+      inside = inPackageFile(node);
+      this.packageFileMemo.set(sf, inside);
+    }
+    return inside;
+  }
+
   private declBoundaryMemo: boolean | null = null;
   get declBoundary(): boolean {
     this.declBoundaryMemo ??= this.program.getSourceFileNames().some(isDeclBoundaryFile);
@@ -6517,19 +6686,20 @@ export class Lowerer {
       node.initializer !== undefined;
     const collectDynamicViews = (): Set<string> => {
       const keys = new Set<string>();
-      const dynamicValue = (node: ts.Expression): boolean => {
-        // A binding's declared type says whether it holds dynamic data; a
-        // flow type such as `Array.isArray(x)`'s `any[]` only narrows it.
+      // A binding's declared type says whether it holds dynamic data; a flow
+      // type such as `Array.isArray(x)`'s `any[]` only narrows it.
+      const typedNode = (node: ts.Expression): ts.Node => {
         const e = peel(node);
         const symbol = ts.isIdentifier(e) ? symbolOf(e) : null;
         const declaration = symbol ? symbol.valueDeclaration : undefined;
-        const declared =
-          declaration &&
+        return declaration &&
           (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) &&
           ts.isIdentifier(declaration.name)
-            ? declaration.name
-            : null;
-        const type = typeOrNull(declared ?? node);
+          ? declaration.name
+          : node;
+      };
+      const dynamicValue = (node: ts.Expression): boolean => {
+        const type = typeOrNull(typedNode(node));
         if (type === null) return true;
         if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
         if (!this.checker.isArrayType(type) || this.checker.isTupleType(type)) return false;
@@ -6550,57 +6720,64 @@ export class Lowerer {
             collect(field.type, depth + 1);
         } else if (type.kind === "promise") collect(type.inner, depth + 1);
       };
-      const target = (type: ts.Type | null | undefined): void => {
+      const convert = (type: ts.Type | null | undefined): void => {
         // An unanswerable target may be any array.
         if (type === null) keys.add("*");
         else if (type) collect(this.mapTypeOf(type), 0);
       };
-      const visit = (node: ts.Node): void => {
-        if ((ts.isAsExpression(node) || ts.isTypeAssertion(node)) && dynamicValue(node.expression))
-          target(typeOrNull(node));
-        else if (
-          ts.isVariableDeclaration(node) &&
-          node.type &&
-          node.initializer &&
-          dynamicValue(node.initializer)
-        )
-          target(typeOrNull(node.name));
-        else if (initializedBinding(node) && dynamicValue(node.initializer!))
-          target(typeOrNull(node.name ?? node));
-        else if (
-          ts.isBinaryExpression(node) &&
-          assignmentOperators.has(node.operatorToken.kind) &&
-          dynamicValue(node.right)
-        )
-          target(typeOrNull(node.left));
-        else if (ts.isReturnStatement(node) && node.expression && dynamicValue(node.expression))
-          target(contextualOrNull(node.expression));
-        else if (ts.isYieldExpression(node) && node.expression && dynamicValue(node.expression))
-          target(contextualOrNull(node.expression));
-        else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      /** Each value `node` converts, with the type it converts to. */
+      const conversions = (
+        node: ts.Node,
+        judge: (value: ts.Expression, target: () => ts.Type | null | undefined) => void,
+      ): void => {
+        if (ts.isAsExpression(node) || ts.isTypeAssertion(node))
+          judge(node.expression, () => typeOrNull(node));
+        else if (ts.isVariableDeclaration(node) && node.type && node.initializer)
+          judge(node.initializer, () => typeOrNull(node.name));
+        else if (initializedBinding(node))
+          judge(node.initializer!, () => typeOrNull(node.name ?? node));
+        else if (ts.isBinaryExpression(node) && assignmentOperators.has(node.operatorToken.kind))
+          judge(node.right, () => typeOrNull(node.left));
+        else if ((ts.isReturnStatement(node) || ts.isYieldExpression(node)) && node.expression) {
+          const value = node.expression;
+          judge(value, () => contextualOrNull(value));
+        } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           for (const arg of node.arguments?.nodes ?? [])
-            if (!ts.isSpreadElement(arg) && dynamicValue(arg)) target(contextualOrNull(arg));
-        } else if (ts.isPropertyAssignment(node) && dynamicValue(node.initializer))
-          target(contextualOrNull(node.initializer));
-        else if (ts.isArrayLiteralExpression(node)) {
+            if (!ts.isSpreadElement(arg)) judge(arg, () => contextualOrNull(arg));
+        } else if (ts.isPropertyAssignment(node)) {
+          const value = node.initializer;
+          judge(value, () => contextualOrNull(value));
+        } else if (ts.isArrayLiteralExpression(node)) {
           for (const element of node.elements.nodes)
-            if (
-              !ts.isSpreadElement(element) &&
-              !ts.isOmittedExpression(element) &&
-              dynamicValue(element)
-            )
-              target(contextualOrNull(element));
-        } else if (
-          ts.isArrowFunction(node) &&
-          !ts.isBlock(node.body) &&
-          dynamicValue(node.body as ts.Expression)
-        )
-          target(contextualOrNull(node.body as ts.Expression));
+            if (!ts.isSpreadElement(element) && !ts.isOmittedExpression(element))
+              judge(element, () => contextualOrNull(element));
+        } else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) {
+          const body = node.body as ts.Expression;
+          judge(body, () => contextualOrNull(body));
+        }
       };
+      // The values' types in one batch: these bodies' reachability is not
+      // known yet.
+      const typed: ts.Node[] = [];
+      for (const sf of sourceFiles)
+        ts.walkPreorder(sf, (node) => {
+          panicSafe(() => conversions(node, (value) => typed.push(typedNode(value))), undefined);
+          return undefined;
+        });
+      this.checker.prefetchClassCollection(typed, []);
       for (const sf of sourceFiles)
         ts.walkPreorder(sf, (node) => {
           // A checker panic hides this conversion's target: any array.
-          if (!panicSafe(() => (visit(node), true), false)) keys.add("*");
+          const judged = panicSafe(
+            () => (
+              conversions(node, (value, target) => {
+                if (dynamicValue(value)) convert(target());
+              }),
+              true
+            ),
+            false,
+          );
+          if (!judged) keys.add("*");
           return undefined;
         });
       return keys;
@@ -7037,6 +7214,12 @@ export class Lowerer {
           node.operatorToken.kind === ts.SyntaxKind.EqualsToken
         )
           values.push(node.right);
+        // A for-of loop reads its iterable's array keys.
+        if (ts.isForOfStatement(node)) values.push(node.expression);
+        // A property read in such a slot reads its declared type through
+        // its receiver's (widenedType).
+        const receiver = widenedReceiver(node);
+        if (receiver !== null) values.push(receiver);
       });
       this.checker.prefetchCollectionTypes(values);
       scanSites.set(sf, nodes);
@@ -7616,7 +7799,8 @@ export class Lowerer {
       siteBase.set(sf, siteCount);
       siteCount += sitesOf(sf).length;
     }
-    siteDependencies = new SiteDependencies(siteCount);
+    // Each function's returns are one more site, after the files' sites.
+    siteDependencies = new SiteDependencies(siteCount + functionDeclBySymbol.size);
     let fullPass = true;
     for (let changed = true, first = true; changed || !fullPass; first = false) {
       fullPass = first || !changed;
@@ -7630,8 +7814,14 @@ export class Lowerer {
         }
       }
       for (const sf of sourceFiles) if (scanFile(sf)) changed = true;
+      let returnSite = siteCount;
       for (const [symbol, decl] of functionDeclBySymbol) {
-        if (!scanReturns(symbol, decl)) continue;
+        const site = returnSite++;
+        if (!fullPass && !siteDependencies.isStale(site)) continue;
+        siteDependencies.begin(site);
+        const returnsChanged = scanReturns(symbol, decl);
+        siteDependencies.end(returnsChanged);
+        if (!returnsChanged) continue;
         siteDependencies.changed(symbol);
         changed = true;
       }
@@ -8335,6 +8525,7 @@ export class Lowerer {
             ...(this.foreignElementKeys.size > 0
               ? { foreignElementKeys: [...this.foreignElementKeys].sort() }
               : {}),
+            ...(this.declOrigins.length > 0 ? { declOrigins: [...this.declOrigins] } : {}),
             ...(this.threadSlotKeys.size > 0
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
@@ -8346,6 +8537,7 @@ export class Lowerer {
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
+    if (module?.declOrigins !== undefined) compactDeclOrigins(module);
     if (module) checkCycleBindingAccesses(this, module);
     if (module) bindCompletionCallbacks(module);
     // Execution tiers from the final bodies (ir/tiers.ts). Assigned with or
@@ -9202,7 +9394,11 @@ export class Lowerer {
       this.diagSink.push(d);
       return;
     }
-    if (pending) this.commitFlush(pending.symbol, pending.source);
+    if (pending) {
+      this.commitFlush(pending.symbol, pending.source);
+      const group = this.rejectedGroups.get(pending.symbol);
+      if (group !== undefined) d.rejects ??= group;
+    }
     // One site, one report: some declarations map a type twice (module
     // globals pre-register before their initializers lower) — an exact
     // duplicate (code + span + message) adds noise, not information.
@@ -9257,6 +9453,35 @@ export class Lowerer {
     return (this.typeOf(node).flags & ts.TypeFlags.Any) !== 0;
   }
 
+  /** badType's commit: the diagnostic carries the structured type
+   * failure (report-only in stage L0), and so does the poison. */
+  private typeFail(
+    node: ts.Node,
+    type: ts.Type,
+    family: TypeFailureFamily,
+    diag: ScrDiagnostic,
+  ): never {
+    const failure = typeFailureOf(node, this.checker.typeToString(type), family);
+    diag.typeFailure = failure;
+    this.pushDiag(diag);
+    throw new PoisonError(failure);
+  }
+
+  /** The SC1090 refusal of checked-dynamic class fields in TypeScript
+   * (classFieldStoresDyn): a policy fence, not a missing representation,
+   * so its failure is recorded as degradable. */
+  dynFieldPolicyFence(node: ts.Node, feature: string): never {
+    const diag = unsupportedDiag("SC1090", locOf(node), feature);
+    const failure = typeFailureOf(
+      node,
+      this.checker.typeToString(this.typeOf(node)),
+      "dyn-field-policy",
+    );
+    diag.typeFailure = failure;
+    this.pushDiag(diag);
+    throw new PoisonError(failure);
+  }
+
   badType(node: ts.Node, type: ts.Type): never {
     const widened = this.checker.getBaseTypeOfLiteralType(type);
     // Types declared by the ADOPTED @types/node (Buffer, NodeJS.Timeout,
@@ -9268,8 +9493,12 @@ export class Lowerer {
     // applies to node-typed values.
     const typeSym = widened.getAliasSymbol() ?? widened.getSymbol();
     if (this.nodeTypesOnlySymbol(typeSym)) {
-      this.pushDiag(noLoweringDiag(this.checker.typeToString(type), locOf(node), undefined, true));
-      throw new PoisonError();
+      this.typeFail(
+        node,
+        type,
+        "node-types",
+        noLoweringDiag(this.checker.typeToString(type), locOf(node), undefined, true),
+      );
     }
     // Engine-backed ambient TYPES in a STATIC build report the per-site
     // SC2012 rather than the generic supported-types recitation. Native
@@ -9280,10 +9509,12 @@ export class Lowerer {
       (FETCH_AMBIENT_TYPES as readonly string[]).includes(ts.symbolName(typeSym)) &&
       this.isStdlibSymbol(typeSym)
     ) {
-      this.pushDiag(
+      this.typeFail(
+        node,
+        type,
+        "fetch-ambient",
         unsupportedNativeApiDiag(`a value of type '${ts.symbolName(typeSym)}'`, locOf(node)),
       );
-      throw new PoisonError();
     }
     // ENUM OBJECTS (`typeof e` — a numeric enum's type carries the
     // reverse-map index signature, a string enum's just its members):
@@ -9292,14 +9523,16 @@ export class Lowerer {
     // as the per-site identifier fence — never the index-signature
     // recitation.
     if (typeSym && (typeSym.flags & ts.SymbolFlags.Enum) !== 0) {
-      this.pushDiag(
+      this.typeFail(
+        node,
+        type,
+        "enum-object",
         unsupportedDiag(
           "SC1090",
           locOf(node),
           `enum objects as values ('${ts.symbolName(typeSym)}' — member reads like '${ts.symbolName(typeSym)}.X' compile to constants; the object itself has no runtime representation)`,
         ),
       );
-      throw new PoisonError();
     }
     // Would-be records with INDEX SIGNATURES (`Record<string, T>`,
     // `{ [k: string]: T }`) get the index-signature fence (SC2006) naming
@@ -9329,19 +9562,26 @@ export class Lowerer {
             this.isStdlibFile(ts.getSourceFileOfNode(d)),
         )
       ) {
-        this.pushDiag(noLoweringDiag(this.checker.typeToString(type), locOf(node)));
-        throw new PoisonError();
+        this.typeFail(
+          node,
+          type,
+          "stdlib-index",
+          noLoweringDiag(this.checker.typeToString(type), locOf(node)),
+        );
       }
 
-      this.pushDiag(indexSignatureTypeDiag(this.checker.typeToString(type), locOf(node)));
-      throw new PoisonError();
+      this.typeFail(
+        node,
+        type,
+        "index-signature",
+        indexSignatureTypeDiag(this.checker.typeToString(type), locOf(node)),
+      );
     }
     // Attribute an unsupported package type to its package.
     {
       const pkg = this.npmPackageOf(widened);
       if (pkg) {
-        this.pushDiag(unsupportedPackageValueDiag(pkg, locOf(node)));
-        throw new PoisonError();
+        this.typeFail(node, type, "package", unsupportedPackageValueDiag(pkg, locOf(node)));
       }
     }
     // A type that keeps a GENERIC call signature (`<T>(x: T) => T` slots,
@@ -9357,8 +9597,12 @@ export class Lowerer {
           this.checker.getCallSignatures(p).some((s) => s.getTypeParameters().length > 0),
         )
       ) {
-        this.pushDiag(genericSignatureTypeDiag(this.checker.typeToString(type), locOf(node)));
-        throw new PoisonError();
+        this.typeFail(
+          node,
+          type,
+          "generic-signature",
+          genericSignatureTypeDiag(this.checker.typeToString(type), locOf(node)),
+        );
       }
     }
     // STANDARD-LIBRARY nominal provenance, decided once: interface/class
@@ -9378,16 +9622,24 @@ export class Lowerer {
     // generic overload set keeps the monomorphization story: a value of a
     // multi-signature type has no single compiled signature to hold.
     if (!stdlibNominal && this.checker.getCallSignatures(widened).length > 1) {
-      this.pushDiag(overloadedSignatureTypeDiag(this.checker.typeToString(type), locOf(node)));
-      throw new PoisonError();
+      this.typeFail(
+        node,
+        type,
+        "overloads",
+        overloadedSignatureTypeDiag(this.checker.typeToString(type), locOf(node)),
+      );
     }
     // INTERSECTIONS that resolved to no lowering (SC2008). The ones that
     // compile never get here: member intersections intern through the
     // record path, callable hybrids map to '%call' records, and pinned
     // mixin instantiations resolve by chain structure.
     if (widened.isIntersectionType()) {
-      this.pushDiag(intersectionTypeDiag(this.checker.typeToString(type), locOf(node)));
-      throw new PoisonError();
+      this.typeFail(
+        node,
+        type,
+        "intersection",
+        intersectionTypeDiag(this.checker.typeToString(type), locOf(node)),
+      );
     }
     // SUPPORTED shapes over a component outside its slot (SC2009): the
     // Map/Set domains, array/tuple elements, union arms, function
@@ -9399,8 +9651,12 @@ export class Lowerer {
     {
       const detail = describeComponentBlocker(widened, this.typeCtx);
       if (detail !== null) {
-        this.pushDiag(componentTypeDiag(this.checker.typeToString(type), detail, locOf(node)));
-        throw new PoisonError();
+        this.typeFail(
+          node,
+          type,
+          "component",
+          componentTypeDiag(this.checker.typeToString(type), detail, locOf(node)),
+        );
       }
     }
     // STANDARD-LIBRARY nominal types with no lowering at all: the SC2020
@@ -9430,26 +9686,36 @@ export class Lowerer {
         TextDecoder:
           "TextDecoder instances support recognized labels, fatal/ignoreBOM option literals, and streaming UTF-8/UTF-16/single-byte decode; runtime option objects remain unsupported",
       };
-      this.pushDiag(
+      this.typeFail(
+        node,
+        type,
+        "stdlib-nominal",
         noLoweringDiag(
           this.checker.typeToString(type),
           locOf(node),
           typeHints[ts.symbolNameOf(stdlibOwnSym) ?? ""],
         ),
       );
-      throw new PoisonError();
     }
     // USER record shapes blocked by ONE member (SC2009's record arm):
     // name the member and its type.
     {
       const detail = describeRecordMemberBlocker(widened, this.typeCtx);
       if (detail !== null) {
-        this.pushDiag(componentTypeDiag(this.checker.typeToString(type), detail, locOf(node)));
-        throw new PoisonError();
+        this.typeFail(
+          node,
+          type,
+          "record-member",
+          componentTypeDiag(this.checker.typeToString(type), detail, locOf(node)),
+        );
       }
     }
-    this.pushDiag(unsupportedTypeDiag(this.checker.typeToString(type), locOf(node)));
-    throw new PoisonError();
+    this.typeFail(
+      node,
+      type,
+      "unsupported",
+      unsupportedTypeDiag(this.checker.typeToString(type), locOf(node)),
+    );
   }
 
   /** The lib fence (SC2020): a reached use of standard-library surface
@@ -9882,6 +10148,38 @@ export class Lowerer {
       null
     );
   };
+
+  private structuredCloneReadCounts: { workerData: number; messageListeners: number } | null = null;
+
+  /** How often the program reads `workerData` (every expression spelling it,
+   * counted conservatively) and registers a `"message"` listener: a
+   * structured clone read at one site only has no other holder
+   * (narrowing.ts freshDynSource). Computed once per lowering pass. */
+  structuredCloneReads(): { workerData: number; messageListeners: number } {
+    if (this.structuredCloneReadCounts) return this.structuredCloneReadCounts;
+    const counts = { workerData: 0, messageListeners: 0 };
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node) && node.text === "workerData") {
+        const parent = node.parent;
+        const declaresName =
+          parent !== undefined &&
+          (ts.isImportSpecifier(parent) ||
+            ts.isExportSpecifier(parent) ||
+            ((ts.isPropertyAssignment(parent) ||
+              ts.isPropertyDeclaration(parent) ||
+              ts.isPropertySignature(parent) ||
+              ts.isMethodDeclaration(parent)) &&
+              parent.name === node));
+        if (!declaresName) counts.workerData++;
+      } else if (ts.isCallExpression(node) && isMessageListenerCall(node)) {
+        counts.messageListeners++;
+      }
+      ts.forEachChild(node, visit);
+    };
+    for (const sf of this.moduleOrder) ts.forEachChild(sf, visit);
+    this.structuredCloneReadCounts = counts;
+    return counts;
+  }
 
   irTypeOf(node: ts.Node): IrType {
     const t = this.typeOf(node);
@@ -10650,6 +10948,8 @@ export class Lowerer {
       if (!typeEquals(expr.type, expected)) {
         const w = this.widthCoerce(expr, expected);
         if (w) return w;
+        const asserted = assertedConversion(this, expr, expected);
+        if (asserted) return asserted;
         // A UNIT (null/undefined) flowing into a plain non-nullable slot
         // the checker approved (`null!` casts, non-strict assignments):
         // the stranded-source stance (divergence 38) without a union in
@@ -10668,7 +10968,7 @@ export class Lowerer {
       if (helper) {
         return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
       }
-      return expr;
+      return assertedConversion(this, expr, expected) ?? expr;
     }
     if (expr.type.kind === "void") {
       // A void CALL RESULT flowing into a union with an undefined arm
@@ -11007,8 +11307,30 @@ export class Lowerer {
    * wrap implicitly (coerceToExpected), then the exact-type fence runs
    * (SC2002 for record shapes, SC2003 for unions). Every slot-directed
    * lowering goes through here (via lowerExprExpecting) or calls this
-   * directly when the expression was already lowered. */
+   * directly when the expression was already lowered. In package files, a
+   * check this coercion creates names the package declaration that types
+   * the slot (decl-origin.ts). */
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
+    if (!this.inPackageFileOf(node)) return this.coerceIntoSlot(node, expr, expected);
+    const outer = this.coercionOriginNode;
+    const outerUnion = this.coercionOriginUnion;
+    this.coercionOriginNode = node;
+    this.coercionOriginUnion = expr.type.kind === "union" ? expr.type.unionId : null;
+    let out: IrExpr;
+    try {
+      out = this.coerceIntoSlot(node, expr, expected);
+    } finally {
+      this.coercionOriginNode = outer;
+      this.coercionOriginUnion = outerUnion;
+    }
+    if (out !== expr && out.kind === "dynCheck" && out.origin === undefined) {
+      const origin = this.slotOriginOf(node);
+      if (origin !== null) return { ...out, origin: this.declOriginIndex(origin) };
+    }
+    return out;
+  }
+
+  private coerceIntoSlot(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
     // An assertion's scalar check whose value goes straight back into a
     // checked-dynamic slot (`process.loadEnvFile({} as unknown as string)`)
@@ -11495,6 +11817,7 @@ export class Lowerer {
           !this.mapTypeOf(this.typeOf(x)) ||
           this.excessJsContextualProperty(x, parts) ||
           this.reshapeableContextualLiteral(x, parts) ||
+          this.untypedLiteralContext(x) ||
           holdsEvolvingArray(this, x)
         ) {
           return lowerDynObjectLiteral(this, x);
@@ -12104,12 +12427,35 @@ export class Lowerer {
     this.reportDeferred(symbol);
   }
 
+  /** A statement's lowering used a declaration: if that declaration was
+   * rejected, the statement's own failure (if any) is its cascade. */
+  touchRejected(symbol: ts.Symbol): void {
+    const group = this.rejectedGroups.get(symbol);
+    if (group === undefined) return;
+    const frame = this.failureTouches[this.failureTouches.length - 1];
+    if (frame !== undefined) frame.add(group);
+  }
+
+  /** Records a declaration whose deferred diagnostics reached the build:
+   * its failure group, on the group's diagnostics too. */
+  private noteRejected(symbol: ts.Symbol, diags: readonly ScrDiagnostic[]): void {
+    let group = this.rejectedGroups.get(symbol);
+    if (group === undefined) {
+      group = declarationGroupKey(symbol);
+      this.rejectedGroups.set(symbol, group);
+    }
+    for (const d of diags) d.rejects ??= group;
+  }
+
   /** flushDeferred without the collection-pass guard: for declarations
    * whose diagnostics must report eagerly (class statements with
    * declaration-time code, extended bases — collectClassShapeDeferring). */
   reportDeferred(symbol: ts.Symbol): void {
     const diags = this.deferredDiags.get(symbol);
-    if (!diags) return;
+    if (!diags) {
+      this.touchRejected(symbol);
+      return;
+    }
     if (this.alreadyFlushed.has(symbol)) {
       this.deferredDiags.delete(symbol); // the emit pass reported these
       return;
@@ -12117,7 +12463,9 @@ export class Lowerer {
     if (this.diagSink === null) {
       this.deferredDiags.delete(symbol);
       this.flushedSymbols.add(symbol);
+      this.noteRejected(symbol, diags);
       for (const d of diags) this.pushDiag(d);
+      this.touchRejected(symbol);
       return;
     }
     // A capture buffer is active (a probe, or another declaration's
@@ -12134,6 +12482,7 @@ export class Lowerer {
    * (the declaration counts as flushed for the coverage remainder). */
   private commitFlush(symbol: ts.Symbol, source: ScrDiagnostic): void {
     this.flushedSymbols.add(symbol);
+    this.noteRejected(symbol, [source]);
     const list = this.deferredDiags.get(symbol);
     if (!list) return;
     const index = list.indexOf(source);
@@ -13259,8 +13608,8 @@ export class Lowerer {
     return lowerStmts(this, stmts);
   }
 
-  noteBlockedBindings(stmt: ts.Statement): void {
-    return noteBlockedBindings(this, stmt);
+  noteBlockedBindings(stmt: ts.Statement, diags?: readonly ScrDiagnostic[]): void {
+    return noteBlockedBindings(this, stmt, diags);
   }
 
   isBlockedBinding(symbol: ts.Symbol | null): boolean {

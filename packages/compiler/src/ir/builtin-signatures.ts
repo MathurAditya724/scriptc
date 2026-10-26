@@ -385,6 +385,18 @@ function buildLibFnSignatures() {
     "module.parent": { argTypes: [F64], result: F64 },
     "module.loaded": { argTypes: [F64], result: BOOL },
     "module.cacheGet": { argTypes: [STRING], result: F64 },
+    /** createRequire's require(id) and require.resolve(request, options)
+     * with a specifier computed at run time (scr_require.c): the arguments,
+     * then the requiring file, the call's "file:line" and the builtin ids.
+     * Both resolve like Node at run time. requireComputed always throws
+     * (Node's argument errors or MODULE_NOT_FOUND), or ends the program with
+     * an SC2020 refusal when the specifier resolves; resolveComputed answers
+     * the resolved id or real path. */
+    "module.requireComputed": { argTypes: [DYN, STRING, STRING, arrayOf(STRING)], result: DYN },
+    "module.resolveComputed": {
+      argTypes: [DYN, DYN, STRING, STRING, arrayOf(STRING)],
+      result: STRING,
+    },
     "module.cacheHas": { argTypes: [STRING], result: BOOL },
     "module.cacheKeys": { argTypes: [], result: arrayOf(STRING) },
     "timers.setTimeout": { argTypes: [{ kind: "func", params: [], ret: VOID }, F64], result: VOID },
@@ -2870,9 +2882,27 @@ function buildLibFnSignatures() {
       result: { kind: "object", className: "%Duplex" },
     },
     /** Whether pipeline() pumps a checked-dynamic first stage as an
-     * iterable (a string, or a value with an iterator method that is not a
-     * stream with pipe() and on()) instead of piping it as a stream. */
+     * iterable (a string, a value with an iterator method that is not a
+     * stream with pipe() and on(), a { readable, writable } pair, or a
+     * source function's result) instead of piping it as a stream. */
     "stream.dynIterableSource": { argTypes: [DYN], result: BOOL },
+    /** The value pipeline() pumps for a checked-dynamic first stage: a
+     * source function's result (the flag set), which must be iterable, else
+     * a { readable, writable } pair's readable side or the value itself. */
+    "stream.dynSourceValue": { argTypes: [DYN, BOOL], result: DYN },
+    /** An untyped pipeline function stage's result before the last stage,
+     * which must be async iterable: ERR_INVALID_RETURN_VALUE naming the
+     * stage ("transform[i]") otherwise. Answers the value (+1). */
+    "stream.dynTransformResult": { argTypes: [DYN, STRING], result: DYN },
+    /** A checked-dynamic pipeline() stage taken as a stream: a native stream
+     * (+1), or Duplex.from of a value that is not stream-like or a function
+     * (an iterable), which the pipeline uses without piping into it. Other
+     * values throw: Duplex.from's ERR_INVALID_ARG_TYPE, or the given
+     * not-supported message. */
+    "stream.unboxDynStage": {
+      argTypes: [DYN, STRING],
+      result: { kind: "object", className: "%Duplex" },
+    },
     /** The Transform a Cipheriv or Decipheriv reads and writes as a stream
      * (+1, created on first use and owned by the cipher). */
     "stream.handleStream": {
@@ -3967,6 +3997,12 @@ function buildLibFnSignatures() {
      * Throws the path TypeError, changing nothing, when a converted object
      * is not plain data (a prototype, accessors, symbols, frozen state). */
     "dyn.declAdopt": { argTypes: [DYN, DYN], result: VOID },
+    /** dyn.declAdopt for every other checked cast of a dynamic value to a
+     * record or array (`value as T`): a shared source object or array
+     * becomes a live capsule of the value built from it. A node that is not
+     * plain data, or that the value holds twice, keeps its separate copy.
+     * Never throws: the conversion already succeeded. */
+    "dyn.adoptShared": { argTypes: [DYN, DYN], result: VOID },
     "dyn.cloneMissing": { argTypes: [], result: DYN },
     /** structuredClone with a NON-EMPTY transfer array of static values:
      * nothing static is transferable, so the call always throws Node's
@@ -5263,10 +5299,12 @@ export type IrLibFn = keyof ReturnType<typeof buildLibFnSignatures>;
 /** The function-stage runs of a pipeline of `total` stages that a stream
  * follows (positions bit j: stage j is a function), and an async
  * generator destination's run (flags bits 1-2 = 1, pumped into the
- * PassThrough pipeline() answers): each pumps its last generator through
- * one (next, read, return) triple. */
+ * PassThrough pipeline() answers, or 3, an untyped destination whose
+ * result may be pumped there): each pumps its last generator through one
+ * (next, read, return) triple. */
 export function pipelinePumpedRuns(total: number, positions: number, flags: number): number {
-  let runs = ((flags >> 1) & 3) === 1 ? 1 : 0;
+  const dest = (flags >> 1) & 3;
+  let runs = dest === 1 || dest === 3 ? 1 : 0;
   for (let j = 0; j + 1 < total; j++) {
     if (Math.floor(positions / 2 ** j) % 2 === 1 && Math.floor(positions / 2 ** (j + 1)) % 2 === 0)
       runs++;
