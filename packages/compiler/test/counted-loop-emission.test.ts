@@ -267,6 +267,17 @@ test("worker programs read and write shared elements at a strip-mined loop's cou
         "  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) t += a[i]! + a[j]!;",
         "  return t;",
         "}",
+        "export function waits(a: Int32Array, out: Uint8Array, n: number): number {",
+        "  let spins = 0;",
+        "  for (let i = 0; i < n; i++) {",
+        "    out[i] = 1;",
+        "    while (a[i] === 0) spins++;",
+        "    do spins++; while (a[i] === 1);",
+        "    for (let k = 0; a[i]! > k; k++) spins++;",
+        "    for (let k = 0; k < 3; k += a[i]!) spins++;",
+        "  }",
+        "  return spins;",
+        "}",
         "export function spin(a: Int32Array): number {",
         "  let n = 0;",
         "  while (a[0] === 0 && n < 10) n++;",
@@ -279,7 +290,7 @@ test("worker programs read and write shared elements at a strip-mined loop's cou
         "codes(c);",
         "shift(c);",
         "const d = new Int32Array(new SharedArrayBuffer(16)).fill(1);",
-        "console.log(b[7], c[0], rows(d, 4), spin(d));",
+        "console.log(b[7], c[0], rows(d, 4), spin(d), waits(new Int32Array(new SharedArrayBuffer(16)).fill(2), new Uint8Array(new SharedArrayBuffer(4)), 4));",
         "if (!isMainThread) new Worker(new URL(import.meta.url));",
       ].join("\n"),
     );
@@ -319,6 +330,15 @@ test("worker programs read and write shared elements at a strip-mined loop's cou
     expect(rows).toMatch(/load atomic i32, ptr %/);
     // A loop that is not counted keeps atomic reads.
     expect(bodies("spin")).toMatch(/load atomic i32, ptr %/);
+    // A nested loop that tests the outer counter's element in its condition
+    // or steps by it reads it again on every iteration: each read stays
+    // atomic, so another thread's write ends the wait.
+    const waits = bodies("waits");
+    expect(waits).toMatch(/^loop\.poll\d+:$/m);
+    expect(waits.match(/load atomic i32, ptr %/g)?.length).toBeGreaterThanOrEqual(4);
+    // The outer loop's write at its counter stays plain (speculation counters
+    // are atomic stores to globals).
+    expect(waits).not.toMatch(/store atomic i8 \S+, ptr %/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -2818,7 +2818,7 @@ function emitStripMinedCountedLoop(
   // iteration: its plain load or store is not merged with another
   // iteration's or moved out of the loop.
   const outer = emitter.plainSharedLoop;
-  emitter.plainSharedLoop = { counter: counter.localId, target };
+  emitter.plainSharedLoop = { counter: counter.localId, target, depth: emitter.loopDepth };
   try {
     emitter.emitBlock(s.body);
   } finally {

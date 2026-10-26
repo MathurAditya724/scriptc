@@ -331,10 +331,11 @@ function emitBytesLoad(
 /** Worker programs: whether an element access at `index` of a view that
  * may be shared is a plain load or store, like a thread-owned view's. It is
  * when the index is the counter of the strip-mined counted loop whose body
- * holds the access, outside any loop nested in that body: every iteration
- * then reaches a different element, so LLVM cannot merge an element's reads
- * across iterations or move them out of the loop, and the loop can be
- * vectorized. A racing write from another thread can still be seen or
+ * holds the access, outside any loop nested in that body (its condition and
+ * update included: a nested loop that waits on the element reads it on
+ * every iteration, so the read stays atomic): every iteration then reaches
+ * a different element, so LLVM cannot merge an element's reads across
+ * iterations or move them out of the loop, and the loop can be vectorized. A racing write from another thread can still be seen or
  * missed within one iteration, the documented gap of non-atomic shared
  * accesses. Float16 elements keep their runtime path. */
 function plainSharedElement(
@@ -344,7 +345,8 @@ function plainSharedElement(
 ): boolean {
   const loop = host.plainSharedLoop;
   if (loop === null || elem === "f16" || index?.kind !== "varRef") return false;
-  if (index.localId !== loop.counter) return false;
+  // A nested loop raises loopDepth before its condition is emitted.
+  if (index.localId !== loop.counter || host.loopDepth !== loop.depth) return false;
   let innermost: (typeof host.jumpTargets)[number] | undefined;
   for (let i = host.jumpTargets.length - 1; i >= 0 && innermost === undefined; i--)
     if (host.jumpTargets[i]!.kind === "loop") innermost = host.jumpTargets[i];
