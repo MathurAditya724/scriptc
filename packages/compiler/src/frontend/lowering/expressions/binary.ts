@@ -388,6 +388,20 @@ export function lowerNullishPair(
     lowerer.runtimeOptionalArithmeticTypes.set(expr, type);
   }
   if (type.kind === "dyn" && lowerer.dynConvertible(left.type)) {
+    // `counts.get(k) ?? 0` in JavaScript: a scalar optional left and a
+    // default of its value's type give a scalar, so the test and the default
+    // run on the typed path and only the result converts. Converting the
+    // optional left itself would allocate a union for every read.
+    if (rest.length === 1 && primitive(rest[0]!) && rightType && typeEquals(rightType, rest[0]!)) {
+      const typed: IrExpr = {
+        kind: "nullish",
+        left,
+        right: lowerer.lowerExprExpecting(expr.right, rest[0]!),
+        type: rest[0]!,
+        loc,
+      };
+      return lowerer.coerceToExpected(typed, DYN);
+    }
     return {
       kind: "nullish",
       left: lowerer.coerceToExpected(left, DYN),
