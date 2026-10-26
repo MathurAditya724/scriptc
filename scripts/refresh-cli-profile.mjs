@@ -6,13 +6,18 @@
  *
  * Builds an instrumented native compiler for this Linux host, runs it on the
  * training builds below, and merges the raw profiles it writes into one
- * sparse indexed profile. The training builds are tsc-ts (a cold `speed`
+ * indexed profile. The training builds are tsc-ts (a cold `speed`
  * build, then a rebuild after an edit), every seventh top-level corpus
  * program (by number, or by a hash of the name of a program without one) at
  * the default optimization and a further slice in `dev`, and the runtime
  * benchmark workloads. Run it on a quiet Linux x64 host after changes that
  * move much compiler code; a stale profile only loses part of its gain. A
  * refresh takes about 11 minutes on 16 cores.
+ *
+ * The instrumented compiler is built with the committed function layout, or
+ * the one SCRIPTC_NATIVE_LAYOUT names, and the profile matches builds that
+ * use the same layout. When refreshing both, refresh the layout first
+ * (scripts/refresh-cli-layout.mjs).
  *
  *   node scripts/refresh-cli-profile.mjs --tsc-ts <tsc-ts checkout> [--jobs 8]
  */
@@ -210,12 +215,15 @@ const profiles = readdirSync(raw)
   .map((name) => join(raw, name));
 rmSync(builds, { recursive: true, force: true });
 const indexed = join(work, "cli.profdata");
-const merged = spawnSync(scriptc, ["merge-profiles", "--sparse", "-o", indexed, ...profiles], {
+// The profile keeps the functions that never ran in training, with zero
+// counts. Builds optimize those as cold and place them after the trained code,
+// which keeps the compiler's .text smaller than a sparse profile does.
+const merged = spawnSync(scriptc, ["merge-profiles", "-o", indexed, ...profiles], {
   stdio: "inherit",
   env: { ...trainingEnv, LLVM_PROFILE_FILE: join(work, "merge.profraw") },
 });
 if (merged.status !== 0) throw new Error("merge-profiles failed");
-// The indexed profile compresses to about an eighth of its size.
+// The indexed profile compresses to about a sixth of its size.
 writeFileSync(
   profileOutput,
   gzipSync(readFileSync(indexed), { level: constants.Z_BEST_COMPRESSION }),

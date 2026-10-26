@@ -46,3 +46,15 @@ export function keyedHelperName(
     throw new InternalCompilerError(`helper name ${name} is shared by two helper keys`);
   return name;
 }
+
+/** The number in the `%m<number>.` tag of the module named `fileName`: a
+ * 32-bit FNV-1a hash of the name, so a module keeps its tag when other
+ * modules are added, removed or reordered. A number in `taken` moves to the
+ * next free one, which keeps tags distinct. */
+export function moduleTagNumber(fileName: string, taken: ReadonlySet<number>): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < fileName.length; i++) h = Math.imul(h ^ fileName.charCodeAt(i), 0x01000193);
+  let n = h >>> 0;
+  while (taken.has(n)) n = (n + 1) >>> 0;
+  return n;
+}

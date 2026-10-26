@@ -24,10 +24,10 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 // SCRIPTC_NATIVE_PROFILE_USE builds without one.
 const profileGenerate = process.env["SCRIPTC_NATIVE_PROFILE_GENERATE"] || undefined;
 // Below this share of matching functions, the build warns that the profile
-// has lost most of its gain. A profile refreshed on the same commit matched
-// 92.7% of the native compiler's profiled functions, one refreshed 1.5 days
-// and about 200 commits earlier 87.2%, and that one kept about half of the
-// fresh profile's gain on a cold tsc-ts build.
+// has lost most of its gain. A profile refreshed on the same commit, with
+// the same layout, matches all of the native compiler's profiled functions.
+// One refreshed 1.5 days and about 200 commits earlier matched 87.2%, and
+// kept about half of the fresh profile's gain on a cold tsc-ts build.
 const PROFILE_MATCH_WARNING = 0.9;
 const committedProfile = join(root, "packages/compiler/native/cli.profdata.gz");
 const requestedProfile = process.env["SCRIPTC_NATIVE_PROFILE_USE"];
@@ -39,11 +39,15 @@ const useProfile =
   (requestedProfile !== undefined || existsSync(committedProfile));
 // Builds lay out the compiler's functions with the committed layout
 // (scripts/refresh-cli-layout.mjs), or the one SCRIPTC_NATIVE_LAYOUT names;
-// an empty SCRIPTC_NATIVE_LAYOUT, and instrumented builds, use none.
+// an empty SCRIPTC_NATIVE_LAYOUT uses none. Instrumented builds use the same
+// layout as the builds their profile is for. The layout decides which
+// functions share a partition, and a function whose partition differs from
+// the instrumented build's is optimized differently before its control flow
+// is hashed, so the profile's record for it no longer matches.
 const committedLayout = join(root, "packages/compiler/native/cli.layout.gz");
 const requestedLayout = process.env["SCRIPTC_NATIVE_LAYOUT"];
 const functionLayout =
-  profileGenerate !== undefined || requestedLayout === ""
+  requestedLayout === ""
     ? undefined
     : (requestedLayout ?? (existsSync(committedLayout) ? committedLayout : undefined));
 let target = nativeCodegenTarget();
