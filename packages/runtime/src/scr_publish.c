@@ -481,9 +481,9 @@ void scr_publish(void *root, ScrPubFn fn) {
       void *obj = scr_pub_log_obj(&ctx.log[i]);
       if (ctx.log[i].obj & SCR_PUB_DYN) {
         ScrDyn *d = obj;
-        /* Other threads share the object; its shape belongs to this one
-         * (scr_js.h). */
-        if (d->kind == SCR_DYN_OBJ) d->v.obj.shape = NULL;
+        /* Other threads share the object; layouts belong to this thread
+         * (scr_dyn.h), so it moves to dictionary mode. */
+        if (d->kind == SCR_DYN_OBJ) scr_dyn_to_dictionary(d);
         scr_dyn_release(scr_dyn_freeze_data(d));
       }
 #ifdef SCR_RC_AUDIT

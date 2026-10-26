@@ -702,9 +702,10 @@ static ScrMessage *scr_message_try_publish(const ScrDyn *value) {
       } else if (d->rc != SIZE_MAX) {
         scr_cyc_on_dead(d); /* leave the candidate and tenured buffers */
         d->rc = SIZE_MAX;
-        /* A shape names a node of this thread's transition tree (scr_js.h),
-         * which other threads cannot use and which ends with this thread. */
-        if (d->kind == SCR_DYN_OBJ) d->v.obj.shape = NULL;
+        /* A layout names a node of this thread's transition tree
+         * (scr_dyn.h), which other threads cannot use and which ends with
+         * this thread: the object moves to dictionary mode. */
+        if (d->kind == SCR_DYN_OBJ) scr_dyn_to_dictionary(d);
 #ifdef SCR_RC_AUDIT
         scr_dyn_live_forget();
 #endif

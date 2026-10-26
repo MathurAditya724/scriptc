@@ -470,9 +470,16 @@ struct ScrDyn {
     struct { ScrSym *value; void (*release)(ScrSym *); ScrStr *(*render)(ScrSym *); ScrStr *(*description)(ScrSym *); } symbol;
     struct { size_t len; size_t cap; ScrDyn **items; struct ScrDyn *properties; bool sealed; bool frozen; unsigned char *presence; struct ScrDynRegion *region; } arr; /* owned; NULL presence means dense; region: see ScrDynRegion */
     struct {
-      size_t len;
-      size_t cap;
-      ScrDynEntry *entries;
+      size_t len; /* own string-keyed properties, in both modes */
+      size_t cap; /* capacity of entries (dictionary mode) or slots (layout mode) */
+      /* Layout mode (`layout` non-NULL): slots[i] holds the value of the
+       * property layout->keys[i] names, a writable, enumerable,
+       * configurable data property. Dictionary mode (`layout` NULL):
+       * entries hold keys, values and attributes. See ScrLayout. */
+      union {
+        ScrDynEntry *entries;
+        struct ScrDyn **slots;
+      };
       /* Optional identity of the typed record that produced this ordinary
        * snapshot. Empty records and callback interfaces can retain their
        * source across repeated static-to-dynamic crossings. */
@@ -480,7 +487,7 @@ struct ScrDyn {
        * interfaces may request a fresh snapshot with the true arm. */
       void *source_identity;
       ScrDyn *(*source_access)(void *, bool materialize);
-      struct ScrDynObjectIndex *index; /* optional wide-object lookup; owns no values */
+      struct ScrDynObjectIndex *index; /* dictionary mode: optional wide-object lookup; owns no values */
       /* On a runtime-built class prototype (e.g. url.Url.prototype) and
        * on a compiled class's prototype object: the constructor name
        * (static or immortal text) util.inspect prints for objects
@@ -489,19 +496,13 @@ struct ScrDyn {
        * exits, and those clear it before release; reuse of a freed object
        * resets it (scr_dyn_alloc). */
       const char *class_name;
-      union {
-        struct ScrDynRegion *region; /* see ScrDynRegion */
-        /* While the node is pooled: the key bytes it keeps for reuse,
-         * counted in the pool's key budget (scr_dyn_obj_drop_keys). */
-        size_t cached_key_bytes;
-      };
-      /* The dynamic tier's hidden class (scr_js_object.c): the transition
-       * tree node naming this object's key sequence, or NULL while it has
-       * none. Only programs with dynamic-tier code read or maintain it:
-       * their runtime is built with SCR_JS_TIER, where every allocation and
-       * every change to the key set resets it. Other programs never look
-       * at it, so it may hold anything there. */
-      struct ScrJsShape *shape;
+      struct ScrDynRegion *region; /* see ScrDynRegion */
+      /* The object's layout in layout mode, NULL in dictionary mode. The
+       * dynamic tier's inline caches key on it. */
+      const struct ScrLayout *layout;
+      /* Layout mode: bit i is the collector's snapshot of whether slot i's
+       * value is traced (ScrDynEntry.value_traced in dictionary mode). */
+      size_t slots_traced;
     } obj; /* owned */
     /* SCR_DYN_FUNC: the boxed closure (owned) + its call descriptor. `sig`
      * and `name` are static compiler-emitted literals (never freed); name
@@ -580,17 +581,86 @@ _Static_assert(offsetof(ScrDyn, v.typed_ref.casts) == 16 + 8 * sizeof(void *),
 _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref) &&
                sizeof(((ScrDyn *)0)->v.obj) <= sizeof(((ScrDyn *)0)->v.typed_ref),
                "dyn region links must not grow the node");
-/* Dynamic-tier inline caches read the shape word in place (64-bit). */
-_Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.shape) == 80, "v.obj.shape offset");
+/* Dynamic-tier inline caches read the layout word and slots in place (64-bit). */
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.layout) == 80, "v.obj.layout offset");
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.slots) == 32, "v.obj.slots offset");
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.region) == 72, "v.obj.region offset");
 
+/* ── layouts ───────────────────────────────────────────────────────────
+ * An ordinary object (SCR_DYN_OBJ) is in one of two modes.
+ *
+ * Layout mode: v.obj.layout names the object's key sequence, a node of the
+ * thread's interned transition tree, and v.obj.slots holds one value per
+ * key (8 bytes per property). Every property of a layout-mode object is a
+ * writable, enumerable, configurable data property; objects of one key
+ * sequence share one layout, so a layout pointer proves which key sits at
+ * each slot and which keys the object lacks (the dynamic tier's inline
+ * caches key on it). New objects start in layout mode at the thread's
+ * empty layout.
+ *
+ * Dictionary mode: v.obj.layout is NULL and v.obj.entries holds keys,
+ * values and attributes (ScrDynEntry). An object moves there, once and for
+ * good, when it gets an accessor, a non-default attribute, a delete, more
+ * than SCR_LAYOUT_MAX_KEYS keys, when the thread's layout budgets are
+ * spent, when it is published to other threads, and whenever code that
+ * reads entries directly touches it (scr_dyn_obj_dict_entries): the conversion
+ * is unobservable, so code that has not been taught layouts stays correct.
+ *
+ * Layouts belong to one thread and live until its runtime state is torn
+ * down; they are never owned by a parse region. Each holds one reference
+ * to its key's bytes (scr_json.c's shared key storage). */
+#define SCR_LAYOUT_MAX_KEYS (8 * sizeof(size_t))
+
+typedef struct ScrLayoutKey {
+  char *key; /* shared key bytes; one reference belongs to the layout that added it */
+  uint32_t len;
+  uint32_t hash; /* low bits of scr_key_hash */
+} ScrLayoutKey;
+
+typedef struct ScrLayout {
+  const ScrLayoutKey *keys; /* keys[0..count); shared along a chain of layouts */
+  uint32_t count;
+  uint32_t lookup_mask; /* capacity - 1 of `lookup`; 0 while it has none */
+  uint8_t *lookup;      /* lazily built hash index: slot + 1, 0 = empty */
+  const struct ScrLayout *parent;
+  struct ScrLayout *last_child; /* the most recent transition from here */
+  struct ScrLayoutKeys *store;  /* the key array `keys` lives in */
+  struct ScrLayout *all_next;
+  bool owns_store;
+} ScrLayout;
+
+/* The index of `key` in layout `layout`, or UINT32_MAX. */
+uint32_t scr_layout_find(const ScrLayout *layout, const char *key, size_t key_len);
+/* The layout that appends `key` (borrowed bytes) to `layout`, created on
+ * first use; NULL past SCR_LAYOUT_MAX_KEYS or the thread's budgets. */
+const ScrLayout *scr_layout_add(const ScrLayout *layout, const char *key, size_t key_len);
+/* The thread's empty layout. */
+const ScrLayout *scr_layout_root(void);
+/* Moves a layout-mode object to dictionary mode (no-op otherwise). */
+void scr_dyn_to_dictionary(ScrDyn *object);
+
+/* v.obj.entries of an object in dictionary mode, converting a layout-mode
+ * object first: code that reads or writes entries directly goes through
+ * this. */
+static inline __attribute__((always_inline)) ScrDynEntry *scr_dyn_obj_dict_entries(const ScrDyn *object) {
+  if (__builtin_expect(object->v.obj.layout != NULL, 0)) scr_dyn_to_dictionary((ScrDyn *)object);
+  return object->v.obj.entries;
+}
+
+/* scr_dyn_obj_key_at and scr_dyn_obj_value_at out of line, for emitted
+ * code (borrowed results). */
+const char *scr_dyn_member_key(const ScrDyn *object, size_t i);
+size_t scr_dyn_member_key_len(const ScrDyn *object, size_t i);
+ScrDyn *scr_dyn_member_value(const ScrDyn *object, size_t i);
+
 /* ── own properties of ordinary objects ──────────────────────────────
- * Code outside the object core (scr_json.c and scr_js_object.c) reads and
+ * The accessors are always inlined, so a binary that never sees an
+ * ordinary object links no out-of-line copies. Code outside the object core (scr_json.c and scr_js_object.c) reads and
  * adjusts an SCR_DYN_OBJ's own string-keyed properties through these
- * accessors, never through v.obj.entries, so the object's storage can
- * change underneath (the single object model's generic objects). Index i
- * runs over the properties in creation order, 0 <= i < scr_dyn_obj_count.
- * Keys and values are borrowed: they stay valid until the object changes. */
+ * accessors, never through v.obj.entries or v.obj.slots, so they work in
+ * both modes. Index i runs over the properties in creation order,
+ * 0 <= i < scr_dyn_obj_count. Keys and values are borrowed: they stay
+ * valid until the object changes. */
 typedef struct {
   const char *key;
   size_t key_len;
@@ -603,30 +673,44 @@ typedef struct {
   bool configurable;
 } ScrDynProp;
 
-static inline size_t scr_dyn_obj_count(const ScrDyn *o) {
+static inline __attribute__((always_inline)) size_t scr_dyn_obj_count(const ScrDyn *o) {
   return o->v.obj.len;
 }
 
-static inline const char *scr_dyn_obj_key_at(const ScrDyn *o, size_t i, size_t *key_len) {
+static inline __attribute__((always_inline)) const char *scr_dyn_obj_key_at(const ScrDyn *o, size_t i, size_t *key_len) {
+  const ScrLayout *layout = o->v.obj.layout;
+  if (layout) {
+    *key_len = layout->keys[i].len;
+    return layout->keys[i].key;
+  }
   *key_len = o->v.obj.entries[i].key_len;
   return o->v.obj.entries[i].key;
 }
 
 /* The value of data property i (borrowed); the undefined value for an
  * accessor property, whose functions scr_dyn_obj_prop_at answers. */
-static inline ScrDyn *scr_dyn_obj_value_at(const ScrDyn *o, size_t i) {
-  return o->v.obj.entries[i].value;
+static inline __attribute__((always_inline)) ScrDyn *scr_dyn_obj_value_at(const ScrDyn *o, size_t i) {
+  return o->v.obj.layout ? o->v.obj.slots[i] : o->v.obj.entries[i].value;
 }
 
-static inline ScrDynProp scr_dyn_obj_prop_at(const ScrDyn *o, size_t i) {
+static inline __attribute__((always_inline)) ScrDynProp scr_dyn_obj_prop_at(const ScrDyn *o, size_t i) {
+  const ScrLayout *layout = o->v.obj.layout;
+  if (layout)
+    return (ScrDynProp){layout->keys[i].key, layout->keys[i].len, o->v.obj.slots[i], NULL, NULL,
+                        false, true, true, true};
   const ScrDynEntry *e = &o->v.obj.entries[i];
   return (ScrDynProp){e->key, e->key_len, e->value, e->getter, e->setter,
                       e->accessor, e->writable, e->enumerable, e->configurable};
 }
 
-/* The index of own property `key`, or SIZE_MAX. A linear scan: for code
- * that looks up options and headers, not for hot property reads. */
+/* The index of own property `key`, or SIZE_MAX. A linear scan in
+ * dictionary mode: for code that looks up options and headers, not for hot
+ * property reads. */
 static inline size_t scr_dyn_obj_index_of(const ScrDyn *o, const char *key, size_t key_len) {
+  if (o->v.obj.layout) {
+    uint32_t i = scr_layout_find(o->v.obj.layout, key, key_len);
+    return i == UINT32_MAX ? SIZE_MAX : i;
+  }
   for (size_t i = 0; i < o->v.obj.len; i++) {
     const ScrDynEntry *e = &o->v.obj.entries[i];
     if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) return i;
@@ -639,7 +723,8 @@ static inline size_t scr_dyn_obj_index_of(const ScrDyn *o, const char *key, size
  * members this way right after adding them. */
 static inline void scr_dyn_obj_set_attrs_at(ScrDyn *o, size_t i, bool writable, bool enumerable,
                                             bool configurable) {
-  ScrDynEntry *e = &o->v.obj.entries[i];
+  if (o->v.obj.layout && writable && enumerable && configurable) return;
+  ScrDynEntry *e = &scr_dyn_obj_dict_entries(o)[i];
   if (!e->accessor) e->writable = writable;
   e->enumerable = enumerable;
   e->configurable = configurable;
@@ -821,6 +906,13 @@ static inline bool scr_dyn_own_symbol_prop(const ScrDyn *object, const ScrDyn *k
 }
 /* Copies own property i of `source` to `target` (scr_dyn_copy_entry). */
 static inline void scr_dyn_copy_prop_at(ScrDyn *target, const ScrDyn *source, size_t i) {
+  if (source->v.obj.layout) {
+    ScrDynProp prop = scr_dyn_obj_prop_at(source, i);
+    ScrDynEntry entry = {(char *)prop.key, prop.key_len, prop.value, NULL, NULL,
+                         false, false, false, true, true, true};
+    scr_dyn_copy_entry(target, source, &entry);
+    return;
+  }
   scr_dyn_copy_entry(target, source, &source->v.obj.entries[i]);
 }
 /* The private storage name of a symbol key (+1). With it,
@@ -2054,7 +2146,7 @@ void scr_dyn_trace_v(void *d, ScrTraceVisit visit, void *ctx);
 long scr_dyn_live_count(void);
 #endif
 
-/* Checked-object primitives the dynamic tier's shapes and caches build on
+/* Checked-object primitives the dynamic tier's inline caches build on
  * (scr_js_object.c). They exist only in the SCR_JS_TIER build of
  * scr_json.c, which programs with dynamic-tier code link. */
 /* The builtin Object.prototype node, or NULL before its first use. */
@@ -2062,12 +2154,9 @@ const ScrDyn *scr_dyn_tier_object_prototype(void);
 /* A read site's answer for a native array's length or a native iterator's
  * next (scr_js_get_probe_native): +1, or NULL. */
 ScrDyn *scr_dyn_tier_unshaped_get(const ScrDyn *receiver, const ScrStr *key);
-/* Shared key bytes for `key` (+1, NUL-terminated), and their release. */
-char *scr_dyn_tier_key_copy(const char *key, size_t key_len);
-void scr_dyn_tier_key_release(char *key, size_t key_len);
-/* Appends an own data property (writable, enumerable, configurable) that
- * `obj` does not have, sharing `key`'s bytes and taking ownership of
- * `value`, exactly as an ordinary insertion would; leaves the shape reset. */
-void scr_dyn_tier_append(ScrDyn *obj, char *key, size_t key_len, ScrDyn *value);
+/* Appends to a layout-mode object the property that `next`, a child of
+ * its layout, adds, taking ownership of `value`, exactly as an ordinary
+ * insertion would. */
+void scr_dyn_tier_append(ScrDyn *obj, const ScrLayout *next, ScrDyn *value);
 
 #endif /* SCR_DYN_H */

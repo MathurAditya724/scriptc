@@ -10,13 +10,14 @@ const src = join(import.meta.dirname, "..", "src");
  * change how it stores them. */
 const CORE = new Set(["scr_json.c", "scr_js_object.c", "scr_dyn.h"]);
 
-test("only the object core reads ordinary objects' entry storage", () => {
+test("only the object core reads ordinary objects' storage", () => {
   const offenders: string[] = [];
   for (const name of readdirSync(src)) {
     if (!/\.(c|h)$/.test(name) || name.endsWith(".test.c") || CORE.has(name)) continue;
     const lines = readFileSync(join(src, name), "utf8").split("\n");
     lines.forEach((line, i) => {
-      if (/\bv\.obj\.(entries|len)\b/.test(line)) offenders.push(`${name}:${i + 1}: ${line.trim()}`);
+      if (/\bv\.obj\.(entries|slots|layout|len|cap|index)\b/.test(line))
+        offenders.push(`${name}:${i + 1}: ${line.trim()}`);
     });
   }
   expect(offenders).toEqual([]);
