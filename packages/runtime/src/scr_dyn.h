@@ -584,6 +584,67 @@ _Static_assert(sizeof(((ScrDyn *)0)->v.arr) <= sizeof(((ScrDyn *)0)->v.typed_ref
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.shape) == 80, "v.obj.shape offset");
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.obj.region) == 72, "v.obj.region offset");
 
+/* ── own properties of ordinary objects ──────────────────────────────
+ * Code outside the object core (scr_json.c and scr_js_object.c) reads and
+ * adjusts an SCR_DYN_OBJ's own string-keyed properties through these
+ * accessors, never through v.obj.entries, so the object's storage can
+ * change underneath (the single object model's generic objects). Index i
+ * runs over the properties in creation order, 0 <= i < scr_dyn_obj_count.
+ * Keys and values are borrowed: they stay valid until the object changes. */
+typedef struct {
+  const char *key;
+  size_t key_len;
+  ScrDyn *value;  /* data property; the undefined value for an accessor */
+  ScrDyn *getter; /* accessor property; NULL when absent */
+  ScrDyn *setter; /* accessor property; NULL when absent */
+  bool accessor;
+  bool writable;
+  bool enumerable;
+  bool configurable;
+} ScrDynProp;
+
+static inline size_t scr_dyn_obj_count(const ScrDyn *o) {
+  return o->v.obj.len;
+}
+
+static inline const char *scr_dyn_obj_key_at(const ScrDyn *o, size_t i, size_t *key_len) {
+  *key_len = o->v.obj.entries[i].key_len;
+  return o->v.obj.entries[i].key;
+}
+
+/* The value of data property i (borrowed); the undefined value for an
+ * accessor property, whose functions scr_dyn_obj_prop_at answers. */
+static inline ScrDyn *scr_dyn_obj_value_at(const ScrDyn *o, size_t i) {
+  return o->v.obj.entries[i].value;
+}
+
+static inline ScrDynProp scr_dyn_obj_prop_at(const ScrDyn *o, size_t i) {
+  const ScrDynEntry *e = &o->v.obj.entries[i];
+  return (ScrDynProp){e->key, e->key_len, e->value, e->getter, e->setter,
+                      e->accessor, e->writable, e->enumerable, e->configurable};
+}
+
+/* The index of own property `key`, or SIZE_MAX. A linear scan: for code
+ * that looks up options and headers, not for hot property reads. */
+static inline size_t scr_dyn_obj_index_of(const ScrDyn *o, const char *key, size_t key_len) {
+  for (size_t i = 0; i < o->v.obj.len; i++) {
+    const ScrDynEntry *e = &o->v.obj.entries[i];
+    if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) return i;
+  }
+  return SIZE_MAX;
+}
+
+/* Sets the attributes of property i (`writable` is ignored for an
+ * accessor property): builtin objects the runtime builds restrict their
+ * members this way right after adding them. */
+static inline void scr_dyn_obj_set_attrs_at(ScrDyn *o, size_t i, bool writable, bool enumerable,
+                                            bool configurable) {
+  ScrDynEntry *e = &o->v.obj.entries[i];
+  if (!e->accessor) e->writable = writable;
+  e->enumerable = enumerable;
+  e->configurable = configurable;
+}
+
 /* ── intact parse regions ─────────────────────────────────────────────
  * Every heap dyn node carries a cycle header, so an ordinary release that
  * leaves an array or object alive buffers it as a possible cycle root, and
@@ -748,6 +809,20 @@ ScrDyn *scr_dyn_get_own_property_symbols(const ScrDyn *value);
 /* The own property stored under a symbol key on an object (borrowed), or
  * NULL when it has none. */
 ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key);
+/* The own symbol-keyed property `key` of `object` as a property view
+ * (scr_dyn_obj_prop_at; `key` and `key_len` name its private storage
+ * key); false when there is none. */
+static inline bool scr_dyn_own_symbol_prop(const ScrDyn *object, const ScrDyn *key, ScrDynProp *out) {
+  const ScrDynEntry *e = scr_dyn_own_symbol_entry(object, key);
+  if (!e) return false;
+  *out = (ScrDynProp){e->key, e->key_len, e->value, e->getter, e->setter,
+                      e->accessor, e->writable, e->enumerable, e->configurable};
+  return true;
+}
+/* Copies own property i of `source` to `target` (scr_dyn_copy_entry). */
+static inline void scr_dyn_copy_prop_at(ScrDyn *target, const ScrDyn *source, size_t i) {
+  scr_dyn_copy_entry(target, source, &source->v.obj.entries[i]);
+}
 /* The private storage name of a symbol key (+1). With it,
  * scr_dyn_symbol_init_own gives an object that has no symbol properties
  * yet its first one, a writable, enumerable, configurable data property

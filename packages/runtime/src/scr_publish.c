@@ -278,8 +278,8 @@ static bool scr_pub_dyn_ok(const ScrDyn *d, const char **why) {
     *why = "Cannot publish an Object object";
     return false;
   }
-  for (size_t i = 0; i < d->v.obj.len; i++)
-    if (d->v.obj.entries[i].accessor) {
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++)
+    if (scr_dyn_obj_prop_at(d, i).accessor) {
       *why = "Cannot publish an accessor property";
       return false;
     }
@@ -325,9 +325,9 @@ void scr_pub_dyn_fn(void *v, ScrPub *ctx) {
     case SCR_DYN_ARR:
     case SCR_DYN_OBJ: {
       if (!scr_pub_dyn_ok(d, &why)) break;
-      size_t n = d->kind == SCR_DYN_ARR ? d->v.arr.len : d->v.obj.len;
+      size_t n = d->kind == SCR_DYN_ARR ? d->v.arr.len : scr_dyn_obj_count(d);
       for (size_t i = 0; i < n; i++) {
-        ScrDyn *child = d->kind == SCR_DYN_ARR ? d->v.arr.items[i] : d->v.obj.entries[i].value;
+        ScrDyn *child = d->kind == SCR_DYN_ARR ? d->v.arr.items[i] : scr_dyn_obj_value_at(d, i);
         if (child && child->rc != SIZE_MAX) SCR_PUB_ADD((uintptr_t)child);
       }
       break;
