@@ -278,6 +278,9 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.stdioWritable",
   "stream.unboxDyn",
   "stream.dynIterableSource",
+  "stream.dynSourceValue",
+  "stream.dynTransformResult",
+  "stream.unboxDynStage",
   "stream.handleStream",
   "stream.unpipeDyn",
   "stream.workerStdio",
@@ -314,6 +317,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromAsyncFn",
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
+  "stream.unboxDynStage",
 ]);
 
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
