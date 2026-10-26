@@ -592,6 +592,9 @@ function buildLibFnSignatures() {
     "fs.rmSync": { argTypes: [STRING], result: VOID },
     "fs.rmdirSync": { argTypes: [STRING], result: VOID },
     "fs.readdirSync": { argTypes: [STRING], result: arrayOf(STRING) },
+    /** `fs.readdirSync(path, { recursive: true })`: every entry below the
+     * path, relative to it, in Node's queue order. */
+    "fs.readdirRecursiveSync": { argTypes: [STRING], result: arrayOf(STRING) },
     // Result is the call site's Dirent record array (VOID is the
     // structure-checked sentinel, the os.networkInterfaces pattern).
     /** `fs.readdirSync(path, { withFileTypes: true })` — Dirent rows over

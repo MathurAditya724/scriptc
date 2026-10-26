@@ -423,6 +423,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.rmRetrySync": "scr_fs_rm_opts_retry",
   "fs.rmdirSync": "scr_fs_rmdir",
   "fs.readdirSync": "scr_fs_readdir",
+  "fs.readdirRecursiveSync": "scr_fs_readdir_recursive",
   "fs.globSync": "scr_fs_glob_strings",
   "fs.callbackGlob": "scr_fs_glob_callback",
   "fsp.globStrings": "scr_fsp_glob_strings",
