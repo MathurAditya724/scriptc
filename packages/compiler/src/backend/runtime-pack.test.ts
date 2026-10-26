@@ -129,7 +129,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 43, marker: "scr_runtime_abi_v43" },
+    runtime_abi: { version: 46, marker: "scr_runtime_abi_v46" },
     compiler: {
       command: "clang",
       identity: "fixture clang",

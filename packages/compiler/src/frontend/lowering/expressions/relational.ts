@@ -39,6 +39,7 @@ import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
+import { lowerMimeInstanceof } from "../builtins/mime.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
@@ -246,6 +247,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (cryptoKey) return cryptoKey;
     const netAddress = lowerNetAddressInstanceof(lowerer, expr);
     if (netAddress) return netAddress;
+    const mime = lowerMimeInstanceof(lowerer, expr);
+    if (mime) return mime;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
     if (readlineInterface) return readlineInterface;
   }
@@ -548,12 +551,13 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       };
     }
     if (rhsClassval?.kind === "classval" && !caught) {
-      const targetInfo = lowerer.classes.get(rhsClassval.className);
+      const targetInfo =
+        lowerer.classes.get(rhsClassval.className) ??
+        lowerer.flushDeferredClass(rhsClassval.className);
       if (!targetInfo) {
         // The type world names a class the lowering never registered
-        // (a fenced class expression, a deferred declaration): flush
-        // its diagnostics and poison the test site, never an ICE.
-        lowerer.flushDeferredClass(rhsClassval.className);
+        // (a fenced class expression, a deferred declaration): its
+        // diagnostics flushed above; poison the test site, never an ICE.
         lowerer.unsupported(
           "SC1090",
           expr,

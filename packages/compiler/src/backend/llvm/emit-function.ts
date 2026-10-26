@@ -83,6 +83,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.unwindCleanups.clear();
   emitter.jumpTargets = [];
   emitter.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
+  emitter.currentParameters = new Set(fn.params.map((p) => p.localId));
   emitter.lazyCaptureBoxes.clear();
   emitter.lazyStackBoxes.clear();
   // An unchanged captured parameter keeps its value in a plain slot; the

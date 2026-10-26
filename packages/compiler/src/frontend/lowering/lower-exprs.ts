@@ -89,14 +89,15 @@ import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
-import { lowerTernary } from "./expressions/narrowing.js";
+import { lowerTernary, v8CalleeText } from "./expressions/narrowing.js";
 import {
   classFieldTarget,
   lowerPropertyAccessExpr,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
 import { lowerNullishPair } from "./expressions/binary.js";
-import { lowerElementCompoundParts } from "./expressions/element-access.js";
+import { lowerElementCompoundParts, recordKeyLiteralText } from "./expressions/element-access.js";
+import { OBJECT_PROTOTYPE_MEMBERS } from "../shape-inference/domain.js";
 export {
   DEFERRED_READ_MESSAGE,
   abstractPropertyDeclOf,
@@ -433,7 +434,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const operand = assertionOperand(lowerer, expr, inner, target ?? null, loc);
       if (operand) return operand;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
-        const helper = lowerer.narrowedArmHelper(inner.type.unionId, target, loc);
+        const helper = lowerer.narrowedArmHelper(
+          inner.type.unionId,
+          target,
+          loc,
+          assertedCalleeMessage(expr, target),
+        );
         if (helper) {
           return lowerer.checkedNarrowCall(helper, inner, target, loc);
         }
@@ -1159,6 +1165,19 @@ const NUMERIC_COMPOUNDS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
   ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
 ]);
+
+/** The TypeError Node raises when an asserted callee (`t[k]!(…)`, `o.f!()`)
+ * holds no function: `!` is erased, so the call itself throws "<callee> is
+ * not a function" in V8's spelling of the callee. */
+function assertedCalleeMessage(expr: ts.NonNullExpression, target: IrType): string | undefined {
+  if (target.kind !== "func") return undefined;
+  let child: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(child.parent)) child = child.parent;
+  const call = child.parent;
+  if (!ts.isCallExpression(call) || call.expression !== child || call.questionDotToken)
+    return undefined;
+  return `${v8CalleeText(expr.expression)} is not a function`;
+}
 
 /** Whether the use of `t[i]!` tells undefined from NaN: a converting use
  * that takes the value itself (see convertingUseOf), or a destination that
@@ -1944,6 +1963,23 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
   if (receiverT?.kind === "record") {
     const shape = lowerer.shapes.get(receiverT.shapeId);
     if (shape && !shape.tuple && shape.indexValue && shape.indexValue.kind !== "dyn") {
+      return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
+    }
+    // A literal key the shape does not declare is absent from every value
+    // (lowerRecordKeyRead answers undefined), whatever type the checker gave
+    // the read. An optional chain keeps its own lowering, which reads a
+    // nullish receiver as undefined instead of converting it.
+    const literal = recordKeyLiteralText(expr.argumentExpression);
+    if (
+      !expr.questionDotToken &&
+      !hasOptionalChainGuard(expr.expression) &&
+      shape &&
+      !shape.tuple &&
+      !shape.indexValue &&
+      literal !== null &&
+      !OBJECT_PROTOTYPE_MEMBERS.has(literal) &&
+      !shape.fields.some((field) => field.name === literal)
+    ) {
       return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
     }
     return null;
@@ -3118,11 +3154,9 @@ export function symbolFieldInfo(
   if (lowerer.chainBlocked(expr)) return null;
   const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverIr?.kind !== "object") return null;
-  const info = lowerer.classes.get(receiverIr.className);
-  if (!info) {
-    lowerer.flushDeferredClass(receiverIr.className);
-    return null;
-  }
+  const info =
+    lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
+  if (!info) return null;
   const key = classSymbolKeyOf(lowerer, expr.argumentExpression);
   if (!key) return null;
   const field = info.symbolFields?.get(key.identity);
