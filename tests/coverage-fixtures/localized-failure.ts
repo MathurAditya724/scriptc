@@ -3,7 +3,7 @@
 // each one rejects today.
 interface Tool {
   name: string;
-  execute(id: string, params: any): Promise<string>;
+  hooks: Map<string, (x: number) => string> | AbortSignal | (() => void) | Set<string>;
 }
 type Progress = (done: number, total: number) => void;
 type Callbacks = Progress | AbortSignal | Map<string, (x: number) => string> | Set<number>;
