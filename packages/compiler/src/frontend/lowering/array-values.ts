@@ -692,6 +692,9 @@ export function lowerSafeIndexRead(
   const elem = arr.type.elem;
   if (elem.kind === "void") return null;
   const resultT = arrayValueType(lowerer, elem);
+  // An element union that cannot take an undefined arm has no value for a
+  // missing element.
+  if (resultT.kind !== "dyn" && lowerer.wrappedUndefined(resultT, loc) === null) return null;
   const key = `idxOr:${typeKey(elem)}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (!name) {

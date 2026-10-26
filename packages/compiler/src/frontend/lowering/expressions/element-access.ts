@@ -1,5 +1,6 @@
 /* Element reads and writes (`a[i]`, `a[i] = v`), compound element updates, and keyed record reads. */
 import { OBJECT_PROTOTYPE_MEMBERS } from "../../shape-inference/domain.js";
+import { lowerUnionTupleRead } from "./union-fields.js";
 import * as ts from "../../ts7/adapter.js";
 import {
   lowerOptionalIndex,
@@ -466,6 +467,12 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           "tuple indexing with a non-literal index (tuples are fixed-shape — use t[0], t[1], ...)",
         );
       }
+      // A union of tuples asserted to one tuple view (`(r as readonly
+      // [boolean, T | E])[0]`) still holds the union.
+      if (obj.type.kind === "union") {
+        const element = lowerUnionTupleRead(lowerer, obj, idx, locOf(expr));
+        if (element) return lowerer.maybeNarrow(element, expr);
+      }
       const shapeId = obj.type.kind === "record" ? obj.type.shapeId : receiverIr.shapeId;
       const actualShape = lowerer.shapes.get(shapeId) ?? shape;
       const fieldType = actualShape.fields.find((f) => f.name === String(idx))?.type;
@@ -597,6 +604,15 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
             };
           }
         }
+      }
+      if (key.type.kind === "f64" && ts.isNumericLiteral(expr.argumentExpression)) {
+        const element = lowerUnionTupleRead(
+          lowerer,
+          value,
+          Number(expr.argumentExpression.text),
+          locOf(expr),
+        );
+        if (element) return lowerer.maybeNarrow(element, expr);
       }
       if (key.type.kind === "f64") {
         const optional = optionalArmIndexRead(lowerer, value, key, locOf(expr));

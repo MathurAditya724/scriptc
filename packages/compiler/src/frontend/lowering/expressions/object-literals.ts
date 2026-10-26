@@ -419,7 +419,11 @@ export function lowerDynObjectLiteral(
             : !boxValue &&
                 (ts.isObjectLiteralExpression(valueExpr) ||
                   (ts.isArrayLiteralExpression(valueExpr) &&
-                    (holdsEvolvingArray(lowerer, valueExpr) ||
+                    // An empty literal takes whatever the object's users
+                    // store into it (`{ [kChildren]: [] }`), so it is a
+                    // checked-dynamic array rather than its `never[]` layout.
+                    (valueExpr.elements.nodes.length === 0 ||
+                      holdsEvolvingArray(lowerer, valueExpr) ||
                       lowerer.untypedLiteralContext(valueExpr))))
               ? lowerer.lowerExprExpecting(valueExpr, DYN)
               : lowerer.lowerExpr(valueExpr as ts.Expression);

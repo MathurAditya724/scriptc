@@ -1,3 +1,4 @@
+import { unionNarrowFailureMessage } from "./union-narrow.js";
 import {
   compactDeclOrigins,
   inPackageFile,
@@ -10,7 +11,7 @@ import { relieveHeapPressure } from "../../heap-pressure.js";
 import { moduleNamespaceObject, moduleNamespaceValue } from "./module-namespace-elements.js";
 import { keyedHelperName } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
-import { onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
+import { bindingSymbolOfRead, onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
 import {
   needsGeneralNodeStreams,
   noteUntypedStreamFlow,
@@ -6116,6 +6117,22 @@ export class Lowerer {
       };
       if (!stringRead(e.left) && !stringRead(e.right)) return null;
       if (!primitive(e.left) || !primitive(e.right)) return null;
+      // A missing read is undefined, and `+` yields a number only when
+      // neither operand is a string: an operand that is always a string
+      // (`"x-" + PAD[i]`) makes the result a string. Only literals,
+      // templates and sums with such an operand are always strings; a
+      // binding or call can hold a missing read.
+      const definitelyString = (part: ts.Expression): boolean => {
+        const p = peel(part);
+        if (ts.isStringLiteral(p) || ts.isNoSubstitutionTemplateLiteral(p)) return true;
+        if (ts.isTemplateExpression(p)) return true;
+        return (
+          ts.isBinaryExpression(p) &&
+          p.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+          (definitelyString(p.left) || definitelyString(p.right))
+        );
+      };
+      if (definitelyString(e.left) || definitelyString(e.right)) return null;
       return { kind: "union", unionId: this.unions.intern([F64, STRING]) };
     };
     /** The union of primitive result types, or null when any is missing or
@@ -11617,6 +11634,26 @@ export class Lowerer {
 
   private coerceIntoSlot(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
+    // A union into one of its record arms extracts that arm, trusting the
+    // checker to have excluded the others. A built-in object arm the checker
+    // still types the site with (`c ?? new Map()` into an interface the
+    // untyped Map satisfies only through `any`) holds a value at run time,
+    // and no conversion makes a record of it, so the flow is refused like
+    // the arm's value would be.
+    if (
+      expr.type.kind === "union" &&
+      expected.kind === "record" &&
+      this.armTag(expr.type.unionId, expected) >= 0
+    ) {
+      const site = this.mapTypeOf(this.typeOf(node));
+      const siteArms =
+        site?.kind === "union" ? (this.unions.get(site.unionId)?.arms ?? []) : site ? [site] : [];
+      for (const arm of this.unions.get(expr.type.unionId)?.arms ?? []) {
+        if (arm.kind !== "map" && arm.kind !== "set") continue;
+        if (!siteArms.some((s) => typeEquals(s, arm))) continue;
+        this.requireExactShape(node, arm, expected);
+      }
+    }
     // An assertion's scalar check whose value goes straight back into a
     // checked-dynamic slot (`process.loadEnvFile({} as unknown as string)`)
     // keeps the original value: JavaScript erases assertions, so the check
@@ -11779,6 +11816,25 @@ export class Lowerer {
       }
     }
 
+    // A value the checker types `never` at this site (a read narrowed past
+    // every member of its union) exists only when an assertion lied about
+    // its type, so its layout need not fit the slot: it is evaluated, then a
+    // TypeError is thrown, as checked extraction of an impossible arm does.
+    if (!typeEquals(e.type, expected) && (this.typeOf(node).flags & ts.TypeFlags.Never) !== 0) {
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: e, loc: e.loc }],
+        result: nodeThrowExpr(
+          1,
+          "",
+          unionNarrowFailureMessage(e.type, (t) => this.fmt(t)),
+          expected,
+          e.loc,
+        ),
+        type: expected,
+        loc: e.loc,
+      };
+    }
     this.requireExactShape(node, e.type, expected);
     return e;
   }
@@ -13443,7 +13499,7 @@ export class Lowerer {
     const fn = decl.parent;
     const symbol = this.checker.getSymbolAtLocation(nameNode);
     const isRead = (id: ts.Identifier): boolean =>
-      id !== nameNode && this.checker.getSymbolAtLocation(id) === symbol;
+      id !== nameNode && bindingSymbolOfRead(this, id) === symbol;
     const pure = fn !== undefined && symbol !== undefined && onlyForwarded(this, fn, isRead);
     // A forwarded-only tuple is never built: a tuple with optional
     // positions (`Parameters<(n?: T) => R>`, whose length varies per call)

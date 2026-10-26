@@ -3376,6 +3376,18 @@ export function lowerUnionProperty(
         expr,
       );
   }
+  // An array the checker sees through a union of arrays (`readdirSync`'s
+  // `string[] | Buffer[]`, whose lowering answers the string[] arm).
+  if (value.type.kind === "array" && expr.name.text === "length") {
+    return {
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver: value,
+      args: [],
+      type: F64,
+      loc: locOf(expr),
+    };
+  }
   if (value.type.kind !== "union") {
     lowerer.unsupported(
       "SC1090",
