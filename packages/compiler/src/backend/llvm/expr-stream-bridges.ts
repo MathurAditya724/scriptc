@@ -1,7 +1,7 @@
 import { typedRefConstructor } from "./shapes.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
-import { streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
+import { streamRooted, streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
 import {
   type IrRecordShape,
   type IrType,
@@ -184,7 +184,11 @@ export function streamTypedRefCommitAdapter(
   }
   if (t.kind === "array") {
     const commit = `${snapshot}_commit`;
-    const check = host.dyn.dynCheckHelper(t);
+    // A value the element type cannot hold stays in the array as a foreign
+    // element where the program can store one (LlEmitter.mayHoldForeign).
+    const check = host.mayHoldForeign(t.elem)
+      ? host.dyn.dynViewArrayHelper(t)
+      : host.dyn.dynCheckHelper(t);
     host.declare(`declare void @scr_arr_release(ptr)`);
     host.declare(`declare void @scr_arr_outline(ptr)`);
     host.declare(`declare void @scr_arr_adopt_view_properties(ptr, ptr, ptr)`);
@@ -438,10 +442,14 @@ export function streamTypedRefCommitAdapter(
       host.declare(`declare ptr @scr_str_new(ptr, ${host.sizeType})`);
       host.declare(`declare void @scr_str_release(ptr)`);
       host.declare(`declare void @scr_dyn_key_delete(ptr, ptr, i1 zeroext)`);
+      // The view of a sealed or frozen instance holds its fields as
+      // non-configurable entries, which the bag copies.
+      const withAttributes = meta.def.fields.some((field) => field.name === CLASS_ATTRIBUTES);
+      const placeholderSet = withAttributes ? "scr_dyn_obj_set_field" : "scr_dyn_obj_set";
       if (meta.def.tracksOwnFields) {
         host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
-        host.declare(`declare void @scr_dyn_obj_set(ptr, ptr, ${host.sizeType}, ptr)`);
-      }
+        host.declare(`declare void @${placeholderSet}(ptr, ptr, ${host.sizeType}, ptr)`);
+      } else if (withAttributes) host.declare(`declare void @scr_dyn_obj_delete_field(ptr, ptr)`);
       lines.push(
         `  %bag = call ptr @scr_dyn_new_obj()`,
         `  %bag_copy = call ptr @scr_dyn_copy_property_descriptors(ptr %bag, ptr %d)`,
@@ -478,14 +486,16 @@ export function streamTypedRefCommitAdapter(
               `bag_field${index}_present:`,
               `  %bag_undefined${index} = call ptr @scr_dyn_undefined()`,
               `  %bag_placeholder${index} = call ptr @scr_dyn_retain_v(ptr %bag_undefined${index})`,
-              `  call void @scr_dyn_obj_set(ptr %bag, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr %bag_placeholder${index})`,
+              `  call void @${placeholderSet}(ptr %bag, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr %bag_placeholder${index})`,
               `  br label %bag_field${index}_after`,
               `bag_field${index}_after:`,
             );
           else
             lines.push(
               `  %bag_key${index} = call ptr @scr_str_new(ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")})`,
-              `  call void @scr_dyn_key_delete(ptr %bag, ptr %bag_key${index}, i1 zeroext false)`,
+              withAttributes
+                ? `  call void @scr_dyn_obj_delete_field(ptr %bag, ptr %bag_key${index})`
+                : `  call void @scr_dyn_key_delete(ptr %bag, ptr %bag_key${index}, i1 zeroext false)`,
               `  call void @scr_str_release(ptr %bag_key${index})`,
             );
         });
@@ -493,7 +503,9 @@ export function streamTypedRefCommitAdapter(
         host.declare(
           meta.def.tracksOwnFields
             ? `declare void @scr_dyn_symbol_key_placeholder(ptr, ptr)`
-            : `declare void @scr_dyn_key_delete_computed(ptr, ptr, i1 zeroext)`,
+            : withAttributes
+              ? `declare void @scr_dyn_obj_delete_symbol_field(ptr, ptr)`
+              : `declare void @scr_dyn_key_delete_computed(ptr, ptr, i1 zeroext)`,
         );
       [...symbols.values()].forEach((symbol, index) => {
         const keyLines = symbolKeyLines(host, symbol, `bag_symraw${index}`);
@@ -503,7 +515,9 @@ export function streamTypedRefCommitAdapter(
           ...keyLines.release,
           meta.def.tracksOwnFields
             ? `  call void @scr_dyn_symbol_key_placeholder(ptr %bag, ptr %bag_sym${index})`
-            : `  call void @scr_dyn_key_delete_computed(ptr %bag, ptr %bag_sym${index}, i1 zeroext false)`,
+            : withAttributes
+              ? `  call void @scr_dyn_obj_delete_symbol_field(ptr %bag, ptr %bag_sym${index})`
+              : `  call void @scr_dyn_key_delete_computed(ptr %bag, ptr %bag_sym${index}, i1 zeroext false)`,
           `  call void @scr_dyn_release_v(ptr %bag_sym${index})`,
         );
       });
@@ -518,6 +532,20 @@ export function streamTypedRefCommitAdapter(
     if (meta.root.def.name === "%Error") {
       host.declare(`declare void @scr_error_commit_dyn(ptr, ptr)`);
       lines.push(`  call void @scr_error_commit_dyn(ptr %target, ptr %d)`);
+    }
+    // Untyped Object.freeze, seal and preventExtensions apply to the view;
+    // the instance's integrity word records them.
+    if (host.untypedIntegrity && meta.def.fields.some((field) => field.name === CLASS_ATTRIBUTES)) {
+      const bag = meta.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES)
+        ? "%bag"
+        : "null";
+      host.declare(`declare double @scr_dyn_class_view_integrity(ptr, double, ptr)`);
+      lines.push(
+        `  %word_ptr = getelementptr inbounds %${classStructSym(t.className)}, ptr %target, i64 0, i32 ${classFieldIndex(meta, CLASS_ATTRIBUTES).index}`,
+        `  %word = load double, ptr %word_ptr`,
+        `  %word_next = call double @scr_dyn_class_view_integrity(ptr %d, double %word, ptr ${bag})`,
+        `  store double %word_next, ptr %word_ptr`,
+      );
     }
     lines.push(`  br label %done`, `done:`, `  ret void`, `}`, ``);
     host.resolveThunkDefs.push(...lines);
@@ -768,13 +796,16 @@ export function streamTypedRefMaterializeAdapter(
   t: IrType,
 ): LlStreamTypedRefAdapter {
   const key = typeKey(t);
-  const existing = host.liveDynRefAdapters.get(key);
+  // A `(T | undefined)[]` stored as T elements shares T[]'s capsule type,
+  // but its adapters also store undefined elements.
+  const adapterKey = t.kind === "array" && t.optionalElements ? `${key}?` : key;
+  const existing = host.liveDynRefAdapters.get(adapterKey);
   if (existing) return existing;
   // The converter depends only on the static type. Intern the complete
   // graph across roots and union arms so recursive types emit once.
   const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
   const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
-  host.liveDynRefAdapters.set(key, adapter);
+  host.liveDynRefAdapters.set(adapterKey, adapter);
   host.journal?.allocated(
     snapshot.replace(/_materialize$/, ""),
     "streamTypedRefMaterializeAdapter",
@@ -843,8 +874,7 @@ export function streamTypedRefMaterializeAdapter(
       host.declare(`declare ptr @scr_error_dyn_fields(ptr)`);
       B.line(`${out} = call ptr @scr_error_dyn_fields(ptr %p)`);
     } else if (
-      meta.def.runtime &&
-      RUNTIME_STREAM_CLASSES.has(t.className) &&
+      ((meta.def.runtime && RUNTIME_STREAM_CLASSES.has(t.className)) || streamRooted(meta)) &&
       !meta.def.instancePrototypeHelper &&
       !meta.def.prototypeDataHelper
     ) {
@@ -980,9 +1010,15 @@ export function streamTypedRefMaterializeAdapter(
         host.declare(`declare void @scr_union_release(ptr)`);
         B.line(`call void @scr_union_release(ptr ${fieldValue})`);
       }
-      host.declare(`declare void @scr_dyn_symbol_key_set(ptr, ptr, ptr)`);
+      // As for string-keyed fields, attributes copied from the bag (a frozen
+      // instance's) do not stop the view taking the value.
+      const symbolSetter =
+        meta.def.tracksOwnFields || withAttributes
+          ? "scr_dyn_symbol_field_set"
+          : "scr_dyn_symbol_key_set";
+      host.declare(`declare void @${symbolSetter}(ptr, ptr, ptr)`);
       host.declare(`declare void @scr_dyn_release_v(ptr)`);
-      B.line(`call void @scr_dyn_symbol_key_set(ptr ${out}, ptr ${key}, ptr ${value})`);
+      B.line(`call void @${symbolSetter}(ptr ${out}, ptr ${key}, ptr ${value})`);
       B.line(`call void @scr_dyn_release_v(ptr ${value})`);
       if (afterSymbol) {
         B.terminate(`br label %${afterSymbol}`);
@@ -1203,6 +1239,21 @@ export function streamTypedRefMaterializeAdapter(
       B.line(`call void @scr_dyn_arr_push_hole(ptr ${out})`);
       B.br(doneLabel);
       B.startBlock(undefinedLabel);
+      if (host.mayHoldForeign(elem)) {
+        // A foreign element (SCR_ARR_FOREIGN) holds its own value.
+        const foreign = B.tmp();
+        const foreignLabel = B.newLabel("live.array.foreign");
+        const presentUndefined = B.newLabel("live.array.present.undefined");
+        B.line(`${foreign} = fcmp oeq double ${state}, 3.0`);
+        B.condBr(foreign, foreignLabel, presentUndefined);
+        B.startBlock(foreignLabel);
+        host.declare(`declare ptr @scr_arr_get_foreign(ptr, double)`);
+        const payload = B.tmp();
+        B.line(`${payload} = call ptr @scr_arr_get_foreign(ptr %p, double ${index}) ; +1`);
+        B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${payload})`);
+        B.br(doneLabel);
+        B.startBlock(presentUndefined);
+      }
       const undefinedValue = B.tmp();
       const retained = B.tmp();
       B.line(`${undefinedValue} = call ptr @scr_dyn_undefined()`);
@@ -1283,13 +1334,34 @@ function liveArrayOps(
   G.terminate(`ret ptr ${boxed}`);
 
   const S = new BlockBuilder();
+  if (t.optionalElements) {
+    // A `(T | undefined)[]` stores undefined as a present undefined.
+    const undef = host.dyn.isUndefined(S, "%v");
+    const storeUndefined = S.newLabel("live.array.undefined");
+    const other = S.newLabel("live.array.value");
+    S.condBr(undef, storeUndefined, other);
+    S.startBlock(storeUndefined);
+    host.declare(`declare void @scr_arr_set_undefined(ptr, double)`);
+    S.line(`call void @scr_arr_set_undefined(ptr %p, double %i)`);
+    S.terminate(`ret i1 true`);
+    S.startBlock(other);
+  }
   const fits = S.tmp();
   S.line(`${fits} = call zeroext i1 @${host.dyn.dynMatchHelper(elem)}(ptr %v)`);
   const store = S.newLabel("live.array.store");
   const refuse = S.newLabel("live.array.refuse");
   S.condBr(fits, store, refuse);
   S.startBlock(refuse);
-  S.terminate(`ret i1 false`);
+  if (host.mayHoldForeign(elem)) {
+    // The array keeps a value its element type cannot hold as a foreign
+    // element, and undefined as a present undefined.
+    host.declare(`declare zeroext i1 @scr_arr_set_foreign(ptr, double, ptr)`);
+    const kept = S.tmp();
+    S.line(`${kept} = call zeroext i1 @scr_arr_set_foreign(ptr %p, double %i, ptr %v)`);
+    S.terminate(`ret i1 ${kept}`);
+  } else {
+    S.terminate(`ret i1 false`);
+  }
   S.startBlock(store);
   const next = S.tmp();
   S.line(

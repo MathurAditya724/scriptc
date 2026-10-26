@@ -1,3 +1,8 @@
+import {
+  arrayClassMemberOwner,
+  arrayOfClassInstance,
+  arrayRootOf,
+} from "./builtins/array-classes.js";
 import { keyedHelperName } from "./stable-names.js";
 import {
   isNewTarget,
@@ -89,14 +94,15 @@ import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
-import { lowerTernary } from "./expressions/narrowing.js";
+import { lowerTernary, v8CalleeText } from "./expressions/narrowing.js";
 import {
   classFieldTarget,
   lowerPropertyAccessExpr,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
 import { lowerNullishPair } from "./expressions/binary.js";
-import { lowerElementCompoundParts } from "./expressions/element-access.js";
+import { lowerElementCompoundParts, recordKeyLiteralText } from "./expressions/element-access.js";
+import { OBJECT_PROTOTYPE_MEMBERS } from "../shape-inference/domain.js";
 export {
   DEFERRED_READ_MESSAGE,
   abstractPropertyDeclOf,
@@ -433,7 +439,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const operand = assertionOperand(lowerer, expr, inner, target ?? null, loc);
       if (operand) return operand;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
-        const helper = lowerer.narrowedArmHelper(inner.type.unionId, target, loc);
+        const helper = lowerer.narrowedArmHelper(
+          inner.type.unionId,
+          target,
+          loc,
+          assertedCalleeMessage(expr, target),
+        );
         if (helper) {
           return lowerer.checkedNarrowCall(helper, inner, target, loc);
         }
@@ -503,7 +514,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // noImplicitThis, so the generic scope walk here is preflight-safe.
     const local = lowerer.resolveThis(expr);
     if (local) {
-      const value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
+      let value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
+      // `this` in a class declared `extends Array` is the array, except as
+      // the receiver of a member the class declares.
+      if (local.type.kind === "object") {
+        const arrayClass = lowerer.classes.get(local.type.className);
+        const parent = expr.parent;
+        if (
+          arrayClass &&
+          arrayRootOf(arrayClass) &&
+          !(
+            ts.isPropertyAccessExpression(parent) &&
+            parent.expression === expr &&
+            arrayClassMemberOwner(lowerer, parent) !== null
+          )
+        )
+          value = arrayOfClassInstance(arrayClass, value, loc);
+      }
       // `this.#x` in a function-local class's prototype method, whose `this`
       // is the call-site value: the field lives on the native instance of
       // this evaluation (checkedPrivateReceiver).
@@ -579,7 +606,24 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // any other super position (field reads, bare references) stays out.
     lowerer.unsupported("SC1090", expr, "'super' outside super() and super.method() calls");
   }
-  if (ts.isNewExpression(expr)) return lowerer.lowerNew(expr);
+  if (ts.isNewExpression(expr)) {
+    const value = lowerer.lowerNew(expr);
+    // `new X()` for a class declared `extends Array` is the array, except
+    // as the receiver of a member the class declares (as `this` above).
+    if (value.type.kind !== "object") return value;
+    const arrayClass = lowerer.classes.get(value.type.className);
+    if (!arrayClass || !arrayRootOf(arrayClass)) return value;
+    let operand: ts.Expression = expr;
+    while (ts.isParenthesizedExpression(operand.parent)) operand = operand.parent;
+    const parent = operand.parent;
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === operand &&
+      arrayClassMemberOwner(lowerer, parent) !== null
+    )
+      return value;
+    return arrayOfClassInstance(arrayClass, value, loc);
+  }
   if (ts.isAwaitExpression(expr)) {
     if (!lowerer.ctx.isAsync) {
       // A tsc-clean occurrence here is outside both an async function
@@ -975,6 +1019,18 @@ function assertionDestinationHoldsNullish(
   return constituentTypes(contextual).some((type) => (type.flags & nullish) !== 0);
 }
 
+/** Whether `declaration` is TextDecoder's `decode` method. */
+function isTextDecoderDecode(declaration: ts.Node): boolean {
+  if (!ts.isMethodSignatureDeclaration(declaration) && !ts.isMethodDeclaration(declaration))
+    return false;
+  if (!ts.isIdentifier(declaration.name) || declaration.name.text !== "decode") return false;
+  const owner = declaration.parent;
+  return (
+    (ts.isInterfaceDeclaration(owner) || ts.isClassDeclaration(owner)) &&
+    owner.name?.text === "TextDecoder"
+  );
+}
+
 /** Whether `argument` of `call` binds an optional parameter of a standard
  * library declaration (`decoder.decode(input?)`). The undefined such a
  * parameter's type holds comes from its optionality, and the builtin
@@ -989,6 +1045,9 @@ function optionalStdlibParameter(
   const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
   if (declaration === undefined || !lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration)))
     return false;
+  // TextDecoder.decode reads an undefined input as no bytes, as Node does
+  // (builtins/text-codecs.ts lowerDecodeInput).
+  if (isTextDecoderDecode(declaration)) return false;
   const index = call.arguments?.nodes.indexOf(argument) ?? -1;
   const parameter = declaration.parameters?.nodes[index];
   return (
@@ -1144,6 +1203,19 @@ const NUMERIC_COMPOUNDS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
   ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
 ]);
+
+/** The TypeError Node raises when an asserted callee (`t[k]!(…)`, `o.f!()`)
+ * holds no function: `!` is erased, so the call itself throws "<callee> is
+ * not a function" in V8's spelling of the callee. */
+function assertedCalleeMessage(expr: ts.NonNullExpression, target: IrType): string | undefined {
+  if (target.kind !== "func") return undefined;
+  let child: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(child.parent)) child = child.parent;
+  const call = child.parent;
+  if (!ts.isCallExpression(call) || call.expression !== child || call.questionDotToken)
+    return undefined;
+  return `${v8CalleeText(expr.expression)} is not a function`;
+}
 
 /** Whether the use of `t[i]!` tells undefined from NaN: a converting use
  * that takes the value itself (see convertingUseOf), or a destination that
@@ -1931,6 +2003,23 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
     if (shape && !shape.tuple && shape.indexValue && shape.indexValue.kind !== "dyn") {
       return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
     }
+    // A literal key the shape does not declare is absent from every value
+    // (lowerRecordKeyRead answers undefined), whatever type the checker gave
+    // the read. An optional chain keeps its own lowering, which reads a
+    // nullish receiver as undefined instead of converting it.
+    const literal = recordKeyLiteralText(expr.argumentExpression);
+    if (
+      !expr.questionDotToken &&
+      !hasOptionalChainGuard(expr.expression) &&
+      shape &&
+      !shape.tuple &&
+      !shape.indexValue &&
+      literal !== null &&
+      !OBJECT_PROTOTYPE_MEMBERS.has(literal) &&
+      !shape.fields.some((field) => field.name === literal)
+    ) {
+      return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
+    }
     return null;
   }
   // `m[2]` on a JavaScript `RegExpExecArray | null` that a previous
@@ -2339,6 +2428,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "set":
     case "generator":
     case "regex":
+    case "date":
     case "bytes":
     case "url":
     case "searchParams":
@@ -3102,11 +3192,9 @@ export function symbolFieldInfo(
   if (lowerer.chainBlocked(expr)) return null;
   const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverIr?.kind !== "object") return null;
-  const info = lowerer.classes.get(receiverIr.className);
-  if (!info) {
-    lowerer.flushDeferredClass(receiverIr.className);
-    return null;
-  }
+  const info =
+    lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
+  if (!info) return null;
   const key = classSymbolKeyOf(lowerer, expr.argumentExpression);
   if (!key) return null;
   const field = info.symbolFields?.get(key.identity);

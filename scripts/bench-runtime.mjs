@@ -42,6 +42,8 @@ const { values } = parseArgs({
     "candidate-optimization": { type: "string", default: "release" },
     "baseline-target-cpu": { type: "string" },
     "candidate-target-cpu": { type: "string" },
+    "baseline-cpu-dispatch": { type: "boolean", default: false },
+    "candidate-cpu-dispatch": { type: "boolean", default: false },
     json: { type: "string" },
     "no-lock": { type: "boolean", default: false },
     node: { type: "boolean", default: true },
@@ -54,6 +56,7 @@ if (values.help) {
        [--workloads=a,b] [--runs=15] [--warmup=2] [--timeout=120] [--layouts=1] [--json=<file>]
        [--baseline-optimization=release] [--candidate-optimization=release]
        [--baseline-target-cpu=<level>] [--candidate-target-cpu=<level>]
+       [--baseline-cpu-dispatch] [--candidate-cpu-dispatch]
        [--no-lock] [--no-node] [--keep]
 
 Each checkout must have a built CLI (packages/cli/dist/bootstrap.js) and native
@@ -74,8 +77,9 @@ Workload names are the file names in benchmarks/runtime/workloads/*.json; for ex
 contenders, e.g. --baseline=. --candidate-optimization=speed compares speed with
 release. --baseline-target-cpu/--candidate-target-cpu pass --target-cpu to each
 contender's builds, e.g. --baseline=. --candidate-target-cpu=x86-64-v3 compares
-x86-64-v3 code with the baseline. cold_build_ms records each contender's first,
-uncached build.`);
+x86-64-v3 code with the baseline. --baseline-cpu-dispatch/--candidate-cpu-dispatch
+pass --cpu-dispatch, and SCRIPTC_CPU_LEVEL in the environment reaches every timed
+run. cold_build_ms records each contender's first, uncached build.`);
   process.exit(0);
 }
 const runs = Number(values.runs);
@@ -178,6 +182,16 @@ function generateInput(kind) {
       path,
       Array.from({ length: 300_000 }, (_, i) =>
         ["sku-" + i, "category-" + (i % 17), "product " + i, i % 40, 199 + (i % 5000)].join("\t"),
+      ).join("\n") + "\n",
+    );
+  } else if (kind === "line-reader") {
+    // About 67 MB of access-log lines; every 50th path is not ASCII.
+    writeFileSync(
+      path,
+      Array.from(
+        { length: 600_000 },
+        (_, i) =>
+          `10.${i % 251}.${i % 7}.${i % 13} - - [24/Oct/2026:${String(i % 24).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}:00 +0000] "${i % 9 === 0 ? "POST" : "GET"} /${i % 50 === 0 ? "caf\u00e9" : "api"}/items/${i % 997}?page=${i % 31} HTTP/1.1" ${i % 23 === 0 ? 404 : 200} ${(i * 7919) % 50000} "scriptc-bench/1.0"`,
       ).join("\n") + "\n",
     );
   } else if (kind === "cli-config") {
@@ -434,7 +448,7 @@ function revision(root) {
   });
   return r.stdout.trim() + (dirty.stdout.trim() ? "+dirty" : "");
 }
-function build(label, root, workload, layout, optimization, targetCpu) {
+function build(label, root, workload, layout, optimization, targetCpu, cpuDispatch) {
   const cli = cliFor(root);
   const out = join(work, label, layout === 0 ? workload.name : `${workload.name}.layout${layout}`);
   mkdirSync(dirname(out), { recursive: true });
@@ -456,6 +470,7 @@ function build(label, root, workload, layout, optimization, targetCpu) {
       entry,
       `--optimization=${optimization}`,
       ...(targetCpu === undefined ? [] : [`--target-cpu=${targetCpu}`]),
+      ...(cpuDispatch ? ["--cpu-dispatch"] : []),
       "-o",
       out,
     ],
@@ -482,6 +497,7 @@ const contenders = [
           root: resolve(values.baseline),
           optimization: values["baseline-optimization"],
           targetCpu: values["baseline-target-cpu"],
+          cpuDispatch: values["baseline-cpu-dispatch"],
         },
       ]
     : []),
@@ -490,6 +506,7 @@ const contenders = [
     root: resolve(values.candidate),
     optimization: values["candidate-optimization"],
     targetCpu: values["candidate-target-cpu"],
+    cpuDispatch: values["candidate-cpu-dispatch"],
   },
 ];
 const report = {
@@ -596,7 +613,7 @@ try {
       entry.results[c.label] = result;
       result.binaries = [];
       for (let layout = 0; layout < layouts && result.status === undefined; layout++) {
-        const built = build(c.label, c.root, w, layout, c.optimization, c.targetCpu);
+        const built = build(c.label, c.root, w, layout, c.optimization, c.targetCpu, c.cpuDispatch);
         result.build_ms += Math.round(built.buildMs);
         if (layout === 0) result.cold_build_ms = Math.round(built.buildMs);
         if (!built.ok) {

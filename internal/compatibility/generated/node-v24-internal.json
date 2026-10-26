@@ -19394,6 +19394,8 @@
         "tests": [
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
+          "tests/corpus/1568-x509-fingerprint.ts",
+          "tests/corpus/1572-x509-validity-date-gettime.ts",
           "tests/corpus/2556-crypto-introspection.ts",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/5250-cipher-aes-gcm.ts",
@@ -19436,6 +19438,7 @@
           "tests/corpus/6709-dh-generate.ts",
           "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
           "tests/corpus/7055-cipher-streams.ts",
           "tests/corpus/7056-cipher-stream-errors.ts",
           "tests/corpus/7057-cipher-streams.mjs",
@@ -19443,6 +19446,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
           "tests/corpus/7122-webcrypto-node-crypto.ts",
           "tests/corpus/7123-webcrypto-node-crypto.cjs",
           "tests/corpus/7150-cipher-legacy-modes.ts",
@@ -19461,6 +19468,7 @@
           "tests/fixtures/node-types/dh.ts",
           "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/keys.ts",
+          "tests/fixtures/node-types/x509-methods.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23784,8 +23792,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:X509Certificate",
+        "tests": [
+          "tests/corpus/1568-x509-fingerprint.ts",
+          "tests/corpus/1572-x509-validity-date-gettime.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23807,8 +23820,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.checkEmail",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23830,8 +23850,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.checkHost",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23853,8 +23880,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.checkIP",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23876,8 +23910,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.checkIssued",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23899,8 +23940,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.checkPrivateKey",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23922,8 +23970,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.toJSON",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23945,8 +24000,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.toLegacyObject",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23968,8 +24030,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.toString",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23991,8 +24060,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.verify",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -24198,8 +24274,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.publicKey",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -25723,8 +25806,12 @@
       "anchor": "dep0044-utilisarray",
       "nodeStability": null,
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:deprecations"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.isArray",
+        "tests": [
+          "tests/corpus/7700-util-deprecated-helpers.cjs",
+          "tests/corpus/7701-util-deprecated-helpers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -26011,8 +26098,12 @@
       "anchor": "dep0060-util_extend",
       "nodeStability": null,
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:deprecations"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util._extend",
+        "tests": [
+          "tests/corpus/7700-util-deprecated-helpers.cjs",
+          "tests/corpus/7701-util-deprecated-helpers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32679,6 +32770,9 @@
         "tests": [
           "tests/corpus/6702-ecdh-errors.js",
           "tests/corpus/6708-dh-errors.js",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7711-util-throttle.cjs",
           "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/error-stack-frames.ts",
@@ -36604,8 +36698,11 @@
       "anchor": "err_invalid_mime_syntax",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_MIME_SYNTAX",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38742,8 +38839,11 @@
       "anchor": "err_throttled",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_THROTTLED",
+        "tests": [
+          "tests/corpus/7711-util-throttle.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39012,8 +39112,11 @@
       "anchor": "err_tls_required_server_name",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-dedicated:ERR_TLS_REQUIRED_SERVER_NAME",
+        "tests": [
+          "tests/corpus/7440-tls-server-add-context.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52328,6 +52431,7 @@
           "tests/corpus/6331-jose-root-entry/main.ts",
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
+          "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -54380,6 +54484,7 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.navigator",
         "tests": [
+          "tests/corpus/8162-navigator-global.cjs",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/project-config.test.ts",
           "tests/corpus/6331-jose-root-entry/main.ts"
@@ -54405,8 +54510,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.hardwareConcurrency",
+        "tests": [
+          "tests/corpus/8162-navigator-global.cjs",
+          "tests/fixtures/node-types/navigator.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -54428,8 +54537,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.language",
+        "tests": [
+          "tests/corpus/8162-navigator-global.cjs",
+          "tests/fixtures/node-types/navigator.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -54451,8 +54564,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.languages",
+        "tests": [
+          "tests/corpus/8162-navigator-global.cjs",
+          "tests/fixtures/node-types/navigator.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -54497,8 +54614,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.platform",
+        "tests": [
+          "tests/corpus/8162-navigator-global.cjs",
+          "tests/fixtures/node-types/navigator.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -95877,6 +95998,17 @@
           "tests/corpus/6722-tls-min-max-version.ts",
           "tests/corpus/7087-tls-socket-wrap.ts",
           "tests/corpus/7088-tls-socket-connect-tunnel.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7097-tls-client-certificates.ts",
+          "tests/corpus/7098-tls-client-certificates-paths.ts",
+          "tests/corpus/7099-tls-client-certificates.mjs",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/fixtures/node-types/tls-client-certificates.ts",
+          "tests/fixtures/node-types/tls-peer-certificates.ts",
+          "tests/fixtures/node-types/tls-server-contexts.ts",
           "tests/fixtures/node-types/tls-socket-wrap.ts"
         ]
       },
@@ -96245,8 +96377,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:server.addContext",
+        "tests": [
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/fixtures/node-types/tls-server-contexts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96372,8 +96510,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:server.setSecureContext",
+        "tests": [
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/fixtures/node-types/tls-server-contexts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96556,8 +96700,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:'tlsClientError'",
+        "tests": [
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/fixtures/node-types/tls-server-contexts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96699,8 +96849,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tlsSocket.getCertificate",
+        "tests": [
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/fixtures/node-types/tls-peer-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96791,8 +96946,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tlsSocket.getPeerCertificate",
+        "tests": [
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/fixtures/node-types/tls-peer-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96860,8 +97020,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tlsSocket.getPeerX509Certificate",
+        "tests": [
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/fixtures/node-types/tls-peer-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96978,8 +97143,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tlsSocket.getX509Certificate",
+        "tests": [
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/fixtures/node-types/tls-peer-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -97119,8 +97289,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tlsSocket.authorizationError",
+        "tests": [
+          "tests/corpus/7097-tls-client-certificates.ts",
+          "tests/corpus/7098-tls-client-certificates-paths.ts",
+          "tests/corpus/7099-tls-client-certificates.mjs",
+          "tests/fixtures/node-types/tls-client-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -97142,8 +97318,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.authorized",
+        "tests": [
+          "tests/corpus/7097-tls-client-certificates.ts",
+          "tests/corpus/7098-tls-client-certificates-paths.ts",
+          "tests/corpus/7099-tls-client-certificates.mjs",
+          "tests/fixtures/node-types/tls-client-certificates.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -101420,6 +101602,25 @@
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/5884-inspect-layout-options.ts",
           "tests/corpus/6428-promisify-callback-functions.ts",
+          "tests/corpus/7520-util-format-runtime.ts",
+          "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/7522-promisify-untyped.cjs",
+          "tests/corpus/7523-promisify-untyped.ts",
+          "tests/corpus/7524-inspect-custom.ts",
+          "tests/corpus/7525-inspect-custom.cjs",
+          "tests/corpus/7526-inspect-options-runtime.ts",
+          "tests/corpus/7700-util-deprecated-helpers.cjs",
+          "tests/corpus/7701-util-deprecated-helpers.ts",
+          "tests/corpus/7702-util-signal-exit-code.cjs",
+          "tests/corpus/7703-util-aborted.cjs",
+          "tests/corpus/7704-util-aborted.ts",
+          "tests/corpus/7705-util-diff.cjs",
+          "tests/corpus/7706-util-diff.ts",
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/7710-util-debounce.cjs",
+          "tests/corpus/7711-util-throttle.cjs",
+          "tests/corpus/7712-util-debounce-throttle.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
@@ -101506,8 +101707,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util._extend",
+        "tests": [
+          "tests/corpus/7700-util-deprecated-helpers.cjs",
+          "tests/corpus/7701-util-deprecated-helpers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101529,8 +101734,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.isArray",
+        "tests": [
+          "tests/corpus/7700-util-deprecated-helpers.cjs",
+          "tests/corpus/7701-util-deprecated-helpers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101552,8 +101761,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.MIMEType",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101575,8 +101788,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.mime.toString",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101598,8 +101815,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.mime.toJSON",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101621,8 +101842,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.MIMEType.parse",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101736,8 +101961,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.MIMEParams",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101759,8 +101988,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.mimeParams.delete",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101782,8 +102015,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.mimeParams.entries",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101805,8 +102042,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.mimeParams.get",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101828,8 +102069,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.mimeParams.has",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101851,8 +102096,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.mimeParams.keys",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101874,8 +102123,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.mimeParams.set",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101897,8 +102150,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.mimeParams.values",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101920,8 +102177,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.mimeParams",
+        "tests": [
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/7708-util-mime-type.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102320,8 +102581,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.convertProcessSignalToExitCode",
+        "tests": [
+          "tests/corpus/7702-util-signal-exit-code.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102455,8 +102719,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.debounce",
+        "tests": [
+          "tests/corpus/7710-util-debounce.cjs",
+          "tests/corpus/7712-util-debounce-throttle.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102478,8 +102746,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.throttle",
+        "tests": [
+          "tests/corpus/7711-util-throttle.cjs",
+          "tests/corpus/7712-util-debounce-throttle.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102501,8 +102773,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.diff",
+        "tests": [
+          "tests/corpus/7705-util-diff.cjs",
+          "tests/corpus/7706-util-diff.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102529,7 +102805,9 @@
         "tests": [
           "tests/corpus/1636-util-format.ts",
           "tests/corpus/2440-console-inspect-args.ts",
-          "tests/corpus/5835-util-format-integer-specifiers.ts"
+          "tests/corpus/5835-util-format-integer-specifiers.ts",
+          "tests/corpus/7520-util-format-runtime.ts",
+          "tests/corpus/7521-util-format-runtime.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -102557,7 +102835,9 @@
         "tests": [
           "tests/corpus/1636-util-format.ts",
           "tests/corpus/2440-console-inspect-args.ts",
-          "tests/corpus/5835-util-format-integer-specifiers.ts"
+          "tests/corpus/5835-util-format-integer-specifiers.ts",
+          "tests/corpus/7520-util-format-runtime.ts",
+          "tests/corpus/7521-util-format-runtime.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -102748,7 +103028,8 @@
           "tests/corpus/1632-inspect-records.ts",
           "tests/corpus/1637-inspect-dyn.ts",
           "tests/corpus/2485-inspect-circular-refs.ts",
-          "tests/corpus/5884-inspect-layout-options.ts"
+          "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/7526-inspect-options-runtime.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102771,8 +103052,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.inspect",
+        "tests": [
+          "tests/corpus/7526-inspect-options-runtime.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102794,8 +103078,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.custom",
+        "tests": [
+          "tests/corpus/7524-inspect-custom.ts",
+          "tests/corpus/7525-inspect-custom.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -103112,6 +103400,8 @@
           "tests/fixtures/node-types/promisify-dns.ts",
           "tests/corpus/6428-promisify-callback-functions.ts",
           "tests/fixtures/node-types/promisify-callback-functions.ts",
+          "tests/corpus/7522-promisify-untyped.cjs",
+          "tests/corpus/7523-promisify-untyped.ts",
           "tests/harness/project-config.test.ts"
         ]
       },
@@ -103327,8 +103617,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.aborted",
+        "tests": [
+          "tests/corpus/7703-util-aborted.cjs",
+          "tests/corpus/7704-util-aborted.ts"
+        ]
       },
       "anchorSource": "exact"
     },

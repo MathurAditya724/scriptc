@@ -4,8 +4,16 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { NativeCodegenError } from "../backend/native-codegen-core.js";
 import { requireNativeArtifact, runNativeTool } from "../backend/native-tools.js";
-import type { NativeRuntimePack, NativeRuntimeSelection } from "../backend/runtime-pack-native.js";
-import { runtimePackFlavorKey, type RuntimePackMode } from "../backend/runtime-pack-core.js";
+import {
+  runtimePackManifest,
+  type NativeRuntimePack,
+  type NativeRuntimeSelection,
+} from "../backend/runtime-pack-native.js";
+import {
+  runtimePackFlavorKey,
+  selectedRuntimeUnits,
+  type RuntimePackMode,
+} from "../backend/runtime-pack-core.js";
 import { LRE_SOURCES, ZLIB_SOURCES } from "../backend/vendor-inputs.js";
 import { contentDigest, type NativeCache } from "./cache.js";
 import type { NativeToolchain } from "./toolchain.js";
@@ -119,10 +127,10 @@ export function buildSanitizedRuntime(
     }
     return output;
   };
-  const key = runtimePackFlavorKey(selection.manifest, selection.flavor, mode);
-  const flavor = selection.manifest.flavors[key];
+  const manifest = runtimePackManifest(selection);
+  const key = runtimePackFlavorKey(manifest, selection.flavor, mode);
+  const flavor = manifest.flavors[key];
   if (flavor === undefined) throw new NativeCodegenError("SC3003", `runtime pack lacks ${key}`);
-  const wanted = new Set(selection.selected.runtime.map((artifact) => artifact.path));
   const common = [
     "-std=c11",
     "-pthread",
@@ -142,18 +150,14 @@ export function buildSanitizedRuntime(
     join(brotli, "include"),
     ...(toolchain.target.platform === "linux" ? ["-ffunction-sections", "-fdata-sections"] : []),
   ];
-  const runtimeObjects: string[] = [];
-  for (const unit of flavor.runtime_units) {
-    for (const variant of unit.variants) {
-      if (wanted.has(variant.path))
-        runtimeObjects.push(
-          compile(join(src, unit.source), unit.source.replace(/\.c$/, ".o"), [
-            ...common,
-            ...variant.defines.map((define) => "-D" + define),
-          ]),
-        );
-    }
-  }
+  // The units and variants the pack selection chose, compiled from source.
+  const runtimeObjects = selectedRuntimeUnits(flavor, selection.selected.features).map(
+    ({ source, variant }) =>
+      compile(join(src, source), source.replace(/\.c$/, ".o"), [
+        ...common,
+        ...variant.defines.map((define) => "-D" + define),
+      ]),
+  );
   const archives: string[] = [];
   for (const archive of selection.selected.archives) {
     const name = basename(archive.path)

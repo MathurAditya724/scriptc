@@ -64,10 +64,21 @@
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
  *            likely-hot functions that use untyped values (SC6101,
- *            diagnostics/dynamic-tier.ts)
- *   SC8xxx  Node islands: the program calls into Node.js, and the build
- *            finds no usable libnode pack (SC8005), or cannot collect the
- *            modules a call loads (SC8006)
+ *            diagnostics/dynamic-tier.ts), package files whose projected
+ *            declaration types were dropped (SC6102), and shape inference's
+ *            overlay report: what it typed and how many inferred facts the
+ *            build checks (SC6103, frontend/shape-inference)
+ *   SC8xxx  Node islands: packages and modules outside the native subset
+ *            that run (or, in report-only mode, would run) in a Node
+ *            island — unknown project configuration (SC8004), a package
+ *            required to be native (SC8003) or every island refused
+ *            (SC8002) while outside the native subset, and the R2
+ *            object-model constructs in user JavaScript (SC8101–SC8105,
+ *            behind --strict-user-js); programs that call into Node.js
+ *            where the build finds no usable libnode pack (SC8005), or
+ *            cannot collect the modules a call loads (SC8006); and type
+ *            patches from `scriptc.typePatches` that did not apply as
+ *            written (SC8030–SC8033, warnings)
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
@@ -95,10 +106,73 @@ export interface ScrDiagnostic {
    * the error may not reproduce under the project's tsc. Machine-readable
    * output reports these under the "environment" category. */
   typeWorld?: boolean;
+  /** Why the construct is outside the native subset, as a Node island
+   * reason id (node-islands/rules.ts), at the refusal sites whose code
+   * alone does not say it (a computed require(), a native addon, `with`).
+   * Report-only: never part of the rendered message. */
+  reason?: string;
   /** A runtime fence in a module's top-level code, outside every function
    * and class member body: it throws when the module initializes, which is
    * program startup for a module the entry imports. */
   startup?: true;
+  /** Localized failure, report-only (stage L0): set where a type with no
+   * static lowering poisoned a slot (Lowerer.badType and the dyn class
+   * field policy). Never part of the rendered message. */
+  typeFailure?: TypeFailure;
+  /** Localized failure, report-only: the declaration this diagnostic
+   * rejected, as a failure-group key. Set when a reference flushes a
+   * deferred declaration's diagnostics, and on the diagnostics of a
+   * declaration statement whose bindings were blocked. */
+  rejects?: string;
+  /** Localized failure, report-only: the failure groups (rejected
+   * declarations, blocked statements) that the statement committing this
+   * diagnostic used. A cascade clears when every one of them would
+   * degrade instead of failing. */
+  cause?: readonly string[];
+}
+
+/** Where a type failure sits (localized-failure design §3.6): a
+ * declaration slot, a member of a declared type, or an expression's own
+ * type. */
+export type TypeFailureSlot =
+  | "field"
+  | "param"
+  | "return"
+  | "local"
+  | "global"
+  | "loop"
+  | "member"
+  | "expression";
+
+/** Which badType branch (or policy fence) refused the type. */
+export type TypeFailureFamily =
+  | "node-types"
+  | "fetch-ambient"
+  | "enum-object"
+  | "stdlib-index"
+  | "index-signature"
+  | "package"
+  | "generic-signature"
+  | "overloads"
+  | "intersection"
+  | "component"
+  | "stdlib-nominal"
+  | "record-member"
+  | "unsupported"
+  | "dyn-field-policy";
+
+/** A type failure's structured payload: what the commit points of the
+ * localized-failure design inspect (PoisonError.failure carries the same
+ * object). `degradable` is the §3.7 classification: a checked-dynamic slot
+ * would keep the program's meaning. */
+export interface TypeFailure {
+  slot: TypeFailureSlot;
+  /** The slot's name (`_customTools`, `listAll`, `x`), or the expression
+   * text for expression slots. */
+  name: string;
+  declaredType: string;
+  family: TypeFailureFamily;
+  degradable: boolean;
 }
 
 /** SC3002–SC3004 — native-helper target, installation, and execution
@@ -231,6 +305,94 @@ export function unrelatedClassCastDivergenceDiag(
     message: `this '${source}' reaches a cast to the unrelated class '${target}' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally`,
     loc,
     hint: `narrow with 'instanceof ${target}' before casting, or cast to a base class or interface both classes share`,
+  };
+}
+
+/* ── SC8xxx: Node island policy ───────────────────────────────────────── */
+
+/** SC8004 — an unknown key or value in `scriptc.packages` or
+ * `scriptc.nodeIslands`. */
+export function projectConfigDiag(
+  path: string,
+  detail: string,
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8004",
+    message: `package.json '${path}' ${detail}`,
+    loc,
+    hint,
+  };
+}
+
+/** SC8002 — Node islands are off (or limited to marked islands) and an
+ * npm package is outside the native subset. */
+export function nodeIslandsOffDiag(pkg: string, why: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8002",
+    message: `npm package '${pkg}' is outside the native subset (${why}) and Node islands are off`,
+    loc,
+    hint: `allow Node islands (--node-islands=auto), mark it with --node-island=${pkg}, or replace the dependency`,
+  };
+}
+
+/** SC8002 — a user module is marked to run in a Node island while
+ * Node islands are off. */
+export function nodeIslandsOffModuleDiag(
+  file: string,
+  source: "config" | "cli",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8002",
+    message: `user module '${file}' is marked to run in Node (${source === "cli" ? "--node-island" : "scriptc.nodeIslands.modules"}) and Node islands are off`,
+    loc,
+    hint: "allow Node islands (--node-islands=auto or explicit), or remove the marking",
+  };
+}
+
+/** SC8030–SC8033 — a type patch (`scriptc.typePatches`) that did not
+ * apply as written: no range covers the installed copy (SC8030), its
+ * selector matches nothing (SC8031), the declaration already has the type
+ * (SC8032), or the selector is ambiguous or not patchable (SC8033).
+ * Warnings: the build goes on with the declarations it has. */
+export function typePatchDiag(
+  code: "SC8030" | "SC8031" | "SC8032" | "SC8033",
+  message: string,
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return { code, message, loc, hint };
+}
+
+/** True for the type patch warnings (SC8030–SC8033). */
+export function isTypePatchCode(code: string): boolean {
+  return /^SC803[0-3]$/.test(code);
+}
+
+/** SC8003 — a package marked "native" is outside the native subset. */
+export function nativePackageDiag(pkg: string, why: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8003",
+    message: `npm package '${pkg}' is marked native but is outside the native subset: ${why}`,
+    loc,
+    hint: `remove the "native" marking to let it run in a Node island, or replace the construct the reason names`,
+  };
+}
+
+/** SC8101–SC8105 — an R2 object-model construct in the program's own
+ * JavaScript (R2.1 constructor functions … R2.5 builtin patching). */
+export function userJsObjectModelDiag(
+  code: "SC8101" | "SC8102" | "SC8103" | "SC8104" | "SC8105",
+  construct: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code,
+    message: `${construct} needs a mutable JavaScript object model, which native code does not have`,
+    loc,
+    hint: "rewrite it as a class or typed object, or mark this module as a Node island in scriptc.nodeIslands.modules",
   };
 }
 
@@ -648,7 +810,7 @@ export function unsupportedTypeDiag(typeText: string, loc: SrcLoc): ScrDiagnosti
     code: "SC2001",
     message:
       `values of type '${typeText}' cannot be compiled yet ` +
-      `(supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')`,
+      `(supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')`,
     loc,
     milestone: "M2",
   };
@@ -799,6 +961,22 @@ export function nativeAddonDiag(specifier: string, loc: SrcLoc): ScrDiagnostic {
     loc,
     milestone: "later",
     hint: "expose the native operation as a plain C ABI function in an object or static archive, then bind a signature-only TypeScript declaration with --ffi; Node-API callbacks themselves require Node (https://scriptc.dev/ffi#replacing-a-node-api-addon)",
+    reason: "native-addon",
+  };
+}
+
+/** A createRequire require or require.resolve call whose specifier is
+ * computed at run time, where the runtime resolves it like Node
+ * (scr_require.c). Coverage lists the call as deferred: a require whose
+ * specifier resolves to a module ends the program with this code, because
+ * the module graph is fixed at build time. */
+export function computedRequireDiag(surface: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `${surface} with a computed specifier resolves at run time; a require of a specifier that resolves to a module, such as a native addon, ends the program`,
+    loc,
+    milestone: "later",
+    hint: 'require("<static string literal>") compiles the module into the program; native addons need a replacement through native FFI (https://scriptc.dev/ffi#replacing-a-node-api-addon)',
   };
 }
 

@@ -20,7 +20,12 @@ import { constructorClass } from "../../ir/final-fields.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findCallArrayReads, findLocalArrayReads } from "./local-array-reads.js";
 import { findScalarStringSlices, findScratchStringSlices } from "./string-slices.js";
-import { findMapReadLifetimes, findReadNumberMapWrites } from "./map-read-lifetimes.js";
+import {
+  findMapReadBorrows,
+  findMapReadLifetimes,
+  findReadNumberMapWrites,
+} from "./map-read-lifetimes.js";
+import { borrowableMapGet } from "./expr-containers.js";
 import { findMapEntryFusions } from "./map-entry-fusion.js";
 import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
@@ -56,12 +61,17 @@ import { emitIntegerClone, emitIntegerDispatcher } from "./integer-clones.js";
 import { beginFunctionLoops, LOOPS } from "./loop-state.js";
 import { runningExtremumUpdates } from "./running-extrema.js";
 import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
+import { UNWIND_PERSONALITY, UNWIND_SLOT } from "./unwind-abi.js";
 
 export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const B = new BlockBuilder();
   emitter.B = B;
   emitter.currentFunctionName = fn.name;
+  emitter.currentUnwindAbi = emitter.unwindAbi.has(fn.name);
+  emitter.usesLandingPads = false;
+  emitter.aliasScopedVersions = 0;
   emitter.findInt32Allocations(fn);
+  emitter.speculativeLeaves = 0;
   emitter.currentTier = fn.tier;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
@@ -73,6 +83,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.unwindCleanups.clear();
   emitter.jumpTargets = [];
   emitter.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
+  emitter.currentParameters = new Set(fn.params.map((p) => p.localId));
   emitter.lazyCaptureBoxes.clear();
   emitter.lazyStackBoxes.clear();
   // An unchanged captured parameter keeps its value in a plain slot; the
@@ -136,6 +147,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   beginFunctionLoops(emitter, fn, numericFn);
   emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
+  emitter.loopCopiesEnabled = true;
   emitter.speculativeFunction = fn.name;
   emitter.speculation = null;
   emitter.speculationResume = null;
@@ -147,6 +159,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     constructorClass(fn.name) === null &&
     emitter.finalFields.size > 0;
   emitter.integerViews.clear();
+  emitter.orderedViews.clear();
   emitter.fieldPointerTags.clear();
   emitter.compressedFieldPtrs.clear();
   emitter.integerArrayBindings.clear();
@@ -187,15 +200,27 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           fn,
           emitter.callLifetimes,
           emitter.scalarStringSlices,
-          emitter.lentStringParameters,
+          emitter.lendingFacts,
         )
       : new Set();
   emitter.mapReadLifetimes = findMapReadLifetimes(
     fn,
     emitter.boxedUnionsById,
     emitter.callLifetimes,
+    emitter.referenceEffects,
+  );
+  const stable = emitter.callLifetimes.bindings.get(fn.name);
+  emitter.borrowedMapGets = findMapReadBorrows(
+    fn,
+    emitter.referenceEffects,
+    (decl) =>
+      decl.init !== null &&
+      stable?.has(decl.localId) === true &&
+      !emitter.mapReadLifetimes.locals.has(decl.localId) &&
+      borrowableMapGet(emitter, decl.init),
   );
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
+  emitter.numberMapKeyIntegers = new Map();
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;
   emitter.localStackUnions = findLocalStackUnions(
     fn,
@@ -333,6 +358,15 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
         `${slot} = alloca i32 ; integer view ${emitter.numericLocals.get(id)!.name}`,
       );
       emitter.integerViews.set(id, slot);
+      // A local of exact integers or NaN also keeps whether it is NaN, so
+      // its integer is usable without converting the double.
+      if (emitter.integerOrNaNLocals.has(id)) {
+        const ordered = B.slot();
+        B.entryAllocas.push(
+          `${ordered} = alloca i1 ; ordered view ${emitter.numericLocals.get(id)!.name}`,
+        );
+        emitter.orderedViews.set(id, ordered);
+      }
     }
   }
   for (const global of initializerBindings) {
@@ -596,6 +630,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     B.terminate(cleanup.terminator);
   }
 
+  if (emitter.usesLandingPads && emitter.currentUnwindAbi)
+    B.entryAllocas.push(`${UNWIND_SLOT} = alloca { ptr, i32 }`);
   if (emitter.logArgSlots > 0) {
     B.entryAllocas.push(`%logargs = alloca [${emitter.logArgSlots} x %ScrLogArg]`);
   }
@@ -636,7 +672,10 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const debug = emitter.debugScope === null ? "" : ` !dbg ${emitter.debugScope}`;
   const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
   emitter.privateGlobalSlots.clear();
-  let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
+  // Landing pads (emitDirectCall) need the personality.
+  const personality = emitter.usesLandingPads ? ` ${UNWIND_PERSONALITY}` : "";
+  if (emitter.usesLandingPads) emitter.declare(`declare i32 @__gcc_personality_v0(...)`);
+  let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${personality}${debug} { ; ${fn.name}\n${B.render()}\n}`;
   if (int32Abi) body += "\n" + emitter.emitInt32AbiWrapper(fn, symbol, int32Abi);
   if (emitter.integerClones.members.has(fn.name)) {
     body += "\n" + emitIntegerClone(fn, emitter, emitter.stackChecks?.has(fn.name) === true);

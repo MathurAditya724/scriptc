@@ -211,6 +211,24 @@ function implementationIdentity(toolchain: NativeToolchain): string {
   );
 }
 
+/** SCRIPTC_* variables that report on a build, place its cache or set
+ * backend emission parallelism. The frontend's output does not depend on
+ * them, so they are left out of its cache key. */
+const FRONTEND_INDEPENDENT_VARIABLES = new Set([
+  "SCRIPTC_CACHE_DIR",
+  "SCRIPTC_CACHE_MAX_MB",
+  "SCRIPTC_EMIT_WORKERS",
+  "SCRIPTC_EMIT_WORKER_FUNCTIONS",
+  "SCRIPTC_TIMING",
+]);
+
+/** The SCRIPTC_* variables a frontend cache entry depends on, sorted by name. */
+function frontendEnvironment(): [string, string | undefined][] {
+  return Object.entries(process.env)
+    .filter(([name]) => name.startsWith("SCRIPTC_") && !FRONTEND_INDEPENDENT_VARIABLES.has(name))
+    .sort(([a], [b]) => a.localeCompare(b));
+}
+
 function validFeatures(value: unknown): value is NativeLinkFeatures {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const features = value as Record<string, unknown>;
@@ -257,6 +275,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "dh",
     "pki",
     "ed25519",
+    "x509",
     "webcrypto",
     "perfLoop",
   ].every((name) => typeof features[name] === "boolean");
@@ -362,9 +381,7 @@ export function prepareNativeExecutable(
           implementation: implementationIdentity(toolchain),
           target: toolchain.target.name,
           declarations: toolchain.declarationsRoot ?? null,
-          environment: Object.entries(process.env)
-            .filter(([name]) => name.startsWith("SCRIPTC_"))
-            .sort(([a], [b]) => a.localeCompare(b)),
+          environment: frontendEnvironment(),
         }),
       );
       const cached = readFrontendCache(cache, key, exclusions);
@@ -408,13 +425,20 @@ export function prepareNativeExecutable(
           pointerBits: toolchain.target.pointerBits,
           wasi: toolchain.target.platform === "wasi",
           runtimeAbiMarker: outputKind === "obj" || outputKind === "exe",
+          // As for the Node-hosted build: executables and their textual
+          // LLVM and assembly, not objects.
+          unwindAbi:
+            (outputKind === "exe" || outputKind === "llvm" || outputKind === "asm") &&
+            toolchain.target.platform === "linux",
           objectAudit: options.sanitize === true,
+          sanitizeAttributes: options.sanitize === true,
           lowRegion: lowRegionTarget(toolchain.target.platform, options.sanitize === true),
           functionWorkers: emitWorkers(),
           forkPrimitives: emitForkPrimitives(),
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
           ...targetCpuField(options.targetCpu),
+          ...(options.cpuDispatch === true && outputKind === "exe" ? { cpuDispatch: true } : {}),
           ...(options.optimization === "dev" && !options.strip
             ? { debugSources: prepared.sourceTexts }
             : {}),
@@ -487,9 +511,7 @@ export function prepareNativeLibrary(
           implementation: implementationIdentity(toolchain),
           target: toolchain.target.name,
           declarations: toolchain.declarationsRoot ?? null,
-          environment: Object.entries(process.env)
-            .filter(([name]) => name.startsWith("SCRIPTC_"))
-            .sort(([a], [b]) => a.localeCompare(b)),
+          environment: frontendEnvironment(),
         }),
       );
       const cached = readFrontendCache(cache, key, exclusions);
@@ -525,6 +547,7 @@ export function prepareNativeLibrary(
     pointerBits: toolchain.target.pointerBits,
     wasi: toolchain.target.platform === "wasi",
     objectAudit: options.sanitize === true,
+    sanitizeAttributes: options.sanitize === true,
     ...inlineRcOption(profile.optimization, options.sanitize === true),
   });
   timing("llvm-emit");

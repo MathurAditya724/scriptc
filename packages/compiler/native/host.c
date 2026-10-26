@@ -56,7 +56,9 @@ void scr_collect_cycles_phase(void);
  * frontend's syntax trees and program state refer to each other, so
  * reference counting frees almost none of them when the frontend is
  * disposed, and the collector's schedule alone may not run a full pass
- * before the build ends. */
+ * before the build ends. The sweep then returns the freed pages to the
+ * system (scr_heap_trim), so code generation does not grow on top of the
+ * frontend's heap. */
 void scriptc_native_collect_cycles(void) {
   scr_collect_cycles_phase();
 }
@@ -80,9 +82,30 @@ void scriptc_native_unlock(void) {}
 #include <sys/file.h>
 #include <sys/wait.h>
 
-int32_t scriptc_native_fork(void) { return (int32_t)fork(); }
+#if defined(__linux__)
+/* LLVM's profile runtime, linked into instrumented builds of the compiler
+ * (SCRIPTC_NATIVE_PROFILE_GENERATE); other builds leave these null. A worker
+ * starts with zeroed counters and writes its profile before _exit, which
+ * skips the runtime's atexit writer, so the profile counts the worker's work
+ * once. */
+extern void __llvm_profile_reset_counters(void) __attribute__((weak));
+extern int __llvm_profile_write_file(void) __attribute__((weak));
+#endif
 
-void scriptc_native_exit(int32_t code) { _exit(code); }
+int32_t scriptc_native_fork(void) {
+  pid_t pid = fork();
+#if defined(__linux__)
+  if (pid == 0 && __llvm_profile_reset_counters != NULL) __llvm_profile_reset_counters();
+#endif
+  return (int32_t)pid;
+}
+
+void scriptc_native_exit(int32_t code) {
+#if defined(__linux__)
+  if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
+#endif
+  _exit(code);
+}
 
 /* The worker's exit status, 128 plus the signal for a worker a signal
  * ended, or -1 when waitpid fails. */
@@ -134,4 +157,17 @@ void scr_cyc_set_growth_cap(long cap);
  * passes over the live heap. SCR_CYCLE_GROWTH_CAP still overrides it. */
 void scriptc_native_bound_cycle_growth(void) {
   scr_cyc_set_growth_cap(2);
+}
+
+/* The runtime's nursery trigger (scr_rc.h). */
+void scr_cyc_set_nursery_threshold(long threshold);
+
+/* Runs nursery passes every 1024 new candidates instead of every 256. Much
+ * of a build's cyclic garbage outlives 256 releases: in the shorter window
+ * it survives a nursery pass, is promoted, and only full passes over the
+ * whole live heap find it. A constructor sets it before the compiler's
+ * modules initialize, so every pass of a build uses it.
+ * SCR_CYCLE_THRESHOLD still overrides it. */
+__attribute__((constructor)) static void scriptc_native_widen_cycle_nursery(void) {
+  scr_cyc_set_nursery_threshold(1024);
 }

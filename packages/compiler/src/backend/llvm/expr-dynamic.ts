@@ -11,7 +11,7 @@ import { bindLiveArrayOps } from "./expr-stream-bridges.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { emitNullableIsTag, emitNullablePresent } from "./union-repr.js";
-import { isObjectArm } from "./nullable-unions.js";
+import { isPointerIdentityArm } from "./nullable-unions.js";
 import { streamTypedRefEligible } from "../../ir/analysis.js";
 import {
   DYN,
@@ -31,7 +31,8 @@ import { elemAccess, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { emitUnionWiden } from "./expr-records.js";
-import { emitJsIcMethod, jsIcMethods } from "./js-ic.js";
+import { emitJsIcLiteralMember, emitJsIcMethod, jsIcMethods } from "./js-ic.js";
+import { jsIcLiteralKey } from "../../ir/js-ic.js";
 import { DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
@@ -89,7 +90,7 @@ export function emitDynamicExpr(
       // Bytes already box their shared mutable storage directly. A second
       // capsule would split identity between checked and native views.
       const errorRef = v.type.kind === "object" && host.shapeHost.isErrorClass(v.type.className);
-      // A TextEncoder or TextDecoder record boxes as its own handle, which
+      // A TextEncoder, TextDecoder or StringDecoder record boxes as its own handle, which
       // keeps the record's identity (toDynHelper).
       const codecRef = textCodecRecordClass(v.type, (id) => host.recordsById.get(id)) !== null;
       if (!errorRef && !codecRef && ((e.liveRef && v.type.kind !== "bytes") || identityRef)) {
@@ -121,6 +122,10 @@ export function emitDynamicExpr(
         const box = host.dyn.dynFuncBoxHelper(v.type);
         const t = B.tmp();
         B.line(`${t} = call ptr @${box}(ptr ${v.name}, ptr ${name})`);
+        if (e.fnLength !== undefined) {
+          host.declare(`declare void @scr_dyn_function_set_length(ptr, i32)`);
+          B.line(`call void @scr_dyn_function_set_length(ptr ${t}, i32 ${e.fnLength})`);
+        }
         return host.own({ name: t, type: e.type });
       }
       const conv = host.dyn.toDynHelper(v.type);
@@ -312,9 +317,14 @@ export function emitDynamicExpr(
       const obj = B.tmp();
       B.line(`${obj} = call ptr @scr_dyn_new_obj()`);
       const out = host.own({ name: obj, type: e.type });
+      const cached = jsIcMethods(host);
       for (const f of e.fields ?? []) {
         const k = emitBorrowedInput(host, f.key);
         const v = emitBorrowedInput(host, f.value);
+        if (cached && jsIcLiteralKey(f.key) !== null) {
+          emitJsIcLiteralMember(host, obj, k.name, v.name);
+          continue;
+        }
         B.line(
           `call void @${f.key.type.kind === "dyn" ? "scr_dyn_key_set_computed" : "scr_dyn_key_set"}(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`,
         );
@@ -898,13 +908,13 @@ export function emitDynamicExpr(
       if (!def)
         throw new InternalCompilerError(`llvm emitter bug: equality of unknown union ${e.unionId}`);
       const nullable = host.nullableUnions.get(def.id);
-      if (nullable && isObjectArm(nullable)) {
+      if (nullable && isPointerIdentityArm(nullable)) {
         // Object identity, and NULL === NULL for the unit arm: one compare.
         const eq = B.tmp();
         B.line(`${eq} = icmp ${e.negated ? "ne" : "eq"} ptr ${l.name}, ${r.name}`);
         return { name: eq, type: e.type };
       }
-      if (nullable) {
+      if (nullable && nullable.repr === "single" && nullable.arm.kind === "string") {
         // String arm: identical pointers are equal (the same string or the
         // same unit encoding); otherwise equal only when both hold strings
         // with the same bytes.

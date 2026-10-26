@@ -70,6 +70,8 @@ export interface LiteralSite {
   readonly kind: "object" | "array";
   /** Static keys in creation order; null when a spread or computed key makes them unknown. */
   readonly keys: string[] | null;
+  /** The literal's own static keys (without spread contributions). */
+  readonly ownKeys: string[];
   readonly hasAccessor: boolean;
   readonly hasProto: boolean;
   readonly hasComputedKey: boolean;
@@ -100,6 +102,8 @@ export interface CallEdge {
   readonly caller: FunctionInfo | null;
   readonly callee: FunctionInfo;
   readonly inLoop: boolean;
+  /** The call (or `new`, getter read, builtin callback) site. */
+  readonly site: Node;
 }
 
 export interface ShapeAnalysis {
@@ -123,6 +127,21 @@ export interface ShapeAnalysis {
   readonly steps: number;
   readonly topCause: ReadonlyMap<number, number | string>;
   readonly nodeLabel: ReadonlyMap<number, string>;
+  /** Functions unknown code may call (their atoms escaped). */
+  readonly escapedFunctions: ReadonlySet<FunctionInfo>;
+  /** ES5 constructors: each function's default prototype object. */
+  readonly protoOf: ReadonlyMap<Atom, Atom>;
+  /** ES5 constructor instances: the function atom whose `new` made each. */
+  readonly fnOfInstance: ReadonlyMap<Atom, Atom>;
+  /** Every value a declaration (parameter, variable, binding element) holds,
+   * merged over the analysis contexts it was analyzed in. */
+  declValues(decl: Node): Set<Atom>;
+  /** The classes a class declaration's chain contains, base last. */
+  classChain(decl: Node): Node[];
+  /** `if` statements in walked code whose condition is known: the branch
+   * whose condition values never allowed it is absent from `walkedBranches`. */
+  readonly branchIfs: ReadonlySet<ts.IfStatement>;
+  readonly walkedBranches: ReadonlySet<Node>;
 }
 
 /** Array.prototype members: other names on an array are own properties. */
@@ -232,6 +251,47 @@ function isLoop(node: Node): boolean {
   );
 }
 
+/** Whether control can reach the end of `stmts`. False only when every
+ * path ends in a return or throw, or in a `while (true)`, `do … while
+ * (true)` or `for (;;)` loop with no break inside; anything else is
+ * assumed to complete. */
+function canComplete(stmts: readonly Node[]): boolean {
+  return stmts.every(canCompleteStatement);
+}
+
+function canCompleteStatement(s: Node): boolean {
+  if (ts.isReturnStatement(s) || ts.isThrowStatement(s)) return false;
+  if (ts.isBlock(s)) return canComplete(list(s.statements));
+  if (ts.isIfStatement(s))
+    return (
+      s.elseStatement === undefined ||
+      canCompleteStatement(s.thenStatement) ||
+      canCompleteStatement(s.elseStatement)
+    );
+  if (ts.isTryStatement(s)) {
+    if (s.finallyBlock !== undefined && !canCompleteStatement(s.finallyBlock)) return false;
+    return (
+      canCompleteStatement(s.tryBlock) ||
+      (s.catchClause !== undefined && canCompleteStatement(s.catchClause.block))
+    );
+  }
+  const endless =
+    ((ts.isWhileStatement(s) || ts.isDoStatement(s)) &&
+      s.expression.kind === ts.SyntaxKind.TrueKeyword) ||
+    (ts.isForStatement(s) && s.condition === undefined);
+  return !endless || containsBreak(s);
+}
+
+/** Whether a break statement occurs in `node`'s body, outside nested
+ * functions. */
+function containsBreak(node: Node): boolean {
+  return (
+    ts.forEachChild(node, (c) =>
+      ts.isBreakStatement(c) || (!ts.isFunctionLike(c) && containsBreak(c)) ? true : undefined,
+    ) === true
+  );
+}
+
 const LOOP_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   "map",
   "forEach",
@@ -246,6 +306,10 @@ const LOOP_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   "reduceRight",
   "flatMap",
   "sort",
+  "toSorted",
+  "from",
+  "replace",
+  "replaceAll",
 ]);
 
 export function analyzeShapes(program: ts.Program, checker: ts.TypeChecker): ShapeAnalysis {
@@ -292,12 +356,18 @@ class Analyzer {
       this.siteCtx.set(site, { caller: this.currentFn, inLoop: this.loopDepth > 0 });
   }
 
+  /** Builtin calls that invoke their callbacks once per value
+   * (JSON.parse revivers, JSON.stringify replacers and toJSON methods),
+   * which may run after the call's own handling. */
+  private readonly repeatingSites = new Set<Node>();
+
   edgeFor(site: Node, callee: FunctionInfo): void {
     const ctx = this.siteCtx.get(site);
     this.calls.push({
       caller: ctx?.caller ?? null,
       callee,
-      inLoop: (ctx?.inLoop ?? false) || this.forceLoop,
+      inLoop: (ctx?.inLoop ?? false) || this.forceLoop || this.repeatingSites.has(site),
+      site,
     });
   }
 
@@ -309,8 +379,7 @@ class Analyzer {
   }
 
   run(): ShapeAnalysis {
-    for (const sf of this.program.getSourceFiles()) {
-      if (sf.isDeclarationFile) continue;
+    for (const sf of this.program.getImplementationSourceFiles()) {
       const name = sf.fileName.split("\\").join("/");
       const inPackage = isPackageJsFile(sf);
       if (!inPackage && name.includes("/node_modules/")) continue;
@@ -340,6 +409,13 @@ class Analyzer {
       steps: this.steps,
       topCause: this.topCause,
       nodeLabel: this.nodeLabel,
+      escapedFunctions: this.escapedFunctionCalls,
+      protoOf: this.protoOf,
+      fnOfInstance: this.fnOfInstance,
+      declValues: (decl) => this.declValues(decl),
+      classChain: (decl) => this.classChain(decl),
+      branchIfs: this.branchIfs,
+      walkedBranches: this.walkedBranches,
     };
   }
 
@@ -413,6 +489,97 @@ class Analyzer {
     return a;
   }
 
+  /** ES5 constructor functions: the function's default prototype object,
+   * and which function each `new F()` instance atom belongs to. */
+  readonly protoOf = new Map<Atom, Atom>();
+  readonly fnOfInstance = new Map<Atom, Atom>();
+  protoAtom(fn: Atom): Atom {
+    let p = this.protoOf.get(fn);
+    if (p === undefined) {
+      p = this.atoms.intern(`proto:${this.nodeKey(fn.node!)}:${fn.ctx ?? ""}`, () => ({
+        kind: "object",
+        label: `${fn.label}.prototype`,
+        node: fn.node,
+      }));
+      this.protoOf.set(fn, p);
+      this.add(this.field(p, "constructor"), fn);
+      if (this.escaped.has(fn)) this.escape(p, `via ${fn.label}`);
+    }
+    return p;
+  }
+
+  /** A boolean literal: labeled `boolean` like any boolean, but its
+   * truthiness is known, so `if` statements on it walk one branch. */
+  boolLiteral(value: boolean): Atom {
+    return this.atoms.intern(`prim:boolean:${value}`, () => ({
+      kind: "prim",
+      label: "boolean",
+      literal: value,
+    }));
+  }
+
+  /** The analysis environment a deferred walk restores. */
+  private env(): WalkEnv {
+    return {
+      ctx: this.ctx,
+      ctxRoot: this.ctxRoot,
+      currentFn: this.currentFn,
+      loopDepth: this.loopDepth,
+    };
+  }
+
+  private inEnv(env: WalkEnv, walk: () => void): void {
+    const saved = this.env();
+    this.ctx = env.ctx;
+    this.ctxRoot = env.ctxRoot;
+    this.currentFn = env.currentFn;
+    this.loopDepth = env.loopDepth;
+    try {
+      walk();
+    } finally {
+      this.ctx = saved.ctx;
+      this.ctxRoot = saved.ctxRoot;
+      this.currentFn = saved.currentFn;
+      this.loopDepth = saved.loopDepth;
+    }
+  }
+
+  readonly branchIfs = new Set<ts.IfStatement>();
+  readonly walkedBranches = new Set<Node>();
+  /** Ifs whose branches wait for condition values; at the fixpoint, an
+   * `if` whose condition node stayed empty walks every waiting branch. */
+  private readonly pendingIfs: PendingIf[] = [];
+
+  /** An `if` walks a branch once a condition value allows it: the then
+   * branch on a value that may be truthy, the else branch on one that may
+   * be falsy. A branch no value allows is never walked, so its effects
+   * (returns, calls, writes) stay out of the facts; the overlay turns it
+   * into a checked internal error. */
+  private ifStatement(s: ts.IfStatement): void {
+    const cond = this.expr(s.expression);
+    this.branchIfs.add(s);
+    const pending: PendingIf = {
+      s,
+      cond,
+      env: this.env(),
+      thenDone: false,
+      elseDone: s.elseStatement === undefined,
+    };
+    this.pendingIfs.push(pending);
+    this.on(cond, (a) => {
+      if (!pending.thenDone && mayBeTruthy(a)) this.walkBranch(pending, "then");
+      if (!pending.elseDone && mayBeFalsy(a)) this.walkBranch(pending, "else");
+    });
+  }
+
+  private walkBranch(pending: PendingIf, which: "then" | "else"): void {
+    const branch = which === "then" ? pending.s.thenStatement : pending.s.elseStatement!;
+    if (which === "then") pending.thenDone = true;
+    else pending.elseDone = true;
+    this.walkedBranches.add(branch);
+    this.inEnv(pending.env, () => this.stmt(branch));
+  }
+
   builtin(path: string, receiver?: Atom): Atom {
     const key = receiver === undefined ? `builtin:${path}` : `builtin:${path}@${receiver.id}`;
     return this.atoms.intern(key, () => ({ kind: "builtin", label: path, path, receiver }));
@@ -483,6 +650,11 @@ class Analyzer {
     if (this.escaped.has(atom)) return;
     this.escaped.set(atom, reason);
     const via = `via ${atom.label}`;
+    // Unknown code reaches a constructor's prototype through the function
+    // and through its instances.
+    const ctor = atom.kind === "function" ? atom : this.fnOfInstance.get(atom);
+    if (ctor !== undefined && ctor.node !== undefined && (atom !== ctor || this.protoOf.has(ctor)))
+      this.escape(this.protoAtom(ctor), via);
     const fm = this.fields.get(atom);
     if (fm !== undefined) {
       for (const [name, id] of fm) {
@@ -676,6 +848,24 @@ class Analyzer {
     return `${inside ? this.ctx : ""}|${this.nodeKey(node)}`;
   }
 
+  private declIndex: Map<number, number[]> | null = null;
+  declValues(decl: Node): Set<Atom> {
+    if (this.declIndex === null) {
+      this.declIndex = new Map();
+      for (const [key, id] of this.bindings) {
+        const k = Number(key.slice(key.lastIndexOf("|") + 1));
+        let l = this.declIndex.get(k);
+        if (l === undefined) this.declIndex.set(k, (l = []));
+        l.push(id);
+      }
+    }
+    const out = new Set<Atom>();
+    const k = this.nodeKeys.get(decl);
+    if (k === undefined) return out;
+    for (const id of this.declIndex.get(k) ?? []) for (const a of this.nodes[id]!.atoms) out.add(a);
+    return out;
+  }
+
   receiverCtx(atom: Atom): string {
     return atom.kind === "instance" || atom.kind === "class" ? `C${atom.id}` : "";
   }
@@ -771,8 +961,11 @@ class Analyzer {
     }
     const body = fn.body;
     if (body !== undefined) {
-      if (ts.isBlock(body)) this.stmts(list(body.statements));
-      else this.edge(this.expr(body as ts.Expression), info.ret);
+      if (ts.isBlock(body)) {
+        this.stmts(list(body.statements));
+        // A call that runs off the end of the body returns undefined.
+        if (canComplete(list(body.statements))) this.add(info.ret, this.prim("undefined"));
+      } else this.edge(this.expr(body as ts.Expression), info.ret);
     }
     this.currentFn = saved;
     this.loopDepth = savedLoop;
@@ -1106,8 +1299,9 @@ class Analyzer {
       return;
     }
     if (ts.isReturnStatement(s)) {
-      if (s.expression !== undefined && this.currentFn !== null)
-        this.edge(this.expr(s.expression), this.currentFn.ret);
+      if (this.currentFn === null) return;
+      if (s.expression !== undefined) this.edge(this.expr(s.expression), this.currentFn.ret);
+      else this.add(this.currentFn.ret, this.prim("undefined"));
       return;
     }
     if (ts.isFunctionDeclaration(s)) {
@@ -1179,6 +1373,10 @@ class Analyzer {
       return;
     if (ts.isExportAssignment(s)) {
       this.expr(s.expression);
+      return;
+    }
+    if (ts.isIfStatement(s) && this.currentFn !== null) {
+      this.ifStatement(s);
       return;
     }
     // Blocks, ifs, switches, labels: walk children, evaluating expressions.
@@ -1275,8 +1473,9 @@ class Analyzer {
       case ts.SyntaxKind.BigIntLiteral:
         return this.constNode(this.prim("bigint"));
       case ts.SyntaxKind.TrueKeyword:
+        return this.constNode(this.boolLiteral(true));
       case ts.SyntaxKind.FalseKeyword:
-        return this.constNode(this.prim("boolean"));
+        return this.constNode(this.boolLiteral(false));
       case ts.SyntaxKind.NullKeyword:
         return this.constNode(this.prim("null"));
       case ts.SyntaxKind.RegularExpressionLiteral:
@@ -1438,6 +1637,15 @@ class Analyzer {
     )
       return this.constNode(this.top);
     if (ts.isSourceFile(decl) || ts.isModuleDeclaration(decl)) return this.namespaceNode(decl);
+    // A CommonJS export the checker resolved an import or require binding
+    // to (`module.exports = { name }`, `exports.name = v`): the member of the
+    // module's exports.
+    const exported = cjsExportName(decl);
+    if (exported !== null && decl.getSourceFile() !== id.getSourceFile()) {
+      const dst = this.newNode();
+      this.loadConstraint(this.namespaceNode(decl.getSourceFile()), exported, dst, id);
+      return dst;
+    }
     return this.narrowed(id, decl, this.binding(decl));
   }
 
@@ -1545,6 +1753,9 @@ class Analyzer {
   }
 
   private readonly namespaces = new Map<Node, number>();
+  /** Module namespaces: a CommonJS module's `module.exports` value is the
+   * namespace's `exports` field, and member reads see its members too. */
+  private readonly namespaceAtoms = new Set<Atom>();
   /** `import * as ns`: an object whose fields are the module's exports. */
   namespaceNode(mod: Node): number {
     const existing = this.namespaces.get(mod);
@@ -1556,6 +1767,7 @@ class Analyzer {
       label: `namespace ${shortFile((mod as ts.SourceFile).fileName ?? "")}`,
       node: mod,
     }));
+    this.namespaceAtoms.add(atom);
     this.add(n, atom);
     const sym = this.checker.getSymbolAtLocation(mod);
     if (sym !== undefined) {
@@ -1695,6 +1907,7 @@ class Analyzer {
         node: e,
         kind: "object",
         keys: keysKnown ? keys : null,
+        ownKeys: keys,
         hasAccessor,
         hasProto,
         hasComputedKey,
@@ -1861,6 +2074,7 @@ class Analyzer {
         node: e,
         kind: "array",
         keys: null,
+        ownKeys: [],
         hasAccessor: false,
         hasProto: hasHole,
         hasComputedKey: false,
@@ -2096,8 +2310,11 @@ class Analyzer {
         // An own field, written by name or under an unknown key, shadows a builtin member.
         if (name === "call" || name === "apply" || name === "bind")
           this.add(dst, this.builtin(`function.${name}`, a));
-        else if (name === "prototype") this.add(dst, this.top);
-        else if (name === "name") this.add(dst, this.prim("string"));
+        else if (name === "prototype") {
+          // The default prototype object, or what the program assigns.
+          this.add(dst, this.protoAtom(a));
+          this.edge(this.field(a, "prototype"), dst);
+        } else if (name === "name") this.add(dst, this.prim("string"));
         else if (name === "length") this.add(dst, this.prim("number"));
         else {
           this.edge(this.field(a, name), dst);
@@ -2119,12 +2336,32 @@ class Analyzer {
           this.unknownKeysInto(a, dst);
         }
         return;
-      case "object":
+      case "object": {
         this.edge(this.field(a, name), dst);
         this.edge(this.anyField(a), dst);
+        if (this.namespaceAtoms.has(a) && name !== "exports") {
+          this.loadConstraint(this.field(a, "exports"), name, dst, site);
+        }
+        // `new F()` instances read through F's prototype objects.
+        const fn = this.fnOfInstance.get(a);
+        if (fn !== undefined) {
+          const protos = this.newNode();
+          this.add(protos, this.protoAtom(fn));
+          this.edge(this.field(fn, "prototype"), protos);
+          this.on(protos, (proto) => {
+            if (proto.kind === "object") {
+              // A method stored under a computed key (`F.prototype[k] = fn`)
+              // may be any name.
+              this.edge(this.field(proto, name), dst);
+              this.edge(this.anyField(proto), dst);
+            } else if (proto.kind === "top") this.add(dst, this.top);
+          });
+          return;
+        }
         if (name === "constructor" || name === "hasOwnProperty" || name === "toString")
           this.add(dst, this.builtin(`object.${name}`, a));
         return;
+      }
       case "dictionary":
         this.edge(this.anyField(a), dst);
         this.edge(this.field(a, name), dst);
@@ -2357,6 +2594,27 @@ class Analyzer {
         for (const a of args) this.sink(a, `super(...) at ${locLabel(e)}`);
       return dst;
     }
+    // CommonJS `require("<spec>")` of an analyzed module: its exports (the
+    // module's namespace, which holds `module.exports` as its `exports`
+    // field and the checker's view of its exports).
+    if (ts.isIdentifier(callee) && callee.text === "require" && e.arguments.nodes.length === 1) {
+      const spec = e.arguments.nodes[0]!;
+      if (ts.isStringLiteral(spec)) {
+        let target: Node | undefined;
+        try {
+          const sym = this.checker.getSymbolAtLocation(spec);
+          target = sym?.valueDeclaration ?? sym?.declarations[0];
+        } catch {
+          target = undefined;
+        }
+        if (target !== undefined && ts.isSourceFile(target) && this.files.includes(target)) {
+          const ns = this.namespaceNode(target);
+          this.edge(ns, dst);
+          this.on(ns, (a) => this.edge(this.field(a, "exports"), dst));
+          return dst;
+        }
+      }
+    }
     if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
       const recvExpr = unparen(callee.expression);
       const { args, spread } = this.args(e);
@@ -2453,13 +2711,19 @@ class Analyzer {
             label: `new ${a.label}`,
             node: a.node,
           }));
+          this.fnOfInstance.set(inst, a);
           this.add(dst, inst);
           const info = this.infoOfAtom(a);
           if (info !== undefined) {
             this.activate(info);
             this.add(info.thisNode, inst);
             this.bindArgs(info, args, spread);
-            this.edge(info.ret, dst);
+            // `new` ignores a primitive result (and the undefined of a
+            // body that runs off its end) and yields the instance.
+            this.on(info.ret, (r) => {
+              if (r.kind !== "prim") this.add(dst, r);
+            });
+            this.edgeFor(e, info);
           }
           return;
         }
@@ -2807,6 +3071,7 @@ class Analyzer {
           for (const p of info.params)
             if (args[1] !== undefined) this.iterateInto(args[1], p, site);
           this.edge(info.ret, dst);
+          this.edgeFor(site, info);
         }
         return;
       }
@@ -2947,6 +3212,7 @@ class Analyzer {
         // result.
         const revived = this.newNode();
         this.add(revived, this.top);
+        this.repeatingSites.add(site);
         if (args[1] !== undefined)
           this.on(args[1], (f) => {
             if (f.kind === "function")
@@ -2970,6 +3236,7 @@ class Analyzer {
         // Their results are serialized in turn.
         const serialized = this.newNode();
         this.childrenInto(serialized);
+        this.repeatingSites.add(site);
         this.edge(arg(0), serialized);
         const key = this.constNode(this.prim("string"));
         this.on(serialized, (v) => this.callToJSON(v, key, serialized, site));
@@ -3102,7 +3369,71 @@ class Analyzer {
       const before = this.steps;
       for (const c of this.lateCopies) c();
       this.solve();
+      // A condition with no values at the fixpoint is one the analysis
+      // could not evaluate: walk both of its branches.
+      let walked = false;
+      for (const p of this.pendingIfs) {
+        if (this.nodes[p.cond]!.atoms.size > 0) continue;
+        if (!p.thenDone) {
+          this.walkBranch(p, "then");
+          walked = true;
+        }
+        if (!p.elseDone) {
+          this.walkBranch(p, "else");
+          walked = true;
+        }
+      }
+      if (walked) continue;
       if (this.steps === before || this.budgetExceeded) return;
     }
   }
+}
+
+/** The export name of a CommonJS export declaration the checker resolves
+ * bindings to: a member of the `module.exports` literal, or the target of
+ * `exports.name =` / `module.exports.name =`. */
+function cjsExportName(decl: Node): string | null {
+  if (ts.isShorthandPropertyAssignment(decl) || ts.isPropertyAssignment(decl)) {
+    const n = decl.name;
+    return ts.isIdentifier(n) || ts.isStringLiteral(n) ? n.text : null;
+  }
+  if (ts.isPropertyAccessExpression(decl) && ts.isIdentifier(decl.name)) return decl.name.text;
+  if (
+    ts.isBinaryExpression(decl) &&
+    ts.isPropertyAccessExpression(decl.left) &&
+    ts.isIdentifier(decl.left.name)
+  )
+    return decl.left.name.text;
+  return null;
+}
+
+interface WalkEnv {
+  readonly ctx: string;
+  readonly ctxRoot: Node | null;
+  readonly currentFn: FunctionInfo | null;
+  readonly loopDepth: number;
+}
+
+interface PendingIf {
+  readonly s: ts.IfStatement;
+  readonly cond: number;
+  readonly env: WalkEnv;
+  thenDone: boolean;
+  elseDone: boolean;
+}
+
+/** Whether a value of the atom may be truthy (only `null`, `undefined` and
+ * the literal `false` never are; ⊤ may be anything). */
+function mayBeTruthy(a: Atom): boolean {
+  if (a.kind !== "prim") return true;
+  if (a.label === "null" || a.label === "undefined") return false;
+  return a.literal !== false;
+}
+
+/** Whether a value of the atom may be falsy (objects, arrays, functions,
+ * classes, promises and collections never are). */
+function mayBeFalsy(a: Atom): boolean {
+  if (a.kind === "top") return true;
+  if (a.kind !== "prim") return false;
+  return a.literal !== true;
 }

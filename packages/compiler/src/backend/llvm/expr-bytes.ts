@@ -1,6 +1,7 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
+import type { BytesHeader } from "./bytes-headers.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrBytesElem, type IrExpr } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { F64_INF, exactIndexLines, f64Lit, sizeToDouble } from "./common.js";
@@ -8,7 +9,7 @@ import { alwaysExactInteger, exactInteger } from "./integer-values.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { emitByteNumber } from "./byte-numbers.js";
 import { integerOrNaNIndex, integerOrNaNRange } from "./wrapping-sums.js";
-import { bytesElementAlias, bytesHeaderAlias } from "./bytes-alias.js";
+import { bytesElementAlias, bytesHeaderAlias, bytesHeaderValueAlias } from "./bytes-alias.js";
 
 const BYTES_NUM_KIND: Record<string, { kind: number; le: boolean } | undefined> = {
   u8: { kind: 0, le: false },
@@ -160,16 +161,43 @@ export function emitBytesIndex(
   return idx;
 }
 
-/** The element count of a typed array, in the target's size type. */
-export function emitBytesHeaderLength(host: LlvmEmitterContext, receiver: string): string {
+/** Records that `value` is the view `receiver` reads, so the header reads of
+ * an access through it use the values a loop entry read (bytes-headers.ts). */
+export function noteBytesReceiver(host: LlvmEmitterContext, receiver: IrExpr, value: string): void {
+  const scope = host.bytesHeaders;
+  if (scope === null || receiver.kind !== "varRef" || scope.fn !== host.currentFunctionName) return;
+  const header = scope.locals.get(receiver.localId);
+  if (header !== undefined) scope.values.set(value, header);
+}
+
+/** The header fields a loop entry read for the view `receiver`, if any. */
+function cachedHeader(host: LlvmEmitterContext, receiver: string): BytesHeader | undefined {
+  const scope = host.bytesHeaders;
+  if (scope === null || scope.fn !== host.currentFunctionName) return undefined;
+  return scope.values.get(receiver);
+}
+
+/** The element count of a typed array, in the target's size type. `value`:
+ * the program reads the count itself (bytesHeaderValueAlias), rather than
+ * only bounding an access. */
+export function emitBytesHeaderLength(
+  host: LlvmEmitterContext,
+  receiver: string,
+  value = false,
+): string {
+  const cached = cachedHeader(host, receiver);
+  if (cached !== undefined) return cached.length;
   const p = host.B.tmp();
   const len = host.B.tmp();
+  const alias = value ? bytesHeaderValueAlias(host) : bytesHeaderAlias(host);
   host.B.line(`${p} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 1`);
-  host.B.line(`${len} = load ${host.sizeType}, ptr ${p}${bytesHeaderAlias(host)}`);
+  host.B.line(`${len} = load ${host.sizeType}, ptr ${p}${alias}`);
   return len;
 }
 
 export function emitBytesData(host: LlvmEmitterContext, receiver: string): string {
+  const cached = cachedHeader(host, receiver);
+  if (cached !== undefined) return cached.data;
   const p = host.B.tmp();
   const data = host.B.tmp();
   host.B.line(`${p} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 3`);
@@ -184,7 +212,7 @@ export function emitBytesLength(
   bytes: boolean,
 ): LlValue {
   const B = host.B;
-  const len = emitBytesHeaderLength(host, receiver);
+  const len = emitBytesHeaderLength(host, receiver, true);
   const size = BYTES_ELEMENT_SIZE[elem];
   const count = bytes && size !== 1 ? B.tmp() : len;
   if (count !== len) B.line(`${count} = shl ${host.sizeType} ${len}, ${Math.log2(size)}`);
@@ -196,6 +224,8 @@ export function emitBytesLength(
 /** A view's shared backing (null for a buffer this thread owns). It is
  * set at construction, before script code can see the view. */
 export function emitBytesSharedStorage(host: LlvmEmitterContext, receiver: string): string {
+  const cached = cachedHeader(host, receiver)?.shared;
+  if (cached !== undefined && cached !== null) return cached;
   const B = host.B;
   const slot = B.tmp(),
     storage = B.tmp();
@@ -235,6 +265,26 @@ export function emitBytesGet(
   inBounds = false,
   invalidNaN = false,
   owned = false,
+  scope = "",
+): LlValue {
+  const outer = host.bytesAccessScope;
+  host.bytesAccessScope = scope;
+  try {
+    return emitScopedBytesGet(host, elem, receiver, index, expr, inBounds, invalidNaN, owned);
+  } finally {
+    host.bytesAccessScope = outer;
+  }
+}
+
+function emitScopedBytesGet(
+  host: LlvmEmitterContext,
+  elem: IrBytesElem,
+  receiver: string,
+  index: LlValue,
+  expr: IrExpr | undefined,
+  inBounds: boolean,
+  invalidNaN: boolean,
+  owned: boolean,
 ): LlValue {
   const B = host.B;
   // Any invalid index traps (the array runtime's discipline).
@@ -276,7 +326,9 @@ export function emitBytesGet(
   const signed = elem === "i8" || elem === "i16" || elem === "i32";
   B.line(`${number} = ${signed ? "sitofp" : "uitofp"} i32 ${u32} to double`);
   B.line(`${out} = select i1 ${valid}, double ${number}, double ${f64Lit(NaN)}`);
-  return { name: out, type: F64, uint32: u32 };
+  const integer = B.tmp();
+  B.line(`${integer} = ${signed ? "sext" : "zext"} i32 ${u32} to i64`);
+  return { name: out, type: F64, uint32: u32, ordered: valid, nanInteger: integer };
 }
 
 function emitBytesLoad(
@@ -290,7 +342,7 @@ function emitBytesLoad(
   owned: boolean,
 ): LlValue {
   // `owned`: an enclosing version guard proved the view thread-owned.
-  if (host.mod.workers && !owned) {
+  if (host.mod.workers && !owned && !plainSharedElement(host, elem, expr)) {
     const idx = emitBytesIndex(host, receiver, index, expr, invalid, inBounds);
     return emitSharedOrLocalLoad(host, elem, receiver, idx);
   }
@@ -299,6 +351,31 @@ function emitBytesLoad(
   const data = host.emitBytesData(receiver);
   const idx = emitBytesIndex(host, receiver, index, expr, invalid, inBounds);
   return emitBytesLoadAt(host, elem, data, idx);
+}
+
+/** Worker programs: whether an element access at `index` of a view that
+ * may be shared is a plain load or store, like a thread-owned view's. It is
+ * when the index is the counter of the strip-mined counted loop whose body
+ * holds the access, outside any loop nested in that body (its condition and
+ * update included: a nested loop that waits on the element reads it on
+ * every iteration, so the read stays atomic): every iteration then reaches
+ * a different element, so LLVM cannot merge an element's reads across
+ * iterations or move them out of the loop, and the loop can be vectorized. A racing write from another thread can still be seen or
+ * missed within one iteration, the documented gap of non-atomic shared
+ * accesses. Float16 elements keep their runtime path. */
+function plainSharedElement(
+  host: LlvmEmitterContext,
+  elem: IrBytesElem,
+  index: IrExpr | undefined,
+): boolean {
+  const loop = host.plainSharedLoop;
+  if (loop === null || elem === "f16" || index?.kind !== "varRef") return false;
+  // A nested loop raises loopDepth before its condition is emitted.
+  if (index.localId !== loop.counter || host.loopDepth !== loop.depth) return false;
+  let innermost: (typeof host.jumpTargets)[number] | undefined;
+  for (let i = host.jumpTargets.length - 1; i >= 0 && innermost === undefined; i--)
+    if (host.jumpTargets[i]!.kind === "loop") innermost = host.jumpTargets[i];
+  return innermost === loop.target;
 }
 
 /** Worker programs: the element at a checked index of a view that may be
@@ -547,6 +624,27 @@ export function emitBytesSet(
   expr?: IrExpr,
   inBounds = false,
   owned = false,
+  scope = "",
+): void {
+  const outer = host.bytesAccessScope;
+  host.bytesAccessScope = scope;
+  try {
+    emitScopedBytesSet(host, elem, receiver, index, value, indexExpr, expr, inBounds, owned);
+  } finally {
+    host.bytesAccessScope = outer;
+  }
+}
+
+function emitScopedBytesSet(
+  host: LlvmEmitterContext,
+  elem: IrBytesElem,
+  receiver: string,
+  index: LlValue,
+  value: LlValue,
+  indexExpr: IrExpr | undefined,
+  expr: IrExpr | undefined,
+  inBounds: boolean,
+  owned: boolean,
 ): void {
   const B = host.B;
   // Invalid integer-indexed writes are ignored after evaluating the RHS.
@@ -618,7 +716,7 @@ export function emitBytesSet(
     ty = "i32";
     operand = stored!;
   }
-  if (host.mod.workers && !owned) {
+  if (host.mod.workers && !owned && !plainSharedElement(host, elem, indexExpr)) {
     // A shared view's element takes a relaxed atomic store of its width.
     const local = emitSharedBytesSplit(host, receiver);
     const p = B.tmp();
@@ -740,6 +838,7 @@ export function emitBytesIntrinsic(
   const r = directElementAccess
     ? host.emitStableReceiver(e.receiver, e.args)
     : emitBorrowedInput(host, e.receiver);
+  if (directElementAccess) noteBytesReceiver(host, e.receiver, r.name);
   // Byte operations borrow every input; views and identity results return
   // independent owners, while writes retain no operand beyond the call.
   const args = e.args.map((a) => emitBorrowedInput(host, a));
@@ -768,6 +867,7 @@ export function emitBytesIntrinsic(
         host.bytesBounds.has(e),
         e.invalidNaN === true,
         host.bytesOwned.has(e),
+        host.bytesAliasScopes.get(e),
       );
     case "slice":
       return call(

@@ -186,6 +186,10 @@ typedef enum {
   X(MATCH_SOURCE, 55) /* a match result's pending metadata (scr_regex.c) */ \
   X(MESSAGE_EVENT, 50) /* ScrEvent with data — BroadcastChannel's 'message' */ \
   X(MESSAGE_PORT, 36) \
+  X(MIME_PARAMS, 81) /* util.MIMEParams (scr_mime.c) */ \
+  X(MIME_TYPE, 82) /* util.MIMEType (scr_mime.c) */ \
+  X(MODULE_NAMESPACE, 79) /* module namespace object read through its exports (scr_module_namespace.c) */ \
+  X(NAVIGATOR, 83) /* Node's navigator global (scr_node_builtin.c) */ \
   X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
   X(NET_SERVER, 3) /* ScrNetServer — net.Server (http.Server rides the same handle) */ \
   X(NET_SOCKET, 2) /* ScrNetSocket — net.Socket */ \
@@ -195,11 +199,13 @@ typedef enum {
   X(REGEXP, 26) /* native RegExp, shared compiled pattern */ \
   X(SEARCH_PARAMS, 33) /* live WHATWG URLSearchParams */ \
   X(SEGMENTER, 19) /* default Unicode grapheme segmentation */ \
+  X(SEGMENTER_REFUSING, 80) /* word or sentence Segmenter whose segment() throws (scr_grapheme.c) */ \
   X(SEGMENTS, 20) /* iterable immutable segmentation result */ \
   X(SET, 25) /* native Set<unknown>, shared backing map */ \
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
+  X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_ENCODER, 77) /* compiled TextEncoder record (scr_text_codec_dyn.c) */ \
   X(URL, 28) /* native WHATWG URL */ \
@@ -324,6 +330,9 @@ typedef struct {
    * must not inspect the value: an earlier cycle member may already be freed.
    * Ordinary mutations need not maintain this collector-only decision. */
   bool value_traced : 1;
+  /* A namespace object's function member (scr_dyn_namespace_define), which
+   * static member calls bypass: a change to its value fences instead. */
+  bool fenced : 1;
   /* Ordinary object insertion sets all three attributes true. */
   bool writable;
   bool enumerable;
@@ -385,6 +394,12 @@ const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
  * holds. Both borrowed; a node that is not plain data throws the path
  * TypeError before anything changes. */
 void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
+void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
+/* A checked conversion into a type an npm package declares failed
+ * (scr_type_origin.c, linked by programs with such checks): the pending
+ * TypeError's message gains the declaration and the type patch that would
+ * admit the value. `origin` is the compiler's origin string. */
+void scr_type_origin_note(const char *origin);
 
 /* Prototype members of a compiled class seen as `unknown`, emitted per
  * class by the compiler: the string names of methods, getters and setters
@@ -474,7 +489,12 @@ struct ScrDyn {
        * exits, and those clear it before release; reuse of a freed object
        * resets it (scr_dyn_alloc). */
       const char *class_name;
-      struct ScrDynRegion *region; /* see ScrDynRegion */
+      union {
+        struct ScrDynRegion *region; /* see ScrDynRegion */
+        /* While the node is pooled: the key bytes it keeps for reuse,
+         * counted in the pool's key budget (scr_dyn_obj_drop_keys). */
+        size_t cached_key_bytes;
+      };
       /* The dynamic tier's hidden class (scr_js_object.c): the transition
        * tree node naming this object's key sequence, or NULL while it has
        * none. Only programs with dynamic-tier code read or maintain it:
@@ -517,7 +537,9 @@ struct ScrDyn {
        * identity while the source reference remains observable. */
       ScrDyn *materialized;
       ScrDynTypedCast *casts;
-      /* One word keeps this, the largest payload, at its previous size. */
+      /* One word keeps this, the largest payload, at its previous size.
+       * Dynamic-tier inline caches read record, klass and bag_class as
+       * the word's top three bits (backend/llvm/js-ic.ts nativeArray). */
       uint32_t type_key_len : 27;
       uint32_t traced : 1; /* native referent has a cycle header */
       uint32_t observed : 1; /* native release reports this identity's disposal */
@@ -870,11 +892,16 @@ bool scr_disposable_stack_use(const ScrDyn *stack, const ScrDyn *value);
 bool scr_disposable_stack_use_callback(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *dispose);
 bool scr_disposable_stack_adopt(const ScrDyn *stack, const ScrDyn *value, const ScrDyn *on_dispose);
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
+/* scr_dyn_obj_set_field for a symbol-keyed field of a class instance's
+ * view: replaces the value whatever the attributes copied into the view.
+ * Does not consume stored. */
+void scr_dyn_symbol_field_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored);
 void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key);
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key);
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key);
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key);
 void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *key, bool strict);
+bool scr_dyn_reflect_delete_property(ScrDyn *target, const ScrDyn *key);
 ScrStr *scr_dyn_string_constructor(const ScrDyn *value);
 ScrDyn *scr_dyn_property_key_value(const ScrDyn *value);
 ScrDyn *scr_dyn_to_numeric(const ScrDyn *value);
@@ -897,6 +924,19 @@ ScrDyn *scr_dyn_error_constructor(const char *name);
 /* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
  * as an interned dynamic function value: +1. */
 ScrDyn *scr_dyn_builtin_function(const ScrStr *name);
+/* A standard namespace object (Math, JSON, Reflect read as a JavaScript
+ * value): an ordinary object whose Symbol.toStringTag is `tag` (+1).
+ * `tag_key` is the Symbol.toStringTag key (borrowed), which the compiler
+ * passes so this unit needs no symbol entry points. */
+ScrDyn *scr_dyn_namespace_new(const ScrStr *tag, ScrDyn *tag_key);
+/* Defines the own data property `key` of a namespace object. `attributes`
+ * has bits 1 writable, 2 enumerable, 4 configurable; a function value
+ * takes `length` as its length when it is not negative. */
+void scr_dyn_namespace_define(ScrDyn *object, const ScrStr *key, ScrDyn *value, double attributes,
+                              double length);
+/* Marks the own property `key` of `object` as a fenced namespace member
+ * (ScrDynEntry.fenced). */
+void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key);
 /* A constant-key read of an Object.prototype member name: takes the
  * ordinary read's +1 result and answers the inherited member in place of
  * an undefined one (scr_dyn_invoke.c). */
@@ -930,9 +970,16 @@ ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators);
  * for-of protocol reads it. +1, or NULL with the error pending. */
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
+/* Symbol.for('nodejs.util.inspect.custom'): the symbol unit installs it
+ * when the registry creates it; NULL (borrowed) until then. */
+void scr_dyn_install_inspect_custom_symbol(ScrDyn *key);
+ScrDyn *scr_dyn_inspect_custom_symbol(void);
 void scr_dyn_install_has_instance_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
+void scr_dyn_install_species_symbol(ScrDyn *key);
+/* Records each well-known symbol the symbol unit creates. */
+void scr_dyn_install_well_known_symbol(ScrDyn *key);
 void scr_dyn_install_to_string_tag_symbol(ScrDyn *key);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
@@ -1020,6 +1067,9 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
 extern SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args,
                                                   ScrDyn **result);
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key);
+/* A typed array's, Buffer's or DataView's own named property (+1), or NULL
+ * without an exception when it has none. */
+ScrDyn *scr_bytes_named_get(const ScrDyn *view, const char *key, size_t key_len);
 /* The Buffer-flavored twin (stream chunks): string coercion/toString
  * decode utf8 instead of joining elements. */
 ScrDyn *scr_dyn_new_buffer(const ScrBytes *b);
@@ -1206,6 +1256,12 @@ void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn 
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
 void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits);
 void scr_dyn_class_view_attributes(ScrDyn *view, double bits);
+/* The integrity state of a class instance's checked view as CLASS_* bits,
+ * added to `bits`. The commits of hierarchies with an integrity word store
+ * it in the word, in programs that freeze, seal or prevent extensions of
+ * untyped values. `bag`, the instance's new property bag or NULL, stops
+ * being extensible with the view. */
+double scr_dyn_class_view_integrity(const ScrDyn *view, double bits, ScrDyn *bag);
 ScrDyn *scr_class_define_field(ScrDyn *current, double field_bits, double object_bits, ScrStr *name,
                                ScrDyn *descriptor);
 double scr_class_defined_bits(ScrDyn *holder, ScrStr *name);
@@ -1235,10 +1291,28 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
 void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict);
+/* Removes the own property `key` of an ordinary object whatever its
+ * attributes, as scr_dyn_obj_set_field replaces values. */
+void scr_dyn_obj_delete_field(ScrDyn *obj, const ScrStr *key);
+/* The same for the own symbol-keyed property `symbol` of an ordinary
+ * object. */
+void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol);
 /* This thread's global object box (borrowed). Every spelling of the global
  * object answers it; its symbol-keyed properties are the global object's
  * (scr_node_builtin.c). */
 ScrDyn *scr_global_object(void);
+/* The program's builtin-global lookup, a dyn function (borrowed); the first
+ * installation stands. */
+void scr_global_values_install(ScrDyn *lookup);
+/* An object whose keys are what `for (key in globalThis)` visits (+1). */
+ScrDyn *scr_global_for_in_object(void);
+/* Node's navigator global (+1, one box per thread) and its members:
+ * navigator.language (+1), navigator.languages (+1, one frozen array per
+ * thread) and navigator.platform (+1). */
+ScrDyn *scr_navigator_object(void);
+ScrStr *scr_navigator_language(void);
+ScrDyn *scr_navigator_languages(void);
+ScrStr *scr_navigator_platform(void);
 ScrDyn *scr_dyn_global_symbol_get(ScrSym *key); /* borrowed key; +1 value */
 void scr_dyn_global_symbol_set(ScrSym *key, ScrDyn *value); /* both borrowed */
 bool scr_dyn_global_symbol_has(ScrSym *key);
@@ -1450,6 +1524,9 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
 /* Gives a function box made with thunk its typed message entry (an
  * EventEmitter listener registered from it keeps the entry). */
 void scr_dyn_func_set_message(ScrDyn *fn, ScrDynThunk thunk, ScrDynMessageListener listener);
+/* Sets a freshly boxed function's `length` (a builtin function value whose
+ * length is not its adapter's parameter count). */
+void scr_dyn_function_set_length(ScrDyn *fn, uint32_t length);
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
 /* EventEmitter and the stream constructors as untyped constructor values,
  * and instanceof over untyped constructor functions
@@ -1490,6 +1567,9 @@ ScrDyn *scr_dyn_builtin_stream_object(struct ScrStream *s);
 ScrDyn *scr_dyn_builtin_stream_view(struct ScrStream *s);
 struct ScrStream *scr_dyn_builtin_stream_check(const ScrDyn *value, double kind);
 struct ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr *message);
+/* stream.unboxDynStage in those programs (scr_stream_unbox_dyn_stage's
+ * contract, also taking constructor-function streams). */
+struct ScrStream *scr_dyn_builtin_stream_unbox_stage(const ScrDyn *value, const ScrStr *message);
 /* stream.dynNative in those programs: scr_stream_dyn_native's contract,
  * also taking constructor-function streams that keep the runtime's write
  * and end (+1 or NULL). */
@@ -1541,6 +1621,10 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
 /* The Date object a checked-dynamic Date handle holds, +1, or NULL with
  * the check failure pending. */
 ScrDate *scr_dyn_native_date_check(const ScrDyn *value, const ScrDynPath *path);
+/* Names the analysis-proven fact the next checked conversion checks
+ * (shape inference's overlay), or NULL: its failure then reports a compiler
+ * analysis bug ("<package> <file>:<line>"). */
+void scr_dyn_inferred_site(const char *site);
 
 /* Matchers and builders of recursive shapes (records and arrays whose type
  * reaches itself) track the dyn values they visit, so cyclic values match
@@ -1576,6 +1660,19 @@ void scr_dyn_build_add(const ScrDyn *d, const void *builder, void *value);
 void scr_dyn_build_note(const ScrDyn *d, const void *builder, void *value);
 void scr_dyn_build_rekey(const ScrDyn *d, const void *builder, void *value);
 ScrDyn *scr_dyn_visit_view(const ScrDyn *capsule);
+
+/* A union's builder converts the arm whose literal discriminator and
+ * complete structure matched; every value inside that arm then matched its
+ * own type too. Between scr_dyn_trust_enter and scr_dyn_trust_exit (which
+ * restores the value enter returned), scr_dyn_trusted_build answers true,
+ * and the builder of a nested union whose arms' literals are disjoint picks
+ * a plain object's arm by its literal alone instead of matching the arm's
+ * structure again (dyn.ts unionArmMatch). Code a getter or proxy trap runs
+ * sees false, and so does the rest of the conversion once such code has
+ * run: it can return a value the match never saw. */
+bool scr_dyn_trust_enter(void);
+void scr_dyn_trust_exit(bool previous);
+bool scr_dyn_trusted_build(void);
 
 /* ── native handles in the checked-dynamic tree (SCR_DYN_HANDLE) ────────────────────────
  * Per-tag dispatch ops, registered by the handle's owning unit
@@ -1876,7 +1973,8 @@ extern void scr_dyn_listener_fire_data(ScrClosure *cb, ScrBytes *chunk);
 extern void scr_dyn_listener_fire_err(ScrClosure *cb, ScrStr *msg);
 
 void *scr_dyn_retain_v(void *d);
-/* After a compiled fast path decremented a surviving capsule or handle. */
+/* After a compiled fast path decremented a surviving value of a kind that
+ * can be a cycle candidate and is not one yet (scr_json.c). */
 void scr_dyn_release_survivor(ScrDyn *d);
 void scr_dyn_release_v(void *d);
 void scr_dyn_trace_v(void *d, ScrTraceVisit visit, void *ctx);
@@ -1890,6 +1988,9 @@ long scr_dyn_live_count(void);
  * scr_json.c, which programs with dynamic-tier code link. */
 /* The builtin Object.prototype node, or NULL before its first use. */
 const ScrDyn *scr_dyn_tier_object_prototype(void);
+/* A read site's answer for a native array's length or a native iterator's
+ * next (scr_js_get_probe_native): +1, or NULL. */
+ScrDyn *scr_dyn_tier_unshaped_get(const ScrDyn *receiver, const ScrStr *key);
 /* Shared key bytes for `key` (+1, NUL-terminated), and their release. */
 char *scr_dyn_tier_key_copy(const char *key, size_t key_len);
 void scr_dyn_tier_key_release(char *key, size_t key_len);
