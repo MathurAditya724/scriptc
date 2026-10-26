@@ -36,3 +36,20 @@ function local(list: Entry[]): boolean {
   return view === list && kept === list;
 }
 console.log(local(entries), entries[0]!.hits, entries[0]!.note);
+
+// An annotated const that kept its initializer's layout is that value when it
+// is passed on: the callee's writes reach both names.
+function track(list: Counted[], key: string): void {
+  list.push({ key, hits: 0 });
+}
+function viaAlias(): string {
+  const source: Entry[] = [{ key: "s", hits: 1, note: "kept" }];
+  const view: Counted[] = source;
+  track(view, "t");
+  return `${view.length} ${source.length} ${view === source}`;
+}
+console.log(viaAlias());
+const moduleSource: Entry[] = [{ key: "m", hits: 1 }];
+const moduleView: Counted[] = moduleSource;
+track(moduleView, "n");
+console.log(moduleView.length, moduleSource.length, moduleView === moduleSource);

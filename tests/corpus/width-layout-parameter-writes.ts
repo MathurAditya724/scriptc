@@ -71,3 +71,26 @@ function fill(params: Slot[], n: number): void {
 const deep: Param[] = [];
 fill(deep, 3);
 console.log(names(deep), deep.length);
+
+// Recursive layouts: a tree with an optional field passed where a tree
+// without it is expected.
+interface Tree {
+  label: string;
+  kids: Tree[];
+  note?: string;
+}
+interface Plain {
+  label: string;
+  kids: Plain[];
+}
+function addKid(t: Plain, label: string): void {
+  t.kids.push({ label, kids: [] });
+}
+function size(t: Plain): number {
+  let n = 1;
+  for (const k of t.kids) n += size(k);
+  return n;
+}
+const tree: Tree = { label: "r", kids: [{ label: "a", kids: [], note: "leaf" }] };
+addKid(tree, "b");
+console.log(size(tree), tree.kids.map((k) => k.label).join(","), tree.kids[0]!.note);

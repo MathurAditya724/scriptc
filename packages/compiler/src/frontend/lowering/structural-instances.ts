@@ -49,17 +49,29 @@ function namesExistingValue(arg: ts.Expression): boolean {
  * elements. Every value that code stores converts into `from` by completing
  * the optional fields as absent, so reads and writes through either type see
  * one value. */
-function standsFor(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+function standsFor(
+  lowerer: Lowerer,
+  from: IrType,
+  to: IrType,
+  assumed: Set<string> = new Set(),
+): boolean {
   if (typeEquals(from, to)) return true;
-  if (from.kind === "array" && to.kind === "array") return standsFor(lowerer, from.elem, to.elem);
+  if (from.kind === "array" && to.kind === "array")
+    return standsFor(lowerer, from.elem, to.elem, assumed);
   if (from.kind !== "record" || to.kind !== "record") return false;
+  // Recursive layouts (`{ kids: Tree[] }` against `{ kids: Plain[] }`) meet
+  // the same pair again inside their fields; the pair holds there if it
+  // holds for the other fields.
+  const pair = `${from.shapeId}>${to.shapeId}`;
+  if (assumed.has(pair)) return true;
+  assumed.add(pair);
   const source = lowerer.shapes.get(from.shapeId);
   const target = lowerer.shapes.get(to.shapeId);
   if (!source || !target || source.tuple || target.tuple) return false;
   if (source.indexValue || target.indexValue) return false;
   for (const field of target.fields) {
     const kept = source.fields.find((f) => f.name === field.name);
-    if (!kept || !standsFor(lowerer, kept.type, field.type)) return false;
+    if (!kept || !standsFor(lowerer, kept.type, field.type, assumed)) return false;
   }
   return source.fields.every(
     (field) =>
@@ -139,7 +151,7 @@ export function structuralCallInstance(
     // whose fields also take undefined) keeps its own boundary conversion.
     const own = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(params[index]!.name));
     if (!own || !typeEquals(own, declared.type)) return;
-    const checker = lowerer.typeOf(arg);
+    const checker = preservedLayoutOf(lowerer, arg) ?? lowerer.typeOf(arg);
     const type = lowerer.mapTypeOf(checker);
     if (type && copies(lowerer, type, declared.type)) bound.push({ index, type, checker });
   });
@@ -163,7 +175,18 @@ export function structuralCallInstance(
   } finally {
     lowerer.implicitParamTypes = previous;
   }
-  return internImplicitInstanceOr(lowerer, expr, info, shapes, argTypes, "", returnType, true);
+  const instance = internImplicitInstanceOr(
+    lowerer,
+    expr,
+    info,
+    shapes,
+    argTypes,
+    "",
+    returnType,
+    true,
+  );
+  if (instance) for (const { index } of bound) lowerer.layoutKeptNodes.add(args[index]!);
+  return instance;
 }
 
 /** The layout of the value an existing-value expression names: a binding's
@@ -224,6 +247,17 @@ export function layoutReturnType(
   return layout ?? declared;
 }
 
+/** The initializer type of a const the argument names when the const kept
+ * that initializer's layout (keepsInitializerLayout): the checker types the
+ * binding by its annotation, but its value has the initializer's layout. */
+function preservedLayoutOf(lowerer: Lowerer, arg: ts.Expression): ts.Type | undefined {
+  let e = arg;
+  while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+  if (!ts.isIdentifier(e)) return undefined;
+  const symbol = lowerer.resolveValueSymbol(e);
+  return symbol ? lowerer.preservedLayoutTypes.get(symbol) : undefined;
+}
+
 /** Whether a `const` binding typed `declared` keeps the record or array
  * layout `actual` of an initializer that names an existing value or returns
  * one, instead of converting it by a copy. Fresh literals convert as
@@ -239,4 +273,16 @@ export function keepsInitializerLayout(
   if (!namesExistingValue(e) && !ts.isCallExpression(e)) return false;
   if (lowerer.isRuntimeOptionalRecordVariant(actual, declared)) return false;
   return copies(lowerer, actual, declared);
+}
+
+/** Records that the const `decl` keeps its initializer's layout, so calls
+ * that pass it bind the initializer's type (preservedLayoutOf). */
+export function notePreservedLayout(lowerer: Lowerer, decl: ts.VariableDeclaration): void {
+  if (!ts.isIdentifier(decl.name) || !decl.initializer) return;
+  const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+  if (!symbol) return;
+  const initializer =
+    preservedLayoutOf(lowerer, decl.initializer) ?? lowerer.typeOf(decl.initializer);
+  lowerer.preservedLayoutTypes.set(symbol, initializer);
+  lowerer.layoutKeptNodes.add(decl.initializer);
 }
