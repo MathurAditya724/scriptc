@@ -30,6 +30,40 @@ test.each([
   }
 });
 
+test.each([
+  [
+    "a void conditional tail",
+    `
+for (const flag of [false, true]) {
+  false || ((new (class { static value = 1; })() && flag)
+    ? console.log('a') : console.log('b'));
+}
+`,
+  ],
+  ["a loop initializer", "for (false || new (class { static value = 1; })(); false;) {}"],
+])(
+  "discarded logical expressions preserve class initializer fences in %s",
+  async (_name, source) => {
+    const { dir, entry } = fixture(source);
+    try {
+      const result = await compile(entry, {
+        outDir: dir,
+        outPath: join(dir, "program"),
+        sanitize: process.env["SCRIPTC_SAN"] === "1",
+      });
+      if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+      const run = spawnSync(result.binaryPath, { encoding: "utf8", timeout: 30_000 });
+      expect(run.error).toBeUndefined();
+      expect(run.status).toBe(1);
+      expect(run.stdout).toBe("");
+      expect(run.stderr).toContain("SC1090");
+      expect(run.stderr).toContain("class expressions with static initializers");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("data descriptor changes on native fields match Node", async () => {
   const { dir, entry } = fixture(`
 class Value { constructor() { this.x = 1; } }

@@ -8855,13 +8855,13 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     return { kind: "block", body: [], loc: locOf(expr) };
   }
   if (
-    stmtNode !== undefined &&
-    ts.isExpressionStatement(stmtNode) &&
     ts.isBinaryExpression(expr) &&
     (expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
       expr.operatorToken.kind === ts.SyntaxKind.BarBarToken)
   ) {
-    return lowerDiscardedLogical(lowerer, expr);
+    if (hasVoidConditionalTail(lowerer, expr.right)) return lowerLogicalStatement(lowerer, expr);
+    if (stmtNode !== undefined && ts.isExpressionStatement(stmtNode))
+      return lowerDiscardedLogical(lowerer, expr);
   }
   const value = lowerer.lowerExpr(expr);
   // A bare unit-literal statement (`undefined;`): a pure no-op in JS,
@@ -8904,6 +8904,35 @@ function lowerDiscardedLogical(lowerer: Lowerer, expr: ts.BinaryExpression): IrS
     if (!local) throw e;
     lowerer.diags.length = diagsBefore;
   }
+  return lowerLogicalStatement(lowerer, expr);
+}
+
+/** Decide before value lowering: a failed probe can leave collected class state behind. */
+function hasVoidConditionalTail(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (
+    ts.isBinaryExpression(expr) &&
+    (expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+      expr.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      expr.operatorToken.kind === ts.SyntaxKind.CommaToken)
+  ) {
+    return hasVoidConditionalTail(lowerer, expr.right);
+  }
+  if (!ts.isConditionalExpression(expr)) return false;
+  const condition = stripTypeWrappers(expr.condition);
+  // Keep existing value IR when pure selection reaches a represented value.
+  const decided =
+    condition.kind === ts.SyntaxKind.TrueKeyword || lowerer.isStdlibGlobal(condition, "Buffer")
+      ? true
+      : condition.kind === ts.SyntaxKind.FalseKeyword
+        ? false
+        : staticCondition(lowerer, condition);
+  if (decided !== null)
+    return hasVoidConditionalTail(lowerer, decided ? expr.whenTrue : expr.whenFalse);
+  return lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind === "void";
+}
+
+function lowerLogicalStatement(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt {
   const and = expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken;
   const cond = lowerer.lowerCondition(expr.left);
   if (cond.kind === "boolLit") {
