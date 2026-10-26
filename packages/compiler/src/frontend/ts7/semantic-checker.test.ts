@@ -25,6 +25,7 @@ const source = [
   "export function predicate(value: unknown): value is Box { return value instanceof Box; }",
   "export function rest(...values: number[]): number { return values.length; }",
   "export function receiver(this: Box, value: number): number { return value; }",
+  'export enum Kind { A = 1, B = "b", C = A + 2, D }',
 ].join("\n");
 
 let directory: string;
@@ -158,6 +159,35 @@ for (const server of servers)
         }
         expect(() => actual.file.sourceFile).toThrow("expected a source file root");
       }
+    } finally {
+      snapshot.dispose();
+      sdkSnapshot.dispose();
+    }
+  });
+
+for (const server of servers)
+  test(`enum member constant values match the pinned SDK (${server.name})`, () => {
+    const session = sessions.get(server.name)!;
+    const snapshot = session.updateSnapshot({ openProjects: [config] });
+    const sdkSnapshot = oracle.updateSnapshot({ openProjects: [config] });
+    try {
+      const project = snapshot.getProject(config)!;
+      const sdk = sdkSnapshot.getProject(config)!;
+      const statement = project.program.getSourceFile(file)!.statements.nodes[11]!;
+      const expected = Reflect.get(
+        sdk.program.getSourceFile(file)!.statements[11]!,
+        "members",
+      ) as SdkNode[];
+      const members = statement.members!.nodes;
+      expect(members.map((member) => project.checker.getConstantValue(member))).toEqual(
+        expected.map((member) => sdk.checker.getConstantValue(member)),
+      );
+      expect(members.map((member) => project.checker.getConstantValue(member))).toEqual([
+        1,
+        "b",
+        3,
+        4,
+      ]);
     } finally {
       snapshot.dispose();
       sdkSnapshot.dispose();

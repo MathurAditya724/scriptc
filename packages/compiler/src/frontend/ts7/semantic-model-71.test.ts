@@ -112,3 +112,26 @@ test("TypeScript 7.1 requests name types and signatures as 7.1 does", () => {
   expect(checker.isUndefinedSymbol(undefinedSymbol)).toBe(true);
   expect(checker.isUnknownSymbol(undefinedSymbol)).toBe(false);
 });
+
+test("TypeScript 7.1 constant values are read from their answer object", () => {
+  const answers = [
+    { isNumber: true, value: 1 },
+    { isNumber: false, value: "a" },
+    { isNumber: true, value: "+Infinity" },
+    { isNumber: true, value: "-Infinity" },
+    { isNumber: true, value: "NaN" },
+    null,
+  ];
+  let next = 0;
+  const { checker } = server((method) => {
+    expect(method).toBe("getConstantValue");
+    return answers[next++];
+  });
+  const node = { id: "2.306./main.ts" } as Parameters<typeof checker.getConstantValue>[0];
+  expect(checker.getConstantValue(node)).toBe(1);
+  expect(checker.getConstantValue(node)).toBe("a");
+  expect(checker.getConstantValue(node)).toBe(Infinity);
+  expect(checker.getConstantValue(node)).toBe(-Infinity);
+  expect(checker.getConstantValue(node)).toBeNaN();
+  expect(checker.getConstantValue(node)).toBeUndefined();
+});

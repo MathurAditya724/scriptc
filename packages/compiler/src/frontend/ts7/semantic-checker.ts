@@ -103,6 +103,13 @@ interface IndexInfoResponse71 {
   declaration?: string;
 }
 
+/** TypeScript 7.1's getConstantValue answer: the value, with a number's
+ * non-finite values written as "+Infinity", "-Infinity" and "NaN". */
+interface ConstantValueResponse71 {
+  isNumber: boolean;
+  value?: string | number | boolean | null;
+}
+
 interface ReferencedSymbolResponse<S> {
   definition: string;
   symbol?: S;
@@ -402,6 +409,16 @@ export class SemanticChecker {
     });
   }
   getConstantValue(node: AstNode): string | number | undefined {
+    if (this.project.ts71()) {
+      const data = this.project.request<ConstantValueResponse71 | null>("getConstantValue", {
+        location: node.id,
+      });
+      const value = data?.value;
+      if (typeof value === "number") return value;
+      if (typeof value !== "string") return undefined;
+      if (!data!.isNumber) return value;
+      return value === "+Infinity" ? Infinity : value === "-Infinity" ? -Infinity : NaN;
+    }
     return (
       this.project.request<string | number | null>("getConstantValue", { location: node.id }) ??
       undefined
