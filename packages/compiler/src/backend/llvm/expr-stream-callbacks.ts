@@ -684,11 +684,15 @@ export function streamCbThunkFor(
     passed.push(`ptr %sr`);
   }
   // The stream-owning completion closure (a 1-cap closure boxing the
-  // retained stream) — shared by the typed and dyn done shapes. The
-  // stream reuses it while it holds the only reference.
+  // retained stream) — shared by the typed and dyn done shapes. Every
+  // write and writev call receives the same one, as Node passes one
+  // onwrite function; other calls receive a new one, which the stream
+  // reuses while it holds the only reference.
+  const doneEntry =
+    kind === "w" || kind === "v" ? "scr_stream_write_closure" : "scr_stream_done_closure";
   const doneClosure = (fnRef: string, tag: string): string => {
-    host.declare(`declare ptr @scr_stream_done_closure(ptr, ptr)`);
-    d.push(`  %${tag}clo = call ptr @scr_stream_done_closure(ptr %s, ptr ${fnRef})`);
+    host.declare(`declare ptr @${doneEntry}(ptr, ptr)`);
+    d.push(`  %${tag}clo = call ptr @${doneEntry}(ptr %s, ptr ${fnRef})`);
     return `%${tag}clo`;
   };
   for (let i = off; i < declared.length; i++) {
