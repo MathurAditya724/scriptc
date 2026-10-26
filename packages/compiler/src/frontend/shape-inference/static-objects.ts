@@ -1207,10 +1207,6 @@ export function planStaticObjectRewrites(
     if (parent === undefined || ts.isDeleteExpression(parent)) continue;
     if (!ts.isPropertyAccessExpression(node)) continue;
     if (topStatement(node) === null) continue;
-    // The receiver's evaluation is dropped, and the binding exists from the
-    // store on (a function) or from its declaration on (a class).
-    if (!pureReceiver(node.expression, node)) continue;
-    if (!runsAfter(node, storeOf.get(field.values[0]!)!)) continue;
     // The reference replaces the whole member expression: its receiver
     // must be one that evaluating runs no code.
     if (!effectFree(node.expression)) {
@@ -1221,6 +1217,10 @@ export function planStaticObjectRewrites(
       kept.push(`reference ${node.getText()}: it may run before the member is stored`);
       continue;
     }
+    // The receiver's evaluation is dropped, and the binding exists from the
+    // store on (a function) or from its declaration on (a class).
+    if (!pureReceiver(node.expression, node)) continue;
+    if (!runsAfter(node, storeOf.get(field.values[0]!)!)) continue;
     if (node.getSourceFile() !== field.values[0]!.node!.getSourceFile()) {
       const text = crossFileReference(node, field.values[0]!.node!.getSourceFile(), name);
       if (text === null) continue;

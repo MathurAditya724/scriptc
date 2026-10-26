@@ -184,7 +184,11 @@ export function streamTypedRefCommitAdapter(
   }
   if (t.kind === "array") {
     const commit = `${snapshot}_commit`;
-    const check = host.dyn.dynCheckHelper(t);
+    // A value the element type cannot hold stays in the array as a foreign
+    // element where the program can store one (LlEmitter.mayHoldForeign).
+    const check = host.mayHoldForeign(t.elem)
+      ? host.dyn.dynViewArrayHelper(t)
+      : host.dyn.dynCheckHelper(t);
     host.declare(`declare void @scr_arr_release(ptr)`);
     host.declare(`declare void @scr_arr_outline(ptr)`);
     host.declare(`declare void @scr_arr_adopt_view_properties(ptr, ptr, ptr)`);
@@ -792,13 +796,16 @@ export function streamTypedRefMaterializeAdapter(
   t: IrType,
 ): LlStreamTypedRefAdapter {
   const key = typeKey(t);
-  const existing = host.liveDynRefAdapters.get(key);
+  // A `(T | undefined)[]` stored as T elements shares T[]'s capsule type,
+  // but its adapters also store undefined elements.
+  const adapterKey = t.kind === "array" && t.optionalElements ? `${key}?` : key;
+  const existing = host.liveDynRefAdapters.get(adapterKey);
   if (existing) return existing;
   // The converter depends only on the static type. Intern the complete
   // graph across roots and union arms so recursive types emit once.
   const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
   const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
-  host.liveDynRefAdapters.set(key, adapter);
+  host.liveDynRefAdapters.set(adapterKey, adapter);
   host.journal?.allocated(
     snapshot.replace(/_materialize$/, ""),
     "streamTypedRefMaterializeAdapter",
@@ -1232,6 +1239,21 @@ export function streamTypedRefMaterializeAdapter(
       B.line(`call void @scr_dyn_arr_push_hole(ptr ${out})`);
       B.br(doneLabel);
       B.startBlock(undefinedLabel);
+      if (host.mayHoldForeign(elem)) {
+        // A foreign element (SCR_ARR_FOREIGN) holds its own value.
+        const foreign = B.tmp();
+        const foreignLabel = B.newLabel("live.array.foreign");
+        const presentUndefined = B.newLabel("live.array.present.undefined");
+        B.line(`${foreign} = fcmp oeq double ${state}, 3.0`);
+        B.condBr(foreign, foreignLabel, presentUndefined);
+        B.startBlock(foreignLabel);
+        host.declare(`declare ptr @scr_arr_get_foreign(ptr, double)`);
+        const payload = B.tmp();
+        B.line(`${payload} = call ptr @scr_arr_get_foreign(ptr %p, double ${index}) ; +1`);
+        B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${payload})`);
+        B.br(doneLabel);
+        B.startBlock(presentUndefined);
+      }
       const undefinedValue = B.tmp();
       const retained = B.tmp();
       B.line(`${undefinedValue} = call ptr @scr_dyn_undefined()`);
@@ -1312,13 +1334,34 @@ function liveArrayOps(
   G.terminate(`ret ptr ${boxed}`);
 
   const S = new BlockBuilder();
+  if (t.optionalElements) {
+    // A `(T | undefined)[]` stores undefined as a present undefined.
+    const undef = host.dyn.isUndefined(S, "%v");
+    const storeUndefined = S.newLabel("live.array.undefined");
+    const other = S.newLabel("live.array.value");
+    S.condBr(undef, storeUndefined, other);
+    S.startBlock(storeUndefined);
+    host.declare(`declare void @scr_arr_set_undefined(ptr, double)`);
+    S.line(`call void @scr_arr_set_undefined(ptr %p, double %i)`);
+    S.terminate(`ret i1 true`);
+    S.startBlock(other);
+  }
   const fits = S.tmp();
   S.line(`${fits} = call zeroext i1 @${host.dyn.dynMatchHelper(elem)}(ptr %v)`);
   const store = S.newLabel("live.array.store");
   const refuse = S.newLabel("live.array.refuse");
   S.condBr(fits, store, refuse);
   S.startBlock(refuse);
-  S.terminate(`ret i1 false`);
+  if (host.mayHoldForeign(elem)) {
+    // The array keeps a value its element type cannot hold as a foreign
+    // element, and undefined as a present undefined.
+    host.declare(`declare zeroext i1 @scr_arr_set_foreign(ptr, double, ptr)`);
+    const kept = S.tmp();
+    S.line(`${kept} = call zeroext i1 @scr_arr_set_foreign(ptr %p, double %i, ptr %v)`);
+    S.terminate(`ret i1 ${kept}`);
+  } else {
+    S.terminate(`ret i1 false`);
+  }
   S.startBlock(store);
   const next = S.tmp();
   S.line(

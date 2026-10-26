@@ -427,6 +427,14 @@ export function analyzeShapes(
 }
 
 class Analyzer {
+  /** locLabel per node: sink reasons and atom labels name the same sites
+   * over and over, and each label reads the file's text for its line. */
+  private readonly locLabels = new Map<Node, string>();
+  private loc(node: Node): string {
+    let label = this.locLabels.get(node);
+    if (label === undefined) this.locLabels.set(node, (label = locLabel(node)));
+    return label;
+  }
   readonly atoms = new AtomTable();
   readonly nodes: ValueNode[] = [];
   readonly functions = new Map<string, FunctionInfo>();
@@ -1079,7 +1087,7 @@ class Analyzer {
       if (this.traceTop)
         this.nodeLabel.set(
           id,
-          `binding ${(decl as { name?: { text?: string } }).name?.text ?? "?"}@${locLabel(decl)}${this.ctx !== "" ? ` [${this.ctx}]` : ""}`,
+          `binding ${(decl as { name?: { text?: string } }).name?.text ?? "?"}@${this.loc(decl)}${this.ctx !== "" ? ` [${this.ctx}]` : ""}`,
         );
     }
     return id;
@@ -1164,7 +1172,7 @@ class Analyzer {
     const nameNode = (fn as { name?: Node }).name;
     const name = nameNode !== undefined ? (propertyNameText(nameNode) ?? "<computed>") : null;
     const owner = ownerClass !== null ? this.className(ownerClass) : null;
-    const label = `${owner !== null ? `${owner}.` : ""}${name ?? (ts.isConstructorDeclaration(node) ? "constructor" : "<fn>")}@${locLabel(node)}`;
+    const label = `${owner !== null ? `${owner}.` : ""}${name ?? (ts.isConstructorDeclaration(node) ? "constructor" : "<fn>")}@${this.loc(node)}`;
     const info: FunctionInfo = {
       node,
       ctx,
@@ -1213,7 +1221,7 @@ class Analyzer {
       if (p.dotDotDotToken !== undefined) {
         const arr = this.atoms.intern(`rest:${this.nodes.length}`, () => ({
           kind: "array",
-          label: `rest@${locLabel(p)}`,
+          label: `rest@${this.loc(p)}`,
           node: p,
         }));
         this.add(this.binding(p), arr);
@@ -1259,7 +1267,7 @@ class Analyzer {
     const p = decl.parent;
     if (p !== undefined && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name))
       return p.name.text;
-    return `<class@${locLabel(decl)}>`;
+    return `<class@${this.loc(decl)}>`;
   }
 
   classAtoms(decl: Node): { cls: Atom; inst: Atom } {
@@ -1300,7 +1308,7 @@ class Analyzer {
       ctx: "",
       root: null,
       walked: true,
-      label: `${label}.${suffix}@${locLabel(decl)}`,
+      label: `${label}.${suffix}@${this.loc(decl)}`,
       params: [],
       rest: -1,
       thisNode: this.newNode(),
@@ -1450,7 +1458,7 @@ class Analyzer {
     if (this.isFactory(callee.node)) {
       const d = this.atoms.intern(`dict:${this.nodeKey(site)}`, () => ({
         kind: "dictionary",
-        label: `Object.create@${locLabel(site)}`,
+        label: `Object.create@${this.loc(site)}`,
         node: site,
       }));
       this.add(dst, d);
@@ -1584,7 +1592,7 @@ class Analyzer {
   syntheticArray(site: Node, tag: string): Atom {
     return this.atoms.intern(`arr:${tag}:${this.nodeKey(site)}`, () => ({
       kind: "array",
-      label: `${tag}[]@${locLabel(site)}`,
+      label: `${tag}[]@${this.loc(site)}`,
       node: site,
     }));
   }
@@ -1692,7 +1700,7 @@ class Analyzer {
       return;
     }
     if (ts.isThrowStatement(s)) {
-      this.sink(this.expr(s.expression), `thrown at ${locLabel(s)}`);
+      this.sink(this.expr(s.expression), `thrown at ${this.loc(s)}`);
       return;
     }
     if (
@@ -1768,7 +1776,7 @@ class Analyzer {
            Symbol.iterator member have a computed key; they are G sites. */
       } else {
         this.add(dst, this.top);
-        if (a.kind !== "top") this.escape(a, `iterated at ${locLabel(site)}`);
+        if (a.kind !== "top") this.escape(a, `iterated at ${this.loc(site)}`);
       }
     });
   }
@@ -1784,7 +1792,7 @@ class Analyzer {
     if (this.traceTop && !this.nodeLabel.has(id))
       this.nodeLabel.set(
         id,
-        `expr ${e.getText().slice(0, 40).replace(/\s+/g, " ")}@${locLabel(e)}`,
+        `expr ${e.getText().slice(0, 40).replace(/\s+/g, " ")}@${this.loc(e)}`,
       );
     return id;
   }
@@ -1918,7 +1926,7 @@ class Analyzer {
     if (ts.isTaggedTemplateExpression(e)) return this.taggedTemplate(e);
     if (ts.isYieldExpression(e)) {
       if (e.expression !== undefined)
-        this.sink(this.expr(e.expression), `yielded at ${locLabel(e)}`);
+        this.sink(this.expr(e.expression), `yielded at ${this.loc(e)}`);
       return this.constNode(this.top);
     }
     if (ts.isMetaProperty(e)) return this.constNode(this.top);
@@ -2173,7 +2181,7 @@ class Analyzer {
     const spreads: number[] = [];
     const inPackage = isPackageJsFile(e.getSourceFile());
     const label = (): string =>
-      `{${keys.slice(0, 6).join(",")}${keys.length > 6 ? ",…" : ""}${keysKnown ? "" : ",…"}}@${locLabel(e)}`;
+      `{${keys.slice(0, 6).join(",")}${keys.length > 6 ? ",…" : ""}${keysKnown ? "" : ",…"}}@${this.loc(e)}`;
     // keys first, so the label is complete
     for (const p of list(e.properties)) {
       if (ts.isSpreadAssignment(p)) {
@@ -2389,7 +2397,7 @@ class Analyzer {
       sctx === "" ? `arr:${this.nodeKey(e)}` : `arr:${sctx}|${this.nodeKey(e)}`,
       () => ({
         kind: "array",
-        label: `[]@${locLabel(e)}`,
+        label: `[]@${this.loc(e)}`,
         node: e,
         ...(sctx === "" ? {} : { ctx: sctx }),
       }),
@@ -2514,7 +2522,7 @@ class Analyzer {
     if (ts.isIdentifier(t)) {
       const decl = this.resolve(t);
       if (decl === undefined || decl.getSourceFile().isDeclarationFile) {
-        this.sink(value, `global write at ${locLabel(t)}`);
+        this.sink(value, `global write at ${this.loc(t)}`);
         return;
       }
       this.edge(value, this.binding(decl));
@@ -2774,7 +2782,7 @@ class Analyzer {
       switch (a.kind) {
         case "top":
           this.noteTopWrite(name, site);
-          this.sink(value, `stored into ⊤.${name} at ${locLabel(site)}`);
+          this.sink(value, `stored into ⊤.${name} at ${this.loc(site)}`);
           return;
         case "instance": {
           const member = this.lookupMember(a.node!, name, false);
@@ -2802,7 +2810,7 @@ class Analyzer {
           return;
         default:
           if (isPrimitivePrototype(a)) this.extendPrimitives(name);
-          this.sink(value, `stored into ${a.label} at ${locLabel(site)}`);
+          this.sink(value, `stored into ${a.label} at ${this.loc(site)}`);
       }
     });
   }
@@ -2851,7 +2859,7 @@ class Analyzer {
       switch (a.kind) {
         case "top":
           this.noteTopWrite(null, site);
-          this.sink(value, `stored into ⊤[k] at ${locLabel(site)}`);
+          this.sink(value, `stored into ⊤[k] at ${this.loc(site)}`);
           return;
         case "array":
           // An index, or a named property under an unknown key.
@@ -2870,7 +2878,7 @@ class Analyzer {
         default:
           // As a store under a name: a builtin, promise or collection keeps it where it isn't tracked.
           if (isPrimitivePrototype(a)) this.extendPrimitives(null);
-          this.sink(value, `stored into ${a.label}[k] at ${locLabel(site)}`);
+          this.sink(value, `stored into ${a.label}[k] at ${this.loc(site)}`);
       }
     });
   }
@@ -2958,7 +2966,7 @@ class Analyzer {
           if (inst.kind === "instance") this.callConstructorChain(base, inst, args, spread, e);
         });
       } else if (base === undefined)
-        for (const a of args) this.sink(a, `super(...) at ${locLabel(e)}`);
+        for (const a of args) this.sink(a, `super(...) at ${this.loc(e)}`);
       return dst;
     }
     // CommonJS `require("<spec>")` of an analyzed module: its exports (the
@@ -3054,9 +3062,9 @@ class Analyzer {
         case "prim":
           return;
         default:
-          for (const x of args) this.sink(x, `argument of ⊤ call at ${locLabel(site)}`);
+          for (const x of args) this.sink(x, `argument of ⊤ call at ${this.loc(site)}`);
           if (recv !== null && a.kind === "top")
-            this.sink(recv, `receiver of ⊤ call at ${locLabel(site)}`);
+            this.sink(recv, `receiver of ⊤ call at ${this.loc(site)}`);
           this.add(dst, this.top);
       }
     });
@@ -3099,7 +3107,7 @@ class Analyzer {
           this.constructBuiltin(a.path ?? "", args, dst, e);
           return;
         default:
-          for (const x of args) this.sink(x, `argument of ⊤ constructor at ${locLabel(e)}`);
+          for (const x of args) this.sink(x, `argument of ⊤ constructor at ${this.loc(e)}`);
           this.add(dst, this.top);
       }
     });
@@ -3114,7 +3122,7 @@ class Analyzer {
       case "WeakSet": {
         const c = this.atoms.intern(`coll:${this.nodeKey(site)}`, () => ({
           kind: "collection",
-          label: `${path}@${locLabel(site)}`,
+          label: `${path}@${this.loc(site)}`,
           node: site,
         }));
         this.add(dst, c);
@@ -3128,7 +3136,7 @@ class Analyzer {
         this.add(dst, this.builtin("Error.instance"));
         return;
       case "Promise": {
-        const p = this.promiseAtom(site, locLabel(site));
+        const p = this.promiseAtom(site, this.loc(site));
         this.add(this.field(p, "value"), this.top);
         this.add(dst, p);
         if (args[0] !== undefined) {
@@ -3161,11 +3169,11 @@ class Analyzer {
         // The handler's traps run on every operation with the target.
         if (args[0] !== undefined)
           this.ops.push({ kind: "proxy", recv: args[0], name: null, node: site });
-        for (const x of args) this.sink(x, `argument of new Proxy at ${locLabel(site)}`);
+        for (const x of args) this.sink(x, `argument of new Proxy at ${this.loc(site)}`);
         this.add(dst, this.top);
         return;
       default:
-        for (const x of args) this.sink(x, `argument of new ${path} at ${locLabel(site)}`);
+        for (const x of args) this.sink(x, `argument of new ${path} at ${this.loc(site)}`);
         this.add(dst, this.top);
     }
   }
@@ -3192,13 +3200,13 @@ class Analyzer {
           this.callFunction(this.infoOfAtom(f)!, null, cbArgs, false, ret ?? this.newNode(), site);
           this.forceLoop = saved;
         } else if (f.kind === "top" || f.kind === "builtin") {
-          for (const x of cbArgs) this.sink(x, `argument of ⊤ callback at ${locLabel(site)}`);
+          for (const x of cbArgs) this.sink(x, `argument of ⊤ callback at ${this.loc(site)}`);
           if (ret !== null) this.add(ret, this.top);
         }
       });
     };
     const escapeAll = (): void => {
-      for (const x of args) this.sink(x, `argument of ${path} at ${locLabel(site)}`);
+      for (const x of args) this.sink(x, `argument of ${path} at ${this.loc(site)}`);
       this.add(dst, this.top);
     };
     // Methods of builtin receivers.
@@ -3316,7 +3324,7 @@ class Analyzer {
             return;
         }
         escapeAll();
-        this.escape(recv, `array.${method} at ${locLabel(site)}`);
+        this.escape(recv, `array.${method} at ${this.loc(site)}`);
         return;
       }
       if (path.startsWith("string.") || path.startsWith("number.") || path.startsWith("boolean.")) {
@@ -3347,7 +3355,7 @@ class Analyzer {
         return;
       }
       if (path.startsWith("promise.")) {
-        const out = this.promiseAtom(site, locLabel(site));
+        const out = this.promiseAtom(site, this.loc(site));
         const value = this.field(recv, "value");
         const ret = this.newNode();
         if (method === "then") {
@@ -3417,7 +3425,7 @@ class Analyzer {
           if (info !== undefined && args.length > 1) {
             this.activate(info);
             for (const p of info.params) this.add(p, this.top);
-            for (const x of args.slice(1)) this.sink(x, `bound argument at ${locLabel(site)}`);
+            for (const x of args.slice(1)) this.sink(x, `bound argument at ${this.loc(site)}`);
           }
           this.add(dst, recv);
           return;
@@ -3516,7 +3524,7 @@ class Analyzer {
           for (const s of args.slice(1)) this.copyFields(s, t, site);
           if (t.kind === "top")
             for (const s of args.slice(1))
-              this.sink(s, `Object.assign into ⊤ at ${locLabel(site)}`);
+              this.sink(s, `Object.assign into ⊤ at ${this.loc(site)}`);
         });
         this.edge(arg(0), dst);
         return;
@@ -3529,21 +3537,21 @@ class Analyzer {
           arg(0),
           path === "Object.defineProperties" ? null : literalKey(site, 1),
         );
-        this.sink(arg(2), `property descriptor at ${locLabel(site)}`);
-        this.sink(arg(1), `property descriptor at ${locLabel(site)}`);
+        this.sink(arg(2), `property descriptor at ${this.loc(site)}`);
+        this.sink(arg(1), `property descriptor at ${this.loc(site)}`);
         this.edge(arg(0), dst);
         return;
       case "Object.setPrototypeOf":
       case "Reflect.setPrototypeOf":
         this.ops.push({ kind: "setPrototypeOf", recv: arg(0), name: null, node: site });
         this.prototypeWrite(arg(0), null);
-        this.sink(arg(1), `prototype at ${locLabel(site)}`);
+        this.sink(arg(1), `prototype at ${this.loc(site)}`);
         this.edge(arg(0), dst);
         return;
       case "Object.create": {
         const d = this.atoms.intern(`dict:${this.nodeKey(site)}`, () => ({
           kind: "dictionary",
-          label: `Object.create@${locLabel(site)}`,
+          label: `Object.create@${this.loc(site)}`,
           node: site,
         }));
         this.add(dst, d);
@@ -3552,7 +3560,7 @@ class Analyzer {
       case "Object.fromEntries": {
         const d = this.atoms.intern(`dict:${this.nodeKey(site)}`, () => ({
           kind: "dictionary",
-          label: `fromEntries@${locLabel(site)}`,
+          label: `fromEntries@${this.loc(site)}`,
           node: site,
         }));
         const pairs = this.newNode();
@@ -3601,7 +3609,7 @@ class Analyzer {
                 site,
               );
             else if (f.kind === "top")
-              this.sink(revived, `JSON.parse reviver at ${locLabel(site)}`);
+              this.sink(revived, `JSON.parse reviver at ${this.loc(site)}`);
           });
         this.edge(revived, dst);
         return;
@@ -3628,7 +3636,7 @@ class Analyzer {
                 site,
               );
             else if (f.kind === "top")
-              this.sink(serialized, `JSON.stringify replacer at ${locLabel(site)}`);
+              this.sink(serialized, `JSON.stringify replacer at ${this.loc(site)}`);
           });
         prim("string");
         prim("undefined");
@@ -3654,7 +3662,7 @@ class Analyzer {
           if (c.kind === "builtin" && c.path === "Proxy")
             this.ops.push({ kind: "proxy", recv: listed, name: null, node: site });
         });
-        this.sink(listed, `argument of ${path} at ${locLabel(site)}`);
+        this.sink(listed, `argument of ${path} at ${this.loc(site)}`);
         escapeAll();
         return;
       }
@@ -3683,23 +3691,23 @@ class Analyzer {
         prim("bigint");
         return;
       case "Promise.resolve": {
-        const p = this.promiseAtom(site, locLabel(site));
+        const p = this.promiseAtom(site, this.loc(site));
         if (args[0] !== undefined) this.awaitInto(args[0], this.field(p, "value"));
         else this.add(this.field(p, "value"), this.prim("undefined"));
         this.add(dst, p);
         return;
       }
       case "Promise.reject": {
-        const p = this.promiseAtom(site, locLabel(site));
+        const p = this.promiseAtom(site, this.loc(site));
         this.add(dst, p);
-        if (args[0] !== undefined) this.sink(args[0], `rejection at ${locLabel(site)}`);
+        if (args[0] !== undefined) this.sink(args[0], `rejection at ${this.loc(site)}`);
         return;
       }
       case "Promise.all":
       case "Promise.allSettled":
       case "Promise.race":
       case "Promise.any": {
-        const p = this.promiseAtom(site, locLabel(site));
+        const p = this.promiseAtom(site, this.loc(site));
         const items = this.newNode();
         if (args[0] !== undefined) this.iterateInto(args[0], items, site);
         if (path === "Promise.all") {
@@ -3713,7 +3721,7 @@ class Analyzer {
         return;
       }
       case "promise.resolver":
-        for (const x of args) this.sink(x, `promise resolution at ${locLabel(site)}`);
+        for (const x of args) this.sink(x, `promise resolution at ${this.loc(site)}`);
         return;
     }
     if (path.startsWith("console.")) {

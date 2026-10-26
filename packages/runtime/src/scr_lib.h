@@ -63,6 +63,9 @@ bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
  * direct startup never filters user arguments. */
 bool scr_lib_should_collapse_reexec_arg(ScrStr *cmd, ScrArr *args);
 ScrStr *scr_process_platform(void); /* +1 interned ("darwin", "linux", ...) */
+/* Whether OpenSSL, as Node 24 links it, names a digest `name` (its names,
+ * aliases and object identifiers, case-insensitively). */
+bool scr_digest_known(const char *name, size_t len);
 ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 
 bool scr_stdio_write(int fd, const void *data, size_t len);
@@ -290,6 +293,7 @@ void scr_fs_mkdir(ScrStr *path);
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
 ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
+ScrArr *scr_fs_readdir_recursive(ScrStr *path); /* relative paths of every entry below path, Node's queue order */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
  * recursive algorithm (existing-dir target is a no-op; errors report
