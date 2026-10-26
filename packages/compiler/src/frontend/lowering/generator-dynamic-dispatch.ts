@@ -441,7 +441,8 @@ export class GeneratorDynamicDispatch {
    * back. Every other iterator, and every early exit (return() through the
    * protocol), keeps the dynamic path. The awaits are the protocol's: a
    * `for await` over an async generator awaits next()'s promise, and over a
-   * sync generator awaits once for the result and once for the value. */
+   * sync generator awaits once for the result and, reached through
+   * Symbol.iterator, once for the value. */
   private stepUntypedLoops(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
     if (this.generators.size === 0 || lowerer.untypedLoops.size === 0) return false;
     // The loop reads next through the getter only once it exists.
@@ -659,8 +660,15 @@ export class GeneratorDynamicDispatch {
         type: DYN,
         loc,
       };
-    // for await over a sync generator: the result awaits once, then the
-    // value (the final one too), as the async-from-sync iterator does.
+    // for await over a sync generator: the result awaits once. When the
+    // loop reached it through Symbol.iterator, the async-from-sync iterator
+    // also awaits the value (the final one too); a sync generator that an
+    // object's Symbol.asyncIterator returns passes the value as it is, as
+    // the protocol does.
+    const fromSync: IrExpr =
+      site.sync === null
+        ? { kind: "boolLit", value: false, type: BOOL, loc }
+        : varRef(site.sync, BOOL, loc);
     return {
       kind: "seqExpr",
       stmts: [
@@ -672,13 +680,27 @@ export class GeneratorDynamicDispatch {
         kind: "ternary",
         cond: doneRef,
         then: {
-          kind: "seqExpr",
-          stmts: [{ kind: "exprStmt", expr: awaitDyn(boxed), loc }],
-          result: dynUndefinedExpr(loc),
+          kind: "ternary",
+          cond: fromSync,
+          then: {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: awaitDyn(boxed), loc }],
+            result: dynUndefinedExpr(loc),
+            type: DYN,
+            loc,
+          },
+          else_: dynUndefinedExpr(loc),
           type: DYN,
           loc,
         },
-        else_: awaitDyn(boxed),
+        else_: {
+          kind: "ternary",
+          cond: fromSync,
+          then: awaitDyn(boxed),
+          else_: boxed,
+          type: DYN,
+          loc,
+        },
         type: DYN,
         loc,
       },

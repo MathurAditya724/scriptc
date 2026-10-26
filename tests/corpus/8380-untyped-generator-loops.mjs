@@ -56,6 +56,12 @@ async function main() {
     },
   };
   console.log("async custom", show(await collectAsync(asyncCustom)));
+  // Symbol.asyncIterator returning a sync generator: each result is awaited,
+  // its value is not, so a yielded promise reaches the loop as a promise.
+  const viaAsyncIterator = { [Symbol.asyncIterator]: () => mixed() };
+  const seen = [];
+  for await (const x of viaAsyncIterator) seen.push(x instanceof Promise ? `promise ${await x}` : x);
+  console.log("async iterator sync", show(seen));
 
   // A generator that has started keeps its position; one that finished stays done.
   const started = numbers(5);
