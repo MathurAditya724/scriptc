@@ -83,6 +83,32 @@ export function parseNativeProfileMatch(stdout: string): NativeProfileMatch | nu
   return null;
 }
 
+/** The share of the functions a profile describes whose control flow changed
+ * since it was collected, above which `scriptc build` warns that the profile
+ * is stale. A freshly collected profile has none. */
+export const STALE_PROFILE_SHARE = 0.1;
+
+/** `scriptc build --profile-use`'s report on stderr: one line with the match,
+ * and a warning line when more than STALE_PROFILE_SHARE of the functions the
+ * profile describes changed since it was collected. */
+export function renderNativeProfileMatch(profile: string, match: NativeProfileMatch): string {
+  const unknown =
+    match.unknownPartitions === 0
+      ? ""
+      : `, ${match.unknownPartitions} partition${match.unknownPartitions === 1 ? "" : "s"} without counts`;
+  const lines = [
+    `scriptc: profile ${profile}: ${match.annotated} functions annotated, ${match.mismatched} mismatched, ${match.missing} without a record${unknown}`,
+  ];
+  const described = match.annotated + match.mismatched;
+  if (described > 0 && match.mismatched / described > STALE_PROFILE_SHARE) {
+    const percent = ((match.mismatched / described) * 100).toFixed(1);
+    lines.push(
+      `scriptc: warning: ${match.mismatched} of the ${described} functions ${profile} describes (${percent}%) changed since it was collected and are optimized without their counts; collect the profile again`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 /** Cache-key part; empty without a profile so other keys are unchanged. */
 export function nativeProfileKey(profile: NativeProfileOptions | undefined): string {
   if (profile?.generate !== undefined) return `profile-generate:${profile.generate}`;

@@ -551,12 +551,13 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       };
     }
     if (rhsClassval?.kind === "classval" && !caught) {
-      const targetInfo = lowerer.classes.get(rhsClassval.className);
+      const targetInfo =
+        lowerer.classes.get(rhsClassval.className) ??
+        lowerer.flushDeferredClass(rhsClassval.className);
       if (!targetInfo) {
         // The type world names a class the lowering never registered
-        // (a fenced class expression, a deferred declaration): flush
-        // its diagnostics and poison the test site, never an ICE.
-        lowerer.flushDeferredClass(rhsClassval.className);
+        // (a fenced class expression, a deferred declaration): its
+        // diagnostics flushed above; poison the test site, never an ICE.
         lowerer.unsupported(
           "SC1090",
           expr,

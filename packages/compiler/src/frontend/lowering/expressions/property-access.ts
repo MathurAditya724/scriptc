@@ -3376,6 +3376,18 @@ export function lowerUnionProperty(
         expr,
       );
   }
+  // An array the checker sees through a union of arrays (`readdirSync`'s
+  // `string[] | Buffer[]`, whose lowering answers the string[] arm).
+  if (value.type.kind === "array" && expr.name.text === "length") {
+    return {
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver: value,
+      args: [],
+      type: F64,
+      loc: locOf(expr),
+    };
+  }
   if (value.type.kind !== "union") {
     lowerer.unsupported(
       "SC1090",
@@ -3651,13 +3663,13 @@ export function classFieldTarget(
   ) {
     return { container: "dynamic", obj: represented, field: fieldName, fieldType: DYN };
   }
-  const info = lowerer.classes.get(receiverType.className);
-  if (!info) {
-    // A receiver typed as a class whose collection deferred: the
-    // deferred diagnostics are what explains the miss.
+  // A receiver typed as a class whose collection deferred: the deferred
+  // diagnostics are what explains the miss (unless the flush registers
+  // the class with dynamic slots, retryDeferred).
+  const info =
+    lowerer.classes.get(receiverType.className) ??
     lowerer.flushDeferredClass(receiverType.className);
-    return null;
-  }
+  if (!info) return null;
   const fieldType = info.fields.get(fieldName);
   const lowerObjectReceiver = (): IrExpr => {
     let obj = represented;

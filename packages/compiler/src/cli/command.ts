@@ -28,6 +28,7 @@ import {
 import { isTypePatchCode } from "../diagnostics/diagnostic.js";
 import { isPerformanceCode, renderPerformanceWarnings } from "../diagnostics/dynamic-tier.js";
 import { isNativeOptimization } from "../backend/optimization.js";
+import { renderNativeProfileMatch } from "../backend/native-profile.js";
 import {
   hostTargetCpu,
   isTargetCpuOption,
@@ -713,6 +714,15 @@ async function main(args: string[], host: CliHost): Promise<number> {
       }
     }
     if (result.artifact.kind === "exe") {
+      // How the profile matched the program's functions; `run` keeps stderr
+      // for the program's own output.
+      const profileUse = values["profile-use"];
+      if (
+        command === "build" &&
+        profileUse !== undefined &&
+        result.artifact.profileMatch !== undefined
+      )
+        process.stderr.write(renderNativeProfileMatch(profileUse, result.artifact.profileMatch));
       if (!values["keep-llvm"]) rmSync(result.artifact.translationUnitPath, { force: true });
     } else if (result.artifact.kind === "obj") {
       nativeLinkInfo = result.artifact.nativeLinkInfo;
