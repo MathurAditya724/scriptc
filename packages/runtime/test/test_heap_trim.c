@@ -18,12 +18,16 @@
 
 #define COUNT 400000
 #define SIZE 48
-#define KEEP_EVERY 1000
 
 _Noreturn void scr_trap(const char *msg) {
   fputs(msg, stderr);
   exit(EXIT_FAILURE);
 }
+
+/* One block kept per KEEP_PAGES pages of blocks, whatever the page size: a
+ * kept block pins its page, so the others hold only free blocks. */
+#define KEEP_PAGES 4
+static size_t keep_every;
 
 static void check(bool condition, const char *message) {
   if (condition) return;
@@ -69,7 +73,7 @@ typedef struct {
 static void *free_remotely(void *arg) {
   RemoteFree *r = arg;
   for (size_t i = r->first; i < r->first + r->count; i++)
-    if (i % KEEP_EVERY != 0) {
+    if (i % keep_every != 0) {
       scr_mem_free(r->blocks[i]);
       r->blocks[i] = NULL;
     }
@@ -83,6 +87,7 @@ static int compare(const void *a, const void *b) {
 }
 
 int main(void) {
+  keep_every = KEEP_PAGES * ((size_t)sysconf(_SC_PAGESIZE) / SIZE + 1);
 #ifdef SCR_WORKERS
   pthread_t churner;
   check(pthread_create(&churner, NULL, churn, NULL) == 0, "start the other thread");
@@ -95,7 +100,7 @@ int main(void) {
     memset(blocks[i], (int)(i & 0xff), SIZE);
   }
   size_t kept = 0;
-  uintptr_t *keep = malloc((COUNT / KEEP_EVERY + 1) * sizeof *keep);
+  uintptr_t *keep = malloc((COUNT / keep_every + 1) * sizeof *keep);
   check(keep != NULL, "keep table");
 #ifdef SCR_WORKERS
   RemoteFree remote = {blocks, 0, COUNT / 4};
@@ -104,7 +109,7 @@ int main(void) {
   check(pthread_join(freer, NULL) == 0, "join the freeing thread");
 #endif
   for (size_t i = 0; i < COUNT; i++) {
-    if (i % KEEP_EVERY == 0) {
+    if (i % keep_every == 0) {
       keep[kept++] = (uintptr_t)blocks[i];
       continue;
     }
@@ -114,11 +119,11 @@ int main(void) {
   scr_heap_trim();
   size_t after = resident();
   check(before > after && before - after >= (size_t)8 << 20, "the free pages go back to the system");
-  for (size_t i = 0; i < COUNT; i += KEEP_EVERY)
+  for (size_t i = 0; i < COUNT; i += keep_every)
     for (size_t j = 0; j < SIZE; j++) check(blocks[i][j] == (unsigned char)(i & 0xff), "kept blocks keep their contents");
   qsort(keep, kept, sizeof *keep, compare);
   for (size_t i = 0; i < COUNT; i++) {
-    if (i % KEEP_EVERY == 0) continue;
+    if (i % keep_every == 0) continue;
     unsigned char *p = scr_mem_alloc(SIZE);
     check(p != NULL, "allocate after the trim");
     uintptr_t key = (uintptr_t)p;
@@ -126,7 +131,7 @@ int main(void) {
     memset(p, 0x5a, SIZE);
     blocks[i] = p;
   }
-  for (size_t i = 0; i < COUNT; i += KEEP_EVERY)
+  for (size_t i = 0; i < COUNT; i += keep_every)
     for (size_t j = 0; j < SIZE; j++) check(blocks[i][j] == (unsigned char)(i & 0xff), "kept blocks survive new allocations");
   for (size_t i = 0; i < COUNT; i++) scr_mem_free(blocks[i]);
 #ifdef SCR_WORKERS
