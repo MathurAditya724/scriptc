@@ -34,7 +34,11 @@ import { varRef } from "../../../ir/build.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
-import { isTemporalGlobalRoot } from "../lower-namespaces.js";
+import {
+  ambientUndefinedFnSymbolOf,
+  ambientUndefinedVarSymbolOf,
+  isTemporalGlobalRoot,
+} from "../lower-namespaces.js";
 import { isF64HandleTyped } from "../f64-handles.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
@@ -218,6 +222,16 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     // Node 24 defines no temporal global: typeof answers "undefined"
     // without reading it, like any undeclared name.
     if (isTemporalGlobalRoot(lowerer, tested, sym)) {
+      return { kind: "strLit", value: "undefined", type: STRING, loc };
+    }
+    // A name the program declares ambiently but nothing defines
+    // (`declare const Bun`, `declare function f(): void`): Node erases the
+    // declaration, so typeof answers "undefined" without reading it, where
+    // a read throws ReferenceError.
+    if (
+      ambientUndefinedVarSymbolOf(lowerer, tested) ||
+      ambientUndefinedFnSymbolOf(lowerer, tested)
+    ) {
       return { kind: "strLit", value: "undefined", type: STRING, loc };
     }
     // `const { inspect } = require("util")` / `import { inspect } from

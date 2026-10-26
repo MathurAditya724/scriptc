@@ -6,7 +6,11 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { compile } from "../packages/compiler/src/index.js";
-import { NATIVE_TARGETS, nativeCodegenTarget } from "../packages/compiler/src/backend/targets.js";
+import {
+  NATIVE_TARGETS,
+  executableStripLinkerArgs,
+  nativeCodegenTarget,
+} from "../packages/compiler/src/backend/targets.js";
 import { tsgoExecutable } from "../packages/compiler/src/frontend/ts7/rpc-api.js";
 import { prebuiltLibDiagnosticsText } from "../packages/compiler/src/frontend/ts7/lib-diagnostics.js";
 import { stageNativeCliAssets } from "./native-cli-assets.mjs";
@@ -103,12 +107,14 @@ const ffi = join(seed, "compiler.ffi.json");
 writeFileSync(ffi, JSON.stringify({ ffi_format: 6, functions, libraries }, null, 2) + "\n");
 const executable = join(bin, "scriptc" + target.outputSuffixes.exe);
 const comptime = join(lib, "scriptc-comptime" + target.outputSuffixes.exe);
+const strip = process.env["SCRIPTC_NATIVE_KEEP_SYMBOLS"] !== "1";
 execFileSync(
   compiler,
   [
     ...compilerArgs,
     ...cFlags,
     "-O2",
+    ...(strip ? ["-g0", ...executableStripLinkerArgs(target.platform, true)] : []),
     "-I",
     join(root, "packages/runtime/vendor/quickjs-ng"),
     join(nativeSources, "comptime.c"),
@@ -125,12 +131,15 @@ execFileSync(
   ],
   { stdio: "inherit" },
 );
+// The Windows link writes the debug database beside the executable.
+if (strip && target.platform === "win32")
+  rmSync(comptime.replace(/\.exe$/, ".pdb"), { force: true });
 const result = await compile(join(root, "packages/compiler/src/native/cli.ts"), {
   outDir: seed,
   outPath: executable,
   backend: "llvm",
   optimization,
-  strip: process.env["SCRIPTC_NATIVE_KEEP_SYMBOLS"] !== "1",
+  strip,
   ffiProfilePath: ffi,
   sanitize,
   ...(profileGenerate === undefined ? {} : { profileGenerate }),
@@ -177,6 +186,7 @@ const assets = stageNativeCliAssets({
   target,
   ts7: tsgoExecutable(),
   compilerVersion,
+  strip,
 });
 // A cross-libc seed may use Zig on the build host. The installed compiler
 // selects the destination platform's ordinary linker and SDK.
