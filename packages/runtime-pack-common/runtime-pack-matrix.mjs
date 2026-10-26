@@ -47,6 +47,7 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_cycle.c",
   "scr_publish.c",
   "scr_region.c",
+  "scr_arena.c",
   "scr_itable.c",
   "scr_slots.c",
   "scr_alloc.c",

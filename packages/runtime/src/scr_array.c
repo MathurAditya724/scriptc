@@ -1426,15 +1426,53 @@ static void scr_arr_put_slots(ScrArr *a, size_t to, size_t count, const uint64_t
 
 /* Inlined into each constructor, so `small` and the slot unit fold to
  * constants there. */
+static void scr_arr_arena_dispose(void *object);
+static void scr_arr_arena_dispose_closed(void *object);
+static ScrCycType scr_arr_cyc_type;
+
+/* An array block of `size` bytes in the current group arena, or NULL.
+ * Its storage beyond the block is the heap's, so it goes on the arena's
+ * dispose list even when the arena is closed; there, its elements are
+ * arena objects and immortal values, which need no release. */
+static inline ScrArr *scr_arr_arena_block(size_t size, bool cyc) {
+  void *arena = scr_arena_cur;
+  if (!arena) return NULL;
+  size_t hdr = cyc ? sizeof(ScrCycHdr) : 0;
+  size_t n = (hdr + size + 7) & ~(size_t)7;
+  uint32_t id = cyc ? scr_cyc_type_id(&scr_arr_cyc_type) : 0;
+  char *block = scr_arena_bump(arena, n);
+  ScrArr *a;
+  if (block) {
+    /* The constructor sets every header field, as on the heap; only the
+     * collector header needs setting here. */
+    if (cyc) *(ScrCycHdr *)block = (ScrCycHdr){.id = (uint16_t)id, .buf = SCR_CYC_ACYCLIC};
+    a = (ScrArr *)(block + hdr);
+  } else {
+    a = scr_arena_obj(arena, size, cyc ? &scr_arr_cyc_type : NULL);
+    if (!a) return NULL;
+  }
+  scr_arena_dispose_later(arena, a,
+                          scr_arena_is_closed(arena) ? scr_arr_arena_dispose_closed
+                                                     : scr_arr_arena_dispose);
+  return a;
+}
+
 static inline __attribute__((always_inline)) ScrArr *scr_arr_make(ScrElemKind elem,
                                                                   size_t initial_cap,
-                                                                  bool small) {
+                                                                  bool small,
+                                                                  bool arena) {
   size_t unit = scr_elem_slot_width(elem);
   size_t inline_cap = small ? scr_arr_small_cap(SCR_ARR_INLINE_OFFSET, unit)
                             : scr_arr_known_cap(SCR_ARR_INLINE_OFFSET, initial_cap, unit);
-  ScrArr *a = scr_mem_alloc(inline_cap ? SCR_ARR_INLINE_OFFSET + inline_cap * unit : sizeof(ScrArr));
-  if (!a) scr_arr_oom();
-  a->rc = 1;
+  size_t size = inline_cap ? SCR_ARR_INLINE_OFFSET + inline_cap * unit : sizeof(ScrArr);
+  ScrArr *a = arena ? scr_arr_arena_block(size, false) : NULL;
+  if (a)
+    a->rc = SCR_ARENA_RC;
+  else {
+    a = scr_mem_alloc(size);
+    if (!a) scr_arr_oom();
+    a->rc = 1;
+  }
   a->len = 0;
   a->cap = 0;
   a->elem = (uint8_t)elem;
@@ -1451,10 +1489,16 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make(ScrElemKind el
 }
 
 ScrArr *scr_arr_new(ScrElemKind elem, size_t initial_cap) {
-  return scr_arr_make(elem, initial_cap, false);
+  return scr_arr_make(elem, initial_cap, false, false);
 }
 
-ScrArr *scr_arr_new_small(ScrElemKind elem) { return scr_arr_make(elem, 0, true); }
+ScrArr *scr_arr_new_small(ScrElemKind elem) { return scr_arr_make(elem, 0, true, false); }
+
+ScrArr *scr_arr_new_r(ScrElemKind elem, size_t initial_cap) {
+  return scr_arr_make(elem, initial_cap, false, true);
+}
+
+ScrArr *scr_arr_new_small_r(ScrElemKind elem) { return scr_arr_make(elem, 0, true, true); }
 
 /* A non-cycle array whose final length the runtime knows when it builds
  * it (regex match results): its `cap` slots share the header's block, so
@@ -1463,7 +1507,7 @@ ScrArr *scr_arr_new_small(ScrElemKind elem) { return scr_arr_make(elem, 0, true)
  * `cap` moves the slots out like any inline array. */
 ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states) {
   if (cap == 0) {
-    ScrArr *a = scr_arr_make(elem, 0, false);
+    ScrArr *a = scr_arr_make(elem, 0, false, false);
     if (states) a->spare |= SCR_ARR_STATES;
     return a;
   }
@@ -1572,13 +1616,16 @@ static void scr_arr_gc_free(void *a0) {
   scr_cyc_free_inline(a);
 }
 
+static ScrCycType scr_arr_cyc_type = {&scr_arr_trace_v, &scr_arr_gc_free, SCR_CYC_KIND_ARRAY};
+
 /* Inlined into each constructor like scr_arr_make: with `small`, the count
  * and `elem` constant, scr_arr_new_ops_small's size class folds to a table
  * index and the slot sizes to constants. */
 static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops_kind(const ScrArrOps *ops,
                                                                            size_t initial_cap,
                                                                            bool small,
-                                                                           uint8_t elem) {
+                                                                           uint8_t elem,
+                                                                           bool arena) {
   ScrArr *a;
   bool cyc = ops->trace != NULL;
   /* The array starts without states: slots of the value width alone. */
@@ -1587,14 +1634,18 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops_kind(const
   size_t inline_cap =
       small ? scr_arr_small_cap(prefix, unit) : scr_arr_known_cap(prefix, initial_cap, unit);
   size_t size = inline_cap ? SCR_ARR_INLINE_OFFSET + inline_cap * unit : sizeof(ScrArr);
-  if (cyc) {
-    static ScrCycType cyc_type = { &scr_arr_trace_v, &scr_arr_gc_free, SCR_CYC_KIND_ARRAY };
-    a = scr_cyc_alloc_inline(size, &cyc_type);
-  } else {
-    a = scr_mem_alloc(size);
-    if (!a) scr_arr_oom();
+  a = arena ? scr_arr_arena_block(size, cyc) : NULL;
+  if (a)
+    a->rc = SCR_ARENA_RC;
+  else {
+    if (cyc)
+      a = scr_cyc_alloc_inline(size, &scr_arr_cyc_type);
+    else {
+      a = scr_mem_alloc(size);
+      if (!a) scr_arr_oom();
+    }
+    a->rc = 1;
   }
-  a->rc = 1;
   a->len = 0;
   a->cap = 0;
   a->elem = elem;
@@ -1622,17 +1673,26 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops_kind(const
  * branch inlines scr_arr_make_ops_kind with a constant kind. */
 static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops(const ScrArrOps *ops,
                                                                       size_t initial_cap,
-                                                                      bool small) {
+                                                                      bool small,
+                                                                      bool arena) {
   if (__builtin_expect(scr_arr_ops_compact(ops), 0))
-    return scr_arr_make_ops_kind(ops, initial_cap, small, SCR_ELEM_CREF);
-  return scr_arr_make_ops_kind(ops, initial_cap, small, SCR_ELEM_REF);
+    return scr_arr_make_ops_kind(ops, initial_cap, small, SCR_ELEM_CREF, arena);
+  return scr_arr_make_ops_kind(ops, initial_cap, small, SCR_ELEM_REF, arena);
 }
 
 ScrArr *scr_arr_new_ops(const ScrArrOps *ops, size_t initial_cap) {
-  return scr_arr_make_ops(ops, initial_cap, false);
+  return scr_arr_make_ops(ops, initial_cap, false, false);
 }
 
-ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops) { return scr_arr_make_ops(ops, 0, true); }
+ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops) { return scr_arr_make_ops(ops, 0, true, false); }
+
+/* The constructors arena-aware functions call (llvm/arenas.ts): in the
+ * current group arena when one is open. */
+ScrArr *scr_arr_new_ops_r(const ScrArrOps *ops, size_t initial_cap) {
+  return scr_arr_make_ops(ops, initial_cap, false, true);
+}
+
+ScrArr *scr_arr_new_ops_small_r(const ScrArrOps *ops) { return scr_arr_make_ops(ops, 0, true, true); }
 
 /* Frees an acyclic array whose elements are already released. */
 static inline __attribute__((always_inline)) void scr_arr_free(ScrArr *a) {
@@ -1744,6 +1804,26 @@ static void scr_arr_destroy(void *object) {
   scr_arr_release_contents(a);
   if (a->cyc) scr_arr_gc_free(a);
   else scr_arr_free(a);
+}
+
+/* An arena array at its arena's drop: its contents and the storage beyond
+ * its block go; the block goes with the arena. */
+static void scr_arr_arena_dispose(void *object) {
+  ScrArr *a = object;
+  scr_arr_release_contents(a);
+  scr_arr_free_parts(a);
+#ifdef SCR_RC_AUDIT
+  scr_live_arrays--;
+#endif
+}
+
+/* The same in a closed arena, whose objects hold only each other and
+ * immortal values: only the storage beyond the block goes. */
+static void scr_arr_arena_dispose_closed(void *object) {
+  scr_arr_free_parts((ScrArr *)object);
+#ifdef SCR_RC_AUDIT
+  scr_live_arrays--;
+#endif
 }
 
 void scr_arr_subclass_init(ScrArr *a, uint8_t elem, const ScrArrOps *ops, const ScrArrClass *cls,

@@ -343,6 +343,15 @@ import {
   type LlClassMeta,
 } from "./classes.js";
 import { LifetimeRegions, REGION_TYPES } from "./regions.js";
+import {
+  arenaAware,
+  arenaCurrentAddress,
+  arenaNewSym,
+  arenasRequested,
+  planArenas,
+  type ArenaPlan,
+} from "./arenas.js";
+import { children, type Node } from "./region-ir.js";
 import { LlDyn, recordDynKeepsIdentity, type DynHost } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -375,6 +384,7 @@ import {
   retainSym,
   traceArg,
   vAdapters,
+  traceAdapter,
 } from "./shapes.js";
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
 import { INLINE_LITERAL_BYTES } from "./string-literal-equality.js";
@@ -465,6 +475,9 @@ export interface LlScopeEntry {
   slot: string;
   type: IrType;
   boxed?: boolean;
+  /** A group arena list slot (arenas.ts), dropped after the scope's other
+   * entries. */
+  arena?: boolean;
   /** A lazily created box: the slot stays null on paths that build no
    * environment, which skip the release call. */
   lazy?: boolean;
@@ -2407,6 +2420,40 @@ export class LlEmitter {
       mod.lib === undefined &&
       options.lowRegion === true &&
       [...this.classMeta.values()].some((m) => m.compact);
+    // Group arenas: off with lifetime regions, which own their classes'
+    // allocation, and in libraries, whose exports any host code calls.
+    if (arenasRequested() && mod.lifetimeRegions !== true && mod.lib === undefined) {
+      this.arenas = planArenas(mod, {
+        shape: (id) => {
+          const shape = this.recordsById.get(id);
+          return (
+            shape !== undefined &&
+            shape.freezable !== true &&
+            shape.indexValue === undefined &&
+            this.publishedTypes?.recordGuarded(id) !== true
+          );
+        },
+        cls: (def) => {
+          const meta = this.classMeta.get(def.name);
+          return (
+            meta !== undefined &&
+            !meta.compact &&
+            !meta.threadSlot &&
+            // An Array subclass's instance is an array (the runtime's header).
+            def.arrayElem === undefined &&
+            meta.root.def.arrayElem === undefined &&
+            !this.programLifetime.has(def.name) &&
+            this.publishedTypes?.classGuarded(def.name) !== true
+          );
+        },
+        nullableArm: (unionId) => this.nullableUnions.single(unionId)?.arm ?? null,
+        traced: (t) => traceAdapter(this.shapeHost, t) !== null,
+      });
+      if (this.arenas !== null) {
+        this.shapeHost.arenaShapes = this.arenas.shapes;
+        this.shapeHost.arenaClasses = this.arenas.classes;
+      }
+    }
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -3522,6 +3569,7 @@ export class LlEmitter {
   /** Releases a statement frame's temps and owned slots. */
   releaseTemps(frame: LlValue[]): void {
     for (const v of frame) {
+      if (v.arena !== undefined) continue;
       if (v.slot) {
         const t = this.B.tmp();
         this.B.line(`${t} = load ptr, ptr ${v.name}`);
@@ -3534,10 +3582,19 @@ export class LlEmitter {
         this.releaseFrame(v.name, v.type);
       }
     }
+    // Arena lists last: the frame's temps may be arena objects.
+    for (const v of frame)
+      if (v.arena === "drop") this.B.line(`call void @scr_arena_drop(ptr ${v.name})`);
+      else if (v.arena === "close") {
+        const head = this.B.tmp();
+        this.B.line(`${head} = load ptr, ptr ${v.name}`);
+        this.B.line(`call void @scr_arena_close(ptr ${head})`);
+      }
   }
 
   releaseScope(scope: LlScopeEntry[]): void {
     for (const e of scope) {
+      if (e.arena === true) continue;
       const t = this.B.tmp();
       this.B.line(`${t} = load ptr, ptr ${e.slot}`);
       if (e.boxed && e.lazy) {
@@ -3559,6 +3616,9 @@ export class LlEmitter {
         this.releaseFrame(t, e.type); // runtime releases are NULL-tolerant
       }
     }
+    // Arena lists last: the scope's bindings may hold arena objects.
+    for (const e of scope)
+      if (e.arena === true) this.B.line(`call void @scr_arena_drop(ptr ${e.slot})`);
   }
 
   /** THE release-on-jump path (break/continue/return): pending statement
@@ -6314,6 +6374,7 @@ export class LlEmitter {
         type: local.type,
         slot: true,
         ...(local.boxed ? { boxed: true } : {}),
+        ...(local.arena === true ? { arena: "drop" as const } : {}),
       });
     }
     return result;
@@ -7408,7 +7469,194 @@ export class LlEmitter {
   }
 
   emitExpr(e: IrExpr): LlValue {
+    return this.arenas === null ? emitExpr(this, e) : this.emitArenaExpr(e, this.arenas);
+  }
+
+  /** emitExpr when group arenas are planned. Kept out of emitExpr, whose
+   * frame each level of a nested expression holds while it is emitted. */
+  private emitArenaExpr(e: IrExpr, arenas: ArenaPlan): LlValue {
+    if (arenas.groups.calls.has(e)) {
+      // A call region: everything the call allocates dies when it returns.
+      // The statement drops the arena after its temps, which an
+      // arena-aware caller can have allocated in it while evaluating the
+      // arguments; any other caller drops it as soon as the call returns.
+      const slot = this.arenaSlot(e);
+      this.statementFrame().push({ name: slot, type: e.type, slot: true, arena: "drop" });
+      this.B.line(`call ptr @scr_arena_open(ptr ${slot}, i32 ${this.arenaClosed(e)})`);
+      const value = emitExpr(this, e);
+      if (!arenaAware(arenas, this.fnByName.get(this.currentFunctionName)))
+        this.B.line(`call void @scr_arena_drop(ptr ${slot})`);
+      return value;
+    }
+    if (arenas.sites.heapCalls.has(e) && this.arenaSite(null)) {
+      // A call whose value the group does not keep: everything it allocates
+      // takes the heap.
+      const saved = this.suspendArena();
+      const value = emitExpr(this, e);
+      this.resumeArena(saved);
+      return value;
+    }
+    if (this.opensArena(e)) {
+      // A root: its group lives until the scope holding its value exits
+      // (the statement frame for a value used in place).
+      const slot = this.arenaSlot(e);
+      const local = arenas.groups.drops.get(e) ?? null;
+      this.statementFrame().push({
+        name: slot,
+        type: e.type,
+        slot: true,
+        arena: local === null ? "drop" : "close",
+      });
+      const arena = this.B.tmp();
+      this.B.line(`${arena} = call ptr @scr_arena_open(ptr ${slot}, i32 ${this.arenaClosed(e)})`);
+      const value = emitExpr(this, e);
+      this.B.line(`call void @scr_arena_close(ptr ${arena})`);
+      return value;
+    }
     return emitExpr(this, e);
+  }
+
+  /** Group arenas (arenas.ts): the plan, the list slot of each root and
+   * call region, and which locals' scopes drop which roots' arenas. */
+  arenas: ArenaPlan | null = null;
+  private arenaSlots = new Map<Node, string>();
+  /** The frames emitStmtBody opens for whole statements (arenas only). */
+  readonly statementFrames = new Set<LlValue[]>();
+
+  /** The frame of the statement being emitted: a nested frame (call
+   * arguments, branches) ends before the values built in it do. */
+  statementFrame(): LlValue[] {
+    for (let i = this.frames.length - 1; i >= 0; i--)
+      if (this.statementFrames.has(this.frames[i]!)) return this.frames[i]!;
+    return this.currentFrame();
+  }
+
+  /** The arena list slot of root or call region `e`: allocated, cleared and
+   * (for a root dropped with a local) owned by that local's scope when the
+   * function starts or the local is declared. */
+  arenaSlot(e: Node): string {
+    let slot = this.arenaSlots.get(e);
+    if (slot === undefined) {
+      slot = this.B.tmp();
+      this.B.entryAllocas.push(`${slot} = alloca ptr`, `store ptr null, ptr ${slot}`);
+      this.arenaSlots.set(e, slot);
+      this.declare(`declare ptr @scr_arena_open(ptr, i32)`);
+      this.declare(`declare void @scr_arena_close(ptr)`);
+      this.declare(`declare void @scr_arena_drop(ptr)`);
+    }
+    return slot;
+  }
+
+  /** Whether emitExpr opens an arena for `e`: a root call or `new` of a
+   * counted value. */
+  opensArena(e: Node): e is Extract<IrExpr, { kind: "call" | "new" }> {
+    return (
+      this.arenas !== null &&
+      this.arenas.groups.roots.has(e) &&
+      (e.kind === "call" || e.kind === "new") &&
+      isRefCounted(e.type)
+    );
+  }
+
+  /** 1 when the group of root or call region `e` is closed: its objects
+   * hold only each other and immortal values. */
+  arenaClosed(e: Node): number {
+    return this.arenas?.groups.closed.has(e) === true ? 1 : 0;
+  }
+
+  /** Registers on the innermost scope the arena lists of the roots whose
+   * arenas `localId`'s scope drops. */
+  ownArenasOf(localId: string): void {
+    const roots = this.arenaDropsByLocal.get(localId);
+    if (roots === undefined) return;
+    const scope = this.scopes[this.scopes.length - 1]!;
+    for (const { root, type } of roots)
+      scope.push({ slot: this.arenaSlot(root), type, arena: true });
+  }
+
+  /** The roots of the function being emitted, by the local that drops
+   * them; set when a function's emission starts. */
+  arenaDropsByLocal = new Map<string, { root: Node; type: IrType }[]>();
+
+  /** Starts a function's arena bookkeeping: its roots by dropping local,
+   * with the lists of locals the body never declares (parameters, loop
+   * and catch bindings) owned by the function's own scope. */
+  beginArenaFunction(fn: IrFunction): void {
+    this.arenaSlots.clear();
+    this.statementFrames.clear();
+    this.arenaDropsByLocal = new Map();
+    const arenas = this.arenas;
+    if (arenas === null) return;
+    const declared = new Set<string>();
+    const visit = (node: Node): void => {
+      if (node.kind === "varDecl") declared.add(node.localId);
+      if (this.opensArena(node)) {
+        const local = arenas.groups.drops.get(node);
+        if (local !== undefined && local !== null) {
+          const list = this.arenaDropsByLocal.get(local) ?? [];
+          list.push({ root: node, type: node.type });
+          this.arenaDropsByLocal.set(local, list);
+        }
+      }
+      const kids: Node[] = [];
+      children(node, kids);
+      for (const kid of kids) visit(kid);
+    };
+    for (const s of fn.body) visit(s);
+    for (const local of [...this.arenaDropsByLocal.keys()])
+      if (!declared.has(local)) this.ownArenasOf(local);
+  }
+
+  /** Whether allocation site `e` (null: any) in the function being
+   * emitted takes the open arena: the function is arena-aware and the group
+   * keeps the site's value (region-sites.ts). */
+  arenaSite(e: IrExpr | null): boolean {
+    const arenas = this.arenas;
+    if (!arenaAware(arenas, this.fnByName.get(this.currentFunctionName))) return false;
+    return e === null || arenas!.sites.arenaSites.has(e);
+  }
+
+  /** Stops any arena being the allocation target; returns what restores it. */
+  suspendArena(): string {
+    const saved = this.B.tmp();
+    const cur = this.B.tmp();
+    const lines = arenaCurrentAddress(this.shapeHost, cur);
+    if (lines === null) {
+      this.declare(`declare ptr @scr_arena_suspend()`);
+      this.B.line(`${saved} = call ptr @scr_arena_suspend()`);
+    } else {
+      for (const line of lines) this.B.line(line);
+      this.B.line(`${saved} = load ptr, ptr ${cur}`);
+      this.B.line(`store ptr null, ptr ${cur}`);
+    }
+    return saved;
+  }
+
+  /** Makes the arena suspendArena stopped (`saved`) the target again. */
+  resumeArena(saved: string): void {
+    const cur = this.B.tmp();
+    const lines = arenaCurrentAddress(this.shapeHost, cur);
+    if (lines === null) {
+      this.declare(`declare void @scr_arena_resume(ptr)`);
+      this.B.line(`call void @scr_arena_resume(ptr ${saved})`);
+    } else {
+      for (const line of lines) this.B.line(line);
+      this.B.line(`store ptr ${saved}, ptr ${cur}`);
+    }
+  }
+
+  /** The arena-aware constructor of `newSym` for an allocation of a
+   * record shape or class in the function being emitted, or `newSym`. */
+  allocSym(newSym: string, e: IrExpr): string {
+    const arenas = this.arenas;
+    if (arenas === null) return newSym;
+    const planned =
+      e.type.kind === "record"
+        ? arenas.shapes.has(e.type.shapeId)
+        : e.kind === "new" && arenas.classes.has(e.className);
+    if (!planned) return newSym;
+    const aware = this.arenaSite(e) || arenas.groups.roots.has(e);
+    return aware ? arenaNewSym(newSym) : newSym;
   }
 
   /** The helper classification of this module's inline-cache sites. */

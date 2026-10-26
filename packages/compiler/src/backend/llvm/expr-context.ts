@@ -33,6 +33,9 @@ export interface LlValue {
   slot?: boolean;
   /** A sequence local held in a capture box; release the box itself. */
   boxed?: boolean;
+  /** A group arena list slot (arenas.ts): the frame closes the newest
+   * arena on it, or drops the whole list, after its other temps. */
+  arena?: "close" | "drop";
 }
 
 export interface WideInteger {
