@@ -8951,13 +8951,17 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     return { kind: "block", body: [], loc: locOf(expr) };
   }
   if (
-    stmtNode !== undefined &&
-    ts.isExpressionStatement(stmtNode) &&
     ts.isBinaryExpression(expr) &&
     (expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
       expr.operatorToken.kind === ts.SyntaxKind.BarBarToken)
   ) {
-    return lowerDiscardedLogical(lowerer, expr);
+    // A right operand without a value (`skip || (flag ? warnA() : warnB())`,
+    // where both arms are void calls) leaves the logical nothing to join:
+    // it is the branch `if (!skip) ...` wherever its result is discarded,
+    // a for loop's initializer and update included.
+    if (needsNoValue(lowerer, expr.right)) return lowerLogicalBranch(lowerer, expr);
+    if (stmtNode !== undefined && ts.isExpressionStatement(stmtNode))
+      return lowerDiscardedLogical(lowerer, expr);
   }
   const value = lowerer.lowerExpr(expr);
   // A bare unit-literal statement (`undefined;`): a pure no-op in JS,
@@ -9000,6 +9004,32 @@ function lowerDiscardedLogical(lowerer: Lowerer, expr: ts.BinaryExpression): IrS
     if (!local) throw e;
     lowerer.diags.length = diagsBefore;
   }
+  return lowerLogicalBranch(lowerer, expr);
+}
+
+/** True when the discarded `expr` needs no value: its type maps to void,
+ * or it is a logical or comma expression whose last operand needs none. A
+ * discarded logical whose right operand needs no value lowers as a branch
+ * that runs the operand as a statement. */
+function needsNoValue(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (
+    ts.isBinaryExpression(expr) &&
+    (expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+      expr.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      expr.operatorToken.kind === ts.SyntaxKind.CommaToken)
+  )
+    return needsNoValue(lowerer, expr.right);
+  const type = lowerer.typeOf(expr);
+  return (
+    (type.flags & (ts.TypeFlags.Void | ts.TypeFlags.TypeParameter)) !== 0 &&
+    lowerer.mapTypeOf(type)?.kind === "void"
+  );
+}
+
+/** `a && b` as `if (a) b;` and `a || b` as `if (!a) b;`, with `b` lowered
+ * as a statement under the narrowing `a` gives it. */
+function lowerLogicalBranch(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt {
   const and = expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken;
   const cond = lowerer.lowerCondition(expr.left);
   if (cond.kind === "boolLit") {
