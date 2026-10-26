@@ -1,30 +1,19 @@
-// Localized failure, stage L4, at a forward-captured binding: functions
-// declared before a const capture it, and the const's initializer has an
-// expression whose type does not compile. The statement lowers again with
-// that expression degraded, and it initializes the binding the functions
-// captured: before the declaration a call throws ReferenceError, after it
-// the call reads the value.
-type Hook = Map<string, (x: number) => string> | AbortSignal | (() => number) | Set<string>;
-interface Plugin {
-  name: string;
-  hook: Hook;
+// Localized failure, stage L1: a statement that declares a binding an
+// earlier closure captures, and then a binding whose declared type has no
+// static lowering, still initializes the captured binding.
+type Callbacks = ((done: number) => void) | AbortSignal | Map<string, (x: number) => string> | Set<number>;
+
+function run(): void {
+  const read = (): number => total;
+  const total = 3,
+    hook: Callbacks = new Set<number>([1, 2]);
+  console.log(read(), hook instanceof Set, hook instanceof Set && hook.size);
+  let late = (): string => label;
+  let label = "first",
+    other: Callbacks = new Set<number>([3]);
+  console.log(late(), other instanceof Set);
+  label = "second";
+  late = (): string => label + "!";
+  console.log(late());
 }
-function load(text: string): unknown {
-  return JSON.parse(text);
-}
-function main(): void {
-  function nameOf(): string {
-    return plugin.name;
-  }
-  function attempt(): string {
-    try {
-      return nameOf();
-    } catch (e) {
-      return e instanceof ReferenceError ? "ReferenceError" : "other";
-    }
-  }
-  console.log(attempt());
-  const plugin = { name: (load('{"name":"tags","hook":null}') as Plugin).name };
-  console.log(attempt(), nameOf().length);
-}
-main();
+run();

@@ -755,6 +755,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const touched = new Set<string>();
       lowerer.failureTouches.push(touched);
       const pendingSlots: DynamicSlot[] = [];
+      // A declarator that initializes a forward-captured TDZ box takes it
+      // out of tdzPredeclared; a retry after a later declarator degrades
+      // must initialize the same box again.
+      const tdzBefore = new Map(lowerer.ctx.tdzPredeclared);
       try {
         for (let attempt = 0; ; attempt++) {
           const hits = new Set<number>();
@@ -784,6 +788,9 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             // retry appends after them.
             lowerer.dropAttemptDiags(diagsBefore);
             if (slot !== null) pendingSlots.push(slot);
+            for (const [symbol, local] of tdzBefore)
+              if (!lowerer.ctx.tdzPredeclared.has(symbol))
+                lowerer.ctx.tdzPredeclared.set(symbol, local);
           }
         }
         for (const slot of pendingSlots) lowerer.noteDynamicSlot(slot);
@@ -1378,6 +1385,7 @@ function jsDeclarationExpandsObject(
       inferred !== null &&
       jsOpenObjectType(decl, inferred, lowerer.shapes, lowerer.unions).kind === "dyn") ||
     arms.some((arm) => arm.kind === "record" && jsObjectBindingExpands(lowerer, decl, arm)) ||
+    arms.some((arm) => arm.kind === "record" && jsObjectLiteralFilledLater(lowerer, decl, arm)) ||
     (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       !hasJsTypeAnnotation(decl) &&
@@ -1967,7 +1975,16 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     }
     // Exception-representable values move into the runtime's exception
     // cell. `throw f()` of a void call has no value.
-    let value = lowerer.lowerExpr(stmt.expression);
+    // A thrown object or array literal has no declared type: it is built as
+    // a dynamic object, so the catch binding's checked casts adopt it
+    // (lowerer.untypedLiteralContext).
+    let literal: ts.Expression = stmt.expression;
+    while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
+    let value =
+      (ts.isObjectLiteralExpression(literal) || ts.isArrayLiteralExpression(literal)) &&
+      lowerer.untypedLiteralContext(literal)
+        ? lowerer.lowerExprExpecting(stmt.expression, DYN)
+        : lowerer.lowerExpr(stmt.expression);
     if (value.type.kind === "void")
       lowerer.badType(stmt.expression, lowerer.typeOf(stmt.expression));
     // Preserve primitive reasons and readable record identity across the
@@ -6604,6 +6621,41 @@ function lowerVariableInitializer(
       else lowerer.chainRecvByNode.delete(keyNode);
     }
   }
+}
+
+/** A JS object literal that leaves out a required field of the binding's
+ * inferred record: tsc types `var p = {}; p.id = id;` by the members later
+ * assignments add, so the object only gains them after its initializer, and
+ * until then it is not a value of that record. Keep it a checked-dynamic
+ * object, as an object that gains keys outside the record is. */
+function jsObjectLiteralFilledLater(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  type: IrType & { kind: "record" },
+): boolean {
+  if (decl.type || !decl.initializer || !isJsSourceFile(ts.getSourceFileOfNode(decl))) return false;
+  let initializer = decl.initializer;
+  while (ts.isParenthesizedExpression(initializer)) initializer = initializer.expression;
+  if (!ts.isObjectLiteralExpression(initializer) || hasJsTypeAnnotation(decl)) return false;
+  const shape = lowerer.shapes.get(type.shapeId);
+  if (!shape || shape.tuple) return false;
+  const given = new Set<string>();
+  for (const property of initializer.properties.nodes) {
+    if (ts.isSpreadAssignment(property)) return false;
+    const name = property.name;
+    if (name === undefined) return false;
+    if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))
+      given.add(name.text);
+    else return false;
+  }
+  // A field whose type holds undefined reads as it would before the write.
+  const holdsUndefined = (t: IrType): boolean =>
+    t.kind === "dyn" ||
+    t.kind === "undefinedT" ||
+    (t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0);
+  return shape.fields.some(
+    (field) => !given.has(field.name) && !field.name.startsWith("%") && !holdsUndefined(field.type),
+  );
 }
 
 /** A JS object literal's inferred fields do not close its later storage.

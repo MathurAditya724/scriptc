@@ -293,6 +293,7 @@ void scr_fs_mkdir(ScrStr *path);
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
 ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
+ScrArr *scr_fs_readdir_recursive(ScrStr *path); /* relative paths of every entry below path, Node's queue order */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
  * recursive algorithm (existing-dir target is a no-op; errors report
