@@ -32,9 +32,11 @@ import {
 import {
   arrayIndexPresent,
   arrayValueRead,
+  arraySlotAppend,
   arrayValueStore,
   arrayValueType,
   elementMayBeForeign,
+  unreadArgument,
 } from "../array-values.js";
 import type { Lowerer } from "../lowerer.js";
 
@@ -62,6 +64,9 @@ export interface ArrayHofInfo {
   present: boolean;
   split: boolean;
   hasInit?: boolean;
+  /** The callback never reads the element it declares
+   * (lowerArrayCallback's `unread`). */
+  unread?: boolean;
 }
 
 type FuncType = IrType & { kind: "func" };
@@ -1595,13 +1600,21 @@ class FusedLoop {
       stage: Stage,
       k: number,
       lead: IrExpr[],
-      flow: Flow & { kind: "value" },
+      flow: Flow,
     ): { pre: IrStmt[]; value: IrExpr } | null => {
       const arity = stage.info.arity;
-      const value = varRef(flow.id, flow.type, loc);
       const at = lead.length;
       const pick = (): { arg: IrExpr & { type: FuncType }; value: IrExpr | null } | null => {
         if (arity <= at) return { arg: stage.slow, value: null };
+        // A callback that reads the value reaches it read (`read`); one
+        // that never reads it takes a placeholder for the unread slot.
+        if (flow.kind !== "value") {
+          const placeholder = stage.info.unread
+            ? unreadArgument(this.lowerer, stage.slow.type.params[at]!, loc)
+            : null;
+          return placeholder ? { arg: stage.slow, value: placeholder } : null;
+        }
+        const value = varRef(flow.id, flow.type, loc);
         const fast = stage.fast;
         if (fast && typeEquals(fast.type.params[at]!, flow.type)) return { arg: fast, value };
         const paramT = stage.slow.type.params[at]!;
@@ -1629,6 +1642,12 @@ class FusedLoop {
       );
       return { pre: [...before, ...called.pre], value: called.value };
     };
+
+    /** The stage's callback never reads the element at parameter `at`, and
+     * a placeholder of its type stands for it (unreadArgument). */
+    const unreadSlot = (stage: Stage, at: number): boolean =>
+      stage.info.unread === true &&
+      unreadArgument(this.lowerer, stage.slow.type.params[at]!, loc) !== null;
 
     const fail = (): IrStmt[] => {
       this.failed = true;
@@ -1694,7 +1713,12 @@ class FusedLoop {
       if (k === chain.stages.length) return finish(flow);
       const stage = chain.stages[k]!;
       const info = stage.info;
-      if (flow.kind === "slot") return read(stage, (value) => visit(k, value));
+      // A callback that declares no element parameter, or never reads the
+      // one it declares, leaves the slot unread, so an element outside the
+      // element type passes it as it is (a kept one is copied by the next
+      // stage or the collecting terminal).
+      if (flow.kind === "slot" && info.arity > 0 && !unreadSlot(stage, 0))
+        return read(stage, (value) => visit(k, value));
       const called = deliver(stage, k, [], flow);
       if (!called) return fail();
       const { pre, value: result } = called;
@@ -1791,11 +1815,20 @@ class FusedLoop {
       }
     };
 
+    /** Append the source slot to the collected result unread: a filter
+     * whose callback never read the element keeps it as it is stored
+     * (arraySlotAppend). */
+    const copySlot = (): IrStmt[] => {
+      const outT = resultT as IrType & { kind: "array" };
+      if (holes || !typeEquals(outT.elem, arrT.elem)) return fail();
+      const v = this.local("v", arrayValueType(this.lowerer, arrT.elem));
+      return [arraySlotAppend(this.lowerer, varRef(out!, resultT, loc), a, i, arrT.elem, v, loc)];
+    };
     /** The terminal's action for one value. */
     const finish = (flow: Flow): IrStmt[] => {
       if (terminal.kind === "length") return [increment(count!, loc)];
       if (terminal.kind === "collect") {
-        if (flow.kind !== "value") return fail();
+        if (flow.kind !== "value") return copySlot();
         const last = chain.stages[chain.stages.length - 1]!;
         const outT = resultT as IrType & { kind: "array" };
         if (!typeEquals(outT.elem, last.info.outElem)) return fail();
@@ -1816,7 +1849,9 @@ class FusedLoop {
       }
       const stage = terminal.stage;
       const method = stage.info.method;
-      if (flow.kind === "slot") return read(stage, (value) => finish(value));
+      const lead = method === "reduce" ? 1 : 0;
+      if (flow.kind === "slot" && stage.info.arity > lead && !unreadSlot(stage, lead))
+        return read(stage, (value) => finish(value));
       if (method === "reduce") {
         const accT = stage.info.outElem;
         const called = deliver(stage, chain.stages.length, [varRef(acc!, accT, loc)], flow);

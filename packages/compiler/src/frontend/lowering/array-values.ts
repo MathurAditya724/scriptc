@@ -3,6 +3,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, varRef } from "../../ir/build.js";
 import {
   BOOL,
+  DYN,
   F64,
   type IrExpr,
   type IrStmt,
@@ -444,6 +445,94 @@ export function appendElement(
       loc,
     },
   ];
+}
+
+/** The argument a helper passes in place of an element its callback never
+ * reads (lowerArrayCallback's `unread`): a constant of the parameter's
+ * type, so the slot stays unread and an element the type cannot hold
+ * (stored through a dynamic view) passes. Null for a type without one. */
+export function unreadArgument(lowerer: Lowerer, type: IrType, loc: SrcLoc): IrExpr | null {
+  if (type.kind === "f64") return { kind: "numLit", value: NaN, type: F64, loc };
+  if (type.kind === "bool") return { kind: "boolLit", value: false, type: BOOL, loc };
+  if (type.kind === "string") return { kind: "strLit", value: "", type: STRING, loc };
+  if (type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0)
+    return lowerer.wrappedUndefined(type, loc) ?? null;
+  return null;
+}
+
+/** Append the element at `arr[index]` to `out`, an array of the same
+ * element type, as it is stored: a value, a present undefined, or an
+ * element outside the element type (stored through a dynamic view), which
+ * `out` keeps as one, as the view's push stores it. `out` is a binding,
+ * and `value` names a local of the read's type (arrayValueType) that holds
+ * a stored value on its way. */
+export function arraySlotAppend(
+  lowerer: Lowerer,
+  out: IrExpr,
+  arr: IrExpr,
+  index: IrExpr,
+  elem: IrType,
+  value: string,
+  loc: SrcLoc,
+): IrStmt {
+  const valueT = arrayValueType(lowerer, elem);
+  const end: IrExpr = {
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: out,
+    args: [],
+    type: F64,
+    loc,
+  };
+  const plain: IrStmt = {
+    kind: "block",
+    body: [
+      {
+        kind: "varDecl",
+        localId: value,
+        init: arrayValueRead(lowerer, arr, index, elem, loc),
+        loc,
+      },
+      arrayValueStore(
+        lowerer,
+        out,
+        end,
+        { kind: "varRef", localId: value, type: valueT, loc },
+        elem,
+        loc,
+      ),
+    ],
+    loc,
+  };
+  if (!elementMayBeForeign(lowerer, elem)) return plain;
+  return {
+    kind: "if",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "arrayState", arr, index, type: F64, loc },
+      right: { kind: "numLit", value: 3, type: F64, loc },
+      type: BOOL,
+      loc,
+    },
+    then: [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "dynInvoke",
+          recv: { kind: "dynFrom", value: out, liveRef: true, type: DYN, loc },
+          method: "push",
+          calleeName: "push",
+          args: [{ kind: "libCall", fn: "array.foreign", args: [arr, index], type: DYN, loc }],
+          type: DYN,
+          loc,
+        },
+        loc,
+      },
+    ],
+    else_: [plain],
+    loc,
+  };
 }
 
 /** Store a stabilized value without changing the array's element ABI. */
