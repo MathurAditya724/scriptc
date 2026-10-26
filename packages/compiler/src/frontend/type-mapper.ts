@@ -1845,6 +1845,17 @@ function arrayClassBaseType(
 }
 
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const shadow = ctx.canonShadow;
+  if (shadow === undefined || mapTypeDepth !== 0) return mapTypeEntry(type, ctx);
+  // Shadow mode observes every successful top-level mapping, including the
+  // intrinsic primitives, local class values and memo hits that return
+  // before the mapping proper.
+  const mapped = mapTypeEntry(type, ctx);
+  if (mapped !== null) shadow(type, mapped, ctx);
+  return mapped;
+}
+
+function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
   // These intrinsic domains cannot depend on generic bindings, declaration
   // provenance, or recursive shape state. Enum literals retain the ordinary
@@ -1915,8 +1926,6 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     ) {
       ctx.typeMemo?.set(memoKey, mapped);
     }
-    if (mapped !== null && topLevel && ctx.canonShadow !== undefined)
-      ctx.canonShadow(type, mapped, ctx);
     return mapped;
   } finally {
     mapTypeDepth--;
