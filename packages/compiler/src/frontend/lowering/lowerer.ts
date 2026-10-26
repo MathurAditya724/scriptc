@@ -1,3 +1,4 @@
+import { globalMemberValue } from "./global-values.js";
 import { unionNarrowFailureMessage } from "./union-narrow.js";
 import {
   arrayClassFieldsFn,
@@ -3282,6 +3283,9 @@ export class Lowerer {
   /** The property names the program assigns on the global object
    * (property-access.ts), collected on first use. */
   globalThisWrittenNames: Set<string> | null = null;
+  /** Set with globalThisWrittenNames: the program writes the global object
+   * by a computed name somewhere. */
+  globalThisComputedWrite = false;
   /** Well-known symbol methods (`sym:iterator`) the program may replace
    * through a symbol-keyed write: an instance or prototype property, or a
    * reflection call. */
@@ -3515,6 +3519,9 @@ export class Lowerer {
    * values other than fresh literals (noteUntypedIntegrity). */
   untypedIntegrity = false;
   readonly liftedFns: IrFunction[] = [];
+  /** global-values.ts's answer per JavaScript source: the receiver of its
+   * first read of the global object by a computed name, or null. */
+  readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
   /** The first lifted function of each name (liftedFnNamed), for the
    * liftedFns indexed so far. liftedFns only grows. */
   private readonly liftedFnsByName = new Map<string, IrFunction>();
@@ -15451,11 +15458,12 @@ export class Lowerer {
     if (bi.module === "crypto" && bi.member === "webcrypto") {
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     }
-    // node:stream/web's exports are the web stream globals themselves: in
-    // JavaScript sources the same identity token as the global spelling
-    // (`require("stream/web").ReadableStream === globalThis.ReadableStream`).
-    if (bi.module === "stream/web" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-      return { kind: "strLit", value: `[builtin ${bi.member}]`, type: STRING, loc };
+    // Members that are global objects (`require("stream/web").ReadableStream
+    // === globalThis.ReadableStream`) read in JavaScript sources as their
+    // global spelling does.
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const global = globalMemberValue(this, bi, loc);
+      if (global) return global;
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
