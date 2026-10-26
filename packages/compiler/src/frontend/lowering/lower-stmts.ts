@@ -1772,8 +1772,8 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
     const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
     if (pre) {
-      lowerer.ctx.tdzPredeclared.delete(symbol!);
       const value = lowerer.coerceToExpected(lowerer.lowerClassExpression(stmt), DYN);
+      lowerer.ctx.tdzPredeclared.delete(symbol!);
       return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(stmt) };
     }
     const type: IrType = { kind: "classval", className: info.def.name };
@@ -5789,8 +5789,8 @@ export function lowerVarDecl(
       const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
       const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
       if (pre) {
-        lowerer.ctx.tdzPredeclared.delete(symbol!);
         const value = genericBindingStoredValue(lowerer, decl, info);
+        lowerer.ctx.tdzPredeclared.delete(symbol!);
         return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(decl) };
       }
       return genericBindingPresenceStore(info, decl);
@@ -5953,11 +5953,13 @@ export function lowerVarDecl(
   // A forward-captured binding pre-declared as a TDZ box (an earlier
   // function in this scope captured it — predeclareForwardCapture): the
   // binding and its scope-entry varDecl already exist; the source
-  // declaration is the one initializing `assign` into the shared box.
+  // declaration is the one initializing `assign` into the shared box. The
+  // box stays pre-declared until the initializer lowers: a statement the
+  // commit point lowers again (localized failure) initializes the same box.
   const pre = declSymbol ? lowerer.ctx.tdzPredeclared.get(declSymbol) : undefined;
   if (pre && decl.initializer) {
-    lowerer.ctx.tdzPredeclared.delete(declSymbol!);
     const init = lowerer.lowerExprExpecting(decl.initializer, pre.type);
+    lowerer.ctx.tdzPredeclared.delete(declSymbol!);
     return { kind: "assign", localId: pre.id, value: init, initializes: true, loc: locOf(decl) };
   }
 
