@@ -5754,6 +5754,16 @@ function preflight7(load: LoadResult): {
           );
           continue;
         }
+        // A re-export from a Node island package that tsconfig `paths` maps
+        // to its installed directory: its declarations are no program
+        // module (the lowering reports the island boundary).
+        if (
+          projectReexport !== null &&
+          projectReexport.isDeclarationFile &&
+          !isRelativeSpecifier(fromSpec) &&
+          isFrontendIsland(packageNameOfSpecifier(fromSpec))
+        )
+          continue;
         const reDep = projectReexport;
         // `export * as ns from "./m"` re-exports the module NAMESPACE
         // object under a name: importers' `x.ns.member` reads resolve
@@ -5876,6 +5886,16 @@ function preflight7(load: LoadResult): {
       // Node's startup crash with Node's exact message; what keeps a compile
       // fence is unsupported builtin or types-only surface.
       if (isBare && npmStaticDep === null) {
+        // A Node island package that tsconfig `paths` maps to its
+        // installed directory resolves to its declarations here: it loads
+        // in Node, typed by them, like an island package resolved through
+        // node_modules (scope-B NI-4).
+        if (
+          projDep !== null &&
+          projDep.isDeclarationFile &&
+          isFrontendIsland(packageNameOfSpecifier(spec))
+        )
+          continue;
         if (projDep !== null && projDep.isDeclarationFile) {
           diags.push(
             unsupportedDiag(
