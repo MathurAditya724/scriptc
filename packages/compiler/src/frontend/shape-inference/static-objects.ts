@@ -238,6 +238,149 @@ function ownLiteralMember(literal: Node, key: string): string | null {
   return found;
 }
 
+/** Whether a top-level statement runs no code but its own. Its expressions
+ * are literals, identifiers, functions (not run), object and array literals
+ * without spreads or computed keys, `=` stores, `var` bindings without
+ * patterns, `&&`, `||`, `??`, `?:`, `,`, `!`, `typeof`, `void`, `===` and
+ * `!==`, none of which calls a function, and member reads and stores that
+ * `plainMember` accepts (no getter or setter runs). Every other form can
+ * run code: a call, `new` or tagged template, a class (static blocks and
+ * field initializers run), coercion (arithmetic, `+`, templates with
+ * substitutions, relational and loose comparisons, `in`, `instanceof`,
+ * computed keys), iteration (spreads, destructuring), `delete`, `await` and
+ * `yield`. */
+function runsNoCode(stmt: ts.Statement, plainMember: (n: Node) => boolean): boolean {
+  if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) return true;
+  if (ts.isExpressionStatement(stmt)) return quietExpression(stmt.expression, plainMember);
+  if (!ts.isVariableStatement(stmt)) return false;
+  return stmt.declarationList.declarations.nodes.every(
+    (d) =>
+      ts.isIdentifier(d.name) &&
+      (d.initializer === undefined || quietExpression(d.initializer, plainMember)),
+  );
+}
+
+function quietExpression(e: ts.Expression, plainMember: (n: Node) => boolean): boolean {
+  const quiet = (x: ts.Expression): boolean => quietExpression(x, plainMember);
+  if (ts.isParenthesizedExpression(e)) return quiet(e.expression);
+  if (
+    ts.isIdentifier(e) ||
+    ts.isNumericLiteral(e) ||
+    ts.isBigIntLiteral(e) ||
+    ts.isStringLiteral(e) ||
+    ts.isNoSubstitutionTemplateLiteral(e) ||
+    ts.isRegularExpressionLiteral(e) ||
+    ts.isFunctionExpression(e) ||
+    ts.isArrowFunction(e) ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    e.kind === ts.SyntaxKind.NullKeyword ||
+    e.kind === ts.SyntaxKind.ThisKeyword
+  )
+    return true;
+  if (ts.isObjectLiteralExpression(e))
+    return e.properties.nodes.every((m) => {
+      if (ts.isShorthandPropertyAssignment(m)) return m.objectAssignmentInitializer === undefined;
+      if (!ts.isPropertyAssignment(m)) return false;
+      const name = m.name;
+      if (!ts.isIdentifier(name) && !ts.isStringLiteral(name) && !ts.isNumericLiteral(name))
+        return false;
+      return quiet(m.initializer);
+    });
+  if (ts.isArrayLiteralExpression(e))
+    return e.elements.nodes.every(
+      (x) => ts.isOmittedExpression(x) || (!ts.isSpreadElement(x) && quiet(x)),
+    );
+  if (ts.isTypeOfExpression(e) || ts.isVoidExpression(e)) return quiet(e.expression);
+  if (ts.isPrefixUnaryExpression(e))
+    return e.operator === ts.SyntaxKind.ExclamationToken && quiet(e.operand);
+  if (ts.isConditionalExpression(e))
+    return quiet(e.condition) && quiet(e.whenTrue) && quiet(e.whenFalse);
+  if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e))
+    return quietMember(e, plainMember);
+  if (!ts.isBinaryExpression(e)) return false;
+  switch (e.operatorToken.kind) {
+    case ts.SyntaxKind.EqualsToken:
+      if (ts.isIdentifier(e.left)) return quiet(e.right);
+      return (
+        (ts.isPropertyAccessExpression(e.left) || ts.isElementAccessExpression(e.left)) &&
+        quietMember(e.left, plainMember) &&
+        quiet(e.right)
+      );
+    case ts.SyntaxKind.AmpersandAmpersandToken:
+    case ts.SyntaxKind.BarBarToken:
+    case ts.SyntaxKind.QuestionQuestionToken:
+    case ts.SyntaxKind.CommaToken:
+    case ts.SyntaxKind.EqualsEqualsEqualsToken:
+    case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+      return quiet(e.left) && quiet(e.right);
+    default:
+      return false;
+  }
+}
+
+/** A member read or store target with a literal key on a receiver that
+ * runs no code, which `plainMember` accepts. */
+function quietMember(
+  e: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  plainMember: (n: Node) => boolean,
+): boolean {
+  if (e.questionDotToken !== undefined) return false;
+  if (
+    ts.isElementAccessExpression(e) &&
+    !ts.isStringLiteral(e.argumentExpression) &&
+    !ts.isNumericLiteral(e.argumentExpression)
+  )
+    return false;
+  return plainMember(e) && quietExpression(e.expression, plainMember);
+}
+
+/** Whether an identifier is written where it appears: an assignment or
+ * update target, a destructuring assignment or loop target (through array
+ * and object patterns, defaults and rests), or a `var`, `let`, `const` or
+ * parameter binding of the name (a nested binding shadows it, which only
+ * makes the answer conservative). */
+function writesBinding(id: ts.Identifier): boolean {
+  let n: Node = id;
+  for (let p = n.parent; p !== undefined; n = p, p = p.parent) {
+    if (ts.isPrefixUnaryExpression(p) || ts.isPostfixUnaryExpression(p))
+      return (
+        p.operator === ts.SyntaxKind.PlusPlusToken || p.operator === ts.SyntaxKind.MinusMinusToken
+      );
+    if (ts.isBinaryExpression(p)) {
+      const op = p.operatorToken.kind;
+      if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment)
+        return p.left === n;
+      return false;
+    }
+    if (ts.isForOfStatement(p) || ts.isForInStatement(p)) return p.initializer === n;
+    if (ts.isVariableDeclaration(p) || ts.isParameter(p) || ts.isBindingElement(p))
+      return p.name === n;
+    if (
+      ts.isParenthesizedExpression(p) ||
+      ts.isArrayLiteralExpression(p) ||
+      ts.isObjectLiteralExpression(p) ||
+      ts.isSpreadElement(p) ||
+      ts.isSpreadAssignment(p) ||
+      ts.isShorthandPropertyAssignment(p) ||
+      ts.isArrayBindingPattern(p) ||
+      ts.isObjectBindingPattern(p)
+    )
+      continue;
+    if (ts.isPropertyAssignment(p)) {
+      if (p.initializer !== n) return false;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
+function enclosingFunctionLike(n: Node): Node | null {
+  for (let p = n.parent; p !== undefined; p = p.parent) if (ts.isFunctionLike(p)) return p;
+  return null;
+}
+
 function primitiveLiteralText(e: ts.Expression): string | null {
   if (
     ts.isNumericLiteral(e) ||
@@ -1273,10 +1416,6 @@ export function planStaticObjectRewrites(
     if (parent === undefined || ts.isDeleteExpression(parent)) continue;
     if (!ts.isPropertyAccessExpression(node)) continue;
     if (topStatement(node) === null) continue;
-    // The receiver's evaluation is dropped, and the binding exists from the
-    // store on (a function) or from its declaration on (a class).
-    if (!pureReceiver(node.expression, node)) continue;
-    if (!runsAfter(node, storeOf.get(field.values[0]!)!)) continue;
     // The reference replaces the whole member expression: its receiver
     // must be one that evaluating runs no code.
     if (!effectFree(node.expression)) {
@@ -1287,6 +1426,10 @@ export function planStaticObjectRewrites(
       kept.push(`reference ${node.getText()}: it may run before the member is stored`);
       continue;
     }
+    // The receiver's evaluation is dropped, and the binding exists from the
+    // store on (a function) or from its declaration on (a class).
+    if (!pureReceiver(node.expression, node)) continue;
+    if (!runsAfter(node, storeOf.get(field.values[0]!)!)) continue;
     if (node.getSourceFile() !== field.values[0]!.node!.getSourceFile()) {
       const text = crossFileReference(node, field.values[0]!.node!.getSourceFile(), name);
       if (text === null) continue;
@@ -1319,16 +1462,84 @@ export function planStaticObjectRewrites(
   // the object does and nothing writes it, so every read sees it. (A
   // member stored after the object was created could be read before the
   // store; those stay reads.)
+  //
+  // A member stored once by an unconditional top-level statement of the
+  // object's own file (`app.math.EPSILON = 1e-9;`) folds too, at reads that
+  // provably run after the store: reads inside functions, when no code can
+  // run before the store (the statements before it call nothing, so no
+  // function runs and no other module starts), and top-level reads after
+  // it in the same file.
+  const writesOf = new Map<Atom, Map<string, Node[]>>();
+  for (const op of analysis.ops) {
+    if (op.kind !== "write" || op.name === null) continue;
+    for (const a of analysis.nodes[op.recv]!.atoms) {
+      let byKey = writesOf.get(a);
+      if (byKey === undefined) writesOf.set(a, (byKey = new Map()));
+      let l = byKey.get(op.name);
+      if (l === undefined) byKey.set(op.name, (l = []));
+      if (!l.includes(op.node)) l.push(op.node);
+    }
+  }
+  // Member reads and stores whose receiver can only be constant objects or
+  // primitives: neither has accessors of its own, so no getter or setter
+  // runs (a primitive receiver of a store throws, or reads its prototype).
+  const memberReceivers = new Map<Node, Set<Atom>>();
+  for (const op of analysis.ops) {
+    if ((op.kind !== "read" && op.kind !== "write") || op.name === null) continue;
+    let set = memberReceivers.get(op.node);
+    if (set === undefined) memberReceivers.set(op.node, (set = new Set()));
+    for (const a of analysis.nodes[op.recv]!.atoms) set.add(a);
+  }
+  const plainMember = (n: Node): boolean => {
+    const atoms = memberReceivers.get(n);
+    return (
+      atoms !== undefined &&
+      atoms.size > 0 &&
+      [...atoms].every((a) => a.kind === "prim" || constantAtoms.has(a))
+    );
+  };
+  const quietPrefix = new Map<ts.Statement, boolean>();
+  const storedLiteral = (
+    atom: Atom,
+    site: Node,
+    key: string,
+  ): { literal: string; stmt: ts.ExpressionStatement; statements: readonly Node[] } | null => {
+    const writes = writesOf.get(atom)?.get(key) ?? [];
+    if (writes.length !== 1) return null;
+    const target = writes[0]!;
+    const assign = target.parent;
+    if (
+      assign === undefined ||
+      !ts.isBinaryExpression(assign) ||
+      assign.left !== target ||
+      assign.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+    )
+      return null;
+    const stmt = assign.parent;
+    if (stmt === undefined || !ts.isExpressionStatement(stmt) || !ts.isSourceFile(stmt.parent))
+      return null;
+    if (stmt.getSourceFile() !== site.getSourceFile()) return null;
+    const literal = primitiveLiteralText(assign.right);
+    if (literal === null) return null;
+    const statements = stmt.parent.statements.nodes;
+    let quiet = quietPrefix.get(stmt);
+    if (quiet === undefined) {
+      quiet = statements
+        .slice(0, statements.indexOf(stmt))
+        .every((s) => runsNoCode(s, plainMember));
+      quietPrefix.set(stmt, quiet);
+    }
+    return quiet ? { literal, stmt, statements } : null;
+  };
   let foldedReads = 0;
   for (const { op, atoms, nullish } of mergedOps) {
     if (op.kind !== "read" || op.name === null) continue;
     if (atoms.size !== 1) continue;
-    const o = constantAtoms.get([...atoms][0]!);
+    const atom = [...atoms][0]!;
+    const o = constantAtoms.get(atom);
     if (o === undefined || o.site.kind !== "literal") continue;
     const field = o.fields.find((f) => f.key === op.name);
     if (field === undefined || field.stores !== 1) continue;
-    const literal = ownLiteralMember(o.site.node, op.name);
-    if (literal === null) continue;
     const node = op.node;
     if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) continue;
     if (!isPlainRead(node) || topStatement(node) === null) continue;
@@ -1340,6 +1551,19 @@ export function planStaticObjectRewrites(
       kept.push(`constant read ${node.getText()}: it may run before the object is created`);
       continue;
     }
+    let literal = ownLiteralMember(o.site.node, op.name);
+    if (literal === null && process.env["SCRIPTC_SHAPE_FOLD_STORES"] !== "0") {
+      const stored = storedLiteral(atom, o.site.node, op.name);
+      if (stored === null) continue;
+      const inFunction = enclosingFunctionLike(node) !== null;
+      const top = topStatement(node)!;
+      const after =
+        top.getSourceFile() === stored.stmt.getSourceFile() &&
+        stored.statements.indexOf(top) > stored.statements.indexOf(stored.stmt);
+      if (!inFunction && !after) continue;
+      literal = stored.literal;
+    }
+    if (literal === null) continue;
     // An element key needs no parentheses (and a parenthesized literal key
     // would read as a computed one).
     const key =
@@ -1387,7 +1611,51 @@ export function planStaticObjectRewrites(
     call: ts.CallExpression;
     arms: [string, string][];
     nullish: boolean;
+    exhaustive: boolean;
   }[] = [];
+  // Whether a key parameter only ever holds one of the table's keys: its
+  // function never escapes, every call of it passes a string literal key
+  // of the table, and its body neither assigns the parameter nor uses
+  // `arguments` (which aliases parameters in sloppy code). The dispatch
+  // then needs no arm for other keys.
+  const literalKeysOnly = (keyDecl: Node, keys: ReadonlySet<string>): boolean => {
+    if (process.env["SCRIPTC_SHAPE_EXHAUSTIVE_TABLES"] === "0") return false;
+    if (!ts.isParameter(keyDecl) || !ts.isIdentifier(keyDecl.name)) return false;
+    const fn = keyDecl.parent;
+    if (fn === undefined || !ts.isFunctionLike(fn) || escapedFns.has(fn)) return false;
+    for (const a of analysis.atoms.atoms)
+      if (a.kind === "function" && a.node === fn && analysis.escaped.has(a)) return false;
+    const index = (fn as ts.FunctionLikeDeclaration).parameters.nodes.indexOf(keyDecl);
+    const name = keyDecl.name.text;
+    // Any write of the name in the function, its other parameters included,
+    // or a direct eval or `arguments` (which aliases parameters in sloppy
+    // code) can give the key another value.
+    let touched = false;
+    const visit = (n: Node): void => {
+      if (touched) return;
+      if (ts.isIdentifier(n) && (n.text === "arguments" || n.text === "eval")) touched = true;
+      else if (ts.isIdentifier(n) && n.text === name && n !== keyDecl.name && writesBinding(n))
+        touched = true;
+      ts.forEachChild(n, (c) => {
+        visit(c);
+        return undefined;
+      });
+    };
+    for (const p of (fn as ts.FunctionLikeDeclaration).parameters.nodes) visit(p);
+    const body = (fn as { body?: Node }).body;
+    if (body === undefined) return false;
+    visit(body);
+    if (touched) return false;
+    const edges = analysis.calls.filter((c) => c.callee.node === fn);
+    if (edges.length === 0) return false;
+    return edges.every((e) => {
+      if (!ts.isCallExpression(e.site)) return false;
+      const args = e.site.arguments.nodes;
+      if (args.slice(0, index + 1).some((a) => ts.isSpreadElement(a))) return false;
+      const arg = args[index];
+      return arg !== undefined && ts.isStringLiteral(arg) && keys.has(arg.text);
+    });
+  };
   for (const { op, atoms, nullish } of mergedOps) {
     if (op.kind !== "computedRead") continue;
     const node = op.node;
@@ -1438,16 +1706,35 @@ export function planStaticObjectRewrites(
       kept.push(`${where}: it may run before the table is created`);
       continue;
     }
-    tableCalls.push({ sf: call.getSourceFile(), call, arms, nullish });
+    tableCalls.push({
+      sf: call.getSourceFile(),
+      call,
+      arms,
+      nullish,
+      exhaustive: literalKeysOnly(keyDecl, new Set(arms.map(([k]) => k))),
+    });
   }
-  for (const { sf, call, arms, nullish } of tableCalls) {
+  for (const { sf, call, arms, nullish, exhaustive } of tableCalls) {
     const node = call.expression as ts.ElementAccessExpression;
     const key = node.argumentExpression.getText();
     const args = call.arguments.nodes.map((a) => sliceWithCalls(sf, a)).join(", ");
     const table = sliceWithCalls(sf, node.expression);
-    const text = arms
+    const tested = exhaustive ? arms.slice(0, -1) : arms;
+    const text = tested
       .map(([k, name]) => `${key} === ${JSON.stringify(k)} ? ${name}(${args}) : `)
       .join("");
+    if (exhaustive) {
+      callEdits.push({
+        sf,
+        edit: {
+          start: ts.tokenStartOfNode(call),
+          end: call.end,
+          text: `(${nullish ? `${table}[${key}], ` : ""}${text}${arms[arms.length - 1]![1]}(${args}))`,
+        },
+      });
+      tableDispatches++;
+      continue;
+    }
     callEdits.push({
       sf,
       edit: {
