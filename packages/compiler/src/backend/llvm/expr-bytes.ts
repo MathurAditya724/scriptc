@@ -326,7 +326,9 @@ function emitScopedBytesGet(
   const signed = elem === "i8" || elem === "i16" || elem === "i32";
   B.line(`${number} = ${signed ? "sitofp" : "uitofp"} i32 ${u32} to double`);
   B.line(`${out} = select i1 ${valid}, double ${number}, double ${f64Lit(NaN)}`);
-  return { name: out, type: F64, uint32: u32, ordered: valid };
+  const integer = B.tmp();
+  B.line(`${integer} = ${signed ? "sext" : "zext"} i32 ${u32} to i64`);
+  return { name: out, type: F64, uint32: u32, ordered: valid, nanInteger: integer };
 }
 
 function emitBytesLoad(

@@ -1,6 +1,12 @@
 import { widensReducedRecords } from "../function-returns.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
+import { jsSpecialGlobalValue } from "../global-values.js";
+import {
+  arrayClassMemberOwner,
+  arrayClassReceiver,
+  lowerArrayClassConstructorRead,
+} from "../builtins/array-classes.js";
 import { indexedUnionArms, lowerIndexedUnionMember } from "../indexed-unions.js";
 import { keyedHelperName } from "../stable-names.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
@@ -38,7 +44,6 @@ import {
 } from "../../type-mapper.js";
 import {
   BOOL,
-  BYTES_ELEMENT_NAME,
   BYTES_U8,
   DYN,
   F64,
@@ -63,7 +68,7 @@ import {
   unionContainerArmsOk,
   BYTES_ELEMENT_SIZE,
 } from "../../../ir/ir.js";
-import { lowerNavigatorMember } from "../builtins/navigator.js";
+import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
 import { lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
@@ -322,6 +327,8 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
+  if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `value.#x` on a checked-dynamic value, or on a checked extraction of
   // one: the field of the brand-checked receiver (checkedPrivateValue).
   if (ts.isPrivateIdentifier(expr.name)) {
@@ -612,7 +619,10 @@ export function lowerPropertyAccessExpr(
     // (`(_a = globalThis).__config ?? (_a.__config = {})`) reads back from
     // the global object's own properties.
     const globalType = lowerer.typeOf(staticallySelected(lowerer, expr.expression));
-    if (globalThisWrittenNames(lowerer, globalType).has(expr.name.text)) {
+    if (
+      globalThisWrittenNames(lowerer, globalType).has(expr.name.text) ||
+      lowerer.globalThisComputedWrite
+    ) {
       return {
         kind: "dynKeyGet",
         value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),
@@ -621,6 +631,10 @@ export function lowerPropertyAccessExpr(
         loc,
       };
     }
+    // Node's navigator, which JavaScript reads as a free name when no
+    // declaration types it (isNavigatorGlobal).
+    if (expr.name.text === "navigator" && isJsSourceFile(ts.getSourceFileOfNode(expr)))
+      return navigatorValue(loc);
     return dynUndefinedExpr(loc);
   }
   // `Uint8Array.prototype.toBase64` and its siblings, the base64/hex
@@ -995,18 +1009,8 @@ export function lowerPropertyAccessExpr(
       if (canonical === "globalThis") return lowerGlobalValue(lowerer, expr);
       // Typed for the programs that name it, absent in Node 24.
       if (canonical === TEMPORAL_GLOBAL) return dynUndefinedExpr(loc);
-      if (canonical === "ArrayBuffer")
-        return { kind: "libCall", fn: "arrayBuffer.constructor", args: [], type: DYN, loc };
-      if (canonical === "fetch")
-        return { kind: "libCall", fn: "fetch.function", args: [], type: DYN, loc };
-      if (Object.values(BYTES_ELEMENT_NAME).includes(canonical))
-        return {
-          kind: "libCall",
-          fn: "bytes.constructor",
-          args: [{ kind: "strLit", value: canonical, type: STRING, loc }],
-          type: DYN,
-          loc,
-        };
+      const value = jsSpecialGlobalValue(lowerer, canonical, loc);
+      if (value) return value;
       return (
         builtinGlobalValueAt(lowerer, expr, canonical, loc, true) ?? {
           kind: "strLit",
@@ -3839,6 +3843,32 @@ export function fieldTarget(
       );
     }
   }
+  // A field declared by a class that extends Array, on an instance (whose
+  // type maps to its array): the class object's field.
+  {
+    const owner = arrayClassMemberOwner(lowerer, access);
+    const name = access.name.text;
+    if (
+      owner !== null &&
+      (owner.fields.has(name) ||
+        lowerer.findMethodOn(owner, `get:${name}`) ||
+        lowerer.findMethodOn(owner, `set:${name}`))
+    ) {
+      const receiver = arrayClassReceiver(
+        lowerer,
+        owner,
+        lowerer.lowerExpr(access.expression),
+        access.expression,
+      );
+      return classFieldTarget(
+        lowerer,
+        access.expression,
+        { kind: "object", className: owner.def.name },
+        access.name.text,
+        receiver,
+      );
+    }
+  }
   const stored = ts.isIdentifier(access.expression)
     ? (lowerer.peekLocal(access.expression)?.type ?? lowerer.globalOf(access.expression)?.type)
     : undefined;
@@ -4316,9 +4346,13 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
 
 /** The builtin global functions JavaScript sources read as interned
  * function values (the `cond ? setImmediate : process.nextTick` feature
- * probe of bcryptjs and async libraries): typeof answers "function",
- * identity holds across spellings, and calls run the timer APIs. */
+ * probe of bcryptjs and async libraries, and the known globals Node's test
+ * harness collects): typeof answers "function", identity holds across
+ * spellings, and calls run what the direct calls run. */
 const GLOBAL_FUNCTION_VALUES: ReadonlySet<string> = new Set([
+  "atob",
+  "btoa",
+  "structuredClone",
   "setTimeout",
   "setInterval",
   "setImmediate",
@@ -4696,11 +4730,24 @@ function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<stri
         (node.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
           node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken ||
           node.operatorToken.kind === ts.SyntaxKind.BarBarEqualsToken ||
-          node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken) &&
-        ts.isPropertyAccessExpression(node.left) &&
-        lowerer.typeOf(node.left.expression) === globalType
-      )
-        names.add(node.left.name.text);
+          node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken)
+      ) {
+        if (
+          ts.isPropertyAccessExpression(node.left) &&
+          lowerer.typeOf(node.left.expression) === globalType
+        )
+          names.add(node.left.name.text);
+        // A write by computed name may store any name: every read of a
+        // name the program does not declare consults the global object.
+        if (
+          ts.isElementAccessExpression(node.left) &&
+          lowerer.typeOf(node.left.expression) === globalType
+        ) {
+          if (ts.isStringLiteralLike(node.left.argumentExpression))
+            names.add(node.left.argumentExpression.text);
+          else lowerer.globalThisComputedWrite = true;
+        }
+      }
       return undefined;
     });
   }
