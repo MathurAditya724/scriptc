@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import type { NativeTargetSpec } from "../packages/compiler/src/backend/targets.js";
@@ -27,10 +27,18 @@ function copyPackage(source: string, destination: string, members: readonly stri
 /** Removes the symbol table and debug sections of a copied executable.
  * llvm-strip rewrites the linker-signed ad hoc code signature of a Mach-O
  * executable, which arm64 macOS requires to run it. Windows executables keep
- * their debug information in separate .pdb files, which are not copied. */
+ * their debug information in separate .pdb files, which are not copied.
+ * Without llvm-strip on PATH the executable keeps its symbols; the release
+ * hosts install it with LLVM. */
 function stripExecutable(path: string, platform: string): void {
   if (platform === "win32") return;
-  execFileSync("llvm-strip", [path], { stdio: "inherit" });
+  const result = spawnSync("llvm-strip", [path], { stdio: "inherit" });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+    console.warn(`llvm-strip is not on PATH; ${basename(path)} keeps its symbols`);
+    return;
+  }
+  if (result.error !== undefined) throw result.error;
+  if (result.status !== 0) throw new Error(`llvm-strip ${path} exited with ${result.status}`);
 }
 
 /** Rewrites CRLF line endings to LF in the text files under `directory`. A
