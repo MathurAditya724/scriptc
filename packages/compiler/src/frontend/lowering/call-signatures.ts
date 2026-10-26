@@ -1,3 +1,4 @@
+import { layoutReturnType } from "./structural-instances.js";
 import {
   typedArgumentsCandidate,
   typedArgumentsShapes,
@@ -890,6 +891,7 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
     lowerer.badType(nameBlame, lowerer.typeOf(nameBlame));
   }
 
+  if (!isAsync && !isGenerator) returnType = layoutReturnType(lowerer, decl, returnType);
   const symbol = declSymbolOf(lowerer, decl);
   if (!symbol) lowerer.unsupported("SC1090", decl, "this function form");
   lowerer.fnSigsBySymbol.set(symbol, {

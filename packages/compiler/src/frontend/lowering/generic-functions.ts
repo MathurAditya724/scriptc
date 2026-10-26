@@ -1650,7 +1650,7 @@ export function implicitMonoFile(sf: ts.SourceFile): boolean {
  * parameter symbol — assignment, compound assignment, ++/--, a
  * destructuring-assignment target, or a for-in/of cursor. A written
  * param's binding could lie after the write, so it stays dyn. */
-function paramWrittenInBody(
+export function paramWrittenInBody(
   lowerer: Lowerer,
   body: ts.Node,
   sym: ts.Symbol,
@@ -2370,18 +2370,46 @@ export function implicitDefaultInstance(
   return internImplicitInstance(lowerer, blame, info, shapes, argTypes);
 }
 
-function internImplicitInstance(
+export function internImplicitInstance(
   lowerer: Lowerer,
   blame: ts.Node,
   info: GenericFnInfo,
   shapes: ParamShape[],
   argTypes: Map<ts.Symbol, ts.Type>,
   patternKey = "",
+  declaredReturn?: IrType,
 ): GenericInstance {
+  return internImplicitInstanceOr(
+    lowerer,
+    blame,
+    info,
+    shapes,
+    argTypes,
+    patternKey,
+    declaredReturn,
+    false,
+  )!;
+}
+
+/** internImplicitInstance; with `fallible`, a body that does not lower
+ * leaves no instance and no diagnostics, and the answer is null (the caller
+ * keeps its own lowering). */
+export function internImplicitInstanceOr(
+  lowerer: Lowerer,
+  blame: ts.Node,
+  info: GenericFnInfo,
+  shapes: ParamShape[],
+  argTypes: Map<ts.Symbol, ts.Type>,
+  patternKey: string,
+  declaredReturn: IrType | undefined,
+  fallible: boolean,
+): GenericInstance | null {
   const key = shapes.map((s) => typeKey(s.type)).join(",") + (patternKey ? `|${patternKey}` : "");
   let inst = info.instances.get(key);
-  if (inst?.implicitState === "failed")
+  if (inst?.implicitState === "failed") {
+    if (fallible) return null;
     lowerer.unsupported("SC1090", blame, `the failed specialization of '${info.baseName}'`);
+  }
   if (inst) {
     // A recursive caller has observed this ABI before inference settles.
     // Keep the promised return slot and coerce the completed body's returns.
@@ -2405,7 +2433,8 @@ function internImplicitInstance(
       shapes[index]?.type.kind === "dyn" &&
       broadPromiseParam(lowerer, lowerer.typeOf(param.name)),
   );
-  const declared = dynamicBroadPromise ? null : implicitDeclaredReturn(lowerer, info);
+  const declared =
+    declaredReturn ?? (dynamicBroadPromise ? null : implicitDeclaredReturn(lowerer, info));
   inst = {
     path,
     name: keyedHelperName(lowerer, `${info.qualifiedName}%`, key, ""),
@@ -2426,6 +2455,25 @@ function internImplicitInstance(
   // JS body must still have a throwing implementation: later references
   // (including recursive ones) can already hold its cached signature.
   const diagsBefore = lowerer.diags.length;
+  const fencesBefore = lowerer.runtimeFences.length;
+  const totalBefore = lowerer.stats.statementsTotal;
+  const failedBefore = lowerer.stats.statementsFailed;
+  const skippedBefore = lowerer.stats.functionsSkipped;
+  const blockedBefore = fallible ? new Set(lowerer.blockedBindings) : null;
+  const deferredBefore = fallible ? new Set(lowerer.deferredDiags.keys()) : null;
+  /** Undoes what a failed fallible body recorded: the instance's
+   * statements share their symbols with the declaration's own body. */
+  const rollback = (): void => {
+    lowerer.diags.splice(diagsBefore);
+    lowerer.runtimeFences.splice(fencesBefore);
+    lowerer.stats.statementsTotal = totalBefore;
+    lowerer.stats.statementsFailed = failedBefore;
+    lowerer.stats.functionsSkipped = skippedBefore;
+    for (const symbol of [...lowerer.blockedBindings])
+      if (!blockedBefore!.has(symbol)) lowerer.blockedBindings.delete(symbol);
+    for (const symbol of [...lowerer.deferredDiags.keys()])
+      if (!deferredBefore!.has(symbol)) lowerer.deferredDiags.delete(symbol);
+  };
   // The instance is cached even when a receiver probe requested it.
   // Its body must retain statement fences instead of dropping failures
   // into that probe's temporary diagnostic sink and caching empty code.
@@ -2445,10 +2493,22 @@ function internImplicitInstance(
       ...(info.decl.body ? [info.decl.body] : []),
     ]);
     const fn = lowerer.lowerGenericInstance(info, inst);
+    if (
+      fallible &&
+      (lowerer.diags.length > diagsBefore || lowerer.runtimeFences.length > fencesBefore)
+    ) {
+      inst.implicitState = "failed";
+      rollback();
+      return null;
+    }
     lowerer.implicitFns.push(fn);
   } catch (e) {
     if (!(e instanceof PoisonError)) throw e;
     inst.implicitState = "failed";
+    if (fallible) {
+      rollback();
+      return null;
+    }
     const types: IrType[] = shapes.map((shape) => shape.type);
     if (info.member?.kind === "method")
       types.unshift({ kind: "object", className: info.member.cls.def.name });
