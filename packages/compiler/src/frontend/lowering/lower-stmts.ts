@@ -755,6 +755,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const touched = new Set<string>();
       lowerer.failureTouches.push(touched);
       const pendingSlots: DynamicSlot[] = [];
+      // A declarator that initializes a forward-captured TDZ box takes it
+      // out of tdzPredeclared; a retry after a later declarator degrades
+      // must initialize the same box again.
+      const tdzBefore = new Map(lowerer.ctx.tdzPredeclared);
       try {
         for (let attempt = 0; ; attempt++) {
           try {
@@ -773,6 +777,9 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             // forward captures declared (they stay declared), so the
             // retry appends after them.
             pendingSlots.push(slot);
+            for (const [symbol, local] of tdzBefore)
+              if (!lowerer.ctx.tdzPredeclared.has(symbol))
+                lowerer.ctx.tdzPredeclared.set(symbol, local);
           }
         }
         for (const slot of pendingSlots) lowerer.noteDynamicSlot(slot);
