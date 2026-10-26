@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 /* Refreshes packages/compiler/native/cli.layout.gz, the function layout that
  * builds of the native compiler use (scripts/build-native-cli.mts). The
- * layout lists, in two tiers, the functions the compiler runs: tier 1 for
- * `--version` and rebuilds of unchanged programs, tier 2 for the other
- * builds. The emitter writes the listed functions first, so the code a build
+ * layout lists the functions the compiler runs, in tiers: tier 1 for
+ * `--version` and rebuilds of unchanged programs, then the functions of the
+ * other builds by the share of training builds that run them (COLD_TIERS).
+ * The emitter writes the listed functions first, by tier, so the code a build
  * runs sits together in the compiler's executable and a run maps fewer of its
- * pages.
+ * pages: a function nearly every build runs sits with the others that do, not
+ * among functions only a few programs need.
  *
  * Builds an instrumented native compiler for this Linux host (or reuses one
  * with --instrumented), builds each training program cold and then again
@@ -138,9 +140,9 @@ const training = [
 
 // Tier 1 collects each run that took the warm path from its own profile; a
 // rebuild that missed a cache (it shows no `frontend-cache-hit` or
-// `executable-cache-hit` phase) is left out. Tier 2 pools the first builds.
+// `executable-cache-hit` phase) is left out. The first builds each write
+// their own profile (cold-<program>-*), merged across the build's processes.
 const warm = new Set();
-const cold = new Set();
 let skipped = 0;
 async function warmRun(args, cache, name, cacheHits) {
   const profile = join(raw, `warm-${name}.profraw`);
@@ -159,7 +161,11 @@ const passed = await pool(
     const cache = join(work, `cache-${index}`);
     const out = join(builds, `program-${index}`);
     const args = ["build", program.file, `--optimization=${program.optimization}`, "-o", out];
-    const { ok } = await run(args, { cwd: root, cache, profile: join(raw, "cold-%4m.profraw") });
+    const { ok } = await run(args, {
+      cwd: root,
+      cache,
+      profile: join(raw, `cold-${index}-%1m.profraw`),
+    });
     if (ok)
       await warmRun(args, cache, String(index), ["frontend-cache-hit", "executable-cache-hit"]);
     rmSync(cache, { recursive: true, force: true });
@@ -231,18 +237,39 @@ function executedFunctions(path) {
   return ran;
 }
 
-for (const name of readdirSync(raw))
-  if (name.startsWith("cold-")) for (const fn of executedFunctions(join(raw, name))) cold.add(fn);
+// The cold tiers, by the least share of training builds that run a function:
+// tier 2 for functions at least 90% of the builds run, tier 3 for 60%, and so
+// on; tier 7 holds the functions fewer than 3% of the builds run.
+const COLD_TIERS = [0.9, 0.6, 0.3, 0.1, 0.03];
+const coldRuns = new Map();
+for (const name of readdirSync(raw)) {
+  const program = /^cold-(\d+)-/.exec(name)?.[1];
+  if (program === undefined) continue;
+  const ran = coldRuns.get(program) ?? new Set();
+  for (const fn of executedFunctions(join(raw, name))) ran.add(fn);
+  coldRuns.set(program, ran);
+}
+const runs = new Map();
+for (const ran of coldRuns.values()) for (const fn of ran) runs.set(fn, (runs.get(fn) ?? 0) + 1);
+const coldTier = (count) => {
+  const share = count / coldRuns.size;
+  const index = COLD_TIERS.findIndex((least) => share >= least);
+  return 2 + (index < 0 ? COLD_TIERS.length : index);
+};
 const lines = [
   ...[...warm].sort().map((name) => `1 ${name}`),
-  ...[...cold]
-    .filter((name) => !warm.has(name))
-    .sort()
-    .map((name) => `2 ${name}`),
+  ...[...runs]
+    .filter(([name]) => !warm.has(name))
+    .map(([name, count]) => [coldTier(count), name])
+    .sort((a, b) => a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+    .map(([tier, name]) => `${tier} ${name}`),
 ];
 writeFileSync(output, gzipSync(`${lines.join("\n")}\n`, { level: constants.Z_BEST_COMPRESSION }));
+const perTier = new Map();
+for (const line of lines)
+  perTier.set(line.split(" ")[0], (perTier.get(line.split(" ")[0]) ?? 0) + 1);
 console.log(
-  `wrote ${output}: ${warm.size} tier-1 and ${lines.length - warm.size} tier-2 functions (${statSync(output).size} bytes)`,
+  `wrote ${output}: ${[...perTier].map(([tier, count]) => `tier ${tier}: ${count}`).join(", ")} functions, from ${coldRuns.size} builds (${statSync(output).size} bytes)`,
 );
 rmSync(builds, { recursive: true, force: true });
 if (values.work === undefined) rmSync(work, { recursive: true, force: true });
