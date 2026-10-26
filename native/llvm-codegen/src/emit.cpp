@@ -64,6 +64,9 @@ static constexpr size_t MaxPartitions = 64;
 // multiple of the usual size limit, in builds with a profile. See
 // limitProfileImports().
 static constexpr const char *ProfileImportMultiplier = "2";
+// The thin link's size limit, in instructions, for a callee it imports into
+// a partition that calls it. See limitImports().
+static constexpr const char *ImportInstructionLimit = "40";
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
   EmitOptions Options;
@@ -168,6 +171,22 @@ void limitProfileImports() {
          {"import-hot-multiplier", "import-critical-multiplier"})
       if (cl::Option *Option = Registered.lookup(Name))
         Option->addOccurrence(0, Name, ProfileImportMultiplier);
+    return true;
+  }();
+  (void)Limited;
+}
+
+// The thin link imports a callee of up to 100 instructions, LLVM's default,
+// into every partition that calls it, and each partition then optimizes and
+// compiles its imported copies again. On tsc-ts (64 partitions) a limit of 40
+// takes about 7% off the helper's time, and the program runs as fast; 30 and
+// below made it run 1-8% slower. The limit is a process-wide option; the
+// helper sets it once.
+void limitImports() {
+  static const bool Limited = [] {
+    if (cl::Option *Option =
+            cl::getRegisteredOptions().lookup("import-instr-limit"))
+      Option->addOccurrence(0, "import-instr-limit", ImportInstructionLimit);
     return true;
   }();
   (void)Limited;
@@ -852,6 +871,7 @@ compileOptimizedPartitions(const EmitOptions &Options,
   std::vector<std::string> Names(Count);
   for (size_t I = 0; I < Count; ++I)
     Names[I] = "partition-" + std::to_string(I);
+  limitImports();
   if (!Options.ProfileUse.empty())
     limitProfileImports();
   lto::LTO Link(std::move(Config),
