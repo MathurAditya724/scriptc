@@ -9,6 +9,10 @@ if (isMainThread) {
     workerData: { name: "job", point: { x: 1, y: 2 }, tags: ["a"] },
   });
   worker.on("message", (message: unknown) => {
+    if (typeof message === "string") {
+      console.log(message);
+      return;
+    }
     const reply = message as Job;
     reply.tags.push("main");
     console.log("reply", reply.name, reply.point.x, reply.tags.join(","));
@@ -18,6 +22,9 @@ if (isMainThread) {
   const same = workerData as Job;
   job.point.x = 10;
   same.tags.push("worker");
-  console.log("worker", same.point.x, job.tags.join(","), job === same);
+  // Node forwards a worker's stdout to the parent asynchronously, so the
+  // worker's line goes through the port: messages on one port keep their
+  // order, and the line prints before the reply.
+  parentPort!.postMessage(`worker ${same.point.x} ${job.tags.join(",")} ${job === same}`);
   parentPort!.postMessage(job);
 }

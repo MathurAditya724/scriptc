@@ -520,6 +520,10 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.bagGet",
   "dyn.bitwise",
   "dyn.compare",
+  // Adoption reads the native value it was built into and turns shared
+  // source nodes into capsules of it; it stores no property into a capsule.
+  "dyn.declAdopt",
+  "dyn.adoptShared",
   "dyn.forInKeyStrings",
   "dyn.forInKeys",
   "dyn.forInStable",
