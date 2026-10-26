@@ -1351,9 +1351,16 @@ export function lowerFsReaddirTypesCall(
     }
   }
   if (recursive !== null) {
-    const flag = lowerer.typeOf(recursive);
+    // Only the `true`/`false` keywords fold; any other expression, even one
+    // typed as a literal, evaluates at run time for its effects.
+    let flag = recursive;
+    while (ts.isParenthesizedExpression(flag)) flag = flag.expression;
     const literal =
-      flag.flags & ts.TypeFlags.BooleanLiteral ? lowerer.checker.typeToString(flag) : null;
+      flag.kind === ts.SyntaxKind.TrueKeyword
+        ? "true"
+        : flag.kind === ts.SyntaxKind.FalseKeyword
+          ? "false"
+          : null;
     if (sawWithFileTypes && literal !== "false") {
       lowerer.noLowering(
         `${operation} with withFileTypes and recursive`,

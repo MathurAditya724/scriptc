@@ -27,6 +27,22 @@ for (const flag of [false, true]) {
 }
 console.log(readdirSync(join(root, "empty"), { recursive: true }).length);
 
+// A flag expression typed `true` or `false` still evaluates, once.
+let probes = 0;
+function yes(): true {
+  probes++;
+  return true;
+}
+function no(): false {
+  probes++;
+  return false;
+}
+console.log(
+  readdirSync(join(root, "b"), { recursive: yes() }).length,
+  readdirSync(join(root, "b"), { recursive: no() }).length,
+  probes,
+);
+
 try {
   readdirSync(join(root, "missing"), { recursive: true });
 } catch (e) {

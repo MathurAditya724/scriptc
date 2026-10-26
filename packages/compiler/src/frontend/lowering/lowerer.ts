@@ -6011,12 +6011,19 @@ export class Lowerer {
       if (!primitive(e.left) || !primitive(e.right)) return null;
       // A missing read is undefined, and `+` yields a number only when
       // neither operand is a string: an operand that is always a string
-      // (`"x-" + PAD[i]`) makes the result a string. A read, or a sum or
-      // call whose result may itself be NaN, is not always a string.
-      const definitelyString = (part: ts.Expression): boolean =>
-        !stringRead(part) &&
-        this.mapTypeOf(this.typeOf(part))?.kind === "string" &&
-        optionalPrimitiveResultType(part) === null;
+      // (`"x-" + PAD[i]`) makes the result a string. Only literals,
+      // templates and sums with such an operand are always strings; a
+      // binding or call can hold a missing read.
+      const definitelyString = (part: ts.Expression): boolean => {
+        const p = peel(part);
+        if (ts.isStringLiteral(p) || ts.isNoSubstitutionTemplateLiteral(p)) return true;
+        if (ts.isTemplateExpression(p)) return true;
+        return (
+          ts.isBinaryExpression(p) &&
+          p.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+          (definitelyString(p.left) || definitelyString(p.right))
+        );
+      };
       if (definitelyString(e.left) || definitelyString(e.right)) return null;
       return { kind: "union", unionId: this.unions.intern([F64, STRING]) };
     };

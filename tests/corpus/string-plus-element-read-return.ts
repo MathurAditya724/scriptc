@@ -25,3 +25,18 @@ function pair(i: number, j: number): string {
 }
 const both = pair(8, 9);
 console.log(pair(0, 1), typeof both, String(both));
+
+// A missing element held in a binding or returned by a function is undefined,
+// so two of them still add to NaN.
+function at(i: number): string {
+  return PAD[i];
+}
+function viaBinding(i: number, j: number): string {
+  const head = PAD[i];
+  return head + PAD[j];
+}
+function viaCall(i: number, j: number): string {
+  return at(i) + PAD[j];
+}
+console.log(viaBinding(0, 1), String(viaBinding(5, 6)), typeof viaBinding(5, 6));
+console.log(viaCall(0, 2), String(viaCall(5, 6)), viaBinding(0, 9));
