@@ -8,7 +8,12 @@ import {
   validateNativeCodegenVersion,
   type NativeCodegenOutputKind,
 } from "./native-codegen-core.js";
-import { nativeProfileHelperArgs, type NativeProfileOptions } from "./native-profile.js";
+import {
+  nativeProfileHelperArgs,
+  parseNativeProfileMatch,
+  type NativeProfileMatch,
+  type NativeProfileOptions,
+} from "./native-profile.js";
 
 export function runNativeTool(
   executable: string,
@@ -48,10 +53,10 @@ export function emitNativeObject(options: {
   partitionCache?: string;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
-}): string[] {
+}): { outputs: string[]; profileMatch: NativeProfileMatch | null } {
   verifyNativeHelper(options);
   const outputs = nativePartitionPaths(options.outputPath, options.partitions ?? 1);
-  runNativeTool(options.executable, [
+  const stdout = runNativeTool(options.executable, [
     "emit",
     "--input",
     options.inputPath,
@@ -74,7 +79,10 @@ export function emitNativeObject(options: {
     ...nativeProfileHelperArgs(options.profile),
   ]);
   for (const output of outputs) requireNativeArtifact(output);
-  return outputs;
+  return {
+    outputs,
+    profileMatch: options.profile?.use === undefined ? null : parseNativeProfileMatch(stdout),
+  };
 }
 
 /** Merges raw or indexed IR profiles into one indexed profile. */

@@ -58,7 +58,6 @@ const KNOWN: Record<string, Known> = {
   "esbuild-require": { island: true },
   "esm-missing-default": { build: "SC1090" },
   "esm-missing-export": { build: "SC1090" },
-  "fetch-destructure": { island: true },
   "fs-shims": { run: "SC1101" },
   "import-refusal": { build: "SC2020" },
   "island-registry": { build: "SC2011" },
@@ -66,12 +65,12 @@ const KNOWN: Record<string, Known> = {
     divergence:
       "Timeout handles are numbers (typeof) and lose their ref flag once fired or cleared",
   },
-  "island-web-plumbing": { run: "SC2020" },
+  "island-web-plumbing": { run: "SC1090" },
   "lazy-traps": {
     divergence:
       "an island module loaded by path lists itself twice in MODULE_NOT_FOUND require stacks",
   },
-  "misc-shims": { run: "SC2020" },
+  "misc-shims": { run: "SC1090" },
   namespace: { island: true },
   "node24-async-events": { run: "SC2020" },
   "node24-commonjs-metadata": {

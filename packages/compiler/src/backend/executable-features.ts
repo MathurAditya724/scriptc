@@ -32,12 +32,14 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
+    ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
+    ...(features.computedRequire ? { computedRequire: true } : {}),
     // Island code's signal and exit listeners join the events unit's
     // registries (scope-B NI-3).
     events: features.processEvents || features.nodeIsland === true,

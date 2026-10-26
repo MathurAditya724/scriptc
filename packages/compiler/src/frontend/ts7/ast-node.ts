@@ -83,6 +83,9 @@ export interface AstFileOptions {
   writeTargets?: boolean;
 }
 
+const NO_CHILD_INDICES = new Uint32Array(0);
+const NO_CHILD_NODES: AstNode[] = [];
+
 export class AstFile {
   readonly wire: AstWireFile;
   readonly root: AstNode;
@@ -94,7 +97,9 @@ export class AstFile {
   private readonly structuredNodes = new Map<number, AstNode[]>();
   private readonly strings = new Map<number, string[]>();
   private lines: number[] | undefined;
-  private childIndices: Uint32Array | undefined;
+  /** Resolved named children, eight slots per node; empty until the first
+   * named child is read. */
+  private childIndices: Uint32Array = NO_CHILD_INDICES;
   /** The root source file's name (AstNode.fileName). */
   private rootFileName: string | undefined;
 
@@ -164,8 +169,8 @@ export class AstFile {
     const mask = node.data >>> 30 === 0 ? node.data & 0xff : 0xff;
     if ((mask & (1 << order)) === 0) return 0;
     const slot = node.index * 8 + order;
-    const indices = this.childIndices;
-    if (indices !== undefined) {
+    let indices = this.childIndices;
+    if (indices.length !== 0) {
       const cached = indices[slot]!;
       if (cached !== 0) return cached;
     }
@@ -173,9 +178,11 @@ export class AstFile {
     // The pinned wire has at most eight named children per node. One packed
     // table avoids per-node arrays; allocate it only after successful access
     // so malformed siblings still fail lazily in the checked wire decoder.
-    if (this.childIndices === undefined)
-      this.childIndices = new Uint32Array(this.wire.nodeCount * 8);
-    this.childIndices[slot] = index;
+    if (indices.length === 0) {
+      indices = new Uint32Array(this.wire.nodeCount * 8);
+      this.childIndices = indices;
+    }
+    indices[slot] = index;
     return index;
   }
 
@@ -187,7 +194,7 @@ export class AstFile {
     if (parsed.path !== this.root.path)
       throw new AstDecodeError("node handle belongs to another source file");
     const node = this.node(parsed.index);
-    if (node.kind !== parsed.kind)
+    if (node.kind !== this.wire.kindFromWire(parsed.kind))
       throw new AstDecodeError("node handle kind does not match the response");
     return node;
   }
@@ -320,6 +327,13 @@ export class AstNode {
   readonly data: number;
   private parentResolved = false;
   private parentCache: AstNode | undefined;
+  /** The node's text, read once: the frontend asks the same identifiers
+   * for their text many times. */
+  private textResolved = false;
+  private textCache: string | undefined;
+  /** Named child nodes by wire slot, filled as they are read; empty until
+   * the first one is. Slots the child mask leaves empty are never stored. */
+  private childNodes: AstNode[] = NO_CHILD_NODES;
 
   constructor(
     readonly file: AstFile,
@@ -336,7 +350,7 @@ export class AstNode {
   }
 
   get id(): string {
-    return `${this.index}.${this.kind}.${this.file.root.path}`;
+    return `${this.index}.${this.file.wire.kindOnWire(this.kind)}.${this.file.root.path}`;
   }
   get parent(): AstNode | undefined {
     if (!this.parentResolved) {
@@ -351,7 +365,11 @@ export class AstNode {
     return this.parentCache;
   }
   get text(): string | undefined {
-    return this.file.wire.text(this.index);
+    if (!this.textResolved) {
+      this.textCache = this.file.wire.text(this.index);
+      this.textResolved = true;
+    }
+    return this.textCache;
   }
   get rawText(): string | undefined {
     return this.file.wire.rawText(this.index);
@@ -363,8 +381,21 @@ export class AstNode {
   }
   /** childNode by wire slot, as the generated getters select it. */
   childNodeAt(order: number): AstNode | undefined {
+    let nodes = this.childNodes;
+    if (order >= 0 && order < nodes.length) {
+      const cached = nodes[order];
+      if (cached !== undefined) return cached;
+    }
     const index = this.file.namedChildAt(this, order);
-    return index === 0 ? undefined : this.file.node(index);
+    if (index === 0) return undefined;
+    const child = this.file.node(index);
+    if (nodes.length === 0) {
+      const mask = this.data >>> 30 === 0 ? this.data & 0xff : 0xff;
+      nodes = new Array<AstNode>(32 - Math.clz32(mask));
+      this.childNodes = nodes;
+    }
+    nodes[order] = child;
+    return child;
   }
   childListAt(order: number): AstNodeList | undefined {
     const index = this.file.namedChildAt(this, order);
