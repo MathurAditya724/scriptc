@@ -1012,10 +1012,9 @@ function loadProgram7(
       }
     }
     // Shape inference's overlay: package files typed from proven facts. The
-    // tsc gate keeps reading the files as written.
-    // A load without the overlay must not see an earlier load's overlay
-    // files (the registry is per process).
-    resetShapeOverlay();
+    // tsc gate keeps reading the files as written. loadProgram resets the
+    // overlay registry before the lowering world's load.
+    const overlayOriginals = new Map<string, string | null>();
     if (overlayer !== undefined && jsx.refusal === null) {
       // Rounds: structural rewrites, then the typed overlay of the rebuilt
       // program (shape-inference/index.ts).
@@ -1023,15 +1022,23 @@ function loadProgram7(
         const overlay = overlayer(program, round);
         if (overlay === null || overlay.size === 0) break;
         const before = program;
-        for (const [file, text] of overlay) host.addVirtualFile(file, text);
-        program = host.createProgram([...programRoots, overridesDtsPath()], options);
+        // The tsc gate reads the files as written: its diagnostics are
+        // taken before the overlay's files replace them on the host, and
+        // its project world (load.projectWorld()) is built over the files
+        // as written.
         if (tscWorld === undefined)
           tscWorld = {
             program: before,
             diagnostics: ts.getPreEmitDiagnostics(before),
             projectWorld: null,
+            declWorldFallback: true,
           };
-        else if (tscWorld.program !== before) before.dispose();
+        for (const file of overlay.keys())
+          if (!overlayOriginals.has(file))
+            overlayOriginals.set(file, before.getSourceFile(file)?.text ?? null);
+        for (const [file, text] of overlay) host.addVirtualFile(file, text);
+        program = host.createProgram([...programRoots, overridesDtsPath()], options);
+        if (tscWorld.program !== before) before.dispose();
         if (shapeOverlayDone()) break;
       }
     }
@@ -1055,7 +1062,10 @@ function loadProgram7(
       externalTypeSpecifiersByFile,
       ...(tscWorld === undefined ? {} : { jsxSources: jsx.sources }),
       ...(tscWorld === undefined ? {} : { tscWorld }),
-      projectWorld: () => (projectWorld ??= host.createProgram(programRoots, options)),
+      projectWorld: () =>
+        (projectWorld ??= withFilesAsWritten(host, overlayOriginals, () =>
+          host.createProgram(programRoots, options),
+        )),
       disposeAll: () => {
         try {
           projectWorld?.dispose();
@@ -1081,6 +1091,27 @@ export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   /** Exact host module specifiers paired with their declaration paths. */
   externalTypes?: readonly (readonly [string, string])[];
+}
+
+/** Runs `build` with the overlay's files served as written (their original
+ * texts), then serves the overlay's texts again. */
+function withFilesAsWritten<T>(
+  host: ts.Ts7Host,
+  originals: ReadonlyMap<string, string | null>,
+  build: () => T,
+): T {
+  if (originals.size === 0) return build();
+  const overlaid = new Map<string, string>();
+  for (const [file, text] of originals) {
+    const current = host.virtualFileText(file);
+    if (current !== undefined) overlaid.set(file, current);
+    if (text !== null) host.addVirtualFile(file, text);
+  }
+  try {
+    return build();
+  } finally {
+    for (const [file, text] of overlaid) host.addVirtualFile(file, text);
+  }
 }
 
 export function loadProgram(
@@ -1296,6 +1327,12 @@ export function loadProgram(
           return projection;
         };
   try {
+    // The overlay registry is per process and describes the lowering
+    // world's load: a load without the overlay must not see an earlier
+    // load's overlay files. The authored world (authored()) is a second load
+    // of the same build, which preflight can create after the overlay
+    // rounds, so it leaves the registry as this load set it.
+    resetShapeOverlay();
     const load = loadProgram7(
       host,
       entryPath,
