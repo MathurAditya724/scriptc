@@ -1648,8 +1648,33 @@ export function planStaticObjectRewrites(
     if (touched) return false;
     const edges = analysis.calls.filter((c) => c.callee.node === fn);
     if (edges.length === 0) return false;
+    // A call lines its arguments up with the parameters only when its callee
+    // is the function itself: a binding, or a constant object's member, that
+    // holds nothing else. `call` and `apply` pass the this value first, and
+    // a builtin that calls the function back chooses its own arguments.
+    const isFn = (a: Atom): boolean => a.kind === "function" && a.node === fn;
+    const onlyFn = (values: ReadonlySet<Atom>): boolean =>
+      values.size > 0 && [...values].every(isFn);
+    const callsFn = (callee: ts.Expression): boolean => {
+      while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+      if (ts.isIdentifier(callee)) {
+        const d = declOf(callee);
+        return d !== undefined && onlyFn(analysis.declValues(d));
+      }
+      if (!ts.isPropertyAccessExpression(callee)) return false;
+      const op = readOps.get(callee);
+      if (op === undefined || op.name === null) return false;
+      const recv = analysis.nodes[op.recv]!.atoms;
+      if (recv.size === 0) return false;
+      for (const a of recv) {
+        if (!constantAtoms.has(a)) return false;
+        const field = analysis.fields.get(a)?.get(op.name);
+        if (field === undefined || !onlyFn(analysis.nodes[field]!.atoms)) return false;
+      }
+      return true;
+    };
     return edges.every((e) => {
-      if (!ts.isCallExpression(e.site)) return false;
+      if (!ts.isCallExpression(e.site) || !callsFn(e.site.expression)) return false;
       const args = e.site.arguments.nodes;
       if (args.slice(0, index + 1).some((a) => ts.isSpreadElement(a))) return false;
       const arg = args[index];

@@ -7,7 +7,9 @@
  * - a table call whose key parameter the function rebinds (destructuring,
  *   a loop target, another parameter's default or a `var` redeclaration)
  *   keeps reading the table for other keys, though every caller passes one
- *   of the table's keys.
+ *   of the table's keys;
+ * - so does one whose function is called through `call` or `apply`, where
+ *   the first argument is the this value and not the key.
  * The checks read the rewritten package text SCRIPTC_DEBUG_SHAPE_OVERLAY
  * prints. */
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -59,6 +61,12 @@ t.redeclared = function (op, v) {
   var op = "c";
   return t.ops[op](v);
 };
+t.viaCall = function (op, v) {
+  return t.ops[op](v);
+};
+t.viaApply = function (op, v) {
+  return t.ops[op](v);
+};
 module.exports = { late, quiet, t };
 `;
 
@@ -74,6 +82,7 @@ const tryCall = (call) => {
 console.log(t.plain("a", 1), t.plain("b", 2));
 console.log(tryCall(() => t.pattern("a", 1)), tryCall(() => t.loop("b", 2)));
 console.log(tryCall(() => t.initializer("a", 1)), tryCall(() => t.redeclared("b", 2)));
+console.log(tryCall(() => t.viaCall.call("a", "c", 1)), tryCall(() => t.viaApply.apply("b", ["c", 2])));
 `;
 
 let dir = "";
@@ -144,5 +153,13 @@ test("a table call whose key parameter is rebound keeps reading the table", asyn
   // Every caller passes "a" or "b": the plain call needs no arm for other keys.
   expect(body(text, "t_plain")).not.toContain("t.ops[op](v)");
   for (const name of ["t_pattern", "t_loop", "t_initializer", "t_redeclared"])
+    expect(body(text, name), name).toContain("t.ops[op](v)");
+});
+
+test("a table call whose function is called through call or apply keeps reading the table", async () => {
+  // The first argument of those calls, a key of the table, is the this
+  // value; the key each call passes, "c", is not one.
+  const text = await rewrittenPackage();
+  for (const name of ["t_viaCall", "t_viaApply"])
     expect(body(text, name), name).toContain("t.ops[op](v)");
 });
