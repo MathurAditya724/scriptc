@@ -24,6 +24,7 @@ import {
   compileLibArchive,
   executableSectionEliminationFlags,
   executableNativeEnvironmentFingerprint,
+  implicitDependencyIncludeDirective,
   implicitDependencyProbeIncludes,
   parseLinkTraceFiles,
   resolveBuildCacheRoot,
@@ -623,6 +624,46 @@ test("implicit dependency seeds include separately compiled vendor system header
   // to the native object/cache identity.
   expect(includes).toContain("<stdatomic.h>");
 });
+
+test.skipIf(clangExecutable === undefined)(
+  "the implicit toolchain probe guards target-specific compiler headers",
+  async () => {
+    // clang ships its x86 intrinsic headers (<emmintrin.h>, ...) for every
+    // target, so __has_include finds them on arm64, where including them is
+    // an #error, and the same holds for the ARM headers on x86. The probe
+    // must guard them by target. Only the compiler's own freestanding
+    // headers are visible here, so the result does not depend on the host's
+    // C library.
+    const includes = (await implicitDependencyProbeIncludes(runtimeSrcDir())).filter(
+      (include) =>
+        include !== "<intrin.h>" && /intrin\.h>$|^<cpuid\.h>$|^<arm_(neon|acle)\.h>$/.test(include),
+    );
+    expect(includes).toContain("<emmintrin.h>");
+    const resourceDir = execFileSync(clangExecutable!, ["-print-resource-dir"], {
+      encoding: "utf8",
+    }).trim();
+    const source = includes.map(implicitDependencyIncludeDirective).join("");
+    for (const target of ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]) {
+      const result = spawnSync(
+        clangExecutable!,
+        [
+          `--target=${target}`,
+          "-ffreestanding",
+          "-nostdinc",
+          "-isystem",
+          join(resourceDir, "include"),
+          "-fsyntax-only",
+          "-x",
+          "c",
+          "-",
+        ],
+        { input: source, encoding: "utf8" },
+      );
+      expect(result.stderr, target).toBe("");
+      expect(result.status, target).toBe(0);
+    }
+  },
+);
 
 test.skipIf(
   process.platform === "win32" ||
