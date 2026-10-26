@@ -1,9 +1,18 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
+import { compilerReleaseVersion } from "../library/sidecar.js";
 import { NODE_BRIDGE_ABI, libnodeRecord } from "./libnode.js";
 import {
   LIBNODE_PACK_SCHEMA,
@@ -48,7 +57,10 @@ function fakePack(
   writeFileSync(join(dir, "libnode.so.137"), libnode);
   writeFileSync(join(dir, "libscr_node_bridge.so"), bridge);
   writeFileSync(join(dir, "LICENSE"), "Node.js is licensed for use as follows:\n\nMIT\n");
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version: "0.4.1" }));
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({ name, version: compilerReleaseVersion() }),
+  );
   const manifest: Record<string, unknown> = {
     schema: LIBNODE_PACK_SCHEMA,
     nodeVersion: "24.22.0",
@@ -59,7 +71,7 @@ function fakePack(
     libnode: "libnode.so.137",
     bridge: "libscr_node_bridge.so",
     package: name,
-    version: "0.4.1",
+    version: compilerReleaseVersion(),
     target: "linux-x64-gnu",
     license: "LICENSE",
     files: { "libnode.so.137": entry(libnode), "libscr_node_bridge.so": entry(bridge) },
@@ -180,6 +192,34 @@ describe("finding the installed pack", () => {
   });
 });
 
+test("an installed pack of another scriptc version is refused", () => {
+  const root = temp();
+  const name = libnodePackPackage(hostLibnodeTarget());
+  if (name === null) return;
+  const pack = fakePack(
+    join(root, "node_modules", name),
+    (m) => {
+      m["version"] = "0.0.1";
+    },
+    name,
+  );
+  expect(libnodeRecord(undefined, join(root, "app"), {}, root)).toBe(
+    `the installed libnode pack ${name} at ${pack} is version 0.0.1; this scriptc is ${compilerReleaseVersion()}: install ${name}@${compilerReleaseVersion()}`,
+  );
+});
+
+test("an installed pack whose files do not match their digests is refused", () => {
+  const root = temp();
+  const name = libnodePackPackage(hostLibnodeTarget());
+  if (name === null) return;
+  const pack = fakePack(join(root, "node_modules", name), () => {}, name);
+  // Same size, other bytes.
+  writeFileSync(join(pack, "libnode.so.137"), "stand-in libnodX");
+  expect(libnodeRecord(undefined, join(root, "app"), {}, root)).toBe(
+    `libnode.so.137 in the libnode pack at ${pack} does not match its manifest`,
+  );
+});
+
 describe("readLibnodePack", () => {
   test("reads a pack in build-pack.mjs's format and checks its package", () => {
     const pack = fakePack(join(temp(), "pack"));
@@ -195,16 +235,27 @@ describe("readLibnodePack", () => {
     );
   });
 
-  test("refuses other manifest schemas and nested file names", () => {
+  test("refuses other manifest schemas and file names outside the pack", () => {
     const schema = fakePack(join(temp(), "pack"), (m) => {
       m["schema"] = "scriptc.libnode-pack.v0";
     });
     expect(thrown(() => readLibnodePack(schema)).kind).toBe("invalid");
-    const nested = fakePack(join(temp(), "pack"), (m) => {
-      m["libnode"] = "lib/libnode.so.137";
-      m["files"] = { ...(m["files"] as object), "lib/libnode.so.137": entry("stand-in libnode") };
-    });
-    expect(thrown(() => readLibnodePack(nested)).message).toContain("nested file");
+    for (const name of [
+      "lib/libnode.so.137",
+      "../libnode.so.137",
+      "..",
+      "/etc/libnode.so",
+      "a\\b",
+      "a\0b",
+    ]) {
+      const pack = fakePack(join(temp(), "pack"), (m) => {
+        m["libnode"] = name;
+        m["files"] = { ...(m["files"] as object), [name]: entry("stand-in libnode") };
+      });
+      expect(thrown(() => readLibnodePack(pack)).message).toBe(
+        `the libnode pack at ${pack} names a file outside the pack (${JSON.stringify(name)})`,
+      );
+    }
   });
 
   test("checks sizes always and hashes on request", () => {
@@ -233,7 +284,7 @@ test("the license notices carry Node's LICENSE", () => {
   expect(path).toBe(`${out}.licenses.txt`);
   expect(readFileSync(path, "utf8")).toBe(
     [
-      "server runs part of its code in Node.js 24.22.0, loaded from libnode.so.137 (@scriptc/libnode-linux-x64-gnu@0.4.1).",
+      `server runs part of its code in Node.js 24.22.0, loaded from libnode.so.137 (@scriptc/libnode-linux-x64-gnu@${compilerReleaseVersion()}).`,
       "Node.js and the components it bundles are licensed as follows. The scriptc bridge,",
       "libscr_node_bridge.so, is licensed under Apache-2.0.",
       "",
@@ -243,4 +294,45 @@ test("the license notices carry Node's LICENSE", () => {
       "",
     ].join("\n"),
   );
+});
+
+test("beside refuses an installed pack whose manifest names a file outside it", () => {
+  const root = temp();
+  const name = libnodePackPackage(hostLibnodeTarget());
+  if (name === null) return;
+  const pack = fakePack(
+    join(root, "node_modules", name),
+    (m) => {
+      m["files"] = { ...(m["files"] as object), "../escaped": entry("payload") };
+    },
+    name,
+  );
+  // The pack's "../escaped" and the file it would replace next to the output.
+  writeFileSync(join(pack, "..", "escaped"), "payload");
+  writeFileSync(join(root, "escaped"), "victim");
+  expect(libnodeRecord("beside", join(root, "app"), {}, root)).toBe(
+    `the libnode pack at ${pack} names a file outside the pack ("../escaped")`,
+  );
+  expect(readFileSync(join(root, "escaped"), "utf8")).toBe("victim");
+  expect(existsSync(join(root, "app.libnode"))).toBe(false);
+});
+
+test("readLibnodePack refuses any listed file or license outside the pack", () => {
+  for (const edit of [
+    (m: Record<string, unknown>) => {
+      m["files"] = { ...(m["files"] as object), "../escaped": entry("payload") };
+    },
+    (m: Record<string, unknown>) => {
+      m["files"] = { ...(m["files"] as object), "/etc/passwd": entry("payload") };
+    },
+    (m: Record<string, unknown>) => {
+      m["license"] = "../../secret";
+    },
+    (m: Record<string, unknown>) => {
+      m["license"] = 7;
+    },
+  ]) {
+    const pack = fakePack(join(temp(), "pack"), edit);
+    expect(thrown(() => readLibnodePack(pack)).kind).toBe("invalid");
+  }
 });

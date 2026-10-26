@@ -99,6 +99,11 @@ export function parseLibnodeSetting(value: unknown): LibnodePlacement | string {
   return `must be "embedded", "beside" or an absolute directory`;
 }
 
+/** Whether `name` names a file directly in the pack directory. */
+function packFileName(name: string): boolean {
+  return name !== "" && name !== "." && name !== ".." && !/[/\\\0]/.test(name) && !isAbsolute(name);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -134,8 +139,20 @@ export function parseLibnodePackManifest(json: unknown, where: string): LibnodeP
   }
   const files = json["files"];
   if (!isRecord(files)) return invalid("lists no files in manifest.json");
+  // Every name the pack lists is a file directly in the pack directory.
+  const license = json["license"];
+  if (license !== undefined && typeof license !== "string") {
+    return invalid("has a malformed license in manifest.json");
+  }
+  for (const name of [...Object.keys(files), json["license"] ?? "LICENSE"] as string[]) {
+    if (!packFileName(name)) {
+      return invalid(`names a file outside the pack (${JSON.stringify(name)})`);
+    }
+  }
   for (const name of [json["libnode"], json["bridge"]] as string[]) {
-    if (name.includes("/") || name.includes("\\")) return invalid(`names a nested file ${name}`);
+    if (!packFileName(name)) {
+      return invalid(`names a file outside the pack (${JSON.stringify(name)})`);
+    }
     if (!isFileEntry(files[name])) return invalid(`lists no size and SHA-256 for ${name}`);
   }
   return json as unknown as LibnodePackManifest;
