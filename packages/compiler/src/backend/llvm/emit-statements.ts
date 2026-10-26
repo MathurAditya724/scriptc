@@ -1,4 +1,6 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
+import { emitLoopBytesHeaders } from "./bytes-headers.js";
+import { noteBytesReceiver } from "./expr-bytes.js";
 import {
   type LlEmitter,
   type LlScopeEntry,
@@ -50,6 +52,7 @@ import {
   matchIntegerBytesForLoop,
   matchIntegerCountedForLoop,
   matchIntegerPairedForLoop,
+  steppedLoopCounter,
 } from "../../ir/integer-loops.js";
 import { emitByteWindowGuard, matchByteWindow } from "./byte-windows.js";
 import {
@@ -80,6 +83,7 @@ import {
   planProvenIntegerLoop,
   planSpeculativeLoop,
   type ProvenLoopPlan,
+  type SpeculativeLoopPlan,
   speculativeReads,
   speculativeWriteTarget,
 } from "./speculative-integers.js";
@@ -92,6 +96,7 @@ import {
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
 import { loopAccessesTypedArrays } from "../loop-polls.js";
+import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
 
 /** A callback loop version copies the loop; keep the copies small. */
 const MAX_CALLBACK_VERSION_COST = 400;
@@ -575,6 +580,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // IrBytesElem is static, so never rediscover it through the
       // generic runtime switch in a hot loop.
       const arr = emitter.emitStableReceiver(s.arr, [s.index, s.value]);
+      noteBytesReceiver(emitter, s.arr, arr.name);
       const idx = emitter.emitExpr(s.index);
       const v = emitter.emitExpr(s.value);
       if (s.arr.type.kind !== "bytes")
@@ -836,6 +842,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "if": {
+      // A chain storing one of several literals to one element stores a
+      // table entry instead (debug builds keep the arms to step through).
+      const choice = emitter.debug === null ? matchConstantChoice(s) : null;
+      if (choice !== null) {
+        emitConstantChoice(emitter, choice);
+        break;
+      }
       const cond = emitter.emitCondition(s.cond);
       const trueLabel = B.newLabel("if.t");
       const joinLabel = B.newLabel("if.j");
@@ -1218,7 +1231,24 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // has no exit besides its own bound, which LLVM can vectorize. A typed
       // array's length is fixed, so each block can take it as its limit when
       // the loop does not assign the array's binding.
+      //
+      // Inside another loop of this function, which polls at least once
+      // every WORKER_POLL_BLOCK of its own iterations, a loop needs less:
+      // - a loop whose counters' ranges bound its runs, and those of the
+      //   loops in its body, to WORKER_POLL_BLOCK^2 needs no poll;
+      // - an innermost counted loop is strip-mined, typed arrays or not,
+      //   and does not poll after its last block. A run of at most
+      //   WORKER_POLL_BLOCK iterations then never polls, and the countdown
+      //   leaves its body. A run of at most WORKER_UNPOLLED_RUN iterations
+      //   is one block, polled once as it leaves.
+      const enclosed =
+        emitter.mod.workers === true &&
+        emitter.jumpTargets.some((target) => target.kind === "loop");
+      const bounded =
+        enclosed && boundedLoopRuns(emitter, s) <= WORKER_POLL_BLOCK * WORKER_POLL_BLOCK;
+      const innermost = enclosed && !containsLoop(s.body);
       const stripMined =
+        !bounded &&
         capturedLets.length === 0 &&
         integerSlot !== null &&
         ((countedLoop !== null &&
@@ -1226,22 +1256,28 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           Math.abs(countedLoop.step) * WORKER_POLL_BLOCK <= 2 ** 52) ||
           (integerLoop !== null && integerArrayLoop === null && integerLoop.stableReceiver)) &&
         emitter.workerLoopPolls(s) &&
-        loopAccessesTypedArrays(s);
-      const workerBudget = stripMined ? null : emitter.workerLoopBudget(s);
+        (loopAccessesTypedArrays(s) || (countedLoop !== null && innermost));
+      const workerBudget = stripMined || bounded ? null : emitter.workerLoopBudget(s);
       // One slot for every copy of the loop: a speculative copy resumes an
       // iteration in another copy's body, which then reads this bound.
       let blockBound: string | null = null;
+      let runSlot: string | null = null;
       if (stripMined) {
         blockBound = B.slot();
         B.entryAllocas.push(
           `${blockBound} = alloca ${countedLoop ? "i64" : emitter.sizeType} ; cancellation poll block bound`,
         );
+        if (innermost) {
+          runSlot = B.slot();
+          B.entryAllocas.push(`${runSlot} = alloca i1 ; cancellation poll after the run`);
+        }
       }
       freshenBindings();
       emitter.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
         if (stripMined) {
           const counter: StripMinedCounter = countedLoop
             ? {
+                localId: countedLoop.localId,
                 slot: integerSlot!,
                 type: "i64",
                 signed: true,
@@ -1253,6 +1289,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
                 limit: () => countedLimit!,
               }
             : {
+                localId: integerLoop!.localId,
                 slot: integerSlot!,
                 type: emitter.sizeType,
                 signed: false,
@@ -1271,7 +1308,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
                   return len;
                 },
               };
-          emitStripMinedCountedLoop(emitter, s, counter, blockBound!, exit);
+          emitStripMinedCountedLoop(emitter, s, counter, blockBound!, exit, runSlot);
           return;
         }
         const lc = B.newLabel("loop.c");
@@ -2348,6 +2385,22 @@ export function emitLoopCopies(
     else ordinary(exit);
     return;
   }
+  const outer = emitter.bytesHeaders;
+  emitter.bytesHeaders = emitLoopBytesHeaders(emitter, loop, emitter.currentParameters) ?? outer;
+  try {
+    emitSpeculativeLoop(emitter, plan, exit, emitCopy);
+  } finally {
+    emitter.bytesHeaders = outer;
+  }
+}
+
+/** The copies of a speculative loop (emitLoopCopies). */
+function emitSpeculativeLoop(
+  emitter: LlEmitter,
+  plan: SpeculativeLoopPlan,
+  exit: string,
+  emitCopy: (exit: string) => void,
+): void {
   const B = emitter.B;
   const entries = new Map<string, string>();
   let ok = "true";
@@ -2628,10 +2681,65 @@ function emitInt32KindLoop(
 /** Iterations between cancellation polls of a strip-mined counted loop. */
 const WORKER_POLL_BLOCK = 64;
 
-/** The counter of a strip-mined loop: its slot, the LLVM integer type and
- * signedness of its values, its step, the counters stepped beside it, and
- * the limit, emitted in the outer header before each block. */
+/** The longest run of a strip-mined loop inside another loop that polls
+ * only as it leaves. */
+const WORKER_UNPOLLED_RUN = 16384;
+
+/** Whether a step of `step` from every value in `range` gives a different
+ * value. Beyond 2^53 a double can stop changing (`j + 1 === j` from 2^53),
+ * so a counter there can run without end inside a range of a few values. */
+function exactSteps(range: { min: number; max: number }, step: number): boolean {
+  const size = Math.abs(step);
+  return range.min >= size - 2 ** 53 && range.max <= 2 ** 53 - size;
+}
+
+/** At most how many times a `for` loop and the loops in its body run their
+ * bodies per entry, from the counters' proven ranges: its iterations times
+ * one plus the nested loops' runs. Infinity when a count has no bound, or
+ * depends on a run-time guard (the guard's slow copy steps a double). */
+function boundedLoopRuns(emitter: LlEmitter, loop: IrStmt): number {
+  if (loop.kind !== "for") return Infinity;
+  const counted = matchIntegerCountedForLoop(
+    loop,
+    emitter.numericLocals,
+    emitter.integerRanges,
+    LOOPS.of(emitter).unaliasedArrays,
+  );
+  let trips = Infinity;
+  if (counted && !counted.guarded && exactSteps(counted.range, counted.step))
+    trips = Math.floor((counted.range.max - counted.range.min) / Math.abs(counted.step)) + 1;
+  else if (!counted) {
+    // Each iteration closes the gap between the two counters by at least two.
+    const paired = matchIntegerPairedForLoop(loop, emitter.numericLocals, emitter.integerRanges);
+    if (paired && !paired.guarded && exactSteps(paired.range, 1))
+      trips = Math.floor((paired.range.max - paired.range.min) / 2) + 1;
+  }
+  if (trips === Infinity) {
+    // A counter with a proven range where the condition reads it, such as
+    // one compared with a module constant.
+    const stepped = steppedLoopCounter(loop, emitter.currentLocals);
+    const range = stepped && emitter.integerRanges.get(stepped.ref);
+    if (stepped && range && exactSteps(range, stepped.step))
+      trips = Math.floor((range.max - range.min) / Math.abs(stepped.step)) + 1;
+  }
+  if (!(trips <= WORKER_POLL_BLOCK * WORKER_POLL_BLOCK)) return Infinity;
+  let nested = 0;
+  const visit = (s: IrStmt): boolean => {
+    if (s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf") {
+      nested += boundedLoopRuns(emitter, s);
+      return nested !== Infinity;
+    }
+    return everyStmtChild(s, () => true, visit);
+  };
+  if (!loop.body.every(visit)) return Infinity;
+  return trips * (1 + nested);
+}
+
+/** The counter of a strip-mined loop: its binding, its slot, the LLVM
+ * integer type and signedness of its values, its step, the counters stepped
+ * beside it, and the limit, emitted in the outer header before each block. */
 interface StripMinedCounter {
+  localId: string;
   slot: string;
   type: string;
   signed: boolean;
@@ -2645,13 +2753,20 @@ interface StripMinedCounter {
  * tests the counter against the loop's limit, each block runs the body up
  * to the nearer of the limit and WORKER_POLL_BLOCK steps on, and the poll
  * follows the block. It polls as often as the budget it replaces, and the
- * inner loop's only exit besides `break` and `return` is its bound. */
+ * inner loop's only exit besides `break` and `return` is its bound.
+ *
+ * With `runSlot` (for a loop that another loop of the function encloses), a
+ * block that ends at the limit leaves the loop without polling, and a run
+ * of at most WORKER_UNPOLLED_RUN iterations is one block, polled once as
+ * it leaves when it took more than WORKER_POLL_BLOCK iterations. `runSlot`
+ * holds whether the current block is such a run. */
 function emitStripMinedCountedLoop(
   emitter: LlEmitter,
   s: Extract<IrStmt, { kind: "for" }>,
   counter: StripMinedCounter,
   boundSlot: string,
   exit: string,
+  runSlot: string | null,
 ): void {
   const B = emitter.B;
   const { slot, type, signed, step } = counter;
@@ -2684,7 +2799,27 @@ function emitStripMinedCountedLoop(
     `${stepped} = call ${type} @${saturating}(${type} ${start}, ${type} ${step * WORKER_POLL_BLOCK})`,
   );
   B.line(`${bound} = call ${type} @${nearer}(${type} ${stepped}, ${type} ${limit})`);
-  B.line(`store ${type} ${bound}, ptr ${boundSlot}`);
+  if (runSlot === null) B.line(`store ${type} ${bound}, ptr ${boundSlot}`);
+  else {
+    // The steps left to the limit: positive, as the header tested.
+    const left = B.tmp(),
+      whole = B.tmp(),
+      long = B.tmp(),
+      polled = B.tmp(),
+      end = B.tmp();
+    const stride = Math.abs(step);
+    B.line(
+      ascending
+        ? `${left} = sub ${wrap} ${type} ${limit}, ${start}`
+        : `${left} = sub ${wrap} ${type} ${start}, ${limit}`,
+    );
+    B.line(`${whole} = icmp ule ${type} ${left}, ${stride * WORKER_UNPOLLED_RUN}`);
+    B.line(`${long} = icmp ugt ${type} ${left}, ${stride * WORKER_POLL_BLOCK}`);
+    B.line(`${polled} = and i1 ${whole}, ${long}`);
+    B.line(`${end} = select i1 ${whole}, ${type} ${limit}, ${type} ${bound}`);
+    B.line(`store ${type} ${end}, ptr ${boundSlot}`);
+    B.line(`store i1 ${polled}, ptr ${runSlot}`);
+  }
   B.br(bc);
   B.startBlock(bc);
   const index = B.tmp();
@@ -2693,9 +2828,10 @@ function emitStripMinedCountedLoop(
   B.line(`${index} = load ${type}, ptr ${slot}`);
   B.line(`${end} = load ${type}, ptr ${boundSlot}`);
   B.line(`${inBlock} = icmp ${compare} ${type} ${index}, ${end}`);
-  B.condBr(inBlock, lb, poll);
+  const after = runSlot === null ? poll : B.newLabel("loop.end");
+  B.condBr(inBlock, lb, after);
   B.startBlock(lb);
-  emitter.jumpTargets.push({
+  const target: LlEmitter["jumpTargets"][number] = {
     kind: "loop",
     brkLabel: exit,
     contLabel: lu,
@@ -2703,8 +2839,19 @@ function emitStripMinedCountedLoop(
     frameDepth: emitter.frames.length,
     scopeDepth: emitter.scopes.length,
     finallyDepth: emitter.finallyStack.length,
-  });
-  emitter.emitBlock(s.body);
+  };
+  emitter.jumpTargets.push(target);
+  // The counter steps by a nonzero constant and the body does not assign
+  // it, so an element at the counter is a different element on every
+  // iteration: its plain load or store is not merged with another
+  // iteration's or moved out of the loop.
+  const outer = emitter.plainSharedLoop;
+  emitter.plainSharedLoop = { counter: counter.localId, target, depth: emitter.loopDepth };
+  try {
+    emitter.emitBlock(s.body);
+  } finally {
+    emitter.plainSharedLoop = outer;
+  }
   emitter.jumpTargets.pop();
   B.br(lu);
   B.startBlock(lu);
@@ -2716,9 +2863,43 @@ function emitStripMinedCountedLoop(
     B.line(`store ${type} ${next}, ptr ${stepSlot}`);
   }
   B.br(bc);
+  if (runSlot !== null) {
+    // A speculative copy may enter the body without passing the header, so
+    // the limit is read again here.
+    B.startBlock(after);
+    const at = B.tmp();
+    const more = B.tmp();
+    const run = B.tmp();
+    const done = B.newLabel("loop.done");
+    const last = B.newLabel("loop.poll.run");
+    B.line(`${at} = load ${type}, ptr ${slot}`);
+    B.line(`${more} = icmp ${compare} ${type} ${at}, ${counter.limit()}`);
+    B.condBr(more, poll, done);
+    B.startBlock(done);
+    B.line(`${run} = load i1, ptr ${runSlot}`);
+    B.condBr(run, last, exit);
+    B.startBlock(last);
+    emitter.emitWorkerPoll();
+    B.br(exit);
+  }
   B.startBlock(poll);
   emitter.emitWorkerPoll();
   B.br(lc);
+}
+
+/** Whether `body` holds a loop outside its closures. */
+function containsLoop(body: IrStmt[]): boolean {
+  const inStmt = (s: IrStmt): boolean =>
+    s.kind === "while" ||
+    s.kind === "doWhile" ||
+    s.kind === "for" ||
+    s.kind === "forOf" ||
+    !everyStmtChild(
+      s,
+      () => true,
+      (child) => !inStmt(child),
+    );
+  return body.some(inStmt);
 }
 
 function enterLoopHeader(emitter: LlEmitter, header: string): void {

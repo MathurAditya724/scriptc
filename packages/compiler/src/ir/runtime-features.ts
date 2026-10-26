@@ -9,7 +9,7 @@ import {
   RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_STREAM_CLASSES,
 } from "./ir.js";
-import { everyModuleNode } from "./traverse.js";
+import { everyModuleNode, everyStmtList } from "./traverse.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "./node-index.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
 
@@ -103,6 +103,11 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
+  // util.aborted answers a checked-dynamic promise, and so do the
+  // functions util.debounce and util.throttle return.
+  "util.aborted",
+  "util.debounce",
+  "util.throttle",
   "timers.immediatePromise",
   // The performance timeline (scr_perf.c, linked with this unit for its
   // MaxPerformanceEntryBufferExceededWarning).
@@ -144,8 +149,11 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.promisifyDyn",
   "util.debuglog",
   "util.deprecate",
+  "util.diff",
+  "util.extend",
   "util.inherits",
   "util.inheritsPrototype",
+  "util.isArrayDeprecated",
   "util.styleText",
 ]);
 
@@ -174,8 +182,11 @@ const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.callbackify",
   "util.debuglog",
   "util.deprecate",
+  "util.diff",
+  "util.extend",
   "util.inherits",
   "util.inheritsPrototype",
+  "util.isArrayDeprecated",
 ]);
 
 /** Entry points that link the regex unit: the regex and glob matchers (fs.glob's walk compiles its patterns with the glob matcher), and readline's terminal unit (scr_readline_tty.c), which measures with the regex unit's stripVTControlCharacters. */
@@ -267,6 +278,9 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.stdioWritable",
   "stream.unboxDyn",
   "stream.dynIterableSource",
+  "stream.dynSourceValue",
+  "stream.dynTransformResult",
+  "stream.unboxDynStage",
   "stream.handleStream",
   "stream.unpipeDyn",
   "stream.workerStdio",
@@ -303,6 +317,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromAsyncFn",
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
+  "stream.unboxDynStage",
 ]);
 
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
@@ -952,7 +967,13 @@ const RUNTIME_FEATURE_RULES = {
   /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
    * casts, and closures boxed in a boundary program, which adopt their
    * arguments. */
-  declAdopt: rule({ fns: ["dyn.declAdopt"], initial: (mod) => mod.declBoundary === true }),
+  declAdopt: rule({
+    fns: ["dyn.declAdopt", "dyn.adoptShared"],
+    initial: (mod) => mod.declBoundary === true,
+  }),
+  // Checked conversions into package-declared types name the declaration
+  // in their TypeError (scr_type_origin.c).
+  typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
   /** Buffer.prototype methods called on checked-dynamic values
@@ -962,6 +983,9 @@ const RUNTIME_FEATURE_RULES = {
     fns: ["buffer.prototypeMember"],
     expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_METHODS.has(node.method),
   }),
+  /** createRequire's require and require.resolve with specifiers computed
+   * at run time (scr_require.c). */
+  computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({
     fns: [
@@ -997,9 +1021,20 @@ const RUNTIME_FEATURE_RULES = {
       (mod.classes ?? []).some(
         (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
       ),
-    fns: ["events.addAbortListener", ...ABORT_SIGNAL_LIB_FNS],
+    // util.debounce and util.throttle register options.signal's listener.
+    fns: [
+      "events.addAbortListener",
+      "util.aborted",
+      "util.debounce",
+      "util.throttle",
+      ...ABORT_SIGNAL_LIB_FNS,
+    ],
     prefixes: ["event."],
   }),
+  /** util.MIMEType and util.MIMEParams (scr_mime.c). */
+  mime: rule({ prefixes: ["mime."] }),
+  /** util.debounce and util.throttle (scr_util_timing.c). */
+  utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
@@ -1218,6 +1253,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     http: false,
     inspect: false,
     legacyTextDecoder: false,
+    mime: false,
+    utilTiming: false,
     mockTimers: false,
     net: false,
     netLookup: false,
@@ -1237,9 +1274,11 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     declAdopt: false,
+    typeOrigins: false,
     dynForAwait: false,
     dynBuffer: false,
     builtinValues: false,
+    computedRequire: false,
     symbol: false,
     tls: false,
     tlsCa: false,
@@ -1344,6 +1383,17 @@ function scanRuntimeFeatures(
  * switch that pulls scr_regex.c + the vendored libregexp into the binary
  * (native-toolchain.ts); regex-free programs keep the historical command line. The
  * typed traversal visits type slots as well as executable nodes. */
+/** True when the module enters AsyncLocalStorage stores (RuntimeFeatures
+ * asyncContext): a walk for those libCalls alone, without the other
+ * features' rules. */
+export function moduleUsesAsyncContext(mod: IrModule): boolean {
+  const visitor = {
+    expr: (e: IrExpr): boolean => e.kind !== "libCall" || !ASYNC_CONTEXT_LIB_FNS.has(e.fn),
+    stmt: (): boolean => true,
+  };
+  return !mod.functions.every((fn) => everyStmtList(fn.body, visitor));
+}
+
 export function moduleUsesRegex(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "regex").regex;
 }

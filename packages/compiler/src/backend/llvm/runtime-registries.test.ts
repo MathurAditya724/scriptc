@@ -80,6 +80,8 @@ test("CLOSURE_KIND matches the SCR_CLOSURE_KIND_* bits", () => {
   const flags = cFlags("scr_closure.h", "SCR_CLOSURE_KIND_");
   expect(flags.get("CALL_MASK")).toBe(CLOSURE_KIND.GENERATOR | CLOSURE_KIND.ASYNC);
   flags.delete("CALL_MASK");
+  expect(flags.get("MASK")).toBe(CLOSURE_KIND.RECEIVER_FREE - 1);
+  flags.delete("MASK");
   expectSingleBits(flags, "SCR_CLOSURE_KIND");
   expect(Object.fromEntries(flags)).toEqual(CLOSURE_KIND);
 });

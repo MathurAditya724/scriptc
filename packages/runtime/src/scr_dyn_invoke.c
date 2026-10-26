@@ -1975,6 +1975,12 @@ static const char dyn_s32[] SCR_DYN_COMPAT_STR = "";
 static const char dyn_s33[] SCR_DYN_COMPAT_STR = "constructing %s%s through a stored value is not supported yet";
 static const char dyn_s34[] SCR_DYN_COMPAT_STR = " from a primitive";
 static const char dyn_s35[] SCR_DYN_COMPAT_STR = "FinalizationRegistry";
+static const char dyn_s36[] SCR_DYN_COMPAT_STR = "atob";
+static const char dyn_s37[] SCR_DYN_COMPAT_STR = "btoa";
+static const char dyn_s38[] SCR_DYN_COMPAT_STR = "structuredClone";
+static const char dyn_s39[] SCR_DYN_COMPAT_STR = "The \"input\" argument must be specified";
+static const char dyn_s40[] SCR_DYN_COMPAT_STR = "The \"The value argument must be specified\" argument must be specified";
+static const char dyn_s41[] SCR_DYN_COMPAT_STR = "ERR_MISSING_ARGS";
 
 static const char *const dyn_global_ctor_names[] = {
   dyn_s26, dyn_s29, dyn_s25, dyn_s30, dyn_s31, dyn_s21, dyn_s22, dyn_s24, dyn_s35,
@@ -2240,7 +2246,36 @@ static ScrClosure *dyn_builtin_fn_deferred(ScrDyn *const *args, size_t argc, siz
 
 #endif
 
+/* atob, btoa and structuredClone as values: the calls the direct
+ * spellings make, with Node's error for a missing argument. NULL with the
+ * exception pending, or the result (+1); `*handled` reports whether `name`
+ * is one of them. */
+static ScrDyn *dyn_builtin_data_fn_call(const ScrStr *name, ScrDyn *const *args, size_t argc, bool *handled) {
+  bool atob = strcmp(name->data, dyn_s36) == 0, btoa = strcmp(name->data, dyn_s37) == 0;
+  bool clone = strcmp(name->data, dyn_s38) == 0;
+  *handled = atob || btoa || clone;
+  if (!*handled) return NULL;
+  if (argc == 0) {
+    const char *message = clone ? dyn_s40 : dyn_s39;
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), dyn_s41);
+    return NULL;
+  }
+  if (clone) return scr_structured_clone(args[0], argc > 1 ? args[1] : scr_dyn_undefined());
+  ScrStr *text = atob ? scr_atob(args[0]) : scr_btoa(args[0]);
+  if (!text) return NULL;
+  ScrDyn *result = scr_dyn_new_str(text); /* retains */
+  scr_str_release(text);
+  return result;
+}
+
 static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  {
+    ScrStr *name = scr_box_get_ref(clo->caps[0]);
+    bool handled;
+    ScrDyn *result = dyn_builtin_data_fn_call(name, args, argc, &handled);
+    scr_str_release(name);
+    if (handled) return result;
+  }
 #ifdef SCR_LIB
   (void)clo;
   (void)args;
@@ -2299,7 +2334,8 @@ ScrDyn *scr_dyn_builtin_function(const ScrStr *name) {
     closure->caps[0] = scr_box_new(SCR_BOX_STR);
     scr_box_set_ref(closure->caps[0], scr_str_retain((ScrStr *)name));
     const char *dot = memchr(name->data, '.', name->len);
-    bool two = strcmp(name->data, dyn_s16) == 0 || strcmp(name->data, dyn_s15) == 0;
+    bool two = strcmp(name->data, dyn_s16) == 0 || strcmp(name->data, dyn_s15) == 0 ||
+               strcmp(name->data, dyn_s38) == 0;
     value = scr_dyn_new_func(closure, dyn_builtin_fn_call, two ? 2 : 1, dyn_s10, dot ? dot + 1 : name->data);
     scr_dyn_obj_set(dyn_builtin_fns, name->data, name->len, value); /* the table owns it */
   }

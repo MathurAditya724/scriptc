@@ -7,6 +7,14 @@ import {
   lowerDateSuperMethodCall,
 } from "./builtins/date-classes.js";
 import { predeclareForwardClass } from "./lower-stmts.js";
+import {
+  arrayClassBase,
+  arrayClassFieldsFn,
+  arrayClassSpeciesFn,
+  arraySuperCall,
+  refuseArrayClassSpecies,
+  lowerArraySuperCall,
+} from "./builtins/array-classes.js";
 import { lowerDateStaticCall } from "./builtins/dates.js";
 import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
@@ -116,6 +124,7 @@ import {
   requireSpecOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
+import { declarationGroupKey } from "./type-failure.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
@@ -163,6 +172,7 @@ import {
 } from "./lower-event-emitter.js";
 import { declSymbolOf } from "./lower-modules.js";
 import {
+  INSPECT_CUSTOM_MEMBER,
   classSymbolKeyOf,
   classSymbolKeyOfSymbol,
   symbolFieldDisplayName,
@@ -605,6 +615,10 @@ export interface ClassInfo {
    * constructor's rules, and the Date methods it does not declare lower
    * over that value. Subclasses inherit the field. */
   extendsDate?: true;
+  /** A class declared `extends Array` (builtins/array-classes.ts): its
+   * instances are arrays of `elem` whose own fields follow the array
+   * header, and its TypeScript type maps to `elem[]`. */
+  extendsArray?: { elem: IrType };
   /** The synthetic LifetimeRegion class (@scriptc/experimental,
    * lifetime-regions.ts): its constructor is synthesized with the class,
    * and its methods lower at their call sites. */
@@ -1993,6 +2007,7 @@ export function collectClassShapeInner(
     let genericBase: ts.ExpressionWithTypeArguments | undefined;
     let callableBase: ClassInfo["callableBase"];
     let extendsDate = false;
+    let extendsArray: { elem: IrType } | undefined;
     let factoryBaseExpression: ts.Expression | undefined;
     const adoptCallableBase = (expression: ts.Expression): boolean => {
       if (familyMode || inst || mixin) return false;
@@ -2193,6 +2208,13 @@ export function collectClassShapeInner(
         if (t && adoptCallableBase(t.expression)) continue;
         lowerer.unsupported("SC1090", clause, "extending computed expressions");
       }
+      if ((familyMode || inst) && lowerer.isStdlibGlobal(t.expression, "Array"))
+        lowerer.unsupported("SC1090", t, "a generic class that extends Array");
+      if (!familyMode && !inst && !mixin && lowerer.isStdlibGlobal(t.expression, "Array")) {
+        extendsArray = arrayClassBase(lowerer, t);
+        refuseArrayClassSpecies(lowerer, decl);
+        continue;
+      }
       if (!familyMode && !inst && !mixin && lowerer.isStdlibGlobal(t.expression, "Date")) {
         if (t.typeArguments?.nodes) lowerer.unsupported("SC1090", t, "extending generic classes");
         extendsDate = true;
@@ -2293,14 +2315,30 @@ export function collectClassShapeInner(
         continue;
       }
       if (t.typeArguments?.nodes) lowerer.unsupported("SC1090", t, "extending generic classes");
-      base = named;
-      if (!base) {
-        if (adoptCallableBase(t.expression)) continue;
+      if (named?.extendsArray)
         lowerer.unsupported(
           "SC1090",
           t,
+          `extending '${t.expression.text}', a class that extends Array (one level of Array subclass compiles)`,
+        );
+      base = named;
+      if (!base) {
+        if (adoptCallableBase(t.expression)) continue;
+        // A base whose own collection deferred can still register later
+        // (a flush retry with dynamic slots): the derived class retries
+        // with it (Lowerer.retryDeferred).
+        const diag = unsupportedDiag(
+          "SC1090",
+          locOf(t),
           `extending classes not declared in the program ('${t.expression.text}')`,
         );
+        lowerer.retriableDiags.add(diag);
+        // A base the program declares but rejected: this rejection is its
+        // cascade (localized failure, report-only).
+        const rejectedBase = rejectedProgramClassGroup(lowerer, symbol);
+        if (rejectedBase !== null) diag.cause = [rejectedBase];
+        lowerer.pushDiag(diag);
+        throw new PoisonError();
       }
     }
 
@@ -2536,13 +2574,13 @@ export function collectClassShapeInner(
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           if (
             type.kind === "dyn" &&
+            !lowerer.liftDynFieldPolicy &&
             !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
             !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name)) &&
             (member.type !== undefined ||
               (lowerer.typeOf(member.name).flags & ts.TypeFlags.Any) === 0)
           ) {
-            lowerer.unsupported(
-              "SC1090",
+            lowerer.dynFieldPolicyFence(
               member.name,
               `${dynFieldTypeSpelling(lowerer, member.name)}-typed static fields`,
             );
@@ -3052,14 +3090,16 @@ export function collectClassShapeInner(
         if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
         // Bundled JS declares fields without annotations before assigning
         // them in the constructor. Use the same native checked-dynamic
-        // storage as implicit constructor-assigned JS fields.
+        // storage as implicit constructor-assigned JS fields. In
+        // TypeScript the refusal is a policy fence that a flush retry lifts
+        // (Lowerer.liftDynFieldPolicy).
         if (
           type.kind === "dyn" &&
+          !lowerer.liftDynFieldPolicy &&
           !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
           !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name))
         ) {
-          lowerer.unsupported(
-            "SC1090",
+          lowerer.dynFieldPolicyFence(
             member.name,
             `${dynFieldTypeSpelling(lowerer, member.name)}-typed class fields`,
           );
@@ -3195,9 +3235,12 @@ export function collectClassShapeInner(
           const type = shape.bodyType ?? shape.type;
           if (type.kind === "void") lowerer.badType(p.name, lowerer.typeOf(p.name));
           // The class-field dyn rule verbatim (KEEP NARROW).
-          if (type.kind === "dyn" && !lowerer.classFieldStoresDyn(lowerer.typeOf(p))) {
-            lowerer.unsupported(
-              "SC1090",
+          if (
+            type.kind === "dyn" &&
+            !lowerer.liftDynFieldPolicy &&
+            !lowerer.classFieldStoresDyn(lowerer.typeOf(p))
+          ) {
+            lowerer.dynFieldPolicyFence(
               p.name,
               `${dynFieldTypeSpelling(lowerer, p)}-typed class fields`,
             );
@@ -4399,7 +4442,7 @@ export function collectClassShapeInner(
       ctor && !mixinForwarding
         ? lowerer.paramShapes(ctor.parameters.nodes)
         : (base?.ctorParams ??
-          (callableBase || extendsDate ? [{ type: DYN, mode: "dynRest" }] : []));
+          (callableBase || extendsDate || extendsArray ? [{ type: DYN, mode: "dynRest" }] : []));
     if (
       ctor &&
       !mixinForwarding &&
@@ -4454,6 +4497,9 @@ export function collectClassShapeInner(
         ...(methods.size > 0 ? { methods: [...methods.keys()] } : {}),
         ...((): { prototypeNames?: string[] } => {
           const names = classPrototypeNames(decl);
+          // A [util.inspect.custom] method, by its reserved slot name: the
+          // checked-dynamic inspect walk refuses instances that have one.
+          if (methods.has(INSPECT_CUSTOM_MEMBER)) names.push(INSPECT_CUSTOM_MEMBER);
           return names.length > 0 ? { prototypeNames: names } : {};
         })(),
         ...(abstractClass ? { abstract: true as const } : {}),
@@ -4462,6 +4508,13 @@ export function collectClassShapeInner(
           return am.length > 0 ? { abstractMethods: am } : {};
         })(),
         ...(inst ? { genericOf: inst.family.def.name } : {}),
+        ...(extendsArray
+          ? {
+              arrayElem: extendsArray.elem,
+              arrayFields: `%${className}.arrayFields`,
+              arraySpecies: `%${className}.species`,
+            }
+          : {}),
         loc: locOf(decl),
       },
       fields,
@@ -4478,6 +4531,7 @@ export function collectClassShapeInner(
       ...(genericBase ? { genericBase } : {}),
       ...(callableBase ? { callableBase } : {}),
       ...(extendsDate ? { extendsDate: true as const } : {}),
+      ...(extendsArray ? { extendsArray } : {}),
       ...(factoryBaseExpression ? { factoryBaseExpression } : {}),
       subclasses: [],
       throwingSetters,
@@ -6201,6 +6255,7 @@ function lowerClassValue(
     const context = newFnCtx(true, null, null, VOID);
     info.localClass.context = context;
     lowerer.fnStack.push(context);
+    const diagsBefore = lowerer.diags.length;
     try {
       const bodies = lowerClassMembers(lowerer, info);
       for (const body of bodies) info.localClass.bodies.set(body.name, body);
@@ -6215,6 +6270,8 @@ function lowerClassValue(
         });
       }
       info.localClass.ready = true;
+      // A retry of the enclosing statement reuses these bodies.
+      for (const d of lowerer.diags.slice(diagsBefore)) lowerer.loweredOnceDiags.add(d);
       lowerer.onExprClassCollected?.(info);
     } finally {
       lowerer.fnStack.pop();
@@ -7972,6 +8029,12 @@ export function lowerClassMembers(lowerer: Lowerer, info: ClassInfo): IrFunction
     const diagsBefore = lowerer.diags.length;
     try {
       out.push(lowerer.lowerClassCtor(info));
+      if (info.extendsArray) {
+        const fields = arrayClassFieldsFn(lowerer, info);
+        if (fields) out.push(fields);
+        const species = arrayClassSpeciesFn(lowerer, info);
+        if (species) out.push(species);
+      }
     } catch (e) {
       if (!(e instanceof PoisonError)) throw e;
       if (info.decl && isJsSourceFile(ts.getSourceFileOfNode(info.decl))) {
@@ -8020,6 +8083,10 @@ export function lowerClassMembers(lowerer: Lowerer, info: ClassInfo): IrFunction
  * the base's signature — forward every param to super(), then run own
  * field initializers. */
 export function lowerClassCtor(lowerer: Lowerer, info: ClassInfo): IrFunction {
+  if (info.extendsArray) {
+    lowerer.noteEdge(`%${info.def.name}.arrayFields`);
+    lowerer.noteEdge(`%${info.def.name}.species`);
+  }
   const cached = info.localClass?.bodies.get(`%${info.def.name}.constructor`);
   if (cached) return cached;
   return withInstanceBindings(lowerer, info, () => lowerClassCtorInner(lowerer, info));
@@ -8087,7 +8154,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
         lowerer.ctx.argumentsLocal = local;
       }
       body.push(...declared.prologue);
-      if (!ctorBase && !info.callableBase && !info.extendsDate) {
+      if (!ctorBase && !info.callableBase && !info.extendsDate && !info.extendsArray) {
         // Node's base-class order: field initializers run at the start
         // of construction, the parameter-property assignments open the
         // constructor body (probed — a field initializer reading a
@@ -8099,7 +8166,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
         body.push(...lowerer.lowerDerivedCtorBody(info, thisLocal));
       }
     } else {
-      if (ctorBase || info.callableBase || info.extendsDate) {
+      if (ctorBase || info.callableBase || info.extendsDate || info.extendsArray) {
         // Synthetic forwarding params (the inherited ABI signature).
         // Nothing references them by symbol — only the super call below,
         // which forwards the already-completed values UNCHANGED (defaults
@@ -9146,7 +9213,9 @@ export function lowerDerivedCtorBody(
         loc,
       },
     ];
-    if (info.callableBase || info.extendsDate) {
+    if (info.extendsArray) {
+      statements.push(...lowerArraySuperCall(lowerer, info, thisLocal, superCall));
+    } else if (info.callableBase || info.extendsDate) {
       if (superCall.arguments.nodes.some(ts.isSpreadElement))
         lowerer.unsupported(
           "SC1090",
@@ -9339,6 +9408,7 @@ export function superCallStmt(
     loc,
   };
   if (info.extendsDate) return dateSuperCall(thisRef, info, args[0]!, loc);
+  if (info.extendsArray) return arraySuperCall(info, thisRef, args[0]!, loc);
   if (info.callableBase)
     return {
       kind: "exprStmt",
@@ -11311,12 +11381,13 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         );
         info = lowerer.classes.get(calleeT.className);
       }
+      // The TYPE world names a class the lowering never registered — a
+      // fenced class expression, an abstract/deferred declaration: flush
+      // its own diagnostics (they tell the real story, unless the flush
+      // registers it with dynamic slots) and poison this construction
+      // site, never an ICE.
+      if (!info) info = lowerer.flushDeferredClass(calleeT.className);
       if (!info) {
-        // The TYPE world names a class the lowering never registered —
-        // a fenced class expression, an abstract/deferred declaration:
-        // flush its own diagnostics (they tell the real story) and
-        // poison this construction site, never an ICE.
-        lowerer.flushDeferredClass(calleeT.className);
         lowerer.unsupported(
           "SC1090",
           expr,
@@ -11845,4 +11916,15 @@ function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaratio
     return undefined;
   });
   return found;
+}
+
+/** The failure group of a class the program declares but did not collect
+ * (its own declaration was rejected), or null for any other symbol. */
+function rejectedProgramClassGroup(lowerer: Lowerer, symbol: ts.Symbol | null): string | null {
+  if (symbol === null) return null;
+  const recorded = lowerer.rejectedGroups.get(symbol);
+  if (recorded !== undefined) return recorded;
+  const decl = symbol.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
+  if (decl === undefined || ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
+  return declarationGroupKey(symbol);
 }

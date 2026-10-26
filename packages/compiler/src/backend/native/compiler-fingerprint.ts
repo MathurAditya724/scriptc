@@ -195,15 +195,25 @@ export async function implicitDependencyProbeIncludes(rtDir: string): Promise<st
   return [...includes].sort();
 }
 
-function implicitDependencyIncludeDirective(include: string): string {
-  const targetCondition =
-    include === "<cpuid.h>" || include === "<immintrin.h>"
-      ? " && (defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64))"
-      : include === "<intrin.h>"
-        ? " && defined(_WIN32)"
-        : include === "<arm64_neon.h>" || include === "<arm_acle.h>" || include === "<arm_neon.h>"
-          ? " && (defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64))"
-          : "";
+/** Compiler-provided x86 headers: clang ships them for every target, so
+ * __has_include finds them on arm64 too, where including them is an
+ * #error. Covers the SSE/AVX intrinsic families (<emmintrin.h>,
+ * <immintrin.h>, ...), <x86intrin.h>, <x86gprintrin.h> and <cpuid.h>. */
+function x86OnlyHeader(include: string): boolean {
+  return include === "<cpuid.h>" || /^<(x86|x86gpr|[a-z]*mm)intrin\.h>$/.test(include);
+}
+
+/** One guarded line of the implicit-toolchain probe source: the header is
+ * included only when the compiler can find it and it belongs to the target
+ * being probed. */
+export function implicitDependencyIncludeDirective(include: string): string {
+  const targetCondition = x86OnlyHeader(include)
+    ? " && (defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64))"
+    : include === "<intrin.h>"
+      ? " && defined(_WIN32)"
+      : include === "<arm64_neon.h>" || include === "<arm_acle.h>" || include === "<arm_neon.h>"
+        ? " && (defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64))"
+        : "";
   return `#if __has_include(${include})${targetCondition}\n#include ${include}\n#endif\n`;
 }
 

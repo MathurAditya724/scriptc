@@ -21,6 +21,15 @@ export interface LlValue {
    * its absolute value is below `below` (a zero may be -0). Index consumers
    * use it in place of a round trip (integer-values.ts `indexInteger`). */
   wideInteger?: WideInteger;
+  /** An i1 SSA value (or `true`) that is true exactly when this number is
+   * not NaN: set by NaN-coded integer element reads and the wrapping sums
+   * of them, so ToInt32 consumers need no floating compare. */
+  ordered?: string;
+  /** An i64 equal to this number whenever `ordered` is true: the integer of
+   * a number that is an exact integer or NaN (a NaN-coded integer element
+   * read, a local that only holds those, or a sum, difference or product of
+   * them), so integer consumers need no conversion of the double. */
+  nanInteger?: string;
   slot?: boolean;
   /** A sequence local held in a capture box; release the box itself. */
   boxed?: boolean;

@@ -93,6 +93,12 @@ void scr_box_set_ref(ScrBox *b, void *v); /* releases old, owns new */
 #define SCR_CLOSURE_KIND_CALL_MASK 3u
 #define SCR_CLOSURE_KIND_OWN_PROTOTYPE 4u /* an ordinary function with its own prototype */
 #define SCR_CLOSURE_KIND_CHECKED_ADAPTER 8u /* a checked callable adapter: the callable is in caps[0] */
+/* The body never observes the ambient receiver (the `this` an unbound call
+ * binds), so compiled callers skip the receiver bracket around an indirect
+ * call. Set only by the compiler; the kind proper is
+ * function_kind & SCR_CLOSURE_KIND_MASK. */
+#define SCR_CLOSURE_KIND_RECEIVER_FREE 16u
+#define SCR_CLOSURE_KIND_MASK 15u
 
 typedef struct ScrClosure {
   size_t rc; /* SIZE_MAX = immortal (interned top-level function value) */

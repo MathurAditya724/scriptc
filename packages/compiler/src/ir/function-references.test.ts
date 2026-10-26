@@ -157,6 +157,8 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "classes[].errorNameAfter": "other",
   "classes[].prototypeDataHelper": "reference",
   "classes[].instancePrototypeHelper": "reference",
+  "classes[].arrayFields": "reference",
+  "classes[].arraySpecies": "reference",
   "classes[].stringTagHelper": "reference",
   "classes[].localCaptures[].name": "other",
   "classes[].localCaptures[].localId": "other",
@@ -223,6 +225,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "threadSlotKeys[]": "other",
   "foreignElementKeys[]": "other",
   "freezableArrays[]": "other",
+  "declOrigins[]": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };
@@ -283,6 +286,14 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
   "classes[].instancePrototypeHelper": () => ({
     ...module(),
     classes: [{ name: "%m0.Cell", fields: [], instancePrototypeHelper: TARGET, loc }],
+  }),
+  "classes[].arrayFields": () => ({
+    ...module(),
+    classes: [{ name: "%m0.Row", fields: [], arrayElem: F64, arrayFields: TARGET, loc }],
+  }),
+  "classes[].arraySpecies": () => ({
+    ...module(),
+    classes: [{ name: "%m0.Row", fields: [], arrayElem: F64, arraySpecies: TARGET, loc }],
   }),
   "classes[].stringTagHelper": () => ({
     ...module(),

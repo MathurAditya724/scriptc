@@ -774,6 +774,12 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
             isUnitType(a),
         ) ??
         false);
+    // Checked-dynamic elements: the runtime's String() over the array's
+    // dyn form (its join, element by element).
+    if (elem.kind === "dyn") {
+      const boxed: IrExpr = { kind: "dynFrom", value: e, type: DYN, loc: e.loc };
+      return { kind: "toString", operand: boxed, type: STRING, loc: e.loc };
+    }
     if (
       elem.kind === "f64" ||
       elem.kind === "string" ||
@@ -1551,6 +1557,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           reference.kind === "map" ||
           reference.kind === "set" ||
           reference.kind === "union" ||
+          // A promise of dyn boxes its own promise, so identity holds;
+          // other promise types box a fresh adapter.
+          (reference.kind === "promise" && reference.inner.kind === "dyn") ||
           DYN_HANDLE_KINDS.has(reference.kind)) &&
         lowerer.dynConvertible(reference)
       ) {

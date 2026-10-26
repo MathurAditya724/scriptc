@@ -1,4 +1,6 @@
 /* Element reads and writes (`a[i]`, `a[i] = v`), compound element updates, and keyed record reads. */
+import { OBJECT_PROTOTYPE_MEMBERS } from "../../shape-inference/domain.js";
+import { lowerUnionTupleRead } from "./union-fields.js";
 import * as ts from "../../ts7/adapter.js";
 import {
   lowerOptionalIndex,
@@ -465,6 +467,12 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           "tuple indexing with a non-literal index (tuples are fixed-shape — use t[0], t[1], ...)",
         );
       }
+      // A union of tuples asserted to one tuple view (`(r as readonly
+      // [boolean, T | E])[0]`) still holds the union.
+      if (obj.type.kind === "union") {
+        const element = lowerUnionTupleRead(lowerer, obj, idx, locOf(expr));
+        if (element) return lowerer.maybeNarrow(element, expr);
+      }
       const shapeId = obj.type.kind === "record" ? obj.type.shapeId : receiverIr.shapeId;
       const actualShape = lowerer.shapes.get(shapeId) ?? shape;
       const fieldType = actualShape.fields.find((f) => f.name === String(idx))?.type;
@@ -596,6 +604,15 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
             };
           }
         }
+      }
+      if (key.type.kind === "f64" && ts.isNumericLiteral(expr.argumentExpression)) {
+        const element = lowerUnionTupleRead(
+          lowerer,
+          value,
+          Number(expr.argumentExpression.text),
+          locOf(expr),
+        );
+        if (element) return lowerer.maybeNarrow(element, expr);
       }
       if (key.type.kind === "f64") {
         const optional = optionalArmIndexRead(lowerer, value, key, locOf(expr));
@@ -1319,6 +1336,21 @@ export function lowerRecordKeyRead(
       };
       return lowerer.maybeNarrow(get, expr);
     }
+    // A literal key the shape does not declare, on a shape without an index
+    // signature, names no own property of any of its values: the read
+    // answers undefined, as Node's does. The checker's key check cannot vouch
+    // for it here, since the receiver can be typed from a package's
+    // JavaScript while the checker read its declarations. Object.prototype
+    // members keep the keyed read below.
+    if (shape.indexValue === undefined && !OBJECT_PROTOTYPE_MEMBERS.has(litKey)) {
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: obj, loc }],
+        result: dynUndefinedExpr(loc),
+        type: DYN,
+        loc,
+      };
+    }
   }
   let key =
     litKey !== null
@@ -1489,7 +1521,7 @@ function lowerRecordPropertyKey(lowerer: Lowerer, key: IrExpr, node: ts.Expressi
  * exactly the key JS derives; negative/computed keys stay runtime
  * expressions and canonicalize through ensureString instead). Null for
  * everything else. */
-function recordKeyLiteralText(node: ts.Expression): string | null {
+export function recordKeyLiteralText(node: ts.Expression): string | null {
   if (ts.isStringLiteral(node)) return node.text;
   if (ts.isNumericLiteral(node)) return String(Number(node.text));
   return null;
