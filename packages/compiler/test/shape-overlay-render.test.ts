@@ -51,3 +51,33 @@ test("each kept annotation's leading JSDoc is neutralized, once per range", () =
   expect(overlay.files.get("a.js")).toContain("/** -param {string} a */");
   expect(overlay.annotations).toBe(2);
 });
+
+test("a function's annotation neutralizes only the tags it replaces", () => {
+  const head =
+    "/**\n * @template T\n * @param {{ a?: boolean }} options\n * @param {T} [b]\n * @param {string} options.c\n * @param {number} n\n * @returns {T}\n */\n";
+  expect(neutralizeCommentTags(head, { returns: true, params: ["n"] })).toBe(
+    "/**\n * @template T\n * @param {{ a?: boolean }} options\n * @param {T} [b]\n * @param {string} options.c\n * -param {number} n\n * -returns {T}\n */\n",
+  );
+  expect(neutralizeCommentTags(head, { returns: false, params: ["options", "b"] })).toBe(
+    "/**\n * @template T\n * -param {{ a?: boolean }} options\n * -param {T} [b]\n * -param {string} options.c\n * @param {number} n\n * @returns {T}\n */\n",
+  );
+  const text = `${head}function f(options, b, n) {}\n`;
+  const plan: ShapeOverlayPlan = {
+    parts: new Map([
+      [
+        "a.js",
+        {
+          text,
+          edits: [{ pos: head.length, id: head.length, text: "/** @returns {undefined} */ " }],
+          suffix: "",
+          docRanges: [
+            { lo: 0, hi: head.length, id: head.length, replaces: { returns: true, params: [] } },
+          ],
+        },
+      ],
+    ]),
+  };
+  const out = renderShapeOverlay(plan).files.get("a.js")!;
+  expect(out).toContain("@param {{ a?: boolean }} options");
+  expect(out).toContain("-returns {T}");
+});

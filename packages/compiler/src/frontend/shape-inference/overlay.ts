@@ -55,7 +55,23 @@ interface OverlayPart {
    * the package's own JSDoc there is neutralized while the annotation is
    * kept (package JSDoc is a hint; elsewhere it types the code as it does
    * without the overlay). */
-  readonly docRanges: { lo: number; hi: number; id: number }[];
+  readonly docRanges: DocRange[];
+}
+
+interface DocRange {
+  readonly lo: number;
+  readonly hi: number;
+  readonly id: number;
+  /** For a function's annotation, the tags it writes: only the package's
+   * tags for the same result and parameters (and a `@type` or `@overload`
+   * signature) are neutralized, so the parameters it leaves untyped keep
+   * their documented types. Unset: every type tag in the range is. */
+  readonly replaces?: FunctionTags;
+}
+
+interface FunctionTags {
+  readonly returns: boolean;
+  readonly params: readonly string[];
 }
 
 /** Marks the overlay's own comments (an unknown JSDoc tag, ignored). */
@@ -140,9 +156,21 @@ export function planShapeOverlay(
     // One annotation: a JSDoc comment at `pos` carrying MARK and the
     // annotation's id (its position), so a refused lowering can name it and
     // the next load drop it. `close`: the text that closes a type cast.
-    const docRanges: { lo: number; hi: number; id: number }[] = [];
-    const annotate = (pos: number, tags: string, close?: number, from?: number): void => {
-      if (from !== undefined && from < pos) docRanges.push({ lo: from, hi: pos, id: pos });
+    const docRanges: DocRange[] = [];
+    const annotate = (
+      pos: number,
+      tags: string,
+      close?: number,
+      from?: number,
+      replaces?: FunctionTags,
+    ): void => {
+      if (from !== undefined && from < pos)
+        docRanges.push({
+          lo: from,
+          hi: pos,
+          id: pos,
+          ...(replaces !== undefined ? { replaces } : {}),
+        });
       edits.push({
         pos,
         id: pos,
@@ -460,8 +488,12 @@ export function planShapeOverlay(
       return out;
     };
 
-    const paramTags = (fn: ts.FunctionLikeDeclaration): string | null => {
+    const paramTags = (
+      fn: ts.FunctionLikeDeclaration,
+    ): { text: string; replaces: FunctionTags } | null => {
       const tags: string[] = [];
+      const params: string[] = [];
+      let returns = false;
       if (!ts.isConstructorDeclaration(fn) && !constructed.has(fn)) {
         const ret = returnValues(fn);
         const t = ret !== undefined && ret.size > 0 ? typeOf(ret, false, 0) : null;
@@ -477,7 +509,10 @@ export function planShapeOverlay(
           process.stderr.write(
             `[shape-overlay-why] ${fn.name.text}: ${[...ret].map((a) => `${a.kind}:${a.label}${analysis.escaped.has(a) ? "(escaped)" : ""}`).join(" | ")}\n`,
           );
-        if (t !== null) tags.push(`@returns {${t}}`);
+        if (t !== null) {
+          tags.push(`@returns {${t}}`);
+          returns = true;
+        }
       }
       list(fn.parameters).forEach((p, index) => {
         if (
@@ -493,9 +528,12 @@ export function planShapeOverlay(
         // narrow the typed parameter to never inside the branch, which the
         // lowering refuses: such a parameter stays untyped.
         if (t !== null && typeofTestsOutside(fn, p.name.text, values)) return;
-        if (t !== null) tags.push(`@param {${t}} ${p.name.text}`);
+        if (t !== null) {
+          tags.push(`@param {${t}} ${p.name.text}`);
+          params.push(p.name.text);
+        }
       });
-      return tags.length > 0 ? tags.join(" ") : null;
+      return tags.length > 0 ? { text: tags.join(" "), replaces: { returns, params } } : null;
     };
 
     const visit = (node: ts.Node): void => {
@@ -513,7 +551,8 @@ export function planShapeOverlay(
       ) {
         if (node.body !== undefined) {
           const tags = paramTags(node);
-          if (tags !== null) annotate(ts.tokenStartOfNode(node), tags, undefined, node.pos);
+          if (tags !== null)
+            annotate(ts.tokenStartOfNode(node), tags.text, undefined, node.pos, tags.replaces);
         }
         // `this.f = …` fields of a constructor's top-level statements.
         if (ts.isConstructorDeclaration(node) && node.body !== undefined) {
@@ -675,7 +714,8 @@ export function renderShapeOverlay(
 
 /** The part's text with the package JSDoc neutralized in the leading trivia
  * of the annotations a build kept. Each range is one declaration's leading
- * trivia, so two ranges are equal or disjoint; the text is built once. */
+ * trivia, so two ranges are equal or disjoint; the text is built once, with
+ * the tags of all the annotations of a range neutralized. */
 function neutralizedDocRanges(part: OverlayPart, dropped: ReadonlySet<number> | undefined): string {
   const ranges = part.docRanges
     .filter((r) => dropped?.has(r.id) !== true)
@@ -683,10 +723,22 @@ function neutralizedDocRanges(part: OverlayPart, dropped: ReadonlySet<number> | 
   if (ranges.length === 0) return part.text;
   let out = "";
   let at = 0;
-  for (const r of ranges) {
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i]!;
+    let replaces = r.replaces;
+    for (; i + 1 < ranges.length && ranges[i + 1]!.lo === r.lo && ranges[i + 1]!.hi === r.hi; i++) {
+      const next = ranges[i + 1]!.replaces;
+      replaces =
+        replaces === undefined || next === undefined
+          ? undefined
+          : {
+              returns: replaces.returns || next.returns,
+              params: [...replaces.params, ...next.params],
+            };
+    }
     const lo = Math.max(r.lo, at);
     if (r.hi <= lo) continue;
-    out += part.text.slice(at, lo) + neutralizeCommentTags(part.text.slice(lo, r.hi));
+    out += part.text.slice(at, lo) + neutralizeCommentTags(part.text.slice(lo, r.hi), replaces);
     at = r.hi;
   }
   return out + part.text.slice(at);
@@ -694,15 +746,45 @@ function neutralizedDocRanges(part: OverlayPart, dropped: ReadonlySet<number> | 
 
 /** A comment range's JSDoc type tags made plain text (the range is
  * trivia, so it holds no literal). The overlay's own comments carry MARK
- * and are kept. Lengths are unchanged. */
-export function neutralizeCommentTags(text: string): string {
+ * and are kept. With `replaces`, only the tags a function's annotation
+ * replaces are. Lengths are unchanged. */
+export function neutralizeCommentTags(text: string, replaces?: FunctionTags): string {
   return text.replace(/\/\*\*[\s\S]*?\*\//g, (comment) => {
     if (comment.includes(MARK)) return comment;
+    if (replaces === undefined)
+      return comment.replace(
+        /@(param|type|typedef|returns?|template|this|callback|property|prop|arg|argument|enum|implements|extends|augments|satisfies|overload|import)\b/g,
+        "-$1",
+      );
     return comment.replace(
-      /@(param|type|typedef|returns?|template|this|callback|property|prop|arg|argument|enum|implements|extends|augments|satisfies|overload|import)\b/g,
-      "-$1",
+      /@(param|arg|argument|returns?|type|overload)\b/g,
+      (tag: string, name: string, at: number) => {
+        if (name === "type" || name === "overload") return `-${name}`;
+        if (name === "returns" || name === "return") return replaces.returns ? `-${name}` : tag;
+        const param = paramTagName(comment, at + tag.length);
+        return param !== null && replaces.params.includes(param) ? `-${name}` : tag;
+      },
     );
   });
+}
+
+/** The parameter a `@param` tag ending at `from` names (`{type} name`,
+ * `[name=default]`, or `name.member` of a documented object), or null. */
+function paramTagName(comment: string, from: number): string | null {
+  let i = from;
+  while (i < comment.length && /\s/.test(comment[i]!)) i++;
+  if (comment[i] === "{") {
+    let depth = 0;
+    for (; i < comment.length; i++) {
+      if (comment[i] === "{") depth++;
+      else if (comment[i] === "}" && --depth === 0) break;
+    }
+    i++;
+    while (i < comment.length && /\s/.test(comment[i]!)) i++;
+  }
+  if (comment[i] === "[") i++;
+  const name = /^[A-Za-z_$][\w$]*/.exec(comment.slice(i, i + 256));
+  return name !== null ? name[0] : null;
 }
 
 /** The `typeof` results the values can have. */
