@@ -1,6 +1,6 @@
 import { planRecordUnionLift, planRecordUnionWrap } from "../union-retag.js";
 import type { WidthLift } from "../width-lift.js";
-import type { IrType } from "../../../ir/ir.js";
+import type { IrRecordShape, IrType } from "../../../ir/ir.js";
 import { canDynCheckTo, isUnitType, typeEquals, UNDEFINED_T } from "../../../ir/ir.js";
 import { type ClassInfo, findMethodOn, findGenericMethodOn } from "../lower-classes.js";
 import type { Lowerer } from "../lowerer.js";
@@ -104,7 +104,15 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
           })
         );
       });
-      if (absentOnly.length === 1) selected = absentOnly;
+      // That layout does not win when it holds the record only by dropping
+      // fields and another arm keeps every field (`{ kind; type }` beside
+      // `{ kind; name; adapts?: true; type }`): the value is not its variant.
+      const dropsFields = (arm: IrType): boolean => !keepsEveryField(lowerer, source, arm);
+      if (
+        absentOnly.length === 1 &&
+        !(dropsFields(absentOnly[0]!.arm) && selected.some(({ arm }) => !dropsFields(arm)))
+      )
+        selected = absentOnly;
     }
     // A record that fits several arms of a discriminated union selects one
     // by its discriminant at run time. Without this, an arm that a nested
@@ -131,21 +139,19 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     // A record whose fields some arm keeps EVERY one of, each lifting
     // (`{ id; limit; opts?: A | B }` into `{ id; limit; opts?: A | B | C } |
     // { id; opts?: C }`): that arm is the value's own layout, widened; the
-    // others hold it only by dropping fields. Prefer the unique lossless arm.
+    // others hold it only by dropping fields. Prefer the unique lossless arm
+    // with the record's own fields, then the unique one that also declares
+    // optional fields the record lacks, which complete as absent.
     if (selected.length > 1 && src.kind === "record") {
       const source = lowerer.shapes.get(src.shapeId);
-      const lossless = selected.filter(({ arm }) => {
-        const target = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
-        return (
-          source !== undefined &&
-          target !== undefined &&
-          !source.tuple &&
-          !target.tuple &&
-          target.fields.length === source.fields.length &&
-          source.fields.every((field) => target.fields.some((kept) => kept.name === field.name))
-        );
-      });
-      if (lossless.length === 1) selected = lossless;
+      const lossless = selected.filter(({ arm }) => keepsEveryField(lowerer, source, arm));
+      const exact = lossless.filter(
+        ({ arm }) =>
+          arm.kind === "record" &&
+          lowerer.shapes.get(arm.shapeId)?.fields.length === source?.fields.length,
+      );
+      if (exact.length === 1) selected = exact;
+      else if (exact.length === 0 && lossless.length === 1) selected = lossless;
     }
     if (selected.length !== 1) return null;
     return { how: "liftWrap", tag: selected[0]!.tag, arm: selected[0]!.arm };
@@ -239,6 +245,23 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     return null;
   }
   return null;
+}
+
+/** True when the record arm `arm` has a field of every name the record
+ * `source` has. Tuples keep their own positional layouts. */
+function keepsEveryField(
+  lowerer: Lowerer,
+  source: IrRecordShape | undefined,
+  arm: IrType,
+): boolean {
+  const target = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
+  return (
+    source !== undefined &&
+    target !== undefined &&
+    !source.tuple &&
+    !target.tuple &&
+    source.fields.every((field) => target.fields.some((kept) => kept.name === field.name))
+  );
 }
 
 /** Two record arms a source record fits, where one arm declares a field

@@ -1519,6 +1519,8 @@ export async function compileCInternal(
           [],
           programPublicSymbols,
           `${stem}.program`,
+          undefined,
+          { inProcessElf: true },
         );
         const publishable = entries.filter((entry) => entry.missed);
         if (publishable.length > 0) {

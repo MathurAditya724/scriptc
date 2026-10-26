@@ -592,6 +592,9 @@ function buildLibFnSignatures() {
     "fs.rmSync": { argTypes: [STRING], result: VOID },
     "fs.rmdirSync": { argTypes: [STRING], result: VOID },
     "fs.readdirSync": { argTypes: [STRING], result: arrayOf(STRING) },
+    /** `fs.readdirSync(path, { recursive: true })`: every entry below the
+     * path, relative to it, in Node's queue order. */
+    "fs.readdirRecursiveSync": { argTypes: [STRING], result: arrayOf(STRING) },
     // Result is the call site's Dirent record array (VOID is the
     // structure-checked sentinel, the os.networkInterfaces pattern).
     /** `fs.readdirSync(path, { withFileTypes: true })` — Dirent rows over
@@ -3733,6 +3736,15 @@ function buildLibFnSignatures() {
     "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
+    /** Installs the program's builtin-global lookup (global-values.ts). */
+    "global.installValues": { argTypes: [DYN], result: VOID },
+    /** The keys `for (key in globalThis)` visits, as a fresh object. */
+    "global.forInObject": { argTypes: [], result: DYN },
+    /** Node's navigator global (scr_node_builtin.c). */
+    "navigator.object": { argTypes: [], result: DYN },
+    "navigator.language": { argTypes: [], result: STRING },
+    "navigator.languages": { argTypes: [], result: DYN },
+    "navigator.platform": { argTypes: [], result: STRING },
     // `X.name` through a class value: the arg is a program-dependent
     // classval (a null slot; the libCall case checks the kind).
     /** `X.name` through a class VALUE (scr_object.c): args[0] is a borrowed
@@ -3997,6 +4009,12 @@ function buildLibFnSignatures() {
      * Throws the path TypeError, changing nothing, when a converted object
      * is not plain data (a prototype, accessors, symbols, frozen state). */
     "dyn.declAdopt": { argTypes: [DYN, DYN], result: VOID },
+    /** dyn.declAdopt for every other checked cast of a dynamic value to a
+     * record or array (`value as T`): a shared source object or array
+     * becomes a live capsule of the value built from it. A node that is not
+     * plain data, or that the value holds twice, keeps its separate copy.
+     * Never throws: the conversion already succeeded. */
+    "dyn.adoptShared": { argTypes: [DYN, DYN], result: VOID },
     "dyn.cloneMissing": { argTypes: [], result: DYN },
     /** structuredClone with a NON-EMPTY transfer array of static values:
      * nothing static is transferable, so the call always throws Node's
@@ -4031,6 +4049,32 @@ function buildLibFnSignatures() {
     // The string keys `for...in` visits on an array (args[0], any element
     // type) after its indices. Borrowed; never throws.
     "array.namedKeys": { argTypes: [null], result: arrayOf(STRING) },
+    /** super(...) in a class declared `extends Array`: the instance, the
+     * arguments (an array of its element type, or the implicit constructor's
+     * dyn argument array) and whether the elements are dyn values. */
+    "array.subclassConstruct": { argTypes: [null, null, BOOL], result: VOID },
+    "array.subclassConstructDyn": { argTypes: [null, DYN, BOOL], result: VOID },
+    /** ArraySpeciesCreate over an Array method's plain result: the receiver
+     * (borrowed), the result (moved), the species constructor's length
+     * argument (-1: the result's length) and whether to set the length. The
+     * result has the second argument's type. */
+    "array.speciesAdopt": { argTypes: [null, null, F64, BOOL], result: VOID },
+    /** ArraySpeciesCreate ahead of a method that calls back into the program
+     * (map, filter, flatMap): the receiver (borrowed) and the species
+     * constructor's length argument. The result has the receiver's type: the
+     * instance, or the receiver itself when it is a plain array. */
+    "array.speciesCreate": { argTypes: [null, F64], result: VOID },
+    /** The method's plain result (moved) defined on the instance
+     * array.speciesCreate answered (borrowed), and whether to set the length.
+     * The result has the second argument's type. */
+    "array.speciesFinish": { argTypes: [null, null, BOOL], result: VOID },
+    /** Array.of / Array.from on a class declared `extends Array`: the class
+     * (its name, a literal), the plain result (moved) and the constructor's
+     * length argument (negative: no argument). */
+    "array.classConstructAdopt": { argTypes: [STRING, null, F64], result: VOID },
+    /** `value instanceof C` for a dyn value and a class that extends Array
+     * (its name, a literal). */
+    "array.dynIsClass": { argTypes: [DYN, STRING], result: BOOL },
     // The value of the foreign element (SCR_ARR_FOREIGN) at args[1] of an
     // array (args[0], any element type); callers test the element state
     // first. Borrowed; never throws.

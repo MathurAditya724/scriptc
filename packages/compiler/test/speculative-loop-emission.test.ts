@@ -183,3 +183,47 @@ console.log(key(new Uint8Array([1, 2, 3, 0]), 6));
   expect(fast).not.toMatch(/ashr i64 %/);
   expect(fast).not.toContain("@llvm.smul.with.overflow.i64");
 });
+
+test("a speculative loop reads its views' header fields once, before its copies", async () => {
+  // A view held by a const local or by a parameter is the same view in
+  // every iteration. Its data pointer is read before the branch to the fast
+  // copy, and no copy (ordinary, fast, or the one a failed check resumes
+  // in) reads it again.
+  const llvm = await emitLlvm(`
+let last = 42;
+function fill(array: ArrayBuffer, count: number): void {
+  const buf = new Float64Array(array);
+  let l = last;
+  for (let i = 0; i < count; i++) {
+    l = (l * 3877 + 29573) % 139968;
+    buf[i] = l;
+  }
+  last = l;
+}
+function fillInto(buf: Float64Array, count: number): void {
+  let l = last;
+  for (let i = 0; i < count; i++) {
+    l = (l * 3877 + 29573) % 139968;
+    buf[i] = l;
+  }
+  last = l;
+}
+const array = new ArrayBuffer(8 * 16);
+fill(array, 16);
+const view = new Float64Array(8);
+fillInto(view, 8);
+console.log(new Float64Array(array)[15], view[7], last);
+`);
+  const dataReads = /getelementptr inbounds %ScrBytes, ptr %\w+, i64 0, i32 3$/gm;
+  for (const name of ["fill", "fillInto"]) {
+    const fn =
+      new RegExp(`^define internal void @sc_bf_${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(
+        llvm,
+      )?.[0] ?? "";
+    const branch = /^ {2}br i1 %\w+, label %spec\.fast\d+, label %spec\.slow\d+$/m.exec(fn);
+    expect(branch, name).not.toBeNull();
+    const copies = fn.slice(branch!.index);
+    expect(copies.match(dataReads), name).toBeNull();
+    expect(fn.slice(0, branch!.index).match(dataReads)?.length, name).toBeGreaterThan(0);
+  }
+});
