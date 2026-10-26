@@ -64,7 +64,7 @@ _Static_assert(offsetof(ScrArenaHead, disposals) == offsetof(ScrArena, disposals
                    offsetof(ScrArenaHead, closed) == offsetof(ScrArena, closed),
                "ScrArenaHead is ScrArena's prefix");
 
-SCR_TL ScrArena *scr_arena_cur;
+SCR_TL ScrArena *scr_arena_cur = NULL;
 static SCR_TL ScrArena *scr_arena_pool;
 static SCR_TL unsigned scr_arena_pooled;
 static SCR_TL ScrArenaChunk *scr_arena_chunk_pool;

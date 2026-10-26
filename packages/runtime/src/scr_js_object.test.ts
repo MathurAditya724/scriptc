@@ -29,6 +29,7 @@ test("dynamic-tier shapes stay within the shape and key-byte budgets, and absent
         "scr_json.c",
         "scr_string.c",
         "scr_array.c",
+        "scr_arena.c",
         "scr_map.c",
         "scr_exception.c",
         "scr_error.c",

@@ -29,6 +29,8 @@
  * Without the small-object allocator (sanitized and audit builds), every
  * arena object is a block of its own that the drop frees, so a use after
  * the drop is a use after free that the sanitizer reports. */
+#include "scr_core.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
