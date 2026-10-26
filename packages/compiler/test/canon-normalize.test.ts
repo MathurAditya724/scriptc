@@ -3,6 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { canonEqual, canonKey, Normalizer, type Canon } from "../src/frontend/canon.js";
+import { mapCanonical } from "../src/frontend/canon-map.js";
+import {
+  mapType,
+  ShapeRegistry,
+  UnionRegistry,
+  type TypeMapperCtx,
+} from "../src/frontend/type-mapper.js";
+import { typeKey } from "../src/ir/ir.js";
 import { loadProgram } from "../src/frontend/program-node.js";
 import * as ts from "../src/frontend/ts7/adapter.js";
 
@@ -65,6 +73,10 @@ beforeAll(() => {
     export type Loose = [string, number?, ...boolean[]];
     // Arrays of two instantiations of one generic class.
     export type Maps = Map<string, number>[] | Map<number, string>[];
+    // The same instantiations, each refined by an object type.
+    export type RefinedMaps =
+      | (Map<string, number> & { tag: number })[]
+      | (Map<number, string> & { tag: number })[];
   `,
   );
   load = loadProgram(entry);
@@ -259,6 +271,12 @@ describe("canon", () => {
     expect(key(maps)).toBe("Map<string, number>[] | Map<number, string>[]");
   });
 
+  test("a refined instantiation keeps its type arguments", () => {
+    const maps = new Normalizer(checker).canon(aliases.get("RefinedMaps")!);
+    expect(maps.k === "union" && maps.arms.length).toBe(2);
+    expect(key(maps)).toBe("Map<string, number>[] | Map<number, string>[]");
+  });
+
   test("optional and rest tuple elements keep their flags", () => {
     expect(key(new Normalizer(checker).canon(aliases.get("Loose")!))).toBe(
       "[string, number | undefined?, ...boolean]",
@@ -269,5 +287,56 @@ describe("canon", () => {
     const n = new Normalizer(checker);
     expect(key(n.canon(aliases.get("Points")!))).toBe("readonly Point[]");
     expect(key(n.canon(aliases.get("Pair")!))).toBe("[string, number]");
+  });
+});
+
+describe("mapCanonical", () => {
+  const ctx = (): TypeMapperCtx => ({
+    checker,
+    shapes: new ShapeRegistry(),
+    unions: new UnionRegistry(),
+    classNamer: (decl) => decl.name?.text ?? "anonymous",
+    isStdlibFile: (sf) => load.program.isSourceFileDefaultLibrary(sf),
+    isNpmFile: () => false,
+    isExternalTypeFile: () => false,
+    isProgramFile: (sf) => load.moduleOrder.includes(sf),
+  });
+  test.for(["Normalized", "Same", "Flat", "Id", "Pair"])("%s maps like mapType", (name) => {
+    const strict = mapType(aliases.get(name)!, ctx());
+    const canonical = mapCanonical(new Normalizer(checker).canon(aliases.get(name)!), ctx());
+    expect(strict).not.toBeNull();
+    expect(canonical && typeKey(canonical)).toBe(typeKey(strict!));
+  });
+  test("shadow mode observes every successful top-level mapping", () => {
+    const seen: string[] = [];
+    const point = { kind: "object", className: "Point" } as const;
+    const observed: TypeMapperCtx = {
+      ...ctx(),
+      typeMemo: new Map(),
+      localClassValue: (type) => (type === aliases.get("Points") ? point : null),
+      canonShadow: (type, mapped) => seen.push(`${checker.typeToString(type)} ${typeKey(mapped)}`),
+    };
+    // An intrinsic primitive, a mapping and its memo hit, and a local class
+    // value: one observation each; the nested mappings of `Same` are not
+    // observed.
+    const number = mapType(valueTypes.get("sampleNumber")!, observed);
+    const same = mapType(aliases.get("Same")!, observed);
+    expect(mapType(aliases.get("Same")!, observed)).toBe(same);
+    expect(mapType(aliases.get("Points")!, observed)).toBe(point);
+    expect(seen).toEqual([
+      `number ${typeKey(number!)}`,
+      `Same ${typeKey(same!)}`,
+      `Same ${typeKey(same!)}`,
+      `Points ${typeKey(point)}`,
+    ]);
+  });
+  test("a generic alias maps under bindings, where mapType needs the instance table", () => {
+    const { type, params } = asTypes.get("Catalog<G, P>")!;
+    const env = new Map([
+      [params[0]!, valueTypes.get("sampleNumber")!],
+      [params[1]!, valueTypes.get("sampleText")!],
+    ]);
+    const canonical = mapCanonical(new Normalizer(checker).canon(type, env), ctx());
+    expect(canonical?.kind).toBe("record");
   });
 });
