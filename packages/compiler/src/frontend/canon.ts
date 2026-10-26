@@ -397,11 +397,16 @@ export class Normalizer {
     if (parts.every((p) => p.k === "obj" || (p.k === "top" && p.t === "object"))) {
       const merged = this.object(type, env, key);
       // A class (or mixin instance) refined by other object types is that
-      // class: the nominal table answers it, not a merged record.
-      let nominal: string | undefined;
-      for (const p of parts) if (p.k === "obj" && p.nominal !== undefined) nominal ??= p.nominal;
-      if (nominal !== undefined && merged.k === "obj" && merged.nominal === undefined)
-        merged.nominal = nominal;
+      // class, with its type arguments: the nominal table answers it, not a
+      // merged record.
+      let refined: { nominal: string; typeArgs: () => readonly Canon[] } | undefined;
+      for (const p of parts)
+        if (p.k === "obj" && p.nominal !== undefined)
+          refined ??= { nominal: p.nominal, typeArgs: p.typeArgs };
+      if (refined !== undefined && merged.k === "obj" && merged.nominal === undefined) {
+        merged.nominal = refined.nominal;
+        merged.typeArgs = refined.typeArgs;
+      }
       return merged;
     }
     return { k: "opaque", ts: type, reason: "intersection" };
