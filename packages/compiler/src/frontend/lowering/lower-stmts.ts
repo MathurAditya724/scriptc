@@ -759,10 +759,18 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       // out of tdzPredeclared; a retry after a later declarator degrades
       // must initialize the same box again.
       const tdzBefore = new Map(lowerer.ctx.tdzPredeclared);
+      // The first attempt's diagnostics: a statement that still fails
+      // after degrading reports them, since a retry does not repeat what
+      // lowered once (a poisoned generic instance) and its own diagnostics
+      // can miss the failure's cause.
+      let firstAttempt: ScrDiagnostic[] | null = null;
       try {
         for (let attempt = 0; ; attempt++) {
+          const hits = new Set<number>();
           try {
-            lowerOneStatement(lowerer, stmt, out, usingMarkers, diagsBefore, deferFences);
+            lowerer.withPartialHits(hits, () =>
+              lowerOneStatement(lowerer, stmt, out, usingMarkers, diagsBefore, deferFences),
+            );
             break;
           } catch (e) {
             // Localized failure's statement commit point (design §3.3): a
@@ -770,9 +778,21 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             // global degrades that type and the statement lowers again.
             // A declaration this statement flushed inside a probe (where
             // no retry runs) can retry here too.
-            if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw e;
+            firstAttempt ??= lowerer.diags.slice(diagsBefore);
+            const giveUp = (): unknown => {
+              if (attempt > 0) lowerer.restoreFirstAttemptDiags(diagsBefore, firstAttempt!);
+              return e;
+            };
+            if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw giveUp();
             const slot = lowerer.degradeAtCommit(e, STATEMENT_SLOTS);
-            if (slot === null && !lowerer.reopenFlushedAtCommit(diagsBefore)) throw e;
+            // Pushed-down types the failed attempt mapped widen to the
+            // whole slot before anything else is given up.
+            if (
+              slot === null &&
+              !lowerer.reopenFlushedAtCommit(diagsBefore) &&
+              !lowerer.widenPartials(hits)
+            )
+              throw giveUp();
             // A failed attempt adds nothing to `out` but the TDZ boxes
             // forward captures declared (they stay declared), so the
             // retry appends after them.
@@ -864,7 +884,8 @@ const MAX_DEGRADE_RETRIES = 16;
 /** The slot kinds lowerStmts' commit point degrades: locals, loop
  * variables and module globals (stage L1), and the parameters and returns
  * of the function expressions, arrows and methods a statement holds
- * (stage L2). */
+ * (stage L2), and the types of the statement's own expressions: casts,
+ * literals with a contextual type, spread clones, temporaries (stage L4). */
 const STATEMENT_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>([
   "local",
   "global",
@@ -872,6 +893,8 @@ const STATEMENT_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>([
   "param",
   "return",
   "field",
+  "member",
+  "expression",
 ]);
 
 /** One attempt at lowering a statement of lowerStmts into `out`. */
@@ -1767,8 +1790,8 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
     const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
     if (pre) {
-      lowerer.ctx.tdzPredeclared.delete(symbol!);
       const value = lowerer.coerceToExpected(lowerer.lowerClassExpression(stmt), DYN);
+      lowerer.ctx.tdzPredeclared.delete(symbol!);
       return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(stmt) };
     }
     const type: IrType = { kind: "classval", className: info.def.name };
@@ -5788,8 +5811,8 @@ export function lowerVarDecl(
       const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
       const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
       if (pre) {
-        lowerer.ctx.tdzPredeclared.delete(symbol!);
         const value = genericBindingStoredValue(lowerer, decl, info);
+        lowerer.ctx.tdzPredeclared.delete(symbol!);
         return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(decl) };
       }
       return genericBindingPresenceStore(info, decl);
@@ -5962,11 +5985,13 @@ export function lowerVarDecl(
   // A forward-captured binding pre-declared as a TDZ box (an earlier
   // function in this scope captured it — predeclareForwardCapture): the
   // binding and its scope-entry varDecl already exist; the source
-  // declaration is the one initializing `assign` into the shared box.
+  // declaration is the one initializing `assign` into the shared box. The
+  // box stays pre-declared until the initializer lowers: a statement the
+  // commit point lowers again (localized failure) initializes the same box.
   const pre = declSymbol ? lowerer.ctx.tdzPredeclared.get(declSymbol) : undefined;
   if (pre && decl.initializer) {
-    lowerer.ctx.tdzPredeclared.delete(declSymbol!);
     const init = lowerer.lowerExprExpecting(decl.initializer, pre.type);
+    lowerer.ctx.tdzPredeclared.delete(declSymbol!);
     return { kind: "assign", localId: pre.id, value: init, initializes: true, loc: locOf(decl) };
   }
 
