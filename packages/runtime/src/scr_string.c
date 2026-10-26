@@ -2172,11 +2172,19 @@ double scr_str_char_code_at(ScrStr *s, double i) {
 }
 
 double scr_str_index_of(ScrStr *s, ScrStr *needle, double fromIndex) {
-  /* A search from the start of a proven-ASCII receiver: byte offsets are
-   * UTF-16 indexes, and a needle with other bytes is never found. A start
-   * index that is not positive (NaN, -0 or negative) clamps to 0. */
-  if (s->ascii && !(fromIndex > 0)) {
-    const char *found = scr_byte_find(s->data, s->len, needle->data, needle->len);
+  /* A proven-ASCII receiver: byte offsets are UTF-16 indexes, and a needle
+   * with other bytes is never found. A start index that is not positive
+   * (NaN, -0 or negative) clamps to 0, a positive one truncates
+   * (ToIntegerOrInfinity) and clamps to the length, where only the empty
+   * needle is found. */
+  if (s->ascii) {
+    size_t start = 0;
+    if (fromIndex > 0) {
+      if (fromIndex >= (double)s->len) return needle->len == 0 ? (double)s->len : -1.0;
+      start = (size_t)fromIndex;
+    }
+    const char *found =
+        scr_byte_find(s->data + start, s->len - start, needle->data, needle->len);
     return found ? (double)(found - s->data) : -1.0;
   }
   double pos = scr_to_integer_or_infinity(fromIndex);
