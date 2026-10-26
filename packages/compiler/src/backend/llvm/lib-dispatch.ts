@@ -17,6 +17,7 @@ import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./
 import {
   ASSERT_VERDICT_LIB_FNS,
   LIB_FN_SYMS,
+  PURE_MATH_LIB_FNS,
   mockTimerSym,
   USES_TIMERS_LIB_FNS,
 } from "./lib-shared.js";
@@ -671,11 +672,13 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         // which also takes those streams.
         e.fn === "stream.unboxDyn" && host.usesDynBuiltinStream
         ? "scr_dyn_builtin_stream_unbox"
-        : // for await over a checked-dynamic value iterates a native
-          // stream behind it (scr_dyn_for_await_stream.c)
-          e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
-          ? "scr_stream_dyn_async_iterator_open"
-          : LIB_FN_SYMS[e.fn]);
+        : e.fn === "stream.unboxDynStage" && host.usesDynBuiltinStream
+          ? "scr_dyn_builtin_stream_unbox_stage"
+          : // for await over a checked-dynamic value iterates a native
+            // stream behind it (scr_dyn_for_await_stream.c)
+            e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
+            ? "scr_stream_dyn_async_iterator_open"
+            : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   // The runtime's Date functions take and answer time values: a Date
   // operand passes its time value, read at once from the borrowed object,
@@ -777,7 +780,8 @@ function emitSymbolLibCall(
     return { name: "", type: e.type };
   }
   const t = B.tmp();
-  B.line(`${t} = call ${retDecl} @${sym}(${argList})`);
+  const attrs = PURE_MATH_LIB_FNS.has(e.fn) ? " nounwind willreturn memory(none)" : "";
+  B.line(`${t} = call ${retDecl} @${sym}(${argList})${attrs}`);
   // The result joins its frame BEFORE the pending check so an unwind
   // releases the dummy (NULL for refcounted returns) harmlessly.
   const out = host.own({ name: t, type: e.type });
@@ -1198,7 +1202,7 @@ function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrT
   const key = `allTuple:${fnName}`;
   let adapter = host.resolveThunks.get(key);
   if (adapter !== undefined) return adapter;
-  adapter = `sc_all_tuple_${host.resolveThunks.size}`;
+  adapter = host.contentSymbol("sc_all_tuple_", key);
   host.resolveThunks.set(key, adapter);
   host.journal?.allocated(adapter, "allTupleAdapterFor", [fnName, tuple]);
   const rc = vAdapters(host.shapeHost, tuple);

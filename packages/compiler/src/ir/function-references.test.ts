@@ -231,6 +231,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "nodeIsland.modules.files[].sha256": "other",
   "nodeIsland.modules.links[].path": "other",
   "nodeIsland.modules.links[].target": "other",
+  "declOrigins[]": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };
