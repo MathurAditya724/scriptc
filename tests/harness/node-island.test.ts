@@ -354,3 +354,28 @@ test("recursive JSON types cross into Node", async () => {
   const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
   expect(ir).toContain("nodeIsland.callSync");
 }, 300_000);
+
+// When a build fails and the packages it compiled with runtime fences then
+// fail as islands too, the island build's errors are reported. That build
+// types the user code from the packages' declarations; the native one
+// typed it from their JavaScript, where declared-only types (`Static<T>`)
+// are `any`. Needs no libnode pack: both builds fail before linking.
+test("a failed build reports the island build's errors", async () => {
+  const dir = join(outDir, "declared-types");
+  rmSync(dir, { recursive: true, force: true });
+  cpSync(
+    join(repoRoot, "tests/corpus/6829-node-island-declared-types/node_modules"),
+    join(dir, "node_modules"),
+    { recursive: true },
+  );
+  copyFileSync(
+    join(repoRoot, "tests/fixtures/node-island/declared-types.ts"),
+    join(dir, "main.ts"),
+  );
+  const result = await compile(join(dir, "main.ts"), { outPath: join(dir, "main"), outDir: dir });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  const messages = result.diagnostics.map((d) => `${d.code}: ${d.message}`);
+  expect(messages.some((m) => m.startsWith("SC1090: method decorators"))).toBe(true);
+  expect(messages.filter((m) => /Tool|Static|'check'/.test(m))).toEqual([]);
+}, 300_000);
