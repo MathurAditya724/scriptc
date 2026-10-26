@@ -8301,13 +8301,10 @@ export class Lowerer {
           // generic method's this/super fence, a fenced parameter
           // default): the diagnostic is recorded — the instance skips
           // like a signature-blocked function (lowerFunction's rule).
-          try {
-            functions.push(
-              this.withClosureRoot(inst.name, () => this.lowerGenericInstance(info, inst)),
-            );
-          } catch (e) {
-            if (!(e instanceof PoisonError)) throw e;
-          }
+          const fn = this.lowerUnitDegrading(() =>
+            this.withClosureRoot(inst.name, () => this.lowerGenericInstance(info, inst)),
+          );
+          if (fn !== null) functions.push(fn);
         }
         // Emit-override specializations queued by the emit sites above (a
         // body can queue more — the super-forward chain — and generic
@@ -8983,17 +8980,16 @@ export class Lowerer {
             this.genericDemandPriority.set(inst, ref);
             // Body-level poisons skip the instance after retaining the
             // diagnostic and every edge fired before poisoning.
-            try {
-              instanceFunctions.push(
-                this.withGenericDemandOwner(owner, () =>
-                  this.shapes.withDeclaredOrderPriority(ref, () =>
-                    this.withClosureRoot(inst.name, () => this.lowerGenericInstance(info, inst)),
-                  ),
+            const fn = this.lowerUnitDegrading(() =>
+              this.withGenericDemandOwner(owner, () =>
+                this.shapes.withDeclaredOrderPriority(ref, () =>
+                  this.withClosureRoot(inst.name, () => this.lowerGenericInstance(info, inst)),
                 ),
-              );
+              ),
+            );
+            if (fn !== null) {
+              instanceFunctions.push(fn);
               relieveHeapPressure();
-            } catch (e) {
-              if (!(e instanceof PoisonError)) throw e;
             }
           }
         }
@@ -9532,6 +9528,30 @@ export class Lowerer {
     const kept = this.diags.slice(diagsBefore).filter((d) => d.rejects !== undefined);
     this.diags.length = diagsBefore;
     this.diags.push(...kept);
+  }
+
+  /** Lowers one unit whose body-level poison skips it (a generic
+   * instance), with localized failure's commit point: a degradable type
+   * failure at one of its declaration slots degrades the type and the unit
+   * lowers again (at most MAX_DECLARATION_RETRIES times). Null when it
+   * still poisons; its diagnostics are then committed as before. */
+  lowerUnitDegrading<T>(lower: () => T): T | null {
+    const slots: DynamicSlot[] = [];
+    for (let attempt = 0; ; attempt++) {
+      const mark = this.diags.length;
+      try {
+        const result = lower();
+        for (const slot of slots) this.noteDynamicSlot(slot);
+        return result;
+      } catch (e) {
+        if (!(e instanceof PoisonError)) throw e;
+        if (attempt >= MAX_DECLARATION_RETRIES) return null;
+        const slot = this.degradeAtCommit(e, DECLARATION_SLOTS);
+        if (slot === null) return null;
+        slots.push(slot);
+        this.dropAttemptDiags(mark);
+      }
+    }
   }
 
   /** Records a dynamic slot whose unit lowered with it (one per site). */

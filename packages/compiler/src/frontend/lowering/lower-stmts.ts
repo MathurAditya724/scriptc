@@ -854,11 +854,17 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
  * at most this many times (each retry degrades one more type). */
 const MAX_DEGRADE_RETRIES = 16;
 
-/** The slot kinds lowerStmts' commit point degrades (stage L1). */
+/** The slot kinds lowerStmts' commit point degrades: locals, loop
+ * variables and module globals (stage L1), and the parameters and returns
+ * of the function expressions, arrows and methods a statement holds
+ * (stage L2). */
 const STATEMENT_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>([
   "local",
   "global",
   "loop",
+  "param",
+  "return",
+  "field",
 ]);
 
 /** One attempt at lowering a statement of lowerStmts into `out`. */
