@@ -217,13 +217,18 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Blob and File (every blob.* call selects dynAsync, whose unit boxes
   // their reads as dyn promises).
   unit((u) => u.opts.dynAsync, "scr_blob.c"),
-  // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the vendored zlib
-  // objects also serve the native fetch's gzip decoder — spread exactly once.
+  // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the LINK (system
+  // libz on the default host-clang build, vendored objects on Zig builds)
+  // also serves the native fetch's gzip decoder — spread exactly once.
   unitArgs((u) =>
     u.opts.zlib
-      ? ["-I", vendorZlibDir(), u.rt(join(u.rtDir, "scr_zlib.c")), ...u.zlibObjects]
+      ? isZigDriver(u.driver)
+        ? ["-I", vendorZlibDir(), u.rt(join(u.rtDir, "scr_zlib.c")), ...u.zlibObjects]
+        : [u.rt(join(u.rtDir, "scr_zlib.c"))]
       : u.nativeFetch
-        ? ["-I", vendorZlibDir(), ...u.zlibObjects]
+        ? isZigDriver(u.driver)
+          ? ["-I", vendorZlibDir(), ...u.zlibObjects]
+          : []
         : [],
   ),
   // Brotli (scr_brotli.c) plugs into the zlib engine and links the
@@ -669,11 +674,11 @@ export async function compileCInternal(
   let lreObjects = regex
     ? lreObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : [];
-  // Every driver links the vendored zlib (the copy Node bundles), so
-  // compressed bytes match Node's. The native fetch's gzip decoder rides the
-  // same objects.
+  // Vendored zlib is the Zig story — default host-clang builds keep the exact
+  // historical `-lz` system link (see CcOptions.zlib). The native fetch's
+  // gzip decoder rides the same objects/link.
   let zlibObjects =
-    (opts.zlib ?? false) || nativeFetch
+    ((opts.zlib ?? false) || nativeFetch) && isZigDriver(driver)
       ? zlibObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
       : [];
   const materializeVendorPrerequisites = async (
@@ -822,6 +827,11 @@ export async function compileCInternal(
     ...(opts.linkInputs ?? []),
     ...(opts.systemLibraries ?? []).map((name) => `-l${name}`),
     ...(opts.frameworks ?? []).flatMap((name) => ["-framework", name]),
+    // GNU ld resolves libraries from left to right and commonly enables
+    // --as-needed: host-clang libz must follow scr_zlib.c/scr_fetch.c and every
+    // generated/native input that references inflate symbols. Cross
+    // and targetless Zig builds use vendored zlib objects in the input section above.
+    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...unwinderLinkArgs(driver),
     // glibc keeps libm separate from libc. This must trail the generated
     // program and every native FFI input because GNU ld resolves archives
@@ -1075,6 +1085,7 @@ export async function compileCInternal(
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),
     ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
+    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...unwinderLinkArgs(driver),
     ...driver.linkArgs,
     ...executableLinkFlags,
@@ -1087,6 +1098,7 @@ export async function compileCInternal(
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),
     ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
+    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...unwinderLinkArgs(driver),
     ...driver.linkArgs,
     ...executableLinkFlags,

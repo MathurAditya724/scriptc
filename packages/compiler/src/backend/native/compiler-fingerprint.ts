@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { type CcDriver } from "./driver.js";
 import { resolvedToolIdentity, resolvedTool } from "./tool-identity.js";
 import { execFileAsync } from "./process.js";
@@ -168,7 +168,7 @@ export function effectiveCompilerInvocationFingerprint(
 export async function implicitDependencyProbeIncludes(rtDir: string): Promise<string[]> {
   const vendor = join(rtDir, "..", "vendor");
   const quickjsSources = new Set<string>(LRE_SOURCES);
-  const zlibSources = new Set<string>(ZLIB_SOURCES.map((source) => basename(source)));
+  const zlibSources = new Set<string>(ZLIB_SOURCES);
   const fileGroups = await Promise.all([
     nativeSourceFiles(rtDir, false),
     nativeSourceFiles(join(vendor, "ryu"), false),
@@ -181,7 +181,7 @@ export async function implicitDependencyProbeIncludes(rtDir: string): Promise<st
     nativeSourceFiles(join(vendor, "mbedtls", "library"), true),
     nativeSourceFiles(
       join(vendor, "zlib"),
-      true,
+      false,
       (name) => name.endsWith(".h") || zlibSources.has(name),
     ),
   ]);
@@ -199,10 +199,8 @@ export async function implicitDependencyProbeIncludes(rtDir: string): Promise<st
  * __has_include finds them on arm64 too, where including them is an
  * #error. Covers the SSE/AVX intrinsic families (<emmintrin.h>,
  * <immintrin.h>, ...), <x86intrin.h>, <x86gprintrin.h> and <cpuid.h>. */
-/** clang's x86 intrinsic headers: every <...intrin.h> but the Windows
- * <intrin.h> (<xsaveintrin.h>, <immintrin.h>, ...), and <cpuid.h>. */
 function x86OnlyHeader(include: string): boolean {
-  return include === "<cpuid.h>" || /^<[a-z0-9_]+intrin\.h>$/.test(include);
+  return include === "<cpuid.h>" || /^<(x86|x86gpr|[a-z]*mm)intrin\.h>$/.test(include);
 }
 
 /** One guarded line of the implicit-toolchain probe source: the header is

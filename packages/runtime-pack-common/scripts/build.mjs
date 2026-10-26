@@ -17,7 +17,6 @@ import { buildImportBitcode, buildRuntimeUnit, resolveRuntimeUnitHelper } from "
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
-import { zlibInputs } from "./zlib-inputs.mjs";
 
 const run = promisify(execFile);
 const packageRoot = process.env.SCRIPTC_RUNTIME_PACK_ROOT;
@@ -90,7 +89,19 @@ async function build() {
   const brotli = join(vendorRoot, "brotli", "c");
   const qjsSources = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const lreSources = ["libregexp.c", "libunicode.c"];
-  const zlibBuild = zlibInputs(config.target.llvm_triple);
+  const zlibSources = [
+    "adler32.c",
+    "compress.c",
+    "crc32.c",
+    "deflate.c",
+    "infback.c",
+    "inffast.c",
+    "inflate.c",
+    "inftrees.c",
+    "trees.c",
+    "uncompr.c",
+    "zutil.c",
+  ];
   const sha256 = async (path) =>
     createHash("sha256")
       .update(await readFile(path))
@@ -389,11 +400,10 @@ async function build() {
               : []),
             ...(requestedArchives.has("zlib")
               ? [
-                  await archive("zlib", zlibBuild.sources, zlib, [
+                  await archive("zlib", zlibSources, zlib, [
                     ...vendorTarget,
                     "-std=c11",
-                    "-O3",
-                    ...zlibBuild.defines.map((define) => `-D${define}`),
+                    "-Os",
                     "-I",
                     zlib,
                   ]),
@@ -444,7 +454,6 @@ async function build() {
         "BSD-3-Clause",
       ],
       [join(zlib, "LICENSE"), "artifacts/licenses/zlib.txt", "Zlib"],
-      [join(zlib, "LICENSE.chromium"), "artifacts/licenses/zlib-chromium.txt", "BSD-3-Clause"],
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
     ];

@@ -78,8 +78,9 @@ import { CacheInputsChangedError } from "./session.js";
  * External-symbol contract: undefined references only to the target's C/math
  * runtime and system APIs. Windows embedders additionally link advapi32,
  * iphlpapi, and ws2_32; the platform driver supplies its ordinary CRT and
- * kernel imports. Zlib rides the vendored per-flavor objects, as in the
- * executable lane. */
+ * kernel imports. Zlib rides the VENDORED per-flavor objects here even on
+ * hosts because the executable lane's system `-lz` cannot ride inside an
+ * archive. */
 
 export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> {
   clearCcCaches();
