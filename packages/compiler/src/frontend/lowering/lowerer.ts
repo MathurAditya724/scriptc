@@ -7,7 +7,8 @@ import {
   arrayRootOf,
   lowerWithArraySpecies,
 } from "./builtins/array-classes.js";
-import { canonShadowHook } from "../canon-map.js";
+import { canonShadowHook, mapCanonical } from "../canon-map.js";
+import { Normalizer } from "../canon.js";
 import {
   compactDeclOrigins,
   inPackageFile,
@@ -750,6 +751,9 @@ export interface DynamicSlot {
   /** The slot keeps its type's compilable shape; only the failing
    * components are checked-dynamic (push-down, stage L3). */
   partial?: true;
+  /** The type mapped exactly from its canonical form (stage N2): a static
+   * slot, never reported as dynamic. */
+  canonical?: true;
 }
 
 /** Localized failure: rounds of the declaration flush retry. */
@@ -1007,6 +1011,9 @@ export interface DegradedType {
   lenient: IrType | null;
   code: string;
   reason: string;
+  /** The type maps exactly from its canonical form (stage N2): its slots
+   * are static. */
+  canonical?: true;
 }
 
 /** The Lowerer's pass configuration (see lowerToIr). */
@@ -4178,9 +4185,12 @@ export class Lowerer {
         // checked dynamic cuts the knot while it does.
         if (degraded.lenient === null) {
           degraded.lenient = DYN;
-          degraded.lenient = this.lenientType(type);
+          degraded.lenient =
+            (degraded.canonical === true ? this.canonicalType(type) : null) ??
+            this.lenientType(type);
         }
-        if (degraded.lenient.kind !== "dyn") this.partialHits[this.partialHits.length - 1]?.add(id);
+        if (degraded.lenient.kind !== "dyn" && degraded.canonical !== true)
+          this.partialHits[this.partialHits.length - 1]?.add(id);
         return degraded.lenient;
       },
       ...(shadow !== undefined ? { canonShadow: shadow } : {}),
@@ -9833,8 +9843,10 @@ export class Lowerer {
     }
     if (committed === undefined) return null;
     this.degradeType(type, committed.code, committed.message);
+    const canonical = this.isCanonicalDegraded(id);
     const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
     return {
+      ...(canonical ? { canonical: true as const } : {}),
       ...(partial ? { partial: true as const } : {}),
       loc: committed.loc,
       failure,
@@ -9966,6 +9978,14 @@ export class Lowerer {
       this.degradedTypes.set(id, { lenient: DYN, code, reason });
       return true;
     }
+    // Canonical normalization (stage N2): a type the per-form rules miss
+    // maps exactly from its canonical form when that form maps; no dynamic
+    // slot then. Otherwise the lenient (pushed-down) form.
+    const canonical = this.canonicalType(type);
+    if (canonical !== null) {
+      this.degradedTypes.set(id, { lenient: canonical, code, reason, canonical: true });
+      return true;
+    }
     this.degradedTypes.set(id, {
       lenient: this.wholeSlotDegradation ? DYN : this.lenientType(type),
       code,
@@ -9974,10 +9994,38 @@ export class Lowerer {
     return true;
   }
 
+  /** The IR type of a type's canonical form (canon-map.ts), or null when
+   * the form is irreducible, unbound, or only the checked dynamic. Runs
+   * only at localized failure's commit points, so a program that compiles
+   * today never consults it. */
+  canonicalType(type: ts.Type): IrType | null {
+    try {
+      const resolve = this.typeCtx.resolveTypeParamTs;
+      const c = new Normalizer(this.checker).canon(type, resolve ? (t) => resolve(t) : new Map());
+      if (c.k === "opaque" || c.k === "param") return null;
+      const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
+      const mapped = mapCanonical(c, { ...strict, canMemoizeType: () => false });
+      return mapped === null || mapped.kind === "void" || mapped.kind === "dyn" ? null : mapped;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The degraded type of `id` maps exactly (canonical form): its slots
+   * are static, not dynamic. */
+  isCanonicalDegraded(id: number): boolean {
+    return this.degradedTypes.get(id)?.canonical === true;
+  }
+
   /** Some degraded type kept a pushed-down (partial) shape. */
   hasPartialDegradedTypes(): boolean {
     for (const degraded of this.degradedTypes.values())
-      if (degraded.lenient !== null && degraded.lenient.kind !== "dyn") return true;
+      if (
+        degraded.canonical !== true &&
+        degraded.lenient !== null &&
+        degraded.lenient.kind !== "dyn"
+      )
+        return true;
     return false;
   }
 
@@ -10011,6 +10059,7 @@ export class Lowerer {
 
   /** Records a dynamic slot whose unit lowered with it (one per site). */
   noteDynamicSlot(slot: DynamicSlot): void {
+    if (slot.canonical === true) return;
     const seen = this.dynamicSlots.some(
       (s) =>
         s.loc.file === slot.loc.file &&
@@ -13166,18 +13215,17 @@ export class Lowerer {
         const prior = this.degradedTypes.get(id);
         degraded.push({
           id,
-          prior:
-            prior === undefined
-              ? undefined
-              : { lenient: prior.lenient, code: prior.code, reason: prior.reason },
+          prior: prior === undefined ? undefined : { ...prior },
         });
         this.degradeType(type, diag.code, diag.message);
+        const canonical = this.isCanonicalDegraded(id);
         const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
         slots.push({
           loc: diag.loc,
           failure,
           code: diag.code,
           reason: diag.message,
+          ...(canonical ? { canonical: true as const } : {}),
           ...(partial ? { partial: true as const } : {}),
         });
       }
