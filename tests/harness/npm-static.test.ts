@@ -15,6 +15,7 @@ import { promisify } from "node:util";
 import { beforeEach, describe, expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
 import { skipUnownedTest } from "./shard.js";
+import { libnodePack } from "./libnode.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -586,7 +587,10 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
-  test("a word segmenter in a package constructs, and its segment() throws SC2020", async () => {
+  // The package builds its segmenter at module load, a run-time fence that
+  // surely fires, so the package runs in its Node island and segments as
+  // Node does.
+  test("a word segmenter a package builds at load runs in its Node island", async () => {
     const entry = join(pilotRoot, "word-segments-cli.ts");
     const { coverage } = analyze(entry, { npmStatic: "auto" });
     expect(coverage.npmStatic).toEqual([{ package: "word-segments", status: "static" }]);
@@ -599,12 +603,15 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       outDir,
       outPath: join(outDir, "program"),
     });
+    if (libnodePack() === null) {
+      expect(result.ok, "no libnode pack: the compile stops").toBe(false);
+      if (!result.ok) expect(result.diagnostics.map((d) => d.code)).toContain("SC8005");
+      return;
+    }
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const nativeRes = await runBinary(result.binaryPath, []);
-    expect(nativeRes.stdout.toString()).toMatch(
-      /^SC2020: Intl\.Segmenter segmentation with granularity 'word' is not supported yet \[SC2020 at .*index\.js:1\]\n$/,
-    );
+    expect(nativeRes.stdout.toString()).toBe("two| |words\n");
     expect(nativeRes.exitCode).toBe(0);
   });
 
