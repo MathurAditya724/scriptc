@@ -392,7 +392,8 @@ export class Normalizer {
       return arms.length === 1 ? arms[0]! : { k: "union", arms };
     }
     const prims = parts.filter((p) => p.k === "prim" || p.k === "lit");
-    if (prims.length === 1 && parts.every((p) => p === prims[0] || p.k === "obj")) return prims[0]!;
+    if (prims.length === 1 && parts.every((p) => p.k === "prim" || p.k === "lit" || p.k === "obj"))
+      return prims[0]!;
     if (parts.every((p) => p.k === "obj" || (p.k === "top" && p.t === "object")))
       return this.object(type, env, key);
     return { k: "opaque", ts: type, reason: "intersection" };
