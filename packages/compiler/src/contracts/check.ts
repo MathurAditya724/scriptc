@@ -26,6 +26,7 @@
  *   counts (classes.ts programLifetimeClass).
  *
  * Verified facts land on the IR as `contracts` (IrContracts). */
+import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type {
   IrClassDef,
@@ -158,7 +159,7 @@ class ContractChecker {
     return raw.length > max ? `${raw.slice(0, max - 3)}...` : raw;
   }
 
-  report(code: `SC${number}`, loc: SrcLoc, message: string, hint: string): void {
+  report(code: DiagnosticCode, loc: SrcLoc, message: string, hint: string): void {
     const key = `${code}\0${contractLocKey(loc)}\0${message}`;
     if (this.reported.has(key)) return;
     this.reported.add(key);
