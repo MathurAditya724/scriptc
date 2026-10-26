@@ -343,3 +343,45 @@ test("worker programs read and write shared elements at a strip-mined loop's cou
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a loop that starts from a typed-array read guards the read's integer and ordered bit", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-counted-reads-"));
+  try {
+    const entry = join(dir, "chain.ts");
+    await writeFile(
+      entry,
+      [
+        "export function chain(pp: Int32Array): number {",
+        "  let p0 = pp[0]!;",
+        "  let n = 0;",
+        "  while (pp[p0] !== 0) {",
+        "    n++;",
+        "    for (let i = 1, j = p0 - 1; i < j; i++, j--) {",
+        "      const t = pp[i]!;",
+        "      pp[i] = pp[j]!;",
+        "      pp[j] = t;",
+        "    }",
+        "    const t = pp[p0]!;",
+        "    pp[p0] = p0;",
+        "    p0 = t;",
+        "  }",
+        "  return n;",
+        "}",
+        "console.log(chain(Int32Array.from([3, 1, 2, 0])));",
+      ].join("\n"),
+    );
+    const outPath = join(dir, "chain.ir.json");
+    const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    const body = ll.match(/define internal double @sc_bf_chain\([^\n]*\n([\s\S]*?)\n\}/)![1]!;
+    // `p0` holds a read's integer or NaN: it keeps whether it is NaN beside
+    // its integer view, and `p0 - 1` starts the loop from that integer. No
+    // test converts the double back to check it is an exact integer.
+    expect(body).toContain("alloca i1 ; ordered view p0");
+    expect(body).toContain("counted.fast");
+    expect(body).not.toContain("bitcast double");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -1,3 +1,4 @@
+import { computedGlobalReadOf, globalValuesInstall } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { positionTag } from "./structural-positions.js";
@@ -966,6 +967,12 @@ export function moduleArtifacts(
             visitClass("%Readable");
             visitClass("%Writable");
           }
+          // A class declared `extends Array` named by its instanceof test
+          // or by X.of / X.from.
+          if (node.fn === "array.dynIsClass" && node.args[1]?.kind === "strLit")
+            visitClass(node.args[1].value);
+          if (node.fn === "array.classConstructAdopt" && node.args[0]?.kind === "strLit")
+            visitClass(node.args[0].value);
           break;
         case "dynFrom":
           if (boxedChild(node.value.type)) {
@@ -3064,6 +3071,10 @@ export function lowerFileInit(
       });
     }
     if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
+    // A module that reads builtin globals through the global object by
+    // computed names installs the program's lookup before its body runs.
+    const computedGlobalRead = computedGlobalReadOf(lowerer, sf);
+    if (computedGlobalRead) header.push(globalValuesInstall(lowerer, computedGlobalRead, loc0));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);

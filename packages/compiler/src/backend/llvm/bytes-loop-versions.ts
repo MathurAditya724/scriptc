@@ -15,9 +15,10 @@ import { exactInteger, widenInteger } from "./integer-values.js";
 import {
   emitCountedLoopLimit,
   emitCountedLoopSafety,
-  emitExactIntegerTest,
   emitStartIntegerTest,
+  emitValueIntegerTest,
 } from "./counted-loops.js";
+import { integerOrNaNRange } from "./wrapping-sums.js";
 import { emitBytesData, emitBytesHeaderLength, emitBytesSharedStorage } from "./expr-bytes.js";
 import { f64Lit } from "./common.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -1228,7 +1229,7 @@ export function emitBytesLoopVersionGuard(
         B.line(`${ok} = icmp sge i64 ${widenInteger(host, integer)}, ${counter.min}`);
         conditions.push(ok);
       }
-    } else conditions.push(emitExactIntegerTest(host, value.name, counter.min, SAFE).ok);
+    } else conditions.push(emitValueIntegerTest(host, value, counter.ref, counter.min, SAFE).ok);
     for (const wrap of counter.wrapBounds) {
       const bound = host.emitExpr(wrap.bound);
       const boundInteger = exactInteger(host, bound, wrap.bound);
@@ -1258,6 +1259,9 @@ export function emitBytesLoopVersionGuard(
     const startInteger = exactInteger(host, startValue, counted.start);
     let start: string;
     if (startInteger) start = widenInteger(host, startInteger);
+    else if (startValue.nanInteger !== undefined && integerOrNaNRange(host, counted.start))
+      // The counted-loop safety test required the ordered bit.
+      start = startValue.nanInteger;
     else {
       // The counted-loop safety test above proved an exact integer.
       start = B.tmp();
@@ -1296,7 +1300,13 @@ export function emitBytesLoopVersionGuard(
       for (const term of check.terms) {
         const value = host.emitExpr(term.expr);
         if (version.guarded.has(term.key)) {
-          const tested = emitExactIntegerTest(host, value.name, GUARDED_TERM.min, GUARDED_TERM.max);
+          const tested = emitValueIntegerTest(
+            host,
+            value,
+            term.expr,
+            GUARDED_TERM.min,
+            GUARDED_TERM.max,
+          );
           conditions.push(tested.ok);
           const sum = B.tmp();
           B.line(`${sum} = ${term.sign > 0 ? "add" : "sub"} i64 ${base}, ${tested.integer}`);
