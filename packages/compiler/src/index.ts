@@ -1,4 +1,4 @@
-import { shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
+import { setShapeOverlayMemoDir, shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
@@ -1026,6 +1026,16 @@ async function stageDriverBuildSources(
  * (`runFrontendProcess`). Node's heap keeps the pages a build's frontend used for the life of the
  * process, so running them in a process of their own leaves the native helper the memory they took.
  */
+/** The shape overlay's memo directory for the current executable build
+ * (frontend/shape-inference/memo.ts): per compiler, in the build cache. */
+let shapeOverlayMemo: string | null = null;
+
+function shapeOverlayMemoDir(cacheRoot: string | null, implementation: string): string | null {
+  return cacheRoot === null
+    ? null
+    : join(cacheRoot, "shape-overlay-v1", implementation.slice(0, 24));
+}
+
 const frontendProcessEntry = fileURLToPath(new URL("./frontend-process.js", import.meta.url));
 
 /**
@@ -1105,6 +1115,8 @@ interface FrontendProcessRequest {
   timing: TimingClock;
   /** The compile's --provenance-sources mappings, which the frontend process installs. */
   provenance: ProvenanceSources | null;
+  /** The shape overlay's memo directory (shapeOverlayMemoDir). */
+  shapeOverlayMemo: string | null;
 }
 
 /** What the frontend process sends back. A thrown error comes back as `failed`. */
@@ -1158,6 +1170,7 @@ async function prepareExecutableInputInChild(
       buildPlatform,
       timing: timingClock,
       provenance: provenanceSources(),
+      shapeOverlayMemo,
     };
     await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
     const exitCode = await frontendProcess.run(requestPath, resultPath);
@@ -1225,6 +1238,8 @@ export async function runFrontendProcess(requestPath: string, resultPath: string
     process.env["SCRIPTC_SHAPE_OVERLAY"] = request.opts.shapeOverlay ? "1" : "0";
   clearCompileSessionCaches();
   setProvenanceSources(request.provenance);
+  shapeOverlayMemo = request.shapeOverlayMemo;
+  setShapeOverlayMemoDir(request.shapeOverlayMemo);
   // The compile that started this process prepared the cache root.
   configureLibDiagnostics(
     (request.opts.outputKind ?? "exe") === "exe" && provenanceSources() === null
@@ -1294,6 +1309,8 @@ async function compileTracked(
   const timing = compilationTiming();
   const timingStart = Date.now();
   entryPath = resolve(entryPath);
+  shapeOverlayMemo = null;
+  setShapeOverlayMemoDir(null);
   const outputKind = opts.outputKind ?? "exe";
   if (
     (opts.backend !== undefined && opts.backend !== "llvm") ||
@@ -1594,6 +1611,8 @@ async function compileTracked(
       implementation: implementation.digest,
       implementationDependencies: implementation.dependencies,
     };
+    shapeOverlayMemo = shapeOverlayMemoDir(cacheRoot, implementation.digest);
+    setShapeOverlayMemoDir(shapeOverlayMemo);
   }
   const earlyHit =
     earlyCacheOptions === null

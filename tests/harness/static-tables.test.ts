@@ -3,7 +3,8 @@
  * consumer, js-main.cjs) calls its constant function table directly, reads
  * constant primitive members as literals, refers to namespace members of
  * another module through that module's exports, keeps every form whose
- * dynamic read is observable, and prints what Node prints. The npm suites
+ * dynamic read is observable, keeps the TypeError of a receiver that may
+ * be undefined, and prints what Node prints. The npm suites
  * run the TypeScript consumer with and without the overlay. */
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -32,7 +33,7 @@ test(
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const report = (result.warnings ?? []).find((w) => w.code === "SC6103");
-    expect(report?.message).toMatch(/1 function table call, 8 constant reads\)/);
+    expect(report?.message).toMatch(/2 function table calls, 9 constant reads\)/);
     const pending = execFileAsync(result.binaryPath, [], { cwd: dirname(entry), encoding: "utf8" });
     pending.child.stdin?.end();
     const { stdout } = await pending;

@@ -20,3 +20,12 @@ try {
 } catch (e) {
   console.log(e instanceof TypeError);
 }
+for (const holder of lib.holders) {
+  for (const read of [() => lib.modeOn(holder), () => lib.addVia(holder), () => lib.callVia(holder, "mul")]) {
+    try {
+      console.log(read());
+    } catch (e) {
+      console.log(e.constructor.name, e.message);
+    }
+  }
+}
