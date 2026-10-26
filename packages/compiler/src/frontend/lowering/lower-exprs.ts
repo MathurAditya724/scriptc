@@ -82,6 +82,7 @@ import { unitOnlyUnion } from "../type-mapper.js";
 import { lowerYield } from "./lower-generators.js";
 import { unionWideningTags } from "../../ir/analysis.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
+import { everyExprChild } from "../../ir/traverse.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./expressions/optional-chains.js";
 import { classToStringConversion, classUnionToString } from "./class-to-primitive.js";
 import { lowerCjsTopLevelThis, lowerRequireCacheElement } from "./lower-node-module.js";
@@ -1132,17 +1133,50 @@ function assertedElementOperand(
     : lowerPrimitiveUnionNumber(lowerer, probe, expr, loc);
 }
 
-/** `xs[i]!` on an array as the receiver of a member read or write
- * (`xs[i]!.name`, `xs[i]!.size()`, `xs[i]![0]`, `xs[i]!.name = v`). `!`
- * performs no runtime check, so a missing element is undefined there and
- * the member access throws Node's TypeError ("Cannot read properties of
- * undefined (reading 'name')") instead of the bounds trap. The receiver is
- * the element when it is present. Returns null for other reads and uses. */
+/** `xs[i]!` on an array as the receiver of a member read
+ * (`xs[i]!.name`, `xs[i]!.size()`, `xs[i]![0]`). `!` performs no runtime
+ * check, so a missing element is undefined there and the member access
+ * throws Node's TypeError ("Cannot read properties of undefined (reading
+ * 'name')") instead of the bounds trap. The receiver is the element when it
+ * is present. A write (`xs[i]!.name = v`) is lowered as a statement by
+ * lowerDereferencedElementWrite, which evaluates the value before the
+ * receiver throws; elsewhere it keeps the bounds trap. Returns null for
+ * other reads and uses. */
 function dereferencedElementReceiver(
   lowerer: Lowerer,
   expr: ts.NonNullExpression,
   loc: SrcLoc,
 ): IrExpr | null {
+  const use = runtimeOptionalUseOf(expr);
+  if (!use || isAssignmentTarget(use.access)) return null;
+  const parts = dereferencedElementParts(lowerer, expr, loc, false);
+  if (parts?.message == null) return null;
+  const message = parts.message;
+  const value: IrExpr = {
+    kind: "ternary",
+    cond: parts.present,
+    then: parts.element,
+    else_: nodeTypeError(message, parts.element.type, loc),
+    type: parts.element.type,
+    loc,
+  };
+  return parts.stmts.length === 0
+    ? value
+    : { kind: "seqExpr", stmts: parts.stmts, result: value, type: value.type, loc };
+}
+
+/** The parts of a member access through `xs[i]!` (see
+ * dereferencedElementReceiver): statements that evaluate the array and the
+ * index, whether the element is present, the element read, and Node's
+ * TypeError message for a missing one. `hold` keeps the array and the
+ * index in hidden locals, for a write whose value is evaluated before the
+ * element is read. */
+export function dereferencedElementParts(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  loc: SrcLoc,
+  hold: boolean,
+): { stmts: IrStmt[]; present: IrExpr; element: IrExpr; message: IrExpr | null } | null {
   let read: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(read)) read = read.expression;
   if (!ts.isElementAccessExpression(read) || read.questionDotToken) return null;
@@ -1155,8 +1189,14 @@ function dereferencedElementReceiver(
   if (lowerer.nanCodedReads?.counterIndexInBounds(read)) return null;
   const use = runtimeOptionalUseOf(expr);
   if (!use || use.optional || use.complex || use.comma || use.kind === "call") return null;
-  const message = memberAccessMessage(lowerer, use.access);
-  if (message === null) return null;
+  // A write holds its key, so the message can name any number or string
+  // key (dereferencedElementWrite builds it).
+  const message =
+    memberAccessMessage(lowerer, use.access) ??
+    (hold && ts.isElementAccessExpression(use.access) && namedKey(lowerer, use.access)
+      ? null
+      : undefined);
+  if (message === undefined) return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(read.argumentExpression))?.kind !== "f64") return null;
   // The element must already have the asserted type: an element union the
   // assertion or a guard narrows keeps its checked narrow.
@@ -1175,19 +1215,22 @@ function dereferencedElementReceiver(
   const index = lowerer.lowerExprExpecting(read.argumentExpression, F64);
   // Plain reads (a local, a field of one) evaluate once more instead of
   // through a hidden local: the receiver then stays a borrowed element
-  // read, like the plain `xs[i]` it replaces.
+  // read, like the plain `xs[i]` it replaces. An index that can assign
+  // can replace the array binding or field (`xs[(xs = other, 0)]!`), so the
+  // array is held before it, as JavaScript reads it first.
   const stmts: IrStmt[] = [];
-  const stable = (value: IrExpr, name: string): IrExpr => {
-    if (isSafeToRepeat(value) || plainProjection(value)) return value;
+  const plain = (value: IrExpr): boolean =>
+    !hold && (isSafeToRepeat(value) || plainProjection(value));
+  const held = (value: IrExpr, name: string): IrExpr => {
     const tmp = lowerer.declareHiddenLocal(name, value.type);
     stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
     return varRef(tmp.id, value.type, loc);
   };
-  const a = stable(arr, "%elementArray");
-  const i = stable(index, "%elementIndex");
-  const value: IrExpr = {
-    kind: "ternary",
-    cond: {
+  const a = !mayAssign(index) && plain(arr) ? arr : held(arr, "%elementArray");
+  const i = plain(index) ? index : held(index, "%elementIndex");
+  return {
+    stmts,
+    present: {
       kind: "bin",
       op: "===",
       left: { kind: "arrayState", arr: a, index: i, type: F64, loc },
@@ -1195,18 +1238,167 @@ function dereferencedElementReceiver(
       type: BOOL,
       loc,
     },
-    then: { kind: "arrayGet", arr: a, index: i, type: elem, loc },
-    else_: {
-      kind: "libCall",
-      fn: "error.nodeThrow",
-      args: [numLit(1, loc), strLit("", loc), message],
-      type: elem,
+    element: { kind: "arrayGet", arr: a, index: i, type: elem, loc },
+    message,
+  };
+}
+
+/** A write through `xs[i]!` (`xs[i]!.name = v`, `xs[i]![k] = v`): as in
+ * Node, the array, the index, the key and the value evaluate in order (the
+ * statements), then a missing element makes the write throw Node's
+ * TypeError and a present one takes the write, which reads the element,
+ * the key and the value through `overrides`. Null for other targets. */
+export function dereferencedElementWrite(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+): {
+  stmts: IrStmt[];
+  present: IrExpr;
+  message: IrExpr;
+  overrides: { node: ts.Expression; value: IrExpr }[];
+} | null {
+  if (expr.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
+  const target = expr.left;
+  if (
+    !(ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) ||
+    target.questionDotToken ||
+    lowerer.chainRecvByNode.has(target.expression)
+  )
+    return null;
+  let receiver: ts.Expression = target.expression;
+  while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+  if (!ts.isNonNullExpression(receiver)) return null;
+  const loc = locOf(expr);
+  // The key and the value evaluate before the element is read, so the
+  // array and the index are held when either can assign one of them.
+  const keyValue = ts.isElementAccessExpression(target)
+    ? lowerer.lowerExpr(target.argumentExpression)
+    : null;
+  const rightValue = lowerer.lowerExpr(expr.right);
+  const pure = !mayAssign(rightValue) && (keyValue === null || !mayAssign(keyValue));
+  const parts = dereferencedElementParts(lowerer, receiver, loc, !pure);
+  if (parts === null) return null;
+  const stmts = [...parts.stmts];
+  const held = (
+    node: ts.Expression,
+    value: IrExpr,
+    name: string,
+  ): { node: ts.Expression; value: IrExpr } => {
+    // A key or value whose evaluation is unobservable may evaluate in the
+    // write itself, after the element is tested.
+    if (isSafeToRepeat(value) || unobservable(value)) return { node, value };
+    // A call without a result evaluates to undefined.
+    if (value.type.kind === "void") {
+      stmts.push({ kind: "exprStmt", expr: value, loc });
+      return { node, value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc } };
+    }
+    const tmp = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
+    return { node, value: varRef(tmp.id, value.type, loc) };
+  };
+  const overrides = [{ node: target.expression, value: parts.element }];
+  let message = parts.message;
+  if (ts.isElementAccessExpression(target) && keyValue !== null) {
+    const key = held(target.argumentExpression, keyValue, "%elementWriteKey");
+    overrides.push(key);
+    message ??= keyMessage(messageHead(target), key.value, loc);
+  }
+  overrides.push(held(expr.right, rightValue, "%elementWriteValue"));
+  if (message === null) return null;
+  return { stmts, present: parts.present, message, overrides };
+}
+
+/** dereferencedElementWrite in value position (`f(xs[i]!.name = v)`). */
+export function lowerDereferencedElementAssignment(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+): IrExpr | null {
+  const write = dereferencedElementWrite(lowerer, expr);
+  if (write === null) return null;
+  const loc = locOf(expr);
+  const value = lowerer.withExpressionOverrides(write.overrides, () => lowerer.lowerExpr(expr));
+  return {
+    kind: "seqExpr",
+    stmts: write.stmts,
+    result: {
+      kind: "ternary",
+      cond: write.present,
+      then: value,
+      else_: nodeTypeError(write.message, value.type, loc),
+      type: value.type,
       loc,
     },
-    type: elem,
+    type: value.type,
     loc,
   };
-  return stmts.length === 0 ? value : { kind: "seqExpr", stmts, result: value, type: elem, loc };
+}
+
+/** Whether evaluating `e` has no effect and cannot throw: a discardable
+ * expression, or the compiler's element-or-undefined read of one. */
+function unobservable(e: IrExpr): boolean {
+  if (e.kind === "call" && e.callee.startsWith("%arr.idxOr.")) return e.args.every(unobservable);
+  return isSafeToDiscard(e);
+}
+
+/** Whether evaluating `e` can assign a binding or a field: it contains an
+ * assignment, an increment, statements, a suspension, or a call that can
+ * run program code (a library call only through a function it is given). */
+function mayAssign(e: IrExpr): boolean {
+  switch (e.kind) {
+    case "call":
+      // The compiler's element-or-undefined read and union narrows run no
+      // program code.
+      if (!e.callee.startsWith("%arr.idxOr.") && !e.callee.startsWith("%union.narrow."))
+        return true;
+      break;
+    case "assignExpr":
+    case "incDec":
+    case "seqExpr":
+    case "callValue":
+    case "virtualCall":
+    case "dynCall":
+    case "dynInvoke":
+    case "ffiCall":
+    case "new":
+    case "newValue":
+    case "awaitExpr":
+    case "awaitUnionExpr":
+    case "yieldExpr":
+      return true;
+    case "closure":
+      return false;
+    case "libCall":
+      if (e.args.some((arg) => arg.type.kind === "func")) return true;
+      break;
+  }
+  return !everyExprChild(
+    e,
+    (child) => !mayAssign(child),
+    () => false,
+  );
+}
+
+/** Node's TypeError, thrown in place of a value of `type`. */
+export function nodeTypeError(message: IrExpr, type: IrType, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "error.nodeThrow",
+    args: [numLit(1, loc), strLit("", loc), message],
+    type,
+    loc,
+  };
+}
+
+/** Whether `access` is the target of `=`. */
+function isAssignmentTarget(access: ts.Expression): boolean {
+  let outer: ts.Expression = access;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  return (
+    ts.isBinaryExpression(parent) &&
+    parent.left === outer &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  );
 }
 
 /** A local, a number literal, or a field or record member read through a
@@ -1224,16 +1416,7 @@ function memberAccessMessage(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression | ts.ElementAccessExpression | ts.CallExpression,
 ): IrExpr | null {
-  let outer: ts.Expression = access;
-  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
-  const parent = outer.parent;
-  const setting =
-    ts.isBinaryExpression(parent) &&
-    parent.left === outer &&
-    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
-  const head = setting
-    ? "Cannot set properties of undefined (setting '"
-    : "Cannot read properties of undefined (reading '";
+  const head = messageHead(access);
   const loc = locOf(access);
   if (ts.isPropertyAccessExpression(access)) {
     if (ts.isPrivateIdentifier(access.name)) return null;
@@ -1249,10 +1432,31 @@ function memberAccessMessage(
   if (keyType !== "f64" && keyType !== "string") return null;
   const keyValue = lowerer.lowerExpr(keyNode);
   if (!isSafeToRepeat(keyValue) || keyValue.type.kind !== keyType) return null;
+  return keyMessage(head, keyValue, loc);
+}
+
+/** The start of Node's TypeError message for a member access on undefined:
+ * setting the member when the access is the target of `=`, else reading
+ * it. */
+function messageHead(access: ts.Expression): string {
+  return isAssignmentTarget(access)
+    ? "Cannot set properties of undefined (setting '"
+    : "Cannot read properties of undefined (reading '";
+}
+
+/** Whether `access`'s key is typed a number or a string, which the message
+ * can name from its value. */
+function namedKey(lowerer: Lowerer, access: ts.ElementAccessExpression): boolean {
+  const kind = lowerer.mapTypeOf(lowerer.typeOf(access.argumentExpression))?.kind;
+  return kind === "f64" || kind === "string";
+}
+
+/** The message naming a key from its value (a number or a string), or null
+ * for another type. */
+function keyMessage(head: string, key: IrExpr, loc: SrcLoc): IrExpr | null {
+  if (key.type.kind !== "f64" && key.type.kind !== "string") return null;
   const text: IrExpr =
-    keyValue.type.kind === "string"
-      ? keyValue
-      : { kind: "toString", operand: keyValue, type: STRING, loc };
+    key.type.kind === "string" ? key : { kind: "toString", operand: key, type: STRING, loc };
   const concat = (left: IrExpr, right: IrExpr): IrExpr => ({
     kind: "strConcat",
     left,
@@ -1275,14 +1479,15 @@ function stringElementOrUndefined(
   if (arr.type.kind !== "array" || arr.type.elem.kind !== "string") return null;
   const index = lowerer.lowerExprExpecting(read.argumentExpression, F64);
   const stmts: IrStmt[] = [];
-  const stable = (value: IrExpr, name: string): IrExpr => {
-    if (isSafeToRepeat(value)) return value;
+  const held = (value: IrExpr, name: string): IrExpr => {
     const tmp = lowerer.declareHiddenLocal(name, value.type);
     stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
     return varRef(tmp.id, value.type, loc);
   };
-  const a = stable(arr, "%elementArray");
-  const i = stable(index, "%elementIndex");
+  // An index that can assign can replace the array binding or field, so
+  // the array is held before it, as JavaScript reads it first.
+  const a = !mayAssign(index) && isSafeToRepeat(arr) ? arr : held(arr, "%elementArray");
+  const i = isSafeToRepeat(index) ? index : held(index, "%elementIndex");
   const value: IrExpr = {
     kind: "ternary",
     cond: {

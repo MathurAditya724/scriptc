@@ -69,3 +69,45 @@ try {
   console.log("loop", (e as Error).message, total);
 }
 console.log(cells.map((c) => `${c.label}:${c.count}`).join(" "));
+
+// A write through a missing element evaluates the key and the value before
+// it throws; an error the value throws is the one that propagates.
+const events: string[] = [];
+const note = (event: string, value: number): number => {
+  events.push(event);
+  return value;
+};
+attempt("write order", () => {
+  cells[note("index", 7)]!.count = note("value", 1);
+});
+attempt("write key order", () => {
+  grid[note("row", 9)]![note("column", 0)] = note("cell", 5);
+});
+attempt("write literal key", () => {
+  grid[9]![0] = note("cell 0", 5);
+});
+attempt("value throws", () => {
+  cells[7]!.count = (() => {
+    throw new Error("from the value");
+  })();
+});
+attempt("present write", () => {
+  cells[0]!.count = note("present", 41) + 1;
+  return cells[0]!.count;
+});
+console.log("events", events.join(","));
+
+// The array is read before an index that replaces it.
+let current = [new Cell("first")];
+const replace = (): number => {
+  current = [];
+  return 0;
+};
+attempt("replaced read", () => current[replace()]!.label);
+current = [new Cell("second")];
+attempt("replaced write", () => {
+  current[replace()]!.label = "written";
+});
+let names = ["kept"];
+attempt("replaced string", () => `${names[(names = [], 0)]!}`);
+console.log(current.length, names.length);

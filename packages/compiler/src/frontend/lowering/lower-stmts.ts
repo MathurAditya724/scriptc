@@ -240,10 +240,12 @@ import { globalSymbolKey } from "./expressions/global-symbols.js";
 import { identifiersNamed } from "./identifier-uses.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
 import {
+  dereferencedElementWrite,
   jsHoldsDynObject,
   lowerEnvironmentKey,
   lowerNativeFunctionAssignment,
   lowerStrictEquality,
+  nodeTypeError,
 } from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
@@ -7944,6 +7946,29 @@ function lowerCjsSingleValueExport(
  * assignment, and `({ a, b } = e);` (destructuring ASSIGNMENT, which JS
  * requires parenthesized in statement position) lands in the
  * object-literal-target branch below. */
+/** dereferencedElementWrite in statement position. */
+function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt | null {
+  const write = dereferencedElementWrite(lowerer, expr);
+  if (write === null) return null;
+  const loc = locOf(expr);
+  return {
+    kind: "block",
+    body: [
+      ...write.stmts,
+      {
+        kind: "if",
+        cond: write.present,
+        then: [
+          lowerer.withExpressionOverrides(write.overrides, () => lowerExprStatement(lowerer, expr)),
+        ],
+        else_: [{ kind: "exprStmt", expr: nodeTypeError(write.message, VOID, loc), loc }],
+        loc,
+      },
+    ],
+    loc,
+  };
+}
+
 export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt {
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
@@ -8205,6 +8230,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       {
         const ex = lowerExpandoAssignStmt(lowerer, expr);
         if (ex) return ex;
+      }
+      {
+        const dereferenced = lowerDereferencedElementWrite(lowerer, expr);
+        if (dereferenced) return dereferenced;
       }
       if (ts.isElementAccessExpression(expr.left)) return lowerer.lowerElementWrite(expr);
       if (ts.isPropertyAccessExpression(expr.left)) {
