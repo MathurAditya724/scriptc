@@ -1474,7 +1474,10 @@ static void scr_scan_black(void *obj, uintptr_t depth) {
   const ScrCycType *type = scr_cyc_type(h);
   bool acyclic = type->trace == scr_cyc_no_children;
   if (!scr_cyc_is_buffered(h)) h->buf = acyclic ? SCR_CYC_ACYCLIC : 0;
-  if (scr_cyc_gen(h) < SCR_CYC_OLD) scr_cyc_push_work(&scr_promote, obj);
+  /* Such a candidate also keeps its generation: the generation names the
+   * buffer its slot is in (scr_cyc_on_dead), so it is promoted only once a
+   * pass takes it. */
+  if (scr_cyc_gen(h) < SCR_CYC_OLD && !scr_cyc_is_buffered(h)) scr_cyc_push_work(&scr_promote, obj);
   if (acyclic) return;
   if (depth == SCR_CYC_WALK_DEPTH) {
     scr_cyc_push_work(&scr_restore_pending, obj);
