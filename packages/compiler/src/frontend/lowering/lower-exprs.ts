@@ -1967,9 +1967,12 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
     }
     // A literal key the shape does not declare is absent from every value
     // (lowerRecordKeyRead answers undefined), whatever type the checker gave
-    // the read.
+    // the read. An optional chain keeps its own lowering, which reads a
+    // nullish receiver as undefined instead of converting it.
     const literal = recordKeyLiteralText(expr.argumentExpression);
     if (
+      !expr.questionDotToken &&
+      !hasOptionalChainGuard(expr.expression) &&
       shape &&
       !shape.tuple &&
       !shape.indexValue &&
