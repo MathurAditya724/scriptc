@@ -46,7 +46,12 @@ import {
   slotWidth,
   type ArrayAccess,
 } from "./dense-array-access.js";
-import { emitWrappingSum, integerOrNaNRange, markWrappingOperands } from "./wrapping-sums.js";
+import {
+  emitNanArithmetic,
+  emitWrappingSum,
+  integerOrNaNRange,
+  markWrappingOperands,
+} from "./wrapping-sums.js";
 import { emitPowF64, emitPowerOfTwoQuotient, isPowerOfTwoCall } from "./lib-filesystem.js";
 
 /** The signed integer predicates of the number compares. */
@@ -205,7 +210,19 @@ export function emitLiteralExpr(
         // the binding. Consumers must not reload its current view.
         const uint32 = B.tmp();
         B.line(`${uint32} = load i32, ptr ${integerView}`);
-        return { name: t, type: e.type, uint32 };
+        const orderedView = host.orderedViews.get(e.localId);
+        const range = orderedView && host.integerOrNaNLocals.get(e.localId);
+        if (!orderedView || !range) return { name: t, type: e.type, uint32 };
+        const ordered = B.tmp();
+        B.line(`${ordered} = load i1, ptr ${orderedView}`);
+        // The view holds the integer's low 32 bits (0 for NaN): its integer
+        // when the range is within int32 or uint32.
+        const signed = range.min >= -2147483648 && range.max <= 2147483647;
+        if (!signed && !(range.min >= 0 && range.max <= 4294967295))
+          return { name: t, type: e.type, uint32, ordered };
+        const nanInteger = B.tmp();
+        B.line(`${nanInteger} = ${signed ? "sext" : "zext"} i32 ${uint32} to i64`);
+        return { name: t, type: e.type, uint32, ordered, nanInteger };
       }
       if (isRefCounted(e.type)) {
         // An immortal Immutable constant: nothing to count.
@@ -413,8 +430,11 @@ export function emitOperatorExpr(
           const wrapped = emitWrappingSum(host, e, l, r, li, ri);
           // The exact integer beside the double, for index consumers.
           const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
-          if (wrapped !== undefined || wideInteger) {
+          // The integer of an exact integer or NaN, for index and loop guards.
+          const nan = emitNanArithmetic(host, e, l, r, li, ri);
+          if (wrapped !== undefined || wideInteger || nan) {
             const value: LlValue = { name: t, type: e.type };
+            if (nan) Object.assign(value, nan);
             if (wrapped !== undefined) Object.assign(value, wrapped);
             if (wideInteger) value.wideInteger = wideInteger;
             return value;

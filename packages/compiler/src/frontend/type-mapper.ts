@@ -1295,6 +1295,10 @@ export interface TypeMapperCtx {
   /** With `lenient`: told each component the lenient mapping turned into
    * the checked dynamic (Lowerer.lenientPieces). */
   onLenientPiece?: (type: ts.Type) => void;
+  /** Canonical normalization's shadow mode (canon-map.ts): called after
+   * each successful top-level mapping; installed only under
+   * SCRIPTC_CANON_SHADOW=1. It records, and never changes a result. */
+  canonShadow?: (type: ts.Type, mapped: IrType, ctx: TypeMapperCtx) => void;
   /** GENERIC program classes (monomorphization by flow): the mapping of a
    * concrete instantiation reference (`Box<number>`) — the Lowerer
    * registers/reuses the instantiation (`Box%0`) and answers its object
@@ -1357,7 +1361,7 @@ export interface TypeMapperCtx {
    * member graph each time is quadratic work. Generic/mixin contexts opt out
    * through canMemoizeType because the same checker type can map differently
    * under different instantiation bindings. */
-  typeMemo?: Map<string, IrType>;
+  typeMemo?: Map<number, IrType>;
   canMemoizeType?: () => boolean;
   /** True for files the Lowerer actually compiles (its module order). A
    * class type can reach the entry through the TYPE world alone — a jsdoc
@@ -1870,8 +1874,8 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const memoizable = typeId !== undefined && (ctx.canMemoizeType?.() ?? true);
   // An empty literal's type maps to the empty record as an unreduced union's
   // arm (emptyLiteralArm) and to the checked-dynamic value elsewhere: the two
-  // answers keep separate memo entries.
-  const memoKey = memoizable ? `${ctx.emptyLiteralArm ? 1 : 0}:${typeId}` : null;
+  // answers keep separate memo entries. Type ids are non-negative integers.
+  const memoKey = memoizable ? typeId * 2 + (ctx.emptyLiteralArm ? 1 : 0) : null;
   if (memoKey !== null) {
     const memo = ctx.typeMemo?.get(memoKey);
     if (memo !== undefined) return memo;
@@ -1926,6 +1930,8 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     ) {
       ctx.typeMemo?.set(memoKey, mapped);
     }
+    if (mapped !== null && topLevel && ctx.canonShadow !== undefined)
+      ctx.canonShadow(type, mapped, ctx);
     return mapped;
   } finally {
     mapTypeDepth--;

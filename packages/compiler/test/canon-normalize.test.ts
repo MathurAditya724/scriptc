@@ -3,6 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { canonEqual, canonKey, Normalizer, type Canon } from "../src/frontend/canon.js";
+import { mapCanonical } from "../src/frontend/canon-map.js";
+import {
+  mapType,
+  ShapeRegistry,
+  UnionRegistry,
+  type TypeMapperCtx,
+} from "../src/frontend/type-mapper.js";
+import { typeKey } from "../src/ir/ir.js";
 import { loadProgram } from "../src/frontend/program-node.js";
 import * as ts from "../src/frontend/ts7/adapter.js";
 
@@ -269,5 +277,33 @@ describe("canon", () => {
     const n = new Normalizer(checker);
     expect(key(n.canon(aliases.get("Points")!))).toBe("readonly Point[]");
     expect(key(n.canon(aliases.get("Pair")!))).toBe("[string, number]");
+  });
+});
+
+describe("mapCanonical", () => {
+  const ctx = (): TypeMapperCtx => ({
+    checker,
+    shapes: new ShapeRegistry(),
+    unions: new UnionRegistry(),
+    classNamer: (decl) => decl.name?.text ?? "anonymous",
+    isStdlibFile: (sf) => load.program.isSourceFileDefaultLibrary(sf),
+    isNpmFile: () => false,
+    isExternalTypeFile: () => false,
+    isProgramFile: (sf) => load.moduleOrder.includes(sf),
+  });
+  test.for(["Normalized", "Same", "Flat", "Id", "Pair"])("%s maps like mapType", (name) => {
+    const strict = mapType(aliases.get(name)!, ctx());
+    const canonical = mapCanonical(new Normalizer(checker).canon(aliases.get(name)!), ctx());
+    expect(strict).not.toBeNull();
+    expect(canonical && typeKey(canonical)).toBe(typeKey(strict!));
+  });
+  test("a generic alias maps under bindings, where mapType needs the instance table", () => {
+    const { type, params } = asTypes.get("Catalog<G, P>")!;
+    const env = new Map([
+      [params[0]!, valueTypes.get("sampleNumber")!],
+      [params[1]!, valueTypes.get("sampleText")!],
+    ]);
+    const canonical = mapCanonical(new Normalizer(checker).canon(type, env), ctx());
+    expect(canonical?.kind).toBe("record");
   });
 });
