@@ -29,7 +29,7 @@ export interface CcOptions {
   windowsSubsystem?: WindowsSubsystem;
   /** Optional equivalent LLVM modules for dev compilation. Unsupported
    * targets or merge failures fall back to the canonical cPath TU. */
-  programShards?: readonly { name: string; source: string }[];
+  programShards?: readonly { name: string; source: () => string }[];
   /** Canonical externally visible definitions retained while shard merging
    * demotes generated cross-shard linkage back to local symbols. */
   programPublicSymbols?: readonly string[];
@@ -131,6 +131,10 @@ export interface CcOptions {
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
+  /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
+  mime?: boolean;
+  /** util.debounce and util.throttle: compiles scr_util_timing.c. */
+  utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:
    * compiles scr_bytes_dyn.c. */
   dynBuffer?: boolean;
@@ -150,6 +154,9 @@ export interface CcOptions {
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;
+  /** Module namespace objects as checked-dynamic values: compiles
+   * scr_module_namespace.c. */
+  moduleNamespace?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -275,6 +282,8 @@ export interface CcOptions {
   /** Ed25519 with pki: compiles scr_ed25519.c (the vendored libsodium
    * Ed25519). */
   ed25519?: boolean;
+  /** X509Certificate fields: compiles scr_x509.c. */
+  x509?: boolean;
   /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
   webcrypto?: boolean;
   /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */
@@ -304,7 +313,7 @@ export interface LibArchiveOptions {
    * `programSource` remains the canonical TU/cache identity; these stable
    * shards compile independently and are relocatably merged into one program
    * object before archive assembly. */
-  programShards?: readonly { name: string; source: string }[];
+  programShards?: readonly { name: string; source: () => string }[];
   /** Canonical externally visible definitions retained while the shard merge
    * demotes generated cross-shard linkage back to local symbols. */
   programPublicSymbols?: readonly string[];
@@ -360,6 +369,8 @@ export interface LibArchiveOptions {
   searchParams?: boolean;
   emitter?: boolean;
   zlib?: boolean;
+  /** X509Certificate fields: scr_x509.c. */
+  x509?: boolean;
   copying?: boolean;
   textDecoderLegacy?: boolean;
 }

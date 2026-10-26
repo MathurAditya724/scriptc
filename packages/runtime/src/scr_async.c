@@ -28,6 +28,7 @@
 #include "scr_runtime.h"
 #ifdef SCR_NODE_ISLANDS
 #include "scr_node_bridge.h"
+#include "scr_node_island.h"
 #endif
 
 #include <errno.h>
@@ -1387,7 +1388,7 @@ static ScrClosure *scr_als_bind(ScrClosure *cb /*moves*/);
 /* A tick runs with the AsyncLocalStorage context active when it was
  * queued, as Node's process.nextTick does. */
 void scr_next_tick(ScrClosure *cb /*moves*/) {
-  ScrNtick *t = calloc(1, sizeof *t);
+  ScrNtick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_oom();
   t->cb = scr_als_bind(cb);
 #ifdef SCR_NODE_ISLANDS
@@ -1406,7 +1407,7 @@ void scr_next_tick(ScrClosure *cb /*moves*/) {
  * adapter ABI also used by fs.rename: emitted adapters construct the
  * program's Error | null union, and NULL selects its null arm. */
 void scr_process_write_callback(ScrClosure *cb /*moves*/, ScrFsRenameFn fn) {
-  ScrNtick *t = calloc(1, sizeof *t);
+  ScrNtick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_oom();
   t->cb = cb;
   t->error_cb = fn;
@@ -1427,7 +1428,7 @@ void scr_process_write_callback(ScrClosure *cb /*moves*/, ScrFsRenameFn fn) {
  * endReadableNT, ...). The hook dispatches exactly one stream tick;
  * teardown just drops markers (the stream queue owns its entries). */
 void scr_next_tick_raw(void (*fn)(void)) {
-  ScrNtick *t = calloc(1, sizeof *t);
+  ScrNtick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_oom();
   t->raw = fn;
 #ifdef SCR_NODE_ISLANDS
@@ -1444,7 +1445,7 @@ void scr_next_tick_raw(void (*fn)(void)) {
 /* A raw tick at the front of the queue: it runs before the ticks already
  * queued. */
 static void scr_next_tick_raw_first(void (*fn)(void)) {
-  ScrNtick *t = calloc(1, sizeof *t);
+  ScrNtick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_oom();
   t->raw = fn;
   /* Hosted, Node's tick queue has no front: the tick queues last. */
@@ -1464,7 +1465,7 @@ void scr_nticks_teardown(void) {
     ScrNtick *t = scr_nt_head;
     scr_nt_head = t->next;
     if (t->cb) scr_closure_release(t->cb);
-    free(t);
+    scr_mem_free(t);
   }
   scr_nt_tail = NULL;
 }
@@ -1677,6 +1678,10 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
    * its own; every resumed context restores the guard it saved here. */
   uintptr_t guard = scr_stack_guard;
   if (to_fiber) SCR_STACK_GUARD_SET(scr_stack_guard_for((uintptr_t)to_fiber->stack, SCR_FIBER_STACK));
+#endif
+#ifdef SCR_NODE_ISLANDS
+  /* Leaving Node's stack keeps this frame and those above it live. */
+  scr_node_island_leave_stack((uintptr_t)__builtin_frame_address(0));
 #endif
 #ifdef _WIN32
   /* SwitchToFiber snapshots the outgoing fiber's state inside its own
@@ -4968,7 +4973,7 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
     ScrClosure *cb = t->cb;
     ScrFsRenameFn error_cb = t->error_cb;
     void (*raw)(void) = t->raw;
-    free(t);
+    scr_mem_free(t);
     if (cb) {
       if (error_cb) error_cb(cb, NULL);
       else ((void (*)(ScrClosure *))cb->fn)(cb);
@@ -5277,7 +5282,7 @@ static bool scr_loop_run_ticks(void) {
     ScrClosure *cb = t->cb;
     ScrFsRenameFn error_cb = t->error_cb;
     void (*raw)(void) = t->raw;
-    free(t);
+    scr_mem_free(t);
     if (cb) {
       if (error_cb) error_cb(cb, NULL);
       else ((void (*)(ScrClosure *))cb->fn)(cb);

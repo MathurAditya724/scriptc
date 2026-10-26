@@ -65,6 +65,31 @@ export function reusedLibDiagnostics(
   supplied: (fileName: string) => boolean,
   sourceFile: (fileName: string) => SourceFile | undefined,
 ): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
+  return reuse(program, fileNames, supplied, sourceFile, () => true, false);
+}
+
+/** reusedLibDiagnostics for a caller that keeps only the diagnostics of the
+ * `kept` files: a stored answer then needs checking only the kept other
+ * files, and without a stored answer the result is null (nothing is checked
+ * or stored). */
+export function reusedKeptLibDiagnostics(
+  program: Ts7SessionProgram,
+  fileNames: readonly string[],
+  supplied: (fileName: string) => boolean,
+  sourceFile: (fileName: string) => SourceFile | undefined,
+  kept: ReadonlySet<string>,
+): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
+  return reuse(program, fileNames, supplied, sourceFile, (name) => kept.has(name), true);
+}
+
+function reuse(
+  program: Ts7SessionProgram,
+  fileNames: readonly string[],
+  supplied: (fileName: string) => boolean,
+  sourceFile: (fileName: string) => SourceFile | undefined,
+  keep: (fileName: string) => boolean,
+  storedOnly: boolean,
+): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
   if (configured === null || process.env["SCRIPTC_LIB_DIAGNOSTICS"] === "0") return null;
   const { store, checker } = configured;
   const libs: string[] = [];
@@ -104,12 +129,16 @@ export function reusedLibDiagnostics(
     if (globals !== null) writeEntry(store, key, globals, Object.fromEntries(stored.files));
   }
   if (stored !== null && (scripts.length === 0 || (globals !== null && !collides(globals)))) {
-    const checked = program.checkedFileDiagnosticData(own);
+    const checkedNames = storedOnly ? own.filter(keep) : own;
+    const checked = program.checkedFileDiagnosticData(checkedNames);
     if (checked === null) return null;
-    const byFile = new Map<string, Ts7DiagnosticData[]>(stored.files);
-    own.forEach((name, index) => byFile.set(name, checked.files[index] ?? []));
+    const byFile = new Map<string, Ts7DiagnosticData[]>(
+      storedOnly ? [...stored.files].filter(([name]) => keep(name)) : stored.files,
+    );
+    checkedNames.forEach((name, index) => byFile.set(name, checked.files[index] ?? []));
     return { semantic: inFileOrder(byFile), global: checked.global };
   }
+  if (storedOnly) return null;
   // The full check, as before. Its answers for the supplied files are stored
   // when it reports no global diagnostics and the program's scripts declare
   // none of the supplied files' globals (so nothing of the program reached
@@ -339,7 +368,7 @@ function readEntry(
 
 /** Each file's diagnostics (already in the checker's order) in the order the
  * checker sorts files: by file name, compared by code point. */
-function inFileOrder(byFile: ReadonlyMap<string, Ts7DiagnosticData[]>): Ts7DiagnosticData[] {
+export function inFileOrder(byFile: ReadonlyMap<string, Ts7DiagnosticData[]>): Ts7DiagnosticData[] {
   const names = [...byFile.keys()].sort(compareCodePoints);
   const out: Ts7DiagnosticData[] = [];
   for (const name of names) for (const d of byFile.get(name)!) out.push(d);
