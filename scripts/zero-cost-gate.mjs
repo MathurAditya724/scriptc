@@ -80,7 +80,8 @@ runtime pack). Both compile the same program files, taken from --programs
 
 --set picks the good-code set: bench (benchmarks/runtime workloads and the
 benchmarks/builds applications), self (packages/compiler/src/native/cli.ts,
-LLVM only), corpus (tests/corpus TypeScript programs; --corpus=all adds
+LLVM only; the candidate's own compiler source must also build with the
+candidate), corpus (tests/corpus TypeScript programs; --corpus=all adds
 JavaScript entries). --quick is --set=bench --timing-runs=0, for CI.
 --shard=i/n keeps every n-th corpus program; --only filters program ids.
 
@@ -631,6 +632,30 @@ if (timingRuns > 0) {
         `${name} compile time grew ${pct(result.ratio)} (CI low ${pct(result.low)})`,
       );
     }
+  }
+}
+
+// The self program is the baseline's compiler source (the programs come
+// from one checkout), so a change that adds compiler code the self-hosted
+// frontend cannot lower would pass unnoticed. The candidate's own compiler
+// source must still build with the candidate (LLVM only, not compared).
+if (sets.has("self") && programsRoot !== trees.candidate) {
+  const entry = join(trees.candidate, "packages/compiler/src/native/cli.ts");
+  const result = await buildProgram(
+    { id: "self/candidate-source", entry, kind: "source" },
+    "candidate",
+  );
+  report.candidateSelf = result.ok
+    ? { ok: true, buildMs: result.ms }
+    : { ok: false, error: result.error };
+  console.log(
+    result.ok
+      ? `self       candidate compiler source builds with the candidate (${fmtMs(result.ms)})`
+      : `self       candidate compiler source FAILS to build with the candidate`,
+  );
+  if (!result.ok) {
+    failed = true;
+    report.failures.push(`self/candidate-source: ${result.error.split("\n")[0]}`);
   }
 }
 

@@ -119,6 +119,10 @@ struct ScrStreamState {
     bool reading, in_read_sync, ended, end_emitted, end_scheduled;
     bool in_read_call; /* inside the user's _read (in_read_sync also starts true) */
     bool need_readable, emitted_readable, readable_listening;
+    /* the stream has 'data' listeners: kept by scr_stream_listener_observe
+     * from the registry's empty/nonempty transitions, so the per-chunk
+     * paths read it instead of looking the name up */
+    bool data_listeners;
     bool resume_scheduled, maybe_more_scheduled;
     /* The buffer's representation: encoded means every entry is a ScrStr,
      * otherwise every entry is a ScrBytes (scr_stream_rbuf_push checks
@@ -881,10 +885,14 @@ static void scr_stream_emit_data(ScrStream *s, void *chunk, ScrEntryKind kind) {
   } else {
     b = chunk;
   }
-  ScrStr *n = (ScrStr *)&scr_stream_lit_data;
-  scr_emitter_emit((ScrEmitter *)s, n, b, str, value);
-  scr_str_release(n);
-  if (scr_exc_pending()) return;
+  /* emit('data') with no listeners does nothing; a piped stream delivers
+   * through st->pipes below */
+  if (st->r.data_listeners) {
+    ScrStr *n = (ScrStr *)&scr_stream_lit_data;
+    scr_emitter_emit((ScrEmitter *)s, n, b, str, value);
+    scr_str_release(n);
+    if (scr_exc_pending()) return;
+  }
   /* pipe delivery, with backpressure: a full destination pauses us until
    * its 'drain'. Encoded sources write the string (utf8 bytes at the
    * destination — Node writes the decoded string through). */
@@ -1033,7 +1041,7 @@ static bool scr_stream_add_chunk(ScrStream *s, ScrBytes *chunk, bool front) {
   }
   if (entry_len > 0 &&
       st->r.flowing == 1 && st->r.length == 0 && !st->r.in_read_sync && !front &&
-      (scr_emitter_has((ScrEmitter *)s, "data") || st->pipes.n > 0)) {
+      (st->r.data_listeners || st->pipes.n > 0)) {
     /* the direct-emit fast path: flowing, empty buffer, async push */
     if (st->r.emitted_readable) st->r.emitted_readable = false;
     ScrEntryKind kind = scr_stream_rkind(st);
@@ -2002,7 +2010,7 @@ static int scr_stream_add_entry(ScrStream *s, void *entry /*moves*/, ScrEntryKin
   }
   st->r.reading = false;
   if (st->r.flowing == 1 && st->r.length == 0 && !st->r.in_read_sync &&
-      (scr_emitter_has((ScrEmitter *)s, "data") || st->pipes.n > 0)) {
+      (st->r.data_listeners || st->pipes.n > 0)) {
     if (st->r.emitted_readable) st->r.emitted_readable = false;
     scr_stream_emit_data(s, entry, kind);
     scr_stream_entry_release_kind(entry, kind);
@@ -2501,6 +2509,20 @@ static ScrStreamState *scr_stream_state_new(bool has_r, bool has_w,
   return st;
 }
 
+/* The registry's empty/nonempty transitions for the names the per-chunk
+ * paths test (scr_emitter_observe): no script runs here. */
+static void scr_stream_listener_observe(void *context, const ScrStr *name, bool present) {
+  ScrStream *s = context;
+  if (s->st != NULL && name->len == 4 && memcmp(name->data, "data", 4) == 0)
+    s->st->r.data_listeners = present;
+}
+
+/* Starts tracking the stream's 'data' listeners, once its state exists. */
+static void scr_stream_watch_listeners(ScrStream *s) {
+  s->st->r.data_listeners = scr_emitter_has((ScrEmitter *)s, "data");
+  scr_emitter_observe((ScrEmitter *)s, &scr_stream_listener_observe, s);
+}
+
 static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r, bool has_w,
                                     double rhwm, double whwm, bool auto_destroy,
                                     bool emit_close, bool allow_half_open) {
@@ -2529,6 +2551,7 @@ static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r,
     scr_emitter_reserve(em, "end");
     scr_emitter_reserve(em, "readable");
   }
+  scr_stream_watch_listeners(s);
   scr_obj_alloc_note();
   return s;
 }
@@ -2651,6 +2674,7 @@ void scr_stream_init_readable(ScrStream *s, double hwm, bool auto_destroy, bool 
     ScrClosure *destroy, ScrStreamErrInv destroy_inv) {
   ScrStreamState *st = scr_stream_state_new(true, false, hwm, -1, auto_destroy, emit_close, true);
   s->st = st;
+  scr_stream_watch_listeners(s);
   st->r.read_cb = read;
   st->r.read_inv = read_inv;
   st->destroy_cb = destroy;
@@ -2663,6 +2687,7 @@ void scr_stream_init_writable(ScrStream *s, double hwm, bool auto_destroy, bool 
     ScrClosure *destroy, ScrStreamErrInv destroy_inv) {
   ScrStreamState *st = scr_stream_state_new(false, true, -1, hwm, auto_destroy, emit_close, true);
   s->st = st;
+  scr_stream_watch_listeners(s);
   st->w.write_cb = write;
   st->w.write_inv = write_inv;
   st->w.final_cb = final_cb;
@@ -2680,6 +2705,7 @@ void scr_stream_init_duplex(ScrStream *s, double rhwm, double whwm, bool auto_de
   ScrStreamState *st = scr_stream_state_new(readable_side, writable_side, rhwm, whwm,
                                             auto_destroy, emit_close, allow_half_open);
   s->st = st;
+  scr_stream_watch_listeners(s);
   if (!readable_side) {
     st->r.ended = true;
     st->r.end_emitted = true;
@@ -2706,6 +2732,7 @@ static void scr_stream_init_transformish(ScrStream *s, bool passthrough,
   ScrStreamState *st = scr_stream_state_new(true, true, rhwm, whwm,
                                             auto_destroy, emit_close, allow_half_open);
   s->st = st;
+  scr_stream_watch_listeners(s);
   st->is_transform = !passthrough;
   st->passthrough = passthrough;
   /* the Transform constructor's readable-half stance (see new_transformish) */

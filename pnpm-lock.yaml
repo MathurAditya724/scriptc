@@ -93,19 +93,68 @@ importers:
         specifier: workspace:*
         version: link:../cli-win32-x64-msvc
 
-  packages/cli-darwin-arm64: {}
+  packages/cli-darwin-arm64:
+    dependencies:
+      '@scriptc/llvm-darwin-arm64':
+        specifier: workspace:*
+        version: link:../llvm-darwin-arm64
+      '@scriptc/runtime-darwin-arm64':
+        specifier: workspace:*
+        version: link:../runtime-darwin-arm64
 
-  packages/cli-darwin-x64: {}
+  packages/cli-darwin-x64:
+    dependencies:
+      '@scriptc/llvm-darwin-x64':
+        specifier: workspace:*
+        version: link:../llvm-darwin-x64
+      '@scriptc/runtime-darwin-x64':
+        specifier: workspace:*
+        version: link:../runtime-darwin-x64
 
-  packages/cli-linux-arm64-gnu: {}
+  packages/cli-linux-arm64-gnu:
+    dependencies:
+      '@scriptc/llvm-linux-arm64-gnu':
+        specifier: workspace:*
+        version: link:../llvm-linux-arm64-gnu
+      '@scriptc/runtime-linux-arm64-gnu':
+        specifier: workspace:*
+        version: link:../runtime-linux-arm64-gnu
 
-  packages/cli-linux-arm64-musl: {}
+  packages/cli-linux-arm64-musl:
+    dependencies:
+      '@scriptc/llvm-linux-arm64-musl':
+        specifier: workspace:*
+        version: link:../llvm-linux-arm64-musl
+      '@scriptc/runtime-linux-arm64-musl':
+        specifier: workspace:*
+        version: link:../runtime-linux-arm64-musl
 
-  packages/cli-linux-x64-gnu: {}
+  packages/cli-linux-x64-gnu:
+    dependencies:
+      '@scriptc/llvm-linux-x64-gnu':
+        specifier: workspace:*
+        version: link:../llvm-linux-x64-gnu
+      '@scriptc/runtime-linux-x64-gnu':
+        specifier: workspace:*
+        version: link:../runtime-linux-x64-gnu
 
-  packages/cli-linux-x64-musl: {}
+  packages/cli-linux-x64-musl:
+    dependencies:
+      '@scriptc/llvm-linux-x64-musl':
+        specifier: workspace:*
+        version: link:../llvm-linux-x64-musl
+      '@scriptc/runtime-linux-x64-musl':
+        specifier: workspace:*
+        version: link:../runtime-linux-x64-musl
 
-  packages/cli-win32-x64-msvc: {}
+  packages/cli-win32-x64-msvc:
+    dependencies:
+      '@scriptc/llvm-win32-x64-msvc':
+        specifier: workspace:*
+        version: link:../llvm-win32-x64-msvc
+      '@scriptc/runtime-win32-x64-msvc':
+        specifier: workspace:*
+        version: link:../runtime-win32-x64-msvc
 
   packages/compiler:
     dependencies:

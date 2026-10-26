@@ -1563,6 +1563,15 @@ function buildLibFnSignatures() {
       argTypes: [F64, STRING, { kind: "func", params: [], ret: VOID }],
       result: NETSOCKET_T,
     },
+    /** net.connect/createConnection(path[, connectListener]) and the
+     * `path` option: a client of the Unix socket at `path`. With the flag
+     * (a positional string), Node's isPipeName applies first: a string that
+     * reads as a non-negative number is a localhost port. */
+    "net.connectPath": { argTypes: [STRING, BOOL], result: NETSOCKET_T },
+    "net.connectPathCb": {
+      argTypes: [STRING, BOOL, { kind: "func", params: [], ret: VOID }],
+      result: NETSOCKET_T,
+    },
     // The lookup's exact func shape is program data (its answer callback's
     // union/record types) — checked specially in the libCall case.
     /** connect({ port, host, autoSelectFamily: true, lookup }) — the

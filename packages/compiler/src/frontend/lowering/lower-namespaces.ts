@@ -676,6 +676,30 @@ export function ambientUndefReadType(lowerer: Lowerer, node: ts.Node): IrType | 
   return null;
 }
 
+/** The symbol of a variable a program file declares ambiently without
+ * an initializer (`declare const Bun: ...`), which nothing defines: Node
+ * erases the declaration, so a read throws the catchable ReferenceError
+ * "<name> is not defined" and typeof answers "undefined". Null for other
+ * identifiers, including the standard library's declarations, which
+ * describe real runtime values. */
+export function ambientUndefinedVarSymbolOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): ts.Symbol | null {
+  const sym = lowerer.resolveValueSymbol(ident);
+  const decl = sym ? sym.declarations[0] : undefined;
+  if (
+    sym === null ||
+    decl === undefined ||
+    lowerer.isStdlibSymbol(sym) ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer !== undefined ||
+    !(ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Ambient)
+  )
+    return null;
+  return sym;
+}
+
 /** The symbol behind `ident` when it names an ambient `declare function`
  * NOTHING defines: every function declaration on the symbol is body-less
  * and ambient in a USER program file (merge partners — the fundule's

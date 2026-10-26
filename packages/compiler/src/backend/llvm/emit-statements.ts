@@ -95,6 +95,7 @@ import {
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
+import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
 import { loopAccessesTypedArrays } from "../loop-polls.js";
 import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
 
@@ -1315,6 +1316,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         const lb = B.newLabel("loop.b");
         const lu =
           s.update || capturedLets.length > 0 || workerBudget !== null ? B.newLabel("loop.u") : lc;
+        // A periodic guard on the counter (periodic-guards.ts): the back
+        // edge asks LLVM to unroll the loop by the guard's period.
+        const period =
+          countedLoop && integerSlot
+            ? periodicGuardPeriod(s, countedLoop.localId, countedLoop.start, countedLoop.step)
+            : null;
+        const backEdge = period === null ? "" : loopUnrollAttachment(period);
         B.br(lc);
         B.startBlock(lc);
         enterLoopHeader(emitter, lc);
@@ -1375,7 +1383,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         });
         emitter.emitBlock(s.body);
         emitter.jumpTargets.pop();
-        B.br(lu);
+        B.br(lu, lu === lc ? backEdge : "");
         if (lu !== lc) {
           B.startBlock(lu);
           emitter.emitWorkerLoopCheck(workerBudget);
@@ -1408,7 +1416,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               B.line(`store i64 ${next}, ptr ${pairedSlots[i]}`);
             });
           } else if (s.update) emitter.emitStmt(s.update);
-          B.br(lc);
+          B.br(lc, backEdge);
         }
       });
       B.startBlock(le);

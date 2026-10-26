@@ -109,6 +109,10 @@ Options:
                      "pkg..." also names every package pkg depends on).
                      Packages that fail preflight are refused with a
                      diagnostic. Eligible dependencies compile automatically.
+      --no-shape-overlay
+                     compile npm packages' JavaScript without the types shape
+                     inference proves (per package: "scriptc": {"packages":
+                     {"<name>": {"shapes": false}}} in package.json)
       --provenance-sources
                      EXPERIMENTAL: compile npm dependencies from their
                      provenance-attested SOURCE (fetched at the attested
@@ -186,6 +190,7 @@ export const CLI_OPTIONS = {
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
+  "shape-overlay": { type: "boolean" },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },

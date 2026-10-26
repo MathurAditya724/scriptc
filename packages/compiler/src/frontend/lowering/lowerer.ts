@@ -1,3 +1,5 @@
+import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
+import { npmStaticPackageOfPath } from "../npm-static.js";
 import { globalMemberValue } from "./global-values.js";
 import { unionNarrowFailureMessage } from "./union-narrow.js";
 import {
@@ -7,6 +9,7 @@ import {
   arrayRootOf,
   lowerWithArraySpecies,
 } from "./builtins/array-classes.js";
+import { canonShadowHook } from "../canon-map.js";
 import {
   compactDeclOrigins,
   inPackageFile,
@@ -3301,6 +3304,8 @@ export class Lowerer {
   /** Inferred JS methods participating in an override chain keep a vtable
    * ABI instead of call-site specialization. Filled before class collection. */
   readonly virtualJsMethods = new Set<ts.MethodDeclaration>();
+  /** Methods of checked-JavaScript override pairs (vtable dispatch). */
+  readonly checkedJsOverrideMethods = new Set<ts.MethodDeclaration>();
   /** Descendant writes must widen the original JS field before collecting
    * any class layout; base and derived instances share its storage ABI. */
   readonly inheritedJsFieldWrites = new Map<
@@ -4102,6 +4107,7 @@ export class Lowerer {
     this.externalTypeSpecifiersByFile =
       mode.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(this.externalTypes);
     this.checker = program.getTypeChecker();
+    const shadow = canonShadowHook(this.checker);
     this.typeCtx = {
       checker: this.checker,
       positionOf: (node) => this.positions.of(node),
@@ -4115,6 +4121,7 @@ export class Lowerer {
         const id = (type as { id?: number }).id;
         return id === undefined ? null : (this.degradedTypes.get(id)?.lenient ?? null);
       },
+      ...(shadow !== undefined ? { canonShadow: shadow } : {}),
       isErasing: () => this.erasingDepth > 0,
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
@@ -8719,6 +8726,7 @@ export class Lowerer {
     // reference are untouched — byte-stability holds.
     checkRequireBindingAccesses(this, functions);
     refuseX509DynValues(this, functions);
+    markInferredFactChecks(functions, this.program);
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -8735,6 +8743,13 @@ export class Lowerer {
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
             ...(this.usesNodeIsland ? { nodeIsland: this.nodeIslandRecord() } : {}),
             ...(this.declBoundary ? { declBoundary: true as const } : {}),
+            ...(shapeOverlayFileNames().length > 0
+              ? {
+                  inferredFactFiles: shapeOverlayFileNames()
+                    .map((file) => ({ file, pkg: npmStaticPackageOfPath(file) ?? "" }))
+                    .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0)),
+                }
+              : {}),
             ...(this.foreignElementKeys.size > 0
               ? { foreignElementKeys: [...this.foreignElementKeys].sort() }
               : {}),
