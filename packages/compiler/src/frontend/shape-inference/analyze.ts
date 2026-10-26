@@ -24,7 +24,13 @@
 import * as ts from "../ts7/adapter.js";
 import { isJsSourceFile } from "../program.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
-import { AtomTable, MODELED_GLOBALS, STRING_METHOD_RESULTS, type Atom } from "./domain.js";
+import {
+  AtomTable,
+  MODELED_GLOBALS,
+  OBJECT_PROTOTYPE_MEMBERS,
+  STRING_METHOD_RESULTS,
+  type Atom,
+} from "./domain.js";
 
 type Node = ts.Node;
 
@@ -36,6 +42,9 @@ export interface ValueNode {
   readonly onAtom: ((atom: Atom) => void)[];
   /** Every atom that arrives escapes. */
   escapeSink: string | null;
+  /** Widened (WIDEN_AT): the node holds ⊤, and every further atom that
+   * arrives escapes instead of flowing on. */
+  wide?: true;
 }
 
 export interface FunctionInfo {
@@ -77,6 +86,8 @@ export interface LiteralSite {
   readonly hasComputedKey: boolean;
   readonly spreads: number[];
   readonly inPackage: boolean;
+  /** The per-call-site clone that allocates it ("" outside clones). */
+  readonly ctx: string;
 }
 
 export interface Op {
@@ -186,6 +197,96 @@ const ARRAY_METHODS: ReadonlySet<string> = new Set([
   "with",
 ]);
 const MAX_STEPS = 20_000_000;
+
+/** The members String.prototype, Number.prototype and Boolean.prototype
+ * define (Node 24); Object.prototype's come from OBJECT_PROTOTYPE_MEMBERS. */
+const PRIMITIVE_MEMBERS: Readonly<Record<"string" | "number" | "boolean", ReadonlySet<string>>> = {
+  string: new Set([
+    "at",
+    "charAt",
+    "charCodeAt",
+    "codePointAt",
+    "concat",
+    "endsWith",
+    "includes",
+    "indexOf",
+    "isWellFormed",
+    "lastIndexOf",
+    "localeCompare",
+    "match",
+    "matchAll",
+    "normalize",
+    "padEnd",
+    "padStart",
+    "repeat",
+    "replace",
+    "replaceAll",
+    "search",
+    "slice",
+    "split",
+    "startsWith",
+    "substr",
+    "substring",
+    "toLocaleLowerCase",
+    "toLocaleUpperCase",
+    "toLowerCase",
+    "toString",
+    "toUpperCase",
+    "toWellFormed",
+    "trim",
+    "trimEnd",
+    "trimStart",
+    "trimLeft",
+    "trimRight",
+    "valueOf",
+    "anchor",
+    "big",
+    "blink",
+    "bold",
+    "fixed",
+    "fontcolor",
+    "fontsize",
+    "italics",
+    "link",
+    "small",
+    "strike",
+    "sub",
+    "sup",
+    "length",
+    "constructor",
+  ]),
+  number: new Set([
+    "toExponential",
+    "toFixed",
+    "toLocaleString",
+    "toPrecision",
+    "toString",
+    "valueOf",
+    "constructor",
+  ]),
+  boolean: new Set(["toString", "valueOf", "constructor"]),
+};
+
+/** Per-call-site clones of an init factory, at most (SCRIPTC_SHAPE_SITE_CLONES;
+ * 0 turns them off), and the deepest chain of nested clones. */
+const SITE_CLONES = Number(process.env["SCRIPTC_SHAPE_SITE_CLONES"] ?? 64);
+const SITE_CLONE_DEPTH = 4;
+
+/** The prototypes a string, number or boolean member read reaches. */
+const PRIMITIVE_PROTOTYPES: ReadonlySet<string> = new Set([
+  "String.prototype",
+  "Number.prototype",
+  "Boolean.prototype",
+  "Object.prototype",
+]);
+
+function isPrimitivePrototype(a: Atom): boolean {
+  return a.kind === "builtin" && a.receiver === undefined && PRIMITIVE_PROTOTYPES.has(a.path ?? "");
+}
+
+/** The most atoms a value node tracks before it widens to ⊤
+ * (SCRIPTC_SHAPE_WIDEN overrides). */
+const WIDEN_AT = Number(process.env["SCRIPTC_SHAPE_WIDEN"] ?? 32);
 
 function list<T extends Node>(arr: { readonly nodes: readonly T[] } | undefined): readonly T[] {
   return arr?.nodes ?? [];
@@ -335,6 +436,14 @@ class Analyzer {
   readonly escaped = new Map<Atom, string>();
   readonly topWriteNames = new Map<string, Node>();
   readonly topComputedWrites: Node[] = [];
+  /** Names a write may add to a primitive's prototype chain, or every name
+   * (`primitiveExtensionsAll`). A read of a name the chain lacks reads ⊤
+   * for them as well as undefined. */
+  private readonly primitiveExtensions = new Set<string>();
+  private primitiveExtensionsAll = false;
+  /** Reads of names a primitive's prototype chain lacks, by name; each
+   * takes ⊤ once a write may add the name. */
+  private readonly primitiveReads = new Map<string, number[]>();
   readonly fields = new Map<Atom, Map<string, number>>();
   readonly elements = new Map<Atom, number>();
   readonly top: Atom;
@@ -369,8 +478,9 @@ class Analyzer {
    * which may run after the call's own handling. */
   private readonly repeatingSites = new Set<Node>();
 
-  edgeFor(site: Node, callee: FunctionInfo): void {
-    const ctx = this.siteCtx.get(site);
+  edgeFor(site: Node, callee: FunctionInfo, args?: number[]): void {
+    const ctx =
+      (args !== undefined ? this.argsFrom.get(args) : undefined) ?? this.siteCtx.get(site);
     this.calls.push({
       caller: ctx?.caller ?? null,
       callee,
@@ -386,6 +496,49 @@ class Analyzer {
     this.top = this.atoms.intern("top", () => ({ kind: "top", label: "⊤" }));
   }
 
+  /** SCRIPTC_DEBUG_SHAPES_PROFILE: where the solver's steps go. */
+  private profileReport(): void {
+    const byNodeLabel = new Map<string, number>();
+    let atomsTotal = 0;
+    let maxAtoms = 0;
+    let onAtoms = 0;
+    let succ = 0;
+    for (const n of this.nodes) {
+      atomsTotal += n.atoms.size;
+      maxAtoms = Math.max(maxAtoms, n.atoms.size);
+      onAtoms += n.onAtom.length;
+      succ += n.succ.size;
+    }
+    const kinds = new Map<string, number>();
+    for (const a of this.atoms.atoms) kinds.set(a.kind, (kinds.get(a.kind) ?? 0) + 1);
+    const ctxPerFn = new Map<Node, number>();
+    for (const info of this.functions.values())
+      ctxPerFn.set(info.node, (ctxPerFn.get(info.node) ?? 0) + 1);
+    const topFns = [...ctxPerFn.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15);
+    const lines = [
+      `nodes ${this.nodes.length} atoms ${this.atoms.atoms.length} (${[...kinds].map(([k, v]) => `${k} ${v}`).join(", ")})`,
+      `solve ${this.solveMs.toFixed(0)} ms (nested walks included) checker ${this.checkerMs.toFixed(0)} ms in ${this.checkerCalls} calls`,
+      `node-atom pairs ${atomsTotal} max ${maxAtoms} edges ${succ} listeners ${onAtoms} functions ${this.functions.size} steps ${this.steps}`,
+      ...topFns.map(([n, c]) => `  ${c} contexts: ${locLabel(n)}`),
+      ...[...this.popsByAtom.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 15)
+        .map(([a, c]) => `  ${c} pops: atom ${a.kind} ${a.label}`),
+      ...[...this.popsByNode.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(
+          ([id, c]) =>
+            `  ${c} pops: node ${id} ${this.nodeLabel.get(id) ?? ""} atoms ${this.nodes[id]!.atoms.size} succ ${this.nodes[id]!.succ.size} listeners ${this.nodes[id]!.onAtom.length}`,
+        ),
+    ];
+    void byNodeLabel;
+    process.stderr.write(lines.map((l) => `[shapes-profile] ${l}\n`).join(""));
+  }
+  private readonly profiling = process.env["SCRIPTC_DEBUG_SHAPES_PROFILE"] !== undefined;
+  private readonly popsByAtom = new Map<Atom, number>();
+  private readonly popsByNode = new Map<number, number>();
+
   run(): ShapeAnalysis {
     for (const sf of this.program.getImplementationSourceFiles()) {
       const name = sf.fileName.split("\\").join("/");
@@ -397,6 +550,7 @@ class Analyzer {
     for (const sf of this.files) this.checker.prefetchSourceFile(sf);
     for (const sf of this.files) this.moduleBody(sf);
     this.finish();
+    if (this.profiling) this.profileReport();
     return {
       atoms: this.atoms,
       nodes: this.nodes,
@@ -444,7 +598,22 @@ class Analyzer {
   add(node: number, atom: Atom): void {
     const n = this.nodes[node]!;
     if (n.atoms.has(atom)) return;
+    if (n.wide === true) {
+      this.escape(atom, "a value set too large to track");
+      return;
+    }
     n.atoms.add(atom);
+    // Widening: a value set this large is merged code (a utility every
+    // value flows through). It becomes ⊤: its values escape, so the facts
+    // stay sound, and the solver stops multiplying constraints per atom.
+    if (n.atoms.size > WIDEN_AT) {
+      n.wide = true;
+      for (const a of n.atoms) this.escape(a, "a value set too large to track");
+      if (!n.atoms.has(this.top)) {
+        n.atoms.add(this.top);
+        this.worklist.push([node, this.top]);
+      }
+    }
     if (this.traceTop && atom === this.top && !this.topCause.has(node))
       this.topCause.set(
         node,
@@ -593,7 +762,17 @@ class Analyzer {
     return this.atoms.intern(key, () => ({ kind: "builtin", label: path, path, receiver }));
   }
 
+  private solveMs = 0;
   solve(): void {
+    const started = this.profiling ? performance.now() : 0;
+    try {
+      this.solveLoop();
+    } finally {
+      if (this.profiling) this.solveMs += performance.now() - started;
+    }
+  }
+
+  private solveLoop(): void {
     while (this.worklist.length > 0) {
       if (++this.steps > MAX_STEPS) {
         this.budgetExceeded = true;
@@ -601,6 +780,10 @@ class Analyzer {
       }
       const [id, atom] = this.worklist.pop()!;
       const n = this.nodes[id]!;
+      if (this.profiling) {
+        this.popsByAtom.set(atom, (this.popsByAtom.get(atom) ?? 0) + 1);
+        this.popsByNode.set(id, (this.popsByNode.get(id) ?? 0) + 1);
+      }
       this.cause = id;
       for (const s of n.succ) this.add(s, atom);
       this.cause = null;
@@ -654,6 +837,8 @@ class Analyzer {
 
   escape(atom: Atom, reason: string): void {
     if (atom.kind === "prim" || atom.kind === "top") return;
+    // Unknown code may add any member to a primitive's prototype.
+    if (isPrimitivePrototype(atom)) this.extendPrimitives(null);
     if (atom.kind === "builtin" && atom.receiver === undefined) return;
     if (this.escaped.has(atom)) return;
     this.escaped.set(atom, reason);
@@ -705,6 +890,8 @@ class Analyzer {
 
   /** Property names that untyped code writes on receivers that may be ⊤ (census). */
   noteTopWrite(name: string | null, node: Node): void {
+    // ⊤ may be a primitive's prototype.
+    this.extendPrimitives(name);
     if (name === null) {
       const first = this.topComputedWrites.length === 0;
       this.topComputedWrites.push(node);
@@ -724,6 +911,43 @@ class Analyzer {
       const id = this.fields.get(atom)?.get(name);
       if (id !== undefined) this.add(id, this.top);
     }
+  }
+
+  /** A read of a name a primitive's prototype chain lacks: ⊤ as well, now
+   * or once a write may add the name there. */
+  primitiveRead(name: string, dst: number): void {
+    if (this.primitiveExtensionsAll || this.primitiveExtensions.has(name)) {
+      this.add(dst, this.top);
+      return;
+    }
+    const reads = this.primitiveReads.get(name);
+    if (reads === undefined) this.primitiveReads.set(name, [dst]);
+    else reads.push(dst);
+  }
+
+  /** A write that may add `name` (any name when null) to String.prototype,
+   * Number.prototype, Boolean.prototype or Object.prototype. */
+  extendPrimitives(name: string | null): void {
+    if (this.primitiveExtensionsAll) return;
+    if (name === null || name === "__proto__") {
+      this.primitiveExtensionsAll = true;
+      for (const reads of this.primitiveReads.values())
+        for (const dst of reads) this.add(dst, this.top);
+      this.primitiveReads.clear();
+      return;
+    }
+    if (this.primitiveExtensions.has(name)) return;
+    this.primitiveExtensions.add(name);
+    for (const dst of this.primitiveReads.get(name) ?? []) this.add(dst, this.top);
+    this.primitiveReads.delete(name);
+  }
+
+  /** An operation that may add, replace or remove `name` (any name when
+   * null) on its receiver: a primitive's prototype, or ⊤, which may be one. */
+  prototypeWrite(recv: number, name: string | null): void {
+    this.on(recv, (t) => {
+      if (t.kind === "top" || isPrimitivePrototype(t)) this.extendPrimitives(name);
+    });
   }
 
   // ---- classes ---------------------------------------------------------------
@@ -816,7 +1040,22 @@ class Analyzer {
 
   // ---- symbols -----------------------------------------------------------------
 
+  private checkerMs = 0;
+  private checkerCalls = 0;
+  private readonly resolved = new Map<Node, Node | undefined>();
   resolve(id: Node): Node | undefined {
+    if (this.resolved.has(id)) return this.resolved.get(id);
+    const started = this.profiling ? performance.now() : 0;
+    const out = this.resolveUncached(id);
+    if (this.profiling) {
+      this.checkerMs += performance.now() - started;
+      this.checkerCalls++;
+    }
+    this.resolved.set(id, out);
+    return out;
+  }
+
+  private resolveUncached(id: Node): Node | undefined {
     let sym = this.checker.getSymbolAtLocation(id);
     if (sym === undefined) return undefined;
     if (sym.flags & ts.SymbolFlags.Alias) {
@@ -885,7 +1124,14 @@ class Analyzer {
 
   // ---- functions ---------------------------------------------------------------
 
-  functionInfo(node: Node, ownerClass: Node | null, ctxArg = ""): FunctionInfo {
+  /** `lexicalThis`: an arrow's receiver node, for a clone walked away from
+   * the function that encloses the arrow. */
+  functionInfo(
+    node: Node,
+    ownerClass: Node | null,
+    ctxArg = "",
+    lexicalThis: number | null = null,
+  ): FunctionInfo {
     // A nested closure walked inside a clone shares the clone's context.
     const inherit =
       ctxArg === "" &&
@@ -925,7 +1171,12 @@ class Analyzer {
       label: ctx === "" ? label : `${label} [${this.ctxLabel(ctx)}]`,
       params,
       rest,
-      thisNode: isArrow && this.currentFn !== null ? this.currentFn.thisNode : this.newNode(),
+      thisNode:
+        isArrow && lexicalThis !== null
+          ? lexicalThis
+          : isArrow && this.currentFn !== null
+            ? this.currentFn.thisNode
+            : this.newNode(),
       ret: this.newNode(),
       isArrow,
       isAsync: mods.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword),
@@ -1134,7 +1385,9 @@ class Analyzer {
     spread: boolean,
     site: Node,
   ): void {
-    const key = `ctor:${this.nodeKey(decl)}:${instance.id}:${this.nodeKey(site)}`;
+    // The arguments' nodes too: one `new` site walked in several contexts
+    // (receiver classes, per-site clones) passes each context's values.
+    const key = `ctor:${this.nodeKey(decl)}:${instance.id}:${this.nodeKey(site)}:${args.join(",")}`;
     if (this.boundCalls.has(key)) return;
     this.boundCalls.add(key);
     const entry = this.ensureClass(decl);
@@ -1147,7 +1400,7 @@ class Analyzer {
       this.activate(info);
       this.add(info.thisNode, instance);
       this.bindArgs(info, args, spread);
-      this.edgeFor(site, info);
+      this.edgeFor(site, info, args);
       return;
     }
     const base = this.baseClass(decl);
@@ -1183,7 +1436,7 @@ class Analyzer {
 
   /** Call of a function atom with a receiver node. */
   callFunction(
-    info: FunctionInfo,
+    callee: FunctionInfo,
     thisNode: number | null,
     args: number[],
     spread: boolean,
@@ -1192,7 +1445,7 @@ class Analyzer {
   ): void {
     // `() => Object.create(null)` helpers: each call site gets its own
     // dictionary, as if the helper were inlined.
-    if (this.isFactory(info.node)) {
+    if (this.isFactory(callee.node)) {
       const d = this.atoms.intern(`dict:${this.nodeKey(site)}`, () => ({
         kind: "dictionary",
         label: `Object.create@${this.loc(site)}`,
@@ -1201,6 +1454,7 @@ class Analyzer {
       this.add(dst, d);
       return;
     }
+    const info = this.siteClone(callee, site, args) ?? callee;
     this.activate(info);
     const fnNode = info.node;
     const key = `call:${info.ctx}|${this.nodeKey(fnNode)}:${this.nodeKey(site)}:${thisNode ?? -1}:${dst}`;
@@ -1215,7 +1469,74 @@ class Analyzer {
     } else if (info.isGenerator) {
       this.add(dst, this.top);
     } else this.edge(info.ret, dst);
-    this.edgeFor(site, info);
+    this.edgeFor(site, info, args);
+  }
+
+  /** Per-call-site clones of init factories: a function called from
+   * module initialization (top-level code outside loops, or another such
+   * clone) is analyzed once per call site, so the objects it creates are
+   * one allocation per site (`z.string()` and `z.object(…)` schemas,
+   * valibot's schema literals) instead of one per function. Clones run
+   * at most once, which makes their objects singletons. */
+  private readonly siteClones = new Map<Node, number>();
+  /** The site-clone context a literal at `node` is allocated in, or "". */
+  private siteCloneCtx(node: Node): string {
+    const root = this.ctxRoot;
+    if (!this.ctx.includes("@S") || root === null) return "";
+    const inside =
+      node.getSourceFile() === root.getSourceFile() && node.pos >= root.pos && node.end <= root.end;
+    return inside ? this.ctx : "";
+  }
+  private siteClone(info: FunctionInfo, site: Node, args: number[]): FunctionInfo | null {
+    if (SITE_CLONES === 0 || info.isGenerator || ts.isSourceFile(info.node)) return null;
+    if (ts.isClassLikeDeclaration(info.node)) return null;
+    // A function walked in an enclosing clone's or receiver's context reads
+    // and writes that context's bindings of the variables it captures. A
+    // clone is its own context root, so it would resolve them in the
+    // default context instead, and their writes would be lost.
+    if (info.root !== null && info.root !== info.node) return null;
+    // A class's constructor and methods run in receiver contexts of their
+    // own, rooted at each member: inside a clone they too would resolve the
+    // function's bindings in the default context.
+    if (this.declaresClass(info.node)) return null;
+    const sc = this.argsFrom.get(args);
+    if (sc === undefined || sc.inLoop || this.forceLoop || this.repeatingSites.has(site))
+      return null;
+    const caller = sc.caller;
+    if (caller === null) return null;
+    // The clone itself, not a closure created inside it (which inherits
+    // its context but may run any number of times).
+    const callerInit =
+      ts.isSourceFile(caller.node) || (caller.ctx.includes("@S") && caller.root === caller.node);
+    if (!callerInit) return null;
+    // A clone inside a clone keys on the whole chain of sites.
+    const chain = caller.ctx.includes("@S") ? caller.ctx.slice(caller.ctx.indexOf("@S")) : "";
+    if (chain.split("@S").length > SITE_CLONE_DEPTH) return null;
+    const ctx = `${info.ctx}${chain}@S${this.nodeKey(site)}`;
+    const existing = this.functions.get(`${ctx}|${this.nodeKey(info.node)}`);
+    if (existing !== undefined) return existing;
+    const count = this.siteClones.get(info.node) ?? 0;
+    if (count >= SITE_CLONES) return null;
+    this.siteClones.set(info.node, count + 1);
+    // The clone keeps the function's receiver: an arrow's lexical `this`,
+    // and whatever reaches a function's own `this`, such as the receiver
+    // `bind` supplies.
+    const clone = this.functionInfo(info.node, info.ownerClass, ctx, info.thisNode);
+    if (!clone.isArrow) this.edge(info.thisNode, clone.thisNode);
+    return clone;
+  }
+
+  private readonly classDeclarers = new Map<Node, boolean>();
+  /** Whether a class declaration or expression is anywhere inside `node`. */
+  private declaresClass(node: Node): boolean {
+    let r = this.classDeclarers.get(node);
+    if (r === undefined) {
+      const visit = (n: Node): true | undefined =>
+        ts.isClassLikeDeclaration(n) ? true : ts.forEachChild(n, visit);
+      r = ts.forEachChild(node, visit) === true;
+      this.classDeclarers.set(node, r);
+    }
+    return r;
   }
 
   private readonly factories = new Map<Node, boolean>();
@@ -1575,6 +1896,7 @@ class Analyzer {
         const recv = this.expr(target.expression);
         const name = ts.isPropertyAccessExpression(target) ? target.name.text : null;
         this.ops.push({ kind: "delete", recv, name, node: e });
+        this.prototypeWrite(recv, name);
       }
       return this.constNode(this.prim("boolean"));
     }
@@ -1867,11 +2189,11 @@ class Analyzer {
         hasProto = true;
       if (!keys.includes(key)) keys.push(key);
     }
-    const atom = this.atoms.intern(`obj:${this.nodeKey(e)}`, () => ({
-      kind: "object",
-      label: label(),
-      node: e,
-    }));
+    const sctx = this.siteCloneCtx(e);
+    const atom = this.atoms.intern(
+      sctx === "" ? `obj:${this.nodeKey(e)}` : `obj:${sctx}|${this.nodeKey(e)}`,
+      () => ({ kind: "object", label: label(), node: e, ...(sctx === "" ? {} : { ctx: sctx }) }),
+    );
     const n = this.newNode();
     this.add(n, atom);
     for (const p of list(e.properties)) {
@@ -1921,6 +2243,7 @@ class Analyzer {
         hasComputedKey,
         spreads,
         inPackage,
+        ctx: sctx,
       });
     return n;
   }
@@ -2059,11 +2382,16 @@ class Analyzer {
   }
 
   arrayLiteral(e: ts.ArrayLiteralExpression): number {
-    const atom = this.atoms.intern(`arr:${this.nodeKey(e)}`, () => ({
-      kind: "array",
-      label: `[]@${this.loc(e)}`,
-      node: e,
-    }));
+    const sctx = this.siteCloneCtx(e);
+    const atom = this.atoms.intern(
+      sctx === "" ? `arr:${this.nodeKey(e)}` : `arr:${sctx}|${this.nodeKey(e)}`,
+      () => ({
+        kind: "array",
+        label: `[]@${this.loc(e)}`,
+        node: e,
+        ...(sctx === "" ? {} : { ctx: sctx }),
+      }),
+    );
     const n = this.newNode();
     this.add(n, atom);
     const el = this.element(atom);
@@ -2088,6 +2416,7 @@ class Analyzer {
         hasComputedKey: false,
         spreads: [],
         inPackage: isPackageJsFile(e.getSourceFile()),
+        ctx: sctx,
       });
     return n;
   }
@@ -2253,8 +2582,21 @@ class Analyzer {
         return;
       case "prim":
         if (name === "length" && a.label === "string") this.add(dst, this.prim("number"));
-        else if (a.label === "string" || a.label === "number" || a.label === "boolean")
-          this.add(dst, this.builtin(`${a.label}.${name}`, a));
+        else if (a.label === "string" && /^\d+$/.test(name)) {
+          // An index past the end reads the prototype chain.
+          this.add(dst, this.prim("string"));
+          this.add(dst, this.prim("undefined"));
+          this.primitiveRead(name, dst);
+        } else if (a.label === "string" || a.label === "number" || a.label === "boolean") {
+          // A name the primitive's prototype chain lacks reads undefined,
+          // unless the program may add it there.
+          if (PRIMITIVE_MEMBERS[a.label].has(name) || OBJECT_PROTOTYPE_MEMBERS.has(name))
+            this.add(dst, this.builtin(`${a.label}.${name}`, a));
+          else {
+            this.add(dst, this.prim("undefined"));
+            this.primitiveRead(name, dst);
+          }
+        }
         return;
       case "instance": {
         const decl = a.node!;
@@ -2417,6 +2759,7 @@ class Analyzer {
     } else if (
       a.receiver === undefined &&
       MODELED_GLOBALS.has(path.split(".")[0]!) &&
+      !path.endsWith(".instance") &&
       path.split(".").length < 4
     )
       this.add(dst, this.builtin(`${path}.${name}`));
@@ -2456,6 +2799,7 @@ class Analyzer {
         case "prim":
           return;
         default:
+          if (isPrimitivePrototype(a)) this.extendPrimitives(name);
           this.sink(value, `stored into ${a.label} at ${this.loc(site)}`);
       }
     });
@@ -2523,6 +2867,7 @@ class Analyzer {
           return;
         default:
           // As a store under a name: a builtin, promise or collection keeps it where it isn't tracked.
+          if (isPrimitivePrototype(a)) this.extendPrimitives(null);
           this.sink(value, `stored into ${a.label}[k] at ${this.loc(site)}`);
       }
     });
@@ -2582,8 +2927,20 @@ class Analyzer {
       }
       out.push(this.expr(a));
     }
+    // The walk context of this call (one argument list per call site and
+    // context): calls fire during solving, after the walk moved on.
+    this.argsFrom.set(out, {
+      caller: this.currentFn,
+      inLoop: this.loopDepth > 0 || this.forceLoop,
+    });
     return { args: out, spread };
   }
+
+  /** Per argument list (args()), the calling function and whether the call
+   * is in a loop, in the context the call was walked in. siteCtx keeps
+   * the first context per syntax node, which a site walked in several
+   * contexts (receiver classes, per-site clones) does not determine. */
+  private readonly argsFrom = new Map<number[], { caller: FunctionInfo | null; inLoop: boolean }>();
 
   call(e: ts.CallExpression): number {
     this.noteSite(e);
@@ -2732,7 +3089,7 @@ class Analyzer {
             this.on(info.ret, (r) => {
               if (r.kind !== "prim") this.add(dst, r);
             });
-            this.edgeFor(e, info);
+            this.edgeFor(e, info, args);
           }
           return;
         }
@@ -2978,8 +3335,10 @@ class Analyzer {
       if (path.startsWith("regexp.")) {
         if (method === "test") prim("boolean");
         else if (method === "exec") {
+          // The match and its capture groups; a group that did not take part is undefined.
           const out = this.syntheticArray(site, "exec");
           this.add(this.element(out), this.prim("string"));
+          this.add(this.element(out), this.prim("undefined"));
           this.add(dst, out);
           prim("null");
         } else escapeAll();
@@ -3150,6 +3509,7 @@ class Analyzer {
         return;
       case "Object.assign": {
         this.ops.push({ kind: "assign", recv: arg(0), name: null, node: site });
+        this.prototypeWrite(arg(0), null);
         this.on(arg(0), (t) => {
           for (const s of args.slice(1)) this.copyFields(s, t, site);
           if (t.kind === "top")
@@ -3163,6 +3523,10 @@ class Analyzer {
       case "Object.defineProperties":
       case "Reflect.defineProperty":
         this.ops.push({ kind: "defineProperty", recv: arg(0), name: null, node: site });
+        this.prototypeWrite(
+          arg(0),
+          path === "Object.defineProperties" ? null : literalKey(site, 1),
+        );
         this.sink(arg(2), `property descriptor at ${this.loc(site)}`);
         this.sink(arg(1), `property descriptor at ${this.loc(site)}`);
         this.edge(arg(0), dst);
@@ -3170,6 +3534,7 @@ class Analyzer {
       case "Object.setPrototypeOf":
       case "Reflect.setPrototypeOf":
         this.ops.push({ kind: "setPrototypeOf", recv: arg(0), name: null, node: site });
+        this.prototypeWrite(arg(0), null);
         this.sink(arg(1), `prototype at ${this.loc(site)}`);
         this.edge(arg(0), dst);
         return;
@@ -3268,12 +3633,9 @@ class Analyzer {
         return;
       }
       case "Reflect.deleteProperty": {
-        const key = ts.isCallExpression(site) ? unparen(list(site.arguments)[1]!) : undefined;
-        const name =
-          key !== undefined && (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key))
-            ? key.text
-            : null;
+        const name = literalKey(site, 1);
         this.ops.push({ kind: "delete", recv: arg(0), name, node: site });
+        this.prototypeWrite(arg(0), name);
         prim("boolean");
         return;
       }
@@ -3429,6 +3791,17 @@ interface PendingIf {
   readonly env: WalkEnv;
   thenDone: boolean;
   elseDone: boolean;
+}
+
+/** The string literal a call passes as argument `i`, or null. */
+function literalKey(
+  site: ts.CallExpression | ts.TaggedTemplateExpression,
+  i: number,
+): string | null {
+  const key = ts.isCallExpression(site) ? list(site.arguments)[i] : undefined;
+  if (key === undefined) return null;
+  const k = unparen(key);
+  return ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k) ? k.text : null;
 }
 
 /** Whether a value of the atom may be truthy (only `null`, `undefined` and

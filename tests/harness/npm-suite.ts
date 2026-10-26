@@ -114,6 +114,16 @@ const KNOWN: Record<string, Known> = {
   "workspace-unclean": { build: "SC2013" },
 };
 
+/** Where the overlay changes how a case KNOWN refuses: the operation it
+ * fails at on an argv list that fails in both builds. */
+const OVERLAY_KNOWN: Record<string, Known> = {
+  // `--help` reaches an unsupported operation in both builds; with the
+  // overlay it fails at a checked conversion of an option value first
+  // (results/design-shape-inference/NOTES.md, open item).
+  "commander-calc": { run: "expected number at $, got undefined", argvs: [["--help"]] },
+  "commander-calc-async": { run: "expected number at $, got undefined", argvs: [["--help"]] },
+};
+
 /** Per-case timeouts past the default 120 s: the undici cases compile the
  * built-in undici implementation's module graph, the zod 3 cases (zod3,
  * zod3-adoption, zod3-boundary, zod3-infer) compile zod 3's 3,700-line
@@ -239,7 +249,7 @@ export function defineNpmSuite(options: { label: string; shapeOverlay?: boolean 
 
   describe(`${label} (${cases.length} programs${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {
     for (const c of cases) {
-      const known = KNOWN[c.name];
+      const known = (shapeOverlay === true ? OVERLAY_KNOWN[c.name] : undefined) ?? KNOWN[c.name];
       if (known !== undefined && "divergence" in known) {
         test.fails(`${c.name} (diverges: ${known.divergence})`, async () => {
           const built = await build(c.entry, shapeOverlay);

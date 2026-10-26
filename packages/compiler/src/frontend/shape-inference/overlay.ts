@@ -166,7 +166,6 @@ export function planShapeOverlay(
     const typeOf = (atoms: ReadonlySet<Atom>, inner: boolean, depth: number): string | null => {
       if (atoms.size === 0) return inner ? "any" : null;
       const arms = new Set<string>();
-      let objects = 0;
       // Every array arm becomes one Array<…> of the joined element values.
       const elements = new Set<Atom>();
       let hasArray = false;
@@ -189,17 +188,14 @@ export function planShapeOverlay(
             break;
           case "instance":
             t = a.node !== undefined ? className(a.node) : null;
-            objects++;
             break;
           case "object": {
-            objects++;
             const v = pSites.get(a);
             if (v === undefined || depth >= 4 || !siteKeys.has(a)) return inner ? "any" : null;
             recordSites.push(a);
             continue;
           }
           case "array": {
-            objects++;
             if (analysis.escaped.has(a) || (siteVerdicts.has(a) && !pSites.has(a)))
               return inner ? "any" : null;
             // Only arrays the program writes as literals: a builtin's array
@@ -246,7 +242,9 @@ export function planShapeOverlay(
       // A promise beside other values cannot cross into untyped code
       // (maybe-promise unions stay typed-only), so it stays untyped here.
       if (hasPromise) return inner ? "any" : null;
-      if (objects > MAX_ARMS) return inner ? "any" : null;
+      // Arms, not atoms: per-site allocations of one record shape are one
+      // typedef.
+      if (arms.size > MAX_ARMS) return inner ? "any" : null;
       if (arms.has("any")) return inner ? "any" : null;
       return [...arms].join(" | ");
     };
