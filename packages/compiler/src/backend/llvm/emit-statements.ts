@@ -1662,7 +1662,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.line(`call void @scr_async_gen_return_awaits()`);
       }
       if (emitter.currentAsyncGenerator && s.awaited !== true && emitter.finallyStack.length > 0) {
-        if (emitter.wasi) emitter.emitWasiSuspend(null);
+        if (emitter.coroAwait) emitter.emitCoroAwait(null);
         else {
           emitter.declare(`declare void @scr_await_hop()`);
           B.line(`call void @scr_await_hop()`);

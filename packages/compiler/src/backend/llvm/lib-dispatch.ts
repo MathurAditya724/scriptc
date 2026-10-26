@@ -218,7 +218,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitCoroAwait(null);
     return { name: "", type: e.type };
   }
-  if (host.wasi && e.fn === "async.awaitDyn") {
+  if (host.coroAwait && e.fn === "async.awaitDyn") {
     const value = host.emitExpr(e.args[0]!);
     host.declare(`declare ptr @scr_dyn_promise_of(ptr)`);
     const promise = B.tmp();
@@ -230,15 +230,16 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${isPromise} = icmp ne ptr ${promise}, null`);
     B.condBr(isPromise, wait, hop);
     B.startBlock(wait);
-    host.emitWasiSuspend(promise);
+    host.emitCoroAwait(promise);
     B.br(ready);
     B.startBlock(hop);
-    host.emitWasiSuspend(null);
+    host.emitCoroAwait(null);
     B.br(ready);
     B.startBlock(ready);
-    host.declare(`declare ptr @scr_await_dyn_value_settled(ptr)`);
+    const extract = host.wasi ? "scr_await_dyn_value_settled" : "scr_coro_await_dyn_value";
+    host.declare(`declare ptr @${extract}(ptr)`);
     const result = B.tmp();
-    B.line(`${result} = call ptr @scr_await_dyn_value_settled(ptr ${value.name})`);
+    B.line(`${result} = call ptr @${extract}(ptr ${value.name})`);
     const output = host.own({ name: result, type: e.type });
     host.emitPendingCheck();
     return output;
