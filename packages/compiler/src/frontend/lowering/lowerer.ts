@@ -3788,6 +3788,9 @@ export class Lowerer {
     number,
     { lenient: IrType | null; code: string; reason: string }
   >();
+  /** One frame per unit a commit point may retry: the pushed-down
+   * (partial) degraded types its lowering mapped (withPartialHits). */
+  readonly partialHits: Set<number>[] = [];
   /** The dynamic slots the commit points created: one SC6104 each. */
   readonly dynamicSlots: DynamicSlot[] = [];
   /** Declarations retryDeferred registered. */
@@ -3950,6 +3953,7 @@ export class Lowerer {
           degraded.lenient = DYN;
           degraded.lenient = this.lenientType(type);
         }
+        if (degraded.lenient.kind !== "dyn") this.partialHits[this.partialHits.length - 1]?.add(id);
         return degraded.lenient;
       },
       isErasing: () => this.erasingDepth > 0,
@@ -9572,16 +9576,17 @@ export class Lowerer {
     const slots: DynamicSlot[] = [];
     for (let attempt = 0; ; attempt++) {
       const mark = this.diags.length;
+      const hits = new Set<number>();
       try {
-        const result = lower();
+        const result = this.withPartialHits(hits, lower);
         for (const slot of slots) this.noteDynamicSlot(slot);
         return result;
       } catch (e) {
         if (!(e instanceof PoisonError)) throw e;
         if (attempt >= MAX_DECLARATION_RETRIES) return null;
         const slot = this.degradeAtCommit(e, DECLARATION_SLOTS);
-        if (slot === null) return null;
-        slots.push(slot);
+        if (slot === null && !this.widenPartials(hits)) return null;
+        if (slot !== null) slots.push(slot);
         this.dropAttemptDiags(mark);
       }
     }
@@ -9612,6 +9617,34 @@ export class Lowerer {
     }
     this.degradedTypes.set(id, { lenient: this.lenientType(type), code, reason });
     return true;
+  }
+
+  /** Runs a unit a commit point may retry, recording the pushed-down
+   * types it maps; the frame's hits also count for the enclosing unit. */
+  withPartialHits<T>(hits: Set<number>, run: () => T): T {
+    this.partialHits.push(hits);
+    try {
+      return run();
+    } finally {
+      this.partialHits.pop();
+      const outer = this.partialHits[this.partialHits.length - 1];
+      if (outer !== undefined) for (const id of hits) outer.add(id);
+    }
+  }
+
+  /** Push-down is a refinement, never a new failure: a unit that still
+   * fails after mapping pushed-down types falls back to the whole-slot
+   * checked dynamic for them. True when some type widened (retry). */
+  widenPartials(hits: ReadonlySet<number>): boolean {
+    if (this.tierMode !== "auto" || this.diagSink !== null) return false;
+    let widened = false;
+    for (const id of hits) {
+      const degraded = this.degradedTypes.get(id);
+      if (degraded === undefined || degraded.lenient?.kind === "dyn") continue;
+      degraded.lenient = DYN;
+      widened = true;
+    }
+    return widened;
   }
 
   /** Records a dynamic slot whose unit lowered with it (one per site). */
@@ -12654,9 +12687,19 @@ export class Lowerer {
       this.deferredDiags.delete(symbol);
       const lifted = this.liftDynFieldPolicy;
       this.liftDynFieldPolicy = true;
-      let registered: boolean;
+      // Pushed-down types that did not help widen to the whole slot, and the
+      // collection runs again (a few times at most).
+      let registered = false;
       try {
-        registered = this.collectDeferring(collector.symbolOf, collector.collect) === null;
+        for (let widen = 0; widen < 4; widen++) {
+          const hits = new Set<number>();
+          registered =
+            this.withPartialHits(hits, () =>
+              this.collectDeferring(collector.symbolOf, collector.collect),
+            ) === null;
+          if (registered || !this.widenPartials(hits)) break;
+          this.deferredDiags.delete(symbol);
+        }
       } finally {
         this.liftDynFieldPolicy = lifted;
       }

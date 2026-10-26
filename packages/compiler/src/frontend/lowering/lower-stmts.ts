@@ -757,8 +757,11 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const pendingSlots: DynamicSlot[] = [];
       try {
         for (let attempt = 0; ; attempt++) {
+          const hits = new Set<number>();
           try {
-            lowerOneStatement(lowerer, stmt, out, usingMarkers, diagsBefore, deferFences);
+            lowerer.withPartialHits(hits, () =>
+              lowerOneStatement(lowerer, stmt, out, usingMarkers, diagsBefore, deferFences),
+            );
             break;
           } catch (e) {
             // Localized failure's statement commit point (design §3.3): a
@@ -768,7 +771,14 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             // no retry runs) can retry here too.
             if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw e;
             const slot = lowerer.degradeAtCommit(e, STATEMENT_SLOTS);
-            if (slot === null && !lowerer.reopenFlushedAtCommit(diagsBefore)) throw e;
+            // Pushed-down types the failed attempt mapped widen to the
+            // whole slot before anything else is given up.
+            if (
+              slot === null &&
+              !lowerer.reopenFlushedAtCommit(diagsBefore) &&
+              !lowerer.widenPartials(hits)
+            )
+              throw e;
             // A failed attempt adds nothing to `out` but the TDZ boxes
             // forward captures declared (they stay declared), so the
             // retry appends after them.
