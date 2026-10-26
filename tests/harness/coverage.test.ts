@@ -431,8 +431,8 @@ test("--explain-dynamic attributes each refusal to the unit the dynamic tier wou
 test("--explain-dynamic lists the type failures localized failure would turn into dynamic slots", async () => {
   const { coverage } = analyze(fixture("localized-failure.ts"), { explainDynamic: true });
   const report = coverage.tiers!.localizedFailure;
-  expect(report.errors).toBe(11);
-  expect(report.typeFailures).toEqual({ degradable: 4, refused: 1 });
+  expect(report.errors).toBe(14);
+  expect(report.typeFailures).toEqual({ degradable: 5, refused: 1 });
   expect(
     report.slots.map((s) => [
       s.stage,
@@ -444,13 +444,15 @@ test("--explain-dynamic lists the type failures localized failure would turn int
     ]),
   ).toEqual([
     ["L2", "field", "tools", "component", "class Session", 2],
+    // The derived class's rejection and its construction.
+    ["L2", "field", "state", "dyn-field-policy", "class Base", 2],
     ["L2", "param", "progress", "component", "function listAll", 1],
     ["L2", "field", "state", "dyn-field-policy", "class Holder", 1],
     ["L1", "local", "callbacks", "component", "statement", 1],
   ]);
   // The WeakRef field stays refused, so its class and the construction
   // that uses it stay errors.
-  expect(report.clearedThroughL2).toBe(9);
+  expect(report.clearedThroughL2).toBe(12);
   expect(report.remainingByCode).toEqual({ SC1090: 1, SC2020: 1 });
   const relative = JSON.parse(
     JSON.stringify(coverage.tiers).replaceAll(repoRoot + "/", ""),
