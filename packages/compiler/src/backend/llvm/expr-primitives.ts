@@ -367,8 +367,8 @@ export function emitOperatorExpr(
               `${result} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} nsw i64 ${left}, ${right}`,
             );
             const number = integerNumber(host, result, range, e.type);
-            const uint32 = emitWrappingSum(host, e, l, r, li, ri);
-            return uint32 === undefined ? number : { ...number, uint32 };
+            const wrapped = emitWrappingSum(host, e, l, r, li, ri);
+            return wrapped === undefined ? number : { ...number, ...wrapped };
           }
           if (e.op === "%" && li.range.min >= 0 && ri.range.min > 0) {
             const range = { min: 0, max: Math.min(li.range.max, ri.range.max - 1) };
@@ -411,12 +411,12 @@ export function emitOperatorExpr(
           return { name: emitPowerOfTwoQuotient(host, l.name, r.name), type: e.type };
         if (arith[e.op] !== undefined) {
           B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
-          const uint32 = emitWrappingSum(host, e, l, r, li, ri);
+          const wrapped = emitWrappingSum(host, e, l, r, li, ri);
           // The exact integer beside the double, for index consumers.
           const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
-          if (uint32 !== undefined || wideInteger) {
+          if (wrapped !== undefined || wideInteger) {
             const value: LlValue = { name: t, type: e.type };
-            if (uint32 !== undefined) value.uint32 = uint32;
+            if (wrapped !== undefined) Object.assign(value, wrapped);
             if (wideInteger) value.wideInteger = wideInteger;
             return value;
           }
