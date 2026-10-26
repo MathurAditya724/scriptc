@@ -7,13 +7,27 @@ export { tsgoPath } from "./ts7/session-path.js";
 
 const require = createRequire(import.meta.url);
 let installedDeclarationRoot: string | null = null;
+/** The paths `declarationPath` answered, by name, for the current root.
+ * Lowering asks for them once per mapped type (isFallbackDtsPath), and each
+ * answer without an installed root costs a package resolution. */
+const declarationPaths = new Map<string, string>();
 
 /** A native distribution supplies its relocatable declaration directory. */
 export function setDeclarationRoot(root: string): void {
   installedDeclarationRoot = root;
+  declarationPaths.clear();
 }
 
 function declarationPath(name: string): string {
+  let path = declarationPaths.get(name);
+  if (path === undefined) {
+    path = resolveDeclarationPath(name);
+    declarationPaths.set(name, path);
+  }
+  return path;
+}
+
+function resolveDeclarationPath(name: string): string {
   return tsgoPath(
     installedDeclarationRoot === null
       ? name === "scriptc.d.ts"
