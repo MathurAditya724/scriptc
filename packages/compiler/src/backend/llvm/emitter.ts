@@ -1851,6 +1851,9 @@ export class LlEmitter {
    * their scopes. */
   aliasScopedVersions = 0;
   integerViews = new Map<string, string>();
+  /** The i1 slot beside an integer view of a local that only holds exact
+   * integers or NaN: true when the local is not NaN. */
+  orderedViews = new Map<string, string>();
   /** Module globals the current function owns outright (initializer
    * bindings): their function-local slot, which stands in for the global. */
   privateGlobalSlots = new Map<string, string>();
@@ -7697,6 +7700,14 @@ export class LlEmitter {
     if (slot === undefined) return;
     const integer = this.emitToUint32(value.name, expr, value.uint32);
     this.B.line(`store i32 ${integer}, ptr ${slot}`);
+    const orderedSlot = this.orderedViews.get(localId);
+    if (orderedSlot === undefined) return;
+    let ordered = value.ordered;
+    if (ordered === undefined) {
+      ordered = this.B.tmp();
+      this.B.line(`${ordered} = fcmp ord double ${value.name}, 0.0`);
+    }
+    this.B.line(`store i1 ${ordered}, ptr ${orderedSlot}`);
   }
 
   emitBytesSet(

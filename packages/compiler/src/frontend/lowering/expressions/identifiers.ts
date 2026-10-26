@@ -1,4 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
+import { globalMemberValue } from "../global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
@@ -89,7 +90,7 @@ import { unsupportedModuleFeatureOf } from "../../builtin-modules.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
 import { fenceEnumObjectValue } from "../lower-enums.js";
 import { mixinFnOfCallee } from "../lower-mixins.js";
-import { isNavigatorGlobal, refuseNavigator } from "../builtins/navigator.js";
+import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
 
 export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr {
@@ -599,6 +600,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // the same identity-token story as stdlib globals above (the
       // harness adds worker_threads.Worker to its identity Set).
       if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+        // A member that is a global object reads as the global does.
+        const global = globalMemberValue(lowerer, bi, loc);
+        if (global) return global;
         // EventEmitter and the stream classes are the runtime's untyped
         // constructors, so constructor functions can inherit from them.
         const classKind = builtinMemberClassKind(bi.module, bi.member);
@@ -608,12 +612,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           return builtinFunctionFenceValue(lowerer, bi, expr, loc);
         return {
           kind: "strLit",
-          // node:stream/web exports the web stream globals themselves:
-          // the same identity token as the global spelling.
-          value:
-            bi.module === "stream/web"
-              ? `[builtin ${bi.member}]`
-              : `[builtin ${bi.module}.${bi.member}]`,
+          value: `[builtin ${bi.module}.${bi.member}]`,
           type: STRING,
           loc,
         };
@@ -731,43 +730,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       expr.text === "decodeURI") &&
     lowerer.isStdlibGlobal(expr, expr.text)
   ) {
-    const name = `%builtin.${expr.text}`;
-    const type = funcOf([DYN], STRING);
-    if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
-      const value: IrExpr = {
-        kind: "libCall",
-        fn: "dyn.toStringCoerce",
-        args: [varRef("value", DYN, loc)],
-        type: STRING,
-        loc,
-      };
-      const fn =
-        expr.text === "encodeURIComponent"
-          ? "str.encodeUriComponent"
-          : expr.text === "encodeURI"
-            ? "str.encodeUri"
-            : expr.text === "decodeURI"
-              ? "str.decodeUri"
-              : "str.decodeUriComponent";
-      lowerer.liftedFns.push({
-        name,
-        params: [{ localId: "value", name: "value", type: DYN }],
-        locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
-        returnType: STRING,
-        body: [
-          {
-            kind: "return",
-            value: { kind: "libCall", fn, args: [value], type: STRING, loc },
-            loc,
-          },
-        ],
-        loc,
-      });
-    }
-    return { kind: "closure", fnName: name, captures: [], type, loc };
+    return uriFunctionValue(lowerer, expr.text, loc);
   }
   if (lowerer.isStdlibGlobal(expr, "crypto"))
     return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+  if (isNavigatorGlobal(lowerer, expr)) return navigatorValue(loc);
   const nativeAlias = stdlibGlobalNameOf(lowerer, expr);
   if (nativeAlias === "Buffer" && expr.text !== "Buffer") {
     // An alias through a cast of globalThis carries the cast's static type,
@@ -1026,14 +993,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     const ns = lowerNsIdentifierValue(lowerer, expr);
     if (ns) return ns;
   }
-  if (isNavigatorGlobal(lowerer, expr)) {
-    refuseNavigator(
-      lowerer,
-      expr,
-      "the navigator object as a value",
-      lowerer.checker.getSymbolAtLocation(expr),
-    );
-  }
   // An import of a CommonJS member export whose value is a binding of the
   // exporting module (`module.exports = Client; module.exports.StatsD =
   // Client`): the member holds that binding's value.
@@ -1162,4 +1121,43 @@ function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr |
       return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc: locOf(ident) };
   }
   return cjsAccessorCall(lowerer, getter, locOf(ident));
+}
+
+/** encodeURIComponent, encodeURI, decodeURI or decodeURIComponent as a
+ * function value: one interned closure per function. */
+export function uriFunctionValue(lowerer: Lowerer, which: string, loc: SrcLoc): IrExpr {
+  const name = `%builtin.${which}`;
+  const type = funcOf([DYN], STRING);
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    const value: IrExpr = {
+      kind: "libCall",
+      fn: "dyn.toStringCoerce",
+      args: [varRef("value", DYN, loc)],
+      type: STRING,
+      loc,
+    };
+    const fn =
+      which === "encodeURIComponent"
+        ? "str.encodeUriComponent"
+        : which === "encodeURI"
+          ? "str.encodeUri"
+          : which === "decodeURI"
+            ? "str.decodeUri"
+            : "str.decodeUriComponent";
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "value", name: "value", type: DYN }],
+      locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+      returnType: STRING,
+      body: [
+        {
+          kind: "return",
+          value: { kind: "libCall", fn, args: [value], type: STRING, loc },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "closure", fnName: name, captures: [], type, loc };
 }

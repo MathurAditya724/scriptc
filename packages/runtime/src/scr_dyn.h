@@ -189,6 +189,7 @@ typedef enum {
   X(MIME_PARAMS, 81) /* util.MIMEParams (scr_mime.c) */ \
   X(MIME_TYPE, 82) /* util.MIMEType (scr_mime.c) */ \
   X(MODULE_NAMESPACE, 79) /* module namespace object read through its exports (scr_module_namespace.c) */ \
+  X(NAVIGATOR, 83) /* Node's navigator global (scr_node_builtin.c) */ \
   X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
   X(NET_SERVER, 3) /* ScrNetServer — net.Server (http.Server rides the same handle) */ \
   X(NET_SOCKET, 2) /* ScrNetSocket — net.Socket */ \
@@ -1300,6 +1301,18 @@ void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol);
  * object answers it; its symbol-keyed properties are the global object's
  * (scr_node_builtin.c). */
 ScrDyn *scr_global_object(void);
+/* The program's builtin-global lookup, a dyn function (borrowed); the first
+ * installation stands. */
+void scr_global_values_install(ScrDyn *lookup);
+/* An object whose keys are what `for (key in globalThis)` visits (+1). */
+ScrDyn *scr_global_for_in_object(void);
+/* Node's navigator global (+1, one box per thread) and its members:
+ * navigator.language (+1), navigator.languages (+1, one frozen array per
+ * thread) and navigator.platform (+1). */
+ScrDyn *scr_navigator_object(void);
+ScrStr *scr_navigator_language(void);
+ScrDyn *scr_navigator_languages(void);
+ScrStr *scr_navigator_platform(void);
 ScrDyn *scr_dyn_global_symbol_get(ScrSym *key); /* borrowed key; +1 value */
 void scr_dyn_global_symbol_set(ScrSym *key, ScrDyn *value); /* both borrowed */
 bool scr_dyn_global_symbol_has(ScrSym *key);

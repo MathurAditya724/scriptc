@@ -1,6 +1,14 @@
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
+import { globalMemberValue } from "./global-values.js";
 import { unionNarrowFailureMessage } from "./union-narrow.js";
+import {
+  arrayClassFieldsFn,
+  arrayClassSpeciesFn,
+  arrayOfClassInstance,
+  arrayRootOf,
+  lowerWithArraySpecies,
+} from "./builtins/array-classes.js";
 import {
   compactDeclOrigins,
   inPackageFile,
@@ -294,12 +302,12 @@ import {
   cjsExportsAssignedInFunctions,
   cjsReexportedModules,
   cjsNamespaceExportNames,
-  fallbackDtsPath,
   isCheckedJsSourceFile,
   isCjsExportTableLiteral,
   isCjsJsFile,
   isJsSourceFile,
   isNodeEsmFile,
+  isFallbackDtsPath,
   isNodeTypesPath,
   locOf,
   orderedImportsOf,
@@ -2001,6 +2009,9 @@ function byName(fns: readonly IrFunction[]): IrFunction[] {
   );
 }
 
+/** The program module a createRequire binding requires. */
+type CreateRequireTarget = NonNullable<ReturnType<typeof createRequireProgramModuleOf>>;
+
 export class Lowerer {
   readonly frontendServices: FrontendServices | undefined;
   readonly checker: ts.TypeChecker;
@@ -3274,6 +3285,9 @@ export class Lowerer {
   /** The property names the program assigns on the global object
    * (property-access.ts), collected on first use. */
   globalThisWrittenNames: Set<string> | null = null;
+  /** Set with globalThisWrittenNames: the program writes the global object
+   * by a computed name somewhere. */
+  globalThisComputedWrite = false;
   /** Well-known symbol methods (`sym:iterator`) the program may replace
    * through a symbol-keyed write: an instance or prototype property, or a
    * reflection call. */
@@ -3475,10 +3489,9 @@ export class Lowerer {
    * tag. */
   readonly unions = new UnionRegistry();
   /** Context-free successful type mappings. See TypeMapperCtx.typeMemo. */
-  readonly typeMemo = new Map<string, IrType>();
+  readonly typeMemo = new Map<number, IrType>();
   readonly ambient = ambientDtsPath();
   readonly overridesAmbient = overridesDtsPath();
-  readonly fallbackAmbient = fallbackDtsPath();
   /** The one mapType context: registries + hooks, assembled in the
    * constructor (typeParamResolver reads the CURRENT instantiation bindings
    * through `this`, so the same ctx serves generic bodies too). */
@@ -3510,6 +3523,9 @@ export class Lowerer {
    * values other than fresh literals (noteUntypedIntegrity). */
   untypedIntegrity = false;
   readonly liftedFns: IrFunction[] = [];
+  /** global-values.ts's answer per JavaScript source: the receiver of its
+   * first read of the global object by a computed name, or null. */
+  readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
   /** The first lifted function of each name (liftedFnNamed), for the
    * liftedFns indexed so far. liftedFns only grows. */
   private readonly liftedFnsByName = new Map<string, IrFunction>();
@@ -4939,6 +4955,55 @@ export class Lowerer {
     return createRequireProgramModuleOf(this, decl.initializer)?.dep ?? null;
   }
 
+  private readonly createRequireBindingTargets = new Map<ts.Symbol, CreateRequireTarget | null>();
+  private readonly createRequireElementTargets = new Map<
+    ts.Symbol,
+    { element: ts.BindingElement; target: CreateRequireTarget } | null
+  >();
+
+  /** The program module a `const x = createRequire(...)("./m")` binding
+   * requires, by the binding's symbol; null for every other binding. Every
+   * reference resolves it (resolveValueSymbol), so it is cached. */
+  private createRequireBindingTarget(binding: ts.Symbol): CreateRequireTarget | null {
+    const cached = this.createRequireBindingTargets.get(binding);
+    if (cached !== undefined) return cached;
+    const decl = binding.declarations.find(ts.isVariableDeclaration);
+    const target =
+      decl && ts.isIdentifier(decl.name) && decl.initializer
+        ? createRequireProgramModuleOf(this, decl.initializer)
+        : null;
+    this.createRequireBindingTargets.set(binding, target);
+    return target;
+  }
+
+  /** The binding element and required program module of a
+   * `const { m } = createRequire(...)("./m")` binding, by the binding's
+   * symbol; null for every other binding. Cached like
+   * createRequireBindingTarget. */
+  private createRequireElementTarget(
+    binding: ts.Symbol,
+  ): { element: ts.BindingElement; target: CreateRequireTarget } | null {
+    const cached = this.createRequireElementTargets.get(binding);
+    if (cached !== undefined) return cached;
+    let found: { element: ts.BindingElement; target: CreateRequireTarget } | null = null;
+    const element = binding.declarations.find(ts.isBindingElement);
+    if (
+      element &&
+      element.name !== undefined &&
+      ts.isIdentifier(element.name) &&
+      ts.isObjectBindingPattern(element.parent)
+    ) {
+      const declaration = element.parent.parent;
+      const target =
+        ts.isVariableDeclaration(declaration) && declaration.initializer
+          ? createRequireProgramModuleOf(this, declaration.initializer)
+          : null;
+      if (target !== null) found = { element, target };
+    }
+    this.createRequireElementTargets.set(binding, found);
+    return found;
+  }
+
   /** The represented single value behind a createRequire binding, or null
    * when the target is a namespace/table module. Collection has already
    * registered executable exports before entry-module uses lower, so the
@@ -4946,9 +5011,7 @@ export class Lowerer {
    * static storage or callable/class metadata. */
   private createRequireWholeExportSymbolOf(ident: ts.Identifier): ts.Symbol | null {
     const binding = this.checker.getSymbolAtLocation(ident);
-    const decl = binding ? binding.declarations.find(ts.isVariableDeclaration) : undefined;
-    if (!decl || !ts.isIdentifier(decl.name) || !decl.initializer) return null;
-    const target = createRequireProgramModuleOf(this, decl.initializer);
+    const target = binding ? this.createRequireBindingTarget(binding) : null;
     if (target === null) return null;
     const moduleSym = this.checker.getSymbolAtLocation(target.dep);
     let symbol = moduleSym?.getExports().get("export=" as ts.__String);
@@ -4993,18 +5056,9 @@ export class Lowerer {
    * target module's real export symbol. */
   private createRequireDestructuredExportSymbolOf(ident: ts.Identifier): ts.Symbol | null {
     const binding = this.checker.getSymbolAtLocation(ident);
-    const element = binding ? binding.declarations.find(ts.isBindingElement) : undefined;
-    if (
-      !element ||
-      element.name === undefined ||
-      !ts.isIdentifier(element.name) ||
-      !ts.isObjectBindingPattern(element.parent)
-    )
-      return null;
-    const declaration = element.parent.parent;
-    if (!ts.isVariableDeclaration(declaration) || !declaration.initializer) return null;
-    const target = createRequireProgramModuleOf(this, declaration.initializer);
-    if (target === null) return null;
+    const found = binding ? this.createRequireElementTarget(binding) : null;
+    if (found === null) return null;
+    const { element, target } = found;
     const property = element.propertyName;
     const name =
       property && (ts.isIdentifier(property) || ts.isStringLiteralLike(property))
@@ -8966,6 +9020,20 @@ export class Lowerer {
           lower: () =>
             info.localClass && !info.localClass.ready ? null : this.lowerClassCtor(info),
         });
+        // The descriptor helpers of a class that extends Array, reached
+        // from its constructor.
+        if (info.extendsArray) {
+          units.set(`%${cName}.arrayFields`, {
+            order: unitOrder++,
+            roots: [],
+            lower: () => arrayClassFieldsFn(this, info),
+          });
+          units.set(`%${cName}.species`, {
+            order: unitOrder++,
+            roots: [],
+            lower: () => arrayClassSpeciesFn(this, info),
+          });
+        }
         for (const { mName, member } of this.classMethodMembers(info)) {
           units.set(`%${cName}.${mName}`, {
             order: unitOrder++,
@@ -9094,6 +9162,10 @@ export class Lowerer {
       register(`%${cName}.constructor`, classCtorRoots(info), () =>
         info.localClass && !info.localClass.ready ? null : this.lowerClassCtor(info),
       );
+      if (info.extendsArray) {
+        register(`%${cName}.arrayFields`, [], () => arrayClassFieldsFn(this, info));
+        register(`%${cName}.species`, [], () => arrayClassSpeciesFn(this, info));
+      }
       for (const { mName, member } of this.classMethodMembers(info)) {
         register(`%${cName}.${mName}`, functionRoots(member), () =>
           info.localClass && !info.localClass.ready
@@ -10781,6 +10853,18 @@ export class Lowerer {
     ) {
       const result = this.coerceToExpected(expr.result, expected);
       return { ...expr, result, type: result.type };
+    }
+    // An instance of a class declared `extends Array` is its array (the
+    // same object); an array slot of another element type converts it as
+    // an array.
+    if (expr.type.kind === "object" && expected.kind !== "object") {
+      const arrayClass = this.classes.get(expr.type.className);
+      if (arrayClass && arrayRootOf(arrayClass)) {
+        const asArray = arrayOfClassInstance(arrayClass, expr, expr.loc);
+        return typeEquals(asArray.type, expected)
+          ? asArray
+          : this.coerceToExpected(asArray, expected);
+      }
     }
     // A destination that holds undefined takes an unassigned deferred-init
     // field's slot as is (Node passes the undefined along).
@@ -14368,7 +14452,7 @@ export class Lowerer {
   readonly isStdlibFile = (sf: ts.SourceFile): boolean =>
     sf.fileName === this.ambient ||
     sf.fileName === this.overridesAmbient ||
-    sf.fileName === this.fallbackAmbient ||
+    isFallbackDtsPath(sf.fileName) ||
     this.program.isSourceFileDefaultLibrary(sf) ||
     (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
 
@@ -14780,7 +14864,9 @@ export class Lowerer {
     call: ts.CallExpression,
     access: ts.PropertyAccessExpression,
   ): IrExpr | null {
-    return lowerArrayMethodCall(this, call, access);
+    return lowerWithArraySpecies(this, call, access, () =>
+      lowerArrayMethodCall(this, call, access),
+    );
   }
 
   lowerMapMethodCall(call: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr | null {
@@ -15075,6 +15161,18 @@ export class Lowerer {
    * member access that IS a module in its own right (`fs.promises` — the
    * same object as node:fs/promises, Node's rule). Null otherwise. */
   builtinNamespaceModuleOf(expr: ts.Expression): string | null {
+    // A function declaration is never a module namespace. Answering that
+    // from the symbol skips the type mapping below (every direct call asks).
+    if (ts.isIdentifier(expr)) {
+      const symbol = this.checker.getSymbolAtLocation(expr);
+      if (
+        symbol !== undefined &&
+        (symbol.flags & ts.SymbolFlags.Alias) === 0 &&
+        symbol.declarations.length > 0 &&
+        symbol.declarations.every(ts.isFunctionDeclaration)
+      )
+        return null;
+    }
     // Default and CommonJS process bindings alias the global object, whose
     // methods and properties keep their existing process lowerings.
     if (stdlibGlobalNameOf(this, expr) === "process") return null;
@@ -15372,11 +15470,12 @@ export class Lowerer {
     if (bi.module === "crypto" && bi.member === "webcrypto") {
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     }
-    // node:stream/web's exports are the web stream globals themselves: in
-    // JavaScript sources the same identity token as the global spelling
-    // (`require("stream/web").ReadableStream === globalThis.ReadableStream`).
-    if (bi.module === "stream/web" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-      return { kind: "strLit", value: `[builtin ${bi.member}]`, type: STRING, loc };
+    // Members that are global objects (`require("stream/web").ReadableStream
+    // === globalThis.ReadableStream`) read in JavaScript sources as their
+    // global spelling does.
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const global = globalMemberValue(this, bi, loc);
+      if (global) return global;
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);

@@ -1,3 +1,4 @@
+import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import {
   allBytesArms,
@@ -33,7 +34,6 @@ import { InternalCompilerError } from "../../errors.js";
  * explicit resource management, and blocked-binding poisoning. */
 import * as ts from "../ts7/adapter.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
-import { builtinNamespaceValue } from "./builtin-namespaces.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
@@ -240,7 +240,6 @@ import { globalSymbolKey } from "./expressions/global-symbols.js";
 import { identifiersNamed } from "./identifier-uses.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
 import {
-  builtinGlobalValue,
   jsHoldsDynObject,
   lowerEnvironmentKey,
   lowerNativeFunctionAssignment,
@@ -4419,14 +4418,9 @@ function stdlibGlobalTokenDestructure(
       const canonical = ts.symbolName(member) === "global" ? "globalThis" : ts.symbolName(member);
       token = `[builtin ${canonical}]`;
       alias = canonical;
-      // Builtin constructors read as their interned function values, and
-      // crypto as the WebCrypto object: the same values the bare and
-      // `globalThis.X` spellings read.
-      value =
-        canonical === "crypto"
-          ? { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc: locOf(el) }
-          : (builtinNamespaceValue(lowerer, canonical, locOf(el)) ??
-            builtinGlobalValue(canonical, locOf(el), true));
+      // The values the bare and `globalThis.X` spellings read
+      // (jsGlobalValueByName).
+      value = jsGlobalValueByName(lowerer, canonical, locOf(el));
     } else if (globalName === "console" && !CONSOLE_CALL_MEMBERS.has(propName)) {
       token = `[builtin console.${propName}]`;
     } else if (TOKEN_OPAQUE_GLOBALS.has(globalName)) {
@@ -12355,11 +12349,8 @@ function lowerForOfString(
  *   own-keys snapshot, verified against Node) while each visit re-checks
  *   presence (i < live length), so pops during the body skip exactly
  *   like Node. Sparse arrays cannot exist here (hole creation traps).
- * - globalThis: the harness's leaked-globals sweep — a compiled binary's
- *   global bindings are compile-time names, never enumerable runtime
- *   properties, so the enumeration is honestly EMPTY (zero iterations;
- *   the body typechecked but never evaluates — SEMANTICS.md documents
- *   the divergence).
+ * - globalThis: Node 24's enumerable globals in Node's order, then the
+ *   program's own global properties, as keys of a fresh object.
  * - JavaScript program classes use their live property-creation table.
  *   TypeScript and runtime-owned layouts keep the class-instance fence.
  * Bindings mirror for-of's: const/let declare the per-iteration string
@@ -12369,10 +12360,12 @@ function lowerForOfString(
 function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
   const labels = lowerer.takeLabels();
   const loc = locOf(stmt);
-  if (stdlibGlobalNameOf(lowerer, stmt.expression) === "globalThis") {
-    return { kind: "block", body: [], loc };
-  }
-  let receiver = lowerer.lowerExpr(stmt.expression);
+  // The global object visits Node's enumerable globals, then the
+  // program's own global properties (scr_global_for_in_object).
+  let receiver: IrExpr =
+    stdlibGlobalNameOf(lowerer, stmt.expression) === "globalThis"
+      ? { kind: "libCall", fn: "global.forInObject", args: [], type: DYN, loc }
+      : lowerer.lowerExpr(stmt.expression);
   if (receiver.type.kind === "object") {
     const info = lowerer.classes.get(receiver.type.className);
     let root = info;
