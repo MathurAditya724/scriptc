@@ -195,7 +195,29 @@ function emitReplaceWith(
   return host.own({ name: t, type: e.type });
 }
 
+/** Substitutions whose result owns its text: once the runtime call returns,
+ * no operand is read again. */
+function releasesInputsOnReturn(method: string): boolean {
+  return method === "replace" || method === "replaceAll";
+}
+
 export function emitRegexIntrinsic(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "regexIntrinsic" },
+): LlValue {
+  if (!releasesInputsOnReturn(e.method)) return emitRegexOperation(host, e);
+  // The operands' temps (the subject of a chained substitution, a computed
+  // replacement) are released when the call returns rather than at the
+  // end of the statement, so a chain of substitutions holds at most its
+  // current subject and result.
+  host.frames.push([]);
+  const out = emitRegexOperation(host, e);
+  host.toFrame(out);
+  host.releaseTemps(host.frames.pop()!);
+  return host.own(out);
+}
+
+function emitRegexOperation(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "regexIntrinsic" },
 ): LlValue {
