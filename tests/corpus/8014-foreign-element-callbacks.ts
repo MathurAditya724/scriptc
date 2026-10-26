@@ -58,3 +58,61 @@ console.log(sparse.filter(() => true), sparse.map((_, i) => i), sparse.findIndex
 const plain = [1, 2, 3];
 console.log(plain.map((v) => ({ v })), plain.reduce((acc, v) => ({ sum: acc.sum + v, v }), { sum: 0, v: 0 }));
 console.log(plain.filter((v) => [{ v }].length > 0 && v > 1));
+
+// A callback that ignores its element still receives the element as it was
+// before the callback ran: filter keeps it, and find returns it, even when
+// the callback overwrites or removes the slot.
+const changing: number[] = [1, 2, 3];
+const changingView: unknown[] = changing;
+changingView.push("x");
+let at = 0;
+console.log(
+  changing.filter(() => {
+    changingView[at] = at === 1 ? "w" : 100 + at;
+    at++;
+    return true;
+  }),
+  changing,
+);
+const found: number[] = [1, 2];
+(found as unknown[]).push("y");
+let step = 0;
+console.log(
+  found.find(() => {
+    found[step] = 50;
+    step++;
+    return step === 2;
+  }),
+  found,
+);
+const shrinking: number[] = [4, 5];
+(shrinking as unknown[]).push("z", 6);
+console.log(
+  shrinking.findLast(() => {
+    shrinking.length = 1;
+    return true;
+  }),
+  shrinking.length,
+);
+const cut: number[] = [7, 8, 9];
+(cut as unknown[]).push("q");
+console.log(
+  cut.filter((_v, i) => {
+    if (i === 1) cut.length = 1;
+    return true;
+  }),
+  cut.length,
+);
+
+// Arrays proven to hold no undefined keep their elements in filter results
+// when the predicate ignores them.
+const dense = [1, 2, 3, 4];
+let calls = 0;
+console.log(
+  dense.filter((_v, i) => {
+    calls++;
+    return i % 2 === 0;
+  }),
+  calls,
+  dense.filter((_v, i) => i > 1),
+);

@@ -38,7 +38,9 @@ import {
 } from "../lower-array-sort.js";
 import {
   arrayIndexPresent,
-  arraySlotAppend,
+  arraySlotSnapshot,
+  arraySnapshotAppend,
+  arraySnapshotValue,
   arrayValueRead,
   arrayValueStore,
   arrayValueType,
@@ -46,7 +48,9 @@ import {
   elementMayBeForeign,
   foreignElementThrow,
   primitiveElement,
+  slotSnapshotLocals,
   unreadArgument,
+  type SlotSnapshot,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
 import {
@@ -105,7 +109,10 @@ export function lowerArrayHofCall(
   const callback = booleanFilter
     ? { fnArg: truthyFilterCallback(lowerer, valueT, loc), arity: 1, unread: false }
     : lowerArrayCallback(lowerer, argNode, [valueT], arrayOf(elem));
-  const { fnArg, arity, unread } = callback;
+  const { fnArg, arity } = callback;
+  // Only an array that can hold elements outside its element type needs to
+  // leave an element its callback ignores unread.
+  const unread = callback.unread && !present && elementMayBeForeign(lowerer, elem);
   const fnRet = fnArg.type.ret;
   if (method === "map" && (fnRet.kind === "void" || fnRet.kind === "func")) {
     // The result array U[] is unrepresentable here (no void elements;
@@ -556,6 +563,10 @@ function callbackValueRead(
     : arrayValueRead(lowerer, arr, index, elem, loc);
 }
 
+/** The snapshot locals of the filter and find helpers; `value` is their
+ * element local `v.0`. */
+const FILTER_SNAPSHOT: SlotSnapshot = { isForeign: "vf.0", value: "v.0", foreign: "vd.0" };
+
 /** Interned synthetic loop function for one (method, elem, fnRet, arity)
  * combo. Named `%arr.<method>.<n>` ('%' keeps it out of the user
  * namespace); rides `liftedFns` into the module like a lifted lambda (it
@@ -830,8 +841,20 @@ function buildArrayHofFn(
     elem,
     present,
     loc,
-    unread,
   );
+  // What the callback takes: the element, or a placeholder for one it
+  // ignores (callbackValueRead's `unread`).
+  const argElem = unread
+    ? callbackValueRead(
+        lowerer,
+        varRef("a.0", arrT, loc),
+        varRef("i.0", F64, loc),
+        elem,
+        present,
+        loc,
+        true,
+      )
+    : getElem;
   const hasElem: IrExpr = {
     kind: "arrayHas",
     arr: varRef("a.0", arrT, loc),
@@ -880,7 +903,7 @@ function buildArrayHofFn(
           kind: "if",
           cond: hasElem,
           then: [
-            { kind: "varDecl", localId: "mapped.0", init: callF(getElem), loc },
+            { kind: "varDecl", localId: "mapped.0", init: callF(argElem), loc },
             arrayValueStore(
               lowerer,
               varRef("out.0", outT, loc),
@@ -1016,7 +1039,19 @@ function buildArrayHofFn(
     );
     returnType = outT;
     const retained = filterRetainedValue(lowerer, varRef("v.0", valueT, loc), elem, outElem, loc);
-    const copied = (arity === 0 || unread) && !present && typeEquals(outElem, elem);
+    // A predicate that ignores the element of an array that can hold
+    // elements outside its element type keeps a snapshot of the slot, read
+    // before the predicate runs, as stored (arraySlotSnapshot).
+    const copied =
+      (arity === 0 || unread) &&
+      !present &&
+      typeEquals(outElem, elem) &&
+      elementMayBeForeign(lowerer, elem);
+    // `v.0` is declared above; the snapshot adds its other two locals.
+    if (copied)
+      locals.push(
+        ...slotSnapshotLocals(lowerer, elem, FILTER_SNAPSHOT).filter((l) => l.id !== "v.0"),
+      );
     body = [
       {
         kind: "varDecl",
@@ -1029,22 +1064,27 @@ function buildArrayHofFn(
         {
           kind: "if",
           cond: hasElem,
-          // A predicate that never reads the element leaves the slot unread:
-          // a kept element is appended as it is stored (arraySlotAppend), so
-          // one the element type cannot hold stays in the result.
+          // A kept element is appended as it was stored, so one the element
+          // type cannot hold stays in the result.
           then: copied
             ? [
+                ...arraySlotSnapshot(
+                  lowerer,
+                  varRef("a.0", arrT, loc),
+                  varRef("i.0", F64, loc),
+                  elem,
+                  FILTER_SNAPSHOT,
+                  loc,
+                ),
                 {
                   kind: "if",
-                  cond: filterCond(callF(getElem), fnRet, loc),
+                  cond: filterCond(callF(argElem), fnRet, loc),
                   then: [
-                    arraySlotAppend(
+                    arraySnapshotAppend(
                       lowerer,
                       varRef("out.0", outT, loc),
-                      varRef("a.0", arrT, loc),
-                      varRef("i.0", F64, loc),
                       elem,
-                      "v.0",
+                      FILTER_SNAPSHOT,
                       loc,
                     ),
                   ],
@@ -1094,7 +1134,7 @@ function buildArrayHofFn(
         {
           kind: "if",
           cond: hasElem,
-          then: [{ kind: "exprStmt", expr: callF(getElem), loc }],
+          then: [{ kind: "exprStmt", expr: callF(argElem), loc }],
           else_: null,
           loc,
         },
@@ -1134,13 +1174,17 @@ export function lowerArrayFindLikeCall(
     presentElements(lowerer, call, elem) &&
     ((method !== "find" && method !== "findLast") ||
       (!bindUntyped && lowerer.coercibleValue(elem, lowerer.irTypeOf(call))));
-  const { fnArg, arity, unread } = lowerArrayCallback(
+  const lowered = lowerArrayCallback(
     lowerer,
     argNode,
     [callbackValueType(lowerer, elem, present)],
     arrT,
     bindUntyped,
   );
+  const { fnArg, arity } = lowered;
+  // Only an array that can hold elements outside its element type needs to
+  // leave an element its callback ignores unread.
+  const unread = lowered.unread && !present && elementMayBeForeign(lowerer, elem);
   // JS takes the ToBoolean of the predicate's result — allowed wherever
   // that ToBoolean has a static answer (bool passes through; f64/string
   // by value; a truthy-answerable union by its arm — the
@@ -1360,32 +1404,49 @@ function findHelper(
     ),
     loc,
   };
-  // A predicate that takes no element, or never reads it, reads it only
-  // once it holds: the element of a visit it rejects stays unread.
+  // A predicate that ignores the element of an array that can hold
+  // elements outside its element type keeps a snapshot of the slot, read
+  // before the predicate runs as JavaScript reads it (arraySlotSnapshot):
+  // the predicate is called without reading it as typed, and a found element
+  // outside the element type takes the checked conversion into the result.
+  const ignored = (arity === 0 || unread) && !present && elementMayBeForeign(lowerer, elem);
   const placeholder = unread ? unreadArgument(lowerer, valueT, loc) : null;
-  const visitBody: IrStmt[] =
-    arity === 0 || placeholder
-      ? [
-          {
-            kind: "if",
-            cond: predicateToBoolean(
-              callArrayCallback(arrT, fnT, fnRet, arity, placeholder ?? v, loc),
-            ),
-            then: [read, { kind: "return", value: found, loc }],
-            else_: null,
-            loc,
-          },
-        ]
-      : [
-          read,
-          {
-            kind: "if",
-            cond: predicateToBoolean(callArrayCallback(arrT, fnT, fnRet, arity, v, loc)),
-            then: [{ kind: "return", value: found, loc }],
-            else_: null,
-            loc,
-          },
-        ];
+  const visitBody: IrStmt[] = ignored
+    ? [
+        ...arraySlotSnapshot(
+          lowerer,
+          varRef("a.0", arrT, loc),
+          varRef("i.0", F64, loc),
+          elem,
+          FILTER_SNAPSHOT,
+          loc,
+        ),
+        {
+          kind: "if",
+          cond: predicateToBoolean(
+            callArrayCallback(arrT, fnT, fnRet, arity, placeholder ?? v, loc),
+          ),
+          then: [
+            {
+              kind: "return",
+              value: arraySnapshotValue(lowerer, elem, FILTER_SNAPSHOT, resultT, () => found, loc),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        },
+      ]
+    : [
+        read,
+        {
+          kind: "if",
+          cond: predicateToBoolean(callArrayCallback(arrT, fnT, fnRet, arity, v, loc)),
+          then: [{ kind: "return", value: found, loc }],
+          else_: null,
+          loc,
+        },
+      ];
   const visit: IrStmt[] = visitBody;
   const loop = last
     ? reverseArrayLoop(loc, visit)
@@ -1402,6 +1463,9 @@ function findHelper(
     locals: [
       ...arrayCallbackLocals(arrT, fnT),
       { id: "v.0", name: "v", type: valueT, mutable: false },
+      ...(ignored
+        ? slotSnapshotLocals(lowerer, elem, FILTER_SNAPSHOT).filter((l) => l.id !== "v.0")
+        : []),
     ],
     body,
     loc,
@@ -1627,12 +1691,16 @@ export function lowerArrayFlatMapCall(
   const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const present = presentElements(lowerer, call, elem);
-  const { fnArg, arity, unread } = lowerArrayCallback(
+  const lowered = lowerArrayCallback(
     lowerer,
     argNode,
     [callbackValueType(lowerer, elem, present)],
     arrT,
   );
+  const { fnArg, arity } = lowered;
+  // Only an array that can hold elements outside its element type needs to
+  // leave an element its callback ignores unread.
+  const unread = lowered.unread && !present && elementMayBeForeign(lowerer, elem);
   const fnRet = fnArg.type.ret;
   if (
     fnRet.kind === "dyn" ||
@@ -2206,7 +2274,7 @@ export function lowerArrayReduceCall(
     lowerer.runtimeOptionalReduceTypes.get(call) ??
     (hasInit ? lowerer.irTypeOf(call) : arrayValueType(lowerer, elem));
   if (accT.kind === "void" || accT.kind === "func") lowerer.badType(call, lowerer.typeOf(call));
-  const { fnArg, arity, unread } = lowerArrayCallback(
+  const lowered = lowerArrayCallback(
     lowerer,
     argNode,
     [accT, arrayValueType(lowerer, elem)],
@@ -2214,6 +2282,10 @@ export function lowerArrayReduceCall(
     false,
     accT,
   );
+  const { fnArg, arity } = lowered;
+  // Only an array that can hold elements outside its element type needs to
+  // leave an element its callback ignores unread.
+  const unread = lowered.unread && elementMayBeForeign(lowerer, elem);
   const fast = unread
     ? null
     : lowerFastCallback(

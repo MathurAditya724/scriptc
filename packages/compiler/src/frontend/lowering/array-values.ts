@@ -6,6 +6,7 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrLocal,
   type IrStmt,
   type IrType,
   isIntegerBytesElem,
@@ -460,22 +461,95 @@ export function unreadArgument(lowerer: Lowerer, type: IrType, loc: SrcLoc): IrE
   return null;
 }
 
-/** Append the element at `arr[index]` to `out`, an array of the same
- * element type, as it is stored: a value, a present undefined, or an
- * element outside the element type (stored through a dynamic view), which
- * `out` keeps as one, as the view's push stores it. `out` is a binding,
- * and `value` names a local of the read's type (arrayValueType) that holds
- * a stored value on its way. */
-export function arraySlotAppend(
+/** The locals of an element snapshot (arraySlotSnapshot): whether the slot
+ * held an element outside the element type, the value read otherwise, and
+ * that element's dynamic value otherwise. */
+export interface SlotSnapshot {
+  isForeign: string;
+  value: string;
+  foreign: string;
+}
+
+/** The locals a snapshot of an `elem` element uses. */
+export function slotSnapshotLocals(lowerer: Lowerer, elem: IrType, ids: SlotSnapshot): IrLocal[] {
+  return [
+    { id: ids.isForeign, name: "foreign", type: BOOL, mutable: false },
+    { id: ids.value, name: "value", type: arrayValueType(lowerer, elem), mutable: false },
+    { id: ids.foreign, name: "element", type: DYN, mutable: false },
+  ];
+}
+
+/** Read the element at `arr[index]` as it is stored, before a callback runs,
+ * as JavaScript reads it before calling a callback that ignores it: a value
+ * or a present undefined into `ids.value`, or an element outside the element
+ * type (stored through a dynamic view) as its dynamic value into
+ * `ids.foreign`, which `ids.isForeign` tells apart. */
+export function arraySlotSnapshot(
   lowerer: Lowerer,
-  out: IrExpr,
   arr: IrExpr,
   index: IrExpr,
   elem: IrType,
-  value: string,
+  ids: SlotSnapshot,
+  loc: SrcLoc,
+): IrStmt[] {
+  const valueT = arrayValueType(lowerer, elem);
+  const isForeign: IrExpr = { kind: "varRef", localId: ids.isForeign, type: BOOL, loc };
+  const missing =
+    valueT.kind === "dyn" ? dynUndefinedExpr(loc) : lowerer.wrappedUndefined(valueT, loc)!;
+  return [
+    {
+      kind: "varDecl",
+      localId: ids.isForeign,
+      init: {
+        kind: "bin",
+        op: "===",
+        left: { kind: "arrayState", arr, index, type: F64, loc },
+        right: { kind: "numLit", value: 3, type: F64, loc },
+        type: BOOL,
+        loc,
+      },
+      loc,
+    },
+    {
+      kind: "varDecl",
+      localId: ids.value,
+      init: {
+        kind: "ternary",
+        cond: isForeign,
+        then: missing,
+        else_: arrayValueRead(lowerer, arr, index, elem, loc),
+        type: valueT,
+        loc,
+      },
+      loc,
+    },
+    {
+      kind: "varDecl",
+      localId: ids.foreign,
+      init: {
+        kind: "ternary",
+        cond: isForeign,
+        then: { kind: "libCall", fn: "array.foreign", args: [arr, index], type: DYN, loc },
+        else_: dynUndefinedExpr(loc),
+        type: DYN,
+        loc,
+      },
+      loc,
+    },
+  ];
+}
+
+/** Append a snapshot (arraySlotSnapshot) of an element to `out`, an array of
+ * the same element type, as it was stored: an element outside the element
+ * type stays one, appended as the view's push appends it. `out` is a
+ * binding. */
+export function arraySnapshotAppend(
+  lowerer: Lowerer,
+  out: IrExpr,
+  elem: IrType,
+  ids: SlotSnapshot,
   loc: SrcLoc,
 ): IrStmt {
-  const valueT = arrayValueType(lowerer, elem);
   const end: IrExpr = {
     kind: "arrIntrinsic",
     method: "length",
@@ -484,37 +558,15 @@ export function arraySlotAppend(
     type: F64,
     loc,
   };
-  const plain: IrStmt = {
-    kind: "block",
-    body: [
-      {
-        kind: "varDecl",
-        localId: value,
-        init: arrayValueRead(lowerer, arr, index, elem, loc),
-        loc,
-      },
-      arrayValueStore(
-        lowerer,
-        out,
-        end,
-        { kind: "varRef", localId: value, type: valueT, loc },
-        elem,
-        loc,
-      ),
-    ],
+  const value: IrExpr = {
+    kind: "varRef",
+    localId: ids.value,
+    type: arrayValueType(lowerer, elem),
     loc,
   };
-  if (!elementMayBeForeign(lowerer, elem)) return plain;
   return {
     kind: "if",
-    cond: {
-      kind: "bin",
-      op: "===",
-      left: { kind: "arrayState", arr, index, type: F64, loc },
-      right: { kind: "numLit", value: 3, type: F64, loc },
-      type: BOOL,
-      loc,
-    },
+    cond: { kind: "varRef", localId: ids.isForeign, type: BOOL, loc },
     then: [
       {
         kind: "exprStmt",
@@ -523,14 +575,36 @@ export function arraySlotAppend(
           recv: { kind: "dynFrom", value: out, liveRef: true, type: DYN, loc },
           method: "push",
           calleeName: "push",
-          args: [{ kind: "libCall", fn: "array.foreign", args: [arr, index], type: DYN, loc }],
+          args: [{ kind: "varRef", localId: ids.foreign, type: DYN, loc }],
           type: DYN,
           loc,
         },
         loc,
       },
     ],
-    else_: [plain],
+    else_: [arrayValueStore(lowerer, out, end, value, elem, loc)],
+    loc,
+  };
+}
+
+/** A snapshot (arraySlotSnapshot) as a value of `type`: the value read, or
+ * the element outside the element type through the checked conversion,
+ * which such an element fails as a typed read does. `typed` converts the
+ * value read. */
+export function arraySnapshotValue(
+  lowerer: Lowerer,
+  elem: IrType,
+  ids: SlotSnapshot,
+  type: IrType,
+  typed: (value: IrExpr) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "ternary",
+    cond: { kind: "varRef", localId: ids.isForeign, type: BOOL, loc },
+    then: lowerer.coerceToExpected({ kind: "varRef", localId: ids.foreign, type: DYN, loc }, type),
+    else_: typed({ kind: "varRef", localId: ids.value, type: arrayValueType(lowerer, elem), loc }),
+    type,
     loc,
   };
 }

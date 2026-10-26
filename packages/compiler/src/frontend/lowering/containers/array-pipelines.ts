@@ -6,6 +6,7 @@ import { AmbientReceiverReaders } from "../../../ir/receiver-readers.js";
 import { boolLit, countedFor, numLit, varRef } from "../../../ir/build.js";
 import {
   BOOL,
+  DYN,
   F64,
   VOID,
   type IrBindingSource,
@@ -32,11 +33,14 @@ import {
 import {
   arrayIndexPresent,
   arrayValueRead,
-  arraySlotAppend,
+  arraySlotSnapshot,
+  arraySnapshotAppend,
+  arraySnapshotValue,
   arrayValueStore,
   arrayValueType,
   elementMayBeForeign,
   unreadArgument,
+  type SlotSnapshot,
 } from "../array-values.js";
 import type { Lowerer } from "../lowerer.js";
 
@@ -615,7 +619,13 @@ function chainCallbacks(chain: Chain): Stage[] | null {
 
 /** The values a fused loop hands from one stage to the next: a local of a
  * known type, or (before the first read) the source slot itself. */
-type Flow = { kind: "value"; id: string; type: IrType } | { kind: "slot" };
+/** What reaches a stage: a value, the source slot not yet read, or a
+ * snapshot of the slot read before an earlier callback that ignored it
+ * (arraySlotSnapshot). */
+type Flow =
+  | { kind: "value"; id: string; type: IrType }
+  | { kind: "slot" }
+  | { kind: "snapshot"; ids: SlotSnapshot };
 
 interface Plan {
   chain: Chain;
@@ -1654,6 +1664,51 @@ class FusedLoop {
       return [];
     };
 
+    /** Bring `flow` to the callback of `stage`, whose element parameter is
+     * at `at`. A slot is read for a callback that reads it. For one that
+     * ignores it, the slot of an array that can hold elements outside its
+     * element type is read as stored before the callback runs (a snapshot,
+     * as JavaScript reads the element first), so such an element passes the
+     * callback as it is; other arrays read the slot as usual. A snapshot
+     * reaching a callback that reads it becomes its value, and an element
+     * outside the element type takes the ordinary read's checked
+     * conversion there. */
+    const reach = (
+      stage: Stage,
+      at: number,
+      flow: Flow,
+      rest: (flow: Flow) => IrStmt[],
+    ): IrStmt[] => {
+      const reads = stage.info.arity > at && !unreadSlot(stage, at);
+      if (flow.kind === "slot") {
+        if (reads || !elementMayBeForeign(this.lowerer, arrT.elem))
+          return read(stage, (value) => rest(value));
+        const ids: SlotSnapshot = {
+          isForeign: this.local("sf", BOOL),
+          value: this.local("sv", arrayValueType(this.lowerer, arrT.elem)),
+          foreign: this.local("sd", DYN),
+        };
+        return [
+          ...arraySlotSnapshot(this.lowerer, a, i, arrT.elem, ids, loc),
+          ...rest({ kind: "snapshot", ids }),
+        ];
+      }
+      if (flow.kind === "snapshot" && reads) {
+        const valueT = arrayValueType(this.lowerer, arrT.elem);
+        const u = this.local("u", valueT);
+        return [
+          {
+            kind: "varDecl",
+            localId: u,
+            init: arraySnapshotValue(this.lowerer, arrT.elem, flow.ids, valueT, (v) => v, loc),
+            loc,
+          },
+          ...rest({ kind: "value", id: u, type: valueT }),
+        ];
+      }
+      return rest(flow);
+    };
+
     /** Turn the source slot into a value for the callback of `stage`. */
     const read = (stage: Stage, rest: (flow: Flow & { kind: "value" }) => IrStmt[]): IrStmt[] => {
       if (stage.info.present) {
@@ -1709,16 +1764,12 @@ class FusedLoop {
     };
 
     /** The statements that run one value through stages k.. and the terminal. */
-    const visit = (k: number, flow: Flow): IrStmt[] => {
+    const visit = (k: number, flow: Flow, reached = false): IrStmt[] => {
       if (k === chain.stages.length) return finish(flow);
       const stage = chain.stages[k]!;
       const info = stage.info;
-      // A callback that declares no element parameter, or never reads the
-      // one it declares, leaves the slot unread, so an element outside the
-      // element type passes it as it is (a kept one is copied by the next
-      // stage or the collecting terminal).
-      if (flow.kind === "slot" && info.arity > 0 && !unreadSlot(stage, 0))
-        return read(stage, (value) => visit(k, value));
+      if (flow.kind !== "value" && !reached)
+        return reach(stage, 0, flow, (next) => visit(k, next, true));
       const called = deliver(stage, k, [], flow);
       if (!called) return fail();
       const { pre, value: result } = called;
@@ -1815,20 +1866,23 @@ class FusedLoop {
       }
     };
 
-    /** Append the source slot to the collected result unread: a filter
-     * whose callback never read the element keeps it as it is stored
-     * (arraySlotAppend). */
-    const copySlot = (): IrStmt[] => {
+    /** Append a snapshot of the source slot to the collected result: a
+     * filter whose callback ignored the element keeps it as it was stored
+     * (arraySnapshotAppend). */
+    const copySlot = (flow: Flow & { kind: "snapshot" }): IrStmt[] => {
       const outT = resultT as IrType & { kind: "array" };
       if (holes || !typeEquals(outT.elem, arrT.elem)) return fail();
-      const v = this.local("v", arrayValueType(this.lowerer, arrT.elem));
-      return [arraySlotAppend(this.lowerer, varRef(out!, resultT, loc), a, i, arrT.elem, v, loc)];
+      return [
+        arraySnapshotAppend(this.lowerer, varRef(out!, resultT, loc), arrT.elem, flow.ids, loc),
+      ];
     };
     /** The terminal's action for one value. */
-    const finish = (flow: Flow): IrStmt[] => {
+    const finish = (flow: Flow, reached = false): IrStmt[] => {
       if (terminal.kind === "length") return [increment(count!, loc)];
       if (terminal.kind === "collect") {
-        if (flow.kind !== "value") return copySlot();
+        if (flow.kind === "snapshot") return copySlot(flow);
+        if (flow.kind === "slot")
+          return read(chain.stages[chain.stages.length - 1]!, (value) => finish(value));
         const last = chain.stages[chain.stages.length - 1]!;
         const outT = resultT as IrType & { kind: "array" };
         if (!typeEquals(outT.elem, last.info.outElem)) return fail();
@@ -1850,8 +1904,8 @@ class FusedLoop {
       const stage = terminal.stage;
       const method = stage.info.method;
       const lead = method === "reduce" ? 1 : 0;
-      if (flow.kind === "slot" && stage.info.arity > lead && !unreadSlot(stage, lead))
-        return read(stage, (value) => finish(value));
+      if (flow.kind !== "value" && !reached)
+        return reach(stage, lead, flow, (next) => finish(next, true));
       if (method === "reduce") {
         const accT = stage.info.outElem;
         const called = deliver(stage, chain.stages.length, [varRef(acc!, accT, loc)], flow);
