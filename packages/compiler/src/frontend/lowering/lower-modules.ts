@@ -636,7 +636,13 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // graph: resolveImport follows its node_modules link to the loaded
       // TypeScript entry. Its internal `.js` spellings have already been
       // resolved to `.ts` by that graph.
-      if (!isRelativeSpecifier(spec) && resolveImport(lowerer.program, fp.sf, spec) !== null) {
+      const projectDep = isRelativeSpecifier(spec)
+        ? null
+        : resolveImport(lowerer.program, fp.sf, spec);
+      if (projectDep !== null) {
+        // A Node island package that tsconfig `paths` maps to its installed
+        // directory resolves to its declarations: it loads in Node.
+        if (projectDep.isDeclarationFile) collectIslandImport(lowerer, fp.sf, stmt, spec);
         continue;
       }
       const npm = resolveNpmImport(fp.sf.fileName, spec);
