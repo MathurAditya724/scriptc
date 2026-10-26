@@ -759,6 +759,11 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       // out of tdzPredeclared; a retry after a later declarator degrades
       // must initialize the same box again.
       const tdzBefore = new Map(lowerer.ctx.tdzPredeclared);
+      // The first attempt's diagnostics: a statement that still fails
+      // after degrading reports them, since a retry does not repeat what
+      // lowered once (a poisoned generic instance) and its own diagnostics
+      // can miss the failure's cause.
+      let firstAttempt: ScrDiagnostic[] | null = null;
       try {
         for (let attempt = 0; ; attempt++) {
           const hits = new Set<number>();
@@ -773,7 +778,12 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             // global degrades that type and the statement lowers again.
             // A declaration this statement flushed inside a probe (where
             // no retry runs) can retry here too.
-            if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw e;
+            firstAttempt ??= lowerer.diags.slice(diagsBefore);
+            const giveUp = (): unknown => {
+              if (attempt > 0) lowerer.restoreFirstAttemptDiags(diagsBefore, firstAttempt!);
+              return e;
+            };
+            if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw giveUp();
             const slot = lowerer.degradeAtCommit(e, STATEMENT_SLOTS);
             // Pushed-down types the failed attempt mapped widen to the
             // whole slot before anything else is given up.
@@ -782,7 +792,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
               !lowerer.reopenFlushedAtCommit(diagsBefore) &&
               !lowerer.widenPartials(hits)
             )
-              throw e;
+              throw giveUp();
             // A failed attempt adds nothing to `out` but the TDZ boxes
             // forward captures declared (they stay declared), so the
             // retry appends after them.

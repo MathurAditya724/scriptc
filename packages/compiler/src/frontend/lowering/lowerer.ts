@@ -9853,6 +9853,19 @@ export class Lowerer {
     this.diags.push(...kept);
   }
 
+  /** A unit that still fails after its retries commits its first
+   * attempt's own diagnostics (`first`, taken before the first
+   * degradation) in place of the last attempt's. The diagnostics the
+   * retries carry (dropAttemptDiags) stay as they are now: a declaration
+   * reopened since may have registered. */
+  restoreFirstAttemptDiags(diagsBefore: number, first: readonly ScrDiagnostic[]): void {
+    const carried = (d: ScrDiagnostic): boolean =>
+      d.rejects !== undefined || this.loweredOnceDiags.has(d);
+    const kept = this.diags.slice(diagsBefore).filter(carried);
+    this.diags.length = diagsBefore;
+    this.diags.push(...first.filter((d) => !carried(d)), ...kept);
+  }
+
   /** Lowers one unit whose body-level poison skips it (a generic
    * instance), with localized failure's commit point: a degradable type
    * failure at one of its declaration slots degrades the type and the unit
