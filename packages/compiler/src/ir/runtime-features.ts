@@ -967,7 +967,10 @@ const RUNTIME_FEATURE_RULES = {
   /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
    * casts, and closures boxed in a boundary program, which adopt their
    * arguments. */
-  declAdopt: rule({ fns: ["dyn.declAdopt"], initial: (mod) => mod.declBoundary === true }),
+  declAdopt: rule({
+    fns: ["dyn.declAdopt", "dyn.adoptShared"],
+    initial: (mod) => mod.declBoundary === true,
+  }),
   // Checked conversions into package-declared types name the declaration
   // in their TypeError (scr_type_origin.c).
   typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),

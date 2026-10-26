@@ -169,6 +169,33 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     ).toBe("");
   });
 
+  test("a boxed native value cast to another layout is copied (decision D3)", async () => {
+    // Node's `as` is a no-op, so these writes would show through every
+    // holder. scriptc copies a boxed native value into a cast's different
+    // layout for now (the object model's decision D3: copy, throw, or
+    // share storage); the copy keeps one identity per boxed value.
+    const r = await compileAndRun(
+      "native-layout-casts",
+      `type Point = { x: number; y: number };
+const dict: Record<string, number> = { x: 1, y: 2 };
+const v: unknown = dict;
+const p = v as Point;
+p.x = 5;
+console.log(dict.x, p.x, (v as Point) === p);
+const nums: number[] = [1, 2];
+const u: unknown = nums;
+console.log((u as number[]) === nums);
+const wide = u as (number | string)[];
+wide.push("s");
+console.log(nums.length, wide.length);
+console.log(JSON.stringify({ ...(v as Record<string, number>) }));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(["1 5 true", "true", "2 3", '{"x":1,"y":2}', ""].join("\n"));
+    expect(r.stderr).toBe("");
+  });
+
   test("wrong-typed field throws with the path", async () => {
     const r = await compileAndRun(
       "wrong-type",
