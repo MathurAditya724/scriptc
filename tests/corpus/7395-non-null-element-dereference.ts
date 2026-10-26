@@ -111,3 +111,32 @@ attempt("replaced write", () => {
 let names = ["kept"];
 attempt("replaced string", () => `${names[(names = [], 0)]!}`);
 console.log(current.length, names.length);
+
+// The element is read before the key and the value: a value that replaces,
+// removes or adds it writes to, or misses, the element the target read, and
+// a key the value reassigns is the one read before it.
+const slots = [new Cell("p"), new Cell("q")];
+const original = slots[0]!;
+attempt("value replaces", () => {
+  slots[0]!.label = ((slots[0] = new Cell("r")), "set");
+  return `${original.label} ${slots[0]!.label}`;
+});
+const tail = slots[1]!;
+attempt("value removes", () => {
+  slots[1]!.label = (slots.pop(), "gone");
+  return `${tail.label} ${slots.length}`;
+});
+attempt("value adds", () => {
+  slots[1]!.label = (slots.push(new Cell("s")), "added");
+});
+const table: number[][] = [[1, 2]];
+let column = 0;
+attempt("value moves key", () => {
+  table[0]![column] = ((column = 1), 5);
+  return table[0]!.join(",");
+});
+column = 0;
+attempt("value moves missing key", () => {
+  table[4]![column] = ((column = 1), 5);
+});
+console.log(slots.length, column);

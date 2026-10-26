@@ -83,6 +83,7 @@ import { lowerYield } from "./lower-generators.js";
 import { unionWideningTags } from "../../ir/analysis.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { everyExprChild } from "../../ir/traverse.js";
+import { declareContextLocal } from "./function-context.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./expressions/optional-chains.js";
 import { classToStringConversion, classUnionToString } from "./class-to-primitive.js";
 import { lowerCjsTopLevelThis, lowerRequireCacheElement } from "./lower-node-module.js";
@@ -1168,14 +1169,13 @@ function dereferencedElementReceiver(
 /** The parts of a member access through `xs[i]!` (see
  * dereferencedElementReceiver): statements that evaluate the array and the
  * index, whether the element is present, the element read, and Node's
- * TypeError message for a missing one. `hold` keeps the array and the
- * index in hidden locals, for a write whose value is evaluated before the
- * element is read. */
+ * TypeError message for a missing one. A `write` holds its key, so its
+ * message may be left for dereferencedElementWrite to build from the key. */
 export function dereferencedElementParts(
   lowerer: Lowerer,
   expr: ts.NonNullExpression,
   loc: SrcLoc,
-  hold: boolean,
+  write: boolean,
 ): { stmts: IrStmt[]; present: IrExpr; element: IrExpr; message: IrExpr | null } | null {
   let read: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(read)) read = read.expression;
@@ -1193,7 +1193,7 @@ export function dereferencedElementParts(
   // key (dereferencedElementWrite builds it).
   const message =
     memberAccessMessage(lowerer, use.access) ??
-    (hold && ts.isElementAccessExpression(use.access) && namedKey(lowerer, use.access)
+    (write && ts.isElementAccessExpression(use.access) && namedKey(lowerer, use.access)
       ? null
       : undefined);
   if (message === undefined) return null;
@@ -1219,8 +1219,7 @@ export function dereferencedElementParts(
   // can replace the array binding or field (`xs[(xs = other, 0)]!`), so the
   // array is held before it, as JavaScript reads it first.
   const stmts: IrStmt[] = [];
-  const plain = (value: IrExpr): boolean =>
-    !hold && (isSafeToRepeat(value) || plainProjection(value));
+  const plain = (value: IrExpr): boolean => isSafeToRepeat(value) || plainProjection(value);
   const held = (value: IrExpr, name: string): IrExpr => {
     const tmp = lowerer.declareHiddenLocal(name, value.type);
     stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
@@ -1269,43 +1268,89 @@ export function dereferencedElementWrite(
   while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
   if (!ts.isNonNullExpression(receiver)) return null;
   const loc = locOf(expr);
-  // The key and the value evaluate before the element is read, so the
-  // array and the index are held when either can assign one of them.
   const keyValue = ts.isElementAccessExpression(target)
     ? lowerer.lowerExpr(target.argumentExpression)
     : null;
   const rightValue = lowerer.lowerExpr(expr.right);
-  const pure = !mayAssign(rightValue) && (keyValue === null || !mayAssign(keyValue));
-  const parts = dereferencedElementParts(lowerer, receiver, loc, !pure);
+  const parts = dereferencedElementParts(lowerer, receiver, loc, true);
   if (parts === null) return null;
   const stmts = [...parts.stmts];
-  const held = (
-    node: ts.Expression,
-    value: IrExpr,
-    name: string,
-  ): { node: ts.Expression; value: IrExpr } => {
-    // A key or value whose evaluation is unobservable may evaluate in the
-    // write itself, after the element is tested.
-    if (isSafeToRepeat(value) || unobservable(value)) return { node, value };
+  let present = parts.present;
+  let element = parts.element;
+  // JavaScript reads the element before the key and the value. When either
+  // has an effect, which can replace, remove or add the element, its
+  // presence and value are read first; otherwise the write tests and reads
+  // it after them.
+  if (!unobservable(rightValue) || (keyValue !== null && !unobservable(keyValue))) {
+    const presentLocal = lowerer.declareHiddenLocal("%elementPresent", BOOL);
+    // Assigned only when the element is present.
+    const elementLocal = declareContextLocal(
+      lowerer.ctx,
+      "%elementValue",
+      element.type,
+      true,
+      undefined,
+      undefined,
+    );
+    stmts.push(
+      { kind: "varDecl", localId: presentLocal.id, init: present, loc },
+      { kind: "varDecl", localId: elementLocal.id, init: null, loc },
+    );
+    present = varRef(presentLocal.id, BOOL, loc);
+    stmts.push({
+      kind: "if",
+      cond: present,
+      then: [{ kind: "assign", localId: elementLocal.id, value: element, loc }],
+      else_: null,
+      loc,
+    });
+    element = varRef(elementLocal.id, element.type, loc);
+  }
+  const overrides: { node: ts.Expression; value: IrExpr }[] = [];
+  // The write lowers the node with or without its parentheses.
+  const override = (node: ts.Expression, value: IrExpr): void => {
+    for (let n: ts.Expression = node; ; n = n.expression) {
+      overrides.push({ node: n, value });
+      if (!ts.isParenthesizedExpression(n)) break;
+    }
+  };
+  const held = (value: IrExpr, name: string, inline: boolean): IrExpr => {
+    if (inline) return value;
     // A call without a result evaluates to undefined.
     if (value.type.kind === "void") {
       stmts.push({ kind: "exprStmt", expr: value, loc });
-      return { node, value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc } };
+      return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
     }
     const tmp = lowerer.declareHiddenLocal(name, value.type);
     stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
-    return { node, value: varRef(tmp.id, value.type, loc) };
+    return varRef(tmp.id, value.type, loc);
   };
-  const overrides = [{ node: target.expression, value: parts.element }];
+  override(target.expression, element);
   let message = parts.message;
   if (ts.isElementAccessExpression(target) && keyValue !== null) {
-    const key = held(target.argumentExpression, keyValue, "%elementWriteKey");
-    overrides.push(key);
-    message ??= keyMessage(messageHead(target), key.value, loc);
+    // The key evaluates before the value, which can assign the binding or
+    // field it reads; a literal, or an unobservable key the value cannot
+    // change, may evaluate in the write.
+    const key = held(
+      keyValue,
+      "%elementWriteKey",
+      keyValue.kind === "numLit" ||
+        keyValue.kind === "strLit" ||
+        (unobservable(keyValue) && !mayAssign(rightValue)),
+    );
+    override(target.argumentExpression, key);
+    // The message names the key's value as the write evaluated it.
+    if (key !== keyValue || message === null)
+      message = keyMessage(messageHead(target), key, loc) ?? message;
   }
-  overrides.push(held(expr.right, rightValue, "%elementWriteValue"));
+  // A value whose evaluation is unobservable may evaluate in the write
+  // itself, after the element is tested.
+  override(
+    expr.right,
+    held(rightValue, "%elementWriteValue", isSafeToRepeat(rightValue) || unobservable(rightValue)),
+  );
   if (message === null) return null;
-  return { stmts, present: parts.present, message, overrides };
+  return { stmts, present, message, overrides };
 }
 
 /** dereferencedElementWrite in value position (`f(xs[i]!.name = v)`). */
