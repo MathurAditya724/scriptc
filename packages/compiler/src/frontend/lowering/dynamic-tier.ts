@@ -271,6 +271,10 @@ function causeOf(lowerer: Lowerer, sites: readonly { loc: SrcLoc }[]): UntypedCa
 /** Generated functions (see scanDynamicTier), after any module prefix. */
 const GENERATED = /^%*(?:m\d+\.)?%*(?:dyn|caught|init)\./;
 
+/** Generated helpers that repeat their callers' locations: `%dyn.*` and
+ * `%caught.*`, but not a module's top level (`%init.*`). */
+const HELPERS = /^%*(?:m\d+\.)?%*(?:dyn|caught)\./;
+
 /** The likely-hot dynamic-tier functions of `module` (see the header). */
 export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTierReport {
   const facts = new Map<string, FunctionFacts>();
@@ -410,8 +414,9 @@ export function dynamicSlotOperationCounts(
   const counts = new Map<string, number>();
   if (lowerer.degradedTypes.size === 0) return counts;
   for (const fn of bodies) {
-    // Generated helpers repeat their callers' locations.
-    if (GENERATED.test(fn.name)) continue;
+    // Generated helpers repeat their callers' locations; top-level code
+    // (`%init.*`) counts like any function.
+    if (HELPERS.test(fn.name)) continue;
     for (const site of dynamicOperationSites(fn)) {
       const cause = causeAt(lowerer, site.loc);
       if (cause?.kind !== "slot") continue;

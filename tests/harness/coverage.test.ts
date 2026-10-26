@@ -461,6 +461,8 @@ test("a local or module global whose declared type does not compile becomes a dy
     ["global", "all", "(number | Callbacks)[]", "SC2009"],
     ["local", "local", "Callbacks | undefined", "SC2009"],
   ]);
+  // The loop over `all` is top-level code: its dynamic operations count too.
+  expect(coverage.dynamicSlots?.find((s) => s.name === "all")?.operations).toBeGreaterThan(0);
   expect(coverage.performance?.filter((d) => d.code === "SC6104")).toHaveLength(3);
   expect(coveragePasses(coverage, "blockers")).toBe(true);
   expect(coveragePasses(coverage, "dynamic")).toBe(true);
