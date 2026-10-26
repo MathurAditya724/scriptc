@@ -2032,6 +2032,15 @@ export class Lowerer {
    * exact binding discipline as globals/functions. */
   readonly staticCallables = new Map<ts.Symbol, StaticCallableProjection>();
   readonly genericFnsBySymbol = new Map<ts.Symbol, GenericFnInfo>();
+  /** Typed declarations' instances for arguments that keep their own
+   * record or array layout (structural-instances.ts). */
+  readonly structuralFnInfos = new Map<ts.Symbol, GenericFnInfo>();
+  /** Consts that keep their initializer's record or array layout, with the
+   * initializer's checker type (structural-instances.ts). */
+  readonly preservedLayoutTypes = new Map<ts.Symbol, ts.Type>();
+  /** Arguments and const initializers whose array or record layout the
+   * lowering kept instead of copying (divergences.ts reports no copy there). */
+  readonly layoutKeptNodes = new Set<ts.Node>();
   /** Object-literal GENERIC methods (`{ m<T>(x: T) {...} }`), interned by
    * their function-like node — instances ride the same monomorphization
    * queue (objLitGenericFnInfoOf). */

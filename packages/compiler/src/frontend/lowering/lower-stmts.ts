@@ -1,3 +1,4 @@
+import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import {
@@ -5924,6 +5925,16 @@ export function lowerVarDecl(
     )
       g.type = DYN;
     g.type = inferredOptionalRecordType(lowerer, decl, g.type, raw.type);
+    // A module const keeps its initializer's record or array layout, as a
+    // function's const does (keepsInitializerLayout).
+    if (
+      !isVarDeclared(decl) &&
+      (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
+      keepsInitializerLayout(lowerer, decl.initializer, raw.type, g.type)
+    ) {
+      g.type = raw.type;
+      notePreservedLayout(lowerer, decl);
+    }
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
@@ -6071,6 +6082,17 @@ export function lowerVarDecl(
   // Promise.prototype is an ordinary object the checker types Promise<any>.
   if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
     type = DYN;
+  // A const whose initializer has another record or array layout than the
+  // binding's type keeps the initializer's layout: converting would copy the
+  // value, so the binding would not be the value its initializer names.
+  if (
+    !isLet &&
+    type !== null &&
+    keepsInitializerLayout(lowerer, decl.initializer, init.type, type)
+  ) {
+    type = init.type;
+    notePreservedLayout(lowerer, decl);
+  }
   // A typed-arguments function expression (typed-arguments.ts): the
   // checker types the binding variadic, but its value has the fixed
   // signature every use asserts.
