@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -26,6 +26,7 @@ async function fakePackage(
     emptyOutput?: boolean;
     missingOutput?: boolean;
     changePackageDuringEmit?: boolean;
+    profileReport?: string;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-native-helper-test-"));
@@ -72,6 +73,7 @@ ${
         ? ":"
         : 'for each in $outputs; do cp "$input" "$each"; done'
 }
+${options.profileReport === undefined ? "" : `printf '%s\\n' '${options.profileReport}'`}
 `,
   );
   await chmod(bin, 0o755);
@@ -194,6 +196,41 @@ test("profiles reach the helper and key the native cache by their bytes", async 
   expect(calls[0]).not.toContain("--profile-");
   expect(calls[1]).toContain("--profile-generate /profiles/%p.profraw");
   expect(calls[2]).toContain("--profile-use /profiles/a.profdata");
+});
+
+test("a cached artifact keeps the profile match of the build that produced it", async () => {
+  const pkg = await fakePackage({
+    profileReport:
+      '{"ok":true,"profile":{"annotated":120,"mismatched":7,"missing":40,"unknown_partitions":0}}',
+  });
+  const used = {
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "used.o")),
+    profile: { use: { path: "/profiles/a.profdata", digest: "a".repeat(64) } },
+  };
+  const match = { annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 0 };
+  expect((await emitNativeArtifact(used)).profileMatch).toEqual(match);
+  const again = await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "again.o") });
+  expect(again.profileMatch).toEqual(match);
+  expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+  // Without the cached match, the cached partition's counts are unknown.
+  const cache = join(pkg.root, "cache", "native-codegen-v1");
+  const [shard] = await readdir(cache);
+  for (const name of await readdir(join(cache, shard!)))
+    if (name.includes(".profile-match")) await rm(join(cache, shard!, name));
+  const unknown = await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "unknown.o") });
+  expect(unknown.profileMatch).toEqual({
+    annotated: 0,
+    mismatched: 0,
+    missing: 0,
+    unknownPartitions: 1,
+  });
+  // Builds without a profile carry no match, from the helper or the cache.
+  const plain = request(pkg.root, pkg.packageJson, join(pkg.root, "plain.o"));
+  expect((await emitNativeArtifact(plain)).profileMatch).toBeUndefined();
+  expect(
+    (await emitNativeArtifact({ ...plain, outputPath: join(pkg.root, "plain-again.o") }))
+      .profileMatch,
+  ).toBeUndefined();
 });
 
 test("chunked LLVM input preserves emitted bytes and the native cache identity", async () => {
