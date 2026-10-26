@@ -871,11 +871,20 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
       // NI-5: the runtime exports dyn objects by reference and copies only
       // primitives, strings and (for now) arrays.
       return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
-    case "refused":
+    case "refused": {
+      const type = lowerer.typeOf(node);
+      // A type parameter the instance binds to dyn (a generic function
+      // over island types, `<T extends TSchema>`): its values are dyn
+      // values, and they cross the way `any` values do.
+      if (
+        (type.flags & ts.TypeFlags.TypeParameter) !== 0 &&
+        lowerer.typeParamResolver(type)?.kind === "dyn"
+      )
+        return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
       // NI-5: closures, promises, records and class instances cross by
       // reference (scr_node_island_export.c): their dyn boxes keep the
       // native referent, and the closure's thunk checks its arguments.
-      if (exportedByReference(lowerer, lowerer.typeOf(node))) {
+      if (exportedByReference(lowerer, type)) {
         const lowered = lowerer.lowerExpr(node);
         const value = lowerer.coerceToExpected(lowered, DYN);
         return lowered.type.kind === "object"
@@ -884,9 +893,10 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
       }
       return boundaryFail(
         lowerer,
-        `a '${lowerer.checker.typeToString(lowerer.typeOf(node))}' value (a native object would cross as a copy and lose its identity)`,
+        `a '${lowerer.checker.typeToString(type)}' value (a native object would cross as a copy and lose its identity)`,
         node,
       );
+    }
   }
 }
 

@@ -156,18 +156,20 @@ export function prepareExecutableModule(
         );
       }
       // A failed program whose compiled packages need the runtime or a
-      // mutable object model (NI-2's report): try them as islands, and
-      // report this failure if that build fails too.
+      // mutable object model (NI-2's report): try them as islands. If that
+      // build fails too, its failure is the one reported. This build typed
+      // those packages from their JavaScript, where the types they only
+      // declare (interfaces, aliases such as `Static<T>`) are `any`, so its
+      // diagnostics describe a program the island build does not compile:
+      // there the packages' declarations type the user code.
       const marked = retryFences
         ? fenceIslands(entryPath, opts, fe, lowered, lowerIslands, false)
         : null;
       if (marked !== null) {
-        const diagnostics = lowered.diagnostics;
-        const texts = fe.sourceTexts();
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        const islanded = prepareExecutableModule(
+        return prepareExecutableModule(
           entryPath,
           opts,
           ffi,
@@ -177,8 +179,6 @@ export function prepareExecutableModule(
           marked,
           false,
         );
-        if (islanded.ok) return islanded;
-        return { ok: false, diagnostics, sourceTexts: texts };
       }
       return fail(lowered.diagnostics);
     }
