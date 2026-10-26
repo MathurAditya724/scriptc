@@ -75,6 +75,10 @@ export function mapCanonical(c: Canon, ctx: TypeMapperCtx, depth = 0): IrType | 
         return viaChecker();
       if (c.index().length > 0) return viaChecker();
       const props = c.props();
+      // Accessor members are closure slots (`%get:x`, `%set:x`), and a
+      // getter and setter of different types have no single slot type:
+      // mapType's rules decide them, not a data field of the read type.
+      if (props.some((p) => p.accessor)) return viaChecker();
       // `{}` holds any non-nullish value: the checked dynamic, as mapType.
       if (props.length === 0) return DYN;
       const fields: { name: string; type: IrType }[] = [];

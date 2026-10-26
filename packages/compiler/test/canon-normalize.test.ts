@@ -73,6 +73,9 @@ beforeAll(() => {
     export type Loose = [string, number?, ...boolean[]];
     // Arrays of two instantiations of one generic class.
     export type Maps = Map<string, number>[] | Map<number, string>[];
+    // Accessor members: one type, and a getter and setter of different types.
+    export interface Gauge { get level(): number; set level(next: number) }
+    export interface Cell { get value(): string; set value(next: string | number) }
   `,
   );
   load = loadProgram(entry);
@@ -291,11 +294,20 @@ describe("mapCanonical", () => {
     isExternalTypeFile: () => false,
     isProgramFile: (sf) => load.moduleOrder.includes(sf),
   });
-  test.for(["Normalized", "Same", "Flat", "Id", "Pair"])("%s maps like mapType", (name) => {
-    const strict = mapType(aliases.get(name)!, ctx());
-    const canonical = mapCanonical(new Normalizer(checker).canon(aliases.get(name)!), ctx());
-    expect(strict).not.toBeNull();
-    expect(canonical && typeKey(canonical)).toBe(typeKey(strict!));
+  test.for(["Normalized", "Same", "Flat", "Id", "Pair", "Gauge"])(
+    "%s maps like mapType",
+    (name) => {
+      const strict = mapType(aliases.get(name)!, ctx());
+      const canonical = mapCanonical(new Normalizer(checker).canon(aliases.get(name)!), ctx());
+      expect(strict).not.toBeNull();
+      expect(canonical && typeKey(canonical)).toBe(typeKey(strict!));
+    },
+  );
+  test("accessors are not data fields: a getter and setter of different types do not map", () => {
+    const cell = aliases.get("Cell")!;
+    expect(mapType(cell, ctx())).toBeNull();
+    expect(mapCanonical(new Normalizer(checker).canon(cell), ctx())).toBeNull();
+    expect(key(new Normalizer(checker).canon(cell))).toContain("get value");
   });
   test("a generic alias maps under bindings, where mapType needs the instance table", () => {
     const { type, params } = asTypes.get("Catalog<G, P>")!;
