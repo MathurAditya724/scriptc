@@ -316,3 +316,41 @@ test("a file changed shortly before the read is hashed on every check", async ()
   expect(frontendInputsStillMatch(snapshot)).toBe(true);
   expect(reads.mock.calls.filter(([path]) => path === source)).toHaveLength(1);
 });
+
+test("a read before and a read after a file settles record one probe", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  const tracker = new FrontendInputTracker();
+  // The first read comes right after the write, the second once the file
+  // has been unchanged long enough for its identity to stand for it.
+  tracker.run(() => trackedReadFile(source));
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.now() + 5000);
+  try {
+    tracker.run(() => trackedReadFile(source));
+  } finally {
+    vi.useRealTimers();
+  }
+  const snapshot = tracker.snapshot();
+  expect(snapshot.stable).toBe(true);
+  const probe = snapshot.probes.find((entry) => entry.op === "file");
+  expect(probe?.op === "file" && probe.identity !== undefined).toBe(true);
+  expect(frontendInputsStillMatch(snapshot)).toBe(true);
+  // The identity still invalidates the snapshot on any write.
+  await writeFile(source, "export const answer = 2;\n");
+  expect(frontendInputsStillMatch(snapshot)).toBe(false);
+});
+
+test("two reads of a file that saw different content prevent cache publication", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(source));
+  await writeFile(source, "export const answer = 2;\n");
+  tracker.run(() => trackedReadFile(source));
+  expect(tracker.snapshot().stable).toBe(false);
+});
