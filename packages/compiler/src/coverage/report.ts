@@ -650,6 +650,7 @@ export function coverageEnvelope(
             declaredType: slot.declaredType,
             code: slot.code,
             reason: slot.reason,
+            ...(slot.partial === true ? { partial: true } : {}),
           })),
         }
       : {}),
@@ -763,7 +764,9 @@ function renderDynamicSlots(
     `    dynamic slots       ${slots.length}  ${c(DIM, "(declared types with no static lowering, held as checked-dynamic values; SC6104)")}`,
   );
   for (const slot of slots.slice(0, DYNAMIC_SLOTS_SHOWN))
-    out.push(`      ${dynamicSlotLabel(slot)}  ${c(DIM, where(slot.loc))}`);
+    out.push(
+      `      ${dynamicSlotLabel(slot)}${slot.partial === true ? " (dynamic pieces)" : ""}  ${c(DIM, where(slot.loc))}`,
+    );
   if (slots.length > DYNAMIC_SLOTS_SHOWN)
     out.push(`      ${c(DIM, `and ${slots.length - DYNAMIC_SLOTS_SHOWN} more`)}`);
 }

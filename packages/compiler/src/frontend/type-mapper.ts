@@ -1287,6 +1287,11 @@ export interface TypeMapperCtx {
    * only after the strict mapping (and its bound-alias retry) returns null,
    * at every depth, so every occurrence of a degraded type maps alike. */
   degradedType?: (type: ts.Type) => IrType | null;
+  /** Localized failure's lenient mapping (Lowerer.lenientType): a nested
+   * component whose mapping fails maps to the checked dynamic instead, so a
+   * failing type keeps its outer shape with dynamic pieces. Only ever set
+   * on a throwaway context without memoization. */
+  lenient?: boolean;
   /** GENERIC program classes (monomorphization by flow): the mapping of a
    * concrete instantiation reference (`Box<number>`) — the Lowerer
    * registers/reuses the instantiation (`Box%0`) and answers its object
@@ -1870,6 +1875,12 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         mapped = lenient;
         contextResolutions++;
       }
+    }
+    // Push-down (stage L3): in a lenient mapping, the smallest failing
+    // component is the checked dynamic.
+    if (mapped === null && ctx.lenient === true && !topLevel) {
+      mapped = DYN;
+      contextResolutions++;
     }
     if (
       mapped !== null &&

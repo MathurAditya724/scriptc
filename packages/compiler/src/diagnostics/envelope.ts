@@ -172,6 +172,7 @@ export interface DiagnosticsEnvelope {
     declaredType: string;
     code: string;
     reason: string;
+    partial?: boolean;
   })[];
   /** coverage --explain-dynamic only: the report-only tier assignment. */
   tiers?: TiersEnvelope;

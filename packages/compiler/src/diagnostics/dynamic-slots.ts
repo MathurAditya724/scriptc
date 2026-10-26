@@ -17,6 +17,9 @@ export interface DynamicSlotEntry {
   /** The diagnostic the slot's declaration would have failed with. */
   code: string;
   reason: string;
+  /** Push-down: the slot keeps its type's compilable shape, and only the
+   * components that do not compile are checked-dynamic. */
+  partial?: boolean;
 }
 
 const SLOT_WORD: Record<TypeFailureSlot, string> = {
@@ -38,7 +41,10 @@ export function dynamicSlotLabel(entry: DynamicSlotEntry): string {
 export function dynamicSlotDiag(entry: DynamicSlotEntry): ScrDiagnostic {
   return {
     code: DYNAMIC_SLOT_CODE,
-    message: `${dynamicSlotLabel(entry)} is held as a checked-dynamic value: its type has no static lowering (${entry.reason}); reads into typed code are checked`,
+    message:
+      entry.partial === true
+        ? `${dynamicSlotLabel(entry)} keeps its compilable shape with checked-dynamic pieces where its type has no static lowering (${entry.reason}); reads of those pieces into typed code are checked`
+        : `${dynamicSlotLabel(entry)} is held as a checked-dynamic value: its type has no static lowering (${entry.reason}); reads into typed code are checked`,
     loc: entry.loc,
     hint: "restate the declared type inside the compilable set to keep this slot static; scriptc coverage lists dynamic slots, and --fail-on=dynamic-slots fails on them",
   };

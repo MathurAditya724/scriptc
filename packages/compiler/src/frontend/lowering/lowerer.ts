@@ -728,6 +728,9 @@ export interface DynamicSlot {
   failure: TypeFailure;
   code: string;
   reason: string;
+  /** The slot keeps its type's compilable shape; only the failing
+   * components are checked-dynamic (push-down, stage L3). */
+  partial?: true;
 }
 
 /** Localized failure: rounds of the declaration flush retry. */
@@ -987,7 +990,7 @@ export interface LowererMode {
   /** Localized failure: the types reachable emit degraded (the coverage
    * remainder maps them alike, so the declarations reachable emit
    * registered with dynamic slots collect there too). */
-  degradedTypes?: ReadonlyMap<number, { lenient: IrType; code: string; reason: string }>;
+  degradedTypes?: ReadonlyMap<number, { lenient: IrType | null; code: string; reason: string }>;
   /** Localized failure: the declarations reachable emit registered with
    * dynamic slots (the coverage remainder registers them too). */
   retriedSymbols?: ReadonlySet<ts.Symbol>;
@@ -1304,6 +1307,7 @@ export function lowerToIr(
       declaredType: slot.failure.declaredType,
       code: slot.code,
       reason: slot.reason,
+      ...(slot.partial ? { partial: true } : {}),
     }));
     result = {
       ...result,
@@ -3780,7 +3784,10 @@ export class Lowerer {
    * at a committed slot, with their lenient mapping. Filled only at the
    * commit points (degradeAtCommit), so a program that compiles today
    * never fills it. */
-  readonly degradedTypes = new Map<number, { lenient: IrType; code: string; reason: string }>();
+  readonly degradedTypes = new Map<
+    number,
+    { lenient: IrType | null; code: string; reason: string }
+  >();
   /** The dynamic slots the commit points created: one SC6104 each. */
   readonly dynamicSlots: DynamicSlot[] = [];
   /** Declarations retryDeferred registered. */
@@ -3888,7 +3895,13 @@ export class Lowerer {
   ) {
     // The mode's options, sorted by name; the values derived from them follow.
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
-    for (const [id, degraded] of mode.degradedTypes ?? []) this.degradedTypes.set(id, degraded);
+    // Lenient forms are IR types of the other pass's shape tables: only the
+    // whole-slot dynamic carries over as is.
+    for (const [id, degraded] of mode.degradedTypes ?? [])
+      this.degradedTypes.set(id, {
+        ...degraded,
+        lenient: degraded.lenient?.kind === "dyn" ? DYN : null,
+      });
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
@@ -3927,7 +3940,17 @@ export class Lowerer {
       resolveBoundAliasTs: this.boundAliasTsResolver,
       degradedType: (type) => {
         const id = (type as { id?: number }).id;
-        return id === undefined ? null : (this.degradedTypes.get(id)?.lenient ?? null);
+        if (id === undefined) return null;
+        const degraded = this.degradedTypes.get(id);
+        if (degraded === undefined) return null;
+        // An entry handed over from another pass (the coverage remainder)
+        // re-derives its lenient form in this lowerer's shape tables; the
+        // checked dynamic cuts the knot while it does.
+        if (degraded.lenient === null) {
+          degraded.lenient = DYN;
+          degraded.lenient = this.lenientType(type);
+        }
+        return degraded.lenient;
       },
       isErasing: () => this.erasingDepth > 0,
       genericClassInstance: (decl, ref, mapArgument) =>
@@ -9455,8 +9478,9 @@ export class Lowerer {
     if (!failure.degradable || failure.family === "dyn-field-policy") return null;
     if (!slots.has(failure.slot)) return null;
     const id = (type as { id?: number }).id;
-    // Already degraded and still failing: no progress, commit as today.
-    if (id === undefined || this.degradedTypes.has(id)) return null;
+    // Already degraded to the whole-slot dynamic and still failing: no
+    // progress, commit as today.
+    if (id === undefined || this.degradedTypes.get(id)?.lenient?.kind === "dyn") return null;
     let committed: ScrDiagnostic | undefined;
     for (let i = this.diags.length - 1; i >= 0; i--) {
       if (this.diags[i]!.typeFailure !== failure) continue;
@@ -9464,8 +9488,15 @@ export class Lowerer {
       this.diags.splice(i, 1);
     }
     if (committed === undefined) return null;
-    this.degradedTypes.set(id, { lenient: DYN, code: committed.code, reason: committed.message });
-    return { loc: committed.loc, failure, code: committed.code, reason: committed.message };
+    this.degradeType(type, committed.code, committed.message);
+    const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
+    return {
+      ...(partial ? { partial: true as const } : {}),
+      loc: committed.loc,
+      failure,
+      code: committed.code,
+      reason: committed.message,
+    };
   }
 
   /** A declaration slot whose type maps through degradedTypes is a
@@ -9474,7 +9505,9 @@ export class Lowerer {
   noteDegradedSlot(node: ts.Node, type: ts.Type): void {
     if (this.diagSink !== null) return;
     const degraded = this.degradedTypes.get((type as { id?: number }).id ?? -1);
-    if (degraded === undefined) return;
+    // A pushed-down type is one slot, reported where it degraded; only
+    // whole-slot dynamic declarations are reported one by one.
+    if (degraded === undefined || degraded.lenient?.kind !== "dyn") return;
     const failure = typeFailureOf(node, this.checker.typeToString(type), "unsupported");
     if (failure.slot === "expression" || failure.slot === "member") return;
     this.noteDynamicSlot({
@@ -9552,6 +9585,33 @@ export class Lowerer {
         this.dropAttemptDiags(mark);
       }
     }
+  }
+
+  /** Localized failure's lenient mapping (stage L3, push-down): the type
+   * mapped with each failing component as the checked dynamic, so a record
+   * keeps its static members, an array of records its records, and a
+   * function its arity. The whole slot is the checked dynamic when even
+   * that shape does not map. Throwaway context: nothing memoizes. */
+  lenientType(type: ts.Type): IrType {
+    const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
+    const mapped = mapType(type, { ...strict, lenient: true, canMemoizeType: () => false });
+    return mapped === null || mapped.kind === "void" ? DYN : mapped;
+  }
+
+  /** Degrades a type for a commit point: its lenient (pushed-down) form
+   * first; a type already degraded that still fails falls back to the
+   * whole-slot checked dynamic. False when nothing is left to degrade. */
+  private degradeType(type: ts.Type, code: string, reason: string): boolean {
+    const id = (type as { id?: number }).id;
+    if (id === undefined) return false;
+    const known = this.degradedTypes.get(id);
+    if (known !== undefined) {
+      if (known.lenient?.kind === "dyn") return false;
+      this.degradedTypes.set(id, { lenient: DYN, code, reason });
+      return true;
+    }
+    this.degradedTypes.set(id, { lenient: this.lenientType(type), code, reason });
+    return true;
   }
 
   /** Records a dynamic slot whose unit lowered with it (one per site). */
@@ -12549,7 +12609,7 @@ export class Lowerer {
     const slots: DynamicSlot[] = [];
     let current = diags;
     for (let round = 0; round < MAX_DECLARATION_RETRIES; round++) {
-      const failing: { diag: ScrDiagnostic; failure: TypeFailure; id: number }[] = [];
+      const failing: { diag: ScrDiagnostic; failure: TypeFailure; type: ts.Type }[] = [];
       let retriable = false;
       for (const diag of current) {
         if (this.retriableDiags.has(diag)) {
@@ -12567,20 +12627,29 @@ export class Lowerer {
         const id = (type as { id?: number } | undefined)?.id;
         if (
           failure === undefined ||
+          type === undefined ||
           id === undefined ||
           !failure.degradable ||
           !DECLARATION_SLOTS.has(failure.slot) ||
-          this.degradedTypes.has(id)
+          this.degradedTypes.get(id)?.lenient?.kind === "dyn"
         )
           return false;
-        failing.push({ diag, failure, id });
+        failing.push({ diag, failure, type });
       }
       // A round makes progress by degrading a type, or (once) by running
       // a collection that only waited for another declaration.
       if (failing.length === 0 && !(retriable && round === 0)) return false;
-      for (const { diag, failure, id } of failing) {
-        this.degradedTypes.set(id, { lenient: DYN, code: diag.code, reason: diag.message });
-        slots.push({ loc: diag.loc, failure, code: diag.code, reason: diag.message });
+      for (const { diag, failure, type } of failing) {
+        this.degradeType(type, diag.code, diag.message);
+        const partial =
+          this.degradedTypes.get((type as { id?: number }).id ?? -1)?.lenient?.kind !== "dyn";
+        slots.push({
+          loc: diag.loc,
+          failure,
+          code: diag.code,
+          reason: diag.message,
+          ...(partial ? { partial: true as const } : {}),
+        });
       }
       this.deferredDiags.delete(symbol);
       const lifted = this.liftDynFieldPolicy;
@@ -13066,8 +13135,7 @@ export class Lowerer {
   /* ── scoping and captures ─────────────────────────────────────────── */
 
   declareLocal(nameNode: ts.Node, name: string, type: IrType, mutable: boolean): IrLocal {
-    if (type.kind === "dyn" && this.degradedTypes.size > 0)
-      this.noteDegradedSlot(nameNode, this.typeOf(nameNode));
+    if (this.degradedTypes.size > 0) this.noteDegradedSlot(nameNode, this.typeOf(nameNode));
     const symbol = this.checker.getSymbolAtLocation(nameNode);
     const local = declareContextLocal(
       this.ctx,
