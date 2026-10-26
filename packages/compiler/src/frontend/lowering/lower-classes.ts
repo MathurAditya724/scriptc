@@ -116,6 +116,7 @@ import {
   requireSpecOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
+import { declarationGroupKey } from "./type-failure.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
@@ -2306,6 +2307,10 @@ export function collectClassShapeInner(
           `extending classes not declared in the program ('${t.expression.text}')`,
         );
         lowerer.retriableDiags.add(diag);
+        // A base the program declares but rejected: this rejection is its
+        // cascade (localized failure, report-only).
+        const rejectedBase = rejectedProgramClassGroup(lowerer, symbol);
+        if (rejectedBase !== null) diag.cause = [rejectedBase];
         lowerer.pushDiag(diag);
         throw new PoisonError();
       }
@@ -11864,4 +11869,15 @@ function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaratio
     return undefined;
   });
   return found;
+}
+
+/** The failure group of a class the program declares but did not collect
+ * (its own declaration was rejected), or null for any other symbol. */
+function rejectedProgramClassGroup(lowerer: Lowerer, symbol: ts.Symbol | null): string | null {
+  if (symbol === null) return null;
+  const recorded = lowerer.rejectedGroups.get(symbol);
+  if (recorded !== undefined) return recorded;
+  const decl = symbol.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
+  if (decl === undefined || ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
+  return declarationGroupKey(symbol);
 }

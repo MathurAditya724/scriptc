@@ -755,6 +755,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const touched = new Set<string>();
       lowerer.failureTouches.push(touched);
       const pendingSlots: DynamicSlot[] = [];
+      // A declarator that initializes a forward-captured TDZ box takes it
+      // out of tdzPredeclared; a retry after a later declarator degrades
+      // must initialize the same box again.
+      const tdzBefore = new Map(lowerer.ctx.tdzPredeclared);
       try {
         for (let attempt = 0; ; attempt++) {
           try {
@@ -774,6 +778,9 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             // retry appends after them.
             lowerer.dropAttemptDiags(diagsBefore);
             if (slot !== null) pendingSlots.push(slot);
+            for (const [symbol, local] of tdzBefore)
+              if (!lowerer.ctx.tdzPredeclared.has(symbol))
+                lowerer.ctx.tdzPredeclared.set(symbol, local);
           }
         }
         for (const slot of pendingSlots) lowerer.noteDynamicSlot(slot);
@@ -1954,7 +1961,16 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     }
     // Exception-representable values move into the runtime's exception
     // cell. `throw f()` of a void call has no value.
-    let value = lowerer.lowerExpr(stmt.expression);
+    // A thrown object or array literal has no declared type: it is built as
+    // a dynamic object, so the catch binding's checked casts adopt it
+    // (lowerer.untypedLiteralContext).
+    let literal: ts.Expression = stmt.expression;
+    while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
+    let value =
+      (ts.isObjectLiteralExpression(literal) || ts.isArrayLiteralExpression(literal)) &&
+      lowerer.untypedLiteralContext(literal)
+        ? lowerer.lowerExprExpecting(stmt.expression, DYN)
+        : lowerer.lowerExpr(stmt.expression);
     if (value.type.kind === "void")
       lowerer.badType(stmt.expression, lowerer.typeOf(stmt.expression));
     // Preserve primitive reasons and readable record identity across the
