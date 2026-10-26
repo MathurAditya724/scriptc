@@ -520,6 +520,10 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.bagGet",
   "dyn.bitwise",
   "dyn.compare",
+  // Adoption reads the native value it was built into and turns shared
+  // source nodes into capsules of it; it stores no property into a capsule.
+  "dyn.declAdopt",
+  "dyn.adoptShared",
   "dyn.forInKeyStrings",
   "dyn.forInKeys",
   "dyn.forInStable",
@@ -575,6 +579,19 @@ const DYN_READ_ONLY = new Set<string>([
   "buffer.poolFromDynRange",
   "insp.dyn",
   "insp.dynS",
+  // util.format and util.inspect over checked values: the inspect walk and
+  // the format conversions read them; insp.registerCustom keeps a class's
+  // custom inspect thunk in the runtime's registry.
+  "insp.customIsSelf",
+  "insp.customResult",
+  "insp.format",
+  "insp.formatList",
+  "insp.formatPrimitives",
+  "insp.formatSpecifiesDyn",
+  "insp.formatWithOptions",
+  "insp.inspect",
+  "insp.registerCustom",
+  "insp.dynFormatS",
   "insp.dynHidden",
   // The dynamic-tier operators run their dyn twins (scr_js_value.c); the
   // conversions move a value between dyn and jsval, and js.toF64 is

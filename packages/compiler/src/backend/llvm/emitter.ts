@@ -1,4 +1,5 @@
 import type { TargetCpu } from "../target-cpu.js";
+import type { FunctionLayout } from "./function-layout.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
@@ -63,6 +64,7 @@ import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
 import { globalSlotAlias } from "./bytes-alias.js";
+import type { BytesHeaderScope } from "./bytes-headers.js";
 import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
 import {
   materializeSplitPiece,
@@ -147,6 +149,7 @@ import {
   bridgePlainUnwindCalls,
   unwindAbiFunctions,
 } from "./unwind-abi.js";
+import { cloneForCpuDispatch } from "./cpu-dispatch.js";
 import {
   mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
@@ -183,14 +186,14 @@ import {
   unionBoxBits,
 } from "./inline-unions.js";
 import { OptionalArrayReads, type LocalArrayRead } from "./local-array-reads.js";
-import { CheckedNarrows } from "./checked-narrows.js";
+import { borrowsCheckedNarrow, CheckedNarrows } from "./checked-narrows.js";
 import {
   emitDenseArraySet,
   emitDenseSlotUnlink,
   SCR_ELEM_I32,
   type ArrayAccess,
 } from "./dense-array-access.js";
-import { matchMapRead, type MapReadLifetimes } from "./map-read-lifetimes.js";
+import { matchMapRead, pointerMapGet, type MapReadLifetimes } from "./map-read-lifetimes.js";
 import { type MapEntryFusion } from "./map-entry-fusion.js";
 import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
@@ -202,7 +205,7 @@ import { ReferenceEffects } from "./reference-effects.js";
 import { ReferenceWrites, type Writes } from "./reference-writes.js";
 import { LlvmDebugInfo } from "./debug-info.js";
 import { StackCallbacks } from "./stack-callbacks.js";
-import { findAppendedArrayLiterals } from "./appended-array-literals.js";
+import { findAppendedArrayLiterals, reservedArrayLength } from "./appended-array-literals.js";
 import { AmbientReceiverReaders, findConstantCallbacks } from "./constant-callbacks.js";
 import {
   findLentRecordFields,
@@ -213,7 +216,13 @@ import {
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
 import { StackCaptures } from "./stack-captures.js";
-import { emitFieldAbsentTest, f64Lit, SCR_ARR_FIELD, SCR_ARR_FROZEN } from "./common.js";
+import {
+  CLOSURE_RECEIVER_FREE,
+  emitFieldAbsentTest,
+  f64Lit,
+  SCR_ARR_FIELD,
+  SCR_ARR_FROZEN,
+} from "./common.js";
 import { ffiExtendsNarrowIntegers } from "../targets.js";
 import {
   emitLiteralExpr,
@@ -285,7 +294,12 @@ import {
   emitBytesSet,
   emitBytesIntrinsic,
 } from "./expr-bytes.js";
-import { emitRegexIntrinsic, emitRecordKeyGet, keyedRecordReadInto } from "./expr-records.js";
+import {
+  emitRecordKeyGet,
+  emitRegexIntrinsic,
+  keyedRecordReadInto,
+  pointerRecordKeyGet,
+} from "./expr-records.js";
 import {
   dynPromiseAdapter,
   streamTypedRefCommitAdapter,
@@ -476,18 +490,19 @@ export interface LlvmTargetOptions {
    * earlier emission found breaking its rules (UnwindAbiViolation). */
   unwindExcluded?: ReadonlySet<string>;
   /** Emit the function bodies in this many contiguous ranges, each by its
-   * own emitter, and merge them in function order (emit-journal.ts). The
-   * output is the same as one emitter's. Debug builds (`debugSources`)
-   * emit in one emitter. */
+   * own emitter, and merge them in function order (emit-journal.ts, and
+   * debug-info.ts for debug metadata). The output is the same as one
+   * emitter's. */
   functionChunks?: number;
   /** Emit the function bodies of a large module on this many forked worker
    * processes at a time (emit-module.ts), forked with `forkPrimitives`. The
-   * output is the same as one emitter's. Debug builds (`debugSources`)
-   * emit in one emitter. */
+   * output is the same as one emitter's. */
   functionWorkers?: number;
   /** The host's process primitives, where it can fork (the native
    * compiler's). */
   forkPrimitives?: ForkPrimitives | undefined;
+  /** Functions to write first, by tier (function-layout.ts). */
+  functionLayout?: FunctionLayout;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
@@ -512,6 +527,12 @@ export interface LlvmTargetOptions {
   inlineRc?: InlineRcMode;
   /** Define the inline RC fast-path helpers `noinline` (sanitized builds). */
   rcHelpersNoinline?: boolean;
+  /** Mark every emitted function `sanitize_address`, which the sanitized
+   * lane's `-fsanitize=address` link needs to instrument it. Without a
+   * sanitizer pass the attribute still turns off shrink-wrapping and
+   * speculative loads, so plain builds pass false. Defaults to true for
+   * direct emission. */
+  sanitizeAttributes?: boolean;
   /** Define `scr_detached_exit` so the Linux runtime hands the address-space
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
@@ -528,6 +549,11 @@ export interface LlvmTargetOptions {
    * every emitted function carries it as its `target-cpu`. Unset, code
    * runs on any x86-64 CPU. */
   targetCpu?: TargetCpu;
+  /** Give an x86-64 executable without a `targetCpu` an x86-64-v3 copy of
+   * each program function, which it runs on CPUs at that level
+   * (cpu-dispatch.ts). Ignored for other targets, libraries and builds
+   * with debug information. */
+  cpuDispatch?: boolean;
 }
 
 /** LlvmTargetOptions.lowRegion for an executable: Linux targets without
@@ -1270,6 +1296,10 @@ export class LlEmitter {
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
   readonly targetCpu: TargetCpu | undefined;
+  /** Emitted functions carry `sanitize_address` (LlvmTargetOptions). */
+  readonly sanitizeAttributes: boolean;
+  /** LlvmTargetOptions.cpuDispatch, where it applies. */
+  readonly cpuDispatch: boolean;
   readonly wasmBoundsChecks: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the runtime ABI’s determinism discipline. */
@@ -1303,6 +1333,12 @@ export class LlEmitter {
   readonly regexInstances = new Map<
     string,
     { sym: string; src: string; fl: string; pattern: string; flags: string }
+  >();
+  /** Build-time replacers: one per (pattern, flags, replacement) of a
+   * global substitution with a literal replacement (regex-matchers.ts). */
+  readonly regexReplacers = new Map<
+    string,
+    { sym: string; pattern: string; flags: string; replacement: string }
   >();
   /** Interned tagged-template strings objects: per-site key → { symbol,
    * interned cooked-literal refs }. One immortal ScrArr of string slots
@@ -1479,6 +1515,11 @@ export class LlEmitter {
   /** Locals whose array literal emitStmts left for the `await Promise.all`
    * that reads them (deferredPromiseAllLocal). */
   private readonly deferredPromiseAllEntries = new Map<string, ExprOf<"arrayLit">>();
+  /** Empty array literals that a capacity hint follows directly
+   * (reservedArrayLength), with that hint. Constructing the literal with
+   * the hinted capacity consumes the hint, which then emits nothing. */
+  readonly reservedArrayLengths = new Map<IrExpr, IrStmt & { kind: "arraySetLength" }>();
+  readonly consumedReserves = new Set<IrStmt>();
   /** The promise a `return` emitted past its finally regions already
    * produced for its adopting await (borrowed from the return's parked
    * slot); that await takes it instead of evaluating its operand. */
@@ -1629,6 +1670,9 @@ export class LlEmitter {
    * commit back into their objects. Library builds keep their commits:
    * their values cross a native boundary. */
   readonly liveViewsReadOnly: boolean;
+  /** IrModule.foreignElementKeys: element keys whose arrays can hold
+   * SCR_ARR_FOREIGN elements. */
+  readonly foreignElementKeys: ReadonlySet<string>;
   /** The program freezes, seals or prevents extensions of untyped values
    * (IrModule.untypedIntegrity): the commits of class views store the
    * view's integrity state in the instance's integrity word. */
@@ -1783,15 +1827,33 @@ export class LlEmitter {
   /** Worker programs: typed-array accesses whose views an enclosing version
    * guard proved thread-owned. */
   bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
+  /** Worker programs: the strip-mined counted loop whose body is being
+   * emitted (emitStripMinedCountedLoop), with its counter, its jump target
+   * and its loopDepth. An element access of a view that may be shared, at
+   * the counter and directly in that loop's body, is a plain load or store
+   * (plainSharedElement in expr-bytes.ts). */
+  plainSharedLoop: {
+    counter: string;
+    target: LlEmitter["jumpTargets"][number];
+    depth: number;
+  } | null = null;
   /** The alias-scope attachment of each typed-array element read and write
    * in the current loop version's fast copy (emitVersionedLoop), and the
    * one the element access being emitted carries (bytesElementAlias). */
   bytesAliasScopes: ReadonlyMap<IrExpr | IrStmt, string> = new Map();
   bytesAccessScope = "";
+  /** Header fields a speculative loop's entry read for its views
+   * (bytes-headers.ts), while its copies are emitted. */
+  bytesHeaders: BytesHeaderScope | null = null;
+  /** The parameters of the function being emitted. */
+  currentParameters: ReadonlySet<string> = new Set();
   /** Loop versions with alias scopes in the current function; it names
    * their scopes. */
   aliasScopedVersions = 0;
   integerViews = new Map<string, string>();
+  /** The i1 slot beside an integer view of a local that only holds exact
+   * integers or NaN: true when the local is not NaN. */
+  orderedViews = new Map<string, string>();
   /** Module globals the current function owns outright (initializer
    * bindings): their function-local slot, which stands in for the global. */
   privateGlobalSlots = new Map<string, string>();
@@ -1884,9 +1946,7 @@ export class LlEmitter {
     this.journal = journal;
     this.journaled =
       journal !== null ||
-      ((options.functionWorkers ?? 1) > 1 &&
-        options.forkPrimitives !== undefined &&
-        options.debugSources === undefined);
+      ((options.functionWorkers ?? 1) > 1 && options.forkPrimitives !== undefined);
     // One walk of every body, which the analyses below read instead of
     // walking the bodies themselves.
     this.nodeIndex = int32Analysis?.nodeIndex ?? new IrNodeIndex(mod);
@@ -1923,6 +1983,7 @@ export class LlEmitter {
       !this.untypedIntegrity &&
       !dynamicStores.all &&
       dynamicStores.names.size === 0;
+    this.foreignElementKeys = new Set(mod.foreignElementKeys ?? []);
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);
@@ -1959,6 +2020,14 @@ export class LlEmitter {
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
     this.targetCpu = options.targetCpu;
+    this.sanitizeAttributes = options.sanitizeAttributes !== false;
+    this.cpuDispatch =
+      options.cpuDispatch === true &&
+      options.targetCpu === undefined &&
+      !this.wasi &&
+      mod.lib === undefined &&
+      this.debug === null &&
+      /^(x86_64|amd64|x64)\b/.test(options.targetTriple || process.arch);
     this.wasmBoundsChecks =
       options.wasmBoundsChecks === true ||
       wasmBoundsChecks({
@@ -2217,6 +2286,7 @@ export class LlEmitter {
       declare: (decl) => this.declare(decl),
       needOom: () => this.needOom(),
       needBadTag: () => this.needBadTag(),
+      mayHoldForeign: (elem) => this.mayHoldForeign(elem),
       internLiteral: (text) => this.internLiteral(text),
       cstr: (text) => this.cstr(text),
       mapOps: (operands) => this.mapOps(operands),
@@ -2464,7 +2534,8 @@ export class LlEmitter {
   }
   emitParts(): string[] {
     const parts = emitParts(this);
-    return this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
+    const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
+    return this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
   }
 
   /** The dispose-observer gates the emitted frees and record writers test
@@ -2538,7 +2609,7 @@ export class LlEmitter {
         ret === "void" ? `  ${call}` : `  %r = ${call}`,
         ret === "void" ? `  ret void` : `  ret ${ret} %r`,
         `}`,
-        `@${mangleFnClosure(name)} = internal ${this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${(fn.generator ? 1 : 0) + (fn.async ? 2 : 0) + (fn.ownsPrototype ? 4 : 0)}, i32 0, ptr null, ptr ${lending ? `@${mangleBorrowingWrapper(name)}` : "null"} }`,
+        `@${mangleFnClosure(name)} = internal ${this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${this.closureFunctionKind(fn)}, i32 0, ptr null, ptr ${lending ? `@${mangleBorrowingWrapper(name)}` : "null"} }`,
         ``,
       );
       if (lending)
@@ -3090,12 +3161,13 @@ export class LlEmitter {
 
   // ── plumbing (frame and scope ownership) ──────
 
-  /** A symbol derived from the constant's text rather than its first-use
-   * index, so an edit that interns one more string leaves every other
-   * constant's symbol, and the code referencing it, unchanged. This lets
-   * native builds reuse the compiled partitions an edit does not touch. A
-   * collision retries with a counter, still in first-use order. */
-  private contentSymbol(prefix: string, text: string): string {
+  /** A symbol derived from a constant's text, or a helper's key, rather
+   * than its first-use index, so an edit that interns one more string or
+   * helper leaves every other symbol, and the code referencing it,
+   * unchanged. This lets native builds reuse the compiled partitions an
+   * edit does not touch. A collision retries with a counter, still in
+   * first-use order. */
+  contentSymbol(prefix: string, text: string): string {
     for (let attempt = 0; ; attempt++) {
       const digest = createHash("sha256")
         .update(attempt === 0 ? text : `${attempt}\0${text}`)
@@ -3221,7 +3293,7 @@ export class LlEmitter {
     const key = `${unionId}:${tag}`;
     let sym = this.unitInstances.get(key);
     if (!sym) {
-      sym = `sc_unit_${this.unitInstances.size}`;
+      sym = this.contentSymbol("sc_unit_", key);
       this.unitInstances.set(key, sym);
     }
     this.journal?.entry("unit", key, sym);
@@ -3678,6 +3750,9 @@ export class LlEmitter {
     passThrough?: { name: string; type: IrType },
     poll = false,
     guard?: string,
+    /** Runs at the start of the cold unwind block, before the unwind (a
+     * package-declared check's origin note). */
+    onUnwind?: () => void,
   ): void {
     const through =
       passThrough !== undefined &&
@@ -3702,6 +3777,7 @@ export class LlEmitter {
       const lk = B.newLabel("exc.k");
       B.condBr(p, lu, lk);
       B.startBlock(lu);
+      onUnwind?.();
       this.emitUnwind(through);
       B.startBlock(lk);
       if (skip !== undefined) {
@@ -3778,6 +3854,7 @@ export class LlEmitter {
       B.condBr(cold, lu, lk);
     }
     B.startBlock(lu);
+    onUnwind?.();
     this.emitUnwind(through);
     B.startBlock(lk);
     if (skip !== undefined) {
@@ -3927,13 +4004,19 @@ export class LlEmitter {
     }
   }
 
+  /** Whether `loop` needs a cancellation poll: in a worker program, unless
+   * the loop already runs a pending test on every iteration, which observes
+   * a terminate request itself (a separate poll would only add work). */
+  workerLoopPolls(loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" | "forOf" }>): boolean {
+    return (
+      this.mod.workers === true && !loopTestsEveryIteration(loop, (e) => this.callTestsPending(e))
+    );
+  }
+
   workerLoopBudget(
     loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" | "forOf" }>,
   ): string | null {
-    if (!this.mod.workers) return null;
-    // A loop that runs a pending test on every iteration observes a
-    // terminate request through it; a separate poll would only add work.
-    if (loopTestsEveryIteration(loop, (e) => this.callTestsPending(e))) return null;
+    if (!this.workerLoopPolls(loop)) return null;
     const slot = this.B.slot();
     this.B.entryAllocas.push(`${slot} = alloca i32 ; worker cancellation budget`);
     this.B.line(`store i32 0, ptr ${slot}`);
@@ -4051,12 +4134,17 @@ export class LlEmitter {
     B.condBr(due, poll, next);
     B.startBlock(poll);
     B.line(`store i32 63, ptr ${slot}`);
-    // Calls and throwing operations retain their own checks. Amortize the
-    // extra cancellation poll across bounded loop batches so scalar work
-    // does not cross the runtime ABI on every iteration.
-    this.emitPendingCheck(undefined, true);
+    this.emitWorkerPoll();
     B.br(next);
     B.startBlock(next);
+  }
+
+  /** The cancellation poll itself. Calls and throwing operations retain
+   * their own checks. Loops amortize this extra poll across bounded
+   * batches of iterations so scalar work does not cross the runtime ABI on
+   * every iteration. */
+  emitWorkerPoll(): void {
+    this.emitPendingCheck(undefined, true);
   }
 
   /** Moves an already-evaluated value into the runtime's exception cell —
@@ -5259,6 +5347,7 @@ export class LlEmitter {
   chunkResult(): ChunkResult {
     return {
       entries: this.journal!.entries,
+      debugRequests: this.debug?.recorded() ?? [],
       flags: {
         usesCoroutines: this.usesCoroutines,
         usesTimers: this.usesTimers,
@@ -5294,6 +5383,8 @@ export class LlEmitter {
     // emission left them (a helper set guards the declarations its first
     // request adds).
     replayJournal(this, chunk.entries, names, tags);
+    const debugIds = new Map<string, string>();
+    this.debug?.replay(chunk.debugRequests, (name) => this.functionNamed(name), debugIds);
     const flags = chunk.flags;
     this.usesCoroutines ||= flags.usesCoroutines;
     this.usesTimers ||= flags.usesTimers;
@@ -5314,7 +5405,13 @@ export class LlEmitter {
     for (const name of chunk.adoptCallees) this.adoptCallees.add(name);
     for (const name of chunk.directAwaitCallees) this.directAwaitCallees.add(name);
     for (const name of chunk.inlineAwaitCallees) this.inlineAwaitCallees.add(name);
-    return renameChunk(names, tags);
+    return renameChunk(names, tags, debugIds);
+  }
+
+  private functionNamed(name: string): IrFunction {
+    const fn = this.fnByName.get(name);
+    if (fn === undefined) throw new InternalCompilerError(`llvm emitter bug: no function ${name}`);
+    return fn;
   }
 
   /** Adds a content-named constant a chunk interned. Its symbol is this
@@ -5407,8 +5504,15 @@ export class LlEmitter {
       case "retainWrapper":
         addEntry(this.nullableUnions.retainWrappers, key, value as string);
         return;
-      case "unit":
-        return addNumbered(this.unitInstances, key, value as string, "sc_unit_", names);
+      case "unit": {
+        let own = this.unitInstances.get(key);
+        if (own === undefined) {
+          own = this.contentSymbol("sc_unit_", key);
+          this.unitInstances.set(key, own);
+        }
+        if (own !== value) names.set(value as string, own);
+        return;
+      }
       case "absent":
         return addNumbered(this.absentInstances, key, value as string, "sc_absent_", names);
       case "retype":
@@ -5416,7 +5520,9 @@ export class LlEmitter {
       case "slots":
         return addNumbered(this.threadSlotsBlocks, key, value as string, "@sc_slots_", names);
       case "regex":
-        return addNumberedSymbol(this.regexInstances, key, value as never, "sc_re_", names);
+        return this.addContentEntry(this.regexInstances, key, value as never, "sc_re_", names);
+      case "regexReplacer":
+        return this.addContentEntry(this.regexReplacers, key, value as never, "sc_rr_", names);
       case "templateStrings":
         return addNumberedSymbol(
           this.templateStringsInstances,
@@ -5442,7 +5548,13 @@ export class LlEmitter {
   /** An emitter for a range of this module's functions: the same facts,
    * empty module-level tables, and a journal of what the range adds. */
   chunkEmitter(): LlEmitter {
-    return new LlEmitter(this.mod, { ...this.targetOptions, functionChunks: 1 }, new EmitJournal());
+    const chunk = new LlEmitter(
+      this.mod,
+      { ...this.targetOptions, functionChunks: 1 },
+      new EmitJournal(),
+    );
+    chunk.debug?.record();
+    return chunk;
   }
 
   /** The double-ABI entry of a function with an i32 entry: every caller
@@ -5687,7 +5799,10 @@ export class LlEmitter {
   unwrittenRead(e: IrExpr, writes: Writes): boolean {
     const rw = this.referenceWrites;
     if (rw === null) return false;
-    const keys = rw.readKeys(e, (call) => this.borrowedReturnKeys(call.callee));
+    // A checked extraction reads nothing besides the union it narrows.
+    const keys = rw.readKeys(e, (call) =>
+      borrowsCheckedNarrow(this, call) ? [] : this.borrowedReturnKeys(call.callee),
+    );
     return keys !== null && !rw.conflicts(keys, writes);
   }
 
@@ -5964,7 +6079,21 @@ export class LlEmitter {
       }
       case "fieldGet":
       case "recordGet":
+      case "recordKeyGet":
         return this.borrowsWithoutOwning(e) && this.unownedWalk(e.obj);
+      case "mapIntrinsic": {
+        // A Map binding's own pointer (maps are not plainReference types).
+        if (!this.borrowsWithoutOwning(e) || e.receiver.kind !== "varRef") return false;
+        const binding = this.binding(e.receiver.localId);
+        return (
+          binding.kind === "global" ||
+          (binding.kind === "local" &&
+            binding.local !== undefined &&
+            !binding.local.boxed &&
+            !binding.local.tdz &&
+            !this.localUnionStorage.has(e.receiver.localId))
+        );
+      }
       case "unionNarrow":
       case "downcast":
       case "upcast":
@@ -6044,6 +6173,8 @@ export class LlEmitter {
         if (this.B.isTerminated()) return;
         if (cursor) cursor.index = i;
         this.stmtCursor = cursor;
+        const reserve = reservedArrayLength(stmts, i);
+        if (reserve !== null) this.reservedArrayLengths.set(reserve.literal, reserve.hint);
         const deferred = this.deferredPromiseAllLocal(stmts, i);
         if (deferred !== null) {
           this.deferredPromiseAllEntries.set((stmts[i] as { localId: string }).localId, deferred);
@@ -6686,6 +6817,12 @@ export class LlEmitter {
     }
   }
 
+  /** Arrays of this element type can hold SCR_ARR_FOREIGN elements. */
+  mayHoldForeign(elem: IrType): boolean {
+    if (this.foreignElementKeys.size === 0) return false;
+    return this.foreignElementKeys.has("*") || this.foreignElementKeys.has(typeKey(elem));
+  }
+
   /** Lifetime regions in modules with lifetimeRegions (llvm/regions.ts).
    * Created with the class graph; null elsewhere. */
   regions: LifetimeRegions | null = null;
@@ -7214,6 +7351,11 @@ export class LlEmitter {
         return this.nullableFieldGet(e) === null;
       case "recordGet":
         return true;
+      // A keyed read whose hits are all the result's own pointer.
+      case "recordKeyGet":
+        return pointerRecordKeyGet(this, e);
+      case "mapIntrinsic":
+        return pointerMapGet(this, e);
       // emitReadReceiver lends a required element of a borrowed array when
       // computing the index removes no edge.
       case "arrayGet":
@@ -7359,8 +7501,20 @@ export class LlEmitter {
     return wrapEmitterListener(this, target, adapterFn);
   }
 
-  unwrapNullableClosure(u: string, funcTag: number): string {
-    return unwrapNullableClosure(this, u, funcTag);
+  /** ScrClosure.function_kind for a closure over `fn`: generator 1, async
+   * 2, own prototype 4, and SCR_FN_RECEIVER_FREE (16) when its body never
+   * observes the ambient receiver, so indirect callers skip the bracket. */
+  closureFunctionKind(fn: IrFunction): number {
+    return (
+      (fn.generator ? 1 : 0) +
+      (fn.async ? 2 : 0) +
+      (fn.ownsPrototype ? 4 : 0) +
+      (this.receiverReaders.ignores(fn) ? CLOSURE_RECEIVER_FREE : 0)
+    );
+  }
+
+  unwrapNullableClosure(u: string, unionId: string, funcTag: number): string {
+    return unwrapNullableClosure(this, u, unionId, funcTag);
   }
 
   closeBindThunkFor(cbUnion: IrType, retServer: boolean): string {
@@ -7546,6 +7700,14 @@ export class LlEmitter {
     if (slot === undefined) return;
     const integer = this.emitToUint32(value.name, expr, value.uint32);
     this.B.line(`store i32 ${integer}, ptr ${slot}`);
+    const orderedSlot = this.orderedViews.get(localId);
+    if (orderedSlot === undefined) return;
+    let ordered = value.ordered;
+    if (ordered === undefined) {
+      ordered = this.B.tmp();
+      this.B.line(`${ordered} = fcmp ord double ${value.name}, 0.0`);
+    }
+    this.B.line(`store i1 ${ordered}, ptr ${orderedSlot}`);
   }
 
   emitBytesSet(

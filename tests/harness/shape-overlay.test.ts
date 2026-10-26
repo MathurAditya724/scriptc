@@ -63,7 +63,8 @@ test("shapeOverlay: false compiles without the overlay", { timeout: 900_000 }, a
 
 // shape-facts: results that include the undefined of a fall-through or a bare
 // return keep the caller's falsy branch, comment-like text in literals keeps
-// its value, and a replaced branch keeps its var declared.
+// its value, and a replaced branch keeps its var declared, also when two
+// replaced branches declare the same var.
 const factsEntry = join(repoRoot, "tests/fixtures/npm/cases/shape-overlay-facts/main.ts");
 
 test(
@@ -78,7 +79,7 @@ test(
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const report = (result.warnings ?? []).find((w) => w.code === "SC6103");
     expect(report?.message).toMatch(/of 1 package \(shape-facts\)/);
-    expect(report?.message).toMatch(/replaces 1 branch it proved unreachable/);
+    expect(report?.message).toMatch(/replaces 3 branches it proved unreachable/);
     const native = await execFileAsync(result.binaryPath, [], {
       cwd: dirname(factsEntry),
       encoding: "utf8",

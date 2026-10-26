@@ -41,6 +41,13 @@ for (const name of [
     throw new Error(`native toolchain needs a relative ${name}`);
   within(resolve(dirname(binary), hostPath(value)));
 }
+// Optional: a compiler this host could not run while building ships without it.
+if (toolchain.lib_diagnostics !== undefined) {
+  const value = toolchain.lib_diagnostics;
+  if (typeof value !== "string" || absolutePath(value))
+    throw new Error("native toolchain needs a relative lib_diagnostics");
+  within(resolve(dirname(binary), hostPath(value)));
+}
 const pack = JSON.parse(
   readFileSync(
     resolve(dirname(binary), hostPath(toolchain.runtime_pack), "runtime-pack.json"),
@@ -104,5 +111,12 @@ if (process.argv.includes("--run")) {
   }).trim();
   if (!tscTsVersion.startsWith("Version "))
     throw new Error(`the distribution's tsc-ts reported ${JSON.stringify(tscTsVersion)}`);
+  // The release strips tsc-ts and the comptime evaluator; arm64 macOS runs
+  // only executables whose linker-generated code signature matches their
+  // contents.
+  if (process.platform === "darwin" && process.arch === "arm64") {
+    for (const executable of [binary, tscTs, resolve(dirname(binary), toolchain.comptime)])
+      execFileSync("codesign", ["--verify", "--strict", executable], { stdio: "inherit" });
+  }
 }
 console.log(`${identity.name}@${identity.version}: native distribution verified`);

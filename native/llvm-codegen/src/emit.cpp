@@ -64,6 +64,9 @@ static constexpr size_t MaxPartitions = 64;
 // multiple of the usual size limit, in builds with a profile. See
 // limitProfileImports().
 static constexpr const char *ProfileImportMultiplier = "2";
+// The thin link's size limit, in instructions, for a callee it imports into
+// a partition that calls it. See limitImports().
+static constexpr const char *ImportInstructionLimit = "40";
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
   EmitOptions Options;
@@ -172,6 +175,39 @@ void limitProfileImports() {
   }();
   (void)Limited;
 }
+
+// The thin link imports a callee of up to 100 instructions, LLVM's default,
+// into every partition that calls it, and each partition then optimizes and
+// compiles its imported copies again. On tsc-ts (64 partitions) a limit of 40
+// takes about 7% off the helper's time, and the program runs as fast; 30 and
+// below made it run 1-8% slower. The limit is a process-wide option; the
+// helper sets it once.
+void limitImports() {
+  static const bool Limited = [] {
+    if (cl::Option *Option =
+            cl::getRegisteredOptions().lookup("import-instr-limit"))
+      Option->addOccurrence(0, "import-instr-limit", ImportInstructionLimit);
+    return true;
+  }();
+  (void)Limited;
+}
+
+// Drops the names of a partition's struct types before its summary is
+// written. Every partition declares the program's types under the same
+// names, and a thin link loads the importing partition and the partitions
+// it imports from into one context, which tells same-named types apart by
+// appending a counter that runs across the whole link. An edit that adds a
+// type anywhere shifts the counter, so the module after importing, the
+// object cache key, changed in partitions whose code had not. Unnamed types
+// carry no such suffix; importing still matches them by their bodies.
+struct UnnameStructTypes : PassInfoMixin<UnnameStructTypes> {
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+    for (StructType *Type : M.getIdentifiedStructTypes())
+      Type->setName("");
+    return PreservedAnalyses::all();
+  }
+  static bool isRequired() { return true; }
+};
 
 // How the --profile-use profile matched the functions it annotated, summed
 // over partitions: functions that received its counts, functions whose
@@ -733,6 +769,7 @@ compileOptimizedPartitions(const EmitOptions &Options,
       if (Annotating)
         P.countAnnotated(PartitionMatch.Annotated);
       ModulePassManager MPM = P.PB.buildThinLTOPreLinkDefaultPipeline(Level);
+      MPM.addPass(UnnameStructTypes());
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,
                                     /*EmitSummaryIndex=*/true,
                                     /*EmitModuleHash=*/true));
@@ -834,6 +871,7 @@ compileOptimizedPartitions(const EmitOptions &Options,
   std::vector<std::string> Names(Count);
   for (size_t I = 0; I < Count; ++I)
     Names[I] = "partition-" + std::to_string(I);
+  limitImports();
   if (!Options.ProfileUse.empty())
     limitProfileImports();
   lto::LTO Link(std::move(Config),
