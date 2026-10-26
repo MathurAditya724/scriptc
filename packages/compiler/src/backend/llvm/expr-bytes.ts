@@ -317,7 +317,7 @@ function emitBytesLoad(
   owned: boolean,
 ): LlValue {
   // `owned`: an enclosing version guard proved the view thread-owned.
-  if (host.mod.workers && !owned) {
+  if (host.mod.workers && !owned && !plainSharedElement(host, elem, expr)) {
     const idx = emitBytesIndex(host, receiver, index, expr, invalid, inBounds);
     return emitSharedOrLocalLoad(host, elem, receiver, idx);
   }
@@ -326,6 +326,29 @@ function emitBytesLoad(
   const data = host.emitBytesData(receiver);
   const idx = emitBytesIndex(host, receiver, index, expr, invalid, inBounds);
   return emitBytesLoadAt(host, elem, data, idx);
+}
+
+/** Worker programs: whether an element access at `index` of a view that
+ * may be shared is a plain load or store, like a thread-owned view's. It is
+ * when the index is the counter of the strip-mined counted loop whose body
+ * holds the access, outside any loop nested in that body: every iteration
+ * then reaches a different element, so LLVM cannot merge an element's reads
+ * across iterations or move them out of the loop, and the loop can be
+ * vectorized. A racing write from another thread can still be seen or
+ * missed within one iteration, the documented gap of non-atomic shared
+ * accesses. Float16 elements keep their runtime path. */
+function plainSharedElement(
+  host: LlvmEmitterContext,
+  elem: IrBytesElem,
+  index: IrExpr | undefined,
+): boolean {
+  const loop = host.plainSharedLoop;
+  if (loop === null || elem === "f16" || index?.kind !== "varRef") return false;
+  if (index.localId !== loop.counter) return false;
+  let innermost: (typeof host.jumpTargets)[number] | undefined;
+  for (let i = host.jumpTargets.length - 1; i >= 0 && innermost === undefined; i--)
+    if (host.jumpTargets[i]!.kind === "loop") innermost = host.jumpTargets[i];
+  return innermost === loop.target;
 }
 
 /** Worker programs: the element at a checked index of a view that may be
@@ -666,7 +689,7 @@ function emitScopedBytesSet(
     ty = "i32";
     operand = stored!;
   }
-  if (host.mod.workers && !owned) {
+  if (host.mod.workers && !owned && !plainSharedElement(host, elem, indexExpr)) {
     // A shared view's element takes a relaxed atomic store of its width.
     const local = emitSharedBytesSplit(host, receiver);
     const p = B.tmp();

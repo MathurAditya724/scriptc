@@ -1265,6 +1265,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         if (stripMined) {
           const counter: StripMinedCounter = countedLoop
             ? {
+                localId: countedLoop.localId,
                 slot: integerSlot!,
                 type: "i64",
                 signed: true,
@@ -1276,6 +1277,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
                 limit: () => countedLimit!,
               }
             : {
+                localId: integerLoop!.localId,
                 slot: integerSlot!,
                 type: emitter.sizeType,
                 signed: false,
@@ -2705,10 +2707,11 @@ function boundedLoopRuns(emitter: LlEmitter, loop: IrStmt): number {
   return trips * (1 + nested);
 }
 
-/** The counter of a strip-mined loop: its slot, the LLVM integer type and
- * signedness of its values, its step, the counters stepped beside it, and
- * the limit, emitted in the outer header before each block. */
+/** The counter of a strip-mined loop: its binding, its slot, the LLVM
+ * integer type and signedness of its values, its step, the counters stepped
+ * beside it, and the limit, emitted in the outer header before each block. */
 interface StripMinedCounter {
+  localId: string;
   slot: string;
   type: string;
   signed: boolean;
@@ -2800,7 +2803,7 @@ function emitStripMinedCountedLoop(
   const after = runSlot === null ? poll : B.newLabel("loop.end");
   B.condBr(inBlock, lb, after);
   B.startBlock(lb);
-  emitter.jumpTargets.push({
+  const target: LlEmitter["jumpTargets"][number] = {
     kind: "loop",
     brkLabel: exit,
     contLabel: lu,
@@ -2808,8 +2811,19 @@ function emitStripMinedCountedLoop(
     frameDepth: emitter.frames.length,
     scopeDepth: emitter.scopes.length,
     finallyDepth: emitter.finallyStack.length,
-  });
-  emitter.emitBlock(s.body);
+  };
+  emitter.jumpTargets.push(target);
+  // The counter steps by a nonzero constant and the body does not assign
+  // it, so an element at the counter is a different element on every
+  // iteration: its plain load or store is not merged with another
+  // iteration's or moved out of the loop.
+  const outer = emitter.plainSharedLoop;
+  emitter.plainSharedLoop = { counter: counter.localId, target };
+  try {
+    emitter.emitBlock(s.body);
+  } finally {
+    emitter.plainSharedLoop = outer;
+  }
   emitter.jumpTargets.pop();
   B.br(lu);
   B.startBlock(lu);
