@@ -353,15 +353,51 @@ export function declarationSelector(decl: ts.Node): string | null {
   return null;
 }
 
+/** One argument of the suggested `scriptc types patch` command, quoted so
+ * the shell passes it as written (scr_type_origin.c quotes the same way):
+ * bare when it has only characters no shell treats specially; otherwise,
+ * for a POSIX shell, in single quotes with each `'` as `'\''`, and for
+ * Windows (cmd and PowerShell), in double quotes when it has none of the
+ * characters either shell expands, escapes or ends a string with there. Null when no quoting
+ * is inert there: the note then names the command without arguments.
+ * Package names, selectors and types come from package declarations. */
+export function shellArgument(value: string, windows: boolean): string | null {
+  if (/^[A-Za-z0-9_@+=:,./-]+$/.test(value)) return value;
+  if (!windows)
+    return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+  for (const ch of value) {
+    const code = ch.codePointAt(0)!;
+    // PowerShell also takes the typographic quotes U+2018-U+201F as quotes.
+    if (code < 0x20 || code === 0x7f || (code >= 0x2018 && code <= 0x201f)) return null;
+    if ('"%!^$`'.includes(ch)) return null;
+  }
+  return `"${value}"`;
+}
+
+/** The suggested patch for a declaration: `scriptc types patch` with the
+ * package, the selector and the type, each quoted for the target's shell. */
+export function patchSuggestion(
+  pkg: string,
+  selector: string,
+  type: string,
+  windows: boolean,
+): string {
+  const args = [pkg, selector, type].map((a) => shellArgument(a, windows));
+  return args.every((a) => a !== null)
+    ? `if that declaration is wrong, patch it: scriptc types patch ${args.join(" ")}`
+    : "if that declaration is wrong, patch it with scriptc types patch";
+}
+
 /** The note a union extraction's TypeError carries for a failing `arm`
- * (the same text the runtime renders for checked conversions). */
-export function renderOriginNote(origin: string, arm: string): string {
-  const [pkg = "", version = "", range = "", selector = "", where = "", declared = ""] =
+ * (the same text the runtime renders for checked conversions). `windows`:
+ * the program targets Windows, whose shells quote differently. */
+export function renderOriginNote(origin: string, arm: string, windows = false): string {
+  const [pkg = "", version = "", , selector = "", where = "", declared = ""] =
     origin.split(ORIGIN_SEPARATOR);
   return (
     `\n    ${pkg}${version === "" ? "" : `@${version}`} declares ${selector}` +
     `${declared === "" ? "" : ` as ${declared}`} (${where})` +
-    `\n    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "${pkg}@${range}": { "declarations": { "${selector}": "| ${arm}" } } } }`
+    `\n    ${patchSuggestion(pkg, selector, `| ${arm}`, windows)}`
   );
 }
 

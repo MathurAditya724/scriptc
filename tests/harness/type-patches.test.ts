@@ -121,7 +121,7 @@ describe("type patches", () => {
           expect(native.stderr).toBe(
             "Uncaught TypeError: expected string at $, got undefined\n" +
               "    profilekit@3.1.0 declares Profile.email as string (index.d.ts:7)\n" +
-              `    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "profilekit@^3.1.0": { "declarations": { "Profile.email": "| undefined" } } } }\n`,
+              `    if that declaration is wrong, patch it: scriptc types patch profilekit Profile.email '| undefined'\n`,
           );
         }
       } finally {
@@ -179,12 +179,12 @@ describe("type patches", () => {
       const result = await build(join(fixture, "unpatched/main.ts"), "unpatched", ["termctx"]);
       const native = await run(result.binaryPath, []);
       const patch = (selector: string) =>
-        `    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "termctx@^1.2.0": { "declarations": { "${selector}": "| undefined" } } } }`;
+        `    if that declaration is wrong, patch it: scriptc types patch termctx ${selector} '| undefined'`;
       expect(native.stdout).toBe(
         [
           "expected number at $, got undefined",
           "    termctx@1.2.0 declares Terminal.columns() as number (index.js:16)",
-          patch("Terminal.columns()"),
+          patch("'Terminal.columns()'"),
           "undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
           "    termctx@1.2.0 declares OutputContext.width as number (index.js:24)",
           patch("OutputContext.width"),
@@ -206,7 +206,7 @@ describe("type patches", () => {
       const failure = (pkg: string, version: string) => [
         "undefined is not representable in the target union (a value narrowed or asserted past it still held it)",
         `    ${pkg}@${version} declares OutputContext.width as number (index.js:24)`,
-        `    if that declaration is wrong, patch it in package.json: "scriptc": { "typePatches": { "${pkg}@^${version}": { "declarations": { "OutputContext.width": "| undefined" } } } }`,
+        `    if that declaration is wrong, patch it: scriptc types patch ${pkg} OutputContext.width '| undefined'`,
       ];
       expect(native.stdout).toBe(
         [...failure("panectx", "2.0.0"), ...failure("gridctx", "4.1.0"), ""].join("\n"),
