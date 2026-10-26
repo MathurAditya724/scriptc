@@ -232,11 +232,29 @@ fenced.ts:108:9 - error SC2020: 'crypto.subtle.getPublicKey' is part of the stan
 
   hint: the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC or AES-CTR, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, deriveBits and deriveKey with PBKDF2 or HKDF, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
 
-fenced.ts:113:15 - error SC2020: 'navigator.hardwareConcurrency' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:113:7 - error SC2020: 'LockManager' is typed by @types/node but has no scriptc lowering yet
 
-  112 |  * compile; the other members fence by name. */
-  113 | const cores = navigator.hardwareConcurrency;
-      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  114 | void cores;
+  112 |  * by name. */
+  113 | const locks = navigator.locks;
+      |       ^~~~~
+  114 | void locks;
 
-  hint: of Node's navigator global only typeof navigator and navigator.userAgent compile
+  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+fenced.ts:113:15 - error SC2020: 'navigator.locks' is typed by @types/node but has no scriptc lowering yet
+
+  112 |  * by name. */
+  113 | const locks = navigator.locks;
+      |               ^~~~~~~~~~~~~~~
+  114 | void locks;
+
+  hint: navigator.locks (the Web Locks API) has no lowering
+
+fenced.ts:114:6 - error SC2004: uses of 'locks' inherit the blocker on its declaration
+
+  113 | const locks = navigator.locks;
+  114 | void locks;
+      |      ^~~~~
+  115 | // End of the declared-but-not-lowered surface.
+
+  hint: the declaration of 'locks' did not compile — fix the diagnostic reported there and these sites clear with it

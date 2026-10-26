@@ -244,3 +244,144 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("worker programs read and write shared elements at a strip-mined loop's counter with plain accesses", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-counted-shared-"));
+  try {
+    const entry = join(dir, "shared.ts");
+    await writeFile(
+      entry,
+      [
+        'import { isMainThread, Worker } from "node:worker_threads";',
+        "export function scale(a: Float64Array, b: Float64Array, n: number): void {",
+        "  for (let i = 0; i < n; i++) b[i] = a[i]! * 2;",
+        "}",
+        "export function codes(a: Uint8Array): void {",
+        "  for (let i = 0; i < a.length; ++i) a[i] = a[i] === 97 ? 0 : 3;",
+        "}",
+        "export function shift(a: Uint8Array): void {",
+        "  for (let i = 0; i < a.length - 1; i++) a[i] = a[i + 1]!;",
+        "}",
+        "export function rows(a: Int32Array, n: number): number {",
+        "  let t = 0;",
+        "  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) t += a[i]! + a[j]!;",
+        "  return t;",
+        "}",
+        "export function waits(a: Int32Array, out: Uint8Array, n: number): number {",
+        "  let spins = 0;",
+        "  for (let i = 0; i < n; i++) {",
+        "    out[i] = 1;",
+        "    while (a[i] === 0) spins++;",
+        "    do spins++; while (a[i] === 1);",
+        "    for (let k = 0; a[i]! > k; k++) spins++;",
+        "    for (let k = 0; k < 3; k += a[i]!) spins++;",
+        "  }",
+        "  return spins;",
+        "}",
+        "export function spin(a: Int32Array): number {",
+        "  let n = 0;",
+        "  while (a[0] === 0 && n < 10) n++;",
+        "  return n;",
+        "}",
+        "const a = new Float64Array(new SharedArrayBuffer(64)).fill(1);",
+        "const b = new Float64Array(8);",
+        "scale(a, b, 8);",
+        "const c = new Uint8Array(new SharedArrayBuffer(8)).fill(97);",
+        "codes(c);",
+        "shift(c);",
+        "const d = new Int32Array(new SharedArrayBuffer(16)).fill(1);",
+        "console.log(b[7], c[0], rows(d, 4), spin(d), waits(new Int32Array(new SharedArrayBuffer(16)).fill(2), new Uint8Array(new SharedArrayBuffer(4)), 4));",
+        "if (!isMainThread) new Worker(new URL(import.meta.url));",
+      ].join("\n"),
+    );
+    const outPath = join(dir, "shared.ir.json");
+    const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    const bodies = (name: string): string =>
+      [
+        ...ll.matchAll(
+          new RegExp(
+            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
+            "g",
+          ),
+        ),
+      ]
+        .map((match) => match[1]!)
+        .join("\n");
+    // Element loads (the poll's flag read is atomic too, from a global).
+    const elementLoads = (body: string): number =>
+      body.match(/load atomic \w+, ptr %/g)?.length ?? 0;
+    // Elements at the counter of a strip-mined loop: plain loads and stores.
+    for (const name of ["scale", "codes"]) {
+      const body = bodies(name);
+      expect(body).toMatch(/^loop\.poll\d+:$/m);
+      expect(elementLoads(body)).toBe(0);
+      expect(body).not.toContain("store atomic");
+    }
+    // `a[i + 1]` is not at the counter: its read stays atomic, the store
+    // at the counter is plain.
+    const shift = bodies("shift");
+    expect(shift).toMatch(/load atomic i8, ptr %/);
+    expect(shift).not.toContain("store atomic");
+    // The outer counter read inside the inner loop reads one element on every
+    // inner iteration: it stays atomic; the inner counter's read is plain.
+    const rows = bodies("rows");
+    expect(rows).toMatch(/load atomic i32, ptr %/);
+    // A loop that is not counted keeps atomic reads.
+    expect(bodies("spin")).toMatch(/load atomic i32, ptr %/);
+    // A nested loop that tests the outer counter's element in its condition
+    // or steps by it reads it again on every iteration: each read stays
+    // atomic, so another thread's write ends the wait.
+    const waits = bodies("waits");
+    expect(waits).toMatch(/^loop\.poll\d+:$/m);
+    expect(waits.match(/load atomic i32, ptr %/g)?.length).toBeGreaterThanOrEqual(4);
+    // The outer loop's write at its counter stays plain (speculation counters
+    // are atomic stores to globals).
+    expect(waits).not.toMatch(/store atomic i8 \S+, ptr %/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a loop that starts from a typed-array read guards the read's integer and ordered bit", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-counted-reads-"));
+  try {
+    const entry = join(dir, "chain.ts");
+    await writeFile(
+      entry,
+      [
+        "export function chain(pp: Int32Array): number {",
+        "  let p0 = pp[0]!;",
+        "  let n = 0;",
+        "  while (pp[p0] !== 0) {",
+        "    n++;",
+        "    for (let i = 1, j = p0 - 1; i < j; i++, j--) {",
+        "      const t = pp[i]!;",
+        "      pp[i] = pp[j]!;",
+        "      pp[j] = t;",
+        "    }",
+        "    const t = pp[p0]!;",
+        "    pp[p0] = p0;",
+        "    p0 = t;",
+        "  }",
+        "  return n;",
+        "}",
+        "console.log(chain(Int32Array.from([3, 1, 2, 0])));",
+      ].join("\n"),
+    );
+    const outPath = join(dir, "chain.ir.json");
+    const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    const body = ll.match(/define internal double @sc_bf_chain\([^\n]*\n([\s\S]*?)\n\}/)![1]!;
+    // `p0` holds a read's integer or NaN: it keeps whether it is NaN beside
+    // its integer view, and `p0 - 1` starts the loop from that integer. No
+    // test converts the double back to check it is an exact integer.
+    expect(body).toContain("alloca i1 ; ordered view p0");
+    expect(body).toContain("counted.fast");
+    expect(body).not.toContain("bitcast double");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

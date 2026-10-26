@@ -47,7 +47,7 @@ import {
 } from "../input-tracker.js";
 import { packageShimDeclarationText } from "../package-shims.js";
 import { typePatchedText, typePatchFileExists } from "../type-patches/layer.js";
-import { ambientDtsPath, fallbackDtsPath, overridesDtsPath } from "../dts-paths.js";
+import { ambientDtsPath, isFallbackDtsPath, overridesDtsPath } from "../dts-paths.js";
 import { inFileOrder, reusedKeptLibDiagnostics, reusedLibDiagnostics } from "./lib-diagnostics.js";
 import { ts7Diagnostic } from "./diagnostic.js";
 import type { Ts7DiagnosticData } from "./session-schema.generated.js";
@@ -439,10 +439,11 @@ export class Ts7Program {
   ): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
     this.snapshot.ensureActive();
     const program = this.project.program;
-    const declarations = new Set([ambientDtsPath(), overridesDtsPath(), fallbackDtsPath()]);
+    const declarations = new Set([ambientDtsPath(), overridesDtsPath()]);
     const names = this.getSourceFileNames();
     const supplied = (name: string): boolean =>
       declarations.has(tsgoPath(name)) ||
+      isFallbackDtsPath(name) ||
       program.getSourceFileMetadataByPath(name)?.isDefaultLibrary === true;
     const sourceFile = (name: string): SourceFile | undefined => this.getSourceFile(name);
     return kept === null
