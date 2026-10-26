@@ -64,6 +64,10 @@ export interface NativeLinkFeatures {
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
+  /** util.MIMEType and util.MIMEParams: scr_mime.c. */
+  mime?: boolean;
+  /** util.debounce and util.throttle: scr_util_timing.c. */
+  utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBuffer?: boolean;

@@ -379,6 +379,39 @@ export function emitRegexIntrinsic(
   }
 }
 
+/** `r[k] ?? d` in its pass-through shape: a missing key evaluates `d`
+ * where the read would store undefined, so a hit costs nothing extra. */
+export function emitRecordKeyGetOr(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "recordKeyGet" },
+  fallback: IrExpr,
+): LlValue {
+  const B = host.B;
+  const obj = host.emitExpr(e.obj);
+  const k = host.emitExpr(e.key);
+  const ty = host.llType(e.type);
+  const slot = B.slot();
+  B.entryAllocas.push(`${slot} = alloca ${ty}`);
+  const join = B.newLabel("rkg.j");
+  keyedRecordReadInto(
+    host,
+    slot,
+    join,
+    obj.name,
+    k.name,
+    e.shapeId,
+    e.type,
+    e.overflowOnly === true,
+    e.loc,
+    false,
+    () => host.emitBranchInto(slot, fallback),
+  );
+  B.startBlock(join);
+  const t = B.tmp();
+  B.line(`${t} = load ${ty}, ptr ${slot}`);
+  return host.own({ name: t, type: e.type });
+}
+
 export function emitRecordKeyGet(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "recordKeyGet" },
@@ -526,6 +559,7 @@ export function keyedRecordReadInto(
   overflowOnly: boolean,
   loc?: SrcLoc,
   missNaN = false,
+  missInto: (() => void) | null = null,
 ): void {
   const B = host.B;
   const shape = host.recordShape(shapeId);
@@ -728,8 +762,10 @@ export function keyedRecordReadInto(
     }
   }
   if (def !== null && resultType.kind === "union" && undefTag >= 0) {
-    // The miss path: the result union's undefined arm.
-    B.line(`store ptr ${host.unitInstanceRef(resultType.unionId, undefTag)}, ptr ${slot}`);
+    // The miss path: the result union's undefined arm, or the caller's
+    // own value for a miss (missInto stores it into the slot).
+    if (missInto !== null) missInto();
+    else B.line(`store ptr ${host.unitInstanceRef(resultType.unionId, undefTag)}, ptr ${slot}`);
     B.br(join);
     return;
   }

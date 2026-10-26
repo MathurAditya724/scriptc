@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, expect, test } from "vitest";
 import type { SourceFile } from "./ast-types.js";
 import {
+  reusedKeptLibDiagnostics,
   reusedLibDiagnostics,
   setLibDiagnosticsStore,
   type LibDiagnosticsStore,
@@ -116,6 +117,45 @@ test("a stored answer stands in for checking the supplied files, merged by file 
     global: [],
   });
   expect(full?.semantic).toEqual(reused?.semantic);
+});
+
+test("with kept files, a stored answer needs checking only the kept other files", () => {
+  const store = memoryStore();
+  setLibDiagnosticsStore(store, "checker");
+  const pkg = join(dir, "node_modules", "pkg", "index.d.ts");
+  const semantic = new Map([
+    [lib, [diagnostic(lib, 1)]],
+    [fallback, []],
+    [main, [diagnostic(main, 5)]],
+    [pkg, [diagnostic(pkg, 3)]],
+  ]);
+  const withPackage = files({
+    [main]: "export const n: number = 'x';\n",
+    [pkg]: "export declare const p: number;\n",
+  });
+  const all = [lib, fallback, main, pkg];
+  const keep = new Set([lib, fallback, main]);
+  // Without a stored answer nothing is checked or stored.
+  const cold = sessionProgram({ semantic });
+  expect(reusedKeptLibDiagnostics(cold, all, supplied, withPackage, keep)).toBeNull();
+  expect(cold.asked).toEqual([]);
+  expect(store.entries.size).toBe(0);
+  reusedLibDiagnostics(sessionProgram({ semantic }), all, supplied, withPackage);
+  expect(store.entries.size).toBe(1);
+  const warm = sessionProgram({ semantic });
+  expect(reusedKeptLibDiagnostics(warm, all, supplied, withPackage, keep)).toEqual({
+    semantic: [diagnostic(lib, 1), diagnostic(main, 5)],
+    global: [],
+  });
+  expect(warm.asked).toEqual([`checked ${main}`]);
+  // A left-out file that can declare something global still prevents reuse.
+  const augmenting = files({
+    [main]: "export const n: number = 'x';\n",
+    [pkg]: "export {};\ndeclare global {\n  var NaN: number;\n}\n",
+  });
+  const blocked = sessionProgram({ semantic });
+  expect(reusedKeptLibDiagnostics(blocked, all, supplied, augmenting, keep)).toBeNull();
+  expect(blocked.asked).toEqual([]);
 });
 
 test("files merge in code point order, which differs from UTF-16 order", () => {
