@@ -91,7 +91,7 @@ import { lowerGlobalValue } from "../lower-global-value.js";
 import { fenceEnumObjectValue } from "../lower-enums.js";
 import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, refuseNavigator } from "../builtins/navigator.js";
-import { wasiGuestPath } from "../../../wasi-paths.js";
+import { moduleFileName } from "../import-meta.js";
 
 export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr {
   if (lowerer.isStdlibGlobal(expr, "console")) {
@@ -319,10 +319,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     // that does not exist. The blocked-binding cascade names the use;
     // without this the validator's registration check ICEs on the live
     // reference (`@this {T}` inference — signature 07).
-    const unregistered = lowerer.unregisteredClassOf(g.type, new Set());
+    let unregistered = lowerer.unregisteredClassOf(g.type, new Set());
+    // The class's own rejection is the root cause the cascade names
+    // (unless the flush registers it with dynamic slots).
+    if (unregistered !== null && lowerer.flushDeferredClass(unregistered) !== undefined)
+      unregistered = lowerer.unregisteredClassOf(g.type, new Set());
     if (unregistered !== null) {
-      // The class's own rejection is the root cause the cascade names.
-      lowerer.flushDeferredClass(unregistered);
       lowerer.pushDiag(blockedBindingUseDiag(expr.text, loc));
       throw new PoisonError();
     }
@@ -1079,12 +1081,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     expr,
     `the reference to '${expr.text}' (a binding form with no lowering)`,
   );
-}
-
-function moduleFileName(lowerer: Lowerer, sf: ts.SourceFile): string {
-  return lowerer.targetPlatform === "wasi"
-    ? (wasiGuestPath(sf.fileName) ?? sf.fileName.replace(/\\/g, "/"))
-    : sf.fileName;
 }
 
 /** A computed-key access (`value[key]` after `typeof value === "object"`)

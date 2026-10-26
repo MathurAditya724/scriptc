@@ -1,3 +1,4 @@
+import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
@@ -179,6 +180,17 @@ export interface AppendGraph {
  * the require() edges preflight resolved — a CommonJS file's only edges
  * (the compiled CommonJS package a workspace module loaded on demand
  * imports, and the sibling packages and files IT requires). */
+/** Whether a class declaration has a static field with an initializer,
+ * which Node runs where the class statement evaluates. */
+function hasStaticFieldInitializer(decl: ts.ClassDeclaration): boolean {
+  return decl.members.nodes.some(
+    (member) =>
+      ts.isPropertyDeclaration(member) &&
+      member.initializer !== undefined &&
+      member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true,
+  );
+}
+
 function appendedEdgesOf(
   program: ts.Program,
   graph: AppendGraph | undefined,
@@ -1041,13 +1053,11 @@ export function moduleArtifacts(
     }
     while (pendingClasses.length > 0) {
       const name = pendingClasses.pop()!;
-      const info = lowerer.classes.get(name);
-      if (!info) {
-        // Referenced by an emitted type but never registered: collection
-        // deferred its diagnostics — a reached reference makes them count.
-        lowerer.flushDeferredClass(name);
-        continue;
-      }
+      // Referenced by an emitted type but never registered: collection
+      // deferred its diagnostics — a reached reference makes them count
+      // (or registers the class with dynamic slots, retryDeferred).
+      const info = lowerer.classes.get(name) ?? lowerer.flushDeferredClass(name);
+      if (!info) continue;
       for (const field of info.def.fields) visitType(field.type);
       if (info.base) visitClass(info.base.def.name);
       if (info.def.genericOf) visitClass(info.def.genericOf);
@@ -2054,7 +2064,15 @@ export function collectGlobals(
       // Destructuring declarations register EVERY bound identifier (the
       // desugar in the init function assigns the pre-registered globals,
       // exactly like plain declarations).
-      for (const nameNode of boundIdentifiersOf(decl.name)) {
+      const names = boundIdentifiersOf(decl.name);
+      // Localized failure: a degradable type failure at a module global
+      // degrades that type and the same name registers again
+      // (globalSlotRetry), at most MAX_GLOBAL_RETRIES times.
+      let retries = 0;
+      let retriedIndex = -1;
+      for (let nameIndex = 0; nameIndex < names.length; nameIndex++) {
+        const nameNode = names[nameIndex]!;
+        if (nameIndex !== retriedIndex) retries = 0;
         const diagsBefore = lowerer.diags.length;
         try {
           // Checked JavaScript factories can expose inferred callables by
@@ -2706,6 +2724,12 @@ export function collectGlobals(
           }
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
+          if (retries < MAX_GLOBAL_RETRIES && globalSlotRetry(lowerer, sf, e)) {
+            retries++;
+            retriedIndex = nameIndex;
+            nameIndex--;
+            continue;
+          }
           // diagnostic already recorded; lowering the statement poisons
           // too — and in a JS file BOTH defer to the statement's
           // runtime fence (deferJsCollectionDiags).
@@ -2715,6 +2739,20 @@ export function collectGlobals(
     }
   }
 }
+
+/** Localized failure's commit point for module globals (design §3.3):
+ * collectGlobals commits a global's type failure directly, before any body
+ * lowers, so it degrades here and the registration runs again. */
+function globalSlotRetry(lowerer: Lowerer, sf: ts.SourceFile, e: PoisonError): boolean {
+  if (isJsSourceFile(sf)) return false;
+  const slot = lowerer.degradeAtCommit(e, GLOBAL_SLOTS);
+  if (slot === null) return false;
+  lowerer.noteDynamicSlot(slot);
+  return true;
+}
+
+const MAX_GLOBAL_RETRIES = 16;
+const GLOBAL_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>(["global"]);
 
 /** Registers the entry-init note for a `var` module global: JS hoists
  * module vars to `undefined` at module entry, so an undefined-armed slot
@@ -3208,7 +3246,19 @@ export function lowerFileInit(
     // by position) — exactly when JS evaluates decorators, static
     // initializers, and blocks, so code reading an earlier module
     // binding sees its assigned value.
-    const statics = [...lowerer.classes.values()]
+    const runsStatics = (c: ClassInfo): boolean =>
+      lowerer.classInitFlags.has(c.def.name) ||
+      c.callableBase !== undefined ||
+      c.def.baseValueGlobal !== undefined ||
+      c.runtimeStatics !== undefined ||
+      c.staticFields.length > 0 ||
+      (c.staticBlocks?.length ?? 0) > 0 ||
+      c.classDecorators !== undefined;
+    const statics: {
+      pos: number;
+      info: ClassInfo | null;
+      deferred?: { symbol: ts.Symbol; decl: ts.ClassDeclaration };
+    }[] = [...lowerer.classes.values()]
       .filter(
         (c) =>
           // Class DECLARATIONS only: expression classes run their static
@@ -3220,15 +3270,30 @@ export function lowerFileInit(
           ts.isClassDeclaration(c.decl) &&
           !c.mixinInstance &&
           ts.getSourceFileOfNode(c.decl) === sf &&
-          (lowerer.classInitFlags.has(c.def.name) ||
-            c.callableBase !== undefined ||
-            c.def.baseValueGlobal !== undefined ||
-            c.runtimeStatics !== undefined ||
-            c.staticFields.length > 0 ||
-            (c.staticBlocks?.length ?? 0) > 0 ||
-            c.classDecorators !== undefined),
+          runsStatics(c),
       )
       .map((c) => ({ pos: ts.tokenStartOfNode(c.decl!), info: c }));
+    // Localized failure: a deferred class with static field initializers
+    // is reached at its statement, where Node runs them. Its place retries
+    // it (retryDeferredAtDeclaration), and once it has registered there or
+    // through an earlier flush, its initializers lower in place.
+    for (const symbol of lowerer.deferredCollectors.keys())
+      for (const decl of symbol.declarations)
+        if (
+          ts.isClassDeclaration(decl) &&
+          ts.getSourceFileOfNode(decl) === sf &&
+          hasStaticFieldInitializer(decl)
+        )
+          statics.push({ pos: ts.tokenStartOfNode(decl), info: null, deferred: { symbol, decl } });
+    const lowerStaticsAt = (entry: (typeof statics)[number]): IrStmt[] => {
+      let info = entry.info;
+      if (entry.deferred) {
+        if (!lowerer.retryDeferredAtDeclaration(entry.deferred.symbol)) return [];
+        info = lowerer.classes.get(lowerer.classNamer(entry.deferred.decl)) ?? null;
+        if (info === null || !runsStatics(info)) return [];
+      }
+      return withClassInitFlag(lowerer, info!, lowerer.lowerStaticFieldInits(info!));
+    };
     // Statics-bearing MIXIN instantiations whose call evaluates in THIS
     // file: their declaration-time code runs when the call does — the
     // top-level statement lower-mixins recorded. Insertion order is
@@ -3249,13 +3314,7 @@ export function lowerFileInit(
       // declarations never share a kept statement's start, so `<=`
       // changes nothing for them.
       while (at < statics.length && statics[at]!.pos <= ts.tokenStartOfNode(stmt)) {
-        body.push(
-          ...withClassInitFlag(
-            lowerer,
-            statics[at]!.info,
-            lowerer.lowerStaticFieldInits(statics[at]!.info),
-          ),
-        );
+        body.push(...lowerStaticsAt(statics[at]!));
         at++;
       }
       // A cycle binding's declaration stays at its position: its
@@ -3274,13 +3333,7 @@ export function lowerFileInit(
       body.push(...lowerer.pendingClassExprInits.splice(0), ...stmtIr);
     }
     while (at < statics.length) {
-      body.push(
-        ...withClassInitFlag(
-          lowerer,
-          statics[at]!.info,
-          lowerer.lowerStaticFieldInits(statics[at]!.info),
-        ),
-      );
+      body.push(...lowerStaticsAt(statics[at]!));
       at++;
     }
     for (const { at, g } of unionEntryInits) {
