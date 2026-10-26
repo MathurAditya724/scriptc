@@ -2,6 +2,7 @@
  * pending flag (see unwindAbiFunctions). */
 import type { IrExpr, IrModule } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
+import { eachStringField } from "../../ir/fields.generated.js";
 
 /** How many calls above a `throw` functions keep the pending flag. */
 const THROW_LEVELS = 3;
@@ -129,13 +130,14 @@ export function unwindAbiFunctions(
   }
   // Any function a node names other than as a call's callee may be reached
   // through a pointer.
+  // Every string field counts (eachStringField), as a key walk of the node
+  // would find them; a call's callee does not.
   const referenced = new Set<string>();
-  const noteNames = (node: object, skip: string | undefined): void => {
-    for (const key in node) {
-      if (key === skip) continue;
-      const value = (node as Record<string, unknown>)[key];
-      if (typeof value === "string" && names.has(value)) referenced.add(value);
-    }
+  const noteName = (value: string): void => {
+    if (names.has(value)) referenced.add(value);
+  };
+  const noteCallName = (value: string, field: string): void => {
+    if (field !== "callee") noteName(value);
   };
   // The call graph, for the functions near a throw and the recursive ones.
   // Calls through values (closures, class values, dynamic calls, callbacks
@@ -171,10 +173,10 @@ export function unwindAbiFunctions(
           // flag they keep landing pads out of the top-level code inlined
           // into the entry.
           if (coroutine || fn.name === mod.entry) blocked.add(e.callee);
-          noteNames(e, "callee");
+          eachStringField(e, noteCallName);
           return true;
         }
-        noteNames(e, undefined);
+        eachStringField(e, noteName);
         if (e.kind === "virtualCall")
           for (const target of e.targets ?? methodsNamed.get(e.method) ?? []) edge(fn.name, target);
         else if (e.kind === "new") {
@@ -193,7 +195,7 @@ export function unwindAbiFunctions(
       stmt: (s) => {
         const kind = s.kind as string;
         if (kind === "throw" || kind === "rethrow") throws.add(fn.name);
-        noteNames(s, undefined);
+        eachStringField(s, noteName);
         return true;
       },
     });

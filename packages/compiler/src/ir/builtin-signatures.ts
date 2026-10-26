@@ -1554,6 +1554,15 @@ function buildLibFnSignatures() {
       argTypes: [F64, STRING, { kind: "func", params: [], ret: VOID }],
       result: NETSOCKET_T,
     },
+    /** net.connect/createConnection(path[, connectListener]) and the
+     * `path` option: a client of the Unix socket at `path`. With the flag
+     * (a positional string), Node's isPipeName applies first: a string that
+     * reads as a non-negative number is a localhost port. */
+    "net.connectPath": { argTypes: [STRING, BOOL], result: NETSOCKET_T },
+    "net.connectPathCb": {
+      argTypes: [STRING, BOOL, { kind: "func", params: [], ret: VOID }],
+      result: NETSOCKET_T,
+    },
     // The lookup's exact func shape is program data (its answer callback's
     // union/record types) — checked specially in the libCall case.
     /** connect({ port, host, autoSelectFamily: true, lookup }) — the
@@ -3736,6 +3745,15 @@ function buildLibFnSignatures() {
     "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
+    /** Installs the program's builtin-global lookup (global-values.ts). */
+    "global.installValues": { argTypes: [DYN], result: VOID },
+    /** The keys `for (key in globalThis)` visits, as a fresh object. */
+    "global.forInObject": { argTypes: [], result: DYN },
+    /** Node's navigator global (scr_node_builtin.c). */
+    "navigator.object": { argTypes: [], result: DYN },
+    "navigator.language": { argTypes: [], result: STRING },
+    "navigator.languages": { argTypes: [], result: DYN },
+    "navigator.platform": { argTypes: [], result: STRING },
     // `X.name` through a class value: the arg is a program-dependent
     // classval (a null slot; the libCall case checks the kind).
     /** `X.name` through a class VALUE (scr_object.c): args[0] is a borrowed

@@ -84,6 +84,22 @@ function readWithIdentity(path: string): { text: string; identity: string | null
   return { text, identity: settled && after === identity ? identity : null };
 }
 
+/** Two reads of one file that saw the same content, as one probe: a read
+ * before the file had been unchanged for IDENTITY_SETTLE_MS records no
+ * identity, and a later read of the same bytes does. The probe keeps the
+ * identity, which the settled read proved for that content. Null when the
+ * reads differ in anything else. */
+function sameFileContent(
+  previous: FrontendInputProbe,
+  probe: FrontendInputProbe,
+): FrontendInputProbe | null {
+  if (previous.op !== "file" || probe.op !== "file" || previous.digest !== probe.digest)
+    return null;
+  if (previous.identity === undefined) return probe;
+  if (probe.identity === undefined || probe.identity === previous.identity) return previous;
+  return null;
+}
+
 function pathKind(path: string): Extract<FrontendInputProbe, { op: "kind" }>["kind"] {
   try {
     const info = statSync(path);
@@ -142,12 +158,17 @@ export class FrontendInputTracker {
     const key = `${probe.op}\0${probe.path}`;
     if (probe.op === "text" && this.probes.has(key)) return;
     const previous = this.probes.get(key);
-    if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(probe)) {
+    const merged = previous === undefined ? null : sameFileContent(previous, probe);
+    if (
+      merged === null &&
+      previous !== undefined &&
+      JSON.stringify(previous) !== JSON.stringify(probe)
+    ) {
       // An input changed while this frontend was running.  The build may
       // still finish normally, but it is not safe to publish as a cache key.
       this.stable = false;
     }
-    this.probes.set(key, probe);
+    this.probes.set(key, merged ?? probe);
     if (probe.op === "file") {
       // A successful content read supersedes earlier existence probes for the
       // same path only when they also observed a file. A missing/non-file
