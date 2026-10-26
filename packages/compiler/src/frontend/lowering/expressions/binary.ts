@@ -37,6 +37,7 @@ import {
   dynCompoundValue,
   lowerAbsenceProbe,
   lowerDynMemberAssignment,
+  lowerDereferencedElementAssignment,
   lowerOptionalNumber,
   lowerPresenceOperand,
   nullishBranches,
@@ -1068,6 +1069,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       if (prototypeWrite) return prototypeWrite;
       const callableWrite = lowerNativeFunctionAssignment(lowerer, expr);
       if (callableWrite) return callableWrite;
+      const dereferenced = lowerDereferencedElementAssignment(lowerer, expr);
+      if (dereferenced) return dereferenced;
     }
     if (
       op === ts.SyntaxKind.QuestionQuestionEqualsToken ||

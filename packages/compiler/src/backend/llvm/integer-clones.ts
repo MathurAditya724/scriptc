@@ -192,6 +192,8 @@ function cloneShape(fn: IrFunction, borrowed?: BorrowedParameter): Set<string> |
       case "ternary":
         return expr(e.cond, "bool") && expr(e.then, want) && expr(e.else_, want);
       case "arrIntrinsic":
+        if (e.method === "getNumber")
+          return want === "num" && arrayRef(e.receiver) && expr(e.args[0]!, "num");
         return (
           want === "num" && e.method === "length" && e.args.length === 0 && arrayRef(e.receiver)
         );
@@ -268,6 +270,9 @@ function callsMatch(fn: IrFunction, byName: ReadonlyMap<string, IrFunction>): bo
         return;
       case "arrayGet":
         visit(e.index);
+        return;
+      case "arrIntrinsic":
+        if (e.method === "getNumber") visit(e.args[0]!);
         return;
       default:
         return;
@@ -433,6 +438,8 @@ function callsAnything(e: IrExpr): boolean {
       return callsAnything(e.cond) || callsAnything(e.then) || callsAnything(e.else_);
     case "arrayGet":
       return callsAnything(e.index);
+    case "arrIntrinsic":
+      return e.method === "getNumber" && callsAnything(e.args[0]!);
     default:
       return false;
   }
@@ -1021,10 +1028,10 @@ class CloneEmitter {
    * keeps every slot below `filled` a present value) whose element is
    * exactly an int32. Everything else (holes, indices outside the prefix,
    * other numbers) bails: the ordinary body reads it. */
-  private emitElement(e: Extract<IrExpr, { kind: "arrayGet" }>): string {
+  private emitElement(arr: IrExpr, indexExpr: IrExpr): string {
     const { B } = this;
-    const array = this.emitArray(e.arr);
-    const index = this.narrow(this.emitNum(e.index));
+    const array = this.emitArray(arr);
+    const index = this.narrow(this.emitNum(indexExpr));
     const filledField = B.tmp();
     const filled = B.tmp();
     const inside = B.tmp();
@@ -1188,9 +1195,13 @@ class CloneEmitter {
         if (this.inlines(e)) return { name: this.emitInlineCall(e), wide: false };
         return { name: this.emitCall(e), wide: true };
       case "arrIntrinsic":
+        // `getNumber` reads an element like `arrayGet`: a missing one bails,
+        // and the ordinary body reads it as NaN.
+        if (e.method === "getNumber")
+          return { name: this.emitElement(e.receiver, e.args[0]!), wide: false };
         return { name: this.emitLength(this.emitArray(e.receiver)), wide: false };
       case "arrayGet":
-        return { name: this.emitElement(e), wide: false };
+        return { name: this.emitElement(e.arr, e.index), wide: false };
       case "unary": {
         const operand = this.narrow(this.emitNum(e.operand));
         const value = B.tmp();
