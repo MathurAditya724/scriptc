@@ -13,6 +13,12 @@
 #include "scr_node_bridge.h"
 #include "scr_node_island_host.h"
 
+#ifdef __APPLE__
+#define BRIDGE_FILE "libscr_node_bridge.dylib"
+#else
+#define BRIDGE_FILE "libscr_node_bridge.so"
+#endif
+
 static int settled = 0;
 
 static void settle(uint32_t id, const char *outcome, size_t len) {
@@ -44,7 +50,7 @@ static void call(const ScrNodeBridge *b, uint32_t id, int sync, const char *modu
 int main(int argc, char **argv) {
   if (argc != 3) return 2;
   char path[4096];
-  snprintf(path, sizeof path, "%s/libscr_node_bridge.so", argv[1]);
+  snprintf(path, sizeof path, "%s/" BRIDGE_FILE, argv[1]);
   void *lib = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
   if (lib == NULL) {
     fprintf(stderr, "%s\n", dlerror());

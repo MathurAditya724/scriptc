@@ -1,5 +1,5 @@
-/* Node island tests need a libnode pack (SCRIPTC_LIBNODE). The Linux x64 CI
- * test lanes provide one (.github/actions/libnode-linux) and must run
+/* Node island tests need a libnode pack (SCRIPTC_LIBNODE). The Linux x64 and
+ * macOS CI test lanes provide one (.github/actions/libnode) and must run
  * these tests, so there a missing pack is a failure, never a skip. Other
  * CI platforms do not provision a pack yet, and a local run without a pack
  * skips. */
@@ -17,8 +17,7 @@ export const libnodeRequired =
   process.env["CI"] !== undefined &&
   process.env["CI"] !== "" &&
   process.env["CI"] !== "false" &&
-  process.platform === "linux" &&
-  process.arch === "x64";
+  ((process.platform === "linux" && process.arch === "x64") || process.platform === "darwin");
 
 /** The configured pack, or null. Throws where CI requires one. */
 export function libnodePack(): string | null {
@@ -26,7 +25,7 @@ export function libnodePack(): string | null {
   if (pack !== undefined && pack !== "") return pack;
   if (libnodeRequired)
     throw new Error(
-      "Node island tests need a libnode pack in this CI lane, and SCRIPTC_LIBNODE is not set (.github/actions/libnode-linux provides it)",
+      "Node island tests need a libnode pack in this CI lane, and SCRIPTC_LIBNODE is not set (.github/actions/libnode provides it)",
     );
   return null;
 }
