@@ -54,6 +54,7 @@ export type {
 import { compilePackedLibrary } from "./backend/library-pack.js";
 import { node24FetchCompatProfile } from "./compat/fetch-profile.js";
 import { libFnSignatures } from "./ir/builtin-signatures.js";
+import { type FunctionLayout, parseFunctionLayout } from "./backend/llvm/function-layout.js";
 import { InternalCompilerError } from "./errors.js";
 import { frontendProcessExecArgv } from "./frontend-process-args.js";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -63,6 +64,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import {
   clearCcCaches,
   configuredTargetPlatform,
@@ -801,6 +803,37 @@ async function readNativeProfile(
   return { use: { path, digest: createHash("sha256").update(bytes).digest("hex") } };
 }
 
+/** The digest of the request's function layout file, which keys the
+ * executable cache: the layout changes the code's order, not its frontend
+ * input. */
+async function functionLayoutKey(opts: CompileRequestOptions): Promise<string | undefined> {
+  if (opts.functionLayout === undefined) return undefined;
+  const path = resolve(opts.functionLayout);
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(path);
+  } catch (err) {
+    throw new Error(
+      `cannot read function layout ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** The request's function layout. */
+async function readFunctionLayout(
+  opts: CompileRequestOptions,
+): Promise<{ functionLayout?: FunctionLayout }> {
+  if (opts.functionLayout === undefined) return {};
+  const path = resolve(opts.functionLayout);
+  const bytes = await readFile(path);
+  return {
+    functionLayout: parseFunctionLayout(
+      (path.endsWith(".gz") ? gunzipSync(bytes) : bytes).toString("utf8"),
+    ),
+  };
+}
+
 function usesPrecompiledRuntimePack(opts: CompileRequestOptions, backend: "llvm"): boolean {
   if (backend !== "llvm" || opts.sanitize === true) return false;
   return nativeCodegenTarget() !== null;
@@ -874,6 +907,7 @@ async function prepareExecutableInput(
       llvm = emitLlvmModuleSource(mod, {
         targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
         ...debugOptions,
+        ...(await readFunctionLayout(opts)),
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
         wasi: buildPlatform === "wasi",
         runtimeAbiMarker: outputKind === "obj",
@@ -948,6 +982,7 @@ async function prepareExecutableInput(
     llvmSource = emitLlvmModuleSource(mod, {
       targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
       ...debugOptions,
+      ...(await readFunctionLayout(opts)),
       pointerBits: buildPlatform === "wasi" ? 32 : 64,
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
@@ -1571,9 +1606,11 @@ async function compileTracked(
     platform: buildPlatform,
   });
   let profile: NativeProfileOptions | undefined;
+  let functionLayoutDigest: string | undefined;
   try {
     if (profileRefusal !== null) throw new Error(profileRefusal);
     profile = await readNativeProfile(opts);
+    functionLayoutDigest = await functionLayoutKey(opts);
   } catch (err) {
     return {
       ok: false,
@@ -1609,6 +1646,7 @@ async function compileTracked(
       ...targetCpuField(opts.targetCpu),
       ...(opts.cpuDispatch === true ? { cpuDispatch: true as const } : {}),
       ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
+      ...(functionLayoutDigest === undefined ? {} : { functionLayout: functionLayoutDigest }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,

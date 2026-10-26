@@ -82,9 +82,30 @@ void scriptc_native_unlock(void) {}
 #include <sys/file.h>
 #include <sys/wait.h>
 
-int32_t scriptc_native_fork(void) { return (int32_t)fork(); }
+#if defined(__linux__)
+/* LLVM's profile runtime, linked into instrumented builds of the compiler
+ * (SCRIPTC_NATIVE_PROFILE_GENERATE); other builds leave these null. A worker
+ * starts with zeroed counters and writes its profile before _exit, which
+ * skips the runtime's atexit writer, so the profile counts the worker's work
+ * once. */
+extern void __llvm_profile_reset_counters(void) __attribute__((weak));
+extern int __llvm_profile_write_file(void) __attribute__((weak));
+#endif
 
-void scriptc_native_exit(int32_t code) { _exit(code); }
+int32_t scriptc_native_fork(void) {
+  pid_t pid = fork();
+#if defined(__linux__)
+  if (pid == 0 && __llvm_profile_reset_counters != NULL) __llvm_profile_reset_counters();
+#endif
+  return (int32_t)pid;
+}
+
+void scriptc_native_exit(int32_t code) {
+#if defined(__linux__)
+  if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
+#endif
+  _exit(code);
+}
 
 /* The worker's exit status, 128 plus the signal for a worker a signal
  * ended, or -1 when waitpid fails. */

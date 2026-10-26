@@ -101,11 +101,11 @@ jobs:
           if (receiptRun) appendFileSync(process.env.GITHUB_OUTPUT, `receipt_run=${receiptRun}\n`);
           NODE
 
-  # Collects the native compiler's profile on this commit
-  # (scripts/refresh-cli-profile.mjs), so every platform's CLI build optimizes
-  # with a profile of the code it compiles. The committed profile falls behind
-  # main within a day or two. If this job fails, the CLI builds use the
-  # committed profile.
+  # Collects the native compiler's profile and function layout on this commit
+  # (scripts/refresh-cli-profile.mjs, scripts/refresh-cli-layout.mjs), so every
+  # platform's CLI build optimizes and lays out the code it compiles. The
+  # committed ones fall behind main within a day or two. If this job fails,
+  # the CLI builds use the committed profile and layout.
   cli-profile:
     name: Collect the native compiler profile
     needs: check-release
@@ -139,11 +139,17 @@ jobs:
       - name: Collect the profile
         run: >-
           node scripts/refresh-cli-profile.mjs --tsc-ts "$RUNNER_TEMP/tsc-ts" --jobs 4
-          --output "$RUNNER_TEMP/cli-profile/cli.profdata.gz"
+          --output "$RUNNER_TEMP/cli-profile/cli.profdata.gz" --work "$RUNNER_TEMP/cli-profile-work"
+      - name: Collect the function layout
+        run: >-
+          node scripts/refresh-cli-layout.mjs --jobs 4 --instrumented "$RUNNER_TEMP/cli-profile-work/cli"
+          --output "$RUNNER_TEMP/cli-profile/cli.layout.gz"
       - uses: actions/upload-artifact@v4
         with:
           name: cli-profile
-          path: ${{ runner.temp }}/cli-profile/cli.profdata.gz
+          path: |
+            ${{ runner.temp }}/cli-profile/cli.profdata.gz
+            ${{ runner.temp }}/cli-profile/cli.layout.gz
           retention-days: 7
           if-no-files-found: error
 
@@ -336,8 +342,8 @@ jobs:
         with:
           name: cli-profile
           path: ${{ runner.temp }}/cli-profile
-      # Without the artifact, SCRIPTC_NATIVE_PROFILE_USE stays unset and
-      # build-native-cli.mts uses the committed profile.
+      # Without the artifact, SCRIPTC_NATIVE_PROFILE_USE and SCRIPTC_NATIVE_LAYOUT
+      # stay unset and build-native-cli.mts uses the committed profile and layout.
       - name: Select the native compiler profile
         if: matrix.cli != ''
         shell: bash
@@ -347,6 +353,11 @@ jobs:
           if [ -n "$COLLECTED" ]; then
             echo "SCRIPTC_NATIVE_PROFILE_USE=$COLLECTED" >> "$GITHUB_ENV"
             echo "The native CLI builds with the profile collected on $GITHUB_SHA"
+            layout="$(dirname "$COLLECTED")/cli.layout.gz"
+            if [ -f "$layout" ]; then
+              echo "SCRIPTC_NATIVE_LAYOUT=$layout" >> "$GITHUB_ENV"
+              echo "The native CLI builds with the function layout collected on $GITHUB_SHA"
+            fi
           else
             echo "::warning::No profile was collected on this commit; the native CLI builds with the committed profile"
           fi

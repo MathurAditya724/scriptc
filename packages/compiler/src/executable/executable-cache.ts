@@ -157,6 +157,8 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted without --profile-generate/--profile-use; otherwise the
    * pattern, or the digest of the profile's bytes. */
   profile?: string;
+  /** Omitted without a function layout; otherwise the digest of its bytes. */
+  functionLayout?: string;
   /** Omitted for the default tsgo checker; with SCRIPTC_CHECKER=tsc-ts, the
    * tsc-ts executable's file identity. */
   checker?: string;
@@ -311,6 +313,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...targetCpuKeyParts(options.targetCpu),
     ...cpuDispatchKeyParts(options.cpuDispatch),
     ...(options.profile !== undefined ? [options.profile] : []),
+    ...(options.functionLayout !== undefined ? [`layout:${options.functionLayout}`] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
     options.npmStatic === null
@@ -355,6 +358,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
   for (const part of cpuDispatchKeyParts(options.cpuDispatch)) hash.update(`${part}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);
+  if (options.functionLayout !== undefined) hash.update(`layout:${options.functionLayout}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
   hash

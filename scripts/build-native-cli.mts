@@ -37,6 +37,15 @@ const useProfile =
   !sanitize &&
   requestedProfile !== "" &&
   (requestedProfile !== undefined || existsSync(committedProfile));
+// Builds lay out the compiler's functions with the committed layout
+// (scripts/refresh-cli-layout.mjs), or the one SCRIPTC_NATIVE_LAYOUT names;
+// an empty SCRIPTC_NATIVE_LAYOUT, and instrumented builds, use none.
+const committedLayout = join(root, "packages/compiler/native/cli.layout.gz");
+const requestedLayout = process.env["SCRIPTC_NATIVE_LAYOUT"];
+const functionLayout =
+  profileGenerate !== undefined || requestedLayout === ""
+    ? undefined
+    : (requestedLayout ?? (existsSync(committedLayout) ? committedLayout : undefined));
 let target = nativeCodegenTarget();
 if (target === null || target.platform === "wasi")
   throw new Error("a supported native host is required to build the compiler");
@@ -126,6 +135,7 @@ const result = await compile(join(root, "packages/compiler/src/native/cli.ts"), 
   sanitize,
   ...(profileGenerate === undefined ? {} : { profileGenerate }),
   ...(profileUse === undefined ? {} : { profileUse }),
+  ...(functionLayout === undefined ? {} : { functionLayout }),
   emitIr: process.env["SCRIPTC_NATIVE_EMIT_IR"] === "1",
 });
 if (!result.ok)
