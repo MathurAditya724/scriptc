@@ -86,9 +86,23 @@ const PRIM_FLAGS: readonly [number, CanonPrim][] = [
   [ts.TypeFlags.ESSymbol | ts.TypeFlags.UniqueESSymbol, "symbol"],
 ];
 
-/** A stable key for a canonical node, for deduplication and tests. */
-export function canonKey(c: Canon, depth = 0): string {
-  if (depth > 6) return "…";
+/** A stable key for a canonical node, for deduplication and tests. Deep
+ * and wide types are cut off (depth 6, about 4,000 characters), so equal
+ * keys mean equal up to that horizon. */
+export function canonKey(c: Canon): string {
+  const budget = { left: 4000 };
+  return canonKeyAt(c, 0, budget);
+}
+
+function canonKeyAt(c: Canon, depth: number, budget: { left: number }): string {
+  const key = canonKeyInner(c, depth, budget);
+  budget.left -= key.length;
+  return key;
+}
+
+function canonKeyInner(c: Canon, depth: number, budget: { left: number }): string {
+  if (depth > 6 || budget.left <= 0) return "…";
+  const canonKey = (n: Canon, d: number) => canonKeyAt(n, d, budget);
   switch (c.k) {
     case "prim":
       return c.p;

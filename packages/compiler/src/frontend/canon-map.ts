@@ -111,6 +111,7 @@ export function canonShadowHook(
   return (type, mapped, ctx) => {
     if (busy) return;
     busy = true;
+    // The shadow records and must never break a compile.
     try {
       const resolve = ctx.resolveTypeParamTs;
       const normalizer = new Normalizer(checker);
@@ -146,6 +147,8 @@ export function canonShadowHook(
             ...(canonical !== null ? { canonical: typeKey(canonical) } : {}),
           })}\n`,
         );
+    } catch {
+      // A census line lost, nothing else.
     } finally {
       busy = false;
     }
