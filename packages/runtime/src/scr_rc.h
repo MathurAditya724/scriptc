@@ -732,6 +732,10 @@ static inline void scr_cyc_dead(void *obj) {
  * live heap — do not put it on a per-turn path. */
 void scr_collect_cycles(void);
 void scr_collect_cycles_phase(void);
+/* Returns the heap pages that hold only freed memory to the system: the
+ * calling thread's size-class pages whose blocks are all free, and the
+ * system allocator's free pages (scr_alloc.c). */
+void scr_heap_trim(void);
 /* Sets the growth cap SCR_CYCLE_GROWTH_CAP sets (scr_cycle.c), for a program
  * that knows its own memory profile; the environment variable takes
  * precedence. Call it before the program allocates much. */

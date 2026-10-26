@@ -56,7 +56,9 @@ void scr_collect_cycles_phase(void);
  * frontend's syntax trees and program state refer to each other, so
  * reference counting frees almost none of them when the frontend is
  * disposed, and the collector's schedule alone may not run a full pass
- * before the build ends. */
+ * before the build ends. The sweep then returns the freed pages to the
+ * system (scr_heap_trim), so code generation does not grow on top of the
+ * frontend's heap. */
 void scriptc_native_collect_cycles(void) {
   scr_collect_cycles_phase();
 }
