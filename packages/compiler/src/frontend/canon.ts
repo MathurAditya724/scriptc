@@ -281,7 +281,7 @@ export class Normalizer {
       if (known !== undefined) return known;
     }
     const node = this.build(type, env, key);
-    if (node.src === undefined && node.k !== "param") node.src = type;
+    if (node.src === undefined) node.src = type;
     if (key !== null && !this.interned.has(key)) this.interned.set(key, node);
     return node;
   }
@@ -394,8 +394,21 @@ export class Normalizer {
     const prims = parts.filter((p) => p.k === "prim" || p.k === "lit");
     if (prims.length === 1 && parts.every((p) => p.k === "prim" || p.k === "lit" || p.k === "obj"))
       return prims[0]!;
-    if (parts.every((p) => p.k === "obj" || (p.k === "top" && p.t === "object")))
-      return this.object(type, env, key);
+    if (parts.every((p) => p.k === "obj" || (p.k === "top" && p.t === "object"))) {
+      const merged = this.object(type, env, key);
+      // A class (or mixin instance) refined by other object types is that
+      // class, with its type arguments: the nominal table answers it, not a
+      // merged record.
+      let refined: { nominal: string; typeArgs: () => readonly Canon[] } | undefined;
+      for (const p of parts)
+        if (p.k === "obj" && p.nominal !== undefined)
+          refined ??= { nominal: p.nominal, typeArgs: p.typeArgs };
+      if (refined !== undefined && merged.k === "obj" && merged.nominal === undefined) {
+        merged.nominal = refined.nominal;
+        merged.typeArgs = refined.typeArgs;
+      }
+      return merged;
+    }
     return { k: "opaque", ts: type, reason: "intersection" };
   }
 
