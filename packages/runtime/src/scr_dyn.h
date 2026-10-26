@@ -428,6 +428,13 @@ typedef struct ScrDynTypedRecordOps {
    * optional key can change after the record is boxed. NULL in every other
    * table. */
   const struct ScrDynTypedRecordOps *(*select)(void *rec);
+  /* Stores `value` into present field `index` in place when it fits the
+   * field's type and answers true (also when the conversion itself threw,
+   * which has then raised the write's error); answers false with no side
+   * effects otherwise, leaving the snapshot path to raise its diagnostic.
+   * NULL when the program never writes through a dynamic view, and for a
+   * field whose storage it cannot replace (an inline union). */
+  bool (*set)(void *rec, size_t index, const ScrDyn *value);
 } ScrDynTypedRecordOps;
 /* A record capsule's ops while it answers from the native record (no view
  * created yet), or NULL. */
@@ -1308,8 +1315,10 @@ bool scr_dyn_typed_ref_is(
     const ScrDyn *d, const char *type_key, size_t type_key_len);
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
+void *scr_dyn_typed_ref_prefix_view(const ScrDyn *d); /* +1 or NULL */
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
+ScrDyn *scr_dyn_typed_ref_peek(const ScrDyn *d); /* +1 */
 /* What string conversion renders for a capsule (+1): its materialized
  * view, or, for an EventTarget or Event subclass without its own
  * toString, the "[object EventTarget]" / "[object Event]" string of its
