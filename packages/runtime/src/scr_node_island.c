@@ -871,6 +871,28 @@ static const void *ni_caller_bottom = NULL;
 static size_t ni_caller_size = 0;
 #endif
 
+/* A context that runs fn on the stack [lo, lo + size), from its top.
+ * macOS's makecontext clears the whole stack it is given, which costs a
+ * pass over (and commits) every page of it on each call: there it is given
+ * only the top slice. The context starts at the same address either way,
+ * and its frames grow below the slice as they would anywhere on the
+ * stack; nothing reads uc_stack after makecontext, and the stack's bound
+ * is the runtime's stack guard (and the guard page), not uc_stack. */
+static void ni_make_context(ucontext_t *ctx, char *lo, size_t size, void (*fn)(void)) {
+  if (getcontext(ctx) != 0) scr_trap("scriptc: getcontext failed\n");
+#if defined(__APPLE__)
+  size_t slice = (size_t)64 * 1024;
+  if (size > slice) {
+    lo += size - slice;
+    size = slice;
+  }
+#endif
+  ctx->uc_stack.ss_sp = lo;
+  ctx->uc_stack.ss_size = size;
+  ctx->uc_link = NULL;
+  makecontext(ctx, fn, 0);
+}
+
 static void ni_trampoline(void) {
   for (;;) {
 #ifdef NI_ASAN
@@ -947,11 +969,7 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   uintptr_t top = ni_mark;
   if (scr_node_stack_low != 0 && scr_node_stack_low < top) top = scr_node_stack_low;
   uintptr_t hi = (top - 1024) & ~(uintptr_t)15;
-  if (getcontext(&nested) != 0) scr_trap("scriptc: getcontext failed\n");
-  nested.uc_stack.ss_sp = lo;
-  nested.uc_stack.ss_size = hi - (uintptr_t)lo;
-  nested.uc_link = NULL;
-  makecontext(&nested, ni_nested_trampoline, 0);
+  ni_make_context(&nested, lo, hi - (uintptr_t)lo, ni_nested_trampoline);
   ni_nested_job = job;
   ni_nested_arg = arg;
   ni_nested_return = &caller;
@@ -992,11 +1010,7 @@ static void ni_on_node_stack(void (*job)(void *), void *arg) {
 #ifdef NI_ASAN
     if (__lsan_register_root_region) __lsan_register_root_region(ni_stack, NI_STACK);
 #endif
-    if (getcontext(&ni_node_ctx) != 0) scr_trap("scriptc: getcontext failed\n");
-    ni_node_ctx.uc_stack.ss_sp = ni_stack + NI_GUARD;
-    ni_node_ctx.uc_stack.ss_size = NI_STACK - NI_GUARD;
-    ni_node_ctx.uc_link = NULL;
-    makecontext(&ni_node_ctx, ni_trampoline, 0);
+    ni_make_context(&ni_node_ctx, ni_stack + NI_GUARD, NI_STACK - NI_GUARD, ni_trampoline);
   }
   ni_job = job;
   ni_job_arg = arg;
@@ -1022,12 +1036,61 @@ typedef struct {
   char *error;
 } NiStart;
 
+#if defined(__APPLE__)
+/* V8 takes each thread's stack start (v8::base::Stack, the bound of its
+ * conservative stack scan and of its stack limit) from
+ * pthread_get_stackaddr_np the first time it asks, and keeps it for the
+ * thread's life. On Linux the bridge's definitions of those functions
+ * answer for libnode with Node's stack; macOS binds libnode's own calls
+ * inside libnode, so they cannot. While Node starts on its stack (where
+ * V8 first asks, and where every frame of Node runs), the main thread's
+ * pthread record names Node's stack instead: its stack address and the
+ * bottom pthread_get_stacksize_np derives from it, found by value next
+ * to each other in the record and checked through the public accessors.
+ * The record is restored once Node has started. */
+static void **ni_pthread_stack = NULL;
+static void *ni_pthread_saved[2];
+
+static void ni_pthread_stack_enter(uintptr_t start, size_t size) {
+  pthread_t self = pthread_self();
+  void *addr = pthread_get_stackaddr_np(self);
+  void *bottom = (char *)addr - pthread_get_stacksize_np(self);
+  void **record = (void **)(void *)self;
+  for (size_t i = 0; i + 1 < 64; i++) {
+    if (record[i] != addr || record[i + 1] != bottom) continue;
+    ni_pthread_saved[0] = record[i];
+    ni_pthread_saved[1] = record[i + 1];
+    record[i] = (void *)start;
+    record[i + 1] = (void *)(start - size);
+    if (pthread_get_stackaddr_np(self) == (void *)start) {
+      ni_pthread_stack = &record[i];
+      return;
+    }
+    record[i] = ni_pthread_saved[0];
+    record[i + 1] = ni_pthread_saved[1];
+  }
+}
+
+static void ni_pthread_stack_leave(void) {
+  if (ni_pthread_stack == NULL) return;
+  ni_pthread_stack[0] = ni_pthread_saved[0];
+  ni_pthread_stack[1] = ni_pthread_saved[1];
+  ni_pthread_stack = NULL;
+}
+#endif
+
 static void ni_start_job(void *p) {
   NiStart *a = p;
   /* JavaScript may use Node's stack down to a reserve above its guard page
    * (native frames below V8's limit, the runtime's stack guard). */
   uintptr_t limit = (uintptr_t)(ni_stack + NI_GUARD) + NI_STACK / 8;
+#if defined(__APPLE__)
+  ni_pthread_stack_enter((uintptr_t)ni_stack + NI_STACK, NI_STACK - NI_GUARD);
+#endif
   a->error = ni_bridge->start(&ni_host, a->bootstrap, a->argv0, limit);
+#if defined(__APPLE__)
+  ni_pthread_stack_leave();
+#endif
 }
 
 typedef struct {
