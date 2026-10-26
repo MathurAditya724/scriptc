@@ -217,7 +217,7 @@ import {
 import { LazyCaptures } from "./lazy-captures.js";
 import { StackCaptures } from "./stack-captures.js";
 import {
-  CLOSURE_RECEIVER_FREE,
+  CLOSURE_KIND,
   emitFieldAbsentTest,
   f64Lit,
   SCR_ARR_FIELD,
@@ -7501,15 +7501,15 @@ export class LlEmitter {
     return wrapEmitterListener(this, target, adapterFn);
   }
 
-  /** ScrClosure.function_kind for a closure over `fn`: generator 1, async
-   * 2, own prototype 4, and SCR_FN_RECEIVER_FREE (16) when its body never
+  /** ScrClosure.function_kind for a closure over `fn`: its generator,
+   * async and own prototype bits, and RECEIVER_FREE when its body never
    * observes the ambient receiver, so indirect callers skip the bracket. */
   closureFunctionKind(fn: IrFunction): number {
     return (
-      (fn.generator ? 1 : 0) +
-      (fn.async ? 2 : 0) +
-      (fn.ownsPrototype ? 4 : 0) +
-      (this.receiverReaders.ignores(fn) ? CLOSURE_RECEIVER_FREE : 0)
+      (fn.generator ? CLOSURE_KIND.GENERATOR : 0) +
+      (fn.async ? CLOSURE_KIND.ASYNC : 0) +
+      (fn.ownsPrototype ? CLOSURE_KIND.OWN_PROTOTYPE : 0) +
+      (this.receiverReaders.ignores(fn) ? CLOSURE_KIND.RECEIVER_FREE : 0)
     );
   }
 

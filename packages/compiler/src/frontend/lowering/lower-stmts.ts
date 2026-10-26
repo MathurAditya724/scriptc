@@ -1,3 +1,4 @@
+import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
@@ -2065,7 +2066,7 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
   const entry = UNSUPPORTED_STMT[stmt.kind];
   if (entry)
     lowerer.unsupported(
-      entry.code as `SC${number}` & keyof typeof UNSUPPORTED,
+      entry.code as DiagnosticCode & keyof typeof UNSUPPORTED,
       stmt,
       entry.feature,
     );

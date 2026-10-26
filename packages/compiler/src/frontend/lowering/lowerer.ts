@@ -1,3 +1,4 @@
+import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { globalMemberValue } from "./global-values.js";
@@ -966,7 +967,7 @@ export interface LowerOptions {
 }
 
 interface RuntimeFenceFallback {
-  code: `SC${number}`;
+  code: DiagnosticCode;
   message: string;
 }
 
@@ -9785,7 +9786,7 @@ export class Lowerer {
   }
 
   unsupported(
-    code: keyof typeof UNSUPPORTED & `SC${number}`,
+    code: keyof typeof UNSUPPORTED & DiagnosticCode,
     node: ts.Node,
     featureOverride?: string,
     hintOverride?: string,
