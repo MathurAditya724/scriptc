@@ -113,14 +113,20 @@ const KNOWN: Record<string, Known> = {
   "workspace-unclean": { build: "SC2013" },
 };
 
+/** Where the overlay changes how a case KNOWN refuses (none today). */
+const OVERLAY_KNOWN: Record<string, Known> = {};
+
 /** Per-case timeouts past the default 120 s: the undici cases compile the
  * built-in undici implementation's module graph, the zod 3 cases (zod3,
  * zod3-adoption, zod3-boundary, zod3-infer) compile zod 3's 3,700-line
  * types module, and the zod 4 cases (zod4-boundary, zod4-record,
  * hono-zod-validator, hono-zod-default-hook)
  * compile zod 4's core, classic API and locales. A sanitized build of any
- * of them takes minutes on a CI runner. */
+ * of them takes minutes on a CI runner. commander-calc-async runs four
+ * command lines, and with the shape overlay its build analyzes commander
+ * for most of a minute. */
 const TIMEOUTS: Record<string, number> = {
+  "commander-calc-async": 300_000,
   "hono-zod-default-hook": 900_000,
   "hono-zod-validator": 900_000,
   undici5: 600_000,
@@ -235,7 +241,7 @@ export function defineNpmSuite(options: { label: string; shapeOverlay?: boolean 
 
   describe(`${label} (${cases.length} programs${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {
     for (const c of cases) {
-      const known = KNOWN[c.name];
+      const known = (shapeOverlay === true ? OVERLAY_KNOWN[c.name] : undefined) ?? KNOWN[c.name];
       if (known !== undefined && "divergence" in known) {
         test.fails(`${c.name} (diverges: ${known.divergence})`, async () => {
           const built = await build(c.entry, shapeOverlay);

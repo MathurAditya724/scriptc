@@ -35,6 +35,10 @@ export function attributeOverlayRefusals(
   program: ts.Program,
   diagnostics: readonly ScrDiagnostic[],
   overlayFiles: ReadonlySet<string>,
+  /** Failing refusals may blame every annotation in their enclosing
+   * function as a last resort; refusals deferred to run time do not (most
+   * exist without the overlay too). */
+  wholeFunctions = true,
 ): OverlayAttribution {
   const annotations = new Map<string, Set<number>>();
   const files = new Set<string>();
@@ -124,10 +128,17 @@ export function attributeOverlayRefusals(
         const sf = program.getSourceFile(file);
         if (sf === undefined) continue;
         const visit = (n: ts.Node): void => {
-          if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+          const callee = !ts.isCallExpression(n)
+            ? undefined
+            : ts.isIdentifier(n.expression)
+              ? n.expression
+              : ts.isPropertyAccessExpression(n.expression) && ts.isIdentifier(n.expression.name)
+                ? n.expression.name
+                : undefined;
+          if (callee !== undefined && ts.isCallExpression(n)) {
             let decl: ts.Node | undefined;
             try {
-              decl = checker!.getSymbolAtLocation(n.expression)?.declarations[0];
+              decl = checker!.getSymbolAtLocation(callee)?.declarations[0];
             } catch {
               decl = undefined;
             }
@@ -148,6 +159,42 @@ export function attributeOverlayRefusals(
     return calls.get(fn) ?? [];
   };
 
+  // Annotations whose type text names an identifier, by identifier: a
+  // class the lowering refuses compiles dynamically until a type names it.
+  let naming: Map<string, [string, number][]> | null = null;
+  const blameNaming = (name: string): void => {
+    if (naming === null) {
+      naming = new Map();
+      for (const file of overlayFiles) {
+        const text = program.getSourceFile(file)?.text;
+        if (text === undefined) continue;
+        for (const m of text.matchAll(/\/\*\*[\s\S]*?\*\//g)) {
+          if (!m[0].includes(OVERLAY_MARK)) continue;
+          const ids = overlayAnnotationIds(m[0]);
+          for (const w of new Set(m[0].match(/[A-Za-z_$][\w$]*/g) ?? [])) {
+            let l = naming.get(w);
+            if (l === undefined) naming.set(w, (l = []));
+            for (const id of ids) l.push([file, id]);
+          }
+        }
+      }
+    }
+    for (const [file, id] of naming.get(name) ?? []) add(file, id);
+  };
+  // The class a refusal is about: a field or the heritage of a class
+  // declaration, or a `new C(...)` of a named class.
+  const refusedClassName = (node: ts.Node): string | null => {
+    for (let n: ts.Node | undefined = node; n !== undefined; n = n.parent) {
+      if (ts.isNewExpression(n) && ts.isIdentifier(n.expression)) return n.expression.text;
+      if (ts.isFunctionLike(n)) return null;
+      if (ts.isClassLikeDeclaration(n)) {
+        const name = (n as { name?: ts.Node }).name;
+        return name !== undefined && ts.isIdentifier(name) ? name.text : null;
+      }
+    }
+    return null;
+  };
+
   for (const d of diagnostics) {
     const sf = program.getSourceFile(d.loc.file);
     if (sf === undefined) {
@@ -164,6 +211,8 @@ export function attributeOverlayRefusals(
       blameNode(n);
       if (statement === node && (ts.isStatement(n) || isClassMember(n))) statement = n;
     }
+    const refusedClass = refusedClassName(node);
+    if (refusedClass !== null) blameNaming(refusedClass);
     const own = blamed;
     blameReferences(node, 0);
     if (blamed === own && statement !== node) blameReferences(statement, 0);
@@ -177,7 +226,7 @@ export function attributeOverlayRefusals(
     }
     // Still nothing: the lowering of the enclosing function changed as a
     // whole (an instantiation the annotations inside it made possible).
-    if (blamed === before) {
+    if (blamed === before && wholeFunctions) {
       const fn = enclosingFunctionLike(node);
       if (fn !== undefined && overlayFiles.has(fn.getSourceFile().fileName)) {
         const visit = (n: ts.Node): void => {
@@ -197,7 +246,7 @@ export function attributeOverlayRefusals(
 
 function enclosingFunction(node: ts.Node): ts.Node | undefined {
   for (let n: ts.Node | undefined = node.parent; n !== undefined; n = n.parent)
-    if (ts.isFunctionDeclaration(n)) return n;
+    if (ts.isFunctionDeclaration(n) || ts.isMethodDeclaration(n)) return n;
     else if (ts.isFunctionLike(n)) return undefined;
   return undefined;
 }
@@ -224,7 +273,7 @@ function visitReturns(body: ts.Node, f: (e: ts.Expression) => void): void {
 }
 
 /** The innermost node whose token span covers [start, end). */
-function innermostNodeAt(sf: ts.SourceFile, start: number, end: number): ts.Node {
+export function innermostNodeAt(sf: ts.SourceFile, start: number, end: number): ts.Node {
   let node: ts.Node = sf;
   for (;;) {
     let next: ts.Node | undefined;
