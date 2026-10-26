@@ -1,4 +1,5 @@
 /* LlEmitter's module-level output: module parts, helper definitions, library declarations and FFI callback definitions. */
+import { loopUnrollMetadata } from "./periodic-guards.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { emitWasmModules } from "./wasm-modules.js";
 import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
@@ -1099,6 +1100,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
     out.push(``);
     out.push(...emitter.fieldAliasMetadata());
+    out.push(...loopUnrollMetadata(out));
     if (emitter.debug !== null) out.push(emitter.debug.render());
     return out;
   }
@@ -1274,6 +1276,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     );
   }
   out.push(...emitter.fieldAliasMetadata());
+  out.push(...loopUnrollMetadata(out));
   if (emitter.debug !== null) out.push(emitter.debug.render());
   return out;
 }
