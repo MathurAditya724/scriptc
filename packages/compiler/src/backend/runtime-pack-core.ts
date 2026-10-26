@@ -89,12 +89,15 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   declAdopt: boolean;
   dynForAwait: boolean;
   eventsOnceSignal: boolean;
+  mime: boolean;
+  utilTiming: boolean;
   dynBuffer: boolean;
   builtinValues: boolean;
   warningReplace: boolean;
   stdioExtended: boolean;
   nodeIsland: boolean;
   brotli: boolean;
+  moduleNamespace: boolean;
   nativeFetch: boolean;
   netEffective: boolean;
   httpEffective: boolean;
@@ -289,12 +292,15 @@ export function effectiveRuntimeFeatures(
     declAdopt: features.declAdopt === true,
     dynForAwait: features.dynForAwait === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
+    mime: features.mime === true,
+    utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,
     builtinValues: features.builtinValues === true,
     warningReplace: features.warningReplace === true,
     stdioExtended: features.stdioExtended === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
+    moduleNamespace: features.moduleNamespace === true,
     nativeFetch,
     netEffective,
     httpEffective,

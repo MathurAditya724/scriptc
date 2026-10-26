@@ -29,6 +29,8 @@ import { classifyDiagnostic, isIslandReasonCode } from "../node-islands/classify
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
+import { isEsmFile } from "../frontend/lowering/lower-node-island.js";
+import type { PackageEdge } from "../node-islands/scan.js";
 
 export interface PreparedExecutableModule {
   ok: true;
@@ -139,7 +141,14 @@ export function prepareExecutableModule(
       // Packages whose own modules refused to lower run in Node islands
       // too (the authoritative lowering, DESIGN.md §1.4): build again with
       // them as islands.
-      const grown = loweringIslands(entryPath, opts, fe, lowered.diagnostics, lowerIslands);
+      const grown = loweringIslands(
+        entryPath,
+        opts,
+        fe,
+        lowered.diagnostics,
+        lowerIslands,
+        fe.nodeIslandScan?.({ userJs: false }).edges,
+      );
       if (grown !== null) {
         fe.dispose();
         frontendDisposed();
@@ -379,6 +388,7 @@ function loweringIslands(
   fe: ReturnType<FrontendFactory>,
   diagnostics: readonly ScrDiagnostic[],
   known: ReadonlyMap<string, IslandPackage>,
+  edges: readonly PackageEdge[] | undefined,
 ): Map<string, IslandPackage> | null {
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
   if (policy.mode !== "auto" || known.size > 16) return null;
@@ -417,6 +427,33 @@ function loweringIslands(
       class: reason.class,
       reason: describe(reason),
     });
+  }
+  // A native ES module that imports an island CommonJS module would read
+  // its bindings from the module's exports object, where Node gives it the
+  // namespace its CommonJS facade builds (the lexed names, module.exports
+  // as the default): the importing package runs in the island too.
+  for (let added = edges !== undefined; added;) {
+    added = false;
+    for (const edge of edges!) {
+      const name = edge.to;
+      if (!grown.has(name) || edge.fromDir === null || edge.shim) continue;
+      const at = packageDirOf(edge.fromFile);
+      if (at === null || grown.has(at.name) || !compiled.has(at.name)) continue;
+      if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
+      if (!isEsmFile(edge.fromFile)) continue;
+      const target =
+        resolveBareModule(edge.fromFile, name, "js-only") ??
+        resolveBareModule(edge.fromFile, name, "js-only", "require");
+      if (target === null || isEsmFile(target.typesFile)) continue;
+      grown.set(at.name, {
+        name: at.name,
+        version: packageVersionOf(at.dir),
+        dir: at.dir,
+        class: "packaging",
+        reason: `an ES module of the package imports the CommonJS island package '${name}'`,
+      });
+      added = true;
+    }
   }
   return grown.size === known.size ? null : grown;
 }
@@ -507,9 +544,10 @@ function fenceIslands(
     if (runtime) sure?.add(at.name);
   }
   if (requireFence && fenced.size === 0) return null;
+  const scan = fe.nodeIslandScan({ userJs: false });
   const report = buildNodeIslandReport({
     entry: entryPath,
-    scan: fe.nodeIslandScan({ userJs: false }),
+    scan,
     npm: fe.npmStatic,
     diagnostics: lowered.diagnostics,
     fences: lowered.runtimeFences,
@@ -536,6 +574,35 @@ function fenceIslands(
       class: island.class,
       reason: island.reason,
     });
+  }
+  // A native ES module that imports an island CommonJS module would read
+  // its bindings from the module's exports object, where Node gives it the
+  // namespace its CommonJS facade builds (the lexed names, module.exports
+  // as the default): the importing package runs in the island too.
+  for (let added = true; added;) {
+    added = false;
+    for (const edge of scan.edges) {
+      const name = edge.to;
+      if (!grown.has(name) || edge.fromDir === null || edge.shim) continue;
+      const at = packageDirOf(edge.fromFile);
+      if (at === null || grown.has(at.name) || !compiled.has(at.name)) continue;
+      if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
+      if (!isEsmFile(edge.fromFile)) continue;
+      const target =
+        resolveBareModule(edge.fromFile, name, "js-only") ??
+        resolveBareModule(edge.fromFile, name, "js-only", "require");
+      if (target === null || isEsmFile(target.typesFile)) continue;
+      grown.set(at.name, {
+        name: at.name,
+        version: packageVersionOf(at.dir),
+        dir: at.dir,
+        class: "packaging",
+        reason: `an ES module of the package imports the CommonJS island package '${name}'`,
+      });
+      // It goes wherever that island goes, the sure-fence retry included.
+      if (known.has(name) || sure?.has(name) === true) sure?.add(at.name);
+      added = true;
+    }
   }
   return grown.size === known.size ? null : grown;
 }

@@ -82,7 +82,7 @@ const KNOWN: Record<string, Known> = {
   "node24-file-url-conversion": { island: true },
   "node24-fs-descriptors": { run: "SC2020" },
   "node24-mime": { run: "SC2020" },
-  "node24-mime-errors": { run: "SC1090" },
+  "node24-mime-errors": { run: "SC2020" },
   "node24-no-error-assertions": { run: "SC2020" },
   "node24-parseargs": { run: "SC1090" },
   "node24-promise-timers": { run: "SC2020" },
@@ -112,6 +112,8 @@ const KNOWN: Record<string, Known> = {
   "self-name": { build: "SC2013" },
   "stream-shims": { run: "SC2020" },
   "util-shims": { run: "SC2020" },
+  // The package redeclares the var it exported: Node copies the first value.
+  "var-export-redeclared": { island: true },
   "web-streams": { run: "SC1090" },
   "workspace-copied": { island: true },
   "workspace-unclean": { build: "SC2013" },

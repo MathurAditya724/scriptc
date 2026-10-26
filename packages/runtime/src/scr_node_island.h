@@ -59,6 +59,11 @@ void scr_loop_hosted_io_state(struct ScrNodeIoState *state);
 void scr_loop_hosted_io(void);
 void scr_loop_hosted_microtasks_done(void);
 
+/* Runtime code switches stacks (scr_switch) at `sp`: when that is Node's
+ * stack, the frames above stay live until it switches back, so a call
+ * into Node.js from the other stack runs below them. */
+void scr_node_island_leave_stack(uintptr_t sp);
+
 /* Process events island code listens to (SCR_NODE_EVENT_* of the bridge
  * ABI). Their listeners sit in the runtime's registries (the
  * SCR_NODE_ISLANDS build of scr_events.c) at their registration position,
