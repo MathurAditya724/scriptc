@@ -86,8 +86,10 @@ Options:
                      code is laid out, inlined and split by how the profiled
                      runs used it. Code the profile does not describe, or
                      describes from an older version of the program, is
-                     optimized as without one (release or speed; --emit=exe
-                     only)
+                     optimized as without one. build prints how the profile
+                     matched on stderr, and warns when more than 10% of the
+                     functions it describes changed (release or speed;
+                     --emit=exe only)
       --keep-llvm    keep generated LLVM IR beside the executable (default)
       --no-keep-llvm delete generated LLVM IR after compiling
       --emit-ir      also write IR beside an executable or library archive;
