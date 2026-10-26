@@ -413,8 +413,17 @@ const LOOP_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   "replaceAll",
 ]);
 
-export function analyzeShapes(program: ts.Program, checker: ts.TypeChecker): ShapeAnalysis {
-  return new Analyzer(program, checker).run();
+export interface AnalyzeOptions {
+  /** Per-call-site clones per function (default SCRIPTC_SHAPE_SITE_CLONES or 64). */
+  readonly siteClones?: number;
+}
+
+export function analyzeShapes(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  options: AnalyzeOptions = {},
+): ShapeAnalysis {
+  return new Analyzer(program, checker, options.siteClones ?? SITE_CLONES).run();
 }
 
 class Analyzer {
@@ -492,6 +501,7 @@ class Analyzer {
   constructor(
     private readonly program: ts.Program,
     private readonly checker: ts.TypeChecker,
+    private readonly siteCloneLimit: number,
   ) {
     this.top = this.atoms.intern("top", () => ({ kind: "top", label: "⊤" }));
   }
@@ -1488,7 +1498,7 @@ class Analyzer {
     return inside ? this.ctx : "";
   }
   private siteClone(info: FunctionInfo, site: Node, args: number[]): FunctionInfo | null {
-    if (SITE_CLONES === 0 || info.isGenerator || ts.isSourceFile(info.node)) return null;
+    if (this.siteCloneLimit === 0 || info.isGenerator || ts.isSourceFile(info.node)) return null;
     if (ts.isClassLikeDeclaration(info.node)) return null;
     // A function walked in an enclosing clone's or receiver's context reads
     // and writes that context's bindings of the variables it captures. A
@@ -1516,7 +1526,7 @@ class Analyzer {
     const existing = this.functions.get(`${ctx}|${this.nodeKey(info.node)}`);
     if (existing !== undefined) return existing;
     const count = this.siteClones.get(info.node) ?? 0;
-    if (count >= SITE_CLONES) return null;
+    if (count >= this.siteCloneLimit) return null;
     this.siteClones.set(info.node, count + 1);
     // The clone keeps the function's receiver: an arrow's lexical `this`,
     // and whatever reaches a function's own `this`, such as the receiver

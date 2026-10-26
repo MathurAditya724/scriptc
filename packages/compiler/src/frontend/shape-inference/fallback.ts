@@ -35,6 +35,10 @@ export function attributeOverlayRefusals(
   program: ts.Program,
   diagnostics: readonly ScrDiagnostic[],
   overlayFiles: ReadonlySet<string>,
+  /** Failing refusals may blame every annotation in their enclosing
+   * function as a last resort; refusals deferred to run time do not (most
+   * exist without the overlay too). */
+  wholeFunctions = true,
 ): OverlayAttribution {
   const annotations = new Map<string, Set<number>>();
   const files = new Set<string>();
@@ -124,10 +128,17 @@ export function attributeOverlayRefusals(
         const sf = program.getSourceFile(file);
         if (sf === undefined) continue;
         const visit = (n: ts.Node): void => {
-          if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+          const callee = !ts.isCallExpression(n)
+            ? undefined
+            : ts.isIdentifier(n.expression)
+              ? n.expression
+              : ts.isPropertyAccessExpression(n.expression) && ts.isIdentifier(n.expression.name)
+                ? n.expression.name
+                : undefined;
+          if (callee !== undefined && ts.isCallExpression(n)) {
             let decl: ts.Node | undefined;
             try {
-              decl = checker!.getSymbolAtLocation(n.expression)?.declarations[0];
+              decl = checker!.getSymbolAtLocation(callee)?.declarations[0];
             } catch {
               decl = undefined;
             }
@@ -177,7 +188,7 @@ export function attributeOverlayRefusals(
     }
     // Still nothing: the lowering of the enclosing function changed as a
     // whole (an instantiation the annotations inside it made possible).
-    if (blamed === before) {
+    if (blamed === before && wholeFunctions) {
       const fn = enclosingFunctionLike(node);
       if (fn !== undefined && overlayFiles.has(fn.getSourceFile().fileName)) {
         const visit = (n: ts.Node): void => {
@@ -197,7 +208,7 @@ export function attributeOverlayRefusals(
 
 function enclosingFunction(node: ts.Node): ts.Node | undefined {
   for (let n: ts.Node | undefined = node.parent; n !== undefined; n = n.parent)
-    if (ts.isFunctionDeclaration(n)) return n;
+    if (ts.isFunctionDeclaration(n) || ts.isMethodDeclaration(n)) return n;
     else if (ts.isFunctionLike(n)) return undefined;
   return undefined;
 }

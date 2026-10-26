@@ -35,6 +35,43 @@ interface Edit {
   readonly text: string;
   /** Replaces pos..end instead of inserting at pos. */
   readonly end?: number;
+  /** The annotation (or dead branch) the edit belongs to. */
+  readonly id?: number;
+}
+
+/** The overlay before annotation exclusions apply: per file, its text,
+ * edits and appended typedefs. It depends only on the analysis, so a build
+ * that drops refused annotations renders it again instead of analyzing
+ * again (renderShapeOverlay). */
+export interface ShapeOverlayPlan {
+  readonly parts: Map<string, OverlayPart>;
+}
+
+interface OverlayPart {
+  readonly text: string;
+  readonly edits: Edit[];
+  readonly suffix: string;
+  /** The leading trivia of each annotated declaration, by annotation id:
+   * the package's own JSDoc there is neutralized while the annotation is
+   * kept (package JSDoc is a hint; elsewhere it types the code as it does
+   * without the overlay). */
+  readonly docRanges: DocRange[];
+}
+
+interface DocRange {
+  readonly lo: number;
+  readonly hi: number;
+  readonly id: number;
+  /** For a function's annotation, the tags it writes: only the package's
+   * tags for the same result and parameters (and a `@type` or `@overload`
+   * signature) are neutralized, so the parameters it leaves untyped keep
+   * their documented types. Unset: every type tag in the range is. */
+  readonly replaces?: FunctionTags;
+}
+
+interface FunctionTags {
+  readonly returns: boolean;
+  readonly params: readonly string[];
 }
 
 /** Marks the overlay's own comments (an unknown JSDoc tag, ignored). */
@@ -76,7 +113,7 @@ export function planShapeOverlay(
   verdicts: readonly SiteVerdict[],
   packageFiles: readonly ts.SourceFile[],
   exclusions: OverlayExclusions = NO_EXCLUSIONS,
-): ShapeOverlay {
+): ShapeOverlayPlan {
   const pSites = new Map<Atom, SiteVerdict>();
   const siteVerdicts = new Set<Atom>(verdicts.map((v) => v.site.atom));
   // Records and arrays print only for sites whose objects never escape: a
@@ -93,11 +130,9 @@ export function planShapeOverlay(
     siteKeys.set(v.site.atom, keys);
     pSites.set(v.site.atom, v);
   }
-  const files = new Map<string, string>();
+  const parts = new Map<string, OverlayPart>();
   const overlaid = new Set<ts.SourceFile>(packageFiles);
   const exportedClasses = new Map<ts.SourceFile, Set<string>>();
-  let annotations = 0;
-  let deadBranches = 0;
   debugIndex = 0;
   // `if` branches no condition value allowed, per file: the overlay
   // replaces each with a throwing check, so the checker and the lowering
@@ -118,15 +153,30 @@ export function planShapeOverlay(
     const typedefs = new Map<string, string>();
     const typedefText: string[] = [];
     const edits: Edit[] = [];
-    const dropped = exclusions.annotations.get(sf.fileName);
     // One annotation: a JSDoc comment at `pos` carrying MARK and the
     // annotation's id (its position), so a refused lowering can name it and
     // the next load drop it. `close`: the text that closes a type cast.
-    const annotate = (pos: number, tags: string, close?: number): void => {
-      if (dropped?.has(pos) === true) return;
-      edits.push({ pos, text: `/** ${tags} ${MARK} #${pos} */ ${close !== undefined ? "(" : ""}` });
-      if (close !== undefined) edits.push({ pos: close, text: ")" });
-      annotations++;
+    const docRanges: DocRange[] = [];
+    const annotate = (
+      pos: number,
+      tags: string,
+      close?: number,
+      from?: number,
+      replaces?: FunctionTags,
+    ): void => {
+      if (from !== undefined && from < pos)
+        docRanges.push({
+          lo: from,
+          hi: pos,
+          id: pos,
+          ...(replaces !== undefined ? { replaces } : {}),
+        });
+      edits.push({
+        pos,
+        id: pos,
+        text: `/** ${tags} ${MARK} #${pos} */ ${close !== undefined ? "(" : ""}`,
+      });
+      if (close !== undefined) edits.push({ pos: close, id: pos, text: ")" });
     };
 
     const className = (decl: ts.Node): string | null => {
@@ -438,8 +488,12 @@ export function planShapeOverlay(
       return out;
     };
 
-    const paramTags = (fn: ts.FunctionLikeDeclaration): string | null => {
+    const paramTags = (
+      fn: ts.FunctionLikeDeclaration,
+    ): { text: string; replaces: FunctionTags } | null => {
       const tags: string[] = [];
+      const params: string[] = [];
+      let returns = false;
       if (!ts.isConstructorDeclaration(fn) && !constructed.has(fn)) {
         const ret = returnValues(fn);
         const t = ret !== undefined && ret.size > 0 ? typeOf(ret, false, 0) : null;
@@ -455,7 +509,10 @@ export function planShapeOverlay(
           process.stderr.write(
             `[shape-overlay-why] ${fn.name.text}: ${[...ret].map((a) => `${a.kind}:${a.label}${analysis.escaped.has(a) ? "(escaped)" : ""}`).join(" | ")}\n`,
           );
-        if (t !== null) tags.push(`@returns {${t}}`);
+        if (t !== null) {
+          tags.push(`@returns {${t}}`);
+          returns = true;
+        }
       }
       list(fn.parameters).forEach((p, index) => {
         if (
@@ -465,10 +522,18 @@ export function planShapeOverlay(
           p.questionToken !== undefined
         )
           return;
-        const t = typeOf(paramValues(fn, index), false, 0);
-        if (t !== null) tags.push(`@param {${t}} ${p.name.text}`);
+        const values = paramValues(fn, index);
+        const t = typeOf(values, false, 0);
+        // A `typeof p === "…"` test the proven values never pass would
+        // narrow the typed parameter to never inside the branch, which the
+        // lowering refuses: such a parameter stays untyped.
+        if (t !== null && typeofTestsOutside(fn, p.name.text, values)) return;
+        if (t !== null) {
+          tags.push(`@param {${t}} ${p.name.text}`);
+          params.push(p.name.text);
+        }
       });
-      return tags.length > 0 ? tags.join(" ") : null;
+      return tags.length > 0 ? { text: tags.join(" "), replaces: { returns, params } } : null;
     };
 
     const visit = (node: ts.Node): void => {
@@ -486,7 +551,8 @@ export function planShapeOverlay(
       ) {
         if (node.body !== undefined) {
           const tags = paramTags(node);
-          if (tags !== null) annotate(ts.tokenStartOfNode(node), tags);
+          if (tags !== null)
+            annotate(ts.tokenStartOfNode(node), tags.text, undefined, node.pos, tags.replaces);
         }
         // `this.f = …` fields of a constructor's top-level statements.
         if (ts.isConstructorDeclaration(node) && node.body !== undefined) {
@@ -509,7 +575,7 @@ export function planShapeOverlay(
             if (seen.has(name)) continue;
             seen.add(name);
             const t = cls !== undefined ? fieldType(cls, name) : null;
-            if (t !== null) annotate(ts.tokenStartOfNode(st), `@type {${t}}`);
+            if (t !== null) annotate(ts.tokenStartOfNode(st), `@type {${t}}`, undefined, st.pos);
           }
         }
       }
@@ -525,7 +591,7 @@ export function planShapeOverlay(
         const init = d.initializer;
         if (ts.isIdentifier(d.name) && init !== undefined && !literalInitializer(init)) {
           const t = typeOf(analysis.declValues(d), false, 0);
-          if (t !== null) annotate(ts.tokenStartOfNode(node), `@type {${t}}`);
+          if (t !== null) annotate(ts.tokenStartOfNode(node), `@type {${t}}`, undefined, node.pos);
         }
       }
       ts.forEachChild(node, (c) => {
@@ -556,7 +622,6 @@ export function planShapeOverlay(
     const removed = new Set<ts.Node>();
     for (const branch of dead) {
       const start = ts.tokenStartOfNode(branch);
-      if (dropped?.has(start) === true) continue;
       if (ranges.some(([lo, hi]) => start >= lo && start < hi)) continue;
       if (hoistedNames(branch, removed) === null) continue;
       removed.add(branch);
@@ -584,9 +649,9 @@ export function planShapeOverlay(
         edits.push({
           pos: lo,
           end: hi,
+          id: lo,
           text: `{ /** ${MARK} #${lo} */ ${vars}throw new Error(${JSON.stringify(message)}); }`,
         });
-        deadBranches++;
       }
     }
     // Debugging: SCRIPTC_SHAPE_OVERLAY_ONLY=a-b keeps the annotations
@@ -603,7 +668,7 @@ export function planShapeOverlay(
       edits.push(...kept);
     }
     if (edits.length === 0) continue;
-    files.set(sf.fileName, applyEdits(neutralizeDocTags(sf), edits) + typedefText.join(""));
+    parts.set(sf.fileName, { text: sf.text, edits, suffix: typedefText.join(""), docRanges });
   }
   // Type aliases other files name these files' classes through.
   for (const [other, names] of exportedClasses) {
@@ -611,12 +676,167 @@ export function planShapeOverlay(
       .sort()
       .map((n) => `/** @typedef {${n}} __shape_class_${n} ${MARK} */`)
       .join("");
-    files.set(
-      other.fileName,
-      (files.get(other.fileName) ?? neutralizeDocTags(other)) + "\n" + aliases,
-    );
+    const part = parts.get(other.fileName);
+    if (part !== undefined)
+      parts.set(other.fileName, { ...part, suffix: `${part.suffix}\n${aliases}` });
+    else
+      parts.set(other.fileName, {
+        text: other.text,
+        edits: [],
+        suffix: `\n${aliases}`,
+        docRanges: [],
+      });
+  }
+  return { parts };
+}
+
+/** The overlay's files with the annotations a build dropped left out. */
+export function renderShapeOverlay(
+  plan: ShapeOverlayPlan,
+  exclusions: OverlayExclusions = NO_EXCLUSIONS,
+): ShapeOverlay {
+  const files = new Map<string, string>();
+  let annotations = 0;
+  let deadBranches = 0;
+  for (const [file, part] of plan.parts) {
+    const dropped = exclusions.annotations.get(file);
+    const edits = part.edits.filter((e) => e.id === undefined || dropped?.has(e.id) !== true);
+    for (const e of edits) {
+      if (e.id === undefined || e.text === ")") continue;
+      if (e.end !== undefined) deadBranches++;
+      else annotations++;
+    }
+    if (edits.length === 0 && part.suffix === "") continue;
+    files.set(file, applyEdits(neutralizedDocRanges(part, dropped), edits) + part.suffix);
   }
   return { files, annotations, deadBranches };
+}
+
+/** The part's text with the package JSDoc neutralized in the leading trivia
+ * of the annotations a build kept. Each range is one declaration's leading
+ * trivia, so two ranges are equal or disjoint; the text is built once, with
+ * the tags of all the annotations of a range neutralized. */
+function neutralizedDocRanges(part: OverlayPart, dropped: ReadonlySet<number> | undefined): string {
+  const ranges = part.docRanges
+    .filter((r) => dropped?.has(r.id) !== true)
+    .sort((a, b) => a.lo - b.lo || a.hi - b.hi);
+  if (ranges.length === 0) return part.text;
+  let out = "";
+  let at = 0;
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i]!;
+    let replaces = r.replaces;
+    for (; i + 1 < ranges.length && ranges[i + 1]!.lo === r.lo && ranges[i + 1]!.hi === r.hi; i++) {
+      const next = ranges[i + 1]!.replaces;
+      replaces =
+        replaces === undefined || next === undefined
+          ? undefined
+          : {
+              returns: replaces.returns || next.returns,
+              params: [...replaces.params, ...next.params],
+            };
+    }
+    const lo = Math.max(r.lo, at);
+    if (r.hi <= lo) continue;
+    out += part.text.slice(at, lo) + neutralizeCommentTags(part.text.slice(lo, r.hi), replaces);
+    at = r.hi;
+  }
+  return out + part.text.slice(at);
+}
+
+/** A comment range's JSDoc type tags made plain text (the range is
+ * trivia, so it holds no literal). The overlay's own comments carry MARK
+ * and are kept. With `replaces`, only the tags a function's annotation
+ * replaces are. Lengths are unchanged. */
+export function neutralizeCommentTags(text: string, replaces?: FunctionTags): string {
+  return text.replace(/\/\*\*[\s\S]*?\*\//g, (comment) => {
+    if (comment.includes(MARK)) return comment;
+    if (replaces === undefined)
+      return comment.replace(
+        /@(param|type|typedef|returns?|template|this|callback|property|prop|arg|argument|enum|implements|extends|augments|satisfies|overload|import)\b/g,
+        "-$1",
+      );
+    return comment.replace(
+      /@(param|arg|argument|returns?|type|overload)\b/g,
+      (tag: string, name: string, at: number) => {
+        if (name === "type" || name === "overload") return `-${name}`;
+        if (name === "returns" || name === "return") return replaces.returns ? `-${name}` : tag;
+        const param = paramTagName(comment, at + tag.length);
+        return param !== null && replaces.params.includes(param) ? `-${name}` : tag;
+      },
+    );
+  });
+}
+
+/** The parameter a `@param` tag ending at `from` names (`{type} name`,
+ * `[name=default]`, or `name.member` of a documented object), or null. */
+function paramTagName(comment: string, from: number): string | null {
+  let i = from;
+  while (i < comment.length && /\s/.test(comment[i]!)) i++;
+  if (comment[i] === "{") {
+    let depth = 0;
+    for (; i < comment.length; i++) {
+      if (comment[i] === "{") depth++;
+      else if (comment[i] === "}" && --depth === 0) break;
+    }
+    i++;
+    while (i < comment.length && /\s/.test(comment[i]!)) i++;
+  }
+  if (comment[i] === "[") i++;
+  const name = /^[A-Za-z_$][\w$]*/.exec(comment.slice(i, i + 256));
+  return name !== null ? name[0] : null;
+}
+
+/** The `typeof` results the values can have. */
+function typeofResults(values: ReadonlySet<Atom>): Set<string> {
+  const out = new Set<string>();
+  for (const a of values) {
+    if (a.kind === "prim")
+      out.add(a.label === "null" ? "object" : a.label === "symbol" ? "symbol" : a.label);
+    else if (a.kind === "function" || a.kind === "class") out.add("function");
+    else out.add("object");
+  }
+  return out;
+}
+
+/** Whether the function's body compares `typeof name` with a result the
+ * values never have. */
+function typeofTestsOutside(
+  fn: ts.FunctionLikeDeclaration,
+  name: string,
+  values: ReadonlySet<Atom>,
+): boolean {
+  const results = typeofResults(values);
+  let outside = false;
+  const visit = (n: ts.Node): void => {
+    if (outside) return;
+    if (
+      ts.isBinaryExpression(n) &&
+      (n.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        n.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+        n.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+        n.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken)
+    ) {
+      for (const [op, lit] of [
+        [n.left, n.right],
+        [n.right, n.left],
+      ] as const)
+        if (
+          ts.isTypeOfExpression(op) &&
+          ts.isIdentifier(op.expression) &&
+          op.expression.text === name &&
+          ts.isStringLiteral(lit) &&
+          !results.has(lit.text)
+        )
+          outside = true;
+    }
+    ts.forEachChild(n, (c) => {
+      visit(c);
+      return undefined;
+    });
+  };
+  if (fn.body !== undefined) visit(fn.body);
+  return outside;
 }
 
 function packageNameOf(fileName: string): string {
