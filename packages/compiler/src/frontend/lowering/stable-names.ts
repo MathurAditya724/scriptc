@@ -1,4 +1,7 @@
+import * as posix from "node:path/posix";
+import * as win32 from "node:path/win32";
 import { InternalCompilerError } from "../../errors.js";
+import { tsgoPath } from "../ts7/session-path.js";
 
 /** The owner of the names keyedHelperName hands out. */
 export interface KeyedNameOwner {
@@ -57,4 +60,15 @@ export function moduleTagNumber(fileName: string, taken: ReadonlySet<number>): n
   let n = h >>> 0;
   while (taken.has(n)) n = (n + 1) >>> 0;
   return n;
+}
+
+/** The path of `file` relative to the directory `from`, with `/` separators
+ * on every platform, so names built from it match across hosts. */
+export function portableRelativePath(
+  from: string,
+  file: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const path = platform === "win32" ? win32.relative(from, file) : posix.relative(from, file);
+  return tsgoPath(path, platform);
 }
