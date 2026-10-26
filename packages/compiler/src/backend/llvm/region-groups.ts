@@ -438,7 +438,11 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
       const info: UseInfo = {};
       const use = useOf(parents[index]!, parents.slice(0, index), false, info);
       if (use !== "internal") {
-        Object.assign(out, info);
+        // Field by field: an Object.assign onto a record makes the
+        // self-hosted compiler read class and record properties dynamically.
+        if (info.bound !== undefined) out.bound = info.bound;
+        if (info.at !== undefined) out.at = info.at;
+        if (info.target !== undefined) out.target = info.target;
         return use;
       }
       index = info.at!;
