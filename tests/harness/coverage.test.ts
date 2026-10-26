@@ -587,13 +587,18 @@ test("runtime-optional refined unions report blockers without crashing", () => {
 });
 
 test("a rejected class reached only through a receiver probe reports its own diagnostic once", () => {
-  const { coverage } = analyze(join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts"));
+  const program = join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts");
+  // The class's refusal, as the diagnostics corpus pins it (--tier=static-only).
+  const { coverage } = analyze(program, { tier: "static-only" });
   const messages = coverage.diagnostics.map((d) => d.message);
   expect(
     messages.filter((m) => m.startsWith("'MapIterator<string>'-typed class fields")),
   ).toHaveLength(1);
   expect(messages.some((m) => m.startsWith("constructing through a class value"))).toBe(true);
   expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
+  // Localized failure retries the class where the probe's statement commits
+  // the flush, with the field policy lifted, and it compiles.
+  expect(analyze(program).coverage.diagnostics).toEqual([]);
 });
 
 test("settled generic rest-order fences count each source statement once", () => {

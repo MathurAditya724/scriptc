@@ -51,3 +51,18 @@ console.log(s.count(), s.label());
 console.log(listAll("abc"));
 console.log(new Holder().get());
 console.log(pick(1), new Cache().size());
+
+// A class extending one the dyn class field policy rejects: its rejection
+// and the uses of the derived class are that field's cascade.
+class Base {
+  state: any = {};
+  get(): number {
+    return 1;
+  }
+}
+class Derived extends Base {
+  twice(): number {
+    return 2;
+  }
+}
+console.log(new Derived().twice());

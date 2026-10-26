@@ -1718,6 +1718,16 @@ declare module "node:fs" {
   ): void;
   export function rmdirSync(path: string | URL): void;
   export function readdirSync(path: string | URL): string[];
+  /* The recursive form: every entry below the path, relative to it. */
+  export function readdirSync(
+    path: string | URL,
+    options: {
+      recursive?: boolean;
+      withFileTypes?: false;
+      encoding?: "utf8" | "utf-8";
+      [option: string]: unknown;
+    },
+  ): string[];
   /* The withFileTypes form: Dirent rows (name + parentPath + the type
    * probes — the honest subset of Node's Dirent surface). The type is
    * interned explicitly in type-mapper.ts (the record's hidden %dtype field
