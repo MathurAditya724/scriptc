@@ -43,6 +43,7 @@ import {
   cacheTargetIdentity,
   isZigDriver,
   isMuslTarget,
+  type CcDriver,
 } from "./driver.js";
 import {
   resolveProgramShardMergeIdentity,
@@ -194,6 +195,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
   unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
+  // Module namespace objects as checked-dynamic values.
+  unit((u) => u.opts.moduleNamespace === true, "scr_module_namespace.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||
@@ -248,6 +251,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // events.once with options registers through the emitter and
   // event-target units.
   unit((u) => u.opts.eventsOnceSignal === true, "scr_events_once_signal.c"),
+  unit((u) => u.opts.mime === true, "scr_mime.c"),
+  unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
   // net families (http implies net), so handle-free binaries keep
@@ -327,6 +332,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.webcrypto, "scr_webcrypto.c"),
   unit((u) => u.opts.webcrypto === true && u.opts.pki === true, "scr_webcrypto_pki.c"),
   unit((u) => u.opts.pki === true && u.opts.ed25519 === true, "scr_ed25519.c"),
+  unit((u) => u.opts.x509 === true, "scr_x509.c"),
+  // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
+  unit((u) => u.tls && u.opts.x509 === true, "scr_tls_x509.c"),
   // The crypto global's object extends scr_async_dyn.c's.
   unit((u) => u.opts.webcrypto && u.opts.dynAsync, "scr_webcrypto_object.c"),
   // The CA-store unit rides its own gate OR the tls one: scr_tls.c
@@ -434,7 +442,7 @@ export async function compileCInternal(
       ? ["-gline-tables-only", ...(opts.cPath.endsWith(".ll") ? [] : ["-gno-column-info"])]
       : [];
   const { programShards, programPublicSymbols, programShardMergeIdentity } =
-    await selectProgramShards(driver, opts, optimization === "dev" && !sanitize);
+    await selectProgramShards(driver, opts, optimization === "dev");
   // Mobile triples produce library archives, never standalone executables:
   // the executable-lane runtime (event loop, sockets, child processes) is
   // not verified on those device classes. compile() reports the SC3002
@@ -825,6 +833,7 @@ export async function compileCInternal(
     // generated/native input that references inflate symbols. Cross
     // and targetless Zig builds use vendored zlib objects in the input section above.
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
+    ...unwinderLinkArgs(driver),
     // glibc keeps libm separate from libc. This must trail the generated
     // program and every native FFI input because GNU ld resolves archives
     // from left to right.
@@ -887,9 +896,15 @@ export async function compileCInternal(
   };
   const buildExecutable = async (
     runtimeInput: (path: string) => string,
-    build: { programPath?: string; outPath?: string; compilerVisibleSource?: string } = {},
+    build: {
+      programPath?: string;
+      outPath?: string;
+      compilerVisibleSource?: string;
+      /** programPath is an object already (the merged program shards). */
+      programObject?: boolean;
+    } = {},
   ): Promise<void> => {
-    if (!separateSanitizedProgram) {
+    if (!separateSanitizedProgram || build.programObject === true) {
       await runClang(buildArgs(runtimeInput, build));
       return;
     }
@@ -1072,6 +1087,7 @@ export async function compileCInternal(
     ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
+    ...unwinderLinkArgs(driver),
     ...driver.linkArgs,
     ...executableLinkFlags,
   ];
@@ -1084,6 +1100,7 @@ export async function compileCInternal(
     ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
+    ...unwinderLinkArgs(driver),
     ...driver.linkArgs,
     ...executableLinkFlags,
   ];
@@ -1466,7 +1483,7 @@ export async function compileCInternal(
             .update("\0")
             .update(shard.name)
             .update("\0")
-            .update(shard.source)
+            .update(shard.source())
             .digest("hex");
           return {
             ...shard,
@@ -1480,7 +1497,7 @@ export async function compileCInternal(
         for (let i = 0; i < entries.length; i += shardWidth) {
           await Promise.all(
             entries.slice(i, i + shardWidth).map(async (entry) => {
-              await writeFile(entry.sourcePath, entry.source);
+              await writeFile(entry.sourcePath, entry.source());
               if (await copyValidCachedFile(entry.cachePath, entry.staged)) return;
               entry.missed = true;
               await runClang([
@@ -1567,7 +1584,7 @@ export async function compileCInternal(
       (p) => objects?.get(p) ?? p,
       shardedProgramObject === null
         ? { programPath, outPath: privateOut, compilerVisibleSource: opts.cPath }
-        : { programPath: shardedProgramObject, outPath: privateOut },
+        : { programPath: shardedProgramObject, outPath: privateOut, programObject: true },
     );
     if (darwinDebugSymbols) {
       // clang invokes dsymutil when compiling a source TU while linking.
@@ -1692,4 +1709,12 @@ export async function compileC(opts: CcOptions): Promise<void> {
   ) {
     await rm(`${opts.outPath}.dSYM`, { recursive: true, force: true });
   }
+}
+
+/** Linux runtimes raise through the native unwinder (scr_unwind_raise):
+ * Zig's libunwind, or the toolchain's libgcc_eh. Both are static archives,
+ * so programs load no shared library for them. */
+function unwinderLinkArgs(driver: CcDriver): string[] {
+  if (targetPlatform(driver) !== "linux") return [];
+  return isZigDriver(driver) ? ["-lunwind"] : ["-lgcc_eh"];
 }

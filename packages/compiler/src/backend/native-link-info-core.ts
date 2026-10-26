@@ -37,6 +37,9 @@ export interface NativeLinkFeatures {
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
+  /** Module namespace objects as checked-dynamic values link
+   * scr_module_namespace.c; absent (false) otherwise. */
+  moduleNamespace?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
@@ -61,6 +64,10 @@ export interface NativeLinkFeatures {
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
+  /** util.MIMEType and util.MIMEParams: scr_mime.c. */
+  mime?: boolean;
+  /** util.debounce and util.throttle: scr_util_timing.c. */
+  utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBuffer?: boolean;
@@ -109,6 +116,9 @@ export interface NativeLinkFeatures {
   /** Ed25519 keys and signatures with pki: scr_ed25519.c (the vendored
    * libsodium Ed25519). */
   ed25519: boolean;
+  /** X509Certificate fields beyond the validity window and fingerprint:
+   * scr_x509.c. */
+  x509: boolean;
   /** perf_hooks event-loop metrics: scr_perf_loop.c. */
   perfLoop: boolean;
   tlsCa: boolean;

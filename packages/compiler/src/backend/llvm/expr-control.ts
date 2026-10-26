@@ -2,11 +2,14 @@ import { emitBorrowedInput } from "./borrowed-inputs.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, isUnitType, typeEquals, type IrExpr } from "../../ir/ir.js";
+import { isRefCounted, isUnitType, typeEquals, type IrExpr, type IrType } from "../../ir/ir.js";
 import { DYN_KIND } from "./dyn.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import { emitRecordKeyGetOr } from "./expr-records.js";
+import { NULLABLE_NULL, SHAPE_WORD_INDEX, shapeWordHeader } from "./nullable-unions.js";
+import { emitUnionTag } from "./union-repr.js";
 
 export function emitControlExpr(
   host: LlvmEmitterContext,
@@ -52,6 +55,8 @@ export function emitControlExpr(
     case "toBool":
       return { name: host.truthy(host.emitUnionProjection(e.operand)), type: e.type };
     case "logical": {
+      const tagSet = e.op === "||" ? unionTagSet(e) : null;
+      if (tagSet) return { name: emitUnionTagSet(host, tagSet), type: e.type };
       // JS value semantics: the result is the deciding operand itself.
       // Left evaluates once, ownership moves into the result slot; when
       // the branch takes the right operand the stale left releases first
@@ -394,6 +399,13 @@ export function emitControlExpr(
       const fused = emitNullishOptionalChain(host, e);
       if (fused) return fused;
       if (
+        e.left.kind === "recordKeyGet" &&
+        e.left.missNaN !== true &&
+        typeEquals(e.type, e.left.type) &&
+        storesNoUnit(host, e.left)
+      )
+        return emitRecordKeyGetOr(host, e.left, e.right);
+      if (
         !typeEquals(e.type, e.left.type) &&
         (e.left.kind === "varRef" ||
           host.isStackUnionSource(e.left) ||
@@ -613,4 +625,98 @@ function emitNullishOptionalChain(host: LlvmEmitterContext, e: ExprOf<"nullish">
 function literalChoice(e: IrExpr): boolean {
   if (e.kind === "strLit") return true;
   return e.kind === "ternary" && literalChoice(e.then) && literalChoice(e.else_);
+}
+
+type TagSet = { unionId: string; value: IrExpr; tags: Set<number> };
+
+/** An `||` chain of two or more tag tests of one local (`isTag(u, 1) ||
+ * isTag(u, 4) || ...`, the shape of a union conversion's identity test). */
+function unionTagSet(e: IrExpr & { kind: "logical" }): TagSet | null {
+  const leaves: IrExpr[] = [];
+  const collect = (x: IrExpr): void => {
+    if (x.kind === "logical" && x.op === "||") {
+      collect(x.left);
+      collect(x.right);
+    } else leaves.push(x);
+  };
+  collect(e);
+  const first = leaves[0]!;
+  if (first.kind !== "unionIsTag" || first.value.kind !== "varRef") return null;
+  const localId = first.value.localId;
+  const tags = new Set<number>();
+  for (const leaf of leaves) {
+    if (
+      leaf.kind !== "unionIsTag" ||
+      leaf.negated ||
+      leaf.unionId !== first.unionId ||
+      leaf.value.kind !== "varRef" ||
+      leaf.value.localId !== localId
+    )
+      return null;
+    tags.add(leaf.tag);
+  }
+  return { unionId: first.unionId, value: first.value, tags };
+}
+
+/** i1: the union value holds one of the tags. One read of the tag and one
+ * switch over the set; a shape union switches on the record's shape word
+ * after its unit encodings. */
+function emitUnionTagSet(host: LlvmEmitterContext, set: TagSet): string {
+  const B = host.B;
+  const u = host.emitUnionProjection(set.value).name;
+  const nullable = host.nullableUnions.get(set.unionId);
+  const yes = B.newLabel("tags.y");
+  const no = B.newLabel("tags.n");
+  const join = B.newLabel("tags.j");
+  const target = (tag: number): string => (set.tags.has(tag) ? yes : no);
+  if (nullable?.repr === "shapes") {
+    if (nullable.unitTag >= 0) {
+      const isNull = B.tmp();
+      const next = B.newLabel("tags.r");
+      B.line(`${isNull} = icmp eq ptr ${u}, null`);
+      B.condBr(isNull, target(nullable.unitTag), next);
+      B.startBlock(next);
+    }
+    if (nullable.nullTag >= 0) {
+      const isNullArm = B.tmp();
+      const next = B.newLabel("tags.r");
+      B.line(`${isNullArm} = icmp eq ptr ${u}, ${NULLABLE_NULL}`);
+      B.condBr(isNullArm, target(nullable.nullTag), next);
+      B.startBlock(next);
+    }
+    const wp = B.tmp();
+    const w = B.tmp();
+    B.line(
+      `${wp} = getelementptr inbounds ${shapeWordHeader(host.sizeType)}, ptr ${u}, i32 0, i32 ${SHAPE_WORD_INDEX}`,
+    );
+    B.line(`${w} = load i32, ptr ${wp}`);
+    const cases = nullable.arms
+      .filter((arm) => set.tags.has(arm.tag))
+      .map((arm) => `i32 ${host.nullableUnions.shapeNumber(arm.shapeId)}, label %${yes}`);
+    B.terminate(`switch i32 ${w}, label %${no} [ ${cases.join(" ")} ]`);
+  } else {
+    const tag = nullable ? emitUnionTag(B, nullable, u) : host.unionTag(u, set.unionId);
+    const cases = [...set.tags].map((t) => `i32 ${t}, label %${yes}`);
+    B.terminate(`switch i32 ${tag}, label %${no} [ ${cases.join(" ")} ]`);
+  }
+  B.startBlock(yes);
+  B.br(join);
+  B.startBlock(no);
+  B.br(join);
+  B.startBlock(join);
+  const t = B.tmp();
+  B.line(`${t} = phi i1 [ true, %${yes} ], [ false, %${no} ]`);
+  return t;
+}
+
+/** Every value a keyed read can hit is present (no stored undefined or
+ * null), so only a missing key yields the read's unit arm. */
+function storesNoUnit(host: LlvmEmitterContext, e: ExprOf<"recordKeyGet">): boolean {
+  const shape = host.recordShape(e.shapeId);
+  const holdsUnit = (t: IrType): boolean =>
+    isUnitType(t) ||
+    t.kind === "dyn" ||
+    (t.kind === "union" && (host.unionsById.get(t.unionId)?.arms ?? []).some(isUnitType));
+  if (shape.indexValue !== undefined && holdsUnit(shape.indexValue)) return false;
+  return e.overflowOnly === true || !shape.fields.some((f) => holdsUnit(f.type));
 }
