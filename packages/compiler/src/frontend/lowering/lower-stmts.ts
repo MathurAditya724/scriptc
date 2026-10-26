@@ -417,8 +417,8 @@ function cleanupCall(
 ): { call: IrExpr; async: boolean } | null {
   const loc = locOf(node);
   if (value.type.kind === "object") {
-    const info = lowerer.classes.get(value.type.className);
-    if (!info) lowerer.flushDeferredClass(value.type.className);
+    const info =
+      lowerer.classes.get(value.type.className) ?? lowerer.flushDeferredClass(value.type.className);
     const asyncFound = awaited && info ? lowerer.findMethodOn(info, "sym:asyncDispose") : null;
     const syncFound = info ? lowerer.findMethodOn(info, "sym:dispose") : null;
     const member = asyncFound ? "sym:asyncDispose" : syncFound ? "sym:dispose" : null;
@@ -768,15 +768,16 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             // Localized failure's statement commit point (design §3.3): a
             // degradable type failure at a local, loop variable or module
             // global degrades that type and the statement lowers again.
-            const slot =
-              attempt < MAX_DEGRADE_RETRIES && !deferFences
-                ? lowerer.degradeAtCommit(e, STATEMENT_SLOTS)
-                : null;
-            if (slot === null) throw e;
+            // A declaration this statement flushed inside a probe (where
+            // no retry runs) can retry here too.
+            if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw e;
+            const slot = lowerer.degradeAtCommit(e, STATEMENT_SLOTS);
+            if (slot === null && !lowerer.reopenFlushedAtCommit(diagsBefore)) throw e;
             // A failed attempt adds nothing to `out` but the TDZ boxes
             // forward captures declared (they stay declared), so the
             // retry appends after them.
-            pendingSlots.push(slot);
+            lowerer.dropAttemptDiags(diagsBefore);
+            if (slot !== null) pendingSlots.push(slot);
             for (const [symbol, local] of tdzBefore)
               if (!lowerer.ctx.tdzPredeclared.has(symbol))
                 lowerer.ctx.tdzPredeclared.set(symbol, local);
@@ -860,11 +861,17 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
  * at most this many times (each retry degrades one more type). */
 const MAX_DEGRADE_RETRIES = 16;
 
-/** The slot kinds lowerStmts' commit point degrades (stage L1). */
+/** The slot kinds lowerStmts' commit point degrades: locals, loop
+ * variables and module globals (stage L1), and the parameters and returns
+ * of the function expressions, arrows and methods a statement holds
+ * (stage L2). */
 const STATEMENT_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>([
   "local",
   "global",
   "loop",
+  "param",
+  "return",
+  "field",
 ]);
 
 /** One attempt at lowering a statement of lowerStmts into `out`. */
@@ -3307,8 +3314,8 @@ export function lowerBindingPattern(
   // chain declares keep named fences (a detached method would lose its
   // receiver without an error; JS binds the prototype function).
   if (srcType.kind === "object") {
-    const info = lowerer.classes.get(srcType.className);
-    if (!info) lowerer.flushDeferredClass(srcType.className);
+    const info =
+      lowerer.classes.get(srcType.className) ?? lowerer.flushDeferredClass(srcType.className);
     if (info) {
       for (const el of pattern.elements.nodes) {
         if (el.name === undefined) continue;
