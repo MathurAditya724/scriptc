@@ -1,5 +1,12 @@
 import { unionNarrowFailureMessage } from "./union-narrow.js";
 import {
+  arrayClassFieldsFn,
+  arrayClassSpeciesFn,
+  arrayOfClassInstance,
+  arrayRootOf,
+  lowerWithArraySpecies,
+} from "./builtins/array-classes.js";
+import {
   compactDeclOrigins,
   inPackageFile,
   recordOrigin,
@@ -8954,6 +8961,20 @@ export class Lowerer {
           lower: () =>
             info.localClass && !info.localClass.ready ? null : this.lowerClassCtor(info),
         });
+        // The descriptor helpers of a class that extends Array, reached
+        // from its constructor.
+        if (info.extendsArray) {
+          units.set(`%${cName}.arrayFields`, {
+            order: unitOrder++,
+            roots: [],
+            lower: () => arrayClassFieldsFn(this, info),
+          });
+          units.set(`%${cName}.species`, {
+            order: unitOrder++,
+            roots: [],
+            lower: () => arrayClassSpeciesFn(this, info),
+          });
+        }
         for (const { mName, member } of this.classMethodMembers(info)) {
           units.set(`%${cName}.${mName}`, {
             order: unitOrder++,
@@ -9082,6 +9103,10 @@ export class Lowerer {
       register(`%${cName}.constructor`, classCtorRoots(info), () =>
         info.localClass && !info.localClass.ready ? null : this.lowerClassCtor(info),
       );
+      if (info.extendsArray) {
+        register(`%${cName}.arrayFields`, [], () => arrayClassFieldsFn(this, info));
+        register(`%${cName}.species`, [], () => arrayClassSpeciesFn(this, info));
+      }
       for (const { mName, member } of this.classMethodMembers(info)) {
         register(`%${cName}.${mName}`, functionRoots(member), () =>
           info.localClass && !info.localClass.ready
@@ -10769,6 +10794,18 @@ export class Lowerer {
     ) {
       const result = this.coerceToExpected(expr.result, expected);
       return { ...expr, result, type: result.type };
+    }
+    // An instance of a class declared `extends Array` is its array (the
+    // same object); an array slot of another element type converts it as
+    // an array.
+    if (expr.type.kind === "object" && expected.kind !== "object") {
+      const arrayClass = this.classes.get(expr.type.className);
+      if (arrayClass && arrayRootOf(arrayClass)) {
+        const asArray = arrayOfClassInstance(arrayClass, expr, expr.loc);
+        return typeEquals(asArray.type, expected)
+          ? asArray
+          : this.coerceToExpected(asArray, expected);
+      }
     }
     // A destination that holds undefined takes an unassigned deferred-init
     // field's slot as is (Node passes the undefined along).
@@ -14768,7 +14805,9 @@ export class Lowerer {
     call: ts.CallExpression,
     access: ts.PropertyAccessExpression,
   ): IrExpr | null {
-    return lowerArrayMethodCall(this, call, access);
+    return lowerWithArraySpecies(this, call, access, () =>
+      lowerArrayMethodCall(this, call, access),
+    );
   }
 
   lowerMapMethodCall(call: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr | null {

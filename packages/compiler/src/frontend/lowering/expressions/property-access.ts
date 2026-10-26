@@ -1,6 +1,11 @@
 import { widensReducedRecords } from "../function-returns.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
+import {
+  arrayClassMemberOwner,
+  arrayClassReceiver,
+  lowerArrayClassConstructorRead,
+} from "../builtins/array-classes.js";
 import { indexedUnionArms, lowerIndexedUnionMember } from "../indexed-unions.js";
 import { keyedHelperName } from "../stable-names.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
@@ -322,6 +327,8 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
+  if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `value.#x` on a checked-dynamic value, or on a checked extraction of
   // one: the field of the brand-checked receiver (checkedPrivateValue).
   if (ts.isPrivateIdentifier(expr.name)) {
@@ -3829,6 +3836,32 @@ export function fieldTarget(
         access,
         checkedDynamicValue(lowerer.lowerExpr(access.expression))!,
         locOf(access),
+      );
+      return classFieldTarget(
+        lowerer,
+        access.expression,
+        { kind: "object", className: owner.def.name },
+        access.name.text,
+        receiver,
+      );
+    }
+  }
+  // A field declared by a class that extends Array, on an instance (whose
+  // type maps to its array): the class object's field.
+  {
+    const owner = arrayClassMemberOwner(lowerer, access);
+    const name = access.name.text;
+    if (
+      owner !== null &&
+      (owner.fields.has(name) ||
+        lowerer.findMethodOn(owner, `get:${name}`) ||
+        lowerer.findMethodOn(owner, `set:${name}`))
+    ) {
+      const receiver = arrayClassReceiver(
+        lowerer,
+        owner,
+        lowerer.lowerExpr(access.expression),
+        access.expression,
       );
       return classFieldTarget(
         lowerer,
