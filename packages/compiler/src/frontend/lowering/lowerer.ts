@@ -129,7 +129,7 @@ import { devirtualizeVirtualCalls } from "./devirtualize.js";
 import { foldRegexSpanReads } from "./regex-span-reads.js";
 import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
 import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
-import { NarrowingStability } from "./narrowing-stability.js";
+import { NarrowingStability, widenedReceiver } from "./narrowing-stability.js";
 import { ArrayElementStates } from "./runtime-optional-elements.js";
 import { indexReadInBounds } from "./runtime-optional-bounds.js";
 import { ArrayOwnership } from "./runtime-optional-ownership.js";
@@ -6515,19 +6515,20 @@ export class Lowerer {
       node.initializer !== undefined;
     const collectDynamicViews = (): Set<string> => {
       const keys = new Set<string>();
-      const dynamicValue = (node: ts.Expression): boolean => {
-        // A binding's declared type says whether it holds dynamic data; a
-        // flow type such as `Array.isArray(x)`'s `any[]` only narrows it.
+      // A binding's declared type says whether it holds dynamic data; a flow
+      // type such as `Array.isArray(x)`'s `any[]` only narrows it.
+      const typedNode = (node: ts.Expression): ts.Node => {
         const e = peel(node);
         const symbol = ts.isIdentifier(e) ? symbolOf(e) : null;
         const declaration = symbol ? symbol.valueDeclaration : undefined;
-        const declared =
-          declaration &&
+        return declaration &&
           (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) &&
           ts.isIdentifier(declaration.name)
-            ? declaration.name
-            : null;
-        const type = typeOrNull(declared ?? node);
+          ? declaration.name
+          : node;
+      };
+      const dynamicValue = (node: ts.Expression): boolean => {
+        const type = typeOrNull(typedNode(node));
         if (type === null) return true;
         if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
         if (!this.checker.isArrayType(type) || this.checker.isTupleType(type)) return false;
@@ -6548,57 +6549,64 @@ export class Lowerer {
             collect(field.type, depth + 1);
         } else if (type.kind === "promise") collect(type.inner, depth + 1);
       };
-      const target = (type: ts.Type | null | undefined): void => {
+      const convert = (type: ts.Type | null | undefined): void => {
         // An unanswerable target may be any array.
         if (type === null) keys.add("*");
         else if (type) collect(this.mapTypeOf(type), 0);
       };
-      const visit = (node: ts.Node): void => {
-        if ((ts.isAsExpression(node) || ts.isTypeAssertion(node)) && dynamicValue(node.expression))
-          target(typeOrNull(node));
-        else if (
-          ts.isVariableDeclaration(node) &&
-          node.type &&
-          node.initializer &&
-          dynamicValue(node.initializer)
-        )
-          target(typeOrNull(node.name));
-        else if (initializedBinding(node) && dynamicValue(node.initializer!))
-          target(typeOrNull(node.name ?? node));
-        else if (
-          ts.isBinaryExpression(node) &&
-          assignmentOperators.has(node.operatorToken.kind) &&
-          dynamicValue(node.right)
-        )
-          target(typeOrNull(node.left));
-        else if (ts.isReturnStatement(node) && node.expression && dynamicValue(node.expression))
-          target(contextualOrNull(node.expression));
-        else if (ts.isYieldExpression(node) && node.expression && dynamicValue(node.expression))
-          target(contextualOrNull(node.expression));
-        else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      /** Each value `node` converts, with the type it converts to. */
+      const conversions = (
+        node: ts.Node,
+        judge: (value: ts.Expression, target: () => ts.Type | null | undefined) => void,
+      ): void => {
+        if (ts.isAsExpression(node) || ts.isTypeAssertion(node))
+          judge(node.expression, () => typeOrNull(node));
+        else if (ts.isVariableDeclaration(node) && node.type && node.initializer)
+          judge(node.initializer, () => typeOrNull(node.name));
+        else if (initializedBinding(node))
+          judge(node.initializer!, () => typeOrNull(node.name ?? node));
+        else if (ts.isBinaryExpression(node) && assignmentOperators.has(node.operatorToken.kind))
+          judge(node.right, () => typeOrNull(node.left));
+        else if ((ts.isReturnStatement(node) || ts.isYieldExpression(node)) && node.expression) {
+          const value = node.expression;
+          judge(value, () => contextualOrNull(value));
+        } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           for (const arg of node.arguments?.nodes ?? [])
-            if (!ts.isSpreadElement(arg) && dynamicValue(arg)) target(contextualOrNull(arg));
-        } else if (ts.isPropertyAssignment(node) && dynamicValue(node.initializer))
-          target(contextualOrNull(node.initializer));
-        else if (ts.isArrayLiteralExpression(node)) {
+            if (!ts.isSpreadElement(arg)) judge(arg, () => contextualOrNull(arg));
+        } else if (ts.isPropertyAssignment(node)) {
+          const value = node.initializer;
+          judge(value, () => contextualOrNull(value));
+        } else if (ts.isArrayLiteralExpression(node)) {
           for (const element of node.elements.nodes)
-            if (
-              !ts.isSpreadElement(element) &&
-              !ts.isOmittedExpression(element) &&
-              dynamicValue(element)
-            )
-              target(contextualOrNull(element));
-        } else if (
-          ts.isArrowFunction(node) &&
-          !ts.isBlock(node.body) &&
-          dynamicValue(node.body as ts.Expression)
-        )
-          target(contextualOrNull(node.body as ts.Expression));
+            if (!ts.isSpreadElement(element) && !ts.isOmittedExpression(element))
+              judge(element, () => contextualOrNull(element));
+        } else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) {
+          const body = node.body as ts.Expression;
+          judge(body, () => contextualOrNull(body));
+        }
       };
+      // The values' types in one batch: these bodies' reachability is not
+      // known yet.
+      const typed: ts.Node[] = [];
+      for (const sf of sourceFiles)
+        ts.walkPreorder(sf, (node) => {
+          panicSafe(() => conversions(node, (value) => typed.push(typedNode(value))), undefined);
+          return undefined;
+        });
+      this.checker.prefetchClassCollection(typed, []);
       for (const sf of sourceFiles)
         ts.walkPreorder(sf, (node) => {
           // A checker panic hides this conversion's target: any array.
-          if (!panicSafe(() => (visit(node), true), false)) keys.add("*");
+          const judged = panicSafe(
+            () => (
+              conversions(node, (value, target) => {
+                if (dynamicValue(value)) convert(target());
+              }),
+              true
+            ),
+            false,
+          );
+          if (!judged) keys.add("*");
           return undefined;
         });
       return keys;
@@ -7035,6 +7043,12 @@ export class Lowerer {
           node.operatorToken.kind === ts.SyntaxKind.EqualsToken
         )
           values.push(node.right);
+        // A for-of loop reads its iterable's array keys.
+        if (ts.isForOfStatement(node)) values.push(node.expression);
+        // A property read in such a slot reads its declared type through
+        // its receiver's (widenedType).
+        const receiver = widenedReceiver(node);
+        if (receiver !== null) values.push(receiver);
       });
       this.checker.prefetchCollectionTypes(values);
       scanSites.set(sf, nodes);
@@ -7614,7 +7628,8 @@ export class Lowerer {
       siteBase.set(sf, siteCount);
       siteCount += sitesOf(sf).length;
     }
-    siteDependencies = new SiteDependencies(siteCount);
+    // Each function's returns are one more site, after the files' sites.
+    siteDependencies = new SiteDependencies(siteCount + functionDeclBySymbol.size);
     let fullPass = true;
     for (let changed = true, first = true; changed || !fullPass; first = false) {
       fullPass = first || !changed;
@@ -7628,8 +7643,14 @@ export class Lowerer {
         }
       }
       for (const sf of sourceFiles) if (scanFile(sf)) changed = true;
+      let returnSite = siteCount;
       for (const [symbol, decl] of functionDeclBySymbol) {
-        if (!scanReturns(symbol, decl)) continue;
+        const site = returnSite++;
+        if (!fullPass && !siteDependencies.isStale(site)) continue;
+        siteDependencies.begin(site);
+        const returnsChanged = scanReturns(symbol, decl);
+        siteDependencies.end(returnsChanged);
+        if (!returnsChanged) continue;
         siteDependencies.changed(symbol);
         changed = true;
       }
