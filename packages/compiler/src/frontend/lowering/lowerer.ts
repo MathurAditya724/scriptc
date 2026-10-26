@@ -13215,7 +13215,15 @@ export class Lowerer {
         const prior = this.degradedTypes.get(id);
         degraded.push({
           id,
-          prior: prior === undefined ? undefined : { ...prior },
+          prior:
+            prior === undefined
+              ? undefined
+              : {
+                  lenient: prior.lenient,
+                  code: prior.code,
+                  reason: prior.reason,
+                  ...(prior.canonical === true ? { canonical: true as const } : {}),
+                },
         });
         this.degradeType(type, diag.code, diag.message);
         const canonical = this.isCanonicalDegraded(id);
