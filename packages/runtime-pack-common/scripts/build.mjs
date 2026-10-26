@@ -15,6 +15,7 @@ import {
 import { createDeterministicArchive } from "./archive.mjs";
 import { buildImportBitcode, buildRuntimeUnit, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
+import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
 
 const run = promisify(execFile);
@@ -468,13 +469,14 @@ async function build() {
         await copyFile(source, output);
       }),
     );
+    await shareIdenticalArtifacts(flavors, buildRoot);
     const manifest = {
       schema: "scriptc.runtime-pack.v1",
       format: 1,
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 46, marker: "scr_runtime_abi_v46" },
+      runtime_abi: { version: 47, marker: "scr_runtime_abi_v47" },
       compiler: {
         command: compiler,
         identity: compilerVersion,

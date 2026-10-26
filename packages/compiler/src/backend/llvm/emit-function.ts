@@ -159,6 +159,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     constructorClass(fn.name) === null &&
     emitter.finalFields.size > 0;
   emitter.integerViews.clear();
+  emitter.orderedViews.clear();
   emitter.fieldPointerTags.clear();
   emitter.compressedFieldPtrs.clear();
   emitter.integerArrayBindings.clear();
@@ -357,6 +358,15 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
         `${slot} = alloca i32 ; integer view ${emitter.numericLocals.get(id)!.name}`,
       );
       emitter.integerViews.set(id, slot);
+      // A local of exact integers or NaN also keeps whether it is NaN, so
+      // its integer is usable without converting the double.
+      if (emitter.integerOrNaNLocals.has(id)) {
+        const ordered = B.slot();
+        B.entryAllocas.push(
+          `${ordered} = alloca i1 ; ordered view ${emitter.numericLocals.get(id)!.name}`,
+        );
+        emitter.orderedViews.set(id, ordered);
+      }
     }
   }
   for (const global of initializerBindings) {

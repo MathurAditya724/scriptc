@@ -9,7 +9,7 @@ import {
   RUNTIME_EVENT_TARGET_CLASS,
   RUNTIME_STREAM_CLASSES,
 } from "./ir.js";
-import { everyModuleNode } from "./traverse.js";
+import { everyModuleNode, everyStmtList } from "./traverse.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "./node-index.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
 
@@ -1387,6 +1387,17 @@ function scanRuntimeFeatures(
  * switch that pulls scr_regex.c + the vendored libregexp into the binary
  * (native-toolchain.ts); regex-free programs keep the historical command line. The
  * typed traversal visits type slots as well as executable nodes. */
+/** True when the module enters AsyncLocalStorage stores (RuntimeFeatures
+ * asyncContext): a walk for those libCalls alone, without the other
+ * features' rules. */
+export function moduleUsesAsyncContext(mod: IrModule): boolean {
+  const visitor = {
+    expr: (e: IrExpr): boolean => e.kind !== "libCall" || !ASYNC_CONTEXT_LIB_FNS.has(e.fn),
+    stmt: (): boolean => true,
+  };
+  return !mod.functions.every((fn) => everyStmtList(fn.body, visitor));
+}
+
 export function moduleUsesRegex(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "regex").regex;
 }
