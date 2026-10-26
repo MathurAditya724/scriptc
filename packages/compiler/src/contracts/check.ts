@@ -1581,6 +1581,15 @@ class ImmutableContracts {
     for (let steps = 0; steps < 16; steps++) {
       if (root.kind === "fieldGet" || root.kind === "recordGet") root = root.obj;
       else if (root.kind === "arrayGet") root = root.arr;
+      else if (root.kind === "seqExpr") root = root.result;
+      // A receiver that is the element when it is present and otherwise
+      // throws (`xs[i]!.push(v)`) is that element read.
+      else if (
+        root.kind === "ternary" &&
+        root.else_.kind === "libCall" &&
+        root.else_.fn === "error.nodeThrow"
+      )
+        root = root.then;
       else if (
         root.kind === "upcast" ||
         root.kind === "downcast" ||

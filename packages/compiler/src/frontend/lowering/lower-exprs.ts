@@ -412,6 +412,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const probe = lowerAbsenceProbe(lowerer, expr.expression);
       if (probe?.type.kind === "union") return probe;
     }
+    const dereferenced = dereferencedElementReceiver(lowerer, expr, loc);
+    if (dereferenced) return dereferenced;
+    const element = assertedElementOperand(lowerer, expr, loc);
+    if (element) return element;
     const inner = lowerer.lowerExpr(expr.expression);
     if (inner.type.kind === "union") {
       // `!` performs no runtime check: a missing array element stays
@@ -1074,18 +1078,10 @@ function assertionOperand(
   loc: SrcLoc,
 ): IrExpr | null {
   if (inner.type.kind !== "union" || target === null || target.kind === "union") return null;
-  const arms = lowerer.unions.get(inner.type.unionId)?.arms;
-  if (
-    !arms?.some(isUnitType) ||
-    !arms.every(
-      (arm) =>
-        arm.kind === "f64" || arm.kind === "string" || arm.kind === "bool" || isUnitType(arm),
-    )
-  )
-    return null;
-  // Array element reads keep their own handling of a missing element. A
-  // typed-array read is optional here only where its use tells undefined
-  // from NaN (assertedReadObservesUndefined).
+  if (!scalarUnion(lowerer, inner.type.unionId)) return null;
+  // Array element reads take assertedElementOperand or keep their own
+  // handling of a missing element. A typed-array read is optional here only
+  // where its use tells undefined from NaN (assertedReadObservesUndefined).
   let operand: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
   if (ts.isElementAccessExpression(operand)) {
@@ -1094,19 +1090,241 @@ function assertionOperand(
   }
   const use = convertingUseOf(lowerer, expr);
   if (use === null) return null;
-  if (use === "value") return inner;
+  if (use === "value" || use === "string") return inner;
   return lowerPrimitiveUnionNumber(lowerer, inner, expr, loc);
 }
 
-/** How the converting use of `x!` (see assertionOperand) reads it:
- * "number" where the use applies ToNumber, "value" where the consumer
- * lowers the union itself (strings, equality, truthiness), null for other
+/** `xs[i]!` on an array as the operand of a converting use (see
+ * assertionOperand). The read answers undefined for a missing element, as
+ * in Node, instead of trapping: a numeric use reads NaN for it, and other
+ * uses get the optional element value. Returns null for other reads and
  * uses. */
-function convertingUseOf(lowerer: Lowerer, expr: ts.NonNullExpression): "number" | "value" | null {
+function assertedElementOperand(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  let read: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(read)) read = read.expression;
+  if (!ts.isElementAccessExpression(read) || read.questionDotToken) return null;
+  // Plain arrays only: regex match results and other array subtypes keep
+  // their own element reads.
+  const receiverType = lowerer.typeOf(read.expression);
+  if (
+    !lowerer.checker.isArrayType(receiverType) ||
+    lowerer.mapTypeOf(receiverType)?.kind !== "array"
+  )
+    return null;
+  // A counter below the length reads an existing index: the read keeps
+  // its plain element access.
+  if (lowerer.nanCodedReads?.counterIndexInBounds(read)) return null;
+  const target = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (!target || !isScalarArm(target)) return null;
+  const use = convertingUseOf(lowerer, expr);
+  if (use === null) return null;
+  if (use === "string" && target.kind === "string")
+    return stringElementOrUndefined(lowerer, read, loc);
+  const probe = lowerAbsenceProbe(lowerer, read);
+  if (probe?.type.kind !== "union" || !scalarUnion(lowerer, probe.type.unionId)) return null;
+  if (use === "value" || use === "string") return probe;
+  return lowerer.stripUndefinedArm(probe.type).kind === "f64"
+    ? lowerOptionalNumber(lowerer, probe, loc)
+    : lowerPrimitiveUnionNumber(lowerer, probe, expr, loc);
+}
+
+/** `xs[i]!` on an array as the receiver of a member read or write
+ * (`xs[i]!.name`, `xs[i]!.size()`, `xs[i]![0]`, `xs[i]!.name = v`). `!`
+ * performs no runtime check, so a missing element is undefined there and
+ * the member access throws Node's TypeError ("Cannot read properties of
+ * undefined (reading 'name')") instead of the bounds trap. The receiver is
+ * the element when it is present. Returns null for other reads and uses. */
+function dereferencedElementReceiver(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  let read: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(read)) read = read.expression;
+  if (!ts.isElementAccessExpression(read) || read.questionDotToken) return null;
+  const receiverType = lowerer.typeOf(read.expression);
+  if (
+    !lowerer.checker.isArrayType(receiverType) ||
+    lowerer.mapTypeOf(receiverType)?.kind !== "array"
+  )
+    return null;
+  if (lowerer.nanCodedReads?.counterIndexInBounds(read)) return null;
+  const use = runtimeOptionalUseOf(expr);
+  if (!use || use.optional || use.complex || use.comma || use.kind === "call") return null;
+  const message = memberAccessMessage(lowerer, use.access);
+  if (message === null) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(read.argumentExpression))?.kind !== "f64") return null;
+  // The element must already have the asserted type: an element union the
+  // assertion or a guard narrows keeps its checked narrow.
+  const target = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const declared = lowerer.mapTypeOf(receiverType);
+  if (
+    !target ||
+    declared?.kind !== "array" ||
+    declared.elem.kind === "void" ||
+    !typeEquals(declared.elem, target)
+  )
+    return null;
+  const arr = lowerer.lowerExpr(read.expression);
+  if (arr.type.kind !== "array" || !typeEquals(arr.type.elem, target)) return null;
+  const elem = arr.type.elem;
+  const index = lowerer.lowerExprExpecting(read.argumentExpression, F64);
+  // Plain reads (a local, a field of one) evaluate once more instead of
+  // through a hidden local: the receiver then stays a borrowed element
+  // read, like the plain `xs[i]` it replaces.
+  const stmts: IrStmt[] = [];
+  const stable = (value: IrExpr, name: string): IrExpr => {
+    if (isSafeToRepeat(value) || plainProjection(value)) return value;
+    const tmp = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
+    return varRef(tmp.id, value.type, loc);
+  };
+  const a = stable(arr, "%elementArray");
+  const i = stable(index, "%elementIndex");
+  const value: IrExpr = {
+    kind: "ternary",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "arrayState", arr: a, index: i, type: F64, loc },
+      right: numLit(1, loc),
+      type: BOOL,
+      loc,
+    },
+    then: { kind: "arrayGet", arr: a, index: i, type: elem, loc },
+    else_: {
+      kind: "libCall",
+      fn: "error.nodeThrow",
+      args: [numLit(1, loc), strLit("", loc), message],
+      type: elem,
+      loc,
+    },
+    type: elem,
+    loc,
+  };
+  return stmts.length === 0 ? value : { kind: "seqExpr", stmts, result: value, type: elem, loc };
+}
+
+/** A local, a number literal, or a field or record member read through a
+ * local: reading it again has no effect and yields the same value. */
+function plainProjection(e: IrExpr): boolean {
+  if (e.kind === "varRef" || e.kind === "numLit") return true;
+  return (e.kind === "fieldGet" || e.kind === "recordGet") && plainProjection(e.obj);
+}
+
+/** Node's TypeError message for a member access on undefined: reading the
+ * member, or setting it when the access is the target of `=`. Null when
+ * the key is not a name, a literal, or a plain read of a number or string
+ * (which the message reads a second time). */
+function memberAccessMessage(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression | ts.CallExpression,
+): IrExpr | null {
+  let outer: ts.Expression = access;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  const setting =
+    ts.isBinaryExpression(parent) &&
+    parent.left === outer &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+  const head = setting
+    ? "Cannot set properties of undefined (setting '"
+    : "Cannot read properties of undefined (reading '";
+  const loc = locOf(access);
+  if (ts.isPropertyAccessExpression(access)) {
+    if (ts.isPrivateIdentifier(access.name)) return null;
+    return strLit(`${head}${access.name.text}')`, loc);
+  }
+  if (!ts.isElementAccessExpression(access)) return null;
+  const key = runtimeOptionalElementKey(access.argumentExpression);
+  if (key !== null) return strLit(`${head}${key}')`, loc);
+  let keyNode = access.argumentExpression;
+  while (ts.isParenthesizedExpression(keyNode)) keyNode = keyNode.expression;
+  if (!ts.isIdentifier(keyNode)) return null;
+  const keyType = lowerer.mapTypeOf(lowerer.typeOf(keyNode))?.kind;
+  if (keyType !== "f64" && keyType !== "string") return null;
+  const keyValue = lowerer.lowerExpr(keyNode);
+  if (!isSafeToRepeat(keyValue) || keyValue.type.kind !== keyType) return null;
+  const text: IrExpr =
+    keyValue.type.kind === "string"
+      ? keyValue
+      : { kind: "toString", operand: keyValue, type: STRING, loc };
+  const concat = (left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "strConcat",
+    left,
+    right,
+    type: STRING,
+    loc,
+  });
+  return concat(concat(strLit(head, loc), text), strLit("')", loc));
+}
+
+/** A string array's element converted to a string: the element, or
+ * "undefined" for a missing index or a hole. */
+function stringElementOrUndefined(
+  lowerer: Lowerer,
+  read: ts.ElementAccessExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (lowerer.mapTypeOf(lowerer.typeOf(read.argumentExpression))?.kind !== "f64") return null;
+  const arr = lowerer.lowerExpr(read.expression);
+  if (arr.type.kind !== "array" || arr.type.elem.kind !== "string") return null;
+  const index = lowerer.lowerExprExpecting(read.argumentExpression, F64);
+  const stmts: IrStmt[] = [];
+  const stable = (value: IrExpr, name: string): IrExpr => {
+    if (isSafeToRepeat(value)) return value;
+    const tmp = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
+    return varRef(tmp.id, value.type, loc);
+  };
+  const a = stable(arr, "%elementArray");
+  const i = stable(index, "%elementIndex");
+  const value: IrExpr = {
+    kind: "ternary",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "arrayState", arr: a, index: i, type: F64, loc },
+      right: numLit(1, loc),
+      type: BOOL,
+      loc,
+    },
+    then: { kind: "arrayGet", arr: a, index: i, type: STRING, loc },
+    else_: strLit("undefined", loc),
+    type: STRING,
+    loc,
+  };
+  return stmts.length === 0 ? value : { kind: "seqExpr", stmts, result: value, type: STRING, loc };
+}
+
+function isScalarArm(arm: IrType): boolean {
+  return arm.kind === "f64" || arm.kind === "string" || arm.kind === "bool" || isUnitType(arm);
+}
+
+/** A union of numbers, strings, booleans, null and undefined with at least
+ * one unit arm. */
+function scalarUnion(lowerer: Lowerer, unionId: string): boolean {
+  const arms = lowerer.unions.get(unionId)?.arms;
+  return !!arms?.some(isUnitType) && arms.every(isScalarArm);
+}
+
+/** How the converting use of `x!` (see assertionOperand) reads it:
+ * "number" where the use applies ToNumber, "string" where it converts the
+ * value to a string (a template span, `+` with a string), "value" where the
+ * consumer lowers the union itself (equality, truthiness, a comparison with
+ * a string), null for other uses. */
+function convertingUseOf(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+): "number" | "string" | "value" | null {
   let outer: ts.Expression = expr;
   while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
   const parent = outer.parent;
-  if (ts.isTemplateSpan(parent)) return parent.expression === outer ? "value" : null;
+  if (ts.isTemplateSpan(parent)) return parent.expression === outer ? "string" : null;
   if (ts.isTypeOfExpression(parent)) return "value";
   if (ts.isPrefixUnaryExpression(parent)) {
     if (parent.operator === ts.SyntaxKind.ExclamationToken) return "value";
@@ -1139,7 +1357,7 @@ function convertingUseOf(lowerer: Lowerer, expr: ts.NonNullExpression): "number"
     if (op === ts.SyntaxKind.PlusEqualsToken && parent.right !== outer) return null;
     let partner = other;
     while (ts.isParenthesizedExpression(partner)) partner = partner.expression;
-    if (isString(other)) return ts.isNonNullExpression(partner) ? null : "value";
+    if (isString(other)) return ts.isNonNullExpression(partner) ? null : "string";
     if (!numericPartner(lowerer.typeOf(other))) return "value";
     return isString(expr) ? null : "number";
   }
@@ -1225,7 +1443,8 @@ export function assertedReadObservesUndefined(
   lowerer: Lowerer,
   node: ts.NonNullExpression,
 ): boolean {
-  if (convertingUseOf(lowerer, node) === "value") return true;
+  const use = convertingUseOf(lowerer, node);
+  if (use === "value" || use === "string") return true;
   let outer: ts.Expression = node;
   while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
   const parent = outer.parent;
