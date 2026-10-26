@@ -104,6 +104,8 @@ import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import {
   ambientDtsPath,
   fallbackDtsPath,
+  fallbackModulesNamedIn,
+  isFallbackDtsPath,
   isNodeTypesPath,
   overridesDtsPath,
   tsgoPath,
@@ -618,6 +620,27 @@ function externalTypeFileClosure7(
   return new Map([...ownersByFile].map(([file, owners]) => [file, [...owners]] as const));
 }
 
+/** The fallback declaration files of the Node modules the program's files
+ * name (fallbackModulesNamedIn) that the program does not hold yet. Each
+ * file is read as tsgo reads it; the TypeScript libraries and scriptc's own
+ * declarations name no module that needs a file. */
+function fallbackModuleRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
+  const names = program.getSourceFileNames();
+  const held = new Set(names.filter(isFallbackDtsPath).map((name) => tsgoPath(name)));
+  const ambient = ambientDtsPath();
+  const overrides = overridesDtsPath();
+  const roots = new Set<string>();
+  for (const name of names) {
+    const path = tsgoPath(name);
+    if (held.has(path) || path === ambient || path === overrides) continue;
+    if (/\/lib\.[^/]*\.d\.ts$/.test(path) && program.getSourceFileMetadata(name)?.isDefaultLibrary)
+      continue;
+    for (const file of fallbackModulesNamedIn(host.sourceText(name) ?? ""))
+      if (!held.has(file)) roots.add(file);
+  }
+  return [...roots];
+}
+
 /** Program roots hidden behind canonical createRequire bindings. tsgo
  * discovers ordinary import/require edges itself, but a source binding
  * returned by createRequire is intentionally just a function to the type
@@ -902,12 +925,23 @@ function loadProgram7(
     }
     options = { ...options, paths };
   }
-  const coreRoots = [entryPath, ambientDtsPath(), nodeTypes ?? fallbackDtsPath()];
+  // Without @types/node the fallback declarations stand in: the core file,
+  // and a Node module's file once a program file names the module
+  // (fallbackModuleRoots7). The modules the entry names join the first
+  // program.
+  const coreRoots = [
+    entryPath,
+    ambientDtsPath(),
+    ...(nodeTypes === null
+      ? [fallbackDtsPath(), ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? "")]
+      : [nodeTypes]),
+  ];
   const programRoots = [...coreRoots];
   let program = host.createProgram([...programRoots, overridesDtsPath()], options);
   try {
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
+        ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
         ...entryPackageProgramRoots7(program, entryPath, rootNpmStaticEdges),
         ...createRequireProgramRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
@@ -5051,7 +5085,7 @@ function laterJobCallee7(checker: ts.TypeChecker, callee: ts.Expression): boolea
   // package declarations describe user code.
   return decls.every((d) => {
     const file = ts.getSourceFileOfNode(d).fileName;
-    return isNodeTypesPath(file) || file === fallbackDtsPath();
+    return isNodeTypesPath(file) || isFallbackDtsPath(file);
   });
 }
 
@@ -7141,7 +7175,13 @@ const nodeBuiltinNames: ReadonlySet<string> = new Set(builtinModules);
  * established (the phase-2 port kept every spelling); the world-neutral
  * helpers re-export from their focused modules. */
 
-export { ambientDtsPath, fallbackDtsPath, isNodeTypesPath, overridesDtsPath } from "./dts-paths.js";
+export {
+  ambientDtsPath,
+  fallbackDtsPath,
+  isFallbackDtsPath,
+  isNodeTypesPath,
+  overridesDtsPath,
+} from "./dts-paths.js";
 
 export {
   builtinDefaultImportModule,

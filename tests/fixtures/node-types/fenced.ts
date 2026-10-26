@@ -108,8 +108,8 @@ async function publicKeyWithWebCrypto(key: import("node:crypto").webcrypto.Crypt
   await crypto.subtle.getPublicKey(key, ["verify"]);
 }
 void publicKeyWithWebCrypto;
-/* Node's navigator global: typeof navigator and navigator.userAgent
- * compile; the other members fence by name. */
-const cores = navigator.hardwareConcurrency;
-void cores;
+/* Node's navigator global: navigator.locks (the Web Locks API) fences
+ * by name. */
+const locks = navigator.locks;
+void locks;
 // End of the declared-but-not-lowered surface.

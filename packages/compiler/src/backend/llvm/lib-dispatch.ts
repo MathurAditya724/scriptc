@@ -1232,6 +1232,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "punycode":
     case "constants":
     case "promise":
+    case "navigator":
     case "mime":
       return host.emitGenericLibCall(e);
     case "test":
