@@ -299,12 +299,12 @@ import {
   cjsExportsAssignedInFunctions,
   cjsReexportedModules,
   cjsNamespaceExportNames,
-  fallbackDtsPath,
   isCheckedJsSourceFile,
   isCjsExportTableLiteral,
   isCjsJsFile,
   isJsSourceFile,
   isNodeEsmFile,
+  isFallbackDtsPath,
   isNodeTypesPath,
   locOf,
   orderedImportsOf,
@@ -3481,7 +3481,6 @@ export class Lowerer {
   readonly typeMemo = new Map<string, IrType>();
   readonly ambient = ambientDtsPath();
   readonly overridesAmbient = overridesDtsPath();
-  readonly fallbackAmbient = fallbackDtsPath();
   /** The one mapType context: registries + hooks, assembled in the
    * constructor (typeParamResolver reads the CURRENT instantiation bindings
    * through `this`, so the same ctx serves generic bodies too). */
@@ -14393,7 +14392,7 @@ export class Lowerer {
   readonly isStdlibFile = (sf: ts.SourceFile): boolean =>
     sf.fileName === this.ambient ||
     sf.fileName === this.overridesAmbient ||
-    sf.fileName === this.fallbackAmbient ||
+    isFallbackDtsPath(sf.fileName) ||
     this.program.isSourceFileDefaultLibrary(sf) ||
     (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
 

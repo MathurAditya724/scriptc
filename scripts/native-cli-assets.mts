@@ -74,6 +74,11 @@ export function stageNativeCliAssets(options: {
   for (const name of ["scriptc.d.ts", "scriptc-overrides.d.ts", "scriptc-node-fallback.d.ts"]) {
     cpSync(join(repository, "packages/compiler/ambient", name), join(declarations, name));
   }
+  cpSync(
+    join(repository, "packages/compiler/ambient/node-fallback"),
+    join(declarations, "node-fallback"),
+    { recursive: true },
+  );
   // Package shims (packageShimRoot): the built-in npm package implementations.
   cpSync(join(repository, "packages/compiler/shims"), join(declarations, "shims"), {
     recursive: true,
