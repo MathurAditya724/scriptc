@@ -1,5 +1,6 @@
   dynamic tier   (tier assignment, report-only; --tier=auto)
-    1 function already operates on dynamic values (1 statement)
+    2 functions already operate on dynamic values (2 statements)
+      Base.constructor  tests/coverage-fixtures/localized-failure.ts:57:1: dynObjLit at tests/coverage-fixtures/localized-failure.ts:58:16
       Holder.constructor  tests/coverage-fixtures/localized-failure.ts:28:1: dynObjLit at tests/coverage-fixtures/localized-failure.ts:29:16
 
     2 demotion requests (refusals and fences the dynamic tier would replace)

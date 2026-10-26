@@ -6344,6 +6344,56 @@ ScrArr *scr_fs_readdir(ScrStr *path) {
   return arr;
 }
 
+/* fs.readdirSync(path, { recursive: true }): Node's readdirSyncRecursive.
+ * Directories are listed in queue order: the base, then each directory in
+ * the order its entry was listed. Each entry's path is path.join of its
+ * directory and name; the result holds it relative to the base
+ * (path.relative). An entry stat(2) reports as a directory, a symlink to
+ * one included, joins the queue. */
+ScrArr *scr_fs_readdir_recursive(ScrStr *base) {
+  if (!scr_fs_path_ok(base, "path")) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+  size_t len = 1, cap = 8;
+  ScrStr **queue = malloc(cap * sizeof *queue);
+  if (!queue) scr_trap("scriptc: out of memory\n");
+  queue[0] = scr_str_retain(base);
+  bool failed = false;
+  for (size_t at = 0; at < len && !failed; at++) {
+    ScrScandir *scan = scr_fs_scandir(queue[at]);
+    if (!scan) {
+      failed = true;
+      break;
+    }
+    for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+      ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+      scr_arr_push_ref(parts, scr_str_retain(queue[at]));
+      scr_arr_push_ref(parts, scr_fs_scandir_name(scan, i));
+      ScrStr *full = scr_path_join(parts);
+      scr_arr_release(parts);
+      scr_arr_push_ref(out, scr_path_relative(base, full));
+      struct stat st;
+      if (stat(full->data, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (len == cap) {
+          cap *= 2;
+          queue = realloc(queue, cap * sizeof *queue);
+          if (!queue) scr_trap("scriptc: out of memory\n");
+        }
+        queue[len++] = full;
+      } else {
+        scr_str_release(full);
+      }
+    }
+    scr_fs_scandir_free(scan);
+  }
+  for (size_t i = 0; i < len; i++) scr_str_release(queue[i]);
+  free(queue);
+  if (failed) {
+    scr_arr_release(out);
+    return NULL;
+  }
+  return out;
+}
+
 /* ── the withFileTypes scandir snapshot ──────────────────────────────
  * One readdir pass capturing name + entry kind for the emitter's Dirent
  * assembly (scr_runtime.h has the contract). Kinds are libuv's UV_DIRENT
@@ -6828,11 +6878,17 @@ double scr_math_round(double x) {
   return (r == 0.0 && x < 0.0) ? -0.0 : r;
 }
 
-/* IEEE pow(±1, ±Infinity) and pow(1, NaN) return 1; ECMAScript requires
- * NaN. The other special cases, including signed zero and odd integer
- * powers, follow libm. */
+/* V8's math::pow: the platform pow, as Node's Math.pow and ** call it,
+ * after the cases V8 answers itself. IEEE pow(±1, ±Infinity) and
+ * pow(1, NaN) return 1; ECMAScript requires NaN. A NaN base becomes the
+ * quiet NaN, and the exponents 2 and 0.5 answer base * base and
+ * sqrt(base + 0) (+Infinity for an infinite base), as V8's optimizing
+ * compilers do; pow can differ from those in the last bit. */
 double scr_math_pow(double base, double exponent) {
   if (isnan(exponent) || (isinf(exponent) && fabs(base) == 1.0)) return NAN;
+  if (isnan(base)) base = NAN;
+  if (exponent == 2.0) return base * base;
+  if (exponent == 0.5) return isinf(base) ? INFINITY : sqrt(base + 0.0);
   /* 2 ** n for an integer n in the double range is an exact power of two,
    * the value pow returns; its bits are the exponent alone. */
   if (base == 2.0 && exponent >= -1074.0 && exponent <= 1023.0) {
@@ -11588,8 +11644,8 @@ double scr_date_get_timezone_offset(double ms) {
  * from local fields reads those fields back. */
 
 /* The host zone's offset (local - UTC) in ms at UTC instant `ms` (an
- * integral time value within about ±8.65e15). */
-static bool scr_date_offset_at(double ms, double *out) {
+ * integral time value within about ±8.65e15), from the host's localtime. */
+static bool scr_date_offset_at_uncached(double ms, double *out) {
   long long cms = (long long)ms;
   double secd = (double)(cms / 1000 - (cms % 1000 < 0));
   struct tm tmv;
@@ -11609,6 +11665,60 @@ static bool scr_date_offset_at(double ms, double *out) {
     tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
   *out = (local_as_utc - basis_secd) * 1000.0;
   return true;
+}
+
+/* Offsets at UTC midnights, for scr_date_offset_at. A day whose two
+ * midnights have the same offset has that offset throughout, given at most
+ * one transition per day (scr_date_local_to_utc already takes transitions
+ * to be at least a day apart). Each local setter asks for three to five
+ * offsets around one time value, and consecutive ones land on the same or
+ * neighbouring days, so most answers come from here instead of a
+ * localtime(3) call: glibc takes its zone lock in each and, for dates past
+ * the zone file's last transition, parses the zone's rule string again. A
+ * change of process.env.TZ starts a new generation. */
+#define SCR_DATE_MIDNIGHTS 64
+typedef struct {
+  long long day;
+  double offset;
+  bool valid;
+} ScrDateMidnight;
+typedef struct {
+  bool valid;
+  unsigned generation;
+  ScrDateMidnight entries[SCR_DATE_MIDNIGHTS];
+} ScrDateMidnightCache;
+static SCR_TL ScrDateMidnightCache scr_date_midnight_cache;
+
+static bool scr_date_midnight_offset(ScrDateMidnightCache *c, long long day, double *out) {
+  ScrDateMidnight *e = &c->entries[(unsigned long long)day % SCR_DATE_MIDNIGHTS];
+  if (e->valid && e->day == day) {
+    *out = e->offset;
+    return true;
+  }
+  if (!scr_date_offset_at_uncached((double)day * 86400000.0, out)) return false;
+  e->valid = true;
+  e->day = day;
+  e->offset = *out;
+  return true;
+}
+
+static bool scr_date_offset_at(double ms, double *out) {
+  ScrDateMidnightCache *c = &scr_date_midnight_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (!c->valid || c->generation != generation) {
+    memset(c, 0, sizeof *c);
+    c->valid = true;
+    c->generation = generation;
+  }
+  long long cms = (long long)ms;
+  long long day = cms / 86400000 - (cms % 86400000 < 0);
+  double start, end;
+  if (scr_date_midnight_offset(c, day, &start) && scr_date_midnight_offset(c, day + 1, &end) &&
+      start == end) {
+    *out = start;
+    return true;
+  }
+  return scr_date_offset_at_uncached(ms, out);
 }
 
 static volatile const double scr_date_day_ms = 86400000.0;
@@ -12761,8 +12871,15 @@ ScrStr *scr_num_to_string_radix_f64(double value, double requested) {
   bool negative = value < 0;
   value = fabs(value);
   double integer = floor(value), fraction = value - integer;
-  double tolerance = 0.5 * (nextafter(value, INFINITY) - value);
-  if (tolerance <= 0) tolerance = nextafter(0, INFINITY);
+  /* The next double above the positive finite value: its bits plus one
+   * (Infinity above the largest double). */
+  uint64_t value_bits;
+  memcpy(&value_bits, &value, sizeof value_bits);
+  value_bits += 1;
+  double next;
+  memcpy(&next, &value_bits, sizeof next);
+  double tolerance = 0.5 * (next - value);
+  if (tolerance <= 0) tolerance = 0x1p-1074;
   if (fraction >= tolerance) {
     buffer[end++] = '.';
     do {

@@ -1,6 +1,11 @@
 import { widensReducedRecords } from "../function-returns.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
+import {
+  arrayClassMemberOwner,
+  arrayClassReceiver,
+  lowerArrayClassConstructorRead,
+} from "../builtins/array-classes.js";
 import { indexedUnionArms, lowerIndexedUnionMember } from "../indexed-unions.js";
 import { keyedHelperName } from "../stable-names.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
@@ -156,7 +161,10 @@ import { blockedBindingUseDiag } from "../../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
 import { createRequireCalleeFileOf } from "../builtins/module-bindings.js";
-import { createRequireResolveFenceValue } from "../builtins/module-resolution.js";
+import {
+  createRequireResolveFenceValue,
+  createRequireResolveValue,
+} from "../builtins/module-resolution.js";
 import {
   builtinPrototypeMethod,
   lowerArrayIsArrayValue,
@@ -307,6 +315,7 @@ function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessEx
   )
     resolve = expr.expression;
   return (
+    !expr.questionDotToken &&
     ts.isPropertyAccessExpression(resolve) &&
     resolve.name.text === "resolve" &&
     createRequireCalleeFileOf(lowerer, resolve.expression) !== null
@@ -318,6 +327,8 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
+  if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `value.#x` on a checked-dynamic value, or on a checked extraction of
   // one: the field of the brand-checked receiver (checkedPrivateValue).
   if (ts.isPrivateIdentifier(expr.name)) {
@@ -1352,10 +1363,13 @@ export function lowerPropertyAccessExpr(
     }
   }
   // A createRequire loader's resolve read as a value (passed on, or
-  // picked by `??`): resolution happens at build time, so only calls
-  // with a literal specifier lower.
+  // picked by `??`): a function that resolves its request at run time.
+  // resolve.paths read as a value has no run-time lowering: a function
+  // that throws the fence when called.
   if (isCreateRequireResolveValue(lowerer, expr))
-    return createRequireResolveFenceValue(lowerer, expr, loc);
+    return expr.name.text === "paths"
+      ? createRequireResolveFenceValue(lowerer, expr, loc)
+      : createRequireResolveValue(lowerer, expr, loc);
   // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
   // no lowering above claimed ([1,2].entries, Math.SQRT2, Promise.all,
   // re.exec as a value, ...) reports SC2020 here.
@@ -3369,6 +3383,18 @@ export function lowerUnionProperty(
         expr,
       );
   }
+  // An array the checker sees through a union of arrays (`readdirSync`'s
+  // `string[] | Buffer[]`, whose lowering answers the string[] arm).
+  if (value.type.kind === "array" && expr.name.text === "length") {
+    return {
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver: value,
+      args: [],
+      type: F64,
+      loc: locOf(expr),
+    };
+  }
   if (value.type.kind !== "union") {
     lowerer.unsupported(
       "SC1090",
@@ -3810,6 +3836,32 @@ export function fieldTarget(
         access,
         checkedDynamicValue(lowerer.lowerExpr(access.expression))!,
         locOf(access),
+      );
+      return classFieldTarget(
+        lowerer,
+        access.expression,
+        { kind: "object", className: owner.def.name },
+        access.name.text,
+        receiver,
+      );
+    }
+  }
+  // A field declared by a class that extends Array, on an instance (whose
+  // type maps to its array): the class object's field.
+  {
+    const owner = arrayClassMemberOwner(lowerer, access);
+    const name = access.name.text;
+    if (
+      owner !== null &&
+      (owner.fields.has(name) ||
+        lowerer.findMethodOn(owner, `get:${name}`) ||
+        lowerer.findMethodOn(owner, `set:${name}`))
+    ) {
+      const receiver = arrayClassReceiver(
+        lowerer,
+        owner,
+        lowerer.lowerExpr(access.expression),
+        access.expression,
       );
       return classFieldTarget(
         lowerer,

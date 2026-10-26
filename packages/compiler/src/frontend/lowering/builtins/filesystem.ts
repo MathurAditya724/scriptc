@@ -1306,6 +1306,7 @@ export function lowerFsReaddirTypesCall(
     );
   }
   let sawWithFileTypes = false;
+  let recursive: ts.Expression | null = null;
   for (const p of optsNode.properties.nodes) {
     const m = optionMember(p);
     if (!m) {
@@ -1334,9 +1335,11 @@ export function lowerFsReaddirTypesCall(
           "names decode as utf8 (the default); encoding: 'buffer' has no lowering",
         );
       }
+    } else if (m.name === "recursive" && !promiseForm) {
+      recursive = m.value;
     } else {
       // The options-record stance: recursive (a documented knob with
-      // no lowering) fences by name; undocumented keys drop like Node.
+      // no lowering here) fences by name; undocumented keys drop like Node.
       fenceOrDropOptionKey(
         lowerer,
         p,
@@ -1346,6 +1349,26 @@ export function lowerFsReaddirTypesCall(
         "withFileTypes: true (and the default encoding) is the supported options surface — recursive listings want an explicit walk",
       );
     }
+  }
+  if (recursive !== null) {
+    // Only the `true`/`false` keywords fold; any other expression, even one
+    // typed as a literal, evaluates at run time for its effects.
+    let flag = recursive;
+    while (ts.isParenthesizedExpression(flag)) flag = flag.expression;
+    const literal =
+      flag.kind === ts.SyntaxKind.TrueKeyword
+        ? "true"
+        : flag.kind === ts.SyntaxKind.FalseKeyword
+          ? "false"
+          : null;
+    if (sawWithFileTypes && literal !== "false") {
+      lowerer.noLowering(
+        `${operation} with withFileTypes and recursive`,
+        recursive,
+        "recursive: true lists relative names; withFileTypes: true lists one directory's Dirents",
+      );
+    }
+    if (!sawWithFileTypes) return lowerFsReaddirRecursive(lowerer, call, recursive, literal, loc);
   }
   if (!sawWithFileTypes) {
     lowerer.noLowering(
@@ -1384,6 +1407,75 @@ export function lowerFsReaddirTypesCall(
     fn: promiseForm ? "fsp.readdirTypes" : "fs.readdirTypesSync",
     args: [path],
     type: callType,
+    loc,
+  };
+}
+
+/** `fs.readdirSync(path, { recursive })` without withFileTypes: the
+ * relative names of every entry below the path when `recursive` is true
+ * (scr_fs_readdir_recursive, Node's queue order), the directory's own names
+ * when it is false. A recursive flag that is not a boolean literal selects
+ * between the two at run time, after the path is evaluated. */
+function lowerFsReaddirRecursive(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  recursive: ts.Expression,
+  literal: string | null,
+  loc: SrcLoc,
+): IrExpr {
+  const names = arrayOf(STRING);
+  // @types/node types the call `string[] | Buffer[]` when the options name
+  // no encoding; the names are strings, so the call is the string[] arm.
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (
+    !callType ||
+    !(
+      typeEquals(callType, names) ||
+      (callType.kind === "union" && lowerer.armTag(callType.unionId, names) >= 0)
+    )
+  ) {
+    lowerer.noLowering(
+      "readdirSync(path, { recursive }) where the result is not a string array",
+      call,
+      "names decode as utf8 strings (the default encoding)",
+    );
+  }
+  return lowerFsReaddirNames(lowerer, call, recursive, literal, names, loc);
+}
+
+function lowerFsReaddirNames(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  recursive: ts.Expression,
+  literal: string | null,
+  names: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
+  const listing = (fn: IrLibFn, arg: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn,
+    args: [arg],
+    type: names,
+    loc,
+  });
+  if (literal === "true") return listing("fs.readdirRecursiveSync", path);
+  if (literal === "false") return listing("fs.readdirSync", path);
+  const pathLocal = lowerer.declareHiddenLocal("%readdirPath", STRING);
+  const pathRef = varRef(pathLocal.id, STRING, loc);
+  const flag = lowerer.lowerExprExpecting(recursive, BOOL);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: pathLocal.id, init: path, loc }],
+    result: {
+      kind: "ternary",
+      cond: flag,
+      then: listing("fs.readdirRecursiveSync", pathRef),
+      else_: listing("fs.readdirSync", pathRef),
+      type: names,
+      loc,
+    },
+    type: names,
     loc,
   };
 }

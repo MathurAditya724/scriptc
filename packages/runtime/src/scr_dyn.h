@@ -393,6 +393,12 @@ const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
  * holds. Both borrowed; a node that is not plain data throws the path
  * TypeError before anything changes. */
 void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
+void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
+/* A checked conversion into a type an npm package declares failed
+ * (scr_type_origin.c, linked by programs with such checks): the pending
+ * TypeError's message gains the declaration and the type patch that would
+ * admit the value. `origin` is the compiler's origin string. */
+void scr_type_origin_note(const char *origin);
 
 /* Prototype members of a compiled class seen as `unknown`, emitted per
  * class by the compiler: the string names of methods, getters and setters
@@ -1548,6 +1554,9 @@ ScrDyn *scr_dyn_builtin_stream_object(struct ScrStream *s);
 ScrDyn *scr_dyn_builtin_stream_view(struct ScrStream *s);
 struct ScrStream *scr_dyn_builtin_stream_check(const ScrDyn *value, double kind);
 struct ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr *message);
+/* stream.unboxDynStage in those programs (scr_stream_unbox_dyn_stage's
+ * contract, also taking constructor-function streams). */
+struct ScrStream *scr_dyn_builtin_stream_unbox_stage(const ScrDyn *value, const ScrStr *message);
 /* stream.dynNative in those programs: scr_stream_dyn_native's contract,
  * also taking constructor-function streams that keep the runtime's write
  * and end (+1 or NULL). */

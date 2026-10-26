@@ -1,6 +1,10 @@
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif
+/* macOS declares mkdtemp only with the Darwin extensions visible. */
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1
+#endif
 #include "ts7-process.h"
 #include <assert.h>
 #include <errno.h>

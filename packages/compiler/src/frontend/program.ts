@@ -139,8 +139,13 @@ import {
   typeOnlyReachedFiles,
 } from "./type-only-imports.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
-import { planDeclProjection, type DeclProjection } from "./decl-projection.js";
+import {
+  planDeclProjection,
+  resetDeclBoundaryOrigins,
+  type DeclProjection,
+} from "./decl-projection.js";
 import { configureTypePatches, packageSourceText } from "./type-patches/layer.js";
+import { resetDeclOriginVersions } from "./lowering/decl-origin.js";
 import { reportShapes } from "./shape-inference/index.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
@@ -1077,6 +1082,8 @@ export function loadProgram(
   // JavaScript, even when named. A registry entry's `sourceVersions`
   // (chalk 6) compile from their own source.
   configurePackageShims(entryPath);
+  resetDeclBoundaryOrigins();
+  resetDeclOriginVersions();
   // The project's type patches (type-patches/layer.ts), read by every host
   // this load creates; nothing at all without `scriptc.typePatches`.
   configureTypePatches(entryPath, (path, text, kind) => services.parse(path, text, kind));
@@ -2535,24 +2542,36 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
 /** How a use of a createRequire loader lowers:
  * - "static": a literal call or a literal resolution query, which erases
  *   the loader value.
- * - "deferred": a call with a computed specifier or another argument shape,
- *   or `resolve` / `resolve.paths` read as a value, inside the try block
- *   of a try statement in the same function. The call throws a runtime
- *   fence, and the resolve value is a function that throws one when called
- *   (module-resolution.ts), so the statement's catch clause handles them
- *   (packages that look for optional native addons).
- * - "computed": the same shapes outside a try block.
+ * - "runtime": in JavaScript source, a call with a computed specifier, a
+ *   require.resolve call with a computed request, or `resolve` read as a
+ *   value. The runtime resolves the specifier like Node
+ *   (module-resolution.ts, scr_require.c).
+ * - "deferred": in JavaScript source, inside the try block of a try
+ *   statement in the same function, the other shapes: spread arguments,
+ *   require.resolve with another argument count, and `resolve.paths` with
+ *   a computed request or read as a value. The call throws a runtime
+ *   fence, and the resolve.paths value is a function that throws one when
+ *   called (module-resolution.ts), so the statement's catch clause handles
+ *   them (packages that look for optional native addons).
+ * - "computed": the "runtime" uses in TypeScript source, and the
+ *   "deferred" shapes outside a try block.
  * - "escaping": the loader itself as a value, writes, optional calls, and
  *   other members. */
 const COMPUTED_CREATE_REQUIRE_REASON =
-  "its createRequire result is used with a computed specifier, or its resolve as a value, outside a try block (static requires need literal specifiers)";
+  "its createRequire result is used with a computed specifier in TypeScript, or with spread arguments or resolve.paths outside a try block (static requires need literal specifiers)";
 
-type CreateRequireUse7 = "static" | "deferred" | "computed" | "escaping";
+type CreateRequireUse7 = "static" | "runtime" | "deferred" | "computed" | "escaping";
 
 function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
+  const use = createRequireUseShape7(expr);
+  return use === "runtime" && !isJsSourceFile(ts.getSourceFileOfNode(expr)) ? "computed" : use;
+}
+
+function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
   let use: ts.Node = expr;
   while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
   let member = false;
+  let paths = false;
   if (
     ts.isPropertyAccessExpression(use.parent) &&
     use.parent.expression === use &&
@@ -2566,16 +2585,26 @@ function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
       use.parent.expression === use &&
       use.parent.name.text === "paths" &&
       !use.parent.questionDotToken
-    )
+    ) {
       use = use.parent;
+      paths = true;
+    }
   }
   const call = use.parent;
   if (ts.isCallExpression(call) && call.expression === use) {
     if (call.questionDotToken) return "escaping";
-    if (call.arguments.nodes.length === 1 && ts.isStringLiteralLike(call.arguments.nodes[0]!))
-      return "static";
+    const args = call.arguments.nodes;
+    if (args.length === 1 && ts.isStringLiteralLike(args[0]!)) return "static";
+    if (
+      !paths &&
+      !args.some((arg) => ts.isSpreadElement(arg)) &&
+      !(member && (args.length === 0 || args.length > 2))
+    )
+      return "runtime";
   } else if (!member || isAssignmentTarget7(use)) {
     return "escaping";
+  } else if (!paths) {
+    return "runtime";
   }
   return insideTryBlock7(use) ? "deferred" : "computed";
 }
