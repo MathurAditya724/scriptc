@@ -18,6 +18,9 @@ import type { NativeToolchainManifest } from "../packages/compiler/src/native/to
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(process.argv[2] ?? join(root, ".scriptc/native-cli"));
+// --platform-packages builds an npm platform package's distribution, which
+// depends on the helper and runtime pack packages instead of bundling them.
+const platformPackages = process.argv.includes("--platform-packages");
 const optimization = process.env["SCRIPTC_NATIVE_OPTIMIZATION"] === "dev" ? "dev" : "release";
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 // SCRIPTC_NATIVE_PROFILE_GENERATE=<pattern> builds a compiler that writes a
@@ -187,6 +190,7 @@ const assets = stageNativeCliAssets({
   ts7: tsgoExecutable(),
   compilerVersion,
   strip,
+  platformPackages,
 });
 // A cross-libc seed may use Zig on the build host. The installed compiler
 // selects the destination platform's ordinary linker and SDK.

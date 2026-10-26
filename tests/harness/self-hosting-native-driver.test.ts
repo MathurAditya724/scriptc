@@ -26,6 +26,7 @@ import {
 } from "../../scripts/ci-native-bootstrap.mjs";
 import { withoutFirstLine } from "./large-artifacts.js";
 import { bootstrapStep } from "./self-hosting-timing.js";
+import { unbundlePlatformPackages } from "../../scripts/native-cli-bundle.mjs";
 
 const root = join(import.meta.dirname, "../..");
 const exec = promisify(execFile);
@@ -105,6 +106,12 @@ test(
           join(packageDirectory, "package.json"),
         );
         cpSync(distribution, join(packageDirectory, "dist"), { recursive: true });
+        // The npm package depends on its LLVM helper and runtime pack.
+        unbundlePlatformPackages(
+          join(packageDirectory, "dist"),
+          join(packageDirectory, "dist/bin/scriptc.json"),
+          "@scriptc/llvm-linux-x64-gnu",
+        );
         writeFileSync(packageDirectory + ".ready", "ready\n");
       }
       // All compiler assets must survive moving the complete distribution.
