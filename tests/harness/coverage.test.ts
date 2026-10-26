@@ -485,6 +485,15 @@ test("a local or module global whose declared type does not compile becomes a dy
   expect(strict.diagnostics.map((d) => d.code)).toContain("SC2009");
 });
 
+test("dynamic slots rank by their dynamic operations and name themselves in SC6101", () => {
+  const { coverage } = analyze(join(repoRoot, "tests/corpus/localized-failure-declarations.ts"));
+  const slots = coverage.dynamicSlots ?? [];
+  expect(slots.some((s) => (s.operations ?? 0) > 0)).toBe(true);
+  expect(slots.find((s) => s.name === "tools")?.partial).toBe(true);
+  const hot = coverage.performance?.find((d) => d.code === "SC6101");
+  expect(hot?.message).toContain("is a dynamic slot (declared `ToolDefinition`");
+});
+
 test("CLI: --tier and --explain-dynamic", () => {
   const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-tier-"));

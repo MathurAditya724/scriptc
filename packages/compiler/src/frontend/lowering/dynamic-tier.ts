@@ -208,9 +208,26 @@ function identifierCause(lowerer: Lowerer, id: ts.Identifier, depth = 0): Untype
   return null;
 }
 
+/** A dynamic slot (localized failure): the node's declared type degraded
+ * to the checked dynamic, wholly or in pieces. Null while nothing degraded. */
+function slotCause(lowerer: Lowerer, n: ts.Node): UntypedCause | null {
+  if (lowerer.degradedTypes.size === 0) return null;
+  if (!ts.isIdentifier(n) && !ts.isPropertyAccessExpression(n)) return null;
+  const type = lowerer.checker.getTypeAtLocation(n);
+  if (!lowerer.degradedTypes.has((type as { id?: number }).id ?? -1)) return null;
+  const text = ts.getTextOfNode(n);
+  return {
+    kind: "slot",
+    name: text.length > 40 ? `${text.slice(0, 37)}...` : text,
+    declaredType: lowerer.checker.typeToString(type),
+  };
+}
+
 /** Why a node's value has no static type, or null. */
 function nodeCause(lowerer: Lowerer, n: ts.Node): UntypedCause | null {
   if (isJsonParse(n)) return { kind: "json" };
+  const slot = slotCause(lowerer, n);
+  if (slot !== null) return slot;
   const id = rootIdentifier(n);
   return id === null ? null : identifierCause(lowerer, id);
 }
@@ -381,4 +398,25 @@ export function dynamicTierWarning(
     report.packages,
     first.loc,
   );
+}
+
+/** Localized failure: dynamic operations attributed to each dynamic slot
+ * (by declared type), over the dynamic-tier functions of the program. A
+ * site counts for the slot the SC6101 cause search names at it. */
+export function dynamicSlotOperationCounts(
+  lowerer: Lowerer,
+  bodies: readonly IrFunction[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  if (lowerer.degradedTypes.size === 0) return counts;
+  for (const fn of bodies) {
+    // Generated helpers repeat their callers' locations.
+    if (GENERATED.test(fn.name)) continue;
+    for (const site of dynamicOperationSites(fn)) {
+      const cause = causeAt(lowerer, site.loc);
+      if (cause?.kind !== "slot") continue;
+      counts.set(cause.declaredType, (counts.get(cause.declaredType) ?? 0) + 1);
+    }
+  }
+  return counts;
 }

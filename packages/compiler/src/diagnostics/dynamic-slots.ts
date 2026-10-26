@@ -20,6 +20,9 @@ export interface DynamicSlotEntry {
   /** Push-down: the slot keeps its type's compilable shape, and only the
    * components that do not compile are checked-dynamic. */
   partial?: boolean;
+  /** Dynamic operations the program performs on the slot's values (the
+   * dynamic-tier sites whose cause names it). */
+  operations?: number;
 }
 
 const SLOT_WORD: Record<TypeFailureSlot, string> = {

@@ -167,7 +167,7 @@ import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
-import { dynamicTierWarning } from "./dynamic-tier.js";
+import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
 import {
   analyzeTiers,
@@ -1339,7 +1339,9 @@ export function lowerToIr(
   }
   // Localized failure (SC6104): one performance warning per dynamic slot.
   if (resultLowerer.dynamicSlots.length > 0) {
+    const operations = dynamicSlotOperationCounts(resultLowerer, resultLowerer.dynamicBodies);
     const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot) => ({
+      operations: operations.get(slot.failure.declaredType) ?? 0,
       loc: slot.loc,
       name: slot.failure.name,
       slot: slot.failure.slot,
