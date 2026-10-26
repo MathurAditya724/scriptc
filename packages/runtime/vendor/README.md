@@ -38,15 +38,13 @@ The native runtime pack build produces `libscriptc-quickjs.a` for the compiler b
 
 ## zlib/
 
-- Project: https://chromium.googlesource.com/chromium/src/third_party/zlib (Chromium's zlib, a fork of https://github.com/madler/zlib)
-- Version: 1.3.2.1-motley-285e94b, the copy Node v24.22.0 bundles in `deps/zlib` (`process.versions.zlib`)
+- Project: https://github.com/madler/zlib
+- Version: 1.3.1 (release tarball zlib-1.3.1.tar.gz, sha256 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23)
 - License: zlib (see zlib/LICENSE)
 
-The codec behind node:zlib's gzip, deflate and inflate functions and streams (see packages/runtime/src/scr_zlib.c) and the native fetch's gzip decoder. The flat `*.c`/`*.h` files at the root of Node's `deps/zlib`, `contrib/optimizations/`, `LICENSE` and `README.chromium` are vendored; `contrib/minizip`, the other contrib directories, tests, patches, Chromium's build files and docs are not. No vendored file is modified, and the files match Node's copy. The gz* file-I/O units are vendored but never compiled (nothing references the gzFile API).
+The CROSS-target arm of node:zlib (see packages/runtime/src/scr_zlib.c): host builds keep the historical system `-lz` link (macOS ships libz), but zig's cross sysroots have no libz, so SCRIPTC_TARGET builds compile this vendored copy per target instead. Only the flat `*.c`/`*.h` at the distribution root are vendored (LICENSE beside them) — contrib, tests, build machinery, and docs are not. No vendored file is modified; the gz* file-I/O TUs are vendored for faithfulness but never compiled (nothing references the gzFile API — see ZLIB_SOURCES in packages/compiler/src/backend/vendor-archives.ts). To update, re-fetch the release tarball, copy the same flat set, and bump `ZLIB_VERSION` in vendor-archives.ts.
 
-Each target compiles the units and defines Node's `deps/zlib/zlib.gyp` selects for it: the SSSE3 Adler-32 and SSE2 inflate and slide-hash code on x86-64, the NEON code and the ARMv8 CRC-32 code on arm64 Linux, Android and macOS, the NEON inflate and slide-hash code on iOS and Windows arm64, and the portable code (`CPU_NO_SIMD`) elsewhere. The table is `zlibInputs` in packages/runtime-pack-common/scripts/zlib-inputs.mjs (runtime packs) and in packages/compiler/src/backend/vendor-inputs.ts (Zig cross builds and the sanitized runtime), and a unit test keeps the two identical. Android reads CPU features through `getauxval` as Linux does, where Node's Android build uses the NDK's cpu-features library. The SIMD units check the CPU at run time and give the same output as the portable code, so compressed bytes match Node's for the same parameters on every target. To update, copy the same files from the `deps/zlib` of the Node version scriptc follows and bump `ZLIB_VERSION` in vendor-inputs.ts.
-
-Runtime packs archive zlib at `-O3`, as Node builds it. Zig cross builds compile the objects lazily on the first zlib-using cross compile into the per-user build cache's `vendor/zlib-<version>-<flavor>-<target>-<toolchain>/` directory, one flavor per driver/target and compiler environment/identity (the lre-objects pattern). Zlib-free binaries compile and link none of it.
+The objects build lazily on the first zlib-using cross compile into the per-user build cache's `vendor/zlib-<version>-<flavor>-<target>-<toolchain>/` directory — one flavor per driver/target and compiler environment/identity (the lre-objects pattern). Zlib-free binaries never compile any of this; compressed OUTPUT bytes are zlib-version-dependent, which is why the corpus only compares round-trips and fixed-blob inflation.
 
 ## brotli/
 

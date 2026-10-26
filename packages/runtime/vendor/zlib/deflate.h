@@ -1,5 +1,5 @@
 /* deflate.h -- internal compression state
- * Copyright (C) 1995-2026 Jean-loup Gailly
+ * Copyright (C) 1995-2024 Jean-loup Gailly
  * For conditions of distribution and use, see copyright notice in zlib.h
  */
 
@@ -13,10 +13,6 @@
 #ifndef DEFLATE_H
 #define DEFLATE_H
 
-#if defined(DEFLATE_CHUNK_WRITE_64LE)
-#include <stdint.h>
-#endif
-
 #include "zutil.h"
 
 /* define NO_GZIP when compiling if you want to disable gzip header and
@@ -29,7 +25,7 @@
 
 /* define LIT_MEM to slightly increase the speed of deflate (order 1% to 2%) at
    the cost of a larger memory footprint */
-#define LIT_MEM
+/* #define LIT_MEM */
 
 /* ===========================================================================
  * Internal compression state.
@@ -56,11 +52,7 @@
 #define MAX_BITS 15
 /* All codes must not exceed MAX_BITS bits */
 
-#if defined(DEFLATE_CHUNK_WRITE_64LE)
-#define Buf_size 64
-#else
 #define Buf_size 16
-#endif
 /* size of bit buffer in bi_buf */
 
 #define INIT_STATE    42    /* zlib header -> BUSY_STATE */
@@ -121,8 +113,8 @@ typedef struct internal_state {
     ulg   gzindex;       /* where in extra, name, or comment */
     Byte  method;        /* can only be DEFLATED */
     int   last_flush;    /* value of flush param for previous deflate call */
-    unsigned crc0[4 * 5];
-    /* used by deflate.c: */
+
+                /* used by deflate.c: */
 
     uInt  w_size;        /* LZ77 window size (32K by default) */
     uInt  w_bits;        /* log2(w_size)  (8..16) */
@@ -230,9 +222,11 @@ typedef struct internal_state {
      */
 
 #ifdef LIT_MEM
+#   define LIT_BUFS 5
     ushf *d_buf;          /* buffer for distances */
     uchf *l_buf;          /* buffer for literals/lengths */
 #else
+#   define LIT_BUFS 4
     uchf *sym_buf;        /* buffer for distances and literals/lengths */
 #endif
 
@@ -269,20 +263,13 @@ typedef struct internal_state {
     ulg bits_sent;      /* bit length of compressed data sent mod 2^32 */
 #endif
 
-#if defined(DEFLATE_CHUNK_WRITE_64LE)
-    uint64_t bi_buf;
-#else
     ush bi_buf;
-#endif
     /* Output buffer. bits are inserted starting at the bottom (least
      * significant bits).
      */
     int bi_valid;
     /* Number of valid bits in bi_buf.  All bits above the last valid bit
      * are always zero.
-     */
-    int bi_used;
-    /* Last number of used bits when going to a byte boundary.
      */
 
     ulg high_water;
@@ -291,21 +278,6 @@ typedef struct internal_state {
      * longest match routines access bytes past the input.  This is then
      * updated to the new high water mark.
      */
-
-    uInt chromium_zlib_hash;
-    /* 0 if Rabin-Karp rolling hash is enabled, non-zero if chromium zlib
-     * hash is enabled.
-     */
-
-#if defined(QAT_COMPRESSION_ENABLED)
-    /* Pointer to a struct that contains the current state of the QAT
-     * stream.
-     */
-    struct qat_deflate *qat_s;
-#endif
-
-    int slid;
-    /* True if the hash table has been slid since it was cleared. */
 
 } FAR deflate_state;
 
@@ -401,13 +373,5 @@ void ZLIB_INTERNAL _tr_stored_block(deflate_state *s, charf *buf,
 # define _tr_tally_dist(s, distance, length, flush) \
               flush = _tr_tally(s, distance, length)
 #endif
-
-/* Functions that are SIMD optimised on x86 */
-void ZLIB_INTERNAL crc_fold_init(deflate_state* const s);
-void ZLIB_INTERNAL crc_fold_copy(deflate_state* const s,
-                                 unsigned char* dst,
-                                 const unsigned char* src,
-                                 long len);
-unsigned ZLIB_INTERNAL crc_fold_512to32(deflate_state* const s);
 
 #endif /* DEFLATE_H */
