@@ -523,9 +523,9 @@ function builtinAnswer(
 
 /** Whether a value of `type` may be a symbol at run time: a checked value
  * or a union with a symbol or checked arm. Records, class instances,
- * arrays and functions never are, and their keys convert without running
- * dynamic-tier code (which would make every indirect call a heap writer to
- * ReferenceWrites). */
+ * arrays and functions never are, so their keys skip the symbol test (a
+ * key that converts without running code leaves the method's impl no heap
+ * writer to ReferenceWrites). */
 function mayBeSymbol(lowerer: Lowerer, type: IrType): boolean {
   if (type.kind === "dyn" || type.kind === "symbol") return true;
   if (type.kind !== "union") return false;
@@ -557,19 +557,35 @@ function propertyKeyOf(lowerer: Lowerer, arg: IrExpr | undefined, loc: SrcLoc): 
     )
   )
     return { kind: "toString", operand: arg, type: STRING, loc };
-  // A record, or a class instance without its own toString, spells
-  // "[object Object]" without running any code.
+  // A record or class instance that answers Object.prototype.toString
+  // spells "[object Object]" without running any code.
   if (
-    type.kind === "record" ||
+    (type.kind === "record" && defaultRecordToString(lowerer, type.shapeId)) ||
     (type.kind === "object" && defaultToString(lowerer, type.className))
   )
     return { kind: "strLit", value: "[object Object]", type: STRING, loc };
-  // A checked value converts through the dynamic tier it already lives in.
-  if (type.kind === "dyn")
-    return { kind: "libCall", fn: "dyn.toStringCoerce", args: [arg], type: STRING, loc };
-  // Other keys (arrays, functions, class instances with toString) would run
-  // code; the built-in answers the checked-conversion TypeError for them.
-  return nodeThrowExpr(1, "", OTHER_ARM_FAILURE_MESSAGE, STRING, loc);
+  // Any other key (an array, a function, a record or class instance with
+  // its own toString, a checked value) converts as ToPropertyKey does,
+  // through the dynamic tier: the conversion may run the key's code.
+  return {
+    kind: "libCall",
+    fn: "dyn.toStringCoerce",
+    args: [lowerer.coerceToExpected(arg, DYN)],
+    type: STRING,
+    loc,
+  };
+}
+
+/** A record shape whose values answer Object.prototype.toString: no
+ * `toString` field, and no index signature that may hold one at run time
+ * (or give the record a null prototype). */
+function defaultRecordToString(lowerer: Lowerer, shapeId: string): boolean {
+  const shape = lowerer.shapes.get(shapeId);
+  return (
+    shape !== undefined &&
+    shape.indexValue === undefined &&
+    !shape.fields.some((field) => field.name === "toString")
+  );
 }
 
 /** A source class whose instances answer Object.prototype.toString. */

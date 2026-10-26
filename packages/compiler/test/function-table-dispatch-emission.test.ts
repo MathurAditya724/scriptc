@@ -2,7 +2,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { compile } from "../src/index.js";
+import { compile, deserializeModule } from "../src/index.js";
+import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
+import type { IrExpr, IrModule } from "../src/ir/ir.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -18,6 +20,17 @@ async function emit(source: string): Promise<string> {
   const result = await compile(entry, { entry, outDir, outPath, outputKind: "llvm" });
   expect(result.ok, JSON.stringify(result)).toBe(true);
   return readFile(outPath, "utf8");
+}
+
+async function lowerIr(source: string): Promise<IrModule> {
+  const outDir = await mkdtemp(join(tmpdir(), "scriptc-function-table-"));
+  directories.push(outDir);
+  const entry = join(outDir, "main.ts");
+  await writeFile(entry, source);
+  const outPath = join(outDir, "main.ir.json");
+  const result = await compile(entry, { outDir, outPath, outputKind: "ir" });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  return deserializeModule(await readFile(outPath, "utf8"));
 }
 
 function definition(llvm: string, symbol: string): string {
@@ -76,4 +89,52 @@ test("function-table dispatch borrows the stored closure on a hit", async () => 
     expect(body, fn).not.toMatch(/scr_closure_retain|sc_nretain_func/);
     expect(body, fn).toMatch(/sc_map_entry_str/);
   }
+});
+
+// A borrowed ternary whose arms are fallback reads: a miss binds the
+// inherited method into a frame-owned slot, which must outlive the arm
+// until the call has used the lent closure. The lowering builds no such
+// ternary today (a bound read is a call's own callee), so the test wraps
+// the callee read of `pick` in one.
+test("a borrowed ternary of fallback reads keeps a bound default past its arm", async () => {
+  const mod = await lowerIr(`
+type Op = (x: string) => string;
+const table: Record<string, Op> = { echo: (x) => x };
+function pick(name: string, flag: boolean): string {
+  return table[name]!("echo");
+}
+console.log(pick(process.argv[2] ?? "hasOwnProperty", process.argv.length > 3));
+`);
+  const pick = mod.functions.find((fn) => fn.name === "pick")!;
+  const flag = pick.params[1]!;
+  let wrapped = 0;
+  const visit = (node: unknown): void => {
+    if (node === null || typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node)) {
+      const e = value as IrExpr | null;
+      if (e !== null && typeof e === "object" && e.kind === "nullish" && e.right.kind === "call") {
+        const cond: IrExpr = { kind: "varRef", localId: flag.localId, type: flag.type, loc: e.loc };
+        (node as Record<string, unknown>)[key] = {
+          kind: "ternary",
+          cond,
+          then: e,
+          else_: structuredClone(e),
+          type: e.type,
+          loc: e.loc,
+        };
+        wrapped++;
+      } else visit(value);
+    }
+  };
+  visit(pick.body);
+  expect(wrapped).toBe(1);
+  const body = definition(emitLlvmModule(mod), "sc_bf_pick");
+  // Each arm lends its read and leaves: nothing it filled is released
+  // before the join.
+  const arms = [...body.matchAll(/^read\.(?:then|else)\d+:\n([^]*?)(?=^read\.)/gm)].map(
+    (m) => m[1]!,
+  );
+  expect(arms).toHaveLength(2);
+  for (const arm of arms)
+    expect(arm).toMatch(/store ptr %t\d+, ptr %s\d+\n {2}br label %read\.end\d+\n$/);
 });

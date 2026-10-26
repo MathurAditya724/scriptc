@@ -165,6 +165,12 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
       no = B.newLabel("read.else"),
       join = B.newLabel("read.join");
     B.condBr(cond.name, yes, no);
+    // Slots an arm's borrowed read fills (the owner of a `r[k] ?? d`
+    // default) may hold what the result points to: the enclosing frame
+    // releases them after the use, and the other arm's path leaves them
+    // empty so that release skips them.
+    const armSlots: LlValue[][] = [];
+    const ends: string[] = [];
     for (const [label, value] of [
       [yes, e.then],
       [no, e.else_],
@@ -173,9 +179,21 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
       emitter.frames.push([]);
       const result = emitter.emitReadReceiver(value);
       B.line(`store ptr ${result.name}, ptr ${slot}`);
-      emitter.releaseTemps(emitter.frames.pop()!);
+      const frame = emitter.frames.pop()!;
+      armSlots.push(frame.filter((entry) => entry.slot === true && entry.boxed !== true));
+      emitter.releaseTemps(frame.filter((entry) => entry.slot !== true || entry.boxed === true));
+      const end = B.newLabel("read.end");
+      ends.push(end);
+      B.br(end);
+    }
+    for (const [i, end] of ends.entries()) {
+      B.startBlock(end);
+      for (const entry of armSlots[1 - i]!) B.line(`store ptr null, ptr ${entry.name}`);
       B.br(join);
     }
+    for (const entries of armSlots)
+      for (const entry of entries)
+        emitter.ownSlot(entry.name, entry.type, entry.rarelyFilled === true);
     B.startBlock(join);
     const value = B.tmp();
     B.line(`${value} = load ptr, ptr ${slot}`);
