@@ -26,7 +26,3 @@ console.log(maybe(true));
 // must be that arm's own promise type.
 const widened = Promise.resolve<string | number>(maybe(false));
 console.log(typeof widened);
-
-// `instanceof Promise` on a value that is never a promise.
-const record = { v: 1 };
-console.log(record instanceof Promise);

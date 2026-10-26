@@ -1,4 +1,11 @@
 import { createRequire } from "node:module";
+import { shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
+import { nodeFrontendServices } from "./frontend/services-node.js";
+import {
+  runTypePatchCommand,
+  type TypePatchCommandRequest,
+  type TypePatchCommandResult,
+} from "./frontend/type-patches/command.js";
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
@@ -51,6 +58,7 @@ export type {
 import { compilePackedLibrary } from "./backend/library-pack.js";
 import { node24FetchCompatProfile } from "./compat/fetch-profile.js";
 import { libFnSignatures } from "./ir/builtin-signatures.js";
+import { type FunctionLayout, parseFunctionLayout } from "./backend/llvm/function-layout.js";
 import { InternalCompilerError } from "./errors.js";
 import { frontendProcessExecArgv } from "./frontend-process-args.js";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -60,6 +68,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import {
   clearCcCaches,
   configuredTargetPlatform,
@@ -204,6 +213,15 @@ export {
 } from "./backend/external-c.js";
 export { warmNativeCaches } from "./backend/warm-cache.js";
 export { mergeNativeProfiles as mergeProfiles } from "./backend/native-codegen.js";
+
+/** `scriptc types patch|list` with the Node frontend's parser. */
+export async function typePatches(
+  request: TypePatchCommandRequest,
+): Promise<TypePatchCommandResult> {
+  return runTypePatchCommand(request, (path, text, kind) =>
+    nodeFrontendServices().parse(path, text, kind),
+  );
+}
 export { collectGarbageUnderHeapPressure } from "./heap-collection.js";
 export {
   ANDROID_MIN_API,
@@ -475,6 +493,10 @@ export async function compile(
   opts: CompileRequestOptions,
 ): Promise<CompileRequestResult> {
   clearCompileSessionCaches();
+  // `shapeOverlay: false` reaches the frontend (and its child process)
+  // through the environment the overlay reads.
+  const overlayEnv = process.env["SCRIPTC_SHAPE_OVERLAY"];
+  if (opts.shapeOverlay === false) process.env["SCRIPTC_SHAPE_OVERLAY"] = "0";
   const frontendInputs = new FrontendInputTracker();
   const warnings: CompileWarningSink = { warnings: [], sourceTexts: null };
   // compileTracked starts it for a build with no earlier build of the same invocation.
@@ -487,6 +509,10 @@ export async function compile(
   } finally {
     setLibDiagnosticsStore(null);
     frontendProcess?.release();
+    if (opts.shapeOverlay === false) {
+      if (overlayEnv === undefined) delete process.env["SCRIPTC_SHAPE_OVERLAY"];
+      else process.env["SCRIPTC_SHAPE_OVERLAY"] = overlayEnv;
+    }
   }
 }
 
@@ -523,6 +549,14 @@ function performanceWarnings(sink: CompileWarningSink | undefined): {
     (d) => isPerformanceCode(d.code) || isTypePatchCode(d.code),
   );
   return performance.length === 0 ? {} : { performance };
+}
+
+/** The profile match of a --profile-use build's program object, for its
+ * artifact and its executable cache entry, which a cache hit reports again. */
+function profileMatchField(object: NativeProgramObject | null): {
+  profileMatch?: NativeProfileMatch;
+} {
+  return object?.profileMatch === undefined ? {} : { profileMatch: object.profileMatch };
 }
 
 function withCompileWarnings<T extends CompileRequestResult>(
@@ -660,12 +694,14 @@ async function compileExecutableNative(
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
+    ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
+    ...(features.computedRequire ? { computedRequire: true } : {}),
     events: features.events,
     emitter: features.emitter,
     symbol: features.symbol,
@@ -788,6 +824,37 @@ async function readNativeProfile(
   return { use: { path, digest: createHash("sha256").update(bytes).digest("hex") } };
 }
 
+/** The digest of the request's function layout file, which keys the
+ * executable cache: the layout changes the code's order, not its frontend
+ * input. */
+async function functionLayoutKey(opts: CompileRequestOptions): Promise<string | undefined> {
+  if (opts.functionLayout === undefined) return undefined;
+  const path = resolve(opts.functionLayout);
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(path);
+  } catch (err) {
+    throw new Error(
+      `cannot read function layout ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** The request's function layout. */
+async function readFunctionLayout(
+  opts: CompileRequestOptions,
+): Promise<{ functionLayout?: FunctionLayout }> {
+  if (opts.functionLayout === undefined) return {};
+  const path = resolve(opts.functionLayout);
+  const bytes = await readFile(path);
+  return {
+    functionLayout: parseFunctionLayout(
+      (path.endsWith(".gz") ? gunzipSync(bytes) : bytes).toString("utf8"),
+    ),
+  };
+}
+
 function usesPrecompiledRuntimePack(opts: CompileRequestOptions, backend: "llvm"): boolean {
   if (backend !== "llvm" || opts.sanitize === true) return false;
   return nativeCodegenTarget() !== null;
@@ -899,6 +966,7 @@ async function prepareExecutableInput(
       llvm = emitLlvmModuleSource(mod, {
         targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
         ...debugOptions,
+        ...(await readFunctionLayout(opts)),
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
         wasi: buildPlatform === "wasi",
         runtimeAbiMarker: outputKind === "obj",
@@ -974,6 +1042,7 @@ async function prepareExecutableInput(
     llvmSource = emitLlvmModuleSource(mod, {
       targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
       ...debugOptions,
+      ...(await readFunctionLayout(opts)),
       pointerBits: buildPlatform === "wasi" ? 32 : 64,
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
@@ -986,6 +1055,7 @@ async function prepareExecutableInput(
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
       ...(nodeIslandModuleData === undefined ? {} : { nodeIslandModuleData }),
       ...targetCpuField(opts.targetCpu),
+      ...(opts.cpuDispatch === true ? { cpuDispatch: true } : {}),
     });
   } catch (err) {
     if (!(err instanceof LlvmUnsupportedError)) throw err;
@@ -1294,6 +1364,8 @@ function configureLibDiagnostics(root: string | null): void {
 
 export async function runFrontendProcess(requestPath: string, resultPath: string): Promise<void> {
   const request = JSON.parse(await readFile(requestPath, "utf8")) as FrontendProcessRequest;
+  // The process started before the build's options were known.
+  if (request.opts.shapeOverlay === false) process.env["SCRIPTC_SHAPE_OVERLAY"] = "0";
   clearCompileSessionCaches();
   setProvenanceSources(request.provenance);
   // The compile that started this process prepared the cache root.
@@ -1411,6 +1483,19 @@ async function compileTracked(
         nativeCodegenDiag(
           "SC3002",
           "--detached-exit is only supported for executable output",
+          entryPath,
+        ),
+      ],
+      sourceTexts: new Map(),
+    };
+  }
+  if (opts.cpuDispatch === true && outputKind !== "exe") {
+    return {
+      ok: false,
+      diagnostics: [
+        nativeCodegenDiag(
+          "SC3002",
+          "--cpu-dispatch is only supported for executable output",
           entryPath,
         ),
       ],
@@ -1584,9 +1669,11 @@ async function compileTracked(
     platform: buildPlatform,
   });
   let profile: NativeProfileOptions | undefined;
+  let functionLayoutDigest: string | undefined;
   try {
     if (profileRefusal !== null) throw new Error(profileRefusal);
     profile = await readNativeProfile(opts);
+    functionLayoutDigest = await functionLayoutKey(opts);
   } catch (err) {
     return {
       ok: false,
@@ -1623,13 +1710,16 @@ async function compileTracked(
       // identity (node-islands/libnode.ts) and a hit requires it unchanged.
       libnodeIdentity: () => libnodeCacheKey(opts.libnode, process.env, dirname(entryPath)),
       ...targetCpuField(opts.targetCpu),
+      ...(opts.cpuDispatch === true ? { cpuDispatch: true as const } : {}),
       ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
+      ...(functionLayoutDigest === undefined ? {} : { functionLayout: functionLayoutDigest }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
       ...(nodeIslandOptionsKey(opts.nodeIslands) !== ""
         ? { nodeIslands: nodeIslandOptionsKey(opts.nodeIslands) }
         : {}),
       npmStatic: opts.npmStatic ?? null,
+      ...(shapeOverlayEnabled() ? { shapeOverlay: true as const } : {}),
       ffiProfile:
         opts.ffiProfilePath === undefined || ffiProfileBytes === null
           ? null
@@ -1708,6 +1798,7 @@ async function compileTracked(
           path: opts.outPath,
           translationUnitPath: earlyHit.llvmPath,
           backend: earlyHit.native.backend,
+          ...(earlyHit.profileMatch === undefined ? {} : { profileMatch: earlyHit.profileMatch }),
         },
         binaryPath: opts.outPath,
         llvmPath: earlyHit.llvmPath,
@@ -1785,6 +1876,7 @@ async function compileTracked(
                 executableRestored: true,
                 nativeDependencies: dependencies,
                 frontend: earlyHit.frontend,
+                ...profileMatchField(nativeProgramObject),
               });
             },
         nativeProgramObject?.partitionPaths,
@@ -1830,6 +1922,7 @@ async function compileTracked(
         path: opts.outPath,
         translationUnitPath: earlyHit.llvmPath,
         backend: earlyHit.native.backend,
+        ...profileMatchField(nativeProgramObject),
       },
       binaryPath: opts.outPath,
       llvmPath: earlyHit.llvmPath,
@@ -1921,6 +2014,7 @@ async function compileTracked(
               frontend: frontendInputs.snapshot(),
               ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
               ...performanceWarnings(warningSink),
+              ...profileMatchField(nativeProgramObject),
             });
             publishedExecutable = true;
           },
@@ -1940,6 +2034,7 @@ async function compileTracked(
         frontend: frontendInputs.snapshot(),
         ...(irSourcePath === undefined ? {} : { irPath: irSourcePath }),
         ...performanceWarnings(warningSink),
+        ...profileMatchField(nativeProgramObject),
       }).catch(() => undefined);
     }
   } catch (err) {
@@ -1968,7 +2063,6 @@ async function compileTracked(
   }
   await pruneBuildCache(cacheRoot);
   timing("complete");
-  const profileMatch = nativeProgramObject?.profileMatch;
   return {
     ok: true,
     artifact: {
@@ -1976,7 +2070,7 @@ async function compileTracked(
       path: opts.outPath,
       translationUnitPath: llvmPath,
       backend,
-      ...(profileMatch === undefined ? {} : { profileMatch }),
+      ...profileMatchField(nativeProgramObject),
     },
     binaryPath: opts.outPath,
     llvmPath,
