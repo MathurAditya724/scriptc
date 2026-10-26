@@ -586,7 +586,8 @@ export const LAYOUT_ID_LIMIT = 0x3fffffff;
  * (LAYOUT_ID_LIMIT), so it never sets the program-lifetime or frozen bit
  * and the runtime reads it back (scr_rc.h scr_rc_layout_id). */
 export function classIdRcWord(meta: LlClassMeta, lifetime: boolean): string {
-  if (meta.pre + 1 >= LAYOUT_ID_LIMIT) throw new Error(`class id ${meta.pre + 1} is not a layout id`);
+  if (meta.pre + 1 >= LAYOUT_ID_LIMIT)
+    throw new InternalCompilerError(`class id ${meta.pre + 1} is not a layout id`);
   return (BigInt(meta.pre + 1) * 2n ** 32n + (lifetime ? 2n ** 31n : 1n)).toString();
 }
 
