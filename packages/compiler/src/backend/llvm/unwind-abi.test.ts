@@ -283,3 +283,43 @@ test("calls that cannot unwind are marked nounwind", () => {
   expect(out).toContain("%r = call ptr %b(ptr %b) nounwind");
   expect(out).toContain("  call void @scr_unwind_raise()\n");
 });
+
+test("functions without a plain call of a raising function change only their call lines", () => {
+  const raising = [
+    "define internal void @sc_bf_raises() #0 {",
+    "entry:",
+    "  call void @scr_unwind_raise()",
+    "  unreachable",
+    "}",
+  ].join("\n");
+  const other = [
+    "define internal void @sc_bf_raises.copy() #0 {",
+    "entry:",
+    "  ret void",
+    "}",
+  ].join("\n");
+  const plain = [
+    "define internal double @sc_f_plain(ptr %p) #0 {",
+    "entry: ; call sites below",
+    "  %a = call double @sc_f_other(ptr %p)",
+    "  %b = tail call double @sc_f_other(ptr %p) ; mentions @ and @sc_bf_raises.copy",
+    "  store ptr @sc_bf_raises.copy, ptr %p",
+    "  ret double %a",
+    "}",
+  ].join("\n");
+  const parts = [`${raising}\n${other}`, plain, "@table = internal constant ptr @sc_f_plain"];
+  const out = bridgePlainUnwindCalls(parts);
+  expect(out[0]).toBe(parts[0]);
+  expect(out[1]).toBe(
+    plain
+      .replace("@sc_f_other(ptr %p)\n", "@sc_f_other(ptr %p) nounwind\n")
+      .replace("@sc_f_other(ptr %p) ;", "@sc_f_other(ptr %p) nounwind ;"),
+  );
+  expect(out[2]).toBe(parts[2]);
+  expect(() =>
+    bridgePlainUnwindCalls([
+      raising,
+      plain.replace("store ptr @sc_bf_raises.copy", "store ptr @sc_bf_raises"),
+    ]),
+  ).toThrow(UnwindAbiViolation);
+});

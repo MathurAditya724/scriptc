@@ -1314,6 +1314,44 @@ static void check_limited_pass(void) {
   check(freed - before == 4 * RING, "the live ring was not collected once dead");
 }
 
+/* A limited pass that reaches a live candidate it did not take leaves the
+ * candidate in its slot and in its generation, which names the slot's
+ * buffer: when the candidate dies afterwards, it leaves that buffer, and no
+ * later pass meets its freed block. */
+static void check_limited_pass_keeps_untaken_generation(void) {
+  enum { RING = 16 };
+  if (configured_nursery_threshold() < 8) return;
+  scr_collect_cycles();
+  size_t before = freed;
+  static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
+  Node *shared = scr_cyc_alloc(sizeof(*shared), &cyc_type);
+  shared->rc = 1; /* its owner */
+  /* A dead ring the filter takes points at it. */
+  Node *dead = make_ring(RING);
+  dead->other = shared;
+  shared->rc++;
+  /* It loses a reference and becomes a candidate the filter refuses. */
+  shared->rc++;
+  release_live(shared);
+  release_live(dead);
+  ScrCycHdr *h = scr_cyc_hdr(shared);
+  unsigned gen = scr_cyc_gen(h);
+  check(scr_cyc_is_buffered(h), "the shared node is not a candidate");
+  take(dead);
+  check(scr_cyc_collect_set(&taken, SCR_CYC_NURSERY) == RING,
+        "limited pass did not free the taken ring");
+  check(scr_cyc_is_buffered(h) && scr_cyc_gen(h) == gen,
+        "limited pass moved a candidate it did not take out of its generation");
+  memset(taken_slots, 0, sizeof taken_slots);
+  /* Its owner lets go: it dies directly, out of its buffer. */
+  check(shared->rc == 1, "the shared node kept a reference from the freed ring");
+  shared->rc--;
+  scr_cyc_on_dead(shared);
+  node_free(shared);
+  scr_collect_cycles();
+  check(freed - before == RING + 1, "the passes after the limited one freed something else");
+}
+
 /* A full pass whose fullest candidate buffer is the old generation's (more
  * entries than a pass keeps between passes), with nursery candidates
  * beside it: every dead ring in either buffer is reclaimed, the live rings
@@ -1593,6 +1631,7 @@ int main(void) {
   check_allocation_growth_runs_passes();
   check_publication_takes_candidates();
   check_limited_pass();
+  check_limited_pass_keeps_untaken_generation();
   check_large_old_buffer_with_nursery_candidates();
   check_unjudged_backlog_follows_growth();
   check_acyclic_objects();

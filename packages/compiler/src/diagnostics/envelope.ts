@@ -114,6 +114,27 @@ export interface TiersEnvelope {
     message: string;
   })[];
   units: (TierUnitPosition & { requests: number; sites: number })[];
+  /** Localized failure (report-only): committed type failures that would
+   * become checked dynamic slots, and what they would clear. */
+  localizedFailure: {
+    errors: number;
+    typeFailures: { degradable: number; refused: number };
+    cascades: number;
+    clearedThroughL2: number;
+    clearedThroughL4: number;
+    remainingByCode: Record<string, number>;
+    slots: (SourcePosition & {
+      slot: string;
+      name: string;
+      declaredType: string;
+      family: string;
+      code: string;
+      message: string;
+      stage: string;
+      rejects?: string;
+      cascade: number;
+    })[];
+  };
 }
 
 export interface DiagnosticsEnvelope {
@@ -143,6 +164,15 @@ export interface DiagnosticsEnvelope {
   };
   /** build only: the produced artifact path. */
   artifact?: string;
+  /** coverage only, when there are any: the checked dynamic slots
+   * (localized failure, SC6104). */
+  dynamicSlots?: (SourcePosition & {
+    name: string;
+    kind: string;
+    declaredType: string;
+    code: string;
+    reason: string;
+  })[];
   /** coverage --explain-dynamic only: the report-only tier assignment. */
   tiers?: TiersEnvelope;
   /** coverage only: the WebAssembly modules the build can see, with their

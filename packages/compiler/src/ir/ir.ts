@@ -1085,6 +1085,16 @@ export interface IrModule {
    * closures boxed for package code return records and arrays as live
    * capsules, so a value that comes back keeps its identity. */
   declBoundary?: true;
+  /** Package files compiled from shape inference's typed overlay
+   * (frontend/shape-inference/overlay.ts), each with its package name: a
+   * checked conversion in them checks an analysis-proven fact, so its
+   * failure reports a compiler analysis bug instead of a type error. */
+  inferredFactFiles?: { file: string; pkg: string }[];
+  /** Origins of package-declared types checked by `dynCheck.origin`
+   * (frontend/lowering/decl-origin.ts): fields separated by \x1f —
+   * package, version, suggested range, selector, where it is declared,
+   * declared type. */
+  declOrigins?: string[];
   /** The program constructs LifetimeRegion (@scriptc/experimental): every
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
@@ -1566,6 +1576,17 @@ export interface IrClassDef {
    * RUNTIME_ERROR_CLASSES). User subclasses are ordinary emitted classes
    * whose layout prefix embeds ScrError's fields. */
   runtime?: true;
+  /** A class declared `extends Array`: its instances are arrays of this
+   * element type. The struct begins with the runtime's array header (the
+   * reference count is the array's, field 0) and the class's fields follow
+   * it; the runtime finds the class through the array's ext. */
+  arrayElem?: IrType;
+  /** The function (array) => dyn listing such a class's own fields
+   * (ScrArrClass.fields); absent when it declares none. */
+  arrayFields?: string;
+  /** The function (length) => array constructing such a class for
+   * ArraySpeciesCreate (ScrArrClass.species). */
+  arraySpecies?: string;
   /** Base class name (single inheritance, `extends`). A class is IN A
    * HIERARCHY when it has a base or is some class's base; hierarchy classes
    * carry a vtable word after `rc` (backends), standalone classes are laid
@@ -4074,12 +4095,21 @@ export type IrExpr =
    * unshared source is simply consumed. Values must be plain data
    * (ordinary objects and arrays without accessors, prototypes, symbols
    * or frozen state), otherwise the cast throws the path TypeError. */
+  /** `origin`: the target type comes from an npm package's declaration;
+   * an index into `IrModule.declOrigins`. A failing check's TypeError then
+   * names the declaration and the type patch that would admit the value
+   * (scr_type_origin.c). */
   | {
       kind: "dynCheck";
       value: IrExpr;
       preserveRefs?: true;
       adopt?: true;
       exact?: true;
+      /** Shape inference's overlay: this conversion checks an
+       * analysis-proven fact ("<package> <file>:<line>"); a failure is a
+       * compiler analysis bug and reports itself as one. */
+      inferredSite?: string;
+      origin?: number;
       type: IrType;
       loc: SrcLoc;
     };

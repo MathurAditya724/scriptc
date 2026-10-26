@@ -114,6 +114,32 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
+  test("assertions narrowing record members or union arms check the value", async () => {
+    const r = await compileAndRun(
+      "narrowing-record-assertions",
+      `
+      interface AlphaOpts { fast?: boolean }
+      interface Item<K extends string> { id: string; kind: K; opts?: K extends "alpha" ? AlphaOpts : never }
+      const items: Item<"alpha" | "gamma">[] = [{ id: "g1", kind: "gamma" }, { id: "a1", kind: "alpha", opts: { fast: true } }];
+      try { const all = items as Item<"gamma">[]; console.log(all.length); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+      try { const one = items[1]! as Item<"gamma">; console.log(one.id); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+      interface S { stream: () => string }
+      function keys(u: S | { a?: S }): string[] { const m = u as Partial<Record<string, S>>; return Object.keys(m); }
+      try { console.log(keys({ a: { stream: () => "a" } }).join()); console.log(keys({ stream: () => "s" })); }
+      catch (error) { console.log(error instanceof TypeError); }
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "true expected null | undefined at $[1].opts, got object\n" +
+        "true expected null | undefined at $.opts, got object\n" +
+        "a\ntrue\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
   test("typed Promise exits validate fulfillment and preserve rejection", async () => {
     const result = await compileAndRun(
       "promise-exit-payload",
@@ -141,6 +167,33 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
         )
         .join("\n"),
     ).toBe("");
+  });
+
+  test("a boxed native value cast to another layout is copied (decision D3)", async () => {
+    // Node's `as` is a no-op, so these writes would show through every
+    // holder. scriptc copies a boxed native value into a cast's different
+    // layout for now (the object model's decision D3: copy, throw, or
+    // share storage); the copy keeps one identity per boxed value.
+    const r = await compileAndRun(
+      "native-layout-casts",
+      `type Point = { x: number; y: number };
+const dict: Record<string, number> = { x: 1, y: 2 };
+const v: unknown = dict;
+const p = v as Point;
+p.x = 5;
+console.log(dict.x, p.x, (v as Point) === p);
+const nums: number[] = [1, 2];
+const u: unknown = nums;
+console.log((u as number[]) === nums);
+const wide = u as (number | string)[];
+wide.push("s");
+console.log(nums.length, wide.length);
+console.log(JSON.stringify({ ...(v as Record<string, number>) }));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(["1 5 true", "true", "2 3", '{"x":1,"y":2}', ""].join("\n"));
+    expect(r.stderr).toBe("");
   });
 
   test("wrong-typed field throws with the path", async () => {

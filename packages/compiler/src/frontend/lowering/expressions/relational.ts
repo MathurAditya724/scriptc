@@ -1,4 +1,5 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
@@ -109,6 +110,8 @@ const PRIMITIVE_WRAPPERS = ["Boolean", "Number", "String", "BigInt", "Symbol"] a
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const arrayClassTest = lowerArrayClassInstanceOf(lowerer, expr, loc);
+  if (arrayClassTest !== null) return arrayClassTest;
   const webAssembly = lowerWebAssemblyInstanceof(lowerer, expr);
   if (webAssembly !== null) return webAssembly;
   refuseWebAssemblyUse(lowerer, expr.right);
@@ -433,6 +436,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           loc,
         };
       }
+      // Plain data (records, arrays, strings, numbers, booleans, and unions
+      // of them) is never a promise: false after the operand's evaluation.
+      const neverPromise = (t: IrType): boolean =>
+        NEVER_PROMISE_KINDS.has(t.kind) ||
+        (t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms ?? [t]).every(neverPromise));
+      if (neverPromise(left.type)) {
+        const no: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+        if (isSafeToDiscard(left)) return no;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: left, loc }],
+          result: no,
+          type: BOOL,
+          loc,
+        };
+      }
       lowerer.unsupported(
         "SC1090",
         expr,
@@ -535,12 +554,13 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       };
     }
     if (rhsClassval?.kind === "classval" && !caught) {
-      const targetInfo = lowerer.classes.get(rhsClassval.className);
+      const targetInfo =
+        lowerer.classes.get(rhsClassval.className) ??
+        lowerer.flushDeferredClass(rhsClassval.className);
       if (!targetInfo) {
         // The type world names a class the lowering never registered
-        // (a fenced class expression, a deferred declaration): flush
-        // its diagnostics and poison the test site, never an ICE.
-        lowerer.flushDeferredClass(rhsClassval.className);
+        // (a fenced class expression, a deferred declaration): its
+        // diagnostics flushed above; poison the test site, never an ICE.
         lowerer.unsupported(
           "SC1090",
           expr,
@@ -2271,3 +2291,20 @@ function nodeDeclaredMember(lowerer: Lowerer, t: ts.Type, key: string): boolean 
     );
   });
 }
+
+const NEVER_PROMISE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "record",
+  "array",
+  "string",
+  "f64",
+  "bool",
+  "bigint",
+  "date",
+  "map",
+  "set",
+  "regex",
+  "bytes",
+  "symbol",
+  "nullT",
+  "undefinedT",
+]);

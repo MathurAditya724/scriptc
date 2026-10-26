@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -286,4 +294,45 @@ test("the license notices carry Node's LICENSE", () => {
       "",
     ].join("\n"),
   );
+});
+
+test("beside refuses an installed pack whose manifest names a file outside it", () => {
+  const root = temp();
+  const name = libnodePackPackage(hostLibnodeTarget());
+  if (name === null) return;
+  const pack = fakePack(
+    join(root, "node_modules", name),
+    (m) => {
+      m["files"] = { ...(m["files"] as object), "../escaped": entry("payload") };
+    },
+    name,
+  );
+  // The pack's "../escaped" and the file it would replace next to the output.
+  writeFileSync(join(pack, "..", "escaped"), "payload");
+  writeFileSync(join(root, "escaped"), "victim");
+  expect(libnodeRecord("beside", join(root, "app"), {}, root)).toBe(
+    `the libnode pack at ${pack} names a file outside the pack ("../escaped")`,
+  );
+  expect(readFileSync(join(root, "escaped"), "utf8")).toBe("victim");
+  expect(existsSync(join(root, "app.libnode"))).toBe(false);
+});
+
+test("readLibnodePack refuses any listed file or license outside the pack", () => {
+  for (const edit of [
+    (m: Record<string, unknown>) => {
+      m["files"] = { ...(m["files"] as object), "../escaped": entry("payload") };
+    },
+    (m: Record<string, unknown>) => {
+      m["files"] = { ...(m["files"] as object), "/etc/passwd": entry("payload") };
+    },
+    (m: Record<string, unknown>) => {
+      m["license"] = "../../secret";
+    },
+    (m: Record<string, unknown>) => {
+      m["license"] = 7;
+    },
+  ]) {
+    const pack = fakePack(join(temp(), "pack"), edit);
+    expect(thrown(() => readLibnodePack(pack)).kind).toBe("invalid");
+  }
 });

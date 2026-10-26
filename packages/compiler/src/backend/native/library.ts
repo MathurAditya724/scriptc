@@ -517,6 +517,8 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
             [],
             programPublicSymbols!,
             `${stem}.program`,
+            undefined,
+            { inProcessElf: true },
           );
           // Keep the canonical archive member spelling. The fact that native
           // compilation used shards is an implementation detail; consumers and

@@ -2116,6 +2116,99 @@ void scr_heap_stats(double *total, double *used) {
   *used = (double)(held - (idle < held ? idle : held) + sys_used);
 }
 
+/* scr_heap_trim: returns the heap pages that hold only freed memory to the
+ * system after a phase's data died (scr_collect_cycles_phase). The
+ * size-class slices keep freed blocks on their class's free list, which only
+ * later blocks of the same class reuse, so a program whose next phase
+ * allocates other sizes would otherwise grow its resident memory on top of
+ * the freed heap. */
+#if defined(__GLIBC__) && !defined(SCR_HEAP_SANITIZER)
+#include <malloc.h>
+#endif
+#if SCR_SMALL_ALLOC && !defined(SCR_WORKERS) && defined(__linux__) && defined(MADV_DONTNEED)
+#include <sys/mman.h>
+#include <unistd.h>
+
+/* Returns the pages of class c's slice below its frontier that hold only
+ * free blocks (MADV_DONTNEED), and relinks the class's other free blocks in
+ * address order. A block wholly inside a returned page leaves the free list:
+ * the class carves new blocks past its frontier instead, and the slice's
+ * reservation is far larger than what a program fills. */
+static void scr_sa_return_free_pages(unsigned c, size_t page) {
+  size_t sz = scr_sa_class_size(c);
+  char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
+  char *top = scr_sa.bump[c];
+  size_t nblocks = (size_t)(top - start) / sz;
+  if (!nblocks || !scr_sa.free[c]) return;
+  size_t words = (nblocks + 63) / 64;
+  uint64_t *bits = mmap(NULL, words * 8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (bits == MAP_FAILED) return;
+  for (ScrSaBlock *b = scr_sa.free[c]; b; b = b->next) {
+    size_t k = (size_t)((char *)b - start) / sz;
+    bits[k / 64] |= (uint64_t)1 << (k % 64);
+  }
+#define SCR_SA_FREE_BIT(k) ((bits[(k) / 64] >> ((k) % 64)) & 1)
+  /* Mark the returned pages' blocks by clearing their bits after the
+   * madvise; a page is returned when every block overlapping it is free. */
+  uintptr_t first = ((uintptr_t)start + page - 1) & ~(uintptr_t)(page - 1);
+  uintptr_t last = (uintptr_t)top & ~(uintptr_t)(page - 1);
+  char *run = NULL;
+  for (uintptr_t pg = first; pg <= last; pg += page) {
+    bool empty = false;
+    if (pg < last) {
+      size_t k0 = (size_t)((char *)pg - start) / sz;
+      size_t k1 = (size_t)((char *)pg + page - 1 - start) / sz;
+      if (k1 >= nblocks) k1 = nblocks - 1;
+      empty = true;
+      for (size_t k = k0; k <= k1 && empty; k++) empty = SCR_SA_FREE_BIT(k);
+    }
+    if (empty && !run) run = (char *)pg;
+    if (!empty && run) {
+      (void)madvise(run, (size_t)((char *)pg - run), MADV_DONTNEED);
+      /* Blocks wholly inside the returned pages are dropped. */
+      size_t k0 = ((size_t)(run - start) + sz - 1) / sz;
+      size_t k1 = (size_t)((char *)pg - start) / sz;
+      for (size_t k = k0; k < k1 && (char *)start + (k + 1) * sz <= (char *)pg; k++)
+        bits[k / 64] &= ~((uint64_t)1 << (k % 64));
+      run = NULL;
+    }
+  }
+  /* The kept free blocks, in address order. */
+  ScrSaBlock *head = NULL, **tail = &head;
+  for (size_t w = 0; w < words; w++)
+    for (uint64_t m = bits[w]; m; m &= m - 1) {
+      ScrSaBlock *b = (ScrSaBlock *)(start + (w * 64 + (size_t)__builtin_ctzll(m)) * sz);
+      *tail = b;
+      tail = &b->next;
+    }
+  *tail = NULL;
+  scr_sa.free[c] = head;
+#undef SCR_SA_FREE_BIT
+  (void)munmap(bits, words * 8);
+}
+#endif
+
+void scr_heap_trim(void) {
+#ifdef SCR_SA_TRIM
+  /* A worker runtime returns the calling thread's arena pages as a parking
+   * thread does; the arena stays the thread's own. */
+  if (scr_sa_arena >= 0 && scr_sa_trim_worth()) {
+    scr_sa_trim();
+    return;
+  }
+#elif SCR_SMALL_ALLOC && !defined(SCR_WORKERS) && defined(__linux__) && defined(MADV_DONTNEED)
+  if (scr_sa.span) {
+    long page = sysconf(_SC_PAGESIZE);
+    for (unsigned c = 0; c < SCR_SA_NCLASS; c++)
+      if (scr_sa.lim[c]) scr_sa_return_free_pages(c, page > 0 ? (size_t)page : 4096);
+  }
+#endif
+#if defined(__GLIBC__) && !defined(SCR_HEAP_SANITIZER)
+  /* Large blocks: the system allocator's free pages too. */
+  (void)malloc_trim(0);
+#endif
+}
+
 /* ── program-lifetime region ────────────────────────────────────────────
  * Instances of compact classes (llvm/classes.ts LlClassMeta.compact) in
  * programs built for Linux without sanitizers (runtimes with the size-class
