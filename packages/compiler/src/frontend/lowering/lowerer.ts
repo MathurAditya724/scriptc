@@ -183,7 +183,7 @@ import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
-import { dynamicTierWarning } from "./dynamic-tier.js";
+import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
 import {
   analyzeTiers,
@@ -1364,7 +1364,13 @@ export function lowerToIr(
   }
   // Localized failure (SC6104): one performance warning per dynamic slot.
   if (resultLowerer.dynamicSlots.length > 0) {
-    const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot) => ({
+    const operations = dynamicSlotOperationCounts(
+      resultLowerer,
+      resultLowerer.dynamicBodies,
+      resultLowerer.dynamicSlots,
+    );
+    const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot, i) => ({
+      operations: operations[i]!,
       loc: slot.loc,
       name: slot.failure.name,
       slot: slot.failure.slot,
@@ -3916,6 +3922,10 @@ export class Lowerer {
    * commit points (degradeAtCommit), so a program that compiles today
    * never fills it. */
   readonly degradedTypes = new Map<number, DegradedType>();
+  /** The components lenient mappings turned into the checked dynamic, by
+   * checker type id, with the declared type they are pieces of (SC6101
+   * causes and per-slot operation counts). */
+  readonly lenientPieces = new Map<number, string>();
   /** One frame per unit a commit point may retry: the pushed-down
    * (partial) degraded types its lowering mapped (withPartialHits). */
   readonly partialHits: Set<number>[] = [];
@@ -9853,6 +9863,19 @@ export class Lowerer {
     this.diags.push(...kept);
   }
 
+  /** A unit that still fails after its retries commits its first
+   * attempt's own diagnostics (`first`, taken before the first
+   * degradation) in place of the last attempt's. The diagnostics the
+   * retries carry (dropAttemptDiags) stay as they are now: a declaration
+   * reopened since may have registered. */
+  restoreFirstAttemptDiags(diagsBefore: number, first: readonly ScrDiagnostic[]): void {
+    const carried = (d: ScrDiagnostic): boolean =>
+      d.rejects !== undefined || this.loweredOnceDiags.has(d);
+    const kept = this.diags.slice(diagsBefore).filter(carried);
+    this.diags.length = diagsBefore;
+    this.diags.push(...first.filter((d) => !carried(d)), ...kept);
+  }
+
   /** Lowers one unit whose body-level poison skips it (a generic
    * instance), with localized failure's commit point: a degradable type
    * failure at one of its declaration slots degrades the type and the unit
@@ -9885,7 +9908,16 @@ export class Lowerer {
    * that shape does not map. Throwaway context: nothing memoizes. */
   lenientType(type: ts.Type): IrType {
     const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
-    const mapped = mapType(type, { ...strict, lenient: true, canMemoizeType: () => false });
+    const owner = this.checker.typeToString(type);
+    const mapped = mapType(type, {
+      ...strict,
+      lenient: true,
+      canMemoizeType: () => false,
+      onLenientPiece: (piece) => {
+        const id = (piece as { id?: number }).id;
+        if (id !== undefined && !this.lenientPieces.has(id)) this.lenientPieces.set(id, owner);
+      },
+    });
     return mapped === null || mapped.kind === "void" ? DYN : mapped;
   }
 
