@@ -45,6 +45,7 @@ import {
   directDestroyTarget,
   segmentPrologueLines,
   segmentTeardownLines,
+  iterativeTeardownDefinitions,
   segmentedTeardown,
   usedDirectTargets,
   type DirectDestroy,
@@ -1334,6 +1335,15 @@ export function emitClassShapes(
     } else {
       const freeBody: string[] = [];
       teardown(freeBody);
+      // A segmented class whose every reference field holds its own type and
+      // that has no collector header tears down in one loop (shapes.ts
+      // iterativeTeardownDefinitions).
+      const iterative =
+        segmented &&
+        !traced &&
+        refFields.every(
+          (f) => directDestroyTarget(host, f.type, directTargets)?.destroy === destroy,
+        );
       defs.push(
         ...releaseBody(
           host,
@@ -1345,6 +1355,18 @@ export function emitClassShapes(
           lifetime,
           chained,
           segmented,
+          false,
+          iterative
+            ? iterativeTeardownDefinitions(
+                host,
+                destroy,
+                struct,
+                refFields.map((f) => f.index),
+                `@${mangleClassRelease(cls.name)}`,
+                "weak",
+                count,
+              )
+            : null,
         ),
         ``,
       );
