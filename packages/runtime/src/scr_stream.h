@@ -681,6 +681,9 @@ void scr_stream_release(ScrStream *s);
 void *scr_stream_retain_v(void *s);
 void scr_stream_release_v(void *s);
 void scr_stream_trace(void *obj, ScrTraceVisit visit, void *ctx);
+/* The `callback` an option callback receives (+1), reused while the
+ * stream holds its only reference. */
+ScrClosure *scr_stream_done_closure(ScrStream *s, void *fn);
 void scr_stream_install(void);
 
 /* The loop's stream hook (scr_async.c): `pending` keeps the loop alive

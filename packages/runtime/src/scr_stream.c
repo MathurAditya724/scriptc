@@ -246,6 +246,12 @@ struct ScrStreamState {
   ScrClosure *destroy_cb;
   ScrStreamErrInv destroy_inv;
 
+  /* The completion closure (`callback`) the emitted option-callback
+   * thunks last passed, owned: scr_stream_done_closure hands it out again
+   * while this is its only reference. It holds the stream, so it is
+   * dropped at 'close' and traced for a stream dropped before it closes. */
+  ScrClosure *done_cache;
+
   /* finished()/pipeline() watchers: fired once at the terminal point
    * (the 'close' tick — or a registration-time tick when already closed)
    * with the stream's finish status (NULL / the error / premature close).
@@ -417,6 +423,7 @@ static void scr_stream_state_drop(ScrStreamState *st, bool gc) {
     if (st->transform_cb) scr_closure_release(st->transform_cb);
     if (st->flush_cb) scr_closure_release(st->flush_cb);
     if (st->destroy_cb) scr_closure_release(st->destroy_cb);
+    if (st->done_cache) scr_closure_release(st->done_cache);
     for (size_t i = 0; i < st->w.end_cbs_n; i++) scr_closure_release(st->w.end_cbs[i]);
     for (size_t i = 0; i < st->fin.n; i++) scr_closure_release(st->fin.cb[i]);
     for (size_t i = 0; i < st->pipes.n; i++) scr_stream_release(st->pipes.dst[i]);
@@ -465,6 +472,7 @@ void scr_stream_st_trace(ScrStreamState *st, ScrTraceVisit visit, void *ctx) {
   if (st->transform_cb) visit(st->transform_cb, ctx);
   if (st->flush_cb) visit(st->flush_cb, ctx);
   if (st->destroy_cb) visit(st->destroy_cb, ctx);
+  if (st->done_cache) visit(st->done_cache, ctx);
   for (size_t i = 0; i < st->w.end_cbs_n; i++) visit(st->w.end_cbs[i], ctx);
   for (size_t i = 0; i < st->fin.n; i++) visit(st->fin.cb[i], ctx);
   for (size_t i = st->w.head; i < st->w.n; i++) {
@@ -518,6 +526,27 @@ void scr_stream_release(ScrStream *s) {
 
 void *scr_stream_retain_v(void *s) { return scr_stream_retain(s); }
 void scr_stream_release_v(void *s) { scr_stream_release(s); }
+
+/* The completion closure an option callback receives as `callback`: a
+ * 1-cap closure calling fn over a box that holds the stream. The stream
+ * keeps the last one and hands it out again while the cache holds its
+ * only reference and it has no own properties; otherwise a new closure
+ * replaces it, and one the user kept keeps its own stream reference.
+ * Nothing is cached after 'close'. Returns +1. */
+ScrClosure *scr_stream_done_closure(ScrStream *s, void *fn) {
+  ScrStreamState *st = s->st;
+  ScrClosure *c = st->done_cache;
+  if (c != NULL && c->rc == 1 && c->fn == fn && c->props == NULL) return scr_closure_retain(c);
+  c = scr_closure_new(fn, 1);
+  ScrBox *bx = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
+  c->caps[0] = bx;
+  scr_box_set_ref(bx, scr_stream_retain(s));
+  if (st->close_emitted) return c;
+  ScrClosure *old = st->done_cache;
+  st->done_cache = scr_closure_retain(c);
+  if (old) scr_closure_release(old);
+  return c;
+}
 
 /* ── the tick queue (the nextTick stand-in) ───────────────────────────── */
 
@@ -7960,6 +7989,7 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
         if (st->transform_cb) { scr_closure_release(st->transform_cb); st->transform_cb = NULL; }
         if (st->flush_cb) { scr_closure_release(st->flush_cb); st->flush_cb = NULL; }
         if (st->destroy_cb) { scr_closure_release(st->destroy_cb); st->destroy_cb = NULL; }
+        if (st->done_cache) { scr_closure_release(st->done_cache); st->done_cache = NULL; }
       }
       break;
     }

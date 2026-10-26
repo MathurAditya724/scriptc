@@ -684,22 +684,11 @@ export function streamCbThunkFor(
     passed.push(`ptr %sr`);
   }
   // The stream-owning completion closure (a 1-cap closure boxing the
-  // retained stream) — shared by the typed and dyn done shapes.
+  // retained stream) — shared by the typed and dyn done shapes. The
+  // stream reuses it while it holds the only reference.
   const doneClosure = (fnRef: string, tag: string): string => {
-    host.declare(`declare ptr @scr_closure_new(ptr, ${host.sizeType})`);
-    host.declare(`declare ptr @scr_box_new_obj(ptr, ptr, ptr)`);
-    host.declare(`declare void @scr_box_set_ref(ptr, ptr)`);
-    host.declare(`declare ptr @scr_stream_retain_v(ptr)`);
-    host.declare(`declare void @scr_stream_release_v(ptr)`);
-    host.declare(`declare void @scr_stream_trace(ptr, ptr, ptr)`);
-    d.push(
-      `  %${tag}clo = call ptr @scr_closure_new(ptr ${fnRef}, ${host.sizeType} 1)`,
-      `  %${tag}bx = call ptr @scr_box_new_obj(ptr @scr_stream_retain_v, ptr @scr_stream_release_v, ptr @scr_stream_trace)`,
-      `  %${tag}cp = getelementptr inbounds %ScrClosure, ptr %${tag}clo, i64 1`,
-      `  store ptr %${tag}bx, ptr %${tag}cp`,
-      `  %${tag}sr = call ptr @scr_stream_retain_v(ptr %s)`,
-      `  call void @scr_box_set_ref(ptr %${tag}bx, ptr %${tag}sr)`,
-    );
+    host.declare(`declare ptr @scr_stream_done_closure(ptr, ptr)`);
+    d.push(`  %${tag}clo = call ptr @scr_stream_done_closure(ptr %s, ptr ${fnRef})`);
     return `%${tag}clo`;
   };
   for (let i = off; i < declared.length; i++) {
