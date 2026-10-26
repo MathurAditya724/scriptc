@@ -116,7 +116,9 @@ export const DIAGNOSTIC_CODES = {
   SC8010: "value crossing a Node island boundary in a form without an exact copy",
   SC8011: "native class extending a Node island class outside the supported forms",
   SC8020: "stateful module duplicated across the Node island boundary",
+  SC8021: "Node island evaluation notes (deferred or at startup)",
   SC8022: "island code extends a class of a compiled module",
+  SC8023: "Node island build failed; built natively with runtime fences",
   SC8030: "type patch: no range covers the installed copy",
   SC8031: "type patch: selector matches nothing",
   SC8032: "type patch: declaration already has the type",
@@ -155,8 +157,6 @@ export const RETIRED_DIAGNOSTIC_CODES = {
  * abandoned, delete them here. */
 export const RESERVED_DIAGNOSTIC_CODES = {
   SC8012: "Node islands (ni/* branches)",
-  SC8021: "Node islands (ni/* branches)",
-  SC8023: "Node islands (ni/* branches)",
 } as const satisfies Record<`SC${number}`, string>;
 
 export type DiagnosticCode = keyof typeof DIAGNOSTIC_CODES;
