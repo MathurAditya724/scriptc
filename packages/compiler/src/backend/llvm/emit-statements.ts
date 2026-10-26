@@ -96,7 +96,7 @@ import {
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
 import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
-import { loopAccessesTypedArrays } from "../loop-polls.js";
+import { containsLoop, loopAccessesTypedArrays } from "../loop-polls.js";
 import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
 
 /** A callback loop version copies the loop; keep the copies small. */
@@ -1228,8 +1228,8 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       };
       // A counted loop over typed arrays, or a loop to a typed array's
       // length, polls between blocks of WORKER_POLL_BLOCK iterations instead
-      // of counting a budget in its body: the inner loop over a block then
-      // has no exit besides its own bound, which LLVM can vectorize. A typed
+      // of in its body: the inner loop over a block then has no exit
+      // besides its own bound, which LLVM can vectorize. A typed
       // array's length is fixed, so each block can take it as its limit when
       // the loop does not assign the array's binding.
       //
@@ -2760,8 +2760,8 @@ interface StripMinedCounter {
  * iterations, with the cancellation poll between blocks: the outer header
  * tests the counter against the loop's limit, each block runs the body up
  * to the nearer of the limit and WORKER_POLL_BLOCK steps on, and the poll
- * follows the block. It polls as often as the budget it replaces, and the
- * inner loop's only exit besides `break` and `return` is its bound.
+ * follows the block. It polls once per block, and the inner loop's only
+ * exit besides `break` and `return` is its bound.
  *
  * With `runSlot` (for a loop that another loop of the function encloses), a
  * block that ends at the limit leaves the loop without polling, and a run
@@ -2893,21 +2893,6 @@ function emitStripMinedCountedLoop(
   B.startBlock(poll);
   emitter.emitWorkerPoll();
   B.br(lc);
-}
-
-/** Whether `body` holds a loop outside its closures. */
-function containsLoop(body: IrStmt[]): boolean {
-  const inStmt = (s: IrStmt): boolean =>
-    s.kind === "while" ||
-    s.kind === "doWhile" ||
-    s.kind === "for" ||
-    s.kind === "forOf" ||
-    !everyStmtChild(
-      s,
-      () => true,
-      (child) => !inStmt(child),
-    );
-  return body.some(inStmt);
 }
 
 function enterLoopHeader(emitter: LlEmitter, header: string): void {
