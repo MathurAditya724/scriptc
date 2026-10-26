@@ -3154,11 +3154,9 @@ export function symbolFieldInfo(
   if (lowerer.chainBlocked(expr)) return null;
   const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverIr?.kind !== "object") return null;
-  const info = lowerer.classes.get(receiverIr.className);
-  if (!info) {
-    lowerer.flushDeferredClass(receiverIr.className);
-    return null;
-  }
+  const info =
+    lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
+  if (!info) return null;
   const key = classSymbolKeyOf(lowerer, expr.argumentExpression);
   if (!key) return null;
   const field = info.symbolFields?.get(key.identity);

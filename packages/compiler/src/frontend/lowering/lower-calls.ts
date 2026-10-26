@@ -10235,8 +10235,8 @@ export function lowerObjectMethodCall(
       ? lowerer.coerceInto(access.expression, receiver, receiverIr)
       : receiver;
   };
-  const info = lowerer.classes.get(receiverIr.className);
-  if (!info) lowerer.flushDeferredClass(receiverIr.className);
+  const info =
+    lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
   const found = info ? lowerer.findMethodOn(info, access.name.text) : null;
   // The zlib stream members (flush/params/close/reset) are declared on
   // the zlib classes; their receivers are runtime Transform streams.
@@ -10589,11 +10589,8 @@ function lowerUnionObjectMethodCall(
     found: NonNullable<ReturnType<Lowerer["findMethodOn"]>>;
   }[] = [];
   for (const arm of def.arms as (IrType & { kind: "object" })[]) {
-    const info = lowerer.classes.get(arm.className);
-    if (!info) {
-      lowerer.flushDeferredClass(arm.className);
-      return null;
-    }
+    const info = lowerer.classes.get(arm.className) ?? lowerer.flushDeferredClass(arm.className);
+    if (!info) return null;
     const found = lowerer.findMethodOn(info, method);
     if (!found) return null;
     if (found.sig.abstract === true && !lowerer.overrideBelow(info, method)) return null;

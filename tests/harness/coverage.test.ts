@@ -431,28 +431,18 @@ test("--explain-dynamic attributes each refusal to the unit the dynamic tier wou
 test("--explain-dynamic lists the type failures localized failure would turn into dynamic slots", async () => {
   const { coverage } = analyze(fixture("localized-failure.ts"), { explainDynamic: true });
   const report = coverage.tiers!.localizedFailure;
-  expect(report.errors).toBe(14);
-  expect(report.typeFailures).toEqual({ degradable: 5, refused: 1 });
-  expect(
-    report.slots.map((s) => [
-      s.stage,
-      s.slot,
-      s.name,
-      s.family,
-      s.rejects?.split(" @")[0],
-      s.cascade,
-    ]),
-  ).toEqual([
-    ["L2", "field", "tools", "component", "class Session", 2],
-    // The derived class's rejection and its construction.
-    ["L2", "field", "state", "dyn-field-policy", "class Base", 2],
-    ["L2", "param", "progress", "component", "function listAll", 1],
-    ["L2", "field", "state", "dyn-field-policy", "class Holder", 1],
-    ["L1", "local", "callbacks", "component", "statement", 1],
+  // Locals, fields and parameters degrade (stages L1 and L2), and the
+  // 'any' field compiles; only the refused WeakRef field and its
+  // construction remain.
+  expect(coverage.dynamicSlots?.map((s) => [s.slot, s.name])).toEqual([
+    ["field", "tools"],
+    ["param", "progress"],
+    ["local", "callbacks"],
   ]);
-  // The WeakRef field stays refused, so its class and the construction
-  // that uses it stay errors.
-  expect(report.clearedThroughL2).toBe(12);
+  expect(report.errors).toBe(2);
+  expect(report.typeFailures).toEqual({ degradable: 0, refused: 1 });
+  expect(report.slots).toEqual([]);
+  expect(report.cascades).toBe(1);
   expect(report.remainingByCode).toEqual({ SC1090: 1, SC2020: 1 });
   const relative = JSON.parse(
     JSON.stringify(coverage.tiers).replaceAll(repoRoot + "/", ""),
@@ -460,6 +450,39 @@ test("--explain-dynamic lists the type failures localized failure would turn int
   await expect(renderExplainDynamic(relative!)).toMatchFileSnapshot(
     "__snapshots__/coverage-explain-localized-failure.txt",
   );
+});
+
+test("a local or module global whose declared type does not compile becomes a dynamic slot", async () => {
+  const program = join(repoRoot, "tests/corpus/localized-failure-locals.ts");
+  const { coverage, sourceTexts } = analyze(program);
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.dynamicSlots?.map((s) => [s.slot, s.name, s.declaredType, s.code])).toEqual([
+    ["global", "current", "Callbacks | undefined", "SC2009"],
+    ["global", "all", "(number | Callbacks)[]", "SC2009"],
+    ["local", "local", "Callbacks | undefined", "SC2009"],
+  ]);
+  expect(coverage.performance?.filter((d) => d.code === "SC6104")).toHaveLength(3);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "dynamic")).toBe(true);
+  expect(coveragePasses(coverage, "dynamic-slots")).toBe(false);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope.dynamicSlots?.map((s) => [s.kind, s.name, s.line])).toEqual([
+    ["global", "current", 10],
+    ["global", "all", 36],
+    ["local", "local", 14],
+  ]);
+  expect(envelope.diagnostics.filter((d) => d.code === "SC6104").map((d) => d.severity)).toEqual([
+    "warning",
+    "warning",
+    "warning",
+  ]);
+  const text = renderCoverage(coverage, { sourceTexts, root: repoRoot });
+  expect(text).toContain("dynamic slots       3");
+  expect(text).toContain("module global 'current' (declared 'Callbacks | undefined')");
+  // --tier=static-only keeps every refusal.
+  const strict = analyze(program, { tier: "static-only" }).coverage;
+  expect(strict.dynamicSlots).toBeUndefined();
+  expect(strict.diagnostics.map((d) => d.code)).toContain("SC2009");
 });
 
 test("CLI: --tier and --explain-dynamic", () => {
@@ -564,13 +587,18 @@ test("runtime-optional refined unions report blockers without crashing", () => {
 });
 
 test("a rejected class reached only through a receiver probe reports its own diagnostic once", () => {
-  const { coverage } = analyze(join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts"));
+  const program = join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts");
+  // The class's refusal, as the diagnostics corpus pins it (--tier=static-only).
+  const { coverage } = analyze(program, { tier: "static-only" });
   const messages = coverage.diagnostics.map((d) => d.message);
   expect(
     messages.filter((m) => m.startsWith("'MapIterator<string>'-typed class fields")),
   ).toHaveLength(1);
   expect(messages.some((m) => m.startsWith("constructing through a class value"))).toBe(true);
   expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
+  // Localized failure retries the class where the probe's statement commits
+  // the flush, with the field policy lifted, and it compiles.
+  expect(analyze(program).coverage.diagnostics).toEqual([]);
 });
 
 test("settled generic rest-order fences count each source statement once", () => {

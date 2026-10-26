@@ -38,7 +38,7 @@ Options:
                      (native-link-info implies --emit=obj and never links;
                      diagnostics prints the versioned JSON diagnostics
                      envelope for build and coverage)
-      --fail-on <blockers|divergences|dynamic|node-islands|eager-node-islands|island-gaps>
+      --fail-on <blockers|divergences|dynamic|dynamic-slots|node-islands|eager-node-islands|island-gaps>
                      coverage only: exit 1 when the entry path has blockers
                      (a build would fail), or also when it has Node
                      divergences, likely-hot functions that use untyped

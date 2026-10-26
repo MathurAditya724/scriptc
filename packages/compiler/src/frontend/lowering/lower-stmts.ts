@@ -40,8 +40,8 @@ import { isJsonRequireDecl } from "./json-require.js";
 import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
 import { lowerConstructorReturn } from "./constructor-returns.js";
-import type { Lowerer } from "./lowerer.js";
-import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
+import type { DynamicSlot, Lowerer } from "./lowerer.js";
+import type { ScrDiagnostic, TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { statementGroupKey } from "./type-failure.js";
 import {
   cjsExportValueByName,
@@ -417,8 +417,8 @@ function cleanupCall(
 ): { call: IrExpr; async: boolean } | null {
   const loc = locOf(node);
   if (value.type.kind === "object") {
-    const info = lowerer.classes.get(value.type.className);
-    if (!info) lowerer.flushDeferredClass(value.type.className);
+    const info =
+      lowerer.classes.get(value.type.className) ?? lowerer.flushDeferredClass(value.type.className);
     const asyncFound = awaited && info ? lowerer.findMethodOn(info, "sym:asyncDispose") : null;
     const syncFound = info ? lowerer.findMethodOn(info, "sym:dispose") : null;
     const member = asyncFound ? "sym:asyncDispose" : syncFound ? "sym:dispose" : null;
@@ -754,57 +754,36 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const sinkMark = lowerer.diagSinkMark();
       const touched = new Set<string>();
       lowerer.failureTouches.push(touched);
+      const pendingSlots: DynamicSlot[] = [];
+      // A declarator that initializes a forward-captured TDZ box takes it
+      // out of tdzPredeclared; a retry after a later declarator degrades
+      // must initialize the same box again.
+      const tdzBefore = new Map(lowerer.ctx.tdzPredeclared);
       try {
-        let lowered: IrStmt | IrStmt[] | null;
-        let appended = false;
-        if (
-          ts.isVariableStatement(stmt) &&
-          (stmt.declarationList.flags & ts.NodeFlags.Using) !== 0
-        ) {
-          const registrations = lowerUsingStatement(lowerer, stmt);
-          const accounting: IrStmt[] = [];
-          for (const registration of registrations) {
-            out.push(...registration.acquire);
-            accounting.push(...registration.acquire, ...registration.cleanup);
-            if (registration.cleanup.length > 0) {
-              usingMarkers.push({
-                start: out.length,
-                cleanup: registration.cleanup,
-                loc: registration.loc,
-              });
-            }
+        for (let attempt = 0; ; attempt++) {
+          try {
+            lowerOneStatement(lowerer, stmt, out, usingMarkers, diagsBefore, deferFences);
+            break;
+          } catch (e) {
+            // Localized failure's statement commit point (design §3.3): a
+            // degradable type failure at a local, loop variable or module
+            // global degrades that type and the statement lowers again.
+            // A declaration this statement flushed inside a probe (where
+            // no retry runs) can retry here too.
+            if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw e;
+            const slot = lowerer.degradeAtCommit(e, STATEMENT_SLOTS);
+            if (slot === null && !lowerer.reopenFlushedAtCommit(diagsBefore)) throw e;
+            // A failed attempt adds nothing to `out` but the TDZ boxes
+            // forward captures declared (they stay declared), so the
+            // retry appends after them.
+            lowerer.dropAttemptDiags(diagsBefore);
+            if (slot !== null) pendingSlots.push(slot);
+            for (const [symbol, local] of tdzBefore)
+              if (!lowerer.ctx.tdzPredeclared.has(symbol))
+                lowerer.ctx.tdzPredeclared.set(symbol, local);
           }
-          lowered = accounting;
-          appended = true;
-        } else {
-          lowered = lowerer.lowerStmt(stmt);
         }
-        // The lib-boundary chokepoint (lib-boundary.ts): checked-dynamic
-        // arguments that reached builtin-call slots without the checked
-        // coercion get their dynCheck here, and the uncoercible ones
-        // fence — inside this statement's poison window, so a JS fence
-        // becomes the statement's runtimeFence exactly like every other
-        // deferred rejection.
-        if (lowered) {
-          const body: IrStmt[] = [];
-          if (Array.isArray(lowered)) body.push(...lowered);
-          else body.push(lowered);
-          const rewritten = lowerSurplusCalls(lowerer, body);
-          enforceLibBoundary(lowerer, rewritten);
-          if (!appended) out.push(...rewritten);
-        }
-        // A JS statement that lowered CLEAN can still have flushed
-        // DEFERRED collection diagnostics (a symbol lookup on an alias
-        // resolves through flushDeferred — informational here, not a
-        // blocker of THIS statement): those belong to the runtime-fence
-        // ledger, not the build — real uses of the broken declaration
-        // meet their own per-site fences.
-        if (deferFences && lowerer.diagSink === null && lowerer.diags.length > diagsBefore) {
-          const flushed = lowerer.diags.splice(diagsBefore);
-          const ice = flushed.filter((d) => d.code === "SC9001");
-          lowerer.diags.push(...ice);
-          lowerer.runtimeFences.push(...flushed.filter((d) => d.code !== "SC9001"));
-        }
+        for (const slot of pendingSlots) lowerer.noteDynamicSlot(slot);
       } catch (e) {
         // A Go panic inside tsgo, surfaced by the sync channel as a
         // thrown Error (server intact — the prefetch fence's finding):
@@ -876,6 +855,81 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
     lowerer.activeStmtLists.pop();
   }
   return out;
+}
+
+/** Localized failure: retries a degradable statement-level type failure
+ * at most this many times (each retry degrades one more type). */
+const MAX_DEGRADE_RETRIES = 16;
+
+/** The slot kinds lowerStmts' commit point degrades: locals, loop
+ * variables and module globals (stage L1), and the parameters and returns
+ * of the function expressions, arrows and methods a statement holds
+ * (stage L2). */
+const STATEMENT_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>([
+  "local",
+  "global",
+  "loop",
+  "param",
+  "return",
+  "field",
+]);
+
+/** One attempt at lowering a statement of lowerStmts into `out`. */
+function lowerOneStatement(
+  lowerer: Lowerer,
+  stmt: ts.Statement,
+  out: IrStmt[],
+  usingMarkers: UsingMarker[],
+  diagsBefore: number,
+  deferFences: boolean,
+): void {
+  let lowered: IrStmt | IrStmt[] | null;
+  let appended = false;
+  if (ts.isVariableStatement(stmt) && (stmt.declarationList.flags & ts.NodeFlags.Using) !== 0) {
+    const registrations = lowerUsingStatement(lowerer, stmt);
+    const accounting: IrStmt[] = [];
+    for (const registration of registrations) {
+      out.push(...registration.acquire);
+      accounting.push(...registration.acquire, ...registration.cleanup);
+      if (registration.cleanup.length > 0) {
+        usingMarkers.push({
+          start: out.length,
+          cleanup: registration.cleanup,
+          loc: registration.loc,
+        });
+      }
+    }
+    lowered = accounting;
+    appended = true;
+  } else {
+    lowered = lowerer.lowerStmt(stmt);
+  }
+  // The lib-boundary chokepoint (lib-boundary.ts): checked-dynamic
+  // arguments that reached builtin-call slots without the checked
+  // coercion get their dynCheck here, and the uncoercible ones
+  // fence — inside this statement's poison window, so a JS fence
+  // becomes the statement's runtimeFence exactly like every other
+  // deferred rejection.
+  if (lowered) {
+    const body: IrStmt[] = [];
+    if (Array.isArray(lowered)) body.push(...lowered);
+    else body.push(lowered);
+    const rewritten = lowerSurplusCalls(lowerer, body);
+    enforceLibBoundary(lowerer, rewritten);
+    if (!appended) out.push(...rewritten);
+  }
+  // A JS statement that lowered CLEAN can still have flushed
+  // DEFERRED collection diagnostics (a symbol lookup on an alias
+  // resolves through flushDeferred — informational here, not a
+  // blocker of THIS statement): those belong to the runtime-fence
+  // ledger, not the build — real uses of the broken declaration
+  // meet their own per-site fences.
+  if (deferFences && lowerer.diagSink === null && lowerer.diags.length > diagsBefore) {
+    const flushed = lowerer.diags.splice(diagsBefore);
+    const ice = flushed.filter((d) => d.code === "SC9001");
+    lowerer.diags.push(...ice);
+    lowerer.runtimeFences.push(...flushed.filter((d) => d.code !== "SC9001"));
+  }
 }
 
 /** Whether a statement list belongs to a function body (at any block
@@ -3261,8 +3315,8 @@ export function lowerBindingPattern(
   // chain declares keep named fences (a detached method would lose its
   // receiver without an error; JS binds the prototype function).
   if (srcType.kind === "object") {
-    const info = lowerer.classes.get(srcType.className);
-    if (!info) lowerer.flushDeferredClass(srcType.className);
+    const info =
+      lowerer.classes.get(srcType.className) ?? lowerer.flushDeferredClass(srcType.className);
     if (info) {
       for (const el of pattern.elements.nodes) {
         if (el.name === undefined) continue;
