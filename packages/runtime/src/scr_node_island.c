@@ -92,6 +92,7 @@ void __sanitizer_start_switch_fiber(void **fake_stack_save, const void *bottom, 
 void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_old,
                                      size_t *size_old);
 void __lsan_register_root_region(const void *p, size_t size) __attribute__((weak));
+void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 #endif
 #endif
 
@@ -916,10 +917,15 @@ static void (*ni_nested_job)(void *) = NULL;
 static void *ni_nested_arg = NULL;
 static ucontext_t *ni_nested_return = NULL;
 
+#ifdef NI_ASAN
+static uintptr_t ni_nested_top = 0; /* the nested context's stack top */
+#endif
+
 static void ni_nested_trampoline(void) {
 #ifdef NI_ASAN
   const void *caller_bottom;
   size_t caller_size;
+  uintptr_t top = ni_nested_top;
   __sanitizer_finish_switch_fiber(NULL, &caller_bottom, &caller_size);
 #endif
   void (*job)(void *) = ni_nested_job;
@@ -927,7 +933,14 @@ static void ni_nested_trampoline(void) {
   ucontext_t *back = ni_nested_return;
   job(arg);
 #ifdef NI_ASAN
-  /* This context ends: no fake stack to keep. */
+  /* This context ends: no fake stack to keep. Its frame never returns, so
+   * the redzones ASan poisoned around this frame's locals would stay in
+   * the shadow of Node's stack, where Node's own frames (uninstrumented)
+   * later trip over them. Linux's ASan clears a context's stack when it is
+   * switched to (its swapcontext interceptor); macOS's has none, so this
+   * frame's part of the stack is unpoisoned here. */
+  uintptr_t low = ((uintptr_t)__builtin_frame_address(0) - 4096) & ~(uintptr_t)7;
+  if (top > low) __asan_unpoison_memory_region((const void *)low, top - low);
   __sanitizer_start_switch_fiber(NULL, caller_bottom, caller_size);
 #endif
   setcontext(back);
@@ -939,6 +952,9 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   /* Below the red zone and 16-byte aligned, as makecontext expects. */
   uintptr_t hi = (ni_mark - 512) & ~(uintptr_t)15;
   ni_make_context(&nested, lo, hi - (uintptr_t)lo, ni_nested_trampoline);
+#ifdef NI_ASAN
+  ni_nested_top = hi;
+#endif
   ni_nested_job = job;
   ni_nested_arg = arg;
   ni_nested_return = &caller;
