@@ -96,7 +96,8 @@ import {
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
 import { lowerNullishPair } from "./expressions/binary.js";
-import { lowerElementCompoundParts } from "./expressions/element-access.js";
+import { lowerElementCompoundParts, recordKeyLiteralText } from "./expressions/element-access.js";
+import { OBJECT_PROTOTYPE_MEMBERS } from "../shape-inference/domain.js";
 export {
   DEFERRED_READ_MESSAGE,
   abstractPropertyDeclOf,
@@ -1964,6 +1965,23 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
     if (shape && !shape.tuple && shape.indexValue && shape.indexValue.kind !== "dyn") {
       return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
     }
+    // A literal key the shape does not declare is absent from every value
+    // (lowerRecordKeyRead answers undefined), whatever type the checker gave
+    // the read. An optional chain keeps its own lowering, which reads a
+    // nullish receiver as undefined instead of converting it.
+    const literal = recordKeyLiteralText(expr.argumentExpression);
+    if (
+      !expr.questionDotToken &&
+      !hasOptionalChainGuard(expr.expression) &&
+      shape &&
+      !shape.tuple &&
+      !shape.indexValue &&
+      literal !== null &&
+      !OBJECT_PROTOTYPE_MEMBERS.has(literal) &&
+      !shape.fields.some((field) => field.name === literal)
+    ) {
+      return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
+    }
     return null;
   }
   // `m[2]` on a JavaScript `RegExpExecArray | null` that a previous
@@ -3136,11 +3154,9 @@ export function symbolFieldInfo(
   if (lowerer.chainBlocked(expr)) return null;
   const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverIr?.kind !== "object") return null;
-  const info = lowerer.classes.get(receiverIr.className);
-  if (!info) {
-    lowerer.flushDeferredClass(receiverIr.className);
-    return null;
-  }
+  const info =
+    lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
+  if (!info) return null;
   const key = classSymbolKeyOf(lowerer, expr.argumentExpression);
   if (!key) return null;
   const field = info.symbolFields?.get(key.identity);

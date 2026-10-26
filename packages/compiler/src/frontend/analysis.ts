@@ -132,6 +132,7 @@ export function analyzeWithFrontend(
         ...(lowered.runtimeFences.length > 0 ? { runtimeFences: lowered.runtimeFences } : {}),
         ...(lowered.divergences !== undefined ? { divergences: lowered.divergences } : {}),
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
+        ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),
         ...(fe.npmStatic.length > 0 ? { npmStatic: fe.npmStatic } : {}),
         // --provenance-sources: the per-package attribution inputs (the
