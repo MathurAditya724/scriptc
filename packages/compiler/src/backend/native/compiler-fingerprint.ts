@@ -207,7 +207,8 @@ function x86OnlyHeader(include: string): boolean {
 
 /** One guarded line of the implicit-toolchain probe source: the header is
  * included only when the compiler can find it and it belongs to the target
- * being probed. */
+ * being probed. clang ships <riscv_vector.h> for every target, and through
+ * clang 18 including it without the RISC-V vector extension is an #error. */
 export function implicitDependencyIncludeDirective(include: string): string {
   const targetCondition = x86OnlyHeader(include)
     ? " && (defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64))"
@@ -215,7 +216,9 @@ export function implicitDependencyIncludeDirective(include: string): string {
       ? " && defined(_WIN32)"
       : include === "<arm64_neon.h>" || include === "<arm_acle.h>" || include === "<arm_neon.h>"
         ? " && (defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64))"
-        : "";
+        : include === "<riscv_vector.h>"
+          ? " && defined(__riscv_vector)"
+          : "";
   return `#if __has_include(${include})${targetCondition}\n#include ${include}\n#endif\n`;
 }
 
