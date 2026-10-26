@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import {
   LINUX_ARM64_GNU_TARGET,
   nativeCodegenTarget,
@@ -23,6 +23,7 @@ function text(input: ReturnType<ReturnType<typeof fixture>["prepare"]>) {
 
 const scratch: string[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -193,6 +194,30 @@ test("structurally invalid cached features cause a rebuild even with a valid dig
   const payload = JSON.parse(readFileSync(join(family, key), "utf8"));
   payload.input.features = {};
   f.cache.write("frontend", key, JSON.stringify(payload));
+  expect(f.prepare().ok).toBe(true);
+  expect(f.loads()).toBe(2);
+});
+
+test("timing, cache placement and emission worker variables keep the frontend output", () => {
+  for (const name of [
+    "SCRIPTC_CACHE_DIR",
+    "SCRIPTC_CACHE_MAX_MB",
+    "SCRIPTC_EMIT_WORKERS",
+    "SCRIPTC_EMIT_WORKER_FUNCTIONS",
+    "SCRIPTC_TIMING",
+    "SCRIPTC_TEST_FRONTEND_KEY",
+  ])
+    vi.stubEnv(name, undefined);
+  const f = fixture();
+  expect(f.prepare().ok).toBe(true);
+  vi.stubEnv("SCRIPTC_CACHE_DIR", f.cache.root);
+  vi.stubEnv("SCRIPTC_CACHE_MAX_MB", "8192");
+  vi.stubEnv("SCRIPTC_EMIT_WORKERS", "1");
+  vi.stubEnv("SCRIPTC_EMIT_WORKER_FUNCTIONS", "100");
+  vi.stubEnv("SCRIPTC_TIMING", "0");
+  expect(f.prepare().ok).toBe(true);
+  expect(f.loads()).toBe(1);
+  vi.stubEnv("SCRIPTC_TEST_FRONTEND_KEY", "1");
   expect(f.prepare().ok).toBe(true);
   expect(f.loads()).toBe(2);
 });

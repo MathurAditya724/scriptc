@@ -53,7 +53,6 @@ const KNOWN: Record<string, Known> = {
   "esbuild-require": { build: "SC2013" },
   "esm-missing-default": { build: "SC1090" },
   "esm-missing-export": { build: "SC1090" },
-  "fetch-destructure": { run: "SC1031" },
   "fs-shims": { run: "SC1101" },
   "import-refusal": { build: "SC2020" },
   "island-registry": { build: "SC2011" },
@@ -61,9 +60,9 @@ const KNOWN: Record<string, Known> = {
     divergence:
       "Timeout handles are numbers (typeof) and lose their ref flag once fired or cleared",
   },
-  "island-web-plumbing": { run: "SC2020" },
+  "island-web-plumbing": { run: "SC1090" },
   "lazy-traps": { build: "SC2013" },
-  "misc-shims": { run: "SC2020" },
+  "misc-shims": { run: "SC1090" },
   "namespace": { build: "SC1013" },
   "node24-async-events": { run: "SC2020" },
   "node24-commonjs-metadata": { run: "SC2020" },
@@ -77,7 +76,7 @@ const KNOWN: Record<string, Known> = {
   "node24-file-url-conversion": { build: "SC1090" },
   "node24-fs-descriptors": { run: "SC2020" },
   "node24-mime": { run: "SC2020" },
-  "node24-mime-errors": { run: "SC1090" },
+  "node24-mime-errors": { run: "SC2020" },
   "node24-no-error-assertions": { run: "SC2020" },
   "node24-parseargs": { run: "SC1090" },
   "node24-promise-timers": { run: "SC2020" },
@@ -123,8 +122,11 @@ const OVERLAY_KNOWN: Record<string, Known> = {};
  * types module, and the zod 4 cases (zod4-boundary, zod4-record,
  * hono-zod-validator, hono-zod-default-hook)
  * compile zod 4's core, classic API and locales. A sanitized build of any
- * of them takes minutes on a CI runner. */
+ * of them takes minutes on a CI runner. commander-calc-async runs four
+ * command lines, and with the shape overlay its build analyzes commander
+ * for most of a minute. */
 const TIMEOUTS: Record<string, number> = {
+  "commander-calc-async": 300_000,
   "hono-zod-default-hook": 900_000,
   "hono-zod-validator": 900_000,
   undici5: 600_000,

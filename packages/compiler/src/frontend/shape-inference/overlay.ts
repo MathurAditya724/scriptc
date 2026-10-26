@@ -748,15 +748,18 @@ export function planShapeOverlay(
     // Dead branches: outermost first; edits inside a replaced range drop.
     const dead = (deadByFile.get(sf) ?? []).sort((a, b) => a.pos - b.pos);
     const ranges: [number, number][] = [];
-    const hoisted = new Map<number, readonly string[]>();
+    const removed = new Set<ts.Node>();
     for (const branch of dead) {
       const start = ts.tokenStartOfNode(branch);
       if (ranges.some(([lo, hi]) => start >= lo && start < hi)) continue;
-      const names = hoistedNames(branch);
-      if (names === null) continue;
-      hoisted.set(start, names);
+      if (hoistedNames(branch, removed) === null) continue;
+      removed.add(branch);
       ranges.push([start, branch.end]);
     }
+    // A var that only removed branches declare stays declared in each.
+    const hoisted = new Map<number, readonly string[]>();
+    for (const branch of removed)
+      hoisted.set(ts.tokenStartOfNode(branch), hoistedNames(branch, removed)!);
     if (ranges.length > 0) {
       const kept = edits.filter((e) => !ranges.some(([lo, hi]) => e.pos > lo && e.pos < hi));
       edits.length = 0;
@@ -995,11 +998,11 @@ export function neutralizeCommentTags(text: string): string {
 }
 
 /** The `var` names a dead branch declares that its function (or file)
- * declares nowhere else: replacing the branch must keep them bound, as
- * undefined. Null when the branch declares a function in a block, whose
- * binding outside the block depends on the file's strictness; such a
- * branch is kept. */
-function hoistedNames(branch: ts.Node): readonly string[] | null {
+ * declares nowhere else outside the `removed` branches: replacing the
+ * branch must keep them bound, as undefined. Null when the branch declares
+ * a function in a block, whose binding outside the block depends on the
+ * file's strictness; such a branch is kept. */
+function hoistedNames(branch: ts.Node, removed: ReadonlySet<ts.Node>): readonly string[] | null {
   let scope: ts.Node | undefined = branch.parent;
   while (scope !== undefined && !ts.isSourceFile(scope) && !functionScope(scope))
     scope = scope.parent;
@@ -1033,7 +1036,7 @@ function hoistedNames(branch: ts.Node): readonly string[] | null {
   const body = ts.isSourceFile(scope) ? scope : (scope as { body?: ts.Node }).body;
   if (body !== undefined)
     ts.walkPreorder(body, (n) => {
-      if (n === branch) return "skip";
+      if (n === branch || removed.has(n)) return "skip";
       if (n !== body && ts.isFunctionDeclaration(n) && n.name !== undefined)
         elsewhere.add(n.name.text);
       if (n !== body && (functionScope(n) || ts.isClassDeclaration(n) || ts.isClassExpression(n)))

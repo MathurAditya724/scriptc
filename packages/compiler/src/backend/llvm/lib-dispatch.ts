@@ -1,3 +1,4 @@
+import { arrayClassDescriptor } from "./classes.js";
 import { emitBigIntWrap } from "./bigint-wrap.js";
 import { emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { borrowsIteratorInputs, borrowsJsonInputs } from "./checked-value-lifetimes.js";
@@ -17,6 +18,7 @@ import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./
 import {
   ASSERT_VERDICT_LIB_FNS,
   LIB_FN_SYMS,
+  PURE_MATH_LIB_FNS,
   mockTimerSym,
   USES_TIMERS_LIB_FNS,
 } from "./lib-shared.js";
@@ -276,6 +278,82 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       throw new InternalCompilerError("llvm emitter bug: record.sourceSpread of a non-record");
     host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
     return { name: "", type: e.type };
+  }
+  if (e.fn === "array.speciesCreate") {
+    // The receiver is borrowed; the call answers a new reference.
+    const receiver = emitBorrowedInput(host, e.args[0]!);
+    const length = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_arr_species_create(ptr, double)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_create(ptr ${receiver.name}, double ${length.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "array.speciesFinish") {
+    // The instance is borrowed; the method's result moves into the call,
+    // which answers it or the instance that holds its elements.
+    const instance = emitBorrowedInput(host, e.args[0]!);
+    const result = host.emitExpr(e.args[1]!);
+    host.toHeap(result);
+    const setLength = host.emitExpr(e.args[2]!);
+    host.declare(`declare ptr @scr_arr_species_finish(ptr, ptr, i1 zeroext)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_finish(ptr ${instance.name}, ptr ${result.name}, i1 zeroext ${setLength.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "array.speciesAdopt") {
+    // The receiver is borrowed; the method's result moves into the call,
+    // which answers it or the species instance that replaces it.
+    const receiver = emitBorrowedInput(host, e.args[0]!);
+    const result = host.emitExpr(e.args[1]!);
+    host.toHeap(result);
+    const length = host.emitExpr(e.args[2]!);
+    const setLength = host.emitExpr(e.args[3]!);
+    host.declare(`declare ptr @scr_arr_species_adopt(ptr, ptr, double, i1 zeroext)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_adopt(ptr ${receiver.name}, ptr ${result.name}, double ${length.name}, i1 zeroext ${setLength.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "array.dynIsClass") {
+    const className = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
+    if (className === null)
+      throw new InternalCompilerError("llvm emitter bug: array.dynIsClass needs a class name");
+    const value = emitBorrowedInput(host, e.args[0]!);
+    host.declare(`declare zeroext i1 @scr_dyn_is_array_class(ptr, ptr)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call zeroext i1 @scr_dyn_is_array_class(ptr ${value.name}, ptr ${arrayClassDescriptor(className)})`,
+    );
+    return { name: out, type: e.type };
+  }
+  if (e.fn === "array.classConstructAdopt") {
+    const className = e.args[0]!.kind === "strLit" ? e.args[0]!.value : null;
+    if (className === null)
+      throw new InternalCompilerError(
+        "llvm emitter bug: array.classConstructAdopt needs a class name",
+      );
+    const result = host.emitExpr(e.args[1]!);
+    host.toHeap(result);
+    const length = host.emitExpr(e.args[2]!);
+    host.declare(`declare ptr @scr_arr_class_construct_adopt(ptr, ptr, double)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_class_construct_adopt(ptr ${arrayClassDescriptor(className)}, ptr ${result.name}, double ${length.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
   }
   if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
     const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
@@ -671,11 +749,13 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         // which also takes those streams.
         e.fn === "stream.unboxDyn" && host.usesDynBuiltinStream
         ? "scr_dyn_builtin_stream_unbox"
-        : // for await over a checked-dynamic value iterates a native
-          // stream behind it (scr_dyn_for_await_stream.c)
-          e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
-          ? "scr_stream_dyn_async_iterator_open"
-          : LIB_FN_SYMS[e.fn]);
+        : e.fn === "stream.unboxDynStage" && host.usesDynBuiltinStream
+          ? "scr_dyn_builtin_stream_unbox_stage"
+          : // for await over a checked-dynamic value iterates a native
+            // stream behind it (scr_dyn_for_await_stream.c)
+            e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
+            ? "scr_stream_dyn_async_iterator_open"
+            : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   // The runtime's Date functions take and answer time values: a Date
   // operand passes its time value, read at once from the borrowed object,
@@ -777,7 +857,8 @@ function emitSymbolLibCall(
     return { name: "", type: e.type };
   }
   const t = B.tmp();
-  B.line(`${t} = call ${retDecl} @${sym}(${argList})`);
+  const attrs = PURE_MATH_LIB_FNS.has(e.fn) ? " nounwind willreturn memory(none)" : "";
+  B.line(`${t} = call ${retDecl} @${sym}(${argList})${attrs}`);
   // The result joins its frame BEFORE the pending check so an unwind
   // releases the dummy (NULL for refcounted returns) harmlessly.
   const out = host.own({ name: t, type: e.type });
@@ -843,35 +924,68 @@ function emitAssertFailing(
  * `a.name.localeCompare(b.name)` reads both fields without retaining). */
 const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set(["str.localeCompare"]);
 
-/** The parameter count of a replace callback the runtime can call through
- * the closure ABI (scr_regex_replace_fn), or null when it needs the dyn
- * box. Each declared parameter must receive a value of its declared kind
- * in every match: the match string at 0; with more than one parameter the
+/** The most parameters scr_regex_replace_fn calls a replacer with
+ * (SCR_REPLACER_MAX_ARITY), the first bit of its string-or-undefined
+ * parameters (SCR_REPLACER_OPTIONAL), and its flag for a checked-dynamic
+ * result (SCR_REPLACER_BOXED_RESULT). */
+const REPLACER_MAX_ARITY = 6;
+const REPLACER_OPTIONAL = 2 ** 8;
+const REPLACER_BOXED_RESULT = 2 ** 31;
+
+/** `string | undefined` held as the string pointer, NULL for undefined. */
+function optionalStringType(host: LlvmEmitterContext, type: IrType): boolean {
+  if (type.kind !== "union") return false;
+  const nullable = host.nullableUnions.get(type.unionId);
+  if (nullable?.repr !== "single" || nullable.arm.kind !== "string" || nullable.nullTag >= 0)
+    return false;
+  return host.unionsById.get(type.unionId)?.arms[nullable.unitTag]?.kind === "undefinedT";
+}
+
+/** The parameter count and kinds (scr_regex_replace_fn's `kinds`) of a
+ * replace callback the runtime can call through the closure ABI, or null
+ * when it needs the dyn box. A checked-dynamic parameter receives whatever
+ * Node passes at its position. Each typed parameter must receive a value of
+ * its declared kind in every match: the match string at 0; past 0 the
  * pattern must be a literal whose captures are known, so position i is a
- * capture that every match sets (a string), the offset (a number) right
- * after the captures, or the subject (a string) after that. */
-function typedReplacerArity(callback: IrType, pattern: IrExpr): number | null {
+ * capture (a string when every match sets it, otherwise `string |
+ * undefined`), the offset (a number) right after the captures, or the
+ * subject (a string) after that. The result is a string or a
+ * checked-dynamic value. */
+function typedReplacerShape(
+  host: LlvmEmitterContext,
+  callback: IrType,
+  pattern: IrExpr,
+): { arity: number; kinds: number } | null {
   if (callback.kind !== "func" || callback.rest || callback.argumentsAll) return null;
-  if (callback.ret.kind !== "string") return null;
+  if (callback.ret.kind !== "string" && callback.ret.kind !== "dyn") return null;
   const params = callback.params;
-  if (params.length > 4) return null;
-  if (params.length === 0) return 0;
-  if (params[0]!.kind !== "string") return null;
-  if (params.length === 1) return 1;
-  if (pattern.kind !== "regexLit") return null;
-  const captures = regexLiteralCaptures(pattern.pattern, pattern.flags);
-  if (!captures) return null;
-  for (let i = 1; i < params.length; i++) {
+  if (params.length > REPLACER_MAX_ARITY) return null;
+  let kinds = callback.ret.kind === "dyn" ? REPLACER_BOXED_RESULT : 0;
+  let captures: { count: number; always: boolean[] } | null | undefined;
+  for (let i = 0; i < params.length; i++) {
     const kind = params[i]!.kind;
+    if (kind === "dyn") {
+      kinds += 2 ** i;
+      continue;
+    }
+    const optional = optionalStringType(host, params[i]!);
+    if (i === 0) {
+      if (kind !== "string") return null;
+      continue;
+    }
+    if (pattern.kind !== "regexLit") return null;
+    captures ??= regexLiteralCaptures(pattern.pattern, pattern.flags);
+    if (!captures) return null;
     const ok =
       i < captures.count
-        ? kind === "string" && captures.always[i] === true
+        ? (kind === "string" && captures.always[i] === true) || optional
         : i === captures.count
           ? kind === "f64"
           : i === captures.count + 1 && kind === "string";
     if (!ok) return null;
+    if (optional) kinds += REPLACER_OPTIONAL * 2 ** i;
   }
-  return params.length;
+  return { arity: params.length, kinds };
 }
 
 /** `s.replace(re, fn)` / `replaceAll` with a typed callback the runtime can
@@ -881,16 +995,16 @@ function typedReplacerArity(callback: IrType, pattern: IrExpr): number | null {
 function emitTypedRegexReplace(host: LlvmEmitterContext, e: LibCallExpr): LlValue | null {
   const [subject, pattern, callback, all] = e.args;
   if (!subject || !pattern || callback?.kind !== "dynFrom" || all?.kind !== "boolLit") return null;
-  const arity = typedReplacerArity(callback.value.type, pattern);
-  if (arity === null) return null;
+  const shape = typedReplacerShape(host, callback.value.type, pattern);
+  if (shape === null) return null;
   const B = host.B;
   const s = host.emitExpr(subject);
   const re = host.emitExpr(pattern);
   const fn = host.emitExpr(callback.value);
-  host.declare(`declare ptr @scr_regex_replace_fn(ptr, ptr, ptr, i32, i1 zeroext)`);
+  host.declare(`declare ptr @scr_regex_replace_fn(ptr, ptr, ptr, i32, i32, i1 zeroext)`);
   const result = B.tmp();
   B.line(
-    `${result} = call ptr @scr_regex_replace_fn(ptr ${s.name}, ptr ${re.name}, ptr ${fn.name}, i32 ${arity}, i1 zeroext ${all.value})`,
+    `${result} = call ptr @scr_regex_replace_fn(ptr ${s.name}, ptr ${re.name}, ptr ${fn.name}, i32 ${shape.arity}, i32 ${shape.kinds | 0}, i1 zeroext ${all.value})`,
   );
   const output = host.own({ name: result, type: e.type });
   host.emitPendingCheck();
@@ -1110,12 +1224,16 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "blob":
     case "wasm":
     case "array":
+      if (e.fn === "array.foreignThrow") return emitArrayForeignThrow(host, e);
+      return host.emitGenericLibCall(e);
     case "collection":
     case "record":
     case "disposable":
     case "punycode":
     case "constants":
     case "promise":
+    case "navigator":
+    case "mime":
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
@@ -1131,13 +1249,36 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   }
 }
 
+/** `array.foreignThrow`: the checked conversion's TypeError for a foreign
+ * element read into a typed result. Always throws; the result is a dummy
+ * of the replaced read's type (the error.argTypeThrow pattern). */
+function emitArrayForeignThrow(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
+  const B = host.B;
+  const arr = host.emitExpr(e.args[0]!);
+  const index = host.emitExpr(e.args[1]!);
+  const want = host.emitExpr(e.args[2]!);
+  host.declare(`declare void @scr_arr_foreign_throw(ptr, double, ptr)`);
+  B.line(
+    `call void @scr_arr_foreign_throw(ptr ${arr.name}, double ${index.name}, ptr ${want.name})`,
+  );
+  const ty = host.llType(e.type);
+  if (ty === "void") {
+    host.emitAlwaysPendingUnwind();
+    return { name: "", type: e.type };
+  }
+  const dummy = ty === "double" ? "0.0" : ty === "i1" ? "false" : "null";
+  const out = host.own({ name: dummy, type: e.type });
+  host.emitAlwaysPendingUnwind();
+  return out;
+}
+
 /** The settlement adapter of Promise.all's tuple form for the builder
  * `fnName`, which fulfills the result with the builder's tuple. */
 function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrType): string {
   const key = `allTuple:${fnName}`;
   let adapter = host.resolveThunks.get(key);
   if (adapter !== undefined) return adapter;
-  adapter = `sc_all_tuple_${host.resolveThunks.size}`;
+  adapter = host.contentSymbol("sc_all_tuple_", key);
   host.resolveThunks.set(key, adapter);
   host.journal?.allocated(adapter, "allTupleAdapterFor", [fnName, tuple]);
   const rc = vAdapters(host.shapeHost, tuple);
