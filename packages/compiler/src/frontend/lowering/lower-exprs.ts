@@ -96,7 +96,8 @@ import {
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
 import { lowerNullishPair } from "./expressions/binary.js";
-import { lowerElementCompoundParts } from "./expressions/element-access.js";
+import { lowerElementCompoundParts, recordKeyLiteralText } from "./expressions/element-access.js";
+import { OBJECT_PROTOTYPE_MEMBERS } from "../shape-inference/domain.js";
 export {
   DEFERRED_READ_MESSAGE,
   abstractPropertyDeclOf,
@@ -1962,6 +1963,20 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
   if (receiverT?.kind === "record") {
     const shape = lowerer.shapes.get(receiverT.shapeId);
     if (shape && !shape.tuple && shape.indexValue && shape.indexValue.kind !== "dyn") {
+      return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
+    }
+    // A literal key the shape does not declare is absent from every value
+    // (lowerRecordKeyRead answers undefined), whatever type the checker gave
+    // the read.
+    const literal = recordKeyLiteralText(expr.argumentExpression);
+    if (
+      shape &&
+      !shape.tuple &&
+      !shape.indexValue &&
+      literal !== null &&
+      !OBJECT_PROTOTYPE_MEMBERS.has(literal) &&
+      !shape.fields.some((field) => field.name === literal)
+    ) {
       return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
     }
     return null;
