@@ -2223,8 +2223,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     mkdirSync: ["fs.mkdirModeSync", "fs.mkdirRecursiveSync", "fs.mkdirRecursiveModeSync"],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
-    // The { withFileTypes: true } Dirent form.
-    readdirSync: ["fs.readdirTypesSync"],
+    // The { withFileTypes: true } Dirent form and the { recursive: true } walk.
+    readdirSync: ["fs.readdirTypesSync", "fs.readdirRecursiveSync"],
     // The { throwIfNoEntry } probe form.
     statSync: ["fs.statProbeSync"],
     // realpathSync and realpathSync.native read as function values.

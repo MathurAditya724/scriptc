@@ -2576,7 +2576,7 @@ static void scr_dyn_record_view_freeze(ScrDyn *view) {
 
 void scr_record_freeze(void *record) {
   size_t *rc = record;
-  if (*rc != SIZE_MAX) *rc |= SCR_RC_FROZEN;
+  if (!scr_rc_immortal(record)) *rc |= SCR_RC_FROZEN;
 }
 
 void scr_record_throw_frozen(ScrStr *key, ScrStr *owner, double operation) {
@@ -6932,7 +6932,7 @@ ScrDyn *scr_dyn_class_base_prototype(ScrDyn *constructor) {
   default: break;
   }
   if (constructor->kind != SCR_DYN_FUNC || constructor->v.fn.class_obj ||
-      scr_closure_identity(constructor->v.fn.clo)->function_kind != 4) {
+      (scr_closure_identity(constructor->v.fn.clo)->function_kind & SCR_FN_KIND_MASK) != 4) {
     static const char message[] = "Class extends value is not a native ordinary constructor";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
@@ -7084,7 +7084,8 @@ ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr
   if (scr_ni_is_handle(callee))
     return scr_ni_construct((ScrDyn *)callee, args->v.arr.items, args->v.arr.len);
 #endif
-  if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj || scr_closure_identity(callee->v.fn.clo)->function_kind != 4)
+  if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
+      (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_FN_KIND_MASK) != 4)
     return scr_bytes_construct(callee, args, what);
   ScrDyn *prototype = scr_dyn_fn_get(callee, "prototype", 9);
   if (!prototype) return NULL;
@@ -9225,7 +9226,9 @@ bool scr_dyn_is_callable(const ScrDyn *value) {
 
 int scr_dyn_function_kind(const ScrDyn *value) {
   while (value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
-  return value->kind == SCR_DYN_FUNC ? scr_closure_identity(value->v.fn.clo)->function_kind : 0;
+  return value->kind == SCR_DYN_FUNC
+             ? (int)(scr_closure_identity(value->v.fn.clo)->function_kind & SCR_FN_KIND_MASK)
+             : 0;
 }
 
 void scr_dyn_adopt_identity(ScrClosure *adapter, const ScrDyn *value) {
@@ -11191,9 +11194,8 @@ ScrDyn *scr_dyn_arithmetic(const ScrDyn *left, const ScrDyn *right, const ScrStr
     if (result) { out = scr_dyn_new_bigint(result); scr_bigint_release(result); }
   } else {
     double a = l->v.num, b = r->v.num;
-    // ECMAScript differs from libm for ±1 ** ±Infinity and 1 ** NaN.
     double result = op == '-' ? a - b : op == '/' ? a / b : op == '%' ? fmod(a, b)
-      : operation->len == 2 ? ((fabs(a) == 1 && !isfinite(b)) ? NAN : pow(a, b)) : a * b;
+      : operation->len == 2 ? scr_math_pow(a, b) : a * b;
     out = scr_dyn_new_num(result);
   }
   scr_dyn_release(l);
@@ -11734,7 +11736,53 @@ static const char *scr_dyn_kind_name(const ScrDyn *d) {
   return "unknown";
 }
 
+/* Shape inference's overlay (compiler frontend/shape-inference): a checked
+ * conversion of an analysis-proven fact names its site ("<package>
+ * <file>:<line>") while it runs. A failure there is a compiler analysis
+ * bug, so it reports itself as one instead of as a type error. */
+static SCR_TL const char *scr_dyn_inferred_site_name;
+
+void scr_dyn_inferred_site(const char *site) { scr_dyn_inferred_site_name = site; }
+
+static void scr_dyn_inferred_fact_fail(const char *site, const ScrDynPath *path, const char *want,
+                                       const ScrDyn *got) {
+  const char *space = strchr(site, ' ');
+  size_t pkg_len = space ? (size_t)(space - site) : 0;
+  const char *where = space ? space + 1 : site;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "scriptc internal error: an inferred type was contradicted at ");
+  scr_jb_puts(&b, where);
+  scr_jb_puts(&b, " (expected ");
+  scr_jb_puts(&b, want);
+  scr_jb_puts(&b, " at ");
+  scr_dyn_path_render(&b, path);
+  scr_jb_puts(&b, ", got ");
+  scr_jb_puts(&b, scr_dyn_kind_name(got));
+  scr_jb_puts(&b, "). This is a bug in scriptc's shape analysis, not in the program's data. "
+                  "Rebuild with --no-shape-overlay, or set \"scriptc\": {\"packages\": {\"");
+  for (size_t i = 0; i < pkg_len; i++) scr_jb_putc(&b, site[i]);
+  scr_jb_puts(&b, "\": {\"shapes\": false}}} in package.json, to compile the package without it.");
+  /* Validation mode: every hit is logged, also when the program catches it. */
+  const char *log = getenv("SCRIPTC_SHAPE_CHECK_LOG");
+  if (log && *log) {
+    FILE *f = fopen(log, "a");
+    if (f) {
+      fwrite(b.data, 1, b.len, f);
+      fputc('\n', f);
+      fclose(f);
+    }
+  }
+  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+}
+
 void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *got) {
+  const char *site = scr_dyn_inferred_site_name;
+  if (site) {
+    scr_dyn_inferred_site_name = NULL;
+    scr_dyn_inferred_fact_fail(site, path, want, got);
+    return;
+  }
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_jb_puts(&b, "expected ");
@@ -16858,9 +16906,10 @@ ScrError *scr_domex_clone(ScrError *e, const ScrDyn *options) {
  * They live HERE (not scr_string.c) because the argument is a dyn value:
  * WebIDL ToString runs over the dyn kind (Node's atob(null) decodes the
  * string "null"), and the string unit must stay linkable without the
- * dyn. atob is forgiving-base64 exactly — ASCII whitespace stripped, a
- * %4==0 input sheds up to two trailing '=', %4==1 refuses, leftover
- * bits discard — decoding to the latin1 code points as a UTF-8 string;
+ * dyn. atob checks its input as Node's lib/buffer.js does (an invalid
+ * character or a misplaced '=' is "Invalid character", a length the
+ * forgiving-base64 rules refuse "not correctly encoded"), then decodes
+ * with leftover bits discarded to the latin1 code points as a UTF-8 string;
  * btoa refuses any code point over U+00FF. Malformed input throws the
  * catchable DOMException InvalidCharacterError with Node's exact
  * message. */
@@ -16876,61 +16925,70 @@ static int scr_b64_val(unsigned char c) {
 
 ScrStr *scr_atob(const ScrDyn *data) {
   ScrStr *s = scr_dyn_string_coerce(data);
-  /* Strip ASCII whitespace (the forgiving step). */
-  char *buf = malloc(s->len ? s->len : 1);
-  if (!buf) scr_json_oom();
-  size_t n = 0;
+  /* Node's checks (lib/buffer.js): only ASCII whitespace and the base64
+   * alphabet with '=' are allowed, '=' only at the end and at most twice;
+   * the count of the other characters decides the rest. One pass checks
+   * the input and keeps the 6-bit value of each alphabet character. */
+  unsigned char *values = malloc(s->len ? s->len : 1);
+  if (!values) scr_json_oom();
+  size_t n = 0, equals = 0;
+  const char *message = NULL;
   for (size_t i = 0; i < s->len; i++) {
     unsigned char c = (unsigned char)s->data[i];
     if (c == 0x09 || c == 0x0a || c == 0x0c || c == 0x0d || c == 0x20) continue;
-    buf[n++] = (char)c;
+    if (c == '=') {
+      if (++equals > 2) {
+        message = "Invalid character";
+        break;
+      }
+      continue;
+    }
+    int v = scr_b64_val(c);
+    if (v < 0 || equals) {
+      message = "Invalid character";
+      break;
+    }
+    values[n++] = (unsigned char)v;
+  }
+  if (!message) {
+    size_t remainder = (n + equals) % 4;
+    if (!remainder) remainder = n % 4;
+    else if (equals) message = "Invalid character";
+    if (!message && remainder == 1) message = "The string to be decoded is not correctly encoded.";
   }
   scr_str_release(s);
-  /* A %4==0 input sheds one or two trailing '='. */
-  if (n % 4 == 0 && n > 0) {
-    if (buf[n - 1] == '=') n--;
-    if (n > 0 && buf[n - 1] == '=') n--;
+  if (message) {
+    free(values);
+    scr_throw_domex("InvalidCharacterError", message);
+    return NULL;
   }
-  if (n % 4 == 1) goto invalid;
   /* Decode 6-bit groups; latin1 code points expand to UTF-8 (bytes over
-   * 0x7F become two-byte sequences). */
-  {
-    size_t outBytes = (n / 4) * 3 + (n % 4 == 2 ? 1 : n % 4 == 3 ? 2 : 0);
-    char *out = malloc(outBytes * 2 ? outBytes * 2 : 1);
-    if (!out) scr_json_oom();
-    size_t w = 0;
-    unsigned acc = 0;
-    int bits = 0;
-    for (size_t i = 0; i < n; i++) {
-      int v = scr_b64_val((unsigned char)buf[i]);
-      if (v < 0) {
-        free(out);
-        goto invalid;
-      }
-      acc = (acc << 6) | (unsigned)v;
-      bits += 6;
-      if (bits >= 8) {
-        bits -= 8;
-        unsigned char b = (unsigned char)((acc >> bits) & 0xff);
-        if (b < 0x80) {
-          out[w++] = (char)b;
-        } else {
-          out[w++] = (char)(0xc0 | (b >> 6));
-          out[w++] = (char)(0x80 | (b & 0x3f));
-        }
+   * 0x7F become two-byte sequences). Leftover bits discard
+   * (forgiving-base64's final step). */
+  size_t outBytes = (n / 4) * 3 + (n % 4 == 2 ? 1 : n % 4 == 3 ? 2 : 0);
+  char *out = malloc(outBytes * 2 ? outBytes * 2 : 1);
+  if (!out) scr_json_oom();
+  size_t w = 0;
+  unsigned acc = 0;
+  int bits = 0;
+  for (size_t i = 0; i < n; i++) {
+    acc = (acc << 6) | values[i];
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      unsigned char b = (unsigned char)((acc >> bits) & 0xff);
+      if (b < 0x80) {
+        out[w++] = (char)b;
+      } else {
+        out[w++] = (char)(0xc0 | (b >> 6));
+        out[w++] = (char)(0x80 | (b & 0x3f));
       }
     }
-    /* Leftover bits discard (forgiving-base64's final step). */
-    free(buf);
-    ScrStr *result = scr_str_new(out, w);
-    free(out);
-    return result;
   }
-invalid:
-  free(buf);
-  scr_throw_domex("InvalidCharacterError",
-                  "The string to be decoded is not correctly encoded.");
-  return NULL;
+  free(values);
+  ScrStr *result = scr_str_new(out, w);
+  free(out);
+  return result;
 }
 
 ScrStr *scr_btoa(const ScrDyn *data) {
