@@ -135,6 +135,11 @@ const HEADER_SIZE_7_1 = 64;
 /** SourceKeyword in TypeScript 7.1's kinds. */
 const SOURCE_KEYWORD_7_1 = 167;
 
+/** A TypeScript 7.0 SyntaxKind as TypeScript 7.1 numbers it. */
+export function syntaxKind71(kind: number): number {
+  return kind >= SOURCE_KEYWORD_7_1 ? kind + 1 : kind;
+}
+
 /** The node table of a protocol 7.1 response in TypeScript 7.0's terms: each
  * kind above SourceKeyword one lower, and each module declaration's child
  * mask without the attributes slot. Throws for the nodes 7.0 has no form
@@ -248,7 +253,7 @@ export class AstWireFile {
   /** `kind` (TypeScript 7.0's) as this response's protocol numbers it, the
    * kind a node handle names. */
   kindOnWire(kind: number): number {
-    return this.protocol === PROTOCOL_VERSION_7_1 && kind >= SOURCE_KEYWORD_7_1 ? kind + 1 : kind;
+    return this.protocol === PROTOCOL_VERSION_7_1 ? syntaxKind71(kind) : kind;
   }
 
   /** A kind as this response's protocol numbers it (a node handle's) in
