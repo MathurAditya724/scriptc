@@ -2039,7 +2039,9 @@ const ScrNodeBridge kBridge = {
 // libnode's own answer (RTLD_NEXT). Without them a garbage collection that
 // scans the stack while JavaScript runs on the runtime's stack walks from
 // that stack up to the main thread's and faults in the unmapped gap.
-// (macOS binds libnode's calls inside libnode; its packs need another way.)
+// macOS binds libnode's calls inside libnode instead: there the runtime
+// points the main thread's pthread stack record at its stack while Node
+// starts (ni_pthread_stack_enter in scr_node_island.c).
 #define SCR_V8_STACK_START(fn, symbol)                                          \
   extern "C" __attribute__((visibility("default"))) void *fn() __asm__(symbol); \
   extern "C" void *fn() {                                                       \
