@@ -1,6 +1,7 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
+import type { BytesHeader } from "./bytes-headers.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrBytesElem, type IrExpr } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { F64_INF, exactIndexLines, f64Lit, sizeToDouble } from "./common.js";
@@ -160,6 +161,22 @@ export function emitBytesIndex(
   return idx;
 }
 
+/** Records that `value` is the view `receiver` reads, so the header reads of
+ * an access through it use the values a loop entry read (bytes-headers.ts). */
+export function noteBytesReceiver(host: LlvmEmitterContext, receiver: IrExpr, value: string): void {
+  const scope = host.bytesHeaders;
+  if (scope === null || receiver.kind !== "varRef" || scope.fn !== host.currentFunctionName) return;
+  const header = scope.locals.get(receiver.localId);
+  if (header !== undefined) scope.values.set(value, header);
+}
+
+/** The header fields a loop entry read for the view `receiver`, if any. */
+function cachedHeader(host: LlvmEmitterContext, receiver: string): BytesHeader | undefined {
+  const scope = host.bytesHeaders;
+  if (scope === null || scope.fn !== host.currentFunctionName) return undefined;
+  return scope.values.get(receiver);
+}
+
 /** The element count of a typed array, in the target's size type. `value`:
  * the program reads the count itself (bytesHeaderValueAlias), rather than
  * only bounding an access. */
@@ -168,6 +185,8 @@ export function emitBytesHeaderLength(
   receiver: string,
   value = false,
 ): string {
+  const cached = cachedHeader(host, receiver);
+  if (cached !== undefined) return cached.length;
   const p = host.B.tmp();
   const len = host.B.tmp();
   const alias = value ? bytesHeaderValueAlias(host) : bytesHeaderAlias(host);
@@ -177,6 +196,8 @@ export function emitBytesHeaderLength(
 }
 
 export function emitBytesData(host: LlvmEmitterContext, receiver: string): string {
+  const cached = cachedHeader(host, receiver);
+  if (cached !== undefined) return cached.data;
   const p = host.B.tmp();
   const data = host.B.tmp();
   host.B.line(`${p} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 3`);
@@ -203,6 +224,8 @@ export function emitBytesLength(
 /** A view's shared backing (null for a buffer this thread owns). It is
  * set at construction, before script code can see the view. */
 export function emitBytesSharedStorage(host: LlvmEmitterContext, receiver: string): string {
+  const cached = cachedHeader(host, receiver)?.shared;
+  if (cached !== undefined && cached !== null) return cached;
   const B = host.B;
   const slot = B.tmp(),
     storage = B.tmp();
@@ -813,6 +836,7 @@ export function emitBytesIntrinsic(
   const r = directElementAccess
     ? host.emitStableReceiver(e.receiver, e.args)
     : emitBorrowedInput(host, e.receiver);
+  if (directElementAccess) noteBytesReceiver(host, e.receiver, r.name);
   // Byte operations borrow every input; views and identity results return
   // independent owners, while writes retain no operand beyond the call.
   const args = e.args.map((a) => emitBorrowedInput(host, a));

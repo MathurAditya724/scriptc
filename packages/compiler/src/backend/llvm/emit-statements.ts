@@ -1,4 +1,6 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
+import { emitLoopBytesHeaders } from "./bytes-headers.js";
+import { noteBytesReceiver } from "./expr-bytes.js";
 import {
   type LlEmitter,
   type LlScopeEntry,
@@ -81,6 +83,7 @@ import {
   planProvenIntegerLoop,
   planSpeculativeLoop,
   type ProvenLoopPlan,
+  type SpeculativeLoopPlan,
   speculativeReads,
   speculativeWriteTarget,
 } from "./speculative-integers.js";
@@ -576,6 +579,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // IrBytesElem is static, so never rediscover it through the
       // generic runtime switch in a hot loop.
       const arr = emitter.emitStableReceiver(s.arr, [s.index, s.value]);
+      noteBytesReceiver(emitter, s.arr, arr.name);
       const idx = emitter.emitExpr(s.index);
       const v = emitter.emitExpr(s.value);
       if (s.arr.type.kind !== "bytes")
@@ -2373,6 +2377,22 @@ export function emitLoopCopies(
     else ordinary(exit);
     return;
   }
+  const outer = emitter.bytesHeaders;
+  emitter.bytesHeaders = emitLoopBytesHeaders(emitter, loop, emitter.currentParameters) ?? outer;
+  try {
+    emitSpeculativeLoop(emitter, plan, exit, emitCopy);
+  } finally {
+    emitter.bytesHeaders = outer;
+  }
+}
+
+/** The copies of a speculative loop (emitLoopCopies). */
+function emitSpeculativeLoop(
+  emitter: LlEmitter,
+  plan: SpeculativeLoopPlan,
+  exit: string,
+  emitCopy: (exit: string) => void,
+): void {
   const B = emitter.B;
   const entries = new Map<string, string>();
   let ok = "true";
