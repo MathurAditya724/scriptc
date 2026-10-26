@@ -442,6 +442,18 @@ function buildLibFnSignatures() {
     "module.parent": { argTypes: [F64], result: F64 },
     "module.loaded": { argTypes: [F64], result: BOOL },
     "module.cacheGet": { argTypes: [STRING], result: F64 },
+    /** createRequire's require(id) and require.resolve(request, options)
+     * with a specifier computed at run time (scr_require.c): the arguments,
+     * then the requiring file, the call's "file:line" and the builtin ids.
+     * Both resolve like Node at run time. requireComputed always throws
+     * (Node's argument errors or MODULE_NOT_FOUND), or ends the program with
+     * an SC2020 refusal when the specifier resolves; resolveComputed answers
+     * the resolved id or real path. */
+    "module.requireComputed": { argTypes: [DYN, STRING, STRING, arrayOf(STRING)], result: DYN },
+    "module.resolveComputed": {
+      argTypes: [DYN, DYN, STRING, STRING, arrayOf(STRING)],
+      result: STRING,
+    },
     "module.cacheHas": { argTypes: [STRING], result: BOOL },
     "module.cacheKeys": { argTypes: [], result: arrayOf(STRING) },
     "timers.setTimeout": { argTypes: [{ kind: "func", params: [], ret: VOID }, F64], result: VOID },
@@ -637,6 +649,9 @@ function buildLibFnSignatures() {
     "fs.rmSync": { argTypes: [STRING], result: VOID },
     "fs.rmdirSync": { argTypes: [STRING], result: VOID },
     "fs.readdirSync": { argTypes: [STRING], result: arrayOf(STRING) },
+    /** `fs.readdirSync(path, { recursive: true })`: every entry below the
+     * path, relative to it, in Node's queue order. */
+    "fs.readdirRecursiveSync": { argTypes: [STRING], result: arrayOf(STRING) },
     // Result is the call site's Dirent record array (VOID is the
     // structure-checked sentinel, the os.networkInterfaces pattern).
     /** `fs.readdirSync(path, { withFileTypes: true })` — Dirent rows over
@@ -1594,6 +1609,15 @@ function buildLibFnSignatures() {
     "net.connectOptsChk": { argTypes: [DYN, STRING], result: VOID },
     "net.connectCb": {
       argTypes: [F64, STRING, { kind: "func", params: [], ret: VOID }],
+      result: NETSOCKET_T,
+    },
+    /** net.connect/createConnection(path[, connectListener]) and the
+     * `path` option: a client of the Unix socket at `path`. With the flag
+     * (a positional string), Node's isPipeName applies first: a string that
+     * reads as a non-negative number is a localhost port. */
+    "net.connectPath": { argTypes: [STRING, BOOL], result: NETSOCKET_T },
+    "net.connectPathCb": {
+      argTypes: [STRING, BOOL, { kind: "func", params: [], ret: VOID }],
       result: NETSOCKET_T,
     },
     // The lookup's exact func shape is program data (its answer callback's
@@ -2927,9 +2951,27 @@ function buildLibFnSignatures() {
       result: { kind: "object", className: "%Duplex" },
     },
     /** Whether pipeline() pumps a checked-dynamic first stage as an
-     * iterable (a string, or a value with an iterator method that is not a
-     * stream with pipe() and on()) instead of piping it as a stream. */
+     * iterable (a string, a value with an iterator method that is not a
+     * stream with pipe() and on(), a { readable, writable } pair, or a
+     * source function's result) instead of piping it as a stream. */
     "stream.dynIterableSource": { argTypes: [DYN], result: BOOL },
+    /** The value pipeline() pumps for a checked-dynamic first stage: a
+     * source function's result (the flag set), which must be iterable, else
+     * a { readable, writable } pair's readable side or the value itself. */
+    "stream.dynSourceValue": { argTypes: [DYN, BOOL], result: DYN },
+    /** An untyped pipeline function stage's result before the last stage,
+     * which must be async iterable: ERR_INVALID_RETURN_VALUE naming the
+     * stage ("transform[i]") otherwise. Answers the value (+1). */
+    "stream.dynTransformResult": { argTypes: [DYN, STRING], result: DYN },
+    /** A checked-dynamic pipeline() stage taken as a stream: a native stream
+     * (+1), or Duplex.from of a value that is not stream-like or a function
+     * (an iterable), which the pipeline uses without piping into it. Other
+     * values throw: Duplex.from's ERR_INVALID_ARG_TYPE, or the given
+     * not-supported message. */
+    "stream.unboxDynStage": {
+      argTypes: [DYN, STRING],
+      result: { kind: "object", className: "%Duplex" },
+    },
     /** The Transform a Cipheriv or Decipheriv reads and writes as a stream
      * (+1, created on first use and owned by the cipher). */
     "stream.handleStream": {
@@ -3760,6 +3802,15 @@ function buildLibFnSignatures() {
     "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
+    /** Installs the program's builtin-global lookup (global-values.ts). */
+    "global.installValues": { argTypes: [DYN], result: VOID },
+    /** The keys `for (key in globalThis)` visits, as a fresh object. */
+    "global.forInObject": { argTypes: [], result: DYN },
+    /** Node's navigator global (scr_node_builtin.c). */
+    "navigator.object": { argTypes: [], result: DYN },
+    "navigator.language": { argTypes: [], result: STRING },
+    "navigator.languages": { argTypes: [], result: DYN },
+    "navigator.platform": { argTypes: [], result: STRING },
     // `X.name` through a class value: the arg is a program-dependent
     // classval (a null slot; the libCall case checks the kind).
     /** `X.name` through a class VALUE (scr_object.c): args[0] is a borrowed
@@ -4024,6 +4075,12 @@ function buildLibFnSignatures() {
      * Throws the path TypeError, changing nothing, when a converted object
      * is not plain data (a prototype, accessors, symbols, frozen state). */
     "dyn.declAdopt": { argTypes: [DYN, DYN], result: VOID },
+    /** dyn.declAdopt for every other checked cast of a dynamic value to a
+     * record or array (`value as T`): a shared source object or array
+     * becomes a live capsule of the value built from it. A node that is not
+     * plain data, or that the value holds twice, keeps its separate copy.
+     * Never throws: the conversion already succeeded. */
+    "dyn.adoptShared": { argTypes: [DYN, DYN], result: VOID },
     "dyn.cloneMissing": { argTypes: [], result: DYN },
     /** structuredClone with a NON-EMPTY transfer array of static values:
      * nothing static is transferable, so the call always throws Node's
@@ -4058,6 +4115,32 @@ function buildLibFnSignatures() {
     // The string keys `for...in` visits on an array (args[0], any element
     // type) after its indices. Borrowed; never throws.
     "array.namedKeys": { argTypes: [null], result: arrayOf(STRING) },
+    /** super(...) in a class declared `extends Array`: the instance, the
+     * arguments (an array of its element type, or the implicit constructor's
+     * dyn argument array) and whether the elements are dyn values. */
+    "array.subclassConstruct": { argTypes: [null, null, BOOL], result: VOID },
+    "array.subclassConstructDyn": { argTypes: [null, DYN, BOOL], result: VOID },
+    /** ArraySpeciesCreate over an Array method's plain result: the receiver
+     * (borrowed), the result (moved), the species constructor's length
+     * argument (-1: the result's length) and whether to set the length. The
+     * result has the second argument's type. */
+    "array.speciesAdopt": { argTypes: [null, null, F64, BOOL], result: VOID },
+    /** ArraySpeciesCreate ahead of a method that calls back into the program
+     * (map, filter, flatMap): the receiver (borrowed) and the species
+     * constructor's length argument. The result has the receiver's type: the
+     * instance, or the receiver itself when it is a plain array. */
+    "array.speciesCreate": { argTypes: [null, F64], result: VOID },
+    /** The method's plain result (moved) defined on the instance
+     * array.speciesCreate answered (borrowed), and whether to set the length.
+     * The result has the second argument's type. */
+    "array.speciesFinish": { argTypes: [null, null, BOOL], result: VOID },
+    /** Array.of / Array.from on a class declared `extends Array`: the class
+     * (its name, a literal), the plain result (moved) and the constructor's
+     * length argument (negative: no argument). */
+    "array.classConstructAdopt": { argTypes: [STRING, null, F64], result: VOID },
+    /** `value instanceof C` for a dyn value and a class that extends Array
+     * (its name, a literal). */
+    "array.dynIsClass": { argTypes: [DYN, STRING], result: BOOL },
     // The value of the foreign element (SCR_ARR_FOREIGN) at args[1] of an
     // array (args[0], any element type); callers test the element state
     // first. Borrowed; never throws.
@@ -5294,10 +5377,12 @@ export type IrLibFn = keyof ReturnType<typeof buildLibFnSignatures>;
 /** The function-stage runs of a pipeline of `total` stages that a stream
  * follows (positions bit j: stage j is a function), and an async
  * generator destination's run (flags bits 1-2 = 1, pumped into the
- * PassThrough pipeline() answers): each pumps its last generator through
- * one (next, read, return) triple. */
+ * PassThrough pipeline() answers, or 3, an untyped destination whose
+ * result may be pumped there): each pumps its last generator through one
+ * (next, read, return) triple. */
 export function pipelinePumpedRuns(total: number, positions: number, flags: number): number {
-  let runs = ((flags >> 1) & 3) === 1 ? 1 : 0;
+  const dest = (flags >> 1) & 3;
+  let runs = dest === 1 || dest === 3 ? 1 : 0;
   for (let j = 0; j + 1 < total; j++) {
     if (Math.floor(positions / 2 ** j) % 2 === 1 && Math.floor(positions / 2 ** (j + 1)) % 2 === 0)
       runs++;
