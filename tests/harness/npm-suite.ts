@@ -119,8 +119,8 @@ const OVERLAY_KNOWN: Record<string, Known> = {
   // `--help` reaches an unsupported operation in both builds; with the
   // overlay it fails at a checked conversion of an option value first
   // (results/design-shape-inference/NOTES.md, open item).
-  "commander-calc": { run: "expected number at $, got undefined", argvs: [["--help"]] },
-  "commander-calc-async": { run: "expected number at $, got undefined", argvs: [["--help"]] },
+  "commander-calc": { run: "expected boolean at $, got undefined", argvs: [["--help"]] },
+  "commander-calc-async": { run: "expected boolean at $, got undefined", argvs: [["--help"]] },
 };
 
 /** Per-case timeouts past the default 120 s: the undici cases compile the
