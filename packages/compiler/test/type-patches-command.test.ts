@@ -3,7 +3,7 @@
  * matches are shown before anything is written, the patch lands in the
  * nearest package.json under a range covering the installed version (or
  * an existing entry that covers it), and nothing is written when the
- * selector matches nothing. */
+ * selector matches nothing or the build already uses the requested type. */
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,6 +87,36 @@ test("nothing is written for a selector that matches nothing or is already so", 
   );
   expect(patch("termctx", "1bad", "| undefined").stderr).toContain("is not a selector");
   expect(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scriptc).toBeUndefined();
+});
+
+test("a type the declarations already say replaces a covering patch that says another", () => {
+  const manifest = join(root, "package.json");
+  writeFileSync(
+    manifest,
+    JSON.stringify(
+      {
+        name: "app",
+        scriptc: {
+          typePatches: {
+            "termctx@^1.2.0": { declarations: { "OutputContext.width": "| undefined" } },
+          },
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  const result = patch("termctx", "OutputContext.width", "number");
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain(
+    `wrote package.json scriptc.typePatches["termctx@^1.2.0"].declarations["OutputContext.width"]\n`,
+  );
+  expect(JSON.parse(readFileSync(manifest, "utf8")).scriptc.typePatches).toEqual({
+    "termctx@^1.2.0": { declarations: { "OutputContext.width": "number" } },
+  });
+  expect(patch("termctx", "OutputContext.width", "number").stdout).toContain(
+    "the declarations already say this; nothing was written\n",
+  );
 });
 
 test("list shows each patch and what it matches", () => {

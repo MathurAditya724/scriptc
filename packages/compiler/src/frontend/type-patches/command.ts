@@ -285,17 +285,7 @@ function patchCommand(
   const unapplied = problems.filter((p) => p.always);
   if (unapplied.length > 0)
     return fail(`${unapplied.map((p) => p.message).join("\n")}\nnothing was written`);
-  if (changed === 0) {
-    lines.push("the declarations already say this; nothing was written");
-    return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
-  }
   const text = readFileSync(manifest, "utf8");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return fail(`${relative(req.cwd, manifest) || "package.json"} is not valid JSON`);
-  }
   // The compiler applies every entry whose range covers the installed
   // version, and a later entry wins on the same selector. Without a range,
   // the patch goes to the last covering entry that patches the selector
@@ -307,6 +297,22 @@ function patchCommand(
   const covers = (e: TypePatchEntry): boolean => version !== null && satisfies(version, e.range);
   const declares = (e: TypePatchEntry): boolean =>
     e.declarations.some((d) => d.selector === req.selector);
+  // The declarations may say this already while a covering entry patches
+  // the selector to something else, which the build would keep using.
+  const overridden = entries.some(
+    (e) =>
+      covers(e) && e.declarations.some((d) => d.selector === req.selector && d.type !== req.type),
+  );
+  if (changed === 0 && !overridden) {
+    lines.push("the declarations already say this; nothing was written");
+    return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return fail(`${relative(req.cwd, manifest) || "package.json"} is not valid JSON`);
+  }
   const existing =
     req.range === null
       ? (entries.findLast((e) => covers(e) && declares(e)) ?? entries.find(covers))
