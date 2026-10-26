@@ -159,6 +159,42 @@ export function attributeOverlayRefusals(
     return calls.get(fn) ?? [];
   };
 
+  // Annotations whose type text names an identifier, by identifier: a
+  // class the lowering refuses compiles dynamically until a type names it.
+  let naming: Map<string, [string, number][]> | null = null;
+  const blameNaming = (name: string): void => {
+    if (naming === null) {
+      naming = new Map();
+      for (const file of overlayFiles) {
+        const text = program.getSourceFile(file)?.text;
+        if (text === undefined) continue;
+        for (const m of text.matchAll(/\/\*\*[\s\S]*?\*\//g)) {
+          if (!m[0].includes(OVERLAY_MARK)) continue;
+          const ids = overlayAnnotationIds(m[0]);
+          for (const w of new Set(m[0].match(/[A-Za-z_$][\w$]*/g) ?? [])) {
+            let l = naming.get(w);
+            if (l === undefined) naming.set(w, (l = []));
+            for (const id of ids) l.push([file, id]);
+          }
+        }
+      }
+    }
+    for (const [file, id] of naming.get(name) ?? []) add(file, id);
+  };
+  // The class a refusal is about: a field or the heritage of a class
+  // declaration, or a `new C(...)` of a named class.
+  const refusedClassName = (node: ts.Node): string | null => {
+    for (let n: ts.Node | undefined = node; n !== undefined; n = n.parent) {
+      if (ts.isNewExpression(n) && ts.isIdentifier(n.expression)) return n.expression.text;
+      if (ts.isFunctionLike(n)) return null;
+      if (ts.isClassLikeDeclaration(n)) {
+        const name = (n as { name?: ts.Node }).name;
+        return name !== undefined && ts.isIdentifier(name) ? name.text : null;
+      }
+    }
+    return null;
+  };
+
   for (const d of diagnostics) {
     const sf = program.getSourceFile(d.loc.file);
     if (sf === undefined) {
@@ -175,6 +211,8 @@ export function attributeOverlayRefusals(
       blameNode(n);
       if (statement === node && (ts.isStatement(n) || isClassMember(n))) statement = n;
     }
+    const refusedClass = refusedClassName(node);
+    if (refusedClass !== null) blameNaming(refusedClass);
     const own = blamed;
     blameReferences(node, 0);
     if (blamed === own && statement !== node) blameReferences(statement, 0);
@@ -235,7 +273,7 @@ function visitReturns(body: ts.Node, f: (e: ts.Expression) => void): void {
 }
 
 /** The innermost node whose token span covers [start, end). */
-function innermostNodeAt(sf: ts.SourceFile, start: number, end: number): ts.Node {
+export function innermostNodeAt(sf: ts.SourceFile, start: number, end: number): ts.Node {
   let node: ts.Node = sf;
   for (;;) {
     let next: ts.Node | undefined;
