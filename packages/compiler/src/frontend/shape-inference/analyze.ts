@@ -86,6 +86,8 @@ export interface LiteralSite {
   readonly hasComputedKey: boolean;
   readonly spreads: number[];
   readonly inPackage: boolean;
+  /** The per-call-site clone that allocates it ("" outside clones). */
+  readonly ctx: string;
 }
 
 export interface Op {
@@ -264,6 +266,11 @@ const PRIMITIVE_MEMBERS: Readonly<Record<"string" | "number" | "boolean", Readon
   ]),
   boolean: new Set(["toString", "valueOf", "constructor"]),
 };
+
+/** Per-call-site clones of an init factory, at most (SCRIPTC_SHAPE_SITE_CLONES;
+ * 0 turns them off), and the deepest chain of nested clones. */
+const SITE_CLONES = Number(process.env["SCRIPTC_SHAPE_SITE_CLONES"] ?? 64);
+const SITE_CLONE_DEPTH = 4;
 
 /** The prototypes a string, number or boolean member read reaches. */
 const PRIMITIVE_PROTOTYPES: ReadonlySet<string> = new Set([
@@ -471,8 +478,9 @@ class Analyzer {
    * which may run after the call's own handling. */
   private readonly repeatingSites = new Set<Node>();
 
-  edgeFor(site: Node, callee: FunctionInfo): void {
-    const ctx = this.siteCtx.get(site);
+  edgeFor(site: Node, callee: FunctionInfo, args?: number[]): void {
+    const ctx =
+      (args !== undefined ? this.argsFrom.get(args) : undefined) ?? this.siteCtx.get(site);
     this.calls.push({
       caller: ctx?.caller ?? null,
       callee,
@@ -1116,7 +1124,14 @@ class Analyzer {
 
   // ---- functions ---------------------------------------------------------------
 
-  functionInfo(node: Node, ownerClass: Node | null, ctxArg = ""): FunctionInfo {
+  /** `lexicalThis`: an arrow's receiver node, for a clone walked away from
+   * the function that encloses the arrow. */
+  functionInfo(
+    node: Node,
+    ownerClass: Node | null,
+    ctxArg = "",
+    lexicalThis: number | null = null,
+  ): FunctionInfo {
     // A nested closure walked inside a clone shares the clone's context.
     const inherit =
       ctxArg === "" &&
@@ -1156,7 +1171,12 @@ class Analyzer {
       label: ctx === "" ? label : `${label} [${this.ctxLabel(ctx)}]`,
       params,
       rest,
-      thisNode: isArrow && this.currentFn !== null ? this.currentFn.thisNode : this.newNode(),
+      thisNode:
+        isArrow && lexicalThis !== null
+          ? lexicalThis
+          : isArrow && this.currentFn !== null
+            ? this.currentFn.thisNode
+            : this.newNode(),
       ret: this.newNode(),
       isArrow,
       isAsync: mods.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword),
@@ -1365,7 +1385,9 @@ class Analyzer {
     spread: boolean,
     site: Node,
   ): void {
-    const key = `ctor:${this.nodeKey(decl)}:${instance.id}:${this.nodeKey(site)}`;
+    // The arguments' nodes too: one `new` site walked in several contexts
+    // (receiver classes, per-site clones) passes each context's values.
+    const key = `ctor:${this.nodeKey(decl)}:${instance.id}:${this.nodeKey(site)}:${args.join(",")}`;
     if (this.boundCalls.has(key)) return;
     this.boundCalls.add(key);
     const entry = this.ensureClass(decl);
@@ -1378,7 +1400,7 @@ class Analyzer {
       this.activate(info);
       this.add(info.thisNode, instance);
       this.bindArgs(info, args, spread);
-      this.edgeFor(site, info);
+      this.edgeFor(site, info, args);
       return;
     }
     const base = this.baseClass(decl);
@@ -1414,7 +1436,7 @@ class Analyzer {
 
   /** Call of a function atom with a receiver node. */
   callFunction(
-    info: FunctionInfo,
+    callee: FunctionInfo,
     thisNode: number | null,
     args: number[],
     spread: boolean,
@@ -1423,7 +1445,7 @@ class Analyzer {
   ): void {
     // `() => Object.create(null)` helpers: each call site gets its own
     // dictionary, as if the helper were inlined.
-    if (this.isFactory(info.node)) {
+    if (this.isFactory(callee.node)) {
       const d = this.atoms.intern(`dict:${this.nodeKey(site)}`, () => ({
         kind: "dictionary",
         label: `Object.create@${this.loc(site)}`,
@@ -1432,6 +1454,7 @@ class Analyzer {
       this.add(dst, d);
       return;
     }
+    const info = this.siteClone(callee, site, args) ?? callee;
     this.activate(info);
     const fnNode = info.node;
     const key = `call:${info.ctx}|${this.nodeKey(fnNode)}:${this.nodeKey(site)}:${thisNode ?? -1}:${dst}`;
@@ -1446,7 +1469,74 @@ class Analyzer {
     } else if (info.isGenerator) {
       this.add(dst, this.top);
     } else this.edge(info.ret, dst);
-    this.edgeFor(site, info);
+    this.edgeFor(site, info, args);
+  }
+
+  /** Per-call-site clones of init factories: a function called from
+   * module initialization (top-level code outside loops, or another such
+   * clone) is analyzed once per call site, so the objects it creates are
+   * one allocation per site (`z.string()` and `z.object(…)` schemas,
+   * valibot's schema literals) instead of one per function. Clones run
+   * at most once, which makes their objects singletons. */
+  private readonly siteClones = new Map<Node, number>();
+  /** The site-clone context a literal at `node` is allocated in, or "". */
+  private siteCloneCtx(node: Node): string {
+    const root = this.ctxRoot;
+    if (!this.ctx.includes("@S") || root === null) return "";
+    const inside =
+      node.getSourceFile() === root.getSourceFile() && node.pos >= root.pos && node.end <= root.end;
+    return inside ? this.ctx : "";
+  }
+  private siteClone(info: FunctionInfo, site: Node, args: number[]): FunctionInfo | null {
+    if (SITE_CLONES === 0 || info.isGenerator || ts.isSourceFile(info.node)) return null;
+    if (ts.isClassLikeDeclaration(info.node)) return null;
+    // A function walked in an enclosing clone's or receiver's context reads
+    // and writes that context's bindings of the variables it captures. A
+    // clone is its own context root, so it would resolve them in the
+    // default context instead, and their writes would be lost.
+    if (info.root !== null && info.root !== info.node) return null;
+    // A class's constructor and methods run in receiver contexts of their
+    // own, rooted at each member: inside a clone they too would resolve the
+    // function's bindings in the default context.
+    if (this.declaresClass(info.node)) return null;
+    const sc = this.argsFrom.get(args);
+    if (sc === undefined || sc.inLoop || this.forceLoop || this.repeatingSites.has(site))
+      return null;
+    const caller = sc.caller;
+    if (caller === null) return null;
+    // The clone itself, not a closure created inside it (which inherits
+    // its context but may run any number of times).
+    const callerInit =
+      ts.isSourceFile(caller.node) || (caller.ctx.includes("@S") && caller.root === caller.node);
+    if (!callerInit) return null;
+    // A clone inside a clone keys on the whole chain of sites.
+    const chain = caller.ctx.includes("@S") ? caller.ctx.slice(caller.ctx.indexOf("@S")) : "";
+    if (chain.split("@S").length > SITE_CLONE_DEPTH) return null;
+    const ctx = `${info.ctx}${chain}@S${this.nodeKey(site)}`;
+    const existing = this.functions.get(`${ctx}|${this.nodeKey(info.node)}`);
+    if (existing !== undefined) return existing;
+    const count = this.siteClones.get(info.node) ?? 0;
+    if (count >= SITE_CLONES) return null;
+    this.siteClones.set(info.node, count + 1);
+    // The clone keeps the function's receiver: an arrow's lexical `this`,
+    // and whatever reaches a function's own `this`, such as the receiver
+    // `bind` supplies.
+    const clone = this.functionInfo(info.node, info.ownerClass, ctx, info.thisNode);
+    if (!clone.isArrow) this.edge(info.thisNode, clone.thisNode);
+    return clone;
+  }
+
+  private readonly classDeclarers = new Map<Node, boolean>();
+  /** Whether a class declaration or expression is anywhere inside `node`. */
+  private declaresClass(node: Node): boolean {
+    let r = this.classDeclarers.get(node);
+    if (r === undefined) {
+      const visit = (n: Node): true | undefined =>
+        ts.isClassLikeDeclaration(n) ? true : ts.forEachChild(n, visit);
+      r = ts.forEachChild(node, visit) === true;
+      this.classDeclarers.set(node, r);
+    }
+    return r;
   }
 
   private readonly factories = new Map<Node, boolean>();
@@ -2099,11 +2189,11 @@ class Analyzer {
         hasProto = true;
       if (!keys.includes(key)) keys.push(key);
     }
-    const atom = this.atoms.intern(`obj:${this.nodeKey(e)}`, () => ({
-      kind: "object",
-      label: label(),
-      node: e,
-    }));
+    const sctx = this.siteCloneCtx(e);
+    const atom = this.atoms.intern(
+      sctx === "" ? `obj:${this.nodeKey(e)}` : `obj:${sctx}|${this.nodeKey(e)}`,
+      () => ({ kind: "object", label: label(), node: e, ...(sctx === "" ? {} : { ctx: sctx }) }),
+    );
     const n = this.newNode();
     this.add(n, atom);
     for (const p of list(e.properties)) {
@@ -2153,6 +2243,7 @@ class Analyzer {
         hasComputedKey,
         spreads,
         inPackage,
+        ctx: sctx,
       });
     return n;
   }
@@ -2291,11 +2382,16 @@ class Analyzer {
   }
 
   arrayLiteral(e: ts.ArrayLiteralExpression): number {
-    const atom = this.atoms.intern(`arr:${this.nodeKey(e)}`, () => ({
-      kind: "array",
-      label: `[]@${this.loc(e)}`,
-      node: e,
-    }));
+    const sctx = this.siteCloneCtx(e);
+    const atom = this.atoms.intern(
+      sctx === "" ? `arr:${this.nodeKey(e)}` : `arr:${sctx}|${this.nodeKey(e)}`,
+      () => ({
+        kind: "array",
+        label: `[]@${this.loc(e)}`,
+        node: e,
+        ...(sctx === "" ? {} : { ctx: sctx }),
+      }),
+    );
     const n = this.newNode();
     this.add(n, atom);
     const el = this.element(atom);
@@ -2320,6 +2416,7 @@ class Analyzer {
         hasComputedKey: false,
         spreads: [],
         inPackage: isPackageJsFile(e.getSourceFile()),
+        ctx: sctx,
       });
     return n;
   }
@@ -2830,8 +2927,20 @@ class Analyzer {
       }
       out.push(this.expr(a));
     }
+    // The walk context of this call (one argument list per call site and
+    // context): calls fire during solving, after the walk moved on.
+    this.argsFrom.set(out, {
+      caller: this.currentFn,
+      inLoop: this.loopDepth > 0 || this.forceLoop,
+    });
     return { args: out, spread };
   }
+
+  /** Per argument list (args()), the calling function and whether the call
+   * is in a loop, in the context the call was walked in. siteCtx keeps
+   * the first context per syntax node, which a site walked in several
+   * contexts (receiver classes, per-site clones) does not determine. */
+  private readonly argsFrom = new Map<number[], { caller: FunctionInfo | null; inLoop: boolean }>();
 
   call(e: ts.CallExpression): number {
     this.noteSite(e);
@@ -2980,7 +3089,7 @@ class Analyzer {
             this.on(info.ret, (r) => {
               if (r.kind !== "prim") this.add(dst, r);
             });
-            this.edgeFor(e, info);
+            this.edgeFor(e, info, args);
           }
           return;
         }
