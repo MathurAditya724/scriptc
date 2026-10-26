@@ -44,3 +44,7 @@ console.log(counts.get("omega") ?? fallback, counts.get("alpha") ?? fallback);
 let total = 0;
 for (const word of ["alpha", "beta", "omega"]) total += (counts.get(word) ?? 0) * 10;
 console.log(total, (counts.get("omega") ?? 0) === 0, (odd.get("nan") ?? 0) === (odd.get("nan") ?? 0));
+
+// A default of the same type that can itself be undefined keeps its value.
+const spare = [4, 5];
+console.log(counts.get("omega") ?? spare[9], counts.get("beta") ?? spare[9], counts.get("omega") ?? spare[1]);

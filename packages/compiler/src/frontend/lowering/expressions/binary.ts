@@ -334,6 +334,25 @@ function isMemberReceiver(node: ts.Expression): boolean {
   );
 }
 
+/** A literal default (`0`, `-1`, `""`, `true`): it always has its own type.
+ * Other defaults, such as an element read that can be undefined, keep the
+ * dynamic path. */
+function literalDefault(node: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (
+    ts.isPrefixUnaryExpression(node) &&
+    (node.operator === ts.SyntaxKind.MinusToken || node.operator === ts.SyntaxKind.PlusToken)
+  )
+    node = node.operand;
+  return (
+    ts.isNumericLiteral(node) ||
+    ts.isStringLiteral(node) ||
+    ts.isNoSubstitutionTemplateLiteral(node) ||
+    node.kind === ts.SyntaxKind.TrueKeyword ||
+    node.kind === ts.SyntaxKind.FalseKeyword
+  );
+}
+
 export function lowerNullishPair(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -392,7 +411,13 @@ export function lowerNullishPair(
     // default of its value's type give a scalar, so the test and the default
     // run on the typed path and only the result converts. Converting the
     // optional left itself would allocate a union for every read.
-    if (rest.length === 1 && primitive(rest[0]!) && rightType && typeEquals(rightType, rest[0]!)) {
+    if (
+      rest.length === 1 &&
+      primitive(rest[0]!) &&
+      rightType &&
+      typeEquals(rightType, rest[0]!) &&
+      literalDefault(expr.right)
+    ) {
       const typed: IrExpr = {
         kind: "nullish",
         left,
