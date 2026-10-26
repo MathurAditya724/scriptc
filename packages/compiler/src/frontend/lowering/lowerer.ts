@@ -1168,6 +1168,10 @@ export function lowerToIr(
 function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnostic[]): void {
   for (const d of fences) {
     if (!d.loc.file.includes("/node_modules/")) continue;
+    // A fence without a source position belongs to synthesized code, such
+    // as the global object's lookup (global-values.ts), which runs when the
+    // program calls it, not when the module evaluates.
+    if (d.loc.start < 0) continue;
     const sf = program.getSourceFile(d.loc.file);
     if (sf === undefined) continue;
     let inFunction = false;
