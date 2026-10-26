@@ -93,6 +93,7 @@ import {
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
 import { loopAccessesTypedArrays } from "../loop-polls.js";
+import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
 
 /** A callback loop version copies the loop; keep the copies small. */
 const MAX_CALLBACK_VERSION_COST = 400;
@@ -837,6 +838,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "if": {
+      // A chain storing one of several literals to one element stores a
+      // table entry instead (debug builds keep the arms to step through).
+      const choice = emitter.debug === null ? matchConstantChoice(s) : null;
+      if (choice !== null) {
+        emitConstantChoice(emitter, choice);
+        break;
+      }
       const cond = emitter.emitCondition(s.cond);
       const trueLabel = B.newLabel("if.t");
       const joinLabel = B.newLabel("if.j");
