@@ -1,4 +1,5 @@
 import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
+import { shapeOverlayAnnotated } from "../shape-inference/index.js";
 import {
   DATE_TIME_FIELD,
   dateRootOf,
@@ -1181,7 +1182,14 @@ function jsFieldInitializerType(lowerer: Lowerer, type: IrType, expression: ts.E
     )
       return DYN;
   }
-  if (type.kind === "array" || type.kind === "record") return DYN;
+  // Shape inference's overlay types a field as a record or array only when
+  // the analysis proves its values never reach code that could observe a
+  // copy, so those fields keep their native layout.
+  if (
+    (type.kind === "array" || type.kind === "record") &&
+    !shapeOverlayAnnotated(expression.parent?.parent ?? expression)
+  )
+    return DYN;
   // JavaScript documentation cannot guarantee that a call or an indexed
   // read returns a present number. Numeric fields receiving those values
   // must retain undefined, so later arithmetic performs JS coercion (NaN).
@@ -3374,6 +3382,7 @@ export function collectClassShapeInner(
           !functionLocalClass(decl) &&
           ts.isIdentifier(member.name) &&
           !lowerer.virtualJsMethods.has(member) &&
+          !lowerer.checkedJsOverrideMethods.has(member) &&
           !lowerer.prototypeMethodAccesses.has(member.name.text) &&
           inst === undefined &&
           decl.typeParameters === undefined &&
@@ -7695,6 +7704,16 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
                 if (
                   ts.isMethodDeclaration(declaration) &&
                   isJsSourceFile(ts.getSourceFileOfNode(declaration)) &&
+                  checkedJsOverride(lowerer, declaration, member)
+                ) {
+                  // A checked override pair dispatches through the vtable,
+                  // so neither side may become an implicit generic.
+                  lowerer.checkedJsOverrideMethods.add(declaration);
+                  lowerer.checkedJsOverrideMethods.add(member);
+                }
+                if (
+                  ts.isMethodDeclaration(declaration) &&
+                  isJsSourceFile(ts.getSourceFileOfNode(declaration)) &&
                   !checkedJsOverride(lowerer, declaration, member)
                 ) {
                   lowerer.virtualJsMethods.add(declaration);
@@ -7778,7 +7797,7 @@ function checkedJsOverride(
 ): boolean {
   return [base, member].every(
     (method) =>
-      lowerer.checkedJsFile(ts.getSourceFileOfNode(method)) &&
+      (lowerer.checkedJsFile(ts.getSourceFileOfNode(method)) || shapeOverlayAnnotated(method)) &&
       method.parameters.nodes.every(documentedParameter),
   );
 }

@@ -10,7 +10,8 @@
  *       "encoding": "unloaded",          // never loaded (package-shims.ts)
  *       "dd-trace": "node",              // run in a Node island
  *       "hot-shots": "native",           // must compile natively (SC8003)
- *       "proper-lockfile": { "run": "node", "evaluate": "lazy" }
+ *       "proper-lockfile": { "run": "node", "evaluate": "lazy" },
+ *       "zod": { "shapes": false }       // no shape-inference overlay
  *     },
  *     "nodeIslands": { "auto": true, "modules": ["src/plugins/*.ts"] },
  *     "wasm": ["build/module.wasm"],
@@ -40,9 +41,12 @@ export type PackageMarshal = "copy" | "handles";
 export type PackageSchedule = "lockstep" | "free";
 
 /** One `scriptc.packages.<name>` entry. `unloaded` packages never load;
- * the other settings choose where the package runs. */
+ * `shapes: false` compiles the package without shape inference's typed
+ * overlay (shape-inference/overlay.ts); the other settings choose where the
+ * package runs. */
 export interface PackageSetting {
   unloaded: boolean;
+  shapes: boolean;
   run: PackageRun;
   evaluate: PackageEvaluate;
   share: PackageShare;
@@ -117,6 +121,9 @@ const PACKAGE_OBJECT_KEYS: Record<string, string[]> = {
   marshal: ["copy", "handles"],
   schedule: ["lockstep", "free"],
 };
+/** Every key of a package setting object: the string-valued ones above and
+ * the boolean `shapes`. */
+const PACKAGE_SETTING_KEYS = [...Object.keys(PACKAGE_OBJECT_KEYS), "shapes"];
 const NODE_ISLANDS_KEYS = [
   "auto",
   "modules",
@@ -129,6 +136,7 @@ const NODE_ISLANDS_KEYS = [
 function defaultPackageSetting(): PackageSetting {
   return {
     unloaded: false,
+    shapes: true,
     run: "auto",
     evaluate: "auto",
     share: "auto",
@@ -223,7 +231,7 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
             problem(
               ["packages", name],
               `has the unknown value ${shown(value)}`,
-              `use one of ${quoted(PACKAGE_STRINGS)}, or an object with ${Object.keys(PACKAGE_OBJECT_KEYS).join(", ")}`,
+              `use one of ${quoted(PACKAGE_STRINGS)}, or an object with ${PACKAGE_SETTING_KEYS.join(", ")}`,
             );
             continue;
           }
@@ -236,12 +244,24 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
           problem(
             ["packages", name],
             `must be a string or an object, not ${shown(value)}`,
-            `use one of ${quoted(PACKAGE_STRINGS)}, or an object with ${Object.keys(PACKAGE_OBJECT_KEYS).join(", ")}`,
+            `use one of ${quoted(PACKAGE_STRINGS)}, or an object with ${PACKAGE_SETTING_KEYS.join(", ")}`,
           );
           continue;
         }
         let valid = true;
         for (const key of Object.keys(value)) {
+          if (key === "shapes") {
+            const v = value[key];
+            if (typeof v !== "boolean") {
+              problem(
+                ["packages", name, key],
+                `must be true or false, not ${shown(v)}`,
+                "use a boolean",
+              );
+              valid = false;
+            } else setting.shapes = v;
+            continue;
+          }
           const allowed = Object.hasOwn(PACKAGE_OBJECT_KEYS, key)
             ? PACKAGE_OBJECT_KEYS[key]
             : undefined;
@@ -249,7 +269,7 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
             problem(
               ["packages", name, key],
               "is not a known package setting",
-              `the settings are ${Object.keys(PACKAGE_OBJECT_KEYS).join(", ")}`,
+              `the settings are ${PACKAGE_SETTING_KEYS.join(", ")}`,
             );
             valid = false;
             continue;

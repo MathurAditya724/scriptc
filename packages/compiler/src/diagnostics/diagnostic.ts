@@ -64,7 +64,10 @@
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
  *            likely-hot functions that use untyped values (SC6101,
- *            diagnostics/dynamic-tier.ts)
+ *            diagnostics/dynamic-tier.ts), package files whose projected
+ *            declaration types were dropped (SC6102), and shape inference's
+ *            overlay report: what it typed and how many inferred facts the
+ *            build checks (SC6103, frontend/shape-inference)
  *   SC8xxx  Node island policy: packages and modules outside the native
  *            subset that run (or, in report-only mode, would run) in a
  *            Node island — unknown project configuration (SC8004), a

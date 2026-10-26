@@ -641,6 +641,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
         ? {}
         : { profileUse: resolve(values["profile-use"]) }),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(values["shape-overlay"] === false ? { shapeOverlay: false } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
       ...(tier !== undefined ? { tier } : {}),

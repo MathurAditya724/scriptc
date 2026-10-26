@@ -1,3 +1,4 @@
+import { shapeOverlayAnnotated } from "../shape-inference/index.js";
 import {
   typedArgumentsCandidate,
   typedArgumentsShapes,
@@ -181,6 +182,12 @@ export function checkedJsDocumentedParameter(
   lowerer: Lowerer,
   param: ts.ParameterDeclaration,
 ): boolean {
+  if (
+    param.parent !== undefined &&
+    shapeOverlayAnnotated(param.parent) &&
+    documentedParameter(param)
+  )
+    return true;
   return lowerer.checkedJsFile(ts.getSourceFileOfNode(param)) && documentedParameter(param);
 }
 
