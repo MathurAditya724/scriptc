@@ -116,6 +116,7 @@ import {
   requireSpecOf,
 } from "../program.js";
 import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
+import { declarationGroupKey } from "./type-failure.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
@@ -2297,11 +2298,17 @@ export function collectClassShapeInner(
       base = named;
       if (!base) {
         if (adoptCallableBase(t.expression)) continue;
-        lowerer.unsupported(
+        const diag = unsupportedDiag(
           "SC1090",
-          t,
+          locOf(t),
           `extending classes not declared in the program ('${t.expression.text}')`,
         );
+        // A base the program declares but rejected: this rejection is its
+        // cascade (localized failure, report-only).
+        const rejectedBase = rejectedProgramClassGroup(lowerer, symbol);
+        if (rejectedBase !== null) diag.cause = [rejectedBase];
+        lowerer.pushDiag(diag);
+        throw new PoisonError();
       }
     }
 
@@ -2542,8 +2549,7 @@ export function collectClassShapeInner(
             (member.type !== undefined ||
               (lowerer.typeOf(member.name).flags & ts.TypeFlags.Any) === 0)
           ) {
-            lowerer.unsupported(
-              "SC1090",
+            lowerer.dynFieldPolicyFence(
               member.name,
               `${dynFieldTypeSpelling(lowerer, member.name)}-typed static fields`,
             );
@@ -3059,8 +3065,7 @@ export function collectClassShapeInner(
           !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
           !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name))
         ) {
-          lowerer.unsupported(
-            "SC1090",
+          lowerer.dynFieldPolicyFence(
             member.name,
             `${dynFieldTypeSpelling(lowerer, member.name)}-typed class fields`,
           );
@@ -3197,8 +3202,7 @@ export function collectClassShapeInner(
           if (type.kind === "void") lowerer.badType(p.name, lowerer.typeOf(p.name));
           // The class-field dyn rule verbatim (KEEP NARROW).
           if (type.kind === "dyn" && !lowerer.classFieldStoresDyn(lowerer.typeOf(p))) {
-            lowerer.unsupported(
-              "SC1090",
+            lowerer.dynFieldPolicyFence(
               p.name,
               `${dynFieldTypeSpelling(lowerer, p)}-typed class fields`,
             );
@@ -11849,4 +11853,15 @@ function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaratio
     return undefined;
   });
   return found;
+}
+
+/** The failure group of a class the program declares but did not collect
+ * (its own declaration was rejected), or null for any other symbol. */
+function rejectedProgramClassGroup(lowerer: Lowerer, symbol: ts.Symbol | null): string | null {
+  if (symbol === null) return null;
+  const recorded = lowerer.rejectedGroups.get(symbol);
+  if (recorded !== undefined) return recorded;
+  const decl = symbol.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
+  if (decl === undefined || ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
+  return declarationGroupKey(symbol);
 }

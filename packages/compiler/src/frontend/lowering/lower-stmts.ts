@@ -41,6 +41,8 @@ import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
 import { lowerConstructorReturn } from "./constructor-returns.js";
 import type { Lowerer } from "./lowerer.js";
+import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
+import { statementGroupKey } from "./type-failure.js";
 import {
   cjsExportValueByName,
   cjsNamespaceDestructureOf,
@@ -750,6 +752,8 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       if (!lowerer.suppressStats) lowerer.countStatement(stmt, sf?.fileName);
       const diagsBefore = lowerer.diags.length;
       const sinkMark = lowerer.diagSinkMark();
+      const touched = new Set<string>();
+      lowerer.failureTouches.push(touched);
       try {
         let lowered: IrStmt | IrStmt[] | null;
         let appended = false;
@@ -813,7 +817,17 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
           throw e;
         }
         if (!lowerer.suppressStats) lowerer.countStatementFailed(stmt, sf?.fileName);
-        lowerer.noteBlockedBindings(stmt);
+        // Localized failure (report-only): the statement's committed
+        // diagnostics that are not themselves type failures or rejected
+        // declarations are cascades of the rejected declarations it used.
+        const committed =
+          lowerer.diagSink === null && !deferFences ? lowerer.diags.slice(diagsBefore) : [];
+        if (touched.size > 0) {
+          const cause = [...touched];
+          for (const d of committed)
+            if (d.typeFailure === undefined && d.rejects === undefined) d.cause ??= cause;
+        }
+        lowerer.noteBlockedBindings(stmt, committed);
         // The runtime-fence conversion (JS sources, direct diagnostics
         // only — a capture wrapper in force means collection owns the
         // report). The statement's diagnostics move OFF the build and
@@ -837,6 +851,8 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
           const fence = lowerer.capturedRuntimeFence(sinkMark, stmt);
           if (fence) out.push(fence);
         }
+      } finally {
+        lowerer.failureTouches.pop();
       }
     }
     // Each acquisition protects the remainder of its lexical statement
@@ -1522,7 +1538,11 @@ function noteEarlyReadVar(lowerer: Lowerer, symbol: ts.Symbol, local: IrLocal): 
  * lowerVarDecl's salvage path declares the local when it can, and
  * resolution checks locals/globals before the fallthroughs consult
  * blockedBindings. */
-export function noteBlockedBindings(lowerer: Lowerer, stmt: ts.Statement): void {
+export function noteBlockedBindings(
+  lowerer: Lowerer,
+  stmt: ts.Statement,
+  diags: readonly ScrDiagnostic[] = [],
+): void {
   let list: ts.VariableDeclarationList | null = null;
   if (ts.isVariableStatement(stmt)) list = stmt.declarationList;
   else if (
@@ -1533,12 +1553,20 @@ export function noteBlockedBindings(lowerer: Lowerer, stmt: ts.Statement): void 
     list = stmt.initializer;
   }
   if (!list) return;
+  // Localized failure (report-only): the bindings form one failure group,
+  // the statement, whose diagnostics are the group's.
+  const group = statementGroupKey(stmt);
+  let bound = false;
   for (const decl of list.declarations.nodes) {
     for (const nameNode of boundIdentifiersOf(decl.name)) {
       const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
-      if (symbol) lowerer.blockedBindings.add(symbol);
+      if (!symbol) continue;
+      lowerer.blockedBindings.add(symbol);
+      if (!lowerer.rejectedGroups.has(symbol)) lowerer.rejectedGroups.set(symbol, group);
+      bound = true;
     }
   }
+  if (bound) for (const d of diags) d.rejects ??= group;
 }
 
 /** True when a reference/assignment fell through resolution because the
@@ -1548,12 +1576,13 @@ export function noteBlockedBindings(lowerer: Lowerer, stmt: ts.Statement): void 
  * flushed by the emit pass). */
 export function isBlockedBinding(lowerer: Lowerer, symbol: ts.Symbol | null): boolean {
   if (!symbol) return false;
-  return (
+  const blocked =
     lowerer.blockedBindings.has(symbol) ||
     lowerer.deferredDiags.has(symbol) ||
     lowerer.flushedSymbols.has(symbol) ||
-    lowerer.alreadyFlushed.has(symbol)
-  );
+    lowerer.alreadyFlushed.has(symbol);
+  if (blocked) lowerer.touchRejected(symbol);
+  return blocked;
 }
 
 /** Lowers a statement in a fresh lexical scope (if/while/for bodies). */
