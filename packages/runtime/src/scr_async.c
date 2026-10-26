@@ -5868,7 +5868,10 @@ __attribute__((always_inline)) static inline void scr_gen_coro_hop(ScrGen *g, bo
 static __attribute__((noinline)) void scr_async_gen_coro_in(ScrGen *g) {
   uintptr_t guard = scr_stack_guard;
   if (guard != 0 && (uintptr_t)__builtin_frame_address(0) < guard) {
-    scr_stack_overflow();
+    /* scr_stack_overflow's error, thrown here: this unit links without
+     * scr_context.c in the runtime's own tests. */
+    static const char text[] = "Maximum call stack size exceeded";
+    scr_throw_error_msg(SCR_ERR_RANGE, text, sizeof text - 1);
     return;
   }
   scr_gen_coro_hop(g, true, false);
