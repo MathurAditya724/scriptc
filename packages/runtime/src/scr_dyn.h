@@ -1561,6 +1561,9 @@ ScrDyn *scr_dyn_builtin_stream_object(struct ScrStream *s);
 ScrDyn *scr_dyn_builtin_stream_view(struct ScrStream *s);
 struct ScrStream *scr_dyn_builtin_stream_check(const ScrDyn *value, double kind);
 struct ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr *message);
+/* stream.unboxDynStage in those programs (scr_stream_unbox_dyn_stage's
+ * contract, also taking constructor-function streams). */
+struct ScrStream *scr_dyn_builtin_stream_unbox_stage(const ScrDyn *value, const ScrStr *message);
 /* stream.dynNative in those programs: scr_stream_dyn_native's contract,
  * also taking constructor-function streams that keep the runtime's write
  * and end (+1 or NULL). */

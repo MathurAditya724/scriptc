@@ -156,7 +156,10 @@ import { blockedBindingUseDiag } from "../../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
 import { createRequireCalleeFileOf } from "../builtins/module-bindings.js";
-import { createRequireResolveFenceValue } from "../builtins/module-resolution.js";
+import {
+  createRequireResolveFenceValue,
+  createRequireResolveValue,
+} from "../builtins/module-resolution.js";
 import {
   builtinPrototypeMethod,
   lowerArrayIsArrayValue,
@@ -307,6 +310,7 @@ function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessEx
   )
     resolve = expr.expression;
   return (
+    !expr.questionDotToken &&
     ts.isPropertyAccessExpression(resolve) &&
     resolve.name.text === "resolve" &&
     createRequireCalleeFileOf(lowerer, resolve.expression) !== null
@@ -1349,10 +1353,13 @@ export function lowerPropertyAccessExpr(
     }
   }
   // A createRequire loader's resolve read as a value (passed on, or
-  // picked by `??`): resolution happens at build time, so only calls
-  // with a literal specifier lower.
+  // picked by `??`): a function that resolves its request at run time.
+  // resolve.paths read as a value has no run-time lowering: a function
+  // that throws the fence when called.
   if (isCreateRequireResolveValue(lowerer, expr))
-    return createRequireResolveFenceValue(lowerer, expr, loc);
+    return expr.name.text === "paths"
+      ? createRequireResolveFenceValue(lowerer, expr, loc)
+      : createRequireResolveValue(lowerer, expr, loc);
   // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
   // no lowering above claimed ([1,2].entries, Math.SQRT2, Promise.all,
   // re.exec as a value, ...) reports SC2020 here.

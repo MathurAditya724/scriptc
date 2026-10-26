@@ -80,6 +80,7 @@ export interface EarlyExecutableNativeFeatures {
   utilTiming?: boolean;
   dynBuffer?: boolean;
   builtinValues?: boolean;
+  computedRequire?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
