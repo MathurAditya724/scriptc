@@ -651,6 +651,7 @@ export function coverageEnvelope(
             code: slot.code,
             reason: slot.reason,
             ...(slot.partial === true ? { partial: true } : {}),
+            dynamicOps: slot.operations ?? 0,
           })),
         }
       : {}),
@@ -763,9 +764,14 @@ function renderDynamicSlots(
   out.push(
     `    dynamic slots       ${slots.length}  ${c(DIM, "(declared types with no static lowering, held as checked-dynamic values; SC6104)")}`,
   );
-  for (const slot of slots.slice(0, DYNAMIC_SLOTS_SHOWN))
+  // The costly slots first: most dynamic operations, then source order.
+  const ranked = slots
+    .map((slot, index) => ({ slot, index }))
+    .sort((a, b) => (b.slot.operations ?? 0) - (a.slot.operations ?? 0) || a.index - b.index)
+    .map(({ slot }) => slot);
+  for (const slot of ranked.slice(0, DYNAMIC_SLOTS_SHOWN))
     out.push(
-      `      ${dynamicSlotLabel(slot)}${slot.partial === true ? " (dynamic pieces)" : ""}  ${c(DIM, where(slot.loc))}`,
+      `      ${dynamicSlotLabel(slot)}${slot.partial === true ? " (dynamic pieces)" : ""}  ${c(DIM, `${where(slot.loc)}${(slot.operations ?? 0) > 0 ? `, ${slot.operations} dynamic operation${slot.operations === 1 ? "" : "s"}` : ""}`)}`,
     );
   if (slots.length > DYNAMIC_SLOTS_SHOWN)
     out.push(`      ${c(DIM, `and ${slots.length - DYNAMIC_SLOTS_SHOWN} more`)}`);

@@ -183,7 +183,7 @@ import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
-import { dynamicTierWarning } from "./dynamic-tier.js";
+import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
 import {
   analyzeTiers,
@@ -1364,7 +1364,9 @@ export function lowerToIr(
   }
   // Localized failure (SC6104): one performance warning per dynamic slot.
   if (resultLowerer.dynamicSlots.length > 0) {
+    const operations = dynamicSlotOperationCounts(resultLowerer, resultLowerer.dynamicBodies);
     const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot) => ({
+      operations: operations.get(slot.failure.declaredType) ?? 0,
       loc: slot.loc,
       name: slot.failure.name,
       slot: slot.failure.slot,
@@ -3916,6 +3918,10 @@ export class Lowerer {
    * commit points (degradeAtCommit), so a program that compiles today
    * never fills it. */
   readonly degradedTypes = new Map<number, DegradedType>();
+  /** The components lenient mappings turned into the checked dynamic, by
+   * checker type id, with the declared type they are pieces of (SC6101
+   * causes and per-slot operation counts). */
+  readonly lenientPieces = new Map<number, string>();
   /** One frame per unit a commit point may retry: the pushed-down
    * (partial) degraded types its lowering mapped (withPartialHits). */
   readonly partialHits: Set<number>[] = [];
@@ -9898,7 +9904,16 @@ export class Lowerer {
    * that shape does not map. Throwaway context: nothing memoizes. */
   lenientType(type: ts.Type): IrType {
     const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
-    const mapped = mapType(type, { ...strict, lenient: true, canMemoizeType: () => false });
+    const owner = this.checker.typeToString(type);
+    const mapped = mapType(type, {
+      ...strict,
+      lenient: true,
+      canMemoizeType: () => false,
+      onLenientPiece: (piece) => {
+        const id = (piece as { id?: number }).id;
+        if (id !== undefined && !this.lenientPieces.has(id)) this.lenientPieces.set(id, owner);
+      },
+    });
     return mapped === null || mapped.kind === "void" ? DYN : mapped;
   }
 

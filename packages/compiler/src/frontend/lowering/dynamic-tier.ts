@@ -208,9 +208,41 @@ function identifierCause(lowerer: Lowerer, id: ts.Identifier, depth = 0): Untype
   return null;
 }
 
+/** A dynamic slot (localized failure): the node's declared type degraded
+ * to the checked dynamic, wholly or in pieces. Null while nothing degraded. */
+function slotCause(lowerer: Lowerer, n: ts.Node): UntypedCause | null {
+  if (lowerer.degradedTypes.size === 0) return null;
+  if (!ts.isIdentifier(n) && !ts.isPropertyAccessExpression(n)) return null;
+  // The declared type of the binding or property, not its narrowed flow
+  // type (narrowing makes new checker types).
+  let symbol = lowerer.checker.getSymbolAtLocation(ts.isIdentifier(n) ? n : n.name);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  const type =
+    symbol !== undefined && (symbol.flags & VALUE_BINDING) !== 0
+      ? lowerer.checker.getTypeOfSymbol(symbol)
+      : lowerer.checker.getTypeAtLocation(n);
+  const id = (type as { id?: number }).id ?? -1;
+  // A whole degraded type, or a dynamic piece of a pushed-down one. A type
+  // that is also a slot of its own belongs to that slot, not to a container
+  // it is a piece of.
+  const owner = lowerer.degradedTypes.has(id) ? undefined : lowerer.lenientPieces.get(id);
+  if (!lowerer.degradedTypes.has(id) && owner === undefined) return null;
+  const text = ts.getTextOfNode(n);
+  const declaredType = lowerer.checker.typeToString(type);
+  return {
+    kind: "slot",
+    name: text.length > 40 ? `${text.slice(0, 37)}...` : text,
+    declaredType,
+    ...(owner !== undefined && owner !== declaredType ? { owner } : {}),
+  };
+}
+
 /** Why a node's value has no static type, or null. */
 function nodeCause(lowerer: Lowerer, n: ts.Node): UntypedCause | null {
   if (isJsonParse(n)) return { kind: "json" };
+  const slot = slotCause(lowerer, n);
+  if (slot !== null) return slot;
   const id = rootIdentifier(n);
   return id === null ? null : identifierCause(lowerer, id);
 }
@@ -253,6 +285,10 @@ function causeOf(lowerer: Lowerer, sites: readonly { loc: SrcLoc }[]): UntypedCa
 
 /** Generated functions (see scanDynamicTier), after any module prefix. */
 const GENERATED = /^%*(?:m\d+\.)?%*(?:dyn|caught|init)\./;
+
+/** Generated helpers that repeat their callers' locations: `%dyn.*` and
+ * `%caught.*`, but not a module's top level (`%init.*`). */
+const HELPERS = /^%*(?:m\d+\.)?%*(?:dyn|caught)\./;
 
 /** The likely-hot dynamic-tier functions of `module` (see the header). */
 export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTierReport {
@@ -381,4 +417,27 @@ export function dynamicTierWarning(
     report.packages,
     first.loc,
   );
+}
+
+/** Localized failure: dynamic operations attributed to each dynamic slot
+ * (by declared type), over the dynamic-tier functions of the program. A
+ * site counts for the slot the SC6101 cause search names at it. */
+export function dynamicSlotOperationCounts(
+  lowerer: Lowerer,
+  bodies: readonly IrFunction[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  if (lowerer.degradedTypes.size === 0) return counts;
+  for (const fn of bodies) {
+    // Generated helpers repeat their callers' locations; top-level code
+    // (`%init.*`) counts like any function.
+    if (HELPERS.test(fn.name)) continue;
+    for (const site of dynamicOperationSites(fn)) {
+      const cause = causeAt(lowerer, site.loc);
+      if (cause?.kind !== "slot") continue;
+      const slot = cause.owner ?? cause.declaredType;
+      counts.set(slot, (counts.get(slot) ?? 0) + 1);
+    }
+  }
+  return counts;
 }
