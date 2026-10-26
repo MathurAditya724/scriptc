@@ -172,6 +172,8 @@ export interface DiagnosticsEnvelope {
     declaredType: string;
     code: string;
     reason: string;
+    partial?: boolean;
+    dynamicOps: number;
   })[];
   /** coverage --explain-dynamic only: the report-only tier assignment. */
   tiers?: TiersEnvelope;
@@ -239,7 +241,7 @@ export function isDivergenceCode(code: string): boolean {
 }
 
 export function categoryOf(diag: ScrDiagnostic): DiagnosticCategory {
-  const code = diag.code;
+  const code: string = diag.code;
   if (isDivergenceCode(code)) return "divergence";
   if (isPerformanceCode(code)) return "performance";
   if (code === "SC0001") return diag.typeWorld === true ? "environment" : "invalid-source";
@@ -257,7 +259,7 @@ export function categoryOf(diag: ScrDiagnostic): DiagnosticCategory {
  * carries one. */
 export function hintOf(diag: ScrDiagnostic): string {
   if (diag.hint !== undefined && diag.hint !== "") return diag.hint;
-  const code = diag.code;
+  const code: string = diag.code;
   if (code === "SC0001")
     return "fix the TypeScript error; scriptc only compiles programs that typecheck under its type world (strict null checks, the ES2025 library, Node types)";
   if (code === "SC1090")

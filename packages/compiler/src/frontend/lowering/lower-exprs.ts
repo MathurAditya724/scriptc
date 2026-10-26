@@ -1,3 +1,4 @@
+import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import {
   arrayClassMemberOwner,
   arrayOfClassInstance,
@@ -818,7 +819,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   const entry = UNSUPPORTED_EXPR[expr.kind];
   if (entry)
     lowerer.unsupported(
-      entry.code as `SC${number}` & keyof typeof UNSUPPORTED,
+      entry.code as DiagnosticCode & keyof typeof UNSUPPORTED,
       expr,
       entry.feature,
     );

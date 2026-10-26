@@ -1,7 +1,14 @@
 import { emitPerKeyOrder } from "./key-orders.js";
 import { typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
-import { BYTES_ELEM_NUM, SCR_ARR_FIELD, SCR_ARR_STATES, f64Lit, sizeToDouble } from "./common.js";
+import {
+  BYTES_ELEM_NUM,
+  CLOSURE_KIND,
+  SCR_ARR_FIELD,
+  SCR_ARR_STATES,
+  f64Lit,
+  sizeToDouble,
+} from "./common.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   INLINE_UNION_FIELD,
@@ -145,8 +152,8 @@ const DYN_HANDLE_UNBOX_FN: Record<string, string> = {
   dgramSocket: "scr_dgram_from_dyn",
 };
 
-/** ScrMessageKind (scr_message.h): the node kinds message readers test. */
-const MESSAGE_KIND = {
+/** ScrMessageKind (scr_dyn.h): the node kinds message readers test. */
+export const MESSAGE_KIND = {
   UNDEFINED: 0,
   NULL: 1,
   BOOL: 2,
@@ -3174,7 +3181,7 @@ export class LlDyn {
         B.line(`${targetKind} = getelementptr inbounds %ScrClosure, ptr ${a}, i64 0, i32 4`);
         const adapterKind = B.tmp();
         B.line(
-          `${adapterKind} = or i32 ${functionKind}, 8 ; preserves the checked callable in caps[0]`,
+          `${adapterKind} = or i32 ${functionKind}, ${CLOSURE_KIND.CHECKED_ADAPTER} ; preserves the checked callable in caps[0]`,
         );
         B.line(`store i32 ${adapterKind}, ptr ${targetKind}`);
         const box = B.tmp();
