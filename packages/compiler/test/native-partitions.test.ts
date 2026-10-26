@@ -29,8 +29,7 @@ afterEach(async () => {
 
 /** A program whose internal functions, constants and state must stay
  * reachable across partitions. `edit` changes one function's addend. */
-function program(edit = 0, extra = ""): string {
-  const count = 24;
+function program(edit = 0, extra = "", count = 24): string {
   const lines = [
     "; partitioned program",
     "%Pair = type { i64, i64 }",
@@ -74,11 +73,12 @@ function program(edit = 0, extra = ""): string {
   return lines.join("\n") + "\n";
 }
 
-function expectedExit(edit = 0): number {
-  const addends = Array.from({ length: 24 }, (_, index) => (index === 5 ? index + edit : index));
+function expectedExit(edit = 0, count = 24): number {
+  const addends = Array.from({ length: count }, (_, index) => (index === 5 ? index + edit : index));
   let total = 5; // strlen("total")
-  for (let start = 0; start < 24; start++)
-    for (let index = start; index < 24; index++) total += (start === 0 ? 4 : 1) * addends[index]!;
+  for (let start = 0; start < count; start++)
+    for (let index = start; index < count; index++)
+      total += (start === 0 ? 4 : 1) * addends[index]!;
   return total % 251;
 }
 
@@ -161,6 +161,155 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       expect(await exitCode(dir, edited, "edited")).toBe(expectedExit(7));
     });
   }
+
+  test("functions under one group line share a partition", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-groups-"));
+    dirs.push(dir);
+    // Groups of four steps, each smaller than the mean partition; main ends
+    // the last group. Placement by group applies from 32 partitions.
+    const steps = 128;
+    const grouped = (edit: number, count = steps) =>
+      program(edit, "", count)
+        .split("\n")
+        .flatMap((line) => {
+          const step = /^define internal void @step(\d+)\(/.exec(line);
+          if (step !== null && Number(step[1]) % 4 === 0)
+            return [`; scriptc-group ${Number(step[1]) / 4}`, line];
+          return line.startsWith("define i32 @main(") ? ["; scriptc-group", line] : [line];
+        })
+        .join("\n");
+    const cache = join(dir, "cache");
+    const options = { outputs: 32, optLevel: "0", cache } as const;
+    const objects = await emit(dir, grouped(0), { ...options, name: "grouped" });
+    expect(await exitCode(dir, objects, "grouped")).toBe(expectedExit(0, steps));
+    const owner = new Map<number, number>();
+    for (const [index, object] of objects.entries()) {
+      const { stdout } = await execFileAsync("nm", [object]);
+      for (const line of stdout.split("\n")) {
+        const defined = /^[0-9a-fA-F]+ [A-Za-z] _?step(\d+)$/.exec(line.trim());
+        if (defined !== null) owner.set(Number(defined[1]), index);
+      }
+    }
+    expect(owner.size).toBe(steps);
+    // step0's only caller is main, so it goes with main.
+    for (let group = 0; group < steps / 4; group++) {
+      const members = [0, 1, 2, 3].map((offset) => group * 4 + offset).filter((step) => step > 0);
+      expect(new Set(members.map((step) => owner.get(step))).size).toBe(1);
+    }
+
+    // An edit to one function still changes one partition's source.
+    const sources = await cacheEntries(cache, ".o");
+    const edited = await emit(dir, grouped(7), { ...options, name: "edited" });
+    const after = await cacheEntries(cache, ".o");
+    expect([...after].filter((entry) => !sources.has(entry))).toHaveLength(1);
+    expect(await exitCode(dir, edited, "edited")).toBe(expectedExit(7, steps));
+
+    // With fewer partitions, functions keep their placement by name, and a
+    // group line only stops a single-caller chain: step0 joins main without
+    // groups, and keeps its own placement in group 0.
+    const few = { outputs: 4, optLevel: "0" } as const;
+    const placed = async (objects: string[]) => {
+      const where = new Map<string, number>();
+      for (const [index, object] of objects.entries()) {
+        const { stdout } = await execFileAsync("nm", [object]);
+        for (const line of stdout.split("\n")) {
+          const defined = /^[0-9a-fA-F]+ [A-Za-z] _?(step\d+|main)$/.exec(line.trim());
+          if (defined !== null) where.set(defined[1]!, index);
+        }
+      }
+      return where;
+    };
+    const fewGrouped = await placed(
+      await emit(dir, grouped(0, 24), { ...few, name: "few-grouped" }),
+    );
+    const fewPlain = await placed(await emit(dir, program(), { ...few, name: "few-plain" }));
+    expect(fewPlain.get("step0")).toBe(fewPlain.get("main"));
+    for (let step = 1; step < 24; step++)
+      expect(fewGrouped.get(`step${step}`)).toBe(fewPlain.get(`step${step}`));
+    expect(fewGrouped.get("main")).toBe(fewPlain.get("main"));
+  });
+
+  test("internal definitions nothing reaches are left out of every partition", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-unreachable-"));
+    dirs.push(dir);
+    // An unreferenced internal function that uses live code and its own
+    // state, which only it references.
+    const unused = (name: string) =>
+      [
+        `@${name}State = internal global i64 7`,
+        `define internal void @${name}(i64 %value) {`,
+        `  %state = load i64, ptr @${name}State`,
+        "  call void @bump(i64 %state)",
+        "  ret void",
+        "}",
+      ].join("\n");
+    const cache = join(dir, "cache");
+    const options = { outputs: 4, optLevel: "0", cache } as const;
+    const objects = await emit(dir, program(0, unused("unusedOne")), { ...options, name: "first" });
+    expect(await exitCode(dir, objects, "first")).toBe(expectedExit());
+    for (const object of objects) {
+      const { stdout } = await execFileAsync("nm", [object]);
+      expect(stdout).not.toMatch(/unusedOne/);
+    }
+    // Adding another one changes no partition.
+    const before = await cacheEntries(cache, ".o");
+    const more = await emit(dir, program(0, `${unused("unusedOne")}\n${unused("unusedTwo")}`), {
+      ...options,
+      name: "more",
+    });
+    expect(await cacheEntries(cache, ".o")).toEqual(before);
+    expect(await exitCode(dir, more, "more")).toBe(expectedExit());
+  });
+
+  test("a helper that one function uses goes to that function's partition", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-helpers-"));
+    dirs.push(dir);
+    // step7 calls @helper directly, and step9 calls @viaTable through an
+    // internal global only step9 reads.
+    const helpers = (withHelpers: boolean) =>
+      program()
+        .split("\n")
+        .flatMap((line) => {
+          if (!withHelpers) return [line];
+          if (line === "define internal void @step7(i64 %value) noinline {")
+            return [
+              "define internal void @helper(i64 %value) noinline {",
+              "  call void @bump(i64 %value)",
+              "  ret void",
+              "}",
+              "@table = internal constant ptr @viaTable",
+              "define internal void @viaTable(i64 %value) noinline {",
+              "  call void @bump(i64 %value)",
+              "  ret void",
+              "}",
+              line,
+              "  call void @helper(i64 0)",
+            ];
+          if (line === "define internal void @step9(i64 %value) noinline {")
+            return [line, "  %fn = load ptr, ptr @table", "  call void %fn(i64 0)"];
+          return [line];
+        })
+        .join("\n");
+    const cache = join(dir, "cache");
+    const options = { outputs: 4, optLevel: "0", cache } as const;
+    await emit(dir, helpers(false), { ...options, name: "before" });
+    const before = await cacheEntries(cache, ".o");
+    const objects = await emit(dir, helpers(true), { ...options, name: "after" });
+    expect(await exitCode(dir, objects, "after")).toBe(expectedExit());
+    const where = new Map<string, number>();
+    for (const [index, object] of objects.entries()) {
+      const { stdout } = await execFileAsync("nm", [object]);
+      for (const line of stdout.split("\n")) {
+        const defined = /^[0-9a-fA-F]+ [A-Za-z] _?(step7|step9|helper|viaTable)$/.exec(line.trim());
+        if (defined !== null) where.set(defined[1]!, index);
+      }
+    }
+    expect(where.get("helper")).toBe(where.get("step7"));
+    expect(where.get("viaTable")).toBe(where.get("step9"));
+    // Only the partitions of step7 and step9 change.
+    const changed = [...(await cacheEntries(cache, ".o"))].filter((entry) => !before.has(entry));
+    expect(changed).toHaveLength(new Set([where.get("step7"), where.get("step9")]).size);
+  });
 
   test("a table written one element per line keeps the text partitioner and its reuse", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-table-"));

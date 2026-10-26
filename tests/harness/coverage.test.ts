@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import {
   analyze,
+  compile,
   coverageEnvelope,
   coveragePasses,
   renderCoverage,
@@ -222,10 +223,10 @@ test("deferred fences in a module's top-level code report as running at startup"
   ]);
   const out = report(fixture("startup-fences.js"));
   expect(out).toMatch(
-    /runs at startup {3}1 site .*\n.*instanceof against this native constructor\n\s+at tests\/coverage-fixtures\/startup-fences\.js:5:13/,
+    /runs at startup {3}1 site .*\n.*'instanceof' right-hand sides other than classes declared in the program\n\s+at tests\/coverage-fixtures\/startup-fences\.js:5:30/,
   );
   expect(out).toMatch(
-    /deferred to runtime {3}1 site .*\n.*instanceof against this native constructor\n\s+at tests\/coverage-fixtures\/startup-fences\.js:7:10/,
+    /deferred to runtime {3}1 site .*\n.*'instanceof' right-hand sides other than classes declared in the program\n\s+at tests\/coverage-fixtures\/startup-fences\.js:7:27/,
   );
   const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
   expect(envelope.diagnostics.map((d) => [d.scope, d.line, d.startup])).toEqual([
@@ -427,6 +428,63 @@ test("--explain-dynamic attributes each refusal to the unit the dynamic tier wou
   );
 });
 
+test("--explain-dynamic lists the type failures localized failure would turn into dynamic slots", async () => {
+  const { coverage } = analyze(fixture("localized-failure.ts"), { explainDynamic: true });
+  const report = coverage.tiers!.localizedFailure;
+  // Locals, fields and parameters degrade (stages L1 and L2), and the
+  // 'any' field compiles; only the refused WeakRef field and its
+  // construction remain.
+  expect(coverage.dynamicSlots?.map((s) => [s.slot, s.name])).toEqual([
+    ["field", "tools"],
+    ["param", "progress"],
+    ["local", "callbacks"],
+  ]);
+  expect(report.errors).toBe(2);
+  expect(report.typeFailures).toEqual({ degradable: 0, refused: 1 });
+  expect(report.slots).toEqual([]);
+  expect(report.cascades).toBe(1);
+  expect(report.remainingByCode).toEqual({ SC1090: 1, SC2020: 1 });
+  const relative = JSON.parse(
+    JSON.stringify(coverage.tiers).replaceAll(repoRoot + "/", ""),
+  ) as typeof coverage.tiers;
+  await expect(renderExplainDynamic(relative!)).toMatchFileSnapshot(
+    "__snapshots__/coverage-explain-localized-failure.txt",
+  );
+});
+
+test("a local or module global whose declared type does not compile becomes a dynamic slot", async () => {
+  const program = join(repoRoot, "tests/corpus/localized-failure-locals.ts");
+  const { coverage, sourceTexts } = analyze(program);
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.dynamicSlots?.map((s) => [s.slot, s.name, s.declaredType, s.code])).toEqual([
+    ["global", "current", "Callbacks | undefined", "SC2009"],
+    ["global", "all", "(number | Callbacks)[]", "SC2009"],
+    ["local", "local", "Callbacks | undefined", "SC2009"],
+  ]);
+  expect(coverage.performance?.filter((d) => d.code === "SC6104")).toHaveLength(3);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "dynamic")).toBe(true);
+  expect(coveragePasses(coverage, "dynamic-slots")).toBe(false);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope.dynamicSlots?.map((s) => [s.kind, s.name, s.line])).toEqual([
+    ["global", "current", 10],
+    ["global", "all", 36],
+    ["local", "local", 14],
+  ]);
+  expect(envelope.diagnostics.filter((d) => d.code === "SC6104").map((d) => d.severity)).toEqual([
+    "warning",
+    "warning",
+    "warning",
+  ]);
+  const text = renderCoverage(coverage, { sourceTexts, root: repoRoot });
+  expect(text).toContain("dynamic slots       3");
+  expect(text).toContain("module global 'current' (declared 'Callbacks | undefined')");
+  // --tier=static-only keeps every refusal.
+  const strict = analyze(program, { tier: "static-only" }).coverage;
+  expect(strict.dynamicSlots).toBeUndefined();
+  expect(strict.diagnostics.map((d) => d.code)).toContain("SC2009");
+});
+
 test("CLI: --tier and --explain-dynamic", () => {
   const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-tier-"));
@@ -529,19 +587,50 @@ test("runtime-optional refined unions report blockers without crashing", () => {
 });
 
 test("a rejected class reached only through a receiver probe reports its own diagnostic once", () => {
-  const { coverage } = analyze(join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts"));
+  const program = join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts");
+  // The class's refusal, as the diagnostics corpus pins it (--tier=static-only).
+  const { coverage } = analyze(program, { tier: "static-only" });
   const messages = coverage.diagnostics.map((d) => d.message);
   expect(
     messages.filter((m) => m.startsWith("'MapIterator<string>'-typed class fields")),
   ).toHaveLength(1);
   expect(messages.some((m) => m.startsWith("constructing through a class value"))).toBe(true);
   expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
+  // Localized failure retries the class where the probe's statement commits
+  // the flush, with the field policy lifted, and it compiles.
+  expect(analyze(program).coverage.diagnostics).toEqual([]);
 });
 
 test("settled generic rest-order fences count each source statement once", () => {
   const { coverage } = analyze(join(repoRoot, "tests/diagnostics/retained-generic-rest-order.ts"));
   expect(coverage.diagnostics.map((d) => d.code)).toEqual(["SC1031", "SC2004"]);
   expect(coverage.stats.statementsFailed).toBe(2);
+});
+
+test("CommonJS var and let exports that can change after the export keep their refusal", () => {
+  // JavaScript refusals defer to run time: they are the runtime fences.
+  const { coverage } = analyze(fixture("cjs-mutable-exports/main.js"));
+  const refused = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
+    .map((d) => /exporting the mutable 'let' binding '(\w+)'/.exec(d.message)?.[1])
+    .filter((name) => name !== undefined)
+    .sort();
+  expect(refused).toEqual(["counter", "tab", "twice"]);
+});
+
+test("CommonJS namespace reads of exports a re-exported module assigns later keep their refusal", () => {
+  // wrapper.cjs re-exports impl.cjs, whose set() assigns `current` after
+  // evaluation; `version` never changes.
+  const { coverage } = analyze(fixture("cjs-namespace-reexports/main.mjs"));
+  const refused = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
+    .map(
+      (d) =>
+        /reads of '(\w+)' through namespace imports of CommonJS modules whose functions assign exports/.exec(
+          d.message,
+        )?.[1],
+    )
+    .filter((name) => name !== undefined)
+    .sort();
+  expect(refused).toEqual(["current"]);
 });
 
 test("inferred JavaScript compiles natively", async () => {
@@ -869,6 +958,33 @@ test("Node islands (report-only): one package per class, gap islands first", asy
   expect(coverage.diagnostics.every((d) => d.code === "SC2013")).toBe(true);
   expect(coveragePasses(coverage, "island-gaps")).toBe(false);
   expect(coveragePasses(coverage, "node-islands")).toBe(false);
+});
+
+test("unknown scriptc settings warn in a build and make the island report unavailable", async () => {
+  const entry = fixture("node-islands-config/main.ts");
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-config-"));
+  try {
+    const built = await compile(entry, {
+      outputKind: "ir",
+      outPath: join(outDir, "main.ir.json"),
+      outDir,
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect((built.warnings ?? []).map((d) => [d.code, d.message])).toEqual([
+      ["SC8004", `package.json 'scriptc.packages.encoding' has the unknown value "unloded"`],
+      ["SC8004", `package.json 'scriptc.packages.debug.run' has the unknown value "island"`],
+      ["SC8004", `package.json 'scriptc.nodeIslands.auto' must be true or false, not "yes"`],
+      ["SC8004", "package.json 'scriptc.nodeIslands.mode' is not a known Node island setting"],
+    ]);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+  const { coverage } = analyze(entry);
+  expect(coverage.nodeIslands).toBeUndefined();
+  expect(renderCoverage({ ...coverage, file: "main.ts" }, { root: repoRoot })).toContain(
+    "not analyzable: the project's scriptc configuration has 4 unknown settings",
+  );
 });
 
 test("Node island policy from the command line: native, forced, off", () => {

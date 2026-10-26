@@ -1,3 +1,8 @@
+import {
+  arrayClassMemberOwner,
+  arrayOfClassInstance,
+  arrayRootOf,
+} from "./builtins/array-classes.js";
 import { keyedHelperName } from "./stable-names.js";
 import {
   isNewTarget,
@@ -72,7 +77,7 @@ import {
 import { nsMemberIdentOf } from "./lower-namespaces.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { implicitMonoFile } from "./generic-functions.js";
-import { lowerTaggedTemplate } from "./lower-calls.js";
+import { lowerPrimitiveUnionNumber, lowerTaggedTemplate } from "./lower-calls.js";
 import { unitOnlyUnion } from "../type-mapper.js";
 import { lowerYield } from "./lower-generators.js";
 import { unionWideningTags } from "../../ir/analysis.js";
@@ -89,14 +94,15 @@ import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
-import { lowerTernary } from "./expressions/narrowing.js";
+import { lowerTernary, v8CalleeText } from "./expressions/narrowing.js";
 import {
   classFieldTarget,
   lowerPropertyAccessExpr,
   lowerUnionKeyedRead,
 } from "./expressions/property-access.js";
 import { lowerNullishPair } from "./expressions/binary.js";
-import { lowerElementCompoundParts } from "./expressions/element-access.js";
+import { lowerElementCompoundParts, recordKeyLiteralText } from "./expressions/element-access.js";
+import { OBJECT_PROTOTYPE_MEMBERS } from "../shape-inference/domain.js";
 export {
   DEFERRED_READ_MESSAGE,
   abstractPropertyDeclOf,
@@ -426,8 +432,19 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         return inner;
       const use = runtimeOptionalUseOf(expr);
       if (runtimeOptionalAssertionErases(lowerer, expr, inner, use)) return inner;
+      // A destination that holds null or undefined keeps the value, as `!`
+      // does in JavaScript (`return cache.get(key)!` from a function that
+      // returns `T | null`); the destination's own coercion re-tags it.
+      if (assertionDestinationHoldsNullish(lowerer, expr, inner.type)) return inner;
+      const operand = assertionOperand(lowerer, expr, inner, target ?? null, loc);
+      if (operand) return operand;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
-        const helper = lowerer.narrowedArmHelper(inner.type.unionId, target, loc);
+        const helper = lowerer.narrowedArmHelper(
+          inner.type.unionId,
+          target,
+          loc,
+          assertedCalleeMessage(expr, target),
+        );
         if (helper) {
           return lowerer.checkedNarrowCall(helper, inner, target, loc);
         }
@@ -497,7 +514,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // noImplicitThis, so the generic scope walk here is preflight-safe.
     const local = lowerer.resolveThis(expr);
     if (local) {
-      const value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
+      let value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
+      // `this` in a class declared `extends Array` is the array, except as
+      // the receiver of a member the class declares.
+      if (local.type.kind === "object") {
+        const arrayClass = lowerer.classes.get(local.type.className);
+        const parent = expr.parent;
+        if (
+          arrayClass &&
+          arrayRootOf(arrayClass) &&
+          !(
+            ts.isPropertyAccessExpression(parent) &&
+            parent.expression === expr &&
+            arrayClassMemberOwner(lowerer, parent) !== null
+          )
+        )
+          value = arrayOfClassInstance(arrayClass, value, loc);
+      }
       // `this.#x` in a function-local class's prototype method, whose `this`
       // is the call-site value: the field lives on the native instance of
       // this evaluation (checkedPrivateReceiver).
@@ -573,7 +606,24 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // any other super position (field reads, bare references) stays out.
     lowerer.unsupported("SC1090", expr, "'super' outside super() and super.method() calls");
   }
-  if (ts.isNewExpression(expr)) return lowerer.lowerNew(expr);
+  if (ts.isNewExpression(expr)) {
+    const value = lowerer.lowerNew(expr);
+    // `new X()` for a class declared `extends Array` is the array, except
+    // as the receiver of a member the class declares (as `this` above).
+    if (value.type.kind !== "object") return value;
+    const arrayClass = lowerer.classes.get(value.type.className);
+    if (!arrayClass || !arrayRootOf(arrayClass)) return value;
+    let operand: ts.Expression = expr;
+    while (ts.isParenthesizedExpression(operand.parent)) operand = operand.parent;
+    const parent = operand.parent;
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === operand &&
+      arrayClassMemberOwner(lowerer, parent) !== null
+    )
+      return value;
+    return arrayOfClassInstance(arrayClass, value, loc);
+  }
   if (ts.isAwaitExpression(expr)) {
     if (!lowerer.ctx.isAsync) {
       // A tsc-clean occurrence here is outside both an async function
@@ -933,6 +983,257 @@ export function assertedElementKeepsUndefined(
   );
 }
 
+/** Whether `node!` is a returned value, an arrow function's body or a call
+ * argument whose destination type (the return or parameter type) is `any`
+ * or `unknown` (as for `String(x!)` and `Number(x!)`) or holds null or
+ * undefined that the union `inner` holds and the assertion would remove.
+ * Bindings and assignments are left out: the checker narrows them to the
+ * asserted type for later reads. */
+function assertionDestinationHoldsNullish(
+  lowerer: Lowerer,
+  node: ts.NonNullExpression,
+  inner: IrType & { kind: "union" },
+): boolean {
+  const holdsNull = lowerer.armTag(inner.unionId, NULL_T) >= 0;
+  const holdsUndefined = lowerer.armTag(inner.unionId, UNDEFINED_T) >= 0;
+  if (!holdsNull && !holdsUndefined) return false;
+  let outer: ts.Expression = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  const destination =
+    (ts.isReturnStatement(parent) && parent.expression === outer) ||
+    (ts.isArrowFunction(parent) && parent.body === outer) ||
+    ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+      parent.arguments?.nodes.includes(outer) === true);
+  if (!destination) return false;
+  const contextual = lowerer.checker.getContextualType(outer);
+  if (!contextual) return false;
+  const nullish =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    (holdsNull ? ts.TypeFlags.Null : 0) |
+    (holdsUndefined && !optionalStdlibParameter(lowerer, parent, outer)
+      ? ts.TypeFlags.Undefined
+      : 0);
+  if ((contextual.flags & ts.TypeFlags.Union) === 0) return (contextual.flags & nullish) !== 0;
+  return constituentTypes(contextual).some((type) => (type.flags & nullish) !== 0);
+}
+
+/** Whether `declaration` is TextDecoder's `decode` method. */
+function isTextDecoderDecode(declaration: ts.Node): boolean {
+  if (!ts.isMethodSignatureDeclaration(declaration) && !ts.isMethodDeclaration(declaration))
+    return false;
+  if (!ts.isIdentifier(declaration.name) || declaration.name.text !== "decode") return false;
+  const owner = declaration.parent;
+  return (
+    (ts.isInterfaceDeclaration(owner) || ts.isClassDeclaration(owner)) &&
+    owner.name?.text === "TextDecoder"
+  );
+}
+
+/** Whether `argument` of `call` binds an optional parameter of a standard
+ * library declaration (`decoder.decode(input?)`). The undefined such a
+ * parameter's type holds comes from its optionality, and the builtin
+ * lowerings read the argument as the declared type, so `x!` keeps the
+ * checked narrowing there. */
+function optionalStdlibParameter(
+  lowerer: Lowerer,
+  call: ts.Node,
+  argument: ts.Expression,
+): boolean {
+  if (!ts.isCallExpression(call) && !ts.isNewExpression(call)) return false;
+  const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
+  if (declaration === undefined || !lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration)))
+    return false;
+  // TextDecoder.decode reads an undefined input as no bytes, as Node does
+  // (builtins/text-codecs.ts lowerDecodeInput).
+  if (isTextDecoderDecode(declaration)) return false;
+  const index = call.arguments?.nodes.indexOf(argument) ?? -1;
+  const parameter = declaration.parameters?.nodes[index];
+  return (
+    parameter !== undefined &&
+    parameter.dotDotDotToken === undefined &&
+    (parameter.questionToken !== undefined || parameter.initializer !== undefined)
+  );
+}
+
+/** `x!` as the operand of an operator that converts its operands: an
+ * arithmetic, bitwise, relational or equality operator, `+`, a compound
+ * assignment, a unary `-`, `+`, `~` or `!`, a template span, or an argument
+ * of a Math function. `!` performs no runtime check,
+ * so a value that still holds undefined or null reaches the operator, which
+ * converts it as JavaScript does: NaN or 0 in arithmetic, false in a
+ * comparison, "undefined" or "null" in a string. Returns the operand to
+ * use, or null where the assertion narrows as usual. A numeric use gets the
+ * value converted with ToNumber; other uses get the union itself. */
+function assertionOperand(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  inner: IrExpr,
+  target: IrType | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (inner.type.kind !== "union" || target === null || target.kind === "union") return null;
+  const arms = lowerer.unions.get(inner.type.unionId)?.arms;
+  if (
+    !arms?.some(isUnitType) ||
+    !arms.every(
+      (arm) =>
+        arm.kind === "f64" || arm.kind === "string" || arm.kind === "bool" || isUnitType(arm),
+    )
+  )
+    return null;
+  // Array element reads keep their own handling of a missing element. A
+  // typed-array read is optional here only where its use tells undefined
+  // from NaN (assertedReadObservesUndefined).
+  let operand: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (ts.isElementAccessExpression(operand)) {
+    const kind = lowerer.mapTypeOf(lowerer.typeOf(operand.expression))?.kind;
+    if (kind === "array") return null;
+  }
+  const use = convertingUseOf(lowerer, expr);
+  if (use === null) return null;
+  if (use === "value") return inner;
+  return lowerPrimitiveUnionNumber(lowerer, inner, expr, loc);
+}
+
+/** How the converting use of `x!` (see assertionOperand) reads it:
+ * "number" where the use applies ToNumber, "value" where the consumer
+ * lowers the union itself (strings, equality, truthiness), null for other
+ * uses. */
+function convertingUseOf(lowerer: Lowerer, expr: ts.NonNullExpression): "number" | "value" | null {
+  let outer: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  if (ts.isTemplateSpan(parent)) return parent.expression === outer ? "value" : null;
+  if (ts.isTypeOfExpression(parent)) return "value";
+  if (ts.isPrefixUnaryExpression(parent)) {
+    if (parent.operator === ts.SyntaxKind.ExclamationToken) return "value";
+    return parent.operator === ts.SyntaxKind.MinusToken ||
+      parent.operator === ts.SyntaxKind.PlusToken ||
+      parent.operator === ts.SyntaxKind.TildeToken
+      ? "number"
+      : null;
+  }
+  if (ts.isCallExpression(parent) && parent.arguments.nodes.includes(outer)) {
+    const callee = parent.expression;
+    return ts.isPropertyAccessExpression(callee) &&
+      stdlibGlobalNameOf(lowerer, callee.expression) === "Math"
+      ? "number"
+      : null;
+  }
+  if (!ts.isBinaryExpression(parent)) return null;
+  const op = parent.operatorToken.kind;
+  if (EQUALITY_OPERATORS.has(op)) return "value";
+  const other = parent.left === outer ? parent.right : parent.left;
+  const isString = (node: ts.Expression): boolean =>
+    (lowerer.typeOf(node).flags & ts.TypeFlags.StringLike) !== 0;
+  // With a string on either side, `+` concatenates and a comparison
+  // compares strings. `undefined + 1` and `undefined + undefined` are NaN,
+  // which a string-typed result cannot hold, so `+` takes the union only
+  // with a string partner that is not itself asserted. A partner that may
+  // hold a string or a number at run time (`any`, `unknown`) also gets the
+  // union, and `+` decides between concatenation and addition when it runs.
+  if (op === ts.SyntaxKind.PlusToken || op === ts.SyntaxKind.PlusEqualsToken) {
+    if (op === ts.SyntaxKind.PlusEqualsToken && parent.right !== outer) return null;
+    let partner = other;
+    while (ts.isParenthesizedExpression(partner)) partner = partner.expression;
+    if (isString(other)) return ts.isNonNullExpression(partner) ? null : "value";
+    if (!numericPartner(lowerer.typeOf(other))) return "value";
+    return isString(expr) ? null : "number";
+  }
+  if (RELATIONAL_OPERATORS.has(op)) return isString(other) || isString(expr) ? "value" : "number";
+  if (NUMERIC_OPERATORS.has(op)) return "number";
+  return NUMERIC_COMPOUNDS.has(op) && parent.right === outer ? "number" : null;
+}
+
+/** A `+` partner whose every value is a number, a boolean, null or
+ * undefined: `+` adds with it. */
+function numericPartner(type: ts.Type): boolean {
+  const numeric =
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Void;
+  return (type.flags & ts.TypeFlags.Union) !== 0
+    ? constituentTypes(type).every((part) => (part.flags & numeric) !== 0)
+    : (type.flags & numeric) !== 0;
+}
+
+const EQUALITY_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.EqualsEqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsEqualsToken,
+  ts.SyntaxKind.EqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsToken,
+]);
+
+const RELATIONAL_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.LessThanToken,
+  ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.LessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanEqualsToken,
+]);
+
+const NUMERIC_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.AsteriskToken,
+  ts.SyntaxKind.SlashToken,
+  ts.SyntaxKind.PercentToken,
+  ts.SyntaxKind.AsteriskAsteriskToken,
+  ts.SyntaxKind.AmpersandToken,
+  ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.CaretToken,
+  ts.SyntaxKind.LessThanLessThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+]);
+
+const NUMERIC_COMPOUNDS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.SlashEqualsToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+  ts.SyntaxKind.AmpersandEqualsToken,
+  ts.SyntaxKind.BarEqualsToken,
+  ts.SyntaxKind.CaretEqualsToken,
+  ts.SyntaxKind.LessThanLessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+]);
+
+/** The TypeError Node raises when an asserted callee (`t[k]!(…)`, `o.f!()`)
+ * holds no function: `!` is erased, so the call itself throws "<callee> is
+ * not a function" in V8's spelling of the callee. */
+function assertedCalleeMessage(expr: ts.NonNullExpression, target: IrType): string | undefined {
+  if (target.kind !== "func") return undefined;
+  let child: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(child.parent)) child = child.parent;
+  const call = child.parent;
+  if (!ts.isCallExpression(call) || call.expression !== child || call.questionDotToken)
+    return undefined;
+  return `${v8CalleeText(expr.expression)} is not a function`;
+}
+
+/** Whether the use of `t[i]!` tells undefined from NaN: a converting use
+ * that takes the value itself (see convertingUseOf), or a destination that
+ * holds a missing element (see assertedElementKeepsUndefined) other than a
+ * return, whose slot has the function's number type. */
+export function assertedReadObservesUndefined(
+  lowerer: Lowerer,
+  node: ts.NonNullExpression,
+): boolean {
+  if (convertingUseOf(lowerer, node) === "value") return true;
+  let outer: ts.Expression = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  if (ts.isReturnStatement(parent) || (ts.isArrowFunction(parent) && parent.body === outer))
+    return false;
+  return assertedElementKeepsUndefined(lowerer, node);
+}
+
 export function runtimeOptionalAssertionErases(
   lowerer: Lowerer,
   expr: ts.Expression,
@@ -1086,6 +1387,10 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     e.name.text === "setPrototypeOf" &&
     lowerer.isStdlibGlobal(e.expression, "Object")
   )
+    return { kind: "boolLit", value: true, type: BOOL, loc: locOf(e) };
+  // `if (runtimeBuffer)` over an alias of the Buffer global (a
+  // capability probe): Node always defines Buffer.
+  if (lowerer.isStdlibGlobal(e, "Buffer"))
     return { kind: "boolLit", value: true, type: BOOL, loc: locOf(e) };
   if (ts.isPropertyAccessExpression(e)) {
     const presence = lowerPromiseThenPresence(lowerer, e, {
@@ -1698,6 +2003,23 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
     if (shape && !shape.tuple && shape.indexValue && shape.indexValue.kind !== "dyn") {
       return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
     }
+    // A literal key the shape does not declare is absent from every value
+    // (lowerRecordKeyRead answers undefined), whatever type the checker gave
+    // the read. An optional chain keeps its own lowering, which reads a
+    // nullish receiver as undefined instead of converting it.
+    const literal = recordKeyLiteralText(expr.argumentExpression);
+    if (
+      !expr.questionDotToken &&
+      !hasOptionalChainGuard(expr.expression) &&
+      shape &&
+      !shape.tuple &&
+      !shape.indexValue &&
+      literal !== null &&
+      !OBJECT_PROTOTYPE_MEMBERS.has(literal) &&
+      !shape.fields.some((field) => field.name === literal)
+    ) {
+      return lowerer.lowerRecordKeyRead(expr, receiverT.shapeId, shape, true);
+    }
     return null;
   }
   // `m[2]` on a JavaScript `RegExpExecArray | null` that a previous
@@ -2106,6 +2428,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "set":
     case "generator":
     case "regex":
+    case "date":
     case "bytes":
     case "url":
     case "searchParams":
@@ -2869,11 +3192,9 @@ export function symbolFieldInfo(
   if (lowerer.chainBlocked(expr)) return null;
   const receiverIr = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverIr?.kind !== "object") return null;
-  const info = lowerer.classes.get(receiverIr.className);
-  if (!info) {
-    lowerer.flushDeferredClass(receiverIr.className);
-    return null;
-  }
+  const info =
+    lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
+  if (!info) return null;
   const key = classSymbolKeyOf(lowerer, expr.argumentExpression);
   if (!key) return null;
   const field = info.symbolFields?.get(key.identity);

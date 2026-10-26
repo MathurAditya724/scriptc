@@ -93,19 +93,68 @@ importers:
         specifier: workspace:*
         version: link:../cli-win32-x64-msvc
 
-  packages/cli-darwin-arm64: {}
+  packages/cli-darwin-arm64:
+    dependencies:
+      '@scriptc/llvm-darwin-arm64':
+        specifier: workspace:*
+        version: link:../llvm-darwin-arm64
+      '@scriptc/runtime-darwin-arm64':
+        specifier: workspace:*
+        version: link:../runtime-darwin-arm64
 
-  packages/cli-darwin-x64: {}
+  packages/cli-darwin-x64:
+    dependencies:
+      '@scriptc/llvm-darwin-x64':
+        specifier: workspace:*
+        version: link:../llvm-darwin-x64
+      '@scriptc/runtime-darwin-x64':
+        specifier: workspace:*
+        version: link:../runtime-darwin-x64
 
-  packages/cli-linux-arm64-gnu: {}
+  packages/cli-linux-arm64-gnu:
+    dependencies:
+      '@scriptc/llvm-linux-arm64-gnu':
+        specifier: workspace:*
+        version: link:../llvm-linux-arm64-gnu
+      '@scriptc/runtime-linux-arm64-gnu':
+        specifier: workspace:*
+        version: link:../runtime-linux-arm64-gnu
 
-  packages/cli-linux-arm64-musl: {}
+  packages/cli-linux-arm64-musl:
+    dependencies:
+      '@scriptc/llvm-linux-arm64-musl':
+        specifier: workspace:*
+        version: link:../llvm-linux-arm64-musl
+      '@scriptc/runtime-linux-arm64-musl':
+        specifier: workspace:*
+        version: link:../runtime-linux-arm64-musl
 
-  packages/cli-linux-x64-gnu: {}
+  packages/cli-linux-x64-gnu:
+    dependencies:
+      '@scriptc/llvm-linux-x64-gnu':
+        specifier: workspace:*
+        version: link:../llvm-linux-x64-gnu
+      '@scriptc/runtime-linux-x64-gnu':
+        specifier: workspace:*
+        version: link:../runtime-linux-x64-gnu
 
-  packages/cli-linux-x64-musl: {}
+  packages/cli-linux-x64-musl:
+    dependencies:
+      '@scriptc/llvm-linux-x64-musl':
+        specifier: workspace:*
+        version: link:../llvm-linux-x64-musl
+      '@scriptc/runtime-linux-x64-musl':
+        specifier: workspace:*
+        version: link:../runtime-linux-x64-musl
 
-  packages/cli-win32-x64-msvc: {}
+  packages/cli-win32-x64-msvc:
+    dependencies:
+      '@scriptc/llvm-win32-x64-msvc':
+        specifier: workspace:*
+        version: link:../llvm-win32-x64-msvc
+      '@scriptc/runtime-win32-x64-msvc':
+        specifier: workspace:*
+        version: link:../runtime-win32-x64-msvc
 
   packages/compiler:
     dependencies:
@@ -113,8 +162,8 @@ importers:
         specifier: workspace:*
         version: link:../runtime
       tsc-ts:
-        specifier: 0.0.8
-        version: 0.0.8
+        specifier: 0.0.10
+        version: 0.0.10
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -1375,8 +1424,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@scriptc/threads@0.4.2':
-    resolution: {integrity: sha512-nR9FUxpOpgtTmJu6dejttElBL+JJTAZzJ2DZM+eNoujmLx9VpdlAVdgj3cu/MDsTUg/1sIUBq1ME1csC/Aa6yg==}
+  '@scriptc/threads@0.4.5':
+    resolution: {integrity: sha512-wHYrCItM68xYAwjnvM6VrRLDWd9+lAEQNjKh6PyLA8RdE7D8ts/VMoTFLmXRu2uvRywJuY18WPSCoEFRf3qfiA==}
     engines: {node: '>=24.0.0'}
 
   '@sinclair/typebox@0.25.24':
@@ -1392,42 +1441,42 @@ packages:
   '@ts-morph/common@0.11.1':
     resolution: {integrity: sha512-7hWZS0NRpEsNV8vWJzg7FEz6V8MaLNeJOmwmghqUXTpzk16V1LLZhdo+4QvE/+zv4cVci0OviuJFnqhEfoV3+g==}
 
-  '@tsc-ts/darwin-arm64@0.0.8':
-    resolution: {integrity: sha512-+hB9yWk58lwZHGrVEzqEC4D7MQW7Vd2z7blV3TULIKZPTMwdf8aT7XFAmfP48PoGff0H9yuQKyRXJl9I+sQv9w==}
+  '@tsc-ts/darwin-arm64@0.0.10':
+    resolution: {integrity: sha512-mRctKijCzWRxJgxiVAdsk+x9WB7kZz9GBbJ4eVP95bJFkIz9D11uw3xC0m6jWYNoaShF6zn48eLMTYOyJNxBdA==}
     cpu: [arm64]
     os: [darwin]
 
-  '@tsc-ts/darwin-x64@0.0.8':
-    resolution: {integrity: sha512-yz4UddicqMXe+T7nV7ftpf155lkiK6gIPNwSB8rH9dlwiV6a17CO/vpSk627QLMqnfGNicB6YwLMk/SJ9moPdw==}
+  '@tsc-ts/darwin-x64@0.0.10':
+    resolution: {integrity: sha512-oV78/mi3ot8CG3BA9QxrsamvNXutpschgae+qV5skU4gAqimmBsBHy/MWTf9SCssvtWeqrX4uZvcwE0h/AJ+MQ==}
     cpu: [x64]
     os: [darwin]
 
-  '@tsc-ts/linux-arm64-gnu@0.0.8':
-    resolution: {integrity: sha512-LHqfT9mQ4tusPdWmnanCvC8/YBOF5bHM5h5863a3t2HTgFVdps1Qwb0yzrW5DDbojIhQ0Z+GupxtXVUQcV0Q/Q==}
+  '@tsc-ts/linux-arm64-gnu@0.0.10':
+    resolution: {integrity: sha512-O5msxFydn9r64QVm9WDWG8CKkXLjXWo12XeJWDncHlQYK80SoM4T8/C1UTDLtb6A2P+NQ5a+Xq4AaHmNb8VIqg==}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@tsc-ts/linux-arm64-musl@0.0.8':
-    resolution: {integrity: sha512-I0CC3xZMwoQM6OiVsubRHb0VI/RrJpneb33kDQhadYHq3taPos71KwP+CbCXNu88rNsDsyn7D1oCVfJb73g4Mw==}
+  '@tsc-ts/linux-arm64-musl@0.0.10':
+    resolution: {integrity: sha512-v9N5HuqcEW97MzwzLqPNAN5tfAcXIAlLRtp7BSJJd5VKfBu6DplqNZzwCH+//NuAQOtWGSr/Dq565JFPmDRt5w==}
     cpu: [arm64]
     os: [linux]
     libc: [musl]
 
-  '@tsc-ts/linux-x64-gnu@0.0.8':
-    resolution: {integrity: sha512-PLERuwUuxT92x0BZAMQubiQP5jhlqoLmswaZWqcvfKAZyBp0TbWiVOmuNnDbJozvBaNUrfdGPb9suiQ+Me7M6A==}
+  '@tsc-ts/linux-x64-gnu@0.0.10':
+    resolution: {integrity: sha512-sRTPB/50uAJSpMjlA3sc9GTAySnLwIlf1txR8eHlcVpKE6q0QgWvEkKqCSGtFXkn8IQ8z8O68jrAk9WjmRTaYQ==}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@tsc-ts/linux-x64-musl@0.0.8':
-    resolution: {integrity: sha512-zDl36l1uyWc0mQniOAMZmkVD9TrlFExHlDT0fL8JGD4XLgx+bRe+To38yP0KSBehXBzjDNn8xrEoJ+3RP6mYwQ==}
+  '@tsc-ts/linux-x64-musl@0.0.10':
+    resolution: {integrity: sha512-U4qZwP0JzrR/l4kzhh+w+y6o2guEEinC/wminfXXDhez2DtjNTOrM1GxMPfZ7JkCIcKEruL7iCC2telapFk5LQ==}
     cpu: [x64]
     os: [linux]
     libc: [musl]
 
-  '@tsc-ts/win32-x64-msvc@0.0.8':
-    resolution: {integrity: sha512-9gO+pFoLiIxITlAE2P6JL8ihZwns7z/2Raw5+38RqLzHmnSsRN47+H4p/4EqQsLW5/TTsAo9uSeSkf3EuRg+XA==}
+  '@tsc-ts/win32-x64-msvc@0.0.10':
+    resolution: {integrity: sha512-TsiK6k0ljFW3pNR5lvF7SL0nv3aGxr31ZbBCfIXcBrqAvpumINOy/G0ESfTvZWx8llwOQt3PxBS414gF/J0tFA==}
     cpu: [x64]
     os: [win32]
 
@@ -2592,8 +2641,8 @@ packages:
   ts-toolbelt@6.15.5:
     resolution: {integrity: sha512-FZIXf1ksVyLcfr7M317jbB67XFJhOO1YqdTcuGaq9q5jLUoTikukZ+98TPjKiP2jC5CgmYdWWYs0s2nLSU0/1A==}
 
-  tsc-ts@0.0.8:
-    resolution: {integrity: sha512-EiyDziYOryBg/YEvev/mKCn+hD4M6VFjH7VP9nv2WadDKYaPrdb+a3hP+wYr/UsDWNE7AdL7YGnjZppeXlXy6g==}
+  tsc-ts@0.0.10:
+    resolution: {integrity: sha512-oF5hZbeNgJXwJ868adnvBAihxYUwra1rj6Sa2+UhuhW477t5MmGnOsZgGTSGz511uTfuUxDz6e/gLIzvvScbGw==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -3454,7 +3503,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@scriptc/threads@0.4.2': {}
+  '@scriptc/threads@0.4.5': {}
 
   '@sinclair/typebox@0.25.24': {}
 
@@ -3469,25 +3518,25 @@ snapshots:
       mkdirp: 1.0.4
       path-browserify: 1.0.1
 
-  '@tsc-ts/darwin-arm64@0.0.8':
+  '@tsc-ts/darwin-arm64@0.0.10':
     optional: true
 
-  '@tsc-ts/darwin-x64@0.0.8':
+  '@tsc-ts/darwin-x64@0.0.10':
     optional: true
 
-  '@tsc-ts/linux-arm64-gnu@0.0.8':
+  '@tsc-ts/linux-arm64-gnu@0.0.10':
     optional: true
 
-  '@tsc-ts/linux-arm64-musl@0.0.8':
+  '@tsc-ts/linux-arm64-musl@0.0.10':
     optional: true
 
-  '@tsc-ts/linux-x64-gnu@0.0.8':
+  '@tsc-ts/linux-x64-gnu@0.0.10':
     optional: true
 
-  '@tsc-ts/linux-x64-musl@0.0.8':
+  '@tsc-ts/linux-x64-musl@0.0.10':
     optional: true
 
-  '@tsc-ts/win32-x64-msvc@0.0.8':
+  '@tsc-ts/win32-x64-msvc@0.0.10':
     optional: true
 
   '@tybys/wasm-util@0.10.3':
@@ -4828,17 +4877,17 @@ snapshots:
 
   ts-toolbelt@6.15.5: {}
 
-  tsc-ts@0.0.8:
+  tsc-ts@0.0.10:
     dependencies:
-      '@scriptc/threads': 0.4.2
+      '@scriptc/threads': 0.4.5
     optionalDependencies:
-      '@tsc-ts/darwin-arm64': 0.0.8
-      '@tsc-ts/darwin-x64': 0.0.8
-      '@tsc-ts/linux-arm64-gnu': 0.0.8
-      '@tsc-ts/linux-arm64-musl': 0.0.8
-      '@tsc-ts/linux-x64-gnu': 0.0.8
-      '@tsc-ts/linux-x64-musl': 0.0.8
-      '@tsc-ts/win32-x64-msvc': 0.0.8
+      '@tsc-ts/darwin-arm64': 0.0.10
+      '@tsc-ts/darwin-x64': 0.0.10
+      '@tsc-ts/linux-arm64-gnu': 0.0.10
+      '@tsc-ts/linux-arm64-musl': 0.0.10
+      '@tsc-ts/linux-x64-gnu': 0.0.10
+      '@tsc-ts/linux-x64-musl': 0.0.10
+      '@tsc-ts/win32-x64-msvc': 0.0.10
 
   tslib@2.8.1:
     optional: true

@@ -7,7 +7,7 @@ import {
   type IrType,
   type IrUnionDef,
 } from "../../ir/ir.js";
-import { NullableUnions } from "./nullable-unions.js";
+import { isObjectArm, isPointerIdentityArm, NullableUnions } from "./nullable-unions.js";
 
 const loc = { file: "nullable-unions.ts", start: 0, end: 0 };
 const a: IrType = { kind: "record", shapeId: "a" };
@@ -56,10 +56,11 @@ test("unions of two or more records become shape unions", () => {
 });
 
 test("records of runtime-inspected unions keep every union over them boxed", () => {
-  const set: IrType = { kind: "set", elem: { kind: "union", unionId: "ab" } };
+  const set: IrType = { kind: "set", elem: { kind: "union", unionId: "abf" } };
   const unions = new NullableUnions(
     module(
       [
+        { id: "abf", arms: [a, b, F64] },
         { id: "ab", arms: [a, b] },
         { id: "abu", arms: [a, b, UNDEFINED_T] },
         { id: "bc", arms: [b, c] },
@@ -68,6 +69,7 @@ test("records of runtime-inspected unions keep every union over them boxed", () 
       { globals: [{ id: "%g.s", name: "s", type: set, mutable: false }] },
     ),
   );
+  expect(unions.get("abf")).toBeNull();
   expect(unions.get("ab")).toBeNull();
   expect(unions.get("abu")).toBeNull();
   expect(unions.get("bc")).toBeNull();
@@ -75,9 +77,56 @@ test("records of runtime-inspected unions keep every union over them boxed", () 
   expect(unions.shapeNumber("c")).toBe(0);
 });
 
+test("unions of records alone stay shape unions as Map keys and Set elements", () => {
+  const set: IrType = { kind: "set", elem: { kind: "union", unionId: "ab" } };
+  const map: IrType = { kind: "map", key: { kind: "union", unionId: "abc" }, value: F64 };
+  const unions = new NullableUnions(
+    module(
+      [
+        { id: "ab", arms: [a, b] },
+        { id: "abc", arms: [a, b, c] },
+        { id: "ba", arms: [b, a] },
+        { id: "abu", arms: [a, b, UNDEFINED_T] },
+      ],
+      {
+        globals: [
+          { id: "%g.s", name: "s", type: set, mutable: false },
+          { id: "%g.m", name: "m", type: map, mutable: false },
+        ],
+      },
+    ),
+  );
+  expect(unions.shapes("ab")).not.toBeNull();
+  expect(unions.shapes("abc")).not.toBeNull();
+  expect(unions.shapes("abu")).not.toBeNull();
+  // Unions over the same records share one release and trace helper.
+  expect(unions.helperOwner("ba")).toBe("ab");
+  expect(unions.helperOwner("abu")).toBe("ab");
+  expect(unions.helperOwner("abc")).toBe("abc");
+});
+
 test("library, lifetime-region and debug builds keep record unions boxed", () => {
   const unions = [{ id: "ab", arms: [a, b] }];
   expect(new NullableUnions(module(unions), false).get("ab")).toBeNull();
   expect(new NullableUnions(module(unions, { lifetimeRegions: true })).get("ab")).toBeNull();
   expect(new NullableUnions(module(unions)).shapes("ab")).not.toBeNull();
+});
+
+test("function arms are nullable pointers compared by identity root", () => {
+  const fn: IrType = { kind: "func", params: [F64], ret: F64 };
+  const unions = new NullableUnions(
+    module([
+      { id: "fu", arms: [fn, UNDEFINED_T] },
+      { id: "fnu", arms: [NULL_T, fn, UNDEFINED_T] },
+      { id: "ff", arms: [fn, F64] },
+    ]),
+  );
+  expect(unions.single("fu")).toMatchObject({ refTag: 0, unitTag: 1, nullTag: -1, arm: fn });
+  expect(unions.single("fnu")).toMatchObject({ refTag: 1, unitTag: 2, nullTag: 0 });
+  expect(unions.get("ff")).toBeNull();
+  const single = unions.single("fu")!;
+  // Always truthy, but `===` compares adapters by the function they adapt.
+  expect(isObjectArm(single)).toBe(true);
+  expect(isPointerIdentityArm(single)).toBe(false);
+  expect(unions.armTypes().get("fu")).toEqual(fn);
 });

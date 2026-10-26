@@ -15,6 +15,7 @@ import {
 } from "../../runtime-pack-common/scripts/runtime-unit.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
+import { shareIdenticalArtifacts } from "../../runtime-pack-common/scripts/share-artifacts.mjs";
 
 const run = promisify(execFile);
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -72,6 +73,7 @@ async function build() {
   const quickjs = join(vendorRoot, "quickjs-ng");
   const zlib = join(vendorRoot, "zlib");
   const mbedtls = join(vendorRoot, "mbedtls");
+  const brotli = join(vendorRoot, "brotli", "c");
   const QJS_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const LRE_SOURCES = ["libregexp.c", "libunicode.c"];
   const ZLIB_SOURCES = [
@@ -112,20 +114,23 @@ async function build() {
     return parallelMap(items, width, task);
   }
 
+  // Archive members are named by basename, so a source in a subdirectory
+  // (brotli's dec/ and enc/ share file names) is named after its path.
+  const objectName = (source) => source.replaceAll("/", "-").replace(/\.c$/, ".o");
   async function archive(id, sources, sourceRoot, flags) {
     const root = join(stagedOutputRoot, "vendor", id);
     const objectRoot = join(root, "objects");
     await parallel(sources, async (source) => {
       await compile(
         join(sourceRoot, source),
-        join(objectRoot, source.replace(/\.c$/, ".o")),
+        join(objectRoot, objectName(source)),
         unalignedVendorSources.has(source)
           ? flags.filter((flag) => !codeAlignment.includes(flag))
           : flags,
       );
     });
     const output = join(root, `libscriptc-${id}.a`);
-    const objects = sources.map((source) => join(objectRoot, source.replace(/\.c$/, ".o")));
+    const objects = sources.map((source) => join(objectRoot, objectName(source)));
     await createDeterministicArchive(archiver, output, objects);
     await rm(objectRoot, { recursive: true, force: true });
     return {
@@ -181,6 +186,7 @@ async function build() {
               ...(unit.source === "scr_zlib.c" || unit.source === "scr_fetch.c"
                 ? ["-I", zlib]
                 : []),
+              ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),
             ];
             const unitFlags = [
               ...commonFlags,
@@ -268,6 +274,17 @@ async function build() {
     const mbedtlsSources = (await readdir(join(mbedtls, "library")))
       .filter((name) => !name.startsWith(".") && name.endsWith(".c"))
       .sort();
+    const brotliSources = (
+      await Promise.all(
+        ["common", "dec", "enc"].map(async (dir) =>
+          (await readdir(join(brotli, dir)))
+            .filter((name) => !name.startsWith(".") && name.endsWith(".c"))
+            .map((name) => `${dir}/${name}`),
+        ),
+      )
+    )
+      .flat()
+      .sort();
     const archives = [
       await archive("quickjs", QJS_SOURCES, quickjs, [
         "-target",
@@ -301,6 +318,15 @@ async function build() {
         "-I",
         zlib,
       ]),
+      await archive("brotli", brotliSources, brotli, [
+        "-target",
+        RUNTIME_PACK_MATRIX.target.llvm_triple,
+        "-std=c11",
+        "-Os",
+        ...codeAlignment,
+        "-I",
+        join(brotli, "include"),
+      ]),
       await archive("mbedtls", mbedtlsSources, join(mbedtls, "library"), [
         "-target",
         RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -323,8 +349,14 @@ async function build() {
         "artifacts/licenses/v8-number-radix.txt",
         "BSD-3-Clause",
       ],
+      [
+        join(vendorRoot, "v8-ieee754", "LICENSE"),
+        "artifacts/licenses/v8-ieee754.txt",
+        "BSD-3-Clause",
+      ],
       [join(vendorRoot, "unicode", "LICENSE"), "artifacts/licenses/unicode.txt", "Unicode-3.0"],
       [join(zlib, "LICENSE"), "artifacts/licenses/zlib.txt", "Zlib"],
+      [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
     ];
     await Promise.all(
@@ -334,13 +366,14 @@ async function build() {
         await copyFile(source, output);
       }),
     );
+    await shareIdenticalArtifacts(flavors, buildRoot);
     const manifest = {
       schema: "scriptc.runtime-pack.v1",
       format: 1,
       package: packageManifest.name,
       version: packageManifest.version,
       target: RUNTIME_PACK_MATRIX.target,
-      runtime_abi: { version: 37, marker: "scr_runtime_abi_v37" },
+      runtime_abi: { version: 47, marker: "scr_runtime_abi_v47" },
       compiler: {
         command: compiler,
         identity: compilerVersion,

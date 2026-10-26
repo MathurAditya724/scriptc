@@ -43,6 +43,10 @@ import {
   destroyDefinitions,
   directChildReleaseLines,
   directDestroyTarget,
+  segmentPrologueLines,
+  segmentTeardownLines,
+  iterativeTeardownDefinitions,
+  segmentedTeardown,
   usedDirectTargets,
   type DirectDestroy,
   type RegionHooks,
@@ -55,6 +59,7 @@ import {
   traceAdapter,
   type ShapeHost,
   youngEntryLines,
+  arrElemInit,
 } from "./shapes.js";
 
 /** One virtual method slot of a hierarchy: the ROOT-MOST declaring class
@@ -368,9 +373,32 @@ function runtimePrefixOf(meta: LlClassMeta): RuntimePrefix | null {
  * on classes rooted at a runtime base, then the stream-state slot on
  * stream-rooted ones. */
 function headerEnd(meta: LlClassMeta): number {
+  if (meta.def.arrayElem !== undefined) return ARRAY_PREFIX.length + 1;
   if (!meta.hierarchy || meta.idInRc) return 1;
   if (streamRooted(meta)) return 5;
   return runtimePrefixOf(meta) ? 4 : 2;
+}
+
+/** The array header a class declared `extends Array` begins with, after
+ * the size_t reference count: %ScrArr's len, cap, elem, cyc, spare, filled
+ * and data (scr_array.h). */
+const ARRAY_PREFIX = ["i32", "i32", "i8", "i8", "i16", "i32", "ptr"];
+
+/** LLVM `c"..."` text of a string's UTF-8 bytes and a terminating NUL. */
+function nulTerminatedBytes(text: string): string {
+  let out = "";
+  for (const byte of Buffer.from(text, "utf8"))
+    out +=
+      byte >= 0x20 && byte < 0x7f && byte !== 0x22 && byte !== 0x5c
+        ? String.fromCharCode(byte)
+        : `\\${byte.toString(16).padStart(2, "0").toUpperCase()}`;
+  return out + "\\00";
+}
+
+/** The class descriptor (ScrArrClass: name, destroy) of a class declared
+ * `extends Array`. */
+export function arrayClassDescriptor(className: string): string {
+  return `@${mangleClassStruct(className)}.arrcls`;
 }
 
 /** The GEP index of the ThreadSlots slot word (an i32) in a class whose
@@ -470,7 +498,11 @@ export interface ClassHost extends ShapeHost {
  * hierarchy folds away. The cycle analysis leaves the hierarchy untraced, so
  * no trace adapter ever visits an instance (as for every untraced class). */
 export function programLifetimeClass(host: ClassHost, meta: LlClassMeta): boolean {
-  return host.programLifetime?.has(meta.root.def.name) === true && meta.root.def.runtime !== true;
+  return (
+    host.programLifetime?.has(meta.root.def.name) === true &&
+    meta.root.def.runtime !== true &&
+    meta.root.def.arrayElem === undefined
+  );
 }
 
 /** The reference count a program-lifetime instance is created with: the
@@ -570,13 +602,21 @@ export function classIdLoadLines(
  * 64-bit word. The count is the i32 at offset 0. */
 export const CLASS_ID_OFFSET = 4;
 
+/** The bound on layout ids (scr_rc.h SCR_RC_LAYOUT_ID_LIMIT): the high
+ * half of a 64-bit rc word keeps the layout id in its low 30 bits, beside
+ * the program-lifetime and frozen bits. A class id is the layout id of its
+ * class's canonical layout. */
+export const LAYOUT_ID_LIMIT = 0x3fffffff;
+
 /** The rc word an LlClassMeta.idInRc instance is created with: the class
  * id, its preorder number plus 1, in the high 32 bits, and in the low 32 bits
  * a count of 1, or for a program-lifetime instance the midpoint of the 32-bit
- * count (as programLifetimeRc is of the 32-bit word). The id is never 0,
- * 0x80000000 or 0xffffffff, the high halves of other objects' rc words, so
- * the runtime can tell an object with a class id (scr_rc.h scr_rc_class_id). */
+ * count (as programLifetimeRc is of the 32-bit word). The id is a layout id
+ * (LAYOUT_ID_LIMIT), so it never sets the program-lifetime or frozen bit
+ * and the runtime reads it back (scr_rc.h scr_rc_layout_id). */
 export function classIdRcWord(meta: LlClassMeta, lifetime: boolean): string {
+  if (meta.pre + 1 >= LAYOUT_ID_LIMIT)
+    throw new InternalCompilerError(`class id ${meta.pre + 1} is not a layout id`);
   return (BigInt(meta.pre + 1) * 2n ** 32n + (lifetime ? 2n ** 31n : 1n)).toString();
 }
 
@@ -722,7 +762,12 @@ export function assignCompactLayouts(
 ): void {
   const isCompact = (className: string): boolean => {
     const target = metaMap.get(className);
-    return target !== undefined && target.def.runtime !== true && compact(target.root);
+    return (
+      target !== undefined &&
+      target.def.runtime !== true &&
+      target.root.def.arrayElem === undefined &&
+      compact(target.root)
+    );
   };
   const byPre = [...metaMap.values()].sort((a, b) => a.pre - b.pre);
   for (const meta of byPre) {
@@ -897,13 +942,15 @@ export function emitClassShapes(
     // usual pointer reinterprets.
     const runtimePrefix = runtimePrefixOf(meta);
     const prefix =
-      meta.hierarchy && !meta.idInRc
-        ? streamRooted(meta)
-          ? ["ptr", "ptr", "ptr", "ptr"]
-          : runtimePrefix
-            ? ["ptr", "ptr", "ptr"]
-            : ["ptr"]
-        : [];
+      cls.arrayElem !== undefined
+        ? ARRAY_PREFIX
+        : meta.hierarchy && !meta.idInRc
+          ? streamRooted(meta)
+            ? ["ptr", "ptr", "ptr", "ptr"]
+            : runtimePrefix
+              ? ["ptr", "ptr", "ptr"]
+              : ["ptr"]
+          : [];
     const members = [...prefix, ...(meta.threadSlot ? ["i32"] : []), ...fieldTys];
     typeDefs.push(
       `%${mangleClassStruct(cls.name)} = type { ${host.sizeType}${members.length ? ", " + members.join(", ") : ""} } ` +
@@ -990,6 +1037,7 @@ export function emitClassShapes(
     const types = ownedFields(cls).map(({ field }) => storedFieldType(cls, field));
     for (const t of types) fieldTypes.push(t);
     if (programLifetimeClass(host, meta)) continue;
+    if (cls.arrayElem !== undefined) continue;
     if (meta.hierarchy && (meta.children.length !== 0 || meta.root.def.runtime === true)) continue;
     if (!types.some((t) => isRefCounted(t) && needsBoundedRelease(t))) continue;
     const release = mangleClassRelease(cls.name);
@@ -1006,6 +1054,12 @@ export function emitClassShapes(
   }
   const directTargets = usedDirectTargets(host, candidates, fieldTypes);
 
+  // The descriptor entries of a class declared `extends Array`: a helper
+  // the module defines, or null (a class that is never constructed has
+  // neither).
+  const defined = new Set(mod.functions.map((fn) => fn.name));
+  const arrayClassFn = (name: string | undefined): string =>
+    name !== undefined && defined.has(name) ? `@${mangleFunction(name)}` : "null";
   for (const cls of emitted) {
     const meta = metaMap.get(cls.name)!;
     const struct = mangleClassStruct(cls.name);
@@ -1082,25 +1136,68 @@ export function emitClassShapes(
       bounded &&
       (directTargets.has(`object:${cls.name}`) ||
         refFields.some((f) => directDestroyTarget(host, f.type, directTargets) !== null));
+    // The teardown's own symbol, and whether it keeps a segment (shapes.ts
+    // segmentedTeardown).
+    const destroy = `${meta.hierarchy ? mangleClassReleaseDirect(cls.name) : mangleClassRelease(cls.name)}_destroy`;
+    const segmented =
+      chained &&
+      cls.arrayElem === undefined &&
+      !meta.compact &&
+      runtimePrefix === null &&
+      !isStreamRooted &&
+      !meta.threadSlot &&
+      segmentedTeardown(
+        host,
+        destroy,
+        refFields.map((f) => f.type),
+        directTargets,
+      );
     // The field-releasing teardown body shared by both release shapes
     // (the public one on standalone classes, the DIRECT one on hierarchy
     // members). Runs at rc == 0.
     const teardown = (lines: string[]): void => {
-      refFields.forEach((f, t) => {
-        lines.push(
-          `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
-          `  %v${t} = load ptr, ptr %f${t}`,
-        );
-        const direct = bounded ? directDestroyTarget(host, f.type, directTargets) : null;
-        if (direct)
-          lines.push(
-            ...directChildReleaseLines(host, `td${t}`, `%v${t}`, direct, llvmCommentText(f.name)),
-          );
-        else
-          lines.push(
+      const release = (prefix: string, f: (typeof refFields)[number], t: number): string[] => {
+        // An Array subclass instance's destroy releases its fields plainly
+        // (it takes no chain length).
+        const direct =
+          bounded && cls.arrayElem === undefined
+            ? directDestroyTarget(host, f.type, directTargets)
+            : null;
+        if (direct === null)
+          return [
             `  call void ${releaseSym(host, f.type)}(ptr %v${t}) ; ${llvmCommentText(f.name)}`,
-          );
-      });
+          ];
+        const own = segmented && direct.destroy === destroy;
+        return directChildReleaseLines(
+          host,
+          `${prefix}${t}`,
+          `%v${t}`,
+          direct,
+          llvmCommentText(f.name),
+          own,
+        );
+      };
+      const loads = refFields.map((f, t) => [
+        `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
+        `  %v${t} = load ptr, ptr %f${t}`,
+      ]);
+      if (segmented) {
+        // A segmented teardown loads its fields, releases its own block, and
+        // then releases the fields (shapes.ts segmentTeardownLines).
+        const ownType = refFields.flatMap((f, t) =>
+          directDestroyTarget(host, f.type, directTargets)?.destroy === destroy ? [`%v${t}`] : [],
+        );
+        lines.push(
+          ...segmentPrologueLines(),
+          ...loads.flat(),
+          ...emitObjectFree(host, traced, "weak", "%sg.own"),
+          ...segmentTeardownLines(ownType, (prefix) =>
+            refFields.flatMap((f, t) => release(prefix, f, t)),
+          ),
+        );
+        return;
+      }
+      refFields.forEach((f, t) => lines.push(...loads[t]!, ...release("td", f, t)));
       if (runtimePrefix) lines.push(...regCall("td", runtimePrefix.drop, ""));
       if (isStreamRooted) lines.push(...stCall("tds", "scr_stream_st_release", ""));
       if (meta.threadSlot) lines.push(...slotForgetLines(host, struct, meta, "tdw"));
@@ -1182,10 +1279,12 @@ export function emitClassShapes(
         ];
         if (traced) reld.push(...cycleDeadLines(host, "teardown"));
         if (bounded) {
-          const destroy = `${mangleClassReleaseDirect(cls.name)}_destroy`;
           const destroyBody: string[] = [];
           teardown(destroyBody);
-          defs.push(...destroyDefinitions(destroy, destroyBody, chained), ``);
+          defs.push(
+            ...destroyDefinitions(destroy, destroyBody, chained, segmented ? host : null),
+            ``,
+          );
           host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
           reld.push(`  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`);
         } else teardown(reld);
@@ -1194,9 +1293,57 @@ export function emitClassShapes(
         reld.push(`done:`, `  ret void`, `}`, ``);
         defs.push(...reld);
       }
+    } else if (cls.arrayElem !== undefined) {
+      // An instance is an array: its release is the array's, which reaches
+      // the class's destroy (the descriptor's) when the count reaches zero.
+      host.declare(`declare void @scr_arr_release(ptr)`);
+      host.declare(`declare void @scr_arr_subclass_drop(ptr)`);
+      const destroy = `${mangleClassRelease(cls.name)}.arrdestroy`;
+      const destroyBody: string[] = [
+        `define internal void @${destroy}(ptr %o) ${FN_ATTRS} { ; destroy ${cls.name} (an Array subclass instance)`,
+        `entry:`,
+      ];
+      const fieldsTeardown: string[] = [];
+      teardown(fieldsTeardown);
+      const free = emitObjectFree(host, traced);
+      destroyBody.push(
+        ...fieldsTeardown.slice(0, fieldsTeardown.length - free.length),
+        `  call void @scr_arr_subclass_drop(ptr %o)`,
+        ...free,
+        `  ret void`,
+        `}`,
+        ``,
+      );
+      const displayName = cls.name.includes(".")
+        ? cls.name.slice(cls.name.lastIndexOf(".") + 1)
+        : cls.name;
+      const jsName = cls.jsName ?? displayName;
+      defs.push(
+        ...destroyBody,
+        // The name is the class's own copy: its address identifies the
+        // class in dyn snapshots of an instance (scr_arr_copy_metadata).
+        `${arrayClassDescriptor(cls.name)}.name = private constant [${Buffer.byteLength(jsName, "utf8") + 1} x i8] c"${nulTerminatedBytes(jsName)}"`,
+        `${arrayClassDescriptor(cls.name)} = internal constant { ptr, ptr, ptr, ptr } { ptr ${arrayClassDescriptor(cls.name)}.name, ptr @${destroy}, ptr ${arrayClassFn(cls.arrayFields)}, ptr ${arrayClassFn(cls.arraySpecies)} }`,
+        ``,
+        `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name} (the array's)`,
+        `entry:`,
+        `  call void @scr_arr_release(ptr %o)`,
+        `  ret void`,
+        `}`,
+        ``,
+      );
     } else {
       const freeBody: string[] = [];
       teardown(freeBody);
+      // A segmented class whose every reference field holds its own type and
+      // that has no collector header tears down in one loop (shapes.ts
+      // iterativeTeardownDefinitions).
+      const iterative =
+        segmented &&
+        !traced &&
+        refFields.every(
+          (f) => directDestroyTarget(host, f.type, directTargets)?.destroy === destroy,
+        );
       defs.push(
         ...releaseBody(
           host,
@@ -1207,6 +1354,19 @@ export function emitClassShapes(
           bounded,
           lifetime,
           chained,
+          segmented,
+          false,
+          iterative
+            ? iterativeTeardownDefinitions(
+                host,
+                destroy,
+                struct,
+                refFields.map((f) => f.index),
+                `@${mangleClassRelease(cls.name)}`,
+                "weak",
+                count,
+              )
+            : null,
         ),
         ``,
       );
@@ -1280,6 +1440,13 @@ export function emitClassShapes(
       nw.push(
         `  store ${host.sizeType} ${lifetime ? programLifetimeRc(host.sizeType) : 1}, ptr %o`,
       );
+    if (cls.arrayElem !== undefined) {
+      const init = arrElemInit(host, cls.arrayElem);
+      host.declare(`declare void @scr_arr_subclass_init(ptr, i8, ptr, ptr, i1 zeroext)`);
+      nw.push(
+        `  call void @scr_arr_subclass_init(ptr %o, i8 ${init.kind}, ptr ${init.ops}, ptr ${arrayClassDescriptor(cls.name)}, i1 ${traced})`,
+      );
+    }
     if (lifetime && audit) {
       // --sanitize builds: the RC audit skips its leak report when the
       // program keeps program-lifetime objects (scr_console.c), and
@@ -1316,7 +1483,12 @@ export function emitClassShapes(
     // Young instances: program-owned traced classes. Classes rooted at a
     // runtime base (errors, emitters, events, streams) carry runtime state
     // and stay with trial deletion, like every runtime family.
-    if (traced && !lifetime && (!meta.hierarchy || meta.root.def.runtime !== true))
+    if (
+      traced &&
+      !lifetime &&
+      (!meta.hierarchy || meta.root.def.runtime !== true) &&
+      cls.arrayElem === undefined
+    )
       nw.push(...youngEntryLines(host));
     nw.push(`  ret ptr ${meta.hierarchy ? "%o.vt" : "%o"}`, `}`, ``);
     defs.push(...nw);
@@ -1339,6 +1511,12 @@ export function emitClassShapes(
       tracedFields.forEach((f, i) => {
         tr.push(...traceFieldVisitLines(struct, f.index, i, llvmCommentText(f.name)));
       });
+      // An Array subclass instance's elements, when its current element
+      // storage is cycle-capable (a species result can retype it).
+      if (cls.arrayElem !== undefined) {
+        host.declare(`declare void @scr_arr_subclass_trace(ptr, ptr, ptr)`);
+        tr.push(`  call void @scr_arr_subclass_trace(ptr %o, ptr %visit, ptr %ctx) ; the elements`);
+      }
       tr.push(`  ret void`, `}`, ``);
       defs.push(...tr);
 
@@ -1356,6 +1534,12 @@ export function emitClassShapes(
         );
       });
       if (meta.threadSlot) gf.push(...slotForgetLines(host, struct, meta, "gfw"));
+      if (cls.arrayElem !== undefined) {
+        // The elements: traced ones are the collector's, the others are
+        // released with the storage (the same test as the trace's).
+        host.declare(`declare void @scr_arr_subclass_gc_drop(ptr)`);
+        gf.push(`  call void @scr_arr_subclass_gc_drop(ptr %o)`);
+      }
       gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
@@ -1367,18 +1551,18 @@ export function emitClassShapes(
  * statics plus their construct thunks — allocate, run the constructor over
  * a +1 `this`, and hand the remaining +1 out. No pending check is needed:
  * in-tier constructors are throw-free by construction.
- * `classObjs` maps className → { nameSym } registered during body emission
- * (the literal interned while the table was open). */
+ * `classObjs` maps className → { nameSym, baseNameSym } registered during
+ * body emission (the literals interned while the table was open). */
 export function emitClassObjDefs(
   host: ClassHost,
   metaMap: Map<string, LlClassMeta>,
-  classObjs: Map<string, { nameSym: string }>,
+  classObjs: Map<string, { nameSym: string; baseNameSym: string | null }>,
   fnByName: Map<string, IrFunction>,
   llType: (t: IrType) => string,
   threadLocal = false,
 ): string[] {
   const out: string[] = [];
-  for (const [className, { nameSym }] of classObjs) {
+  for (const [className, { nameSym, baseNameSym }] of classObjs) {
     const meta = metaMap.get(className);
     if (!meta)
       throw new InternalCompilerError(
@@ -1404,7 +1588,7 @@ export function emitClassObjDefs(
     const ctorArgs = params.map((p, i) => `${llType(p.type)} %a${i}`);
     const classObj =
       `@${mangleClassObj(className)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClassObj ` +
-      `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? (meta.def.runtime ? 1 : 0)}, ptr null, ptr null } ; class ${className}`;
+      `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? (meta.def.runtime ? 1 : 0)}, ptr null, ptr null, ptr ${baseNameSym ?? "null"}, ${host.sizeType} ${meta.def.ownStaticFields ? 1 : 0} } ; class ${className}`;
     if (meta.def.runtime) {
       // A runtime-provided class: %C.construct allocates through the
       // runtime and returns the instance.

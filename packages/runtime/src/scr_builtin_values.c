@@ -259,3 +259,217 @@ ScrDyn *scr_fs_realpath_value(const ScrDyn *path, const ScrDyn *options, bool na
   scr_str_release(resolved);
   return out;
 }
+
+/* ── Buffer as a value ───────────────────────────────────────────────────
+ * The Buffer function read as a value in JavaScript (bn.js assigns
+ * `require('buffer').Buffer` to a variable and passes it to
+ * `allocate(ArrayType, size)`): one function per thread, named Buffer
+ * with length 3, whose own enumerable properties are Node's, in Node's
+ * order: poolSize, the statics and Symbol(kIsEncodingSymbol). The statics
+ * apply Node's argument handling. Calling or constructing Buffer through
+ * the value, reading its prototype, and the copyBytesFrom and of statics
+ * throw SC2020. poolSize is a data property the pool reads before each
+ * decision (scr_buffer_pool_refresh_hook). */
+static SCR_TL ScrDyn *scr_bv_buffer;
+
+#define SCR_BV_ARG(i) ((i) < argc ? args[i] : scr_dyn_undefined())
+
+static ScrDyn *scr_bv_unsupported(const char *what) {
+  char message[160];
+  int n = snprintf(message, sizeof message, "%s through a stored Buffer value is not supported yet", what);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)n, "SC2020");
+  return NULL;
+}
+
+/* A Buffer result as a value: +1, or NULL with the exception pending. */
+static ScrDyn *scr_bv_bytes(ScrBytes *bytes) {
+  if (!bytes) return NULL;
+  ScrBytes *buffer = scr_bytes_as_buffer(bytes);
+  scr_bytes_release(bytes);
+  ScrDyn *value = scr_dyn_new_bytes(buffer);
+  scr_bytes_release(buffer);
+  return value;
+}
+
+static ScrDyn *scr_bv_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  return scr_bv_unsupported("Calling or constructing Buffer");
+}
+
+static ScrDyn *scr_bv_from(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  const ScrDyn *value = SCR_BV_ARG(0), *second = SCR_BV_ARG(1), *third = SCR_BV_ARG(2);
+  if (value->kind != SCR_DYN_STR) return scr_bv_bytes(scr_buffer_from_dyn_range_pooled(value, second, third));
+  /* fromString: an encoding that is not a non-empty string means utf8. */
+  if (second->kind == SCR_DYN_STR && second->v.str->len > 0)
+    return scr_bv_bytes(scr_buffer_from_str_checked(value->v.str, second->v.str));
+  ScrStr *utf8 = scr_str_new("utf8", 4);
+  ScrBytes *bytes = scr_buffer_from_str_checked(value->v.str, utf8);
+  scr_str_release(utf8);
+  return scr_bv_bytes(bytes);
+}
+
+static ScrDyn *scr_bv_copy_bytes_from(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  return scr_bv_unsupported("Buffer.copyBytesFrom");
+}
+
+static ScrDyn *scr_bv_of(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  return scr_bv_unsupported("Buffer.of");
+}
+
+static ScrDyn *scr_bv_alloc(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  return scr_bv_bytes(scr_buffer_alloc_value(SCR_BV_ARG(0), SCR_BV_ARG(1), SCR_BV_ARG(2)));
+}
+
+static ScrDyn *scr_bv_alloc_unsafe(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  const ScrDyn *size = SCR_BV_ARG(0);
+  if (size->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("size", "of type number", size);
+    return NULL;
+  }
+  return scr_bv_bytes(scr_buffer_alloc_unsafe(size->v.num));
+}
+
+static ScrDyn *scr_bv_alloc_unsafe_slow(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  const ScrDyn *size = SCR_BV_ARG(0);
+  if (size->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("size", "of type number", size);
+    return NULL;
+  }
+  return scr_bv_bytes(scr_buffer_alloc_unsafe_slow(size->v.num));
+}
+
+static ScrDyn *scr_bv_is_buffer(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  const ScrDyn *value = SCR_BV_ARG(0);
+  return scr_dyn_new_bool(value->kind == SCR_DYN_BYTES && value->buffer);
+}
+
+static ScrDyn *scr_bv_compare(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  double order = scr_buffer_compare_chk(SCR_BV_ARG(0), SCR_BV_ARG(1));
+  return scr_exc_pending() ? NULL : scr_dyn_new_num(order);
+}
+
+static ScrDyn *scr_bv_is_encoding(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  const ScrDyn *encoding = SCR_BV_ARG(0);
+  return scr_dyn_new_bool(encoding->kind == SCR_DYN_STR && encoding->v.str->len > 0 &&
+                          scr_bytes_is_encoding(encoding->v.str));
+}
+
+/* Buffer.concat(list, length): Node validates the list, answers an empty
+ * Buffer for an empty list before it reads the length, and otherwise
+ * validates the length as an offset. */
+static ScrDyn *scr_bv_concat(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  const ScrDyn *list = SCR_BV_ARG(0), *length = SCR_BV_ARG(1);
+  bool empty = list->kind == SCR_DYN_ARR && list->v.arr.len == 0;
+  if (length->kind == SCR_DYN_UNDEF || empty || list->kind != SCR_DYN_ARR)
+    return scr_bv_bytes(scr_buffer_concat_dyn(list));
+  if (length->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("length", "of type number", length);
+    return NULL;
+  }
+  return scr_bv_bytes(scr_buffer_concat_len_dyn(list, length->v.num));
+}
+
+static ScrDyn *scr_bv_byte_length(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  double length = scr_buffer_byte_length_value((ScrDyn *)SCR_BV_ARG(0), (ScrDyn *)SCR_BV_ARG(1));
+  return scr_exc_pending() ? NULL : scr_dyn_new_num(length);
+}
+
+static ScrDyn *scr_bv_prototype(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  return scr_bv_unsupported("Buffer.prototype");
+}
+
+/* The pool's setting is the value's poolSize: a number as it is, another
+ * primitive through ToNumber, anything else NaN (no pooling). */
+static void scr_bv_pool_refresh(void) {
+  ScrDyn *table = scr_dyn_function_properties(scr_bv_buffer);
+  const ScrDyn *size = scr_dyn_obj_get(table, "poolSize", 8);
+  double setting = NAN;
+  if (size && size->kind == SCR_DYN_NUM) {
+    setting = size->v.num;
+  } else if (size && (size->kind == SCR_DYN_STR || size->kind == SCR_DYN_BOOL || size->kind == SCR_DYN_NULL ||
+                      size->kind == SCR_DYN_UNDEF)) {
+    if (!scr_dyn_number_coerce_js(size, &setting)) setting = NAN;
+  }
+  scr_dyn_release(table);
+  scr_buffer_pool_apply(setting);
+}
+
+/* A static `Buffer.poolSize = n` write updates the value's property. */
+static void scr_bv_pool_publish(double size) {
+  ScrDyn *table = scr_dyn_function_properties(scr_bv_buffer);
+  scr_dyn_obj_set(table, "poolSize", 8, scr_dyn_new_num(size));
+  scr_dyn_release(table);
+}
+
+static void scr_bv_cleanup(void) {
+  scr_buffer_pool_refresh_hook = NULL;
+  scr_buffer_pool_publish_hook = NULL;
+  scr_dyn_release(scr_bv_buffer);
+  scr_bv_buffer = NULL;
+}
+
+ScrDyn *scr_buffer_constructor_value(void) {
+  if (scr_bv_buffer) return scr_dyn_retain(scr_bv_buffer);
+  static const struct { const char *name; uint32_t length; ScrDynThunk thunk; } statics[] = {
+    {"from", 3, scr_bv_from},
+    {"copyBytesFrom", 3, scr_bv_copy_bytes_from},
+    {"of", 0, scr_bv_of},
+    {"alloc", 3, scr_bv_alloc},
+    {"allocUnsafe", 1, scr_bv_alloc_unsafe},
+    {"allocUnsafeSlow", 1, scr_bv_alloc_unsafe_slow},
+    {"isBuffer", 1, scr_bv_is_buffer},
+    {"compare", 2, scr_bv_compare},
+    {"isEncoding", 1, scr_bv_is_encoding},
+    {"concat", 2, scr_bv_concat},
+    {"byteLength", 2, scr_bv_byte_length},
+  };
+  double pool_size = scr_buffer_pool_size();
+  scr_bv_buffer = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_bv_call, 3, "native:Buffer", "Buffer");
+  scr_atexit(scr_bv_cleanup);
+  ScrDyn *table = scr_dyn_function_properties(scr_bv_buffer);
+  ScrDyn *getter = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_bv_prototype, 0, "native:function", "get prototype");
+  scr_dyn_obj_set_accessor(table, "prototype", 9, getter, NULL);
+  ScrDynEntry *entry = &table->v.obj.entries[table->v.obj.len - 1];
+  entry->enumerable = entry->configurable = false;
+  scr_dyn_obj_set(table, "poolSize", 8, scr_dyn_new_num(pool_size));
+  ScrDyn *is_encoding = NULL;
+  for (size_t i = 0; i < sizeof statics / sizeof statics[0]; i++) {
+    ScrDyn *fn = scr_dyn_new_func(scr_closure_new(NULL, 0), statics[i].thunk, statics[i].length, "native:function",
+                                  statics[i].name);
+    if (statics[i].thunk == scr_bv_is_encoding) is_encoding = scr_dyn_retain(fn);
+    scr_dyn_obj_set(table, statics[i].name, strlen(statics[i].name), fn);
+  }
+  scr_dyn_release(table);
+  ScrStr *description = scr_str_new("kIsEncodingSymbol", 17);
+  ScrSym *symbol = scr_sym_new(description);
+  scr_str_release(description);
+  ScrDyn *key = scr_dyn_new_symbol(symbol);
+  scr_sym_release(symbol);
+  scr_dyn_symbol_key_set(scr_bv_buffer, key, is_encoding);
+  scr_dyn_release(key);
+  scr_dyn_release(is_encoding);
+  scr_buffer_pool_refresh_hook = scr_bv_pool_refresh;
+  scr_buffer_pool_publish_hook = scr_bv_pool_publish;
+  return scr_dyn_retain(scr_bv_buffer);
+}
+
+void scr_buffer_install_value(void) { scr_bytes_buffer_constructor_fn = scr_buffer_constructor_value; }
+
+ScrDyn *scr_buffer_static_value(const ScrStr *name) {
+  ScrDyn *buffer = scr_buffer_constructor_value();
+  ScrDyn *member = scr_dyn_fn_get(buffer, name->data, name->len);
+  scr_dyn_release(buffer);
+  return member;
+}

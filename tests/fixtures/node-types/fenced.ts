@@ -45,9 +45,8 @@ console.log(win32.sep);
 const u = new URL("https://example.com/x?a=1");
 console.log(URL.createObjectURL(new Blob(["data"])));
 u.searchParams.get("a");
-/* The one-shot zlib/raw/gzip codecs take Node's options (the deflateSync
- * call lowers), while Brotli remains a member-qualified fence with the
- * lowered family named. */
+/* The one-shot zlib/raw/gzip and Brotli codecs take Node's options (the
+ * deflateSync and brotliCompressSync calls lower). */
 import { brotliCompressSync, deflateSync } from "zlib";
 deflateSync("data", { level: 9, strategy: 1 });
 brotliCompressSync(Buffer.from("data"));
@@ -99,12 +98,9 @@ void callbackified;
 import { createECDH } from "node:crypto";
 createECDH("sect163k1");
 createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
-/* DiffieHellman's Object.prototype members, and crypto.diffieHellman over
- * asymmetric KeyObjects. */
-import { createDiffieHellman, diffieHellman, type KeyObject } from "node:crypto";
+/* DiffieHellman's Object.prototype members. */
+import { createDiffieHellman } from "node:crypto";
 createDiffieHellman(Buffer.from([23])).toString();
-declare const dhKey: KeyObject;
-diffieHellman({ privateKey: dhKey, publicKey: dhKey });
 /* WebCrypto beyond the secret-key slice: @types/node declares the whole
  * SubtleCrypto surface, and the methods outside the slice, such as
  * getPublicKey, fence by name. */
@@ -112,8 +108,8 @@ async function publicKeyWithWebCrypto(key: import("node:crypto").webcrypto.Crypt
   await crypto.subtle.getPublicKey(key, ["verify"]);
 }
 void publicKeyWithWebCrypto;
-/* Node's navigator global: typeof navigator and navigator.userAgent
- * compile; the other members fence by name. */
-const cores = navigator.hardwareConcurrency;
-void cores;
+/* Node's navigator global: navigator.locks (the Web Locks API) fences
+ * by name. */
+const locks = navigator.locks;
+void locks;
 // End of the declared-but-not-lowered surface.

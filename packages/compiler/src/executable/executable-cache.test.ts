@@ -58,6 +58,7 @@ const native: EarlyExecutableNativeFeatures = {
   dgram: false,
   dnsPromises: false,
   dgramDyn: false,
+  textCodecDyn: false,
   watch: false,
   foreignFfi: false,
   nodeTest: false,
@@ -68,6 +69,7 @@ const native: EarlyExecutableNativeFeatures = {
   dh: false,
   pki: false,
   ed25519: false,
+  x509: false,
   webcrypto: false,
   perfLoop: false,
 };
@@ -218,7 +220,7 @@ test("early executable cache misses on source and resolution changes", async () 
   expect(await readEarlyExecutableCache(f.root, f.options)).toBeNull();
 });
 
-test("early executable keys isolate compile modes, paths, implementation, checker, and FFI manifests", async () => {
+test("early executable keys isolate compile modes, paths, implementation, checker, function layouts, and FFI manifests", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
   tracker.run(() => trackedReadFile(f.source));
@@ -235,8 +237,12 @@ test("early executable keys isolate compile modes, paths, implementation, checke
     { ...f.options, optimization: "dev" },
     { ...f.options, optimization: "speed" },
     { ...f.options, detachedExit: true },
+    { ...f.options, targetCpu: "x86-64-v3" },
+    { ...f.options, targetCpu: "x86-64-v4" },
+    { ...f.options, cpuDispatch: true },
     { ...f.options, profile: "profile-generate:/tmp/%p.profraw" },
     { ...f.options, profile: "profile-use:digest" },
+    { ...f.options, functionLayout: "layout-digest" },
     { ...f.options, checker: "tsc-ts-executable-identity" },
     { ...f.options, npmStatic: "auto" },
     { ...f.options, npmStatic: ["commander"] },

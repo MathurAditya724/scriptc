@@ -1,7 +1,9 @@
 import { expect, test } from "vitest";
 import { executableLinkInputs } from "./link-plan-core.js";
 import {
+  parseNativeProfileMatch,
   nativeProfileHelperArgs,
+  renderNativeProfileMatch,
   nativeProfileKey,
   nativeProfileRefusal,
   profileGenerateLinkerArgs,
@@ -69,5 +71,63 @@ test("only the instrumented link adds the profile runtime", () => {
   expect(executableLinkInputs(inputs).driverFlags).not.toContain("-fprofile-generate");
   expect(executableLinkInputs({ ...inputs, profileGenerate: true }).driverFlags).toContain(
     "-fprofile-generate",
+  );
+});
+
+test("the helper's profile match is read from its output", () => {
+  expect(
+    parseNativeProfileMatch(
+      '{"ok":true,"profile":{"annotated":120,"mismatched":7,"missing":40,"unknown_partitions":1}}\n',
+    ),
+  ).toEqual({ annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 1 });
+  // A helper that predates the report prints nothing.
+  expect(parseNativeProfileMatch("")).toBeNull();
+  expect(parseNativeProfileMatch('{"ok":true}\n')).toBeNull();
+  expect(parseNativeProfileMatch('{"ok":true,"profile":{"annotated":-1}}\n')).toBeNull();
+});
+
+test("the build reports the match, and warns when the profile is stale", () => {
+  expect(
+    renderNativeProfileMatch("app.profdata", {
+      annotated: 9170,
+      mismatched: 0,
+      missing: 28636,
+      unknownPartitions: 0,
+    }),
+  ).toBe(
+    "scriptc: profile app.profdata: 9170 functions annotated, 0 mismatched, 28636 without a record\n",
+  );
+  // 10% of the described functions changed: at the threshold, no warning.
+  expect(
+    renderNativeProfileMatch("app.profdata", {
+      annotated: 90,
+      mismatched: 10,
+      missing: 5,
+      unknownPartitions: 1,
+    }),
+  ).toBe(
+    "scriptc: profile app.profdata: 90 functions annotated, 10 mismatched, 5 without a record, 1 partition without counts\n",
+  );
+  expect(
+    renderNativeProfileMatch("app.profdata", {
+      annotated: 5208,
+      mismatched: 3739,
+      missing: 28859,
+      unknownPartitions: 2,
+    }),
+  ).toBe(
+    "scriptc: profile app.profdata: 5208 functions annotated, 3739 mismatched, 28859 without a record, 2 partitions without counts\n" +
+      "scriptc: warning: 3739 of the 8947 functions app.profdata describes (41.8%) changed since it was collected and are optimized without their counts; collect the profile again\n",
+  );
+  // Nothing described: no share to warn about.
+  expect(
+    renderNativeProfileMatch("app.profdata", {
+      annotated: 0,
+      mismatched: 0,
+      missing: 12,
+      unknownPartitions: 0,
+    }),
+  ).toBe(
+    "scriptc: profile app.profdata: 0 functions annotated, 0 mismatched, 12 without a record\n",
   );
 });

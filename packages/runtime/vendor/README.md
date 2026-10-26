@@ -16,6 +16,13 @@ The x86_64 and AArch64 register-save/restore and `makecontext` logic is adapted 
 
 The double-to-shortest-decimal core of Ryū (d2s and its headers only — the float and fixed/exponent variants are not vendored). scr_number.c textually `#include`s d2s.c and calls its internal `d2d` digit generator; ECMA-262 digit *placement* stays in scr_number.c. The only modification to upstream files: `#include "ryu/x.h"` flattened to `#include "x.h"` in d2s.c and d2s_intrinsics.h so the directory is self-contained. To update, re-fetch the listed files at the new commit and re-apply that include flattening.
 
+## v8-ieee754/ (derived source)
+
+- Project: https://github.com/v8/v8, `src/base/ieee754.cc` as Node v24.22.0 bundles it (`deps/v8`, V8 13.6.233.17)
+- License: BSD-3-Clause (V8), with fdlibm's notice (see v8-ieee754/LICENSE)
+
+V8's adaptation of fdlibm, the code behind Node's Math.sin, Math.exp, Math.cbrt and the other transcendental functions on every platform. `src/scr_ieee754.c` is a C port of the file, so compiled Math members print the values Node prints. The function bodies are unchanged; the port renames the entry points (`scr_ieee754_*`), gives the kernels internal linkage, and replaces V8's C++ helpers (bit casts, wraparound arithmetic, NaN and infinity constants) with C. `legacy::pow` is not ported: Node's Math.pow calls the platform pow. To update, re-fetch `deps/v8/src/base/ieee754.cc` at the new Node version and repeat the same conversion.
+
 ## quickjs-ng/
 
 - Project: https://github.com/quickjs-ng/quickjs
@@ -38,6 +45,16 @@ The native runtime pack build produces `libscriptc-quickjs.a` for the compiler b
 The CROSS-target arm of node:zlib (see packages/runtime/src/scr_zlib.c): host builds keep the historical system `-lz` link (macOS ships libz), but zig's cross sysroots have no libz, so SCRIPTC_TARGET builds compile this vendored copy per target instead. Only the flat `*.c`/`*.h` at the distribution root are vendored (LICENSE beside them) — contrib, tests, build machinery, and docs are not. No vendored file is modified; the gz* file-I/O TUs are vendored for faithfulness but never compiled (nothing references the gzFile API — see ZLIB_SOURCES in packages/compiler/src/backend/vendor-archives.ts). To update, re-fetch the release tarball, copy the same flat set, and bump `ZLIB_VERSION` in vendor-archives.ts.
 
 The objects build lazily on the first zlib-using cross compile into the per-user build cache's `vendor/zlib-<version>-<flavor>-<target>-<toolchain>/` directory — one flavor per driver/target and compiler environment/identity (the lre-objects pattern). Zlib-free binaries never compile any of this; compressed OUTPUT bytes are zlib-version-dependent, which is why the corpus only compares round-trips and fixed-blob inflation.
+
+## brotli/
+
+- Project: https://github.com/google/brotli
+- Version: 1.2.0 (release tarball brotli-1.2.0.tar.gz, sha256 816c96e8e8f193b40151dad7e8ff37b1221d019dbcb9c35cd3fadbfe6477dfec), the version Node v24.22.0 bundles (`process.versions.brotli`)
+- License: MIT (see brotli/LICENSE)
+
+The codec behind node:zlib's Brotli functions and streams (see packages/runtime/src/scr_brotli.c). Only `c/common`, `c/dec`, `c/enc` and `c/include` are vendored, in upstream's layout (LICENSE beside `c/`); the C++ lazy static initializer (`c/enc/static_init_lazy.cc`), the tools, tests, bindings and build machinery are not. No vendored file is modified, and the files match the copy Node bundles in `deps/brotli`. Because the version is Node's, compressed bytes match Node's for the same parameters, so the corpus compares compressed output as well as round trips. To update, re-fetch the release tarball, copy the same directories, and bump `BROTLI_VERSION` in vendor-inputs.ts.
+
+The `dec/` and `enc/` directories share file names (`static_init.c`, `state.h`, `prefix.h`), so archive members are named after their directory (`dec-static_init.o`). Brotli-free binaries compile and link none of it.
 
 ## mbedtls/
 

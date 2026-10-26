@@ -2,6 +2,7 @@ import type { IrExpr, IrFunction, IrStmt } from "./ir.js";
 import { everyExprChild, everyStmtChild, everyStmtList } from "./traverse.js";
 import { byteNumberAccess, byteNumberRange } from "./byte-numbers.js";
 import {
+  BYTES_LENGTH_RANGE,
   boundedIntegerLoopFacts,
   guardedLoopCounterFacts,
   integerPathFallsThrough,
@@ -480,6 +481,7 @@ export function analyzeIntegerRangeFacts(
             return boxedRange(e.localId);
           }
           case "fieldGet":
+          case "arrayGet":
           case "call":
             return slotRange(e);
           default:
@@ -820,7 +822,7 @@ export function analyzeIntegerRangeFacts(
         const numeric = byteNumberAccess(e);
         if (numeric && !numeric.write) range = byteNumberRange(numeric);
         else if (e.method === "length" || e.method === "byteLength" || e.method === "byteOffset")
-          range = { min: 0, max: Number.MAX_SAFE_INTEGER };
+          range = BYTES_LENGTH_RANGE;
         else if (e.method === "get" && e.invalidNaN !== true && e.receiver.type.kind === "bytes") {
           const elem = e.receiver.type.elem;
           if (elem === "u8" || elem === "u8c") range = { min: 0, max: 255 };
@@ -865,6 +867,8 @@ export function analyzeIntegerRangeFacts(
         );
         if (e.type.kind === "f64") {
           if (e.method === "length") range = { min: 0, max: STRING_MAX_UNITS };
+          // A string holds at most SCR_STR_MAX_CAP (0x7fffffff) bytes.
+          else if (e.method === "byteLength") range = { min: 0, max: STRING_MAX_UNITS };
           // An empty needle is found at the clamped position, up to the length.
           else if (e.method === "indexOf") range = { min: -1, max: STRING_MAX_UNITS };
         }
@@ -1074,6 +1078,19 @@ export function analyzeIntegerRangeFacts(
           // inside and after the loop.
           const guarded =
             s.kind === "while" ? guardedLoopCounterFacts(s, loopLocals, facts) : noInvariants;
+          // The same bounds hold on entry and at every write in the loop,
+          // which is what a proven integer loop needs (loopRanges). A loop
+          // analyzed again keeps the bindings every analysis bounds.
+          if (s.kind === "while") {
+            const previous = loopRanges.get(s);
+            if (!previous) loopRanges.set(s, new Map(guarded));
+            else
+              for (const [id, range] of previous) {
+                const other = guarded.get(id);
+                if (other) previous.set(id, union(range, other));
+                else previous.delete(id);
+              }
+          }
           const loop = new Map(facts);
           havocWith(loop, [s], loop, guarded);
           for (const [id, range] of guarded) set(loop, id, range);

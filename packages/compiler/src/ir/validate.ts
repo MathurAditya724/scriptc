@@ -57,11 +57,16 @@ import {
   maybePromiseUnionArmsOk,
   VOID,
 } from "./ir.js";
-import { DYN_CLASS_PROPERTIES, callSiteReturnType, classValueConstructor } from "./ir.js";
+import {
+  DYN_CLASS_PROPERTIES,
+  callSiteReturnType,
+  classValueAbiEquals,
+  classValueConstructor,
+} from "./ir.js";
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
 import { dynamicOperationOf, functionTier } from "./tiers.js";
-import { LIB_FN_SIGS, pipelinePumpedRuns } from "./builtin-signatures.js";
+import { libFnSignatures, pipelinePumpedRuns } from "./builtin-signatures.js";
 import { ALWAYS_THROW_LIB_FNS } from "./builtin-effects.js";
 
 /** The promisified crypto calls' value kinds besides checked-dynamic. */
@@ -122,6 +127,14 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     errors.push({ message: "worker execution mode must be a boolean", loc: moduleLoc });
   if (mod.declBoundary !== undefined && mod.declBoundary !== true)
     errors.push({ message: "declBoundary must be true when present", loc: moduleLoc });
+  const declOrigins = mod.declOrigins;
+  if (
+    declOrigins !== undefined &&
+    (!Array.isArray(declOrigins) || declOrigins.some((o) => typeof o !== "string"))
+  )
+    errors.push({ message: "declOrigins must be an array of strings", loc: moduleLoc });
+  if (mod.untypedIntegrity !== undefined && mod.untypedIntegrity !== true)
+    errors.push({ message: "untypedIntegrity must be true when present", loc: moduleLoc });
   if (mod.lifetimeRegions !== undefined && mod.lifetimeRegions !== true)
     errors.push({ message: "lifetimeRegions must be true when present", loc: moduleLoc });
   if (mod.workers && mod.lib !== undefined)
@@ -501,10 +514,29 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         });
       }
     }
-    for (const symbol of cls.symbolFields ?? []) {
-      const global = mod.globals?.find((global) => global.id === symbol.globalId);
+    if (cls.stringTagHelper !== undefined) {
+      const helper = functionsByName.get(cls.stringTagHelper);
+      const receiver = helper?.params[0]?.type;
       if (
-        global?.type.kind !== "symbol" ||
+        !helper ||
+        helper.params.length !== 1 ||
+        receiver?.kind !== "object" ||
+        receiver.className !== cls.name ||
+        helper.returnType.kind !== "string" ||
+        helper.captures !== undefined ||
+        helper.classCaptures !== undefined
+      ) {
+        errors.push({
+          message: `class ${cls.name}: string tag helper must be a noncapturing (instance) => string function`,
+          loc: cls.loc,
+        });
+      }
+    }
+    for (const symbol of cls.symbolFields ?? []) {
+      const global =
+        "globalId" in symbol ? mod.globals?.find((global) => global.id === symbol.globalId) : null;
+      if (
+        ("globalId" in symbol ? global?.type.kind !== "symbol" : symbol.wellKnown === "") ||
         !cls.fields.some((field) => field.name === symbol.field)
       ) {
         errors.push({ message: `class ${cls.name}: invalid symbol field metadata`, loc: cls.loc });
@@ -803,7 +835,6 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         arm.kind === "void" ||
         arm.kind === "union" ||
         arm.kind === "dyn" ||
-        arm.kind === "date" ||
         (arm.kind === "generator" && iterableArmsElem(u.arms) === null)
       ) {
         errors.push({ message: `union ${u.id}: arm ${i} is ${arm.kind}`, loc: noLoc });
@@ -976,6 +1007,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       mod.workers === true,
       mod.lifetimeRegions === true,
       new Set(mod.threadSlotKeys ?? []),
+      mod.declOrigins?.length ?? 0,
     );
   }
   return errors;
@@ -995,6 +1027,7 @@ function validateFunction(
   workers: boolean,
   lifetimeRegions: boolean,
   threadSlotKeys: ReadonlySet<string>,
+  declOriginCount: number,
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
@@ -1507,6 +1540,7 @@ function validateFunction(
             e.left.type.kind === "map" ||
             e.left.type.kind === "set" ||
             e.left.type.kind === "regex" ||
+            e.left.type.kind === "date" ||
             e.left.type.kind === "url" ||
             e.left.type.kind === "object" ||
             e.left.type.kind === "record" ||
@@ -2046,12 +2080,18 @@ function validateFunction(
       }
       case "arrayNewLen": {
         // Mapper-less Array.from({length: n}): absent-slot fill exists
-        // only for refcounted element kinds (frontend fences scalars).
+        // only for refcounted element kinds. Number and boolean slots are
+        // filled with present undefined values right after
+        // (`(T | undefined)[]`); the frontend fences other scalar uses.
         if (e.type.kind !== "array") {
           err(`arrayNewLen must be array-typed, got ${e.type.kind}`, e.loc);
           break;
         }
-        if (!isRefCounted(e.type.elem)) {
+        if (
+          !isRefCounted(e.type.elem) &&
+          e.type.elem.kind !== "f64" &&
+          e.type.elem.kind !== "bool"
+        ) {
           err(
             `arrayNewLen with non-refcounted ${e.type.elem.kind} elements (no absent value)`,
             e.loc,
@@ -2192,6 +2232,9 @@ function validateFunction(
           indexOfNum: { argTypes: [F64, F64], minArgs: 1, result: F64 },
           lastIndexOfNum: { argTypes: [F64, F64], minArgs: 1, result: F64 },
           includesNum: { argTypes: [F64, F64], minArgs: 1, result: BOOL },
+          indexOfElem: { argTypes: [F64, F64], minArgs: 2, result: F64 },
+          lastIndexOfElem: { argTypes: [F64, F64], minArgs: 2, result: F64 },
+          includesElem: { argTypes: [F64, F64], minArgs: 2, result: BOOL },
           fill: { argTypes: [BYTES_U8, F64, F64], minArgs: 1, result: BYTES_U8 },
           fillNum: { argTypes: [F64, F64, F64], minArgs: 1, result: BYTES_U8 },
           // Per-element TypedArray fill (any elem — the non-u8 fill path).
@@ -2372,9 +2415,13 @@ function validateFunction(
           (e.method === "sortPrimitive" || e.method === "toSortedPrimitive") &&
           elem.kind !== "string" &&
           elem.kind !== "f64" &&
-          elem.kind !== "bool"
+          elem.kind !== "bool" &&
+          elem.kind !== "date"
         ) {
-          err(`arrIntrinsic ${e.method} requires primitive elements, got ${elem.kind}`, e.loc);
+          err(
+            `arrIntrinsic ${e.method} requires primitive or Date elements, got ${elem.kind}`,
+            e.loc,
+          );
         }
         if (e.method === "sortValues" || e.method === "sortDense") {
           const arms = elem.kind === "union" ? unions.get(elem.unionId)?.arms : undefined;
@@ -2456,13 +2503,18 @@ function validateFunction(
           elem.kind !== "f64" &&
           elem.kind !== "string" &&
           elem.kind !== "bool" &&
+          elem.kind !== "date" &&
           !(
             elem.kind === "union" &&
             (unions
               .get(elem.unionId)
               ?.arms.every(
                 (a) =>
-                  a.kind === "f64" || a.kind === "string" || a.kind === "bool" || isUnitType(a),
+                  a.kind === "f64" ||
+                  a.kind === "string" ||
+                  a.kind === "bool" ||
+                  a.kind === "date" ||
+                  isUnitType(a),
               ) ??
               false)
           )
@@ -2962,23 +3014,29 @@ function validateFunction(
           }
           const subClass = classes.get(sub);
           const supClass = classes.get(sup);
-          const subValueCtor = subClass ? classValueConstructor(subClass) : null;
-          const supValueCtor = supClass ? classValueConstructor(supClass) : null;
-          const subCtor = subValueCtor ? functions.get(subValueCtor.fn) : undefined;
-          const supCtor = supValueCtor ? functions.get(supValueCtor.fn) : undefined;
-          if (!subCtor || !supCtor || !subValueCtor || !supValueCtor) {
+          const subCtor = subClass ? functions.get(classValueConstructor(subClass).fn) : undefined;
+          const supCtor = supClass ? functions.get(classValueConstructor(supClass).fn) : undefined;
+          if (!subClass || !supClass || !subCtor || !supCtor) {
             err(`classval upcast: "${sub}"/"${sup}" lack constructor functions`, e.loc);
             break;
           }
-          const subArgs = subCtor.params.slice(subValueCtor.firstArg);
-          const supArgs = supCtor.params.slice(supValueCtor.firstArg);
-          const abiEqual =
-            subArgs.length === supArgs.length &&
-            subArgs.every((p, i) => typeEquals(p.type, supArgs[i]!.type));
+          const abiEqual = classValueAbiEquals(subClass, supClass, functions);
           if (!abiEqual) {
             err(`classval upcast: "${sub}" and "${sup}" constructor ABIs differ`, e.loc);
           }
           break;
+        }
+        // An instance of a class declared `extends Array` and its array
+        // are the same object: upcast to the array, downcast back.
+        {
+          const instance = e.kind === "upcast" ? e.value.type : e.type;
+          const array = e.kind === "upcast" ? e.type : e.value.type;
+          if (instance.kind === "object" && array.kind === "array") {
+            const elem = classes.get(instance.className)?.arrayElem;
+            if (elem === undefined || !typeEquals(elem, array.elem))
+              err(`${e.kind}: "${instance.className}" is not an array of that element type`, e.loc);
+            break;
+          }
         }
         if (e.type.kind !== "object" || e.value.type.kind !== "object") {
           err(`${e.kind} between non-class types`, e.loc);
@@ -3087,6 +3145,15 @@ function validateFunction(
       case "instanceOf": {
         checkExpr(e.value);
         if (e.type.kind !== "bool") err("instanceOf must be bool", e.loc);
+        // An array against a class declared `extends Array` (its ext).
+        if (e.value.type.kind === "array") {
+          if (classes.get(e.className)?.arrayElem === undefined)
+            err(
+              `instanceOf of an array against "${e.className}", which does not extend Array`,
+              e.loc,
+            );
+          break;
+        }
         if (!hierarchy.has(e.className)) {
           err(`instanceOf against non-hierarchy class "${e.className}"`, e.loc);
         }
@@ -4072,7 +4139,7 @@ function validateFunction(
     }
     if (e.fn === "worker.new" && !workers)
       errors.push({ message: "Worker construction requires worker execution mode", loc: e.loc });
-    const sig = LIB_FN_SIGS[e.fn];
+    const sig = libFnSignatures()[e.fn];
     if (!sig) {
       err(`libCall of unknown library function "${e.fn as string}"`, e.loc);
       return;
@@ -4177,6 +4244,41 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    // ArraySpeciesCreate over an Array method's result, and Array.of /
+    // Array.from on a class that extends Array: the result has the plain
+    // result's array type.
+    if (e.fn === "array.dynIsClass") {
+      const cls = e.args[1]?.kind === "strLit" ? classes.get(e.args[1].value) : undefined;
+      if (cls?.arrayElem === undefined)
+        err("libCall array.dynIsClass must name a class that extends Array", e.loc);
+      return false;
+    }
+    if (e.fn === "array.speciesCreate") {
+      if (e.args[0]?.type.kind !== "array" || !typeEquals(e.type, e.args[0].type))
+        err("libCall array.speciesCreate must have its receiver's array type", e.loc);
+      return true;
+    }
+    if (e.fn === "array.speciesFinish") {
+      const plain = e.args[1];
+      if (plain?.type.kind !== "array" || !typeEquals(e.type, plain.type))
+        err("libCall array.speciesFinish must have its array argument's type", e.loc);
+      if (e.args[0]?.type.kind !== "array")
+        err("libCall array.speciesFinish instance must be an array", e.loc);
+      return true;
+    }
+    if (e.fn === "array.speciesAdopt" || e.fn === "array.classConstructAdopt") {
+      const plain = e.args[1];
+      if (plain?.type.kind !== "array" || !typeEquals(e.type, plain.type))
+        err(`libCall ${e.fn} must have its array argument's type`, e.loc);
+      if (e.fn === "array.speciesAdopt" && e.args[0]?.type.kind !== "array")
+        err("libCall array.speciesAdopt receiver must be an array", e.loc);
+      if (e.fn === "array.classConstructAdopt") {
+        const cls = e.args[0]?.kind === "strLit" ? classes.get(e.args[0].value) : undefined;
+        if (cls?.arrayElem === undefined)
+          err("libCall array.classConstructAdopt must name a class that extends Array", e.loc);
+      }
+      return true;
+    }
     const cryptoPromise = CRYPTO_PROMISE_VALUES[e.fn];
     if (cryptoPromise) {
       const inner = e.type.kind === "promise" ? e.type.inner : undefined;
@@ -4275,7 +4377,9 @@ function validateFunction(
     if (
       e.fn === "array.namedKeys" ||
       e.fn === "array.hasNamedKey" ||
-      e.fn === "array.hasProperties"
+      e.fn === "array.hasProperties" ||
+      e.fn === "array.foreign" ||
+      e.fn === "array.foreignThrow"
     ) {
       if (e.args[0]?.type.kind !== "array") {
         err(`libCall ${e.fn} arg 0: expected an array, got ${e.args[0]?.type.kind}`, e.loc);
@@ -5339,6 +5443,39 @@ function validateFunction(
   }
 
   function checkLibSpecialCall(e: IrExpr & { kind: "libCall" }): boolean {
+    if (e.fn === "promise.fulfilledValue") {
+      const promise = e.args[0]?.type;
+      if (
+        promise?.kind !== "promise" ||
+        e.type.kind === "void" ||
+        isUnitType(e.type) ||
+        promise.inner.kind !== "void"
+      )
+        err(`libCall ${e.fn} must read a Promise<void> entry at a non-void type`, e.loc);
+      return true;
+    }
+    if (e.fn === "promise.allTuple") {
+      const [entries, build] = e.args;
+      if (
+        entries?.type.kind !== "array" ||
+        entries.type.elem.kind !== "promise" ||
+        entries.type.elem.inner.kind !== "void" ||
+        build?.kind !== "closure" ||
+        build.captures.length > 0 ||
+        build.type.kind !== "func" ||
+        e.type.kind !== "promise" ||
+        !typeEquals(build.type.ret, e.type.inner)
+      )
+        err(`libCall ${e.fn} must join Promise<void> entries into its builder's tuple`, e.loc);
+      return true;
+    }
+    if (e.fn === "als.bindCallback") {
+      // The bound function, at its closure argument's own type.
+      const fn = e.args[0]?.type;
+      if (fn?.kind !== "func" || !typeEquals(e.type, fn))
+        err(`libCall ${e.fn} must return its function argument's type`, e.loc);
+      return true;
+    }
     if (
       e.fn === "crypto.randomFillView" ||
       e.fn === "crypto.randomFillViewRest" ||
@@ -5688,7 +5825,7 @@ function validateFunction(
         }
         const lastIsFunction = Math.floor(positions! / 2 ** (total - 1)) % 2 === 1;
         const helperCount = 3 * pipelinePumpedRuns(total, positions!, flags!);
-        const groups = helperCount + (destKind === 2 ? 1 : 0) + (flags! & 32 ? 2 : 0);
+        const groups = helperCount + (destKind >= 2 ? 1 : 0) + (flags! & 32 ? 2 : 0);
         const cbArgs =
           e.fn === "sp.pipelineStagesOpts"
             ? 1 + (flags! & 64 ? 1 : 0)
@@ -5703,7 +5840,7 @@ function validateFunction(
           total > 52 ||
           positions! >= 2 ** total ||
           functions !== k ||
-          destKind === 3 ||
+          (destKind === 3 && e.fn === "stream.composeStages") ||
           (destKind !== 0) !== lastIsFunction ||
           total < 2 ||
           e.args.length !== 5 + n! + k! + groups + cbArgs
@@ -5722,7 +5859,7 @@ function validateFunction(
             err(`libCall ${e.fn} stage function ${i} must be a func`, e.loc);
         }
         at2 += k!;
-        const helpers = helperCount + (destKind === 2 ? 1 : 0);
+        const helpers = helperCount + (destKind >= 2 ? 1 : 0);
         for (let i = at2; i < at2 + helpers; i++) {
           if (e.args[i]?.type.kind !== "func")
             err(`libCall ${e.fn} helper ${i} must be a func`, e.loc);
@@ -6081,6 +6218,11 @@ function validateFunction(
       case "dynCheck": {
         checkExpr(e.value);
         expectType(e.value, DYN, "dynCheck operand");
+        if (
+          e.origin !== undefined &&
+          (!Number.isInteger(e.origin) || e.origin < 0 || e.origin >= declOriginCount)
+        )
+          err(`dynCheck origin ${e.origin} is not an index of declOrigins`, e.loc);
         // The target drives the emitted validator/builder: non-dyn,
         // non-void, JSON-representable (closures/class instances can never
         // be found inside a JSON dyn — the frontend rejects those casts).
@@ -6285,15 +6427,10 @@ function validateFunction(
           }
         } else {
           // throw: any exception-representable payload (the throw
-          // statement's rule). Date cannot retain its object kind in the
-          // untyped exception cell.
+          // statement's rule).
           if (e.arg === null) {
             err("genResume throw with no payload", e.loc);
-          } else if (
-            e.arg.type.kind === "void" ||
-            e.arg.type.kind === "caught" ||
-            e.arg.type.kind === "date"
-          ) {
+          } else if (e.arg.type.kind === "void" || e.arg.type.kind === "caught") {
             err(`genResume throw of a ${e.arg.type.kind} value`, e.loc);
           }
         }
@@ -6734,11 +6871,7 @@ function validateFunction(
         checkExpr(s.value);
         // dyn throws are allowed: the dyn node rides the REF cell arm by
         // reference (the JS-lane `throw err` of a dyn argument).
-        if (
-          s.value.type.kind === "void" ||
-          s.value.type.kind === "caught" ||
-          s.value.type.kind === "date"
-        ) {
+        if (s.value.type.kind === "void" || s.value.type.kind === "caught") {
           err(`throw of a ${s.value.type.kind} value`, s.loc);
         }
         break;

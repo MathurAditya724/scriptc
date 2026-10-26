@@ -38,8 +38,8 @@ const KNOWN: Record<string, Known> = {
   "assert-shims": { run: "SC1043" },
   "buffer-shims": { run: "SC2020" },
   "bytes-exit": { build: "SC2004" },
-  "cjs-esm-named": { build: "SC2013" },
-  "cjs-lexer-aligned": { build: "SC2013" },
+  "cjs-esm-named": { run: "SC1090" },
+  "cjs-lexer-aligned": { run: "SC1090" },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },
   "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
   "create-require": { run: "SC1090" },
@@ -50,7 +50,6 @@ const KNOWN: Record<string, Known> = {
   "esbuild-require": { build: "SC2013" },
   "esm-missing-default": { build: "SC1090" },
   "esm-missing-export": { build: "SC1090" },
-  "fetch-destructure": { run: "SC1031" },
   "fs-shims": { run: "SC1101" },
   "import-refusal": { build: "SC2020" },
   "island-registry": { build: "SC2011" },
@@ -58,9 +57,9 @@ const KNOWN: Record<string, Known> = {
     divergence:
       "Timeout handles are numbers (typeof) and lose their ref flag once fired or cleared",
   },
-  "island-web-plumbing": { run: "SC2020" },
+  "island-web-plumbing": { run: "SC1090" },
   "lazy-traps": { build: "SC2013" },
-  "misc-shims": { run: "SC2020" },
+  "misc-shims": { run: "SC1090" },
   "namespace": { build: "SC1013" },
   "node24-async-events": { run: "SC2020" },
   "node24-commonjs-metadata": { run: "SC2020" },
@@ -74,7 +73,7 @@ const KNOWN: Record<string, Known> = {
   "node24-file-url-conversion": { build: "SC1090" },
   "node24-fs-descriptors": { run: "SC2020" },
   "node24-mime": { run: "SC2020" },
-  "node24-mime-errors": { run: "SC1090" },
+  "node24-mime-errors": { run: "SC2020" },
   "node24-no-error-assertions": { run: "SC2020" },
   "node24-parseargs": { run: "SC1090" },
   "node24-promise-timers": { run: "SC2020" },
@@ -104,6 +103,8 @@ const KNOWN: Record<string, Known> = {
   "self-name": { build: "SC2013" },
   "stream-shims": { run: "SC2020" },
   "util-shims": { run: "SC2020" },
+  // The package redeclares the var it exported: Node copies the first value.
+  "var-export-redeclared": { run: "SC1090" },
   "web-streams": { run: "SC1090" },
   "workspace-copied": { build: "SC2013" },
   "workspace-unclean": { build: "SC2013" },
@@ -112,13 +113,19 @@ const KNOWN: Record<string, Known> = {
 const cases = shardSelect(npmCases(fixturesRoot), (c) => c.name);
 
 /** Per-case timeouts past the default 120 s: the undici cases compile the
- * built-in undici implementation's module graph, and the zod 3 cases
- * (zod3, zod3-adoption, zod3-boundary, zod3-infer) compile zod 3's
- * 3,700-line types module. A sanitized build of either takes minutes on a
- * CI runner. */
+ * built-in undici implementation's module graph, the zod 3 cases (zod3,
+ * zod3-adoption, zod3-boundary, zod3-infer) compile zod 3's 3,700-line
+ * types module, and the zod 4 cases (zod4-boundary, zod4-record,
+ * hono-zod-validator, hono-zod-default-hook)
+ * compile zod 4's core, classic API and locales. A sanitized build of any
+ * of them takes minutes on a CI runner. */
 const TIMEOUTS: Record<string, number> = {
+  "hono-zod-default-hook": 900_000,
+  "hono-zod-validator": 900_000,
   undici5: 600_000,
   undici7: 600_000,
+  "zod4-boundary": 900_000,
+  "zod4-record": 900_000,
   zod3: 600_000,
   "zod3-adoption": 600_000,
   "zod3-boundary": 600_000,

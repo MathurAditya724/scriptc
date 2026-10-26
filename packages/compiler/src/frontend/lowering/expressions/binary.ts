@@ -58,6 +58,7 @@ import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-mod
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
+import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
 import { numLit, varRef } from "../../../ir/build.js";
 import { lowerUrlAssignment } from "../builtins/url.js";
@@ -243,37 +244,38 @@ function lowerLooseNullCompare(
       // No unit arms: never null-ish (defensive — the fold below).
       return { kind: "boolLit", value: negated, type: BOOL, loc };
     }
-    const isTag = (tag: number): IrExpr => ({
+    const isTag = (tag: number, value: IrExpr): IrExpr => ({
       kind: "unionIsTag",
       unionId: ut.unionId,
       tag,
       negated,
-      value: other,
+      value,
       type: BOOL,
       loc,
     });
-    if (tags.length === 1) return isTag(tags[0]!);
+    if (tags.length === 1) return isTag(tags[0]!, other);
     // Both null AND undefined arms: tag-in-set as a short-circuit pair
-    // (De Morgan for `!=`). The operand IrExpr rides both tests, so the
-    // backend emits it per test — restricted to re-emittable pure reads;
-    // anything effectful gets its own actionable fence (the generic
-    // SC1040 hint would wrongly suggest `== null` as the fix).
+    // (De Morgan for `!=`). The operand rides both tests, so an operand
+    // that is not a plain read (`m.get(k)! == null`) is evaluated once
+    // into a hidden local first.
+    let value = other;
+    let prefix: IrStmt[] = [];
     if (!isSafeToRepeat(other)) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        `'== null' / '!= null' on a '${lowerer.fmt(ut)}' value that isn't a plain read ` +
-          `(both unit arms need the operand twice — bind it to a const first)`,
-      );
+      const tmp = lowerer.declareHiddenLocal("%nullish", ut);
+      value = varRef(tmp.id, ut, loc);
+      prefix = [{ kind: "varDecl", localId: tmp.id, init: other, loc }];
     }
-    return {
+    const test: IrExpr = {
       kind: "logical",
       op: negated ? "&&" : "||",
-      left: isTag(tags[0]!),
-      right: isTag(tags[1]!),
+      left: isTag(tags[0]!, value),
+      right: isTag(tags[1]!, value),
       type: BOOL,
       loc,
     };
+    return prefix.length === 0
+      ? test
+      : { kind: "seqExpr", stmts: prefix, result: test, type: BOOL, loc };
   }
   if (other.type.kind === "void") {
     return null; // no static tag to test — keep the fence
@@ -764,10 +766,27 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
       (lowerer.unions
         .get(elem.unionId)
         ?.arms.every(
-          (a) => a.kind === "f64" || a.kind === "string" || a.kind === "bool" || isUnitType(a),
+          (a) =>
+            a.kind === "f64" ||
+            a.kind === "string" ||
+            a.kind === "bool" ||
+            a.kind === "date" ||
+            isUnitType(a),
         ) ??
         false);
-    if (elem.kind === "f64" || elem.kind === "string" || elem.kind === "bool" || joinableUnion) {
+    // Checked-dynamic elements: the runtime's String() over the array's
+    // dyn form (its join, element by element).
+    if (elem.kind === "dyn") {
+      const boxed: IrExpr = { kind: "dynFrom", value: e, type: DYN, loc: e.loc };
+      return { kind: "toString", operand: boxed, type: STRING, loc: e.loc };
+    }
+    if (
+      elem.kind === "f64" ||
+      elem.kind === "string" ||
+      elem.kind === "bool" ||
+      elem.kind === "date" ||
+      joinableUnion
+    ) {
       const sep: IrExpr = { kind: "strLit", value: ",", type: STRING, loc: e.loc };
       return {
         kind: "arrIntrinsic",
@@ -787,6 +806,7 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
     // other record is Object.prototype.toString's constant.
     const shape = lowerer.shapes.get(e.type.shapeId);
     if (isPerfEntryType(lowerer, e.type)) return perfEntryTag(lowerer, e, e.type, e.loc);
+    if (isX509Type(lowerer, e.type)) return x509ToString(e, e.loc);
     if (shape && !shape.tuple && !shape.fields.some((f) => f.name === "toString")) {
       // A null-prototype record (Object.groupBy) has no toString or
       // valueOf: ToPrimitive throws Node's TypeError.
@@ -1537,6 +1557,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           reference.kind === "map" ||
           reference.kind === "set" ||
           reference.kind === "union" ||
+          // A promise of dyn boxes its own promise, so identity holds;
+          // other promise types box a fresh adapter.
+          (reference.kind === "promise" && reference.inner.kind === "dyn") ||
           DYN_HANDLE_KINDS.has(reference.kind)) &&
         lowerer.dynConvertible(reference)
       ) {
@@ -1578,6 +1601,19 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         ((scalarSide.type.kind === "moduleNs" && scalarSide.type.moduleId === "builtin:events") ||
           (scalarSide.kind === "classRef" && builtinClassKind(scalarSide.className) !== null))
       ) {
+        const boxed = lowerer.coerceToExpected(scalarSide, DYN);
+        return {
+          kind: "dynScalarEq",
+          left: scalarSide === left ? boxed : left,
+          right: scalarSide === right ? boxed : right,
+          ...(negated ? { negated: true as const } : {}),
+          type: BOOL,
+          loc,
+        };
+      }
+      // A Date against an untyped value: the same Date object, whose
+      // checked-dynamic handle the untyped value would hold.
+      if (dynSide.type.kind === "dyn" && scalarSide.type.kind === "date") {
         const boxed = lowerer.coerceToExpected(scalarSide, DYN);
         return {
           kind: "dynScalarEq",
@@ -2012,6 +2048,28 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       if (left.type.kind === "string" || right.type.kind === "string") {
+        // A Date on the left converts after the right operand is
+        // evaluated, which can run its setters.
+        if (left.type.kind === "date" && !isSafeToRepeat(right)) {
+          const date = lowerer.declareHiddenLocal("%plus", left.type);
+          const other = lowerer.declareHiddenLocal("%plus", right.type);
+          return {
+            kind: "seqExpr",
+            stmts: [
+              { kind: "varDecl", localId: date.id, init: left, loc },
+              { kind: "varDecl", localId: other.id, init: right, loc },
+            ],
+            result: {
+              kind: "strConcat",
+              left: concatOperand(lowerer, varRef(date.id, left.type, loc), expr.left),
+              right: concatOperand(lowerer, varRef(other.id, right.type, loc), expr.right),
+              type: STRING,
+              loc,
+            },
+            type: STRING,
+            loc,
+          };
+        }
         return {
           kind: "strConcat",
           left: concatOperand(lowerer, left, expr.left),
@@ -2195,14 +2253,41 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       if (bothStr) return { kind: "strCmp", op: cmpOp, left, right, type: BOOL, loc };
-      // A Date converts to a new checked-dynamic Date on each crossing, so
-      // comparisons keep their Date fence instead of comparing copies.
-      if (
-        left.type.kind !== "date" &&
-        right.type.kind !== "date" &&
-        lowerer.dynConvertible(left.type) &&
-        lowerer.dynConvertible(right.type)
-      ) {
+      // Dates compare by time value, the number hint of ToPrimitive. Both
+      // operands evaluate before either converts, so a right operand that
+      // mutates the left Date (`a < (a.setTime(t), b)`) is seen: with such
+      // a right operand, both Dates bind first and their times read after.
+      if (left.type.kind === "date" && right.type.kind === "date") {
+        const time = (d: IrExpr): IrExpr => ({
+          kind: "libCall",
+          fn: "date.getTime",
+          args: [d],
+          type: F64,
+          loc,
+        });
+        if (isSafeToRepeat(right))
+          return { kind: "bin", op: cmpOp, left: time(left), right: time(right), type: BOOL, loc };
+        const leftDate = lowerer.declareHiddenLocal("%date", left.type);
+        const rightDate = lowerer.declareHiddenLocal("%date", right.type);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: leftDate.id, init: left, loc },
+            { kind: "varDecl", localId: rightDate.id, init: right, loc },
+          ],
+          result: {
+            kind: "bin",
+            op: cmpOp,
+            left: time(varRef(leftDate.id, left.type, loc)),
+            right: time(varRef(rightDate.id, right.type, loc)),
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        };
+      }
+      if (lowerer.dynConvertible(left.type) && lowerer.dynConvertible(right.type)) {
         return {
           kind: "libCall",
           fn: "dyn.compare",
@@ -2312,6 +2397,34 @@ export function lowerStrictEquality(
         loc,
       };
     }
+    // A promise against a union with a promise arm, or two such unions:
+    // converting a promise into a union's promise arm of another payload
+    // (`chains.get(id) === tail` with a `Map<K, Promise<unknown>>`, or
+    // `a.pending === b.pending` after both were set to one promise) builds a
+    // new promise, so either side may hold a conversion of the other's
+    // promise, and a value narrowed out of the union may be one too.
+    // Promises are objects to ===, so compare both sides as untyped values,
+    // where a converted promise answers with its origin's identity (the plain
+    // promise-vs-promise rule below).
+    const holdsPromise = (type: IrType): boolean =>
+      type.kind === "promise" ||
+      (type.kind === "union" &&
+        (lowerer.unions.get(type.unionId)?.arms ?? []).some((arm) => arm.kind === "promise"));
+    if (
+      holdsPromise(left.type) &&
+      holdsPromise(right.type) &&
+      lowerer.dynConvertible(left.type) &&
+      lowerer.dynConvertible(right.type)
+    ) {
+      return {
+        kind: "dynScalarEq",
+        left: lowerer.coerceToExpected(left, DYN),
+        right: lowerer.coerceToExpected(right, DYN),
+        ...(negated ? { negated: true as const } : {}),
+        type: BOOL,
+        loc,
+      };
+    }
     if ((sameUnion || !bothUnion) && lowerer.eqComparableUnion(ut.unionId)) {
       aliasRefusal(ut);
       return {
@@ -2416,6 +2529,7 @@ export function lowerStrictEquality(
       idLeft.type.kind === "map" ||
       idLeft.type.kind === "set" ||
       idLeft.type.kind === "regex" ||
+      idLeft.type.kind === "date" ||
       idLeft.type.kind === "url" ||
       idLeft.type.kind === "object" ||
       idLeft.type.kind === "record" ||
@@ -2452,14 +2566,7 @@ export function lowerStrictEquality(
       loc,
     };
   }
-  // A Date converts to a new checked-dynamic Date on each crossing; its
-  // identity has no representation, so equality keeps the fence.
-  if (
-    idLeft.type.kind !== "date" &&
-    idRight.type.kind !== "date" &&
-    lowerer.dynConvertible(idLeft.type) &&
-    lowerer.dynConvertible(idRight.type)
-  ) {
+  if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),

@@ -28,16 +28,22 @@ import type { IndexMergeContributor } from "../containers/indexed-objects.js";
 import type { KeyOrderSegment } from "../key-order-witness.js";
 import {
   PERF_ENTRY_MARKER,
+  X509_PUBLIC_KEY_FIELD,
   isGenericCallableMemberType,
   jsOpenObjectType,
 } from "../../type-mapper.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { fenceSymbolFieldCopy } from "../symbol-fields.js";
+import {
+  classSymbolKeyOf,
+  fenceSymbolFieldCopy,
+  symbolFieldDisplayName,
+} from "../symbol-fields.js";
 import { planUnionRetag } from "../union-retag.js";
 import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
 import { builtinGlobalValue } from "./property-access.js";
 import { holdsEvolvingArray } from "../lower-stmts.js";
+import { builtinNamespaceValue } from "../builtin-namespaces.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -195,7 +201,19 @@ function propNameText(lowerer: Lowerer, name: ts.PropertyName): string {
  * (NamedEvaluation): an identifier, string or numeric key, or a computed
  * key that folds to one string. Null for other keys. */
 function propertyFunctionName(lowerer: Lowerer, name: ts.PropertyName): string | null {
-  if (ts.isComputedPropertyName(name)) return literalComputedKey(lowerer, name);
+  if (ts.isComputedPropertyName(name)) {
+    const literal = literalComputedKey(lowerer, name);
+    if (literal !== null) return literal;
+    // A symbol key names the function `[description]`.
+    let key = name.expression;
+    while (ts.isParenthesizedExpression(key)) key = key.expression;
+    const symbol = classSymbolKeyOf(lowerer, key);
+    if (symbol) return `[${symbolFieldDisplayName(symbol.fieldName).slice("Symbol(".length, -1)}]`;
+    const wellKnown = ts.isPropertyAccessExpression(key)
+      ? lowerer.stdlibGlobalMember(key, "Symbol")
+      : null;
+    return wellKnown ? `[Symbol.${wellKnown}]` : null;
+  }
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
   return null;
@@ -401,7 +419,12 @@ export function lowerDynObjectLiteral(
             : !boxValue &&
                 (ts.isObjectLiteralExpression(valueExpr) ||
                   (ts.isArrayLiteralExpression(valueExpr) &&
-                    holdsEvolvingArray(lowerer, valueExpr)))
+                    // An empty literal takes whatever the object's users
+                    // store into it (`{ [kChildren]: [] }`), so it is a
+                    // checked-dynamic array rather than its `never[]` layout.
+                    (valueExpr.elements.nodes.length === 0 ||
+                      holdsEvolvingArray(lowerer, valueExpr) ||
+                      lowerer.untypedLiteralContext(valueExpr))))
               ? lowerer.lowerExprExpecting(valueExpr, DYN)
               : lowerer.lowerExpr(valueExpr as ts.Expression);
       raw = fenceClosureProbe(lowerer, valueExpr, undefined, lowerValue) ?? lowerValue();
@@ -499,6 +522,13 @@ function fenceAccessorSpreadSource(
       "SC1090",
       prop,
       "object spread over performance entries (Node keeps their fields as prototype getters, so own-key walks see none; read the fields or call toJSON())",
+    );
+  }
+  if (srcShape && srcShape.fields.some((f) => f.name === X509_PUBLIC_KEY_FIELD)) {
+    lowerer.unsupported(
+      "SC1090",
+      prop,
+      "object spread over X509Certificate values (Node keeps their fields as prototype getters, so own-key walks see none; read the fields)",
     );
   }
   if (srcShape && shapeHasAccessorSlots(srcShape)) {
@@ -2504,6 +2534,20 @@ export function lowerObjectLiteral(
     : { kind: "seqExpr", stmts: spreadStmts, result, type, loc };
 }
 
+/** The field type is an array, or a union with exactly one array arm. */
+function singleArrayArm(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "array") return true;
+  if (type.kind !== "union") return false;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  return arms.filter((arm) => arm.kind === "array").length === 1;
+}
+
+function isEmptyArrayLiteral(node: ts.Node): boolean {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  return ts.isArrayLiteralExpression(inner) && inner.elements.nodes.length === 0;
+}
+
 /** A union of plain records can preserve its existing variant while
  * replacing shared fields. Dispatch before constructing the copy: only
  * the selected arm evaluates overrides, and recordClone snapshots fields
@@ -2552,8 +2596,11 @@ function lowerUnionRecordClone(lowerer: Lowerer, expr: ts.ObjectLiteralExpressio
     for (let index = 0; index < props.length; index++) {
       const prop = props[index]!;
       const node = ts.isPropertyAssignment(prop) ? prop.initializer : prop.name;
-      const valueType = lowerer.mapTypeOf(lowerer.typeOf(node));
       const fieldType = shape.fields.find((field) => field.name === names[index])!.type;
+      // An empty array literal (`content: []`, typed `never[]`) builds a
+      // fresh array of each arm's own element type.
+      if (isEmptyArrayLiteral(node) && singleArrayArm(lowerer, fieldType)) continue;
+      const valueType = lowerer.mapTypeOf(lowerer.typeOf(node));
       const lift = valueType ? lowerer.widthLiftPlan(valueType, fieldType) : null;
       // The inferred result must retain an override's own fields and
       // aliases. A structural copy into the source field's narrower shape
@@ -3262,7 +3309,11 @@ function shorthandBuiltinValue(
   const symbol = lowerer.checker.getShorthandAssignmentValueSymbol(prop);
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   const js = isJsSourceFile(ts.getSourceFileOfNode(prop));
-  return builtinGlobalValue(ts.symbolName(symbol), locOf(prop.name), js);
+  const name = ts.symbolName(symbol);
+  return (
+    (js ? builtinNamespaceValue(lowerer, name, locOf(prop.name)) : null) ??
+    builtinGlobalValue(name, locOf(prop.name), js)
+  );
 }
 
 export function lowerShorthandValue(

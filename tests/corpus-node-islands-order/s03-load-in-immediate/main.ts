@@ -1,4 +1,5 @@
 // @requires-libnode
+// @order: race
 // Switch: Node loads inside an immediate while later immediates of the same check
 // phase, and timers, are pending.
 import { callSync } from "@scriptc/node";

@@ -29,6 +29,9 @@ export const SCR_ARR_FIELD = {
  * (SCR_ARR_STATES in scr_array.h). */
 export const SCR_ARR_STATES = 16;
 
+/** The `spare` flag of a frozen %ScrArr (SCR_ARR_FROZEN in scr_array.h). */
+export const SCR_ARR_FROZEN = 32;
+
 /** Loads the i32 `len` or `cap` of a %ScrArr at `ptr` into `dest` as a
  * size-type count. */
 export function loadArrCount(
@@ -273,6 +276,10 @@ export function emitFieldAbsentTest(B: BlockBuilder, value: string, undefinedTag
   B.line(`${absent} = and i1 ${isUndef}, ${marked}`);
   return absent;
 }
+
+/** ScrClosure.function_kind's SCR_FN_RECEIVER_FREE bit (scr_closure.h):
+ * the body never observes the ambient receiver. */
+export const CLOSURE_RECEIVER_FREE = 16;
 
 /** The right-hand side of a JS function-identity comparison: two closures
  * are one function when their identity roots match (a signature adapter

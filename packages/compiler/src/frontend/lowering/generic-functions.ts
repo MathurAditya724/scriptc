@@ -1,3 +1,5 @@
+import { shapeOverlayAnnotated } from "../shape-inference/index.js";
+import { documentedParameter } from "./call-signatures.js";
 import { staticNameBindings } from "./static-function-names.js";
 import { positionTag } from "./structural-positions.js";
 import { keyedHelperName } from "./stable-names.js";
@@ -645,8 +647,7 @@ function extendsParameter(
   info: GenericFnInfo,
 ): boolean {
   const params = new Set<ts.Symbol>();
-  const fn = info.decl as { parameters?: { nodes: readonly ts.ParameterDeclaration[] } };
-  for (const param of fn.parameters?.nodes ?? []) {
+  for (const param of info.decl.parameters.nodes) {
     const symbol = ts.isIdentifier(param.name)
       ? lowerer.checker.getSymbolAtLocation(param.name)
       : undefined;
@@ -672,8 +673,7 @@ function declaredInside(node: ts.Node, owner: ts.Node): boolean {
  * return gives anything else (or nothing). Nested functions and classes keep
  * their own returns. */
 function returnedLocalClass(lowerer: Lowerer, info: GenericFnInfo): ts.ClassLikeDeclaration | null {
-  const fn = info.decl as ts.Node & { body?: ts.Node };
-  const body = fn.body;
+  const body = info.decl.body;
   if (!body) return null;
   const classOf = (node: ts.Expression): ts.ClassLikeDeclaration | null => {
     let expr = node;
@@ -1042,6 +1042,14 @@ function unifySignatureBindings(
       dAliasArgs.length &&
       iAliasArgs.length === dAliasArgs.length
     ) {
+      if (tsBindings && declared !== inst) {
+        let entries = lowerer.boundAliasInstances.get(declared);
+        if (!entries) lowerer.boundAliasInstances.set(declared, (entries = []));
+        // A body forwarding its own alias (`inner(g)` returning `Catalog<G,
+        // "x">` inside an instance) resolves through the enclosing one.
+        if (!entries.some((entry) => entry.tsBindings === tsBindings))
+          entries.push({ tsBindings, instance: lowerer.boundAliasTsResolver(inst) ?? inst });
+      }
       dAliasArgs.forEach((da, i) => {
         const ia = iAliasArgs[i];
         if (ia) unify(da, ia, depth + 1);
@@ -1857,10 +1865,14 @@ export function implicitAnyParamSymbolsOf(
   // The variadic-`arguments` form keeps its dynRest story whole.
   if (bodyReadsArguments(decl)) return null;
   let hasImplicitParams = false;
+  const overlayTyped = shapeOverlayAnnotated(decl);
   const out = decl.parameters.nodes.map((param): ts.Symbol | null => {
     if (!ts.isIdentifier(param.name)) return null;
     if (param.dotDotDotToken || param.questionToken || param.initializer) return null;
     if (param.name.text === "this") return null;
+    // A parameter typed by shape inference's overlay is a proven type,
+    // not an implicit type parameter.
+    if (overlayTyped && documentedParameter(param)) return null;
     const t = lowerer.typeOf(param.name);
     const broadFunction = lowerer.checker.typeToString(t) === "Function";
     const broadArray = lowerer.checkerAnyArrayType(t);
@@ -2084,6 +2096,10 @@ function storedImplicitArgumentType(lowerer: Lowerer, arg: ts.Expression): IrTyp
     isJsSourceFile(ts.getSourceFileOfNode(arg)) &&
     (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg))
   ) {
+    // A closure lowered here before (another call site's instance key, or
+    // a repeated demand) keeps its value for the argument's own lowering.
+    const known = lowerer.speculatedClosure(arg);
+    if (known !== null) return known.type;
     const saved = lowerer.diagSink;
     const diagnostics: typeof lowerer.diags = [];
     lowerer.diagSink = diagnostics;
@@ -2094,8 +2110,17 @@ function storedImplicitArgumentType(lowerer: Lowerer, arg: ts.Expression): IrTyp
       lowerer.diagSink = saved;
     }
     // Direct inferred helpers can receive native callbacks even when their
-    // result is an opaque handle that cannot cross checked storage.
-    if (diagnostics.length === 0 && value?.type.kind === "func") return value.type;
+    // result is an opaque handle that cannot cross checked storage. The
+    // argument's own lowering then takes this value instead of lowering
+    // the closure a second time.
+    if (diagnostics.length === 0 && value?.type.kind === "func") {
+      lowerer.speculatedClosures.set(arg, {
+        ctx: lowerer.ctx,
+        bindings: lowerer.typeParamBindings,
+        value,
+      });
+      return value.type;
+    }
   }
   if (arg.kind === ts.SyntaxKind.ThisKeyword) return lowerer.resolveThis()?.type ?? null;
   if (ts.isAwaitExpression(arg)) {

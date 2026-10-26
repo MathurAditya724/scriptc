@@ -87,7 +87,16 @@ export type IrType =
   | { kind: "date" }
   | { kind: "string" } // heap, refcounted, UTF-8
   | { kind: "bool" }
-  | { kind: "array"; elem: IrType } // heap, refcounted, monomorphic elements
+  | {
+      kind: "array";
+      elem: IrType;
+      /** A `(T | undefined)[]` of a number, string or boolean T, stored as
+       * T elements (which hold a present undefined by their state). Not
+       * part of the type's identity (typeEquals, typeKey): it only lets a
+       * checked conversion from a dynamic value accept undefined
+       * elements. */
+      optionalElements?: true;
+    } // heap, refcounted, monomorphic elements
   /** ES `Map<K, V>` — heap, refcounted, insertion-ordered hash map with ONE
    * runtime representation (ScrMap) and type-directed key/value handling,
    * exactly the array pattern (never per-instantiation structs). Keys use
@@ -440,6 +449,7 @@ const POINTER_KIND_LIST = [
   "url",
   "searchParams",
   "symbol",
+  "date",
   ...POINTER_HANDLE_KINDS,
   "func",
   "object",
@@ -463,7 +473,7 @@ export const POINTER_KINDS = irKindSet(POINTER_KIND_LIST);
 export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   f64: "",
   bigint: "scr_bigint",
-  date: "",
+  date: "scr_date",
   string: "scr_str",
   bool: "",
   array: "scr_arr",
@@ -645,6 +655,7 @@ export function isSupportedArrayElem(t: IrType): boolean {
     case "func":
     case "promise":
     case "regex":
+    case "date":
     case "child":
     case "netServer":
     // fs.Stats snapshots (`await Promise.all(paths.map(stat))`): immutable
@@ -689,7 +700,8 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // functions intern one immortal closure, inner closures allocate once
     // per evaluation), so pointer identity is JS function identity.
     // Closures are cycle-headered and traced like records.
-    t.kind === "func"
+    t.kind === "func" ||
+    t.kind === "date"
   );
 }
 
@@ -796,6 +808,9 @@ export function isSupportedMapValue(t: IrType): boolean {
     // the same ordinary refcounted pointer story as child, without even
     // the pre-settle closures.
     case "secureCtx":
+      return true;
+    // A Date object: immutable, holds no references.
+    case "date":
       return true;
     // A promise (Map<string, Promise<SecureContext>> — the SNI callback's
     // in-flight dedupe map): refcounted, with trace/cycle support already
@@ -1009,6 +1024,18 @@ export function isRefCounted(t: IrType): boolean {
 
 /* ── module ────────────────────────────────────────────────────────────── */
 
+/** The island module tree of a program (node-islands/modules.ts): paths
+ * relative to `root`, the directory on the build machine that holds them.
+ * Only the relative paths enter an executable. */
+export interface IrNodeIslandModules {
+  root: string;
+  files: { path: string; size: number; sha256: string }[];
+  links: { path: string; target: string }[];
+  /** Where the executable finds the tree: absent when it carries the tree
+   * itself, else a `$ORIGIN/` path (`--libnode=beside`). */
+  location?: string;
+}
+
 export interface IrModule {
   /** Bumped on any breaking IR change; serialize.ts refuses mismatches. */
   irVersion: 17;
@@ -1048,14 +1075,37 @@ export interface IrModule {
    * closures boxed for package code return records and arrays as live
    * capsules, so a value that comes back keeps its identity. */
   declBoundary?: true;
+  /** Package files compiled from shape inference's typed overlay
+   * (frontend/shape-inference/overlay.ts), each with its package name: a
+   * checked conversion in them checks an analysis-proven fact, so its
+   * failure reports a compiler analysis bug instead of a type error. */
+  inferredFactFiles?: { file: string; pkg: string }[];
+  /** Origins of package-declared types checked by `dynCheck.origin`
+   * (frontend/lowering/decl-origin.ts): fields separated by \x1f —
+   * package, version, suggested range, selector, where it is declared,
+   * declared type. */
+  declOrigins?: string[];
   /** The program constructs LifetimeRegion (@scriptc/experimental): every
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
   lifetimeRegions?: true;
+  /** Element keys (typeKey of the element type) of native arrays that can
+   * hold elements outside their element type (SCR_ARR_FOREIGN), stored
+   * through dynamic views; "*" for every array. Absent when none can. */
+  foreignElementKeys?: string[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
   threadSlotKeys?: string[];
+  /** typeKeys of the array types whose values the program may freeze
+   * (frontend frozen-records.ts): their writes test the array's frozen bit
+   * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
+  freezableArrays?: string[];
+  /** The program freezes, seals or prevents extensions of untyped values
+   * (frontend frozen-records.ts noteUntypedIntegrity). Class hierarchies
+   * that can be held there carry an integrity word, which the runtime sets
+   * through the commit of the instance's checked view. */
+  untypedIntegrity?: true;
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's
@@ -1067,7 +1117,13 @@ export interface IrModule {
    * executable) and the exact Node version its bridge links. Set by the
    * executable build (node-islands/libnode.ts); the emitted main records
    * both before %main. */
-  nodeIsland?: { libnode: string; nodeVersion: string };
+  nodeIsland?: {
+    libnode: string;
+    nodeVersion: string;
+    /** The modules the calls load (node-islands/modules.ts), when any call
+     * loads a file. */
+    modules?: IrNodeIslandModules;
+  };
   /** Outbound native FFI declarations used by `ffiCall` expressions.
    * These are link-time C ABI imports, not runtime dynamic-library handles:
    * executable builds resolve their symbols from the manifest's archive
@@ -1474,11 +1530,18 @@ export interface IrClassDef {
   jsName?: string;
   /** JavaScript constructor arity, ending before the first default or rest parameter. */
   jsLength?: number;
+  /** The class declares public static fields. util.inspect prints them
+   * after the class tag; a class object reached through `unknown` does
+   * not carry them unless the runtime holds its static table. */
+  ownStaticFields?: true;
   /** Zero-argument native helper returning the shared prototype data object.
    * Used when materializing an instance's own-property view. */
   prototypeDataHelper?: string;
   /** Native instance to its actual prototype, including factory captures and subclasses. */
   instancePrototypeHelper?: string;
+  /** Native instance to the string its inherited Symbol.toStringTag getter
+   * answers, read by the runtime for an instance seen as `unknown`. */
+  stringTagHelper?: string;
   /** Public JavaScript fields record their creation in the shared property
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
@@ -1488,8 +1551,14 @@ export interface IrClassDef {
    * class of the chain sets `name` during construction, and then an own
    * `name` follows every other own property. */
   errorNameAfter?: string | null;
-  /** Stable module symbol identities for public instance layout fields. */
-  symbolFields?: { field: string; globalId: string }[];
+  /** JavaScript Error subclasses with a property bag: a view committed by a
+   * dynamic write keeps `name` and `message` where the bag recorded them
+   * (scr_error_dyn_follow_bag). */
+  errorBagOrder?: boolean;
+  /** Stable symbol identities for public instance layout fields: the
+   * module global holding the key, or the name of the well-known symbol
+   * (`toStringTag` for `Symbol.toStringTag`). */
+  symbolFields?: ({ field: string } & ({ globalId: string } | { wellKnown: string }))[];
   /** RUNTIME-PROVIDED class (the builtin Error hierarchy): the struct, RC
    * helpers, and vtable live in the runtime (ScrError / scr_error_*), so
    * backends emit no definitions for it — only the preorder-interval
@@ -1497,6 +1566,17 @@ export interface IrClassDef {
    * RUNTIME_ERROR_CLASSES). User subclasses are ordinary emitted classes
    * whose layout prefix embeds ScrError's fields. */
   runtime?: true;
+  /** A class declared `extends Array`: its instances are arrays of this
+   * element type. The struct begins with the runtime's array header (the
+   * reference count is the array's, field 0) and the class's fields follow
+   * it; the runtime finds the class through the array's ext. */
+  arrayElem?: IrType;
+  /** The function (array) => dyn listing such a class's own fields
+   * (ScrArrClass.fields); absent when it declares none. */
+  arrayFields?: string;
+  /** The function (length) => array constructing such a class for
+   * ArraySpeciesCreate (ScrArrClass.species). */
+  arraySpecies?: string;
   /** Base class name (single inheritance, `extends`). A class is IN A
    * HIERARCHY when it has a base or is some class's base; hierarchy classes
    * carry a vtable word after `rc` (backends), standalone classes are laid
@@ -1606,6 +1686,28 @@ export function classValueConstructor(def: { name: string; runtime?: true }): {
     : { fn: `%${def.name}.constructor`, firstArg: 1 };
 }
 
+/** Whether construction through a class value typed as `sup` may call
+ * `sub`'s construct thunk: both class-value constructors exist and take the
+ * same argument types after the receiver. The classval upcast rule and the
+ * checked class-value boundary both rest on it. */
+export function classValueAbiEquals(
+  sub: { name: string; runtime?: true },
+  sup: { name: string; runtime?: true },
+  functions: ReadonlyMap<string, IrFunction>,
+): boolean {
+  const subValueCtor = classValueConstructor(sub);
+  const supValueCtor = classValueConstructor(sup);
+  const subCtor = functions.get(subValueCtor.fn);
+  const supCtor = functions.get(supValueCtor.fn);
+  if (!subCtor || !supCtor) return false;
+  const subArgs = subCtor.params.slice(subValueCtor.firstArg);
+  const supArgs = supCtor.params.slice(supValueCtor.firstArg);
+  return (
+    subArgs.length === supArgs.length &&
+    subArgs.every((p, i) => typeEquals(p.type, supArgs[i]!.type))
+  );
+}
+
 /** The JavaScript `.name` of a class: its jsName, or the runtime-provided
  * class's own name (`%TypeError` is TypeError). */
 export function classJsName(def: { name: string; runtime?: true; jsName?: string }): string {
@@ -1662,6 +1764,8 @@ export const ZLIB_STREAM_MODES: ReadonlyMap<string, number> = new Map([
   ["DeflateRaw", 5],
   ["InflateRaw", 6],
   ["Unzip", 7],
+  ["BrotliDecompress", 8],
+  ["BrotliCompress", 9],
 ]);
 
 export interface IrRecordShape {
@@ -1691,6 +1795,10 @@ export interface IrRecordShape {
    * dynCheck), and JSON serialization appends overflow entries after the
    * declared fields in insertion order. */
   indexValue?: IrType;
+  /** Values of this shape may be frozen (frozen-records.ts): their rc word
+   * can carry the frozen bit, which their release ignores, and every write
+   * to them checks it. */
+  freezable?: true;
   /** Field names in FIRST-SEEN declaration order (the checker's property
    * order of the first ts.Type interned to this shape) — metadata, NOT
    * part of the interned identity: a later structurally-equal type with a
@@ -1749,6 +1857,34 @@ export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "Tex
   if (shape.fields.some((f) => f.name === "%TextEncoder")) return "TextEncoder";
   if (shape.fields.some((f) => f.name === "%TextDecoder")) return "TextDecoder";
   return null;
+}
+
+/** The class of a record that crosses checked-dynamic slots as a native
+ * handle: the codecs, and a StringDecoder (type-mapper.ts: its canonical
+ * encoding and the packing of its pending bytes). */
+export function recordHandleCodecClass(
+  shape: IrRecordShape,
+): "TextEncoder" | "TextDecoder" | "StringDecoder" | null {
+  const codec = recordTextCodecClass(shape);
+  if (codec !== null) return codec;
+  return shape.fields.length === 2 &&
+    shape.fields[0]!.name === "%enc" &&
+    shape.fields[1]!.name === "%pending"
+    ? "StringDecoder"
+    : null;
+}
+
+/** The codec class of a TextEncoder, TextDecoder or StringDecoder record
+ * type, else null. Such a record crosses an `unknown` slot as a native
+ * handle that holds the record itself (scr_text_codec_dyn.c), never as a
+ * copy or a field view. */
+export function textCodecRecordClass(
+  t: IrType,
+  getRecord: (shapeId: string) => IrRecordShape | undefined,
+): "TextEncoder" | "TextDecoder" | "StringDecoder" | null {
+  if (t.kind !== "record") return null;
+  const shape = getRecord(t.shapeId);
+  return shape ? recordHandleCodecClass(shape) : null;
 }
 
 /** Object-literal ACCESSOR properties (`{ get x() {...}, set x(v) {...} }`)
@@ -2360,10 +2496,13 @@ export type IrStrIntrinsicMethod =
   // surrogate, and the copy with each one replaced by U+FFFD.
   | "isWellFormed"
   | "toWellFormed"
-  // The string iterator's step: the full code-POINT character at a UTF-16
-  // index (astral chars come back whole where charAt truncates) — for-of
-  // over strings desugars onto it, advancing by the result's length.
-  | "cpAt";
+  // The string iterator over the WTF-8 bytes: the byte count of a string,
+  // and the code-point character that starts at a byte offset (a lone
+  // surrogate is a one-unit character). for-of, spread and Array.from of a
+  // string walk a byte cursor with them, advancing by the character's
+  // byte count; the cursor is always a character start below the count.
+  | "byteLength"
+  | "cpAtByte";
 
 /** The typed-array/Buffer method surface (bytesIntrinsic). Receiver/arg
  * conventions (validated): `length`/`byteLength` are property reads → f64;
@@ -2480,6 +2619,14 @@ export type IrBytesIntrinsicMethod =
   | "indexOfNum"
   | "lastIndexOfNum"
   | "includesNum"
+  /** TypedArray.prototype.indexOf / lastIndexOf / includes on any element
+   * kind: [f64 needle, f64 fromIndex]. indexOf and lastIndexOf compare
+   * with strict equality (NaN is never found, -0 matches 0), includes with
+   * SameValueZero (NaN is found). An omitted fromIndex is 0, or +Infinity
+   * for lastIndexOf (which clamps to the last index). */
+  | "indexOfElem"
+  | "lastIndexOfElem"
+  | "includesElem"
   | "fill"
   | "fillNum"
   | "fillStr"
@@ -3331,7 +3478,17 @@ export type IrExpr =
    * from a union) whose Web API contract exposes the reference again, such
    * as stream chunks and abort reasons; ordinary JSON-shaped values retain
    * the documented deep-copy boundary. */
-  | { kind: "dynFrom"; value: IrExpr; fnName?: string; liveRef?: true; type: IrType; loc: SrcLoc }
+  | {
+      kind: "dynFrom";
+      value: IrExpr;
+      fnName?: string;
+      /** A boxed function's `length` when it differs from its parameter
+       * count (builtin function values). */
+      fnLength?: number;
+      liveRef?: true;
+      type: IrType;
+      loc: SrcLoc;
+    }
   /** CALLING a dyn value — `fn(a, b)` where fn is checked-dynamic (an
    * implicit-any JS binding, a dyn record member, a dynKeyGet result).
    * Arguments are ALREADY dyn-typed (typed values box through dynFrom at
@@ -3844,7 +4001,7 @@ export type IrExpr =
     }
   /** Standard-library call (`process` members, node:fs functions). `fn` is a
    * closed union; arg/result types are fixed per member (validated against
-   * LIB_FN_SIGS). Property READS (`process.argv`, `process.platform`) are
+   * libFnSignatures()). Property READS (`process.argv`, `process.platform`) are
    * zero-arg libCalls. Args are BORROWED by the operation (frame temps
    * release at statement end); refcounted results come back owned (+1) —
    * `process.argv` returns +1 on ONE interned array (JS identity:
@@ -3928,12 +4085,21 @@ export type IrExpr =
    * unshared source is simply consumed. Values must be plain data
    * (ordinary objects and arrays without accessors, prototypes, symbols
    * or frozen state), otherwise the cast throws the path TypeError. */
+  /** `origin`: the target type comes from an npm package's declaration;
+   * an index into `IrModule.declOrigins`. A failing check's TypeError then
+   * names the declaration and the type patch that would admit the value
+   * (scr_type_origin.c). */
   | {
       kind: "dynCheck";
       value: IrExpr;
       preserveRefs?: true;
       adopt?: true;
       exact?: true;
+      /** Shape inference's overlay: this conversion checks an
+       * analysis-proven fact ("<package> <file>:<line>"); a failure is a
+       * compiler analysis bug and reports itself as one. */
+      inferredSite?: string;
+      origin?: number;
       type: IrType;
       loc: SrcLoc;
     };
@@ -4025,6 +4191,9 @@ function isJsonSafeAt(
     case "string":
     case "bool":
       return true;
+    // JSON.stringify writes a Date's toJSON(); JSON text never parses to one.
+    case "date":
+      return stringify;
     case "array":
       return isJsonSafeAt(
         t.elem,
@@ -4123,7 +4292,6 @@ function isJsonSafeAt(
     // Maps are not JSON (JSON.stringify(new Map()) is "{}" in Node — an
     // empty-object husk nobody wants; stringify/dynCheck reject instead).
     case "map":
-    case "date":
     // URLSearchParams stringifies as the same "{}" husk — rejected; use
     // sp.toString() instead.
     case "searchParams":
@@ -4279,6 +4447,7 @@ export function canConvertToDyn(
   visiting: Set<string> = new Set(),
 ): boolean {
   if (isJsonSafeType(t, getRecord, getUnion)) return true;
+  if (textCodecRecordClass(t, getRecord) !== null) return true;
   // numeric typed arrays and boxable functions are dyn kinds the walker boxes
   // ANYWHERE (bytes and functions held by identity), including nested
   // in records/arrays/unions. isJsonSafeType rejects them, but dynFrom
@@ -4325,6 +4494,7 @@ export function canConvertToDyn(
           // either its result or a promise of it.
           canBoxDynComposite(a, getRecord, getUnion, visiting) ||
           isDynTypedRefType(a) ||
+          textCodecRecordClass(a, getRecord) !== null ||
           a.kind === "classval" ||
           DYN_HANDLE_KINDS.has(a.kind) ||
           (a.kind === "func" && canBoxFuncIntoDyn(a, getRecord, getUnion, visiting)) ||
@@ -4404,7 +4574,8 @@ function canBoxDynCompositeAt(
     case "record": {
       const shape = getRecord(t.shapeId);
       if (!shape) return false;
-      if (recordTextCodecClass(shape) !== null) return false;
+      // A codec boxes as its own handle wherever it sits (toDynHelper).
+      if (recordTextCodecClass(shape) !== null) return true;
       // Recursive shapes answer coinductively, like isJsonSafeType.
       if (visiting.has(t.shapeId)) return true;
       visiting.add(t.shapeId);
@@ -4505,6 +4676,8 @@ function canDynCheckToAt(
     visiting.delete(key);
     return result;
   }
+  // A codec handle unboxes to the record it holds.
+  if (textCodecRecordClass(t, getRecord) !== null) return true;
   if (t.kind === "record") {
     const key = typeKey(t);
     if (visiting.has(key)) return false;

@@ -73,6 +73,8 @@ async function tryFastPath(): Promise<number | null> {
     // The full compiler keys these builds by the recorded libnode pack.
     values.libnode !== undefined ||
     process.env["SCRIPTC_LIBNODE"] !== undefined ||
+    // The full compiler resolves `native` against the build host.
+    values["target-cpu"] !== undefined ||
     (values["external-types"] ?? []).length > 0 ||
     // The full CLI validates the Node island policy flags.
     hasNodeIslandFlags(values)
@@ -142,8 +144,14 @@ async function tryFastPath(): Promise<number | null> {
     ...(optimization === "dev" || optimization === "speed" ? { optimization } : {}),
     ...(values.strip ? { strip: true as const } : {}),
     ...(values["detached-exit"] ? { detachedExit: true as const } : {}),
+    ...(values["cpu-dispatch"] === true ? { cpuDispatch: true as const } : {}),
     ...(checker === undefined ? {} : { checker }),
     npmStatic,
+    // Mirrors the full compiler's key: shape inference's overlay is opt-in
+    // (SCRIPTC_SHAPE_OVERLAY=1) and --no-shape-overlay turns it off.
+    ...(process.env["SCRIPTC_SHAPE_OVERLAY"] === "1" && values["shape-overlay"] !== false
+      ? { shapeOverlay: true as const }
+      : {}),
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${
       helperObjectRoute ? "runtime-pack" : "driver-tu"
@@ -161,6 +169,8 @@ async function tryFastPath(): Promise<number | null> {
           )
         : startup.executableNativeEnvironmentFingerprint(),
     nodeVersion: process.version,
+    // An entry of a program that calls into Node.js serves only the same pack.
+    libnodeIdentity: () => startup.libnodeCacheKey(values.libnode),
   });
   if (hit === null) return null;
   if (!values["keep-llvm"]) await rm(hit.llvmPath, { force: true });
@@ -220,6 +230,8 @@ async function coverageFastPath(
     values.emit !== undefined ||
     values.strip ||
     values["detached-exit"] ||
+    values["target-cpu"] !== undefined ||
+    values["cpu-dispatch"] !== undefined ||
     values.lib ||
     values.profile !== undefined ||
     values.ffi !== undefined ||
@@ -229,6 +241,7 @@ async function coverageFastPath(
     values["provenance-sources"] ||
     values["emit-ir"] ||
     (values["npm-static"] ?? []).length > 0 ||
+    values["shape-overlay"] === false ||
     (values["external-types"] ?? []).length > 0 ||
     // The replay covers the default Node island policy only.
     hasNodeIslandFlags(values)

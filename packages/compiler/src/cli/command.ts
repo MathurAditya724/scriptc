@@ -1,3 +1,4 @@
+import type { TypePatchCommandRequest } from "../frontend/type-patches/command.js";
 import { rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -19,9 +20,22 @@ import {
 } from "../node-islands/policy.js";
 import { TIER_MODES, type TierMode } from "../frontend/tier-analysis.js";
 import { buildEnvelope } from "../diagnostics/envelope.js";
-import { renderWarnings } from "../diagnostics/render.js";
+import {
+  renderConfigWarnings,
+  renderTypePatchWarnings,
+  renderWarnings,
+} from "../diagnostics/render.js";
+import { isTypePatchCode } from "../diagnostics/diagnostic.js";
 import { isPerformanceCode, renderPerformanceWarnings } from "../diagnostics/dynamic-tier.js";
 import { isNativeOptimization } from "../backend/optimization.js";
+import { renderNativeProfileMatch } from "../backend/native-profile.js";
+import {
+  hostTargetCpu,
+  isTargetCpuOption,
+  TARGET_CPU_OPTIONS,
+  targetCpuField,
+  type TargetCpu,
+} from "../backend/target-cpu.js";
 import { setProvenanceSources } from "../frontend/provenance-registry.js";
 import type { CliHost, NativeCacheWarmProfile } from "./host.js";
 import { resolveOutputOptions } from "./output-options.js";
@@ -103,6 +117,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.strip ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["target-cpu"] !== undefined ||
+      values["cpu-dispatch"] !== undefined ||
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       values.sparse ||
@@ -162,6 +178,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.sanitize ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["target-cpu"] !== undefined ||
+      values["cpu-dispatch"] !== undefined ||
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
@@ -191,6 +209,39 @@ async function main(args: string[], host: CliHost): Promise<number> {
     process.stdout.write(`${outputPath}\n`);
     return 0;
   }
+  if (command === "types") {
+    const sub = positionals[1];
+    const rest = positionals.slice(2);
+    let request: TypePatchCommandRequest;
+    if (sub === "patch" && rest.length === 3) {
+      request = {
+        action: "patch",
+        cwd: process.cwd(),
+        pkg: rest[0]!,
+        selector: rest[1]!,
+        type: rest[2]!,
+        range: values.range ?? null,
+        dryRun: values["dry-run"],
+      };
+    } else if (
+      sub === "list" &&
+      rest.length === 0 &&
+      values.range === undefined &&
+      !values["dry-run"]
+    ) {
+      request = { action: "list", cwd: process.cwd() };
+    } else {
+      fail(
+        `scriptc types takes "patch <package> <selector> <type>" (with --range or --dry-run) or "list"\n\n${USAGE}`,
+      );
+    }
+    const result = await host.typePatches(request);
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    return result.exitCode;
+  }
+  if (values.range !== undefined || values["dry-run"])
+    fail(`--range and --dry-run are scriptc types patch options\n\n${USAGE}`);
   if (values.sparse) fail(`--sparse is a merge-profiles option\n\n${USAGE}`);
   if (command !== "build" && command !== "run" && command !== "coverage") {
     fail(`unknown command "${command}"\n\n${USAGE}`);
@@ -219,6 +270,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.ffi !== undefined ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["target-cpu"] !== undefined ||
+      values["cpu-dispatch"] !== undefined ||
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
@@ -228,7 +281,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       hasNodeIslandFlags(values)
     ) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
     }
     const profilePath = resolve(profileArg);
@@ -270,6 +323,12 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   if (command === "coverage" && values.strip) {
     fail(`--strip is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["target-cpu"] !== undefined) {
+    fail(`--target-cpu is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["cpu-dispatch"] !== undefined) {
+    fail(`--cpu-dispatch is a build/run option\n\n${USAGE}`);
   }
   if (command === "coverage" && values["detached-exit"]) {
     fail(`--detached-exit is a build/run option\n\n${USAGE}`);
@@ -424,6 +483,19 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (windowsSubsystem !== undefined && command === "coverage") {
     fail(`--windows-subsystem is only supported for executable builds\n\n${USAGE}`);
   }
+  const targetCpuOption = values["target-cpu"];
+  if (targetCpuOption !== undefined && !isTargetCpuOption(targetCpuOption)) {
+    fail(
+      `unknown target CPU "${targetCpuOption}" (supported: ${TARGET_CPU_OPTIONS.join(", ")})\n\n${USAGE}`,
+    );
+  }
+  let targetCpu: TargetCpu | undefined = targetCpuOption === "native" ? undefined : targetCpuOption;
+  if (targetCpuOption === "native") {
+    const level = hostTargetCpu();
+    if (level === null)
+      fail(`--target-cpu=native needs an x86-64 Linux or macOS build host; name a level instead`);
+    targetCpu = level;
+  }
   const output =
     command === "coverage"
       ? null
@@ -438,6 +510,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
           ...(values.optimization === undefined ? {} : { optimization: values.optimization }),
           strip: values.strip,
           detachedExit: values["detached-exit"],
+          ...(values["cpu-dispatch"] === undefined ? {} : { cpuDispatch: values["cpu-dispatch"] }),
           ...(values["profile-generate"] === undefined
             ? {}
             : { profileGenerate: values["profile-generate"] }),
@@ -565,6 +638,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
                 : resolve(values.libnode),
           }
         : {}),
+      ...targetCpuField(targetCpu),
+      ...(values["cpu-dispatch"] === undefined ? {} : { cpuDispatch: values["cpu-dispatch"] }),
       // The instrumented program resolves a relative pattern against its own
       // working directory; resolve it here, where the user wrote it.
       ...(values["profile-generate"] === undefined
@@ -574,6 +649,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
         ? {}
         : { profileUse: resolve(values["profile-use"]) }),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(values["shape-overlay"] === false ? { shapeOverlay: false } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
       ...(tier !== undefined ? { tier } : {}),
@@ -617,18 +693,44 @@ async function main(args: string[], host: CliHost): Promise<number> {
       // warning names likely-hot functions that use untyped values. `run`
       // keeps stderr for the program's own output.
       const color = process.stderr.isTTY ?? false;
-      const divergences = warnings.filter((d) => !isPerformanceCode(d.code));
+      const config = warnings.filter((d) => d.code === "SC8004");
+      const patches = warnings.filter((d) => isTypePatchCode(d.code));
+      const divergences = warnings.filter(
+        (d) => !isPerformanceCode(d.code) && d.code !== "SC8004" && !isTypePatchCode(d.code),
+      );
       const performance = warnings.filter((d) => isPerformanceCode(d.code));
-      if (divergences.length > 0)
+      if (config.length > 0)
+        process.stderr.write(
+          renderConfigWarnings(config, result.sourceTexts ?? new Map(), { color }) + "\n",
+        );
+      if (patches.length > 0) {
+        if (config.length > 0) process.stderr.write("\n");
+        process.stderr.write(
+          renderTypePatchWarnings(patches, result.sourceTexts ?? new Map(), { color }) + "\n",
+        );
+      }
+      if (divergences.length > 0) {
+        if (config.length > 0 || patches.length > 0) process.stderr.write("\n");
         process.stderr.write(
           renderWarnings(divergences, result.sourceTexts ?? new Map(), { color }) + "\n",
         );
+      }
       if (performance.length > 0) {
-        if (divergences.length > 0) process.stderr.write("\n");
+        if (divergences.length > 0 || config.length > 0 || patches.length > 0)
+          process.stderr.write("\n");
         process.stderr.write(renderPerformanceWarnings(performance) + "\n");
       }
     }
     if (result.artifact.kind === "exe") {
+      // How the profile matched the program's functions; `run` keeps stderr
+      // for the program's own output.
+      const profileUse = values["profile-use"];
+      if (
+        command === "build" &&
+        profileUse !== undefined &&
+        result.artifact.profileMatch !== undefined
+      )
+        process.stderr.write(renderNativeProfileMatch(profileUse, result.artifact.profileMatch));
       if (!values["keep-llvm"]) rmSync(result.artifact.translationUnitPath, { force: true });
     } else if (result.artifact.kind === "obj") {
       nativeLinkInfo = result.artifact.nativeLinkInfo;

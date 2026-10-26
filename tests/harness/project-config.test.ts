@@ -100,6 +100,13 @@ for (const [name, title] of [
     "eventLoopUtilization and monitorEventLoopDelay follow @types/node's types",
   ],
   ["timeout-type", "NodeJS.Timeout fields, ref/unref/hasRef and clearInterval under @types/node"],
+  ["x509-methods", "X509Certificate's methods and the legacy object under @types/node"],
+  ["tls-peer-certificates", "TLS socket certificate accessors under @types/node"],
+  ["tls-client-certificates", "mutual TLS with client certificates under @types/node"],
+  [
+    "tls-server-contexts",
+    "tls.Server addContext, setSecureContext and tlsClientError under @types/node",
+  ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
     const outDir = outDirFor(name);
@@ -795,20 +802,17 @@ test("node-types: fs functions take URL paths under @types/node's PathLike", asy
   expect(stdout).toBe("hello 5 5\n");
 });
 
-test("node-types: existsSync and fs.promises URL paths remain named fences", async () => {
-  const dir = outDirFor("node-fs-url-path-fences");
-  const result = await compile(join(nodeTypesDir, "fs-url-path-fences.ts"), {
-    outPath: join(dir, "fs-url-path-fences"),
+test("node-types: existsSync and fs.promises answer false or reject for unconvertible URLs", async () => {
+  const dir = outDirFor("node-fs-url-fallible");
+  const result = await compile(join(nodeTypesDir, "fs-url-fallible.ts"), {
+    outPath: join(dir, "fs-url-fallible"),
     outDir: dir,
     sanitize,
   });
-  expect(result.ok).toBe(false);
-  if (result.ok) return;
-  expect(result.diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.message])).toEqual([
-    ["SC2020", expect.stringContaining("'existsSync with a URL path'")],
-    ["SC2020", expect.stringContaining("'fs.promises.readFile with a URL path'")],
-    ["SC2020", expect.stringContaining("'fs.promises.stat with a URL path'")],
-  ]);
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const { stdout } = await execFileAsync(result.binaryPath);
+  expect(stdout).toBe("true false\nhi\nERR_INVALID_FILE_URL_HOST\n");
 });
 
 test("node-types: path and os lower statically under @types/node's shapes", async () => {
@@ -1150,6 +1154,24 @@ test("node-types: asymmetric keys and signatures match Node under @types/node", 
   const outDir = outDirFor("node-keys");
   const entry = join(nodeTypesDir, "keys.ts");
   const result = await compile(entry, { outPath: join(outDir, "keys"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: X25519 keys and diffieHellman match Node under @types/node", async () => {
+  const outDir = outDirFor("node-diffie-hellman");
+  const entry = join(nodeTypesDir, "diffie-hellman.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "diffie-hellman"),
+    outDir,
+    sanitize,
+  });
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
   if (!result.ok) return;
   const [native, node] = await Promise.all([
