@@ -1364,9 +1364,13 @@ export function lowerToIr(
   }
   // Localized failure (SC6104): one performance warning per dynamic slot.
   if (resultLowerer.dynamicSlots.length > 0) {
-    const operations = dynamicSlotOperationCounts(resultLowerer, resultLowerer.dynamicBodies);
-    const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot) => ({
-      operations: operations.get(slot.failure.declaredType) ?? 0,
+    const operations = dynamicSlotOperationCounts(
+      resultLowerer,
+      resultLowerer.dynamicBodies,
+      resultLowerer.dynamicSlots,
+    );
+    const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot, i) => ({
+      operations: operations[i]!,
       loc: slot.loc,
       name: slot.failure.name,
       slot: slot.failure.slot,

@@ -30,7 +30,7 @@ import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import { isCheckedJsSourceFile, isJsSourceFile } from "../program.js";
 import { isNodeModulesPath } from "../resolve.js";
-import type { Lowerer } from "./lowerer.js";
+import type { DynamicSlot, Lowerer } from "./lowerer.js";
 
 export interface HotDynamicFunction {
   /** The IR function name (`%Point.norm`, `parse`, ...). */
@@ -251,15 +251,28 @@ function nodeCause(lowerer: Lowerer, n: ts.Node): UntypedCause | null {
  * the source does not say. The site's own subexpressions are asked first
  * (the operand of a dynamic `for...of`), then its ancestors. */
 function causeAt(lowerer: Lowerer, loc: SrcLoc): UntypedCause | null {
+  return causeSiteAt(lowerer, loc)?.cause ?? null;
+}
+
+/** causeAt, with the node that names the cause (none for an untyped
+ * JavaScript file). */
+function causeSiteAt(
+  lowerer: Lowerer,
+  loc: SrcLoc,
+): { cause: UntypedCause; node?: ts.Node } | null {
   const sf = lowerer.program.getSourceFile(loc.file);
   if (sf === undefined) return null;
   if (isJsSourceFile(sf) && !isCheckedJsSourceFile(sf, lowerer.projectCheckJs))
-    return { kind: "javascript" };
+    return { cause: { kind: "javascript" } };
   const node = nodeAt(sf, loc.start, loc.end);
-  let found: UntypedCause | null = null;
+  let found: { cause: UntypedCause; node: ts.Node } | null = null;
+  const ask = (n: ts.Node): void => {
+    const cause = nodeCause(lowerer, n);
+    if (cause !== null) found = { cause, node: n };
+  };
   const descend = (n: ts.Node, depth: number): void => {
     if (found !== null || depth > 3) return;
-    found = nodeCause(lowerer, n);
+    ask(n);
     if (found === null)
       ts.forEachChild(n, (child) => (descend(child, depth + 1), found !== null || undefined));
   };
@@ -269,7 +282,7 @@ function causeAt(lowerer: Lowerer, loc: SrcLoc): UntypedCause | null {
     found === null && n !== undefined && n !== sf;
     n = n.parent
   )
-    found = nodeCause(lowerer, n);
+    ask(n);
   return found;
 }
 
@@ -420,24 +433,67 @@ export function dynamicTierWarning(
 }
 
 /** Localized failure: dynamic operations attributed to each dynamic slot
- * (by declared type), over the dynamic-tier functions of the program. A
- * site counts for the slot the SC6101 cause search names at it. */
+ * of `slots` (by index), over the dynamic-tier functions of the program. A
+ * site counts for the slot the SC6101 cause search names at it: the slot
+ * declared by the binding the site reads (for a dynamic piece, the binding
+ * its access starts from), or else the one slot of the declared type. */
 export function dynamicSlotOperationCounts(
   lowerer: Lowerer,
   bodies: readonly IrFunction[],
-): Map<string, number> {
-  const counts = new Map<string, number>();
+  slots: readonly DynamicSlot[],
+): number[] {
+  const counts = slots.map(() => 0);
   if (lowerer.degradedTypes.size === 0) return counts;
   for (const fn of bodies) {
     // Generated helpers repeat their callers' locations; top-level code
     // (`%init.*`) counts like any function.
     if (HELPERS.test(fn.name)) continue;
     for (const site of dynamicOperationSites(fn)) {
-      const cause = causeAt(lowerer, site.loc);
-      if (cause?.kind !== "slot") continue;
-      const slot = cause.owner ?? cause.declaredType;
-      counts.set(slot, (counts.get(slot) ?? 0) + 1);
+      const found = causeSiteAt(lowerer, site.loc);
+      if (found?.cause.kind !== "slot" || found.node === undefined) continue;
+      const declaredType = found.cause.owner ?? found.cause.declaredType;
+      const index = slotOfSite(lowerer, slots, found.node, declaredType, found.cause.owner);
+      if (index >= 0) counts[index]!++;
     }
   }
   return counts;
+}
+
+/** The index in `slots` of the slot a dynamic operation on `node` (an
+ * identifier or property access the cause search named) belongs to, or -1
+ * when the declared type is not one slot's and no declaration says. */
+function slotOfSite(
+  lowerer: Lowerer,
+  slots: readonly DynamicSlot[],
+  node: ts.Node,
+  declaredType: string,
+  owner: string | undefined,
+): number {
+  const candidates: number[] = [];
+  slots.forEach((slot, i) => {
+    if (slot.failure.declaredType === declaredType) candidates.push(i);
+  });
+  if (candidates.length <= 1) return candidates[0] ?? -1;
+  // The binding: the identifier or property itself for a whole slot, the
+  // root of the access for a piece of a container.
+  const named =
+    owner !== undefined
+      ? rootIdentifier(node)
+      : ts.isPropertyAccessExpression(node)
+        ? node.name
+        : node;
+  if (named === null) return -1;
+  let symbol = lowerer.checker.getSymbolAtLocation(named);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  for (const decl of symbol?.declarations ?? []) {
+    const file = ts.getSourceFileOfNode(decl).fileName;
+    const start = ts.tokenStartOfNode(decl);
+    const index = candidates.find((i) => {
+      const loc = slots[i]!.loc;
+      return loc.file === file && loc.start >= start && loc.start < decl.end;
+    });
+    if (index !== undefined) return index;
+  }
+  return -1;
 }
