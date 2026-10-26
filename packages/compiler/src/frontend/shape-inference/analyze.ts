@@ -317,15 +317,14 @@ export function analyzeShapes(program: ts.Program, checker: ts.TypeChecker): Sha
 }
 
 class Analyzer {
-  /** locLabel, once per node of this analysis: sinks and escapes label
-   * their site each time the solver reaches them. */
-  private readonly labels = new Map<Node, string>();
+  /** locLabel per node: sink reasons and atom labels name the same sites
+   * over and over, and each label reads the file's text for its line. */
+  private readonly locLabels = new Map<Node, string>();
   private loc(node: Node): string {
-    let label = this.labels.get(node);
-    if (label === undefined) this.labels.set(node, (label = locLabel(node)));
+    let label = this.locLabels.get(node);
+    if (label === undefined) this.locLabels.set(node, (label = locLabel(node)));
     return label;
   }
-
   readonly atoms = new AtomTable();
   readonly nodes: ValueNode[] = [];
   readonly functions = new Map<string, FunctionInfo>();
