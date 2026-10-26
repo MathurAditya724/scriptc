@@ -1068,6 +1068,11 @@ export interface IrModule {
    * checked conversion in them checks an analysis-proven fact, so its
    * failure reports a compiler analysis bug instead of a type error. */
   inferredFactFiles?: { file: string; pkg: string }[];
+  /** Origins of package-declared types checked by `dynCheck.origin`
+   * (frontend/lowering/decl-origin.ts): fields separated by \x1f —
+   * package, version, suggested range, selector, where it is declared,
+   * declared type. */
+  declOrigins?: string[];
   /** The program constructs LifetimeRegion (@scriptc/experimental): every
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
@@ -4045,6 +4050,10 @@ export type IrExpr =
    * unshared source is simply consumed. Values must be plain data
    * (ordinary objects and arrays without accessors, prototypes, symbols
    * or frozen state), otherwise the cast throws the path TypeError. */
+  /** `origin`: the target type comes from an npm package's declaration;
+   * an index into `IrModule.declOrigins`. A failing check's TypeError then
+   * names the declaration and the type patch that would admit the value
+   * (scr_type_origin.c). */
   | {
       kind: "dynCheck";
       value: IrExpr;
@@ -4055,6 +4064,7 @@ export type IrExpr =
        * analysis-proven fact ("<package> <file>:<line>"); a failure is a
        * compiler analysis bug and reports itself as one. */
       inferredSite?: string;
+      origin?: number;
       type: IrType;
       loc: SrcLoc;
     };

@@ -226,6 +226,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "freezableArrays[]": "other",
   "inferredFactFiles[].file": "other",
   "inferredFactFiles[].pkg": "other",
+  "declOrigins[]": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };

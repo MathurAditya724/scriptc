@@ -184,6 +184,24 @@ bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key) {
          key->v.symbol.value == scr_async_dispose_symbol->v.symbol.value;
 }
 
+/* Symbol.for('nodejs.util.inspect.custom'), installed by the symbol unit
+ * when the program creates it: the key util.inspect reads custom inspect
+ * functions under. */
+static SCR_TL ScrDyn *scr_inspect_custom_symbol;
+
+static void scr_inspect_custom_symbol_cleanup(void) {
+  scr_dyn_release(scr_inspect_custom_symbol);
+  scr_inspect_custom_symbol = NULL;
+}
+
+void scr_dyn_install_inspect_custom_symbol(ScrDyn *key) {
+  if (scr_inspect_custom_symbol) return;
+  scr_inspect_custom_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_inspect_custom_symbol_cleanup);
+}
+
+ScrDyn *scr_dyn_inspect_custom_symbol(void) { return scr_inspect_custom_symbol; }
+
 static void scr_to_primitive_symbol_cleanup(void) {
   scr_dyn_release(scr_to_primitive_symbol);
   scr_to_primitive_symbol = NULL;
@@ -6797,11 +6815,12 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
     owner->props = scr_box_retain(function->v.fn.class_obj->static_data);
   if (!owner->props) {
     ScrDyn *table = scr_dyn_new_obj();
+    /* V8's own-key order: length, then name. */
+    scr_dyn_obj_set(table, "length", 6, scr_dyn_new_num((double)function->v.fn.arity));
     const char *name = function->v.fn.name ? function->v.fn.name : "";
     ScrStr *name_string = scr_str_new(name, strlen(name));
     scr_dyn_obj_set(table, "name", 4, scr_dyn_new_str(name_string));
     scr_str_release(name_string);
-    scr_dyn_obj_set(table, "length", 6, scr_dyn_new_num((double)function->v.fn.arity));
     for (size_t i = 0; i < table->v.obj.len; i++) {
       table->v.obj.entries[i].writable = false;
       table->v.obj.entries[i].enumerable = false;
@@ -6889,7 +6908,7 @@ ScrDyn *scr_dyn_class_base_prototype(ScrDyn *constructor) {
   default: break;
   }
   if (constructor->kind != SCR_DYN_FUNC || constructor->v.fn.class_obj ||
-      scr_closure_identity(constructor->v.fn.clo)->function_kind != 4) {
+      (scr_closure_identity(constructor->v.fn.clo)->function_kind & SCR_FN_KIND_MASK) != 4) {
     static const char message[] = "Class extends value is not a native ordinary constructor";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
@@ -7037,7 +7056,8 @@ void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name) {
 /* Ordinary native function constructors retain their live prototype table.
  * A constructor may replace the fresh receiver with another object. */
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
-  if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj || scr_closure_identity(callee->v.fn.clo)->function_kind != 4)
+  if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
+      (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_FN_KIND_MASK) != 4)
     return scr_bytes_construct(callee, args, what);
   ScrDyn *prototype = scr_dyn_fn_get(callee, "prototype", 9);
   if (!prototype) return NULL;
@@ -9172,7 +9192,9 @@ bool scr_dyn_is_callable(const ScrDyn *value) {
 
 int scr_dyn_function_kind(const ScrDyn *value) {
   while (value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
-  return value->kind == SCR_DYN_FUNC ? scr_closure_identity(value->v.fn.clo)->function_kind : 0;
+  return value->kind == SCR_DYN_FUNC
+             ? (int)(scr_closure_identity(value->v.fn.clo)->function_kind & SCR_FN_KIND_MASK)
+             : 0;
 }
 
 void scr_dyn_adopt_identity(ScrClosure *adapter, const ScrDyn *value) {
@@ -10388,7 +10410,8 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     if (scr_dyn_error_encoding(d) && !scr_dyn_property_owner(d, "toString", 8)) return scr_dyn_error_string(d);
     return scr_str_new("[object Object]", 15);
   case SCR_DYN_HANDLE:
-    if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE) {
+    if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE ||
+        d->v.handle.tag == SCR_DYNH_MIME_TYPE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
       if (!text) return NULL;
       ScrStr *out = scr_str_retain(text->v.str);
@@ -11137,9 +11160,8 @@ ScrDyn *scr_dyn_arithmetic(const ScrDyn *left, const ScrDyn *right, const ScrStr
     if (result) { out = scr_dyn_new_bigint(result); scr_bigint_release(result); }
   } else {
     double a = l->v.num, b = r->v.num;
-    // ECMAScript differs from libm for ±1 ** ±Infinity and 1 ** NaN.
     double result = op == '-' ? a - b : op == '/' ? a / b : op == '%' ? fmod(a, b)
-      : operation->len == 2 ? ((fabs(a) == 1 && !isfinite(b)) ? NAN : pow(a, b)) : a * b;
+      : operation->len == 2 ? scr_math_pow(a, b) : a * b;
     out = scr_dyn_new_num(result);
   }
   scr_dyn_release(l);
@@ -13869,7 +13891,9 @@ static ScrDyn *scr_json_to_json_at(ScrDyn *value, const ScrStr *key, size_t inde
   if (scr_exc_pending()) { scr_dyn_release(view); scr_dyn_release(value); return NULL; }
   if (inspected->kind == SCR_DYN_HANDLE && (inspected->v.handle.tag == SCR_DYNH_DATE || inspected->v.handle.tag == SCR_DYNH_URL ||
                                              inspected->v.handle.tag == SCR_DYNH_NET_SOCKET_ADDRESS ||
-                                             inspected->v.handle.tag == SCR_DYNH_NET_BLOCK_LIST)) {
+                                             inspected->v.handle.tag == SCR_DYNH_NET_BLOCK_LIST ||
+                                             inspected->v.handle.tag == SCR_DYNH_MIME_TYPE ||
+                                             inspected->v.handle.tag == SCR_DYNH_MIME_PARAMS)) {
     const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(inspected);
     ScrDyn *converted = ops->invoke(inspected->v.handle.ptr, value, "toJSON", NULL, 0, "toJSON");
     scr_dyn_release(value);
