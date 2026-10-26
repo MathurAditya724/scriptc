@@ -223,8 +223,10 @@ function slotCause(lowerer: Lowerer, n: ts.Node): UntypedCause | null {
       ? lowerer.checker.getTypeOfSymbol(symbol)
       : lowerer.checker.getTypeAtLocation(n);
   const id = (type as { id?: number }).id ?? -1;
-  // A whole degraded type, or a dynamic piece of a pushed-down one.
-  const owner = lowerer.lenientPieces.get(id);
+  // A whole degraded type, or a dynamic piece of a pushed-down one. A type
+  // that is also a slot of its own belongs to that slot, not to a container
+  // it is a piece of.
+  const owner = lowerer.degradedTypes.has(id) ? undefined : lowerer.lenientPieces.get(id);
   if (!lowerer.degradedTypes.has(id) && owner === undefined) return null;
   const text = ts.getTextOfNode(n);
   const declaredType = lowerer.checker.typeToString(type);

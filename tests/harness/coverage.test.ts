@@ -496,6 +496,15 @@ test("dynamic slots rank by their dynamic operations and name themselves in SC61
   expect(hot?.message).toContain("`hook` is a dynamic piece of `Plugin[]` (declared `Hook`");
 });
 
+test("a type that is a dynamic piece and a slot of its own counts toward its own slot", () => {
+  const { coverage } = analyze(fixture("dynamic-slot-shared.ts"));
+  const slots = coverage.dynamicSlots ?? [];
+  expect(slots.find((s) => s.name === "current")?.operations).toBeGreaterThan(0);
+  expect(slots.find((s) => s.name === "plugins")?.operations ?? 0).toBe(0);
+  const hot = coverage.performance?.find((d) => d.code === "SC6101");
+  expect(hot?.message).toContain("`current` is a dynamic slot (declared `Hook`");
+});
+
 test("CLI: --tier and --explain-dynamic", () => {
   const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-tier-"));
