@@ -2,7 +2,7 @@
 title: "CLI Reference"
 ---
 
-The `scriptc` command has five subcommands: `build`, `run`, `coverage`, `cache warm`, and `merge-profiles`. `scriptc --help` prints this summary and the options below, and `scriptc --version` prints the installed version.
+The `scriptc` command has six subcommands: `build`, `run`, `coverage`, `types`, `cache warm`, and `merge-profiles`. `scriptc --help` prints this summary and the options below, and `scriptc --version` prints the installed version.
 
 ```console
 $ scriptc --help
@@ -21,6 +21,13 @@ Usage:
                                             exporting the profile symbols; a profile
                                             with a sidecar section also gets the
                                             contract sidecar JSON beside the archive
+  scriptc types patch <package> <selector> <type> [--range <r>] [--dry-run]
+                                            fix a wrong declaration of an installed
+                                            package: shows what the selector
+                                            matches and adds the type patch to
+                                            package.json ("| undefined" widens)
+  scriptc types list                        the project's type patches and what
+                                            they match
   scriptc cache warm [runtime|tls…] verify and load precompiled runtime families
                                             for the current compiler/SDK/target
   scriptc merge-profiles -o <out.profdata> [--sparse] <profile…>
@@ -87,6 +94,24 @@ $ scriptc run fib.ts
 ## scriptc coverage
 
 Analyzes the program without building it and reports what compiles and what blocks the rest. See [Coverage Reports](/docs/coverage).
+
+## scriptc types
+
+Writes and lists [type patches](/docs/dependencies#fix-a-packages-types), the project's fixes for wrong declarations of npm packages.
+
+<dl>
+  <dt><code>scriptc types patch &lt;package&gt; &lt;selector&gt; &lt;type&gt;</code></dt>
+  <dd>Finds the package installed for the working directory, prints every declaration the selector matches in its declaration files, its JSDoc and its <code>@types/</code> package with the type before and after, and adds the patch to the nearest <code>package.json</code>. The patch joins an entry whose range covers the installed version, or gets the range <code>^&lt;installed version&gt;</code>. Nothing is written when the selector matches nothing. <code>--range &lt;range&gt;</code> chooses the range, and <code>--dry-run</code> only prints.</dd>
+  <dt><code>scriptc types list</code></dt>
+  <dd>Prints each type patch in the nearest <code>package.json</code>, whether it applies to the installed version, and what it matches.</dd>
+</dl>
+
+```console
+$ scriptc types list
+commander@^15.0.0
+  HelpContext.helpWidth: | undefined
+    node_modules/commander/lib/command.js:2481  number  ->  number | undefined
+```
 
 ## scriptc cache warm
 

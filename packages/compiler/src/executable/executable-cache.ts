@@ -74,12 +74,14 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   handleProps?: boolean;
   declAdopt?: boolean;
+  typeOrigins?: boolean;
   dynForAwait?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   utilTiming?: boolean;
   dynBuffer?: boolean;
   builtinValues?: boolean;
+  computedRequire?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
