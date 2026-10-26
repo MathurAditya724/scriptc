@@ -1,4 +1,5 @@
 import type { TargetCpu } from "../target-cpu.js";
+import type { FunctionLayout } from "./function-layout.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
@@ -63,6 +64,7 @@ import { captureFreeFunctions, observesStacks } from "../stack-observations.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import { matchBytesLoopVersion } from "./bytes-loop-versions.js";
 import { globalSlotAlias } from "./bytes-alias.js";
+import type { BytesHeaderScope } from "./bytes-headers.js";
 import type { IntegerCountedForLoop, IntegerPairedForLoop } from "../../ir/integer-loops.js";
 import {
   materializeSplitPiece,
@@ -499,6 +501,8 @@ export interface LlvmTargetOptions {
   /** The host's process primitives, where it can fork (the native
    * compiler's). */
   forkPrimitives?: ForkPrimitives | undefined;
+  /** Functions to write first, by tier (function-layout.ts). */
+  functionLayout?: FunctionLayout;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
@@ -1823,11 +1827,26 @@ export class LlEmitter {
   /** Worker programs: typed-array accesses whose views an enclosing version
    * guard proved thread-owned. */
   bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
+  /** Worker programs: the strip-mined counted loop whose body is being
+   * emitted (emitStripMinedCountedLoop), with its counter, its jump target
+   * and its loopDepth. An element access of a view that may be shared, at
+   * the counter and directly in that loop's body, is a plain load or store
+   * (plainSharedElement in expr-bytes.ts). */
+  plainSharedLoop: {
+    counter: string;
+    target: LlEmitter["jumpTargets"][number];
+    depth: number;
+  } | null = null;
   /** The alias-scope attachment of each typed-array element read and write
    * in the current loop version's fast copy (emitVersionedLoop), and the
    * one the element access being emitted carries (bytesElementAlias). */
   bytesAliasScopes: ReadonlyMap<IrExpr | IrStmt, string> = new Map();
   bytesAccessScope = "";
+  /** Header fields a speculative loop's entry read for its views
+   * (bytes-headers.ts), while its copies are emitted. */
+  bytesHeaders: BytesHeaderScope | null = null;
+  /** The parameters of the function being emitted. */
+  currentParameters: ReadonlySet<string> = new Set();
   /** Loop versions with alias scopes in the current function; it names
    * their scopes. */
   aliasScopedVersions = 0;

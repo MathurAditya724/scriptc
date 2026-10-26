@@ -22,6 +22,11 @@ import {
   type TiersEnvelope,
 } from "../diagnostics/envelope.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
+import {
+  dynamicSlotLabel,
+  isDynamicSlotCode,
+  type DynamicSlotEntry,
+} from "../diagnostics/dynamic-slots.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
 import type {
@@ -59,6 +64,9 @@ export interface CoverageInput {
    * leaves untyped. Never blockers; `--fail-on=dynamic` opts into failing
    * on it. */
   performance?: ScrDiagnostic[];
+  /** Localized failure: the checked dynamic slots (SC6104, also in
+   * `performance`). `--fail-on=dynamic-slots` fails on them. */
+  dynamicSlots?: DynamicSlotEntry[];
   /** Each dependency's native compilation outcome, with the first refusal
    * reason for a refused package. */
   npmStatic?: NpmStaticStatus[];
@@ -238,6 +246,10 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       `  ${c(DIM, `(${skipped} function${skipped === 1 ? "" : "s"} not analyzed — signature blocked; their statements count as not static)`)}`,
     );
   }
+  renderDynamicSlots(input.dynamicSlots ?? [], out, c, (loc) => {
+    const p = locator.position(loc.file, loc.start);
+    return `${displayPath(loc.file, opts.root)}:${p.line}:${p.column}`;
+  });
   out.push("");
 
   // Report native package compilation and the first reason for each refusal.
@@ -395,7 +407,7 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     renderRows(groupBlockers(divergences), YELLOW);
   };
   // The performance warning: its message names the functions.
-  const performance = input.performance ?? [];
+  const performance = (input.performance ?? []).filter((d) => !isDynamicSlotCode(d.code));
   const renderPerformance = () => {
     for (const d of performance) {
       out.push("");
@@ -529,6 +541,7 @@ export type CoverageFailOn =
   | "blockers"
   | "divergences"
   | "dynamic"
+  | "dynamic-slots"
   | "node-islands"
   | "eager-node-islands"
   | "island-gaps";
@@ -537,6 +550,7 @@ export const COVERAGE_FAIL_ON: readonly CoverageFailOn[] = [
   "blockers",
   "divergences",
   "dynamic",
+  "dynamic-slots",
   "node-islands",
   "eager-node-islands",
   "island-gaps",
@@ -552,7 +566,9 @@ export function coveragePasses(input: CoverageInput, failOn?: CoverageFailOn): b
   // runtime fences build (the statement throws only if it executes).
   if (input.diagnostics.length > 0) return false;
   if (failOn === "divergences" && (input.divergences?.length ?? 0) > 0) return false;
-  if (failOn === "dynamic" && (input.performance?.length ?? 0) > 0) return false;
+  if (failOn === "dynamic" && (input.performance ?? []).some((d) => !isDynamicSlotCode(d.code)))
+    return false;
+  if (failOn === "dynamic-slots" && (input.dynamicSlots?.length ?? 0) > 0) return false;
   // The Node island gates (report-only islands count: they are what a
   // build would choose). Every island evaluates eagerly until deferred
   // evaluation lands, so eager-node-islands equals node-islands for now.
@@ -624,6 +640,19 @@ export function coverageEnvelope(
             percentStatic: total === 0 ? 100 : Math.floor((ok / total) * 100),
           },
         }),
+    ...(input.dynamicSlots !== undefined
+      ? {
+          dynamicSlots: input.dynamicSlots.map((slot) => ({
+            file: slot.loc.file,
+            ...locator.position(slot.loc.file, slot.loc.start),
+            name: slot.name,
+            kind: slot.slot,
+            declaredType: slot.declaredType,
+            code: slot.code,
+            reason: slot.reason,
+          })),
+        }
+      : {}),
     ...(input.tiers !== undefined ? { tiers: tiersEnvelope(input.tiers, locator) } : {}),
     ...(input.wasmModules !== undefined ? { wasmModules: input.wasmModules } : {}),
     ...(input.nodeIslands !== undefined
@@ -717,6 +746,26 @@ function unitMatches(u: DemotionUnit, query: string): boolean {
     u.name.split(" ")[0] === query ||
     `${u.owner ?? ""}:${u.name}` === query
   );
+}
+
+const DYNAMIC_SLOTS_SHOWN = 20;
+
+/** The dynamic slots under the statement counts: each slot's declared
+ * type, and why it has no static lowering. */
+function renderDynamicSlots(
+  slots: readonly DynamicSlotEntry[],
+  out: string[],
+  c: (code: string, s: string) => string,
+  where: (loc: SrcLoc) => string,
+): void {
+  if (slots.length === 0) return;
+  out.push(
+    `    dynamic slots       ${slots.length}  ${c(DIM, "(declared types with no static lowering, held as checked-dynamic values; SC6104)")}`,
+  );
+  for (const slot of slots.slice(0, DYNAMIC_SLOTS_SHOWN))
+    out.push(`      ${dynamicSlotLabel(slot)}  ${c(DIM, where(slot.loc))}`);
+  if (slots.length > DYNAMIC_SLOTS_SHOWN)
+    out.push(`      ${c(DIM, `and ${slots.length - DYNAMIC_SLOTS_SHOWN} more`)}`);
 }
 
 const SLOTS_SHOWN = 40;

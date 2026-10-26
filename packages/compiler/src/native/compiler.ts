@@ -63,6 +63,8 @@ import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cach
 import {
   nativeProfileKey,
   nativeProfileRefusal,
+  parseNativeProfileMatch,
+  type NativeProfileMatch,
   type NativeProfileOptions,
 } from "../backend/native-profile.js";
 import { splitLlvmLibraryProgram } from "../backend/llvm/split.js";
@@ -76,6 +78,18 @@ import { nativeFileIdentity } from "./file-identity.js";
 /** The first partition keeps the whole-object key used before partitioning. */
 function partitionCacheKey(key: string, index: number): string {
   return index === 0 ? key : contentDigest(`${key}:${index}`);
+}
+
+/** The object cache entry that holds a cached program's profile match. */
+function profileMatchCacheKey(key: string): string {
+  return contentDigest(`${key}:profile-match`);
+}
+
+/** A program's native objects, and how a --profile-use build's profile
+ * matched its functions. */
+interface NativeObjects {
+  paths: string[];
+  profileMatch?: NativeProfileMatch;
 }
 
 function failure(error: unknown, entry: string, sources: Map<string, string>): CompileFailure {
@@ -186,7 +200,7 @@ export class NativeCompiler {
     partitions = 1,
     profile?: NativeProfileOptions,
     llvmDigest: () => string = () => fileDigest(input),
-  ): string[] {
+  ): NativeObjects {
     const toolchain = this.toolchain;
     const outputs = nativePartitionPaths(output, partitions);
     const helperOptions = {
@@ -223,7 +237,20 @@ export class NativeCompiler {
           verifyNativeHelper(helperOptions);
           if (nativeFileIdentity(toolchain.helperExecutable) === identity) {
             cached.forEach((bytes, index) => writeFileSync(outputs[index]!, bytes!));
-            return outputs;
+            if (profile?.use === undefined) return { paths: outputs };
+            // Without the cached match, every partition's counts are unknown.
+            const match = this.cache.read("object", profileMatchCacheKey(key));
+            return {
+              paths: outputs,
+              profileMatch: (match === null
+                ? null
+                : parseNativeProfileMatch(match.toString("utf8"))) ?? {
+                annotated: 0,
+                mismatched: 0,
+                missing: 0,
+                unknownPartitions: outputs.length,
+              },
+            };
           }
           key = null;
         }
@@ -235,7 +262,7 @@ export class NativeCompiler {
       this.cache === null || identity === null || partitions < 2
         ? null
         : this.cache.partitionDirectory(identity);
-    emitNativeObject({
+    const { profileMatch } = emitNativeObject({
       executable: toolchain.helperExecutable,
       packageRoot: toolchain.helperPackageRoot,
       compilerVersion: toolchain.compilerVersion,
@@ -252,15 +279,30 @@ export class NativeCompiler {
     });
     if (this.cache !== null && key !== null) {
       try {
-        if (nativeFileIdentity(toolchain.helperExecutable) === identity)
+        if (nativeFileIdentity(toolchain.helperExecutable) === identity) {
+          // The match goes in first: a reader that finds every partition finds it too.
+          if (profileMatch !== null)
+            this.cache.write(
+              "object",
+              profileMatchCacheKey(key),
+              `${JSON.stringify({
+                profile: {
+                  annotated: profileMatch.annotated,
+                  mismatched: profileMatch.mismatched,
+                  missing: profileMatch.missing,
+                  unknown_partitions: profileMatch.unknownPartitions,
+                },
+              })}\n`,
+            );
           outputs.forEach((path, index) =>
             this.cache!.write("object", partitionCacheKey(key!, index), readFileSync(path)),
           );
+        }
       } catch {
         /* An updated helper or unavailable cache only prevents reuse. */
       }
     }
-    return outputs;
+    return profileMatch === null ? { paths: outputs } : { paths: outputs, profileMatch };
   }
 
   private emitProgramObject(
@@ -272,7 +314,7 @@ export class NativeCompiler {
     library: boolean,
     profile?: NativeProfileOptions,
     llvmDigest?: () => string,
-  ): string[] {
+  ): NativeObjects {
     // Library archives merge dev shards relocatably; executables link the
     // helper's program partitions directly.
     const llvm =
@@ -303,7 +345,7 @@ export class NativeCompiler {
     }
     const merged = localizeNativeLibrary(this.toolchain, stage, objects, [], split.publicSymbols);
     renameSync(merged, output);
-    return [output];
+    return { paths: [output] };
   }
 
   compile(entry: string, options: CompileRequestOptions): CompileRequestResult {
@@ -427,6 +469,9 @@ export class NativeCompiler {
       const kept = executableCache?.keep(output) ?? false;
       const restored = kept || (executableCache?.restore(stagedOutput) ?? false);
       timing(restored ? "executable-cache-hit" : "executable-cache-miss");
+      // The executable cache leaves out --profile-use builds, so this is set
+      // whenever the build has a profile to report.
+      let profileMatch: NativeProfileMatch | undefined;
       if (!restored) {
         // A missing or invalid runtime pack fails before code generation.
         if (outputKind === "exe") selectPack();
@@ -440,8 +485,8 @@ export class NativeCompiler {
             object,
           ]);
           requireNativeArtifact(object);
-        } else if (outputKind === "exe")
-          programObjects = this.emitProgramObject(
+        } else if (outputKind === "exe") {
+          const objects = this.emitProgramObject(
             llvmInput,
             object,
             entry,
@@ -451,7 +496,9 @@ export class NativeCompiler {
             profile,
             digestLlvm,
           );
-        else
+          programObjects = objects.paths;
+          profileMatch = objects.profileMatch;
+        } else
           this.emitObject(
             llvmInput,
             object,
@@ -578,7 +625,13 @@ export class NativeCompiler {
         rmSync(output + ".dSYM", { recursive: true, force: true });
       return {
         ok: true,
-        artifact: { kind: "exe", path: output, translationUnitPath: llvmPath, backend: "llvm" },
+        artifact: {
+          kind: "exe",
+          path: output,
+          translationUnitPath: llvmPath,
+          backend: "llvm",
+          ...(profileMatch === undefined ? {} : { profileMatch }),
+        },
         binaryPath: output,
         llvmPath,
         backend: "llvm",

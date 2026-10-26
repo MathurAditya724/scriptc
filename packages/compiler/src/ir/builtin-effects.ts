@@ -765,6 +765,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.rmSync",
   "fs.rmdirSync",
   "fs.readdirSync",
+  "fs.readdirRecursiveSync",
   "fs.readdirTypesSync",
   "fs.globSync",
   "fs.globTypesSync",

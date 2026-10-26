@@ -1,4 +1,4 @@
-import { verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
+import { seedBuildEnvironment, verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
 import { execFile, spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -89,12 +89,7 @@ test(
               // seed avoids optimizing the huge compiler module before ASan can
               // exercise its complete traversal, serialization and LLVM emission.
               ...options,
-              env: {
-                ...process.env,
-                SCRIPTC_SAN: sanitize ? "1" : "",
-                SCRIPTC_NATIVE_EMIT_IR: "1",
-                SCRIPTC_NATIVE_OPTIMIZATION: sanitize ? "dev" : "release",
-              },
+              env: { ...process.env, ...seedBuildEnvironment(sanitize) },
             },
           ),
         );
