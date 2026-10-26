@@ -138,7 +138,11 @@ export function typeFailureSlot(node: ts.Node): { slot: TypeFailureSlot; name: s
     if (!declared && !ts.isTypeNode(current) && !ts.isTypeNode(parent)) break;
     current = parent;
   }
-  const text = ts.getTextOfNode(node);
+  // A type node names its expression (`raw as Plugin`, not `Plugin`).
+  let named: ts.Node = node;
+  while (ts.isTypeNode(named) && named.parent !== undefined && !ts.isSourceFile(named.parent))
+    named = named.parent;
+  const text = ts.getTextOfNode(named).replace(/\s+/g, " ");
   return { slot: "expression", name: text.length > 60 ? `${text.slice(0, 57)}...` : text };
 }
 

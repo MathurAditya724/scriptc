@@ -4584,8 +4584,8 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isRegExp")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_REGEXP;
   if (PROBE("isPromise")) return value->kind == SCR_DYN_PROMISE;
   if (PROBE("isProxy")) return value->kind == SCR_DYN_PROXY;
-  if (PROBE("isAsyncFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & 2) != 0;
-  if (PROBE("isGeneratorFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & 1) != 0;
+  if (PROBE("isAsyncFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_ASYNC) != 0;
+  if (PROBE("isGeneratorFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_GENERATOR) != 0;
   if (PROBE("isGeneratorObject")) return scr_dyn_generator(value);
   if (PROBE("isDate")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE;
   if (PROBE("isMapIterator")) return scr_native_iterator_over(value, 2);
@@ -5865,7 +5865,7 @@ void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key) {
 }
 
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name) {
-  if (clo->function_kind & 8) {
+  if (clo->function_kind & SCR_CLOSURE_KIND_CHECKED_ADAPTER) {
     ScrDyn *original = scr_box_get_ref(clo->caps[0]);
     scr_closure_release(clo);
     return original;
@@ -6033,7 +6033,7 @@ ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc) {
   scr_str_release(prefix);
   scr_str_release(suffix);
   ScrClosure *closure = scr_closure_new(NULL, 4);
-  closure->function_kind = scr_closure_identity(target->v.fn.clo)->function_kind & 3;
+  closure->function_kind = scr_closure_identity(target->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_CALL_MASK;
   for (size_t i = 0; i < 3; i++) closure->caps[i] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
   closure->caps[3] = scr_box_new(SCR_BOX_STR);
   scr_box_set_ref(closure->caps[0], scr_dyn_retain(target));
@@ -6853,7 +6853,7 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
     scr_box_set_ref(box, table);
     owner->props = box;
     if (function->v.fn.class_obj) function->v.fn.class_obj->static_data = scr_box_retain(box);
-    if (owner->function_kind & 4) {
+    if (owner->function_kind & SCR_CLOSURE_KIND_OWN_PROTOTYPE) {
       ScrDyn *prototype = scr_dyn_new_obj();
       scr_dyn_obj_set(prototype, "constructor", 11, scr_dyn_retain((ScrDyn *)function));
       prototype->v.obj.entries[0].enumerable = false;
@@ -6932,7 +6932,7 @@ ScrDyn *scr_dyn_class_base_prototype(ScrDyn *constructor) {
   default: break;
   }
   if (constructor->kind != SCR_DYN_FUNC || constructor->v.fn.class_obj ||
-      (scr_closure_identity(constructor->v.fn.clo)->function_kind & SCR_FN_KIND_MASK) != 4) {
+      (scr_closure_identity(constructor->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE) {
     static const char message[] = "Class extends value is not a native ordinary constructor";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
@@ -7085,7 +7085,7 @@ ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr
     return scr_ni_construct((ScrDyn *)callee, args->v.arr.items, args->v.arr.len);
 #endif
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
-      (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_FN_KIND_MASK) != 4)
+      (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE)
     return scr_bytes_construct(callee, args, what);
   ScrDyn *prototype = scr_dyn_fn_get(callee, "prototype", 9);
   if (!prototype) return NULL;
@@ -9227,7 +9227,7 @@ bool scr_dyn_is_callable(const ScrDyn *value) {
 int scr_dyn_function_kind(const ScrDyn *value) {
   while (value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
   return value->kind == SCR_DYN_FUNC
-             ? (int)(scr_closure_identity(value->v.fn.clo)->function_kind & SCR_FN_KIND_MASK)
+             ? (int)(scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK)
              : 0;
 }
 
@@ -14693,7 +14693,7 @@ static ScrDyn *scr_function_constructor_call(ScrClosure *closure, ScrDyn *const 
 }
 
 static ScrDyn *scr_function_constructor(uint32_t kind) {
-  kind &= 3;
+  kind &= SCR_CLOSURE_KIND_CALL_MASK;
   static const char *const names[] = {"Function", "GeneratorFunction", "AsyncFunction", "AsyncGeneratorFunction"};
   if (!scr_function_constructors_registered) {
     scr_atexit(scr_function_constructors_cleanup);
@@ -14723,7 +14723,7 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
     return NULL;
   }
   if (!d->v.fn.class_obj && key_len == 9 && !memcmp(key, "prototype", 9) && !owner->props) {
-    if (owner->function_kind & 1) {
+    if (owner->function_kind & SCR_CLOSURE_KIND_GENERATOR) {
       static const char message[] = "Native generator function prototypes have no lowering";
       scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
       return NULL;
