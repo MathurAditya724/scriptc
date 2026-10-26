@@ -326,9 +326,9 @@ test.skipIf(
 
       let vendorEntries = await readdir(vendorRoot);
       expect(vendorEntries.filter((name) => name.startsWith("mbedtls-")).length).toBe(2);
-      // Host clang uses system zlib, so only the Zig build materializes a zlib
-      // object family in the shared vendor root.
-      expect(vendorEntries.filter((name) => name.startsWith("zlib-")).length).toBe(1);
+      // Host clang and Zig each materialize their own vendored zlib object
+      // family in the shared vendor root.
+      expect(vendorEntries.filter((name) => name.startsWith("zlib-")).length).toBe(2);
       // Invalidate the host archive. A targetless Zig rebuild must continue to
       // use the separately keyed Zig archive instead of repairing or consuming
       // the host-clang entry.
