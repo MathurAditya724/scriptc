@@ -804,6 +804,19 @@ export function lowerNetModuleCall(
         `the supported form is ${bi.member}(port, host?, connectListener?)`,
       );
     }
+    // connect(path[, connectListener]): a string first argument names a
+    // Unix socket, or a localhost port when it reads as a non-negative
+    // number (Node's isPipeName, decided at run time).
+    if (lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "string") {
+      return lowerNetConnectPath(
+        lowerer,
+        expr,
+        bi.member,
+        lowerer.lowerExpr(args[0]!),
+        true,
+        args[1],
+      );
+    }
     const port = lowerer.lowerExprExpecting(args[0]!, F64);
     // The optional middle host: a 2-arg call's second argument is the
     // host when string-typed, the connect listener when func-typed.
@@ -839,6 +852,47 @@ export function lowerNetModuleCall(
     "createServer, connect, and createConnection are the lowered net module functions",
     lowerer.resolveValueSymbol(expr.expression as ts.Identifier),
   );
+}
+
+/** net.connect / net.createConnection of a Unix socket path (a string
+ * argument or the `path` option) with an optional connect listener. Node
+ * ignores any other argument between them for a path, so only a listener
+ * may follow. */
+function lowerNetConnectPath(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  path: IrExpr,
+  pipeNameRule: boolean,
+  listener: ts.Expression | undefined,
+): IrExpr {
+  const loc = locOf(expr);
+  const rule: IrExpr = { kind: "boolLit", value: pipeNameRule, type: BOOL, loc };
+  if (expr.arguments.nodes.length > 2) {
+    lowerer.noLowering(
+      `${member} of a path with ${expr.arguments.nodes.length} arguments`,
+      expr,
+      `the supported form is ${member}(path[, connectListener])`,
+    );
+  }
+  if (listener === undefined)
+    return { kind: "libCall", fn: "net.connectPath", args: [path, rule], type: NETSOCKET_T, loc };
+  const { cb } = lowerCallbackArg(
+    lowerer,
+    listener,
+    "connect listeners",
+    0,
+    () => false,
+    "use ()",
+    [],
+  );
+  return {
+    kind: "libCall",
+    fn: "net.connectPathCb",
+    args: [path, rule, cb],
+    type: NETSOCKET_T,
+    loc,
+  };
 }
 
 /** True when `t` is the lookup-function shape the connect lowering
@@ -927,6 +981,29 @@ function lowerNetConnectOptions(
           loc,
         };
       }
+    }
+  }
+  // connect({ path }[, connectListener]): the Unix-socket form.
+  {
+    const keys = optsNode.properties.nodes.map((p) =>
+      (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+      (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
+        ? p.name.text
+        : null,
+    );
+    if (keys.length === 1 && keys[0] === "path") {
+      const prop = optsNode.properties.nodes[0]!;
+      const path = ts.isPropertyAssignment(prop)
+        ? lowerer.lowerExpr(prop.initializer)
+        : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+      if (path.type.kind !== "string") {
+        lowerer.noLowering(
+          `a ${member} 'path' option of '${lowerer.fmt(path.type)}' values`,
+          prop,
+          "the path is a string here",
+        );
+      }
+      return lowerNetConnectPath(lowerer, expr, member, path, false, args[1]);
     }
   }
   let port: IrExpr | null = null;

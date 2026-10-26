@@ -5827,6 +5827,12 @@ declare module "net" {
     },
     connectListener?: () => void,
   ): Socket;
+  /* A Unix domain socket client (Node's IpcNetConnectOpts and path
+   * overloads). */
+  export function connect(path: string, connectListener?: () => void): Socket;
+  export function connect(options: { path: string }, connectListener?: () => void): Socket;
+  export function createConnection(path: string, connectListener?: () => void): Socket;
+  export function createConnection(options: { path: string }, connectListener?: () => void): Socket;
   /* The happy-eyeballs attempt budget (Node's process-wide knob; the
    * autoSelectFamily dial consults it): one runtime int, default 250ms
    * like Node's. */

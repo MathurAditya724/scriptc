@@ -1801,7 +1801,10 @@ static ScrDyn *dyn_array_method_value_call(ScrClosure *closure, ScrDyn *const *a
   ScrStr *method = scr_box_get_ref(closure->caps[0]);
   ScrDyn *receiver = scr_dyn_this_get();
   ScrDyn *result;
-  if (receiver->kind == SCR_DYN_ARR) {
+  /* An array, or a live view of a native array, runs the method its own
+   * dispatch has; other receivers take the generic array-like algorithms. */
+  if (receiver->kind == SCR_DYN_ARR ||
+      (receiver->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(receiver))) {
     result = scr_dyn_invoke(receiver, method->data, args, argc, method->data);
   } else {
     ScrDyn *pack = scr_dyn_new_arr();
