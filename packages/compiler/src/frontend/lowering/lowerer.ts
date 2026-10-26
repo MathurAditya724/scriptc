@@ -7,6 +7,7 @@ import {
   arrayRootOf,
   lowerWithArraySpecies,
 } from "./builtins/array-classes.js";
+import { canonShadowHook } from "../canon-map.js";
 import {
   compactDeclOrigins,
   inPackageFile,
@@ -4088,6 +4089,7 @@ export class Lowerer {
     this.externalTypeSpecifiersByFile =
       mode.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(this.externalTypes);
     this.checker = program.getTypeChecker();
+    const shadow = canonShadowHook(this.checker);
     this.typeCtx = {
       checker: this.checker,
       positionOf: (node) => this.positions.of(node),
@@ -4101,6 +4103,7 @@ export class Lowerer {
         const id = (type as { id?: number }).id;
         return id === undefined ? null : (this.degradedTypes.get(id)?.lenient ?? null);
       },
+      ...(shadow !== undefined ? { canonShadow: shadow } : {}),
       isErasing: () => this.erasingDepth > 0,
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),

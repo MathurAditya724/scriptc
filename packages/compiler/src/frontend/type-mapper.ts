@@ -1287,6 +1287,10 @@ export interface TypeMapperCtx {
    * only after the strict mapping (and its bound-alias retry) returns null,
    * at every depth, so every occurrence of a degraded type maps alike. */
   degradedType?: (type: ts.Type) => IrType | null;
+  /** Canonical normalization's shadow mode (canon-map.ts): called after
+   * each successful top-level mapping; installed only under
+   * SCRIPTC_CANON_SHADOW=1. It records, and never changes a result. */
+  canonShadow?: (type: ts.Type, mapped: IrType, ctx: TypeMapperCtx) => void;
   /** GENERIC program classes (monomorphization by flow): the mapping of a
    * concrete instantiation reference (`Box<number>`) — the Lowerer
    * registers/reuses the instantiation (`Box%0`) and answers its object
@@ -1911,6 +1915,8 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     ) {
       ctx.typeMemo?.set(memoKey, mapped);
     }
+    if (mapped !== null && topLevel && ctx.canonShadow !== undefined)
+      ctx.canonShadow(type, mapped, ctx);
     return mapped;
   } finally {
     mapTypeDepth--;
