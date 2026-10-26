@@ -51,6 +51,10 @@ async function main() {
         ...process.env,
         SCRIPTC_NATIVE_EMIT_IR: "1",
         SCRIPTC_NATIVE_OPTIMIZATION: sanitize ? "dev" : "release",
+        // The bootstrap compares the seed's LLVM with the native compiler's
+        // own emission, which has no function layout. The layout only orders
+        // the functions, so the seed is built without it.
+        SCRIPTC_NATIVE_LAYOUT: "",
       },
     },
   );
