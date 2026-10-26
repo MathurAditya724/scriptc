@@ -453,6 +453,12 @@ function moduleSpecifierOf(decl: ts.Node | undefined): string | null {
 }
 
 /** What an identifier binds from an island module, or null. */
+/** Whether `ident` names an import of a Node island module: its value
+ * comes from the island, whatever the package's declarations say. */
+export function isIslandImportBinding(lowerer: Lowerer, ident: ts.Identifier): boolean {
+  return islandBindingOf(lowerer, ident) !== null;
+}
+
 function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding | null {
   const islands = lowerer.nodeIslands;
   if (islands === null) return null;
