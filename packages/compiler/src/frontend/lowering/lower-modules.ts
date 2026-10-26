@@ -104,6 +104,7 @@ import {
   createRequireProgramModuleDecl,
 } from "./builtins/module-bindings.js";
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
+import { customInspectRegistrations } from "./lower-inspect.js";
 import { registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
 import { isWebCryptoMemberType } from "./builtins/webcrypto.js";
@@ -357,24 +358,28 @@ function dynamicImportProgramTargetOf(
 }
 
 /** Every distinct program module a file's `import("literal")` sites name
- * (source order, deduped). */
+ * (source order, deduped). The parser lists the specifier of every such call
+ * in the file's module references, in source order after the static imports,
+ * so the file's nodes need no walk. */
 function dynamicProgramImportsOf(program: ts.Program, sf: ts.SourceFile): ts.SourceFile[] {
   const out: ts.SourceFile[] = [];
   const seen = new Set<ts.SourceFile>();
-  ts.walkPreorder(sf, (node) => {
+  for (const specifier of sf.imports) {
+    const call = specifier.parent;
     if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.nodes[0] !== undefined &&
-      ts.isStringLiteralLike(node.arguments.nodes[0])
-    ) {
-      const dep = dynamicImportProgramTargetOf(program, sf, node.arguments.nodes[0].text);
-      if (dep && !seen.has(dep)) {
-        seen.add(dep);
-        out.push(dep);
-      }
+      call === undefined ||
+      !ts.isCallExpression(call) ||
+      call.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+      call.arguments.nodes[0] !== specifier ||
+      !ts.isStringLiteralLike(specifier)
+    )
+      continue;
+    const dep = dynamicImportProgramTargetOf(program, sf, specifier.text);
+    if (dep && !seen.has(dep)) {
+      seen.add(dep);
+      out.push(dep);
     }
-  });
+  }
   return out;
 }
 
@@ -1984,18 +1989,21 @@ export function collectGlobals(
       // symbol registers HERE, before any use site can lower, and the
       // statement lowering skips the declaration by the same check. A
       // bad promisify target reports here (recorded once; the statement
-      // lowering poisons too, like every collectGlobals failure).
+      // lowering poisons too, like every collectGlobals failure). Targets
+      // that promisify to a function value (typed callback-last functions
+      // and untyped functions) keep an ordinary global.
       if (
         ts.isIdentifier(decl.name) &&
         decl.initializer &&
         isPromisifyCall(lowerer, decl.initializer)
       ) {
+        let registered = true;
         try {
-          lowerer.registerPromisifiedBuiltinDecl(decl.name, decl.initializer);
+          registered = lowerer.registerPromisifiedBuiltinDecl(decl.name, decl.initializer);
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
         }
-        continue;
+        if (registered) continue;
       }
       // `const inspect = require("util").inspect` at file scope: a
       // named import in const clothing (builtinImportOf resolves uses)
@@ -3565,6 +3573,9 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       loc,
     });
   }
+  // Classes with custom inspect methods register their compiled calls for
+  // the runtime's inspect walk before any module runs, in every thread.
+  body.unshift(...customInspectRegistrations(lowerer, loc));
   // Node's startup refusal (a resolution the graph carries that Node
   // rejects — preflight's Node-order resolution walk — or a module-LINK
   // SyntaxError from either named-import checker): the graph is refused

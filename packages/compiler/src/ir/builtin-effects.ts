@@ -108,6 +108,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "procStream.write",
   "child.stdioStream",
   "stream.unboxDyn",
+  "stream.dynIterableSource",
   "stream.handleStream",
   "stream.pipeDyn",
   "stream.unpipeDyn",
@@ -201,6 +202,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  // The runtime formatter calls toString, valueOf and toJSON, and refuses
+  // renderings it has no lowering for.
+  "insp.format",
+  "insp.formatList",
+  "insp.formatWithOptions",
+  "insp.inspect",
+  // The options object reads the caller's options (getters included), and
+  // the checked-dynamic walk calls custom inspect functions.
+  "insp.customOptions",
+  "insp.customResult",
   // A checked-dynamic value the inspector does not render (a promise, a
   // URL, a RegExp) throws the 'not supported yet' Error.
   "insp.dyn",
@@ -271,6 +282,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "tls.connectCb",
   "tls.wrapSocket",
   "tls.wrapSocketCtx",
+  // addContext's ERR_TLS_REQUIRED_SERVER_NAME and the context's errors,
+  // setSecureContext's validateObject.
+  "tls.serverAddContext",
+  "tls.serverAddContextCtx",
+  "tls.serverSetSecureContext",
   // The CA-store surface: an unknown getCACertificates type throws
   // Node's ERR_INVALID_ARG_VALUE TypeError; setDefaultCACertificates
   // throws Node's ERR_CRYPTO_OPERATION_FAILED on a certificate-free
@@ -608,7 +624,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.styleText",
   "util.toUSVString",
   "util.inherits",
+  "util.inheritsPrototype",
   "util.deprecate",
+  "util.extend",
+  "util.signalExitCode",
+  "util.diff",
+  "util.debounce",
+  "util.throttle",
+  "mime.typeNew",
+  "mime.typeParse",
   "util.callbackify",
   "util.promisifyDyn",
   "util.debuglog",
@@ -700,6 +724,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackCall",
   "dyn.keyDelete",
   "dyn.keyDeleteComputed",
+  "dyn.reflectDeleteProperty",
   "dyn.hasKeyComputed",
   "dyn.hasOwnComputed",
   "dyn.propertyIsEnumerableComputed",
@@ -889,6 +914,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.setAutoSelTimeout",
   "error.argTypeThrow",
   "error.propTypeThrow",
+  "array.foreignThrow",
   "emitter.setMaxChk",
   "emitter.setDefaultMaxChk",
   "fs.readFileSyncBytes",
@@ -993,6 +1019,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "assert.noErrorPredicate",
   "assert.regexDynTest",
   "assert.expectsErrDyn",
+  "assert.throwsValidate",
   "assert.ifErrorErr",
   "assert.ifErrorF64",
   "assert.ifErrorStr",
@@ -1045,6 +1072,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.openSync",
   "fs.openNumericSync",
   "fs.readSync",
+  "fs.readSyncDyn",
   "fs.writeSync",
   "fs.writeStrSync",
   "fs.closeSync",
@@ -1065,6 +1093,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.diffieHellman",
   "crypto.createSign",
   "crypto.createVerify",
+  "crypto.x509Raw",
+  "crypto.x509RawDer",
+  "crypto.x509RawStr",
+  // Node's argument errors (name, options, pkey) and the key parse.
+  "crypto.x509CheckHost",
+  "crypto.x509CheckEmail",
+  "crypto.x509CheckIP",
+  "crypto.x509PublicKey",
+  "crypto.x509Verify",
+  "crypto.x509CheckPrivateKey",
 ]);
 
 /** libCall members that always throw. Their result type is the replaced
@@ -1078,6 +1116,7 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "error.nodeThrow",
   "error.argTypeThrow",
   "error.propTypeThrow",
+  "array.foreignThrow",
   "fs.mkdtempChk",
   "fs.readFileChk",
   "fs.opendirChk",

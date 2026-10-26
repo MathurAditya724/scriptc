@@ -8,7 +8,7 @@ import { alwaysExactInteger, exactInteger } from "./integer-values.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { emitByteNumber } from "./byte-numbers.js";
 import { integerOrNaNIndex, integerOrNaNRange } from "./wrapping-sums.js";
-import { bytesElementAlias, bytesHeaderAlias } from "./bytes-alias.js";
+import { bytesElementAlias, bytesHeaderAlias, bytesHeaderValueAlias } from "./bytes-alias.js";
 
 const BYTES_NUM_KIND: Record<string, { kind: number; le: boolean } | undefined> = {
   u8: { kind: 0, le: false },
@@ -160,12 +160,19 @@ export function emitBytesIndex(
   return idx;
 }
 
-/** The element count of a typed array, in the target's size type. */
-export function emitBytesHeaderLength(host: LlvmEmitterContext, receiver: string): string {
+/** The element count of a typed array, in the target's size type. `value`:
+ * the program reads the count itself (bytesHeaderValueAlias), rather than
+ * only bounding an access. */
+export function emitBytesHeaderLength(
+  host: LlvmEmitterContext,
+  receiver: string,
+  value = false,
+): string {
   const p = host.B.tmp();
   const len = host.B.tmp();
+  const alias = value ? bytesHeaderValueAlias(host) : bytesHeaderAlias(host);
   host.B.line(`${p} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 1`);
-  host.B.line(`${len} = load ${host.sizeType}, ptr ${p}${bytesHeaderAlias(host)}`);
+  host.B.line(`${len} = load ${host.sizeType}, ptr ${p}${alias}`);
   return len;
 }
 
@@ -184,7 +191,7 @@ export function emitBytesLength(
   bytes: boolean,
 ): LlValue {
   const B = host.B;
-  const len = emitBytesHeaderLength(host, receiver);
+  const len = emitBytesHeaderLength(host, receiver, true);
   const size = BYTES_ELEMENT_SIZE[elem];
   const count = bytes && size !== 1 ? B.tmp() : len;
   if (count !== len) B.line(`${count} = shl ${host.sizeType} ${len}, ${Math.log2(size)}`);
@@ -235,6 +242,26 @@ export function emitBytesGet(
   inBounds = false,
   invalidNaN = false,
   owned = false,
+  scope = "",
+): LlValue {
+  const outer = host.bytesAccessScope;
+  host.bytesAccessScope = scope;
+  try {
+    return emitScopedBytesGet(host, elem, receiver, index, expr, inBounds, invalidNaN, owned);
+  } finally {
+    host.bytesAccessScope = outer;
+  }
+}
+
+function emitScopedBytesGet(
+  host: LlvmEmitterContext,
+  elem: IrBytesElem,
+  receiver: string,
+  index: LlValue,
+  expr: IrExpr | undefined,
+  inBounds: boolean,
+  invalidNaN: boolean,
+  owned: boolean,
 ): LlValue {
   const B = host.B;
   // Any invalid index traps (the array runtime's discipline).
@@ -547,6 +574,27 @@ export function emitBytesSet(
   expr?: IrExpr,
   inBounds = false,
   owned = false,
+  scope = "",
+): void {
+  const outer = host.bytesAccessScope;
+  host.bytesAccessScope = scope;
+  try {
+    emitScopedBytesSet(host, elem, receiver, index, value, indexExpr, expr, inBounds, owned);
+  } finally {
+    host.bytesAccessScope = outer;
+  }
+}
+
+function emitScopedBytesSet(
+  host: LlvmEmitterContext,
+  elem: IrBytesElem,
+  receiver: string,
+  index: LlValue,
+  value: LlValue,
+  indexExpr: IrExpr | undefined,
+  expr: IrExpr | undefined,
+  inBounds: boolean,
+  owned: boolean,
 ): void {
   const B = host.B;
   // Invalid integer-indexed writes are ignored after evaluating the RHS.
@@ -768,6 +816,7 @@ export function emitBytesIntrinsic(
         host.bytesBounds.has(e),
         e.invalidNaN === true,
         host.bytesOwned.has(e),
+        host.bytesAliasScopes.get(e),
       );
     case "slice":
       return call(

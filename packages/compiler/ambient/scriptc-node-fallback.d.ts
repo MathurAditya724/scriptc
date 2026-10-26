@@ -2914,6 +2914,8 @@ declare module "crypto" {
   export interface AsymmetricKeyExportOptions<T extends KeyFormat> {
     type: "pkcs1" | "spki" | "pkcs8" | "sec1";
     format: T;
+    cipher?: string | undefined;
+    passphrase?: string | Buffer | undefined;
   }
   export interface AsymmetricKeyDetails {
     modulusLength?: number;
@@ -2938,6 +2940,7 @@ declare module "crypto" {
     format?: "pem" | "der" | undefined;
     type?: "pkcs1" | "pkcs8" | "sec1" | undefined;
     encoding?: string | undefined;
+    passphrase?: string | Buffer | undefined;
   }
   export interface PublicKeyInput {
     key: string | Buffer;
@@ -2974,12 +2977,22 @@ declare module "crypto" {
     modulusLength: number;
     publicExponent?: number | undefined;
     publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs1" | "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export interface ECKeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     namedCurve: string;
     publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
-    privateKeyEncoding: { type: "sec1" | "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "sec1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "rsa",
@@ -3007,7 +3020,12 @@ declare module "crypto" {
   ): KeyPairKeyObjectResult;
   export interface ED25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     publicKeyEncoding: { type: "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "ed25519",
@@ -3020,7 +3038,12 @@ declare module "crypto" {
   export function generateKeyPairSync(type: "ed25519", options?: {}): KeyPairKeyObjectResult;
   export interface X25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     publicKeyEncoding: { type: "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "x25519",
@@ -3551,17 +3574,45 @@ declare module "crypto" {
     keylen: number,
     callback: (error: Error | null, derivedKey: ArrayBuffer) => void,
   ): void;
-  /* The lowered X509Certificate surface is the data-record slice:
-   * fingerprint (the SHA-1 of the DER, uppercase colon-separated) and
-   * the validFrom/validTo validity window (Node's ASN1_TIME_print
-   * strings — "Jul  1 00:00:00 2026 GMT"; the cert-expiry idiom composes
-   * them with new Date(...).getTime()). All compute at construction;
-   * unparseable input throws Node's ERR_OSSL_PEM_NO_START_LINE Error. */
+  /* The lowered X509Certificate surface is the data-record slice: the
+   * fields below, all computed at construction (raw decodes the input,
+   * and the others read raw). validFrom/validTo are Node's
+   * ASN1_TIME_print strings ("Jul  1 00:00:00 2026 GMT"). Unparseable
+   * input throws Node's ERR_OSSL_PEM_NO_START_LINE Error. */
   export class X509Certificate {
     constructor(buffer: Uint8Array | string);
+    readonly ca: boolean;
     readonly fingerprint: string;
+    readonly fingerprint256: string;
+    readonly fingerprint512: string;
+    readonly subject: string;
+    readonly subjectAltName: string | undefined;
+    readonly infoAccess: string | undefined;
+    readonly issuer: string;
+    readonly raw: Buffer;
+    readonly serialNumber: string;
+    readonly signatureAlgorithm: string | undefined;
+    readonly signatureAlgorithmOid: string;
     readonly validFrom: string;
+    readonly validFromDate: Date;
     readonly validTo: string;
+    readonly validToDate: Date;
+    /* the certificate's public key; every read answers the same KeyObject */
+    readonly publicKey: KeyObject;
+    verify(publicKey: KeyObject): boolean;
+    checkPrivateKey(privateKey: KeyObject): boolean;
+    checkIssued(otherCert: X509Certificate): boolean;
+    checkHost(name: string, options?: X509CheckOptions): string | undefined;
+    checkEmail(email: string, options?: X509CheckOptions): string | undefined;
+    checkIP(ip: string): string | undefined;
+    toLegacyObject(): import("tls").PeerCertificate;
+  }
+  export interface X509CheckOptions {
+    subject?: "always" | "default" | "never";
+    wildcards?: boolean;
+    partialWildcards?: boolean;
+    multiLabelWildcards?: boolean;
+    singleLabelSubdomains?: boolean;
   }
   /* The crypto introspection statics: getFips() answers 0 (a compiled
    * binary is never a FIPS build), the three name lists bake as fresh
@@ -3910,6 +3961,85 @@ declare module "util" {
   ): string;
   export function parseEnv(content: string): { [key: string]: string | undefined };
   export function inherits(constructor: unknown, superConstructor: unknown): void;
+  export class MIMEType {
+    constructor(input: string | { toString: () => string });
+    static parse(input: string | { toString: () => string }): MIMEType | null;
+    type: string;
+    subtype: string;
+    readonly essence: string;
+    readonly params: MIMEParams;
+    toString(): string;
+    toJSON(): string;
+  }
+  export class MIMEParams {
+    delete(name: string): void;
+    entries(): IterableIterator<[name: string, value: string]>;
+    get(name: string): string | null;
+    has(name: string): boolean;
+    keys(): IterableIterator<string>;
+    set(name: string, value: string): void;
+    values(): IterableIterator<string>;
+    toString(): string;
+    toJSON(): string;
+    [Symbol.iterator](): IterableIterator<[name: string, value: string]>;
+  }
+  export type DiffEntry = [operation: -1 | 0 | 1, value: string];
+  export function diff(
+    actual: string | readonly string[],
+    expected: string | readonly string[],
+  ): DiffEntry[];
+  export interface DebounceOptions {
+    leading?: boolean;
+    rejectOnCancel?: boolean;
+    signal?: AbortSignal;
+  }
+  /** Every call answers a promise of the result of the call it waits for. */
+  export interface DebouncedFunction<T extends (...args: any[]) => any> {
+    (...args: Parameters<T>): Promise<Awaited<ReturnType<T>>>;
+    cancel(reason?: unknown): void;
+    flush(): void;
+    ref(): this;
+    unref(): this;
+    readonly pending: Promise<Awaited<ReturnType<T>>> | null;
+    readonly pendingCount: number;
+  }
+  export function debounce<T extends (...args: any[]) => any>(
+    fn: T,
+    wait: number,
+    options?: DebounceOptions,
+  ): DebouncedFunction<T>;
+  export interface ThrottleOptions {
+    concurrency?: number;
+    maxPending?: number;
+    overflow?: "queue" | "drop";
+    signal?: AbortSignal;
+    strict?: boolean;
+  }
+  export interface ThrottledFunction<T extends (...args: any[]) => any> {
+    (...args: Parameters<T>): Promise<Awaited<ReturnType<T>>>;
+    cancel(reason?: unknown): void;
+    hasImmediateCapacity(): boolean;
+    ref(): this;
+    unref(): this;
+    readonly pending: Promise<Awaited<ReturnType<T>>> | null;
+    readonly pendingCount: number;
+    readonly activeCount: number;
+  }
+  export function throttle<T extends (...args: any[]) => any>(
+    fn: T,
+    limit: number,
+    interval: number,
+    options?: ThrottleOptions,
+  ): ThrottledFunction<T>;
+  /** Resolves with the abort event once `signal` aborts, or with undefined
+   * when it already has. */
+  export function aborted(signal: AbortSignal, resource: any): Promise<unknown>;
+  /** 128 plus the number of the signal, the exit code of a process it terminates. */
+  export function convertProcessSignalToExitCode(signalCode: string): number;
+  /** @deprecated Since v4.0.0 - Use `Array.isArray()` instead. */
+  export function isArray(object: unknown): object is unknown[];
+  /** @deprecated Since v6.0.0 - Use `Object.assign()` instead. Answers target itself. */
+  export function _extend<T extends object>(target: T, source: object | null | undefined): T;
   export interface DeprecateOptions {
     modifyPrototype?: boolean;
   }
@@ -3967,7 +4097,13 @@ declare module "util" {
   export type TextDecoder = globalThis.TextDecoder;
   export var TextEncoder: typeof globalThis.TextEncoder;
   export var TextDecoder: typeof globalThis.TextDecoder;
-  /* stream.pipeline's overload comes first: its __promisify__ member keeps
+  /* An untyped function: an `any` value, or a function whose parameters
+   * are untyped (JavaScript's `(value, callback) => ...`), the only
+   * parameters that accept this object type. The promisified function is
+   * untyped too. It comes first because such functions match every other
+   * overload. */
+  export function promisify(fn: (...args: { readonly "scriptc:untyped": true }[]) => unknown): any;
+  /* stream.pipeline's overload comes next: its __promisify__ member keeps
    * every other target out of it. */
   export function promisify(
     fn: typeof import("node:stream").pipeline,
@@ -4088,15 +4224,56 @@ declare module "util" {
   ): (address: string, port: number) => Promise<{ hostname: string; service: string }>;
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
-   * without a lowering fences at its site). inspect's options carry the
-   * documented knobs through an index signature. */
+   * without a lowering fences at its site). */
+  export interface InspectOptions {
+    showHidden?: boolean | undefined;
+    depth?: number | null | undefined;
+    colors?: boolean | undefined;
+    customInspect?: boolean | undefined;
+    showProxy?: boolean | undefined;
+    maxArrayLength?: number | null | undefined;
+    maxStringLength?: number | null | undefined;
+    breakLength?: number | undefined;
+    compact?: boolean | number | undefined;
+    sorted?: boolean | ((a: string, b: string) => number) | undefined;
+    getters?: "get" | "set" | boolean | undefined;
+    numericSeparator?: boolean | undefined;
+  }
+  export type Style =
+    | "special"
+    | "number"
+    | "bigint"
+    | "boolean"
+    | "undefined"
+    | "null"
+    | "string"
+    | "symbol"
+    | "date"
+    | "regexp"
+    | "module";
+  export interface InspectOptionsStylized extends InspectOptions {
+    stylize(text: string, styleType: Style): string;
+  }
+  export type CustomInspectFunction = (
+    depth: number,
+    options: InspectOptionsStylized,
+    inspect: typeof import("node:util").inspect,
+  ) => any;
   export function inspect(
     object: unknown,
-    options?: { depth?: number | null; colors?: boolean; [k: string]: unknown },
+    showHidden?: boolean,
+    depth?: number | null,
+    color?: boolean,
   ): string;
+  export function inspect(object: unknown, options?: InspectOptions): string;
+  export namespace inspect {
+    /* The key of an object's custom inspect function:
+     * Symbol.for('nodejs.util.inspect.custom'). */
+    const custom: unique symbol;
+  }
   export function format(format?: unknown, ...args: unknown[]): string;
   export function formatWithOptions(
-    inspectOptions: { depth?: number | null; colors?: boolean; [k: string]: unknown },
+    inspectOptions: InspectOptions,
     format?: unknown,
     ...args: unknown[]
   ): string;
@@ -5294,10 +5471,10 @@ declare module "node:zlib" {
  * with the real port discoverable as address().port (the composed read
  * is the lowered form — bare address() has no lowering); close([cb])
  * firing once connections drain; socket write/end/destroy/pipe and the
- * data/end/close/error/connect events (on and once — listeners take at
- * most the declared parameter). write/end return void here (Node returns
- * the backpressure boolean / the socket); on/once return void (chaining
- * is fenced). connect's host is a numeric IP or "localhost" (pinned to
+ * data/end/close/error/connect/drain events (on and once — listeners
+ * take at most the declared parameter). write returns Node's
+ * backpressure boolean; end returns void here (Node returns the socket);
+ * on/once return void (chaining is fenced). connect's host is a numeric IP or "localhost" (pinned to
  * 127.0.0.1 — SEMANTICS.md); every failure is the async 'error' event,
  * and an 'error' with no listener exits 1 like an unhandled EventEmitter
  * 'error'. */
@@ -5329,7 +5506,13 @@ declare module "net" {
     readonly bytesWritten: number;
     /* write's callback runs once the data is flushed, with null; end's
      * once the socket finishes. */
-    write(data: string | Uint8Array, callback?: (err?: Error | null) => void): void;
+    /* false when the bytes this write left unsent reach the 65536-byte
+     * high-water mark, as in Node; 'drain' fires when they are all sent. */
+    write(data: string | Uint8Array, callback?: (err?: Error | null) => void): boolean;
+    /* the bytes written and not yet sent */
+    readonly writableLength: number;
+    /* a write answered false and 'drain' has not fired yet */
+    readonly writableNeedDrain: boolean;
     end(callback?: () => void): void;
     end(data: string | Uint8Array, callback?: () => void): void;
     destroy(): void;
@@ -5377,6 +5560,7 @@ declare module "net" {
         | "connect"
         | "ready"
         | "timeout"
+        | "drain"
         | "readable"
         | "finish"
         | "secureConnect"
@@ -5401,6 +5585,7 @@ declare module "net" {
         | "connect"
         | "ready"
         | "timeout"
+        | "drain"
         | "readable"
         | "finish"
         | "secureConnect"
@@ -5424,6 +5609,7 @@ declare module "net" {
         | "connect"
         | "ready"
         | "timeout"
+        | "drain"
         | "readable"
         | "finish"
         | "secureConnect"
@@ -5473,6 +5659,11 @@ declare module "net" {
     /* The demux route: hand an accepted socket to another server. */
     emit(event: "connection", socket: Socket): boolean;
     on(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: a handshake that failed */
+    on(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
     on(event: "close" | "listening", listener: () => void): void;
     on(event: "drop", listener: (data?: DropArgument) => void): void;
     on(event: "timeout", listener: (socket: Socket) => void): void;
@@ -5492,6 +5683,11 @@ declare module "net" {
     ): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: a handshake that failed */
+    addListener(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
     addListener(event: "close" | "listening", listener: () => void): void;
     addListener(event: "drop", listener: (data?: DropArgument) => void): void;
     addListener(event: "timeout", listener: (socket: Socket) => void): void;
@@ -5505,6 +5701,11 @@ declare module "net" {
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
     once(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: a handshake that failed */
+    once(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
     once(event: "close" | "listening", listener: () => void): void;
     once(event: "drop", listener: (data?: DropArgument) => void): void;
     once(event: "timeout", listener: (socket: Socket) => void): void;
@@ -5958,8 +6159,15 @@ declare module "node:http" {
  * are PEM strings or Buffers. Handshake failures tear the socket down
  * without emitting an event, Node's default for 'tlsClientError' with no listener. */
 declare module "tls" {
-  import { Server, Socket } from "net";
-  export { Server };
+  import { Server as NetServer, Socket } from "net";
+  /** tls.Server: a net server whose connections handshake first. */
+  export interface Server extends NetServer {
+    /* serve `context` to clients whose SNI name matches `hostname` ('*'
+     * matches within one label); the newest match wins */
+    addContext(hostname: string, context: TlsOptions | SecureContext): void;
+    /* new connections serve a context made from `options` */
+    setSecureContext(options: TlsOptions): void;
+  }
   export interface TlsOptions {
     /* Optional in the DECLARATION only (real Node programs build these
      * literals with every TLS knob): the lowering still requires both —
@@ -5993,7 +6201,47 @@ declare module "tls" {
     getCipher(): CipherNameAndProtocol;
     /* whether the handshake resumed a cached session */
     isSessionReused(): boolean;
+    /* the peer's certificate: {} before the handshake or without one,
+     * null once the socket is destroyed; detailed adds issuerCertificate */
+    getPeerCertificate(detailed: true): DetailedPeerCertificate;
+    getPeerCertificate(detailed?: false): PeerCertificate;
+    getPeerCertificate(detailed?: boolean): PeerCertificate | DetailedPeerCertificate;
+    /* the certificate this socket serves, the same way */
+    getCertificate(): PeerCertificate | object | null;
+    /* a new X509Certificate on each call, or undefined without one */
+    getPeerX509Certificate(): import("crypto").X509Certificate | undefined;
+    getX509Certificate(): import("crypto").X509Certificate | undefined;
   }
+  /* A certificate as getPeerCertificate() and X509Certificate's
+   * toLegacyObject() answer it: subject and issuer map attribute short
+   * names to values, infoAccess its "<method> - <type>" keys to values. */
+  export interface PeerCertificate {
+    subject: { [attribute: string]: string | string[] };
+    issuer: { [attribute: string]: string | string[] };
+    subjectaltname?: string;
+    infoAccess?: { [key: string]: string[] };
+    ca: boolean;
+    modulus?: string;
+    exponent?: string;
+    pubkey?: Buffer;
+    bits?: number;
+    valid_from: string;
+    valid_to: string;
+    fingerprint: string;
+    fingerprint256: string;
+    fingerprint512: string;
+    ext_key_usage?: string[];
+    serialNumber: string;
+    raw: Buffer;
+    asn1Curve?: string;
+    nistCurve?: string;
+  }
+  /* getPeerCertificate(true): each certificate links to its issuer; a
+   * self-issued root is its own issuerCertificate */
+  export interface DetailedPeerCertificate extends PeerCertificate {
+    issuerCertificate: DetailedPeerCertificate;
+  }
+
   /** new tls.TLSSocket(socket, options): the server-mode wrap of an open
    * socket (a server connection or an http CONNECT socket). The options
    * record reads at runtime; isServer, cert, key, secureContext,
@@ -6048,6 +6296,8 @@ declare module "tls" {
   /** An opaque parsed cert/key pair — what an SNI callback answers with
    * (the value is a runtime handle; the members are runtime-internal). */
   export interface SecureContext {}
+  /* @types/node's name for createSecureContext's options */
+  export type SecureContextOptions = TlsOptions;
   export function createSecureContext(options: TlsOptions): SecureContext;
   /** The CA-store introspection surface (scr_tls_ca.c): per-type cached
    * PEM string arrays. The host bundle stands in for Node's compiled-in
