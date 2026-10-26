@@ -167,6 +167,7 @@ export function eachStringField(
     }
     case "dynCheck": {
       visit(node.kind, "kind");
+      if (typeof node.inferredSite === "string") visit(node.inferredSite, "inferredSite");
       return;
     }
     case "dynDestrCheck": {
@@ -866,6 +867,9 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "dynCheck": {
       walker.string(node.kind);
       walkExprFields(node.value, walker, skipType);
+      if (node.inferredSite !== undefined && node.inferredSite !== null) {
+        walker.string(node.inferredSite);
+      }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
       }
