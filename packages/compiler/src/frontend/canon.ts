@@ -53,6 +53,8 @@ export type Canon =
       k: "obj";
       /** Class or standard-library declaration name, when nominal. */
       nominal?: string;
+      /** The type arguments of a nominal generic instantiation. */
+      typeArgs: () => readonly Canon[];
       alias?: AliasRef;
       props: () => readonly CanonProp[];
       index: () => readonly CanonIndex[];
@@ -99,7 +101,12 @@ export function canonKey(c: Canon, depth = 0): string {
     case "union":
       return c.arms.map((a) => canonKey(a, depth + 1)).join(" | ");
     case "obj": {
-      if (c.nominal !== undefined) return c.nominal;
+      if (c.nominal !== undefined) {
+        const args = c.typeArgs();
+        return args.length === 0
+          ? c.nominal
+          : `${c.nominal}<${args.map((a) => canonKey(a, depth + 1)).join(", ")}>`;
+      }
       const props = c
         .props()
         .map((p) => `${p.name}${p.optional ? "?" : ""}: ${canonKey(p.type(), depth + 1)}`);
@@ -119,21 +126,42 @@ export function canonKey(c: Canon, depth = 0): string {
   }
 }
 
+/** The pairs a comparison takes as equal while it runs, and the order they
+ * were assumed in, so that a failed comparison withdraws what it assumed. */
+interface Assumptions {
+  pairs: Map<Canon, Set<Canon>>;
+  trail: [Canon, Canon][];
+}
+
 /** Whether two canonical nodes are the same type, structurally: unlike
  * canonKey, every part is compared (signature parameters, index
- * signatures, any depth). A pair met again while it is being compared is
- * taken as equal, which closes the comparison of recursive types. */
+ * signatures, type arguments, any depth). A pair met again while it is
+ * being compared is taken as equal, which closes the comparison of
+ * recursive types; when the comparison fails, the pairs assumed during it
+ * are withdrawn. */
 export function canonEqual(
   a: Canon,
   b: Canon,
-  assumed: Map<Canon, Set<Canon>> = new Map(),
+  assumed: Assumptions = { pairs: new Map(), trail: [] },
 ): boolean {
   if (a === b) return true;
   if (a.k !== b.k) return false;
-  let pairs = assumed.get(a);
+  let pairs = assumed.pairs.get(a);
   if (pairs?.has(b)) return true;
-  if (pairs === undefined) assumed.set(a, (pairs = new Set()));
+  if (pairs === undefined) assumed.pairs.set(a, (pairs = new Set()));
+  const mark = assumed.trail.length;
   pairs.add(b);
+  assumed.trail.push([a, b]);
+  const equal = sameCanon(a, b, assumed);
+  if (!equal)
+    while (assumed.trail.length > mark) {
+      const [x, y] = assumed.trail.pop()!;
+      assumed.pairs.get(x)!.delete(y);
+    }
+  return equal;
+}
+
+function sameCanon(a: Canon, b: Canon, assumed: Assumptions): boolean {
   const eq = (x: Canon, y: Canon): boolean => canonEqual(x, y, assumed);
   const sigsEqual = (xs: readonly CanonSig[], ys: readonly CanonSig[]): boolean =>
     xs.length === ys.length &&
@@ -191,7 +219,11 @@ export function canonEqual(
     case "obj": {
       const o = b as typeof a;
       if (a.nominal !== o.nominal) return false;
-      if (a.nominal !== undefined) return true;
+      if (a.nominal !== undefined) {
+        const ax = a.typeArgs();
+        const ox = o.typeArgs();
+        return ax.length === ox.length && ax.every((x, i) => eq(x, ox[i]!));
+      }
       const ap = a.props();
       const op = o.props();
       if (ap.length !== op.length) return false;
@@ -394,6 +426,7 @@ export class Normalizer {
             args: type.getAliasTypeArguments().map((a) => this.canon(a, env)),
             tsType: type,
           };
+    let typeArgs: readonly Canon[] | undefined;
     let props: readonly CanonProp[] | undefined;
     let index: readonly CanonIndex[] | undefined;
     let call: readonly CanonSig[] | undefined;
@@ -417,6 +450,12 @@ export class Normalizer {
       k: "obj",
       ...(nominal !== undefined ? { nominal } : {}),
       ...(alias !== undefined ? { alias } : {}),
+      typeArgs: () =>
+        (typeArgs ??=
+          nominal !== undefined &&
+          ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !== 0
+            ? checker.getTypeArguments(type as ts.TypeReference).map((a) => this.canon(a, env))
+            : []),
       props: () =>
         (props ??= checker.getPropertiesOfType(type).map((p) => ({
           name: ts.symbolName(p),

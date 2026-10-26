@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { canonKey, Normalizer, type Canon } from "../src/frontend/canon.js";
+import { canonEqual, canonKey, Normalizer, type Canon } from "../src/frontend/canon.js";
 import { loadProgram } from "../src/frontend/program-node.js";
 import * as ts from "../src/frontend/ts7/adapter.js";
 
@@ -63,6 +63,8 @@ beforeAll(() => {
     export type Chain = [number, Chain] | null;
     // Optional and rest tuple elements.
     export type Loose = [string, number?, ...boolean[]];
+    // Arrays of two instantiations of one generic class.
+    export type Maps = Map<string, number>[] | Map<number, string>[];
   `,
   );
   load = loadProgram(entry);
@@ -235,6 +237,26 @@ describe("canon", () => {
     const tuple = chain.arms.find((a) => a.k === "tuple");
     const rest = tuple?.k === "tuple" ? tuple.elems[1]!.type : undefined;
     expect(rest?.k === "union" && rest.arms.includes(tuple!)).toBe(true);
+  });
+
+  test("a failed comparison withdraws the pairs it assumed equal", () => {
+    const array = (p: "number" | "string"): Canon => ({
+      k: "array",
+      elem: { k: "prim", p },
+      readonly: false,
+    });
+    // number[] fails against string[] before it matches number[]; that
+    // attempt must not make string[] match later.
+    const a: Canon = { k: "union", arms: [array("number"), array("number")] };
+    const b: Canon = { k: "union", arms: [array("string"), array("number")] };
+    expect(canonEqual(a, b)).toBe(false);
+    expect(canonEqual(b, a)).toBe(false);
+  });
+
+  test("instantiations of one generic class stay distinct", () => {
+    const maps = new Normalizer(checker).canon(aliases.get("Maps")!);
+    expect(maps.k === "union" && maps.arms.length).toBe(2);
+    expect(key(maps)).toBe("Map<string, number>[] | Map<number, string>[]");
   });
 
   test("optional and rest tuple elements keep their flags", () => {
