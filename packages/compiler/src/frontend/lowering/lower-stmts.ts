@@ -867,7 +867,8 @@ const MAX_DEGRADE_RETRIES = 16;
 /** The slot kinds lowerStmts' commit point degrades: locals, loop
  * variables and module globals (stage L1), and the parameters and returns
  * of the function expressions, arrows and methods a statement holds
- * (stage L2). */
+ * (stage L2), and the types of the statement's own expressions: casts,
+ * literals with a contextual type, spread clones, temporaries (stage L4). */
 const STATEMENT_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>([
   "local",
   "global",
@@ -875,6 +876,8 @@ const STATEMENT_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>([
   "param",
   "return",
   "field",
+  "member",
+  "expression",
 ]);
 
 /** One attempt at lowering a statement of lowerStmts into `out`. */
