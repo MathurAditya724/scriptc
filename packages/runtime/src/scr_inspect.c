@@ -973,21 +973,23 @@ ScrStr *scr_insp_regex(ScrRegex *re) {
  * the k-th symbol key. */
 static size_t insp_view_property_slots(const ScrDyn *props) {
   if (!props) return 0;
-  return props->v.obj.len + (props->symbol_keys ? props->symbol_keys->v.arr.len : 0);
+  return scr_dyn_obj_count(props) + (props->symbol_keys ? props->symbol_keys->v.arr.len : 0);
 }
 
-static ScrStr *insp_accessor_tag(const ScrDynEntry *ent);
+static ScrStr *insp_accessor_tag(const ScrDynProp *ent);
 static void insp_key_into(InspBuf *b, const char *key, size_t len);
 
 /* Slot k's `key: value` entry when it is enumerable, else NULL. */
 static ScrStr *insp_view_property(ScrDyn *props, size_t k, double recurse, double depth) {
-  const ScrDynEntry *ent;
+  ScrDynProp found;
+  const ScrDynProp *ent = NULL;
   ScrStr *key = NULL;
-  if (k < props->v.obj.len) {
-    ent = &props->v.obj.entries[k];
+  if (k < scr_dyn_obj_count(props)) {
+    found = scr_dyn_obj_prop_at(props, k);
+    ent = &found;
   } else {
-    ScrDyn *symbol = props->symbol_keys->v.arr.items[k - props->v.obj.len];
-    ent = scr_dyn_own_symbol_entry(props, symbol);
+    ScrDyn *symbol = props->symbol_keys->v.arr.items[k - scr_dyn_obj_count(props)];
+    if (scr_dyn_own_symbol_prop(props, symbol, &found)) ent = &found;
     if (ent && ent->enumerable) key = scr_insp_dyn(symbol, recurse, depth);
   }
   if (!ent || !ent->enumerable) return NULL;
@@ -1005,10 +1007,11 @@ static ScrStr *insp_view_property(ScrDyn *props, size_t k, double recurse, doubl
 static size_t insp_view_property_count(ScrDyn *props) {
   size_t count = 0;
   for (size_t k = 0; k < insp_view_property_slots(props); k++) {
-    if (k < props->v.obj.len) count += props->v.obj.entries[k].enumerable;
+    if (k < scr_dyn_obj_count(props)) count += scr_dyn_obj_prop_at(props, k).enumerable;
     else {
-      const ScrDynEntry *ent = scr_dyn_own_symbol_entry(props, props->symbol_keys->v.arr.items[k - props->v.obj.len]);
-      count += ent && ent->enumerable;
+      ScrDynProp ent;
+      count += scr_dyn_own_symbol_prop(props, props->symbol_keys->v.arr.items[k - scr_dyn_obj_count(props)], &ent) &&
+               ent.enumerable;
     }
   }
   return count;
@@ -1157,11 +1160,11 @@ static ScrDyn *insp_error_cause(ScrError *e, bool *enumerable, ScrDyn **view) {
   ScrDyn *node = scr_errdyn_view_of(e);
   if (node != NULL && node->kind == SCR_DYN_TYPED_REF) node = *view = scr_dyn_typed_ref_materialize(node);
   if (node != NULL && node->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < node->v.obj.len; i++) {
-      ScrDynEntry *ent = &node->v.obj.entries[i];
-      if (ent->key_len == 5 && memcmp(ent->key, "cause", 5) == 0) {
-        *enumerable = ent->enumerable;
-        return ent->value;
+    for (size_t i = 0; i < scr_dyn_obj_count(node); i++) {
+      ScrDynProp ent = scr_dyn_obj_prop_at(node, i);
+      if (ent.key_len == 5 && memcmp(ent.key, "cause", 5) == 0) {
+        *enumerable = ent.enumerable;
+        return ent.value;
       }
     }
     return NULL;
@@ -1176,9 +1179,9 @@ static ScrDyn *insp_error_cause(ScrError *e, bool *enumerable, ScrDyn **view) {
  * other non-enumerable property of an error. */
 bool scr_insp_error_bag_has_properties(ScrDyn *bag) {
   if (bag == NULL || bag->kind != SCR_DYN_OBJ) return false;
-  for (size_t i = 0; i < bag->v.obj.len; i++) {
-    const ScrDynEntry *ent = &bag->v.obj.entries[i];
-    if (ent->enumerable && !(ent->key_len == 5 && memcmp(ent->key, "cause", 5) == 0)) return true;
+  for (size_t i = 0; i < scr_dyn_obj_count(bag); i++) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(bag, i);
+    if (ent.enumerable && !(ent.key_len == 5 && memcmp(ent.key, "cause", 5) == 0)) return true;
   }
   return false;
 }
@@ -1282,7 +1285,7 @@ ScrStr *scr_insp_error(ScrError *e, double recurse, double depth) {
  * (/^[a-zA-Z_][a-zA-Z_0-9]*$/, '__proto__' excepted), quoted otherwise. */
 /* util.inspect's text for an accessor property: [Getter], [Setter] or
  * [Getter/Setter], by which of the two are functions. +1. */
-static ScrStr *insp_accessor_tag(const ScrDynEntry *ent) {
+static ScrStr *insp_accessor_tag(const ScrDynProp *ent) {
   bool get = ent->getter && ent->getter->kind == SCR_DYN_FUNC;
   bool set = ent->setter && ent->setter->kind == SCR_DYN_FUNC;
   const char *text = get && set ? "[Getter/Setter]" : get ? "[Getter]" : set ? "[Setter]" : "undefined";
@@ -1371,12 +1374,12 @@ static ScrDyn *insp_assertion_ellipsis(ScrDyn *value) {
  * Node's `{ ... }` tail. */
 /* An own non-enumerable entry of the error encoding, NULL when absent or
  * enumerable (an enumerable one prints with the other own keys). */
-static const ScrDynEntry *insp_error_hidden_entry(const ScrDyn *d, const char *key, size_t len) {
-  for (size_t i = 0; i < d->v.obj.len; i++) {
-    const ScrDynEntry *ent = &d->v.obj.entries[i];
-    if (ent->key_len == len && memcmp(ent->key, key, len) == 0) return ent->enumerable ? NULL : ent;
-  }
-  return NULL;
+static const ScrDynProp *insp_error_hidden_entry(const ScrDyn *d, const char *key, size_t len,
+                                                 ScrDynProp *out) {
+  size_t i = scr_dyn_obj_index_of(d, key, len);
+  if (i == SIZE_MAX) return NULL;
+  *out = scr_dyn_obj_prop_at(d, i);
+  return out->enumerable ? NULL : out;
 }
 
 static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
@@ -1390,19 +1393,20 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
                    memcmp(name->v.str->data, "AssertionError", 14) == 0;
   double value_depth = assertion ? recurse : depth;
   size_t extra = 0;
-  for (size_t i = 0; i < d->v.obj.len; i++) {
-    ScrDynEntry *ent = &d->v.obj.entries[i];
-    if (!ent->enumerable) continue;
-    if ((ent->key_len == 4 && memcmp(ent->key, "name", 4) == 0) ||
-        (ent->key_len == 7 && memcmp(ent->key, "message", 7) == 0) ||
-        (ent->key_len == 5 && memcmp(ent->key, "stack", 5) == 0))
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
+    if (!ent.enumerable) continue;
+    if ((ent.key_len == 4 && memcmp(ent.key, "name", 4) == 0) ||
+        (ent.key_len == 7 && memcmp(ent.key, "message", 7) == 0) ||
+        (ent.key_len == 5 && memcmp(ent.key, "stack", 5) == 0))
       continue;
     extra++;
   }
   /* formatError shows a non-enumerable `cause`, and an AggregateError's
    * `errors` array, after the enumerable keys: `[cause]`, `[errors]`. */
-  const ScrDynEntry *cause = insp_error_hidden_entry(d, "cause", 5);
-  const ScrDynEntry *errors = insp_error_hidden_entry(d, "errors", 6);
+  ScrDynProp cause_prop, errors_prop;
+  const ScrDynProp *cause = insp_error_hidden_entry(d, "cause", 5, &cause_prop);
+  const ScrDynProp *errors = insp_error_hidden_entry(d, "errors", 6, &errors_prop);
   if (errors && errors->value->kind != SCR_DYN_ARR) errors = NULL;
   extra += (cause != NULL) + (errors != NULL);
   InspBuf base = {0};
@@ -1426,20 +1430,20 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
   if (extra == 0) return base_str;
   scr_insp_begin(recurse + 1);
   scr_insp_seen_push(d);
-  for (size_t i = 0; i < d->v.obj.len; i++) {
-    ScrDynEntry *ent = &d->v.obj.entries[i];
-    if (!ent->enumerable) continue;
-    if ((ent->key_len == 4 && memcmp(ent->key, "name", 4) == 0) ||
-        (ent->key_len == 7 && memcmp(ent->key, "message", 7) == 0) ||
-        (ent->key_len == 5 && memcmp(ent->key, "stack", 5) == 0))
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
+    if (!ent.enumerable) continue;
+    if ((ent.key_len == 4 && memcmp(ent.key, "name", 4) == 0) ||
+        (ent.key_len == 7 && memcmp(ent.key, "message", 7) == 0) ||
+        (ent.key_len == 5 && memcmp(ent.key, "stack", 5) == 0))
       continue;
-    bool shortened = assertion && ((ent->key_len == 6 && memcmp(ent->key, "actual", 6) == 0) ||
-                                   (ent->key_len == 8 && memcmp(ent->key, "expected", 8) == 0));
-    ScrDyn *shown = shortened ? insp_assertion_ellipsis(ent->value) : scr_dyn_retain(ent->value);
+    bool shortened = assertion && ((ent.key_len == 6 && memcmp(ent.key, "actual", 6) == 0) ||
+                                   (ent.key_len == 8 && memcmp(ent.key, "expected", 8) == 0));
+    ScrDyn *shown = shortened ? insp_assertion_ellipsis(ent.value) : scr_dyn_retain(ent.value);
     ScrStr *val = scr_insp_dyn(shown, recurse + 1, value_depth);
     scr_dyn_release(shown);
     InspBuf eb = {0};
-    insp_key_into(&eb, ent->key, ent->key_len);
+    insp_key_into(&eb, ent.key, ent.key_len);
     ib_cstr(&eb, ": ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(val);
@@ -1447,7 +1451,7 @@ static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
     scr_insp_entry(entry, false);
     scr_str_release(entry);
   }
-  const ScrDynEntry *hidden[] = {cause, errors};
+  const ScrDynProp *hidden[] = {cause, errors};
   for (size_t i = 0; i < 2; i++) {
     if (!hidden[i]) continue;
     ScrStr *val = scr_insp_dyn(hidden[i]->value, recurse + 1, value_depth);
@@ -1690,9 +1694,9 @@ static ScrStr *scr_insp_dyn_collection(ScrDyn *d, double recurse, double depth, 
 
 /* An own symbol-keyed property of `d` (borrowed) this render shows, or
  * NULL: enumerable ones, and under showHidden the non-enumerable ones too. */
-static ScrDynEntry *scr_insp_symbol_entry(ScrDyn *d, size_t i) {
-  ScrDynEntry *ent = scr_dyn_own_symbol_entry(d, d->symbol_keys->v.arr.items[i]);
-  return ent && (ent->enumerable || g_show_hidden) ? ent : NULL;
+static bool scr_insp_symbol_entry(ScrDyn *d, size_t i, ScrDynProp *out) {
+  return scr_dyn_own_symbol_prop(d, d->symbol_keys->v.arr.items[i], out) &&
+         (out->enumerable || g_show_hidden);
 }
 
 /* An ordinary object: `Name { key: value }` with its constructor name
@@ -1700,15 +1704,21 @@ static ScrDynEntry *scr_insp_symbol_entry(ScrDyn *d, size_t i) {
  * enumerable string keys, then the own enumerable symbol keys. */
 /* An own entry this render shows: enumerable ones, and under showHidden
  * the non-enumerable ones too (never the encoding's `%` markers). */
-static bool insp_obj_shows(const ScrDynEntry *ent) {
+static bool insp_obj_shows(const ScrDynProp *ent) {
   return ent->enumerable || (g_show_hidden && !(ent->key_len && ent->key[0] == '%'));
 }
 
 static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char *cls) {
   size_t shown = 0;
-  for (size_t i = 0; i < d->v.obj.len; i++) shown += insp_obj_shows(&d->v.obj.entries[i]);
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
+    shown += insp_obj_shows(&ent);
+  }
   size_t nsymbols = d->symbol_keys ? d->symbol_keys->v.arr.len : 0;
-  for (size_t i = 0; i < nsymbols; i++) shown += scr_insp_symbol_entry(d, i) != NULL;
+  for (size_t i = 0; i < nsymbols; i++) {
+    ScrDynProp ent;
+    shown += scr_insp_symbol_entry(d, i, &ent);
+  }
   if (shown == 0) {
     if (cls) return scr_insp_class_tag(cls, " {}");
     return d->null_proto ? scr_str_new("[Object: null prototype] {}", 27)
@@ -1720,17 +1730,17 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
                          : insp_styled_lit("[Object]", 8, INSP_SPECIAL);
   }
   scr_insp_begin(recurse + 1);
-  for (size_t i = 0; i < d->v.obj.len; i++) {
-    ScrDynEntry *ent = &d->v.obj.entries[i];
-    if (!insp_obj_shows(ent)) continue;
-    ScrStr *val = ent->accessor ? insp_accessor_tag(ent) : scr_insp_dyn(ent->value, recurse + 1, depth);
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
+    if (!insp_obj_shows(&ent)) continue;
+    ScrStr *val = ent.accessor ? insp_accessor_tag(&ent) : scr_insp_dyn(ent.value, recurse + 1, depth);
     InspBuf eb = {0};
-    if (ent->enumerable) {
-      insp_key_into(&eb, ent->key, ent->key_len);
+    if (ent.enumerable) {
+      insp_key_into(&eb, ent.key, ent.key_len);
     } else {
       /* formatProperty's hidden key: the key's rendering in brackets. */
       ib_char(&eb, '[');
-      insp_key_into(&eb, ent->key, ent->key_len);
+      insp_key_into(&eb, ent.key, ent.key_len);
       ib_char(&eb, ']');
     }
     ib_cstr(&eb, ": ");
@@ -1742,8 +1752,9 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
     if (scr_exc_pending()) break;
   }
   for (size_t i = 0; i < nsymbols; i++) {
-    ScrDynEntry *ent = scr_insp_symbol_entry(d, i);
-    if (!ent) continue;
+    ScrDynProp found;
+    if (!scr_insp_symbol_entry(d, i, &found)) continue;
+    const ScrDynProp *ent = &found;
     ScrStr *key = scr_insp_dyn(d->symbol_keys->v.arr.items[i], recurse + 1, depth);
     ScrStr *val = ent->accessor ? insp_accessor_tag(ent) : scr_insp_dyn(ent->value, recurse + 1, depth);
     InspBuf eb = {0};
@@ -2063,7 +2074,7 @@ static ScrDyn *insp_inspect_value(void) {
       ScrDyn *set = scr_dyn_new_func(scr_closure_new((void *)members[i], 0), insp_inspect_member_call, 1,
                                      "native:function", members[i]);
       scr_dyn_obj_set_accessor(table, members[i], strlen(members[i]), get, set);
-      table->v.obj.entries[table->v.obj.len - 1].enumerable = false;
+      scr_dyn_obj_set_attrs_at(table, scr_dyn_obj_count(table) - 1, true, false, true);
     }
     scr_dyn_release(table);
   }
@@ -2100,15 +2111,15 @@ static ScrDyn *insp_user_options(double depth) {
   insp_opt_set(options, "getters", scr_dyn_new_bool(false));
   insp_opt_set(options, "numericSeparator", scr_dyn_new_bool(false));
   if (g_user_options && g_user_options->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < g_user_options->v.obj.len; i++) {
-      const ScrDynEntry *ent = &g_user_options->v.obj.entries[i];
-      if (!ent->enumerable) continue;
-      ScrDyn *value = scr_dyn_obj_read((ScrDyn *)g_user_options, ent->key, ent->key_len);
+    for (size_t i = 0; i < scr_dyn_obj_count(g_user_options); i++) {
+      ScrDynProp ent = scr_dyn_obj_prop_at(g_user_options, i);
+      if (!ent.enumerable) continue;
+      ScrDyn *value = scr_dyn_obj_read((ScrDyn *)g_user_options, ent.key, ent.key_len);
       if (!value) {
         scr_dyn_release(options);
         return NULL;
       }
-      scr_dyn_obj_set(options, ent->key, ent->key_len, value);
+      scr_dyn_obj_set(options, ent.key, ent.key_len, value);
     }
   }
   return options;
@@ -2343,9 +2354,12 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
   }
   size_t shown = 0;
   if (table && table->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < table->v.obj.len; i++) shown += table->v.obj.entries[i].enumerable;
+    for (size_t i = 0; i < scr_dyn_obj_count(table); i++) shown += scr_dyn_obj_prop_at(table, i).enumerable;
     size_t nsymbols = table->symbol_keys ? table->symbol_keys->v.arr.len : 0;
-    for (size_t i = 0; i < nsymbols; i++) shown += scr_insp_symbol_entry(table, i) != NULL;
+    for (size_t i = 0; i < nsymbols; i++) {
+      ScrDynProp ent;
+      shown += scr_insp_symbol_entry(table, i, &ent);
+    }
   }
   if (shown == 0) {
     scr_dyn_release(table);
@@ -2498,7 +2512,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
        * own `length` comes first, and non-enumerable properties show too. */
       const ScrDyn *props = d->v.arr.properties;
       size_t nprops = 0;
-      for (size_t i = 0; props && i < props->v.obj.len; i++) nprops += insp_obj_shows(&props->v.obj.entries[i]);
+      for (size_t i = 0; props && i < scr_dyn_obj_count(props); i++) {
+        ScrDynProp ent = scr_dyn_obj_prop_at(props, i);
+        nprops += insp_obj_shows(&ent);
+      }
       /* An instance of a class that extends Array: Node's `Name(length) `
        * prefix (scr_arr_copy_metadata names the class). */
       const char *cls = props ? props->v.obj.class_name : NULL;
@@ -2562,15 +2579,15 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_str_release(s);
         entries++;
       }
-      for (size_t k = 0; props && k < props->v.obj.len; k++) {
-        const ScrDynEntry *ent = &props->v.obj.entries[k];
-        if (!insp_obj_shows(ent)) continue;
-        ScrStr *val = ent->accessor ? insp_accessor_tag(ent) : scr_insp_dyn(ent->value, recurse + 1, depth);
+      for (size_t k = 0; props && k < scr_dyn_obj_count(props); k++) {
+        ScrDynProp ent = scr_dyn_obj_prop_at(props, k);
+        if (!insp_obj_shows(&ent)) continue;
+        ScrStr *val = ent.accessor ? insp_accessor_tag(&ent) : scr_insp_dyn(ent.value, recurse + 1, depth);
         InspBuf eb = {0};
         /* formatProperty's hidden key: the key's rendering in brackets. */
-        if (!ent->enumerable) ib_char(&eb, '[');
-        insp_key_into(&eb, ent->key, ent->key_len);
-        if (!ent->enumerable) ib_char(&eb, ']');
+        if (!ent.enumerable) ib_char(&eb, '[');
+        insp_key_into(&eb, ent.key, ent.key_len);
+        if (!ent.enumerable) ib_char(&eb, ']');
         ib_cstr(&eb, ": ");
         ib_bytes(&eb, val->data, val->len);
         scr_str_release(val);
@@ -2753,8 +2770,8 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_str_release(iso);
         ScrStr *prefix = ib_take(&head);
         bool fields = false;
-        for (size_t i = 0; i < materialized->v.obj.len && !fields; i++)
-          fields = materialized->v.obj.entries[i].enumerable;
+        for (size_t i = 0; i < scr_dyn_obj_count(materialized) && !fields; i++)
+          fields = scr_dyn_obj_prop_at(materialized, i).enumerable;
         if (!fields || recurse > depth) {
           scr_dyn_release(materialized);
           return prefix;
@@ -3323,12 +3340,12 @@ bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o
         "maxArrayLength", "maxStringLength", "breakLength", "compact", "sorted",
         "getters",    "numericSeparator", "stylize",
     };
-    for (size_t i = 0; i < options->v.obj.len && !o->user_options; i++) {
-      const ScrDynEntry *ent = &options->v.obj.entries[i];
-      if (!ent->enumerable) continue;
+    for (size_t i = 0; i < scr_dyn_obj_count(options) && !o->user_options; i++) {
+      ScrDynProp ent = scr_dyn_obj_prop_at(options, i);
+      if (!ent.enumerable) continue;
       bool read = false;
       for (size_t k = 0; k < sizeof known / sizeof *known && !read; k++)
-        read = ent->key_len == strlen(known[k]) && memcmp(ent->key, known[k], ent->key_len) == 0;
+        read = ent.key_len == strlen(known[k]) && memcmp(ent.key, known[k], ent.key_len) == 0;
       if (!read) o->user_options = options;
     }
   }
@@ -3436,10 +3453,10 @@ static ScrStr *insp_table_cell(ScrDyn *v) {
       }
       const char *base = v->null_proto ? "[Object: null prototype]" : "Object";
       size_t n = 0;
-      for (size_t i = 0; i < v->v.obj.len; i++) {
-        ScrDynEntry *ent = &v->v.obj.entries[i];
-        if (!ent->enumerable) continue;
-        if (ent->accessor) {
+      for (size_t i = 0; i < scr_dyn_obj_count(v); i++) {
+        ScrDynProp ent = scr_dyn_obj_prop_at(v, i);
+        if (!ent.enumerable) continue;
+        if (ent.accessor) {
           static const char message[] = "console.table cells holding accessor properties have no lowering";
           scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
           return scr_str_new("", 0);
@@ -3463,12 +3480,12 @@ static ScrStr *insp_table_cell(ScrDyn *v) {
       }
       ScrStr *items[2];
       size_t count = 0;
-      for (size_t i = 0; i < v->v.obj.len; i++) {
-        ScrDynEntry *ent = &v->v.obj.entries[i];
-        if (!ent->enumerable) continue;
-        ScrStr *val = scr_insp_dyn(ent->value, 1, 0);
+      for (size_t i = 0; i < scr_dyn_obj_count(v); i++) {
+        ScrDynProp ent = scr_dyn_obj_prop_at(v, i);
+        if (!ent.enumerable) continue;
+        ScrStr *val = scr_insp_dyn(ent.value, 1, 0);
         InspBuf eb = {0};
-        insp_key_into(&eb, ent->key, ent->key_len);
+        insp_key_into(&eb, ent.key, ent.key_len);
         ib_cstr(&eb, ": ");
         ib_str(&eb, val);
         scr_str_release(val);

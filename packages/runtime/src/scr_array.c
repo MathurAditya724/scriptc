@@ -5982,8 +5982,8 @@ void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
     target->v.arr.properties->v.obj.class_name = cls->name;
     ScrDyn *fields = scr_arr_class_fields(a);
     if (fields) {
-      for (size_t i = 0; i < fields->v.obj.len; i++)
-        scr_dyn_copy_entry(target, fields, &fields->v.obj.entries[i]);
+      for (size_t i = 0; i < scr_dyn_obj_count(fields); i++)
+        scr_dyn_copy_prop_at(target, fields, i);
       scr_dyn_release(fields);
     }
     return;
@@ -5994,7 +5994,7 @@ void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
     return;
   metadata = SCR_AX(a)->metadata;
   if (!metadata) return;
-  for (size_t i = 0; i < metadata->v.obj.len; i++) scr_dyn_copy_entry(target, metadata, &metadata->v.obj.entries[i]);
+  for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) scr_dyn_copy_prop_at(target, metadata, i);
 }
 
 ScrArr *scr_arr_named_keys(ScrArr *a) {
@@ -6008,9 +6008,9 @@ ScrArr *scr_arr_named_keys(ScrArr *a) {
     scr_arr_push_ref(keys, scr_str_new(x->props[i].key, x->props[i].key_len));
   ScrDyn *fields = scr_arr_class_fields(a);
   if (fields) {
-    for (size_t i = 0; i < fields->v.obj.len; i++) {
-      const ScrDynEntry *entry = &fields->v.obj.entries[i];
-      if (entry->enumerable) scr_arr_push_ref(keys, scr_str_new(entry->key, entry->key_len));
+    for (size_t i = 0; i < scr_dyn_obj_count(fields); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(fields, i);
+      if (entry.enumerable) scr_arr_push_ref(keys, scr_str_new(entry.key, entry.key_len));
     }
     scr_dyn_release(fields);
     return keys;
@@ -6022,10 +6022,10 @@ ScrArr *scr_arr_named_keys(ScrArr *a) {
     return keys;
   }
   if (!metadata || metadata->kind != SCR_DYN_OBJ) return keys;
-  for (size_t i = 0; i < metadata->v.obj.len; i++) {
-    const ScrDynEntry *entry = &metadata->v.obj.entries[i];
-    if (!entry->enumerable || scr_arr_prop_index(a, entry->key, entry->key_len) != SIZE_MAX) continue;
-    scr_arr_push_ref(keys, scr_str_new(entry->key, entry->key_len));
+  for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) {
+    ScrDynProp entry = scr_dyn_obj_prop_at(metadata, i);
+    if (!entry.enumerable || scr_arr_prop_index(a, entry.key, entry.key_len) != SIZE_MAX) continue;
+    scr_arr_push_ref(keys, scr_str_new(entry.key, entry.key_len));
   }
   return keys;
 }
@@ -6038,9 +6038,9 @@ bool scr_arr_has_named_key(ScrArr *a, ScrStr *key) {
   if (metadata && metadata->kind == SCR_DYN_HANDLE && metadata->v.handle.tag == SCR_DYNH_MATCH_SOURCE)
     return true; /* index, input and groups, the only keys a pending result lists */
   if (!metadata || metadata->kind != SCR_DYN_OBJ) return false;
-  for (size_t i = 0; i < metadata->v.obj.len; i++) {
-    const ScrDynEntry *entry = &metadata->v.obj.entries[i];
-    if (entry->key_len == key->len && memcmp(entry->key, key->data, key->len) == 0) return true;
+  for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) {
+    ScrDynProp entry = scr_dyn_obj_prop_at(metadata, i);
+    if (entry.key_len == key->len && memcmp(entry.key, key->data, key->len) == 0) return true;
   }
   return false;
 }
@@ -6067,20 +6067,22 @@ void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
     from->prop_cap = cap;
   }
   ScrDyn *named = view && view->kind == SCR_DYN_ARR ? view->v.arr.properties : NULL;
-  if (!named || named->v.obj.len == 0) return;
+  if (!named || scr_dyn_obj_count(named) == 0) return;
   /* The view's numeric properties are copies of the native ones (every
    * write to them goes to the native array), so only the others move. */
   bool numeric = false;
-  for (size_t i = 0; i < named->v.obj.len && !numeric; i++) {
+  for (size_t i = 0; i < scr_dyn_obj_count(named) && !numeric; i++) {
     double number;
-    numeric = scr_arr_numeric_key(named->v.obj.entries[i].key, named->v.obj.entries[i].key_len, &number);
+    size_t key_len;
+    const char *key = scr_dyn_obj_key_at(named, i, &key_len);
+    numeric = scr_arr_numeric_key(key, key_len, &number);
   }
   if (numeric) {
     ScrDyn *rest = scr_dyn_new_obj();
-    for (size_t i = 0; i < named->v.obj.len; i++) {
-      const ScrDynEntry *entry = &named->v.obj.entries[i];
+    for (size_t i = 0; i < scr_dyn_obj_count(named); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(named, i);
       double number;
-      if (!scr_arr_numeric_key(entry->key, entry->key_len, &number)) scr_dyn_copy_entry(rest, named, entry);
+      if (!scr_arr_numeric_key(entry.key, entry.key_len, &number)) scr_dyn_copy_prop_at(rest, named, i);
     }
     named = rest;
   } else {
@@ -6088,7 +6090,7 @@ void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
   }
   ScrArrExt *x = scr_arr_ext(a);
   ScrDyn *old = x->metadata;
-  x->metadata = named->v.obj.len ? named : NULL;
+  x->metadata = scr_dyn_obj_count(named) ? named : NULL;
   if (!x->metadata) scr_dyn_release(named);
   scr_dyn_release(old);
 }

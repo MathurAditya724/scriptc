@@ -7,7 +7,7 @@ import { expect, test } from "vitest";
 
 const exec = promisify(execFile);
 
-test("dynamic-tier shapes stay within the shape and key-byte budgets, and absent reads are cached", async () => {
+test("layouts stay within the layout and key-byte budgets, and dynamic-tier absent reads are cached", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "scriptc-js-object-"));
   const src = import.meta.dirname;
   const binary = join(scratch, "js-object");

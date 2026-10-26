@@ -2047,10 +2047,10 @@ void scr_http_res_write_head_dyn(ScrHttpRes *r, double status, const ScrDyn *hea
     scr_dyn_arg_type_fail("headers", "an instance of Object", headers);
     return;
   }
-  for (size_t i = 0; i < headers->v.obj.len; i++) {
-    const ScrDynEntry *e = &headers->v.obj.entries[i];
-    const ScrDyn *v = e->value;
-    ScrStr *name = scr_str_new(e->key, e->key_len);
+  for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+    const ScrDyn *v = e.value;
+    ScrStr *name = scr_str_new(e.key, e.key_len);
     if (v->kind == SCR_DYN_STR) {
       scr_http_res_set_header(r, name, v->v.str);
     } else if (v->kind == SCR_DYN_NUM) {
@@ -6200,10 +6200,10 @@ static bool scr_http_dynh_req_set(void *h, const char *key, size_t key_len, cons
  * consecutive same-name pairs). Numbers format through String(n). NULL =
  * a value this surface cannot honestly carry (exception pending). */
 static ScrArr *scr_http_dynh_pairs(const ScrDyn *headers) {
-  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, headers->v.obj.len * 2);
-  for (size_t i = 0; i < headers->v.obj.len; i++) {
-    const ScrDynEntry *e = &headers->v.obj.entries[i];
-    const ScrDyn *v = e->value;
+  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, scr_dyn_obj_count(headers) * 2);
+  for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+    const ScrDyn *v = e.value;
     size_t reps = v->kind == SCR_DYN_ARR ? v->v.arr.len : 1;
     for (size_t k = 0; k < reps; k++) {
       const ScrDyn *one = v->kind == SCR_DYN_ARR ? v->v.arr.items[k] : v;
@@ -6218,7 +6218,7 @@ static ScrArr *scr_http_dynh_pairs(const ScrDyn *headers) {
         scr_jb_puts(&b, "Invalid value \"");
         scr_jb_puts(&b, one->kind == SCR_DYN_UNDEF ? "undefined" : "object");
         scr_jb_puts(&b, "\" for header \"");
-        for (size_t c = 0; c < e->key_len; c++) scr_jb_putc(&b, e->key[c]);
+        for (size_t c = 0; c < e.key_len; c++) scr_jb_putc(&b, e.key[c]);
         scr_jb_putc(&b, '"');
         ScrStr *msg = scr_jb_finish(&b);
         scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_HTTP_INVALID_HEADER_VALUE");
@@ -6226,7 +6226,7 @@ static ScrArr *scr_http_dynh_pairs(const ScrDyn *headers) {
         scr_arr_release(pairs);
         return NULL;
       }
-      scr_arr_push_ref(pairs, scr_str_new(e->key, e->key_len));
+      scr_arr_push_ref(pairs, scr_str_new(e.key, e.key_len));
       scr_arr_push_ref(pairs, vs);
     }
   }
@@ -6945,8 +6945,8 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
       scr_dyn_arr_push(arr, item);
     }
     /* the list is most recent first: reverse each array into Node's order */
-    for (size_t i = 0; i < obj->v.obj.len; i++) {
-      ScrDyn *arr = obj->v.obj.entries[i].value;
+    for (size_t i = 0; i < scr_dyn_obj_count(obj); i++) {
+      ScrDyn *arr = scr_dyn_obj_value_at(obj, i);
       for (size_t l = 0, r = arr->v.arr.len ? arr->v.arr.len - 1 : 0; l < r; l++, r--) {
         ScrDyn *t = arr->v.arr.items[l];
         arr->v.arr.items[l] = arr->v.arr.items[r];
@@ -7449,13 +7449,13 @@ bool scr_http_req_opts_read(const ScrDyn *opts, bool secure, const char *api, Sc
     headers = headers_view;
   }
   if (headers != NULL && headers->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < headers->v.obj.len; i++) {
-      const ScrDynEntry *e = &headers->v.obj.entries[i];
-      ScrStr *name = scr_str_new(e->key, e->key_len);
+    for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+      ScrStr *name = scr_str_new(e.key, e.key_len);
       ScrStr *label = scr_str_new("", 0);
       scr_http_validate_header_name(name, label);
       scr_str_release(label);
-      const ScrDyn *v = e->value;
+      const ScrDyn *v = e.value;
       if (!scr_exc_pending()) {
         if (v->kind == SCR_DYN_ARR) {
           for (size_t k = 0; k < v->v.arr.len && !scr_exc_pending(); k++)
