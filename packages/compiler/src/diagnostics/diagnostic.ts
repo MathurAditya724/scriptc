@@ -1,4 +1,5 @@
-/* Diagnostic codes live in ONE registry. Message strings are never inlined
+/* Diagnostics live in ONE registry, and every code is claimed by its row in
+ * codes.ts (DIAGNOSTIC_CODES). Message strings are never inlined
  * at rejection sites — every "not supported yet" the compiler can produce is
  * enumerable here, which is the seed of the future coverage report
  * ("N constructs prevented static compilation, grouped by code").
@@ -68,6 +69,9 @@
  *            declaration types were dropped (SC6102), and shape inference's
  *            overlay report: what it typed and how many inferred facts the
  *            build checks (SC6103, frontend/shape-inference)
+ *   SC7xxx  contract types (@scriptc/types): a NoThrow, Int32, Immutable,
+ *            Acyclic or ProgramLifetime contract that does not hold or
+ *            cannot be checked (SC7001–SC7008, contracts/check.ts)
  *   SC8xxx  Node islands: packages and modules outside the native subset
  *            that run (or, in report-only mode, would run) in a Node
  *            island — unknown project configuration (SC8004), a package
@@ -82,6 +86,7 @@
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
+import type { DiagnosticCode } from "./codes.js";
 
 /* Internal prioritization buckets. NEVER rendered to users — user-facing
  * output says only what is and isn't supported (plus hints); scheduling is
@@ -89,7 +94,7 @@ import type { SrcLoc } from "../ir/ir.js";
 export type Milestone = "M1" | "M2" | "M3" | "M4" | "M5" | "later";
 
 export interface ScrDiagnostic {
-  code: `SC${number}`;
+  code: DiagnosticCode;
   message: string;
   loc: SrcLoc;
   milestone?: Milestone;
@@ -771,7 +776,7 @@ export const FENCE_CODES: Record<string, { name: string; status: "unsupported" }
 };
 
 export function unsupportedDiag(
-  code: keyof typeof UNSUPPORTED & `SC${number}`,
+  code: keyof typeof UNSUPPORTED & DiagnosticCode,
   loc: SrcLoc,
   featureOverride?: string,
   hintOverride?: string,

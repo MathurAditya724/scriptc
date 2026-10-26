@@ -129,17 +129,30 @@ typedef enum {
  * lowerings (the http/net receiver surface); new kinds join by adding a
  * tag + an ops registration in their owning unit.
  *
- * SCR_DYNH_TAGS is the one list of tags: X(NAME, value) declares
- * SCR_DYNH_NAME. Rows are sorted by name and every value is explicit and
- * permanent: the LLVM backend hardcodes some of them (DYN_HANDLE_TAG_NUM in
- * packages/compiler/src/backend/llvm/dyn.ts). A new tag goes in its sorted
- * place with the next value after the largest one in use, below
- * SCR_DYNH_CAPACITY. Two changes that add tags therefore edit different
- * lines and merge without a textual conflict; when they picked the same
- * value, scr_dynh_tags_distinct below has a duplicate case label and every
- * runtime unit fails to compile, and a value at or above the capacity
- * fails its _Static_assert. packages/compiler/src/backend/llvm/dyn-handle-tags.test.ts
- * checks the same properties and that the backend's numbers match. */
+ * Two lists declare the tags. SCR_DYNH_TAGS holds the PINNED tags: X(NAME,
+ * value) declares SCR_DYNH_NAME with an explicit, permanent value, rows
+ * sorted by name. SCR_DYNH_NEW_TAGS holds tags added since the last pin, by
+ * NAME ONLY: Y(NAME), rows sorted by name. A new tag goes in its sorted place
+ * in SCR_DYNH_NEW_TAGS, so a branch never picks a number and two branches
+ * that add tags never collide; the enum numbers the new tags after the
+ * largest pinned value, in list order. Values are an ABI only between the
+ * compiler and the runtime pack of one build, so a new tag added before
+ * another one in name order may renumber it; nothing outside the build
+ * depends on it.
+ *
+ * Pin a new tag (move it to SCR_DYNH_TAGS with the value it has now: the
+ * largest pinned value + 1 for the first row of SCR_DYNH_NEW_TAGS, + 2 for
+ * the second, and so on) only when the LLVM backend needs its number: DYN_HANDLE_TAG_NUM and
+ * TEXT_CODEC_TAG_NUM in packages/compiler/src/backend/llvm/dyn.ts may only
+ * name pinned tags. Pin the new tags in name order, oldest first, in a change
+ * of its own, so their values do not move.
+ *
+ * Checks: a pinned value at or above SCR_DYNH_CAPACITY fails its
+ * _Static_assert, two tags with one value are a duplicate case label in
+ * scr_dynh_tags_distinct below, and the header does not compile.
+ * dyn-handle-tags.test.ts checks the same properties by name, that both lists
+ * are sorted, that every value below the largest pinned one is a tag or
+ * listed in SCR_DYNH_UNASSIGNED, and that the backend's numbers match. */
 #define SCR_DYNH_TAGS(X) \
   X(ABORT_CONTROLLER, 15) /* native static-fetch AbortController */ \
   X(ABORT_SIGNAL, 8) /* native static-fetch AbortSignal */ \
@@ -194,7 +207,6 @@ typedef enum {
   X(NET_SERVER, 3) /* ScrNetServer — net.Server (http.Server rides the same handle) */ \
   X(NET_SOCKET, 2) /* ScrNetSocket — net.Socket */ \
   X(NET_SOCKET_ADDRESS, 47) /* net.SocketAddress (scr_net.c) */ \
-  X(NODE_ISLAND, 84) /* a Node island value (scr_node_island_handle.c) */ \
   X(PRIVATE_KEY, 65) /* node:crypto PrivateKeyObject (scr_pki.c) */ \
   X(PUBLIC_KEY, 66) /* node:crypto PublicKeyObject (scr_pki.c) */ \
   X(REGEXP, 26) /* native RegExp, shared compiled pattern */ \
@@ -226,24 +238,56 @@ typedef enum {
   X(WEB_WRITER, 75) /* WritableStreamDefaultWriter (scr_fetch.c) */ \
   X(WORKER, 35)
 
+/* Tags added since the last pin, by name only (see above). */
+#define SCR_DYNH_NEW_TAGS(Y) \
+  Y(NODE_ISLAND) /* a Node island value (scr_node_island_handle.c) */
+
+/* Values below the largest pinned one that no tag holds, each with the
+ * reason. Never reuse one without removing it here. */
+#define SCR_DYNH_UNASSIGNED(Z) \
+  Z(63) /* skipped: claimed by a branch that took another number */
+
+/* One member per pinned tag, sized value + 1, so its size is the largest
+ * pinned value + 1: the new tags are numbered from there. Never instantiated. */
+union ScrDynhPinnedSpan {
+#define SCR_DYNH_SPAN_ROW(name, value) char name[(value) + 1];
+  SCR_DYNH_TAGS(SCR_DYNH_SPAN_ROW)
+#undef SCR_DYNH_SPAN_ROW
+};
+
 typedef enum {
 #define SCR_DYNH_ENUM_ROW(name, value) SCR_DYNH_##name = value,
   SCR_DYNH_TAGS(SCR_DYNH_ENUM_ROW)
 #undef SCR_DYNH_ENUM_ROW
+  SCR_DYNH__LAST_PINNED = (int)sizeof(union ScrDynhPinnedSpan) - 1,
+#define SCR_DYNH_NEW_ROW(name) SCR_DYNH_##name,
+  SCR_DYNH_NEW_TAGS(SCR_DYNH_NEW_ROW)
+#undef SCR_DYNH_NEW_ROW
 } ScrDynHandleTag;
 
 #define SCR_DYNH_RANGE_ROW(name, value) \
   _Static_assert((value) < SCR_DYNH_CAPACITY, "SCR_DYNH_" #name " is not below SCR_DYNH_CAPACITY");
 SCR_DYNH_TAGS(SCR_DYNH_RANGE_ROW)
 #undef SCR_DYNH_RANGE_ROW
+#define SCR_DYNH_NEW_RANGE_ROW(name) \
+  _Static_assert(SCR_DYNH_##name < SCR_DYNH_CAPACITY, "SCR_DYNH_" #name " is not below SCR_DYNH_CAPACITY");
+SCR_DYNH_NEW_TAGS(SCR_DYNH_NEW_RANGE_ROW)
+#undef SCR_DYNH_NEW_RANGE_ROW
 
-/* Never called: a case label per tag, so two tags with one value are a
- * duplicate case value and the header does not compile. */
+/* Never called: a case label per tag and per unassigned value, so two tags
+ * with one value, or a tag on an unassigned value, are a duplicate case
+ * value and the header does not compile. */
 static inline void scr_dynh_tags_distinct(ScrDynHandleTag tag) {
-  switch (tag) {
+  switch ((int)tag) {
 #define SCR_DYNH_CASE_ROW(name, value) case SCR_DYNH_##name:
     SCR_DYNH_TAGS(SCR_DYNH_CASE_ROW)
 #undef SCR_DYNH_CASE_ROW
+#define SCR_DYNH_NEW_CASE_ROW(name) case SCR_DYNH_##name:
+    SCR_DYNH_NEW_TAGS(SCR_DYNH_NEW_CASE_ROW)
+#undef SCR_DYNH_NEW_CASE_ROW
+#define SCR_DYNH_UNASSIGNED_CASE_ROW(value) case value:
+    SCR_DYNH_UNASSIGNED(SCR_DYNH_UNASSIGNED_CASE_ROW)
+#undef SCR_DYNH_UNASSIGNED_CASE_ROW
     break;
   }
 }
