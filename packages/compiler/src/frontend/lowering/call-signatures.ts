@@ -1,3 +1,5 @@
+import { shapeOverlayAnnotated } from "../shape-inference/index.js";
+import { layoutReturnType } from "./structural-instances.js";
 import {
   typedArgumentsCandidate,
   typedArgumentsShapes,
@@ -181,6 +183,12 @@ export function checkedJsDocumentedParameter(
   lowerer: Lowerer,
   param: ts.ParameterDeclaration,
 ): boolean {
+  if (
+    param.parent !== undefined &&
+    shapeOverlayAnnotated(param.parent) &&
+    documentedParameter(param)
+  )
+    return true;
   return lowerer.checkedJsFile(ts.getSourceFileOfNode(param)) && documentedParameter(param);
 }
 
@@ -890,6 +898,7 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
     lowerer.badType(nameBlame, lowerer.typeOf(nameBlame));
   }
 
+  if (!isAsync && !isGenerator) returnType = layoutReturnType(lowerer, decl, returnType);
   const symbol = declSymbolOf(lowerer, decl);
   if (!symbol) lowerer.unsupported("SC1090", decl, "this function form");
   lowerer.fnSigsBySymbol.set(symbol, {

@@ -526,6 +526,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     }
   }
   emitter.scopes.push(fnScope);
+  emitter.beginArenaFunction(fn);
   // Stackful native fibers and native coroutine frames retain these frames
   // while suspended. The active exception context owns the chain, so
   // concurrent fibers isolate it.

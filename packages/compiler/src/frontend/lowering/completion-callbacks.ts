@@ -45,6 +45,7 @@ const COMPLETION_CALLBACKS: ReadonlyMap<IrLibFn, CallbackPosition> = new Map<
   ["http.requestDynCb", "last"],
   ["http.requestUrlCb", "last"],
   ["net.connectCb", 2],
+  ["net.connectPathCb", 2],
   ["net.listenCb", 2],
   ["net.listenOptsCb", 4],
   ["net.listenOptsReusePortCb", 5],

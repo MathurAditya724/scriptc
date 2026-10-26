@@ -70,12 +70,31 @@ test("package settings: strings and objects", () => {
   expect(c.packages.get("semver")?.run).toBe("auto");
   expect(c.packages.get("proper-lockfile")).toEqual({
     unloaded: false,
+    shapes: true,
     run: "node",
     evaluate: "lazy",
     share: "duplicate",
     marshal: "copy",
     schedule: "lockstep",
   });
+});
+
+test("shapes: false turns off the shape overlay for one package", () => {
+  const c = config({
+    packages: {
+      zod: { shapes: false },
+      effect: { shapes: true, run: "native" },
+      ms: { shapes: "no" },
+    },
+  });
+  expect(c.packages.get("zod")?.shapes).toBe(false);
+  expect(c.packages.get("zod")?.run).toBe("auto");
+  expect(c.packages.get("effect")?.shapes).toBe(true);
+  expect(c.packages.get("effect")?.run).toBe("native");
+  expect(c.packages.has("ms")).toBe(false);
+  expect(c.diagnostics.map((d) => d.message)).toEqual([
+    `package.json 'scriptc.packages.ms.shapes' must be true or false, not "no"`,
+  ]);
 });
 
 test("nodeIslands settings", () => {

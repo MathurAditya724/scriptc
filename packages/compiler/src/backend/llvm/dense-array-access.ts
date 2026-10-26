@@ -300,6 +300,9 @@ function loadState(host: LlvmEmitterContext, guard: DenseGuard): string {
   return state;
 }
 
+/** The ScrElemKind of double arrays (scr_array.h). */
+export const SCR_ELEM_F64 = 0;
+
 /** The ScrElemKind of int32 arrays (scr_array.h). */
 export const SCR_ELEM_I32 = 7;
 

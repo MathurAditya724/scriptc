@@ -3,6 +3,7 @@ import type { IrExpr, IrFunction, IrLocal, IrModule, IrStmt, IrType } from "../.
 import { mangleFunction } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { SCR_ARR_FIELD } from "./common.js";
+import { SCR_ELEM_F64, SCR_ELEM_I32 } from "./dense-array-access.js";
 
 /** Speculative integer clones of pure number-valued functions.
  *
@@ -1044,9 +1045,39 @@ class CloneEmitter {
     );
     B.line(`${data} = load ptr, ptr ${dataField}`);
     B.line(`${offset} = zext i32 ${index} to i64`);
+    // A number array keeps 8-byte doubles, or 4-byte int32 slots when it is
+    // proven to hold only int32s (SCR_ELEM_I32); any other storage bails.
+    const kindField = B.tmp();
+    const kind = B.tmp();
+    const isInt32 = B.tmp();
+    B.line(
+      `${kindField} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.elem}`,
+    );
+    B.line(`${kind} = load i8, ptr ${kindField}`);
+    B.line(`${isInt32} = icmp eq i8 ${kind}, ${SCR_ELEM_I32}`);
+    const int32Slots = B.newLabel("elem.i32");
+    const doubleSlots = B.newLabel("elem.f64");
+    const join = B.newLabel("elem.join");
+    B.condBr(isInt32, int32Slots, doubleSlots);
+    B.startBlock(int32Slots);
+    const int32Slot = B.tmp();
+    const int32 = B.tmp();
+    B.line(`${int32Slot} = getelementptr inbounds i32, ptr ${data}, i64 ${offset}`);
+    B.line(`${int32} = load i32, ptr ${int32Slot}`);
+    B.br(join);
+    B.startBlock(doubleSlots);
+    const isDouble = B.tmp();
+    B.line(`${isDouble} = icmp eq i8 ${kind}, ${SCR_ELEM_F64}`);
+    this.require(isDouble);
     B.line(`${slot} = getelementptr inbounds double, ptr ${data}, i64 ${offset}`);
     B.line(`${number} = load double, ptr ${slot}`);
-    return this.exactInt32(number);
+    const exact = this.exactInt32(number);
+    const doubleEnd = B.currentLabel();
+    B.br(join);
+    B.startBlock(join);
+    const value = B.tmp();
+    B.line(`${value} = phi i32 [ ${int32}, %${int32Slots} ], [ ${exact}, %${doubleEnd} ]`);
+    return value;
   }
 
   /** The int32 the double `number` equals bit for bit (never -0, NaN, a

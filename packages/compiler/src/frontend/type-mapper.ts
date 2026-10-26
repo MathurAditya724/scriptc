@@ -1287,6 +1287,18 @@ export interface TypeMapperCtx {
    * only after the strict mapping (and its bound-alias retry) returns null,
    * at every depth, so every occurrence of a degraded type maps alike. */
   degradedType?: (type: ts.Type) => IrType | null;
+  /** Localized failure's lenient mapping (Lowerer.lenientType): a nested
+   * component whose mapping fails maps to the checked dynamic instead, so a
+   * failing type keeps its outer shape with dynamic pieces. Only ever set
+   * on a throwaway context without memoization. */
+  lenient?: boolean;
+  /** With `lenient`: told each component the lenient mapping turned into
+   * the checked dynamic (Lowerer.lenientPieces). */
+  onLenientPiece?: (type: ts.Type) => void;
+  /** Canonical normalization's shadow mode (canon-map.ts): called after
+   * each successful top-level mapping; installed only under
+   * SCRIPTC_CANON_SHADOW=1. It records, and never changes a result. */
+  canonShadow?: (type: ts.Type, mapped: IrType, ctx: TypeMapperCtx) => void;
   /** GENERIC program classes (monomorphization by flow): the mapping of a
    * concrete instantiation reference (`Box<number>`) — the Lowerer
    * registers/reuses the instantiation (`Box%0`) and answers its object
@@ -1841,6 +1853,17 @@ function arrayClassBaseType(
 }
 
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const shadow = ctx.canonShadow;
+  if (shadow === undefined || mapTypeDepth !== 0) return mapTypeEntry(type, ctx);
+  // Shadow mode observes every successful top-level mapping, including the
+  // intrinsic primitives, local class values and memo hits that return
+  // before the mapping proper.
+  const mapped = mapTypeEntry(type, ctx);
+  if (mapped !== null) shadow(type, mapped, ctx);
+  return mapped;
+}
+
+function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
   // These intrinsic domains cannot depend on generic bindings, declaration
   // provenance, or recursive shape state. Enum literals retain the ordinary
@@ -1900,6 +1923,13 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         mapped = lenient;
         contextResolutions++;
       }
+    }
+    // Push-down (stage L3): in a lenient mapping, the smallest failing
+    // component is the checked dynamic.
+    if (mapped === null && ctx.lenient === true && !topLevel) {
+      mapped = DYN;
+      contextResolutions++;
+      ctx.onLenientPiece?.(type);
     }
     if (
       mapped !== null &&

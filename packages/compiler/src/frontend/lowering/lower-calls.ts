@@ -3,6 +3,7 @@ import {
   arrayClassReceiver,
   lowerArrayClassStaticCall,
 } from "./builtins/array-classes.js";
+import { structuralCallInstance } from "./structural-instances.js";
 import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
 import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
@@ -1360,6 +1361,16 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         sig &&
         !(jsSpreadArgs && spreadNeedsRuntimeArity(lowerer, sig.params, expr.arguments.nodes))
       ) {
+        const layout = structuralCallInstance(lowerer, expr, sig);
+        if (layout) {
+          return reconcileOverloadReturn(lowerer, expr, {
+            kind: "call",
+            callee: layout.name,
+            args: lowerer.completeArgs(expr.arguments.nodes, layout.params, loc, expr),
+            type: layout.returnType,
+            loc,
+          });
+        }
         lowerer.noteEdge(sig.name);
         const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
         const symbol = lowerer.resolveValueSymbol(expr.expression);

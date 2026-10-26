@@ -1,3 +1,4 @@
+import { shapeOverlayReport } from "./shape-inference/index.js";
 /** Shared frontend orchestration. Hosts supply a program loader so Node
  * and native callers use the same npm selection, preflight and lowering. */
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
@@ -801,8 +802,11 @@ function loadFrontend(
       });
       // The declaration-typed boundary's notes (SC6102) join the
       // performance warnings; they never fail a build.
-      const notes = finalLoad.declBoundaryNotes;
-      if (notes === undefined) return lowered;
+      const notes = [
+        ...(finalLoad.declBoundaryNotes ?? []),
+        ...shapeOverlayReport(finalLoad.entry.fileName),
+      ];
+      if (notes.length === 0) return lowered;
       return { ...lowered, performance: [...notes, ...(lowered.performance ?? [])] };
     },
     npmStatic: statuses,
