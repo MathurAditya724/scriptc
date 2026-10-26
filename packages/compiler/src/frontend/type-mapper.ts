@@ -1292,6 +1292,9 @@ export interface TypeMapperCtx {
    * failing type keeps its outer shape with dynamic pieces. Only ever set
    * on a throwaway context without memoization. */
   lenient?: boolean;
+  /** With `lenient`: told each component the lenient mapping turned into
+   * the checked dynamic (Lowerer.lenientPieces). */
+  onLenientPiece?: (type: ts.Type) => void;
   /** GENERIC program classes (monomorphization by flow): the mapping of a
    * concrete instantiation reference (`Box<number>`) — the Lowerer
    * registers/reuses the instantiation (`Box%0`) and answers its object
@@ -1881,6 +1884,7 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (mapped === null && ctx.lenient === true && !topLevel) {
       mapped = DYN;
       contextResolutions++;
+      ctx.onLenientPiece?.(type);
     }
     if (
       mapped !== null &&

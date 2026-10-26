@@ -488,12 +488,12 @@ test("a local or module global whose declared type does not compile becomes a dy
 });
 
 test("dynamic slots rank by their dynamic operations and name themselves in SC6101", () => {
-  const { coverage } = analyze(join(repoRoot, "tests/corpus/localized-failure-declarations.ts"));
+  const { coverage } = analyze(fixture("dynamic-slot-hot.ts"));
   const slots = coverage.dynamicSlots ?? [];
+  expect(slots.find((s) => s.name === "plugins")?.partial).toBe(true);
   expect(slots.some((s) => (s.operations ?? 0) > 0)).toBe(true);
-  expect(slots.find((s) => s.name === "tools")?.partial).toBe(true);
   const hot = coverage.performance?.find((d) => d.code === "SC6101");
-  expect(hot?.message).toContain("is a dynamic slot (declared `ToolDefinition`");
+  expect(hot?.message).toContain("`hook` is a dynamic piece of `Plugin[]` (declared `Hook`");
 });
 
 test("CLI: --tier and --explain-dynamic", () => {

@@ -27,7 +27,13 @@ export type UntypedCause =
   | { kind: "json-binding"; name: string }
   | { kind: "json" }
   | { kind: "javascript" }
-  | { kind: "slot"; name: string; declaredType: string };
+  | {
+      kind: "slot";
+      name: string;
+      declaredType: string;
+      /** The declared type this is a dynamic piece of (push-down). */
+      owner?: string;
+    };
 
 export function causePhrase(cause: UntypedCause): string {
   switch (cause.kind) {
@@ -40,7 +46,9 @@ export function causePhrase(cause: UntypedCause): string {
     case "javascript":
       return "untyped JavaScript file";
     case "slot":
-      return `\`${cause.name}\` is a dynamic slot (declared \`${cause.declaredType}\`, which does not compile)`;
+      return cause.owner === undefined
+        ? `\`${cause.name}\` is a dynamic slot (declared \`${cause.declaredType}\`, which does not compile)`
+        : `\`${cause.name}\` is a dynamic piece of \`${cause.owner}\` (declared \`${cause.declaredType}\`, which does not compile)`;
   }
 }
 

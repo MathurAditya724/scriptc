@@ -213,13 +213,26 @@ function identifierCause(lowerer: Lowerer, id: ts.Identifier, depth = 0): Untype
 function slotCause(lowerer: Lowerer, n: ts.Node): UntypedCause | null {
   if (lowerer.degradedTypes.size === 0) return null;
   if (!ts.isIdentifier(n) && !ts.isPropertyAccessExpression(n)) return null;
-  const type = lowerer.checker.getTypeAtLocation(n);
-  if (!lowerer.degradedTypes.has((type as { id?: number }).id ?? -1)) return null;
+  // The declared type of the binding or property, not its narrowed flow
+  // type (narrowing makes new checker types).
+  let symbol = lowerer.checker.getSymbolAtLocation(ts.isIdentifier(n) ? n : n.name);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  const type =
+    symbol !== undefined && (symbol.flags & VALUE_BINDING) !== 0
+      ? lowerer.checker.getTypeOfSymbol(symbol)
+      : lowerer.checker.getTypeAtLocation(n);
+  const id = (type as { id?: number }).id ?? -1;
+  // A whole degraded type, or a dynamic piece of a pushed-down one.
+  const owner = lowerer.lenientPieces.get(id);
+  if (!lowerer.degradedTypes.has(id) && owner === undefined) return null;
   const text = ts.getTextOfNode(n);
+  const declaredType = lowerer.checker.typeToString(type);
   return {
     kind: "slot",
     name: text.length > 40 ? `${text.slice(0, 37)}...` : text,
-    declaredType: lowerer.checker.typeToString(type),
+    declaredType,
+    ...(owner !== undefined && owner !== declaredType ? { owner } : {}),
   };
 }
 
@@ -420,7 +433,8 @@ export function dynamicSlotOperationCounts(
     for (const site of dynamicOperationSites(fn)) {
       const cause = causeAt(lowerer, site.loc);
       if (cause?.kind !== "slot") continue;
-      counts.set(cause.declaredType, (counts.get(cause.declaredType) ?? 0) + 1);
+      const slot = cause.owner ?? cause.declaredType;
+      counts.set(slot, (counts.get(slot) ?? 0) + 1);
     }
   }
   return counts;

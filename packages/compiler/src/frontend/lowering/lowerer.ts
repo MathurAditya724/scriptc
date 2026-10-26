@@ -3829,6 +3829,10 @@ export class Lowerer {
     number,
     { lenient: IrType | null; code: string; reason: string }
   >();
+  /** The components lenient mappings turned into the checked dynamic, by
+   * checker type id, with the declared type they are pieces of (SC6101
+   * causes and per-slot operation counts). */
+  readonly lenientPieces = new Map<number, string>();
   /** One frame per unit a commit point may retry: the pushed-down
    * (partial) degraded types its lowering mapped (withPartialHits). */
   readonly partialHits: Set<number>[] = [];
@@ -9643,7 +9647,16 @@ export class Lowerer {
    * that shape does not map. Throwaway context: nothing memoizes. */
   lenientType(type: ts.Type): IrType {
     const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
-    const mapped = mapType(type, { ...strict, lenient: true, canMemoizeType: () => false });
+    const owner = this.checker.typeToString(type);
+    const mapped = mapType(type, {
+      ...strict,
+      lenient: true,
+      canMemoizeType: () => false,
+      onLenientPiece: (piece) => {
+        const id = (piece as { id?: number }).id;
+        if (id !== undefined && !this.lenientPieces.has(id)) this.lenientPieces.set(id, owner);
+      },
+    });
     return mapped === null || mapped.kind === "void" ? DYN : mapped;
   }
 
