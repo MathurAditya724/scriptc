@@ -434,8 +434,8 @@ test("--explain-dynamic lists the type failures localized failure would turn int
   // The local already degrades (stage L1); fields and parameters are
   // listed as would-be slots with the uses each one rejects.
   expect(coverage.dynamicSlots?.map((s) => [s.slot, s.name])).toEqual([["local", "callbacks"]]);
-  expect(report.errors).toBe(9);
-  expect(report.typeFailures).toEqual({ degradable: 3, refused: 1 });
+  expect(report.errors).toBe(12);
+  expect(report.typeFailures).toEqual({ degradable: 4, refused: 1 });
   expect(
     report.slots.map((s) => [
       s.stage,
@@ -447,12 +447,14 @@ test("--explain-dynamic lists the type failures localized failure would turn int
     ]),
   ).toEqual([
     ["L2", "field", "tools", "component", "class Session", 2],
+    // The derived class's rejection and its construction.
+    ["L2", "field", "state", "dyn-field-policy", "class Base", 2],
     ["L2", "param", "progress", "component", "function listAll", 1],
     ["L2", "field", "state", "dyn-field-policy", "class Holder", 1],
   ]);
   // The WeakRef field stays refused, so its class and the construction
   // that uses it stay errors.
-  expect(report.clearedThroughL2).toBe(7);
+  expect(report.clearedThroughL2).toBe(10);
   expect(report.remainingByCode).toEqual({ SC1090: 1, SC2020: 1 });
   const relative = JSON.parse(
     JSON.stringify(coverage.tiers).replaceAll(repoRoot + "/", ""),
