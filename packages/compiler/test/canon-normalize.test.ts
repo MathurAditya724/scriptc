@@ -12,6 +12,7 @@ let checker: ts.TypeChecker;
 const aliases = new Map<string, ts.Type>();
 const asTypes = new Map<string, { type: ts.Type; params: ts.Symbol[] }>();
 const valueTypes = new Map<string, ts.Type>();
+const typeParams = new Map<string, ts.Symbol>();
 
 beforeAll(() => {
   directory = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-canon-"));
@@ -45,6 +46,23 @@ beforeAll(() => {
     export class Point { x = 0 }
     export type Points = readonly Point[];
     export type Pair = [string, number];
+    // Two type parameters named T, in different functions.
+    export function first<T>(x: unknown) {
+      return x as T[];
+    }
+    export function second<T>(x: unknown) {
+      return x as readonly T[];
+    }
+    // Distinct callables, and arrays of them.
+    export type Calls = ((a: string) => void) & ((a: number) => void);
+    export type CallArrays = ((a: string) => void)[] | ((a: number) => void)[];
+    // A dictionary with a named property.
+    export type Dict = { [key: string]: number } & { size: number };
+    // Recursive array and tuple aliases.
+    export type Nested = number | Nested[];
+    export type Chain = [number, Chain] | null;
+    // Optional and rest tuple elements.
+    export type Loose = [string, number?, ...boolean[]];
   `,
   );
   load = loadProgram(entry);
@@ -67,6 +85,11 @@ beforeAll(() => {
         params,
       });
     }
+    if (ts.isTypeParameterDeclaration(node) && ts.isFunctionDeclaration(node.parent))
+      typeParams.set(
+        `${node.parent.name?.text}.${node.name.text}`,
+        checker.getSymbolAtLocation(node.name)!,
+      );
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name))
       valueTypes.set(node.name.text, checker.getTypeAtLocation(node.name));
     if (
@@ -149,6 +172,74 @@ describe("canon", () => {
     const { type, params } = asTypes.get("present")!;
     expect(key(n.canon(type, new Map([[params[0]!, valueTypes.get("sampleMaybe")!]])))).toBe(
       "string",
+    );
+  });
+
+  test("type parameters with the same name are distinct in the intern key", () => {
+    const n = new Normalizer(checker);
+    const { type } = asTypes.get("T[]")!;
+    const firstT = typeParams.get("first.T")!;
+    const secondT = typeParams.get("second.T")!;
+    const num = valueTypes.get("sampleNumber")!;
+    const text = valueTypes.get("sampleText")!;
+    expect(
+      key(
+        n.canon(
+          type,
+          new Map([
+            [firstT, num],
+            [secondT, text],
+          ]),
+        ),
+      ),
+    ).toBe("number[]");
+    expect(
+      key(
+        n.canon(
+          type,
+          new Map([
+            [firstT, text],
+            [secondT, num],
+          ]),
+        ),
+      ),
+    ).toBe("string[]");
+  });
+
+  test("callables and arrays of callables with different parameters stay distinct", () => {
+    const n = new Normalizer(checker);
+    const calls = n.canon(aliases.get("Calls")!);
+    expect(calls.k === "obj" && calls.call().length).toBe(2);
+    const arms = n.canon(aliases.get("CallArrays")!);
+    expect(arms.k === "union" && arms.arms.length).toBe(2);
+    expect(key(arms)).toBe("{ (string) => void }[] | { (number) => void }[]");
+  });
+
+  test("intersecting a dictionary with a named property keeps the index signature", () => {
+    const dict = new Normalizer(checker).canon(aliases.get("Dict")!);
+    expect(key(dict)).toBe("{ [string]: number; size: number }");
+  });
+
+  test("recursive array and tuple aliases close on themselves", () => {
+    const n = new Normalizer(checker);
+    const nested = n.canon(aliases.get("Nested")!);
+    expect(nested.k).toBe("union");
+    if (nested.k !== "union") return;
+    // The array closes on itself through the union of its element.
+    const array = nested.arms.find((a) => a.k === "array");
+    const elem = array?.k === "array" ? array.elem : undefined;
+    expect(elem?.k === "union" && elem.arms.includes(array!)).toBe(true);
+    const chain = n.canon(aliases.get("Chain")!);
+    expect(chain.k).toBe("union");
+    if (chain.k !== "union") return;
+    const tuple = chain.arms.find((a) => a.k === "tuple");
+    const rest = tuple?.k === "tuple" ? tuple.elems[1]!.type : undefined;
+    expect(rest?.k === "union" && rest.arms.includes(tuple!)).toBe(true);
+  });
+
+  test("optional and rest tuple elements keep their flags", () => {
+    expect(key(new Normalizer(checker).canon(aliases.get("Loose")!))).toBe(
+      "[string, number | undefined?, ...boolean]",
     );
   });
 

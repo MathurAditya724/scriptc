@@ -103,14 +103,119 @@ export function canonKey(c: Canon, depth = 0): string {
       const props = c
         .props()
         .map((p) => `${p.name}${p.optional ? "?" : ""}: ${canonKey(p.type(), depth + 1)}`);
-      const calls = c.call().map((s) => `(${s.params.length}) => ${canonKey(s.ret(), depth + 1)}`);
-      return `{ ${[...calls, ...props].join("; ")} }`;
+      const sig = (s: CanonSig): string =>
+        `(${s.params
+          .map(
+            (p) => `${p.rest ? "..." : ""}${p.optional ? "?" : ""}${canonKey(p.type(), depth + 1)}`,
+          )
+          .join(", ")}) => ${canonKey(s.ret(), depth + 1)}`;
+      const calls = c.call().map(sig);
+      const constructs = c.construct().map((s) => `new ${sig(s)}`);
+      const index = c
+        .index()
+        .map((i) => `[${canonKey(i.key, depth + 1)}]: ${canonKey(i.value(), depth + 1)}`);
+      return `{ ${[...calls, ...constructs, ...index, ...props].join("; ")} }`;
+    }
+  }
+}
+
+/** Whether two canonical nodes are the same type, structurally: unlike
+ * canonKey, every part is compared (signature parameters, index
+ * signatures, any depth). A pair met again while it is being compared is
+ * taken as equal, which closes the comparison of recursive types. */
+export function canonEqual(
+  a: Canon,
+  b: Canon,
+  assumed: Map<Canon, Set<Canon>> = new Map(),
+): boolean {
+  if (a === b) return true;
+  if (a.k !== b.k) return false;
+  let pairs = assumed.get(a);
+  if (pairs?.has(b)) return true;
+  if (pairs === undefined) assumed.set(a, (pairs = new Set()));
+  pairs.add(b);
+  const eq = (x: Canon, y: Canon): boolean => canonEqual(x, y, assumed);
+  const sigsEqual = (xs: readonly CanonSig[], ys: readonly CanonSig[]): boolean =>
+    xs.length === ys.length &&
+    xs.every((x, i) => {
+      const y = ys[i]!;
+      return (
+        x.generic === y.generic &&
+        x.params.length === y.params.length &&
+        x.params.every(
+          (p, j) =>
+            p.optional === y.params[j]!.optional &&
+            p.rest === y.params[j]!.rest &&
+            eq(p.type(), y.params[j]!.type()),
+        ) &&
+        eq(x.ret(), y.ret())
+      );
+    });
+  switch (a.k) {
+    case "prim":
+      return a.p === (b as typeof a).p;
+    case "lit":
+      return a.value === (b as typeof a).value;
+    case "unit":
+      return a.u === (b as typeof a).u;
+    case "top":
+      return a.t === (b as typeof a).t;
+    case "param":
+      return a.name === (b as typeof a).name;
+    case "opaque":
+      return a.ts === (b as typeof a).ts;
+    case "array": {
+      const o = b as typeof a;
+      return a.readonly === o.readonly && eq(a.elem, o.elem);
+    }
+    case "tuple": {
+      const o = b as typeof a;
+      return (
+        a.elems.length === o.elems.length &&
+        a.elems.every(
+          (e, i) =>
+            e.optional === o.elems[i]!.optional &&
+            e.rest === o.elems[i]!.rest &&
+            eq(e.type, o.elems[i]!.type),
+        )
+      );
+    }
+    case "union": {
+      const o = b as typeof a;
+      return (
+        a.arms.length === o.arms.length &&
+        a.arms.every((x) => o.arms.some((y) => eq(x, y))) &&
+        o.arms.every((y) => a.arms.some((x) => eq(x, y)))
+      );
+    }
+    case "obj": {
+      const o = b as typeof a;
+      if (a.nominal !== o.nominal) return false;
+      if (a.nominal !== undefined) return true;
+      const ap = a.props();
+      const op = o.props();
+      if (ap.length !== op.length) return false;
+      for (const p of ap) {
+        const q = op.find((x) => x.name === p.name);
+        if (q === undefined || q.optional !== p.optional || !eq(p.type(), q.type())) return false;
+      }
+      const ai = a.index();
+      const oi = o.index();
+      return (
+        ai.length === oi.length &&
+        ai.every((x, i) => eq(x.key, oi[i]!.key) && eq(x.value(), oi[i]!.value())) &&
+        sigsEqual(a.call(), o.call()) &&
+        sigsEqual(a.construct(), o.construct())
+      );
     }
   }
 }
 
 export class Normalizer {
   private readonly interned = new Map<string, Canon>();
+  /** A number for each type parameter an environment binds: parameters
+   * with the same name are distinct keys. */
+  private readonly paramIds = new Map<ts.Symbol, number>();
 
   constructor(private readonly checker: ts.TypeChecker) {}
 
@@ -129,8 +234,11 @@ export class Normalizer {
   private envKey(env: CanonEnv): string {
     if (env.size === 0) return "";
     const parts: string[] = [];
-    for (const [param, bound] of env)
-      parts.push(`${ts.symbolName(param)}=${(bound as { id?: number }).id ?? "?"}`);
+    for (const [param, bound] of env) {
+      let id = this.paramIds.get(param);
+      if (id === undefined) this.paramIds.set(param, (id = this.paramIds.size));
+      parts.push(`${id}=${(bound as { id?: number }).id ?? "?"}`);
+    }
     return parts.sort().join(",");
   }
 
@@ -169,7 +277,6 @@ export class Normalizer {
   /** Flat, deduplicated, never-free; `void` reads as `undefined`. */
   private union(parts: readonly ts.Type[], env: CanonEnv): Canon {
     const arms: Canon[] = [];
-    const seen = new Set<string | Canon>();
     const add = (c: Canon): void => {
       if (c.k === "union") {
         for (const a of c.arms) add(a);
@@ -177,11 +284,9 @@ export class Normalizer {
       }
       if (c.k === "unit" && c.u === "never") return;
       const arm: Canon = c.k === "unit" && c.u === "void" ? { k: "unit", u: "undefined" } : c;
-      // Objects dedupe by identity (they intern by checker type): their
-      // structural key would walk into a recursive type still being built.
-      const k = arm.k === "obj" ? arm : canonKey(arm);
-      if (seen.has(k)) return;
-      seen.add(k);
+      // Objects dedupe by identity (they intern by checker type): comparing
+      // their members would walk into a recursive type still being built.
+      if (arms.some((a) => (arm.k === "obj" ? a === arm : canonEqual(a, arm)))) return;
       arms.push(arm);
     };
     for (const part of parts) add(this.canon(part, env));
@@ -206,12 +311,16 @@ export class Normalizer {
    * primitive branded with an object is the primitive. */
   private intersection(type: ts.Type, env: CanonEnv, key: string | null): Canon {
     const parts = ts.constituentTypes(type).map((t) => this.canon(t, env));
-    const keys = new Set(parts.map((p) => canonKey(p)));
-    if (keys.size === 1) return parts[0]!;
+    if (parts.every((p) => canonEqual(p, parts[0]!))) return parts[0]!;
     // Narrowed parameters: `T & {}` (and `T & ({} | null)`'s object part)
     // keep T without its undefined and null arms.
     const empty = (p: Canon): boolean =>
-      p.k === "obj" && p.nominal === undefined && p.props().length === 0 && p.call().length === 0;
+      p.k === "obj" &&
+      p.nominal === undefined &&
+      p.props().length === 0 &&
+      p.index().length === 0 &&
+      p.call().length === 0 &&
+      p.construct().length === 0;
     const rest = parts.filter((p) => !empty(p));
     if (rest.length === 1 && rest.length < parts.length) {
       const only = rest[0]!;
@@ -228,21 +337,42 @@ export class Normalizer {
 
   private object(type: ts.Type, env: CanonEnv, key: string | null): Canon {
     const checker = this.checker;
+    // Arrays and tuples enter the intern table before their elements are
+    // normalized, so a recursive alias (`type Tree = Tree[] | number`)
+    // closes on the node under construction.
     if (checker.isArrayType(type)) {
       const [elem] = checker.getTypeArguments(type as ts.TypeReference);
-      return {
+      const node: Canon & { k: "array" } = {
         k: "array",
-        elem: elem === undefined ? { k: "top", t: "unknown" } : this.canon(elem, env),
+        elem: { k: "top", t: "unknown" },
         readonly:
           type.getSymbol() !== undefined && ts.symbolName(type.getSymbol()!) === "ReadonlyArray",
       };
+      if (key !== null) this.interned.set(key, node);
+      if (elem !== undefined) node.elem = this.canon(elem, env);
+      return node;
     }
     if (checker.isTupleType(type)) {
-      const args = checker.getTypeArguments(type as ts.TypeReference);
-      return {
-        k: "tuple",
-        elems: args.map((a) => ({ type: this.canon(a, env), optional: false, rest: false })),
-      };
+      const ref = type as ts.TupleTypeReference;
+      // The element flags live on the tuple shape: the type itself, or the
+      // target of a reference to it.
+      const shape =
+        (ref.elementFlags as ts.ElementFlags[] | undefined) !== undefined
+          ? ref
+          : (ref.getTarget() as ts.TupleType | undefined);
+      const flags = shape?.elementFlags ?? [];
+      const elems: { type: Canon; optional: boolean; rest: boolean }[] = [];
+      const node: Canon = { k: "tuple", elems };
+      if (key !== null) this.interned.set(key, node);
+      checker.getTypeArguments(ref).forEach((a, i) => {
+        const f = flags[i] ?? ts.ElementFlags.Required;
+        elems.push({
+          type: this.canon(a, env),
+          optional: (f & ts.ElementFlags.Optional) !== 0,
+          rest: (f & (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) !== 0,
+        });
+      });
+      return node;
     }
     const symbol = type.getSymbol();
     const decl = symbol?.declarations[0];
