@@ -60,6 +60,14 @@ void scr_gen_coro_finish(ScrFiber *self);
 ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                           void (*drop_args)(void *),
                           void (*settle)(ScrGen *, ScrPromise *));
+/* An async generator whose body is a switched coroutine, as
+ * scr_gen_new_stackless's: its steps run on the resumer's stack (the loop's
+ * after an await), its awaits suspend through scr_coro_await_prepare and
+ * scr_coro_hop_prepare, and its yields store OUT through scr_coro_yield_*.
+ * Native targets only. */
+ScrGen *scr_async_gen_new_stackless(void (*entry)(ScrFiber *, void *), void *argpack,
+                                    void (*drop_args)(void *),
+                                    void (*settle)(ScrGen *, ScrPromise *));
 /* Runs when return() reaches the generator before its first resume, with
  * the packed arguments still alive: an iterator helper closes its source. */
 void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *));

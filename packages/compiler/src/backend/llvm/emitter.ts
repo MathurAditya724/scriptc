@@ -859,16 +859,23 @@ function isIdentifierByte(code: number): boolean {
 }
 
 /** Runtime entry points (and await-call entries) that may park the running
- * execution context, as they appear in emitted function text. */
+ * execution context, as they appear in emitted function text. An async
+ * generator's next, return and throw only queue a request and run its body
+ * to its next suspension, which returns to the caller, and the body's own
+ * bookkeeping calls do not suspend it. */
 export const SUSPENDS =
-  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_)|sc_a[wd]_)/;
+  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_(?!new\b|next_|return_|throw\b|hop_done\b)|fiber_)|sc_a[wd]_)/;
 /** The suspensions of a fiber body's own awaits, which its stackless
  * coroutine form suspends itself at instead. */
-const AWAIT_SUSPENSIONS = /@(?:scr_await_(?:void|f64|bool|str|ref|hop)\b|sc_a[wd]_[A-Za-z0-9_]+)/g;
+const AWAIT_SUSPENSIONS =
+  /@(?:scr_await_(?:void|f64|bool|str|ref|hop|dyn_value)\b|sc_a[wd]_[A-Za-z0-9_]+)/g;
+/** The suspensions of a fiber generator body's own yields, which its
+ * coroutine form also suspends itself at. */
+const YIELD_SUSPENSIONS = /@scr_(?:gen_yield_(?:f64|bool|ref))\b/g;
 /** SUSPENDS in a stackless coroutine body, whose frame bookkeeping reads its
  * own fiber and promise. */
 const COROUTINE_SUSPENDS =
-  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_(?!self\b|promise\b))|sc_a[wd]_)/;
+  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_(?!new\b|next_|return_|throw\b|hop_done\b)|fiber_(?!self\b|promise\b))|sc_a[wd]_)/;
 /** Captured bindings (boxes a body declares or receives) from which a
  * function compiles without LLVM optimization (see boxSlotCount). */
 export const UNOPTIMIZED_BOX_SLOTS = 512;
@@ -1290,11 +1297,13 @@ export class LlEmitter {
    * generator stacks) and so do debug builds (the debugger reads locals
    * from the native frame). */
   private stacklessGenerators = false;
-  /** Async bodies that suspend only at their own awaits compile to the same
-   * switched coroutines on native targets (selectStacklessAsync), under the
-   * generators' conditions; library and Windows builds keep fibers. */
+  /** Async bodies that suspend only at their own awaits (and an async
+   * generator's yields) compile to the same switched coroutines on native
+   * targets (selectStacklessAsync), under the generators' conditions;
+   * library and Windows builds keep fibers. */
   private stacklessAsyncAllowed = false;
-  /** The async functions selectStacklessAsync lowered as coroutines. */
+  /** The async functions and async generators selectStacklessAsync lowered
+   * as coroutines. */
   readonly stacklessAsync = new Set<string>();
   /** Some function in the module is lowered as a coroutine. */
   usesCoroutines = false;
@@ -1920,9 +1929,12 @@ export class LlEmitter {
   currentUnionResult = false;
   /** Active only while emitting a body lowered with LLVM's
    * switched-coroutine intrinsics (wasm32 async bodies and generators,
-   * native synchronous generators; see coroLowered). */
+   * native synchronous generators, and the native async bodies
+   * selectStacklessAsync chose; see coroLowered). */
   currentCoro: {
     kind: "async" | "generator";
+    /** The body awaits: an async function or an async generator. */
+    awaits: boolean;
     id: string;
     handle: string;
     self: string;
@@ -2765,19 +2777,21 @@ export class LlEmitter {
     }
   }
 
-  /** Chooses the native async functions whose bodies compile to switched
-   * coroutines instead of running on a fiber: a suspended call then keeps a
-   * heap frame of the values live across its awaits rather than a fiber and
-   * its stack. A body qualifies when its only suspension points are its own
-   * awaits, which the coroutine form suspends itself at (emitCoroAwait), so
-   * nothing it runs can park the stack it borrows. It is first emitted as
-   * usual: that text may suspend only through await runtime calls and
-   * await-call entries, which the coroutine form replaces, and may call no
-   * function that parks. The coroutine form is then emitted and must pass
-   * the same test with no exceptions (its frame bookkeeping excepted);
-   * otherwise the fiber form stays. Bodies that never suspend stay
-   * fiberless, and module evaluation bodies and `dyn` results keep fibers
-   * as they do there. The runtime traps if a stackless body ever parks. */
+  /** Chooses the native async functions and async generators whose bodies
+   * compile to switched coroutines instead of running on a fiber: a
+   * suspended call then keeps a heap frame of the values live across its
+   * awaits and yields rather than a fiber and its stack. A body qualifies
+   * when its only suspension points are its own awaits and yields, which
+   * the coroutine form suspends itself at (emitCoroAwait,
+   * emitCoroSuspendPrepared), so nothing it runs can park the stack it
+   * borrows. It is first emitted as usual: that text may suspend only
+   * through await and yield runtime calls and await-call entries, which the
+   * coroutine form replaces, and may call no function that parks. The
+   * coroutine form is then emitted and must pass the same test with no
+   * exceptions (its frame bookkeeping excepted); otherwise the fiber form
+   * stays. Bodies that never suspend stay fiberless, and module evaluation
+   * bodies and async functions with `dyn` results keep fibers as they do
+   * there. The runtime traps if a stackless body ever parks. */
   selectStacklessAsync(fnDefs: string[]): void {
     if (!this.stacklessAsyncAllowed) return;
     const parks = this.parkingFunctions();
@@ -2792,11 +2806,16 @@ export class LlEmitter {
       return true;
     };
     this.mod.functions.forEach((fn, index) => {
-      if (fn.async !== true || fn.generator !== undefined) return;
+      if (fn.async !== true) return;
       if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) return;
-      if (fn.returnType.kind === "dyn" || !parks.has(fn.name)) return;
-      const fiberText = fnDefs[index]!;
-      if (!qualifies(fn, fiberText.replace(AWAIT_SUSPENSIONS, ""), SUSPENDS)) return;
+      // A dyn result may adopt a thenable when it settles the promise; an
+      // async generator's completion value settles its request's record.
+      if (fn.generator === undefined && fn.returnType.kind === "dyn") return;
+      if (!parks.has(fn.name)) return;
+      // An async generator's body also suspends at its own yields.
+      let fiberText = fnDefs[index]!.replace(AWAIT_SUSPENSIONS, "");
+      if (fn.generator !== undefined) fiberText = fiberText.replace(YIELD_SUSPENSIONS, "");
+      if (!qualifies(fn, fiberText, SUSPENDS)) return;
       this.stacklessAsync.add(fn.name);
       const coroText = this.emitFunction(fn);
       if (!qualifies(fn, coroText, COROUTINE_SUSPENDS)) {
@@ -3209,7 +3228,7 @@ export class LlEmitter {
    * native async bodies selectStacklessAsync chose. */
   coroLowered(fn: IrFunction): boolean {
     if (this.wasi) return fn.async === true || fn.generator !== undefined;
-    if (fn.async === true) return fn.generator === undefined && this.stacklessAsync.has(fn.name);
+    if (fn.async === true) return this.stacklessAsync.has(fn.name);
     return this.stacklessGenerators && fn.generator !== undefined;
   }
   emitGenScaffolding(): string[] {
@@ -5302,7 +5321,7 @@ export class LlEmitter {
   /** Awaits in the current body suspend its coroutine: every wasm32 async
    * body, and native stackless async bodies (selectStacklessAsync). */
   get coroAwait(): boolean {
-    return this.wasi || this.currentCoro?.kind === "async";
+    return this.wasi || this.currentCoro?.awaits === true;
   }
 
   /** Suspends the current coroutine body at an await of `promise` (null: a
@@ -5341,7 +5360,7 @@ export class LlEmitter {
    * coroutine has already suspended until the promise settled, so its
    * extraction takes no further turn. */
   awaitResultFn(kind: "void" | "f64" | "bool" | "str" | "ref"): string {
-    return !this.wasi && this.currentCoro?.kind === "async"
+    return !this.wasi && this.currentCoro?.awaits === true
       ? `scr_coro_await_${kind}`
       : `scr_await_${kind}`;
   }

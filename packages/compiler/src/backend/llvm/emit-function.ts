@@ -338,6 +338,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     }
     emitter.currentCoro = {
       kind: fn.generator !== undefined ? "generator" : "async",
+      awaits: fn.async === true,
       id,
       handle,
       self,
@@ -863,10 +864,14 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
     ];
     const genNew = coroBody && !emitter.wasi ? "scr_gen_new_stackless" : "scr_gen_new";
     if (genNew !== "scr_gen_new") emitter.declare(`declare ptr @${genNew}(ptr, ptr, ptr)`);
+    const asyncGenNew =
+      coroBody && !emitter.wasi ? "scr_async_gen_new_stackless" : "scr_async_gen_new";
+    if (settleAsync !== null && asyncGenNew !== "scr_async_gen_new")
+      emitter.declare(`declare ptr @${asyncGenNew}(ptr, ptr, ptr, ptr)`);
     sp.push(
       settleAsync === null
         ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
-        : `  %gg = call ptr @scr_async_gen_new(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+        : `  %gg = call ptr @${asyncGenNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
       ...(fn.generator.tag !== undefined
         ? [`  call void @scr_gen_set_tag(ptr %gg, ptr ${emitter.cstr(fn.generator.tag)})`]
         : []),
