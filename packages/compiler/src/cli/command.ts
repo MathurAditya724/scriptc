@@ -1,3 +1,4 @@
+import type { TypePatchCommandRequest } from "../frontend/type-patches/command.js";
 import { rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -205,6 +206,39 @@ async function main(args: string[], host: CliHost): Promise<number> {
     process.stdout.write(`${outputPath}\n`);
     return 0;
   }
+  if (command === "types") {
+    const sub = positionals[1];
+    const rest = positionals.slice(2);
+    let request: TypePatchCommandRequest;
+    if (sub === "patch" && rest.length === 3) {
+      request = {
+        action: "patch",
+        cwd: process.cwd(),
+        pkg: rest[0]!,
+        selector: rest[1]!,
+        type: rest[2]!,
+        range: values.range ?? null,
+        dryRun: values["dry-run"],
+      };
+    } else if (
+      sub === "list" &&
+      rest.length === 0 &&
+      values.range === undefined &&
+      !values["dry-run"]
+    ) {
+      request = { action: "list", cwd: process.cwd() };
+    } else {
+      fail(
+        `scriptc types takes "patch <package> <selector> <type>" (with --range or --dry-run) or "list"\n\n${USAGE}`,
+      );
+    }
+    const result = await host.typePatches(request);
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    return result.exitCode;
+  }
+  if (values.range !== undefined || values["dry-run"])
+    fail(`--range and --dry-run are scriptc types patch options\n\n${USAGE}`);
   if (values.sparse) fail(`--sparse is a merge-profiles option\n\n${USAGE}`);
   if (command !== "build" && command !== "run" && command !== "coverage") {
     fail(`unknown command "${command}"\n\n${USAGE}`);

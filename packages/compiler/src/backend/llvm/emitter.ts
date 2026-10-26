@@ -3712,6 +3712,9 @@ export class LlEmitter {
     passThrough?: { name: string; type: IrType },
     poll = false,
     guard?: string,
+    /** Runs at the start of the cold unwind block, before the unwind (a
+     * package-declared check's origin note). */
+    onUnwind?: () => void,
   ): void {
     const through =
       passThrough !== undefined &&
@@ -3736,6 +3739,7 @@ export class LlEmitter {
       const lk = B.newLabel("exc.k");
       B.condBr(p, lu, lk);
       B.startBlock(lu);
+      onUnwind?.();
       this.emitUnwind(through);
       B.startBlock(lk);
       if (skip !== undefined) {
@@ -3812,6 +3816,7 @@ export class LlEmitter {
       B.condBr(cold, lu, lk);
     }
     B.startBlock(lu);
+    onUnwind?.();
     this.emitUnwind(through);
     B.startBlock(lk);
     if (skip !== undefined) {
