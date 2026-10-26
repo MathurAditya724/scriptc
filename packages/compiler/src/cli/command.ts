@@ -116,6 +116,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
       values["target-cpu"] !== undefined ||
+      values["cpu-dispatch"] !== undefined ||
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       values.sparse ||
@@ -176,6 +177,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
       values["target-cpu"] !== undefined ||
+      values["cpu-dispatch"] !== undefined ||
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
@@ -234,6 +236,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
       values["target-cpu"] !== undefined ||
+      values["cpu-dispatch"] !== undefined ||
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
@@ -243,7 +246,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       hasNodeIslandFlags(values)
     ) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--target-cpu/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
     }
     const profilePath = resolve(profileArg);
@@ -288,6 +291,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   if (command === "coverage" && values["target-cpu"] !== undefined) {
     fail(`--target-cpu is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["cpu-dispatch"] !== undefined) {
+    fail(`--cpu-dispatch is a build/run option\n\n${USAGE}`);
   }
   if (command === "coverage" && values["detached-exit"]) {
     fail(`--detached-exit is a build/run option\n\n${USAGE}`);
@@ -469,6 +475,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
           ...(values.optimization === undefined ? {} : { optimization: values.optimization }),
           strip: values.strip,
           detachedExit: values["detached-exit"],
+          ...(values["cpu-dispatch"] === undefined ? {} : { cpuDispatch: values["cpu-dispatch"] }),
           ...(values["profile-generate"] === undefined
             ? {}
             : { profileGenerate: values["profile-generate"] }),
@@ -589,6 +596,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(windowsSubsystem !== undefined ? { windowsSubsystem } : {}),
       ...(values["detached-exit"] ? { detachedExit: true } : {}),
       ...targetCpuField(targetCpu),
+      ...(values["cpu-dispatch"] === undefined ? {} : { cpuDispatch: values["cpu-dispatch"] }),
       // The instrumented program resolves a relative pattern against its own
       // working directory; resolve it here, where the user wrote it.
       ...(values["profile-generate"] === undefined

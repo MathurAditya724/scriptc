@@ -138,6 +138,9 @@ With `--sparse`, the profile leaves out the functions the runs never reached. Th
   <dt><code>--target-cpu &lt;baseline|x86-64-v2|x86-64-v3|x86-64-v4|native&gt;</code></dt>
   <dd>On x86-64 targets, compile the program's code for an x86-64 microarchitecture level. The default, <code>baseline</code>, runs on any x86-64 CPU. A higher level lets LLVM use more instructions, and the executable then runs only on CPUs that support that level. <code>native</code> uses the highest level the build machine supports. Valid for executable, assembly, and object output on x86-64 targets. See <a href="#target-cpu">Target CPU</a>.</dd>
 
+  <dt><code>--cpu-dispatch</code></dt>
+  <dd>On x86-64 targets, compile the program's code twice, for the baseline and for <code>x86-64-v3</code>, and choose the copy when the program starts. The executable runs on any x86-64 CPU and uses the <code>x86-64-v3</code> code on CPUs that support it. Not used with a <code>--target-cpu</code> level above <code>baseline</code>. Valid only for executable builds. See <a href="#runtime-cpu-dispatch">Runtime CPU dispatch</a>.</dd>
+
   <dt><code>--profile-generate &lt;pattern&gt;</code></dt>
   <dd>On Linux, build an instrumented executable for profile-guided optimization. Each run writes a raw profile to the path pattern, where <code>%p</code> expands to the process ID; the <code>LLVM_PROFILE_FILE</code> environment variable overrides the pattern at run time. A relative pattern resolves from the current working directory. Instrumented programs run slower. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
 
@@ -270,6 +273,22 @@ Loops over typed arrays and numbers gain the most, because LLVM vectorizes them 
 An executable built for a level runs only on CPUs that support that level. On an older CPU, it crashes with an illegal-instruction signal (`SIGILL`) when it reaches an instruction the CPU lacks. A named level is portable to every machine of that level. `native` selects the highest level the build machine supports, so use it only for executables that run on the machine that built them or on identical machines.
 
 The level applies to the program's own code. The runtime pack keeps its baseline code. Builds for different levels never share cached artifacts, and `baseline` builds are the same as builds without the option.
+
+### Runtime CPU dispatch
+
+`--cpu-dispatch` keeps the executable portable and still uses the higher level where the CPU has it. The program's functions are compiled for the baseline and for `x86-64-v3`. At startup, the executable checks the CPU and the operating system's register support, and then runs the `x86-64-v3` code on CPUs that support every feature of that level. Calls between the program's functions stay within the chosen copy.
+
+```console
+$ scriptc build app.ts --optimization=speed --cpu-dispatch -o app
+```
+
+The second copy makes the executable larger and the first build of the program slower, since LLVM compiles the program's code twice. Unchanged rebuilds are not affected. Both copies compute the same results: neither contracts floating-point operations into fused multiply-adds.
+
+The `SCRIPTC_CPU_LEVEL` environment variable caps the level the executable uses, for example to test the baseline code on a newer machine. It takes a level from `0` to `4`, `baseline`, or a level name such as `x86-64-v3`; any other value selects the baseline code.
+
+```console
+$ SCRIPTC_CPU_LEVEL=baseline ./app
+```
 
 ## LLVM backend
 
