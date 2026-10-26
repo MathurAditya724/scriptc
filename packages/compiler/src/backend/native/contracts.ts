@@ -131,6 +131,10 @@ export interface CcOptions {
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
+  /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
+  mime?: boolean;
+  /** util.debounce and util.throttle: compiles scr_util_timing.c. */
+  utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:
    * compiles scr_bytes_dyn.c. */
   dynBuffer?: boolean;

@@ -60,6 +60,10 @@ typedef enum {
   SCR_ARR_HOLE = 0,
   SCR_ARR_VALUE = 1,
   SCR_ARR_UNDEFINED = 2,
+  /* A present element outside the element type, stored through a dynamic
+   * view: the slot holds a retained ScrDyn * (scr_arr_set_foreign). Arrays
+   * that hold one mark their out-of-line storage (ScrArrExt.foreign). */
+  SCR_ARR_FOREIGN = 3,
 } ScrArrState;
 
 /* The RC entry points of an SCR_ELEM_REF array's element type: one constant
@@ -174,6 +178,9 @@ typedef struct ScrArrExt {
   /* The class of an instance of a program class that extends Array
    * (scr_arr_subclass_init); NULL for every other array. */
   const struct ScrArrClass *cls;
+  /* Some slot may hold SCR_ARR_FOREIGN; release and copies walk the states
+   * for their payloads only then. */
+  bool foreign;
 } ScrArrExt;
 
 /* A program class that extends Array. Its instances are emitted structs
@@ -549,8 +556,9 @@ void scr_arr_subclass_drop(ScrArr *a);
 void scr_arr_copy_metadata(ScrArr *a, struct ScrDyn *target);
 /* The commit of a live array view calls this on `a`, the array converted
  * from `view`, before `target` takes its storage: `a` takes the view's named
- * (non-index) properties as its metadata and the noncanonical numeric
- * properties of `target`, so neither is lost when the storage is swapped. */
+ * (non-index) properties as its metadata, the noncanonical numeric
+ * properties of `target` and the class of an Array subclass instance, so
+ * none is lost when the storage is swapped. */
 void scr_arr_adopt_view_properties(ScrArr *a, struct ScrDyn *view, ScrArr *target);
 /* True when `key` is the string spelling of a number that is not an array
  * index ("-1", "1.5", "NaN", "Infinity"), or "undefined", with the number in
@@ -666,6 +674,20 @@ void scr_arr_set_f64(ScrArr *a, double i, double v);
 void scr_arr_set_bool(ScrArr *a, double i, bool v);
 void scr_arr_set_ref(ScrArr *a, double i, void *v);
 void scr_arr_set_undefined(ScrArr *a, double i);
+/* Stores `v` (borrowed, retained) at a canonical index as a value outside
+ * the element type (SCR_ARR_FOREIGN), or as a present undefined when it is
+ * undefined, extending the length like the typed setters. False, with
+ * nothing stored, for an index that is not canonical and for a foreign
+ * value in a boolean array, whose 1-byte dense slots cannot hold it. */
+bool scr_arr_set_foreign(ScrArr *a, double i, struct ScrDyn *v);
+/* The value of a foreign element (+1), or NULL when a[i] is not one. */
+struct ScrDyn *scr_arr_get_foreign(const ScrArr *a, double i);
+/* Throws the checked conversion's TypeError for the foreign element a[i]
+ * read where a value of type `want` is expected. */
+void scr_arr_foreign_throw(const ScrArr *a, double i, const ScrStr *want);
+/* The same TypeError for a foreign element's value removed from an array
+ * (pop/shift into a typed result); takes and releases `value`. */
+void scr_dyn_foreign_throw(struct ScrDyn *value, const char *want);
 bool scr_arr_delete(ScrArr *a, double i);
 
 /* slice(start?, end?): a fresh +1 shallow copy of the index range —

@@ -51,11 +51,40 @@ tryIt("empty passphrase", () => {
   return same(c.createPrivateKey({ key: out, passphrase: "" }), rsa);
 });
 
-// Reading encrypted keys.
-const p8pem = ec.privateKey.export({ type: "pkcs8", format: "pem", cipher: "aes-256-cbc", passphrase: "pw" });
-const p8der = ec.privateKey.export({ type: "pkcs8", format: "der", cipher: "aes-256-cbc", passphrase: "pw" });
-const sec1 = String(ec.privateKey.export({ type: "sec1", format: "pem", cipher: "aes-128-cbc", passphrase: "pw" }));
-tryIt("public from encrypted", () => c.createPublicKey({ key: p8pem, passphrase: "pw" }).equals(ec.publicKey));
+// Reading encrypted keys. These are fixed encryptions of one P-256 key
+// with the passphrase "pw": decrypting with a wrong passphrase gives
+// random-looking bytes, which a fresh encryption would make fail at
+// different steps from run to run.
+const fixedKey = [
+  "-----BEGIN PRIVATE KEY-----",
+  "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgExcc5/xZ3vYL2Dpg",
+  "XnB7E8gQhcW1bkUcIGJWBGvrrGChRANCAAR0wxNUH1yo/U9nqFY4Gt5SVzPjvWq6",
+  "NzlStUC6Njk9BdR7SvBlNIGDAFlOfMwhfZbvvvMP+rLMR3RtBg3Ketxe",
+  "-----END PRIVATE KEY-----",
+].join("\n") + "\n";
+const p8pem = [
+  "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+  "MIH0MF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBBkpqs2611cRjGDZTd4",
+  "FmNeAgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQRhL9yxS4i0ngtke+",
+  "frhURASBkN0dk+GQNCGU5cFC+MMswOr9XwGaQnLbJo7VnhCje3//JaVJDjexrd69",
+  "YZliX7pKGNghfFf+eBAeOAkwbAK39T8KQPwTJVJ+Z5O485N2fl5dPlr3gaEA3+cm",
+  "LQgasmL7Zv9UOH2iwvWllFYL3bnwr7VsqTCW2xe53qTB+dWVurP0cCiZNGEnUzrf",
+  "4bvWNrW0nA==",
+  "-----END ENCRYPTED PRIVATE KEY-----",
+].join("\n") + "\n";
+const p8der = Buffer.from("MIH0MF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBAOrVavYYEvy3KUHwK0hbQnAgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQmEnqHOLegUirb49LD8oNhASBkGUwe3SZciScH/tWuoK5JWujckNHRKROwu81a5AGjIKxkvqCm+Qp9Gr4rPsb2vbv3bgfojbEKvSGvtuqB/X/jpN5UMZwWI3D9Ocd1+jEq1FqDb3rb3qxcoO9jmwuFFzNeYy4sW29XFuKTxu4aJHT1sEtMzIVlRLv53aXzpp9eQ9j47EOTWFqIpkt02TRFuazCQ==", "base64");
+const sec1 = [
+  "-----BEGIN EC PRIVATE KEY-----",
+  "Proc-Type: 4,ENCRYPTED",
+  "DEK-Info: AES-128-CBC,E73A95A6783C45F914B397FE018521D2",
+  "",
+  "nsuhQFMPr+QFITcpmr2JWs+Zep4wxoCWMEk1jzyyXSJddfebIXOFg4xmtK8YJXIy",
+  "vqa6pvAIiak0iEZjVSn20+JAg2wqQ0sLaFPhBmhcZk+xuQoLD8CcYvROO5VtVELm",
+  "DkgOUcJ1oEfZJIRM6U2oDNFmj2NB/SnSQUf1niy7ba8=",
+  "-----END EC PRIVATE KEY-----",
+].join("\n") + "\n";
+const fixedPublic = c.createPublicKey(fixedKey);
+tryIt("public from encrypted", () => c.createPublicKey({ key: p8pem, passphrase: "pw" }).equals(fixedPublic));
 tryIt("public from traditional", () => c.createPublicKey({ key: sec1, passphrase: "pw" }).type);
 tryIt("pkcs8 pem no passphrase", () => c.createPrivateKey(p8pem));
 tryIt("pkcs8 der no passphrase", () => c.createPrivateKey({ key: p8der, format: "der", type: "pkcs8" }));

@@ -20,7 +20,10 @@ export function unionNarrowFailureMessage(
  *
  * Deferred scalar fields can supply the established undefined default:
  * false for booleans or NaN for numbers. No other tag receives that default,
- * and reference-bearing targets always use checked extraction. */
+ * and reference-bearing targets always use checked extraction.
+ *
+ * `failureMessage` replaces the TypeError message of every other tag (the
+ * error Node raises for the operation consuming the value). */
 export function buildUnionNarrow(
   name: string,
   from: IrUnionDef,
@@ -28,6 +31,10 @@ export function buildUnionNarrow(
   loc: SrcLoc,
   formatType: (type: IrType) => string,
   undefinedDefault: IrExpr | null = null,
+  failureMessage: string | null = null,
+  /** Converts another arm's payload into the target (a record arm that is
+   * a width subtype of a record target), or null to throw. */
+  convert: ((tag: number, payload: IrExpr) => IrExpr | null) | null = null,
 ): IrFunction | null {
   if (isUnitType(target) || target.kind === "void") return null;
   const targetTag = from.arms.findIndex((arm) => typeEquals(arm, target));
@@ -43,6 +50,7 @@ export function buildUnionNarrow(
   const inputType: IrType = { kind: "union", unionId: from.id };
   const input: IrExpr = { kind: "varRef", localId: "u.0", type: inputType, loc };
   const body: IrStmt[] = [];
+  let converted: IrExpr | null = null;
   for (let tag = 0; tag < from.arms.length; tag++) {
     const arm = from.arms[tag]!;
     let branch: IrStmt[];
@@ -56,6 +64,19 @@ export function buildUnionNarrow(
       ];
     } else if (arm.kind === "undefinedT" && undefinedDefault !== null) {
       branch = [{ kind: "return", value: undefinedDefault, loc }];
+    } else if (
+      convert !== null &&
+      !isUnitType(arm) &&
+      (converted = convert(tag, {
+        kind: "unionNarrow",
+        unionId: from.id,
+        tag,
+        value: input,
+        type: arm,
+        loc,
+      })) !== null
+    ) {
+      branch = [{ kind: "return", value: converted, loc }];
     } else {
       branch = [
         {
@@ -66,7 +87,7 @@ export function buildUnionNarrow(
             args: [
               {
                 kind: "strLit",
-                value: unionNarrowFailureMessage(arm, formatType),
+                value: failureMessage ?? unionNarrowFailureMessage(arm, formatType),
                 type: STRING,
                 loc,
               },

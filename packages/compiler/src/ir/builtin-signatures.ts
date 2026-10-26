@@ -848,6 +848,7 @@ function buildLibFnSignatures() {
     // (subject, characters, NUL-separated replacement texts): the fused
     // chain of global one-character replacements.
     "str.replaceChars": { argTypes: [STRING, STRING, STRING], result: STRING },
+    "str.codePoints": { argTypes: [STRING], result: arrayOf(STRING) },
     /* ToNumber(string) — ECMA-262 7.1.4.1 StringToNumber (scr_string.c):
      * trim the JS StrWhiteSpace set, empty/whitespace-only → +0, then the
      * whole span must be one StrNumericLiteral — signed decimal (Infinity
@@ -1155,6 +1156,17 @@ function buildLibFnSignatures() {
     "util.inherits": { argTypes: [DYN, DYN], result: VOID },
     "util.inheritsPrototype": { argTypes: [DYN, DYN, DYN], result: VOID },
     "util.deprecate": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    "util.isArrayDeprecated": { argTypes: [DYN], result: BOOL },
+    "util.extend": { argTypes: [DYN, DYN], result: DYN },
+    "util.signalExitCode": { argTypes: [DYN], result: F64 },
+    "util.aborted": { argTypes: [DYN, DYN], result: DYN },
+    "util.diff": { argTypes: [DYN, DYN], result: DYN },
+    "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    "mime.typeNew": { argTypes: [DYN, DYN], result: DYN },
+    "mime.typeParse": { argTypes: [DYN], result: DYN },
+    "mime.paramsNew": { argTypes: [], result: DYN },
+    "mime.is": { argTypes: [DYN, F64], result: BOOL },
     "util.callbackify": { argTypes: [DYN], result: DYN },
     /** util.promisify over an untyped function value: a native dyn function
      * whose calls answer a dyn promise the appended callback settles. */
@@ -1547,15 +1559,18 @@ function buildLibFnSignatures() {
      * true } and a callback taking an address string or list, then dials
      * the answers in order. MAY THROW (host validation, a lookup throw). */
     "net.connectLookupDyn": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
-    "net.sockWrite": { argTypes: [NETSOCKET_T, STRING], result: VOID },
-    "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
+    /** socket.write: Node's Writable answer — false when the writes not yet
+     * completely sent, each counted in full, reach the 65536-byte
+     * high-water mark ('drain' follows), and on an ended or closed socket. */
+    "net.sockWrite": { argTypes: [NETSOCKET_T, STRING], result: BOOL },
+    "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: BOOL },
     "net.sockEnd": { argTypes: [NETSOCKET_T], result: VOID },
     "net.sockEndStr": { argTypes: [NETSOCKET_T, STRING], result: VOID },
     "net.sockEndBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
     /** write/end with a CHECKED-DYNAMIC chunk (an untyped JS payload into a
      * typed socket): the runtime dispatches STR/BYTES and throws Node's
      * ERR_INVALID_ARG_TYPE chunk TypeError on any other kind. */
-    "net.sockWriteDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
+    "net.sockWriteDyn": { argTypes: [NETSOCKET_T, DYN], result: BOOL },
     "net.sockEndDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
     "net.sockDestroy": { argTypes: [NETSOCKET_T], result: VOID },
     "net.sockPipe": { argTypes: [NETSOCKET_T, NETSOCKET_T], result: VOID },
@@ -2013,6 +2028,12 @@ function buildLibFnSignatures() {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
       result: VOID,
     },
+    /** on('drain') / once('drain'): fires after a write answered false, once
+     * the write buffer empties. */
+    "net.sockOnDrain": {
+      argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
+      result: VOID,
+    },
     "net.sockRemoteAddress": { argTypes: [NETSOCKET_T], result: VOID },
     /** socket.encrypted — `boolean | undefined`: the true arm iff the
      * socket carries a TLS transport (Node types `encrypted: true` on
@@ -2139,6 +2160,12 @@ function buildLibFnSignatures() {
     /** socket.address(): { address, family, port } or {} as a dyn. */
     "net.sockAddress": { argTypes: [NETSOCKET_T], result: DYN },
     "net.sockBytesWritten": { argTypes: [NETSOCKET_T], result: F64 },
+    /** socket.writableLength: Node's state.length, the length of every
+     * write not yet completely sent. */
+    "net.sockWritableLength": { argTypes: [NETSOCKET_T], result: F64 },
+    /** socket.writableNeedDrain: a write answered false and 'drain' has not
+     * fired, with the write half open. */
+    "net.sockWritableNeedDrain": { argTypes: [NETSOCKET_T], result: BOOL },
     /** remotePort (0), remoteFamily (1), localAddress (2), localPort (3),
      * localFamily (4): dyn values, undefined when unknown. */
     "net.sockAddrField": { argTypes: [NETSOCKET_T, F64], result: DYN },
@@ -4000,6 +4027,15 @@ function buildLibFnSignatures() {
     /** `value instanceof C` for a dyn value and a class that extends Array
      * (its name, a literal). */
     "array.dynIsClass": { argTypes: [DYN, STRING], result: BOOL },
+    // The value of the foreign element (SCR_ARR_FOREIGN) at args[1] of an
+    // array (args[0], any element type); callers test the element state
+    // first. Borrowed; never throws.
+    "array.foreign": { argTypes: [null, F64], result: DYN },
+    /** The checked conversion's TypeError for the foreign element at args[1]
+     * of an array (args[0]) read where a value described by args[2] is
+     * expected. ALWAYS THROWS; polymorphic result (the error.nodeThrow
+     * pattern). May-throw seed. */
+    "array.foreignThrow": { argTypes: [null, F64, STRING], result: VOID },
     // Whether the array (args[0]) still has the key (args[1]) from its
     // namedKeys list. Borrowed; never throws.
     "array.hasNamedKey": { argTypes: [null, STRING], result: BOOL },
@@ -4601,12 +4637,54 @@ function buildLibFnSignatures() {
     "insp.errorCause": { argTypes: [null, F64, F64], result: STRING },
     "insp.dyn": { argTypes: [DYN, F64, F64], result: STRING },
     "insp.dynS": { argTypes: [DYN, F64], result: STRING },
+    /** util.format over a dyn array of its arguments, and
+     * util.formatWithOptions(options, pack): the runtime formatter for format
+     * strings known at run time and spread arguments. */
+    "insp.format": { argTypes: [DYN], result: STRING },
+    /** insp.format over arguments that are all strings, numbers, booleans,
+     * null or undefined, without the checked-dynamic walk. */
+    "insp.formatPrimitives": { argTypes: [arrayOf(DYN)], result: STRING },
+    "insp.formatList": { argTypes: [arrayOf(DYN)], result: STRING },
+    "insp.formatWithOptions": { argTypes: [DYN, DYN], result: STRING },
+    /** util.inspect(value, options, depth, colors) with the call's argument
+     * count: the runtime reads the options and renders the checked-dynamic
+     * view. */
+    "insp.inspect": { argTypes: [DYN, DYN, DYN, DYN, F64], result: STRING },
+    /** A [util.inspect.custom] method's call: whether ctx.customInspect is
+     * set, its depth argument (the remaining depth at recursion r of depth
+     * d), its options object and util.inspect, then its result rendered: a
+     * string re-indented at the current level, or a checked-dynamic value
+     * (customIsSelf tests for the instance itself). customInspect sets the
+     * flag for the renders that follow and answers the previous value, and
+     * depthKind does the same for how an unbounded depth was given (0
+     * Infinity, 1 null, 2 undefined). */
+    "insp.customEnabled": { argTypes: [], result: BOOL },
+    /** Registers a class's compiled custom inspect function under its
+     * instances' typed-ref type key, for the checked-dynamic walk. */
+    "insp.registerCustom": { argTypes: [STRING, DYN], result: VOID },
+    "insp.customInspect": { argTypes: [BOOL], result: BOOL },
+    "insp.depthKind": { argTypes: [F64], result: F64 },
+    "insp.customDepth": { argTypes: [F64, F64], result: DYN },
+    "insp.customOptions": { argTypes: [F64], result: DYN },
+    "insp.inspectFunction": { argTypes: [], result: DYN },
+    "insp.customText": { argTypes: [STRING], result: STRING },
+    "insp.customIsSelf": { argTypes: [DYN, DYN], result: BOOL },
+    "insp.customResult": { argTypes: [DYN, F64, F64], result: STRING },
+    /** Around the method's call: the inspect and format calls it makes run
+     * in a fresh inspect context with the default options. begin answers the
+     * token end takes; end also discards what a call that threw left. */
+    "insp.customCallBegin": { argTypes: [], result: F64 },
+    "insp.customCallEnd": { argTypes: [F64], result: VOID },
+    /** Whether a runtime format string has a '%' before its last character. */
+    "insp.formatSpecifies": { argTypes: [STRING], result: BOOL },
+    "insp.formatSpecifiesDyn": { argTypes: [DYN], result: BOOL },
+    "insp.dynFormatS": { argTypes: [DYN, F64], result: STRING },
     /** util.format's %o over a checked-dynamic value: inspect with
      * showHidden. Kinds whose hidden entries have no rendering throw the
      * 'not supported yet' Error. */
     "insp.dynHidden": { argTypes: [DYN, F64], result: STRING },
     "insp.begin": { argTypes: [F64], result: VOID },
-    /** util.inspect's breakLength, compact (0 for false) and sorted for the
+    /** util.inspect's breakLength, compact (-1 for false) and sorted for the
      * renders that follow; the call site restores 80, 3 and false afterwards. */
     "insp.layout": { argTypes: [F64, F64, BOOL], result: VOID },
     "insp.entry": { argTypes: [STRING, BOOL], result: VOID },
