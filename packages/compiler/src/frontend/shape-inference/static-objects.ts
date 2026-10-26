@@ -864,10 +864,46 @@ export function planStaticObjectRewrites(
     if (recv.size !== 1 || !constantAtoms.has([...recv][0]!)) return false;
     return pureReceiver(target.expression, target);
   };
+  /** Whether evaluating `n` itself may run code of the program: converting
+   * an operand to a primitive or a property key (an arithmetic, relational or
+   * loose-equality operator, a compound assignment, `++`, a template
+   * substitution, a computed key) calls its valueOf, toString or
+   * Symbol.toPrimitive; `in`, `instanceof` and `delete` run traps and
+   * Symbol.hasInstance; spreading and destructuring run iterators and
+   * getters; a class runs its computed keys, static initializers and blocks. */
+  const runsImplicitly = (n: Node): boolean => {
+    if (ts.isBinaryExpression(n)) {
+      const op = n.operatorToken.kind;
+      if (op === ts.SyntaxKind.EqualsToken)
+        return ts.isObjectLiteralExpression(n.left) || ts.isArrayLiteralExpression(n.left);
+      return (
+        op !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+        op !== ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+        op !== ts.SyntaxKind.AmpersandAmpersandToken &&
+        op !== ts.SyntaxKind.BarBarToken &&
+        op !== ts.SyntaxKind.QuestionQuestionToken &&
+        op !== ts.SyntaxKind.CommaToken
+      );
+    }
+    if (ts.isPrefixUnaryExpression(n)) return n.operator !== ts.SyntaxKind.ExclamationToken;
+    return (
+      ts.isPostfixUnaryExpression(n) ||
+      ts.isDeleteExpression(n) ||
+      ts.isAwaitExpression(n) ||
+      ts.isYieldExpression(n) ||
+      ts.isTemplateExpression(n) ||
+      ts.isSpreadElement(n) ||
+      ts.isSpreadAssignment(n) ||
+      ts.isComputedPropertyName(n) ||
+      ts.isObjectBindingPattern(n) ||
+      ts.isArrayBindingPattern(n) ||
+      ts.isClassExpression(n)
+    );
+  };
   /** Whether a statement only defines things: function declarations, and
    * declarations and stores whose evaluation runs no code outside function
    * bodies (no call, no read that could run a getter, no store that could run
-   * a setter). */
+   * a setter, no implicit conversion or other implicit call). */
   const definitionOnly = (stmt: ts.Statement): boolean => {
     if (ts.isFunctionDeclaration(stmt)) return true;
     if (!ts.isExpressionStatement(stmt) && !ts.isVariableStatement(stmt)) return false;
@@ -875,7 +911,12 @@ export function planStaticObjectRewrites(
     const visit = (n: Node): void => {
       if (runs) return;
       if (ts.isFunctionLike(n)) return;
-      if (ts.isCallExpression(n) || ts.isNewExpression(n) || ts.isTaggedTemplateExpression(n))
+      if (
+        ts.isCallExpression(n) ||
+        ts.isNewExpression(n) ||
+        ts.isTaggedTemplateExpression(n) ||
+        runsImplicitly(n)
+      )
         runs = true;
       if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
         const p = n.parent;

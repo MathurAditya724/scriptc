@@ -97,6 +97,12 @@ test(
     // early-user.js calls a function in the statement that loads lazy.js:
     // a binding after that statement is not initialized when it runs.
     expect(rewrittenIfAny(debug, join(pkg, "early-user.js")) ?? "").not.toContain("__ns_mod_");
+    // coerce.js converts an object with a toString method between its
+    // constructor and the method: the conversion runs before the method exists.
+    expect(debug).toContain("code runs between the constructor and its methods");
+    expect(rewrittenIfAny(debug, join(pkg, "coerce.js")) ?? "").not.toContain(
+      "class __ns_shapes_Box",
+    );
     const vec = rewritten(debug, join(pkg, "vec.js"));
     expect(vec).toContain("class __ns_geo_Vec");
     expect(vec).toContain("module.exports = { geo: geo };");
