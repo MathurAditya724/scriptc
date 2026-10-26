@@ -27,7 +27,7 @@ import {
   streamTypedRefEligible,
   undefinedArmTag,
 } from "../../ir/analysis.js";
-import { loopTestsEveryIteration } from "../loop-polls.js";
+import { containsLoop, loopTestsEveryIteration } from "../loop-polls.js";
 import type {
   IrBytesElem,
   IrExpr,
@@ -826,6 +826,11 @@ const NO_BORROWED: ReadonlySet<number> = new Set();
 
 /** The nodes that write a binding by its id (numberGlobalWriters). */
 const GLOBAL_WRITE_KINDS: readonly IrNodeKind[] = ["assign", "varDecl", "assignExpr", "incDec"];
+
+/** workerLoopBudget's answer for a loop that polls on every iteration
+ * instead of counting down in a slot. */
+const POLL_EVERY_ITERATION = "%worker.poll.every";
+
 /** Runtime library calls (readsLoopMetrics). */
 const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
 
@@ -4013,10 +4018,22 @@ export class LlEmitter {
     );
   }
 
+  /** The countdown slot of `loop`'s cancellation poll (emitWorkerLoopCheck),
+   * or null when the loop does not poll. An ELF worker executable's poll is
+   * one ordered load of the thread's own pending word. A loop nest keeps
+   * one countdown per loop, which its register pressure often leaves in
+   * memory, so the loops of a nest there poll on every iteration and get
+   * POLL_EVERY_ITERATION instead of a slot. A loop on its own keeps its
+   * countdown in a register, which costs less than the load. */
   workerLoopBudget(
     loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" | "forOf" }>,
   ): string | null {
     if (!this.workerLoopPolls(loop)) return null;
+    if (
+      this.executableTls &&
+      (this.jumpTargets.some((target) => target.kind === "loop") || containsLoop(loop.body))
+    )
+      return POLL_EVERY_ITERATION;
     const slot = this.B.slot();
     this.B.entryAllocas.push(`${slot} = alloca i32 ; worker cancellation budget`);
     this.B.line(`store i32 0, ptr ${slot}`);
@@ -4121,6 +4138,10 @@ export class LlEmitter {
    * stay in the loop. */
   emitWorkerLoopCheck(slot: string | null): void {
     if (slot === null) return;
+    if (slot === POLL_EVERY_ITERATION) {
+      this.emitWorkerPoll();
+      return;
+    }
     const B = this.B;
     const budget = B.tmp(),
       due = B.tmp(),
@@ -4140,9 +4161,9 @@ export class LlEmitter {
   }
 
   /** The cancellation poll itself. Calls and throwing operations retain
-   * their own checks. Loops amortize this extra poll across bounded
-   * batches of iterations so scalar work does not cross the runtime ABI on
-   * every iteration. */
+   * their own checks. Outside ELF worker executables, loops amortize this
+   * extra poll across bounded batches of iterations so scalar work does not
+   * cross the runtime ABI on every iteration. */
   emitWorkerPoll(): void {
     this.emitPendingCheck(undefined, true);
   }
