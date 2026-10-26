@@ -111,5 +111,12 @@ if (process.argv.includes("--run")) {
   }).trim();
   if (!tscTsVersion.startsWith("Version "))
     throw new Error(`the distribution's tsc-ts reported ${JSON.stringify(tscTsVersion)}`);
+  // The release strips tsc-ts and the comptime evaluator; arm64 macOS runs
+  // only executables whose linker-generated code signature matches their
+  // contents.
+  if (process.platform === "darwin" && process.arch === "arm64") {
+    for (const executable of [binary, tscTs, resolve(dirname(binary), toolchain.comptime)])
+      execFileSync("codesign", ["--verify", "--strict", executable], { stdio: "inherit" });
+  }
 }
 console.log(`${identity.name}@${identity.version}: native distribution verified`);

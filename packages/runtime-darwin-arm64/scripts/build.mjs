@@ -15,6 +15,7 @@ import {
 } from "../../runtime-pack-common/scripts/runtime-unit.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
+import { shareIdenticalArtifacts } from "../../runtime-pack-common/scripts/share-artifacts.mjs";
 
 const run = promisify(execFile);
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -365,6 +366,7 @@ async function build() {
         await copyFile(source, output);
       }),
     );
+    await shareIdenticalArtifacts(flavors, buildRoot);
     const manifest = {
       schema: "scriptc.runtime-pack.v1",
       format: 1,
