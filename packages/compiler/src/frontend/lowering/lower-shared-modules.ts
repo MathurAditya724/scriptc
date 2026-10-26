@@ -34,6 +34,7 @@ import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import { BOOL, DYN, STRING, VOID, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import { resolveBareModule } from "../resolve.js";
 import { packageDirOf } from "../../node-islands/origin.js";
+import { requireModuleSpecifiers, scanModuleSpecifiers } from "../../node-islands/modules.js";
 import { readProjectConfig } from "../../project-config.js";
 import {
   sharedClassExtendedDiag,
@@ -67,13 +68,6 @@ export interface SharedModulePlan {
 }
 
 const MAX_ISLAND_FILES = 4000;
-const SPECIFIERS = [
-  /\bfrom\s*["']([^"'\n]+)["']/g,
-  /\bimport\s*["']([^"'\n]+)["']/g,
-  /\brequire\s*\(\s*["']([^"'\n]+)["']\s*\)/g,
-  /\bimport\s*\(\s*["']([^"'\n]+)["']\s*\)/g,
-];
-const REQUIRE_MODULE = /\brequireModule\s*\(\s*["']([^"'\n]+)["']\s*\)/g;
 
 function real(path: string): string {
   try {
@@ -408,9 +402,9 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
     const text = sf.text;
     if (!text.includes("requireModule")) continue;
     const from = real(sf.fileName);
-    for (const m of text.matchAll(REQUIRE_MODULE)) {
+    for (const spec of requireModuleSpecifiers(text)) {
       try {
-        const target = real(resolveFrom(from, m[1]!));
+        const target = real(resolveFrom(from, spec));
         const own = compiled.get(target);
         if (own !== undefined) candidates.add(own);
         else queue.push(target);
@@ -435,16 +429,16 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
     } catch {
       continue;
     }
-    for (const re of SPECIFIERS) {
-      for (const m of text.matchAll(re)) {
-        for (const target of resolveAll(file, m[1]!)) {
-          const sf = compiled.get(target);
-          if (sf !== undefined) {
-            candidates.add(sf);
-            const base = extendedImport(text, m[1]!);
-            if (base !== null && !extended.has(sf)) extended.set(sf, base);
-          } else if (!seen.has(target)) queue.push(target);
-        }
+    // Specifiers in code only: a comment or a string that looks like an
+    // import names no module.
+    for (const spec of scanModuleSpecifiers(text).specifiers) {
+      for (const target of resolveAll(file, spec)) {
+        const sf = compiled.get(target);
+        if (sf !== undefined) {
+          candidates.add(sf);
+          const base = extendedImport(text, spec);
+          if (base !== null && !extended.has(sf)) extended.set(sf, base);
+        } else if (!seen.has(target)) queue.push(target);
       }
     }
   }
@@ -508,6 +502,9 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
     plans.push({ sf, path, exports });
   }
   if (plans.length > 0) lowerer.usesNodeIsland = true;
+  // Before island loads are lowered (the plans are computed in the first
+  // module's header): the module tree ships these as placeholders.
+  for (const plan of plans) lowerer.nodeIslandModules.addProvided(plan.path);
   return plans;
 }
 

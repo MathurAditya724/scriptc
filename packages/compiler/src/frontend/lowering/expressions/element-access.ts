@@ -59,14 +59,18 @@ import {
   arrayValueRead,
   arrayValueStore,
   arrayValueType,
+  elementMayBeForeign,
   lowerSafeBytesRead,
   lowerSafeIndexRead,
+  primitiveElement,
+  unionArrayValueRead,
 } from "../array-values.js";
 import { lowerOptionalStringIndex, lowerUnionStringIndex } from "../string-index.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
+import { withInheritedMethods } from "../record-inherited.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
 import { isKeyedFieldAccess } from "./keyed-field-targets.js";
@@ -594,6 +598,8 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         }
       }
       if (key.type.kind === "f64") {
+        const optional = optionalArmIndexRead(lowerer, value, key, locOf(expr));
+        if (optional) return lowerer.maybeNarrow(optional, expr);
         const safe = lowerOptionalArrayIndexRead(lowerer, expr, value, key);
         if (safe) return safe;
       }
@@ -884,9 +890,14 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     // must be the element type (library ABI checks and the catchable
     // RangeError contract for an out-of-bounds assert). Where undefined is
     // representable, the assertion keeps JavaScript's unchecked read.
+    // A declared `(T | undefined)[]` element (stored as T) keeps its
+    // optional read: the assertion then narrows it with a catchable
+    // TypeError, as for a union element.
+    const declaredOptional = arr.type.optionalElements === true;
     const provenPresent =
       ts.isNonNullExpression(expr.parent) &&
       expr.parent.expression === expr &&
+      !declaredOptional &&
       !assertedElementKeepsUndefined(lowerer, expr.parent);
     if (provenPresent) {
       return lowerer.maybeNarrow(
@@ -1435,7 +1446,17 @@ export function lowerRecordKeyRead(
     loc,
   };
   if (nanCoded) return read;
-  return includeUndefined || optionalRead ? read : lowerer.maybeNarrow(read, expr);
+  const answered = withInheritedMethods(lowerer, read, litKey, isCalledAccess(expr));
+  return includeUndefined || optionalRead ? answered : lowerer.maybeNarrow(answered, expr);
+}
+
+/** The access is the callee of a call (`o[k](…)`, `o[k]?.(…)`, `o[k]!(…)`),
+ * which passes the object as `this`. */
+function isCalledAccess(node: ts.Expression): boolean {
+  let child: ts.Expression = node;
+  while (ts.isParenthesizedExpression(child.parent) || ts.isNonNullExpression(child.parent))
+    child = child.parent;
+  return ts.isCallExpression(child.parent) && child.parent.expression === child;
 }
 
 /** ToPropertyKey for represented record keys. Missing array-derived string
@@ -1614,11 +1635,14 @@ export function lowerElementCompoundParts(
   const indexRef = (): IrExpr => varRef(indexLocal.id, F64, loc);
   const oldValue: IrExpr =
     receiver.type.kind === "array"
-      ? receiver.type.elem.kind === "f64"
+      ? receiver.type.elem.kind === "f64" &&
+        !(op === "+" && elementMayBeForeign(lowerer, receiver.type.elem))
         ? // Every numeric operator applies ToNumber to the old value, so a
           // missing element is NaN without materializing `number | undefined`.
           arrayNumberRead(receiverRef(), indexRef(), locOf(target))
-        : receiver.type.elem.kind === "string" && op === "+"
+        : receiver.type.elem.kind === "string" &&
+            op === "+" &&
+            !elementMayBeForeign(lowerer, receiver.type.elem)
           ? arrayStringOperand(receiverRef(), indexRef(), locOf(target))
           : arrayValueRead(lowerer, receiverRef(), indexRef(), receiver.type.elem, locOf(target))
       : {
@@ -2436,4 +2460,47 @@ export function lowerEnvironmentKey(lowerer: Lowerer, node: ts.Expression): IrEx
   if (key.type.kind === "dyn")
     return { kind: "libCall", fn: "dyn.toStringCoerce", args: [key], type: STRING, loc: key.loc };
   return lowerRecordPropertyKey(lowerer, key, node);
+}
+
+/** A number-keyed read of a union of arrays with a `(T | undefined)[]` arm
+ * (stored as T elements, primitiveElement) whose element facts admit
+ * missing values: each arm reads its element by its state
+ * (unionArrayValueRead), where the keyed read would trap on a present
+ * undefined. The receiver and key evaluate once. Null for other unions. */
+function optionalArmIndexRead(
+  lowerer: Lowerer,
+  value: IrExpr,
+  key: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (value.type.kind !== "union") return null;
+  const arms = lowerer.unions.get(value.type.unionId)?.arms ?? [];
+  if (
+    !arms.some(
+      (arm) =>
+        arm.kind === "array" &&
+        primitiveElement(arm.elem) &&
+        arrayValueType(lowerer, arm.elem).kind === "union",
+    )
+  )
+    return null;
+  if (unionArrayValueRead(lowerer, value, key, loc) === null) return null;
+  const stmts: IrStmt[] = [];
+  const stable = (e: IrExpr, name: string, keep: boolean): IrExpr => {
+    if (keep) return e;
+    const local = lowerer.declareHiddenLocal(name, e.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: e, loc });
+    return varRef(local.id, e.type, loc);
+  };
+  // A receiver local stays a direct read only when the key cannot assign
+  // it (`a[(a = other, 0)]` reads the array `a` held before the key).
+  const plainKey = key.kind === "varRef" || key.kind === "numLit";
+  const receiver = stable(
+    value,
+    "%indexReceiver",
+    value.kind === "numLit" || (value.kind === "varRef" && plainKey),
+  );
+  const index = stable(key, "%indexKey", plainKey);
+  const read = unionArrayValueRead(lowerer, receiver, index, loc)!;
+  return stmts.length === 0 ? read : { kind: "seqExpr", stmts, result: read, type: read.type, loc };
 }

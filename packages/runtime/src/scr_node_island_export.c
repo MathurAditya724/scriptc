@@ -503,11 +503,17 @@ static ScrDyn *ni_class_ctor(const ScrDyn *cls) {
   return m != NULL ? m->ctor : NULL;
 }
 
-/* A prototype method of a class capsule (+1), or NULL. */
+/* A prototype method of a class capsule (+1), or NULL. An own property the
+ * island wrote under the method's name (kept in the capsule's materialized
+ * view) hides the method, as an own property hides a prototype's in Node. */
 static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key) {
   if (key->kind != SCR_DYN_STR) return NULL;
   ScrDyn *table = ni_methods_of(target);
   if (table == NULL) return NULL;
+  const ScrDyn *view = target->v.typed_ref.materialized;
+  if (view != NULL && view->kind == SCR_DYN_OBJ &&
+      scr_dyn_obj_get(view, key->v.str->data, key->v.str->len) != NULL)
+    return NULL;
   ScrDyn *m = scr_dyn_obj_get(table, key->v.str->data, key->v.str->len);
   return m != NULL ? scr_dyn_retain(m) : NULL;
 }

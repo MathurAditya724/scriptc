@@ -1040,6 +1040,14 @@ function unifySignatureBindings(
       dAliasArgs.length &&
       iAliasArgs.length === dAliasArgs.length
     ) {
+      if (tsBindings && declared !== inst) {
+        let entries = lowerer.boundAliasInstances.get(declared);
+        if (!entries) lowerer.boundAliasInstances.set(declared, (entries = []));
+        // A body forwarding its own alias (`inner(g)` returning `Catalog<G,
+        // "x">` inside an instance) resolves through the enclosing one.
+        if (!entries.some((entry) => entry.tsBindings === tsBindings))
+          entries.push({ tsBindings, instance: lowerer.boundAliasTsResolver(inst) ?? inst });
+      }
       dAliasArgs.forEach((da, i) => {
         const ia = iAliasArgs[i];
         if (ia) unify(da, ia, depth + 1);
@@ -2082,6 +2090,10 @@ function storedImplicitArgumentType(lowerer: Lowerer, arg: ts.Expression): IrTyp
     isJsSourceFile(ts.getSourceFileOfNode(arg)) &&
     (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg))
   ) {
+    // A closure lowered here before (another call site's instance key, or
+    // a repeated demand) keeps its value for the argument's own lowering.
+    const known = lowerer.speculatedClosure(arg);
+    if (known !== null) return known.type;
     const saved = lowerer.diagSink;
     const diagnostics: typeof lowerer.diags = [];
     lowerer.diagSink = diagnostics;
@@ -2092,8 +2104,17 @@ function storedImplicitArgumentType(lowerer: Lowerer, arg: ts.Expression): IrTyp
       lowerer.diagSink = saved;
     }
     // Direct inferred helpers can receive native callbacks even when their
-    // result is an opaque handle that cannot cross checked storage.
-    if (diagnostics.length === 0 && value?.type.kind === "func") return value.type;
+    // result is an opaque handle that cannot cross checked storage. The
+    // argument's own lowering then takes this value instead of lowering
+    // the closure a second time.
+    if (diagnostics.length === 0 && value?.type.kind === "func") {
+      lowerer.speculatedClosures.set(arg, {
+        ctx: lowerer.ctx,
+        bindings: lowerer.typeParamBindings,
+        value,
+      });
+      return value.type;
+    }
   }
   if (arg.kind === ts.SyntaxKind.ThisKeyword) return lowerer.resolveThis()?.type ?? null;
   if (ts.isAwaitExpression(arg)) {
