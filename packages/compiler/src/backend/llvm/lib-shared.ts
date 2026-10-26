@@ -1980,6 +1980,8 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "net.listenOptsReusePortCb",
   "net.connect",
   "net.connectCb",
+  "net.connectPath",
+  "net.connectPathCb",
   "net.connectLookup",
   "net.connectLookupDyn",
   "net.connectAttempt",
