@@ -3932,6 +3932,8 @@ export class Lowerer {
    * commit points (degradeAtCommit), so a program that compiles today
    * never fills it. */
   readonly degradedTypes = new Map<number, DegradedType>();
+  /** A pushed-down (partial) degraded type was mapped (hasPartialDegradedTypes). */
+  private partialDegradedTypesMapped = false;
   /** The components lenient mappings turned into the checked dynamic, by
    * checker type id, with the declared type they are pieces of (SC6101
    * causes and per-slot operation counts). */
@@ -4184,7 +4186,10 @@ export class Lowerer {
           degraded.lenient = DYN;
           degraded.lenient = this.lenientType(type);
         }
-        if (degraded.lenient.kind !== "dyn") this.partialHits[this.partialHits.length - 1]?.add(id);
+        if (degraded.lenient.kind !== "dyn") {
+          this.partialHits[this.partialHits.length - 1]?.add(id);
+          this.partialDegradedTypesMapped = true;
+        }
         return degraded.lenient;
       },
       ...(shadow !== undefined ? { canonShadow: shadow } : {}),
@@ -9991,8 +9996,11 @@ export class Lowerer {
     return true;
   }
 
-  /** Some degraded type kept a pushed-down (partial) shape. */
+  /** Some degraded type kept a pushed-down (partial) shape, or one was
+   * mapped before a retry widened it: the IR lowered before the retry keeps
+   * that shape. */
   hasPartialDegradedTypes(): boolean {
+    if (this.partialDegradedTypesMapped) return true;
     for (const degraded of this.degradedTypes.values())
       if (degraded.lenient !== null && degraded.lenient.kind !== "dyn") return true;
     return false;
