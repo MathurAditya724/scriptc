@@ -72,6 +72,20 @@ for (let k = 0; k < 4; k++) {
 }
 console.log("short", short.join(","));
 
+// The index is the compared local, and on the final else's path it is
+// past the end, also past 2^32: the store is ignored there.
+function indexed(flag: boolean, far: boolean): string {
+  const a = new Uint8Array(4);
+  let j = 0;
+  if (flag) j = far ? 4294967297 : 3;
+  if (j === 0) a[j] = 11;
+  else if (j === 1) a[j] = 22;
+  else if (j === 2) a[j] = 33;
+  else a[j] = 44;
+  return a.join(",");
+}
+console.log("indexed", indexed(false, false), indexed(true, false), indexed(true, true));
+
 // Chains that keep their arms: an arm with a second statement, no final
 // else, a different index, and a subject that is not a local.
 let calls = 0;

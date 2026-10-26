@@ -218,8 +218,13 @@ export function emitConstantChoice(host: LlvmEmitterContext, choice: ConstantCho
   const first = choice.stores[0]!;
   if (first.arr.type.kind !== "bytes")
     throw new InternalCompilerError("llvm emitter bug: constant choice on non-bytes");
-  const arr = host.emitStableReceiver(first.arr, [first.index]);
-  const index = host.emitExpr(first.index);
+  // An arm's index carries the ranges proven inside that arm: an index that
+  // is the compared local holds the arm's value there. The one store runs
+  // for every value, so such an index reads the local through the first
+  // comparison's operand, whose range holds before the chain branches.
+  const indexExpr = sameVarRef(first.index, choice.subject) ? choice.subject : first.index;
+  const arr = host.emitStableReceiver(first.arr, [indexExpr]);
+  const index = host.emitExpr(indexExpr);
   const value = emitChoice(host, choice);
   const scopes = choice.stores.map((store) => host.bytesAliasScopes.get(store));
   host.emitBytesSet(
@@ -227,7 +232,7 @@ export function emitConstantChoice(host: LlvmEmitterContext, choice: ConstantCho
     arr.name,
     index,
     value,
-    first.index,
+    indexExpr,
     undefined,
     choice.stores.every((store) => host.bytesBounds.has(store)),
     choice.stores.every((store) => host.bytesOwned.has(store)),
