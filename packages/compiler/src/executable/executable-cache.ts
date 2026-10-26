@@ -175,6 +175,9 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
   npmStatic: readonly string[] | "auto" | null;
+  /** Omitted unless shape inference's overlay compiles the packages
+   * (frontend/shape-inference). */
+  shapeOverlay?: true;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;

@@ -144,6 +144,11 @@ async function tryFastPath(): Promise<number | null> {
     ...(values["cpu-dispatch"] === true ? { cpuDispatch: true as const } : {}),
     ...(checker === undefined ? {} : { checker }),
     npmStatic,
+    // Mirrors the full compiler's key: shape inference's overlay is opt-in
+    // (SCRIPTC_SHAPE_OVERLAY=1) and --no-shape-overlay turns it off.
+    ...(process.env["SCRIPTC_SHAPE_OVERLAY"] === "1" && values["shape-overlay"] !== false
+      ? { shapeOverlay: true as const }
+      : {}),
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${
       helperObjectRoute ? "runtime-pack" : "driver-tu"
@@ -233,6 +238,7 @@ async function coverageFastPath(
     values["provenance-sources"] ||
     values["emit-ir"] ||
     (values["npm-static"] ?? []).length > 0 ||
+    values["shape-overlay"] === false ||
     (values["external-types"] ?? []).length > 0 ||
     // The replay covers the default Node island policy only.
     hasNodeIslandFlags(values)

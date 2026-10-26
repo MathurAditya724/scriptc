@@ -435,7 +435,8 @@ jobs:
       (needs.check-release.outputs.reuse_artifacts == 'true' ||
       (needs.build-native-packages.result == 'success' && needs.build-mobile-runtime-packs.result == 'success'))
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Two waits for npm availability of at most 25 minutes each.
+    timeout-minutes: 70
     environment: Release
     permissions:
       contents: read
@@ -588,9 +589,8 @@ jobs:
           }
 
           # pnpm pack resolves workspace dependencies; npm handles OIDC.
-          # Publish dependencies first. Registry propagation after an accepted
-          # upload must not block the remaining packages; the npm-available
-          # job waits for it.
+          # Publish dependencies first. The npm-available job waits for the
+          # packages that nothing in this release depends on.
           publish_dir packages/runtime
           publish_dir packages/runtime-darwin-arm64
           publish_dir packages/llvm-darwin-arm64
@@ -610,12 +610,25 @@ jobs:
           publish_dir packages/runtime-wasm32-wasi
           publish_dir packages/runtime-win32-x64-msvc
           publish_dir packages/llvm-win32-x64-msvc
+          # A native CLI package depends on its platform's LLVM helper and
+          # runtime pack packages, and scriptc on the native CLI packages.
+          # Each group publishes only once the packages it depends on
+          # resolve, so an install never finds a package whose dependencies
+          # npm is still processing. A rerun skips accepted uploads and waits
+          # again.
+          wait_available() {
+            awk 'FILENAME == ARGV[1] { accepted[$1] = $2; next } { print $1, accepted[$1] }' \
+              "$RUNNER_TEMP/npm-accepted-times.txt" "$RUNNER_TEMP/npm-release.txt" > "$RUNNER_TEMP/npm-wait.txt"
+            node scripts/wait-npm-available.mjs "$RUNNER_TEMP/npm-wait.txt" --interval 30 --timeout 1500
+          }
+          wait_available
           for pkg in packages/cli-*; do publish_dir "$pkg"; done
           publish_dir packages/compiler
           publish_dir packages/experimental
           publish_dir packages/node
           publish_dir packages/threads
           publish_dir packages/types
+          wait_available
           publish_dir packages/cli
           echo "All package uploads accepted; npm registry propagation may continue after this job." >> "$GITHUB_STEP_SUMMARY"
 

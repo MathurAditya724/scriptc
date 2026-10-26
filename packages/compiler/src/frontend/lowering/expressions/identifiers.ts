@@ -56,6 +56,7 @@ import { varRef } from "../../../ir/build.js";
 import {
   ambientUndefReadType,
   ambientUndefinedFnSymbolOf,
+  ambientUndefinedVarSymbolOf,
   contextualUndefReadType,
   fenceEarlyAliasUse,
   isTemporalGlobalRoot,
@@ -843,14 +844,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // Stdlib/@types/node ambients never reach here (their chokepoint
   // is above); only user-file declares do.
   {
-    const sym = lowerer.resolveValueSymbol(expr);
-    const decl = sym ? sym.declarations[0] : undefined;
-    if (
-      decl !== undefined &&
-      ts.isVariableDeclaration(decl) &&
-      decl.initializer === undefined &&
-      ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Ambient
-    ) {
+    if (ambientUndefinedVarSymbolOf(lowerer, expr)) {
       const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
       if (declared && declared.kind !== "void") {
         return {
