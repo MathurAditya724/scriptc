@@ -2564,7 +2564,7 @@ static void scr_dyn_record_view_freeze(ScrDyn *view) {
 
 void scr_record_freeze(void *record) {
   size_t *rc = record;
-  if (*rc != SIZE_MAX) *rc |= SCR_RC_FROZEN;
+  if (!scr_rc_immortal(record)) *rc |= SCR_RC_FROZEN;
 }
 
 void scr_record_throw_frozen(ScrStr *key, ScrStr *owner, double operation) {
