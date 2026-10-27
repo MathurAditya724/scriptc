@@ -706,31 +706,42 @@ static inline size_t scr_utf16_units_short(const char *data, size_t len) {
 }
 
 /* A fresh concatenation (no head, the template-literal shape): numbers
- * format straight into the result, which reserves scr_f64_to_str's whole
- * 32-byte buffer for each. */
+ * format into a stack buffer first, so the result is allocated at its exact
+ * length. */
 #define SCR_F64_TEXT_MAX 32
 static __attribute__((noinline)) ScrStr *scr_str_concat_fresh(ScrStr *const *parts,
                                                               const double *nums, size_t count) {
-  size_t reserve = 0;
+  char texts[SCR_STR_MIXED_MAX * SCR_F64_TEXT_MAX];
+  size_t text_len[SCR_STR_MIXED_MAX];
+  size_t len = 0, used = 0;
   bool ascii = true;
   for (size_t i = 0; i < count; i++) {
-    size_t n = parts[i] ? parts[i]->len : SCR_F64_TEXT_MAX;
-    if (n > SCR_STR_MAX_CAP - reserve) scr_oom();
-    reserve += n;
-    if (parts[i]) ascii &= parts[i]->ascii;
+    size_t n;
+    if (parts[i]) {
+      n = parts[i]->len;
+      ascii &= parts[i]->ascii;
+    } else {
+      n = scr_f64_to_str(nums[i], texts + used);
+      text_len[i] = n;
+      used += n;
+    }
+    if (n > SCR_STR_MAX_CAP - len) scr_oom();
+    len += n;
   }
-  ScrStr *out = scr_str_take_spare(reserve);
-  if (!out) out = scr_str_alloc(reserve, reserve);
+  ScrStr *out = scr_str_take_spare(len);
+  if (!out) out = scr_str_alloc(len, len);
   char *w = out->data;
+  const char *text = texts;
   for (size_t i = 0; i < count; i++) {
     if (parts[i]) {
       scr_copy_bytes(w, parts[i]->data, parts[i]->len);
       w += parts[i]->len;
     } else {
-      w += scr_f64_to_str(nums[i], w);
+      scr_copy_bytes(w, text, text_len[i]);
+      w += text_len[i];
+      text += text_len[i];
     }
   }
-  size_t len = (size_t)(w - out->data);
   out->len = len;
   out->data[len] = '\0';
   out->ascii = ascii;
@@ -2120,6 +2131,39 @@ void scr_str_note_utf16_len(ScrStr *s, size_t units) {
   *scr_u16len_slot(s) = (ScrU16Len){s, units};
 }
 
+/* A non-ASCII receiver up to this many bytes (a character, a short word)
+ * is decoded from its start on each read, as scr_str_utf16_len counts a
+ * short receiver: an index entry for it would cost more than the walk, and
+ * would evict the cursor of a long receiver being scanned meanwhile. */
+#define SCR_STR_DECODE_SHORT 16
+
+/* The UTF-16 unit at index i of a short receiver, or NaN past its end. */
+static double scr_str_char_code_short(const ScrStr *s, size_t i) {
+  size_t b = 0;
+  while (b < s->len) {
+    unsigned char c = (unsigned char)s->data[b];
+    if (c < 0x80) {
+      if (i == 0) return (double)c;
+      i--;
+      b++;
+      continue;
+    }
+    size_t adv;
+    uint32_t cp = scr_utf8_decode(s->data + b, &adv);
+    if (cp < 0x10000) {
+      if (i == 0) return (double)cp;
+      i--;
+    } else {
+      uint32_t v = cp - 0x10000;
+      if (i == 0) return (double)(0xD800 + (v >> 10));
+      if (i == 1) return (double)(0xDC00 + (v & 0x3FF));
+      i -= 2;
+    }
+    b += adv;
+  }
+  return NAN;
+}
+
 double scr_str_char_code_at(ScrStr *s, double i) {
   /* A sequential scan of a non-ASCII receiver stays inside the bounded
    * ASCII span cached at its last resolved position. Its unit offset is an
@@ -2158,6 +2202,7 @@ double scr_str_char_code_at(ScrStr *s, double i) {
   /* UTF-16 length <= byte length always, so this also fences the cast. */
   if (idx >= (double)s->len) return NAN;
   if (s->ascii) return (double)(unsigned char)s->data[(size_t)idx];
+  if (s->len <= SCR_STR_DECODE_SHORT) return scr_str_char_code_short(s, (size_t)idx);
   ScrSidx *e = scr_sidx(s);
   if (s->ascii || e->u16len == s->len) return (double)(unsigned char)s->data[(size_t)idx];
   if (scr_sidx_units(s, e)) return idx < (double)e->nunits ? (double)e->units[(size_t)idx] : NAN;
@@ -2172,11 +2217,19 @@ double scr_str_char_code_at(ScrStr *s, double i) {
 }
 
 double scr_str_index_of(ScrStr *s, ScrStr *needle, double fromIndex) {
-  /* A search from the start of a proven-ASCII receiver: byte offsets are
-   * UTF-16 indexes, and a needle with other bytes is never found. A start
-   * index that is not positive (NaN, -0 or negative) clamps to 0. */
-  if (s->ascii && !(fromIndex > 0)) {
-    const char *found = scr_byte_find(s->data, s->len, needle->data, needle->len);
+  /* A proven-ASCII receiver: byte offsets are UTF-16 indexes, and a needle
+   * with other bytes is never found. A start index that is not positive
+   * (NaN, -0 or negative) clamps to 0, a positive one truncates
+   * (ToIntegerOrInfinity) and clamps to the length, where only the empty
+   * needle is found. */
+  if (s->ascii) {
+    size_t start = 0;
+    if (fromIndex > 0) {
+      if (fromIndex >= (double)s->len) return needle->len == 0 ? (double)s->len : -1.0;
+      start = (size_t)fromIndex;
+    }
+    const char *found =
+        scr_byte_find(s->data + start, s->len - start, needle->data, needle->len);
     return found ? (double)(found - s->data) : -1.0;
   }
   double pos = scr_to_integer_or_infinity(fromIndex);

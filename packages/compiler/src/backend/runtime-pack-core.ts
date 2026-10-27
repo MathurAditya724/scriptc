@@ -91,6 +91,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   dynForAwait: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
+  largePages: boolean;
   utilTiming: boolean;
   dynBuffer: boolean;
   builtinValues: boolean;
@@ -296,6 +297,7 @@ export function effectiveRuntimeFeatures(
     dynForAwait: features.dynForAwait === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
+    largePages: features.largePages === true,
     utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,
     builtinValues: features.builtinValues === true,

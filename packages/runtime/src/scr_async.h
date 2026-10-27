@@ -150,6 +150,9 @@ void scr_promise_rethrow_top_level(ScrPromise *p);
  * value), or NULL with the rejection re-thrown into the awaiter. */
 ScrDyn *scr_await_dyn(ScrPromise *p);
 ScrDyn *scr_await_dyn_value_settled(ScrDyn *value);
+/* The native coroutine form's extraction: the body has already suspended
+ * until the value's promise settled, or taken the non-promise hop. */
+ScrDyn *scr_coro_await_dyn_value(ScrDyn *value);
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value);
 /* `await v` over a checked-dynamic VALUE: dyn promises adopt, everything
  * else takes JS's one-hop non-thenable await and answers itself (+1). */

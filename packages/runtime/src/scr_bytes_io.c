@@ -1757,11 +1757,11 @@ ScrStr *scr_fs_mkdtemp_sync_chk(const ScrDyn *prefix, const ScrDyn *opts, const 
   if (!scr_fs_encoding_chk(opts)) return NULL;
   bool utf8 = true;
   if (opts->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < opts->v.obj.len; i++) {
-      const ScrDynEntry *e = &opts->v.obj.entries[i];
-      if (scr_fs_dyn_absent(e->value)) continue;
-      if (strcmp(e->key, "encoding") == 0) {
-        if (!scr_fs_utf8_encoding(e->value)) utf8 = false;
+    for (size_t i = 0; i < scr_dyn_obj_count(opts); i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(opts, i);
+      if (scr_fs_dyn_absent(e.value)) continue;
+      if (strcmp(e.key, "encoding") == 0) {
+        if (!scr_fs_utf8_encoding(e.value)) utf8 = false;
         continue;
       }
       utf8 = false; /* an unmodeled effectful option */

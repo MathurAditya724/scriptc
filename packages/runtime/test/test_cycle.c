@@ -833,6 +833,96 @@ static void check_deferred_white_restoration(void) {
  * scheduling decision or pass would do. */
 size_t scr_cyc_pass_at(unsigned gen);
 void scr_cyc_route_bypassed_at(void);
+
+/* A nursery pass over a dead ring, longer than the walk recurses, whose
+ * nodes hold edges into an older ring, and two live nodes the ring reaches
+ * that hold edges into another: only the dead ring's edges are paid off. */
+static void check_cross_generation_holders(void) {
+  enum { RING = 200 };
+  /* The ring's candidate must wait for the pass below. */
+  if (configured_nursery_threshold() < 8) return;
+  static ScrCycType cyc_type = { &node_trace, &node_free, 0 };
+  scr_collect_cycles();
+  size_t before = freed;
+  Node *targets[2];
+  for (int r = 0; r < 2; r++) {
+    targets[r] = make_ring(2);
+    targets[r]->rc++;
+    release_live(targets[r]);
+  }
+  scr_collect_cycles(); /* both survive, out of the nursery */
+  Node *live[2];
+  for (int i = 0; i < 2; i++) {
+    live[i] = scr_cyc_alloc(sizeof(*live[i]), &cyc_type);
+    live[i]->rc = 3; /* itself, the ring's edge and an outside owner */
+    live[i]->next = live[i];
+    live[i]->other = targets[1];
+    targets[1]->rc++;
+  }
+  Node *ring = make_ring(RING);
+  Node *node = ring;
+  for (size_t i = 0; i < RING; i++, node = node->next) {
+    node->other = i == 10 ? live[0] : i == 150 ? live[1] : targets[0];
+    if (node->other == targets[0]) targets[0]->rc++;
+  }
+  release_live(ring);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+  check(freed == before + RING, "nursery pass did not free only the dead ring");
+  check(targets[0]->rc == 2, "the dead ring's edges into an older ring were not paid off");
+  check(targets[1]->rc == 4, "a live node's edge into an older ring was paid off");
+  release_live(live[0]);
+  release_live(live[1]);
+  scr_collect_cycles();
+  check(freed == before + RING + 2, "the live nodes were not collected once dead");
+  release_live(targets[0]);
+  release_live(targets[1]);
+  scr_collect_cycles();
+  check(freed == before + RING + 6, "the older rings were not collected once dead");
+}
+
+/* A dispose observer (scr_cyc_free notifies it) reads the color of the
+ * objects a pass tears down. */
+static size_t observed_doomed, observed_other;
+static void observe_disposal(void *obj) {
+  if (scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_DOOMED) observed_doomed++;
+  else observed_other++;
+}
+
+static void check_dispose_observer_sees_doomed(void) {
+  enum { RING = 8 };
+  size_t before = freed;
+  void (*hook)(void *) = scr_weak_dispose_hook;
+  scr_weak_dispose_hook = observe_disposal;
+  observed_doomed = observed_other = 0;
+  Node *ring = make_ring(RING);
+  release_live(ring);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+  scr_weak_dispose_hook = hook;
+  check(freed == before + RING, "the dead ring was not freed");
+  check(observed_doomed == RING && observed_other == 0,
+        "a dispose observer saw a collected object that was not DOOMED");
+}
+
+/* A full pass whose gray list fills: the dead rings walked before it filled
+ * stay in the list, and the scan from the candidates passes over them. */
+static void check_doomed_rings_before_full_gray_list(void) {
+  enum { RINGS = 4, RING = 8, LIVE = 70000 };
+  if (configured_nursery_threshold() < 8) return;
+  size_t before = freed;
+  Node *dead[RINGS];
+  for (int i = 0; i < RINGS; i++) dead[i] = make_ring(RING);
+  Node *live = make_ring(LIVE);
+  scr_collect_cycles(); /* re-arms the allocation trigger */
+  for (int i = 0; i < RINGS; i++) release_live(dead[i]);
+  live->rc++;
+  release_live(live);
+  scr_collect_cycles();
+  check(freed == before + RINGS * RING, "a pass with a full gray list did not free only the dead rings");
+  release_live(live);
+  scr_collect_cycles();
+  check(freed == before + RINGS * RING + LIVE, "the large ring was not collected once dead");
+}
+
 static size_t bypass_traced; /* trace calls on bypass-kind nodes */
 static size_t bypass_freed;  /* bypass-kind nodes freed */
 static void bypass_trace(void *obj, ScrTraceVisit visit, void *ctx) {
@@ -1617,6 +1707,9 @@ int main(void) {
   check_deferred_white_restoration();
   check_cross_generation_edges();
   check_deep_cross_generation_chain();
+  check_cross_generation_holders();
+  check_dispose_observer_sees_doomed();
+  check_doomed_rings_before_full_gray_list();
   check_teardown_rebuffers_and_immortals();
   check_growth_schedule_follows_yield();
   check_growth_cap_bounds_floating_garbage();

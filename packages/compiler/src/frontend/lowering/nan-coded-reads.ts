@@ -451,6 +451,19 @@ export class NanCodedReads {
 
   // ---- present reads ------------------------------------------------------
 
+  /** `xs[i]` whose index is a non-negative integer counter of the reading
+   * function and that a dominating `i < xs.length` guard bounds by the
+   * length: the read names an existing index. */
+  counterIndexInBounds(read: ts.ElementAccessExpression): boolean {
+    const index = peelTransparent(read.argumentExpression);
+    if (!ts.isIdentifier(index)) return false;
+    const symbol = this.symbolOf(index);
+    if (!symbol || !this.nonNegativeCounter(symbol)) return false;
+    const decl = this.host.declarationOf(symbol);
+    if (!decl || this.containingFunction(decl) !== this.containingFunction(read)) return false;
+    return indexReadInBounds(read);
+  }
+
   /** `t[i]` names an existing element: `i` is a non-negative integer
    * counter and a dominating guard bounds it by `t.length` (or by the
    * length of a typed array that always has the same length).

@@ -23,6 +23,11 @@ export interface IntegerRangeFacts {
   ranges: IntegerRanges;
   loopRanges: ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>>;
 }
+/** Ranges assumed for locals on entry to while loops (loop-entry-ranges.ts):
+ * the facts inside such a loop hold in a copy of it that runs only after a
+ * test proves every assumed local is an integer in its range. After the
+ * loop, its assumed locals and its writes carry no facts. */
+export type LoopEntryAssumptions = ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>>;
 const SIGNED: IntegerRange = { min: -2147483648, max: 2147483647 };
 const UNSIGNED: IntegerRange = { min: 0, max: 4294967295 };
 /** Int32 and uint32 at once: the bound under which `%` (modeled only for
@@ -309,6 +314,7 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
 export function analyzeIntegerRangeFacts(
   fn: IrFunction,
   slots: IntegerSlotFacts = {},
+  entries?: LoopEntryAssumptions,
 ): IntegerRangeFacts {
   const ranges = new Map<IrExpr, IntegerRange | null>();
   const loopRanges = new Map<IrStmt, Map<string, IntegerRange>>();
@@ -1074,6 +1080,8 @@ export function analyzeIntegerRangeFacts(
         }
         case "while":
         case "doWhile": {
+          const assumed = entries?.get(s);
+          if (assumed) for (const [id, range] of assumed) if (!facts.has(id)) set(facts, id, range);
           // Counters the condition bounds keep their range at every read
           // inside and after the loop.
           const guarded =
@@ -1102,6 +1110,10 @@ export function analyzeIntegerRangeFacts(
           } else body(s.body, new Map(loop));
           havocWith(facts, [s], facts, guarded);
           for (const [id, range] of guarded) set(facts, id, range);
+          if (assumed) {
+            invalidate(facts, [s]);
+            for (const id of assumed.keys()) facts.delete(id);
+          }
           break;
         }
         case "forOf": {

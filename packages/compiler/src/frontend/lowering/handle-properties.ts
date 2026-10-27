@@ -283,10 +283,11 @@ const RENAMES: ReadonlyMap<IrLibFn, IrLibFn> = new Map<IrLibFn, IrLibFn>([
  * property-table entries (in place) and installs the table in %main. */
 export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[]): void {
   if (!lowerer.writesOntoChildren && !childAdditions(lowerer).any) return;
-  const calls: (IrExpr & { kind: "libCall" })[] = [];
+  // A node the IR shares at several places is renamed once.
+  const calls = new Set<IrExpr & { kind: "libCall" }>();
   const visitor = {
     expr: (e: IrExpr): boolean => {
-      if (e.kind === "libCall" && RENAMES.has(e.fn)) calls.push(e);
+      if (e.kind === "libCall" && RENAMES.has(e.fn)) calls.add(e);
       return true;
     },
     stmt: (): boolean => true,

@@ -490,6 +490,12 @@ ScrArr *scr_arr_new_small(ScrElemKind elem);
  * SCR_ELEM_F64); no-op for any other kind. */
 void scr_arr_widen_i32(ScrArr *a);
 ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops);
+/* The same constructors in the current group arena, when one is open
+ * (scr_arena.h): what arena-aware functions call. */
+ScrArr *scr_arr_new_r(ScrElemKind elem, size_t initial_cap);
+ScrArr *scr_arr_new_small_r(ScrElemKind elem);
+ScrArr *scr_arr_new_ops_r(const ScrArrOps *ops, size_t initial_cap);
+ScrArr *scr_arr_new_ops_small_r(const ScrArrOps *ops);
 /* scr_arr_new(elem, cap) for a known final length: the `cap` slots share
  * the array's own block (one allocation). With `states`, the array starts
  * with states (for holes or present undefined). Returns +1. */
