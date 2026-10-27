@@ -20,6 +20,8 @@ const PROGRAMS = [
   "6496-key-order-built-and-parsed.ts",
   "6916-index-record-spread-overrides.ts",
   "6951-unknown-cast-class-methods.ts",
+  // Units without records rebuild a shared helper in place.
+  "class-computed-key-descriptors.ts",
 ];
 
 async function lower(program: string, dir: string, label: string): Promise<string> {

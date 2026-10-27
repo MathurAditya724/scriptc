@@ -297,6 +297,48 @@ test("a recorded wave throws when a unit changes a held function in place", () =
   };
   lowerWaveRecorded(subject, ["a"], waveStats());
   expect(() => lowerWaveRecorded(subject, ["a", "b"], waveStats())).toThrow(
-    "a unit changed lifted entry %shared in place",
+    "a unit changed lifted entry %shared in place without naming it",
   );
+});
+
+/** A wave host over one function table holding `%shared` and one checked
+ * list, whose units change `%shared` in place and name it in their IR. */
+function sharedHost(grows: (name: string) => boolean): { host: WaveHost; checked: string[] } {
+  const functions = [fn("%shared")];
+  const checked: string[] = [];
+  return {
+    checked,
+    host: {
+      tables: [
+        functionTable("lifted", functions, (name) => functions.some((f) => f.name === name)),
+        checkedTable("checked", () => checked.length),
+      ],
+      scalars: [],
+      lowerRecorded: (name) => {
+        functions[0]!.body = [{ kind: "exprStmt", note: name } as never];
+        if (grows(name)) checked.push(name);
+        return {
+          fn: { ...fn(`%${name}`), body: [{ kind: "call", callee: "%shared" } as never] },
+          poisoned: false,
+        };
+      },
+      store: () => {},
+      statementCounts: () => ({ total: 0, failed: 0, other: 0 }),
+      resolves: () => true,
+    },
+  };
+}
+
+test("units without a record may change a function they name in place", () => {
+  const { host: subject } = sharedHost(() => true);
+  const stats = waveStats();
+  lowerWaveRecorded(subject, ["a", "b"], stats);
+  expect(stats).toMatchObject({ recorded: 0, unrecorded: 2, reasons: { checked: 2 } });
+});
+
+test("a unit that changes a function it names in place has no record", () => {
+  const { host: subject } = sharedHost(() => false);
+  const stats = waveStats();
+  lowerWaveRecorded(subject, ["a"], stats);
+  expect(stats).toMatchObject({ recorded: 0, unrecorded: 1, reasons: { "lifted:changed": 1 } });
 });

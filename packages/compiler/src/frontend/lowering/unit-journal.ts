@@ -102,6 +102,31 @@ export interface HeldContents {
   extend(): void;
   /** The key of an entry this holds whose content has changed, or null. */
   changed(): string | null;
+  /** The key of an entry among `keys` whose content has changed, or null. */
+  changedAmong(keys: ReadonlySet<string>): string | null;
+  /** Takes the current content of the entries among `keys`. */
+  refresh(keys: ReadonlySet<string>): void;
+}
+
+/** The strings quoted in JSON `texts`, unescaped only as far as their
+ * delimiting quotes: the names a unit's encoded IR and entries refer to. */
+export function quotedStrings(texts: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const text of texts) {
+    let start = -1;
+    for (let index = 0; index < text.length; index++) {
+      const char = text.charCodeAt(index);
+      if (char === 92 /* \\ */) index++;
+      else if (char === 34 /* " */) {
+        if (start < 0) start = index + 1;
+        else {
+          out.add(text.slice(start, index));
+          start = -1;
+        }
+      }
+    }
+  }
+  return out;
 }
 
 /** A table's entries at one point (JournalTable.hold). */
@@ -237,7 +262,11 @@ export interface RecordedUnit {
  * entries it held before, every field is as it was or a flag that was set,
  * statement totals grew by the recorded statements alone, no diagnostic was
  * emitted, every event resolves and the function encodes. */
-export function recordUnit(host: WaveHost, name: string): RecordedUnit {
+export function recordUnit(
+  host: WaveHost,
+  name: string,
+  contents: readonly (HeldContents | null)[] | null = null,
+): RecordedUnit {
   const tables = host.tables;
   const before = tables.map((table) => table.size());
   const held = tables.map((table) => (table.hold === undefined ? null : table.hold()));
@@ -281,6 +310,26 @@ export function recordUnit(host: WaveHost, name: string): RecordedUnit {
       if (entries === null) reasons.push(`${table.name}:encoding`);
       else added[table.name] = entries;
     }
+  if (contents !== null) {
+    // A unit changes in place the entries it uses, which its IR and new
+    // entries name: a unit with a record must leave them as they were, and
+    // a unit without one keeps its changes.
+    const texts: string[] = [];
+    if (text !== null) texts.push(text);
+    for (const index of grown) {
+      const table = tables[index]!;
+      const entries = added[table.name] ?? table.entries!(before[index]!);
+      if (entries !== null) for (const entry of entries) texts.push(entry);
+    }
+    const names = quotedStrings(texts);
+    if (reasons.length === 0)
+      tables.forEach((table, index) => {
+        if ((contents[index] ?? null)?.changedAmong(names) != null)
+          reasons.push(`${table.name}:changed`);
+      });
+    if (reasons.length > 0) for (const held of contents) held?.refresh(names);
+    for (const held of contents) held?.extend();
+  }
   if (reasons.length > 0) return { record: null, reasons, fn, before };
   return { record: { name, fn: text, poisoned, events, tables: added }, reasons, fn, before };
 }
@@ -305,8 +354,7 @@ export function lowerWaveRecorded(
   // started: a record carries a unit's new entries, not changes to others.
   const contents = tables.map((table) => (table.contents === undefined ? null : table.contents()));
   for (const name of wave) {
-    const unit = recordUnit(host, name);
-    for (const held of contents) held?.extend();
+    const unit = recordUnit(host, name, contents);
     stats.units++;
     const record = unit.record;
     if (record === null) {
@@ -330,7 +378,7 @@ export function lowerWaveRecorded(
     const key = contents[index]?.changed() ?? null;
     if (key !== null)
       throw new InternalCompilerError(
-        `a unit changed ${table.name} entry ${key} in place, which no unit record carries`,
+        `a unit changed ${table.name} entry ${key} in place without naming it, which no unit record carries`,
       );
   });
 }
@@ -367,24 +415,29 @@ export function irDataTable<V>(name: string, map: Map<string, V>): JournalTable 
   return {
     ...codecTable(name, map, encode, (text) => JSON.parse(text) as V),
     contents: () => {
-      const keys: string[] = [];
-      const texts: (string | null)[] = [];
+      const texts = new Map<string, string | null>();
+      const differs = (key: string): boolean => {
+        const value = map.get(key);
+        return value === undefined || encode(value) !== texts.get(key);
+      };
       const held: HeldContents = {
         extend: () => {
-          let index = 0;
-          for (const [key, value] of map) {
-            if (index++ < keys.length) continue;
-            keys.push(key);
-            texts.push(encode(value));
-          }
+          if (texts.size === map.size) return;
+          for (const [key, value] of map) if (!texts.has(key)) texts.set(key, encode(value));
         },
         changed: () => {
-          for (let index = 0; index < keys.length; index++) {
-            const key = keys[index]!;
-            const value = map.get(key);
-            if (value === undefined || encode(value) !== texts[index]) return key;
-          }
+          for (const key of texts.keys()) if (differs(key)) return key;
           return null;
+        },
+        changedAmong: (keys) => {
+          for (const key of keys) if (texts.has(key) && differs(key)) return key;
+          return null;
+        },
+        refresh: (keys) => {
+          for (const key of keys) {
+            const value = map.get(key);
+            if (texts.has(key) && value !== undefined) texts.set(key, encode(value));
+          }
         },
       };
       held.extend();
@@ -515,16 +568,35 @@ export function functionTable(
     },
     contents: () => {
       const texts: (string | null)[] = [];
+      const indexes = new Map<string, number>();
+      const differs = (index: number): boolean =>
+        index < functions.length && encodeUnitFunction(functions[index]!) !== texts[index];
       const held: HeldContents = {
         extend: () => {
-          for (let index = texts.length; index < functions.length; index++)
-            texts.push(encodeUnitFunction(functions[index]!));
+          for (let index = texts.length; index < functions.length; index++) {
+            const fn = functions[index]!;
+            texts.push(encodeUnitFunction(fn));
+            indexes.set(fn.name, index);
+          }
         },
         changed: () => {
-          for (let index = 0; index < texts.length && index < functions.length; index++)
-            if (encodeUnitFunction(functions[index]!) !== texts[index])
-              return functions[index]!.name;
+          for (let index = 0; index < texts.length; index++)
+            if (differs(index)) return functions[index]!.name;
           return null;
+        },
+        changedAmong: (keys) => {
+          for (const key of keys) {
+            const index = indexes.get(key);
+            if (index !== undefined && differs(index)) return key;
+          }
+          return null;
+        },
+        refresh: (keys) => {
+          for (const key of keys) {
+            const index = indexes.get(key);
+            if (index !== undefined && index < functions.length)
+              texts[index] = encodeUnitFunction(functions[index]!);
+          }
         },
       };
       held.extend();
