@@ -20,6 +20,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
+    ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),

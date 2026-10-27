@@ -25,6 +25,8 @@ import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 import { dynUndefinedExpr, nodeThrowExpr, countedFor, numLit, varRef } from "../../ir/build.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { threadsImportOf } from "../threads-import.js";
+import { nodeApiCalleeOf } from "../node-api-import.js";
+import { lowerNodeApiCall } from "./lower-node-island.js";
 import {
   adaptZeroArgTimerCallback,
   lowerTimersMemberCall,
@@ -404,6 +406,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   {
     const codeGeneration = codeGenerationCalleeOf(lowerer, expr.expression);
     if (codeGeneration !== null) return lowerCodeGenerationCall(lowerer, expr, codeGeneration);
+  }
+  // @scriptc/node call/callSync: a call into the Node island helper
+  // (lower-node-island.ts).
+  {
+    const nodeApi = nodeApiCalleeOf(lowerer.program, expr.expression);
+    if (nodeApi !== null) return lowerNodeApiCall(lowerer, expr, nodeApi);
   }
   // `(0, util_1.inspect)(value)`: TypeScript's CommonJS output calls a
   // named import through a comma expression, which leaves the call's

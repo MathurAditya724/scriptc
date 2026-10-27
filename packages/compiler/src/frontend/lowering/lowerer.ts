@@ -754,6 +754,7 @@ import {
   maybePromiseUnionOf,
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
+import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
  * function can never collide with it (mangling is injective per prefix). */
@@ -3524,6 +3525,19 @@ export class Lowerer {
   usesWasmCustomSections = false;
   /** The program constructs a LifetimeRegion (lifetime-regions.ts). */
   usesLifetimeRegions = false;
+  /** The program calls into Node.js (@scriptc/node): the module carries
+   * the nodeIsland record, which the executable build fills in. */
+  usesNodeIsland = false;
+  /** The modules Node island calls load (lower-node-island.ts). */
+  readonly nodeIslandModules = new NodeIslandModuleCollector();
+  /** Each call's caller literal, set to its tree path when lowering ends. */
+  readonly nodeIslandCallers: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
+  /** Absolute specifiers, rewritten to the shipped file relative to their caller. */
+  readonly nodeIslandSpecifiers: {
+    literal: IrExpr & { kind: "strLit" };
+    caller: string;
+    target: string;
+  }[] = [];
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */
@@ -4003,6 +4017,11 @@ export class Lowerer {
       setTable("freezableArrays", this.freezableArrays),
       checkedTable("moduleOrder", () => this.moduleOrder.length),
       checkedTable("diags", () => this.diags.length),
+      // Node island call sites hold literals of the unit's IR that lowering's
+      // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
+      // one lowers again rather than replaying a record.
+      checkedTable("nodeIslandCallers", () => this.nodeIslandCallers.length),
+      checkedTable("nodeIslandSpecifiers", () => this.nodeIslandSpecifiers.length),
       checkedTable("fnSigsBySymbol", () => this.fnSigsBySymbol.size),
       checkedTable("cjsExportsAssignments", () => this.cjsExportsAssignments.size),
       checkedTable("inlineRequireCycleCalls", () => this.inlineRequireCycleCalls.size),
@@ -4392,6 +4411,11 @@ export class Lowerer {
         "usesLifetimeRegions",
         () => this.usesLifetimeRegions,
         () => (this.usesLifetimeRegions = true),
+      ),
+      flag(
+        "usesNodeIsland",
+        () => this.usesNodeIsland,
+        () => (this.usesNodeIsland = true),
       ),
       flag(
         "cjsModuleGraphEnabled",
@@ -9434,6 +9458,7 @@ export class Lowerer {
             entry: ENTRY_NAME,
             ...(this.usesWorkers ? { workers: true } : {}),
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
+            ...(this.usesNodeIsland ? { nodeIsland: this.nodeIslandRecord() } : {}),
             ...(this.declBoundary ? { declBoundary: true as const } : {}),
             ...(shapeOverlayFileNames().length > 0
               ? {
@@ -10515,6 +10540,18 @@ export class Lowerer {
       return;
     }
     this.diags.push(d);
+  }
+
+  /** The module's Node island record: the collected module tree, with each
+   * call's caller literal set to its path in that tree. The executable
+   * build fills in the libnode pack (index.ts). */
+  private nodeIslandRecord(): NonNullable<IrModule["nodeIsland"]> {
+    const modules = this.nodeIslandModules.tree();
+    for (const { literal, caller } of this.nodeIslandCallers)
+      literal.value = NodeIslandModuleCollector.callerPath(modules, caller);
+    for (const { literal, caller, target } of this.nodeIslandSpecifiers)
+      literal.value = NodeIslandModuleCollector.relativeSpecifier(caller, target);
+    return { libnode: "", nodeVersion: "", ...(modules === null ? {} : { modules }) };
   }
 
   unsupported(
