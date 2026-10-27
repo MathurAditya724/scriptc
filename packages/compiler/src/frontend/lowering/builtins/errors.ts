@@ -2,7 +2,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
-import { isSafeToDiscard, isSafeToRepeat } from "../expressions/evaluation-safety.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import {
   BOOL,
   CAUGHT,
@@ -541,11 +541,12 @@ export function lowerErrorCaptureStackTraceCall(
   const stmts: IrStmt[] = [];
   let receiver = lowerer.coerceToExpected(target, DYN);
   if (evaluated !== null) {
-    if (!isSafeToRepeat(receiver)) {
-      const local = lowerer.declareHiddenLocal("%captureTarget", DYN);
-      stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
-      receiver = { kind: "varRef", localId: local.id, type: DYN, loc };
-    }
+    // V8 captures onto the target value it evaluated first. The constructor
+    // argument may assign the variable or field the target was read from, so
+    // even a plain read is kept in a local before the argument runs.
+    const local = lowerer.declareHiddenLocal("%captureTarget", DYN);
+    stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
+    receiver = { kind: "varRef", localId: local.id, type: DYN, loc };
     stmts.push({ kind: "exprStmt", expr: evaluated, loc });
   }
   const capture: IrExpr = {

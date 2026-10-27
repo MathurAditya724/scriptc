@@ -150,3 +150,25 @@ try {
 } catch (e) {
   console.log('getter threw', e instanceof RangeError, e.message);
 }
+
+// The stack goes on the target as evaluated before constructorOpt, even when
+// constructorOpt assigns the variable or field the target was read from.
+let target = { message: 'original' };
+const replacement = { message: 'replacement' };
+const swapping = {
+  get ctor() {
+    target = replacement;
+    return inner;
+  },
+};
+const original = target;
+Error.captureStackTrace(target, swapping.ctor);
+console.log('reassigned variable', 'stack' in original, 'stack' in replacement, target === replacement);
+const box = { error: { message: 'boxed' } };
+const boxed = box.error;
+function swapField() {
+  box.error = { message: 'swapped in' };
+  return inner;
+}
+Error.captureStackTrace(box.error, swapField());
+console.log('reassigned field', 'stack' in boxed, 'stack' in box.error);
