@@ -75,7 +75,7 @@ export function executableLinkInputs(options: {
  * links as needed: the runtime defines the libm functions most programs
  * reach (scr_glibc_math.c) and Math's transcendentals (scr_ieee754.c), so a
  * program that calls no other libm function, such as pow, starts without
- * loading libm.so. */
+ * loading libm.so when it links with lld (see inputsWithoutLld). */
 export function systemLibraryLinkerArgs(
   target: Pick<NativeTargetSpec, "platform">,
   names: readonly string[],

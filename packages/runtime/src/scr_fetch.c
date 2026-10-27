@@ -4821,14 +4821,14 @@ static ScrArr *sf_headers_convert_init(const ScrDyn *headers, bool *canonical_ou
     return converted;
   }
   if (headers->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < headers->v.obj.len; i++) {
-      const ScrDynEntry *e = &headers->v.obj.entries[i];
-      ScrStr *raw_name = scr_str_new(e->key, e->key_len);
+    for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+      ScrStr *raw_name = scr_str_new(e.key, e.key_len);
       ScrStr *name_bytes = sf_header_value_bytestring(raw_name);
       ScrStr *name = name_bytes ? sf_latin1_to_utf8(name_bytes) : NULL;
       scr_str_release(name_bytes);
       scr_str_release(raw_name);
-      ScrDyn *source = scr_dyn_retain(e->value);
+      ScrDyn *source = scr_dyn_retain(e.value);
       ScrStr *raw_value = name ? scr_dyn_string_coerce_js(source) : NULL;
       scr_dyn_release(source);
       ScrStr *value_bytes = raw_value
@@ -6088,11 +6088,11 @@ static int8_t sf_light_header_form(const ScrDyn *headers, bool json_body,
   }
   int8_t form = 0;
   if (headers->kind == SCR_DYN_OBJ) {
-    ScrArr *out = scr_arr_new(SCR_ELEM_STR, 2 * headers->v.obj.len);
+    ScrArr *out = scr_arr_new(SCR_ELEM_STR, 2 * scr_dyn_obj_count(headers));
     form = 3;
-    for (size_t i = 0; i < headers->v.obj.len && form == 3; i++) {
-      const ScrDynEntry *e = &headers->v.obj.entries[i];
-      const ScrDyn *value = e->value;
+    for (size_t i = 0; i < scr_dyn_obj_count(headers) && form == 3; i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+      const ScrDyn *value = e.value;
       size_t count = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
       for (size_t j = 0; j < count; j++) {
         const ScrDyn *item = value->kind == SCR_DYN_ARR ? value->v.arr.items[j] : value;
@@ -6106,7 +6106,7 @@ static int8_t sf_light_header_form(const ScrDyn *headers, bool json_body,
           form = 0;
           break;
         }
-        scr_arr_push_ref(out, scr_str_new(e->key, e->key_len));
+        scr_arr_push_ref(out, scr_str_new(e.key, e.key_len));
         scr_arr_push_ref(out, text);
       }
     }
@@ -6666,27 +6666,27 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
     return sf_reject_now(promise, "fetch failed");
   }
   if (init && init->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < init->v.obj.len; i++) {
-      const ScrDynEntry *entry = &init->v.obj.entries[i];
-      bool supported = sf_name(entry->key, entry->key_len, "method") ||
-                       sf_name(entry->key, entry->key_len, "headers") ||
-                       sf_name(entry->key, entry->key_len, "body") ||
-                       sf_name(entry->key, entry->key_len, "duplex") ||
-                       sf_name(entry->key, entry->key_len, "redirect") ||
-                       sf_name(entry->key, entry->key_len, "signal");
+    for (size_t i = 0; i < scr_dyn_obj_count(init); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(init, i);
+      bool supported = sf_name(entry.key, entry.key_len, "method") ||
+                       sf_name(entry.key, entry.key_len, "headers") ||
+                       sf_name(entry.key, entry.key_len, "body") ||
+                       sf_name(entry.key, entry.key_len, "duplex") ||
+                       sf_name(entry.key, entry.key_len, "redirect") ||
+                       sf_name(entry.key, entry.key_len, "signal");
       bool recognized_unsupported =
-          sf_name(entry->key, entry->key_len, "cache") ||
-          sf_name(entry->key, entry->key_len, "credentials") ||
-          sf_name(entry->key, entry->key_len, "dispatcher") ||
-          sf_name(entry->key, entry->key_len, "integrity") ||
-          sf_name(entry->key, entry->key_len, "keepalive") ||
-          sf_name(entry->key, entry->key_len, "mode") ||
-          sf_name(entry->key, entry->key_len, "priority") ||
-          sf_name(entry->key, entry->key_len, "referrer") ||
-          sf_name(entry->key, entry->key_len, "referrerPolicy") ||
-          sf_name(entry->key, entry->key_len, "window");
-      if (!supported && recognized_unsupported && entry->value &&
-          entry->value->kind != SCR_DYN_UNDEF) {
+          sf_name(entry.key, entry.key_len, "cache") ||
+          sf_name(entry.key, entry.key_len, "credentials") ||
+          sf_name(entry.key, entry.key_len, "dispatcher") ||
+          sf_name(entry.key, entry.key_len, "integrity") ||
+          sf_name(entry.key, entry.key_len, "keepalive") ||
+          sf_name(entry.key, entry.key_len, "mode") ||
+          sf_name(entry.key, entry.key_len, "priority") ||
+          sf_name(entry.key, entry.key_len, "referrer") ||
+          sf_name(entry.key, entry.key_len, "referrerPolicy") ||
+          sf_name(entry.key, entry.key_len, "window");
+      if (!supported && recognized_unsupported && entry.value &&
+          entry.value->kind != SCR_DYN_UNDEF) {
         return sf_reject_now(promise, "fetch failed");
       }
     }

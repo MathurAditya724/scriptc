@@ -150,6 +150,10 @@ void scr_process_exit(double code);
  * helper process (Linux, `--detached-exit`). scr_lib.c defines a weak 0;
  * the program object of such an executable defines it as 1. */
 extern const unsigned char scr_detached_exit;
+/* The heap census writer of a program built with SCRIPTC_HEAP_CENSUS
+ * (heap-census.ts): that program's object defines it, and scr_lib.c calls
+ * it at exit through a weak reference (programs on Linux only). */
+void scr_census_write(void);
 void scr_process_set_exit_code(double code);
 double scr_process_exit_code_or_zero(void);
 /* The writer and the presence test of programs that read process.exitCode:
