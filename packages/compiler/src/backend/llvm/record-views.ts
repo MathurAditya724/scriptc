@@ -43,6 +43,24 @@ interface ViewOptions {
   readonly excluded: (shapeId: string) => boolean;
 }
 
+/** Value kinds that hold no reference to a record. */
+const LEAF_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "f64",
+  "bool",
+  "string",
+  "bigint",
+  "date",
+  "regex",
+  "bytes",
+  "symbol",
+  "url",
+  "searchParams",
+  "stats",
+  "undefinedT",
+  "nullT",
+  "void",
+]);
+
 function plainShape(shape: IrRecordShape): boolean {
   return (
     !shape.tuple &&
@@ -94,6 +112,47 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
     for (const root of roots) visit(root);
     return out;
   };
+  // The views planned so far: target shape → the sources it may view.
+  const sources = new Map<string, string[]>();
+  // Whether a value of a record can hold a value of another record type:
+  // through its fields, elements, map entries, union arms and overflow
+  // properties, and through the record a view of it names. Class instances,
+  // functions, untyped values, promises and the other kinds that can
+  // reference arbitrary objects count as holding every type.
+  const held = new Map<string, Set<string> | "any">();
+  const holds = (shapeId: string): Set<string> | "any" => {
+    const known = held.get(shapeId);
+    if (known) return known;
+    const out = new Set<string>();
+    const seen = new Set<string>();
+    const visit = (t: IrType): boolean => {
+      const key = typeKey(t);
+      if (seen.has(key)) return true;
+      seen.add(key);
+      switch (t.kind) {
+        case "record": {
+          out.add(t.shapeId);
+          const shape = shapes.get(t.shapeId);
+          if (shape?.indexValue !== undefined && !visit(shape.indexValue)) return false;
+          if (!(sources.get(t.shapeId) ?? []).every((id) => visit({ kind: "record", shapeId: id })))
+            return false;
+          return (shape?.fields ?? []).every((field) => visit(field.type));
+        }
+        case "array":
+        case "set":
+          return visit(t.elem);
+        case "map":
+          return visit(t.key) && visit(t.value);
+        case "union":
+          return (unions.get(t.unionId)?.arms ?? []).every(visit);
+        default:
+          return LEAF_KINDS.has(t.kind);
+      }
+    };
+    const result = visit({ kind: "record", shapeId }) ? out : "any";
+    held.set(shapeId, result);
+    return result;
+  };
   const checked: IrType[] = [];
   const boxed: IrType[] = [];
   for (const fn of mod.functions)
@@ -109,8 +168,6 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   const reachable = closure(checked);
   const live = closure(boxed);
   if (reachable.size === 0) return NO_RECORD_VIEWS;
-  const targets = new Set<string>();
-  const sources = new Map<string, string[]>();
   for (const id of reachable) {
     const target = shapes.get(id);
     if (!target || !plainShape(target) || target.freezable === true) continue;
@@ -118,13 +175,34 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
     const found: string[] = [];
     for (const source of shapes.values()) {
       if (source.id === id || !live.has(source.id) || !plainShape(source)) continue;
+      // A view writes the source's slots through the target type, which has
+      // no frozen-write guard, so a source that may be frozen keeps the copy.
+      if (source.freezable === true) continue;
       if (covers(source, target)) found.push(source.id);
     }
-    if (found.length === 0) continue;
-    targets.add(id);
-    sources.set(id, found);
+    if (found.length > 0) sources.set(id, found);
   }
-  if (targets.size === 0) return NO_RECORD_VIEWS;
+  // A view's record-source entry owns the source's capsule, an edge the
+  // cycle analysis does not see. A view stays off every cycle only when its
+  // source cannot hold a value of the target type, such as the view itself,
+  // including through other views. Dropping a pair removes edges, so the
+  // check repeats until no pair is dropped.
+  for (let changed = true; changed;) {
+    changed = false;
+    held.clear();
+    for (const [id, list] of sources) {
+      const kept = list.filter((source) => {
+        const sourceHolds = holds(source);
+        return sourceHolds !== "any" && !sourceHolds.has(id);
+      });
+      if (kept.length === list.length) continue;
+      changed = true;
+      if (kept.length > 0) sources.set(id, kept);
+      else sources.delete(id);
+    }
+  }
+  if (sources.size === 0) return NO_RECORD_VIEWS;
+  const targets = new Set(sources.keys());
   return { targets, sources: (target) => sources.get(target) ?? [] };
 }
 
