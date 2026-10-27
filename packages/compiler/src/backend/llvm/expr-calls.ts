@@ -139,7 +139,7 @@ export function emitCallExpr(
         // the call's statement frame releases its reference fields.
         if (
           a.kind === "new" &&
-          host.frameEscapes?.parameters.get(e.callee)?.has(index) === true &&
+          host.frameEscapes?.parameterStays(e.callee, index) === true &&
           frameClass(host, a.className)
         ) {
           const value = emitStackObject(host, a as StackObjectSource, (fields) => {
