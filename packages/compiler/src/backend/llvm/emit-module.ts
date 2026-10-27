@@ -199,19 +199,22 @@ function readRange(dir: string, range: number): { result: ChunkResult; texts: st
 
 /** The attribute groups of the emitted functions: #0 for every function,
  * #1 for coroutine bodies and #2 for out-of-line record clones. Each carries
- * the build's `--target-cpu` level, and `sanitize_address` in sanitized
- * builds. A group needs one attribute: without either, #0 holds a string
- * attribute that LLVM ignores. Dispatching builds add the x86-64-v3 copies'
- * #3 and #4 (cpu-dispatch.ts). */
+ * the build's `--target-cpu` level, `sanitize_address` in sanitized builds,
+ * and `uwtable` on native targets, so every function has an unwind table
+ * entry, including those LLVM infers `nounwind` (profilers and debuggers
+ * unwind through them). A group needs one attribute: without any, #0 holds a
+ * string attribute that LLVM ignores. Dispatching builds add the x86-64-v3
+ * copies' #3 and #4 (cpu-dispatch.ts). */
 function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean): string[] {
   const cpu = targetCpuAttribute(emitter.targetCpu);
   const asan = emitter.sanitizeAttributes ? " sanitize_address" : "";
-  const base = `${asan}${cpu}` || ` "scriptc-function"`;
+  const common = `${asan}${emitter.wasi ? "" : " uwtable"}`;
+  const base = `${common}${cpu}` || ` "scriptc-function"`;
   return [
     `attributes #0 = {${base} }`,
-    ...(emitter.usesCoroutines ? [`attributes #1 = {${asan} presplitcoroutine${cpu} }`] : []),
-    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline${asan}${cpu} }`] : []),
-    ...(emitter.cpuDispatch ? cpuDispatchAttributes(asan) : []),
+    ...(emitter.usesCoroutines ? [`attributes #1 = {${common} presplitcoroutine${cpu} }`] : []),
+    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline${common}${cpu} }`] : []),
+    ...(emitter.cpuDispatch ? cpuDispatchAttributes(common) : []),
   ];
 }
 
