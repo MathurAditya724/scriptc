@@ -1129,15 +1129,19 @@ static void sf_response_pause_if_full(SfStream *s) {
 
 static void sf_response_resume_if_ready(SfStream *s) {
   SfTransfer *t = s->response_owner;
-  if (!t || t->done || !t->response_paused || !t->response_socket ||
-      s->queued >= 1 || s->close_requested || s->closed || s->error) {
+  if (!t || t->done || s->queued >= 1 || s->close_requested || s->closed ||
+      s->error || t->inflate_draining) {
     return;
   }
-  if (t->inflate_draining) return;
-  if (t->inflating && (t->inflate_pending || t->inflate_needs_drain)) {
+  /* Compressed input or decoder output still buffered drains on demand:
+   * while the socket is paused, and after 'end', when the transfer no
+   * longer holds the socket and no more data arrives. */
+  if (t->inflating && (t->inflate_pending || t->inflate_needs_drain) &&
+      (t->response_paused || t->response_ended)) {
     sf_inflate_resume(t);
     return;
   }
+  if (!t->response_paused || !t->response_socket) return;
   t->response_paused = false;
   scr_net_sock_release(scr_net_sock_resume(t->response_socket));
 }
