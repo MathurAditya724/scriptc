@@ -428,6 +428,13 @@ typedef struct ScrDynTypedRecordOps {
    * optional key can change after the record is boxed. NULL in every other
    * table. */
   const struct ScrDynTypedRecordOps *(*select)(void *rec);
+  /* Stores `value` into present field `index` in place when it fits the
+   * field's type and answers true (also when the conversion itself threw,
+   * which has then raised the write's error); answers false with no side
+   * effects otherwise, leaving the snapshot path to raise its diagnostic.
+   * NULL when the program never writes through a dynamic view, and for a
+   * field whose storage it cannot replace (an inline union). */
+  bool (*set)(void *rec, size_t index, const ScrDyn *value);
 } ScrDynTypedRecordOps;
 /* A record capsule's ops while it answers from the native record (no view
  * created yet), or NULL. */
@@ -1308,8 +1315,10 @@ bool scr_dyn_typed_ref_is(
     const ScrDyn *d, const char *type_key, size_t type_key_len);
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
+void *scr_dyn_typed_ref_prefix_view(const ScrDyn *d); /* +1 or NULL */
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
+ScrDyn *scr_dyn_typed_ref_peek(const ScrDyn *d); /* +1 */
 /* What string conversion renders for a capsule (+1): its materialized
  * view, or, for an EventTarget or Event subclass without its own
  * toString, the "[object EventTarget]" / "[object Event]" string of its
@@ -1497,6 +1506,10 @@ bool scr_dyn_is_array_prototype(const ScrDyn *d);
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* The same in sloppy-mode code: an assignment strict mode refuses with a
+ * TypeError is ignored. */
+void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+void scr_dyn_key_set_computed_sloppy(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 /* A named (non-index) property of an extensible, unfrozen ARR, stored as
  * scr_dyn_key_set stores it. Takes ownership of value. */
 void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn *value);

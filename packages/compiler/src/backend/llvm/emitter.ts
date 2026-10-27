@@ -1701,6 +1701,8 @@ export class LlEmitter {
    * commit back into their objects. Library builds keep their commits:
    * their values cross a native boundary. */
   readonly liveViewsReadOnly: boolean;
+  /** IrModule.sloppyDynWrites: untyped writes in sloppy-mode code. */
+  readonly sloppyDynWrites: ReadonlySet<string>;
   /** IrModule.foreignElementKeys: element keys whose arrays can hold
    * SCR_ARR_FOREIGN elements. */
   readonly foreignElementKeys: ReadonlySet<string>;
@@ -2012,6 +2014,7 @@ export class LlEmitter {
           );
     this.constantNumericTables = findConstantNumericTables(mod);
     this.untypedIntegrity = mod.untypedIntegrity === true;
+    this.sloppyDynWrites = new Set(mod.sloppyDynWrites ?? []);
     this.liveViewsReadOnly =
       mod.lib === undefined &&
       !this.untypedIntegrity &&

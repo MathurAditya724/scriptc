@@ -1,5 +1,5 @@
 import { emitPerKeyOrder } from "./key-orders.js";
-import { typedRefConstructor } from "./shapes.js";
+import { rcMembers, typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
 import {
   BYTES_ELEM_NUM,
@@ -45,6 +45,7 @@ import {
   DYN_HANDLE_KINDS,
   isDirentShape,
   KEY_ORDER_FIELD,
+  shapeHasAccessorSlots,
   shapeKeyOrders,
   isDynTypedRefType,
   isRefCounted,
@@ -260,6 +261,8 @@ export class LlDyn {
   /** Emitted function definitions, in interning order. */
   readonly defs: string[] = [];
 
+  private readonly prefixSources = new Map<string, string[]>();
+
   constructor(private readonly host: DynHost) {}
 
   /** Journal replay (emit-journal.ts): builds or finds the helper a chunk
@@ -419,7 +422,7 @@ export class LlDyn {
    * dyn view: inside a visit session (`wrapped`), a capsule keeps the view
    * it was first given, so an outer visit can keep reading it. */
   private viewFn(wrapped: boolean): string {
-    const fn = wrapped ? "scr_dyn_visit_view" : "scr_dyn_typed_ref_materialize";
+    const fn = wrapped ? "scr_dyn_visit_view" : "scr_dyn_typed_ref_peek";
     this.host.declare(`declare ptr @${fn}(ptr)`);
     return fn;
   }
@@ -1150,10 +1153,63 @@ export class LlDyn {
    * Class layouts share their base prefix, so unboxing retains the same
    * pointer and virtual dispatch still uses the object's original vtable. */
   private typedRefMatches(B: BlockBuilder, t: IrType): string {
+    return this.typedRefMatchesAny(
+      B,
+      isDynTypedRefType(t)
+        ? this.host.classSubtypes(t.className).map((className) => ({ kind: "object", className }))
+        : [t],
+    );
+  }
+
+  /** The record shapes whose values a pointer of shape `targetId` may
+   * reference unchanged: their struct begins with exactly the target's
+   * fields (same names, types and representations, so the same offsets),
+   * and everything the target's release, teardown and collector support
+   * would get wrong on them is absent. The extra fields hold no
+   * references (the target's release frees the block without visiting
+   * them; frees are size-class agnostic), neither shape carries a shape
+   * word, a cycle header, an overflow map, key order variants or accessor
+   * slots, and both freeze alike. A record that keeps undeclared source
+   * properties is refused at run time (scr_dyn_typed_ref_prefix_view). */
+  private prefixViewSources(targetId: string): string[] {
+    const memo = this.prefixSources.get(targetId);
+    if (memo) return memo;
+    const host = this.host;
+    const plain = (shape: IrRecordShape): boolean =>
+      !shape.tuple &&
+      !shape.indexValue &&
+      !isDirentShape(shape) &&
+      !shapeHasAccessorSlots(shape) &&
+      shapeKeyOrders(shape).length === 1 &&
+      !shape.fields.some((field) => field.name === KEY_ORDER_FIELD) &&
+      host.nullableUnions.shapeNumber(shape.id) === 0 &&
+      !host.tracedShapes.has(`record:${shape.id}`);
+    const target = host.recordsById.get(targetId);
+    const out: string[] = [];
+    if (target && plain(target) && target.fields.length > 0) {
+      const base = host.nullableUnions.fieldBase(targetId);
+      for (const shape of host.recordsById.values()) {
+        if (shape.id === targetId || shape.fields.length <= target.fields.length) continue;
+        if (!plain(shape) || shape.freezable !== target.freezable) continue;
+        if (host.nullableUnions.fieldBase(shape.id) !== base) continue;
+        const prefix = target.fields.every(
+          (field, i) =>
+            shape.fields[i]!.name === field.name &&
+            typeKey(shape.fields[i]!.type) === typeKey(field.type),
+        );
+        if (!prefix) continue;
+        const extra = rcMembers(shape, host.inlineUnions, base).some(
+          (member) => member.index >= target.fields.length + base && isRefCounted(member.type),
+        );
+        if (!extra) out.push(shape.id);
+      }
+    }
+    this.prefixSources.set(targetId, out);
+    return out;
+  }
+
+  private typedRefMatchesAny(B: BlockBuilder, types: readonly IrType[]): string {
     this.host.declare(`declare zeroext i1 @scr_dyn_typed_ref_is(ptr, ptr, ${this.S})`);
-    const types: IrType[] = isDynTypedRefType(t)
-      ? this.host.classSubtypes(t.className).map((className) => ({ kind: "object", className }))
-      : [t];
     let matched = "false";
     for (const type of types) {
       const key = typeKey(type);
@@ -2166,6 +2222,32 @@ export class LlDyn {
       B.line(`${ref} = call ptr @scr_dyn_typed_ref_unbox(ptr %d)`);
       B.terminate(`ret ptr ${ref}`);
       B.startBlock(lNext);
+      if (t.kind === "record") {
+        // A record whose storage begins with exactly this type's storage
+        // is this type's value too: the conversion passes the pointer, so
+        // both names keep one object (decision D3).
+        const sources = this.prefixViewSources(t.shapeId);
+        if (sources.length > 0) {
+          const viewed = this.typedRefMatchesAny(
+            B,
+            sources.map((shapeId) => ({ kind: "record", shapeId })),
+          );
+          const lView = B.newLabel("dc.prefix");
+          const lOther = B.newLabel("dc.noprefix");
+          B.condBr(viewed, lView, lOther);
+          B.startBlock(lView);
+          host.declare(`declare ptr @scr_dyn_typed_ref_prefix_view(ptr)`);
+          const view = B.tmp();
+          B.line(`${view} = call ptr @scr_dyn_typed_ref_prefix_view(ptr %d)`);
+          const passed = B.tmp();
+          B.line(`${passed} = icmp ne ptr ${view}, null`);
+          const lPass = B.newLabel("dc.prefix.pass");
+          B.condBr(passed, lPass, lOther);
+          B.startBlock(lPass);
+          B.terminate(`ret ptr ${view}`);
+          B.startBlock(lOther);
+        }
+      }
       // A constructor-function stream (scr_dyn_builtin_stream.c) carries
       // its runtime stream.
       const streamKind = t.kind === "object" ? builtinStreamKind(t.className) : null;

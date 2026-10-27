@@ -3745,7 +3745,24 @@ typedef struct {
   const char *names;
   const char *lens;
   size_t name_stride, len_stride, count;
+  /* A record that a narrower record type also references (a prefix view,
+   * scr_dyn_typed_ref_prefix_view) has an entry with no view and this, its
+   * own capsule's parameters: every capsule of the record then answers
+   * for its whole storage (scr_dyn_typed_ref_new), and reflective surfaces
+   * of the narrower type go through that capsule (scr_record_source_has).
+   * Owned; NULL for an ordinary source. */
+  struct ScrRecordPrefix *prefix;
 } ScrRecordSource;
+typedef struct ScrRecordPrefix {
+  void *(*retain)(void *);
+  void (*release)(void *);
+  const char *type_key;
+  size_t type_key_len;
+  ScrDyn *(*materialize)(void *);
+  void (*commit)(void *, const ScrDyn *);
+  const ScrDynTypedArrayOps *ops; /* the record's ScrDynTypedRecordOps */
+  bool traced, record;
+} ScrRecordPrefix;
 static SCR_TL ScrRecordSource *scr_record_sources;
 static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
 /* Deleted slots keep this marker so probe runs stay intact without moving
@@ -3776,7 +3793,7 @@ static size_t scr_record_source_bucket(const void *rec) {
   return (size_t)((run << 6) | (key & 63)) & (scr_record_source_capacity - 1);
 }
 
-static ScrRecordSource *scr_record_source_find(const void *rec) {
+static ScrRecordSource *scr_record_source_slot(const void *rec) {
   if (!scr_record_source_count) return NULL;
   size_t mask = scr_record_source_capacity - 1;
   for (size_t slot = scr_record_source_bucket(rec); scr_record_sources[slot].rec;
@@ -3786,6 +3803,17 @@ static ScrRecordSource *scr_record_source_find(const void *rec) {
   return NULL;
 }
 
+/* The record's kept source, or NULL (also for a prefix-view entry). */
+static ScrRecordSource *scr_record_source_find(const void *rec) {
+  ScrRecordSource *entry = scr_record_source_slot(rec);
+  return entry && !entry->prefix ? entry : NULL;
+}
+
+static const ScrRecordPrefix *scr_record_prefix_find(const void *rec) {
+  ScrRecordSource *entry = scr_record_source_slot(rec);
+  return entry ? entry->prefix : NULL;
+}
+
 /* The retained view of a record with undeclared keys (borrowed), or NULL. */
 ScrDyn *scr_record_source_view(const void *rec) {
   ScrRecordSource *entry = scr_record_source_find(rec);
@@ -3793,7 +3821,7 @@ ScrDyn *scr_record_source_view(const void *rec) {
 }
 
 bool scr_record_source_has(const void *rec) {
-  return scr_record_source_count && scr_record_source_find(rec) != NULL;
+  return scr_record_source_count && scr_record_source_slot(rec) != NULL;
 }
 
 /* Drops the entry at `found` from the table, releasing its view. The table
@@ -3801,6 +3829,7 @@ bool scr_record_source_has(const void *rec) {
  * the dispose hook sees a consistent table. */
 static void scr_record_source_drop(ScrRecordSource *found) {
   ScrDyn *view = found->view;
+  free(found->prefix);
   *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
   scr_record_source_count--;
   scr_record_source_deleted++;
@@ -3810,7 +3839,7 @@ static void scr_record_source_drop(ScrRecordSource *found) {
 static void scr_record_source_disposed(void *rec) {
   size_t bit = scr_record_source_filter_bit(rec);
   if (!(scr_record_source_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)))) return;
-  ScrRecordSource *found = scr_record_source_find(rec);
+  ScrRecordSource *found = scr_record_source_slot(rec);
   if (found) scr_record_source_drop(found);
 }
 
@@ -3883,7 +3912,10 @@ static void scr_record_source_teardown(void) {
   free(scr_record_source_filter);
   scr_record_source_filter = NULL;
   for (size_t i = 0; i < capacity; i++) {
-    if (table[i].rec && table[i].rec != SCR_RECORD_SOURCE_DELETED) scr_dyn_release(table[i].view);
+    if (table[i].rec && table[i].rec != SCR_RECORD_SOURCE_DELETED) {
+      free(table[i].prefix);
+      scr_dyn_release(table[i].view);
+    }
   }
   free(table);
 }
@@ -3991,7 +4023,7 @@ void scr_record_source_spread(void *dst, const void *src, const char *const *nam
     if (scr_dyn_obj_get(view, names[i], lens[i])) continue;
     scr_dyn_obj_set(view, names[i], lens[i], scr_dyn_retain(scr_dyn_undefined()));
   }
-  ScrRecordSource *old = scr_record_source_find(dst);
+  ScrRecordSource *old = scr_record_source_slot(dst);
   if (old) scr_record_source_drop(old);
   probe.view = view;
   scr_record_source_put(&probe);
@@ -3999,9 +4031,15 @@ void scr_record_source_spread(void *dst, const void *src, const char *const *nam
 
 void scr_record_source_move(void *from, void *to) {
   if (!scr_record_source_count) return;
-  ScrRecordSource *old = scr_record_source_find(to);
-  if (old) scr_record_source_drop(old);
+  ScrRecordSource *old = scr_record_source_slot(to);
   ScrRecordSource *found = scr_record_source_find(from);
+  if (old && old->prefix) {
+    /* A prefix-viewed record keeps its entry: its capsule's view holds the
+     * undeclared properties, and narrower names read them through it. */
+    if (found) scr_record_source_drop(found);
+    return;
+  }
+  if (old) scr_record_source_drop(old);
   if (!found) return;
   ScrRecordSource moved = *found;
   *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
@@ -4061,6 +4099,7 @@ ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec) {
 }
 
 static ScrDyn *scr_json_member(const ScrDyn *holder, const ScrStr *key);
+static void scr_jb_put_record_prefix(ScrJsonBuf *b, void *rec);
 static bool scr_jb_try_pure_member(ScrJsonBuf *b, const char *key, size_t key_len,
                                    const ScrStr *key_str, const ScrDyn *value, bool *first);
 static bool scr_jb_put_member(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value, bool *first,
@@ -4138,6 +4177,10 @@ static void scr_record_source_key_order(const ScrDyn *view, size_t *out) {
 
 bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
                               bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
+  if (scr_record_prefix_find(rec)) {
+    scr_jb_put_record_prefix(b, rec);
+    return true;
+  }
   ScrRecordSource *found = scr_record_source_find(rec);
   if (!found) return false;
   /* Program code run by a member can add record sources and move the
@@ -4235,6 +4278,20 @@ static ScrDyn *scr_dyn_typed_ref_new(
     const char *type_key, size_t type_key_len,
     ScrDyn *(*materialize)(void *),
     void (*commit)(void *, const ScrDyn *), bool traced, bool observed) {
+  const ScrRecordPrefix *prefix =
+      scr_record_source_count && type_key_len >= 7 && memcmp(type_key, "record:", 7) == 0
+          ? scr_record_prefix_find(ptr)
+          : NULL;
+  if (prefix) {
+    /* A record seen through a narrower type: its capsule is its own. */
+    retain = prefix->retain;
+    release = prefix->release;
+    type_key = prefix->type_key;
+    type_key_len = prefix->type_key_len;
+    materialize = prefix->materialize;
+    commit = prefix->commit;
+    traced = traced || prefix->traced;
+  }
   scr_typed_ref_reserve();
   size_t slot = scr_typed_ref_bucket(ptr);
   for (ScrDyn *value; (value = scr_typed_ref_slots[slot]); slot = (slot + 1) & (scr_typed_ref_capacity - 1)) {
@@ -4270,6 +4327,11 @@ static ScrDyn *scr_dyn_typed_ref_new(
   d->v.typed_ref.record = false;
   d->v.typed_ref.klass = false;
   d->v.typed_ref.bag_class = false;
+  if (prefix) {
+    /* Bound here: the narrower name's bind keeps them (bind_record). */
+    d->v.typed_ref.array = prefix->ops;
+    d->v.typed_ref.record = prefix->record;
+  }
   scr_typed_ref_slots[slot] = d; /* the empty slot that ended the probe */
   scr_typed_ref_count++;
   return d;
@@ -4315,6 +4377,32 @@ bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key) {
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d) {
   return d->v.typed_ref.retain(d->v.typed_ref.ptr);
 }
+
+/* A record capsule's native record for a conversion into a type whose
+ * storage is a prefix of the record's (the compiler's prefix-view sources):
+ * the pointer itself (+1), so both names keep one object. The record
+ * remembers its own capsule parameters (ScrRecordPrefix), so every later
+ * capsule of it, whichever name boxes it, answers for its whole storage.
+ * NULL while the record keeps undeclared source properties, whose table
+ * is keyed by the record's own declaration; the conversion then builds
+ * its copy as before. */
+void *scr_dyn_typed_ref_prefix_view(const ScrDyn *d) {
+  void *record = d->v.typed_ref.ptr;
+  if (!scr_record_prefix_find(record)) {
+    if (scr_record_source_find(record) || !d->v.typed_ref.record) return NULL;
+    ScrRecordPrefix *prefix = malloc(sizeof *prefix);
+    if (!prefix) scr_json_oom();
+    *prefix = (ScrRecordPrefix){
+      d->v.typed_ref.retain, d->v.typed_ref.release, d->v.typed_ref.type_key,
+      d->v.typed_ref.type_key_len, d->v.typed_ref.materialize, d->v.typed_ref.commit,
+      d->v.typed_ref.array, d->v.typed_ref.traced, d->v.typed_ref.record,
+    };
+    ScrRecordSource entry = { .rec = record, .prefix = prefix };
+    scr_record_source_put(&entry);
+  }
+  return d->v.typed_ref.retain(record);
+}
+
 
 static void scr_dyn_typed_ref_preserve_child(
     ScrDyn **fresh_slot, ScrDyn *cached_child) {
@@ -4465,6 +4553,23 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
   return scr_dyn_retain(capsule->v.typed_ref.materialized);
 }
 
+static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d);
+
+/* A capsule's dyn view for a checked conversion or match, which only reads
+ * it (+1): a live record capsule without a view gets a fresh snapshot that
+ * is not kept, so the capsule keeps answering from the record; any other
+ * capsule its cached view (scr_dyn_typed_ref_materialize). */
+ScrDyn *scr_dyn_typed_ref_peek(const ScrDyn *d) {
+  if (!scr_typed_ref_record_ops(d)) return scr_dyn_typed_ref_materialize(d);
+  ScrDyn *fresh = d->v.typed_ref.materialize(d->v.typed_ref.ptr);
+  if (scr_exc_pending()) {
+    scr_dyn_release(fresh);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (scr_dyn_typed_ref_frozen(d)) scr_dyn_record_view_freeze(fresh);
+  return fresh;
+}
+
 void scr_dyn_typed_ref_commit(ScrDyn *d) {
   /* A frozen record's or array's view cannot have changed its contents. */
   if (d && d->kind == SCR_DYN_TYPED_REF && d->v.typed_ref.commit &&
@@ -4502,7 +4607,9 @@ void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops) {
  * hold state the record cannot (added properties, a prototype, changed
  * attributes), and every operation goes through it as before. */
 void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops) {
-  if (d && d->kind == SCR_DYN_TYPED_REF) {
+  /* A capsule binds once; a prefix-viewed record's capsule keeps its own
+   * table when a narrower name boxes it (scr_dyn_typed_ref_new). */
+  if (d && d->kind == SCR_DYN_TYPED_REF && !d->v.typed_ref.record) {
     d->v.typed_ref.array = (const ScrDynTypedArrayOps *)(const void *)ops;
     d->v.typed_ref.record = true;
     d->v.typed_ref.klass = false;
@@ -4638,6 +4745,18 @@ static bool scr_typed_ref_record_field(const ScrDynTypedRecordOps *ops, const Sc
   for (size_t i = 0; i < ops->count; i++) {
     const ScrStr *name = ops->names[i];
     if (name->len == key->len && memcmp(name->data, key->data, key->len) == 0) {
+      *out = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool scr_typed_ref_record_field_bytes(const ScrDynTypedRecordOps *ops, const char *key,
+                                             size_t key_len, size_t *out) {
+  for (size_t i = 0; i < ops->count; i++) {
+    const ScrStr *name = ops->names[i];
+    if (name->len == key_len && memcmp(name->data, key, key_len) == 0) {
       *out = i;
       return true;
     }
@@ -4792,6 +4911,51 @@ static bool scr_typed_ref_array_has_own(const ScrDyn *d, const ScrStr *key) {
 /* Writes an element in place or appends at `length`. False (nothing done)
  * when the value does not fit the element type or the write could grow the
  * array by more than one element: the snapshot path owns those outcomes. */
+/* A write of a present declared field of a live record stores into the
+ * native record itself, so the capsule keeps answering from the record
+ * instead of turning into a permanent snapshot. A present field keeps its
+ * own-key position, so order observers see what the snapshot would show.
+ * Absent optional fields, frozen records, and values the field type does
+ * not accept take the snapshot path, which reports the mismatch. */
+static bool scr_typed_ref_record_store(ScrDyn *d, const ScrDynTypedRecordOps *ops, size_t index,
+                                       const ScrDyn *value) {
+  void *record = d->v.typed_ref.ptr;
+  if (!ops->set || scr_rc_frozen(record)) return false;
+  if (!ops->fixed && !ops->has(record, index)) return false;
+  return ops->set(record, index, value);
+}
+
+static bool scr_typed_ref_record_set(ScrDyn *d, const ScrStr *key, const ScrDyn *value) {
+  const ScrDynTypedRecordOps *ops = scr_typed_ref_record_ops(d);
+  size_t index;
+  if (!ops || !scr_typed_ref_record_field(ops, key, &index)) return false;
+  return scr_typed_ref_record_store(d, ops, index, value);
+}
+
+/* Object.assign onto a live record from a plain object whose own
+ * properties are all data properties: each enumerable one that names a
+ * present declared field stores in place. Answers false at the first key
+ * it cannot store, leaving every key to the snapshot path, which stores
+ * the already stored values again unchanged. */
+static bool scr_typed_ref_record_assign(ScrDyn *d, const ScrDyn *src) {
+  const ScrDynTypedRecordOps *ops = scr_typed_ref_record_ops(d);
+  if (!ops || !ops->set || src->kind != SCR_DYN_OBJ || src->symbol_properties || src->symbol_keys)
+    return false;
+  size_t count = scr_dyn_obj_count(src);
+  for (size_t i = 0; i < count; i++) {
+    if (scr_dyn_obj_prop_at(src, i).accessor) return false;
+  }
+  for (size_t i = 0; i < count; i++) {
+    ScrDynProp prop = scr_dyn_obj_prop_at(src, i);
+    if (!prop.enumerable) continue;
+    size_t index;
+    if (!scr_typed_ref_record_field_bytes(ops, prop.key, prop.key_len, &index)) return false;
+    if (!scr_typed_ref_record_store(d, ops, index, prop.value)) return false;
+    if (scr_exc_pending()) return true;
+  }
+  return true;
+}
+
 static bool scr_typed_ref_array_set(ScrDyn *d, const ScrStr *key, const ScrDyn *value) {
   const ScrDynTypedArrayOps *ops = scr_dyn_typed_ref_array_ops(d);
   if (!ops || !ops->set) return false;
@@ -11666,6 +11830,25 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
 /* Node's TypeErrors for assigning a read-only property and deleting a
  * non-configurable one of a checked object: the object reads as
  * #<Constructor>, or [object Object] without a prototype. */
+/* Failed assignments. Sloppy-mode code ignores an assignment that strict
+ * mode refuses with a TypeError (a read-only or getter-only property, a
+ * non-extensible object, a frozen array element). The write paths raise
+ * the strict TypeError and note its payload here; the sloppy entry points
+ * (scr_dyn_key_set_sloppy) drop exactly that exception when it reaches
+ * them, while any other exception (a setter's) keeps propagating. */
+static SCR_TL void *scr_dyn_assign_failure;
+
+static void scr_dyn_note_assign_failure(void) {
+  if (scr_exc_pending()) scr_dyn_assign_failure = scr_exc_current_cell()->payload;
+}
+
+static void scr_dyn_sloppy_settle(void) {
+  if (scr_dyn_assign_failure && scr_exc_pending() &&
+      scr_exc_current_cell()->payload == scr_dyn_assign_failure)
+    scr_exc_clear();
+  scr_dyn_assign_failure = NULL;
+}
+
 static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t key_len, bool deleting) {
   const char *name = scr_dyn_class_name(object);
   ScrJsonBuf buffer;
@@ -11687,6 +11870,7 @@ static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t
   }
   if (!deleting) scr_jb_puts(&buffer, "'");
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+  if (!deleting) scr_dyn_note_assign_failure();
 }
 
 /* One lookup of the own property decides the assignment: an own property
@@ -11776,6 +11960,7 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
     scr_jb_write(&buffer, key->data, key->len);
     scr_jb_puts(&buffer, ", object is not extensible");
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+    scr_dyn_note_assign_failure();
     return;
   }
   scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
@@ -11803,6 +11988,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_set(recv, key, value); return; }
   if (recv->kind == SCR_DYN_TYPED_REF) {
     if (scr_typed_ref_array_set(recv, key, value)) return;
+    if (scr_typed_ref_record_set(recv, key, value)) return;
     if (scr_event_ref_hooks && scr_event_ref_hooks->set(recv, key, value)) return;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
     scr_dyn_key_set(materialized, key, value);
@@ -11841,6 +12027,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) {
       if (recv->v.arr.frozen) {
         scr_array_frozen_error(3, recv->v.arr.len, 0, 0, 0);
+        scr_dyn_note_assign_failure();
         return;
       }
       double number;
@@ -11860,6 +12047,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       while (recv->v.arr.len > length) {
         if (recv->v.arr.sealed && scr_dyn_arr_has_index(recv, recv->v.arr.len - 1)) {
           scr_array_frozen_error(5, recv->v.arr.len, (double)(recv->v.arr.len - 1), 0, 0);
+          scr_dyn_note_assign_failure();
           return;
         }
         scr_dyn_release(recv->v.arr.items[--recv->v.arr.len]);
@@ -11879,11 +12067,13 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       if (scr_dyn_array_prototype_element_fence(recv)) return;
       if (recv->v.arr.frozen && idx < recv->v.arr.len && scr_dyn_arr_has_index(recv, idx)) {
         scr_array_frozen_error(0, recv->v.arr.len, (double)idx, 0, 0);
+        scr_dyn_note_assign_failure();
         return;
       }
       if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx)) {
         /* An absent index, a hole included, is a property to add. */
         scr_array_frozen_error(0, 0, (double)idx, 0, 0);
+        scr_dyn_note_assign_failure();
         return;
       }
       if (idx > recv->v.arr.len + 1000000) {
@@ -11978,6 +12168,19 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     }
   }
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+/* Sloppy-mode assignments (the compiler's IrModule.sloppyDynWrites). */
+void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
+  scr_dyn_assign_failure = NULL;
+  scr_dyn_key_set(recv, key, value);
+  scr_dyn_sloppy_settle();
+}
+
+void scr_dyn_key_set_computed_sloppy(ScrDyn *recv, ScrDyn *key, ScrDyn *value) {
+  scr_dyn_assign_failure = NULL;
+  scr_dyn_key_set_computed(recv, key, value);
+  scr_dyn_sloppy_settle();
 }
 
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value) {
@@ -14642,6 +14845,13 @@ ScrStr *scr_util_format_j_text(ScrStr *text) {
 /* The gap of a compact walk; the walks read only its length. */
 static const ScrStr scr_json_compact_gap = { .rc = SIZE_MAX, .len = 0 };
 
+/* JSON for a prefix-viewed record: its own capsule's. */
+static void scr_jb_put_record_prefix(ScrJsonBuf *b, void *rec) {
+  ScrDyn *capsule = scr_dyn_new_typed_ref(rec, NULL, NULL, "record:", 7, NULL, NULL);
+  scr_json_replaced_write(b, capsule, scr_dyn_undefined(), NULL, &scr_json_compact_gap, b->seen_len);
+  scr_dyn_release(capsule);
+}
+
 #define SCR_JSON_PURE_DEPTH 32
 
 /* Writes `value` when writing it runs no program code and meets no cycle:
@@ -16601,6 +16811,8 @@ ScrDyn *scr_dyn_assign(ScrDyn *target, const ScrDyn *src) {
     return NULL;
   }
 
+  if (target->kind == SCR_DYN_TYPED_REF && scr_typed_ref_record_assign(target, src))
+    return scr_exc_pending() ? NULL : scr_dyn_retain(target);
   if (target->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(target);
     ScrDyn *assigned = scr_dyn_assign(materialized, src);
