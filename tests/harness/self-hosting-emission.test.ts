@@ -59,6 +59,8 @@ test("the production layout and metadata stage lowers statically", async () => {
 });
 
 for (const backend of ["llvm"] as const) {
+  // A sanitized build of the fixture and its emission cases take about half
+  // the default 300 s budget on an idle 16-core host.
   test(`native LLVM layout and metadata emission (${backend})`, async () => {
     const dir = mkdtempSync(
       join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-native-emission-"),
@@ -268,5 +270,5 @@ for (const backend of ["llvm"] as const) {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 600_000);
 }
