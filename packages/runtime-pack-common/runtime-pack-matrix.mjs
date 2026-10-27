@@ -34,6 +34,7 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_error.c",
   "scr_console.c",
   "scr_lib.c",
+  "scr_fs_read_i64.c",
   "scr_hash.c",
   "scr_path.c",
   "scr_os.c",

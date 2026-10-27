@@ -2984,64 +2984,7 @@ void scr_net_set_autosel_timeout(double ms) {
  * catch form is bindingless).
  */
 
-static const char *scr_errno_name(int e, char *fallback, size_t cap) {
-  switch (e) {
-  case ENOENT: return "ENOENT";
-  case EEXIST: return "EEXIST";
-  case EACCES: return "EACCES";
-  case EBUSY: return "EBUSY";
-  case EINVAL: return "EINVAL";
-  case EIO: return "EIO";
-  case ENAMETOOLONG: return "ENAMETOOLONG";
-  case ENOMEM: return "ENOMEM";
-  case ENOSPC: return "ENOSPC";
-  case ENOTDIR: return "ENOTDIR";
-  case EISDIR: return "EISDIR";
-  case ENOTEMPTY: return "ENOTEMPTY";
-  case EPERM: return "EPERM";
-  case EROFS: return "EROFS";
-  case EXDEV: return "EXDEV";
-  case EBADF: return "EBADF";
-  case EAGAIN: return "EAGAIN";
-  case EFBIG: return "EFBIG";
-  case EPIPE: return "EPIPE";
-  case ESPIPE: return "ESPIPE";
-  case ELOOP: return "ELOOP";
-  case ENOSYS: return "ENOSYS";
-  case ENOTSUP: return "ENOTSUP";
-  default:
-    snprintf(fallback, cap, "E%d", e);
-    return fallback;
-  }
-}
-
-static const char *scr_errno_text(int e) {
-  switch (e) {
-  case ENOENT: return "no such file or directory";
-  case EEXIST: return "file already exists";
-  case EACCES: return "permission denied";
-  case EBUSY: return "resource busy or locked";
-  case EINVAL: return "invalid argument";
-  case EIO: return "i/o error";
-  case ENAMETOOLONG: return "name too long";
-  case ENOMEM: return "not enough memory";
-  case ENOSPC: return "no space left on device";
-  case ENOTDIR: return "not a directory";
-  case EISDIR: return "illegal operation on a directory";
-  case ENOTEMPTY: return "directory not empty";
-  case EPERM: return "operation not permitted";
-  case EROFS: return "read-only file system";
-  case EXDEV: return "cross-device link not permitted";
-  case EBADF: return "bad file descriptor";
-  case EAGAIN: return "resource temporarily unavailable";
-  case EFBIG: return "file too large";
-  case EPIPE: return "broken pipe";
-  case ESPIPE: return "invalid seek";
-  case ELOOP: return "too many levels of symbolic links";
-  case ENOSYS: return "function not implemented";
-  default: return strerror(e);
-  }
-}
+#include "scr_fs_errno_impl.h"
 
 /* Node on WINDOWS reports fs error paths ABSOLUTIZED and backslashed
  * (its fs binding hands the Windows API namespaced absolute paths and the
@@ -3062,28 +3005,7 @@ static const char *scr_fs_err_path(const ScrStr *path, char buf[PATH_MAX]) {
 /* Exported (scr_runtime.h): scr_bytes.c's fs Buffer forms share it. */
 /* Keep metadata on the error itself until it crosses a checked-value
  * boundary. Failed operations do not populate the process identity cache. */
-static ScrError *scr_fs_error_details(int e, const char *name, const char *message, size_t length,
-                                      const char *op, const ScrStr *path, const ScrStr *dest) {
-  double number = e > 0 ? -e : e;
-#define SCR_FS_ERRNO_VALUE(code, text) if (strcmp(name, #code) == 0) number = SCR_NODE_UV__##code;
-  SCR_NODE_UV_ERRNO_MAP(SCR_FS_ERRNO_VALUE)
-#undef SCR_FS_ERRNO_VALUE
-  ScrStr *text = scr_str_new(message, length);
-  ScrError *error = scr_error_new(SCR_ERR_ERROR, text);
-  scr_str_release(text);
-  scr_error_set_code(error, name);
-  error->system_errno = number;
-  error->system_call = scr_str_new(op, strlen(op));
-  error->system_path = path ? scr_str_retain((ScrStr *)path) : NULL;
-  error->system_dest = dest ? scr_str_retain((ScrStr *)dest) : NULL;
-  return error;
-}
-
-static void scr_fs_throw_details(int e, const char *name, const char *message, size_t length,
-                                 const char *op, const ScrStr *path, const ScrStr *dest) {
-  ScrError *error = scr_fs_error_details(e, name, message, length, op, path, dest);
-  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
-}
+#include "scr_fs_error_details_impl.h"
 
 ScrError *scr_fs_error(int e, const char *op, const ScrStr *path) {
 #ifdef _WIN32
@@ -3875,67 +3797,13 @@ void scr_fs_futimes(double fd, double atime, double mtime) {
 /* fs.closeSync(fd) — close(2); failure throws Node's path-less fs error
  * shape ("EBADF: bad file descriptor, close"). */
 
-/* Offset-preserving read for fs.readSync's validated position. POSIX
+/* Offset-preserving read for fs.readSync's numeric-position form. POSIX
  * supplies pread(2). Windows follows libuv's synchronous-handle recipe:
  * ReadFile with an OVERLAPPED byte offset, then restore the handle position
  * because synchronous ReadFile updates it even when OVERLAPPED is present. */
-static ssize_t scr_fs_pread(int fd, void *data, size_t length, int64_t position) {
-#ifdef _WIN32
-  HANDLE handle = (HANDLE)_get_osfhandle(fd);
-  if (handle == INVALID_HANDLE_VALUE) {
-    errno = EBADF;
-    return -1;
-  }
-
-  OVERLAPPED overlapped;
-  memset(&overlapped, 0, sizeof overlapped);
-  LARGE_INTEGER at;
-  at.QuadPart = (LONGLONG)position;
-  overlapped.Offset = at.LowPart;
-  overlapped.OffsetHigh = at.HighPart;
-
-  LARGE_INTEGER zero;
-  LARGE_INTEGER original;
-  zero.QuadPart = 0;
-  BOOL restore = SetFilePointerEx(handle, zero, &original, FILE_CURRENT);
-  DWORD got = 0;
-  DWORD want = length > (size_t)UINT32_MAX ? UINT32_MAX : (DWORD)length;
-  BOOL ok = ReadFile(handle, data, want, &got, &overlapped);
-  DWORD error = ok ? ERROR_SUCCESS : GetLastError();
-  if (restore) (void)SetFilePointerEx(handle, original, NULL, FILE_BEGIN);
-  /* ReadFile may report a terminal status after still filling part of the
-   * caller's buffer (notably ERROR_MORE_DATA for a message-mode pipe).
-   * libuv/Node return those bytes and surface the status on the next read. */
-  if (ok || got > 0 || error == ERROR_HANDLE_EOF || error == ERROR_BROKEN_PIPE) {
-    return (ssize_t)got;
-  }
-
-  /* The read-specific subset of libuv's Win32-to-errno translation. */
-  switch (error) {
-    case ERROR_INVALID_HANDLE:
-    case ERROR_ACCESS_DENIED:
-      errno = EBADF;
-      break;
-    case ERROR_INVALID_FUNCTION:
-    case ERROR_INVALID_PARAMETER:
-      errno = EINVAL;
-      break;
-    case ERROR_NOT_ENOUGH_MEMORY:
-    case ERROR_OUTOFMEMORY:
-      errno = ENOMEM;
-      break;
-    case ERROR_OPERATION_ABORTED:
-      errno = EINTR;
-      break;
-    default:
-      errno = EIO;
-      break;
-  }
-  return -1;
-#else
-  return pread(fd, data, length, (off_t)position);
-#endif
-}
+#define SCR_FS_READ_POSITION double
+#include "scr_fs_pread_impl.h"
+#undef SCR_FS_READ_POSITION
 
 /* Offset-preserving write for fs.writeSync's numeric-position forms. The
  * Windows arm mirrors scr_fs_pread: WriteFile receives an OVERLAPPED offset
@@ -4186,36 +4054,6 @@ double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
   return wrote;
 }
 
-/* Shared kernel read after the caller has validated the byte window and
- * position. BigInt positions must reach pread/ReadFile as integers. Ordinary
- * inline leaves an out-of-line transition in the typed Number entry at -O2. */
-static inline __attribute__((always_inline)) double scr_fs_read_sync_bytes(double fd, ScrBytes *buf, size_t off, size_t want,
-                                            int64_t position) {
-  uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
-  if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
-  uint8_t *destination = bounce ? bounce : buf->data + off;
-  ssize_t n = position == -1
-    ? read((int)fd, destination, want)
-    : scr_fs_pread((int)fd, destination, want, position);
-  int read_error = errno;
-  if (bounce) {
-    if (n > 0) scr_bytes_write(buf, off, bounce, (size_t)n);
-    free(bounce);
-  }
-  errno = read_error;
-  if (n < 0) {
-    int e = errno;
-    char namebuf[16];
-    const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
-    const char *text = scr_errno_text(e);
-    char msg[160];
-    int len = snprintf(msg, sizeof msg, "%s: %s, read", name, text);
-    scr_fs_throw_details(e, name, msg, (size_t)len, "read", NULL, NULL);
-    return 0;
-  }
-  return (double)n;
-}
-
 /* fs.readSync(fd, buffer, offset, length[, position]) — the buffer form.
  * Node validates offset/length against the buffer before reading and
  * throws ERR_OUT_OF_RANGE; here the checks clamp to the same contract and
@@ -4296,12 +4134,7 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
   }
   size_t off = (size_t)offset;
   size_t want = (size_t)length;
-  return scr_fs_read_sync_bytes(fd, buf, off, want, (int64_t)position);
-}
-
-double scr_fs_read_sync_i64(double fd, ScrBytes *buf, size_t off, size_t want,
-                            int64_t position) {
-  return scr_fs_read_sync_bytes(fd, buf, off, want, position);
+#include "scr_fs_read_body_impl.h"
 }
 
 /* Gather/scatter one contiguous window around ONE kernel operation. Multiple

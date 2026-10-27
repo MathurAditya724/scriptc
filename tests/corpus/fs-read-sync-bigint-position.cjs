@@ -58,6 +58,14 @@ try {
   let calls = 0;
   const length = { valueOf: () => (++calls, 1) };
   console.log('length conversion', fs.readSync(fd, Buffer.alloc(1), 0, length, 9007199254740993n), calls);
+  const closed = fs.openSync(file, 'r');
+  fs.closeSync(closed);
+  try {
+    fs.readSync(closed, shared, 0, 1, 9007199254740993n);
+  } catch (error) {
+    console.log('closed fd bigint', error.name, error.code, error.message, error.errno, error.syscall, error.path);
+  }
+  console.log('shared after error', shared.join(','));
 } finally {
   fs.closeSync(fd);
   fs.rmSync(dir, { recursive: true });

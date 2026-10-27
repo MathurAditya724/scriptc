@@ -17,6 +17,7 @@ const runtimeSources = [
   "scr_fs_cp.c",
   "scr_zlib.c",
   "scr_lib.c",
+  "scr_fs_read_i64.c",
   "scr_hash.c",
   "scr_string.c",
   "scr_array.c",
