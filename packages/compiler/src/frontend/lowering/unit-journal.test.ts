@@ -3,6 +3,8 @@ import type { Program, SourceFile } from "../ts7/adapter.js";
 import { Lowerer } from "./lowerer.js";
 import {
   checkedTable,
+  contentDigest,
+  encodeUnitFunction,
   flagScalar,
   functionTable,
   lowerWaveRecorded,
@@ -341,4 +343,34 @@ test("a unit that changes a function it names in place has no record", () => {
   const stats = waveStats();
   lowerWaveRecorded(subject, ["a"], stats);
   expect(stats).toMatchObject({ recorded: 0, unrecorded: 1, reasons: { "lifted:changed": 1 } });
+});
+
+test("a record lists the held functions it names, with their digests", () => {
+  const functions = [fn("%shared"), fn("%unused")];
+  const subject: WaveHost = {
+    tables: [functionTable("lifted", functions, (name) => functions.some((f) => f.name === name))],
+    scalars: [],
+    lowerRecorded: () => {
+      functions.push(fn("%own"));
+      return {
+        fn: {
+          ...fn("%a"),
+          body: [
+            { kind: "call", callee: "%shared" },
+            { kind: "call", callee: "%own" },
+          ] as never,
+        },
+        poisoned: false,
+      };
+    },
+    store: () => {},
+    statementCounts: () => ({ total: 0, failed: 0, other: 0 }),
+    resolves: () => true,
+  };
+  const { record } = recordUnit(subject, "a");
+  // The function the unit added is in its entries, not its reads.
+  expect(record!.reads).toEqual({
+    lifted: [["%shared", contentDigest(encodeUnitFunction(functions[0]!)!)]],
+  });
+  expect(Object.keys(record!.tables)).toEqual(["lifted"]);
 });

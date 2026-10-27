@@ -3798,6 +3798,11 @@ export class Lowerer {
   /** The events of the unit being recorded (unit-journal.ts); null
    * otherwise. */
   unitEvents: UnitEvents | null = null;
+  /** Fields added to collected classes (class-attributes.ts) and reachable
+   * units registered while units lower: a unit that changes either has no
+   * record (journalScalars). */
+  classLayoutChanges = 0;
+  unitRegistrations = 0;
 
   classCanBeConstructed(info: ClassInfo): boolean {
     return (
@@ -4440,6 +4445,8 @@ export class Lowerer {
       fixed("onExprClassCollected", () => this.onExprClassCollected),
       fixed("onLateClassCollected", () => this.onLateClassCollected),
       fixed("onDeclarationRegistered", () => this.onDeclarationRegistered),
+      fixed("classLayoutChanges", () => this.classLayoutChanges),
+      fixed("unitRegistrations", () => this.unitRegistrations),
       fixed("liftDynFieldPolicy", () => this.liftDynFieldPolicy),
       fixed("coercionOriginNode", () => this.coercionOriginNode),
       fixed("coercionOriginUnion", () => this.coercionOriginUnion),
@@ -9855,6 +9862,7 @@ export class Lowerer {
         lower: () => IrFunction | null,
       ): void => {
         units.set(name, { order: unitOrder++, roots, lower });
+        this.unitRegistrations++;
         if (reachable.has(name)) queue.push(name);
         metadataPriority.set(name, [3, expressionMetadataOrder++]);
       };
@@ -9895,6 +9903,7 @@ export class Lowerer {
           roots: functionRoots(decl),
           lower: () => this.lowerFunction(decl),
         });
+        this.unitRegistrations++;
         if (reachable.has(sig.name)) queue.push(sig.name);
         metadataPriority.set(sig.name, [3, expressionMetadataOrder++]);
       } else if (ts.isClassDeclaration(decl)) {
@@ -9915,6 +9924,7 @@ export class Lowerer {
             roots: functionRoots(entry.member),
             lower: () => lowerStaticMethod(this, info, name),
           });
+          this.unitRegistrations++;
           if (reachable.has(unit)) queue.push(unit);
           metadataPriority.set(unit, [3, expressionMetadataOrder++]);
         }
