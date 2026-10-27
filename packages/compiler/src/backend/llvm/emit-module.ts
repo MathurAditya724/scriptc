@@ -1102,7 +1102,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
     out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
     out.push(``);
-    out.push(...emitter.fieldAliasMetadata());
+    for (const line of emitter.fieldAliasMetadata()) out.push(line);
     out.push(...loopUnrollMetadata(out));
     if (emitter.debug !== null) out.push(emitter.debug.render());
     return out;
@@ -1278,7 +1278,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       `}`,
     );
   }
-  out.push(...emitter.fieldAliasMetadata());
+  for (const line of emitter.fieldAliasMetadata()) out.push(line);
   out.push(...loopUnrollMetadata(out));
   if (emitter.debug !== null) out.push(emitter.debug.render());
   return out;
