@@ -2992,7 +2992,12 @@ function emitProvenLoop(
   }
   const deferred = new Set<string>();
   for (const id of plan.locals.keys()) deferred.add(id);
-  emitter.speculation = { writes: plan.writes, resume: new Map(), deferred };
+  emitter.speculation = {
+    writes: plan.writes,
+    resume: new Map(),
+    deferred,
+    increments: plan.increments,
+  };
   try {
     const leave = B.newLabel("integer.leave");
     emitCopy(leave);
