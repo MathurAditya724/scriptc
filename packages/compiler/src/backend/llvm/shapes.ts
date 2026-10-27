@@ -149,6 +149,9 @@ export interface ShapeHost {
    * (arenas.ts). */
   arenaShapes?: ReadonlySet<string>;
   arenaClasses?: ReadonlySet<string>;
+  /** Every arena the program opens is closed (ArenaPlan.allClosed): the
+   * arena-aware constructors take no dispose list. */
+  arenasClosed?: boolean;
   /** The target C ABI's `size_t` / refcount integer type. */
   readonly sizeType: "i32" | "i64";
   /** Worker executables: the inline allocator state is thread-local. */
@@ -2344,7 +2347,8 @@ export function emitRecordShapes(
     defs.push(...nw);
     if (host.arenaShapes?.has(shape.id) === true && !shape.indexValue) {
       const newSym = mangleRecordNew(shape.id);
-      const dispose = refMembers.length > 0 ? arenaDisposeSym(newSym) : null;
+      const dispose =
+        refMembers.length > 0 && host.arenasClosed !== true ? arenaDisposeSym(newSym) : null;
       const init = [`  store ${host.sizeType} ${ARENA_RC}, ptr %o`];
       if (shapeNumber !== 0)
         init.push(

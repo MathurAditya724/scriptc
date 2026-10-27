@@ -2511,6 +2511,7 @@ export class LlEmitter {
       if (this.arenas !== null) {
         this.shapeHost.arenaShapes = this.arenas.shapes;
         this.shapeHost.arenaClasses = this.arenas.classes;
+        this.shapeHost.arenasClosed = this.arenas.allClosed;
       }
     }
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
