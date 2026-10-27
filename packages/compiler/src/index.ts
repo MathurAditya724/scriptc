@@ -1035,6 +1035,7 @@ async function prepareExecutableInput(
       objectAudit: opts.sanitize === true,
       sanitizeAttributes: opts.sanitize === true,
       lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
+      timing,
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
@@ -2545,6 +2546,7 @@ async function compileLibraryTracked(
       wasi: buildPlatform === "wasi",
       objectAudit: opts.sanitize === true,
       sanitizeAttributes: opts.sanitize === true,
+      timing,
       ...inlineRcOption(profile.optimization, opts.sanitize === true),
     });
     timing("llvm-emit", {
