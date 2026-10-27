@@ -1722,8 +1722,7 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
         if (s.kind === "assign") {
           boxWrite(s.localId, s.value);
           globalWrite(s.localId, s.value);
-        }
-        else if (s.kind === "varDecl" && s.init) boxWrite(s.localId, s.init);
+        } else if (s.kind === "varDecl" && s.init) boxWrite(s.localId, s.init);
         if (s.kind === "fieldSet") {
           const family = slots.family(s.className, s.field);
           if (!family || !slots.hasFamily(family)) return;
