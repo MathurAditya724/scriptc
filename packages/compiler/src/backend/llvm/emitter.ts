@@ -1,6 +1,7 @@
 import type { TargetCpu } from "../target-cpu.js";
 import { loopEntryInlines } from "./loop-entry-versions.js";
 import type { FunctionLayout } from "./function-layout.js";
+import type { CompilationTiming } from "../../timing.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { analyzeFrameEscapes, type FrameEscapes } from "./frame-escapes.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
@@ -522,6 +523,11 @@ export interface LlvmTargetOptions {
   forkPrimitives?: ForkPrimitives | undefined;
   /** Functions to write first, by tier (function-layout.ts). */
   functionLayout?: FunctionLayout;
+  /** Marks emission's serial steps: `llvm-emit-rewrites` after the module
+   * passes, `llvm-emit-int32` after int32 selection, and
+   * `llvm-emit-analyses` after the emitter's whole-program analyses. The
+   * caller's next phase is the function bodies. */
+  timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
@@ -703,6 +709,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   };
   // Keep source storage intact for debugger inspection in dev builds.
   if (options.debugSources !== undefined) return new LlEmitter(mod, options, null, null);
+  const timing = options.timing ?? (() => {});
   const passed = versionParameters(
     addRecordResultEntries(
       scalarizeLiteralResults(
@@ -734,6 +741,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
       ),
     ),
   );
+  timing("llvm-emit-rewrites");
   let emitted = selectInt32Arrays(passed, proven, resultEntryTargets);
   let prepared = rounds.last;
   // A proof that revised functions analyzed the module of the functions it
@@ -755,7 +763,15 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   }
   if (process.env["SCRIPTC_INT32_VERIFY"] === "1")
     verifyInt32Selection(passed, emitted, prepared?.mod === emitted ? prepared : null);
-  return new LlEmitter(emitted, options, null, prepared?.mod === emitted ? prepared : null);
+  timing("llvm-emit-int32");
+  const emitter = new LlEmitter(
+    emitted,
+    options,
+    null,
+    prepared?.mod === emitted ? prepared : null,
+  );
+  timing("llvm-emit-analyses");
+  return emitter;
 }
 
 /** SCRIPTC_INT32_VERIFY=1: throws unless the selection with revisions
@@ -2123,7 +2139,7 @@ export class LlEmitter {
       (options.targetTriple
         ? /-linux-(?:gnu|musl)/.test(options.targetTriple)
         : process.platform === "linux")
-        ? unwindAbiFunctions(mod, this.mayThrow, options.unwindExcluded)
+        ? unwindAbiFunctions(mod, this.mayThrow, options.unwindExcluded, this.nodeIndex)
         : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
@@ -2216,6 +2232,7 @@ export class LlEmitter {
             (type.kind !== "union" ||
               this.nullableUnions.single(type.unionId)?.arm.kind !== "string"),
           this.walkBorrowsByFunction.get(fn.name) ?? new Set(),
+          this.nodeIndex,
         );
         if (rebound.size === 0) continue;
         this.reboundByFunction.set(fn.name, rebound);
