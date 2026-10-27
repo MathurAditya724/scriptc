@@ -5,10 +5,11 @@ import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import { youngNurseryRequested } from "./young-nursery.js";
 
-export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
+export function executableLinkFeatures(mod: IrModule, largePages = false): NativeLinkFeatures {
   const features = moduleRuntimeFeatures(mod);
   return {
     ...(mod.workers ? { workers: true } : {}),
+    ...(largePages ? { largePages: true } : {}),
     ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
     regex: features.regex,
     copying: features.copying,

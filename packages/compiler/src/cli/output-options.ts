@@ -11,6 +11,7 @@ export interface OutputOptionValues {
   strip?: boolean;
   windowsSubsystem?: string;
   detachedExit?: boolean;
+  largePages?: boolean;
   cpuDispatch?: boolean;
   profileGenerate?: string;
   profileUse?: string;
@@ -75,6 +76,9 @@ export function resolveOutputOptions(
   }
   if (values.detachedExit && emit !== "exe") {
     return { ok: false, message: `--detached-exit is only supported with --emit=exe` };
+  }
+  if (values.largePages && emit !== "exe") {
+    return { ok: false, message: `--large-pages is only supported with --emit=exe` };
   }
   if (values.cpuDispatch && emit !== "exe") {
     return { ok: false, message: `--cpu-dispatch is only supported with --emit=exe` };

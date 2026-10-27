@@ -237,6 +237,7 @@ test("early executable keys isolate compile modes, paths, implementation, checke
     { ...f.options, optimization: "dev" },
     { ...f.options, optimization: "speed" },
     { ...f.options, detachedExit: true },
+    { ...f.options, largePages: true },
     { ...f.options, targetCpu: "x86-64-v3" },
     { ...f.options, targetCpu: "x86-64-v4" },
     { ...f.options, cpuDispatch: true },

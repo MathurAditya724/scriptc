@@ -129,6 +129,8 @@ export interface CcOptions {
   eventsOnceSignal?: boolean;
   /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
   mime?: boolean;
+  /** `--large-pages`: compiles scr_text_pages.c. */
+  largePages?: boolean;
   /** util.debounce and util.throttle: compiles scr_util_timing.c. */
   utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:
