@@ -377,6 +377,7 @@ async function build() {
           "SCR_WARNING_REPLACE",
           "SCR_STDIO_EXTENDED",
           "SCR_NATIVE_REACTIONS",
+          "SCR_HANDLE_CLASSES",
           "SCR_YIN",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],

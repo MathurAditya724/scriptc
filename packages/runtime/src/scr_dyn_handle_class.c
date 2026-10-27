@@ -17,6 +17,9 @@
 #include <string.h>
 
 static SCR_TL const ScrDynHandleClass *hc_classes[SCR_DYNH_CAPACITY];
+/* The class tag of another tag's handles + 1 (scr_dyn_handle_class_alias);
+ * 0 = none. */
+static SCR_TL uint16_t hc_aliases[SCR_DYNH_CAPACITY];
 static SCR_TL ScrDyn *hc_ctors[SCR_DYNH_CAPACITY];
 static SCR_TL ScrDyn *hc_prototypes[SCR_DYNH_CAPACITY];
 static SCR_TL bool hc_teardown_registered;
@@ -228,6 +231,21 @@ static void hc_create(ScrDynHandleTag tag) {
     hc_teardown_registered = true;
     scr_atexit(hc_teardown);
   }
+}
+
+void scr_dyn_handle_class_alias(ScrDynHandleTag tag, ScrDynHandleTag klass_tag) {
+  hc_aliases[tag] = (uint16_t)(klass_tag + 1);
+}
+
+ScrDynHandleTag scr_dyn_handle_class_tag_of(const ScrDyn *handle) {
+  ScrDynHandleTag tag = handle->v.handle.tag;
+  if (hc_classes[tag]) return tag;
+  return hc_aliases[tag] ? (ScrDynHandleTag)(hc_aliases[tag] - 1) : SCR_DYNH_CAPACITY;
+}
+
+ScrDyn *scr_dyn_handle_class_prototype_of(const ScrDyn *handle) {
+  ScrDynHandleTag tag = scr_dyn_handle_class_tag_of(handle);
+  return tag == SCR_DYNH_CAPACITY ? NULL : scr_dyn_handle_class_prototype(tag);
 }
 
 void scr_dyn_handle_class_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops, const ScrDynHandleClass *klass) {

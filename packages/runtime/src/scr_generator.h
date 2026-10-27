@@ -223,9 +223,16 @@ typedef struct ScrFetchReadSink {
 /* Queue a sink read request on a reader handle (borrowed). false with a
  * TypeError pending for a value that is not a reader or a released one. */
 bool scr_fetch_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx);
-/* The same for the readers of checked-dynamic web streams
+/* What the fetch unit reaches of checked-dynamic web streams
  * (scr_webstreams.c installs it); NULL in programs without them. */
-extern SCR_TL bool (*scr_web_reader_read_into_fn)(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx);
+typedef struct ScrWebStreamBridge {
+  /* scr_fetch_reader_read_into for one of their readers. */
+  bool (*reader_read_into)(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx);
+  /* Whether a ReadableStream is locked or disturbed, which makes it
+   * unusable as a body. */
+  bool (*unusable)(const ScrDyn *stream);
+} ScrWebStreamBridge;
+extern SCR_TL const ScrWebStreamBridge *scr_web_stream_bridge;
 /* The web stream class constructors for checked-dynamic code, by kind
  * (scr_webstreams.c: ReadableStream, ReadableStreamDefaultReader,
  * ReadableStreamDefaultController, CountQueuingStrategy,

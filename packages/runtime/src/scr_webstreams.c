@@ -2011,6 +2011,14 @@ static bool ws_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, vo
   return true;
 }
 
+/* A stream that cannot be a Response or Request body. */
+static bool ws_readable_unusable(const ScrDyn *stream) {
+  WsReadable *s = ws_stream_of(stream);
+  return !s || ws_readable_locked(s) || s->disturbed;
+}
+
+static const ScrWebStreamBridge ws_fetch_bridge = {ws_reader_read_into, ws_readable_unusable};
+
 /* ── the handle surfaces ───────────────────────────────────────────── */
 
 static bool ws_name(const char *key, size_t len, const char *want) {
@@ -2456,12 +2464,17 @@ static void ws_install(void) {
   ScrStr *name = scr_str_new("asyncIterator", 13);
   scr_sym_release(scr_sym_well_known(name));
   scr_str_release(name);
-  scr_web_reader_read_into_fn = ws_reader_read_into;
+  scr_web_stream_bridge = &ws_fetch_bridge;
   scr_dyn_handle_class_install(SCR_DYNH_WS_READABLE, &ws_readable_ops, &ws_readable_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_READER, &ws_reader_ops, &ws_reader_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_RCONTROLLER, &ws_rcontroller_ops, &ws_rcontroller_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_COUNT_STRATEGY, &ws_count_strategy_ops, &ws_count_strategy_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_BYTE_STRATEGY, &ws_byte_strategy_ops, &ws_byte_strategy_class);
+  /* The fetch unit's streams, readers and controllers (a Response body)
+   * are instances of the same classes. */
+  scr_dyn_handle_class_alias(SCR_DYNH_WEB_STREAM, SCR_DYNH_WS_READABLE);
+  scr_dyn_handle_class_alias(SCR_DYNH_WEB_READER, SCR_DYNH_WS_READER);
+  scr_dyn_handle_class_alias(SCR_DYNH_WEB_CONTROLLER, SCR_DYNH_WS_RCONTROLLER);
 }
 
 /* The classes in the frontend's WEB_STREAM_CLASSES order. */
@@ -2487,7 +2500,7 @@ ScrDyn *scr_webstream_class(double kind) {
 bool scr_webstream_instanceof(ScrDyn *value, double kind) {
   ws_install();
   ScrDynHandleTag tag = ws_class_tag(kind);
-  if (value->kind == SCR_DYN_HANDLE) return value->v.handle.tag == tag;
+  if (value->kind == SCR_DYN_HANDLE) return scr_dyn_handle_class_tag_of(value) == tag;
   if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_ARR && value->kind != SCR_DYN_FUNC) return false;
   ScrDyn *prototype = scr_dyn_handle_class_prototype(tag);
   bool found = false;

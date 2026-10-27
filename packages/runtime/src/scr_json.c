@@ -5621,8 +5621,16 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
     if (!prototype) return false; /* the read threw: pending */
     if (prototype->kind == SCR_DYN_OBJ) {
       bool found = false;
+#ifdef SCR_HANDLE_CLASSES
+      /* A handle of a class (scr_dyn_handle_class.c) has the class's
+       * prototype; this build is the one programs with such classes link. */
+      ScrDyn *handle_prototype = value->kind == SCR_DYN_HANDLE ? scr_dyn_handle_class_prototype_of(value) : NULL;
+      if (handle_prototype || value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_FUNC) {
+        ScrDyn *current = handle_prototype ? handle_prototype : scr_dyn_get_prototype((ScrDyn *)value);
+#else
       if (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_FUNC) {
         ScrDyn *current = scr_dyn_get_prototype((ScrDyn *)value);
+#endif
         while (current && current->kind != SCR_DYN_NULL) {
           if (current == prototype) {
             found = true;
@@ -6981,8 +6989,8 @@ static ScrDyn *scr_dynh_method_call(ScrClosure *closure, ScrDyn *const *args, si
   return result;
 }
 
-/* scr_generator.h: the web stream readers' sink reads (scr_webstreams.c). */
-SCR_TL bool (*scr_web_reader_read_into_fn)(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx) = NULL;
+/* scr_generator.h: what fetch reaches of the web streams (scr_webstreams.c). */
+SCR_TL const ScrWebStreamBridge *scr_web_stream_bridge = NULL;
 
 /* The method `key` of the handle's class as a function value (+1), or NULL
  * when the class has no such method. */

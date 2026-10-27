@@ -2054,6 +2054,14 @@ ScrDyn *scr_dyn_handle_class_value(ScrDynHandleTag tag);
 ScrDyn *scr_dyn_handle_class_method(ScrDynHandleTag tag, const char *name);
 /* The tag's prototype (+1), created on first use. */
 ScrDyn *scr_dyn_handle_class_prototype(ScrDynHandleTag tag);
+/* Handles of `tag` (another unit's native representation of the same
+ * interface) are instances of the class of `klass_tag`. */
+void scr_dyn_handle_class_alias(ScrDynHandleTag tag, ScrDynHandleTag klass_tag);
+/* The class tag a handle is an instance of, or SCR_DYNH_CAPACITY for a
+ * handle of no class. */
+ScrDynHandleTag scr_dyn_handle_class_tag_of(const ScrDyn *handle);
+/* The prototype of the class a handle is an instance of (+1), or NULL. */
+ScrDyn *scr_dyn_handle_class_prototype_of(const ScrDyn *handle);
 /* For a class's ScrDynHandleOps.get: a member that is not one of the
  * class's methods, from the prototype chain with a handle over `h` as the
  * receiver (+1); NULL when the chain has none or with the exception
