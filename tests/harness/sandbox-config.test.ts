@@ -98,6 +98,10 @@ test("the managed-image bootstrap pins the custom image's Node, pnpm, and LLVM",
   expect(bootstrap).toContain("libclang-rt-22-dev");
   expect(bootstrap).toContain("llvm-22-dev");
   expect(bootstrap).toContain("ninja-build");
+  // CI links with ld.lld; without it Sandbox binaries link with GNU ld.
+  expect(bootstrap).toContain("lld-22");
+  const dockerfile = readFileSync(new URL("../../Dockerfile.sandbox", import.meta.url), "utf8");
+  expect(dockerfile).toContain("lld-22");
 });
 
 test("a custom image does not select the Sandbox team or project", () => {
