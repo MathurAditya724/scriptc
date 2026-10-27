@@ -39,6 +39,8 @@ import {
   warmNativeCaches,
 } from "./native-toolchain.js";
 import { splitLlvmProgram } from "./llvm/split.js";
+import { implicitToolchainFingerprints } from "./native/compiler-fingerprint.js";
+import { fingerprintDependencyPaths } from "./native/dependency-files.js";
 
 const scratch: string[] = [];
 const TEST_CACHE_IDENTITY = "cc-cache-tests-v1";
@@ -669,6 +671,29 @@ test.skipIf(clangExecutable === undefined)(
       expect(result.stderr, target).toBe("");
       expect(result.status, target).toBe(0);
     }
+  },
+);
+
+test.skipIf(clangExecutable === undefined)(
+  "the implicit toolchain probe leaves out a header the compiler rejects",
+  async () => {
+    // A system header that the runtime spells, shadowed by one that is an
+    // #error, as clang 18's <riscv_vector.h> is outside RISC-V. The probe
+    // still covers the other headers.
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-probe-header-"));
+    scratch.push(dir);
+    await mkdir(join(dir, "sys"));
+    const rejected = join(dir, "sys", "auxv.h");
+    await writeFile(rejected, '#error "not for this target"\n');
+    const includes = await implicitDependencyProbeIncludes(runtimeSrcDir());
+    expect(includes).toContain("<sys/auxv.h>");
+    const fingerprints = await implicitToolchainFingerprints(
+      { argv: [clangExecutable!, "-isystem", dir], targetArgs: [], target: null },
+      "probe-rejected-header",
+    );
+    const dependencies = fingerprintDependencyPaths(fingerprints.complete);
+    expect(dependencies).not.toContain(rejected);
+    expect(dependencies.some((path) => path.endsWith("/stdatomic.h"))).toBe(true);
   },
 );
 
