@@ -186,13 +186,17 @@ test("profiles reach the helper and key the native cache by their bytes", async 
   const used = {
     ...base,
     outputPath: join(pkg.root, "used.o"),
-    profile: { use: { path: "/profiles/a.profdata", digest: "a".repeat(64) } },
+    profile: {
+      use: { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false },
+    },
   };
   await emitNativeArtifact(used);
   await emitNativeArtifact({
     ...used,
     outputPath: join(pkg.root, "changed.o"),
-    profile: { use: { path: "/profiles/a.profdata", digest: "b".repeat(64) } },
+    profile: {
+      use: { path: "/profiles/a.profdata", digest: "b".repeat(64), contextSensitive: false },
+    },
   });
   await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "again.o") });
   const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
@@ -209,7 +213,9 @@ test("a cached artifact keeps the profile match of the build that produced it", 
   });
   const used = {
     ...request(pkg.root, pkg.packageJson, join(pkg.root, "used.o")),
-    profile: { use: { path: "/profiles/a.profdata", digest: "a".repeat(64) } },
+    profile: {
+      use: { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false },
+    },
   };
   const match = { annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 0 };
   expect((await emitNativeArtifact(used)).profileMatch).toEqual(match);
