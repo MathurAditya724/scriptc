@@ -40,7 +40,17 @@ export function emitCountedLoopLimit(
   const value = host.emitExpr(loop.limit);
   const exact = exactInteger(host, value, loop.limit);
   if (exact) {
-    const integer = /^-?\d+$/.test(exact.name) ? exact.name : widenInteger(host, exact);
+    // An i32 literal may be the unsigned bit pattern of a negative int32
+    // (a ToUint32 view): read it back with the integer's signedness.
+    const integer = /^-?\d+$/.test(exact.name)
+      ? String(
+          exact.type === "i64"
+            ? Number(exact.name)
+            : exact.signed
+              ? Number(exact.name) | 0
+              : Number(exact.name) >>> 0,
+        )
+      : widenInteger(host, exact);
     if (!loop.inclusive) return integer;
     const limit = B.tmp();
     B.line(`${limit} = add nsw i64 ${integer}, ${ascending ? 1 : -1}`);
