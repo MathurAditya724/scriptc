@@ -399,11 +399,8 @@ async function implicitToolchainFingerprintsFresh(
       ];
       const [dependencyResults, linker, assembler, compilerInvocation] = await Promise.all([
         Promise.all(
-          sources.map((source) =>
-            execFileAsync(compiler, [...probeArgs, source], {
-              cwd: probeDir,
-              maxBuffer: 16 * 1024 * 1024,
-            }),
+          sources.map((source, index) =>
+            probeIncludeDependencies(compiler, probeArgs, probeDir, source, sourceGroups[index]!),
           ),
         ),
         execFileAsync(compiler, [...prefix, "-print-prog-name=ld"], { cwd: probeDir }),
@@ -423,14 +420,7 @@ async function implicitToolchainFingerprintsFresh(
       const toolSpellings = [linker.stdout.trim(), assemblerSpelling].filter(
         (value, index, all) => value !== "" && all.indexOf(value) === index,
       );
-      const sourceSet = new Set(sources);
-      const dependencyPaths = [
-        ...new Set(
-          dependencyResults
-            .flatMap((dependencies) => parseMakeDependencies(dependencies.stdout))
-            .filter((path) => !sourceSet.has(path)),
-        ),
-      ].sort();
+      const dependencyPaths = [...new Set(dependencyResults.flat())].sort();
       probe = {
         compilerIdentity: compilerIdentity ?? `<unresolved>\0${compiler}`,
         compilerInvocation: normalizedProbeInvocation(compilerInvocation, probeDir),
@@ -511,6 +501,51 @@ async function implicitToolchainFingerprintsFresh(
       tools.filter((tool) => compileSpellingSet.has(tool.spelling)),
     ),
   };
+}
+
+/** Headers the dependency probe preprocesses at a time when it probes them
+ * one by one. */
+const SINGLE_HEADER_PROBES = 8;
+
+/** The files the compiler reads to preprocess `source`, a probe source that
+ * includes `includes`, apart from the probe's own sources. When the compiler
+ * rejects `source`, for example for a header it finds that is an #error
+ * outside its target (<riscv_vector.h> through clang 18 without the RISC-V
+ * vector extension), each header is preprocessed on its own, and a header
+ * that the compiler rejects on its own is left out, as an absent one is.
+ * Throws the compiler's error when it rejects every header. */
+async function probeIncludeDependencies(
+  compiler: string,
+  probeArgs: readonly string[],
+  probeDir: string,
+  source: string,
+  includes: readonly string[],
+): Promise<string[]> {
+  const dependencies = async (path: string): Promise<string[]> => {
+    const result = await execFileAsync(compiler, [...probeArgs, path], {
+      cwd: probeDir,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return parseMakeDependencies(result.stdout).filter((dependency) => dependency !== path);
+  };
+  try {
+    return await dependencies(source);
+  } catch (error) {
+    const found: string[][] = [];
+    for (let start = 0; start < includes.length; start += SINGLE_HEADER_PROBES) {
+      const batch = includes.slice(start, start + SINGLE_HEADER_PROBES);
+      const results = await Promise.all(
+        batch.map(async (include, offset) => {
+          const single = `${source.slice(0, -2)}-${start + offset}.c`;
+          await writeFile(single, implicitDependencyIncludeDirective(include));
+          return dependencies(single).catch(() => null);
+        }),
+      );
+      for (const result of results) if (result !== null) found.push(result);
+    }
+    if (found.length === 0) throw error;
+    return found.flat();
+  }
 }
 
 const stableImplicitToolchainMemos = new Map<string, Promise<ImplicitToolchainFingerprints>>();
