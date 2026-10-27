@@ -68,14 +68,20 @@ test.skipIf(!glibcHost || !hostHasStaticLibc())(
     await withProject(async (dir, env) => {
       const entry = join(dir, "main.ts");
       const outPath = join(dir, "program");
-      await writeFile(entry, 'console.log("static-ok", [1, 2, 3].map((n) => n * 2).join(","));\n');
+      // The NSS module file name in a string of the program's own is no lookup.
+      await writeFile(
+        entry,
+        'console.log("static-ok", [1, 2, 3].map((n) => n * 2).join(","), "/lib/libnss_files.so.2");\n',
+      );
       const build = async (staticLink: boolean, bootstrap = false) => {
         await cli(
           ["build", entry, "-o", outPath, ...(staticLink ? ["--static"] : [])],
           env,
           bootstrap,
         );
-        expect((await execFileAsync(outPath)).stdout).toBe("static-ok 2,4,6\n");
+        expect((await execFileAsync(outPath)).stdout).toBe(
+          "static-ok 2,4,6 /lib/libnss_files.so.2\n",
+        );
         return elfLinkage(outPath);
       };
       // ET_DYN with a program interpreter: the default dynamic PIE link.

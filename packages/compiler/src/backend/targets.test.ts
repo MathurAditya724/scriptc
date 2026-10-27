@@ -20,6 +20,7 @@ import {
   selectNativeTarget,
   staticExecutableRefusal,
   staticLinkFailureNote,
+  staticLinkMapArgs,
   staticLinkRefusal,
   windowsSubsystemLinkerArgs,
 } from "./targets.js";
@@ -272,15 +273,56 @@ describe("native code-generation targets", () => {
     expect(staticLinkRefusal({ ...request, target: crossMusl })).toBeNull();
   });
 
-  test("refuses static glibc executables that contain the NSS module loader", () => {
-    const loader = Buffer.from("\x7fELF\0libnss_%s.so%s\0");
-    const plain = Buffer.from("\x7fELF\0hello\0");
-    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, true, plain)).toBeNull();
-    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, false, loader)).toBeNull();
-    expect(staticExecutableRefusal(LINUX_X64_MUSL_TARGET, true, loader)).toBeNull();
-    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, true, loader)).toMatch(
-      /^--static cannot link this program: its executable includes host, user or group name lookups/,
+  test("refuses static glibc executables whose link map keeps the NSS loader", () => {
+    const libc = "/lib/x86_64-linux-gnu/libc.a";
+    // lld lists the input sections it kept.
+    const lld = (member: string) =>
+      [
+        "             VMA              LMA     Size Align Out     In      Symbol",
+        `          11e1a0           11e1a0      640    16         ${libc}(${member}):(.text)`,
+        `          11e7e0           11e7e0       38     1         ${libc}(${member}):(.rodata)`,
+      ].join("\n");
+    const lldPlain = [
+      "             VMA              LMA     Size Align Out     In      Symbol",
+      `          2c62c0           2c62c0      a10    16         ${libc}(dl-open.o):(.text)`,
+    ].join("\n");
+    // GNU ld lists discarded sections first, and sections relaxation emptied with size 0.
+    const bfd = (text: boolean) =>
+      [
+        "Discarded input sections",
+        "",
+        ` .text          0x0000000000000000      0x640 ${libc}(nss_module.o)`,
+        "",
+        "Linker script and memory map",
+        "",
+        ` .eh_frame      0x00000000000db750        0x0 ${libc}(nss_module.o)`,
+        "                                        0x1b8 (size before relaxing)",
+        ...(text ? [` .text          0x00000000000a81b0      0x640 ${libc}(nsswitch.o)`] : []),
+      ].join("\n");
+    const refusal =
+      /^--static cannot link this program: its executable includes host, user or group name lookups/;
+    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, true, lld("nss_module.o"))).toMatch(
+      refusal,
     );
+    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, true, lld("nsswitch.o"))).toMatch(refusal);
+    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, true, bfd(true))).toMatch(refusal);
+    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, true, bfd(false))).toBeNull();
+    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, true, lldPlain)).toBeNull();
+    // A program's own string never counts.
+    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, true, "libnss_files.so.2")).toBeNull();
+    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, false, lld("nss_module.o"))).toBeNull();
+    expect(staticExecutableRefusal(LINUX_X64_MUSL_TARGET, true, lld("nss_module.o"))).toBeNull();
+  });
+
+  test("writes a link map only for --static glibc links", () => {
+    expect(staticLinkMapArgs(LINUX_X64_GNU_TARGET, true, "/stage/link.map")).toEqual([
+      "-Xlinker",
+      "-Map",
+      "-Xlinker",
+      "/stage/link.map",
+    ]);
+    expect(staticLinkMapArgs(LINUX_X64_GNU_TARGET, false, "/stage/link.map")).toEqual([]);
+    expect(staticLinkMapArgs(LINUX_X64_MUSL_TARGET, true, "/stage/link.map")).toEqual([]);
   });
 
   test("notes glibc's static libraries on failed --static links", () => {

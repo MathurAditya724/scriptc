@@ -13,7 +13,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { CcCompileError, subprocessFailureDetail } from "./native/process.js";
 import { NativeCodegenError } from "./native-codegen-core.js";
-import { staticExecutableRefusal, staticLinkFailureNote } from "./targets.js";
+import { staticExecutableRefusal, staticLinkFailureNote, staticLinkMapArgs } from "./targets.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import { parseLinkTraceFiles } from "./native/linker-fingerprint.js";
 import {
@@ -240,6 +240,8 @@ export async function linkNativeExecutable(
     join(dirname(plan.outputPath), ".scriptc-runtime-pack-link-"),
   );
   const privateOut = join(privateOutRoot, basename(plan.outputPath));
+  const linkMap = join(privateOutRoot, "link.map");
+  const mapArgs = staticLinkMapArgs(plan.target, plan.staticLink === true, linkMap);
   let stagedRoot: string | null = null;
   try {
     const staged = await stageRuntimePackArtifacts(plan.runtimePack);
@@ -252,6 +254,7 @@ export async function linkNativeExecutable(
         ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
         ...(withLld ? lld : []),
         ...plan.driverFlags,
+        ...mapArgs,
         ...(withLld ? inputs : inputsWithoutLld(plan.target.platform, inputs)),
         ...systemLibraryLinkerArgs(plan.target, plan.systemLibraries),
         "-o",
@@ -295,8 +298,8 @@ export async function linkNativeExecutable(
     });
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
-    if (plan.staticLink) {
-      const refusal = staticExecutableRefusal(plan.target, true, await readFile(privateOut));
+    if (mapArgs.length !== 0) {
+      const refusal = staticExecutableRefusal(plan.target, true, await readFile(linkMap, "utf8"));
       if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);
     }
     if (plan.darwinDebugSymbols) {

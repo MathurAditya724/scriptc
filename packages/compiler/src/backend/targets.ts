@@ -125,24 +125,49 @@ export function executableStaticLinkerArgs(
   return target.name.endsWith("-musl") ? [] : ["-static-pie"];
 }
 
-/** glibc's NSS loader names each module's shared library with this literal
- * (`libnss_%s.so%s` in nss_module.c, glibc 2.33 and later; nsswitch.c
- * before). Section garbage collection keeps it in a static executable only
- * when the loader's code is live. */
-const GLIBC_NSS_LOADER_TEXT = Buffer.from("libnss_");
+/** The link map a `--static` glibc link writes to `path`, which
+ * staticExecutableRefusal reads. `-Xlinker` keeps the path one argument
+ * through the driver and into the linker's job. */
+export function staticLinkMapArgs(
+  target: Pick<NativeTargetSpec, "name">,
+  staticLink: boolean,
+  path: string,
+): string[] {
+  return staticLink && !target.name.endsWith("-musl") ? ["-Xlinker", "-Map", "-Xlinker", path] : [];
+}
+
+/** The libc.a members of glibc's NSS loader: nss_module.o (glibc 2.33 and
+ * later) and nsswitch.o. */
+const GLIBC_NSS_LOADER_MEMBER = /libc\.a\((?:nss_module|nsswitch)\.o\)/;
+
+/** Whether a link map line places code from an archive member in the
+ * output: lld lists the input sections it kept (`… libc.a(m.o):(.text)`),
+ * GNU ld each input section with its size (` .text 0x… 0x… …libc.a(m.o)`),
+ * and lists sections that relaxation emptied with size 0. */
+function keepsText(line: string): boolean {
+  return /\):\(\.text\)\s*$/.test(line) || /^\s*\.text\s+0x[0-9a-f]+\s+0x0*[1-9a-f]/.test(line);
+}
 
 /** Why a linked `--static` executable is refused, or null. A static glibc
  * executable answers host, user and group lookups with glibc's built-in
  * `files` and `dns` sources, and loads every other module the run host's
  * nsswitch.conf names from that host, which glibc supports only for the
- * glibc version the executable was linked with. */
+ * glibc version the executable was linked with. `linkMap` is the link's
+ * map (staticLinkMapArgs): the executable has the NSS loader when the map
+ * places the loader's code in it. GNU ld lists the input sections that
+ * garbage collection discarded before its memory map. */
 export function staticExecutableRefusal(
   target: Pick<NativeTargetSpec, "name">,
   staticLink: boolean,
-  executable: Buffer,
+  linkMap: string,
 ): string | null {
   if (!staticLink || target.name.endsWith("-musl")) return null;
-  if (executable.indexOf(GLIBC_NSS_LOADER_TEXT) === -1) return null;
+  const memoryMap = linkMap.indexOf("Linker script and memory map");
+  const kept = memoryMap === -1 ? linkMap : linkMap.slice(memoryMap);
+  const loader = kept
+    .split("\n")
+    .some((line) => GLIBC_NSS_LOADER_MEMBER.test(line) && keepsText(line));
+  if (!loader) return null;
   return "--static cannot link this program: its executable includes host, user or group name lookups (which dns.lookup, net and http connections, fetch and os.userInfo use), and a statically linked glibc executable loads the NSS modules for those lookups from the run host, which glibc supports only for the glibc version it was linked with. Build without --static, or use an <arch>-linux-musl target";
 }
 
