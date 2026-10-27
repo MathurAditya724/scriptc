@@ -85,7 +85,13 @@ function expectedExit(edit = 0, count = 24): number {
 async function emit(
   dir: string,
   source: string,
-  options: { outputs: number; optLevel: "0" | "2"; cache?: string; name: string },
+  options: {
+    outputs: number;
+    optLevel: "0" | "2";
+    cache?: string;
+    split?: boolean;
+    name: string;
+  },
 ): Promise<string[]> {
   const input = join(dir, `${options.name}.ll`);
   await writeFile(input, source);
@@ -110,6 +116,7 @@ async function emit(
     "--source-path",
     "/src/program.ts",
     ...(options.cache === undefined ? [] : ["--cache-dir", options.cache]),
+    ...(options.split === true ? ["--split", "codegen"] : []),
   ]);
   return outputs;
 }
@@ -161,6 +168,191 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       expect(await exitCode(dir, edited, "edited")).toBe(expectedExit(7));
     });
   }
+
+  test("split code generation links deterministically and defines every function once", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-split-codegen-"));
+    dirs.push(dir);
+    const parts = await emit(dir, program(), {
+      outputs: 3,
+      optLevel: "2",
+      split: true,
+      name: "split",
+    });
+    expect(await exitCode(dir, parts, "split")).toBe(expectedExit());
+    const again = await emit(dir, program(), {
+      outputs: 3,
+      optLevel: "2",
+      split: true,
+      name: "again",
+    });
+    const contents = (paths: string[]) => Promise.all(paths.map((path) => readFile(path)));
+    expect(await contents(again)).toEqual(await contents(parts));
+
+    // The module is optimized whole, so the parts define the same functions as
+    // a single object, each in one part.
+    const defined = async (object: string) => {
+      const { stdout } = await execFileAsync("nm", ["--defined-only", object]);
+      return stdout
+        .split("\n")
+        .map((line) => /^[0-9a-fA-F]+ [Tt] _?(\w+)$/.exec(line.trim())?.[1])
+        .filter((name): name is string => name !== undefined);
+    };
+    const whole = await defined(
+      (await emit(dir, program(), { outputs: 1, optLevel: "2", name: "whole" }))[0]!,
+    );
+    const split = await Promise.all(parts.map(defined));
+    expect(split.flat().sort()).toEqual([...whole].sort());
+    for (const names of split) expect(names.length).toBeGreaterThan(0);
+  });
+
+  test("split code generation keeps local a definition that only its own part uses", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-split-codegen-local-"));
+    dirs.push(dir);
+    const count = 24;
+    const lines = ["@seed = internal global i64 5", "@total = internal global i64 0"];
+    for (let index = 0; index < count; index++)
+      lines.push(
+        `define internal i64 @leaf${index}(i64 %value) noinline {`,
+        `  %scaled = mul i64 %value, ${index + 3}`,
+        "  ret i64 %scaled",
+        "}",
+        `define internal void @step${index}(i64 %value) noinline {`,
+        `  %scaled = call i64 @leaf${index}(i64 %value)`,
+        "  %old = load i64, ptr @total",
+        "  %new = add i64 %old, %scaled",
+        "  store i64 %new, ptr @total",
+        "  ret void",
+        "}",
+      );
+    lines.push(
+      "define i32 @main() {",
+      "  %seed = load volatile i64, ptr @seed",
+      ...Array.from({ length: count }, (_, index) => `  call void @step${index}(i64 %seed)`),
+      "  %total = load i64, ptr @total",
+      "  %low = urem i64 %total, 251",
+      "  %code = trunc i64 %low to i32",
+      "  ret i32 %code",
+      "}",
+    );
+    const parts = await emit(dir, lines.join("\n") + "\n", {
+      outputs: 3,
+      optLevel: "2",
+      split: true,
+      name: "local",
+    });
+    let sum = 0;
+    for (let index = 0; index < count; index++) sum += 5 * (index + 3);
+    expect(await exitCode(dir, parts, "local")).toBe(sum % 251);
+    const symbols = await Promise.all(
+      parts.map(async (part) => (await execFileAsync("nm", ["--defined-only", part])).stdout),
+    );
+    const bindings = (listing: string, prefix: string) =>
+      [...listing.matchAll(new RegExp(`^[0-9a-fA-F]+ ([Tt]) _?${prefix}\\d+$`, "gm"))].map(
+        (match) => match[1],
+      );
+    // A step in another part than main's is called across parts. A leaf is
+    // called only by its step, which is in the same part unless a part
+    // boundary falls between them.
+    const mainPart = symbols.findIndex((listing) => / T _?main$/m.test(listing));
+    expect(mainPart).toBeGreaterThan(0);
+    const crossPart = symbols
+      .filter((_, index) => index !== mainPart)
+      .flatMap((listing) => bindings(listing, "step"));
+    expect(crossPart.length).toBeGreaterThan(0);
+    expect(new Set(crossPart)).toEqual(new Set(["T"]));
+    const leaves = symbols.flatMap((listing) => bindings(listing, "leaf"));
+    expect(leaves).toHaveLength(count);
+    expect(leaves.filter((bound) => bound === "t").length).toBeGreaterThanOrEqual(count - 2);
+  });
+
+  test("split code generation links a thread-local global that only one part uses", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-split-codegen-tls-"));
+    dirs.push(dir);
+    // @touch and main reach @slots through one constant expression, which
+    // outlives their bodies in the part that holds neither.
+    const thread = [
+      "@calls = internal thread_local(localexec) global i64 0",
+      "@slots = internal thread_local(localexec) global [2 x i64] zeroinitializer",
+      "define internal void @touch() noinline {",
+      "  store volatile i64 1, ptr getelementptr inbounds (i8, ptr @slots, i64 8)",
+      "  ret void",
+      "}",
+    ].join("\n");
+    const source = program(0, thread).replace(
+      "  %total = load i64, ptr @total",
+      [
+        "  store volatile i64 1, ptr @calls",
+        "  call void @touch()",
+        "  %slot = load volatile i64, ptr getelementptr inbounds (i8, ptr @slots, i64 8)",
+        "  %total = load i64, ptr @total",
+      ].join("\n"),
+    );
+    const parts = await emit(dir, source, { outputs: 3, optLevel: "2", split: true, name: "tls" });
+    expect(await exitCode(dir, parts, "tls")).toBe(expectedExit());
+  });
+
+  test("split code generation keeps a module that one function dominates whole", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-split-codegen-whole-"));
+    dirs.push(dir);
+    const body = Array.from(
+      { length: 400 },
+      (_, index) => `  %v${index + 1} = mul i64 %v${index}, %v${index}`,
+    );
+    const heavy = [
+      "@sink = internal global i64 0",
+      "define internal void @heavy(i64 %v0) noinline {",
+      ...body,
+      "  store volatile i64 %v400, ptr @sink",
+      "  ret void",
+      "}",
+    ].join("\n");
+    const source = program(0, heavy, 2).replace(
+      "  %total = load i64, ptr @total",
+      "  call void @heavy(i64 %second)\n  %total = load i64, ptr @total",
+    );
+    const parts = await emit(dir, source, {
+      outputs: 3,
+      optLevel: "2",
+      split: true,
+      name: "whole",
+    });
+    expect(await exitCode(dir, parts, "whole")).toBe(expectedExit(0, 2));
+    const { stdout } = await execFileAsync("nm", ["--defined-only", parts[0]!]);
+    expect(stdout).toMatch(/ t _?heavy$/m);
+    for (const part of parts.slice(1)) {
+      const listed = await execFileAsync("nm", ["--defined-only", part]);
+      expect(listed.stdout.trim()).toBe("");
+    }
+    // The first output is the object that a single output produces.
+    const first = await readFile(parts[0]!);
+    const [single] = await emit(dir, source, { outputs: 1, optLevel: "2", name: "whole" });
+    expect(await readFile(single!)).toEqual(first);
+    // The empty parts name the source path, so they do not depend on the
+    // input's file name either.
+    const renamed = await emit(dir, source, {
+      outputs: 3,
+      optLevel: "2",
+      split: true,
+      name: "renamed",
+    });
+    for (let index = 0; index < parts.length; index++)
+      expect(await readFile(renamed[index]!)).toEqual(await readFile(parts[index]!));
+  });
+
+  test("split code generation requires several optimized outputs and no cache", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-split-codegen-invalid-"));
+    dirs.push(dir);
+    for (const options of [
+      { outputs: 1, optLevel: "2" },
+      { outputs: 3, optLevel: "0" },
+      { outputs: 3, optLevel: "2", cache: join(dir, "cache") },
+    ] as const) {
+      const failure = emit(dir, program(), { ...options, split: true, name: "invalid" });
+      await expect(failure).rejects.toMatchObject({
+        stderr: expect.stringContaining("invalid_split"),
+      });
+    }
+  });
 
   test("functions under one group line share a partition", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-groups-"));

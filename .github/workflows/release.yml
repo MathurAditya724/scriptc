@@ -101,8 +101,8 @@ jobs:
           if (receiptRun) appendFileSync(process.env.GITHUB_OUTPUT, `receipt_run=${receiptRun}\n`);
           NODE
 
-  # Collects the native compiler's profile and function layout on this commit
-  # (scripts/refresh-cli-profile.mjs, scripts/refresh-cli-layout.mjs), so every
+  # Collects the native compiler's function layout and profile on this commit
+  # (scripts/refresh-cli-layout.mjs, scripts/refresh-cli-profile.mjs), so every
   # platform's CLI build optimizes and lays out the code it compiles. The
   # committed ones fall behind main within a day or two. If this job fails,
   # the CLI builds use the committed profile and layout.
@@ -111,7 +111,7 @@ jobs:
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true' && needs.check-release.outputs.reuse_artifacts != 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 75
     continue-on-error: true
     permissions:
       contents: read
@@ -136,14 +136,20 @@ jobs:
           git clone --quiet --depth 1 https://github.com/vercel-labs/tsc-ts "$RUNNER_TEMP/tsc-ts"
           echo "tsc-ts $(git -C "$RUNNER_TEMP/tsc-ts" rev-parse HEAD)"
           npm ci --prefix "$RUNNER_TEMP/tsc-ts"
+      # The layout comes first: the profile matches the functions of builds
+      # with the layout its instrumented compiler was built with, so the
+      # profile is collected with a second instrumented compiler built with
+      # this layout.
+      - name: Collect the function layout
+        run: >-
+          node scripts/refresh-cli-layout.mjs --jobs 4
+          --output "$RUNNER_TEMP/cli-profile/cli.layout.gz" --work "$RUNNER_TEMP/cli-layout-work"
       - name: Collect the profile
+        env:
+          SCRIPTC_NATIVE_LAYOUT: ${{ runner.temp }}/cli-profile/cli.layout.gz
         run: >-
           node scripts/refresh-cli-profile.mjs --tsc-ts "$RUNNER_TEMP/tsc-ts" --jobs 4
           --output "$RUNNER_TEMP/cli-profile/cli.profdata.gz" --work "$RUNNER_TEMP/cli-profile-work"
-      - name: Collect the function layout
-        run: >-
-          node scripts/refresh-cli-layout.mjs --jobs 4 --instrumented "$RUNNER_TEMP/cli-profile-work/cli"
-          --output "$RUNNER_TEMP/cli-profile/cli.layout.gz"
       - uses: actions/upload-artifact@v4
         with:
           name: cli-profile

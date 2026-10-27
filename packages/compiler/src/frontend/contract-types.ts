@@ -12,6 +12,7 @@ import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { SrcLoc } from "../ir/ir.js";
 import { locOf } from "./program.js";
 import * as ts from "./ts7/adapter.js";
+import { type HeritageElement, isHeritageElement } from "./heritage-elements.js";
 
 export const CONTRACT_TYPES_MODULE = "@scriptc/types";
 
@@ -87,11 +88,11 @@ function markerOf(checker: ts.TypeChecker, ref: ts.TypeReferenceNode): ContractM
 }
 
 /** The marker a heritage clause names (`implements Acyclic`,
- * `implements sc.ProgramLifetime`). */
-function markerOfHeritage(
-  checker: ts.TypeChecker,
-  node: ts.ExpressionWithTypeArguments,
-): ContractMarker | null {
+ * `implements sc.ProgramLifetime`), as an ExpressionWithTypeArguments or,
+ * in TypeScript 7.1's interface `extends` and class `implements`, a
+ * TypeReference. */
+function markerOfHeritage(checker: ts.TypeChecker, node: HeritageElement): ContractMarker | null {
+  if (ts.isTypeReferenceNode(node)) return markerOf(checker, node);
   const e = node.expression;
   if (ts.isIdentifier(e)) return markerNamed(checker, e, e.text, false);
   if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression) && ts.isIdentifier(e.name))
@@ -169,7 +170,7 @@ export function collectContractAnnotations(
     ts.walkPreorder(
       sf,
       (node) => {
-        if (ts.isExpressionWithTypeArguments(node)) {
+        if (isHeritageElement(node)) {
           const marker = markerOfHeritage(checker, node);
           if (marker === null) return;
           out.count++;
@@ -232,7 +233,7 @@ function unsupported(out: ContractAnnotations, node: ts.Node, marker: ContractMa
 function placeHeritage(
   out: ContractAnnotations,
   checker: ts.TypeChecker,
-  node: ts.ExpressionWithTypeArguments,
+  node: HeritageElement,
   marker: ContractMarker,
   resolveUnit: ContractUnitResolver,
 ): void {

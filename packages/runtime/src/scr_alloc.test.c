@@ -1023,6 +1023,65 @@ static void check_discard(void) {
 }
 #endif
 
+/* ThreadSanitizer stops a child that starts a thread after a fork in a
+ * threaded program, so its build skips the fork check. */
+#define FORK_CHECK 1
+#if defined(__SANITIZE_THREAD__)
+#undef FORK_CHECK
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#undef FORK_CHECK
+#endif
+#endif
+
+#if defined(__linux__) && SCR_SMALL_ALLOC && defined(FORK_CHECK)
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+#define FORK_ROUNDS 64
+#define FORK_SPAN ((size_t)64 << 20)
+#define FORK_OWN ((size_t)1 << 20)
+
+/* A child forked while the prefault helper faults in a range has no helper.
+ * It releases that range (which waits for a busy range to finish), then
+ * requests a fault-in of its own and releases it, and must exit within five
+ * seconds. */
+static void check_fork_while_prefaulting(void) {
+  for (unsigned round = 0; round < FORK_ROUNDS; round++) {
+    char *lo = mmap(NULL, FORK_SPAN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    assert(lo != MAP_FAILED);
+    scr_mem_prefault(lo, lo + FORK_SPAN);
+    pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+      scr_mem_release_ahead(lo, lo + FORK_SPAN);
+      char *own = mmap(NULL, FORK_OWN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+      if (own == MAP_FAILED) _exit(2);
+      scr_mem_prefault(own, own + FORK_OWN);
+      scr_mem_release_ahead(own, own + FORK_OWN);
+      _exit(0);
+    }
+    int status = 0;
+    pid_t done = 0;
+    for (unsigned ms = 0; ms < 5000 && done == 0; ms++) {
+      done = waitpid(pid, &status, WNOHANG);
+      if (done == 0) nanosleep(&(struct timespec){0, 1000000L}, NULL);
+    }
+    if (done == 0) {
+      kill(pid, SIGKILL);
+      (void)waitpid(pid, &status, 0);
+      fprintf(stderr, "the child forked in round %u did not exit\n", round);
+      abort();
+    }
+    assert(done == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    scr_mem_release_ahead(lo, lo + FORK_SPAN);
+    assert(munmap(lo, FORK_SPAN) == 0);
+  }
+}
+#endif
+
 #if defined(__linux__) && SCR_SMALL_ALLOC
 /* The program-lifetime region hands out zeroed, 8-byte aligned blocks below
  * 32 GiB, in order from the calling thread's chunk; a block larger than a
@@ -1087,6 +1146,9 @@ int main(void) {
   check_system_pointers();
   check_churn();
   check_free_order();
+#if defined(__linux__) && SCR_SMALL_ALLOC && defined(FORK_CHECK)
+  check_fork_while_prefaulting();
+#endif
 #if SCR_SMALL_ALLOC && defined(__linux__) && defined(__GLIBC__)
   check_heap_huge_pages();
 #endif
