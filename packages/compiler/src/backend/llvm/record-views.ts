@@ -14,8 +14,8 @@
  * Only the target types of such conversions carry the words and the
  * test. They are found from the IR, before any code is emitted: B is a
  * record type a checked conversion can produce (the closure of dynCheck
- * targets and of the types live capsules expose) and some other record
- * type in the module has all of B's fields. A program without checked
+ * targets), and some other record type whose values reach untyped code as
+ * live capsules (the closure of live dynFrom types) has all of B's fields. A program without checked
  * conversions has none, so its code is unchanged. */
 import {
   isDirentShape,
@@ -66,37 +66,49 @@ function covers(source: IrRecordShape, target: IrRecordShape): boolean {
 export function planRecordViews(mod: IrModule, options: ViewOptions): RecordViews {
   const shapes = new Map((mod.records ?? []).map((shape) => [shape.id, shape]));
   const unions = new Map((mod.unions ?? []).map((union) => [union.id, union]));
-  const reachable = new Set<string>();
-  const seen = new Set<string>();
-  const visit = (t: IrType): void => {
-    const key = typeKey(t);
-    if (seen.has(key)) return;
-    seen.add(key);
-    switch (t.kind) {
-      case "record": {
-        reachable.add(t.shapeId);
-        for (const field of shapes.get(t.shapeId)?.fields ?? []) visit(field.type);
-        return;
+  // Targets: record types a checked conversion produces. Sources: record
+  // types whose values reach untyped code as live capsules. A view arises
+  // only where the two meet; elsewhere a conversion keeps its copy.
+  const closure = (roots: IrType[]): Set<string> => {
+    const out = new Set<string>();
+    const seen = new Set<string>();
+    const visit = (t: IrType): void => {
+      const key = typeKey(t);
+      if (seen.has(key)) return;
+      seen.add(key);
+      switch (t.kind) {
+        case "record": {
+          out.add(t.shapeId);
+          for (const field of shapes.get(t.shapeId)?.fields ?? []) visit(field.type);
+          return;
+        }
+        case "array":
+          visit(t.elem);
+          return;
+        case "union":
+          for (const arm of unions.get(t.unionId)?.arms ?? []) visit(arm);
+          return;
+        default:
+          return;
       }
-      case "array":
-        visit(t.elem);
-        return;
-      case "union":
-        for (const arm of unions.get(t.unionId)?.arms ?? []) visit(arm);
-        return;
-      default:
-        return;
-    }
+    };
+    for (const root of roots) visit(root);
+    return out;
   };
+  const checked: IrType[] = [];
+  const boxed: IrType[] = [];
   for (const fn of mod.functions)
     everyStmtList(fn.body, {
       stmt: () => true,
       expr: (e) => {
-        if (e.kind === "dynCheck") visit(e.type);
-        else if (e.kind === "dynFrom" && e.liveRef === true) visit(e.value.type);
+        if (e.kind === "dynCheck") checked.push(e.type);
+        else if (e.kind === "dynFrom" && e.liveRef === true) boxed.push(e.value.type);
         return true;
       },
     });
+  if (checked.length === 0 || boxed.length === 0) return NO_RECORD_VIEWS;
+  const reachable = closure(checked);
+  const live = closure(boxed);
   if (reachable.size === 0) return NO_RECORD_VIEWS;
   const targets = new Set<string>();
   const sources = new Map<string, string[]>();
@@ -106,7 +118,7 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
     if (options.traced(id) || options.excluded(id)) continue;
     const found: string[] = [];
     for (const source of shapes.values()) {
-      if (source.id === id || !reachable.has(source.id) || !plainShape(source)) continue;
+      if (source.id === id || !live.has(source.id) || !plainShape(source)) continue;
       if (covers(source, target)) found.push(source.id);
     }
     if (found.length === 0) continue;
