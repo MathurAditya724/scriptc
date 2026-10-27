@@ -220,6 +220,8 @@ test("every KNOWN entry names a case", () => {
 });
 
 describe(`npm native (${cases.length} programs${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {
+  // With many shards some own no program; an empty suite would fail the file.
+  if (cases.length === 0) test.skip("no npm program falls in this shard", () => {});
   for (const c of cases) {
     const known = KNOWN[c.name];
     if (known !== undefined && "divergence" in known) {
