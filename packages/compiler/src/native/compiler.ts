@@ -386,7 +386,9 @@ export class NativeCompiler {
       // An optimized program that stays one partition is optimized whole and
       // generates code for its parts concurrently.
       const codegenParts = library || optimization === "dev" ? 1 : nativeCodegenParts(size);
-      const partitions = library ? 1 : Math.max(nativeProgramPartitions(size), codegenParts);
+      const partitions = library
+        ? 1
+        : Math.max(nativeProgramPartitions(size, optimization === "dev"), codegenParts);
       return this.emitObject(
         input,
         output,
