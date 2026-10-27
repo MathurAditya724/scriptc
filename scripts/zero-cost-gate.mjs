@@ -45,6 +45,7 @@ import {
   DYNAMIC_WORKLOADS,
   definedFunctionNames,
   dynamicTierSymbols,
+  linkedRuntimeFiles,
   llvmFunctionHashes,
   median,
   nmOutput,
@@ -502,7 +503,7 @@ function runtimeChanges() {
   const objects = [...diff.changed, ...diff.added, ...diff.removed].filter((path) =>
     path.endsWith(".o"),
   );
-  for (const path of objects)
+  for (const path of linkedRuntimeFiles(diff))
     for (const root of [trees.baseline, trees.candidate]) {
       const file = join(packDir(root), path);
       if (!existsSync(file)) continue;
@@ -808,7 +809,7 @@ await pool(
           nondeterministic,
           strict: values.strict,
         });
-      let { verdict, fails } = judge(false);
+      let { verdict, fails } = judge([]);
       // Build a difference the change cannot explain once more with the
       // baseline: when the baseline's two builds differ in the same
       // artifacts, the difference is the build's, not the change's.
@@ -822,7 +823,7 @@ await pool(
           );
           if (again.dir && !values.keep) rmSync(again.dir, { recursive: true, force: true });
         }
-        if (recheck?.length) ({ verdict, fails } = judge(true));
+        if (recheck?.length) ({ verdict, fails } = judge(recheck));
       }
       const entry = {
         id: program.id,

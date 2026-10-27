@@ -10,6 +10,7 @@ import {
   confinedToRuntime,
   definedFunctionNames,
   dynamicTierSymbols,
+  linkedRuntimeFiles,
   llvmFunctionHashes,
   mergeReports,
   nmOutput,
@@ -222,14 +223,35 @@ test("the zero-cost gate classifies runtime-only and nondeterministic difference
   });
   // A changed runtime cannot explain different LLVM.
   expect(verdict(llvmToo, { runtimeOnly: true })).toEqual({ verdict: "differs", fails: true });
-  expect(verdict(llvmToo, { nondeterministic: true })).toEqual({
+  expect(verdict(llvmToo, { nondeterministic: ["llvm", "exe"] })).toEqual({
     verdict: "nondeterministic",
     fails: false,
   });
-  expect(verdict(llvmToo, { nondeterministic: true, strict: true })).toEqual({
+  expect(verdict(llvmToo, { nondeterministic: ["llvm", "exe"], strict: true })).toEqual({
     verdict: "nondeterministic",
     fails: true,
   });
+  // A nondeterministic executable does not excuse a deterministic LLVM difference.
+  expect(verdict(llvmToo, { nondeterministic: ["exe"] })).toEqual({
+    verdict: "differs",
+    fails: true,
+  });
+});
+
+test("the zero-cost gate reads the symbols of changed runtime objects and vendor archives", () => {
+  expect(
+    linkedRuntimeFiles({
+      changed: [
+        "artifacts/release/runtime/default/scr_a.o",
+        "artifacts/release/runtime/default/scr_a.bc",
+      ],
+      added: ["artifacts/vendor/libz/libscriptc-zlib.a"],
+      removed: [],
+    }),
+  ).toEqual([
+    "artifacts/release/runtime/default/scr_a.o",
+    "artifacts/vendor/libz/libscriptc-zlib.a",
+  ]);
 });
 
 test("the zero-cost gate names the runtime pack files and functions that changed", () => {

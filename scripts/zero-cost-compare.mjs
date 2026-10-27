@@ -523,6 +523,14 @@ export function runtimePackDiff(baseline, candidate) {
   };
 }
 
+/** The changed runtime pack files whose symbols executables link: runtime
+ * objects and vendor archives. */
+export function linkedRuntimeFiles(diff) {
+  return [...diff.changed, ...diff.added, ...diff.removed].filter(
+    (path) => path.endsWith(".o") || path.endsWith(".a"),
+  );
+}
+
 /** Defined functions of textual LLVM IR (llvm-dis output) as name → hash of
  * the body. Attribute group and metadata numbers are dropped first, since
  * an unrelated change elsewhere in the unit renumbers them. */
@@ -638,7 +646,9 @@ export function programLines(entry) {
  * LLVM, is "runtime-only" when `runtimeOnly` says the changed runtime
  * objects explain it (the gate checks the runtime packs and the symbols).
  * A difference the baseline also shows when it builds the program again is
- * "nondeterministic". Neither fails the gate unless `strict` is set. */
+ * "nondeterministic": `nondeterministic` lists the artifact kinds whose
+ * baseline rebuild differs, and every differing artifact must be among
+ * them. Neither fails the gate unless `strict` is set. */
 export function programVerdict({
   baseline,
   candidate,
@@ -646,7 +656,7 @@ export function programVerdict({
   allowed,
   required = false,
   runtimeOnly = false,
-  nondeterministic = false,
+  nondeterministic = [],
   strict = false,
 }) {
   if (!baseline.ok || !candidate.ok) {
@@ -659,7 +669,8 @@ export function programVerdict({
   if (allowed) return { verdict: "allowed", fails: false };
   if (runtimeOnly && differing.every(([kind]) => kind === "exe"))
     return { verdict: "runtime-only", fails: strict };
-  if (nondeterministic) return { verdict: "nondeterministic", fails: strict };
+  if (differing.every(([kind]) => nondeterministic.includes(kind)))
+    return { verdict: "nondeterministic", fails: strict };
   return { verdict: "differs", fails: true };
 }
 
