@@ -11853,6 +11853,7 @@ function lowerForOfDyn(
   const iterator = lowerer.declareHiddenLocal("%dofIterator", DYN);
   const next = lowerer.declareHiddenLocal("%dofNext", DYN);
   const fast = lowerer.declareHiddenLocal("%dofNative", BOOL);
+  const generator = lowerer.declareHiddenLocal("%dofGenerator", F64);
   const done = lowerer.declareHiddenLocal("%dofDone", BOOL);
   done.mutable = true;
   const value = lowerer.declareHiddenLocal("%dofValue", DYN);
@@ -11862,6 +11863,15 @@ function lowerForOfDyn(
   needsClose.mutable = true;
   const error = lowerer.declareHiddenLocal("%dofError", CAUGHT);
   const syncIterator = asyncLoop ? lowerer.declareHiddenLocal("%dofSync", BOOL) : null;
+  lowerer.untypedLoops.set(generator, {
+    kind: generator.id,
+    value: value.id,
+    iterator: iterator.id,
+    next: next.id,
+    done: done.id,
+    async: asyncLoop,
+    sync: syncIterator?.id ?? null,
+  });
   const awaitDyn = (value: IrExpr): IrExpr => ({
     kind: "libCall",
     fn: "async.awaitDyn",
@@ -12134,6 +12144,14 @@ function lowerForOfDyn(
           init: asyncLoop
             ? { kind: "boolLit", value: false, type: BOOL, loc }
             : iteratorCanStep(varRef(iterator.id, DYN, loc), varRef(next.id, DYN, loc), loc),
+          loc,
+        },
+        // Which of the program's generator types the iterator is, once
+        // generator-dynamic-dispatch.ts knows them; 0 keeps the protocol.
+        {
+          kind: "varDecl",
+          localId: generator.id,
+          init: { kind: "numLit", value: 0, type: F64, loc },
           loc,
         },
         {

@@ -706,31 +706,42 @@ static inline size_t scr_utf16_units_short(const char *data, size_t len) {
 }
 
 /* A fresh concatenation (no head, the template-literal shape): numbers
- * format straight into the result, which reserves scr_f64_to_str's whole
- * 32-byte buffer for each. */
+ * format into a stack buffer first, so the result is allocated at its exact
+ * length. */
 #define SCR_F64_TEXT_MAX 32
 static __attribute__((noinline)) ScrStr *scr_str_concat_fresh(ScrStr *const *parts,
                                                               const double *nums, size_t count) {
-  size_t reserve = 0;
+  char texts[SCR_STR_MIXED_MAX * SCR_F64_TEXT_MAX];
+  size_t text_len[SCR_STR_MIXED_MAX];
+  size_t len = 0, used = 0;
   bool ascii = true;
   for (size_t i = 0; i < count; i++) {
-    size_t n = parts[i] ? parts[i]->len : SCR_F64_TEXT_MAX;
-    if (n > SCR_STR_MAX_CAP - reserve) scr_oom();
-    reserve += n;
-    if (parts[i]) ascii &= parts[i]->ascii;
+    size_t n;
+    if (parts[i]) {
+      n = parts[i]->len;
+      ascii &= parts[i]->ascii;
+    } else {
+      n = scr_f64_to_str(nums[i], texts + used);
+      text_len[i] = n;
+      used += n;
+    }
+    if (n > SCR_STR_MAX_CAP - len) scr_oom();
+    len += n;
   }
-  ScrStr *out = scr_str_take_spare(reserve);
-  if (!out) out = scr_str_alloc(reserve, reserve);
+  ScrStr *out = scr_str_take_spare(len);
+  if (!out) out = scr_str_alloc(len, len);
   char *w = out->data;
+  const char *text = texts;
   for (size_t i = 0; i < count; i++) {
     if (parts[i]) {
       scr_copy_bytes(w, parts[i]->data, parts[i]->len);
       w += parts[i]->len;
     } else {
-      w += scr_f64_to_str(nums[i], w);
+      scr_copy_bytes(w, text, text_len[i]);
+      w += text_len[i];
+      text += text_len[i];
     }
   }
-  size_t len = (size_t)(w - out->data);
   out->len = len;
   out->data[len] = '\0';
   out->ascii = ascii;
