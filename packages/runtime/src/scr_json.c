@@ -1526,7 +1526,7 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     while (d->v.typed_ref.casts) {
       ScrDynTypedCast *cast = d->v.typed_ref.casts;
       d->v.typed_ref.casts = cast->next;
-      if (!collected || !cast->traced) cast->release(cast->ptr);
+      if (!cast->borrowed && (!collected || !cast->traced)) cast->release(cast->ptr);
       free(cast);
     }
     if (!collected || !d->v.typed_ref.traced) d->v.typed_ref.release(d->v.typed_ref.ptr);
@@ -3759,24 +3759,17 @@ typedef struct {
   const char *names;
   const char *lens;
   size_t name_stride, len_stride, count;
-  /* A record that a narrower record type also references (a prefix view,
-   * scr_dyn_typed_ref_prefix_view) has an entry with no view and this, its
-   * own capsule's parameters: every capsule of the record then answers
-   * for its whole storage (scr_dyn_typed_ref_new), and reflective surfaces
-   * of the narrower type go through that capsule (scr_record_source_has).
-   * Owned; NULL for an ordinary source. */
-  struct ScrRecordPrefix *prefix;
+  /* A record view (scr_dyn_record_view) has an entry with no view and
+   * this: the capsule of the record it views (+1). Boxing the view answers
+   * that capsule (scr_dyn_typed_ref_new), and the view type's reflective
+   * surfaces go through it (scr_record_source_has). NULL for an ordinary
+   * source. */
+  ScrDyn *capsule;
+  /* A view's record (borrowed: the capsule holds it) and its byte offsets
+   * for the view type's fields. */
+  void *viewed;
+  const size_t *offsets;
 } ScrRecordSource;
-typedef struct ScrRecordPrefix {
-  void *(*retain)(void *);
-  void (*release)(void *);
-  const char *type_key;
-  size_t type_key_len;
-  ScrDyn *(*materialize)(void *);
-  void (*commit)(void *, const ScrDyn *);
-  const ScrDynTypedArrayOps *ops; /* the record's ScrDynTypedRecordOps */
-  bool traced, record;
-} ScrRecordPrefix;
 static SCR_TL ScrRecordSource *scr_record_sources;
 static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
 /* Deleted slots keep this marker so probe runs stay intact without moving
@@ -3817,16 +3810,19 @@ static ScrRecordSource *scr_record_source_slot(const void *rec) {
   return NULL;
 }
 
-/* The record's kept source, or NULL (also for a prefix-view entry). */
+/* The record's kept source, or NULL (also for a record view's entry). */
 static ScrRecordSource *scr_record_source_find(const void *rec) {
   ScrRecordSource *entry = scr_record_source_slot(rec);
-  return entry && !entry->prefix ? entry : NULL;
+  return entry && !entry->capsule ? entry : NULL;
 }
 
-static const ScrRecordPrefix *scr_record_prefix_find(const void *rec) {
+/* The capsule a record view views (borrowed), or NULL. */
+static ScrDyn *scr_record_view_capsule(const void *rec) {
   ScrRecordSource *entry = scr_record_source_slot(rec);
-  return entry ? entry->prefix : NULL;
+  return entry ? entry->capsule : NULL;
 }
+
+static void scr_record_view_forget(ScrDyn *capsule, const void *view);
 
 /* The retained view of a record with undeclared keys (borrowed), or NULL. */
 ScrDyn *scr_record_source_view(const void *rec) {
@@ -3843,11 +3839,16 @@ bool scr_record_source_has(const void *rec) {
  * the dispose hook sees a consistent table. */
 static void scr_record_source_drop(ScrRecordSource *found) {
   ScrDyn *view = found->view;
-  free(found->prefix);
+  ScrDyn *capsule = found->capsule;
+  void *rec = found->rec;
   *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
   scr_record_source_count--;
   scr_record_source_deleted++;
   scr_dyn_release(view);
+  if (capsule) {
+    scr_record_view_forget(capsule, rec);
+    scr_dyn_release(capsule);
+  }
 }
 
 static void scr_record_source_disposed(void *rec) {
@@ -3927,8 +3928,8 @@ static void scr_record_source_teardown(void) {
   scr_record_source_filter = NULL;
   for (size_t i = 0; i < capacity; i++) {
     if (table[i].rec && table[i].rec != SCR_RECORD_SOURCE_DELETED) {
-      free(table[i].prefix);
       scr_dyn_release(table[i].view);
+      scr_dyn_release(table[i].capsule);
     }
   }
   free(table);
@@ -4005,6 +4006,14 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
 void scr_record_source_spread(void *dst, const void *src, const char *const *names,
                               const size_t *lens, size_t count) {
   if (!scr_record_source_count || !dst || !src) return;
+  ScrDyn *viewed = scr_record_view_capsule(src);
+  if (viewed) {
+    /* A record view spreads every property of the record it views. */
+    ScrDyn *snapshot = scr_dyn_typed_ref_peek(viewed);
+    if (!scr_exc_pending()) scr_record_source_note(dst, snapshot, names, lens, count);
+    scr_dyn_release(snapshot);
+    return;
+  }
   ScrRecordSource *found = scr_record_source_find(src);
   if (!found) return;
   ScrRecordSource probe = { dst, NULL, (const char *)names, (const char *)lens,
@@ -4047,9 +4056,9 @@ void scr_record_source_move(void *from, void *to) {
   if (!scr_record_source_count) return;
   ScrRecordSource *old = scr_record_source_slot(to);
   ScrRecordSource *found = scr_record_source_find(from);
-  if (old && old->prefix) {
-    /* A prefix-viewed record keeps its entry: its capsule's view holds the
-     * undeclared properties, and narrower names read them through it. */
+  if (old && old->capsule) {
+    /* A record view keeps its entry: the viewed capsule holds every
+     * property, and the view's name reads them through it. */
     if (found) scr_record_source_drop(found);
     return;
   }
@@ -4113,7 +4122,7 @@ ScrDyn *scr_record_source_apply(ScrDyn *snapshot, const void *rec) {
 }
 
 static ScrDyn *scr_json_member(const ScrDyn *holder, const ScrStr *key);
-static void scr_jb_put_record_prefix(ScrJsonBuf *b, void *rec);
+static void scr_jb_put_record_view(ScrJsonBuf *b, const ScrDyn *capsule);
 static bool scr_jb_try_pure_member(ScrJsonBuf *b, const char *key, size_t key_len,
                                    const ScrStr *key_str, const ScrDyn *value, bool *first);
 static bool scr_jb_put_member(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value, bool *first,
@@ -4191,8 +4200,9 @@ static void scr_record_source_key_order(const ScrDyn *view, size_t *out) {
 
 bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
                               bool (*field)(ScrJsonBuf *, void *, size_t, bool)) {
-  if (scr_record_prefix_find(rec)) {
-    scr_jb_put_record_prefix(b, rec);
+  ScrDyn *viewed = scr_record_view_capsule(rec);
+  if (viewed) {
+    scr_jb_put_record_view(b, viewed);
     return true;
   }
   ScrRecordSource *found = scr_record_source_find(rec);
@@ -4292,20 +4302,12 @@ static ScrDyn *scr_dyn_typed_ref_new(
     const char *type_key, size_t type_key_len,
     ScrDyn *(*materialize)(void *),
     void (*commit)(void *, const ScrDyn *), bool traced, bool observed) {
-  const ScrRecordPrefix *prefix =
-      scr_record_source_count && type_key_len >= 7 && memcmp(type_key, "record:", 7) == 0
-          ? scr_record_prefix_find(ptr)
-          : NULL;
-  if (prefix) {
-    /* A record seen through a narrower type: its capsule is its own. */
-    retain = prefix->retain;
-    release = prefix->release;
-    type_key = prefix->type_key;
-    type_key_len = prefix->type_key_len;
-    materialize = prefix->materialize;
-    commit = prefix->commit;
-    traced = traced || prefix->traced;
-  }
+  /* A record view boxes as the record it views. */
+  ScrDyn *viewed = scr_record_source_count && type_key_len >= 7 &&
+                           memcmp(type_key, "record:", 7) == 0
+                       ? scr_record_view_capsule(ptr)
+                       : NULL;
+  if (viewed) return scr_dyn_retain(viewed);
   scr_typed_ref_reserve();
   size_t slot = scr_typed_ref_bucket(ptr);
   for (ScrDyn *value; (value = scr_typed_ref_slots[slot]); slot = (slot + 1) & (scr_typed_ref_capacity - 1)) {
@@ -4341,11 +4343,6 @@ static ScrDyn *scr_dyn_typed_ref_new(
   d->v.typed_ref.record = false;
   d->v.typed_ref.klass = false;
   d->v.typed_ref.bag_class = false;
-  if (prefix) {
-    /* Bound here: the narrower name's bind keeps them (bind_record). */
-    d->v.typed_ref.array = prefix->ops;
-    d->v.typed_ref.record = prefix->record;
-  }
   scr_typed_ref_slots[slot] = d; /* the empty slot that ended the probe */
   scr_typed_ref_count++;
   return d;
@@ -4392,29 +4389,83 @@ void *scr_dyn_typed_ref_unbox(const ScrDyn *d) {
   return d->v.typed_ref.retain(d->v.typed_ref.ptr);
 }
 
-/* A record capsule's native record for a conversion into a type whose
- * storage is a prefix of the record's (the compiler's prefix-view sources):
- * the pointer itself (+1), so both names keep one object. The record
- * remembers its own capsule parameters (ScrRecordPrefix), so every later
- * capsule of it, whichever name boxes it, answers for its whole storage.
- * NULL while the record keeps undeclared source properties, whose table
- * is keyed by the record's own declaration; the conversion then builds
- * its copy as before. */
-void *scr_dyn_typed_ref_prefix_view(const ScrDyn *d) {
+/* Record views (compiler record-views.ts). A checked conversion of a
+ * capsule of record A into record type B, when A has all of B's fields,
+ * answers a view (+1): a B object (allocated by `alloc`, zeroed, its rc
+ * word marked with the frozen bit) whose record-source entry names A
+ * (borrowed) and A's byte offsets for B's fields, so every field access of
+ * the B value reaches A. `sources` lists, for each A the compiler allows,
+ * its type key and offset table. The entry owns A's capsule: boxing the
+ * view answers that capsule, and the entry dies with the view. One view
+ * per capsule and B, found again through the capsule's cast list, where it
+ * is borrowed. NULL for any other capsule and for a frozen A, whose
+ * conversion keeps its copy. */
+static void *scr_record_view_retain(void *view);
+
+void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
+                          const char *key, size_t key_len, void *(*alloc)(void)) {
+  if (d->kind != SCR_DYN_TYPED_REF) return NULL;
+  const ScrRecordViewSource *source = NULL;
+  for (size_t i = 0; i < count && !source; i++)
+    if (sources[i].key_len == d->v.typed_ref.type_key_len &&
+        memcmp(sources[i].key, d->v.typed_ref.type_key, sources[i].key_len) == 0)
+      source = &sources[i];
   void *record = d->v.typed_ref.ptr;
-  if (!scr_record_prefix_find(record)) {
-    if (scr_record_source_find(record) || !d->v.typed_ref.record) return NULL;
-    ScrRecordPrefix *prefix = malloc(sizeof *prefix);
-    if (!prefix) scr_json_oom();
-    *prefix = (ScrRecordPrefix){
-      d->v.typed_ref.retain, d->v.typed_ref.release, d->v.typed_ref.type_key,
-      d->v.typed_ref.type_key_len, d->v.typed_ref.materialize, d->v.typed_ref.commit,
-      d->v.typed_ref.array, d->v.typed_ref.traced, d->v.typed_ref.record,
-    };
-    ScrRecordSource entry = { .rec = record, .prefix = prefix };
-    scr_record_source_put(&entry);
+  if (!source || scr_rc_frozen(record)) return NULL;
+  for (ScrDynTypedCast *cast = d->v.typed_ref.casts; cast; cast = cast->next)
+    if (cast->borrowed && cast->type_key_len == key_len && memcmp(cast->type_key, key, key_len) == 0)
+      return cast->retain(cast->ptr);
+  void *view = alloc();
+  /* The frozen bit marks a view: view target types are never freezable,
+   * and their emitted releases ignore the bit (record-views.ts). */
+  *(size_t *)view |= SCR_RC_FROZEN;
+  ScrRecordSource entry = { .rec = view, .capsule = scr_dyn_retain(d), .viewed = record,
+                            .offsets = source->offsets };
+  scr_record_source_put(&entry);
+  ScrDynTypedCast *cast = malloc(sizeof *cast);
+  if (!cast) scr_trap("scriptc: out of memory\n");
+  *cast = (ScrDynTypedCast){ .type_key = key, .type_key_len = key_len, .ptr = view,
+                             .retain = scr_record_view_retain, .release = NULL,
+                             .borrowed = true, .next = d->v.typed_ref.casts };
+  d->v.typed_ref.casts = cast;
+  return view;
+}
+
+/* The slot of field `position` of a view (emitted view guards, cold). */
+void *scr_record_view_slot(void *view, size_t position) {
+  ScrRecordSource *entry = scr_record_source_slot(view);
+  return (char *)entry->viewed + entry->offsets[position];
+}
+
+/* The address of field `position` of a value of a view target type, whose
+ * own slot is at byte `offset` (the unoptimized builds' guard): the viewed
+ * record's slot for a view, whose word is the frozen bit plus a count. */
+void *scr_record_view_field(void *value, size_t offset, size_t position) {
+  size_t word = *(const size_t *)value;
+#if SIZE_MAX > UINT32_MAX
+  bool view = word - SCR_RC_FROZEN < ((size_t)1 << 32);
+#else
+  bool view = word - SCR_RC_FROZEN < SCR_RC_FROZEN;
+#endif
+  return view ? scr_record_view_slot(value, position) : (char *)value + offset;
+}
+
+/* A view itself counts like any record (its target's retain). */
+static void *scr_record_view_retain(void *view) {
+  if (!scr_rc_immortal(view)) SCR_RC_COUNT(view)++;
+  return view;
+}
+
+/* A view left the table: its capsule's cast list stops naming it. */
+static void scr_record_view_forget(ScrDyn *capsule, const void *view) {
+  for (ScrDynTypedCast **at = &capsule->v.typed_ref.casts; *at; at = &(*at)->next) {
+    if ((*at)->borrowed && (*at)->ptr == view) {
+      ScrDynTypedCast *cast = *at;
+      *at = cast->next;
+      free(cast);
+      return;
+    }
   }
-  return d->v.typed_ref.retain(record);
 }
 
 
@@ -5002,7 +5053,7 @@ void *scr_dyn_typed_ref_cached_cast(
     const ScrDyn *d, const char *type_key, size_t type_key_len) {
   for (ScrDynTypedCast *cast = d->v.typed_ref.casts; cast;
        cast = cast->next) {
-    if (cast->type_key_len == type_key_len &&
+    if (!cast->borrowed && cast->type_key_len == type_key_len &&
         memcmp(cast->type_key, type_key, type_key_len) == 0) {
       return cast->retain(cast->ptr);
     }
@@ -5022,6 +5073,7 @@ void scr_dyn_typed_ref_cache_cast(
   cast->retain = retain;
   cast->release = release;
   cast->traced = traced;
+  cast->borrowed = false;
   cast->next = d->v.typed_ref.casts;
   d->v.typed_ref.casts = cast;
 }
@@ -14859,11 +14911,9 @@ ScrStr *scr_util_format_j_text(ScrStr *text) {
 /* The gap of a compact walk; the walks read only its length. */
 static const ScrStr scr_json_compact_gap = { .rc = SIZE_MAX, .len = 0 };
 
-/* JSON for a prefix-viewed record: its own capsule's. */
-static void scr_jb_put_record_prefix(ScrJsonBuf *b, void *rec) {
-  ScrDyn *capsule = scr_dyn_new_typed_ref(rec, NULL, NULL, "record:", 7, NULL, NULL);
+/* JSON for a record view: the viewed capsule's. */
+static void scr_jb_put_record_view(ScrJsonBuf *b, const ScrDyn *capsule) {
   scr_json_replaced_write(b, capsule, scr_dyn_undefined(), NULL, &scr_json_compact_gap, b->seen_len);
-  scr_dyn_release(capsule);
 }
 
 #define SCR_JSON_PURE_DEPTH 32

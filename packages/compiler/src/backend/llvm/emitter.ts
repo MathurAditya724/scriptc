@@ -358,6 +358,7 @@ import {
 import { children, type Node } from "./region-ir.js";
 import { LlDyn, recordDynKeepsIdentity, type DynHost } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
+import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import { isObjectArm, NULLABLE_ABSENT, NULLABLE_NULL, NullableUnions } from "./nullable-unions.js";
@@ -1397,6 +1398,8 @@ export class LlEmitter {
   readonly dyn: LlDyn;
   /** Explicit callback boundary for standalone layout and walker stages. */
   readonly shapeHost: DynHost;
+  /** The record view plan's target set (record-views.ts), shared by reference. */
+  private recordViewTargets: Set<string> | null = null;
   /** External declarations, in first-use order. */
   readonly decls = new Set<string>();
   /** Declared functions referenced as values: each needs an env-signature
@@ -2409,6 +2412,20 @@ export class LlEmitter {
         }
       }
     }
+    // Planned before any host copies the shape host (record-views.ts).
+    {
+      const views = planRecordViews(mod, {
+        traced: (id) => this.tracedShapes.has(`record:${id}`),
+        // A tagged shape's values share field reads with the other arms of
+        // its shape union.
+        excluded: (id) =>
+          this.nullableUnions.shapeNumber(id) !== 0 ||
+          this.publishedTypes?.recordGuarded(id) === true ||
+          mod.workers === true,
+      });
+      this.shapeHost.recordViews = views;
+      this.recordViewTargets = views.targets as Set<string>;
+    }
     this.walkers = new LlWalkers(this.shapeHost);
     this.dyn = new LlDyn(this.shapeHost);
     for (const g of mod.globals ?? []) {
@@ -2531,6 +2548,13 @@ export class LlEmitter {
         this.shapeHost.arenasClosed = this.arenas.allClosed;
       }
     }
+    // Arena shapes are known only now; the plan's target set is shared by
+    // every host that copied the shape host, so dropping them here reaches
+    // all of them.
+    const arenaShapes = this.shapeHost.arenaShapes;
+    const viewTargets = this.recordViewTargets;
+    if (arenaShapes !== undefined && viewTargets !== null)
+      for (const id of arenaShapes) viewTargets.delete(id);
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -4852,10 +4876,25 @@ export class LlEmitter {
       throw new InternalCompilerError(
         `llvm emitter bug: unknown field ${field} on shape ${shapeId}`,
       );
-    const p = this.B.tmp();
-    this.B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
-    );
+    const base = this.nullableUnions.fieldBase(shapeId);
+    let p: string;
+    if (this.shapeHost.recordViews?.targets.has(shapeId) === true) {
+      p = recordViewFieldPtr(
+        this.B,
+        this.sizeType,
+        mangleRecordStruct(shapeId),
+        objName,
+        idx + base,
+        idx,
+        (decl) => this.declare(decl),
+        this.rcMode === undefined,
+      );
+    } else {
+      p = this.B.tmp();
+      this.B.line(
+        `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + base}`,
+      );
+    }
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
   }
