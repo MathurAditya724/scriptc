@@ -324,6 +324,30 @@ export class ShapeRegistry {
   private currentDeclaredOrderPriority: DeclaredOrderPriority = [0, 0];
   /** All interned shapes in first-seen order. */
   readonly shapes: IrRecordShape[] = [];
+
+  /** The sizes of the registry's tables, which only grow while shapes are
+   * interned (unit-journal.ts). */
+  journalSizes(): number[] {
+    let candidates = 0;
+    for (const list of this.declaredOrderCandidates.values()) candidates += list.length;
+    let extended = 0;
+    for (const names of this.extendedNames.values()) extended += names.length;
+    return [
+      this.revision,
+      this.shapes.length,
+      this.byKey.size,
+      this.byId.size,
+      this.keyedNameKeys.size,
+      this.declaredOrderPriority.size,
+      this.declaredOrderCandidates.size,
+      candidates,
+      this.derivedDeclaredOrderFinalizers.length,
+      this.recIds.size,
+      this.pendingRec.size,
+      this.extendedNames.size,
+      extended,
+    ];
+  }
   /** ts.Types currently being mapped — a BACK-REFERENCE to one of these is
    * the recursive knot (`interface TreeNode { children: TreeNode[] }`):
    * mapType answers a NAMED RECURSIVE SHAPE (recursiveRef) whose fields
@@ -675,6 +699,23 @@ export class UnionRegistry {
   private readonly armTags = new Map<string, Map<string, number[]>>();
   /** All interned unions in first-seen order. */
   readonly unions: IrUnionDef[] = [];
+
+  /** The sizes of the registry's tables (ShapeRegistry.journalSizes). */
+  journalSizes(): number[] {
+    let tags = 0;
+    for (const byArm of this.armTags.values()) tags += byArm.size;
+    return [
+      this.revision,
+      this.unions.length,
+      this.byKey.size,
+      this.byId.size,
+      this.keyedNameKeys.size,
+      this.armTags.size,
+      tags,
+      this.recIds.size,
+      this.pendingRec.size,
+    ];
+  }
   /** ts.Types currently being mapped — a back-reference to one is the
    * recursive knot passing through a union (`type Tree = Leaf | Branch`
    * whose Branch arm carries `Tree[]`, the optional field `a?: A` of a
