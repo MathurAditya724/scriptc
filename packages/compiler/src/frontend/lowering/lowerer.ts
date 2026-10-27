@@ -4197,7 +4197,8 @@ export class Lowerer {
       checkedTable("declOrigins", () => this.declOrigins.length),
       checkedTable("declOriginIds", () => this.declOriginIds.size),
       sizes("shapes", () => this.shapes.journalSizes()),
-      sizes("unions", () => this.unions.journalSizes()),
+      this.unions.journalTable(),
+      sizes("unions.recIds", () => this.unions.journalSizes()),
       sizes("keyOrder", () => this.keyOrder.journalSizes()),
       sizes("deferredModuleInitializers", () =>
         this.deferredModuleInitializers === null

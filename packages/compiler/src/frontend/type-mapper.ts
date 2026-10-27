@@ -1,5 +1,6 @@
 import { InternalCompilerError } from "../errors.js";
 import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
+import type { HeldContents, JournalTable } from "./lowering/unit-journal.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -700,21 +701,103 @@ export class UnionRegistry {
   /** All interned unions in first-seen order. */
   readonly unions: IrUnionDef[] = [];
 
-  /** The sizes of the registry's tables (ShapeRegistry.journalSizes). */
+  /** The sizes of the tables recursive unions change, which no unit
+   * record carries (unit-journal.ts). */
   journalSizes(): number[] {
-    let tags = 0;
-    for (const byArm of this.armTags.values()) tags += byArm.size;
-    return [
-      this.revision,
-      this.unions.length,
-      this.byKey.size,
-      this.byId.size,
-      this.keyedNameKeys.size,
-      this.armTags.size,
-      tags,
-      this.recIds.size,
-      this.pendingRec.size,
-    ];
+    return [this.revision, this.recIds.size, this.pendingRec.size];
+  }
+
+  /** The interned unions as a table unit records carry (unit-journal.ts).
+   * An entry is a union's definition; applying it interns the union under
+   * the key its arms give. A unit that adds a recursive union changes
+   * journalSizes, so the unions past a unit's start are interned ones. */
+  journalTable(): JournalTable {
+    return {
+      name: "unions",
+      size: () => this.unions.length,
+      entries: (from) => {
+        const out: string[] = [];
+        for (const def of this.unions.slice(from)) {
+          // JSON writes a number that is not finite as null.
+          const text = JSON.stringify(def);
+          if (/[:,[]null\b/.test(text)) return null;
+          out.push(text);
+        }
+        return out;
+      },
+      apply: (entries) => {
+        for (const entry of entries) {
+          const def = JSON.parse(entry) as IrUnionDef;
+          const key = unionKey(def.arms, def.discriminant);
+          if (this.byKey.has(key)) continue;
+          if (keyedHelperName(this, "u", key, "") !== def.id)
+            throw new InternalCompilerError(`union record ${def.id} does not match its arms`);
+          this.byKey.set(key, def.id);
+          this.byId.set(def.id, def);
+          this.unions.push(def);
+        }
+      },
+      truncate: (from) => {
+        while (this.unions.length > from) {
+          const def = this.unions.pop()!;
+          this.byKey.delete(unionKey(def.arms, def.discriminant));
+          this.byId.delete(def.id);
+          this.keyedNameKeys.delete(def.id);
+        }
+      },
+      hold: () => {
+        const held = [...this.unions];
+        return { same: () => held.every((def, index) => this.unions[index] === def) };
+      },
+      contents: () => {
+        // A recursive placeholder still pending fills in place when its
+        // outer frame completes, which changes journalSizes.
+        const texts: (string | null)[] = [];
+        const indexes = new Map<string, number>();
+        const differs = (index: number): boolean => {
+          const text = texts[index] ?? null;
+          return (
+            text !== null &&
+            index < this.unions.length &&
+            JSON.stringify(this.unions[index]!) !== text
+          );
+        };
+        const held: HeldContents = {
+          extend: () => {
+            for (let index = texts.length; index < this.unions.length; index++) {
+              const def = this.unions[index]!;
+              texts.push(this.pendingRec.has(def.id) ? null : JSON.stringify(def));
+              indexes.set(def.id, index);
+            }
+          },
+          changed: () => {
+            for (let index = 0; index < texts.length; index++)
+              if (differs(index)) return this.unions[index]!.id;
+            return null;
+          },
+          changedAmong: (keys) => {
+            for (const key of keys) {
+              const index = indexes.get(key);
+              if (index !== undefined && differs(index)) return key;
+            }
+            return null;
+          },
+          refresh: (keys) => {
+            for (const key of keys) {
+              const index = indexes.get(key);
+              if (
+                index !== undefined &&
+                index < this.unions.length &&
+                (texts[index] ?? null) !== null
+              )
+                texts[index] = JSON.stringify(this.unions[index]!);
+            }
+          },
+        };
+        held.extend();
+        return held;
+      },
+    };
   }
   /** ts.Types currently being mapped — a back-reference to one is the
    * recursive knot passing through a union (`type Tree = Leaf | Branch`
@@ -788,7 +871,7 @@ export class UnionRegistry {
 
   /** Interns canonical arms and discriminator cases, returning their unionId. */
   intern(arms: IrType[], discriminant?: IrUnionDiscriminant): string {
-    const key = JSON.stringify([arms.map(typeKey), discriminant]);
+    const key = unionKey(arms, discriminant);
     let id = this.byKey.get(key);
     if (id === undefined) {
       id = keyedHelperName(this, "u", key, "");
@@ -828,6 +911,11 @@ export class UnionRegistry {
     }
     return tags.get(typeKey(arm))?.find((tag) => typeEquals(def.arms[tag]!, arm)) ?? -1;
   }
+}
+
+/** The key UnionRegistry interns a union's arms and discriminant under. */
+function unionKey(arms: readonly IrType[], discriminant: IrUnionDiscriminant | undefined): string {
+  return JSON.stringify([arms.map(typeKey), discriminant]);
 }
 
 /** Human-readable rendering of an IrType for diagnostics (records expand to

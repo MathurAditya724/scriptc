@@ -24,8 +24,8 @@ const lowerer = (): Lowerer =>
 const isCollection = (value: unknown): boolean =>
   value instanceof Map || value instanceof Set || Array.isArray(value);
 
-/** The registries whose collections journalSizes covers, with the
- * collections each one's journalSizes reads. */
+/** The registries whose collections their journalSizes and journalTable
+ * cover, or that are memos of them, with those collections. */
 const sized: Record<string, readonly string[]> = {
   shapes: [
     "keyedNameKeys",
