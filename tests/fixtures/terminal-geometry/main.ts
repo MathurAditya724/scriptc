@@ -1,7 +1,13 @@
 import type { WriteStream } from 'node:tty';
+import { isatty } from 'node:tty';
+const storedIsatty = isatty;
+function ttyDescriptors(probe: (fd: number) => boolean): boolean {
+  return probe === isatty && !probe(0) && probe(1) && probe(2);
+}
 const out = process.stdout;
 function size(stream: WriteStream): [number, number] { return stream.getWindowSize(); }
 function geometry(): number[] {
+  if (!ttyDescriptors(storedIsatty)) throw new Error('stored tty predicate');
   const output = out.getWindowSize();
   const errors = size(process.stderr);
   if (!out.isTTY || !process.stderr.isTTY || process.stdin.isTTY !== undefined) throw new Error(`tty flags: ${out.isTTY},${process.stderr.isTTY},${process.stdin.isTTY}`);

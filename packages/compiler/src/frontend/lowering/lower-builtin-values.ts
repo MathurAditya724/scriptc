@@ -76,6 +76,7 @@ export function isNativeBuiltinValueInitializer(
       ? lowerer.builtinMemberOf(expr)
       : null;
   if (builtin?.module === "util/types") return true;
+  if (builtin?.module === "tty" && builtin.member === "isatty") return true;
   if (
     builtin?.module === "util" &&
     ["stripVTControlCharacters", "toUSVString", "isDeepStrictEqual", "styleText"].includes(

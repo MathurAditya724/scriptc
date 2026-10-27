@@ -48,13 +48,14 @@ export function registerBuiltinCallableAlias(
       : lowerer.builtinImportOf(targetExpr);
   if (!target || !builtinModuleFnOf(lowerer, target.module, target.member)) return false;
   // These checked native functions retain a runtime slot in JavaScript so
-  // aliases can escape without narrowing their arguments to string.
+  // aliases can escape without narrowing checked arguments to the ambient signature.
   if (
     isJsSourceFile(ts.getSourceFileOfNode(nameNode)) &&
-    target.module === "util" &&
-    ["stripVTControlCharacters", "toUSVString", "isDeepStrictEqual", "styleText"].includes(
-      target.member,
-    )
+    ((target.module === "util" &&
+      ["stripVTControlCharacters", "toUSVString", "isDeepStrictEqual", "styleText"].includes(
+        target.member,
+      )) ||
+      (target.module === "tty" && target.member === "isatty"))
   )
     return false;
   if (lowerer.checker.getCallSignatures(lowerer.typeOf(nameNode)).length === 0) return false;
