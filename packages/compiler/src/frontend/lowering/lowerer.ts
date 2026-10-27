@@ -10,7 +10,7 @@ import {
   arrayRootOf,
   lowerWithArraySpecies,
 } from "./builtins/array-classes.js";
-import { canonShadowHook, mapCanonical } from "../canon-map.js";
+import { canonShadowHook, mapCanonical, type CanonMapNotes } from "../canon-map.js";
 import { Normalizer } from "../canon.js";
 import {
   compactDeclOrigins,
@@ -10077,16 +10077,19 @@ export class Lowerer {
   }
 
   /** The IR type of a type's canonical form (canon-map.ts), or null when
-   * the form is irreducible, unbound, or only the checked dynamic. Runs
-   * only at localized failure's commit points, so a program that compiles
-   * today never consults it. */
+   * the form is irreducible, unbound, only the checked dynamic, or holds a
+   * union that mapped to the checked dynamic (such a slot is dynamic in
+   * part, so it degrades like any other). Runs only at localized failure's
+   * commit points, so a program that compiles today never consults it. */
   canonicalType(type: ts.Type): IrType | null {
     try {
       const resolve = this.typeCtx.resolveTypeParamTs;
       const c = new Normalizer(this.checker).canon(type, resolve ? (t) => resolve(t) : new Map());
       if (c.k === "opaque" || c.k === "param") return null;
       const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
-      const mapped = mapCanonical(c, { ...strict, canMemoizeType: () => false });
+      const notes: CanonMapNotes = { collapsedToDynamic: false };
+      const mapped = mapCanonical(c, { ...strict, canMemoizeType: () => false }, 0, notes);
+      if (notes.collapsedToDynamic) return null;
       return mapped === null || mapped.kind === "void" || mapped.kind === "dyn" ? null : mapped;
     } catch {
       return null;
