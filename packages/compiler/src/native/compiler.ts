@@ -39,6 +39,7 @@ import {
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
 import {
   NativeCodegenError,
+  nativeCodegenParts,
   nativePartitionPaths,
   nativeProgramPartitions,
 } from "../backend/native-codegen-core.js";
@@ -200,6 +201,7 @@ export class NativeCompiler {
     partitions = 1,
     profile?: NativeProfileOptions,
     llvmDigest: () => string = () => fileDigest(input),
+    splitCodegen = false,
   ): NativeObjects {
     const toolchain = this.toolchain;
     const outputs = nativePartitionPaths(output, partitions);
@@ -227,6 +229,7 @@ export class NativeCompiler {
             identity: readFileSync(join(toolchain.helperPackageRoot, "package.json"), "utf8"),
             version: toolchain.compilerVersion,
             ...(partitions > 1 ? { partitions } : {}),
+            ...(splitCodegen ? { split: "codegen" } : {}),
             ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
           }),
         );
@@ -259,7 +262,7 @@ export class NativeCompiler {
       }
     }
     const partitionCache =
-      this.cache === null || identity === null || partitions < 2
+      this.cache === null || identity === null || partitions < 2 || splitCodegen
         ? null
         : this.cache.partitionDirectory(identity);
     const { profileMatch } = emitNativeObject({
@@ -274,6 +277,7 @@ export class NativeCompiler {
       optimization,
       outputKind,
       partitions,
+      ...(splitCodegen ? { splitCodegen } : {}),
       ...(partitionCache === null ? {} : { partitionCache }),
       ...(profile === undefined ? {} : { profile }),
     });
@@ -323,7 +327,11 @@ export class NativeCompiler {
         : null;
     const split = llvm === null ? null : splitLlvmLibraryProgram(llvm);
     if (split === null) {
-      const partitions = library ? 1 : nativeProgramPartitions(statSync(input).size);
+      const size = statSync(input).size;
+      // An optimized program that stays one partition is optimized whole and
+      // generates code for its parts concurrently.
+      const codegenParts = library || optimization === "dev" ? 1 : nativeCodegenParts(size);
+      const partitions = library ? 1 : Math.max(nativeProgramPartitions(size), codegenParts);
       return this.emitObject(
         input,
         output,
@@ -333,6 +341,7 @@ export class NativeCompiler {
         partitions,
         profile,
         llvmDigest,
+        codegenParts > 1,
       );
     }
     const objects: string[] = [];
