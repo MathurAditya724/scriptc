@@ -105,8 +105,11 @@ const MAX_CALLBACK_VERSION_COST = 400;
 export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
   const B = emitter.B;
   emitter.frames.push([]);
+  if (emitter.arenas !== null)
+    emitter.statementFrames.add(emitter.frames[emitter.frames.length - 1]!);
   switch (s.kind) {
     case "varDecl": {
+      emitter.ownArenasOf(s.localId);
       if (s.init && emitter.int32Locals.has(s.localId)) {
         emitter.storeInt32Local(s.localId, emitter.emitExpr(s.init), s.init);
         break;
@@ -1670,7 +1673,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.line(`call void @scr_async_gen_return_awaits()`);
       }
       if (emitter.currentAsyncGenerator && s.awaited !== true && emitter.finallyStack.length > 0) {
-        if (emitter.wasi) emitter.emitWasiSuspend(null);
+        if (emitter.coroAwait) emitter.emitCoroAwait(null);
         else {
           emitter.declare(`declare void @scr_await_hop()`);
           B.line(`call void @scr_await_hop()`);

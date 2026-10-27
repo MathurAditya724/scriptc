@@ -242,10 +242,12 @@ import { globalSymbolKey } from "./expressions/global-symbols.js";
 import { identifiersNamed } from "./identifier-uses.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
 import {
+  dereferencedElementWrite,
   jsHoldsDynObject,
   lowerEnvironmentKey,
   lowerNativeFunctionAssignment,
   lowerStrictEquality,
+  nodeTypeError,
 } from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
@@ -7992,6 +7994,29 @@ function lowerCjsSingleValueExport(
  * assignment, and `({ a, b } = e);` (destructuring ASSIGNMENT, which JS
  * requires parenthesized in statement position) lands in the
  * object-literal-target branch below. */
+/** dereferencedElementWrite in statement position. */
+function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt | null {
+  const write = dereferencedElementWrite(lowerer, expr);
+  if (write === null) return null;
+  const loc = locOf(expr);
+  return {
+    kind: "block",
+    body: [
+      ...write.stmts,
+      {
+        kind: "if",
+        cond: write.present,
+        then: [
+          lowerer.withExpressionOverrides(write.overrides, () => lowerExprStatement(lowerer, expr)),
+        ],
+        else_: [{ kind: "exprStmt", expr: nodeTypeError(write.message, VOID, loc), loc }],
+        loc,
+      },
+    ],
+    loc,
+  };
+}
+
 export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt {
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
@@ -8253,6 +8278,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       {
         const ex = lowerExpandoAssignStmt(lowerer, expr);
         if (ex) return ex;
+      }
+      {
+        const dereferenced = lowerDereferencedElementWrite(lowerer, expr);
+        if (dereferenced) return dereferenced;
       }
       if (ts.isElementAccessExpression(expr.left)) return lowerer.lowerElementWrite(expr);
       if (ts.isPropertyAccessExpression(expr.left)) {
@@ -11824,6 +11853,7 @@ function lowerForOfDyn(
   const iterator = lowerer.declareHiddenLocal("%dofIterator", DYN);
   const next = lowerer.declareHiddenLocal("%dofNext", DYN);
   const fast = lowerer.declareHiddenLocal("%dofNative", BOOL);
+  const generator = lowerer.declareHiddenLocal("%dofGenerator", F64);
   const done = lowerer.declareHiddenLocal("%dofDone", BOOL);
   done.mutable = true;
   const value = lowerer.declareHiddenLocal("%dofValue", DYN);
@@ -11833,6 +11863,15 @@ function lowerForOfDyn(
   needsClose.mutable = true;
   const error = lowerer.declareHiddenLocal("%dofError", CAUGHT);
   const syncIterator = asyncLoop ? lowerer.declareHiddenLocal("%dofSync", BOOL) : null;
+  lowerer.untypedLoops.set(generator, {
+    kind: generator.id,
+    value: value.id,
+    iterator: iterator.id,
+    next: next.id,
+    done: done.id,
+    async: asyncLoop,
+    sync: syncIterator?.id ?? null,
+  });
   const awaitDyn = (value: IrExpr): IrExpr => ({
     kind: "libCall",
     fn: "async.awaitDyn",
@@ -12105,6 +12144,14 @@ function lowerForOfDyn(
           init: asyncLoop
             ? { kind: "boolLit", value: false, type: BOOL, loc }
             : iteratorCanStep(varRef(iterator.id, DYN, loc), varRef(next.id, DYN, loc), loc),
+          loc,
+        },
+        // Which of the program's generator types the iterator is, once
+        // generator-dynamic-dispatch.ts knows them; 0 keeps the protocol.
+        {
+          kind: "varDecl",
+          localId: generator.id,
+          init: { kind: "numLit", value: 0, type: F64, loc },
           loc,
         },
         {

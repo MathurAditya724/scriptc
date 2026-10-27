@@ -5,6 +5,7 @@ import {
   sandboxBootstrapCommand,
   sandboxEffectWorkerAllocation,
   sandboxImageConfig,
+  sandboxNativeReference,
   sandboxRunnerConfig,
   sandboxTestSourceConfig,
   sandboxTestWorkerAllocation,
@@ -152,6 +153,24 @@ test("ambiguous or malformed snapshot sources fail before creating workers", () 
   expect(() => sandboxTestSourceConfig({ SCRIPTC_SANDBOX_SNAPSHOT: "wrong-id" })).toThrow(
     "snapshot ID",
   );
+});
+
+test("a native reference checkout needs a prepared source and an absolute path", () => {
+  const snapshot = { SCRIPTC_SANDBOX_SNAPSHOT: "snap_ABC123" };
+  expect(sandboxNativeReference(snapshot)).toBeUndefined();
+  expect(
+    sandboxNativeReference({
+      ...snapshot,
+      SCRIPTC_SANDBOX_NATIVE_REFERENCE: " /vercel/sandbox/prev/ ",
+    }),
+  ).toBe("/vercel/sandbox/prev");
+  expect(() =>
+    sandboxNativeReference({ SCRIPTC_SANDBOX_NATIVE_REFERENCE: "/vercel/sandbox/prev" }),
+  ).toThrow("needs SCRIPTC_SANDBOX_SNAPSHOT");
+  for (const path of ["prev", "/a/../b", "/a b", "/a;rm"])
+    expect(() =>
+      sandboxNativeReference({ ...snapshot, SCRIPTC_SANDBOX_NATIVE_REFERENCE: path }),
+    ).toThrow("absolute path");
 });
 
 test("OIDC authentication wins and supplies its own Sandbox scope", () => {

@@ -25,6 +25,8 @@ their supported native-clang contracts locally; other hosts retain those
 checks in the Sandboxes. Both lanes green is the bar before shipping any
 change.
 
+`SCRIPTC_SANDBOX_NATIVE_REFERENCE` names a built checkout inside a prepared `SCRIPTC_SANDBOX_SNAPSHOT` or image: each lane copies that checkout's LLVM helper and runtime pack instead of rebuilding them when their source inputs are identical. Sandbox creation is rate limited per team in vCPUs per minute, so the runner retries a rate-limited creation with backoff. Larger Sandboxes (`SCRIPTC_SANDBOX_VCPUS` up to 32, with `SCRIPTC_TEST_WORKERS` at half the vCPUs) shorten the lanes most.
+
 `VERCEL_OIDC_TOKEN` is the preferred credential. `VERCEL_TOKEN` remains
 supported with explicit `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID`. The custom
 `SCRIPTC_SANDBOX_IMAGE` is optional: without it, the gate starts from
@@ -57,6 +59,8 @@ A change that must not cost good code anything, such as a compatibility fix that
 ```bash
 node scripts/zero-cost-gate.mjs --baseline=/vercel/sandbox/prev --candidate=. --allow='\barguments\b'
 ```
+
+The whole gate takes 30 to 75 minutes on one 8-vCPU Sandbox, so shard it across Sandboxes. `--shard=i/n` splits the bench and corpus programs; the self-hosted compiler runs in shard 1, or alone with `--set=self`, and its candidate-source build overlaps its comparison build on hosts with 40 GB or more. Each shard writes `--json`, and `node scripts/zero-cost-merge.mjs <shard.json>...` merges them into one verdict, recomputing the compile-time intervals over every shard. `--record-baseline-cache=<file>` builds only the baseline and records each program's artifact hashes; `--baseline-cache=<file>` then skips the baseline build of every program whose candidate artifacts hash the same, which halves the work for a change that leaves most programs identical. A record applies only to the built baseline checkout, toolchain, and paths it was made with, and is ignored otherwise; a program whose entry, relative imports, or optimization level changed since the record builds its baseline.
 
 Test location follows scope:
 

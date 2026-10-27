@@ -84,10 +84,13 @@ function kindIs(host: Host, d: string, kind: number, yes: string, no: string): v
  * inline made polymorphic reads 7-10% faster (the design prototype's W2/W3)
  * and monomorphic method code no faster, for 65-225 more bytes per site;
  * the prototype hit made method-heavy code 3-6% faster for 15-90 bytes.
- * So a site tests entry 0, own or prototype, and its probe does the rest.
- * (0 makes every access probe: with a runtime built with SCR_JS_VERIFY,
- * that probes every access.) */
-const INLINE_WAYS: number = 1;
+ * Two entries cover the common two-layout site (object literals of one
+ * record built in two key orders): on bench:runtime's dynamic-properties
+ * they made the run 13% faster than one entry, and 26% faster without its
+ * class instances; four were no faster than two. So a site tests entries
+ * 0 and 1, own or prototype, and its probe does the rest. (0 makes every access probe: with a runtime
+ * built with SCR_JS_VERIFY, that probes every access.) */
+const INLINE_WAYS: number = 2;
 const INLINE_PROTO = true;
 
 /** The address of slot `slot` of layout-mode object `d`. */
