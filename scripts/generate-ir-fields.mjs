@@ -105,9 +105,23 @@ function irKind(type) {
 }
 
 let temp = 0;
-/** Lines that walk `expr` of `type`: strings to `walker.string`, IR nodes to
- * their walkers, arrays by element and other objects by field. */
-function walkLines(expr, type, indent, depth) {
+/** The fields each walked object type declares, for the type-level check at
+ * the end of the file: `typeExpr` names the object type, `fields` every
+ * field it had when the file was generated and `scalars` the fields that held
+ * no string and no object then. */
+const checks = [];
+/** Records `property list` of `object` (named `typeExpr`) for the check. */
+function noteFields(typeExpr, properties, scalarNames) {
+  checks.push({
+    typeExpr,
+    fields: properties.map((property) => property.name),
+    scalars: scalarNames,
+  });
+}
+/** Lines that walk `expr` of `type` (named `typeExpr` in the generated file):
+ * strings to `walker.string`, IR nodes to their walkers, arrays by element and
+ * other objects by field. */
+function walkLines(expr, type, typeExpr, indent, depth) {
   if (depth > 12) throw new Error(`field type nests too deep at ${expr}`);
   const parts = type.isUnion() ? type.types : [type];
   const present = parts.filter((part) => (part.flags & nullish) === 0);
@@ -127,19 +141,28 @@ function walkLines(expr, type, indent, depth) {
       if (objects.length !== 1) throw new Error(`several array types at ${expr}`);
       const item = `item${temp++}`;
       body.push(`for (const ${item} of ${expr}) {`);
-      body.push(...walkLines(item, checker.getTypeArguments(objects[0])[0], "  ", depth + 1));
+      const itemType = `Extract<NonNullable<${typeExpr}>, readonly unknown[]>[number]`;
+      body.push(
+        ...walkLines(item, checker.getTypeArguments(objects[0])[0], itemType, "  ", depth + 1),
+      );
       body.push("}");
     } else if (kinds.has(null) && objects.length === 1) {
-      for (const property of checker.getPropertiesOfType(objects[0])) {
+      const recordType = `Extract<NonNullable<${typeExpr}>, object>`;
+      const properties = checker.getPropertiesOfType(objects[0]);
+      const scalarNames = [];
+      for (const property of properties) {
         if (property.name === "loc") continue;
         const fieldType = checker.getTypeOfSymbol(property);
         const field = `${expr}.${property.name}`;
-        const lines = walkLines(field, fieldType, "", depth + 1);
+        const fieldTypeExpr = `${recordType}[${JSON.stringify(property.name)}]`;
+        const lines = walkLines(field, fieldType, fieldTypeExpr, "", depth + 1);
+        if (lines.length === 0) scalarNames.push(property.name);
         if (lines.length === 0) continue;
         if (property.name === "type")
           body.push("if (!skipType) {", ...lines.map((l) => `  ${l}`), "}");
         else body.push(...lines);
       }
+      noteFields(recordType, properties, scalarNames);
     } else throw new Error(`mixed object types at ${expr}: ${checker.typeToString(type)}`);
   }
   let lines = body;
@@ -193,20 +216,50 @@ for (const name of ["IrExpr", "IrStmt", "IrType"]) {
   }
   for (const [kind, member] of [...byKind].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     lines.push(`    case ${JSON.stringify(kind)}: {`);
+    const memberType = `Extract<${name}, { kind: ${JSON.stringify(kind)} }>`;
+    const scalarNames = [];
     for (const property of member.getProperties()) {
       if (property.name === "loc") continue;
       const fieldType = checker.getTypeOfSymbol(property);
       const field = `node.${property.name}`;
-      const walk = walkLines(field, fieldType, "", 0);
+      const fieldTypeExpr = `${memberType}[${JSON.stringify(property.name)}]`;
+      const walk = walkLines(field, fieldType, fieldTypeExpr, "", 0);
+      if (walk.length === 0) scalarNames.push(property.name);
       if (walk.length === 0) continue;
       if (property.name === "type")
         lines.push("      if (!skipType) {", ...walk.map((l) => `        ${l}`), "      }");
       else lines.push(...walk.map((l) => `      ${l}`));
     }
     lines.push("      return;", "    }");
+    noteFields(memberType, member.getProperties(), scalarNames);
   }
   lines.push("  }", "}", "");
 }
+
+// Type checking fails below when ir.ts gives a walked object a field this
+// file does not know, or lets a field that held no string and no object hold
+// one before this file is regenerated.
+const quoted = (names) => names.map((name) => JSON.stringify(name)).join(" | ");
+lines.push(
+  "/** A field ir.ts declares that this file does not read. */",
+  "type FieldsNotRead<T, Read extends PropertyKey> = Exclude<keyof T, Read>;",
+  "/** The string or object values a field read as a scalar can hold. */",
+  "type ValuesNotRead<T> = Extract<NonNullable<T>, string | object>;",
+  "/** Fails type checking unless `T` is never: run `pnpm generate:ir-fields`. */",
+  "type Unread<T extends never> = T;",
+  "",
+  "/** Every walked object type's fields as ir.ts declared them when this file",
+  " * was generated. */",
+  "export type IrFieldsCurrent = [",
+);
+for (const { typeExpr, fields, scalars } of checks) {
+  lines.push(
+    `  Unread<FieldsNotRead<${typeExpr}, ${fields.length > 0 ? quoted(fields) : "never"}>>,`,
+  );
+  for (const scalarName of scalars)
+    lines.push(`  Unread<ValuesNotRead<${typeExpr}[${JSON.stringify(scalarName)}]>>,`);
+}
+lines.push("];", "");
 const text = lines.join("\n");
 
 if (process.argv.includes("--check")) {
