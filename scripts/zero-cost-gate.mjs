@@ -462,6 +462,12 @@ function toolchainFingerprint(root) {
   h.update(JSON.stringify([process.platform, process.arch, process.version, root, programsRoot]));
   const clang = spawnSync("clang", ["--version"], { encoding: "utf8" });
   h.update(clang.stdout ?? "");
+  // Linux links use ld.lld when the driver finds it, else the system linker.
+  const lld = spawnSync("clang", ["-print-prog-name=ld.lld"], { encoding: "utf8" });
+  const lldPath = (lld.stdout ?? "").trim();
+  h.update(lldPath);
+  if (lldPath.startsWith("/") && existsSync(lldPath))
+    h.update(spawnSync(lldPath, ["--version"], { encoding: "utf8" }).stdout ?? "");
   const packages = join(root, "packages");
   for (const name of readdirSync(packages).sort()) {
     const dir = join(packages, name);
