@@ -431,11 +431,10 @@ test("--explain-dynamic attributes each refusal to the unit the dynamic tier wou
 test("--explain-dynamic lists the type failures localized failure would turn into dynamic slots", async () => {
   const { coverage } = analyze(fixture("localized-failure.ts"), { explainDynamic: true });
   const report = coverage.tiers!.localizedFailure;
-  // Locals, fields and parameters degrade (stages L1 and L2), and the
-  // 'any' field compiles; only the refused WeakRef field and its
-  // construction remain.
+  // Locals and parameters degrade (stages L1 and L2), the 'any' field
+  // compiles, and the `Tool[]` field maps exactly from its canonical form
+  // (stage N2); only the refused WeakRef field and its construction remain.
   expect(coverage.dynamicSlots?.map((s) => [s.slot, s.name])).toEqual([
-    ["field", "tools"],
     ["param", "progress"],
     ["local", "callbacks"],
   ]);
@@ -458,28 +457,26 @@ test("a local or module global whose declared type does not compile becomes a dy
   expect(coverage.diagnostics).toEqual([]);
   expect(coverage.dynamicSlots?.map((s) => [s.slot, s.name, s.declaredType, s.code])).toEqual([
     ["global", "current", "Callbacks | undefined", "SC2009"],
-    ["global", "all", "(number | Callbacks)[]", "SC2009"],
     ["local", "local", "Callbacks | undefined", "SC2009"],
   ]);
-  // The loop over `all` is top-level code: its dynamic operations count too.
-  expect(coverage.dynamicSlots?.find((s) => s.name === "all")?.operations).toBeGreaterThan(0);
-  expect(coverage.performance?.filter((d) => d.code === "SC6104")).toHaveLength(3);
+  // `all`'s element type maps exactly from its canonical form (stage N2), so
+  // the array is no dynamic slot.
+  expect(coverage.dynamicSlots?.find((s) => s.name === "all")).toBeUndefined();
+  expect(coverage.performance?.filter((d) => d.code === "SC6104")).toHaveLength(2);
   expect(coveragePasses(coverage, "blockers")).toBe(true);
   expect(coveragePasses(coverage, "dynamic")).toBe(true);
   expect(coveragePasses(coverage, "dynamic-slots")).toBe(false);
   const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
   expect(envelope.dynamicSlots?.map((s) => [s.kind, s.name, s.line])).toEqual([
     ["global", "current", 10],
-    ["global", "all", 36],
     ["local", "local", 14],
   ]);
   expect(envelope.diagnostics.filter((d) => d.code === "SC6104").map((d) => d.severity)).toEqual([
     "warning",
     "warning",
-    "warning",
   ]);
   const text = renderCoverage(coverage, { sourceTexts, root: repoRoot });
-  expect(text).toContain("dynamic slots       3");
+  expect(text).toContain("dynamic slots       2");
   expect(text).toContain("module global 'current' (declared 'Callbacks | undefined')");
   // --tier=static-only keeps every refusal.
   const strict = analyze(program, { tier: "static-only" }).coverage;
