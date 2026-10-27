@@ -28,16 +28,22 @@
 #if defined(MADV_HUGEPAGE) && defined(MREMAP_FIXED)
 #define SCR_LARGE_PAGE ((uintptr_t)2 << 20)
 
-/* The main program's executable PT_LOAD segment. */
+/* The executable PT_LOAD segment that holds this function: the runtime
+ * links into the executable, so that is the main program's code. The
+ * object's name does not identify it: glibc reports the main program with
+ * an empty name, and musl with its path or "/proc/self/exe". */
 static int scr_text_segment(struct dl_phdr_info *info, size_t size, void *data) {
   (void)size;
-  if (info->dlpi_name != NULL && info->dlpi_name[0] != 0) return 0;
+  uintptr_t self = (uintptr_t)&scr_text_segment;
   for (int i = 0; i < info->dlpi_phnum; i++) {
     const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
     if (ph->p_type != PT_LOAD || !(ph->p_flags & PF_X)) continue;
+    uintptr_t lo = (uintptr_t)(info->dlpi_addr + ph->p_vaddr);
+    uintptr_t hi = lo + (uintptr_t)ph->p_memsz;
+    if (self < lo || self >= hi) continue;
     uintptr_t *range = data;
-    range[0] = (uintptr_t)(info->dlpi_addr + ph->p_vaddr);
-    range[1] = range[0] + (uintptr_t)ph->p_memsz;
+    range[0] = lo;
+    range[1] = hi;
     return 1;
   }
   return 0;
