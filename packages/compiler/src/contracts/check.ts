@@ -68,6 +68,7 @@ import {
   type ContractNote,
 } from "../frontend/contract-types.js";
 import { planInlineArrays } from "../ir/inline-arrays.js";
+import { checkInlineArraySources } from "../ir/inline-array-sources.js";
 
 /** The largest array index: 2^32 - 2 (ECMA-262 array index). */
 const MAX_ARRAY_INDEX = 2 ** 32 - 2;
@@ -377,6 +378,17 @@ class ContractChecker {
         note.loc,
         `'${note.name}' cannot keep its InlineArray contract: ${r.reason}`,
         "write the field once in the constructor from one of its parameters (subclasses pass theirs through super(...)), never again, and keep the class's instances out of class values and dynamic values",
+      );
+    }
+    // Where the arrays come from and who writes them (ir/inline-array-sources.ts).
+    for (const issue of checkInlineArraySources(this.mod, plan)) {
+      const note = notes.get(`${issue.declaringClass}\0${issue.field}`)!;
+      const from = issue.origin === undefined ? "" : ` (from ${this.where(issue.origin)})`;
+      this.report(
+        "SC7009",
+        issue.loc,
+        `'${note.name}' (InlineArray): ${issue.reason}${from}`,
+        "an InlineArray field holds its array for good: build a new array for each constructor call, and never write to an array a field holds",
       );
     }
     const kept = new Set<string>();

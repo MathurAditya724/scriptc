@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile } from "../src/index.js";
@@ -6,6 +7,8 @@ import { compile } from "../src/index.js";
 // InlineArray fields (@scriptc/experimental, ir/inline-arrays.ts): the
 // elements of a ProgramLifetime class's array field written once from a
 // constructor parameter live in the instance, after its fixed fields.
+
+const repoRoot = join(import.meta.dirname, "../../..");
 
 const header = `
 import type { ProgramLifetime } from "@scriptc/types";
@@ -15,9 +18,10 @@ import type { InlineArray } from "@scriptc/experimental";
 async function build(
   source: string,
 ): Promise<{ ok: boolean; codes: string[]; llvm: string; messages: string[] }> {
-  // Inside the workspace, so that the program resolves both packages.
-  const dir = await mkdtemp(join(import.meta.dirname, ".inline-array-"));
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inline-array-"));
   try {
+    // The workspace's packages, so that the program resolves both imports.
+    await symlink(join(repoRoot, "node_modules"), join(dir, "node_modules"));
     const entry = join(dir, "main.ts");
     const outPath = join(dir, "main.ll");
     await writeFile(entry, header + source);
@@ -159,6 +163,235 @@ console.log(use(new List(0, [new Item(1)])));
   expect(body("use", llvm)).toContain("call ptr @scr_arr_view_cref(");
 });
 
+test("writes to the arrays fields hold are refused", async () => {
+  for (const write of [
+    // Through a read of the field.
+    `function grow(list: List): void {
+  (list.items as Item[]).push(new Item(5));
+}
+grow(new List(0, [new Item(1)]));`,
+    // Through a parameter and an array element.
+    `function clear(items: readonly Item[]): void {
+  (items as Item[]).length = 0;
+}
+const all = [new List(0, [new Item(1)]).items];
+clear(all[0]!);`,
+    // Through a Map value.
+    `const byPos = new Map<number, readonly Item[]>();
+const list = new List(0, [new Item(1)]);
+byPos.set(list.pos, list.items);
+(byPos.get(0)! as Item[])[0] = new Item(2);`,
+  ]) {
+    const result = await build(classes + write);
+    expect(result.ok).toBe(false);
+    expect(result.codes).toContain("SC7009");
+    expect(result.messages.join("\n")).toContain(
+      "writes to an array that may be an InlineArray field's",
+    );
+  }
+});
+
+test("a write names the field read whose array it may reach", async () => {
+  const result = await build(
+    classes +
+      `
+function same(items: readonly Item[]): readonly Item[] {
+  return items;
+}
+const list = new List(0, [new Item(1)]);
+const all: (readonly Item[])[] = [same(list.items)];
+(all[0]! as Item[]).pop();
+`,
+  );
+  expect(result.ok).toBe(false);
+  expect(result.messages.join("\n")).toMatch(
+    /writes to an array that may be an InlineArray field's \(from main\.ts:\d+:\d+\)/,
+  );
+});
+
+test("other arrays of the element type stay writable", async () => {
+  // Arrays are followed by where they are held, not by type: a helper that
+  // returns its argument gives each caller its own array back.
+  const result = await build(
+    classes +
+      `
+function same(items: readonly Item[]): readonly Item[] {
+  return items;
+}
+const list = new List(0, [new Item(1)]);
+const views: (readonly Item[])[] = [same(list.items)];
+const scratch: Item[][] = [[]];
+const own = same([new Item(2)]) as Item[];
+scratch[0]!.push(new Item(3));
+own.push(new Item(4));
+console.log(views[0]!.length, scratch[0]!.length, own.length);
+`,
+  );
+  expect(result.messages).toEqual([]);
+});
+
+test("a read of the field may reach printing and copies, but no other library call", async () => {
+  const reads = await build(
+    classes +
+      `
+const list = new List(0, [new Item(1)]);
+console.log(list.items, JSON.stringify(list.items), [...list.items].length);
+console.log(new List(1, list.items.slice()).items.length);
+`,
+  );
+  expect(reads.ok).toBe(true);
+  const frozen = await build(
+    classes +
+      `
+console.log(Object.isFrozen(new List(0, [new Item(1)]).items));
+`,
+  );
+  expect(frozen.ok).toBe(false);
+  expect(frozen.messages.join("\n")).toContain("reaches the library call");
+});
+
+test("the constructor is passed an array nothing else keeps", async () => {
+  const accepted = [
+    // A literal, a copy, and a factory's result.
+    `function fresh(n: number): Item[] {
+  const out: Item[] = [];
+  for (let i = 0; i < n; i++) out.push(new Item(i));
+  return out;
+}
+const a = new List(0, [new Item(1)]);
+const b = new List(1, a.items.concat([new Item(2)]));
+console.log(a.items.length, b.items.length, new List(2, fresh(3)).items.length);`,
+    // A local's last use, after writes in place, in either arm of a
+    // conditional, and after an early return.
+    `function make(c: boolean): List {
+  const items = [new Item(1)];
+  items.push(new Item(2));
+  if (items.length > 5) return new List(-1, items);
+  return c ? new List(0, items) : new List(1, items);
+}
+console.log(make(true).items.length, make(false).pos);`,
+    // A parameter its callers move.
+    `function wrap(pos: number, items: Item[]): List {
+  items.reverse();
+  return new List(pos, items);
+}
+function build(n: number): List {
+  return wrap(n, Array.from({ length: n }, (_, i) => new Item(i)));
+}
+console.log(build(2).items[0]!.kind);`,
+    // An array a field already holds.
+    `const a = new List(0, [new Item(1)]);
+const shared = a.items;
+console.log(new List(1, shared).items.length, new List(2, shared).pos);`,
+    // An array that is never written, shared by several constructors.
+    `const none: Item[] = [];
+function make(items: Item[]): List {
+  return new List(0, items.length === 0 ? none : items);
+}
+const lists: List[] = [];
+for (let i = 0; i < 2; i++) lists.push(new List(i, none));
+console.log(lists.length, make([]).items.length, make([new Item(1)]).items.length);`,
+    // A local that each pass of a loop moves and then replaces.
+    `function pairs(n: number): List[] {
+  const lists: List[] = [];
+  let items: Item[] = [];
+  for (let i = 0; i < n; i++) {
+    items.push(new Item(i));
+    if (i % 2 === 1) {
+      lists.push(new List(i, items));
+      items = [];
+    }
+  }
+  return lists;
+}
+console.log(pairs(4).length);`,
+    // A top-level array, read elsewhere.
+    `const items = [new Item(1), new Item(2)];
+function count(): number {
+  return items.length;
+}
+console.log(count());
+const list = new List(0, items);
+console.log(list.items.length);`,
+  ];
+  for (const source of accepted) {
+    const result = await build(classes + source);
+    expect(result.messages).toEqual([]);
+  }
+  const refused = [
+    // Written after the move.
+    `const items = [new Item(1)];
+const list = new List(0, items);
+items.push(new Item(2));
+console.log(list.items.length);`,
+    // Kept in another variable.
+    `const items = [new Item(1)];
+const kept = items;
+const list = new List(0, items);
+kept.push(new Item(2));
+console.log(list.items.length);`,
+    // A parameter whose caller keeps the array.
+    `function wrap(items: Item[]): List {
+  return new List(0, items);
+}
+const items = [new Item(1)];
+const list = wrap(items);
+items.push(new Item(2));
+console.log(list.items.length);`,
+    // A parameter of another class's constructor, and of a method.
+    `class Section {
+  readonly list: List;
+  constructor(items: Item[]) {
+    this.list = new List(0, items);
+  }
+}
+const items = [new Item(1)];
+const section = new Section(items);
+items.push(new Item(2));
+console.log(section.list.items.length);`,
+    `class Maker {
+  make(items: Item[]): List {
+    return new List(0, items);
+  }
+}
+class FlagMaker extends Maker {
+  override make(items: Item[]): List {
+    return new Flagged(0, items, 1);
+  }
+}
+function run(maker: Maker): number {
+  const items = [new Item(1)];
+  const list = maker.make(items);
+  items.push(new Item(2));
+  return list.items.length;
+}
+console.log(run(new Maker()), run(new FlagMaker()));`,
+    // A shared array written elsewhere.
+    `const none: Item[] = [];
+const a = new List(0, none);
+const b = new List(1, none);
+function add(items: Item[]): void {
+  items.push(new Item(2));
+}
+add(none);
+console.log(a.items.length, b.items.length);`,
+    // A function returning a shared array.
+    `const all: Item[] = [new Item(1)];
+function current(): Item[] {
+  return all;
+}
+const list = new List(0, current());
+all.push(new Item(2));
+console.log(list.items.length);`,
+  ];
+  for (const source of refused) {
+    const result = await build(classes + source);
+    expect(result.ok).toBe(false);
+    expect(result.codes).toContain("SC7009");
+    expect(result.messages.join("\n")).toContain("may be kept elsewhere");
+  }
+});
+
 test("an InlineArray field must keep its contract", async () => {
   const twice = await build(`
 class Item implements ProgramLifetime {}
@@ -203,6 +436,50 @@ console.log(new List(2).items.length);
   expect(computed.ok).toBe(false);
   expect(computed.codes).toContain("SC7009");
   expect(computed.messages.join("\n")).toContain("constructor parameter");
+});
+
+test.runIf(lowRegion)(
+  "an instance inside a dynamic value shows the field as an array",
+  async () => {
+    const { ok, llvm } = await build(
+      classes +
+        `
+class Holder {
+  readonly list: List;
+  constructor(list: List) {
+    this.list = list;
+  }
+}
+const list = new List(3, [new Item(1), new Item(2)]);
+console.log(JSON.stringify({ list }), JSON.stringify(new Holder(list)));
+`,
+    );
+    expect(ok).toBe(true);
+    // The instance's dynamic view reads the field as an array of the elements.
+    const views = llvm
+      .split(/\n(?=define )/)
+      .filter((f) => f.startsWith("define") && f.includes("_materialize("));
+    expect(views.some((f) => f.includes("call ptr @scr_arr_view_cref("))).toBe(true);
+  },
+);
+
+test("the constructor stores the array parameter and does nothing else with it", async () => {
+  const result = await build(`
+class Item implements ProgramLifetime {}
+class List implements ProgramLifetime {
+  readonly items: InlineArray<Item>;
+  readonly count: number;
+  constructor(items: Item[]) {
+    items.push(new Item());
+    this.items = items;
+    this.count = items.length;
+  }
+}
+console.log(new List([new Item()]).count);
+`);
+  expect(result.ok).toBe(false);
+  expect(result.codes).toContain("SC7009");
+  expect(result.messages.join("\n")).toContain("besides storing it in the field");
 });
 
 test("a read of an InlineArray field is not compared by identity", async () => {

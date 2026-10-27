@@ -79,7 +79,8 @@ export declare class ThreadSlots<K extends object, V extends object> {
  * (@scriptc/types ProgramLifetime classes): `readonly f: InlineArray<C>`,
  * where C is a ProgramLifetime class. The class's constructor writes the
  * field once, from one of its parameters, and nothing else writes it.
- * Reading the field gives an array of its elements, frozen in scriptc
- * builds; two reads need not give the same array. Under Node.js it is the
- * array the constructor stored. */
+ * The constructor is passed an array nothing else keeps, and the arrays
+ * fields hold are never written. Reading the field gives an array of its
+ * elements, frozen in scriptc builds; two reads need not give the same
+ * array. Under Node.js it is the array the constructor stored. */
 export type InlineArray<T> = readonly T[];

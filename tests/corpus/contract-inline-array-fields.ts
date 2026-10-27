@@ -137,6 +137,23 @@ const copy = new List(0, 0, big.nodes);
 const part = new ModifierList(0, 0, big.nodes.slice(10, 13), 1, "part");
 console.log(copy.nodes.length, copy.nodes[39] === big.nodes[39], sum(part), part.nodes[0]!.pos);
 
+// Inside a value that becomes dynamic, the field shows as an array.
+class Holder {
+  readonly list: List;
+  constructor(list: List) {
+    this.list = list;
+  }
+}
+const shown = new ModifierList(1, 2, leaves(7, 2), 3, "shown");
+console.log(JSON.stringify({ shown }));
+console.log(JSON.stringify(new Holder(shown)));
+
+// The arguments of `new` run before the instance is made, so an argument
+// that adds to the array the list is built from adds to the list.
+const growing = leaves(50, 2);
+const grown = new List(growing.push(new Leaf(52, 1)), 0, growing);
+console.log(grown.pos, grown.nodes.length, grown.nodes[2]!.pos);
+
 // Trees whose groups hold lists.
 function tree(level: number, pos: number): Node {
   if (level === 0) return new Leaf(pos, pos);

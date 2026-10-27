@@ -14,8 +14,9 @@
  *
  * `inlineArrayReads` then prepares the IR for the layout:
  * - a `new` of such a class evaluates its arguments into locals first, in
- *   order, when the length argument is not already a local, so that the
- *   backend can read the length before it allocates;
+ *   order, unless every argument is a local or a constant, so that the
+ *   backend reads the length after every argument has run and before it
+ *   allocates;
  * - an immutable local initialized from the field (`const nodes =
  *   list.nodes`) whose every use indexes it, reads its length or iterates
  *   it with `for...of` is replaced by reads of the field, through a local
@@ -220,7 +221,24 @@ function parameterOf(fn: IrFunction, value: IrExpr): number | string {
   const local = fn.locals.find((l) => l.id === value.localId);
   if (local === undefined || local.boxed === true || assigns(fn, value.localId))
     return "the constructor parameter is written";
+  // The allocation took its length from the argument, so nothing in the
+  // constructor may change the array first: the field's value is the
+  // parameter's only use.
+  if (reads(fn, value.localId) !== 1)
+    return "the constructor uses the array parameter besides storing it in the field";
   return index;
+}
+
+function reads(fn: IrFunction, localId: string): number {
+  let n = 0;
+  everyStmtList(fn.body, {
+    expr: (e) => {
+      if (e.kind === "varRef" && e.localId === localId) n++;
+      return true;
+    },
+    stmt: () => true,
+  });
+  return n;
 }
 
 function assigns(fn: IrFunction, localId: string): boolean {
@@ -435,10 +453,15 @@ function rewriteFunction(fn: IrFunction, plan: InlineArrayPlan): IrFunction {
 
 /** A `new` of a planned class whose length argument is not a local read. */
 function newNeedsLocals(e: IrExpr & { kind: "new" }, plan: InlineArrayPlan): boolean {
-  const cls = plan.classes.get(e.className);
-  if (cls === undefined) return false;
-  const arg = e.args[cls.lengthArg];
-  return arg !== undefined && arg.kind !== "varRef";
+  if (!plan.classes.has(e.className)) return false;
+  // The allocation reads the length once every argument has run: unless
+  // they are all locals and constants, which run no code, they are
+  // evaluated into locals first.
+  return !e.args.every((a) => a.kind === "varRef" || isConstant(a));
+}
+
+function isConstant(e: IrExpr): boolean {
+  return e.kind === "numLit" || e.kind === "strLit" || e.kind === "boolLit" || e.kind === "unitLit";
 }
 
 /** `new C(a, b, ...)` as `(t0 = a, t1 = b, ..., new C(t0, t1, ...))`: the

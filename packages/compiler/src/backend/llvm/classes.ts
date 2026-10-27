@@ -464,6 +464,12 @@ export function classFieldIndex(
     throw new InternalCompilerError(
       `llvm emitter bug: unknown field ${field} on class ${meta.def.name}`,
     );
+  // An inline array field's slot holds its element count: its reads and
+  // writes go through inline-arrays.ts.
+  if (meta.inlineTail?.field === idx && meta.compact)
+    throw new InternalCompilerError(
+      `llvm emitter bug: field slot of the inline array field ${meta.def.name}.${field}`,
+    );
   const compressed = meta.compressed[idx] === true;
   // Callers that read or write a field's storage as a pointer must not see
   // a compressed one; callers that decode and encode pass "compressed".
@@ -940,6 +946,8 @@ function undefFieldInits(
     if (f.name === "%cause") return;
     // A nullable-pointer field's zeroed slot already is its unit arm.
     if (nullable?.get(meta.def.name, f.name)) return;
+    // An inline array field's slot holds its count, which `new` stores.
+    if (meta.inlineTail?.field === i && meta.compact) return;
     // Only union and dyn fields get a store here; a compressed field is a
     // class reference, which starts NULL.
     const { index, compressed } = classFieldIndex(meta, f.name, "compressed");

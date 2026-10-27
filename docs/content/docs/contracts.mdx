@@ -368,7 +368,7 @@ A long-running program, such as a compiler in watch mode, can free program-lifet
 
 ### Inline array fields
 
-An array field of a program-lifetime class whose elements are program-lifetime instances can keep its elements in the instance itself, after the other fields, with `InlineArray` from [`@scriptc/experimental`](/docs/experimental). The constructor writes the field once from one of its parameters; reads that index the field, read its `length` or iterate it load the elements from the instance, and other reads get an array of them, which is frozen in scriptc builds. scriptc reports a field that does not keep these rules (SC7009).
+An array field of a program-lifetime class whose elements are program-lifetime instances can keep its elements in the instance itself, after the other fields, with `InlineArray` from [`@scriptc/experimental`](/docs/experimental). The constructor writes the field once from one of its parameters; reads that index the field, read its `length` or iterate it load the elements from the instance, and other reads get an array of them. The array passed to the constructor is one that nothing else keeps, and the arrays fields hold are never written. scriptc reports a field that does not keep these rules (SC7009).
 
 ## Diagnostics
 
