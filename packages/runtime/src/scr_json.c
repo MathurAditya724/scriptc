@@ -4415,6 +4415,15 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
   return view;
 }
 
+/* The slot of field `position` of a view (emitted view guards, cold): the
+ * viewed record's slot at its offset table's entry. `words` is the byte
+ * offset of the view's two trailing words. */
+void *scr_record_view_slot(void *view, size_t words, size_t position) {
+  void **slots = (void **)((char *)view + words);
+  const size_t *offsets = slots[1];
+  return (char *)slots[0] + offsets[position];
+}
+
 /* A view itself counts like any record (its target's retain). */
 static void *scr_record_view_retain(void *view) {
   if (!scr_rc_immortal(view)) SCR_RC_COUNT(view)++;

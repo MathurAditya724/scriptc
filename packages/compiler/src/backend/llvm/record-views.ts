@@ -165,6 +165,7 @@ export function recordViewFieldPtr(
   slotIndex: number,
   position: number,
   words: { record: number; offsets: number },
+  declare: (decl: string) => void,
 ): string {
   const own = B.tmp();
   B.line(`${own} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${slotIndex}`);
@@ -173,26 +174,14 @@ export function recordViewFieldPtr(
   const from = B.currentLabel();
   const view = B.newLabel("rv.view");
   const join = B.newLabel("rv.join");
-  B.condBr(isView, view, join);
+  // Views are rare: the slot lookup stays out of line.
+  B.condBr(isView, view, join, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
   B.startBlock(view);
-  const recordPtr = B.tmp();
-  const record = B.tmp();
-  B.line(
-    `${recordPtr} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${words.record}`,
-  );
-  B.line(`${record} = load ptr, ptr ${recordPtr}`);
-  const tablePtr = B.tmp();
-  const table = B.tmp();
-  const offsetPtr = B.tmp();
-  const offset = B.tmp();
+  declare(`declare ptr @scr_record_view_slot(ptr, ${sizeType}, ${sizeType})`);
   const viewed = B.tmp();
   B.line(
-    `${tablePtr} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${words.offsets}`,
+    `${viewed} = call ptr @scr_record_view_slot(ptr ${obj}, ${sizeType} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${words.record}) to ${sizeType}), ${sizeType} ${position})`,
   );
-  B.line(`${table} = load ptr, ptr ${tablePtr}`);
-  B.line(`${offsetPtr} = getelementptr inbounds ${sizeType}, ptr ${table}, i64 ${position}`);
-  B.line(`${offset} = load ${sizeType}, ptr ${offsetPtr}`);
-  B.line(`${viewed} = getelementptr inbounds i8, ptr ${record}, ${sizeType} ${offset}`);
   B.br(join);
   B.startBlock(join);
   const ptr = B.tmp();

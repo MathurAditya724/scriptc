@@ -4879,6 +4879,7 @@ export class LlEmitter {
         idx + base,
         idx,
         recordViewWords(shape.fields.length, base),
+        (decl) => this.declare(decl),
       );
     } else {
       p = this.B.tmp();

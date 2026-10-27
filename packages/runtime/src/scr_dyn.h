@@ -1325,6 +1325,7 @@ typedef struct {
   size_t key_len;
   const size_t *offsets;
 } ScrRecordViewSource;
+void *scr_record_view_slot(void *view, size_t words, size_t position);
 void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
                           const char *key, size_t key_len, void *(*alloc)(void), size_t words);
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
