@@ -96,8 +96,6 @@ export interface JournalTable {
   readonly digest?: (key: string, before: number) => string | null;
   /** Removes the entries from position `from` on. */
   readonly truncate?: (from: number) => void;
-  /** The entries the table holds now. */
-  readonly hold?: () => HeldEntries;
   /** The content of the entries the table holds now, for tables whose
    * values are objects a unit could change in place. */
   readonly contents?: () => HeldContents;
@@ -127,10 +125,13 @@ export function contentDigest(text: string): string {
   return `${text.length}:${(a >>> 0).toString(16)}${(b >>> 0).toString(16)}`;
 }
 
-/** The strings quoted in JSON `texts`, unescaped only as far as their
- * delimiting quotes: the names a unit's encoded IR and entries refer to. */
+/** The names quoted in JSON `texts`, unescaped only as far as their
+ * delimiting quotes: the strings that start with `%` (helper, lifted and
+ * IR data names) and union ids (`u` and 12 hex digits), which the tables
+ * a unit reads and changes are keyed by. */
 export function quotedStrings(texts: readonly string[]): Set<string> {
   const out = new Set<string>();
+  const hex = (char: number): boolean => (char >= 48 && char <= 57) || (char >= 97 && char <= 102);
   for (const text of texts) {
     let start = -1;
     for (let index = 0; index < text.length; index++) {
@@ -139,19 +140,19 @@ export function quotedStrings(texts: readonly string[]): Set<string> {
       else if (char === 34 /* " */) {
         if (start < 0) start = index + 1;
         else {
-          out.add(text.slice(start, index));
+          const first = text.charCodeAt(start);
+          let name = first === 37; /* % */
+          if (!name && first === 117 /* u */ && index - start === 13) {
+            name = true;
+            for (let at = start + 1; at < index && name; at++) name = hex(text.charCodeAt(at));
+          }
+          if (name) out.add(text.slice(start, index));
           start = -1;
         }
       }
     }
   }
   return out;
-}
-
-/** A table's entries at one point (JournalTable.hold). */
-export interface HeldEntries {
-  /** Whether the table's first entries are still these keys and values. */
-  same(): boolean;
 }
 
 /** A field a unit's lowering must leave as it found it (fixedScalar), or a
@@ -288,7 +289,11 @@ export function recordUnit(
 ): RecordedUnit {
   const tables = host.tables;
   const before = tables.map((table) => table.size());
-  const held = tables.map((table) => (table.hold === undefined ? null : table.hold()));
+  // Outside a recorded wave, the unit's own snapshot of the tables' content.
+  const own =
+    contents === null
+      ? tables.map((table) => (table.contents === undefined ? null : table.contents()))
+      : null;
   const marks = host.scalars.map((scalar) => scalar.mark());
   const counts = host.statementCounts();
   const recorder = new UnitEvents();
@@ -296,8 +301,6 @@ export function recordUnit(
   const reasons: string[] = [];
   const grown: number[] = [];
   tables.forEach((table, index) => {
-    const check = held[index] ?? null;
-    if (check !== null && !check.same()) reasons.push(`${table.name}:replaced`);
     if (table.size() === before[index]) return;
     if (table.entries === undefined) reasons.push(table.name);
     else grown.push(index);
@@ -339,7 +342,12 @@ export function recordUnit(
     if (entries !== null) for (const entry of entries) texts.push(entry);
   }
   const names = quotedStrings(texts);
-  if (contents !== null) {
+  if (own !== null) {
+    if (reasons.length === 0)
+      tables.forEach((table, index) => {
+        if ((own[index] ?? null)?.changed() != null) reasons.push(`${table.name}:changed`);
+      });
+  } else if (contents !== null) {
     // A unit with a record must leave the entries it names as they were; a
     // unit without one keeps its changes.
     if (reasons.length === 0)
@@ -419,6 +427,69 @@ export function lowerWaveRecorded(
   });
 }
 
+/** The content of a keyed table's entries (JournalTable.contents): each
+ * entry's encoded value, and the order of the keys, since a table only adds
+ * entries at the end. An entry is found by its key, or by the name its value
+ * holds (`valueName`): a unit names the helper it got, not the key it was
+ * looked up by. `text` answers undefined for a key the table does not
+ * hold. */
+function keyedContents(
+  size: () => number,
+  keys: () => Iterable<string>,
+  text: (key: string) => string | null | undefined,
+  valueName: (key: string) => string | null,
+): HeldContents {
+  const texts = new Map<string, string | null>();
+  let order: string[] = [];
+  const byName = new Map<string, string>();
+  const differs = (key: string): boolean => text(key) !== texts.get(key);
+  const keyOf = (name: string): string | undefined => (texts.has(name) ? name : byName.get(name));
+  const held: HeldContents = {
+    extend: () => {
+      if (texts.size >= size()) return;
+      for (const key of keys()) {
+        if (texts.has(key)) continue;
+        texts.set(key, text(key) ?? null);
+        order.push(key);
+        const named = valueName(key);
+        if (named !== null) byName.set(named, key);
+      }
+    },
+    changed: () => {
+      let index = 0;
+      for (const key of keys()) {
+        if (index >= order.length) break;
+        if (key !== order[index]) return order[index]!;
+        index++;
+      }
+      if (index < order.length) return order[index]!;
+      for (const key of order) if (differs(key)) return key;
+      return null;
+    },
+    changedAmong: (names) => {
+      for (const name of names) {
+        const key = keyOf(name);
+        if (key !== undefined && differs(key)) return key;
+      }
+      return null;
+    },
+    refresh: (names) => {
+      for (const name of names) {
+        const key = keyOf(name);
+        if (key === undefined) continue;
+        const now = text(key);
+        if (now !== undefined) texts.set(key, now);
+        else {
+          texts.delete(key);
+          order = order.filter((held) => held !== key);
+        }
+      }
+    },
+  };
+  held.extend();
+  return held;
+}
+
 /** An appendable table over a Map from strings to strings, such as helper
  * names by key. */
 export function mapTable(name: string, map: Map<string, string>): JournalTable {
@@ -427,6 +498,7 @@ export function mapTable(name: string, map: Map<string, string>): JournalTable {
     map,
     (value) => JSON.stringify(value),
     (text) => JSON.parse(text) as string,
+    (value) => value,
   );
 }
 
@@ -444,42 +516,15 @@ export function countTable(name: string, map: Map<string, number>): JournalTable
  * JSON. JSON writes a number that is not finite as null, so a value whose
  * encoding holds a null does not encode. */
 export function irDataTable<V>(name: string, map: Map<string, V>): JournalTable {
-  const encode = (value: V): string | null => {
-    const text = JSON.stringify(value);
-    return /[:,[]null\b/.test(text) ? null : text;
-  };
-  return {
-    ...codecTable(name, map, encode, (text) => JSON.parse(text) as V),
-    contents: () => {
-      const texts = new Map<string, string | null>();
-      const differs = (key: string): boolean => {
-        const value = map.get(key);
-        return value === undefined || encode(value) !== texts.get(key);
-      };
-      const held: HeldContents = {
-        extend: () => {
-          if (texts.size === map.size) return;
-          for (const [key, value] of map) if (!texts.has(key)) texts.set(key, encode(value));
-        },
-        changed: () => {
-          for (const key of texts.keys()) if (differs(key)) return key;
-          return null;
-        },
-        changedAmong: (keys) => {
-          for (const key of keys) if (texts.has(key) && differs(key)) return key;
-          return null;
-        },
-        refresh: (keys) => {
-          for (const key of keys) {
-            const value = map.get(key);
-            if (texts.has(key) && value !== undefined) texts.set(key, encode(value));
-          }
-        },
-      };
-      held.extend();
-      return held;
+  return codecTable(
+    name,
+    map,
+    (value) => {
+      const text = JSON.stringify(value);
+      return /[:,[]null\b/.test(text) ? null : text;
     },
-  };
+    (text) => JSON.parse(text) as V,
+  );
 }
 
 /** An appendable table over a Map from strings to values that `encode`
@@ -491,6 +536,7 @@ export function codecTable<V>(
   map: Map<string, V>,
   encode: (value: V) => string | null,
   decode: (text: string) => V,
+  nameOf: ((value: V) => string) | null = null,
 ): JournalTable {
   return {
     name,
@@ -517,21 +563,19 @@ export function codecTable<V>(
       const keys = [...map.keys()].slice(from);
       for (const key of keys) map.delete(key);
     },
-    hold: () => {
-      const keys = [...map.keys()];
-      const values = [...map.values()];
-      return {
-        same: () => {
-          let index = 0;
-          for (const [key, value] of map) {
-            if (index >= keys.length) break;
-            if (key !== keys[index] || value !== values[index]) return false;
-            index++;
-          }
-          return index === keys.length;
+    contents: () =>
+      keyedContents(
+        () => map.size,
+        () => map.keys(),
+        (key) => {
+          const value = map.get(key);
+          return value === undefined ? undefined : encode(value);
         },
-      };
-    },
+        (key) => {
+          const value = map.get(key);
+          return value === undefined || nameOf === null ? null : nameOf(value);
+        },
+      ),
   };
 }
 
@@ -548,20 +592,13 @@ export function setTable(name: string, set: Set<string>): JournalTable {
       const entries = [...set].slice(from);
       for (const entry of entries) set.delete(entry);
     },
-    hold: () => {
-      const entries = [...set];
-      return {
-        same: () => {
-          let index = 0;
-          for (const entry of set) {
-            if (index >= entries.length) break;
-            if (entry !== entries[index]) return false;
-            index++;
-          }
-          return index === entries.length;
-        },
-      };
-    },
+    contents: () =>
+      keyedContents(
+        () => set.size,
+        () => set.keys(),
+        (key) => (set.has(key) ? "" : undefined),
+        () => null,
+      ),
   };
 }
 
@@ -625,10 +662,6 @@ export function functionTable(
     truncate: (from) => {
       while (functions.length > from) functions.pop();
       changed();
-    },
-    hold: () => {
-      const held = [...functions];
-      return { same: () => held.every((fn, index) => functions[index] === fn) };
     },
     contents: () => {
       const texts: (string | null)[] = [];
