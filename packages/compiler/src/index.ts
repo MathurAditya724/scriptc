@@ -101,14 +101,20 @@ import {
   nativeProgramPartitions,
 } from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
-import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./backend/targets.js";
+import {
+  nativeCodegenTarget,
+  nativeCodegenTargetRefusal,
+  staticLinkRefusal,
+} from "./backend/targets.js";
 import { windowsSubsystemLinkerArgs, type WindowsSubsystem } from "./backend/targets.js";
 import { createNativeLinkInfo } from "./backend/native-link-info.js";
 import { RuntimePackError } from "./backend/runtime-pack.js";
 import { createNativeLinkPlan } from "./backend/link-plan.js";
 import {
   nativeProfileKey,
+  nativeProfileLayout,
   nativeProfileRefusal,
+  profileHasContextCounts,
   type NativeProfileMatch,
   type NativeProfileOptions,
 } from "./backend/native-profile.js";
@@ -610,6 +616,7 @@ async function compileExecutableNative(
   ffi: FfiProfile | null,
   windowsSubsystem?: WindowsSubsystem,
   strip?: boolean,
+  staticLink = false,
   programSplit: ReturnType<typeof splitLlvmProgram> = null,
   programObjectDependencies: readonly NativeArtifactDependency[] = [],
   onArtifactReady?: NonNullable<Parameters<typeof compileExternalC>[0]["onArtifactReady"]>,
@@ -618,6 +625,7 @@ async function compileExecutableNative(
   /** The kept LLVM text's shared name, when `llvmPath` is the build's private copy of it
    * (BuildSources): the spelling clang sees and native cache keys name. */
   llvmVisiblePath?: string,
+  profileLayout = false,
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(llvmPath);
   const runtimePackTarget = programIsObject && !sanitize ? nativeCodegenTarget() : null;
@@ -631,8 +639,10 @@ async function compileExecutableNative(
       ffi,
       optimization: features.optimization ?? "release",
       ...(strip ? { strip: true } : {}),
+      ...(staticLink ? { staticLink: true } : {}),
       ...(windowsSubsystem === undefined ? {} : { windowsSubsystem }),
       ...(profileGenerate ? { profileGenerate: true } : {}),
+      ...(profileLayout ? { profileLayout: true } : {}),
       programObjectDependencies,
     });
     const cacheableLinker =
@@ -656,6 +666,8 @@ async function compileExecutableNative(
       : null);
   if (programIsObject)
     throw new InternalCompilerError("program objects must link against a precompiled runtime pack");
+  if (staticLink)
+    throw new InternalCompilerError("--static executables link against a precompiled runtime pack");
   await compileExternalC({
     ...(llvmVisiblePath === undefined || llvmVisiblePath === llvmPath
       ? { cPath: llvmPath }
@@ -699,6 +711,8 @@ async function compileExecutableNative(
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
+    ...(features.webStreams ? { webStreams: true } : {}),
+    ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
@@ -815,8 +829,8 @@ async function removeNativeProgramObject(
 async function readNativeProfile(
   opts: CompileRequestOptions,
 ): Promise<NativeProfileOptions | undefined> {
-  if (opts.profileGenerate !== undefined) return { generate: opts.profileGenerate };
-  if (opts.profileUse === undefined) return undefined;
+  const generate = opts.profileGenerate;
+  if (opts.profileUse === undefined) return generate === undefined ? undefined : { generate };
   const path = resolve(opts.profileUse);
   let bytes: Buffer;
   try {
@@ -826,7 +840,12 @@ async function readNativeProfile(
       `cannot read --profile-use file ${path}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  return { use: { path, digest: createHash("sha256").update(bytes).digest("hex") } };
+  const use = {
+    path,
+    digest: createHash("sha256").update(bytes).digest("hex"),
+    contextSensitive: profileHasContextCounts(bytes),
+  };
+  return generate === undefined ? { use } : { generate, use };
 }
 
 /** The digest of the request's function layout file, which keys the
@@ -1678,6 +1697,19 @@ async function compileTracked(
       sourceTexts: new Map(),
     };
   }
+  const staticRefusal = staticLinkRefusal({
+    staticLink: opts.staticLink,
+    outputKind,
+    sanitize: opts.sanitize ?? false,
+    target: nativeCodegenTarget(),
+  });
+  if (staticRefusal !== null) {
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag("SC3002", staticRefusal, entryPath)],
+      sourceTexts: new Map(),
+    };
+  }
   try {
     windowsSubsystemLinkerArgs(buildPlatform, opts.windowsSubsystem);
   } catch (err) {
@@ -1732,6 +1764,7 @@ async function compileTracked(
       backend: "llvm",
       ...optimizationField(opts.optimization),
       ...(opts.strip ? { strip: true as const } : {}),
+      ...(opts.staticLink === true ? { staticLink: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
       // Calls into Node record the libnode pack; their entries record its
@@ -1890,6 +1923,7 @@ async function compileTracked(
         ffi,
         opts.windowsSubsystem,
         opts.strip,
+        opts.staticLink === true,
         null,
         nativeProgramObject?.dependencies,
         opts.nativeProgramObject === true
@@ -1910,6 +1944,7 @@ async function compileTracked(
         nativeProgramObject?.partitionPaths,
         profile?.generate !== undefined,
         hitSources.llvmPath,
+        nativeProfileLayout(profile),
       );
       if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
         await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
@@ -1928,6 +1963,13 @@ async function compileTracked(
           diagnostics: [
             ffiNativeBuildDiag(ffiNativeBuildDetail(err), opts.ffiProfilePath ?? entryPath),
           ],
+          sourceTexts: new Map(),
+        };
+      }
+      if (err instanceof NativeCodegenError) {
+        return {
+          ok: false,
+          diagnostics: [nativeCodegenDiag(err.diagnosticCode, err.message, entryPath)],
           sourceTexts: new Map(),
         };
       }
@@ -2029,6 +2071,7 @@ async function compileTracked(
       ffi,
       opts.windowsSubsystem,
       opts.strip,
+      opts.staticLink === true,
       programSplit,
       nativeProgramObject?.dependencies,
       opts.nativeProgramObject === true
@@ -2049,6 +2092,7 @@ async function compileTracked(
       nativeProgramObject?.partitionPaths,
       profile?.generate !== undefined,
       llvmPath,
+      nativeProfileLayout(profile),
     );
     timing("native-link");
     if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
@@ -2075,6 +2119,13 @@ async function compileTracked(
         diagnostics: [
           ffiNativeBuildDiag(ffiNativeBuildDetail(err), opts.ffiProfilePath ?? entryPath),
         ],
+        sourceTexts,
+      };
+    }
+    if (err instanceof NativeCodegenError) {
+      return {
+        ok: false,
+        diagnostics: [nativeCodegenDiag(err.diagnosticCode, err.message, entryPath)],
         sourceTexts,
       };
     }

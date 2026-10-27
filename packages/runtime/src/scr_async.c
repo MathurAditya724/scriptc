@@ -215,12 +215,20 @@ struct ScrPromise {
    * Combinator entries (Promise.all / Promise.race) are reaction jobs:
    * `job_at` is the number of waiters parked before the entry subscribed,
    * so settlement queues the job in subscription order among the waking
-   * fibers. Conversions (SCR_CB_SYNC) run inside the settle itself. */
+   * fibers. Conversions (SCR_CB_SYNC) run inside the settle itself.
+   * Native reactions (scr_promise_react) are reaction jobs with no dst:
+   * `reaction` and `ctx` take the places of adapt and all_idx. */
   struct ScrPromiseCbWaiter {
-    void (*adapt)(ScrPromise *dst, ScrPromise *src);
+    union {
+      void (*adapt)(ScrPromise *dst, ScrPromise *src);
+      const ScrPromiseReaction *reaction;
+    };
     ScrPromise *dst;
     struct ScrAllState *all;
-    size_t all_idx;
+    union {
+      size_t all_idx;
+      void *ctx;
+    };
     size_t job_at;
   } *cbs;
   size_t ncbs, cbs_cap;
@@ -292,6 +300,24 @@ static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
   p->waiters[p->nwaiters++] = f;
 }
 
+#ifdef SCR_NATIVE_REACTIONS
+/* A native reaction's steps (scr_promise_react). Only the build for
+ * programs with web streams has them (runtime-pack-matrix.mjs). */
+static void scr_promise_reaction_drop(struct ScrPromiseCbWaiter *cb) {
+  if (cb->reaction->drop) cb->reaction->drop(cb->ctx);
+}
+
+static void scr_promise_reaction_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
+  cb->reaction->react(cb->ctx, src);
+  scr_promise_reaction_drop(cb);
+}
+#define SCR_PROMISE_IS_REACTION(cb) ((cb)->dst == NULL)
+#else
+#define SCR_PROMISE_IS_REACTION(cb) false
+#define scr_promise_reaction_drop(cb) ((void)0)
+#define scr_promise_reaction_run(cb, src) ((void)0)
+#endif
+
 static bool scr_promise_has_traced_children(const ScrPromise *p) {
   return p->ncbs != 0 ||
          ((p->payload_kind == SCR_EXC_REF || p->payload_kind == SCR_EXC_OBJ ||
@@ -328,7 +354,8 @@ static void scr_promise_gcfree(void *o) {
    * is reachable only through them) — release like the untraced payload
    * above; the cb destinations stay untouched (trace visits them). */
   for (size_t i = 0; i < p->ncbs; i++) {
-    if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
+    if (SCR_PROMISE_IS_REACTION(&p->cbs[i])) scr_promise_reaction_drop(&p->cbs[i]);
+    else if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
   }
   scr_promise_free_side(p);
   if (p->cbs) free(p->cbs);
@@ -420,6 +447,10 @@ void scr_promise_release(ScrPromise *p) {
     scr_promise_release_payload(p);
     scr_promise_free_side(p);
     for (size_t i = 0; i < p->ncbs; i++) {
+      if (SCR_PROMISE_IS_REACTION(&p->cbs[i])) {
+        scr_promise_reaction_drop(&p->cbs[i]);
+        continue;
+      }
       scr_promise_release(p->cbs[i].dst);
       if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
     }
@@ -1791,6 +1822,10 @@ static inline void scr_promise_wake_one(ScrFiber *f) {
 /* Runs one callback waiter against its settled source and drops the
  * waiter's references (its destination and countdown state). */
 static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
+  if (SCR_PROMISE_IS_REACTION(cb)) {
+    scr_promise_reaction_run(cb, src);
+    return;
+  }
   if (cb->all) {
     scr_promise_all_settle(cb->all, cb->dst, cb->all_idx, src);
     scr_promise_all_state_release(cb->all);
@@ -1851,6 +1886,15 @@ static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter c
   }
 }
 
+#ifdef SCR_NATIVE_REACTIONS
+void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
+  struct ScrPromiseCbWaiter cb = {0};
+  cb.reaction = reaction;
+  cb.ctx = ctx;
+  scr_promise_cb_subscribe(p, cb);
+}
+#endif
+
 /* Settlement with callback waiters: combinator jobs enter the microtask
  * queue interleaved with the waking fibers in subscription order, then
  * the conversions run in place (they settle their destinations now, so
@@ -1897,7 +1941,7 @@ static void scr_promise_settle_wake(ScrPromise *p) {
 void scr_promise_race_join(ScrPromise *race, ScrPromise *in,
                             void (*adapt)(ScrPromise *dst, ScrPromise *src)) {
   scr_promise_cb_subscribe(
-      in, (struct ScrPromiseCbWaiter){ adapt, scr_promise_retain(race), NULL, 0, 0 });
+      in, (struct ScrPromiseCbWaiter){ .adapt = adapt, .dst = scr_promise_retain(race) });
 }
 
 void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
@@ -1908,7 +1952,7 @@ void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
     return;
   }
   *scr_promise_cb_push(in) =
-      (struct ScrPromiseCbWaiter){ adapt, scr_promise_retain(race), NULL, 0, SCR_CB_SYNC };
+      (struct ScrPromiseCbWaiter){ .adapt = adapt, .dst = scr_promise_retain(race), .job_at = SCR_CB_SYNC };
 }
 
 /* ── Promise.all / allSettled / any ───────────────────────────────────
@@ -1961,7 +2005,7 @@ __attribute__((always_inline)) static inline void scr_combine_add(ScrCombine *c,
   if (in->state == SCR_PROM_PENDING) {
     st->rc++;
     scr_promise_cb_subscribe(
-        in, (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(c->result), st, i, 0 });
+        in, (struct ScrPromiseCbWaiter){ .dst = scr_promise_retain(c->result), .all = st, .all_idx = i });
     return;
   }
   scr_prom_observe(in);
@@ -1981,8 +2025,8 @@ __attribute__((always_inline)) static inline void scr_combine_flush(ScrCombine *
   c->st->rc++;
   job->cb_job = true;
   job->cb_src = c->decided; /* the reference moves in */
-  job->cb = (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(c->result), c->st, c->batched,
-                                         SCR_CB_BATCH };
+  job->cb = (struct ScrPromiseCbWaiter){
+      .dst = scr_promise_retain(c->result), .all = c->st, .all_idx = c->batched, .job_at = SCR_CB_BATCH};
   scr_ready_push(job);
   c->decided = NULL;
   c->batched = 0;
@@ -7238,6 +7282,7 @@ static void scr_context_ready_discard(void) {
       scr_gen_release(generator);
       scr_mem_free(fiber);
     } else if (fiber->cb_job) {
+      if (SCR_PROMISE_IS_REACTION(&fiber->cb)) scr_promise_reaction_drop(&fiber->cb);
       scr_promise_release(fiber->cb.dst);
       if (fiber->cb.all) scr_promise_all_state_release(fiber->cb.all);
       scr_promise_release(fiber->cb_src);

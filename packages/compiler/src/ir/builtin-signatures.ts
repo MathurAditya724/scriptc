@@ -159,10 +159,6 @@ function buildLibFnSignatures() {
     "fetch.responseJson": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "fetch.responseText": { argTypes: [DYN], result: { kind: "promise", inner: STRING } },
     "fetch.responseBytes": { argTypes: [DYN], result: { kind: "promise", inner: BYTES_U8 } },
-    "fetch.abortControllerNew": { argTypes: [], result: DYN },
-    "fetch.abortTimeout": { argTypes: [DYN], result: DYN },
-    "fetch.abortNow": { argTypes: [DYN], result: DYN },
-    "fetch.abortAny": { argTypes: [DYN], result: DYN },
     "fetch.streamNew": { argTypes: [DYN], result: DYN },
     "fetch.transformNew": { argTypes: [], result: DYN },
     // Program-dependent iterable: typed arrays/bytes/string stay intact so
@@ -1187,6 +1183,8 @@ function buildLibFnSignatures() {
     "util.diff": { argTypes: [DYN, DYN], result: DYN },
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    "webstream.class": { argTypes: [F64], result: DYN },
+    "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
     "mime.typeNew": { argTypes: [DYN, DYN], result: DYN },
     "mime.typeParse": { argTypes: [DYN], result: DYN },
     "mime.paramsNew": { argTypes: [], result: DYN },
@@ -3622,6 +3620,7 @@ function buildLibFnSignatures() {
      * Options retain cause presence; constructor calls borrow their args.
      * Message coercion may throw before the cause is installed. */
     "error.newOptions": { argTypes: [DYN, DYN], result: VOID },
+    "error.captureStackTrace": { argTypes: [DYN, STRING, BOOL], result: VOID },
     "error.ctorOptions": { argTypes: [null, DYN, DYN], result: VOID },
     /** Borrowed Error receiver. cause returns an owned dyn value (undefined
      * when absent); hasCause distinguishes absence from present undefined. */
@@ -3955,7 +3954,6 @@ function buildLibFnSignatures() {
     "dyn.objectPrototype": { argTypes: [], result: DYN },
     "dyn.errorPrototype": { argTypes: [], result: DYN },
     "dyn.inheritsErrorPrototype": { argTypes: [DYN], result: BOOL },
-    "dyn.errorCaptureStackTrace": { argTypes: [DYN], result: DYN },
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },

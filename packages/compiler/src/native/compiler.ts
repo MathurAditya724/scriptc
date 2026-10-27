@@ -64,8 +64,10 @@ import { evaluateNativeComptime } from "./comptime.js";
 import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cache.js";
 import {
   nativeProfileKey,
+  nativeProfileLayout,
   nativeProfileRefusal,
   parseNativeProfileMatch,
+  profileHasContextCounts,
   type NativeProfileMatch,
   type NativeProfileOptions,
 } from "../backend/native-profile.js";
@@ -76,6 +78,12 @@ import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
 import { openNativeExecutableCache } from "./executable-cache.js";
 import { LinkerJobs } from "./linker-job.js";
 import { nativeFileIdentity } from "./file-identity.js";
+import {
+  staticExecutableRefusal,
+  staticLinkFailureNote,
+  staticLinkMapArgs,
+  staticLinkRefusal,
+} from "../backend/targets.js";
 
 /** The first partition keeps the whole-object key used before partitioning. */
 function partitionCacheKey(key: string, index: number): string {
@@ -107,11 +115,17 @@ function failure(error: unknown, entry: string, sources: Map<string, string>): C
 /** The request's profile. An indexed profile is read here so every cache keys
  * its bytes. */
 function nativeProfile(options: CompileRequestOptions): NativeProfileOptions | undefined {
-  if (options.profileGenerate !== undefined) return { generate: options.profileGenerate };
-  if (options.profileUse === undefined) return undefined;
+  const generate = options.profileGenerate;
+  if (options.profileUse === undefined) return generate === undefined ? undefined : { generate };
   const path = resolve(options.profileUse);
   try {
-    return { use: { path, digest: contentDigest(readFileSync(path)) } };
+    const bytes = readFileSync(path);
+    const use = {
+      path,
+      digest: contentDigest(bytes),
+      contextSensitive: profileHasContextCounts(bytes),
+    };
+    return generate === undefined ? { use } : { generate, use };
   } catch (error) {
     throw new NativeCodegenError(
       "SC3002",
@@ -440,6 +454,13 @@ export class NativeCompiler {
         platform: target.platform,
       });
       if (profileRefusal !== null) throw new NativeCodegenError("SC3002", profileRefusal);
+      const staticRefusal = staticLinkRefusal({
+        staticLink: options.staticLink,
+        outputKind,
+        sanitize: options.sanitize ?? false,
+        target,
+      });
+      if (staticRefusal !== null) throw new NativeCodegenError("SC3002", staticRefusal);
       const profile = nativeProfile(options);
       let ffi: FfiProfile | null = null;
       if (options.ffiProfilePath !== undefined) {
@@ -607,17 +628,22 @@ export class NativeCompiler {
           runtimeSystemLibraries: runtime.systemLibraries,
           optimization,
           strip: options.strip ?? false,
+          staticLink: options.staticLink ?? false,
           ...(options.windowsSubsystem === undefined
             ? {}
             : { windowsSubsystem: options.windowsSubsystem }),
           ...(profile?.generate === undefined ? {} : { profileGenerate: true }),
+          ...(nativeProfileLayout(profile) ? { profileLayout: true } : {}),
         });
         // Linux links with lld when the driver finds it.
         const lld = options.sanitize ? [] : lldLinkerArgs(target.platform, toolchain.linker);
+        const linkMap = join(stage, "link.map");
+        const mapArgs = staticLinkMapArgs(target, options.staticLink === true, linkMap);
         const linkArgsWith = (withLld: boolean): string[] => [
           ...(options.sanitize ? ["-fsanitize=address"] : toolchain.linkerArgs),
           ...(withLld ? lld : []),
           ...plan.driverFlags,
+          ...mapArgs,
           ...(withLld ? plan.inputs : inputsWithoutLld(target.platform, plan.inputs)),
           ...systemLibraryLinkerArgs(target, plan.systemLibraries),
           "-o",
@@ -626,7 +652,10 @@ export class NativeCompiler {
         const linkArgs = linkArgsWith(lld.length !== 0);
         // Host Linux links with lld run the linker job the driver would.
         const jobs = LinkerJobs.open(this.cache, toolchain, lld, options.sanitize ?? false);
-        const job = jobs?.link([...plan.inputs, stagedOutput], stage);
+        const job = jobs?.link(
+          [...plan.inputs, stagedOutput, ...(mapArgs.length === 0 ? [] : [linkMap])],
+          stage,
+        );
         const cacheable = executableCache?.trace(linkArgs, stage, job) ?? false;
         timing("link-inputs");
         // A successful dependency trace already produced this executable.
@@ -634,16 +663,26 @@ export class NativeCompiler {
         if (!cacheable && (job?.run(linkArgs, true) ?? null) === null) {
           const driver = options.sanitize ? sanitizerDriver(toolchain) : toolchain.linker;
           try {
-            runNativeTool(driver, linkArgs);
+            try {
+              runNativeTool(driver, linkArgs);
+            } catch (error) {
+              // A failed link with lld runs again with the driver's default
+              // linker, whose error (if any) is the one reported.
+              if (lld.length === 0) throw error;
+              runNativeTool(driver, linkArgsWith(false));
+            }
           } catch (error) {
-            // A failed link with lld runs again with the driver's default
-            // linker, whose error (if any) is the one reported.
-            if (lld.length === 0) throw error;
-            runNativeTool(driver, linkArgsWith(false));
+            const note = staticLinkFailureNote(target, options.staticLink === true);
+            if (note === "") throw error;
+            throw new Error(`${error instanceof Error ? error.message : String(error)}${note}`);
           }
         }
         timing("native-link");
         requireNativeArtifact(stagedOutput);
+        if (mapArgs.length !== 0) {
+          const refusal = staticExecutableRefusal(target, true, readFileSync(linkMap, "utf8"));
+          if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);
+        }
         if (target.platform === "darwin" && optimization === "dev" && !options.strip) {
           runNativeTool(toolchain.dsymutil, [stagedOutput, "-o", stagedOutput + ".dSYM"]);
         }

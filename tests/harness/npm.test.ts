@@ -87,16 +87,14 @@ const KNOWN: Record<string, Known> = {
   "node24-url-mutation": { run: "SC1090" },
   "node24-util-adapters": { run: "Object.create with this value is not supported yet" },
   "node24-util-types": { run: "SC1090" },
-  "node24-web-stream-encoding": { run: "SC1090" },
+  "node24-web-stream-encoding": { run: "SC2020" },
   "node24-web-stream-errors": { run: "SC1090" },
-  "node24-web-stream-lifecycle": { run: "SC1090" },
+  "node24-web-stream-lifecycle": { run: "SC2020" },
   "node24-web-stream-pipe-abort": { run: "SC2020" },
-  "node24-web-stream-pipe-errors": { run: "SC1090" },
-  "node24-web-stream-pipes": { run: "SC1090" },
-  "node24-web-stream-queues": { run: "SC1090" },
-  "node24-web-stream-readable-lifecycle": { run: "SC2020" },
-  "node24-web-stream-readers": { run: "SC1090" },
-  "node24-web-stream-tee": { run: "SC2020" },
+  "node24-web-stream-pipe-errors": { run: "SC2020" },
+  "node24-web-stream-pipes": { run: "SC2020" },
+  "node24-web-stream-queues": { run: "SC2020" },
+  "node24-web-stream-tee": { run: "SC1090" },
   "node24-web-stream-transforms": { run: "SC1090" },
   "package-imports": { build: "SC2013" },
   "promise-bridge": { build: "SC1090" },
@@ -220,6 +218,8 @@ test("every KNOWN entry names a case", () => {
 });
 
 describe(`npm native (${cases.length} programs${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {
+  // With many shards some own no program; an empty suite would fail the file.
+  if (cases.length === 0) test.skip("no npm program falls in this shard", () => {});
   for (const c of cases) {
     const known = KNOWN[c.name];
     if (known !== undefined && "divergence" in known) {
