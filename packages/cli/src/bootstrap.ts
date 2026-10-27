@@ -74,7 +74,11 @@ async function tryFastPath(): Promise<number | null> {
     values["target-cpu"] !== undefined ||
     (values["external-types"] ?? []).length > 0 ||
     // The full CLI validates the Node island policy flags.
-    hasNodeIslandFlags(values)
+    hasNodeIslandFlags(values) ||
+    // The full compiler writes the representation report and keys the heap
+    // census build (backend/llvm/repr-report.ts, heap-census.ts).
+    (process.env["SCRIPTC_REPR_REPORT"] ?? "") !== "" ||
+    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== ""
   )
     return null;
   const backend = values.backend;

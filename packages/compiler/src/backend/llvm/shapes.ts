@@ -2,6 +2,7 @@
  * Containers store erased adapters; shape helpers retain, release and trace
  * their fields. Every allocation has a size_t reference count at offset zero
  * and participates in the runtime allocation audit. */
+import type { HeapCensus } from "./heap-census.js";
 import type { IrClassDef, IrModule, IrRecordShape, IrType } from "../../ir/ir.js";
 import {
   isIdentityCollectionKey,
@@ -78,6 +79,8 @@ const CYC_MAX_TYPES = 32768;
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
+  /** The counters of a build instrumented for the heap census (heap-census.ts). */
+  readonly heapCensus?: HeapCensus | null;
   /** Chunk emitters only (emit-journal.ts): EmitJournal's allocated, built,
    * opened, used and entry. */
   journalAllocated?: ((name: string, op: string, args: readonly unknown[]) => void) | undefined;

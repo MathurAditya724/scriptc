@@ -1712,6 +1712,8 @@ export function emitClassObjDefs(
       `define internal ptr @${mangleCtorThunk(className)}(ptr %class${paramDecls ? ", " + paramDecls : ""}) ${FN_ATTRS} { ; construct thunk ${className}`,
       `entry:`,
       `  %o = call ptr @${mangleClassNew(className)}()`,
+      // Construction through a class value: the census counts it here.
+      ...(host.heapCensus?.newLines(className) ?? []),
       ...(meta.def.localCaptures !== undefined
         ? [
             `  %class.owned = call ptr @scr_classobj_retain_v(ptr %class)`,

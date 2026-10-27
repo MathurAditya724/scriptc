@@ -327,6 +327,16 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     const first = await readFile(parts[0]!);
     const [single] = await emit(dir, source, { outputs: 1, optLevel: "2", name: "whole" });
     expect(await readFile(single!)).toEqual(first);
+    // The empty parts name the source path, so they do not depend on the
+    // input's file name either.
+    const renamed = await emit(dir, source, {
+      outputs: 3,
+      optLevel: "2",
+      split: true,
+      name: "renamed",
+    });
+    for (let index = 0; index < parts.length; index++)
+      expect(await readFile(renamed[index]!)).toEqual(await readFile(parts[index]!));
   });
 
   test("split code generation requires several optimized outputs and no cache", async () => {

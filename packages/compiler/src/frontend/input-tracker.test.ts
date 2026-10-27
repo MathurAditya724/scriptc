@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -299,6 +300,36 @@ test("a settled file is checked by its identity, and any write invalidates it", 
   await writeFile(source, "export const answer = 2;\n");
   fs.utimesSync(source, written.atime, written.mtime);
   expect(frontendInputsStillMatch(snapshot)).toBe(false);
+});
+
+test("a settled file an earlier run read keeps that run's digest until it is written", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  const settledRead = (tracker: FrontendInputTracker, later: number) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + later);
+    try {
+      tracker.runSynchronous(() => trackedReadFile(source));
+    } finally {
+      vi.useRealTimers();
+    }
+    const probe = tracker.snapshot().probes.find((entry) => entry.op === "file");
+    return probe?.op === "file" ? probe : undefined;
+  };
+  const first = settledRead(new FrontendInputTracker(), 5000)!;
+  expect(first.identity).toBeDefined();
+  // A digest only the previous snapshot holds shows it was not computed again.
+  const marker = "f".repeat(64);
+  const previous = { version: 1 as const, stable: true, probes: [{ ...first, digest: marker }] };
+  expect(settledRead(new FrontendInputTracker(previous), 5000)?.digest).toBe(marker);
+  await writeFile(source, "export const answer = 2;\n");
+  const rewritten = settledRead(new FrontendInputTracker(previous), 10000);
+  expect(rewritten?.identity).not.toBe(first.identity);
+  expect(rewritten?.digest).toBe(
+    createHash("sha256").update("export const answer = 2;\n").digest("hex"),
+  );
 });
 
 test("a file changed shortly before the read is hashed on every check", async () => {
