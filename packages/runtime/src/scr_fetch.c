@@ -161,6 +161,9 @@ struct SfStream {
   /* A body made from a checked-dynamic web ReadableStream: that stream's
    * reader (+1), read one chunk per pull through scr_web_stream_bridge. */
   ScrDyn *web_reader;
+  /* Consuming the body takes Uint8Array chunks only: set on a body from a
+   * web ReadableStream and on the tee branches of such a body. */
+  bool u8_chunks;
 #endif
   ScrArr *from_array;
   ScrBytes *from_bytes;
@@ -1178,9 +1181,10 @@ static void sf_stream_drain(SfStream *s) {
       s->queued--;
 #ifdef SCR_HANDLE_CLASSES
       ScrBytes *bytes;
-      /* A body read from a JavaScript ReadableStream takes Uint8Array
-       * chunks only, as Node's body mixin does. */
-      if (s->web_reader && !scr_dyn_bytes_is(c->value, SCR_BYTES_U8)) {
+      /* A body read from a JavaScript ReadableStream, or from a clone or
+       * tee branch of one, takes Uint8Array chunks only, as Node's body
+       * mixin does. */
+      if (s->u8_chunks && !scr_dyn_bytes_is(c->value, SCR_BYTES_U8)) {
         sf_type_error("Received non-Uint8Array chunk");
         bytes = NULL;
       } else {
@@ -1611,6 +1615,7 @@ static ScrDyn *sf_web_body(const ScrDyn *body) {
   if (!reader) return NULL;
   SfStream *s = sf_stream_new_native();
   s->web_reader = reader;
+  s->u8_chunks = true;
   sf_stream_schedule_initial_pull(s);
   ScrDyn *out = scr_dyn_new_handle(s, SCR_DYNH_WEB_STREAM);
   sf_stream_release(s);
@@ -2228,6 +2233,9 @@ static void sf_stream_tee(SfStream *s, SfStream *out[2]) {
     b->cancel_cb = sf_tee_func(
         t, i == 0 ? &sf_tee_cancel_thunk_0 : &sf_tee_cancel_thunk_1, "cancel");
     b->source_this = scr_dyn_retain(scr_dyn_undefined());
+#ifdef SCR_HANDLE_CLASSES
+    b->u8_chunks = s->u8_chunks;
+#endif
     sf_stream_track_callbacks(b);
     t->branch[i] = sf_stream_retain(b);
     out[i] = b;

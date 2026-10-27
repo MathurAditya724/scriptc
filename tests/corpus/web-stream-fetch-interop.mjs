@@ -48,3 +48,17 @@ console.log("request", await request.text());
 
 const strings = new Response(new ReadableStream({ start(c) { c.enqueue("str"); c.close(); } }));
 console.log("non-bytes", await settled(strings.text()));
+
+// Clones go through an untyped parameter: Response.clone and Request.clone
+// run on checked-dynamic handles.
+const cloneOf = (value) => value.clone();
+const stringSource = () => new ReadableStream({ start(c) { c.enqueue("str"); c.close(); } });
+const original = new Response(stringSource());
+const clone = cloneOf(original);
+console.log("clone", await settled(original.text()), await settled(clone.text()));
+const cloneOfClone = cloneOf(cloneOf(new Response(stringSource())));
+console.log("clone-of-clone", await settled(cloneOfClone.text()));
+const requestClone = cloneOf(new Request("http://example.com/", { method: "POST", body: stringSource(), duplex: "half" }));
+console.log("request-clone", await settled(requestClone.text()));
+const bytesClone = cloneOf(new Response(new ReadableStream({ start(c) { c.enqueue(encoder.encode("ok")); c.close(); } })));
+console.log("bytes-clone", await settled(bytesClone.text()));
