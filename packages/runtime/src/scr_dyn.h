@@ -244,7 +244,14 @@ typedef enum {
   Y(WS_COUNT_STRATEGY) /* CountQueuingStrategy (scr_webstreams.c) */ \
   Y(WS_RCONTROLLER) /* ReadableStreamDefaultController (scr_webstreams.c) */ \
   Y(WS_READABLE) /* ReadableStream for checked-dynamic code (scr_webstreams.c) */ \
-  Y(WS_READER) /* ReadableStreamDefaultReader (scr_webstreams.c) */
+  Y(WS_READER) /* ReadableStreamDefaultReader (scr_webstreams.c) */ \
+  Y(WS_TCONTROLLER) /* TransformStreamDefaultController (scr_webstreams.c) */ \
+  Y(WS_TEXT_DECODER) /* TextDecoderStream (scr_webstreams.c) */ \
+  Y(WS_TEXT_ENCODER) /* TextEncoderStream (scr_webstreams.c) */ \
+  Y(WS_TRANSFORM) /* TransformStream for checked-dynamic code (scr_webstreams.c) */ \
+  Y(WS_WCONTROLLER) /* WritableStreamDefaultController (scr_webstreams.c) */ \
+  Y(WS_WRITABLE) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
+  Y(WS_WRITER) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -2058,6 +2065,12 @@ typedef struct ScrDynHandleClass {
   /* The prototype's methods and getters in definition order (the order
    * Object.keys reports); NULL = the methods, then the getters. */
   const char *const *order;
+  /* A call of one of the class's method values
+   * (`WritableStream.prototype.close.call(stream)`): the class's method,
+   * which an own property of the same name on the handle does not
+   * replace. NULL = ScrDynHandleOps.invoke. */
+  ScrDyn *(*method_invoke)(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+                           const char *what);
 } ScrDynHandleClass;
 
 /* Installs a tag's ops with the class its handles belong to; both outlive
@@ -2084,6 +2097,11 @@ ScrDyn *scr_dyn_handle_class_prototype_of(const ScrDyn *handle);
  * receiver (+1); NULL when the chain has none or with the exception
  * pending. */
 ScrDyn *scr_dyn_handle_class_member(ScrDynHandleTag tag, void *h, const char *key, size_t len);
+/* A method value's call on a handle of its tag (`self`, borrowed): the
+ * class's method_invoke, or the ops' invoke for a tag without one. +1, or
+ * NULL with the exception pending. */
+ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
+                                         ScrDyn *const *args, size_t argc);
 
 /* The operations a Transform handle gives the stream unit (scr_stream.c):
  * the slot where the handle keeps its stream (+1) with the stream's
@@ -2160,6 +2178,11 @@ ScrPromise *scr_dyn_promise_any(const ScrDyn *entries, const ScrDyn *reader);
  * itself, a thenable adopts through its resolve job, a throwing `then`
  * read rejects, and any other value fulfills. +1. */
 ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader);
+/* Resolves `target` with a dyn value (borrowed), as a promise's resolve
+ * function does: a native promise adopts, a thenable adopts through its
+ * resolve job, a throwing `then` read rejects, and any other value
+ * fulfills. */
+void scr_dyn_promise_resolve_with(ScrPromise *target, ScrDyn *value);
 
 /* Native predicates for typed reference capsules and boxed errors. */
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name);
