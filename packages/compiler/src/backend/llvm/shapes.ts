@@ -69,6 +69,7 @@ import {
   disposeFieldLines,
   plainRefType,
 } from "./arenas.js";
+import { recordViewWords, type RecordViews } from "./record-views.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -151,6 +152,8 @@ export interface ShapeHost {
   /** Record shapes and classes with an arena-aware constructor
    * (arenas.ts). */
   arenaShapes?: ReadonlySet<string>;
+  /** Record view targets and their sources (record-views.ts). */
+  recordViews?: RecordViews;
   arenaClasses?: ReadonlySet<string>;
   /** Every arena the program opens is closed (ArenaPlan.allClosed): the
    * arena-aware constructors take no dispose list. */
@@ -2172,6 +2175,8 @@ export function emitRecordShapes(
       llFieldType(f.type, host.inlineUnions.record(f.type)),
     );
     if (shape.indexValue) fieldTys.push("ptr"); // the overflow ScrMap *
+    // A record view target: the viewed record and its offset table.
+    if (host.recordViews?.targets.has(shape.id) === true) fieldTys.push("ptr", "ptr");
     // A tagged shape (an arm of a shape union) carries its shape number.
     if (host.nullableUnions.shapeNumber(shape.id) !== 0) fieldTys.unshift("i32");
     typeDefs.push(
@@ -2390,10 +2395,31 @@ export function emitRecordShapes(
         const index = i + base;
         const inline = host.inlineUnions.record(field.type);
         const fieldTy = llFieldType(field.type, inline);
-        clone.push(
-          `  %sp${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
-          `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,
-        );
+        if (host.recordViews?.targets.has(shape.id) === true) {
+          // A view's fields live in the viewed record (record-views.ts).
+          const words = recordViewWords(shape.fields.length, base);
+          clone.push(
+            `  %so${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
+            `  %sr${i}p = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${words.record}`,
+            `  %sr${i}r = load ptr, ptr %sr${i}p`,
+            `  %sr${i}v = icmp ne ptr %sr${i}r, null`,
+            `  br i1 %sr${i}v, label %sv${i}.view, label %sv${i}.join`,
+            `sv${i}.view:`,
+            `  %st${i}p = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${words.offsets}`,
+            `  %st${i} = load ptr, ptr %st${i}p`,
+            `  %sx${i}p = getelementptr inbounds ${host.sizeType}, ptr %st${i}, i64 ${i}`,
+            `  %sx${i} = load ${host.sizeType}, ptr %sx${i}p`,
+            `  %sw${i} = getelementptr inbounds i8, ptr %sr${i}r, ${host.sizeType} %sx${i}`,
+            `  br label %sv${i}.join`,
+            `sv${i}.join:`,
+            `  %sp${i} = phi ptr [ %so${i}, %${i === 0 ? "entry" : `sv${i - 1}.join`} ], [ %sw${i}, %sv${i}.view ]`,
+            `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,
+          );
+        } else
+          clone.push(
+            `  %sp${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
+            `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,
+          );
         const owned = isRefCounted(field.type) && !inline;
         const stored = owned ? `%sr${i}` : `%sv${i}`;
         if (owned) {

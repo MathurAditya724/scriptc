@@ -301,6 +301,9 @@ typedef struct ScrDynTypedCast {
   void *(*retain)(void *);
   void (*release)(void *);
   bool traced;
+  /* A record view (scr_dyn_record_view): the view's own record-source
+   * entry owns the capsule, so the list neither owns nor releases it. */
+  bool borrowed;
   struct ScrDynTypedCast *next;
 } ScrDynTypedCast;
 
@@ -1315,7 +1318,6 @@ bool scr_dyn_typed_ref_is(
     const ScrDyn *d, const char *type_key, size_t type_key_len);
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
-void *scr_dyn_typed_ref_prefix_view(const ScrDyn *d); /* +1 or NULL */
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
 ScrDyn *scr_dyn_typed_ref_peek(const ScrDyn *d); /* +1 */
