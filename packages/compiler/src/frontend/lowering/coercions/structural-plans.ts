@@ -197,6 +197,16 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     return { how: "funcAdapt" };
   }
   if (dst.kind === "record" && src.kind === "record") {
+    // An INDEX-SIGNATURE destination takes the overflow CAPTURE reshape:
+    // declared fields copy off the source, every other source field keys
+    // into the destination's overflow (the same helper widthCoerce uses
+    // at top level). Without this the pair had no width plan at all, so a
+    // union arm, field or element of this shape refused.
+    if (lowerer.shapes.get(dst.shapeId)?.indexValue !== undefined) {
+      return lowerer.recordOvfCapturePlan(src.shapeId, dst.shapeId) !== null
+        ? { how: "ovf" }
+        : null;
+    }
     return lowerer.recordWidthPlan(src.shapeId, dst.shapeId) !== null ? { how: "width" } : null;
   }
   if (dst.kind === "record" && src.kind === "union") {

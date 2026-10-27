@@ -22,6 +22,11 @@ export type WidthLift =
       absent: { tag: number; arm: IrType };
     }
   | { how: "width" }
+  /** A record into a record whose destination declares an index
+   * signature: the overflow CAPTURE reshape (declared fields copy off the
+   * source in declaration order, every other source field keys into the
+   * destination's overflow). A copy, like every width lift. */
+  | { how: "ovf" }
   | { how: "unionWidth" }
   | { how: "arr" }
   | { how: "tupleArr" }

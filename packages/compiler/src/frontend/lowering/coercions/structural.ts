@@ -238,6 +238,14 @@ export function applyWidthLift(
         throw new InternalCompilerError("lowerer bug: planned width lift failed to intern");
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
+    case "ovf": {
+      if (dst.kind !== "record" || value.type.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: ovf lift shape");
+      const helper = lowerRecordOvfCaptureHelper(lowerer, value.type.shapeId, dst.shapeId, loc);
+      if (!helper)
+        throw new InternalCompilerError("lowerer bug: planned ovf lift failed to intern");
+      return { kind: "call", callee: helper, args: [value], type: dst, loc };
+    }
     case "unionWidth": {
       if (dst.kind !== "record" || value.type.kind !== "union")
         throw new InternalCompilerError("lowerer bug: union width lift shape");

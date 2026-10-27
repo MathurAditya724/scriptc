@@ -533,7 +533,11 @@ import {
   lowerSetMethodCall,
   lowerSetForEachCall,
 } from "./containers/collection-methods.js";
-import { lowerEnvToPairsHelper } from "./containers/indexed-objects.js";
+import {
+  lowerEnvToPairsHelper,
+  recordOvfCapturePlan,
+  type RecordOvfCapturePlan,
+} from "./containers/indexed-objects.js";
 import { lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew } from "./containers/bytes.js";
 import { lowerRegexMethodCall, lowerStringMethodCall } from "./containers/string-and-regexp.js";
 import {
@@ -12522,6 +12526,10 @@ export class Lowerer {
 
   recordWidthPlan(fromId: string, toId: string): Map<string, FieldLift> | null {
     return recordWidthPlan(this, fromId, toId);
+  }
+
+  recordOvfCapturePlan(fromId: string, toId: string): RecordOvfCapturePlan | null {
+    return recordOvfCapturePlan(this, fromId, toId);
   }
 
   describeRecordWidthBlocker(fromId: string, toId: string): string | null {
