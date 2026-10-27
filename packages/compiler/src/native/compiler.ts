@@ -64,8 +64,10 @@ import { evaluateNativeComptime } from "./comptime.js";
 import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cache.js";
 import {
   nativeProfileKey,
+  nativeProfileLayout,
   nativeProfileRefusal,
   parseNativeProfileMatch,
+  profileHasContextCounts,
   type NativeProfileMatch,
   type NativeProfileOptions,
 } from "../backend/native-profile.js";
@@ -113,11 +115,17 @@ function failure(error: unknown, entry: string, sources: Map<string, string>): C
 /** The request's profile. An indexed profile is read here so every cache keys
  * its bytes. */
 function nativeProfile(options: CompileRequestOptions): NativeProfileOptions | undefined {
-  if (options.profileGenerate !== undefined) return { generate: options.profileGenerate };
-  if (options.profileUse === undefined) return undefined;
+  const generate = options.profileGenerate;
+  if (options.profileUse === undefined) return generate === undefined ? undefined : { generate };
   const path = resolve(options.profileUse);
   try {
-    return { use: { path, digest: contentDigest(readFileSync(path)) } };
+    const bytes = readFileSync(path);
+    const use = {
+      path,
+      digest: contentDigest(bytes),
+      contextSensitive: profileHasContextCounts(bytes),
+    };
+    return generate === undefined ? { use } : { generate, use };
   } catch (error) {
     throw new NativeCodegenError(
       "SC3002",
@@ -625,6 +633,7 @@ export class NativeCompiler {
             ? {}
             : { windowsSubsystem: options.windowsSubsystem }),
           ...(profile?.generate === undefined ? {} : { profileGenerate: true }),
+          ...(nativeProfileLayout(profile) ? { profileLayout: true } : {}),
         });
         // Linux links with lld when the driver finds it.
         const lld = options.sanitize ? [] : lldLinkerArgs(target.platform, toolchain.linker);
