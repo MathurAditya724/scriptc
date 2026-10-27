@@ -2,6 +2,7 @@ import type { TargetCpu } from "../target-cpu.js";
 import { loopEntryInlines } from "./loop-entry-versions.js";
 import type { FunctionLayout } from "./function-layout.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import { analyzeFrameEscapes, type FrameEscapes } from "./frame-escapes.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
 import { JsIcSites } from "../../ir/js-ic.js";
@@ -1440,6 +1441,9 @@ export class LlEmitter {
   /** The current function's fused string-key Map get-then-set pairs (map-entry-fusion.ts). */
   mapEntryFusion: MapEntryFusion | null = null;
   readonly callLifetimes: CallLifetimes;
+  /** The locals whose value never leaves its frame (frame-escapes.ts), for
+   * class instances with reference fields in frame storage. */
+  frameEscapes: FrameEscapes | null = null;
   readonly constantCallbacks: Map<string, Map<string, string>>;
   currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
   /** The current function's running maximum and minimum updates, whose
@@ -2234,6 +2238,7 @@ export class LlEmitter {
       },
       (wrap) => this.borrowableNullableWrap(wrap) === "ref",
     );
+    if (this.stackObjects) this.frameEscapes = analyzeFrameEscapes(this.mod);
     if (this.debug === null) {
       const strings = findLentStringParameters(this.fnByName, this.callLifetimes);
       this.lendingFacts = {
