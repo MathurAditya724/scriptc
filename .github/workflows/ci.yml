@@ -748,11 +748,9 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (macOS arm64 LLVM artifacts, no clang, ${{ matrix.shard }}/5)
     runs-on: macos-15
-    # Shard 1 additionally runs package/install and link-parity contracts
-    # before its LLVM differential slice. The slice itself can take ~10
-    # minutes on a cold hosted runner, so 20 minutes cancels an otherwise
-    # healthy job before the differential completes. Slow runners need more
-    # headroom than that, so the limit is 50 minutes.
+    # Each LLVM differential slice takes 30 to 35 minutes on a hosted runner.
+    # The package/install and link-parity contracts run in their own job
+    # (llvm_artifacts_macos_arm64_contracts), so no slice carries them.
     timeout-minutes: 50
     strategy:
       fail-fast: false
@@ -779,11 +777,39 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
+      - name: LLVM release/dev differential (${{ matrix.shard }}/5)
+        env:
+          SCRIPTC_TEST_WORKERS: "4"
+        run: pnpm test tests/harness/llvm-differential.test.ts
+
+  llvm_artifacts_macos_arm64_contracts:
+    needs: [validation_scope, lanes, native_macos]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
+    name: test (macOS arm64 LLVM artifacts, no clang, contracts)
+    runs-on: macos-15
+    # The no-clang object, helper parity, packaged helper and packed npm
+    # installation contracts: about 12 minutes, which used to run in front
+    # of shard 1's differential slice and took that job to 45-50 minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-darwin-arm64
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
+      - run: pnpm build
       - name: No-clang assembly/object contract
-        if: matrix.shard == 1
         run: pnpm test packages/cli/test/native-output.test.ts
       - name: Helper diagnostics and object/link parity
-        if: matrix.shard == 1
         run: >-
           pnpm test
           packages/compiler/test/native-codegen-integration.test.ts
@@ -791,17 +817,11 @@ jobs:
           packages/cli/test/native-link-info.test.ts
           packages/cli/test/runtime-pack.test.ts
           tests/harness/native-object-example.test.ts
-      - name: LLVM release/dev differential (${{ matrix.shard }}/5)
-        env:
-          SCRIPTC_TEST_WORKERS: "4"
-        run: pnpm test tests/harness/llvm-differential.test.ts
       - name: Packaged helper contract
-        if: matrix.shard == 1
         run: |
           TARBALL=$(pnpm --dir packages/llvm-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent)
           node scripts/verify-llvm-package.mjs "$RUNNER_TEMP/$(basename "$TARBALL")"
       - name: Packed npm installation smoke
-        if: matrix.shard == 1
         env:
           # Release optimization is covered by the compiler bootstrap jobs.
           # This lane verifies packaging and installation with a faster seed.
@@ -1074,6 +1094,7 @@ jobs:
         checker_identity,
         llvm_artifacts_linux_x64,
         llvm_artifacts_macos_arm64,
+        llvm_artifacts_macos_arm64_contracts,
         llvm_artifacts_macos_x64,
         windows_cli,
         llvm_artifacts_windows_x64,
@@ -1107,6 +1128,7 @@ jobs:
               lane checker_identity "${{ needs.checker_identity.result }}" "${{ needs.lanes.outputs.linux }}"
               lane llvm_artifacts_linux_x64 "${{ needs.llvm_artifacts_linux_x64.result }}" "${{ needs.lanes.outputs.linux }}"
               lane llvm_artifacts_macos_arm64 "${{ needs.llvm_artifacts_macos_arm64.result }}" "${{ needs.lanes.outputs.macos }}"
+              lane llvm_artifacts_macos_arm64_contracts "${{ needs.llvm_artifacts_macos_arm64_contracts.result }}" "${{ needs.lanes.outputs.macos }}"
               lane llvm_artifacts_macos_x64 "${{ needs.llvm_artifacts_macos_x64.result }}" "${{ needs.lanes.outputs.macos }}"
               lane windows_cli "${{ needs.windows_cli.result }}" "${{ needs.lanes.outputs.linux }}"
               lane llvm_artifacts_windows_x64 "${{ needs.llvm_artifacts_windows_x64.result }}" "${{ needs.lanes.outputs.linux }}"

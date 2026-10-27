@@ -42,9 +42,10 @@ Options:
                      coverage only: exit 1 when the entry path has blockers
                      (a build would fail), or also when it has Node
                      divergences, likely-hot functions that use untyped
-                     values (SC6101), any Node island (eager-node-islands is
-                     the same until deferred evaluation lands), or a gap
-                     island (a package scriptc should compile but cannot yet)
+                     values (SC6101), dynamic slots (SC6104), any Node
+                     island (eager-node-islands is the same until deferred
+                     evaluation lands), or a gap island (a package scriptc
+                     should compile but cannot yet)
       --backend <b>  code generator (llvm)
       --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev
@@ -55,6 +56,11 @@ Options:
                      counting, cache-line-aligned runtime code on x86-64)
       --strip        remove symbol/debug payload from the linked executable
                      for smaller builds (opt in; --emit=exe only)
+      --static       Linux: link the C library into the executable, which
+                     then starts without the dynamic loader. glibc builds
+                     need its static libraries (libc.a) on the build host
+                     and refuse executables that include host, user or
+                     group name lookups (opt in; --emit=exe only)
       --windows-subsystem <console|gui>
                      Windows executable subsystem (default: console). gui
                      prevents Windows from opening a console window
@@ -63,6 +69,11 @@ Options:
                      a helper process so the parent sees the exit sooner. The
                      helper keeps the executable mapped and its memory charged
                      for up to ~100 ms after exit (opt in; --emit=exe only)
+      --large-pages  Linux: at startup, move the executable's code onto 2 MiB
+                     transparent huge pages when the system allows them, for
+                     large programs. Takes about 3 ms per 10 MiB of code, and
+                     all of the moved code stays resident (opt in; --emit=exe
+                     only)
       --target-cpu <baseline|x86-64-v2|x86-64-v3|x86-64-v4|native>
                      x86-64: compile the program's code for a CPU level
                      (default: baseline, which runs on any x86-64 CPU). The
@@ -170,8 +181,10 @@ export const CLI_OPTIONS = {
   backend: { type: "string" },
   optimization: { type: "string" },
   strip: { type: "boolean", default: false },
+  static: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
+  "large-pages": { type: "boolean", default: false },
   "target-cpu": { type: "string" },
   "cpu-dispatch": { type: "boolean" },
   "profile-generate": { type: "string" },

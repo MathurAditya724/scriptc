@@ -8,7 +8,11 @@ import {
   NativeCodegenError,
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
-import { nativePartitionPaths, nativeProgramPartitions } from "./native-codegen-core.js";
+import {
+  nativeCodegenParts,
+  nativePartitionPaths,
+  nativeProgramPartitions,
+} from "./native-codegen-core.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -407,6 +411,41 @@ test("program partitions depend only on module size", () => {
     "C:\\build.d\\program",
     "C:\\build.d\\program.part1",
   ]);
+});
+
+test("code generation parts depend only on module size", () => {
+  const kilobyte = 1024;
+  expect(nativeCodegenParts(128 * kilobyte)).toBe(1);
+  expect(nativeCodegenParts(128 * kilobyte + 1)).toBe(4);
+  expect(nativeCodegenParts(256 * kilobyte)).toBe(4);
+  expect(nativeCodegenParts(256 * kilobyte + 1)).toBe(8);
+  expect(nativeCodegenParts(1024 * kilobyte)).toBe(8);
+  // Partitioned modules already compile their partitions concurrently.
+  expect(nativeCodegenParts(1024 * kilobyte + 1)).toBe(1);
+});
+
+test("split code generation passes --split codegen and no partition cache", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "split", "program.o");
+  const artifact = await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, output),
+    partitions: 4,
+    splitCodegen: true,
+  });
+  expect(artifact.outputPaths).toEqual(nativePartitionPaths(output, 4));
+  const args = (await readFile(pkg.log, "utf8")).trim().split(" ");
+  expect(args.filter((arg) => arg === "--output")).toHaveLength(4);
+  expect(args.join(" ")).toContain("--split codegen");
+  expect(args).not.toContain("--cache-dir");
+
+  // Partitions of the same module are a distinct artifact.
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "partitions", "program.o")),
+    partitions: 4,
+  });
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).not.toContain("--split");
 });
 
 test("partitioned objects are emitted, cached and restored together", async () => {

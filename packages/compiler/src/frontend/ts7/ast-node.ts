@@ -194,7 +194,7 @@ export class AstFile {
     if (parsed.path !== this.root.path)
       throw new AstDecodeError("node handle belongs to another source file");
     const node = this.node(parsed.index);
-    if (node.kind !== parsed.kind)
+    if (node.kind !== this.wire.kindFromWire(parsed.kind))
       throw new AstDecodeError("node handle kind does not match the response");
     return node;
   }
@@ -350,7 +350,7 @@ export class AstNode {
   }
 
   get id(): string {
-    return `${this.index}.${this.kind}.${this.file.root.path}`;
+    return `${this.index}.${this.file.wire.kindOnWire(this.kind)}.${this.file.root.path}`;
   }
   get parent(): AstNode | undefined {
     if (!this.parentResolved) {

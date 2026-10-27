@@ -1,3 +1,4 @@
+import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { globalMemberValue } from "./global-values.js";
@@ -9,6 +10,7 @@ import {
   arrayRootOf,
   lowerWithArraySpecies,
 } from "./builtins/array-classes.js";
+import { canonShadowHook } from "../canon-map.js";
 import {
   compactDeclOrigins,
   inPackageFile,
@@ -19,7 +21,7 @@ import {
 import { isDeclBoundaryFile } from "../decl-projection.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { moduleNamespaceObject, moduleNamespaceValue } from "./module-namespace-elements.js";
-import { keyedHelperName } from "./stable-names.js";
+import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import { bindingSymbolOfRead, onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
 import {
@@ -179,6 +181,7 @@ import {
 } from "./class-dynamic-dispatch.js";
 import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-attributes.js";
 import { inferredCollectionType } from "./js-collection-types.js";
+import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
@@ -186,7 +189,7 @@ import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
-import { dynamicTierWarning } from "./dynamic-tier.js";
+import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
 import {
   analyzeTiers,
@@ -215,7 +218,7 @@ export { newFnCtx, type FnCtx } from "./function-context.js";
  * - Lexical scoping is resolved here: locals get function-unique ids
  *   ("x.0", "x.1" for shadowing); the IR is scope-flat.
  */
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { bindingSource } from "../binding-source.js";
 import { compilerOwnedFileName, tsgoPath } from "../dts-paths.js";
 import * as ts from "../ts7/adapter.js";
@@ -748,6 +751,9 @@ export interface DynamicSlot {
   failure: TypeFailure;
   code: string;
   reason: string;
+  /** The slot keeps its type's compilable shape; only the failing
+   * components are checked-dynamic (push-down, stage L3). */
+  partial?: true;
 }
 
 /** Localized failure: rounds of the declaration flush retry. */
@@ -962,7 +968,7 @@ export interface LowerOptions {
 }
 
 interface RuntimeFenceFallback {
-  code: `SC${number}`;
+  code: DiagnosticCode;
   message: string;
 }
 
@@ -999,6 +1005,14 @@ type RuntimeFenceTarget =
   | RuntimeFenceFunctionTarget
   | RuntimeFenceClosureTarget;
 
+/** A degraded checker type (Lowerer.degradedTypes): its lenient mapping and
+ * the failure that degraded it. */
+export interface DegradedType {
+  lenient: IrType | null;
+  code: string;
+  reason: string;
+}
+
 /** The Lowerer's pass configuration (see lowerToIr). */
 export interface LowererMode {
   /** Symbols whose deferred diagnostics reachable emit already flushed —
@@ -1007,10 +1021,14 @@ export interface LowererMode {
   /** Localized failure: the types reachable emit degraded (the coverage
    * remainder maps them alike, so the declarations reachable emit
    * registered with dynamic slots collect there too). */
-  degradedTypes?: ReadonlyMap<number, { lenient: IrType; code: string; reason: string }>;
+  degradedTypes?: ReadonlyMap<number, DegradedType>;
   /** Localized failure: the declarations reachable emit registered with
    * dynamic slots (the coverage remainder registers them too). */
   retriedSymbols?: ReadonlySet<ts.Symbol>;
+  /** Localized failure: degrade every type to the whole-slot checked
+   * dynamic, never to its pushed-down shape (lowerToIr's comparison
+   * pass). */
+  wholeSlotDegradation?: boolean;
   /** LowerOptions.externalTypes, threaded through every lowering pass. */
   externalTypes?: ReadonlyMap<string, string>;
   /** LowerOptions.externalTypeSpecifiersByFile, shared by every pass. */
@@ -1228,6 +1246,39 @@ export function lowerToIr(
   let result = emitted.result;
   let resultLowerer = reachableEmit;
   timing("reachable-emit", { reachable: reachable.size });
+  // Localized failure (stage L3): push-down must never cost a failing
+  // program more errors than the whole-slot checked dynamic. A pushed-down
+  // type is baked into the globals, fields and signatures that hold it, so
+  // when the program still fails, the emit runs once more with every
+  // degraded type held whole, and the pass with fewer errors wins (ties
+  // keep push-down). A program that compiles never takes this path.
+  if (result.diagnostics.length > 0 && reachableEmit.hasPartialDegradedTypes()) {
+    const whole = new Lowerer(program, entry, moduleOrder, {
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      targetPlatform,
+      startupCrash,
+      inlineRequireCycleCalls,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      wholeSlotDegradation: true,
+    });
+    for (const d of extraModuleCycleDiags) whole.pushDiag(d);
+    for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
+    const wholeEmitted = whole.emitReachable(options.libRoots);
+    if (wholeEmitted.result.diagnostics.length < result.diagnostics.length) {
+      reachable = wholeEmitted.reachable;
+      result = wholeEmitted.result;
+      resultLowerer = whole;
+    }
+    timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
+  }
   // The general stream representation (TypeMapperCtx.generalNodeStreams)
   // is a per-program decision: only a program whose reachable code moved
   // a general stream into a stdio-represented stream slot lowers again
@@ -1254,6 +1305,7 @@ export function lowerToIr(
       ffiBindingSymbols: ffiValidation.symbolsByName,
       generalNodeStreams: true,
       ...(dyn ? { dynNodeStreams: true } : {}),
+      ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
     });
     for (const d of extraModuleCycleDiags) general.pushDiag(d);
     for (const d of ffiValidation.diagnostics) general.pushDiag(d);
@@ -1296,6 +1348,7 @@ export function lowerToIr(
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
+      ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
     });
     for (const d of extraModuleCycleDiags) emit.pushDiag(d);
     for (const d of ffiValidation.diagnostics) emit.pushDiag(d);
@@ -1317,13 +1370,20 @@ export function lowerToIr(
   }
   // Localized failure (SC6104): one performance warning per dynamic slot.
   if (resultLowerer.dynamicSlots.length > 0) {
-    const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot) => ({
+    const operations = dynamicSlotOperationCounts(
+      resultLowerer,
+      resultLowerer.dynamicBodies,
+      resultLowerer.dynamicSlots,
+    );
+    const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot, i) => ({
+      operations: operations[i]!,
       loc: slot.loc,
       name: slot.failure.name,
       slot: slot.failure.slot,
       declaredType: slot.failure.declaredType,
       code: slot.code,
       reason: slot.reason,
+      ...(slot.partial ? { partial: true } : {}),
     }));
     result = {
       ...result,
@@ -2009,6 +2069,21 @@ function byName(fns: readonly IrFunction[]): IrFunction[] {
   );
 }
 
+/** A loop over an untyped iterable (lowerForOfDyn). `kind` is a local the
+ * loop sets once it has opened the iterator: 0 for the dynamic protocol,
+ * or the 1-based index of the program's generator type it steps natively.
+ * `value` is the per-step local whose initializer takes one step. */
+export interface UntypedLoopSite {
+  kind: string;
+  value: string;
+  iterator: string;
+  next: string;
+  done: string;
+  /** `for await`; `sync` names its async-from-sync flag. */
+  async: boolean;
+  sync: string | null;
+}
+
 /** The program module a createRequire binding requires. */
 type CreateRequireTarget = NonNullable<ReturnType<typeof createRequireProgramModuleOf>>;
 
@@ -2031,6 +2106,15 @@ export class Lowerer {
    * exact binding discipline as globals/functions. */
   readonly staticCallables = new Map<ts.Symbol, StaticCallableProjection>();
   readonly genericFnsBySymbol = new Map<ts.Symbol, GenericFnInfo>();
+  /** Typed declarations' instances for arguments that keep their own
+   * record or array layout (structural-instances.ts). */
+  readonly structuralFnInfos = new Map<ts.Symbol, GenericFnInfo>();
+  /** Consts that keep their initializer's record or array layout, with the
+   * initializer's checker type (structural-instances.ts). */
+  readonly preservedLayoutTypes = new Map<ts.Symbol, ts.Type>();
+  /** Arguments and const initializers whose array or record layout the
+   * lowering kept instead of copying (divergences.ts reports no copy there). */
+  readonly layoutKeptNodes = new Set<ts.Node>();
   /** Object-literal GENERIC methods (`{ m<T>(x: T) {...} }`), interned by
    * their function-like node — instances ride the same monomorphization
    * queue (objLitGenericFnInfoOf). */
@@ -3523,6 +3607,11 @@ export class Lowerer {
    * values other than fresh literals (noteUntypedIntegrity). */
   untypedIntegrity = false;
   readonly liftedFns: IrFunction[] = [];
+  /** `for … of` and `for await` loops over untyped iterables, by their
+   * generator-kind local (generator-dynamic-dispatch.ts steps the program's
+   * own generators there on the typed path). Local ids repeat across
+   * functions; the local itself is in its function's locals. */
+  readonly untypedLoops = new Map<IrLocal, UntypedLoopSite>();
   /** global-values.ts's answer per JavaScript source: the receiver of its
    * first read of the global object by a computed name, or null. */
   readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
@@ -3548,12 +3637,17 @@ export class Lowerer {
    * names do not depend on where the program sits, default library files
    * by their base name (two checkers install them in different
    * directories), and the files scriptc ships by their name inside scriptc,
-   * so names do not depend on where scriptc is installed either. */
-  readonly positions = new StructuralPositions((sf) =>
-    this.program.isSourceFileDefaultLibrary(sf)
+   * so names do not depend on where scriptc is installed either. Relative
+   * paths use `/` on every platform. */
+  readonly positions = new StructuralPositions((sf) => this.stableFileName(sf));
+
+  /** The name of `sf` in positions and module tags. */
+  stableFileName(sf: ts.SourceFile): string {
+    return this.program.isSourceFileDefaultLibrary(sf)
       ? `lib:${sf.fileName.slice(sf.fileName.lastIndexOf("/") + 1)}`
-      : (compilerOwnedFileName(sf.fileName) ?? relative(dirname(this.entry.fileName), sf.fileName)),
-  );
+      : (compilerOwnedFileName(sf.fileName) ??
+          portableRelativePath(dirname(this.entry.fileName), sf.fileName));
+  }
 
   /** The outermost node whose token span is exactly `loc`, or null. */
   nodeAtLoc(loc: SrcLoc): ts.Node | null {
@@ -3877,13 +3971,24 @@ export class Lowerer {
    * at a committed slot, with their lenient mapping. Filled only at the
    * commit points (degradeAtCommit), so a program that compiles today
    * never fills it. */
-  readonly degradedTypes = new Map<number, { lenient: IrType; code: string; reason: string }>();
+  readonly degradedTypes = new Map<number, DegradedType>();
+  /** A pushed-down (partial) degraded type was mapped (hasPartialDegradedTypes). */
+  private partialDegradedTypesMapped = false;
+  /** The components lenient mappings turned into the checked dynamic, by
+   * checker type id, with the declared type they are pieces of (SC6101
+   * causes and per-slot operation counts). */
+  readonly lenientPieces = new Map<number, string>();
+  /** One frame per unit a commit point may retry: the pushed-down
+   * (partial) degraded types its lowering mapped (withPartialHits). */
+  readonly partialHits: Set<number>[] = [];
   /** The dynamic slots the commit points created: one SC6104 each. */
   readonly dynamicSlots: DynamicSlot[] = [];
   /** Declarations retryDeferred registered. */
   readonly retriedSymbols = new Set<ts.Symbol>();
   /** LowererMode.retriedSymbols. */
   readonly priorRetriedSymbols: ReadonlySet<ts.Symbol>;
+  /** LowererMode.wholeSlotDegradation. */
+  readonly wholeSlotDegradation: boolean;
   /** Bodies run() skipped because their declaration had not registered. */
   readonly skippedBodies = new Set<ts.Node>();
   /** Declarations retryDeferred registered, in order: run() lowers the
@@ -4063,9 +4168,16 @@ export class Lowerer {
   ) {
     // The mode's options, sorted by name; the values derived from them follow.
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
+    // Lenient forms are IR types of the other pass's shape tables: only the
+    // whole-slot dynamic carries over as is.
     if (mode.degradedTypes)
-      for (const [id, degraded] of mode.degradedTypes) this.degradedTypes.set(id, degraded);
+      for (const [id, degraded] of mode.degradedTypes)
+        this.degradedTypes.set(id, {
+          ...degraded,
+          lenient: degraded.lenient?.kind === "dyn" ? DYN : null,
+        });
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
+    this.wholeSlotDegradation = mode.wholeSlotDegradation ?? false;
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
     this.ffiImports = mode.ffiImports ?? [];
@@ -4092,6 +4204,7 @@ export class Lowerer {
     this.externalTypeSpecifiersByFile =
       mode.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(this.externalTypes);
     this.checker = program.getTypeChecker();
+    const shadow = canonShadowHook(this.checker);
     this.typeCtx = {
       checker: this.checker,
       positionOf: (node) => this.positions.of(node),
@@ -4103,8 +4216,23 @@ export class Lowerer {
       resolveBoundAliasTs: this.boundAliasTsResolver,
       degradedType: (type) => {
         const id = (type as { id?: number }).id;
-        return id === undefined ? null : (this.degradedTypes.get(id)?.lenient ?? null);
+        if (id === undefined) return null;
+        const degraded = this.degradedTypes.get(id);
+        if (degraded === undefined) return null;
+        // An entry handed over from another pass (the coverage remainder)
+        // re-derives its lenient form in this lowerer's shape tables; the
+        // checked dynamic cuts the knot while it does.
+        if (degraded.lenient === null) {
+          degraded.lenient = DYN;
+          degraded.lenient = this.lenientType(type);
+        }
+        if (degraded.lenient.kind !== "dyn") {
+          this.partialHits[this.partialHits.length - 1]?.add(id);
+          this.partialDegradedTypesMapped = true;
+        }
+        return degraded.lenient;
       },
+      ...(shadow !== undefined ? { canonShadow: shadow } : {}),
       isErasing: () => this.erasingDepth > 0,
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
@@ -4218,9 +4346,20 @@ export class Lowerer {
     // moduleOrder BEFORE any pass constructed — lowerToIr runs
     // appendDynamicImportModules once on the shared array (a per-pass run
     // here would repeatedly extend the graph and duplicate cycle reports).
-    this.moduleOrder.forEach((sf, i) => {
-      this.fileTag.set(sf, sf === entry ? "" : `%m${i}.`);
-    });
+    // A module's tag hashes its stable file name rather than numbering its
+    // place in moduleOrder, so adding or reordering modules leaves the other
+    // modules' function names, and the closure names keyed by them,
+    // unchanged. The native compiler's profile matches functions by name.
+    const tagNumbers = new Set<number>();
+    for (const sf of this.moduleOrder) {
+      if (sf === entry) {
+        this.fileTag.set(sf, "");
+        continue;
+      }
+      const n = moduleTagNumber(this.stableFileName(sf), tagNumbers);
+      tagNumbers.add(n);
+      this.fileTag.set(sf, `%m${n}.`);
+    }
     if (this.moduleOrder.length === 0) this.fileTag.set(entry, "");
     const jsDynamic = jsDynamicDeclarations(this.moduleOrder, this.checker);
     if (jsDynamic.size > 0) this.typeCtx.jsDynamicDeclaration = (decl) => jsDynamic.has(decl);
@@ -8710,6 +8849,7 @@ export class Lowerer {
     checkRequireBindingAccesses(this, functions);
     refuseX509DynValues(this, functions);
     markInferredFactChecks(functions, this.program);
+    const sloppyDynWrites = sloppyDynamicWrites(this, functions);
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -8743,6 +8883,7 @@ export class Lowerer {
               ? { freezableArrays: [...this.freezableArrays].sort() }
               : {}),
             ...(this.untypedIntegrity ? { untypedIntegrity: true as const } : {}),
+            ...(sloppyDynWrites.length > 0 ? { sloppyDynWrites } : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
@@ -9684,7 +9825,7 @@ export class Lowerer {
   }
 
   unsupported(
-    code: keyof typeof UNSUPPORTED & `SC${number}`,
+    code: keyof typeof UNSUPPORTED & DiagnosticCode,
     node: ts.Node,
     featureOverride?: string,
     hintOverride?: string,
@@ -9751,8 +9892,9 @@ export class Lowerer {
     if (!failure.degradable || failure.family === "dyn-field-policy") return null;
     if (!slots.has(failure.slot)) return null;
     const id = (type as { id?: number }).id;
-    // Already degraded and still failing: no progress, commit as today.
-    if (id === undefined || this.degradedTypes.has(id)) return null;
+    // Already degraded to the whole-slot dynamic and still failing: no
+    // progress, commit as today.
+    if (id === undefined || this.degradedTypes.get(id)?.lenient?.kind === "dyn") return null;
     let committed: ScrDiagnostic | undefined;
     for (let i = this.diags.length - 1; i >= 0; i--) {
       if (this.diags[i]!.typeFailure !== failure) continue;
@@ -9760,8 +9902,15 @@ export class Lowerer {
       this.diags.splice(i, 1);
     }
     if (committed === undefined) return null;
-    this.degradedTypes.set(id, { lenient: DYN, code: committed.code, reason: committed.message });
-    return { loc: committed.loc, failure, code: committed.code, reason: committed.message };
+    this.degradeType(type, committed.code, committed.message);
+    const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
+    return {
+      ...(partial ? { partial: true as const } : {}),
+      loc: committed.loc,
+      failure,
+      code: committed.code,
+      reason: committed.message,
+    };
   }
 
   /** A declaration slot whose type maps through degradedTypes is a
@@ -9770,7 +9919,9 @@ export class Lowerer {
   noteDegradedSlot(node: ts.Node, type: ts.Type): void {
     if (this.diagSink !== null) return;
     const degraded = this.degradedTypes.get((type as { id?: number }).id ?? -1);
-    if (degraded === undefined) return;
+    // A pushed-down type is one slot, reported where it degraded; only
+    // whole-slot dynamic declarations are reported one by one.
+    if (degraded === undefined || degraded.lenient?.kind !== "dyn") return;
     const failure = typeFailureOf(node, this.checker.typeToString(type), "unsupported");
     if (failure.slot === "expression" || failure.slot === "member") return;
     this.noteDynamicSlot({
@@ -9828,6 +9979,19 @@ export class Lowerer {
     this.diags.push(...kept);
   }
 
+  /** A unit that still fails after its retries commits its first
+   * attempt's own diagnostics (`first`, taken before the first
+   * degradation) in place of the last attempt's. The diagnostics the
+   * retries carry (dropAttemptDiags) stay as they are now: a declaration
+   * reopened since may have registered. */
+  restoreFirstAttemptDiags(diagsBefore: number, first: readonly ScrDiagnostic[]): void {
+    const carried = (d: ScrDiagnostic): boolean =>
+      d.rejects !== undefined || this.loweredOnceDiags.has(d);
+    const kept = this.diags.slice(diagsBefore).filter(carried);
+    this.diags.length = diagsBefore;
+    this.diags.push(...first.filter((d) => !carried(d)), ...kept);
+  }
+
   /** Lowers one unit whose body-level poison skips it (a generic
    * instance), with localized failure's commit point: a degradable type
    * failure at one of its declaration slots degrades the type and the unit
@@ -9837,19 +10001,98 @@ export class Lowerer {
     const slots: DynamicSlot[] = [];
     for (let attempt = 0; ; attempt++) {
       const mark = this.diags.length;
+      const hits = new Set<number>();
       try {
-        const result = lower();
+        const result = this.withPartialHits(hits, lower);
         for (const slot of slots) this.noteDynamicSlot(slot);
         return result;
       } catch (e) {
         if (!(e instanceof PoisonError)) throw e;
         if (attempt >= MAX_DECLARATION_RETRIES) return null;
         const slot = this.degradeAtCommit(e, DECLARATION_SLOTS);
-        if (slot === null) return null;
-        slots.push(slot);
+        if (slot === null && !this.widenPartials(hits)) return null;
+        if (slot !== null) slots.push(slot);
         this.dropAttemptDiags(mark);
       }
     }
+  }
+
+  /** Localized failure's lenient mapping (stage L3, push-down): the type
+   * mapped with each failing component as the checked dynamic, so a record
+   * keeps its static members, an array of records its records, and a
+   * function its arity. The whole slot is the checked dynamic when even
+   * that shape does not map. Throwaway context: nothing memoizes. */
+  lenientType(type: ts.Type): IrType {
+    const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
+    const owner = this.checker.typeToString(type);
+    const mapped = mapType(type, {
+      ...strict,
+      lenient: true,
+      canMemoizeType: () => false,
+      onLenientPiece: (piece) => {
+        const id = (piece as { id?: number }).id;
+        if (id !== undefined && !this.lenientPieces.has(id)) this.lenientPieces.set(id, owner);
+      },
+    });
+    return mapped === null || mapped.kind === "void" ? DYN : mapped;
+  }
+
+  /** Degrades a type for a commit point: its lenient (pushed-down) form
+   * first; a type already degraded that still fails falls back to the
+   * whole-slot checked dynamic. False when nothing is left to degrade. */
+  private degradeType(type: ts.Type, code: string, reason: string): boolean {
+    const id = (type as { id?: number }).id;
+    if (id === undefined) return false;
+    const known = this.degradedTypes.get(id);
+    if (known !== undefined) {
+      if (known.lenient?.kind === "dyn") return false;
+      this.degradedTypes.set(id, { lenient: DYN, code, reason });
+      return true;
+    }
+    this.degradedTypes.set(id, {
+      lenient: this.wholeSlotDegradation ? DYN : this.lenientType(type),
+      code,
+      reason,
+    });
+    return true;
+  }
+
+  /** Some degraded type kept a pushed-down (partial) shape, or one was
+   * mapped before a retry widened it: the IR lowered before the retry keeps
+   * that shape. */
+  hasPartialDegradedTypes(): boolean {
+    if (this.partialDegradedTypesMapped) return true;
+    for (const degraded of this.degradedTypes.values())
+      if (degraded.lenient !== null && degraded.lenient.kind !== "dyn") return true;
+    return false;
+  }
+
+  /** Runs a unit a commit point may retry, recording the pushed-down
+   * types it maps; the frame's hits also count for the enclosing unit. */
+  withPartialHits<T>(hits: Set<number>, run: () => T): T {
+    this.partialHits.push(hits);
+    try {
+      return run();
+    } finally {
+      this.partialHits.pop();
+      const outer = this.partialHits[this.partialHits.length - 1];
+      if (outer !== undefined) for (const id of hits) outer.add(id);
+    }
+  }
+
+  /** Push-down is a refinement, never a new failure: a unit that still
+   * fails after mapping pushed-down types falls back to the whole-slot
+   * checked dynamic for them. True when some type widened (retry). */
+  widenPartials(hits: ReadonlySet<number>): boolean {
+    if (this.tierMode !== "auto" || this.diagSink !== null) return false;
+    let widened = false;
+    for (const id of hits) {
+      const degraded = this.degradedTypes.get(id);
+      if (degraded === undefined || degraded.lenient?.kind === "dyn") continue;
+      degraded.lenient = DYN;
+      widened = true;
+    }
+    return widened;
   }
 
   /** Records a dynamic slot whose unit lowered with it (one per site). */
@@ -12955,8 +13198,9 @@ export class Lowerer {
     if (collector === undefined) return false;
     const slots: DynamicSlot[] = [];
     // The types this retry degraded (not those of retries its collections
-    // ran), for retryDeferredAtDeclaration to restore when it fails.
-    const degraded: number[] = [];
+    // ran) and their entries before it, for retryDeferredAtDeclaration to
+    // restore when it fails.
+    const degraded: { id: number; prior: DegradedType | undefined }[] = [];
     try {
       return this.retryDeferredRounds(symbol, collector, diags, slots, degraded);
     } finally {
@@ -12969,11 +13213,11 @@ export class Lowerer {
     collector: { symbolOf: () => ts.Symbol | undefined; collect: () => void },
     diags: readonly ScrDiagnostic[],
     slots: DynamicSlot[],
-    degraded: number[],
+    degraded: { id: number; prior: DegradedType | undefined }[],
   ): boolean {
     let current = diags;
     for (let round = 0; round < MAX_DECLARATION_RETRIES; round++) {
-      const failing: { diag: ScrDiagnostic; failure: TypeFailure; id: number }[] = [];
+      const failing: { diag: ScrDiagnostic; failure: TypeFailure; type: ts.Type }[] = [];
       let retriable = false;
       for (const diag of current) {
         if (this.retriableDiags.has(diag)) {
@@ -12991,28 +13235,54 @@ export class Lowerer {
         const id = (type as { id?: number } | undefined)?.id;
         if (
           failure === undefined ||
+          type === undefined ||
           id === undefined ||
           !failure.degradable ||
           !DECLARATION_SLOTS.has(failure.slot) ||
-          this.degradedTypes.has(id)
+          this.degradedTypes.get(id)?.lenient?.kind === "dyn"
         )
           return false;
-        failing.push({ diag, failure, id });
+        failing.push({ diag, failure, type });
       }
       // A round makes progress by degrading a type, or (once) by running
       // a collection that only waited for another declaration.
       if (failing.length === 0 && !(retriable && round === 0)) return false;
-      for (const { diag, failure, id } of failing) {
-        this.degradedTypes.set(id, { lenient: DYN, code: diag.code, reason: diag.message });
-        degraded.push(id);
-        slots.push({ loc: diag.loc, failure, code: diag.code, reason: diag.message });
+      for (const { diag, failure, type } of failing) {
+        const id = (type as { id?: number }).id ?? -1;
+        const prior = this.degradedTypes.get(id);
+        degraded.push({
+          id,
+          prior:
+            prior === undefined
+              ? undefined
+              : { lenient: prior.lenient, code: prior.code, reason: prior.reason },
+        });
+        this.degradeType(type, diag.code, diag.message);
+        const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
+        slots.push({
+          loc: diag.loc,
+          failure,
+          code: diag.code,
+          reason: diag.message,
+          ...(partial ? { partial: true as const } : {}),
+        });
       }
       this.deferredDiags.delete(symbol);
       const lifted = this.liftDynFieldPolicy;
       this.liftDynFieldPolicy = true;
-      let registered: boolean;
+      // Pushed-down types that did not help widen to the whole slot, and the
+      // collection runs again (a few times at most).
+      let registered = false;
       try {
-        registered = this.collectDeferring(collector.symbolOf, collector.collect) === null;
+        for (let widen = 0; widen < 4; widen++) {
+          const hits = new Set<number>();
+          registered =
+            this.withPartialHits(hits, () =>
+              this.collectDeferring(collector.symbolOf, collector.collect),
+            ) === null;
+          if (registered || !this.widenPartials(hits)) break;
+          this.deferredDiags.delete(symbol);
+        }
       } finally {
         this.liftDynFieldPolicy = lifted;
       }
@@ -13034,7 +13304,7 @@ export class Lowerer {
     return false;
   }
 
-  private retryDegraded: number[] = [];
+  private retryDegraded: { id: number; prior: DegradedType | undefined }[] = [];
 
   /** A deferred class with static field initializers is reached where its
    * statement evaluates: Node runs the initializers there, referenced or
@@ -13050,7 +13320,11 @@ export class Lowerer {
       this.retryDegraded = [];
       registered = this.retryDeferred(symbol, diags);
       if (!registered) {
-        for (const id of this.retryDegraded) this.degradedTypes.delete(id);
+        for (let i = this.retryDegraded.length - 1; i >= 0; i--) {
+          const { id, prior } = this.retryDegraded[i]!;
+          if (prior === undefined) this.degradedTypes.delete(id);
+          else this.degradedTypes.set(id, prior);
+        }
         this.deferredDiags.set(symbol, [...diags]);
       }
       this.retryDegraded = [];
@@ -13516,8 +13790,7 @@ export class Lowerer {
   /* ── scoping and captures ─────────────────────────────────────────── */
 
   declareLocal(nameNode: ts.Node, name: string, type: IrType, mutable: boolean): IrLocal {
-    if (type.kind === "dyn" && this.degradedTypes.size > 0)
-      this.noteDegradedSlot(nameNode, this.typeOf(nameNode));
+    if (this.degradedTypes.size > 0) this.noteDegradedSlot(nameNode, this.typeOf(nameNode));
     const symbol = this.checker.getSymbolAtLocation(nameNode);
     const local = declareContextLocal(
       this.ctx,

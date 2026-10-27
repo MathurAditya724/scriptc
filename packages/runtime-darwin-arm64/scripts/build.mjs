@@ -16,6 +16,7 @@ import {
 import { createDeterministicArchive } from "./archive.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "../../runtime-pack-common/scripts/share-artifacts.mjs";
+import { zlibInputs } from "../../runtime-pack-common/scripts/zlib-inputs.mjs";
 
 const run = promisify(execFile);
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -76,19 +77,7 @@ async function build() {
   const brotli = join(vendorRoot, "brotli", "c");
   const QJS_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const LRE_SOURCES = ["libregexp.c", "libunicode.c"];
-  const ZLIB_SOURCES = [
-    "adler32.c",
-    "compress.c",
-    "crc32.c",
-    "deflate.c",
-    "infback.c",
-    "inffast.c",
-    "inflate.c",
-    "inftrees.c",
-    "trees.c",
-    "uncompr.c",
-    "zutil.c",
-  ];
+  const ZLIB_BUILD = zlibInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
 
   // Speed-flavor executable units are emitted through the host LLVM helper
   // so their object and import bitcode come from one promoted module. The
@@ -309,11 +298,12 @@ async function build() {
         "-I",
         quickjs,
       ]),
-      await archive("zlib", ZLIB_SOURCES, zlib, [
+      await archive("zlib", ZLIB_BUILD.sources, zlib, [
         "-target",
         RUNTIME_PACK_MATRIX.target.llvm_triple,
         "-std=c11",
-        "-Os",
+        "-O3",
+        ...ZLIB_BUILD.defines.map((define) => `-D${define}`),
         ...codeAlignment,
         "-I",
         zlib,
@@ -356,6 +346,7 @@ async function build() {
       ],
       [join(vendorRoot, "unicode", "LICENSE"), "artifacts/licenses/unicode.txt", "Unicode-3.0"],
       [join(zlib, "LICENSE"), "artifacts/licenses/zlib.txt", "Zlib"],
+      [join(zlib, "LICENSE.chromium"), "artifacts/licenses/zlib-chromium.txt", "BSD-3-Clause"],
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
     ];

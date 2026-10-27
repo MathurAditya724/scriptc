@@ -3,6 +3,7 @@ import {
   arrayClassReceiver,
   lowerArrayClassStaticCall,
 } from "./builtins/array-classes.js";
+import { structuralCallInstance } from "./structural-instances.js";
 import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
 import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
@@ -1360,6 +1361,16 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         sig &&
         !(jsSpreadArgs && spreadNeedsRuntimeArity(lowerer, sig.params, expr.arguments.nodes))
       ) {
+        const layout = structuralCallInstance(lowerer, expr, sig);
+        if (layout) {
+          return reconcileOverloadReturn(lowerer, expr, {
+            kind: "call",
+            callee: layout.name,
+            args: lowerer.completeArgs(expr.arguments.nodes, layout.params, loc, expr),
+            type: layout.returnType,
+            loc,
+          });
+        }
         lowerer.noteEdge(sig.name);
         const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
         const symbol = lowerer.resolveValueSymbol(expr.expression);
@@ -8713,7 +8724,13 @@ function lowerObjectStaticCall(
       return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
     }
     if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
-      return value; // fresh — freeze is identity here, honestly
+      // A fresh literal can still reach untyped code, which observes and
+      // must honor its frozen state: records and arrays keep the bit.
+      if (freezableRecordType(lowerer, value.type))
+        return lowerNativeFreeze(lowerer, "record.freeze", value, locOf(call));
+      if (value.type.kind === "array")
+        return lowerNativeFreeze(lowerer, "array.freeze", value, locOf(call));
+      return value;
     }
     if (
       value.type.kind === "string" ||

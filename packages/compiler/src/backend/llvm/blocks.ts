@@ -103,8 +103,8 @@ export class BlockBuilder {
     }
   }
 
-  br(label: string): void {
-    this.terminate(`br label %${label}`);
+  br(label: string, attachment = ""): void {
+    this.terminate(`br label %${label}${attachment}`);
   }
 
   condBr(v: string, t: string, f: string, attachment = ""): void {
