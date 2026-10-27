@@ -1775,6 +1775,9 @@ export class LlEmitter {
     ran?: string;
     /** Writes that speculate a rewritten value (rewriteSpeculable). */
     values?: ReadonlyMap<IrStmt, SpeculativeValue>;
+    /** A proven integer loop's expression-position `++`/`--` of its
+     * shadowed bindings (ProvenLoopPlan.increments). */
+    increments?: ReadonlySet<IrExpr>;
   } | null = null;
   /** Speculative loop sites numbered so far in the module. */
   speculativeLoopSites = 0;
