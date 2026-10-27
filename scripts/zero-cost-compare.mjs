@@ -629,6 +629,28 @@ export function timingGroups(rows) {
 /** A content hash of one artifact file, as the baseline cache records it. */
 export const artifactHash = hash;
 
+/** The hash of what a program's build reads, as the baseline cache records
+ * it: `files` (the entry and its relative imports) by path relative to
+ * `root` and content, read through `read`, and the optimization level. */
+export function programInputsHash(root, files, optimization, read) {
+  const h = createHash("sha1").update(`${optimization}\0`);
+  for (const file of [...files].sort())
+    h.update(`${file.startsWith(root + "/") ? file.slice(root.length + 1) : file}\0`)
+      .update(read(file))
+      .update("\0");
+  return h.digest("hex");
+}
+
+/** The baseline cache entry recorded for program `id`, or undefined when the
+ * cache has none or recorded it for other inputs (`programInputsHash`): a
+ * program or an import that changed since the record must build its
+ * baseline, or a recorded build error or artifact hash of the old sources
+ * would settle the new sources' comparison. */
+export function recordedBaseline(cache, id, inputs) {
+  const entry = cache?.programs[id];
+  return entry !== undefined && entry.inputs === inputs ? entry : undefined;
+}
+
 /** The comparison a cached baseline entry settles without building the
  * baseline, or null when the baseline must be built: identical artifacts
  * (every recorded hash equals the candidate's) or the same build error on

@@ -41,8 +41,10 @@ import {
   dynamicTierSymbols,
   median,
   nmOutput,
+  programInputsHash,
   programLines,
   programVerdict,
+  recordedBaseline,
   timingGroups,
   timingVerdict,
 } from "./zero-cost-compare.mjs";
@@ -117,11 +119,14 @@ and compares instruction counts per function of the executable's own
 symbols, excluding the allocator's prefault thread.
 
 --record-baseline-cache=<file> builds only the baseline and records each
-program's artifact hashes (or build error) in <file>, then exits.
+program's artifact hashes (or build error) in <file>, with a hash of the
+program's inputs (its entry, its relative imports and its optimization
+level), then exits.
 --baseline-cache=<file> reads such a record: a program whose candidate
 artifacts hash the same as the recorded baseline's is identical without a
 baseline build, and the same build error on both sides is both-fail; any
-other program builds the baseline as usual. The record applies only to the
+other program builds the baseline as usual, and so does a program whose
+inputs changed since the record. The record applies only to the
 baseline revision and toolchain it was made with; otherwise it is ignored.
 The self program always builds both sides, since its builds are timed.
 
@@ -473,6 +478,16 @@ function toolchainFingerprint(root) {
   return h.digest("hex");
 }
 
+/** The hash of `program`'s inputs, which its baseline cache entry records. */
+function inputsHash(program) {
+  return programInputsHash(
+    programsRoot,
+    programInputs(program.entry),
+    program.kind === "source" ? "source" : (program.optimization ?? "release"),
+    (file) => readFileSync(file),
+  );
+}
+
 /** The content hashes of one build's artifacts (null for a missing one). */
 function buildHashes(build) {
   const hashes = {};
@@ -488,7 +503,7 @@ if (recordPath === undefined && values["baseline-cache"] !== undefined) {
   const file = resolve(values["baseline-cache"]);
   const cache = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
   const fingerprint = cache === null ? null : toolchainFingerprint(trees.baseline);
-  if (cache?.schema === 1 && cache.fingerprint === fingerprint) baselineCache = cache;
+  if (cache?.schema === 2 && cache.fingerprint === fingerprint) baselineCache = cache;
   else
     console.log(
       `baseline cache ${file} ${cache === null ? "is missing" : "was made with another baseline or toolchain"}; building every baseline`,
@@ -527,7 +542,7 @@ const started = Date.now();
 
 if (recordPath !== undefined) {
   const record = {
-    schema: 1,
+    schema: 2,
     date: report.date,
     fingerprint: toolchainFingerprint(trees.baseline),
     baseline: report.trees.baseline,
@@ -537,14 +552,16 @@ if (recordPath !== undefined) {
     programs.map((program) => ({
       run: async () => {
         const build = await buildProgram(program, "baseline");
+        const inputs = inputsHash(program);
         record.programs[program.id] = build.ok
           ? {
+              inputs,
               ok: true,
               ms: build.ms,
               hashes: buildHashes(build),
               ...(build.exe ? { exeBytes: statSync(build.exe).size } : {}),
             }
-          : { ok: false, ms: build.ms ?? null, error: build.error };
+          : { inputs, ok: false, ms: build.ms ?? null, error: build.error };
         if (build.dir) rmSync(build.dir, { recursive: true, force: true });
       },
     })),
@@ -581,7 +598,10 @@ await pool(
   programs.map((program) => ({
     heavy: program.kind === "source",
     run: async () => {
-      const recorded = program.kind === "source" ? undefined : baselineCache?.programs[program.id];
+      const recorded =
+        program.kind === "source" || baselineCache === null
+          ? undefined
+          : recordedBaseline(baselineCache, program.id, inputsHash(program));
       let baseline;
       let candidate;
       let settled = null;
@@ -593,7 +613,7 @@ await pool(
       else {
         candidate = await buildProgram(program, "candidate");
         settled = cachedComparison(recorded, candidate, candidate.ok ? buildHashes(candidate) : {});
-        // A cached identical baseline is byte for byte the candidate's build.
+        // A cached identical baseline has the candidate's artifacts.
         baseline =
           settled === null
             ? await buildProgram(program, "baseline")

@@ -10,8 +10,10 @@ import {
   dynamicTierSymbols,
   mergeReports,
   nmOutput,
+  programInputsHash,
   programLines,
   programVerdict,
+  recordedBaseline,
   timingVerdict,
 } from "../../scripts/zero-cost-compare.mjs";
 
@@ -221,6 +223,30 @@ test("a recorded baseline settles identical programs and shared build errors", (
   });
   expect(cachedComparison(failed, { ok: false, error: "SC1091" }, {})).toBeNull();
   expect(cachedComparison(failed, { ok: true }, hashes)).toBeNull();
+});
+
+test("a recorded baseline applies only to the program inputs it was recorded for", () => {
+  const files: Record<string, string> = {
+    "/p/tests/corpus/a/main.ts": 'import { f } from "./lib.ts";',
+    "/p/tests/corpus/a/lib.ts": "export const f = 1;",
+  };
+  const read = (file: string) => Buffer.from(files[file]!);
+  const paths = Object.keys(files);
+  const inputs = programInputsHash("/p", paths, "release", read);
+  expect(programInputsHash("/p", [...paths].reverse(), "release", read)).toBe(inputs);
+  expect(programInputsHash("/p", paths, "speed", read)).not.toBe(inputs);
+  expect(programInputsHash("/q", paths, "release", read)).not.toBe(inputs);
+  // An edit to an import changes the hash as an edit to the entry does.
+  files["/p/tests/corpus/a/lib.ts"] = "export const f = 2;";
+  const edited = programInputsHash("/p", paths, "release", read);
+  expect(edited).not.toBe(inputs);
+  const entry = { inputs, ok: false, ms: 3, error: "SC1090" };
+  const cache = { programs: { "corpus/a/main.ts": entry } };
+  expect(recordedBaseline(cache, "corpus/a/main.ts", inputs)).toBe(entry);
+  // A record of the old sources must not settle the new sources as both-fail or identical.
+  expect(recordedBaseline(cache, "corpus/a/main.ts", edited)).toBeUndefined();
+  expect(recordedBaseline(cache, "corpus/b/main.ts", inputs)).toBeUndefined();
+  expect(recordedBaseline(null, "corpus/a/main.ts", inputs)).toBeUndefined();
 });
 
 test("merged gate shards judge compile time and comparisons over every shard", () => {
