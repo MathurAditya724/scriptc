@@ -2,6 +2,7 @@
 import type { NativeOptimization } from "./optimization.js";
 import {
   executableOptimizationLinkerArgs,
+  executableStaticLinkerArgs,
   executableStripLinkerArgs,
   windowsSubsystemLinkerArgs,
   type NativeTargetSpec,
@@ -28,6 +29,8 @@ export function executableLinkInputs(options: {
   runtimeSystemLibraries: readonly string[];
   optimization: NativeOptimization;
   strip?: boolean;
+  /** Link the C library and the other system libraries statically (`--static`). */
+  staticLink?: boolean;
   windowsSubsystem?: WindowsSubsystem;
   /** Instrumented for profile-guided optimization. */
   profileGenerate?: boolean;
@@ -65,6 +68,7 @@ export function executableLinkInputs(options: {
       ),
       ...executableOptimizationLinkerArgs(options.target.platform, options.optimization),
       ...executableStripLinkerArgs(options.target.platform, options.strip ?? false),
+      ...executableStaticLinkerArgs(options.target, options.staticLink ?? false),
       ...windowsSubsystemLinkerArgs(options.target.platform, options.windowsSubsystem),
       ...profileGenerateLinkerArgs(options.profileGenerate ?? false),
     ],

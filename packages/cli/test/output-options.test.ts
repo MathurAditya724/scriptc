@@ -46,6 +46,8 @@ describe("output option compatibility", () => {
     [{ emit: "llvm", windowsSubsystem: "gui" }, /windows-subsystem/],
     [{ emit: "obj", strip: true }, /strip/],
     [{ emit: "llvm", strip: true }, /strip/],
+    [{ emit: "obj", staticLink: true }, /--static/],
+    [{ emit: "llvm", staticLink: true }, /--static/],
     [{ emit: "obj", detachedExit: true }, /detached-exit/],
     [{ emit: "llvm", detachedExit: true }, /detached-exit/],
     [{ emit: "obj", largePages: true }, /large-pages/],
