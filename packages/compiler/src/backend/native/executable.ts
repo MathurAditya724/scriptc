@@ -247,6 +247,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // event-target units.
   unit((u) => u.opts.eventsOnceSignal === true, "scr_events_once_signal.c"),
   unit((u) => u.opts.mime === true, "scr_mime.c"),
+  unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or

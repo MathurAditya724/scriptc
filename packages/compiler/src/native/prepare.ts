@@ -449,7 +449,10 @@ export function prepareNativeExecutable(
     llvm,
     ir,
     sidecarJson: null,
-    features: executableLinkFeatures(prepared.mod),
+    features: executableLinkFeatures(
+      prepared.mod,
+      options.largePages === true && outputKind === "exe",
+    ),
     sources: [...prepared.sourceTexts],
     ...(prepared.warnings.length > 0 ? { warnings: prepared.warnings } : {}),
   };

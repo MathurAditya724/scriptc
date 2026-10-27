@@ -5,6 +5,7 @@ import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../i
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 
 import { BYTES_ELEM_NUM, closureIdentityEqual, f64Lit } from "./common.js";
@@ -432,11 +433,13 @@ export function emitOperatorExpr(
           const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
           // The integer of an exact integer or NaN, for index and loop guards.
           const nan = emitNanArithmetic(host, e, l, r, li, ri);
-          if (wrapped !== undefined || wideInteger || nan) {
+          const offset = offsetIndex(e, l, r);
+          if (wrapped !== undefined || wideInteger || nan || offset) {
             const value: LlValue = { name: t, type: e.type };
             if (nan) Object.assign(value, nan);
             if (wrapped !== undefined) Object.assign(value, wrapped);
             if (wideInteger) value.wideInteger = wideInteger;
+            if (offset) value.offsetIndex = offset;
             return value;
           }
         } else {

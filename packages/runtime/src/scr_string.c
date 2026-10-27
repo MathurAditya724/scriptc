@@ -2131,6 +2131,39 @@ void scr_str_note_utf16_len(ScrStr *s, size_t units) {
   *scr_u16len_slot(s) = (ScrU16Len){s, units};
 }
 
+/* A non-ASCII receiver up to this many bytes (a character, a short word)
+ * is decoded from its start on each read, as scr_str_utf16_len counts a
+ * short receiver: an index entry for it would cost more than the walk, and
+ * would evict the cursor of a long receiver being scanned meanwhile. */
+#define SCR_STR_DECODE_SHORT 16
+
+/* The UTF-16 unit at index i of a short receiver, or NaN past its end. */
+static double scr_str_char_code_short(const ScrStr *s, size_t i) {
+  size_t b = 0;
+  while (b < s->len) {
+    unsigned char c = (unsigned char)s->data[b];
+    if (c < 0x80) {
+      if (i == 0) return (double)c;
+      i--;
+      b++;
+      continue;
+    }
+    size_t adv;
+    uint32_t cp = scr_utf8_decode(s->data + b, &adv);
+    if (cp < 0x10000) {
+      if (i == 0) return (double)cp;
+      i--;
+    } else {
+      uint32_t v = cp - 0x10000;
+      if (i == 0) return (double)(0xD800 + (v >> 10));
+      if (i == 1) return (double)(0xDC00 + (v & 0x3FF));
+      i -= 2;
+    }
+    b += adv;
+  }
+  return NAN;
+}
+
 double scr_str_char_code_at(ScrStr *s, double i) {
   /* A sequential scan of a non-ASCII receiver stays inside the bounded
    * ASCII span cached at its last resolved position. Its unit offset is an
@@ -2169,6 +2202,7 @@ double scr_str_char_code_at(ScrStr *s, double i) {
   /* UTF-16 length <= byte length always, so this also fences the cast. */
   if (idx >= (double)s->len) return NAN;
   if (s->ascii) return (double)(unsigned char)s->data[(size_t)idx];
+  if (s->len <= SCR_STR_DECODE_SHORT) return scr_str_char_code_short(s, (size_t)idx);
   ScrSidx *e = scr_sidx(s);
   if (s->ascii || e->u16len == s->len) return (double)(unsigned char)s->data[(size_t)idx];
   if (scr_sidx_units(s, e)) return idx < (double)e->nunits ? (double)e->units[(size_t)idx] : NAN;

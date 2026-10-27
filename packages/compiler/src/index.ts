@@ -95,7 +95,11 @@ import {
   NativeCodegenError,
   writeLlvmSource,
 } from "./backend/native-codegen.js";
-import { nativePartitionPaths, nativeProgramPartitions } from "./backend/native-codegen-core.js";
+import {
+  nativeCodegenParts,
+  nativePartitionPaths,
+  nativeProgramPartitions,
+} from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./backend/targets.js";
 import { windowsSubsystemLinkerArgs, type WindowsSubsystem } from "./backend/targets.js";
@@ -587,11 +591,12 @@ function executableNativeFeatures(
   mod: IrModule,
   backend: "llvm",
   optimization: NativeOptimization,
+  largePages: boolean,
 ): EarlyExecutableNativeFeatures {
   return {
     backend,
     ...optimizationField(optimization),
-    ...executableLinkFeatures(mod),
+    ...executableLinkFeatures(mod, largePages),
   };
 }
 
@@ -691,6 +696,7 @@ async function compileExecutableNative(
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
+    ...(features.largePages ? { largePages: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
@@ -763,8 +769,11 @@ async function emitNativeProgramObject(
   // The validated program-object artifact is a single object by contract.
   const target = nativeCodegenTarget();
   const llvmBytes = llvmInputBytes(llvm);
-  const partitions =
-    opts.nativeProgramObject === true || target === null ? 1 : nativeProgramPartitions(llvmBytes);
+  const single = opts.nativeProgramObject === true || target === null;
+  // An optimized program that stays one partition is optimized whole and
+  // generates code for its parts concurrently.
+  const codegenParts = single || opts.optimization === "dev" ? 1 : nativeCodegenParts(llvmBytes);
+  const partitions = single ? 1 : Math.max(nativeProgramPartitions(llvmBytes), codegenParts);
   try {
     const artifact = await emitNativeArtifact({
       outputPath: linkPath,
@@ -774,6 +783,7 @@ async function emitNativeProgramObject(
       optimization: opts.optimization === "dev" ? "0" : "2",
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
+      ...(codegenParts > 1 ? { splitCodegen: true } : {}),
       ...(profile === undefined ? {} : { profile }),
     });
     return {
@@ -1013,7 +1023,12 @@ async function prepareExecutableInput(
           nativeLinkInfo: await createNativeLinkInfo({
             programObject: opts.outPath,
             target,
-            features: executableNativeFeatures(mod, "llvm", opts.optimization ?? "release"),
+            features: executableNativeFeatures(
+              mod,
+              "llvm",
+              opts.optimization ?? "release",
+              opts.largePages === true,
+            ),
             ffi,
             optimization: opts.optimization ?? "release",
           }),
@@ -1065,7 +1080,12 @@ async function prepareExecutableInput(
     await writeTextParts(irSourcePath, serializeModuleParts(mod, compilerOwnedFileRoots()));
   }
 
-  const nativeFeatures = executableNativeFeatures(mod, backend, opts.optimization ?? "release");
+  const nativeFeatures = executableNativeFeatures(
+    mod,
+    backend,
+    opts.optimization ?? "release",
+    opts.largePages === true,
+  );
   timing("link-features");
   const programSplit =
     !useRuntimePack &&
@@ -1482,6 +1502,19 @@ async function compileTracked(
       sourceTexts: new Map(),
     };
   }
+  if (opts.largePages === true && outputKind !== "exe") {
+    return {
+      ok: false,
+      diagnostics: [
+        nativeCodegenDiag(
+          "SC3002",
+          "--large-pages is only supported for executable output",
+          entryPath,
+        ),
+      ],
+      sourceTexts: new Map(),
+    };
+  }
   if (opts.cpuDispatch === true && outputKind !== "exe") {
     return {
       ok: false,
@@ -1702,6 +1735,7 @@ async function compileTracked(
       // Calls into Node record the libnode pack; their entries record its
       // identity (node-islands/libnode.ts) and a hit requires it unchanged.
       libnodeIdentity: () => libnodeCacheKey(opts.libnode),
+      ...(opts.largePages === true ? { largePages: true as const } : {}),
       ...targetCpuField(opts.targetCpu),
       ...(opts.cpuDispatch === true ? { cpuDispatch: true as const } : {}),
       ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),

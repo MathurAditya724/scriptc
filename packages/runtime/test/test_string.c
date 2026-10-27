@@ -605,10 +605,15 @@ static void sparse_slice_churn_asserts(void) {
 static void index_activity_asserts(void) {
   scr_sidx_test_reset_cache();
   ScrStr *strings[9];
+  /* A receiver of up to 16 bytes is decoded on each indexed read. */
+  ScrStr *shortest = scr_str_new("\xc3\xa9x", 3);
+  if (scr_str_char_code_at(shortest, 1) != 'x' || scr_sidx_test_active() != 0)
+    sidx_fail("short indexed read claimed a cursor");
+  scr_str_release(shortest);
   for (size_t i = 0; i < 9; i++) {
-    strings[i] = scr_str_new("\xc3\xa9x", 3);
+    strings[i] = scr_str_new("\xc3\xa9xxxxxxxxxxxxxxxxx", 19);
     /* Short lengths count directly; an indexed read claims a cursor. */
-    if (scr_str_utf16_len(strings[i]) != 2 || scr_sidx_test_active() != (i < 4 ? i : 4))
+    if (scr_str_utf16_len(strings[i]) != 18 || scr_sidx_test_active() != (i < 4 ? i : 4))
       sidx_fail("short length claimed a cursor");
     if (scr_str_char_code_at(strings[i], 1) != 'x') sidx_fail("cursor activation read");
     if (scr_sidx_test_active() != (i < 4 ? i + 1 : 4))
@@ -616,7 +621,7 @@ static void index_activity_asserts(void) {
   }
   for (size_t i = 0; i < 9; i++) scr_str_release(strings[i]);
   if (scr_sidx_test_active() != 0) sidx_fail("last cursor release stayed active");
-  ScrStr *s = scr_str_new("\xe4\xb8\xad", 3);
+  ScrStr *s = scr_str_new("\xe4\xb8\xadxxxxxxxxxxxxxxxx", 19);
   (void)scr_str_utf16_len(s);
   scr_sidx_test_reset_cache();
   if (scr_sidx_test_active() != 0) sidx_fail("cache reset stayed active");

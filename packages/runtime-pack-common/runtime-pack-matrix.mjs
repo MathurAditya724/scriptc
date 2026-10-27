@@ -101,6 +101,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // events.once with options registers through the emitter and event-target units.
   ["scr_events_once_signal.c", "eventsOnceSignal"],
   ["scr_mime.c", "mime"],
+  // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
+  ["scr_text_pages.c", "largePages"],
   ["scr_util_timing.c", "utilTiming"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   ["scr_symbol.c", "symbol"],

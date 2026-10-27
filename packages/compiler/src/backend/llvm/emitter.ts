@@ -1,4 +1,5 @@
 import type { TargetCpu } from "../target-cpu.js";
+import { loopEntryInlines } from "./loop-entry-versions.js";
 import type { FunctionLayout } from "./function-layout.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
@@ -4014,8 +4015,10 @@ export class LlEmitter {
   emitDirectCall(line: string, callee: string): boolean {
     const B = this.B;
     // A small leaf called only from loops inlines into each of them, past
-    // LLVM's cost threshold (loop-callees.ts). Debug builds keep the call.
-    if (this.debug === null && this.loopCallees.has(callee)) {
+    // LLVM's cost threshold (loop-callees.ts), and so does a function called
+    // only from a loop's entry-range version (loop-entry-versions.ts).
+    // Debug builds keep the call.
+    if (this.debug === null && (this.loopCallees.has(callee) || loopEntryInlines(this, callee))) {
       const comment = line.indexOf(" ; ");
       line =
         comment < 0
