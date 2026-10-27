@@ -4186,6 +4186,36 @@ double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
   return wrote;
 }
 
+/* Shared kernel read after the caller has validated the byte window and
+ * position. BigInt positions must reach pread/ReadFile as integers. Ordinary
+ * inline leaves an out-of-line transition in the typed Number entry at -O2. */
+static inline __attribute__((always_inline)) double scr_fs_read_sync_bytes(double fd, ScrBytes *buf, size_t off, size_t want,
+                                            int64_t position) {
+  uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
+  if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
+  uint8_t *destination = bounce ? bounce : buf->data + off;
+  ssize_t n = position == -1
+    ? read((int)fd, destination, want)
+    : scr_fs_pread((int)fd, destination, want, position);
+  int read_error = errno;
+  if (bounce) {
+    if (n > 0) scr_bytes_write(buf, off, bounce, (size_t)n);
+    free(bounce);
+  }
+  errno = read_error;
+  if (n < 0) {
+    int e = errno;
+    char namebuf[16];
+    const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
+    const char *text = scr_errno_text(e);
+    char msg[160];
+    int len = snprintf(msg, sizeof msg, "%s: %s, read", name, text);
+    scr_fs_throw_details(e, name, msg, (size_t)len, "read", NULL, NULL);
+    return 0;
+  }
+  return (double)n;
+}
+
 /* fs.readSync(fd, buffer, offset, length[, position]) — the buffer form.
  * Node validates offset/length against the buffer before reading and
  * throws ERR_OUT_OF_RANGE; here the checks clamp to the same contract and
@@ -4266,36 +4296,12 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
   }
   size_t off = (size_t)offset;
   size_t want = (size_t)length;
-  return scr_fs_read_sync_i64(fd, buf, off, want, (int64_t)position);
+  return scr_fs_read_sync_bytes(fd, buf, off, want, (int64_t)position);
 }
 
-/* Shared kernel read after the caller has validated the byte window and
- * position. BigInt positions must reach pread/ReadFile as integers. */
 double scr_fs_read_sync_i64(double fd, ScrBytes *buf, size_t off, size_t want,
                             int64_t position) {
-  uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
-  if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
-  uint8_t *destination = bounce ? bounce : buf->data + off;
-  ssize_t n = position == -1
-    ? read((int)fd, destination, want)
-    : scr_fs_pread((int)fd, destination, want, position);
-  int read_error = errno;
-  if (bounce) {
-    if (n > 0) scr_bytes_write(buf, off, bounce, (size_t)n);
-    free(bounce);
-  }
-  errno = read_error;
-  if (n < 0) {
-    int e = errno;
-    char namebuf[16];
-    const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
-    const char *text = scr_errno_text(e);
-    char msg[160];
-    int len = snprintf(msg, sizeof msg, "%s: %s, read", name, text);
-    scr_fs_throw_details(e, name, msg, (size_t)len, "read", NULL, NULL);
-    return 0;
-  }
-  return (double)n;
+  return scr_fs_read_sync_bytes(fd, buf, off, want, position);
 }
 
 /* Gather/scatter one contiguous window around ONE kernel operation. Multiple
