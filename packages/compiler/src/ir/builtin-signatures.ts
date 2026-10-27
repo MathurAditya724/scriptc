@@ -3609,6 +3609,7 @@ function buildLibFnSignatures() {
      * Options retain cause presence; constructor calls borrow their args.
      * Message coercion may throw before the cause is installed. */
     "error.newOptions": { argTypes: [DYN, DYN], result: VOID },
+    "error.captureStackTrace": { argTypes: [DYN, STRING, BOOL], result: VOID },
     "error.ctorOptions": { argTypes: [null, DYN, DYN], result: VOID },
     /** Borrowed Error receiver. cause returns an owned dyn value (undefined
      * when absent); hasCause distinguishes absence from present undefined. */
@@ -3942,7 +3943,6 @@ function buildLibFnSignatures() {
     "dyn.objectPrototype": { argTypes: [], result: DYN },
     "dyn.errorPrototype": { argTypes: [], result: DYN },
     "dyn.inheritsErrorPrototype": { argTypes: [DYN], result: BOOL },
-    "dyn.errorCaptureStackTrace": { argTypes: [DYN], result: DYN },
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },

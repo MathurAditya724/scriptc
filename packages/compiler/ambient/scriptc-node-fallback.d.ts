@@ -1665,4 +1665,5 @@ declare module "node:tty" {
 
 interface ErrorConstructor {
   stackTraceLimit: number;
+  captureStackTrace(targetObject: object, constructorOpt?: Function): void;
 }
