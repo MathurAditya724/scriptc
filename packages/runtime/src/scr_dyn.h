@@ -1318,6 +1318,15 @@ bool scr_dyn_typed_ref_is(
     const ScrDyn *d, const char *type_key, size_t type_key_len);
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
+/* Record views (scr_json.c): a checked conversion's view of the record a
+ * capsule holds, or NULL. */
+typedef struct {
+  const char *key;
+  size_t key_len;
+  const size_t *offsets;
+} ScrRecordViewSource;
+void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
+                          const char *key, size_t key_len, void *(*alloc)(void), size_t words);
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
 ScrDyn *scr_dyn_typed_ref_peek(const ScrDyn *d); /* +1 */

@@ -2526,7 +2526,10 @@ export class LlEmitter {
     }
     this.shapeHost.recordViews = planRecordViews(mod, {
       traced: (id) => this.tracedShapes.has(`record:${id}`),
+      // A tagged shape's values share field reads with the other arms of
+      // its shape union, which do not carry view words.
       excluded: (id) =>
+        this.nullableUnions.shapeNumber(id) !== 0 ||
         this.shapeHost.arenaShapes?.has(id) === true ||
         this.publishedTypes?.recordGuarded(id) === true ||
         mod.workers === true,

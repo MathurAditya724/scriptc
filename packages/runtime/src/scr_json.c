@@ -4382,11 +4382,6 @@ void *scr_dyn_typed_ref_unbox(const ScrDyn *d) {
  * capsule and B, found again through the capsule's cast list, where it is
  * borrowed. NULL for any other capsule and for a frozen A, whose
  * conversion keeps its copy. */
-typedef struct {
-  const char *key;
-  size_t key_len;
-  const size_t *offsets;
-} ScrRecordViewSource;
 static void *scr_record_view_retain(void *view);
 
 void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
