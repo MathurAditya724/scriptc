@@ -5386,9 +5386,21 @@ static void sf_on_data(ScrClosure *cb, ScrBytes *chunk) {
   sf_release(t);
 }
 
+/* After 'end' the keep-alive agent can hand the socket to the next request
+ * on the connection, so the transfer leaves it reading and stops pausing
+ * and resuming it. */
+static void sf_drop_response_socket(SfTransfer *t) {
+  if (!t->response_socket) return;
+  if (t->response_paused) scr_net_sock_release(scr_net_sock_resume(t->response_socket));
+  t->response_paused = false;
+  scr_net_sock_release(t->response_socket);
+  t->response_socket = NULL;
+}
+
 static void sf_on_end(ScrClosure *cb) {
   SfTransfer *t = sf_from(cb);
   if (!t) return;
+  sf_drop_response_socket(t);
   if (!t->done) {
     if (t->inflating && t->response_stream &&
         !t->response_stream->discarded) {
@@ -5929,9 +5941,16 @@ static bool sf_start_hop(SfTransfer *t) {
     wrap_ctx = scr_tls_fetch_client_ctx(sni, true);
     wrap = &scr_tls_fetch_client_wrap;
   }
-  ScrHttpClientReq *client = scr_http_request_ex(
-      dial, dial_port, path, t->method, 0, headers, false, NULL, NULL,
-      default_port, wrap, wrap_ctx);
+  /* A direct connection goes through fetch's keep-alive agent, which hands
+   * an idle connection to the next request for the same origin, as
+   * undici's dispatcher does; the bare host keys the pool, so origins that
+   * share an address keep their own connections. A proxied request dials
+   * its own connection. */
+  ScrHttpClientReq *client =
+      proxy ? scr_http_request_ex(dial, dial_port, path, t->method, 0, headers, false, NULL,
+                                  NULL, default_port, wrap, wrap_ctx)
+            : scr_http_fetch_request(https, dial, dial_port, path, t->method, headers,
+                                     default_port, wrap, wrap_ctx, bare);
   scr_arr_release(headers);
   scr_str_release(path);
   scr_str_release(dial);
