@@ -46,6 +46,7 @@ import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { f64Lit, llvmCommentText, loadArrCount, SCR_ARR_FIELD, sizeToDouble } from "./common.js";
 import { planInt32KindLoop, type Int32KindLoopPlan } from "./int32-kind-loops.js";
 import { withinInt32 } from "../../ir/integer-ranges.js";
+import { emitLoopEntryVersion, loopEntryVersion } from "./loop-entry-versions.js";
 import { resultSlotStore } from "../result-slots.js";
 import {
   matchIntegerArrayForLoop,
@@ -2349,6 +2350,13 @@ export function emitLoopCopies(
   exit: string,
   emitCopy: (exit: string) => void,
 ): void {
+  const entry = allowed ? loopEntryVersion(emitter, loop) : null;
+  if (entry) {
+    emitLoopEntryVersion(emitter, loop, entry, () =>
+      emitLoopCopies(emitter, loop, allowed, exit, emitCopy),
+    );
+    return;
+  }
   const plan =
     allowed &&
     emitter.speculativeLoopsEnabled &&
