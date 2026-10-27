@@ -34,6 +34,11 @@ export interface CompileBaseOptions {
   optimization?: NativeOptimization;
   /** Remove symbol/debug payload from an executable at link time. */
   strip?: boolean;
+  /** Link the C library and the other system libraries into the executable
+   * (`--static`). glibc executables link as static PIE and need the C
+   * library's static archives on the build host; musl executables are always
+   * static. Linux executables only. */
+  staticLink?: boolean;
   /** Windows PE executable subsystem. Console is the default; GUI suppresses
    * automatic console-window creation. Only valid for Windows executables. */
   windowsSubsystem?: WindowsSubsystem;
