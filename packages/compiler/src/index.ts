@@ -95,7 +95,11 @@ import {
   NativeCodegenError,
   writeLlvmSource,
 } from "./backend/native-codegen.js";
-import { nativePartitionPaths, nativeProgramPartitions } from "./backend/native-codegen-core.js";
+import {
+  nativeCodegenParts,
+  nativePartitionPaths,
+  nativeProgramPartitions,
+} from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./backend/targets.js";
 import { windowsSubsystemLinkerArgs, type WindowsSubsystem } from "./backend/targets.js";
@@ -758,8 +762,11 @@ async function emitNativeProgramObject(
   // The validated program-object artifact is a single object by contract.
   const target = nativeCodegenTarget();
   const llvmBytes = llvmInputBytes(llvm);
-  const partitions =
-    opts.nativeProgramObject === true || target === null ? 1 : nativeProgramPartitions(llvmBytes);
+  const single = opts.nativeProgramObject === true || target === null;
+  // An optimized program that stays one partition is optimized whole and
+  // generates code for its parts concurrently.
+  const codegenParts = single || opts.optimization === "dev" ? 1 : nativeCodegenParts(llvmBytes);
+  const partitions = single ? 1 : Math.max(nativeProgramPartitions(llvmBytes), codegenParts);
   try {
     const artifact = await emitNativeArtifact({
       outputPath: linkPath,
@@ -769,6 +776,7 @@ async function emitNativeProgramObject(
       optimization: opts.optimization === "dev" ? "0" : "2",
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
+      ...(codegenParts > 1 ? { splitCodegen: true } : {}),
       ...(profile === undefined ? {} : { profile }),
     });
     return {

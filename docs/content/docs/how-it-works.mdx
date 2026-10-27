@@ -34,7 +34,7 @@ Runtime pack and linker -> executable
 
 ## Build parallelism
 
-Most of a build runs on one CPU core. The LLVM helper uses more cores only when it compiles an executable in partitions.
+Most of a build runs on one CPU core. The LLVM helper uses more cores when it compiles an executable in partitions, and when it generates code for an optimized executable of one partition.
 
 ### Frontend
 
@@ -62,7 +62,7 @@ The count depends only on the size of the LLVM text, so a program has the same p
 
 These builds are not divided into partitions and compile on one thread: `--emit=asm`, `--emit=obj`, and `--print=native-link-info` output, library builds (`--lib`; `dev` library builds are compiled in pieces, one after another), and `--sanitize` builds, which compile the LLVM IR with the C compiler.
 
-The helper compiles partitions on a pool with one thread per hardware thread of the host, so an executable with four partitions uses at most four cores in the backend. A program of one partition is optimized and compiled on one thread.
+The helper compiles partitions on a pool with one thread per hardware thread of the host, so an executable with four partitions uses at most four cores in the backend.
 
 How partitions are compiled depends on `--optimization`:
 
@@ -70,6 +70,23 @@ How partitions are compiled depends on `--optimization`:
 - `release` and `speed` optimize each partition and write a summary of its functions, all in parallel. Then a serial step reads every summary and decides which small functions each partition imports from the others, so that calls between partitions can still be inlined. Last, the partitions are optimized with their imports and compiled, again in parallel.
 
 Reading the LLVM text and dividing it into partitions, and the import step, run on one thread.
+
+### Code generation of one partition
+
+A `release` or `speed` executable of one partition is optimized as one module on one thread. When its LLVM text is larger than 128 KiB, the helper then divides the optimized module for code generation and generates machine code for the parts in parallel, on the same pool. Each part holds a run of consecutive functions with about the same amount of code, so the executable keeps the functions in the same order. The module is optimized before it is divided, so each function's machine code is the same as from one thread, except that a jump to a function that another part also uses takes the longer form. When one function holds most of the code, the first part holds the whole module and the others are empty.
+
+<table>
+  <thead>
+    <tr><th>LLVM text</th><th>Code generation parts</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Up to 128 KiB</td><td>1</td></tr>
+    <tr><td>Over 128 KiB, up to 256 KiB</td><td>4</td></tr>
+    <tr><td>Over 256 KiB, up to 1 MiB</td><td>8</td></tr>
+  </tbody>
+</table>
+
+Like partitions, the count depends only on the size of the LLVM text. A `dev` executable of one partition is compiled on one thread.
 
 ### Rebuilds
 
