@@ -217,6 +217,8 @@ function implementationIdentity(toolchain: NativeToolchain): string {
 const FRONTEND_INDEPENDENT_VARIABLES = new Set([
   "SCRIPTC_CACHE_DIR",
   "SCRIPTC_CACHE_MAX_MB",
+  // The shared checker server answers as the build's own checker does.
+  "SCRIPTC_CHECKER_SERVER",
   "SCRIPTC_EMIT_WORKERS",
   "SCRIPTC_EMIT_WORKER_FUNCTIONS",
   "SCRIPTC_TIMING",

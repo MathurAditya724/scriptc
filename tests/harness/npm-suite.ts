@@ -240,6 +240,8 @@ export function defineNpmSuite(options: { label: string; shapeOverlay?: boolean 
   });
 
   describe(`${label} (${cases.length} programs${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {
+    // With many shards some own no program; an empty suite would fail the file.
+    if (cases.length === 0) test.skip("no npm program falls in this shard", () => {});
     for (const c of cases) {
       const known = (shapeOverlay === true ? OVERLAY_KNOWN[c.name] : undefined) ?? KNOWN[c.name];
       if (known !== undefined && "divergence" in known) {

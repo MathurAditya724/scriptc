@@ -195,7 +195,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
-  unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
+  unit(
+    (u) => u.opts.eventTarget || u.nativeFetch || u.opts.abortSignal === true,
+    "scr_event_target.c",
+  ),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
   // Module namespace objects as checked-dynamic values.
   unit((u) => u.opts.moduleNamespace === true, "scr_module_namespace.c"),
@@ -248,6 +251,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.eventsOnceSignal === true, "scr_events_once_signal.c"),
   unit((u) => u.opts.mime === true, "scr_mime.c"),
   unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
+  unit((u) => u.opts.abortSignal === true && !u.nativeFetch, "scr_abort.c"),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
