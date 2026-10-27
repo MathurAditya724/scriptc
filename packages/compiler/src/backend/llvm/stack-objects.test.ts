@@ -460,3 +460,36 @@ console.log(inPlace(["a", "a"]), captured([1, 2]), kept([3]), handlers.length);
   expect(kept).not.toMatch(/alloca %sc_o_Totals/);
   expect(kept).toContain("@sc_new_Totals()");
 });
+
+test("a nullable class field in frame storage is released as the class pointer it holds", async () => {
+  const ir = emitLlvmModule(
+    await moduleFor(`
+class Tag { readonly name: string; constructor(name: string) { this.name = name; } }
+const seen = new Set<Tag | null>();
+const counts = new Map<Tag | null, number>();
+class Holder {
+  tag: Tag | null = null;
+  set(name: string): void { this.tag = new Tag(name); }
+}
+export function label(names: string[]): string {
+  const h = new Holder();
+  for (const n of names) h.set(n);
+  seen.add(h.tag);
+  counts.set(h.tag, 1);
+  return h.tag?.name ?? "-";
+}
+console.log(label(["a"]), seen.size, counts.size);
+`),
+  );
+  const label = body(ir, "label");
+  expect(label).toMatch(/alloca %sc_o_Holder, align 8/);
+  // The union is boxed where it is a Set element or Map key, but the field
+  // keeps the raw pointer: its release at scope exit is the class release.
+  const field = /(%s\d+) = getelementptr inbounds %sc_o_Holder, ptr %s\d+, i64 0, i32 1/.exec(
+    label,
+  )![1]!;
+  const release = new RegExp(
+    `(%t\\d+) = load ptr, ptr ${field}\\n\\s+call void (@\\w+)\\(ptr \\1\\)`,
+  ).exec(label);
+  expect(release?.[2]).toBe("@sc_release_Tag");
+});

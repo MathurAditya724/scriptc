@@ -126,7 +126,9 @@ function ownsReferences(host: LlvmEmitterContext, type: IrType): boolean {
 }
 
 /** The fields of a frame class that own references: refcounted, not inline
- * unions, and not compressed references to program-lifetime instances. */
+ * unions, and not compressed references to program-lifetime instances.
+ * Each has its storage type: a nullable class field holds the class pointer
+ * itself, whatever form its union takes elsewhere (nullable-fields.ts). */
 function classReferenceFields(
   host: LlvmEmitterContext,
   className: string,
@@ -138,7 +140,11 @@ function classReferenceFields(
     if (!isRefCounted(field.type) || host.inlineUnions.classField(className, field.name)) continue;
     const { index, compressed } = classFieldIndex(meta, field.name, "compressed");
     if (compressed) continue;
-    out.push({ name: field.name, index, type: field.type });
+    out.push({
+      name: field.name,
+      index,
+      type: host.nullableFields.storageType(className, field.name, field.type),
+    });
   }
   return out;
 }

@@ -300,3 +300,32 @@ function guarded(words: string[], failAt: number): string {
 }
 console.log(guarded(["a", "b", "c"], -1));
 console.log(guarded(["a", "b", "c"], 1));
+
+// A nullable class field whose union is a Set element and a Map key
+// elsewhere: the field holds the class pointer itself, and the frame
+// releases it as one.
+class Badge {
+  readonly name: string;
+  constructor(name: string) {
+    this.name = name;
+  }
+}
+const seenBadges = new Set<Badge | null>();
+const badgeCounts = new Map<Badge | null, number>();
+class BadgeHolder {
+  badge: Badge | null = null;
+  count = 0;
+  set(name: string): void {
+    this.badge = new Badge(name);
+    this.count++;
+  }
+}
+function badgeLabel(names: string[]): string {
+  const h = new BadgeHolder();
+  for (const n of names) h.set(n);
+  seenBadges.add(h.badge);
+  badgeCounts.set(h.badge, (badgeCounts.get(h.badge) ?? 0) + h.count);
+  return `${h.badge?.name ?? "-"}:${h.count}`;
+}
+for (let i = 0; i < 100; i++) badgeLabel(["a", `b${i % 3}`]);
+console.log(badgeLabel(["x", "y"]), badgeLabel([]), seenBadges.size, badgeCounts.size);
