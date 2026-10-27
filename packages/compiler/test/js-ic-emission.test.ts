@@ -50,6 +50,10 @@ console.log(read(o), at(dyn([5, 6]), 1), call(o), o.n);
     );
     expect(body(llvm, "read")).toContain("@scr_js_get_probe(");
     expect(body(llvm, "write")).toContain("@scr_js_store_probe(");
+    // Reads and writes test the first two entries inline: the second
+    // starts 40 bytes into the record.
+    for (const site of ["read", "write"])
+      expect(body(llvm, site)).toMatch(/getelementptr inbounds i8, ptr @sc_js_ic_\d+, i64 40$/m);
     expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
     expect(body(llvm, "call")).toContain("@scr_js_load_probe(");
     // A compound assignment stores its number result from the jsval: an
