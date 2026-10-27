@@ -12487,10 +12487,60 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
   const loc = locOf(stmt);
   // The global object visits Node's enumerable globals, then the
   // program's own global properties (scr_global_for_in_object).
-  let receiver: IrExpr =
+  const receiver: IrExpr =
     stdlibGlobalNameOf(lowerer, stmt.expression) === "globalThis"
       ? { kind: "libCall", fn: "global.forInObject", args: [], type: DYN, loc }
       : lowerer.lowerExpr(stmt.expression);
+  if (receiver.type.kind === "union") {
+    const unionId = receiver.type.unionId;
+    const arms = lowerer.unions.get(unionId)?.arms;
+    const present = arms?.filter((arm) => !isUnitType(arm));
+    if (
+      arms &&
+      present?.length === 1 &&
+      present.length < arms.length &&
+      present[0]!.kind === "record"
+    ) {
+      // Nullish receivers enumerate nothing. Keep the non-null arm on
+      // its existing typed walk, including its live deletion checks,
+      // and evaluate the receiver once before testing the tag.
+      const recv = lowerer.declareHiddenLocal("%innullable", receiver.type);
+      const ref: IrExpr = { kind: "varRef", localId: recv.id, type: receiver.type, loc };
+      const tag = lowerer.armTag(unionId, present[0]!);
+      const loop = lowerForInReceiver(lowerer, stmt, labels, {
+        kind: "unionNarrow",
+        unionId,
+        tag,
+        value: ref,
+        type: present[0]!,
+        loc,
+      });
+      return {
+        kind: "block",
+        body: [
+          { kind: "varDecl", localId: recv.id, init: receiver, loc },
+          {
+            kind: "if",
+            cond: { kind: "unionIsTag", unionId, tag, value: ref, negated: false, type: BOOL, loc },
+            then: [loop],
+            else_: null,
+            loc,
+          },
+        ],
+        loc,
+      };
+    }
+  }
+  return lowerForInReceiver(lowerer, stmt, labels, receiver);
+}
+
+function lowerForInReceiver(
+  lowerer: Lowerer,
+  stmt: ts.ForInStatement,
+  labels: string[] | undefined,
+  receiver: IrExpr,
+): IrStmt {
+  const loc = locOf(stmt);
   if (receiver.type.kind === "object") {
     const info = lowerer.classes.get(receiver.type.className);
     let root = info;

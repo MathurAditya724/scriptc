@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { compile } from "../src/index.js";
+import { analyze, compile } from "../src/index.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -19,6 +19,52 @@ async function emit(source: string, file = "main.ts"): Promise<string> {
   expect(result.ok, JSON.stringify(result)).toBe(true);
   return readFile(outPath, "utf8");
 }
+
+test.each(["null", "undefined", "null | undefined"])(
+  "for-in accepts a record parameter with %s arms",
+  async (nullish) => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-forin-nullish-"));
+    directories.push(dir);
+    const entry = join(dir, "main.ts");
+    await writeFile(
+      entry,
+      `function keys(value: { a: number } | ${nullish}): string {
+  let result = "";
+  for (const key in value) result += key;
+  return result;
+}
+console.log(keys({ a: 1 }));`,
+    );
+    const { coverage } = analyze(entry);
+    expect(coverage.preflightFailed).toBe(false);
+    expect([...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]).toEqual([]);
+  },
+);
+
+test.each(["[number] | null", "{ a: number } | number[] | null"])(
+  "for-in keeps unsupported %s receiver unions fenced",
+  async (type) => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-forin-boundary-"));
+    directories.push(dir);
+    const entry = join(dir, "main.ts");
+    await writeFile(
+      entry,
+      `function keys(value: ${type}): string {
+  let result = "";
+  for (const key in value) result += key;
+  return result;
+}
+console.log(keys(null));`,
+    );
+    const { coverage } = analyze(entry);
+    expect(coverage.preflightFailed).toBe(false);
+    expect(
+      [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])].some(
+        (diagnostic) => diagnostic.code === "SC1052",
+      ),
+    ).toBe(true);
+  },
+);
 
 test("for-in over a checked-dynamic value walks native string keys", async () => {
   const llvm = await emit(`
