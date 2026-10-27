@@ -1227,7 +1227,7 @@ export function dereferencedElementParts(
     return varRef(tmp.id, value.type, loc);
   };
   const a = !mayAssign(index) && plain(arr) ? arr : held(arr, "%elementArray");
-  const i = plain(index) ? index : held(index, "%elementIndex");
+  const i = plain(index) || repeatableIndex(index) ? index : held(index, "%elementIndex");
   return {
     stmts,
     present: {
@@ -1452,6 +1452,30 @@ function isAssignmentTarget(access: ts.Expression): boolean {
 function plainProjection(e: IrExpr): boolean {
   if (e.kind === "varRef" || e.kind === "numLit") return true;
   return (e.kind === "fieldGet" || e.kind === "recordGet") && plainProjection(e.obj);
+}
+
+/** A number computed from plain reads, number literals and the lengths of
+ * arrays read through them (`xs.length - 1`): evaluating it again, with
+ * nothing in between, has no effect and yields the same value. An element
+ * read through `xs[xs.length - 1]!` then evaluates its index twice instead
+ * of holding it in a hidden local, and stays a borrowed element read. */
+function repeatableIndex(e: IrExpr): boolean {
+  if (e.type.kind !== "f64") return false;
+  switch (e.kind) {
+    case "numLit":
+    case "varRef":
+    case "fieldGet":
+    case "recordGet":
+      return plainProjection(e);
+    case "bin":
+      return repeatableIndex(e.left) && repeatableIndex(e.right);
+    case "unary":
+      return repeatableIndex(e.operand);
+    case "arrIntrinsic":
+      return e.method === "length" && e.args.length === 0 && plainProjection(e.receiver);
+    default:
+      return false;
+  }
 }
 
 /** Node's TypeError message for a member access on undefined: reading the
