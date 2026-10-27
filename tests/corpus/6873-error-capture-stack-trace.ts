@@ -85,3 +85,32 @@ console.log("limit", frames(outer(new Error("limited")).stack));
 Error.stackTraceLimit = 0;
 console.log("limit 0", JSON.stringify(outer(new Error("none")).stack));
 Error.stackTraceLimit = 10;
+
+// `this.constructor` in a constructor runs a `constructor` getter, and its
+// exception propagates.
+class Watched extends Error {
+  constructor() {
+    super("watched");
+    Error.captureStackTrace(this, this.constructor);
+  }
+  get ["constructor"](): typeof Watched {
+    console.log("constructor getter ran");
+    return Watched;
+  }
+}
+console.log("getter", typeof new Watched().stack);
+class Throwing extends Error {
+  constructor() {
+    super("throwing");
+    Error.captureStackTrace(this, this.constructor);
+  }
+  get ["constructor"](): typeof Throwing {
+    throw new RangeError("constructor getter threw");
+  }
+}
+try {
+  new Throwing();
+  console.log("getter did not throw");
+} catch (e: any) {
+  console.log("getter threw", e instanceof RangeError, e.message);
+}

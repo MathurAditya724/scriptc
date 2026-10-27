@@ -431,6 +431,16 @@ function enclosingConstructorClass(node: ts.Node): ts.ClassLikeDeclaration | und
   return undefined;
 }
 
+/** Whether `access` (`this.constructor`) reads a `constructor` accessor
+ * declared on the class or a base class. */
+function readsConstructorAccessor(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  const property = lowerer.checker.getPropertyOfType(
+    lowerer.typeOf(access.expression),
+    "constructor",
+  );
+  return property !== undefined && (property.flags & ts.SymbolFlags.GetAccessor) !== 0;
+}
+
 /** `Error.captureStackTrace(target, constructorOpt?)`, also through `?.`:
  * target.stack becomes the target's heading and the current stack frames,
  * as V8 does it (scr_error_capture_stack_trace). The target is an error, a
@@ -504,6 +514,12 @@ export function lowerErrorCaptureStackTraceCall(
     const sig = resolved !== undefined ? lowerer.fnSigsBySymbol.get(resolved) : undefined;
     if (constructing && cls !== undefined) {
       skip = false;
+      // `this.constructor` runs a `constructor` getter of the class, whose
+      // calls and exceptions are observable.
+      if (ts.isPropertyAccessExpression(node) && readsConstructorAccessor(lowerer, node)) {
+        const value = lowerer.lowerExpr(ctor);
+        if (!isSafeToDiscard(value)) evaluated = value;
+      }
     } else if (sig !== undefined) {
       lowerer.noteEdge(sig.name);
       through = sig.name;

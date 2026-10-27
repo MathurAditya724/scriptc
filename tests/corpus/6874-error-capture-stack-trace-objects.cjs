@@ -121,3 +121,32 @@ try {
 } catch (caught) {
   console.log('throwing constructorOpt', caught.name, caught.message, 'stack' in untouched);
 }
+
+// `this.constructor` in a constructor runs a `constructor` getter, and its
+// exception propagates.
+class Watched extends Error {
+  constructor() {
+    super('watched');
+    Error.captureStackTrace(this, this.constructor);
+  }
+  get ['constructor']() {
+    console.log('constructor getter ran');
+    return Watched;
+  }
+}
+console.log('getter', typeof new Watched().stack);
+class Throwing extends Error {
+  constructor() {
+    super('throwing');
+    Error.captureStackTrace(this, this.constructor);
+  }
+  get ['constructor']() {
+    throw new RangeError('constructor getter threw');
+  }
+}
+try {
+  new Throwing();
+  console.log('getter did not throw');
+} catch (e) {
+  console.log('getter threw', e instanceof RangeError, e.message);
+}
