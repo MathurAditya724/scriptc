@@ -4014,6 +4014,11 @@ export class Lowerer {
       setTable("freezableArrays", this.freezableArrays),
       checkedTable("moduleOrder", () => this.moduleOrder.length),
       checkedTable("diags", () => this.diags.length),
+      // Node island call sites hold literals of the unit's IR that lowering's
+      // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
+      // one lowers again rather than replaying a record.
+      checkedTable("nodeIslandCallers", () => this.nodeIslandCallers.length),
+      checkedTable("nodeIslandSpecifiers", () => this.nodeIslandSpecifiers.length),
       checkedTable("fnSigsBySymbol", () => this.fnSigsBySymbol.size),
       checkedTable("cjsExportsAssignments", () => this.cjsExportsAssignments.size),
       checkedTable("inlineRequireCycleCalls", () => this.inlineRequireCycleCalls.size),
@@ -4402,6 +4407,11 @@ export class Lowerer {
         "usesLifetimeRegions",
         () => this.usesLifetimeRegions,
         () => (this.usesLifetimeRegions = true),
+      ),
+      flag(
+        "usesNodeIsland",
+        () => this.usesNodeIsland,
+        () => (this.usesNodeIsland = true),
       ),
       flag(
         "cjsModuleGraphEnabled",
