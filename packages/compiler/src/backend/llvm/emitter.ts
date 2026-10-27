@@ -1397,6 +1397,8 @@ export class LlEmitter {
   readonly dyn: LlDyn;
   /** Explicit callback boundary for standalone layout and walker stages. */
   readonly shapeHost: DynHost;
+  /** The record view plan's target set (record-views.ts), shared by reference. */
+  private recordViewTargets: Set<string> | null = null;
   /** External declarations, in first-use order. */
   readonly decls = new Set<string>();
   /** Declared functions referenced as values: each needs an env-signature
@@ -2402,6 +2404,20 @@ export class LlEmitter {
         }
       }
     }
+    // Planned before any host copies the shape host (record-views.ts).
+    {
+      const views = planRecordViews(mod, {
+        traced: (id) => this.tracedShapes.has(`record:${id}`),
+        // A tagged shape's values share field reads with the other arms of
+        // its shape union.
+        excluded: (id) =>
+          this.nullableUnions.shapeNumber(id) !== 0 ||
+          this.publishedTypes?.recordGuarded(id) === true ||
+          mod.workers === true,
+      });
+      this.shapeHost.recordViews = views;
+      this.recordViewTargets = views.targets as Set<string>;
+    }
     this.walkers = new LlWalkers(this.shapeHost);
     this.dyn = new LlDyn(this.shapeHost);
     for (const g of mod.globals ?? []) {
@@ -2524,16 +2540,13 @@ export class LlEmitter {
         this.shapeHost.arenasClosed = this.arenas.allClosed;
       }
     }
-    this.shapeHost.recordViews = planRecordViews(mod, {
-      traced: (id) => this.tracedShapes.has(`record:${id}`),
-      // A tagged shape's values share field reads with the other arms of
-      // its shape union, which do not carry view words.
-      excluded: (id) =>
-        this.nullableUnions.shapeNumber(id) !== 0 ||
-        this.shapeHost.arenaShapes?.has(id) === true ||
-        this.publishedTypes?.recordGuarded(id) === true ||
-        mod.workers === true,
-    });
+    // Arena shapes are known only now; the plan's target set is shared by
+    // every host that copied the shape host, so dropping them here reaches
+    // all of them.
+    const arenaShapes = this.shapeHost.arenaShapes;
+    const viewTargets = this.recordViewTargets;
+    if (arenaShapes !== undefined && viewTargets !== null)
+      for (const id of arenaShapes) viewTargets.delete(id);
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
