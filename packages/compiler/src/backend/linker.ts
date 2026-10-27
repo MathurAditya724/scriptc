@@ -21,7 +21,7 @@ import {
 import { type NativeArtifactDependency } from "./native/contracts.js";
 import { RuntimePackError, stageRuntimePackArtifacts } from "./runtime-pack.js";
 import type { NativeLinkPlan } from "./link-plan.js";
-import { lldLinkerArgs } from "./lld.js";
+import { inputsWithoutLld, lldLinkerArgs } from "./lld.js";
 import { systemLibraryLinkerArgs } from "./link-plan-core.js";
 import {
   createDarwinDebugSymbols,
@@ -244,15 +244,19 @@ export async function linkNativeExecutable(
     stagedRoot = staged.root;
     // Linux links with lld when the default driver finds it.
     const lld = explicitLinker === undefined ? lldLinkerArgs(plan.target.platform, linker) : [];
-    const args = [
-      ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
-      ...lld,
-      ...plan.driverFlags,
-      ...plan.inputs.map((input) => staged.replacements.get(input) ?? input),
-      ...systemLibraryLinkerArgs(plan.target, plan.systemLibraries),
-      "-o",
-      privateOut,
-    ];
+    const linkArgs = (withLld: boolean): string[] => {
+      const inputs = plan.inputs.map((input) => staged.replacements.get(input) ?? input);
+      return [
+        ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
+        ...(withLld ? lld : []),
+        ...plan.driverFlags,
+        ...(withLld ? inputs : inputsWithoutLld(plan.target.platform, inputs)),
+        ...systemLibraryLinkerArgs(plan.target, plan.systemLibraries),
+        "-o",
+        privateOut,
+      ];
+    };
+    const args = linkArgs(lld.length !== 0);
     // The pack snapshots bracket both verification passes and private staging;
     // the program-object snapshot begins before helper emission. Snapshot the
     // remaining cache-bearing inputs before the linker consumes them, then
@@ -285,10 +289,7 @@ export async function linkNativeExecutable(
       // A failed link with lld runs again with the driver's default linker,
       // whose error (if any) is the one reported.
       if (lld.length === 0) throw error;
-      await execFileAsync(
-        linker,
-        args.filter((arg) => !lld.includes(arg)),
-      );
+      await execFileAsync(linker, linkArgs(false));
     });
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");

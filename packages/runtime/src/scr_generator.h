@@ -82,8 +82,9 @@ void scr_gen_set_tag(ScrGen *g, const char *tag);
 void scr_gen_copy_tag(ScrGen *g, const ScrGen *from);
 const char *scr_gen_tag(const ScrGen *g);
 /* scr_gen_tag for units that also link without the generator runtime (a
- * library links none): the generator runtime sets it at startup, and only
- * then can a generator capsule exist. */
+ * library links none): the generator runtime sets it when it creates a
+ * generator, so it is set whenever a generator capsule exists. Read it with
+ * a relaxed atomic load. */
 extern const char *(*scr_gen_tag_reader)(const ScrGen *g);
 ScrGen *scr_gen_retain(ScrGen *g);
 void scr_gen_release(ScrGen *g); /* NULL-tolerant */
