@@ -1518,7 +1518,11 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
   (void)to;
   scr_trap("scriptc: internal error: native stack switch reached on WASI\n");
 #elif defined(SCR_ASAN_FIBERS)
-  void **save = from_fiber ? &from_fiber->fake_stack : &scr_main_fake_stack;
+  /* A finished fiber leaves for the last time: a NULL slot has
+   * AddressSanitizer free its fake stack, which otherwise stays mapped
+   * until exit. */
+  void **save = from_fiber ? (from_fiber->done ? NULL : &from_fiber->fake_stack)
+                           : &scr_main_fake_stack;
   const void *bottom = to_fiber ? to_fiber->stack : NULL;
   size_t size = to_fiber ? SCR_FIBER_STACK : 0;
   __sanitizer_start_switch_fiber(save, bottom, size);
@@ -1527,10 +1531,13 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #else
   swapcontext(from, to);
 #endif
+  /* Back in this frame: the context that saved into `save` above runs
+   * again, whichever fiber `scr_current` names (a finished fiber returns
+   * to its resumer with no fiber to switch to). */
   const void *old_bottom;
   size_t old_size;
-  __sanitizer_finish_switch_fiber(
-      scr_current ? scr_current->fake_stack : scr_main_fake_stack, &old_bottom, &old_size);
+  __sanitizer_finish_switch_fiber(from_fiber ? from_fiber->fake_stack : scr_main_fake_stack,
+                                  &old_bottom, &old_size);
 #elif defined(SCR_FAST_CTX)
   scr_ctx_swap(from, to);
 #else
@@ -2228,6 +2235,7 @@ static void scr_prefix_trampoline(void) {
   scr_als_active = &f->als;
   entry(f, argpack);
   scr_current = carrier;
+  carrier->done = true; /* its stack is freed once the spawner is back */
   scr_switch(&carrier->ctx, carrier->return_to, NULL);
   /* unreachable */
 }
