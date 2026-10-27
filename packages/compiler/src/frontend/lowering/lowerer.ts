@@ -141,6 +141,7 @@ import {
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
 import {
+  lowerProcessCwdValue,
   lowerUtilTypeValue,
   pathModuleValue,
   utilTypesModuleValue,
@@ -15797,6 +15798,7 @@ export class Lowerer {
       return { kind: "libCall", fn: "insp.inspectFunction", args: [], type: DYN, loc };
     if (bi.module === "util/types" && builtinModuleFnOf(this, bi.module, bi.member))
       return lowerUtilTypeValue(this, bi.member, loc);
+    if (bi.module === "process" && bi.member === "cwd") return lowerProcessCwdValue(this, loc);
     if (bi.module === "util" && bi.member === "getSystemErrorMap")
       return lowerSystemErrorMapValue(this, loc);
     if (

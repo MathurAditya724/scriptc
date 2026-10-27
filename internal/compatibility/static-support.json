@@ -151,6 +151,7 @@
     "node-builtin.perf_hooks.performance.eventLoopUtilization": ["tests/corpus/6397-event-loop-metrics.ts", "tests/fixtures/node-types/event-loop-metrics.ts"],
     "node-builtin.perf_hooks.monitorEventLoopDelay": ["tests/corpus/6397-event-loop-metrics.ts", "tests/fixtures/node-types/event-loop-metrics.ts"],
     "node-builtin.process": ["tests/corpus/990-process-basics.ts", "tests/corpus/2314-process-introspection.ts"],
+    "node-builtin.process.cwd": ["tests/corpus/process-cwd-function-value.mjs", "tests/corpus/native-worker-commonjs.cjs"],
     "node-builtin.process.hrtime": ["tests/corpus/process-hrtime.js"],
     "node-builtin.process.memoryUsage": ["tests/corpus/5210-process-memory-usage.ts"],
     "node-builtin.process.ppid": ["tests/corpus/5211-process-identity.ts"],

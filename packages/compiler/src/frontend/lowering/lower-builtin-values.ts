@@ -76,6 +76,7 @@ export function isNativeBuiltinValueInitializer(
       ? lowerer.builtinMemberOf(expr)
       : null;
   if (builtin?.module === "util/types") return true;
+  if (builtin?.module === "process" && builtin.member === "cwd") return true;
   if (
     builtin?.module === "util" &&
     ["stripVTControlCharacters", "toUSVString", "isDeepStrictEqual", "styleText"].includes(
@@ -102,6 +103,7 @@ export function isNativeBuiltinValueInitializer(
       lowerer.stdlibGlobalMember(expr, "console") !== null ||
       lowerer.stdlibGlobalMember(expr, "globalThis") === "console" ||
       lowerer.stdlibGlobalMember(expr, "process") === "getBuiltinModule" ||
+      lowerer.stdlibGlobalMember(expr, "process") === "cwd" ||
       lowerer.stdlibGlobalMember(expr, "process") === "hrtime" ||
       ["stdin", "stdout", "stderr"].includes(lowerer.stdlibGlobalMember(expr, "process") ?? "") ||
       (expr.name.text === "bigint" &&
@@ -173,6 +175,24 @@ export function lowerArrayIsArrayValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     fnName: name,
     captures: [],
     type: { kind: "func", params: [DYN], ret: BOOL },
+    loc,
+  };
+}
+
+/** Node's main-thread cwd wrapper is named; workers expose the native function. */
+export function lowerProcessCwdValue(lowerer: Lowerer, loc: SrcLoc): IrExpr | null {
+  const value = lowerer.lowerNativeCallableValue(
+    { fn: "process.cwd", params: [], result: STRING, valueParams: [] },
+    "process.cwd",
+    loc,
+  );
+  if (!value) return null;
+  return {
+    kind: "ternary",
+    cond: { kind: "libCall", fn: "worker.isMainThread", args: [], type: BOOL, loc },
+    then: { kind: "dynFrom", value, fnName: "wrappedCwd", type: DYN, loc },
+    else_: { kind: "dynFrom", value, fnName: "", type: DYN, loc },
+    type: DYN,
     loc,
   };
 }

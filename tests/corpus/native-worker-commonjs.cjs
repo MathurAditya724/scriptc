@@ -1,4 +1,9 @@
 const { Worker, isMainThread, parentPort, workerData } = require("node:worker_threads");
+const storedCwd = process.cwd;
+if (storedCwd.name !== (isMainThread ? "wrappedCwd" : "") || storedCwd.length !== 0 ||
+    storedCwd !== process.cwd || storedCwd() !== process.cwd()) {
+  throw new Error("stored cwd worker metadata");
+}
 
 if (isMainThread) {
   const worker = new Worker(__filename, { workerData: 41 });

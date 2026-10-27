@@ -1956,6 +1956,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       isatty: { fn: "process.isTTY", params: [F64], result: BOOL },
     },
     process: {
+      cwd: { fn: "process.cwd", params: [], result: STRING, valueParams: [] },
       loadEnvFile: { fn: "process.loadEnvFile", params: [DYN], result: VOID },
     },
     // node:string_decoder's surface is the StringDecoder CLASS — new/write/
@@ -2294,9 +2295,10 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
   },
 };
 
-/** Ambient surfaces lowered through DEDICATED code paths (no lowering-table
- * row): the Date compositions, perf_hooks' performance.now, and the process
- * global's ambient reads and authority calls. These are the determinism
+/** Ambient surfaces with DEDICATED effect witnesses: the Date compositions,
+ * perf_hooks' performance.now, and the process global's ambient reads and
+ * authority calls. A callable module-table projection may share the same row.
+ * These are the determinism
  * attestation's ground (library/ir-policy.ts's LIB_NONDETERMINISTIC_PREFIXES), so
  * each row projects one surface-manifest entry — a permanent, fenceable id
  * — and carries the libCall spellings that witness the surface's reach in

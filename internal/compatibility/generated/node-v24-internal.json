@@ -79673,10 +79673,12 @@
           "tests/corpus/6423-process-exitcode-default.ts",
           "tests/corpus/6424-process-exit-keeps-exitcode.ts",
           "tests/corpus/990-process-basics.ts",
+          "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
           "tests/corpus/node24-env-imports.cjs",
           "tests/corpus/process-builtin-values.js",
+          "tests/corpus/process-cwd-function-value.mjs",
           "tests/corpus/process-hrtime.js",
           "tests/corpus/process-named-signals.cjs",
           "tests/corpus/process-uncaught-handler-throws.cjs",
@@ -80183,8 +80185,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.process.cwd",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/process-cwd-function-value.mjs",
+          "tests/corpus/native-worker-commonjs.cjs"
         ]
       },
       "anchorSource": "exact"

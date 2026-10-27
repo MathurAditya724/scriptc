@@ -28,7 +28,7 @@ import {
   canBoxFuncIntoDyn,
   funcOf,
 } from "../../../ir/ir.js";
-import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
+import { lowerBuiltinLoaderValue, lowerProcessCwdValue } from "../lower-builtin-values.js";
 import { builtinFunctionValue } from "../lower-exprs.js";
 import { canonicalBuiltinModule } from "../../builtin-modules.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
@@ -705,7 +705,10 @@ export function lowerProcessProperty(
       "process.env as a value of this type (read one variable: process.env.NAME or process.env[name])",
     );
   }
-  if (member === "exit" || member === "cwd" || member === "getuid" || member === "kill") {
+  if (member === "cwd") {
+    return lowerProcessCwdValue(lowerer, loc);
+  }
+  if (member === "exit" || member === "getuid" || member === "kill") {
     lowerer.unsupported("SC1090", expr, `process methods as values (call '${member}' directly)`);
   }
   // process.stdout / process.stderr as first-class VALUES (flowing into

@@ -1,6 +1,7 @@
 Some builtins can be stored and passed as functions:
 
 - Lowered `node:path` functions across the bare, POSIX, and win32 modules, including optional `basename` and variadic `join`/`resolve`.
+- `process.cwd`, including its named and namespace exports from `node:process`.
 - Supported zero-argument `node:os` functions and `querystring.escape`/`unescape`.
 - `util.isDeepStrictEqual`, `styleText`, `stripVTControlCharacters`, `toUSVString`, `inherits`, `deprecate`, `callbackify`, `debuglog`, and `debug`.
 - `fs.existsSync`, `unlinkSync`, `chmodSync`, `chownSync`, `renameSync`, and `closeSync`, and `fs/promises.unlink`, `chmod`, and `rename`.

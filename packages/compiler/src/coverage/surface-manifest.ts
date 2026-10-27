@@ -413,10 +413,25 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
         : "recognized module (bare and node:-prefixed specifiers)",
     });
   }
+  const ambient = ambientSurfaceFns();
+  const ambientById = new Map(ambient.map((row) => [row.id, row]));
   for (const [mod, members] of Object.entries(builtinModuleFns())) {
     for (const member of Object.keys(members!)) {
+      const id = `${moduleId(mod)}.${member}`;
+      const owner = ambientById.get(id);
+      const fn = members![member];
+      // A dedicated ambient row owns a module projection only when both
+      // identify the same API and witness; mismatches remain duplicate errors.
+      if (
+        owner?.kind === "node-builtin" &&
+        owner.name === `${mod}.${member}` &&
+        fn &&
+        owner.fns.includes(fn.fn) &&
+        (fn.valueFn === undefined || owner.fns.includes(fn.valueFn))
+      )
+        continue;
       add({
-        id: `${moduleId(mod)}.${member}`,
+        id,
         kind: "node-builtin",
         name: `${mod}.${member}`,
         status: "static",
@@ -523,7 +538,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
   // Date/perf_hooks/process rows from the one ambient table — each entry
   // is fenceable by construction (its row carries the reach-witnessing
   // libCall spellings the fence detector uses).
-  for (const row of ambientSurfaceFns()) {
+  for (const row of ambient) {
     add({
       id: row.id,
       kind: row.kind,
