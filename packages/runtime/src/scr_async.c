@@ -1710,7 +1710,11 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
   (void)to;
   scr_trap("scriptc: internal error: native stack switch reached on WASI\n");
 #elif defined(SCR_ASAN_FIBERS)
-  void **save = from_fiber ? &from_fiber->fake_stack : &scr_main_fake_stack;
+  /* A finished fiber leaves for the last time: a NULL slot has
+   * AddressSanitizer free its fake stack, which otherwise stays mapped
+   * until exit. */
+  void **save = from_fiber ? (from_fiber->done ? NULL : &from_fiber->fake_stack)
+                           : &scr_main_fake_stack;
   const void *bottom = to_fiber ? to_fiber->stack : NULL;
   size_t size = to_fiber ? SCR_FIBER_STACK : 0;
   __sanitizer_start_switch_fiber(save, bottom, size);
@@ -1719,10 +1723,13 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #else
   swapcontext(from, to);
 #endif
+  /* Back in this frame: the context that saved into `save` above runs
+   * again, whichever fiber `scr_current` names (a finished fiber returns
+   * to its resumer with no fiber to switch to). */
   const void *old_bottom;
   size_t old_size;
-  __sanitizer_finish_switch_fiber(
-      scr_current ? scr_current->fake_stack : scr_main_fake_stack, &old_bottom, &old_size);
+  __sanitizer_finish_switch_fiber(from_fiber ? from_fiber->fake_stack : scr_main_fake_stack,
+                                  &old_bottom, &old_size);
 #elif defined(SCR_FAST_CTX)
   scr_ctx_swap(from, to);
 #else
@@ -2486,6 +2493,7 @@ static void scr_prefix_trampoline(void) {
   scr_als_active = &f->als;
   entry(f, argpack);
   scr_current = carrier;
+  carrier->done = true; /* its stack is freed once the spawner is back */
   scr_switch(&carrier->ctx, carrier->return_to, NULL);
   /* unreachable */
 }
@@ -6339,6 +6347,11 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
                                   bool stackless) {
   ScrGen *g = scr_mem_calloc(sizeof *g);
   if (!g) scr_oom();
+  /* Install the tag reader with each generator rather than in a constructor:
+   * a constructor is a link root, so it would keep scr_gen_tag and this
+   * unit's string literals in every executable, generators or not. Threads
+   * store the same value, relaxed. */
+  __atomic_store_n(&scr_gen_tag_reader, scr_gen_tag, __ATOMIC_RELAXED);
   g->rc = 1;
   g->receiver = scr_dyn_this_get();
   g->state = SCR_GEN_UNSTARTED;
@@ -6388,6 +6401,14 @@ ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                           void (*settle)(ScrGen *, ScrPromise *)) {
   return scr_gen_new_common(entry, argpack, drop_args, settle, false);
 }
+
+#ifndef __wasi__
+ScrGen *scr_async_gen_new_stackless(void (*entry)(ScrFiber *, void *), void *argpack,
+                                    void (*drop_args)(void *),
+                                    void (*settle)(ScrGen *, ScrPromise *)) {
+  return scr_gen_new_common(entry, argpack, drop_args, settle, true);
+}
+#endif
 
 ScrGen *scr_gen_retain(ScrGen *g) {
   if (g) g->rc++;
@@ -6737,7 +6758,7 @@ void scr_gen_ret_to_out(ScrGen *g) {
  * settle the generator's state, moving a finished body's exception to the
  * resumer and tearing the finished fiber down. `release` drops the hop's
  * own reference (see scr_gen_switch_in); `sync` marks a body known to be a
- * synchronous generator (every stackless one is). */
+ * synchronous generator. */
 __attribute__((always_inline)) static inline void scr_gen_switched_back(ScrGen *g, ScrFiber *f,
                                                                   bool release, bool sync) {
   if (__builtin_expect(f->done, 0)) {
@@ -6774,10 +6795,12 @@ static __attribute__((noinline)) void scr_async_gen_step_end(ScrFiber *f) { scr_
 
 #ifndef __wasi__
 /* The stackless form of the hop: the coroutine frame runs on this stack
- * until its next yield or its final suspension returns here. `retain`
- * holds the generator across the hop; a resumer whose own reference
- * provably outlives the hop passes false. */
-__attribute__((always_inline)) static inline void scr_gen_coro_hop(ScrGen *g, bool retain) {
+ * until its next yield, an async generator's await, or its final
+ * suspension returns here. `retain` holds the generator across the hop; a
+ * resumer whose own reference provably outlives the hop passes false.
+ * `sync` marks a body known to be a synchronous generator. */
+__attribute__((always_inline)) static inline void scr_gen_coro_hop(ScrGen *g, bool retain,
+                                                                  bool sync) {
   ScrFiber *f = g->fiber;
   if (retain) scr_gen_retain(g);
   /* A synchronous generator has no AsyncLocalStorage context of its own:
@@ -6802,10 +6825,29 @@ __attribute__((always_inline)) static inline void scr_gen_coro_hop(ScrGen *g, bo
   scr_exc_swap_cell(me != NULL ? &me->exc : NULL);
   scr_als_active = resumer_slot;
   if (g->is_async) scr_async_gen_step_end(f);
-  scr_gen_switched_back(g, f, retain, true);
+  scr_gen_switched_back(g, f, retain, sync);
 }
 
-static void scr_gen_coro_in(ScrGen *g) { scr_gen_coro_hop(g, true); }
+/* An async generator's step can resume the next one down a chain of them
+ * before it suspends, all on one stack, through runtime frames that check
+ * no guard: a step that would start below the stack guard throws the
+ * RangeError compiled code throws there, which rejects its request. */
+static __attribute__((noinline)) void scr_async_gen_coro_in(ScrGen *g) {
+  uintptr_t guard = scr_stack_guard;
+  if (guard != 0 && (uintptr_t)__builtin_frame_address(0) < guard) {
+    /* scr_stack_overflow's error, thrown here: this unit links without
+     * scr_context.c in the runtime's own tests. */
+    static const char text[] = "Maximum call stack size exceeded";
+    scr_throw_error_msg(SCR_ERR_RANGE, text, sizeof text - 1);
+    return;
+  }
+  scr_gen_coro_hop(g, true, false);
+}
+
+static void scr_gen_coro_in(ScrGen *g) {
+  if (g->is_async) scr_async_gen_coro_in(g);
+  else scr_gen_coro_hop(g, true, true);
+}
 #endif
 
 /* The consumer→fiber hop shared by every resume mode: switches in, and on
@@ -6884,10 +6926,6 @@ const char *scr_gen_tag(const ScrGen *g) {
   return g->tag ? g->tag : g->is_async ? "AsyncGenerator" : "Generator";
 }
 
-__attribute__((constructor)) static void scr_gen_tag_reader_init(void) {
-  scr_gen_tag_reader = scr_gen_tag;
-}
-
 void scr_gen_close(ScrGen *g) {
   scr_gen_slot_reset(&g->ret);
   scr_gen_resume_return(g);
@@ -6901,8 +6939,9 @@ void scr_gen_close(ScrGen *g) {
 bool scr_gen_step(ScrGen *g) {
   if (g->in.kind != SCR_EXC_NONE) scr_gen_slot_reset(&g->in);
 #ifndef __wasi__
-  if ((g->state == SCR_GEN_SUSPENDED || g->state == SCR_GEN_UNSTARTED) && g->fiber->stackless) {
-    scr_gen_coro_hop(g, false);
+  if ((g->state == SCR_GEN_SUSPENDED || g->state == SCR_GEN_UNSTARTED) && g->fiber->stackless &&
+      !g->is_async) {
+    scr_gen_coro_hop(g, false, true);
     return g->state == SCR_GEN_DONE;
   }
 #endif

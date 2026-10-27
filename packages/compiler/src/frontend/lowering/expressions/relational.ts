@@ -840,9 +840,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (left.type.kind === "union") {
     const unionId = left.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms;
-    // Ordinary records, arrays and scalar values do not carry a class
-    // prototype (no program class extends Array). Dynamic/opaque runtime
-    // objects keep their existing instanceof fences.
+    // Records, arrays and scalar values are no instances of a class that
+    // does not extend Array (lowerArrayClassInstanceOf tests the classes
+    // that do). Dynamic/opaque runtime objects keep their existing
+    // instanceof fences.
     if (
       arms?.every(
         (arm) =>

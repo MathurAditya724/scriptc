@@ -76,14 +76,9 @@ export interface CcOptions {
   fetch?: boolean;
   /** The program uses zlib (index.ts detects zlib.* libCalls on the IR):
    * compiles scr_zlib.c — the regex gating precedent, so zlib-free
-   * binaries keep their exact link line. The default host-clang build links
-   * the SYSTEM libz (macOS ships it), byte-identical to the historical line;
-   * every Zig build compiles the vendored zlib with the selected driver instead
-   * (ensureZlibObjects — zig has no libz in its sysroots). Compressed bytes may
-   * differ between the
-   * system and vendored libraries, which is why the corpus only ever
-   * compares round-trips and fixed-blob inflation, never raw deflate
-   * output. */
+   * binaries keep their exact link line. Every driver compiles the vendored
+   * zlib, the copy Node bundles (ensureZlibObjects), so compressed bytes match
+   * Node's. */
   zlib?: boolean;
   /** The program uses node:zlib's Brotli forms (with zlib): compiles
    * scr_brotli.c and links the vendored brotli archive. */
@@ -134,6 +129,8 @@ export interface CcOptions {
   eventsOnceSignal?: boolean;
   /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
   mime?: boolean;
+  /** `--large-pages`: compiles scr_text_pages.c. */
+  largePages?: boolean;
   /** util.debounce and util.throttle: compiles scr_util_timing.c. */
   utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:
