@@ -583,11 +583,12 @@ function executableNativeFeatures(
   mod: IrModule,
   backend: "llvm",
   optimization: NativeOptimization,
+  largePages: boolean,
 ): EarlyExecutableNativeFeatures {
   return {
     backend,
     ...optimizationField(optimization),
-    ...executableLinkFeatures(mod),
+    ...executableLinkFeatures(mod, largePages),
   };
 }
 
@@ -686,6 +687,7 @@ async function compileExecutableNative(
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
+    ...(features.largePages ? { largePages: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
@@ -969,7 +971,12 @@ async function prepareExecutableInput(
           nativeLinkInfo: await createNativeLinkInfo({
             programObject: opts.outPath,
             target,
-            features: executableNativeFeatures(mod, "llvm", opts.optimization ?? "release"),
+            features: executableNativeFeatures(
+              mod,
+              "llvm",
+              opts.optimization ?? "release",
+              opts.largePages === true,
+            ),
             ffi,
             optimization: opts.optimization ?? "release",
           }),
@@ -1020,7 +1027,12 @@ async function prepareExecutableInput(
     await writeTextParts(irSourcePath, serializeModuleParts(mod, compilerOwnedFileRoots()));
   }
 
-  const nativeFeatures = executableNativeFeatures(mod, backend, opts.optimization ?? "release");
+  const nativeFeatures = executableNativeFeatures(
+    mod,
+    backend,
+    opts.optimization ?? "release",
+    opts.largePages === true,
+  );
   timing("link-features");
   const programSplit =
     !useRuntimePack &&
@@ -1437,6 +1449,19 @@ async function compileTracked(
       sourceTexts: new Map(),
     };
   }
+  if (opts.largePages === true && outputKind !== "exe") {
+    return {
+      ok: false,
+      diagnostics: [
+        nativeCodegenDiag(
+          "SC3002",
+          "--large-pages is only supported for executable output",
+          entryPath,
+        ),
+      ],
+      sourceTexts: new Map(),
+    };
+  }
   if (opts.cpuDispatch === true && outputKind !== "exe") {
     return {
       ok: false,
@@ -1654,6 +1679,7 @@ async function compileTracked(
       ...(opts.strip ? { strip: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
+      ...(opts.largePages === true ? { largePages: true as const } : {}),
       ...targetCpuField(opts.targetCpu),
       ...(opts.cpuDispatch === true ? { cpuDispatch: true as const } : {}),
       ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),

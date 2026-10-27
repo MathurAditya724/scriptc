@@ -22,6 +22,7 @@ const features = {
   dynForAwait: false,
   eventsOnceSignal: false,
   mime: false,
+  largePages: false,
   utilTiming: false,
   dynBuffer: false,
   builtinValues: false,

@@ -64,6 +64,11 @@ Options:
                      a helper process so the parent sees the exit sooner. The
                      helper keeps the executable mapped and its memory charged
                      for up to ~100 ms after exit (opt in; --emit=exe only)
+      --large-pages  Linux: at startup, move the executable's code onto 2 MiB
+                     transparent huge pages when the system allows them, for
+                     large programs. Takes about 3 ms per 10 MiB of code, and
+                     all of the moved code stays resident (opt in; --emit=exe
+                     only)
       --target-cpu <baseline|x86-64-v2|x86-64-v3|x86-64-v4|native>
                      x86-64: compile the program's code for a CPU level
                      (default: baseline, which runs on any x86-64 CPU). The
@@ -173,6 +178,7 @@ export const CLI_OPTIONS = {
   strip: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
+  "large-pages": { type: "boolean", default: false },
   "target-cpu": { type: "string" },
   "cpu-dispatch": { type: "boolean" },
   "profile-generate": { type: "string" },
