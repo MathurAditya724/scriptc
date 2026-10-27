@@ -225,7 +225,17 @@ static void scr_module_registry_cleanup(void) {
  * own cleanup only when the value is first materialized.  That is equivalent
  * at process exit and retains the RC-audit cleanup guarantee for the values a
  * program actually observes. */
+#if defined(__linux__)
+/* The heap census of a program built with SCRIPTC_HEAP_CENSUS
+ * (heap-census.ts) writes its counters at exit, from here and from
+ * scr_process_exit; every other build leaves the weak reference null. */
+extern void scr_census_write(void) __attribute__((weak));
+#endif
+
 static void scr_lib_cleanup(void) {
+#if defined(__linux__)
+  if (scr_census_write != NULL) scr_census_write();
+#endif
   scr_module_registry_cleanup();
   scr_arr_release(scr_argv_arr);
   scr_argv_arr = NULL;
@@ -2137,6 +2147,7 @@ void scr_process_exit(double code) {
   fflush(stdout);
 #if defined(__linux__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
+  if (scr_census_write != NULL) scr_census_write();
   scr_detach_teardown();
 #endif
   _Exit((int)code);

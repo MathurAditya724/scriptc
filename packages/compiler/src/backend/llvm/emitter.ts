@@ -130,6 +130,8 @@ import {
 } from "./int32-abi.js";
 import { type Int32Local } from "./int32-locals.js";
 import { findIntegerClones, NO_INTEGER_CLONES, type IntegerClones } from "./integer-clones.js";
+import { writeRepresentationReport } from "./repr-report.js";
+import { heapCensusOf, type HeapCensus } from "./heap-census.js";
 import { exactInteger, narrowInteger, widenInteger, type LlInteger } from "./integer-values.js";
 import { findInitializerBindings } from "../../ir/initializer-bindings.js";
 import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
@@ -794,7 +796,9 @@ function emitModuleText(input: IrModule, options: LlvmTargetOptions): string[] {
   for (let excluded = options.unwindExcluded ?? new Set<string>(); ;) {
     const emitter = moduleEmitter(input, { ...options, unwindExcluded: excluded });
     try {
-      return emitter.emitParts();
+      const parts = emitter.emitParts();
+      writeRepresentationReport(emitter);
+      return parts;
     } catch (error) {
       if (!(error instanceof UnwindAbiViolation)) throw error;
       const names = new Set(excluded);
@@ -1610,6 +1614,8 @@ export class LlEmitter {
   readonly inlineUnions: InlineUnionFields;
   /** Unions whose values are nullable arm pointers (nullable-unions.ts). */
   readonly nullableUnions: NullableUnions;
+  /** The counters of a build instrumented for the heap census, or null. */
+  readonly heapCensus: HeapCensus | null;
   /** The union table without nullable unions: the stack-box analyses. */
   readonly boxedUnionsById: Map<string, IrUnionDef>;
   readonly recordsById = new Map<string, IrRecordShape>();
@@ -2002,6 +2008,8 @@ export class LlEmitter {
       options.debugSources === undefined,
       this.nodeIndex,
     );
+    this.heapCensus = heapCensusOf(mod, this.nullableUnions);
+    for (const decl of this.heapCensus?.declarations() ?? []) this.declare(decl);
     this.mockTimers = this.runtimeFeatures.mockTimers;
     this.debug =
       options.debugSources === undefined
@@ -2641,7 +2649,8 @@ export class LlEmitter {
   emitParts(): string[] {
     const parts = emitParts(this);
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
-    return this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
+    const out = this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
+    return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
   }
 
   /** The dispose-observer gates the emitted frees and record writers test
@@ -4681,6 +4690,7 @@ export class LlEmitter {
       `${p} = getelementptr inbounds %${classStructSym(className)}, ptr ${objName}, i64 0, i32 ${index}`,
     );
     this.markFieldPointer(p, field);
+    this.heapCensus?.countAccess((line) => this.B.line(line), className, field);
     if (compressed) this.compressedFieldPtrs.add(p);
     return { ptr: p, type, inline: this.inlineUnions.classField(className, field), compressed };
   }
