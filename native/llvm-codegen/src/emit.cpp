@@ -1241,6 +1241,7 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
   size_t Count = Options.Outputs.size();
   std::optional<CodegenSplit> Split = splitForCodegen(M, Count);
   std::string Identifier = M.getModuleIdentifier();
+  std::string SourceFileName = M.getSourceFileName();
   Triple TargetTriple = M.getTargetTriple();
   DataLayout Layout = M.getDataLayout();
   std::vector<std::vector<SmallString<256>>> Temporaries(Count);
@@ -1274,6 +1275,7 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
       keepCodegenPart(*Part, Split->PartOf, I);
     } else {
       Part = std::make_unique<Module>(Identifier, Context);
+      Part->setSourceFileName(SourceFileName);
       Part->setTargetTriple(TargetTriple);
       Part->setDataLayout(Layout);
     }
