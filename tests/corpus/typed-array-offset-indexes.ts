@@ -31,3 +31,22 @@ const bytes = new Uint8Array([5, 4, 3, 2, 1, 250, 251, 252]);
 let total = 0;
 for (let i = 0; i < 8; i++) total += sumWindow(bytes, i);
 console.log(total, sumWindow(bytes, 6), sumWindow(bytes, 4.5));
+
+// A base with a fraction too small to survive the sum indexes like the sum.
+for (const base of [1e-20, -1e-20, 2 ** -60, 3 + 2 ** -50, 0.5, -0.75]) {
+  console.log(String(base), JSON.stringify(readGroup(floats, base)));
+  writeGroup(ints, base, 20);
+  console.log(String(base), ints.join(","));
+}
+
+// A right-hand side that changes the base: the index is the one evaluated
+// before it.
+function rebase(values: Int32Array, at: number): number {
+  values[at + 1] = ((at = 5), 31);
+  values[2 + at] = at++;
+  values[at - 1] += ((at = 0), 4);
+  Atomics.add(values, at + 3, ((at = 6), 2));
+  return at;
+}
+const targets = new Int32Array(10);
+console.log(rebase(targets, 2), targets.join(","));

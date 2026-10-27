@@ -167,17 +167,18 @@ export function exactIndexLines(
 /** exactIndexLines for the index `base + offset`, where `offset` is an
  * integer of magnitude below 2^31: the round trip converts `base` instead of
  * the sum, so accesses at several offsets from one base share the
- * conversion. A length is at most 2^52, and below it the sum is an integer
- * exactly when `base` is one, and is then the integer sum: a fraction of
- * `base` stays in a sum below 2^52, and a sum of 2^52 or more is out of
- * range either way. */
+ * conversion. When `base` is an integer, the sum is in range exactly when
+ * the integer sum is (a length is at most 2^52, and a sum of 2^52 or more is
+ * out of range either way). A fractional `base` can still give an integer
+ * sum, as `1e-20 + 1` is 1, so `integral` false leaves the index to an
+ * exact check of the sum itself. */
 export function exactOffsetIndexLines(
   base: string,
   offset: number,
   length: string,
   sizeType: string,
   tmp: () => string,
-): { lines: string[]; ok: string; wide: string } {
+): { lines: string[]; ok: string; wide: string; integral: string } {
   const raw = tmp(),
     integer = tmp(),
     back = tmp(),
@@ -198,7 +199,7 @@ export function exactOffsetIndexLines(
     lines.push(`${len64} = zext ${sizeType} ${length} to i64`);
   }
   lines.push(`${below} = icmp ult i64 ${wide}, ${len64}`, `${ok} = and i1 ${integral}, ${below}`);
-  return { lines, ok, wide };
+  return { lines, ok, wide, integral };
 }
 
 /** User-controlled text embedded after an LLVM `;` comment marker. Preserve
