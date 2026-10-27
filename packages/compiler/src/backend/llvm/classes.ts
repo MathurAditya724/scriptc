@@ -1097,9 +1097,15 @@ export function emitClassShapes(
     // A traced class whose trace visits nothing carries the collector header
     // only because its hierarchy is traced: it is never on a cycle. Its
     // descriptor names scr_cyc_no_children and its objects start out
-    // SCR_CYC_ACYCLIC, so releases never buffer them.
+    // SCR_CYC_ACYCLIC, so releases never buffer them. An Array subclass's
+    // trace also visits its elements by their current element ops
+    // (scr_arr_subclass_trace), so it is never acyclic.
     const acyclic =
-      traced && runtimePrefix === null && !isStreamRooted && tracedFields.length === 0;
+      traced &&
+      runtimePrefix === null &&
+      !isStreamRooted &&
+      tracedFields.length === 0 &&
+      cls.arrayElem === undefined;
     const bounded =
       runtimePrefix !== null ||
       isStreamRooted ||

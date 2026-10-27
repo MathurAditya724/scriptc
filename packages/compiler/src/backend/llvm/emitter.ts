@@ -2355,6 +2355,39 @@ export class LlEmitter {
       programLifetime: this.programLifetime,
       regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),
     };
+    // An instance of a class that extends Array is an array: a slot of its
+    // element array type can hold it, and the collector visits it there as
+    // an array, which has a collector header when its element ops trace
+    // (scr_arr_make_ops_kind). Such a class carries a header too, and so
+    // does the rest of its hierarchy. A class whose elements are instances
+    // of another such class follows that class, so repeat until no class
+    // adds one.
+    const arrayClasses = (mod.classes ?? []).filter((c) => c.arrayElem !== undefined);
+    if (arrayClasses.length > 0) {
+      const baseOf = new Map((mod.classes ?? []).map((c) => [c.name, c.base] as const));
+      const rootOf = (name: string): string => {
+        let root = name;
+        for (
+          let base = baseOf.get(root);
+          base !== undefined && baseOf.has(base);
+          base = baseOf.get(root)
+        )
+          root = base;
+        return root;
+      };
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const cls of arrayClasses) {
+          if (this.tracedShapes.has(`object:${cls.name}`)) continue;
+          if (traceAdapter(this.shapeHost, { kind: "array", elem: cls.arrayElem! }) === null)
+            continue;
+          const root = rootOf(cls.name);
+          for (const member of mod.classes ?? [])
+            if (rootOf(member.name) === root) this.tracedShapes.add(`object:${member.name}`);
+          changed = true;
+        }
+      }
+    }
     this.walkers = new LlWalkers(this.shapeHost);
     this.dyn = new LlDyn(this.shapeHost);
     for (const g of mod.globals ?? []) {
