@@ -164,6 +164,43 @@ export function exactIndexLines(
   return { lines, ok, wide };
 }
 
+/** exactIndexLines for the index `base + offset`, where `offset` is an
+ * integer of magnitude below 2^31: the round trip converts `base` instead of
+ * the sum, so accesses at several offsets from one base share the
+ * conversion. A length is at most 2^52, and below it the sum is an integer
+ * exactly when `base` is one, and is then the integer sum: a fraction of
+ * `base` stays in a sum below 2^52, and a sum of 2^52 or more is out of
+ * range either way. */
+export function exactOffsetIndexLines(
+  base: string,
+  offset: number,
+  length: string,
+  sizeType: string,
+  tmp: () => string,
+): { lines: string[]; ok: string; wide: string } {
+  const raw = tmp(),
+    integer = tmp(),
+    back = tmp(),
+    integral = tmp(),
+    wide = tmp(),
+    below = tmp(),
+    ok = tmp();
+  const lines = [
+    `${raw} = fptosi double ${base} to i64`,
+    `${integer} = freeze i64 ${raw}`,
+    `${back} = sitofp i64 ${integer} to double`,
+    `${integral} = fcmp oeq double ${back}, ${base}`,
+    `${wide} = add i64 ${integer}, ${offset}`,
+  ];
+  let len64 = length;
+  if (sizeType !== "i64") {
+    len64 = tmp();
+    lines.push(`${len64} = zext ${sizeType} ${length} to i64`);
+  }
+  lines.push(`${below} = icmp ult i64 ${wide}, ${len64}`, `${ok} = and i1 ${integral}, ${below}`);
+  return { lines, ok, wide };
+}
+
 /** User-controlled text embedded after an LLVM `;` comment marker. Preserve
  * ordinary output unchanged, but encode control and line-separator code
  * units so a property name can never inject a line or invalid source byte. */
