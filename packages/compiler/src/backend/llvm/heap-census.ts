@@ -1,6 +1,7 @@
 /* The heap census. A program built with SCRIPTC_HEAP_CENSUS set counts, for
  * ranking representation work:
- * - the instances each `new` of a class creates, with the class's size;
+ * - the instances of each class that `new` or a class value constructs,
+ *   with the class's size;
  * - for each array-typed class field, its stores (with the stored array's
  *   length in buckets and the total of those lengths), the stores whose
  *   value is an array literal written at the store, and its accesses;
@@ -17,10 +18,16 @@ import { classStructSym } from "./classes.js";
 import { llvmBytes, wtf8Bytes } from "../literals.js";
 import type { NullableUnions } from "./nullable-unions.js";
 
+/** Whether this build counts the heap census: SCRIPTC_HEAP_CENSUS is set
+ * and nonempty. The executable cache keys on it. */
+export function heapCensusRequested(env: NodeJS.ProcessEnv = process.env): boolean {
+  const flag = env["SCRIPTC_HEAP_CENSUS"];
+  return flag !== undefined && flag !== "";
+}
+
 /** The census of the module being built, or null when it is off. */
 export function heapCensusOf(mod: IrModule, unions: NullableUnions): HeapCensus | null {
-  const flag = process.env["SCRIPTC_HEAP_CENSUS"];
-  if (flag === undefined || flag === "" || mod.lib !== undefined) return null;
+  if (!heapCensusRequested() || mod.lib !== undefined) return null;
   return new HeapCensus(mod, unions);
 }
 
@@ -58,8 +65,14 @@ export class HeapCensus {
 
   /** Counts one instance of `className`. */
   countNew(line: (text: string) => void, className: string): void {
+    for (const text of this.newLines(className)) line(text);
+  }
+
+  /** The lines that count one instance of `className`: a `new`, or a
+   * construct thunk for class values (`newValue`). */
+  newLines(className: string): string[] {
     const index = this.instances.get(className);
-    if (index !== undefined) line(this.increment(index, "1"));
+    return index === undefined ? [] : [this.increment(index, "1")];
   }
 
   /** Counts an access of a field; true when the field is counted. */

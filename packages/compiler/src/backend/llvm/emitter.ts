@@ -2366,6 +2366,7 @@ export class LlEmitter {
       virtualEntry: (implFn) => this.virtualEntry(implFn),
       programLifetime: this.programLifetime,
       regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),
+      heapCensus: this.heapCensus,
     };
     // An instance of a class that extends Array is an array: a slot of its
     // element array type can hold it, and the collector visits it there as

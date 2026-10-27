@@ -12,12 +12,18 @@ import { INLINE_UNION_FIELD } from "./inline-unions.js";
 
 export const REPR_REPORT_HEADER = "kind\towner\tname\ttype\tstorage\treason";
 
+/** The file SCRIPTC_REPR_REPORT names, or null. A build that writes the
+ * report skips the executable cache, whose hit would emit no module. */
+export function representationReportPath(env: NodeJS.ProcessEnv = process.env): string | null {
+  const path = env["SCRIPTC_REPR_REPORT"];
+  return path === undefined || path === "" ? null : path;
+}
+
 /** Writes the report of `emitter`'s module when SCRIPTC_REPR_REPORT names a
  * file. */
 export function writeRepresentationReport(emitter: LlEmitter): void {
-  const path = process.env["SCRIPTC_REPR_REPORT"];
-  if (path === undefined || path === "") return;
-  writeFileSync(path, representationReport(emitter));
+  const path = representationReportPath();
+  if (path !== null) writeFileSync(path, representationReport(emitter));
 }
 
 export function representationReport(emitter: LlEmitter): string {
