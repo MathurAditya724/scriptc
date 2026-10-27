@@ -6,8 +6,11 @@
 #include "runtime-import.h"
 #include "target.h"
 
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/RuntimeLibcallInfo.h"
@@ -48,6 +51,7 @@
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -100,6 +104,8 @@ std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
       Options.ProfileGenerate = Value.str();
     else if (Arg == "--profile-use")
       Options.ProfileUse = Value.str();
+    else if (Arg == "--split" && Value == "codegen")
+      Options.SplitCodegen = true;
     else
       return std::nullopt;
   }
@@ -212,8 +218,8 @@ struct UnnameStructTypes : PassInfoMixin<UnnameStructTypes> {
 // How the --profile-use profile matched the functions it annotated, summed
 // over partitions: functions that received its counts, functions whose
 // control flow changed since it was collected (hash mismatch), and functions
-// it has no record of (new, or never run in training: the merged profile is
-// sparse). A partition reused from the cache without its counts is counted
+// it has no record of (new since it was collected, or never run in training
+// when the profile was merged with --sparse). A partition reused from the cache without its counts is counted
 // in Unknown.
 struct ProfileMatch {
   std::atomic<uint64_t> Annotated{0};
@@ -1043,6 +1049,251 @@ int emitPartitions(const EmitOptions &Options) {
   return 0;
 }
 
+// An optimized module prepared for split code generation.
+struct CodegenSplit {
+  // The module as bitcode, with the order of every use list.
+  SmallVector<char, 0> Bitcode;
+  // The output that holds each definition, by name.
+  StringMap<size_t> PartOf;
+};
+
+// Divides an optimized module's definitions among Count outputs for code
+// generation. Functions are divided in module order into runs of about the
+// same instruction count, so linking the outputs in order lays the functions
+// out as one module would; a function that would take its run past an even
+// share starts the next run. A local definition that another output uses
+// becomes hidden so the outputs can reference each other; the others stay
+// local. Variables and aliases go with output 0 unless a comdat, an aliasee
+// or an ifunc resolver places them. When one run would hold more than three
+// quarters of the instructions, dividing cannot shorten code generation: the
+// result is empty and M is unchanged. Placement depends only on the module.
+std::optional<CodegenSplit> splitForCodegen(Module &M, size_t Count) {
+  uint64_t Total = 0;
+  for (const Function &F : M)
+    if (!F.isDeclaration())
+      Total += F.getInstructionCount() + 1;
+  DenseMap<const GlobalValue *, size_t> Part;
+  DenseMap<const Comdat *, size_t> ComdatPart;
+  std::vector<uint64_t> Load(Count, 0);
+  uint64_t Share = (Total + Count - 1) / Count;
+  size_t Current = 0;
+  uint64_t InRun = 0;
+  for (Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    uint64_t Size = F.getInstructionCount() + 1;
+    if (InRun > 0 && InRun + Size > Share && Current + 1 < Count) {
+      ++Current;
+      InRun = 0;
+    }
+    size_t Target = Current;
+    if (const Comdat *C = F.getComdat()) {
+      auto [It, Inserted] = ComdatPart.try_emplace(C, Target);
+      Target = It->second;
+    }
+    Part[&F] = Target;
+    Load[Target] += Size;
+    InRun += Size;
+  }
+  if (*std::max_element(Load.begin(), Load.end()) * 4 > Total * 3)
+    return std::nullopt;
+  auto PartOf = [&](const GlobalValue *GV) -> size_t {
+    if (const GlobalObject *Root = GV->getAliaseeObject()) {
+      if (const auto *IFunc = dyn_cast<GlobalIFunc>(Root))
+        Root = IFunc->getResolverFunction();
+      if (Root != nullptr && Root != GV)
+        GV = Root;
+    }
+    if (auto It = Part.find(GV); It != Part.end())
+      return It->second;
+    if (const auto *GO = dyn_cast<GlobalObject>(GV))
+      if (const Comdat *C = GO->getComdat())
+        if (auto It = ComdatPart.find(C); It != ComdatPart.end())
+          return It->second;
+    return 0;
+  };
+  // Whether a user of GV, through any constants, lies outside output Home.
+  auto UsedElsewhere = [&](const GlobalValue &GV, size_t Home) {
+    SmallVector<const User *, 8> Work(GV.users());
+    SmallPtrSet<const User *, 8> Seen;
+    while (!Work.empty()) {
+      const User *U = Work.pop_back_val();
+      if (!Seen.insert(U).second)
+        continue;
+      if (const auto *I = dyn_cast<Instruction>(U)) {
+        if (PartOf(I->getFunction()) != Home)
+          return true;
+      } else if (const auto *G = dyn_cast<GlobalValue>(U)) {
+        if (PartOf(G) != Home)
+          return true;
+      } else {
+        append_range(Work, U->users());
+      }
+    }
+    return false;
+  };
+  for (GlobalValue &GV : M.global_values()) {
+    if (GV.hasLocalLinkage() && UsedElsewhere(GV, PartOf(&GV))) {
+      GV.setLinkage(GlobalValue::ExternalLinkage);
+      GV.setVisibility(GlobalValue::HiddenVisibility);
+    }
+    if (!GV.hasName())
+      GV.setName("scr.split");
+  }
+  CodegenSplit Split;
+  for (const GlobalValue &GV : M.global_values())
+    if (!GV.isDeclaration())
+      Split.PartOf[GV.getName()] = PartOf(&GV);
+  raw_svector_ostream Stream(Split.Bitcode);
+  WriteBitcodeToFile(M, Stream, /*ShouldPreserveUseListOrder=*/true);
+  return Split;
+}
+
+// Reduces P, a copy of the split module, to the definitions of output I:
+// the other definitions become declarations, and declarations that nothing
+// uses are removed. A declaration nothing uses would still emit an untyped
+// undefined symbol for its visibility, which some linkers reject against a
+// thread-local definition. Removing definitions keeps the order of the
+// remaining uses, so each function of the output reaches code generation
+// as it would in the whole module.
+void keepCodegenPart(Module &P, const StringMap<size_t> &PartOf, size_t I) {
+  auto Elsewhere = [&](const GlobalValue &GV) {
+    auto It = PartOf.find(GV.getName());
+    return It != PartOf.end() && It->second != I;
+  };
+  // Aliases and ifuncs cannot be declarations, so a declaration replaces
+  // them.
+  SmallVector<GlobalValue *, 4> Indirect;
+  for (GlobalAlias &GA : P.aliases())
+    if (Elsewhere(GA))
+      Indirect.push_back(&GA);
+  for (GlobalIFunc &GI : P.ifuncs())
+    if (Elsewhere(GI))
+      Indirect.push_back(&GI);
+  for (GlobalValue *GV : Indirect) {
+    GlobalValue *Declaration;
+    if (auto *Type = dyn_cast<FunctionType>(GV->getValueType()))
+      Declaration = Function::Create(Type, GlobalValue::ExternalLinkage,
+                                     GV->getAddressSpace(), "", &P);
+    else
+      Declaration = new GlobalVariable(
+          P, GV->getValueType(), /*isConstant=*/false,
+          GlobalValue::ExternalLinkage, nullptr, "", nullptr,
+          GV->getThreadLocalMode(), GV->getAddressSpace());
+    Declaration->setVisibility(GV->getVisibility());
+    Declaration->setDSOLocal(GV->isDSOLocal());
+    Declaration->takeName(GV);
+    GV->replaceAllUsesWith(Declaration);
+    GV->eraseFromParent();
+  }
+  for (Function &F : P)
+    if (!F.isDeclaration() && Elsewhere(F)) {
+      F.deleteBody();
+      F.setComdat(nullptr);
+    }
+  for (GlobalVariable &GV : P.globals())
+    if (!GV.isDeclaration() && Elsewhere(GV)) {
+      GV.setInitializer(nullptr);
+      GV.setComdat(nullptr);
+      GV.setLinkage(GlobalValue::ExternalLinkage);
+    }
+  if (I != 0)
+    P.setModuleInlineAsm("");
+  // Constant expressions that only the removed bodies used remain as users.
+  for (GlobalVariable &GV : make_early_inc_range(P.globals()))
+    if (GV.isDeclaration()) {
+      GV.removeDeadConstantUsers();
+      if (GV.use_empty())
+        GV.eraseFromParent();
+    }
+  for (Function &F : make_early_inc_range(P))
+    if (F.isDeclaration()) {
+      F.removeDeadConstantUsers();
+      if (F.use_empty())
+        F.eraseFromParent();
+    }
+}
+
+// Optimizes M whole, as a single output would, then divides its definitions
+// among the outputs and generates code for each on its own thread. The first
+// output is generated from M with Machine; the others from copies of M read
+// back from bitcode, which keeps the order of every use list, so each
+// function's code matches a single-output build except where it refers to a
+// definition in another output. Placement depends only
+// on the optimized module and the output count. When splitForCodegen keeps
+// the module whole, the other outputs are empty objects.
+std::optional<EmitFailure>
+emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
+                 OptimizationLevel Level, ProfileMatch &Match) {
+  bool Annotating = !Options.ProfileUse.empty();
+  if (Annotating)
+    M.getContext().setDiagnosticHandler(
+        std::make_unique<ProfileMatchHandler>(Match));
+  {
+    Pipeline P(Machine, Level, profileOptions(Options));
+    if (Annotating)
+      P.countAnnotated(Match.Annotated);
+    P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
+  }
+  if (std::optional<EmitFailure> Failure =
+          verify(M, "post_optimization_verification_failed"))
+    return Failure;
+  size_t Count = Options.Outputs.size();
+  std::optional<CodegenSplit> Split = splitForCodegen(M, Count);
+  std::string Identifier = M.getModuleIdentifier();
+  std::string SourceFileName = M.getSourceFileName();
+  Triple TargetTriple = M.getTargetTriple();
+  DataLayout Layout = M.getDataLayout();
+  std::vector<std::vector<SmallString<256>>> Temporaries(Count);
+  SharedFailure Failures;
+  forEachPartition(Count, [&](size_t I) {
+    if (I == 0) {
+      if (Split)
+        keepCodegenPart(M, Split->PartOf, 0);
+      if (std::optional<EmitFailure> Failure =
+              generateCode(M, Machine, CodeGenFileType::ObjectFile,
+                           Options.Outputs[0], Temporaries[0]))
+        Failures.set(std::move(*Failure));
+      return;
+    }
+    std::string LookupError;
+    std::unique_ptr<TargetMachine> PartMachine =
+        createTargetMachine(Options.Target, Options.OptLevel, LookupError);
+    if (!PartMachine)
+      return Failures.set({"target_machine_failed", LookupError});
+    LLVMContext Context;
+    std::unique_ptr<Module> Part;
+    if (Split) {
+      Expected<std::unique_ptr<Module>> Parsed = parseBitcodeFile(
+          MemoryBufferRef(
+              StringRef(Split->Bitcode.data(), Split->Bitcode.size()), "part"),
+          Context);
+      if (!Parsed)
+        return Failures.set(
+            {"partition_failed", toString(Parsed.takeError())});
+      Part = std::move(*Parsed);
+      keepCodegenPart(*Part, Split->PartOf, I);
+    } else {
+      Part = std::make_unique<Module>(Identifier, Context);
+      Part->setSourceFileName(SourceFileName);
+      Part->setTargetTriple(TargetTriple);
+      Part->setDataLayout(Layout);
+    }
+    if (std::optional<EmitFailure> Failure =
+            generateCode(*Part, *PartMachine, CodeGenFileType::ObjectFile,
+                         Options.Outputs[I], Temporaries[I]))
+      return Failures.set(std::move(*Failure));
+  });
+  std::optional<EmitFailure> Failure = Failures.take();
+  for (size_t I = 0; I < Count && !Failure; ++I)
+    Failure = publish(Temporaries[I][0], Options.Outputs[I]);
+  if (Failure)
+    for (const std::vector<SmallString<256>> &Paths : Temporaries)
+      for (const SmallString<256> &Temporary : Paths)
+        sys::fs::remove(Temporary);
+  return Failure;
+}
+
 } // namespace
 
 int emit(const EmitOptions &Options) {
@@ -1089,7 +1340,14 @@ int emit(const EmitOptions &Options) {
   if (std::optional<EmitFailure> Failure = inspectProfile(Options))
     return reportError(Failure->Code, Failure->Message,
                        Options.DiagnosticFormat);
-  if (Options.Outputs.size() > 1)
+  if (Options.SplitCodegen && (Options.Outputs.size() < 2 ||
+                               Options.OptLevel == "0" ||
+                               !Options.CacheDirectory.empty()))
+    return reportError("invalid_split",
+                       "--split codegen requires several outputs, an "
+                       "optimized build, and no cache directory",
+                       Options.DiagnosticFormat);
+  if (Options.Outputs.size() > 1 && !Options.SplitCodegen)
     return emitPartitions(Options);
 
   SMDiagnostic ParseDiagnostic;
@@ -1147,6 +1405,16 @@ int emit(const EmitOptions &Options) {
   CodeGenFileType Type = Options.FileType == "obj"
                              ? CodeGenFileType::ObjectFile
                              : CodeGenFileType::AssemblyFile;
+  if (Options.SplitCodegen) {
+    ProfileMatch Match;
+    if (std::optional<EmitFailure> Failure =
+            emitSplitCodegen(Options, *Mod, *Machine, Level, Match))
+      return reportError(Failure->Code, Failure->Message,
+                         Options.DiagnosticFormat);
+    if (!Options.ProfileUse.empty())
+      reportProfileMatch(Match);
+    return 0;
+  }
   std::vector<SmallString<256>> Temporaries;
   ProfileMatch Match;
   std::optional<EmitFailure> Failure =

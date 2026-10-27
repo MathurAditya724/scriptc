@@ -170,6 +170,7 @@ export class NativeCache {
         "kept",
         "linker-job",
         "runtime-pack",
+        "helper",
         "binary",
         "dsym",
         "coverage",

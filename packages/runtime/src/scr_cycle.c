@@ -199,6 +199,8 @@ typedef struct {
  * depth budget covers every participating destructor. Queued zero-count
  * objects still own their children until their callback runs. */
 #define SCR_DESTROY_DEPTH 64
+/* How deep the collector's walks recurse (see "the walks" below). */
+#define SCR_CYC_WALK_DEPTH 64
 #ifdef SCR_WORKERS
 /* Worker executables keep the collector's per-thread state in one
  * thread-local block: on Darwin every distinct thread-local costs a call
@@ -218,7 +220,7 @@ typedef struct {
   ScrVec white;
   ScrVec xgen;
   ScrVec xgen_edges;
-  void *gray_holder;
+  void *gray_holders[SCR_CYC_WALK_DEPTH];
   ScrVec pub_holes[SCR_CYC_NGENS];
   unsigned gen_limit;
   size_t live_after[SCR_CYC_NGENS];
@@ -260,7 +262,7 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_white (scr_cyc_thread.white)
 #define scr_xgen (scr_cyc_thread.xgen)
 #define scr_xgen_edges (scr_cyc_thread.xgen_edges)
-#define scr_gray_holder (scr_cyc_thread.gray_holder)
+#define scr_gray_holders (scr_cyc_thread.gray_holders)
 #define scr_pub_holes (scr_cyc_thread.pub_holes)
 #define scr_gen_limit (scr_cyc_thread.gen_limit)
 #define scr_cyc_live_after (scr_cyc_thread.live_after)
@@ -475,11 +477,13 @@ static SCR_TL ScrVec scr_xgen;
 
 /* Edges from a gray object into a generation the pass does not walk, as
  * (holder, target) pairs, recorded by markGray (each gray object is traced
- * there exactly once, so each edge appears once), and the object markGray is
- * tracing. */
+ * there exactly once, so each edge appears once), and the objects markGray is
+ * tracing, by walk depth: an edge's holder is the entry one level above the
+ * depth its visit sees. Nothing is restored after an object's children are
+ * traced, so markGray ends in a tail call to the trace. */
 #ifndef SCR_WORKERS
 static SCR_TL ScrVec scr_xgen_edges;
-static SCR_TL void *scr_gray_holder;
+static SCR_TL void *scr_gray_holders[SCR_CYC_WALK_DEPTH];
 #endif
 
 /* Objects above this generation are invisible to the pass in flight. */
@@ -1338,12 +1342,12 @@ void scr_cyc_on_release(void *obj) {
   ((child) == NULL || SCR_RC(child) == SCR_RC_IMMORTAL \
    || SCR_CYC_WALK_GEN(scr_cyc_hdr(child)) > scr_gen_limit)
 
-/* The walks are depth-first and recursive up to SCR_CYC_WALK_DEPTH, where
- * an object is queued instead (scr_pending, or scr_restore_pending for the
- * restoration, which can run inside scan) and traced from the queue. Trace
- * callbacks forward that integer depth through their opaque context; it is
- * never dereferenced. */
-#define SCR_CYC_WALK_DEPTH 64
+/* The walks are depth-first and recursive up to SCR_CYC_WALK_DEPTH (defined
+ * with the per-thread state, which it sizes), where an object is queued
+ * instead (scr_pending, or scr_restore_pending for the restoration, which
+ * can run inside scan) and traced from the queue. Trace callbacks forward
+ * that integer depth through their opaque context; it is never
+ * dereferenced. */
 
 /* A walk visits a dense cycle-capable array's children itself: the present
  * dense elements, which are all scr_arr_trace_v visits when the array has
@@ -1382,9 +1386,10 @@ SCR_CYC_ARRAY_WALK(scr_sb_array, scr_sb_visit)
 SCR_CYC_ARRAY_WALK(scr_scan_array, scr_scan_visit)
 
 static inline __attribute__((always_inline)) void scr_mark_gray(void *obj, uintptr_t depth);
-/* An edge into a generation this pass does not walk, for settle. */
-static __attribute__((noinline)) void scr_mg_skip_edge(void *child) {
-  scr_cyc_push_work(&scr_xgen_edges, scr_gray_holder);
+/* An edge into a generation this pass does not walk, for settle, seen at
+ * `depth`. */
+static __attribute__((noinline)) void scr_mg_skip_edge(void *child, uintptr_t depth) {
+  scr_cyc_push_work(&scr_xgen_edges, scr_gray_holders[depth - 1]);
   scr_cyc_push_work(&scr_xgen_edges, child);
 }
 /* The first visit of an object: gray it and walk its children. */
@@ -1398,7 +1403,7 @@ static void scr_mg_visit(void *child, void *ctx) {
   if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
   ScrCycHdr *h = scr_cyc_hdr(child);
   if (SCR_CYC_WALK_GEN(h) > scr_gen_limit) {
-    scr_mg_skip_edge(child);
+    scr_mg_skip_edge(child, (uintptr_t)ctx);
     return;
   }
   --SCR_RC(child);
@@ -1438,11 +1443,9 @@ static inline __attribute__((always_inline)) void scr_mark_gray(void *obj, uintp
     scr_cyc_push_work(&scr_pending, obj);
     return;
   }
-  void *holder = scr_gray_holder;
-  scr_gray_holder = obj;
+  scr_gray_holders[depth] = obj;
   const ScrCycType *type = scr_cyc_type(h);
   SCR_CYC_CHILDREN(obj, type, scr_mg_array, scr_mg_visit, depth + 1);
-  scr_gray_holder = holder;
 }
 /* markGray from one (black) candidate, through the queue. */
 static void scr_mark_gray_from(void *root) {
@@ -1450,7 +1453,7 @@ static void scr_mark_gray_from(void *root) {
   while (scr_pending.n) {
     void *obj = scr_pending.v[--scr_pending.n];
     const ScrCycType *type = scr_cyc_type(scr_cyc_hdr(obj));
-    scr_gray_holder = obj;
+    scr_gray_holders[0] = obj;
     SCR_CYC_CHILDREN(obj, type, scr_mg_array, scr_mg_visit, 1);
   }
 }
@@ -1953,7 +1956,9 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
   /* The list holds the dead set: doomed components, and what scan whitened
    * (black once a later outside root restored it), or, when the pass found
    * nothing externally referenced, every gray object. `doomed` says that
-   * every entry is a doomed component's already. */
+   * every entry is a doomed component's: every candidate and every holder
+   * of a recorded edge is about to be freed, and the entries can still be
+   * gray (see "Components" in scr_cyc_pass). */
   for (size_t i = 0; i < scr_white.n && !doomed; i++) {
     void *obj = scr_white.v[i];
     ScrCycHdr *h = scr_cyc_hdr(obj);
@@ -1974,7 +1979,7 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
    * what changes them). A full pass skips no edge, so it pins nothing. */
   scr_xgen.n = 0;
   for (size_t i = 0; i < scr_xgen_edges.n; i += 2) {
-    if (scr_cyc_color(scr_cyc_hdr(scr_xgen_edges.v[i])) != SCR_CYC_DOOMED) continue;
+    if (!doomed && scr_cyc_color(scr_cyc_hdr(scr_xgen_edges.v[i])) != SCR_CYC_DOOMED) continue;
     void *target = scr_xgen_edges.v[i + 1];
     SCR_RC(target) += 1; /* pin across the teardowns */
     scr_cyc_push_work(&scr_xgen, target);
@@ -2005,7 +2010,7 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
    * genuine outside reference and Bacon-Rajan's own reasoning retires the
    * candidate. Re-buffering costs a walk, never correctness: an object that
    * is truly live survives the next pass at its level and is dropped then. */
-  if (gen_limit < SCR_CYC_OLD) {
+  if (gen_limit < SCR_CYC_OLD && !doomed) {
     for (size_t i = 0; i < scr_cands.n; i++) {
       void *obj = scr_cands.v[i];
       ScrCycHdr *h = scr_cyc_hdr(obj);
@@ -2113,6 +2118,17 @@ static size_t scr_cyc_pass_done(size_t freed) {
   return freed;
 }
 
+/* Color the doomed components' entries of the gray list: every entry
+ * outside the referenced components' ranges. */
+static SCR_CYC_COMPACT void scr_cyc_doom_components(void) {
+  size_t from = 0;
+  for (size_t k = 0; k <= scr_live_ranges.n; k += 2) {
+    size_t end = k < scr_live_ranges.n ? (uintptr_t)scr_live_ranges.v[k] : scr_white.n;
+    for (size_t j = from; j < end; j++) scr_cyc_set_color(scr_cyc_hdr(scr_white.v[j]), SCR_CYC_DOOMED);
+    if (k < scr_live_ranges.n) from = (uintptr_t)scr_live_ranges.v[k + 1];
+  }
+}
+
 static size_t scr_cyc_pass(unsigned gen_limit) {
   if (scr_collecting) return 0;
   scr_cyc_route_bypassed();
@@ -2193,9 +2209,15 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
    * cannot add one: its objects would be referencing this component, and
    * those references are still counted. scan would whiten exactly this
    * set, so it is doomed at once and scan runs only over the components
-   * that are externally referenced, if any. A limited pass keeps the single
-   * whole-pass decision below (its untaken candidates cannot carry the
-   * component number). */
+   * that are externally referenced, if any. A doomed component's entries
+   * stay gray, outside the referenced components' ranges, until something
+   * reads their color: settle colors them while it filters the list, and
+   * needs no colors when every component is doomed; a scan from the
+   * candidates colors them first (scr_cyc_doom_components); and with a
+   * dispose observer installed they are colored here, because a weak map's
+   * teardown tells a collected owner by its color. A limited pass keeps
+   * the single whole-pass decision below (its untaken candidates cannot
+   * carry the component number). */
   bool split = scr_cyc_take == NULL;
   uint32_t comp = 0;
   for (size_t i = 0; i < scr_cands.n; i++) {
@@ -2208,8 +2230,11 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
     if (!split) continue;
     size_t end = scr_white.n;
     if (scr_comp_referenced == 0 && end < SCR_CYC_GRAY_LIST_MAX) {
-      for (size_t j = start; j < end; j++) scr_cyc_set_color(scr_cyc_hdr(scr_white.v[j]), SCR_CYC_DOOMED);
-    } else if (scr_live_ranges.n && (uintptr_t)scr_live_ranges.v[scr_live_ranges.n - 1] == start) {
+      if (scr_weak_dispose_hook)
+        for (size_t j = start; j < end; j++) scr_cyc_set_color(scr_cyc_hdr(scr_white.v[j]), SCR_CYC_DOOMED);
+      continue;
+    }
+    if (scr_live_ranges.n && (uintptr_t)scr_live_ranges.v[scr_live_ranges.n - 1] == start) {
       scr_live_ranges.v[scr_live_ranges.n - 1] = (void *)(uintptr_t)end;
     } else {
       scr_cyc_push_work(&scr_live_ranges, (void *)(uintptr_t)start);
@@ -2255,7 +2280,9 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
   }
 
   /* Otherwise scan walks from the candidates. Keep only the doomed
-   * components' entries; scan appends what it whitens. */
+   * components' entries, colored first so that scan passes over them; scan
+   * appends what it whitens. */
+  if (split) scr_cyc_doom_components();
   if (!split) {
     scr_white.n = 0;
   } else if (scr_live_ranges.n) {

@@ -441,8 +441,7 @@ ScrDyn *scr_buffer_constructor_value(void) {
   ScrDyn *table = scr_dyn_function_properties(scr_bv_buffer);
   ScrDyn *getter = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_bv_prototype, 0, "native:function", "get prototype");
   scr_dyn_obj_set_accessor(table, "prototype", 9, getter, NULL);
-  ScrDynEntry *entry = &table->v.obj.entries[table->v.obj.len - 1];
-  entry->enumerable = entry->configurable = false;
+  scr_dyn_obj_set_attrs_at(table, scr_dyn_obj_count(table) - 1, false, false, false);
   scr_dyn_obj_set(table, "poolSize", 8, scr_dyn_new_num(pool_size));
   ScrDyn *is_encoding = NULL;
   for (size_t i = 0; i < sizeof statics / sizeof statics[0]; i++) {

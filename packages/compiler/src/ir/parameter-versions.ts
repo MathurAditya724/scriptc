@@ -122,7 +122,7 @@ function numericLoop(loop: IrStmt, functions: ReadonlyMap<string, IrFunction>): 
       const target = functions.get(e.callee);
       allowed = target !== undefined && simple(target);
     } else if (e.kind === "libCall") allowed = e.fn.startsWith("math.");
-    else if (e.kind === "arrIntrinsic") allowed = e.method === "length";
+    else if (e.kind === "arrIntrinsic") allowed = e.method === "length" || e.method === "getNumber";
     return allowed && everyExprChild(e, expr, stmt);
   };
   const stmt = (s: IrStmt): boolean =>

@@ -28,6 +28,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
 | `optional-fields` | cpu | records and class instances with `number \| undefined` and other scalar-union fields |
 | `published-graphs` | cpu | syntax trees with parent links and a symbol table, published with `@scriptc/threads` and then read |
+| `record-untyped-writes` | cpu | typed records written through untyped views: a counter helper taking `unknown` bumps fields of a stats record, and `Object.assign` merges patches into a settings record, with typed reads in between |
 | `record-boundaries` | cpu | records built from unchecked array reads passed to and returned from annotated functions |
 | `records-sort` | cpu | comparator sorts, group-by, `reduce`/`filter` |
 | `regex-logs` | cpu | regex `exec` with groups, `test`, global `replace` |

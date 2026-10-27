@@ -26,6 +26,9 @@ struct EmitOptions {
   std::string ProfileGenerate;
   // Indexed profile (.profdata) that guides optimization. Empty: none.
   std::string ProfileUse;
+  // With several outputs: optimize the module whole and divide only its code
+  // generation among the outputs.
+  bool SplitCodegen = false;
 };
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv);

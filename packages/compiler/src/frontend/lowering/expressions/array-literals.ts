@@ -652,6 +652,17 @@ export function lowerArrayLiteral(
     return lowered;
   });
   if (!needsStateBuild) {
+    // `[...text]`: the code points call already builds a fresh array of the
+    // literal's type, so it is the literal's value, as `Array.from(text)` is.
+    const only = elems[0];
+    if (
+      elems.length === 1 &&
+      spreads.length === 1 &&
+      only?.kind === "libCall" &&
+      only.fn === "str.codePoints" &&
+      typeEquals(only.type, type)
+    )
+      return { ...only, loc };
     return { kind: "arrayLit", elems, ...(spreads.length > 0 ? { spreads } : {}), type, loc };
   }
   const out = lowerer.declareHiddenLocal("%arrayLit", type);
