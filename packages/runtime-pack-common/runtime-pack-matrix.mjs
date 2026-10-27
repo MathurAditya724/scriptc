@@ -80,7 +80,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // programs whose IR has dynamic-tier operations.
   ["scr_js_value.c", "dynTier"],
   ["scr_js_object.c", "dynTier"],
-  ["scr_event_target.c", any("eventTarget", "nativeFetch")],
+  ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
   // The crypto global's object extends scr_async_dyn.c's crypto object.
   ["scr_webcrypto_object.c", all("webcrypto", "dynAsync")],
@@ -186,6 +186,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_tls_x509.c", all("tlsEffective", "x509")],
   // WebCrypto's AES ciphers run over the cipher feature's mbedTLS archive.
   ["scr_webcrypto_aes.c", all("cipher", "webcrypto")],
+  ["scr_abort.c", "abortSignalOnly"],
   ["scr_fetch.c", "nativeFetch"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];

@@ -1044,6 +1044,8 @@ const RUNTIME_FEATURE_RULES = {
   mime: rule({ prefixes: ["mime."] }),
   /** Web streams in checked-dynamic code (scr_webstreams.c). */
   webStreams: rule({ prefixes: ["webstream."] }),
+  /** AbortController and AbortSignal (scr_abort.c, or the fetch unit). */
+  abortSignal: rule({ prefixes: ["abort."] }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
@@ -1268,6 +1270,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     legacyTextDecoder: false,
     mime: false,
     webStreams: false,
+    abortSignal: false,
     utilTiming: false,
     mockTimers: false,
     net: false,
