@@ -1,6 +1,5 @@
 import { emitPerKeyOrder } from "./key-orders.js";
 import { typedRefConstructor } from "./shapes.js";
-import { recordViewWords } from "./record-views.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
 import {
   BYTES_ELEM_NUM,
@@ -1161,7 +1160,7 @@ export class LlDyn {
     );
   }
 
-  /** `scr_dyn_record_view(d, sources, n, key, key_len, new, words)` for
+  /** `scr_dyn_record_view(d, sources, n, key, key_len, new)` for
    * view target `targetId`: the view (+1) of the record a capsule `%d`
    * holds when its type is one of the target's sources, else NULL. The
    * sources table lists each source's type key and the byte offsets of
@@ -1196,14 +1195,10 @@ export class LlDyn {
       );
     }
     const key = typeKey({ kind: "record", shapeId: targetId });
-    const words = recordViewWords(target.fields.length, host.nullableUnions.fieldBase(targetId));
-    const struct = mangleRecordStruct(targetId);
-    host.declare(
-      `declare ptr @scr_dyn_record_view(ptr, ptr, ${this.S}, ptr, ${this.S}, ptr, ${this.S})`,
-    );
+    host.declare(`declare ptr @scr_dyn_record_view(ptr, ptr, ${this.S}, ptr, ${this.S}, ptr)`);
     const view = B.tmp();
     B.line(
-      `${view} = call ptr @scr_dyn_record_view(ptr %d, ptr ${table}, ${this.S} ${sources.length}, ptr ${host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")}, ptr @${mangleRecordNew(targetId)}, ${this.S} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${words.record}) to ${this.S}))`,
+      `${view} = call ptr @scr_dyn_record_view(ptr %d, ptr ${table}, ${this.S} ${sources.length}, ptr ${host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")}, ptr @${mangleRecordNew(targetId)})`,
     );
     return view;
   }

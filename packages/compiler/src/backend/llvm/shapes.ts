@@ -69,7 +69,7 @@ import {
   disposeFieldLines,
   plainRefType,
 } from "./arenas.js";
-import { recordViewTestLines, recordViewWords, type RecordViews } from "./record-views.js";
+import { recordViewTestLines, type RecordViews } from "./record-views.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -2179,8 +2179,6 @@ export function emitRecordShapes(
       llFieldType(f.type, host.inlineUnions.record(f.type)),
     );
     if (shape.indexValue) fieldTys.push("ptr"); // the overflow ScrMap *
-    // A record view target: the viewed record and its offset table.
-    if (host.recordViews?.targets.has(shape.id) === true) fieldTys.push("ptr", "ptr");
     // A tagged shape (an arm of a shape union) carries its shape number.
     if (host.nullableUnions.shapeNumber(shape.id) !== 0) fieldTys.unshift("i32");
     typeDefs.push(
@@ -2403,19 +2401,13 @@ export function emitRecordShapes(
         const fieldTy = llFieldType(field.type, inline);
         if (host.recordViews?.targets.has(shape.id) === true) {
           // A view's fields live in the viewed record (record-views.ts).
-          const words = recordViewWords(shape.fields.length, base);
+          host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
           clone.push(
             `  %so${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
             ...recordViewTestLines(host.sizeType, "%src", `%sr${i}v`),
             `  br i1 %sr${i}v, label %sv${i}.view, label %sv${i}.join`,
             `sv${i}.view:`,
-            `  %sr${i}p = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${words.record}`,
-            `  %sr${i}r = load ptr, ptr %sr${i}p`,
-            `  %st${i}p = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${words.offsets}`,
-            `  %st${i} = load ptr, ptr %st${i}p`,
-            `  %sx${i}p = getelementptr inbounds ${host.sizeType}, ptr %st${i}, i64 ${i}`,
-            `  %sx${i} = load ${host.sizeType}, ptr %sx${i}p`,
-            `  %sw${i} = getelementptr inbounds i8, ptr %sr${i}r, ${host.sizeType} %sx${i}`,
+            `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,
             `  br label %sv${i}.join`,
             `sv${i}.join:`,
             `  %sp${i} = phi ptr [ %so${i}, %${i === 0 ? "entry" : `sv${i - 1}.join`} ], [ %sw${i}, %sv${i}.view ]`,

@@ -1,5 +1,5 @@
 import { emitPerKeyOrder } from "./key-orders.js";
-import { recordViewFieldPtr, recordViewWords } from "./record-views.js";
+import { recordViewFieldPtr } from "./record-views.js";
 import { f64Lit } from "./common.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Structure-walking helper EMITTERS for the LLVM backend — the .ll mirror
@@ -281,7 +281,6 @@ export class LlWalkers {
     index: number,
     t: IrType,
   ): string {
-    const shape = this.host.recordsById.get(shapeId)!;
     const base = this.host.nullableUnions.fieldBase(shapeId);
     let p: string;
     if (this.host.recordViews?.targets.has(shapeId) === true) {
@@ -292,7 +291,6 @@ export class LlWalkers {
         recName,
         index,
         index - base,
-        recordViewWords(shape.fields.length, base),
         (decl) => this.host.declare(decl),
         this.host.rcMode === undefined,
       );

@@ -357,7 +357,7 @@ import {
 import { children, type Node } from "./region-ir.js";
 import { LlDyn, recordDynKeepsIdentity, type DynHost } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
-import { planRecordViews, recordViewFieldPtr, recordViewWords } from "./record-views.js";
+import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import { isObjectArm, NULLABLE_ABSENT, NULLABLE_NULL, NullableUnions } from "./nullable-unions.js";
@@ -4878,7 +4878,6 @@ export class LlEmitter {
         objName,
         idx + base,
         idx,
-        recordViewWords(shape.fields.length, base),
         (decl) => this.declare(decl),
         this.rcMode === undefined,
       );

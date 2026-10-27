@@ -3751,6 +3751,10 @@ typedef struct {
    * surfaces go through it (scr_record_source_has). NULL for an ordinary
    * source. */
   ScrDyn *capsule;
+  /* A view's record (borrowed: the capsule holds it) and its byte offsets
+   * for the view type's fields. */
+  void *viewed;
+  const size_t *offsets;
 } ScrRecordSource;
 static SCR_TL ScrRecordSource *scr_record_sources;
 static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
@@ -4374,18 +4378,18 @@ void *scr_dyn_typed_ref_unbox(const ScrDyn *d) {
 /* Record views (compiler record-views.ts). A checked conversion of a
  * capsule of record A into record type B, when A has all of B's fields,
  * answers a view (+1): a B object (allocated by `alloc`, zeroed, its rc
- * word marked with the frozen bit) whose trailing words at byte offset
- * `words` hold A (borrowed) and A's offset table for B's fields, so every field access of the B value reaches A.
- * `sources` lists, for each A the compiler allows, its type key and offset
- * table. The view's record-source entry owns A's capsule: boxing the view
- * answers that capsule, and the entry dies with the view. One view per
- * capsule and B, found again through the capsule's cast list, where it is
- * borrowed. NULL for any other capsule and for a frozen A, whose
+ * word marked with the frozen bit) whose record-source entry names A
+ * (borrowed) and A's byte offsets for B's fields, so every field access of
+ * the B value reaches A. `sources` lists, for each A the compiler allows,
+ * its type key and offset table. The entry owns A's capsule: boxing the
+ * view answers that capsule, and the entry dies with the view. One view
+ * per capsule and B, found again through the capsule's cast list, where it
+ * is borrowed. NULL for any other capsule and for a frozen A, whose
  * conversion keeps its copy. */
 static void *scr_record_view_retain(void *view);
 
 void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
-                          const char *key, size_t key_len, void *(*alloc)(void), size_t words) {
+                          const char *key, size_t key_len, void *(*alloc)(void)) {
   if (d->kind != SCR_DYN_TYPED_REF) return NULL;
   const ScrRecordViewSource *source = NULL;
   for (size_t i = 0; i < count && !source; i++)
@@ -4401,10 +4405,8 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
   /* The frozen bit marks a view: view target types are never freezable,
    * and their emitted releases ignore the bit (record-views.ts). */
   *(size_t *)view |= SCR_RC_FROZEN;
-  void **slots = (void **)((char *)view + words);
-  slots[0] = record;
-  slots[1] = (void *)source->offsets;
-  ScrRecordSource entry = { .rec = view, .capsule = scr_dyn_retain(d) };
+  ScrRecordSource entry = { .rec = view, .capsule = scr_dyn_retain(d), .viewed = record,
+                            .offsets = source->offsets };
   scr_record_source_put(&entry);
   ScrDynTypedCast *cast = malloc(sizeof *cast);
   if (!cast) scr_trap("scriptc: out of memory\n");
@@ -4415,26 +4417,23 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
   return view;
 }
 
-/* The slot of field `position` of a view (emitted view guards, cold): the
- * viewed record's slot at its offset table's entry. `words` is the byte
- * offset of the view's two trailing words. */
-void *scr_record_view_slot(void *view, size_t words, size_t position) {
-  void **slots = (void **)((char *)view + words);
-  const size_t *offsets = slots[1];
-  return (char *)slots[0] + offsets[position];
+/* The slot of field `position` of a view (emitted view guards, cold). */
+void *scr_record_view_slot(void *view, size_t position) {
+  ScrRecordSource *entry = scr_record_source_slot(view);
+  return (char *)entry->viewed + entry->offsets[position];
 }
 
-/* The address of field `position` of a value of a view target type, `own`
- * being its own slot (the unoptimized builds' guard): the viewed record's
- * slot for a view, whose word is the frozen bit plus a count. */
-void *scr_record_view_field(void *value, void *own, size_t words, size_t position) {
+/* The address of field `position` of a value of a view target type, whose
+ * own slot is at byte `offset` (the unoptimized builds' guard): the viewed
+ * record's slot for a view, whose word is the frozen bit plus a count. */
+void *scr_record_view_field(void *value, size_t offset, size_t position) {
   size_t word = *(const size_t *)value;
 #if SIZE_MAX > UINT32_MAX
   bool view = word - SCR_RC_FROZEN < ((size_t)1 << 32);
 #else
   bool view = word - SCR_RC_FROZEN < SCR_RC_FROZEN;
 #endif
-  return view ? scr_record_view_slot(value, words, position) : own;
+  return view ? scr_record_view_slot(value, position) : (char *)value + offset;
 }
 
 /* A view itself counts like any record (its target's retain). */

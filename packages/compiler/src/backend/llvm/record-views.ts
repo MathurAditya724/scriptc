@@ -2,21 +2,20 @@
  *
  * A checked conversion of a capsule of a native record A into another
  * record type B whose fields A also has (same names and types, any
- * offsets) answers a view: a B-shaped object whose fields live in A. The
- * view's storage is B's struct plus two trailing words, the A record
- * (borrowed: the view's record-source entry owns A's capsule, which owns
- * A) and a table of A's byte offsets for B's fields, and its rc word
- * carries the frozen bit as the view mark. Every field address of a B
- * value tests the mark (recordViewFieldPtr), so reads and
- * writes through either name reach the same storage, and boxing a view
- * answers A's capsule (scr_dyn_record_view), so identity holds too.
+ * offsets) answers a view: a B object, its rc word marked with the frozen
+ * bit, whose record-source entry names A and A's byte offsets for B's
+ * fields (scr_dyn_record_view). Every field address of a B value tests
+ * the mark (recordViewFieldPtr) and takes A's slot for a view, so reads
+ * and writes through either name reach the same storage, and boxing a
+ * view answers A's capsule, so identity holds too. B's storage itself is
+ * unchanged.
  *
- * Only the target types of such conversions carry the words and the
- * test. They are found from the IR, before any code is emitted: B is a
- * record type a checked conversion can produce (the closure of dynCheck
- * targets), and some other record type whose values reach untyped code as
- * live capsules (the closure of live dynFrom types) has all of B's fields. A program without checked
- * conversions has none, so its code is unchanged. */
+ * Only the target types of such conversions carry the test. They are
+ * found from the IR, before any code is emitted: B is a record type a
+ * checked conversion can produce (the closure of dynCheck targets), and
+ * some other record type whose values reach untyped code as live capsules
+ * (the closure of live dynFrom types) has all of B's fields. A program
+ * without checked conversions has none, so its code is unchanged. */
 import {
   isDirentShape,
   KEY_ORDER_FIELD,
@@ -135,8 +134,7 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
  * are never freezable, and a word with the program-lifetime bit (an
  * immortal one included) is no view, so a view's word is the frozen bit
  * plus a count. The
- * trailing words are read only after this test, so a value of another
- * storage seen through the type is never read past its end. */
+ */
 export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: string): string[] {
   // The frozen bit with a count and no program-lifetime bit: one range.
   const [bit, span] =
@@ -148,17 +146,11 @@ export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: 
   ];
 }
 
-/** The struct indices of a view target's two trailing words. */
-export function recordViewWords(
-  fieldCount: number,
-  base: number,
-): { record: number; offsets: number } {
-  return { record: fieldCount + base, offsets: fieldCount + base + 1 };
-}
-
 /** The address of field `position` (declaration index) of the record
- * `obj` of view-target shape `struct`: the slot itself, or the source
- * record's slot when `obj` is a view. Leaves `B` in a fresh block. */
+ * `obj` of view-target shape `struct`: the slot itself, or the viewed
+ * record's slot when `obj` is a view. Optimized builds test the mark
+ * inline and look the slot up out of line; unoptimized builds, which give
+ * every value a frame slot, make the address one call. */
 export function recordViewFieldPtr(
   B: BlockBuilder,
   sizeType: "i32" | "i64",
@@ -166,23 +158,19 @@ export function recordViewFieldPtr(
   obj: string,
   slotIndex: number,
   position: number,
-  words: { record: number; offsets: number },
   declare: (decl: string) => void,
   outOfLine: boolean,
 ): string {
-  const own = B.tmp();
-  B.line(`${own} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${slotIndex}`);
-  const wordsOffset = `${sizeType} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${words.record}) to ${sizeType})`;
   if (outOfLine) {
-    // Unoptimized builds give every value a frame slot: one call keeps
-    // the guard to a single value per access.
-    declare(`declare ptr @scr_record_view_field(ptr, ptr, ${sizeType}, ${sizeType})`);
+    declare(`declare ptr @scr_record_view_field(ptr, ${sizeType}, ${sizeType})`);
     const ptr = B.tmp();
     B.line(
-      `${ptr} = call ptr @scr_record_view_field(ptr ${obj}, ptr ${own}, ${wordsOffset}, ${sizeType} ${position})`,
+      `${ptr} = call ptr @scr_record_view_field(ptr ${obj}, ${sizeType} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${slotIndex}) to ${sizeType}), ${sizeType} ${position})`,
     );
     return ptr;
   }
+  const own = B.tmp();
+  B.line(`${own} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${slotIndex}`);
   const isView = B.tmp();
   for (const line of recordViewTestLines(sizeType, obj, isView)) B.line(line.trimStart());
   const from = B.currentLabel();
@@ -191,11 +179,9 @@ export function recordViewFieldPtr(
   // Views are rare: the slot lookup stays out of line.
   B.condBr(isView, view, join, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
   B.startBlock(view);
-  declare(`declare ptr @scr_record_view_slot(ptr, ${sizeType}, ${sizeType})`);
+  declare(`declare ptr @scr_record_view_slot(ptr, ${sizeType})`);
   const viewed = B.tmp();
-  B.line(
-    `${viewed} = call ptr @scr_record_view_slot(ptr ${obj}, ${wordsOffset}, ${sizeType} ${position})`,
-  );
+  B.line(`${viewed} = call ptr @scr_record_view_slot(ptr ${obj}, ${sizeType} ${position})`);
   B.br(join);
   B.startBlock(join);
   const ptr = B.tmp();

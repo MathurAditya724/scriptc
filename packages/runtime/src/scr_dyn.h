@@ -1325,10 +1325,10 @@ typedef struct {
   size_t key_len;
   const size_t *offsets;
 } ScrRecordViewSource;
-void *scr_record_view_slot(void *view, size_t words, size_t position);
-void *scr_record_view_field(void *value, void *own, size_t words, size_t position);
+void *scr_record_view_slot(void *view, size_t position);
+void *scr_record_view_field(void *value, size_t offset, size_t position);
 void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
-                          const char *key, size_t key_len, void *(*alloc)(void), size_t words);
+                          const char *key, size_t key_len, void *(*alloc)(void));
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
 ScrDyn *scr_dyn_typed_ref_peek(const ScrDyn *d); /* +1 */

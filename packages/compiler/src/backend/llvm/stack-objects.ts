@@ -54,9 +54,6 @@ export function canStackObject(host: LlvmEmitterContext, e: IrExpr): e is StackO
     return false;
   if (e.type.kind === "record" && host.publishedTypes?.recordGuarded(e.type.shapeId) === true)
     return false;
-  // A record view target's frame copy would need its view words zeroed.
-  if (e.type.kind === "record" && host.shapeHost.recordViews?.targets.has(e.type.shapeId) === true)
-    return false;
   if (e.type.kind === "record" && host.recordsById.get(e.type.shapeId)?.freezable === true)
     return false;
   // A producer with a result-slot entry builds its fresh result in the
