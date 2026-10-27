@@ -18,10 +18,10 @@ const COPY_GROUPS: ReadonlyMap<string, string> = new Map([
   ["2", "4"],
 ]);
 
-export function cpuDispatchAttributes(asan: string): string[] {
+export function cpuDispatchAttributes(common: string): string[] {
   return [
-    `attributes #3 = {${asan} "target-cpu"="x86-64-v3" }`,
-    `attributes #4 = { noinline${asan} "target-cpu"="x86-64-v3" }`,
+    `attributes #3 = {${common} "target-cpu"="x86-64-v3" }`,
+    `attributes #4 = { noinline${common} "target-cpu"="x86-64-v3" }`,
   ];
 }
 

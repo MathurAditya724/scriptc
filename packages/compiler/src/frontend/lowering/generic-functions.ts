@@ -4,6 +4,7 @@ import { staticNameBindings } from "./static-function-names.js";
 import { positionTag } from "./structural-positions.js";
 import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
+import { heritageElementTarget, isHeritageTypeReference } from "../heritage-elements.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -655,8 +656,9 @@ function extendsParameter(
   }
   for (const clause of decl.heritageClauses?.nodes ?? [])
     for (const base of clause.types.nodes) {
-      const symbol = ts.isIdentifier(base.expression)
-        ? lowerer.checker.getSymbolAtLocation(base.expression)
+      const target = heritageElementTarget(base);
+      const symbol = ts.isIdentifier(target)
+        ? lowerer.checker.getSymbolAtLocation(target)
         : undefined;
       if (symbol !== undefined && params.has(symbol)) return true;
     }
@@ -3036,7 +3038,12 @@ function bindingReferences(
       resolved = lowerer.checker.getShorthandAssignmentValueSymbol(parent) ?? resolved;
     if (resolved !== symbol) return false;
     for (let p: ts.Node | undefined = parent; p !== undefined; p = p.parent) {
-      if (ts.isTypeNode(p) && p.kind !== ts.SyntaxKind.ExpressionWithTypeArguments) return false;
+      if (
+        ts.isTypeNode(p) &&
+        p.kind !== ts.SyntaxKind.ExpressionWithTypeArguments &&
+        !isHeritageTypeReference(p)
+      )
+        return false;
       if (ts.isStatement(p) || ts.isFunctionLike(p)) break;
     }
     return true;

@@ -137,6 +137,59 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
   }
 });
 
+test("ELF worker executables poll the loops of a nest on every iteration", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-nest-poll-"));
+  try {
+    const entry = join(dir, "nest.ts");
+    await writeFile(
+      entry,
+      [
+        'import { isMainThread, Worker } from "node:worker_threads";',
+        "export function steps(limit: number): number {",
+        "  let total = 0;",
+        "  for (let start = 1; start < limit; start++) {",
+        "    let x = start;",
+        "    while (x !== 1) {",
+        "      x = x % 2 === 0 ? x / 2 : 3 * x + 1;",
+        "      total++;",
+        "    }",
+        "  }",
+        "  return total;",
+        "}",
+        "export function mix(n: number): number {",
+        "  let t = 0;",
+        "  for (let i = 0; i < n; i++) t = (t * 31 + i) % 1000003;",
+        "  return t;",
+        "}",
+        "console.log(steps(8), mix(8));",
+        "if (!isMainThread) new Worker(new URL(import.meta.url));",
+      ].join("\n"),
+    );
+    const outPath = join(dir, "nest.ir.json");
+    const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    const body = (ll: string, name: string): string =>
+      ll.match(
+        new RegExp(
+          `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
+        ),
+      )![1]!;
+    // Both loops of the nest test the thread's pending word on every
+    // iteration and keep no countdown; a loop on its own keeps one.
+    const elf = emitLlvmModule(mod, { targetTriple: "x86_64-unknown-linux-gnu" });
+    const steps = body(elf, "steps");
+    expect(steps).not.toContain("worker cancellation budget");
+    expect(steps.match(/= load atomic i32, ptr @scr_exc_flag monotonic/g)?.length).toBe(2);
+    expect(body(elf, "mix")).toContain("worker cancellation budget");
+    // Elsewhere the poll reads the process-wide alert word: the nest counts.
+    const darwin = emitLlvmModule(mod, { targetTriple: "arm64-apple-macosx14.0.0" });
+    expect(body(darwin, "steps").match(/worker cancellation budget/g)?.length).toBe(2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("worker programs poll no loop whose proven ranges bound its runs inside another loop", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-bounded-loop-polls-"));
   try {

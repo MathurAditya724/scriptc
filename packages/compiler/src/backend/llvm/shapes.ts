@@ -2,6 +2,7 @@
  * Containers store erased adapters; shape helpers retain, release and trace
  * their fields. Every allocation has a size_t reference count at offset zero
  * and participates in the runtime allocation audit. */
+import type { HeapCensus } from "./heap-census.js";
 import type { IrClassDef, IrModule, IrRecordShape, IrType } from "../../ir/ir.js";
 import {
   isIdentityCollectionKey,
@@ -60,6 +61,14 @@ import {
   type InlineUnionFields,
 } from "./inline-unions.js";
 import { JS_BITS, JS_TAGS } from "./jsval-encoding.js";
+import {
+  ARENA_RC,
+  arenaDisposeLines,
+  arenaDisposeSym,
+  arenaNewLines,
+  disposeFieldLines,
+  plainRefType,
+} from "./arenas.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -70,6 +79,8 @@ const CYC_MAX_TYPES = 32768;
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
+  /** The counters of a build instrumented for the heap census (heap-census.ts). */
+  readonly heapCensus?: HeapCensus | null;
   /** Chunk emitters only (emit-journal.ts): EmitJournal's allocated, built,
    * opened, used and entry. */
   journalAllocated?: ((name: string, op: string, args: readonly unknown[]) => void) | undefined;
@@ -137,6 +148,10 @@ export interface ShapeHost {
    * allocate in regions and count references in their region chunk instead
    * of being empty (llvm/regions.ts). */
   regions?: RegionHooks | null;
+  /** Record shapes and classes with an arena-aware constructor
+   * (arenas.ts). */
+  arenaShapes?: ReadonlySet<string>;
+  arenaClasses?: ReadonlySet<string>;
   /** The target C ABI's `size_t` / refcount integer type. */
   readonly sizeType: "i32" | "i64";
   /** Worker executables: the inline allocator state is thread-local. */
@@ -1198,22 +1213,25 @@ export function arrNewCall(
   /** An empty array expected to receive a few elements (its first slots
    * live in its own block): capText must be "0". */
   small = false,
+  /** In the current group arena when one is open (arenas.ts). */
+  arena = false,
 ): string {
+  const r = arena ? "_r" : "";
   const useRef = arrUsesRef(host, elem);
   if (!useRef) {
     if (small) {
-      host.declare(`declare ptr @scr_arr_new_small(i32)`);
-      return `call ptr @scr_arr_new_small(i32 ${elemKindNum(elem)})`;
+      host.declare(`declare ptr @scr_arr_new_small${r}(i32)`);
+      return `call ptr @scr_arr_new_small${r}(i32 ${elemKindNum(elem)})`;
     }
-    host.declare(`declare ptr @scr_arr_new(i32, ${host.sizeType})`);
-    return `call ptr @scr_arr_new(i32 ${elemKindNum(elem)}, ${host.sizeType} ${capText})`;
+    host.declare(`declare ptr @scr_arr_new${r}(i32, ${host.sizeType})`);
+    return `call ptr @scr_arr_new${r}(i32 ${elemKindNum(elem)}, ${host.sizeType} ${capText})`;
   }
   if (small) {
-    host.declare(`declare ptr @scr_arr_new_ops_small(ptr)`);
-    return `call ptr @scr_arr_new_ops_small(ptr ${arrOps(host, elem)})`;
+    host.declare(`declare ptr @scr_arr_new_ops_small${r}(ptr)`);
+    return `call ptr @scr_arr_new_ops_small${r}(ptr ${arrOps(host, elem)})`;
   }
-  host.declare(`declare ptr @scr_arr_new_ops(ptr, ${host.sizeType})`);
-  return `call ptr @scr_arr_new_ops(ptr ${arrOps(host, elem)}, ${host.sizeType} ${capText})`;
+  host.declare(`declare ptr @scr_arr_new_ops${r}(ptr, ${host.sizeType})`);
+  return `call ptr @scr_arr_new_ops${r}(ptr ${arrOps(host, elem)}, ${host.sizeType} ${capText})`;
 }
 
 /** The ScrElemKind and ops descriptor (or `null`) an array of `elem`
@@ -2327,6 +2345,34 @@ export function emitRecordShapes(
     if (traced) nw.push(...youngEntryLines(host));
     nw.push(`  ret ptr %o`, `}`, ``);
     defs.push(...nw);
+    if (host.arenaShapes?.has(shape.id) === true && !shape.indexValue) {
+      const newSym = mangleRecordNew(shape.id);
+      const dispose = refMembers.length > 0 ? arenaDisposeSym(newSym) : null;
+      const init = [`  store ${host.sizeType} ${ARENA_RC}, ptr %o`];
+      if (shapeNumber !== 0)
+        init.push(
+          `  %shp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${SHAPE_WORD_INDEX}`,
+          `  store i32 ${shapeNumber}, ptr %shp ; shape number`,
+        );
+      defs.push(
+        ...arenaNewLines(host, newSym, sizeOf, traced ? cycType : null, dispose, init, "%o"),
+      );
+      if (dispose !== null)
+        defs.push(
+          ...arenaDisposeLines(
+            newSym,
+            refMembers.flatMap((m, i) =>
+              disposeFieldLines(
+                i,
+                `getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${m.index}`,
+                plainRefType(m.type),
+                releaseSym(host, m.type),
+                llvmCommentText(m.name),
+              ),
+            ),
+          ),
+        );
+    }
 
     if (host.recordCloneShapes.has(shape.id)) {
       const attrs = shape.fields.length >= 16 ? "#2" : FN_ATTRS;

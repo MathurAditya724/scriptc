@@ -5,6 +5,7 @@ import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../i
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 
 import { BYTES_ELEM_NUM, closureIdentityEqual, f64Lit } from "./common.js";
@@ -432,11 +433,13 @@ export function emitOperatorExpr(
           const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
           // The integer of an exact integer or NaN, for index and loop guards.
           const nan = emitNanArithmetic(host, e, l, r, li, ri);
-          if (wrapped !== undefined || wideInteger || nan) {
+          const offset = offsetIndex(e, l, r);
+          if (wrapped !== undefined || wideInteger || nan || offset) {
             const value: LlValue = { name: t, type: e.type };
             if (nan) Object.assign(value, nan);
             if (wrapped !== undefined) Object.assign(value, wrapped);
             if (wideInteger) value.wideInteger = wideInteger;
+            if (offset) value.offsetIndex = offset;
             return value;
           }
         } else {
@@ -1080,16 +1083,21 @@ export function emitContainerExpr(
           B.line(`${fits} = icmp ule ${host.sizeType} ${capacity}, ${SMALL_ARRAY_SLOTS}`);
           B.condBr(fits, smallLabel, sizedLabel);
           B.startBlock(smallLabel);
-          B.line(`${smallArr} = ${arrNewCall(host.shapeHost, elem, "0", true)}`);
+          B.line(`${smallArr} = ${arrNewCall(host.shapeHost, elem, "0", true, host.arenaSite(e))}`);
           B.br(joined);
           B.startBlock(sizedLabel);
-          B.line(`${sizedArr} = ${arrNewCall(host.shapeHost, elem, capacity)}`);
+          B.line(
+            `${sizedArr} = ${arrNewCall(host.shapeHost, elem, capacity, false, host.arenaSite(e))}`,
+          );
           B.br(joined);
           B.startBlock(joined);
           B.line(
             `${arr} = phi ptr [ ${smallArr}, %${smallLabel} ], [ ${sizedArr}, %${sizedLabel} ]`,
           );
-        } else B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small)}`);
+        } else
+          B.line(
+            `${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small, host.arenaSite(e))}`,
+          );
       }
       const out = host.own({ name: arr, type: e.type });
       const acc: ArrayAccess = int32 ? "i32" : elemAccess(elem);
@@ -1362,7 +1370,7 @@ export function emitRecordExpr(
         throw new InternalCompilerError("llvm emitter bug: recordLit of non-record type");
       const shapeId = e.type.shapeId;
       const rec = B.tmp();
-      B.line(`${rec} = call ptr @${mangleRecordNew(shapeId)}()`);
+      B.line(`${rec} = call ptr @${host.allocSym(mangleRecordNew(shapeId), e)}()`);
       const out = host.own({ name: rec, type: e.type });
       // A null-prototype record: SCR_MAP_NULL_PROTO on the fresh map.
       if (e.nullProto) B.line(`store i8 1, ptr ${host.recordMapFlagsPtr(rec, shapeId)}`);
