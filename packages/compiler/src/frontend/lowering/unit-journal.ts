@@ -22,6 +22,7 @@
  * without a record has a line with its name and reasons. */
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { InternalCompilerError } from "../../errors.js";
 import type { IrFunction } from "../../ir/ir.js";
 import { deserializeFunction, encodeFunction } from "../../ir/serialize.js";
 
@@ -90,6 +91,17 @@ export interface JournalTable {
   readonly truncate?: (from: number) => void;
   /** The entries the table holds now. */
   readonly hold?: () => HeldEntries;
+  /** The content of the entries the table holds now, for tables whose
+   * values are objects a unit could change in place. */
+  readonly contents?: () => HeldContents;
+}
+
+/** The content of a table's entries at one point (JournalTable.contents). */
+export interface HeldContents {
+  /** Adds the content of the entries past the ones this holds. */
+  extend(): void;
+  /** The key of an entry this holds whose content has changed, or null. */
+  changed(): string | null;
 }
 
 /** A table's entries at one point (JournalTable.hold). */
@@ -277,6 +289,9 @@ export function recordUnit(host: WaveHost, name: string): RecordedUnit {
  * results its record carries: the entries it added are taken out of their
  * tables and added again from the record, and its function is the one
  * decoded from the record. A unit without one keeps what lowering made.
+ * Throws an InternalCompilerError when a unit changed the content of an
+ * entry a table held when the unit started (JournalTable.contents), which
+ * no record carries.
  * `lines`, when given, receives each unit's record as a JSON line. */
 export function lowerWaveRecorded(
   host: WaveHost,
@@ -286,8 +301,12 @@ export function lowerWaveRecorded(
 ): void {
   stats.waves++;
   const tables = host.tables;
+  // Units keep the content of the entries that tables held when they
+  // started: a record carries a unit's new entries, not changes to others.
+  const contents = tables.map((table) => (table.contents === undefined ? null : table.contents()));
   for (const name of wave) {
     const unit = recordUnit(host, name);
+    for (const held of contents) held?.extend();
     stats.units++;
     const record = unit.record;
     if (record === null) {
@@ -307,6 +326,13 @@ export function lowerWaveRecorded(
     });
     host.store(name, record.fn === null ? null : decodeUnitFunction(record.fn));
   }
+  tables.forEach((table, index) => {
+    const key = contents[index]?.changed() ?? null;
+    if (key !== null)
+      throw new InternalCompilerError(
+        `a unit changed ${table.name} entry ${key} in place, which no unit record carries`,
+      );
+  });
 }
 
 /** An appendable table over a Map from strings to strings, such as helper
@@ -334,15 +360,37 @@ export function countTable(name: string, map: Map<string, number>): JournalTable
  * JSON. JSON writes a number that is not finite as null, so a value whose
  * encoding holds a null does not encode. */
 export function irDataTable<V>(name: string, map: Map<string, V>): JournalTable {
-  return codecTable(
-    name,
-    map,
-    (value) => {
-      const text = JSON.stringify(value);
-      return /[:,[]null\b/.test(text) ? null : text;
+  const encode = (value: V): string | null => {
+    const text = JSON.stringify(value);
+    return /[:,[]null\b/.test(text) ? null : text;
+  };
+  return {
+    ...codecTable(name, map, encode, (text) => JSON.parse(text) as V),
+    contents: () => {
+      const keys: string[] = [];
+      const texts: (string | null)[] = [];
+      const held: HeldContents = {
+        extend: () => {
+          let index = 0;
+          for (const [key, value] of map) {
+            if (index++ < keys.length) continue;
+            keys.push(key);
+            texts.push(encode(value));
+          }
+        },
+        changed: () => {
+          for (let index = 0; index < keys.length; index++) {
+            const key = keys[index]!;
+            const value = map.get(key);
+            if (value === undefined || encode(value) !== texts[index]) return key;
+          }
+          return null;
+        },
+      };
+      held.extend();
+      return held;
     },
-    (text) => JSON.parse(text) as V,
-  );
+  };
 }
 
 /** An appendable table over a Map from strings to values that `encode`
@@ -464,6 +512,23 @@ export function functionTable(
     hold: () => {
       const held = [...functions];
       return { same: () => held.every((fn, index) => functions[index] === fn) };
+    },
+    contents: () => {
+      const texts: (string | null)[] = [];
+      const held: HeldContents = {
+        extend: () => {
+          for (let index = texts.length; index < functions.length; index++)
+            texts.push(encodeUnitFunction(functions[index]!));
+        },
+        changed: () => {
+          for (let index = 0; index < texts.length && index < functions.length; index++)
+            if (encodeUnitFunction(functions[index]!) !== texts[index])
+              return functions[index]!.name;
+          return null;
+        },
+      };
+      held.extend();
+      return held;
     },
   };
 }

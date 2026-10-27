@@ -280,3 +280,23 @@ test("a unit that changes an entry it did not add has no record", () => {
   expect(unit.record).toBeNull();
   expect(unit.reasons).toEqual(["helpers:replaced"]);
 });
+
+test("a recorded wave throws when a unit changes a held function in place", () => {
+  const functions = [fn("%shared")];
+  const subject: WaveHost = {
+    tables: [functionTable("lifted", functions, (name) => functions.some((f) => f.name === name))],
+    scalars: [],
+    lowerRecorded: (name) => {
+      if (name === "b")
+        functions[0]!.locals.push({ id: "x.0", name: "x", type: { kind: "f64" } } as never);
+      return { fn: fn(`%${name}`), poisoned: false };
+    },
+    store: () => {},
+    statementCounts: () => ({ total: 0, failed: 0, other: 0 }),
+    resolves: () => true,
+  };
+  lowerWaveRecorded(subject, ["a"], waveStats());
+  expect(() => lowerWaveRecorded(subject, ["a", "b"], waveStats())).toThrow(
+    "a unit changed lifted entry %shared in place",
+  );
+});
