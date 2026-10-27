@@ -72,6 +72,10 @@ export interface UnitRecord {
   /** The encoded entries the unit added, by table name, for the tables it
    * grew. */
   readonly tables: Readonly<Record<string, readonly string[]>>;
+  /** The entries the unit's IR and new entries name that its tables held
+   * before it, by table name, each with a digest of its content. Applying
+   * the record needs each to be held with the same content. */
+  readonly reads: Readonly<Record<string, readonly (readonly [string, string])[]>>;
 }
 
 /** A table a unit's lowering can grow. An appendable table only adds
@@ -87,6 +91,9 @@ export interface JournalTable {
   readonly entries?: (from: number) => string[] | null;
   /** Adds the encoded entries whose keys this process's table lacks. */
   readonly apply?: (entries: readonly string[]) => void;
+  /** A digest of the content of the entry under `key`, when the table
+   * holds one before position `before`; null otherwise. */
+  readonly digest?: (key: string, before: number) => string | null;
   /** Removes the entries from position `from` on. */
   readonly truncate?: (from: number) => void;
   /** The entries the table holds now. */
@@ -106,6 +113,18 @@ export interface HeldContents {
   changedAmong(keys: ReadonlySet<string>): string | null;
   /** Takes the current content of the entries among `keys`. */
   refresh(keys: ReadonlySet<string>): void;
+}
+
+/** A digest of `text`: its length and two 32-bit FNV-1a hashes. */
+export function contentDigest(text: string): string {
+  let a = 0x811c9dc5;
+  let b = 0x01000193 ^ 0x5bd1e995;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193);
+    b = Math.imul(b ^ c, 0x01000193) ^ (b >>> 13);
+  }
+  return `${text.length}:${(a >>> 0).toString(16)}${(b >>> 0).toString(16)}`;
 }
 
 /** The strings quoted in JSON `texts`, unescaped only as far as their
@@ -310,18 +329,19 @@ export function recordUnit(
       if (entries === null) reasons.push(`${table.name}:encoding`);
       else added[table.name] = entries;
     }
+  // A unit uses the entries its IR and new entries name: it reads them, and
+  // a unit that changes one in place changes one it names.
+  const texts: string[] = [];
+  if (text !== null) texts.push(text);
+  for (const index of grown) {
+    const table = tables[index]!;
+    const entries = added[table.name] ?? table.entries!(before[index]!);
+    if (entries !== null) for (const entry of entries) texts.push(entry);
+  }
+  const names = quotedStrings(texts);
   if (contents !== null) {
-    // A unit changes in place the entries it uses, which its IR and new
-    // entries name: a unit with a record must leave them as they were, and
-    // a unit without one keeps its changes.
-    const texts: string[] = [];
-    if (text !== null) texts.push(text);
-    for (const index of grown) {
-      const table = tables[index]!;
-      const entries = added[table.name] ?? table.entries!(before[index]!);
-      if (entries !== null) for (const entry of entries) texts.push(entry);
-    }
-    const names = quotedStrings(texts);
+    // A unit with a record must leave the entries it names as they were; a
+    // unit without one keeps its changes.
     if (reasons.length === 0)
       tables.forEach((table, index) => {
         if ((contents[index] ?? null)?.changedAmong(names) != null)
@@ -330,8 +350,24 @@ export function recordUnit(
     if (reasons.length > 0) for (const held of contents) held?.refresh(names);
     for (const held of contents) held?.extend();
   }
+  const reads: Record<string, (readonly [string, string])[]> = {};
+  if (reasons.length === 0)
+    tables.forEach((table, index) => {
+      if (table.digest === undefined) return;
+      const read: (readonly [string, string])[] = [];
+      for (const key of names) {
+        const digest = table.digest(key, before[index]!);
+        if (digest !== null) read.push([key, digest]);
+      }
+      if (read.length > 0) reads[table.name] = read;
+    });
   if (reasons.length > 0) return { record: null, reasons, fn, before };
-  return { record: { name, fn: text, poisoned, events, tables: added }, reasons, fn, before };
+  return {
+    record: { name, fn: text, poisoned, events, tables: added, reads },
+    reasons,
+    fn,
+    before,
+  };
 }
 
 /** Lowers `wave` with every unit recorded. A unit with a record keeps the
@@ -539,9 +575,37 @@ export function functionTable(
   has: (name: string) => boolean,
   changed: () => void = () => {},
 ): JournalTable {
+  // The position of each function by name, for the functions indexed so far.
+  let indexes = new Map<string, number>();
+  let indexed = 0;
+  const lookup = (key: string): number | undefined => {
+    for (; indexed < functions.length; indexed++) indexes.set(functions[indexed]!.name, indexed);
+    const index = indexes.get(key);
+    return index !== undefined && functions[index]?.name === key ? index : undefined;
+  };
+  const indexOf = (key: string): number | undefined => {
+    if (indexed > functions.length) {
+      indexes = new Map();
+      indexed = 0;
+    }
+    const index = lookup(key);
+    if (index !== undefined || !has(key)) return index;
+    // A list that was cut and grown again holds other functions at the
+    // positions indexed before.
+    indexes = new Map();
+    indexed = 0;
+    return lookup(key);
+  };
   return {
     name,
     size: () => functions.length,
+    digest: (key, before) => {
+      if (!has(key)) return null;
+      const index = indexOf(key);
+      if (index === undefined || index >= before) return null;
+      const text = encodeUnitFunction(functions[index]!);
+      return text === null ? null : contentDigest(text);
+    },
     entries: (from) => {
       const out: string[] = [];
       for (const fn of functions.slice(from)) {

@@ -70,3 +70,36 @@ test("two builds of a program write the same records", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 }, 300_000);
+
+/** The reasons in a program's records that leave units without one. */
+async function recordReasons(program: string, dir: string): Promise<Set<string>> {
+  process.env["SCRIPTC_LOWER_JOURNAL_DUMP"] = join(dir, program);
+  try {
+    await lower(program, dir, "dump");
+  } finally {
+    delete process.env["SCRIPTC_LOWER_JOURNAL_DUMP"];
+  }
+  const reasons = new Set<string>();
+  for (const line of (await readFile(join(dir, program, "records.jsonl"), "utf8"))
+    .trimEnd()
+    .split("\n"))
+    for (const reason of (JSON.parse(line) as { reasons?: string[] }).reasons ?? [])
+      reasons.add(reason);
+  return reasons;
+}
+
+test("units that register reachable units or add class fields have no record", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-recorded-lowering-reasons-"));
+  try {
+    // A function-local class registers its members as reachable units.
+    expect(await recordReasons("5945-local-class-observed-methods.ts", dir)).toContain(
+      "unitRegistrations",
+    );
+    // Object.freeze of a class instance adds the class's integrity field.
+    expect(await recordReasons("6004-class-instance-integrity.ts", dir)).toContain(
+      "classLayoutChanges",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 300_000);
