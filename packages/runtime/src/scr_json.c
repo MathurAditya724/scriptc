@@ -9633,7 +9633,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   if (d->kind == SCR_DYN_TYPED_REF) {
     if (scr_dyn_ref_is_error(d)) return scr_str_new("[object Error]", 14);
     if (scr_dyn_generator(d)) {
-      const char *gen_tag = scr_gen_tag_reader(d->v.typed_ref.ptr);
+      const char *gen_tag = __atomic_load_n(&scr_gen_tag_reader, __ATOMIC_RELAXED)(d->v.typed_ref.ptr);
       if (gen_tag[0] == '!') {
         static const char message[] = "Object.prototype.toString of this iterator is not supported yet";
         scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);

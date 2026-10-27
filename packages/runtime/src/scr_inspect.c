@@ -1613,7 +1613,7 @@ static bool scr_insp_is_generator(const ScrDyn *d) {
 }
 
 static ScrStr *scr_insp_generator(const ScrDyn *d) {
-  const char *tag = scr_gen_tag_reader(d->v.typed_ref.ptr);
+  const char *tag = __atomic_load_n(&scr_gen_tag_reader, __ATOMIC_RELAXED)(d->v.typed_ref.ptr);
   if (tag[0] == '!') {
     static const char message[] = "util.inspect of this iterator object is not supported yet";
     scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);

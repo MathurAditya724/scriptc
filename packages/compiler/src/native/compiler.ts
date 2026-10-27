@@ -70,7 +70,7 @@ import {
 import { splitLlvmLibraryProgram } from "../backend/llvm/split.js";
 import { prepareNativeExecutable, prepareNativeLibrary } from "./prepare.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
-import { lldLinkerArgs } from "../backend/lld.js";
+import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
 import { openNativeExecutableCache } from "./executable-cache.js";
 import { LinkerJobs } from "./linker-job.js";
 import { nativeFileIdentity } from "./file-identity.js";
@@ -569,15 +569,16 @@ export class NativeCompiler {
         });
         // Linux links with lld when the driver finds it.
         const lld = options.sanitize ? [] : lldLinkerArgs(target.platform, toolchain.linker);
-        const linkArgs = [
+        const linkArgsWith = (withLld: boolean): string[] => [
           ...(options.sanitize ? ["-fsanitize=address"] : toolchain.linkerArgs),
-          ...lld,
+          ...(withLld ? lld : []),
           ...plan.driverFlags,
-          ...plan.inputs,
+          ...(withLld ? plan.inputs : inputsWithoutLld(target.platform, plan.inputs)),
           ...systemLibraryLinkerArgs(target, plan.systemLibraries),
           "-o",
           stagedOutput,
         ];
+        const linkArgs = linkArgsWith(lld.length !== 0);
         // Host Linux links with lld run the linker job the driver would.
         const jobs = LinkerJobs.open(this.cache, toolchain, lld, options.sanitize ?? false);
         const job = jobs?.link([...plan.inputs, stagedOutput], stage);
@@ -593,10 +594,7 @@ export class NativeCompiler {
             // A failed link with lld runs again with the driver's default
             // linker, whose error (if any) is the one reported.
             if (lld.length === 0) throw error;
-            runNativeTool(
-              driver,
-              linkArgs.filter((arg) => !lld.includes(arg)),
-            );
+            runNativeTool(driver, linkArgsWith(false));
           }
         }
         timing("native-link");

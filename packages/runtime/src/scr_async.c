@@ -5393,6 +5393,11 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
                                   bool stackless) {
   ScrGen *g = scr_mem_calloc(sizeof *g);
   if (!g) scr_oom();
+  /* Install the tag reader with each generator rather than in a constructor:
+   * a constructor is a link root, so it would keep scr_gen_tag and this
+   * unit's string literals in every executable, generators or not. Threads
+   * store the same value, relaxed. */
+  __atomic_store_n(&scr_gen_tag_reader, scr_gen_tag, __ATOMIC_RELAXED);
   g->rc = 1;
   g->receiver = scr_dyn_this_get();
   g->state = SCR_GEN_UNSTARTED;
@@ -5965,10 +5970,6 @@ void scr_gen_copy_tag(ScrGen *g, const ScrGen *from) { g->tag = from->tag; }
 
 const char *scr_gen_tag(const ScrGen *g) {
   return g->tag ? g->tag : g->is_async ? "AsyncGenerator" : "Generator";
-}
-
-__attribute__((constructor)) static void scr_gen_tag_reader_init(void) {
-  scr_gen_tag_reader = scr_gen_tag;
 }
 
 void scr_gen_close(ScrGen *g) {
