@@ -3530,6 +3530,9 @@ function buildLibFnSignatures() {
     "process.pid": { argTypes: [], result: F64 },
     "dyn.this": { argTypes: [], result: DYN },
     "dyn.generatorThis": { argTypes: [], result: DYN },
+    /** A sloppy-mode function's `this` from its receiver: the global object
+     * for undefined and null, else the receiver. Never throws. */
+    "dyn.sloppyReceiver": { argTypes: [DYN], result: DYN },
     "process.getuid": { argTypes: [], result: F64 },
     "process.getgid": { argTypes: [], result: F64 },
     /** geteuid(2) / getegid(2) / getgroups(2) (the effective gid appended

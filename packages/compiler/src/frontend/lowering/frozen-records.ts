@@ -121,6 +121,8 @@ function freezableTypes(
   const shapes = new Set<string>();
   const arrays = new Set<string>();
   const live: IrType[] = [];
+  const checked: IrType[] = [];
+  let freezesUntyped = false;
   for (const fn of functions)
     everyStmtList(fn.body, {
       expr: (e) => {
@@ -130,19 +132,28 @@ function freezableTypes(
         } else if (e.kind === "libCall" && e.fn === "array.freeze") {
           const target = e.args[0];
           if (target && target.type.kind === "array") arrays.add(typeKey(target.type));
-        } else if (e.kind === "dynFrom") live.push(e.value.type);
+        } else if (e.kind === "libCall" && e.fn === "dyn.freeze") freezesUntyped = true;
+        else if (e.kind === "dynFrom") live.push(e.value.type);
+        else if (e.kind === "dynCheck") checked.push(e.type);
         return true;
       },
       stmt: () => true,
     });
-  if (!lowerer.untypedIntegrity) return { shapes, arrays };
-  // An untyped reference to a class instance, or to a record or array
-  // boxed live, reaches the values its fields and elements hold as further
-  // live references. Class instances also cross into untyped code through
-  // compiled callbacks, so every class is a root.
-  const stack = [...live];
-  for (const info of lowerer.classes.values())
-    for (const field of info.def.fields) stack.push(field.type);
+  if (!lowerer.untypedIntegrity && !freezesUntyped) return { shapes, arrays };
+  const stack: IrType[] = [];
+  // A record checked from an untyped value copies it, frozen when the value
+  // is (a fresh literal frozen in a JavaScript file included), so the shapes
+  // a check builds are freezable in a program that freezes untyped values.
+  if (freezesUntyped) stack.push(...checked);
+  if (lowerer.untypedIntegrity) {
+    // An untyped reference to a class instance, or to a record or array
+    // boxed live, reaches the values its fields and elements hold as further
+    // live references. Class instances also cross into untyped code through
+    // compiled callbacks, so every class is a root.
+    stack.push(...live);
+    for (const info of lowerer.classes.values())
+      for (const field of info.def.fields) stack.push(field.type);
+  }
   const seen = new Set<string>();
   while (stack.length > 0) {
     const type = stack.pop()!;

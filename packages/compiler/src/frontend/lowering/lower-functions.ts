@@ -38,6 +38,7 @@ import {
   blockBodyOf,
 } from "./function-returns.js";
 import { generatorMeta, isThisParameter, type ParamShape } from "./call-signatures.js";
+import { isStrictCode } from "./strict-mode.js";
 
 /** Save the call-site receiver before defaults or body effects. Escaping
  * arrows capture this binding instead of reading a later call's receiver. */
@@ -48,16 +49,22 @@ function declareCallReceiver(
 ): IrStmt {
   const receiver = lowerer.declareThis(DYN);
   const loc = locOf(node);
+  const bound: IrExpr = {
+    kind: "libCall",
+    fn: generator ? "dyn.generatorThis" : "dyn.this",
+    args: [],
+    type: DYN,
+    loc,
+  };
+  // A sloppy-mode function's `this` is the global object when it is called
+  // with undefined or null. The function's own body decides its mode.
+  const sloppy = !ts.isArrowFunction(node) && node.body !== undefined && !isStrictCode(node.body);
   return {
     kind: "varDecl",
     localId: receiver.id,
-    init: {
-      kind: "libCall",
-      fn: generator ? "dyn.generatorThis" : "dyn.this",
-      args: [],
-      type: DYN,
-      loc,
-    },
+    init: sloppy
+      ? { kind: "libCall", fn: "dyn.sloppyReceiver", args: [bound], type: DYN, loc }
+      : bound,
     loc,
   };
 }
