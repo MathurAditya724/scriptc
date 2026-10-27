@@ -177,6 +177,25 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
   ) {
     return { how: "narrow" };
   }
+  // A UNION of tuples/arrays into ONE array slot that is not already one of
+  // its arms: each arm converts on its own tag (a tuple rebuilds through
+  // tupleArr, an array copies or lifts through arr), and a unit arm takes
+  // the stranded TypeError — the slot holds no unit. This sits AFTER the
+  // checked-extraction rule above, so a union that already contains the
+  // destination array arm keeps compiling to the same narrow it always did;
+  // only sources with no conversion at all (the `as const` key-table read)
+  // gain one.
+  if (dst.kind === "array" && src.kind === "union") {
+    const from = lowerer.unions.get(src.unionId);
+    if (
+      from &&
+      !from.arms.some((arm) => typeEquals(arm, dst)) &&
+      from.arms.some((arm) => !isUnitType(arm))
+    ) {
+      if (from.arms.every((arm) => isUnitType(arm) || lowerer.widthLiftPlan(arm, dst) !== null))
+        return { how: "unionArr" };
+    }
+  }
   // A DERIVED instance into a BASE-typed slot (`{ p: Q }` copying into
   // `{ p: P }`): the same implicit upcast coerceToExpected performs at
   // top level — prefix layout, a pointer reinterpret, no copy.

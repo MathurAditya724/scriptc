@@ -130,6 +130,7 @@ import {
   widthCoerce,
   applyWidthLift,
   unionRecordWidthHelper,
+  unionArrayWidthHelper,
   recordWidthHelper,
   tupleArrayWidthHelper,
   emptyArrayLiftHelper,
@@ -12321,6 +12322,20 @@ export class Lowerer {
         const lifted = unionArmsWidthLift(this, expr, expected);
         if (lifted) return lifted;
       }
+      // A UNION of tuples/arrays flowing into an array slot that is not one
+      // of its arms (an `as const` key table's index read into
+      // `readonly string[]`): a width plan converts every arm on its own
+      // tag, a tuple rebuilding through tupleArr. Planned after the
+      // checked extraction above, and skipped when an arm already IS the
+      // slot, so every union that converted before keeps the same IR.
+      if (
+        expr.type.kind === "union" &&
+        expected.kind === "array" &&
+        !(this.unions.get(expr.type.unionId)?.arms ?? []).some((arm) => typeEquals(arm, expected))
+      ) {
+        const lift = this.widthLiftPlan(expr.type, expected);
+        if (lift) return this.applyWidthLift(lift, expr, expected, expr.loc);
+      }
       if (!typeEquals(expr.type, expected)) {
         const w = this.widthCoerce(expr, expected);
         if (w) return w;
@@ -12522,6 +12537,10 @@ export class Lowerer {
 
   unionRecordWidthHelper(fromId: string, target: IrType & { kind: "record" }, loc: SrcLoc): string {
     return unionRecordWidthHelper(this, fromId, target, loc);
+  }
+
+  unionArrayWidthHelper(fromId: string, target: IrType & { kind: "array" }, loc: SrcLoc): string {
+    return unionArrayWidthHelper(this, fromId, target, loc);
   }
 
   recordWidthPlan(fromId: string, toId: string): Map<string, FieldLift> | null {

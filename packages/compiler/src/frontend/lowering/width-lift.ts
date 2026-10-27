@@ -28,6 +28,10 @@ export type WidthLift =
    * destination's overflow). A copy, like every width lift. */
   | { how: "ovf" }
   | { how: "unionWidth" }
+  /** A union of tuples/arrays into one array slot that no arm already is:
+   * every arm converts on its own tag, unit arms take the stranded
+   * TypeError. */
+  | { how: "unionArr" }
   | { how: "arr" }
   | { how: "tupleArr" }
   | { how: "emptyArr" }
