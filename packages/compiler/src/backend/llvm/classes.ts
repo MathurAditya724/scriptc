@@ -1527,7 +1527,8 @@ export function emitClassShapes(
         ? `  store i64 ${(BigInt(meta.pre + 1) * 2n ** 32n + BigInt(ARENA_RC)).toString()}, ptr %o.vt`
         : `  store ${host.sizeType} ${ARENA_RC}, ptr %o`;
       const newSym = mangleClassNew(cls.name);
-      const dispose = refFields.length > 0 ? arenaDisposeSym(newSym) : null;
+      const dispose =
+        refFields.length > 0 && host.arenasClosed !== true ? arenaDisposeSym(newSym) : null;
       defs.push(
         ...arenaNewLines(
           host,
