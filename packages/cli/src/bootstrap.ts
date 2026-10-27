@@ -144,6 +144,7 @@ async function tryFastPath(): Promise<number | null> {
     backend: "llvm",
     ...(optimization === "dev" || optimization === "speed" ? { optimization } : {}),
     ...(values.strip ? { strip: true as const } : {}),
+    ...(values.static ? { staticLink: true as const } : {}),
     ...(values["detached-exit"] ? { detachedExit: true as const } : {}),
     ...(values["large-pages"] ? { largePages: true as const } : {}),
     ...(values["cpu-dispatch"] === true ? { cpuDispatch: true as const } : {}),
@@ -231,6 +232,7 @@ async function coverageFastPath(
     (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
     values.emit !== undefined ||
     values.strip ||
+    values.static ||
     values["detached-exit"] ||
     values["large-pages"] ||
     values["target-cpu"] !== undefined ||

@@ -60,4 +60,8 @@
   The `readline/promises` `Readline` class writes to the same outputs.
   `readline.emitKeypressEvents` emits `'keypress'` events on `process.stdin` or a readable stream, shared with terminal interfaces on that stream as in Node; a listener's first parameter must admit `undefined`, which it receives for escape sequences.
   Chained listener registration is unsupported.
-  `node:stream/web` exports the same `ReadableStream` class as the global; its other classes are unsupported.
+  `node:stream/web` exports the same `ReadableStream` class as the global; in TypeScript, its other classes are unsupported.
+  In JavaScript, `ReadableStream`, `ReadableStreamDefaultReader`, `ReadableStreamDefaultController`, `CountQueuingStrategy`, and `ByteLengthQueuingStrategy`, as globals and as `node:stream/web` exports, are constructor values with Node's prototypes, brand checks, and errors.
+  Their underlying sources (`start`, `pull`, `cancel`), queuing strategies with a `size` function, readers, `tee`, `ReadableStream.from`, and async iteration settle promises in Node's order.
+  A JavaScript `ReadableStream` given as a `Response` or `Request` body, or as `fetch`'s body, is read through a stream of its own: `response.body` is that stream rather than the one passed in, and the stream passed in is locked from the start.
+  In JavaScript, a byte stream (`type: 'bytes'`), `pipeTo`, `pipeThrough`, `Object.getPrototypeOf` on these streams, readers, controllers, and strategies, their use as `WeakMap` and `WeakSet` keys, `ReadableStream.from` of a function that is not iterable, and the other `node:stream/web` classes are unsupported.

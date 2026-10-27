@@ -111,7 +111,8 @@ jobs:
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true' && needs.check-release.outputs.reuse_artifacts != 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    # The layout and the profile's two phases each build an instrumented compiler.
+    timeout-minutes: 120
     continue-on-error: true
     permissions:
       contents: read
@@ -148,7 +149,7 @@ jobs:
         env:
           SCRIPTC_NATIVE_LAYOUT: ${{ runner.temp }}/cli-profile/cli.layout.gz
         run: >-
-          node scripts/refresh-cli-profile.mjs --tsc-ts "$RUNNER_TEMP/tsc-ts" --jobs 4
+          node scripts/refresh-cli-profile.mjs --tsc-ts "$RUNNER_TEMP/tsc-ts" --jobs 4 --context-sensitive
           --output "$RUNNER_TEMP/cli-profile/cli.profdata.gz" --work "$RUNNER_TEMP/cli-profile-work"
       - uses: actions/upload-artifact@v4
         with:
