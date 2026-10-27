@@ -30,12 +30,21 @@ export interface LlValue {
    * read, a local that only holds those, or a sum, difference or product of
    * them), so integer consumers need no conversion of the double. */
   nanInteger?: string;
+  /** The sum `base + offset` of a number local and an integer literal of
+   * magnitude below 2^31: the base as the sum read it. Typed array indexes
+   * convert it instead of the sum (expr-bytes.ts). */
+  offsetIndex?: OffsetIndex;
   slot?: boolean;
   /** A sequence local held in a capture box; release the box itself. */
   boxed?: boolean;
   /** A group arena list slot (arenas.ts): the frame closes the newest
    * arena on it, or drops the whole list, after its other temps. */
   arena?: "close" | "drop";
+}
+
+export interface OffsetIndex {
+  base: string;
+  offset: number;
 }
 
 export interface WideInteger {
