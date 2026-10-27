@@ -132,17 +132,19 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
 /** Lines setting `dest` (i1) to whether the record `obj` of a view target
  * type is a view. A view's rc word carries the frozen bit (scr_rc.h
  * SCR_RC_FROZEN), which no other value of such a type has: view targets
- * are never freezable, and an immortal word (all ones) is not a view. The
+ * are never freezable, and a word with the program-lifetime bit (an
+ * immortal one included) is no view, so a view's word is the frozen bit
+ * plus a count. The
  * trailing words are read only after this test, so a value of another
  * storage seen through the type is never read past its end. */
 export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: string): string[] {
-  const bit = sizeType === "i64" ? "4611686018427387904" : "1073741824";
+  // The frozen bit with a count and no program-lifetime bit: one range.
+  const [bit, span] =
+    sizeType === "i64" ? ["4611686018427387904", "4294967296"] : ["1073741824", "1073741824"];
   return [
     `  ${dest}.w = load ${sizeType}, ptr ${obj}`,
-    `  ${dest}.b = and ${sizeType} ${dest}.w, ${bit}`,
-    `  ${dest}.m = icmp ne ${sizeType} ${dest}.b, 0`,
-    `  ${dest}.i = icmp ne ${sizeType} ${dest}.w, -1`,
-    `  ${dest} = and i1 ${dest}.m, ${dest}.i`,
+    `  ${dest}.d = sub ${sizeType} ${dest}.w, ${bit}`,
+    `  ${dest} = icmp ult ${sizeType} ${dest}.d, ${span}`,
   ];
 }
 
@@ -166,9 +168,21 @@ export function recordViewFieldPtr(
   position: number,
   words: { record: number; offsets: number },
   declare: (decl: string) => void,
+  outOfLine: boolean,
 ): string {
   const own = B.tmp();
   B.line(`${own} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${slotIndex}`);
+  const wordsOffset = `${sizeType} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${words.record}) to ${sizeType})`;
+  if (outOfLine) {
+    // Unoptimized builds give every value a frame slot: one call keeps
+    // the guard to a single value per access.
+    declare(`declare ptr @scr_record_view_field(ptr, ptr, ${sizeType}, ${sizeType})`);
+    const ptr = B.tmp();
+    B.line(
+      `${ptr} = call ptr @scr_record_view_field(ptr ${obj}, ptr ${own}, ${wordsOffset}, ${sizeType} ${position})`,
+    );
+    return ptr;
+  }
   const isView = B.tmp();
   for (const line of recordViewTestLines(sizeType, obj, isView)) B.line(line.trimStart());
   const from = B.currentLabel();
@@ -180,7 +194,7 @@ export function recordViewFieldPtr(
   declare(`declare ptr @scr_record_view_slot(ptr, ${sizeType}, ${sizeType})`);
   const viewed = B.tmp();
   B.line(
-    `${viewed} = call ptr @scr_record_view_slot(ptr ${obj}, ${sizeType} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${words.record}) to ${sizeType}), ${sizeType} ${position})`,
+    `${viewed} = call ptr @scr_record_view_slot(ptr ${obj}, ${wordsOffset}, ${sizeType} ${position})`,
   );
   B.br(join);
   B.startBlock(join);

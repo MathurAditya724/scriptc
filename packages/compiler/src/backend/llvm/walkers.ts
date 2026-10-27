@@ -294,6 +294,7 @@ export class LlWalkers {
         index - base,
         recordViewWords(shape.fields.length, base),
         (decl) => this.host.declare(decl),
+        this.host.rcMode === undefined,
       );
     } else {
       p = B.tmp();

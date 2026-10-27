@@ -4424,6 +4424,19 @@ void *scr_record_view_slot(void *view, size_t words, size_t position) {
   return (char *)slots[0] + offsets[position];
 }
 
+/* The address of field `position` of a value of a view target type, `own`
+ * being its own slot (the unoptimized builds' guard): the viewed record's
+ * slot for a view, whose word is the frozen bit plus a count. */
+void *scr_record_view_field(void *value, void *own, size_t words, size_t position) {
+  size_t word = *(const size_t *)value;
+#if SIZE_MAX > UINT32_MAX
+  bool view = word - SCR_RC_FROZEN < ((size_t)1 << 32);
+#else
+  bool view = word - SCR_RC_FROZEN < SCR_RC_FROZEN;
+#endif
+  return view ? scr_record_view_slot(value, words, position) : own;
+}
+
 /* A view itself counts like any record (its target's retain). */
 static void *scr_record_view_retain(void *view) {
   if (!scr_rc_immortal(view)) SCR_RC_COUNT(view)++;
