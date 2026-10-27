@@ -370,6 +370,8 @@ export function prepareNativeExecutable(
   const exclusions = { outputPaths, outputDirectories: [...directories] };
   const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
   let key: string | null = null;
+  // The entry this build replaces: its probes give the digests of unchanged files.
+  let previous: FrontendInputSnapshot | undefined;
   if (cache !== null && irInput === "" && provenanceSources() === null) {
     try {
       key = contentDigest(
@@ -389,6 +391,7 @@ export function prepareNativeExecutable(
         timing("frontend-cache-hit");
         return cached.input;
       }
+      if (cached !== null) previous = cached.stale.probes;
       const equivalent =
         cached === null || outputKind === "ir"
           ? null
@@ -403,7 +406,7 @@ export function prepareNativeExecutable(
     }
   }
   timing("frontend-cache-miss");
-  const tracker = new FrontendInputTracker();
+  const tracker = new FrontendInputTracker(previous);
   const prepared =
     irInput !== ""
       ? preparedFromIr(irInput, entry, options)

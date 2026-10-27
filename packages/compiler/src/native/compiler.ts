@@ -28,6 +28,7 @@ import {
   requireNativeArtifact,
   runNativeTool,
   verifyNativeHelper,
+  type NativeHelperVerification,
 } from "../backend/native-tools.js";
 import {
   type NativeRuntimeSelection,
@@ -192,6 +193,44 @@ export class NativeCompiler {
     };
   }
 
+  /** The helpers whose `version` answer this cache recorded, by file identity:
+   * the probe runs again only when the helper file changes. */
+  private helperVerification(): { verified?: NativeHelperVerification } {
+    const cache = this.cache;
+    const toolchain = this.toolchain;
+    if (cache === null) return {};
+    let identity: string;
+    let key: string;
+    try {
+      identity = nativeFileIdentity(toolchain.helperExecutable);
+      key = contentDigest(
+        JSON.stringify({
+          schema: 1,
+          helper: identity,
+          compiler: nativeFileIdentity(process.execPath),
+          version: toolchain.compilerVersion,
+          target: toolchain.target.name,
+          package: toolchain.helper.packageName,
+        }),
+      );
+    } catch {
+      return {};
+    }
+    return {
+      verified: {
+        known: () => cache.read("helper", key) !== null,
+        remember: () => {
+          try {
+            if (nativeFileIdentity(toolchain.helperExecutable) === identity)
+              cache.write("helper", key, "verified\n");
+          } catch {
+            /* A failed write only means probing again next time. */
+          }
+        },
+      },
+    };
+  }
+
   private emitObject(
     input: string,
     output: string,
@@ -211,6 +250,7 @@ export class NativeCompiler {
       compilerVersion: toolchain.compilerVersion,
       target: toolchain.target,
       helper: toolchain.helper,
+      ...this.helperVerification(),
     };
     let key: string | null = null;
     let identity: string | null = null;
@@ -266,11 +306,7 @@ export class NativeCompiler {
         ? null
         : this.cache.partitionDirectory(identity);
     const { profileMatch } = emitNativeObject({
-      executable: toolchain.helperExecutable,
-      packageRoot: toolchain.helperPackageRoot,
-      compilerVersion: toolchain.compilerVersion,
-      target: toolchain.target,
-      helper: toolchain.helper,
+      ...helperOptions,
       inputPath: input,
       outputPath: output,
       sourcePath: source,
