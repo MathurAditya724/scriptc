@@ -103,6 +103,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_mime.c", "mime"],
   // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
   ["scr_text_pages.c", "largePages"],
+  ["scr_webstreams.c", "webStreams"],
+  ["scr_dyn_handle_class.c", "webStreams"],
   ["scr_util_timing.c", "utilTiming"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   ["scr_symbol.c", "symbol"],
@@ -210,6 +212,15 @@ export function variantsFor(source) {
       id: "warning-replace",
       when: { warningReplace: true },
       defines: ["SCR_WARNING_REPLACE"],
+    });
+  }
+  // Programs with web streams link the promise unit with native promise
+  // reactions; every other program keeps the default object.
+  if (source === "scr_async.c") {
+    variants.push({
+      id: "native-reactions",
+      when: { webStreams: true },
+      defines: ["SCR_NATIVE_REACTIONS"],
     });
   }
   // stdin setEncoding, string data listeners and stdio 'resize' events.

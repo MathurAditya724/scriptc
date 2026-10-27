@@ -90,6 +90,7 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
+import { lowerWebStreamNew, lowerWebStreamStaticCall } from "./builtins/web-streams-dyn.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
 import { iterableSlotValue } from "./iterable-values.js";
@@ -15082,6 +15083,7 @@ export class Lowerer {
       lowerStaticFetchCompanionCall(this, expr) ??
       lowerStaticAbortControllerCall(this, expr) ??
       lowerStaticAbortSignalListenerCall(this, expr) ??
+      lowerWebStreamStaticCall(this, expr) ??
       lowerStaticReadableStreamCancelCall(this, expr) ??
       lowerStaticReadableStreamControllerCall(this, expr) ??
       lowerStaticReadableStreamReaderCall(this, expr) ??
@@ -15334,6 +15336,7 @@ export class Lowerer {
       lowerBlobNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
+      lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
       lowerStaticTransformStreamNew(this, expr) ??
       lowerConsoleNew(this, expr);

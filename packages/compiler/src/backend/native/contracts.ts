@@ -131,6 +131,9 @@ export interface CcOptions {
   mime?: boolean;
   /** `--large-pages`: compiles scr_text_pages.c. */
   largePages?: boolean;
+  /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
+   * scr_dyn_handle_class.c. */
+  webStreams?: boolean;
   /** util.debounce and util.throttle: compiles scr_util_timing.c. */
   utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:

@@ -248,6 +248,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.eventsOnceSignal === true, "scr_events_once_signal.c"),
   unit((u) => u.opts.mime === true, "scr_mime.c"),
   unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
+  unit((u) => u.opts.webStreams === true, "scr_webstreams.c"),
+  unit((u) => u.opts.webStreams === true, "scr_dyn_handle_class.c"),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
@@ -390,6 +392,8 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
+  // scr_async.c's native promise reactions, which the web streams unit uses.
+  { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
 ];
 

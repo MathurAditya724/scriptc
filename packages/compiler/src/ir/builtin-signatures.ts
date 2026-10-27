@@ -1178,6 +1178,8 @@ function buildLibFnSignatures() {
     "util.diff": { argTypes: [DYN, DYN], result: DYN },
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    "webstream.class": { argTypes: [F64], result: DYN },
+    "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
     "mime.typeNew": { argTypes: [DYN, DYN], result: DYN },
     "mime.typeParse": { argTypes: [DYN], result: DYN },
     "mime.paramsNew": { argTypes: [], result: DYN },

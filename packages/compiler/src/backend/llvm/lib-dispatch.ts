@@ -1239,6 +1239,11 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "navigator":
     case "mime":
       return host.emitGenericLibCall(e);
+    case "webstream":
+      // A stream's start, pull and cancel steps run as promise jobs, so
+      // a program with the classes runs its event loop.
+      if (e.fn === "webstream.class") host.usesTimers = true;
+      return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
     case "tls":

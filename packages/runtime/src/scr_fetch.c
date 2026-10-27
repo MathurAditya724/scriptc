@@ -2266,6 +2266,9 @@ ScrDyn *scr_fetch_stream_from_string(ScrStr *iterable) {
 }
 
 bool scr_fetch_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx) {
+  if (scr_web_reader_read_into_fn && reader && reader->kind == SCR_DYN_HANDLE &&
+      reader->v.handle.tag == SCR_DYNH_WS_READER)
+    return scr_web_reader_read_into_fn(reader, sink, ctx);
   if (!reader || reader->kind != SCR_DYN_HANDLE ||
       reader->v.handle.tag != SCR_DYNH_WEB_READER) {
     sf_type_error("Expected a ReadableStreamDefaultReader");
@@ -2275,6 +2278,18 @@ bool scr_fetch_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, vo
 }
 
 ScrPromise *scr_fetch_reader_read(ScrDyn *reader) {
+  /* A checked-dynamic web stream's reader answers its own read(). */
+  if (reader && reader->kind == SCR_DYN_HANDLE && reader->v.handle.tag == SCR_DYNH_WS_READER) {
+    ScrDyn *result = scr_dyn_invoke(reader, "read", NULL, 0, "reader.read");
+    if (!result) {
+      ScrPromise *p = scr_promise_new();
+      scr_promise_reject_pending(p);
+      return p;
+    }
+    ScrPromise *p = scr_promise_retain(result->v.promise);
+    scr_dyn_release(result);
+    return p;
+  }
   if (!reader || reader->kind != SCR_DYN_HANDLE ||
       reader->v.handle.tag != SCR_DYNH_WEB_READER) {
     sf_type_error("Expected a ReadableStreamDefaultReader");
