@@ -225,7 +225,18 @@ static void scr_module_registry_cleanup(void) {
  * own cleanup only when the value is first materialized.  That is equivalent
  * at process exit and retains the RC-audit cleanup guarantee for the values a
  * program actually observes. */
+#if defined(__linux__) && !defined(SCR_LIB)
+/* The heap census of a program built with SCRIPTC_HEAP_CENSUS
+ * (heap-census.ts) writes its counters at exit, from here and from
+ * scr_process_exit; every other program leaves the weak reference null.
+ * Libraries have no census, and their archives declare no such symbol. */
+extern void scr_census_write(void) __attribute__((weak));
+#endif
+
 static void scr_lib_cleanup(void) {
+#if defined(__linux__) && !defined(SCR_LIB)
+  if (scr_census_write != NULL) scr_census_write();
+#endif
   scr_module_registry_cleanup();
   scr_arr_release(scr_argv_arr);
   scr_argv_arr = NULL;
@@ -716,8 +727,9 @@ ScrDyn *scr_process_versions(void) {
     scr_dyn_obj_set(scr_versions_object, "openssl", 7, scr_dyn_new_str(openssl));
     scr_str_release(node);
     scr_str_release(openssl);
-    for (size_t i = 0; i < scr_versions_object->v.obj.len; i++) {
-      scr_versions_object->v.obj.entries[i].writable = false;
+    for (size_t i = 0; i < scr_dyn_obj_count(scr_versions_object); i++) {
+      ScrDynProp prop = scr_dyn_obj_prop_at(scr_versions_object, i);
+      scr_dyn_obj_set_attrs_at(scr_versions_object, i, false, prop.enumerable, prop.configurable);
     }
     scr_atexit(&scr_versions_object_cleanup);
   }
@@ -914,8 +926,8 @@ static void scr_env_store(ScrDyn *out, const char *text, size_t ks, size_t ke,
 }
 
 static int scr_env_entry_order(const void *left, const void *right) {
-  const ScrDynEntry *a = *(const ScrDynEntry *const *)left;
-  const ScrDynEntry *b = *(const ScrDynEntry *const *)right;
+  const ScrDynProp *a = left;
+  const ScrDynProp *b = right;
   size_t n = a->key_len < b->key_len ? a->key_len : b->key_len;
   int cmp = memcmp(a->key, b->key, n);
   return cmp ? cmp : (a->key_len > b->key_len) - (a->key_len < b->key_len);
@@ -991,14 +1003,14 @@ static ScrDyn *scr_env_parse_content(const ScrStr *input, bool ordinary) {
   /* Node's std::map orders UTF-8 keys before installing object properties.
    * Ordinary objects ignore string-valued __proto__ assignments; loading
    * the native environment retains that name as an ordinary variable. */
-  size_t count = entries->v.obj.len;
-  const ScrDynEntry **sorted = count ? malloc(count * sizeof(*sorted)) : NULL;
+  size_t count = scr_dyn_obj_count(entries);
+  ScrDynProp *sorted = count ? malloc(count * sizeof(*sorted)) : NULL;
   if (count && !sorted) scr_trap("scriptc: out of memory\n");
-  for (size_t i = 0; i < count; i++) sorted[i] = &entries->v.obj.entries[i];
+  for (size_t i = 0; i < count; i++) sorted[i] = scr_dyn_obj_prop_at(entries, i);
   if (count > 1) qsort(sorted, count, sizeof(*sorted), scr_env_entry_order);
   ScrDyn *result = ordinary ? scr_dyn_new_obj() : scr_dyn_new_obj_null_proto();
   for (size_t i = 0; i < count; i++) {
-    const ScrDynEntry *entry = sorted[i];
+    const ScrDynProp *entry = &sorted[i];
     if (ordinary && entry->key_len == 9 && memcmp(entry->key, "__proto__", 9) == 0) continue;
     if (!ordinary) {
       scr_dyn_obj_set(result, entry->key, entry->key_len, scr_dyn_retain(entry->value));
@@ -1103,15 +1115,15 @@ void scr_process_load_env_file(const ScrDyn *value) {
   if (!content) return;
   ScrDyn *entries = scr_env_parse_content(content, false);
   scr_str_release(content);
-  for (size_t i = 0; i < entries->v.obj.len; i++) {
-    const ScrDynEntry *entry = &entries->v.obj.entries[i];
+  for (size_t i = 0; i < scr_dyn_obj_count(entries); i++) {
+    ScrDynProp entry = scr_dyn_obj_prop_at(entries, i);
     /* Node normalizes each raw sorted entry immediately before checking
      * the environment. Distinct invalid byte keys can normalize alike;
      * the first absent name wins, rather than the last parsed entry. */
-    ScrStr *key = scr_str_from_utf8_lossy((const uint8_t *)entry->key, entry->key_len);
+    ScrStr *key = scr_str_from_utf8_lossy((const uint8_t *)entry.key, entry.key_len);
     ScrStr *existing = scr_env_get(key);
     if (!existing) {
-      const ScrStr *raw = entry->value->v.str;
+      const ScrStr *raw = entry.value->v.str;
       ScrStr *value = scr_str_from_utf8_lossy((const uint8_t *)raw->data, raw->len);
       scr_env_set(key, value);
       scr_str_release(value);
@@ -2136,6 +2148,9 @@ void scr_process_exit(double code) {
   fflush(stdout);
 #if defined(__linux__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
+#ifndef SCR_LIB
+  if (scr_census_write != NULL) scr_census_write();
+#endif
   scr_detach_teardown();
 #endif
   _Exit((int)code);
@@ -2810,10 +2825,9 @@ ScrDyn *scr_process_release(void) {
 #endif
 #undef SCR_RELEASE_FILE
 #undef SCR_RELEASE_PREFIX
-    for (size_t i = 0; i < scr_release_object->v.obj.len; i++) {
-      scr_release_object->v.obj.entries[i].writable = false;
-      scr_release_object->v.obj.entries[i].configurable = false;
-    }
+    for (size_t i = 0; i < scr_dyn_obj_count(scr_release_object); i++)
+      scr_dyn_obj_set_attrs_at(scr_release_object, i, false,
+                               scr_dyn_obj_prop_at(scr_release_object, i).enumerable, false);
     scr_atexit(&scr_release_object_cleanup);
   }
   return scr_dyn_retain(scr_release_object);
@@ -6342,6 +6356,56 @@ ScrArr *scr_fs_readdir(ScrStr *path) {
   for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) scr_arr_push_ref(arr, scr_fs_scandir_name(scan, i));
   scr_fs_scandir_free(scan);
   return arr;
+}
+
+/* fs.readdirSync(path, { recursive: true }): Node's readdirSyncRecursive.
+ * Directories are listed in queue order: the base, then each directory in
+ * the order its entry was listed. Each entry's path is path.join of its
+ * directory and name; the result holds it relative to the base
+ * (path.relative). An entry stat(2) reports as a directory, a symlink to
+ * one included, joins the queue. */
+ScrArr *scr_fs_readdir_recursive(ScrStr *base) {
+  if (!scr_fs_path_ok(base, "path")) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+  size_t len = 1, cap = 8;
+  ScrStr **queue = malloc(cap * sizeof *queue);
+  if (!queue) scr_trap("scriptc: out of memory\n");
+  queue[0] = scr_str_retain(base);
+  bool failed = false;
+  for (size_t at = 0; at < len && !failed; at++) {
+    ScrScandir *scan = scr_fs_scandir(queue[at]);
+    if (!scan) {
+      failed = true;
+      break;
+    }
+    for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+      ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+      scr_arr_push_ref(parts, scr_str_retain(queue[at]));
+      scr_arr_push_ref(parts, scr_fs_scandir_name(scan, i));
+      ScrStr *full = scr_path_join(parts);
+      scr_arr_release(parts);
+      scr_arr_push_ref(out, scr_path_relative(base, full));
+      struct stat st;
+      if (stat(full->data, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (len == cap) {
+          cap *= 2;
+          queue = realloc(queue, cap * sizeof *queue);
+          if (!queue) scr_trap("scriptc: out of memory\n");
+        }
+        queue[len++] = full;
+      } else {
+        scr_str_release(full);
+      }
+    }
+    scr_fs_scandir_free(scan);
+  }
+  for (size_t i = 0; i < len; i++) scr_str_release(queue[i]);
+  free(queue);
+  if (failed) {
+    scr_arr_release(out);
+    return NULL;
+  }
+  return out;
 }
 
 /* ── the withFileTypes scandir snapshot ──────────────────────────────

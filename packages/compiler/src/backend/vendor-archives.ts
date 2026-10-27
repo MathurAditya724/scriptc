@@ -18,6 +18,12 @@ const execFileAsync = promisify(execFile);
  * runtime pack's executable_section_elimination flags). */
 const LRE_SECTION_FLAGS = ["-ffunction-sections", "-fdata-sections"];
 
+/** A vendored source's object file name: sources in subdirectories
+ * (zlib's contrib/optimizations/inflate.c) flatten to one directory. */
+function vendorObjectName(source: string): string {
+  return source.replaceAll("/", "-").replace(/\.c$/, ".o");
+}
+
 import {
   QJS_COMMIT,
   MBEDTLS_VERSION,
@@ -25,6 +31,7 @@ import {
   BROTLI_VERSION,
   LRE_SOURCES,
   ZLIB_SOURCES,
+  zlibInputs,
 } from "./vendor-inputs.js";
 export {
   QJS_COMMIT,
@@ -243,11 +250,18 @@ export function createVendorArchives(context: VendorArchiveContext) {
     return join(runtimeSrcDir(), "..", "vendor", "zlib");
   }
 
-  /** The vendored zlib TUs behind Zig zlib support: every root *.c
-   * except the gzFile file-I/O units (gz*.c — nothing in scr_zlib.c
-   * references the gzFile API, and those TUs alone want unistd/io headers).
-   * The default host-clang build links the system libz; Zig builds use this
-   * list so targetless and explicit-target Zig inputs stay on one toolchain. */
+  /** The vendored zlib TUs every C-lane build links (zlibInputs picks them
+   * per target; the gzFile file-I/O units are never compiled, nothing in
+   * scr_zlib.c references the gzFile API). */
+
+  /** The triple zlibInputs reads for a driver: its explicit target, else
+   * the host. */
+  function zlibTriple(driver: Pick<CcDriver, "target">): string {
+    if (driver.target !== null) return driver.target;
+    const cpu =
+      process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch;
+    return `${cpu}-${process.platform === "win32" ? "windows" : process.platform}`;
+  }
 
   function zlibObjectPaths(
     sanitize: boolean,
@@ -260,15 +274,15 @@ export function createVendorArchives(context: VendorArchiveContext) {
       (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
       `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
     const cacheDir = join(cacheRoot, `zlib-${ZLIB_VERSION}-${flavor}`);
-    return ZLIB_SOURCES.map((f) => join(cacheDir, f.replace(/\.c$/, ".o")));
+    return zlibInputs(zlibTriple(driver)).sources.map((f) => join(cacheDir, vendorObjectName(f)));
   }
 
   /** The zlib objects for one flavor, compiled lazily on the first zlib-using
-   * Zig build (~1s) and cached like the lre objects —
+   * C-lane build (~1s) and cached like the lre objects —
    * <build-cache>/vendor/zlib-<version>-<flavor>-<target>-<toolchain>/*.o — with the same atomic-rename
    * publish (parallel first builds race safely; losers discard their work).
-   * Plain is -Os, asan matches the final link so the sanitized lane
-   * instruments the codec too. The flavor keys the driver and target exactly
+   * Plain is -O3, as Node builds zlib; asan matches the final link so the
+   * sanitized lane instruments the codec too. The flavor keys the driver and target exactly
    * like the lre flavor: the keying
    * must never hand a zig-built object set to a clang link off a shared
    * directory. */
@@ -282,6 +296,7 @@ export function createVendorArchives(context: VendorArchiveContext) {
       (sanitize ? "asan" : "plain") +
       (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
       `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
+    const inputs = zlibInputs(zlibTriple(driver));
     return ensureVendorObjects({
       sanitize,
       driver,
@@ -289,8 +304,9 @@ export function createVendorArchives(context: VendorArchiveContext) {
       flavor,
       name: "zlib",
       vendor: vendorZlibDir(),
-      sources: ZLIB_SOURCES,
+      sources: inputs.sources,
       objects: zlibObjectPaths(sanitize, driver, buildIdentity, cacheRoot),
+      flags: [...(sanitize ? [] : ["-O3"]), ...inputs.defines.map((define) => `-D${define}`)],
     });
   }
 
@@ -327,7 +343,7 @@ export function createVendorArchives(context: VendorArchiveContext) {
             "-c",
             join(vendor, f),
             "-o",
-            join(buildDir, f.replace(/\.c$/, ".o")),
+            join(buildDir, vendorObjectName(f)),
           ],
           { cwd: buildDir },
         );

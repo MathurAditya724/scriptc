@@ -1,4 +1,5 @@
 /* LlEmitter's module-level output: module parts, helper definitions, library declarations and FFI callback definitions. */
+import { loopUnrollMetadata } from "./periodic-guards.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { emitWasmModules } from "./wasm-modules.js";
 import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
@@ -67,6 +68,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { targetCpuAttribute } from "../target-cpu.js";
 import { CPU_LEVEL_INIT_CALL, cpuDispatchAttributes, cpuLevelDefs } from "./cpu-dispatch.js";
 import type { IrFunction } from "../../ir/ir.js";
+import { type FunctionLayout, layoutTierOf } from "./function-layout.js";
 
 /** The function bodies emitted in `chunks` contiguous ranges, each by its
  * own emitter (LlEmitter.chunkEmitter), then merged in function order: the
@@ -197,19 +199,22 @@ function readRange(dir: string, range: number): { result: ChunkResult; texts: st
 
 /** The attribute groups of the emitted functions: #0 for every function,
  * #1 for coroutine bodies and #2 for out-of-line record clones. Each carries
- * the build's `--target-cpu` level, and `sanitize_address` in sanitized
- * builds. A group needs one attribute: without either, #0 holds a string
- * attribute that LLVM ignores. Dispatching builds add the x86-64-v3 copies'
- * #3 and #4 (cpu-dispatch.ts). */
+ * the build's `--target-cpu` level, `sanitize_address` in sanitized builds,
+ * and `uwtable` on native targets, so every function has an unwind table
+ * entry, including those LLVM infers `nounwind` (profilers and debuggers
+ * unwind through them). A group needs one attribute: without any, #0 holds a
+ * string attribute that LLVM ignores. Dispatching builds add the x86-64-v3
+ * copies' #3 and #4 (cpu-dispatch.ts). */
 function functionAttributes(emitter: LlEmitter, hasNoInlineRecordClone: boolean): string[] {
   const cpu = targetCpuAttribute(emitter.targetCpu);
   const asan = emitter.sanitizeAttributes ? " sanitize_address" : "";
-  const base = `${asan}${cpu}` || ` "scriptc-function"`;
+  const common = `${asan}${emitter.wasi ? "" : " uwtable"}`;
+  const base = `${common}${cpu}` || ` "scriptc-function"`;
   return [
     `attributes #0 = {${base} }`,
-    ...(emitter.usesCoroutines ? [`attributes #1 = {${asan} presplitcoroutine${cpu} }`] : []),
-    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline${asan}${cpu} }`] : []),
-    ...(emitter.cpuDispatch ? cpuDispatchAttributes(asan) : []),
+    ...(emitter.usesCoroutines ? [`attributes #1 = {${common} presplitcoroutine${cpu} }`] : []),
+    ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline${common}${cpu} }`] : []),
+    ...(emitter.cpuDispatch ? cpuDispatchAttributes(common) : []),
   ];
 }
 
@@ -232,6 +237,61 @@ function partitionGroupLines(functions: readonly IrFunction[]): string[] {
 
 /** Ends the group of the definitions that follow. */
 const PARTITION_GROUP_END = "; scriptc-group";
+
+/** Writes the generated helpers, then the function definitions with their
+ * group lines. With a layout, the definitions it lists, helpers included,
+ * move after the unlisted helpers and before the other functions, by tier,
+ * each in its tier's group (`layout-<tier>`). The helper compiles each
+ * partition's definitions in text order, so listed ones come first in their
+ * partitions, and it places a group's definitions in the same partitions.
+ * Everything else keeps its order and its source-file group. */
+function writeDefinitions(
+  out: string[],
+  layout: FunctionLayout | undefined,
+  helperTexts: readonly (readonly string[])[],
+  fnDefs: readonly string[],
+  groups: readonly string[],
+): void {
+  const tierLine = (tier: number) => `${PARTITION_GROUP_END} layout-${tier}`;
+  const listed = new Map<number, string[]>();
+  const listIn = (tier: number, lines: readonly string[]) => {
+    const list = listed.get(tier) ?? [];
+    if (!listed.has(tier)) listed.set(tier, list);
+    for (const line of lines) list.push(line);
+  };
+  if (layout === undefined || layout.size === 0) {
+    for (const texts of helperTexts) for (const text of texts) out.push(text);
+  } else {
+    // A helper's text can span several entries (one per line), so the
+    // definitions are found in the joined text. A listed definition moves
+    // through its closing brace; what follows it stays in place.
+    const joined: string[] = [];
+    for (const texts of helperTexts) for (const text of texts) joined.push(text);
+    for (const part of joined.join("\n").split(/\n(?=define )/)) {
+      const tier = part.startsWith("define ") ? layoutTierOf(layout, part) : undefined;
+      const close = tier === undefined ? -1 : part.search(/\n}(\n|$)/);
+      if (tier === undefined || close < 0) {
+        out.push(part);
+        continue;
+      }
+      listIn(tier, [tierLine(tier), part.slice(0, close + 2)]);
+      const rest = part.slice(close + 3);
+      if (rest !== "") out.push(rest);
+    }
+  }
+  const unlisted: number[] = [];
+  fnDefs.forEach((text, i) => {
+    const tier = layout === undefined || layout.size === 0 ? undefined : layoutTierOf(layout, text);
+    if (tier === undefined) unlisted.push(i);
+    else listIn(tier, ["", tierLine(tier), text]);
+  });
+  for (const tier of [...listed.keys()].sort((a, b) => a - b))
+    for (const line of listed.get(tier)!) out.push(line);
+  for (const [k, i] of unlisted.entries()) {
+    if (k > 0 || listed.size > 0) out.push("");
+    out.push(groups[i] ?? PARTITION_GROUP_END, fnDefs[i]!);
+  }
+}
 
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
@@ -948,21 +1008,24 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     );
   }
   if (globals.length > 0) out.push(``);
-  for (const line of helpers) out.push(line);
-  for (const line of ffiCallbacks.defs) out.push(line);
-  for (const line of shapes.defs) out.push(line);
-  for (const line of classShapes.defs) out.push(line);
-  for (const line of classObjDefs) out.push(line);
-  for (const line of emitter.walkers.defs) out.push(line);
-  for (const line of emitter.dyn.defs) out.push(line);
-  for (const line of wrappers) out.push(line);
-  for (const line of asyncDefs) out.push(line);
-  for (const line of emitter.resolveThunkDefs) out.push(line);
-  const groups = partitionGroupLines(emitter.mod.functions);
-  for (let i = 0; i < fnDefs.length; i++) {
-    if (i > 0) out.push("");
-    out.push(groups[i] ?? PARTITION_GROUP_END, fnDefs[i]!);
-  }
+  writeDefinitions(
+    out,
+    emitter.targetOptions.functionLayout,
+    [
+      helpers,
+      ffiCallbacks.defs,
+      shapes.defs,
+      classShapes.defs,
+      classObjDefs,
+      emitter.walkers.defs,
+      emitter.dyn.defs,
+      wrappers,
+      asyncDefs,
+      emitter.resolveThunkDefs,
+    ],
+    fnDefs,
+    partitionGroupLines(emitter.mod.functions),
+  );
   if (fnDefs.length === 0) out.push("");
   out.push(PARTITION_GROUP_END, "");
   // WebAssembly modules translated into this program, and the registry.
@@ -1040,6 +1103,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     out.push(...functionAttributes(emitter, hasNoInlineRecordClone));
     out.push(``);
     out.push(...emitter.fieldAliasMetadata());
+    out.push(...loopUnrollMetadata(out));
     if (emitter.debug !== null) out.push(emitter.debug.render());
     return out;
   }
@@ -1215,6 +1279,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     );
   }
   out.push(...emitter.fieldAliasMetadata());
+  out.push(...loopUnrollMetadata(out));
   if (emitter.debug !== null) out.push(emitter.debug.render());
   return out;
 }

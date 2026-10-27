@@ -105,6 +105,8 @@ import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import {
   ambientDtsPath,
   fallbackDtsPath,
+  fallbackModulesNamedIn,
+  isFallbackDtsPath,
   isNodeTypesPath,
   overridesDtsPath,
   tsgoPath,
@@ -147,7 +149,12 @@ import {
 } from "./decl-projection.js";
 import { configureTypePatches, packageSourceText } from "./type-patches/layer.js";
 import { resetDeclOriginVersions } from "./lowering/decl-origin.js";
-import { reportShapes } from "./shape-inference/index.js";
+import {
+  reportShapes,
+  resetShapeOverlay,
+  shapeOverlayEnabled,
+  shapeOverlayer,
+} from "./shape-inference/index.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
   containsJsx,
@@ -626,6 +633,27 @@ function externalTypeFileClosure7(
   return new Map([...ownersByFile].map(([file, owners]) => [file, [...owners]] as const));
 }
 
+/** The fallback declaration files of the Node modules the program's files
+ * name (fallbackModulesNamedIn) that the program does not hold yet. Each
+ * file is read as tsgo reads it; the TypeScript libraries and scriptc's own
+ * declarations name no module that needs a file. */
+function fallbackModuleRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
+  const names = program.getSourceFileNames();
+  const held = new Set(names.filter(isFallbackDtsPath).map((name) => tsgoPath(name)));
+  const ambient = ambientDtsPath();
+  const overrides = overridesDtsPath();
+  const roots = new Set<string>();
+  for (const name of names) {
+    const path = tsgoPath(name);
+    if (held.has(path) || path === ambient || path === overrides) continue;
+    if (/\/lib\.[^/]*\.d\.ts$/.test(path) && program.getSourceFileMetadata(name)?.isDefaultLibrary)
+      continue;
+    for (const file of fallbackModulesNamedIn(host.sourceText(name) ?? ""))
+      if (!held.has(file)) roots.add(file);
+  }
+  return [...roots];
+}
+
 /** Program roots hidden behind canonical createRequire bindings. tsgo
  * discovers ordinary import/require edges itself, but a source binding
  * returned by createRequire is intentionally just a function to the type
@@ -869,6 +897,9 @@ function loadProgram7(
   /** The declaration-typed boundary's projection (decl-projection.ts):
    * answers rewritten user files for the lowering world, or null. */
   projector?: (program: ts.Program) => DeclProjection | null,
+  /** Shape inference's typed overlay (shape-inference/overlay.ts):
+   * rewritten package JavaScript for the lowering world, or null. */
+  overlayer?: (program: ts.Program) => ReadonlyMap<string, string> | null,
 ): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
   const configuredPaths = config.options["paths"];
@@ -910,12 +941,23 @@ function loadProgram7(
     }
     options = { ...options, paths };
   }
-  const coreRoots = [entryPath, ambientDtsPath(), nodeTypes ?? fallbackDtsPath()];
+  // Without @types/node the fallback declarations stand in: the core file,
+  // and a Node module's file once a program file names the module
+  // (fallbackModuleRoots7). The modules the entry names join the first
+  // program.
+  const coreRoots = [
+    entryPath,
+    ambientDtsPath(),
+    ...(nodeTypes === null
+      ? [fallbackDtsPath(), ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? "")]
+      : [nodeTypes]),
+  ];
   const programRoots = [...coreRoots];
   let program = host.createProgram([...programRoots, overridesDtsPath()], options);
   try {
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
+        ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
         ...entryPackageProgramRoots7(program, entryPath, rootNpmStaticEdges),
         ...createRequireProgramRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
@@ -1008,6 +1050,26 @@ function loadProgram7(
             declWorldFallback: true,
           };
         }
+      }
+    }
+    // Shape inference's overlay: package files typed from proven facts. The
+    // tsc gate keeps reading the files as written.
+    // A load without the overlay must not see an earlier load's overlay
+    // files (the registry is per process).
+    resetShapeOverlay();
+    if (overlayer !== undefined && jsx.refusal === null) {
+      const overlay = overlayer(program);
+      if (overlay !== null && overlay.size > 0) {
+        const before = program;
+        for (const [file, text] of overlay) host.addVirtualFile(file, text);
+        program = host.createProgram([...programRoots, overridesDtsPath()], options);
+        if (tscWorld === undefined)
+          tscWorld = {
+            program: before,
+            diagnostics: ts.getPreEmitDiagnostics(before),
+            projectWorld: null,
+          };
+        else if (tscWorld.program !== before) before.dispose();
       }
     }
     const entry = program.getSourceFile(entryPath);
@@ -1277,6 +1339,7 @@ export function loadProgram(
       externalTypes,
       npmStaticPackages.length > 0,
       projector,
+      npmStaticPackages.length > 0 && shapeOverlayEnabled() ? shapeOverlayer : undefined,
     );
     // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
     const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];
@@ -5066,7 +5129,7 @@ function laterJobCallee7(checker: ts.TypeChecker, callee: ts.Expression): boolea
   // package declarations describe user code.
   return decls.every((d) => {
     const file = ts.getSourceFileOfNode(d).fileName;
-    return isNodeTypesPath(file) || file === fallbackDtsPath();
+    return isNodeTypesPath(file) || isFallbackDtsPath(file);
   });
 }
 
@@ -7198,7 +7261,13 @@ const nodeBuiltinNames: ReadonlySet<string> = new Set(builtinModules);
  * established (the phase-2 port kept every spelling); the world-neutral
  * helpers re-export from their focused modules. */
 
-export { ambientDtsPath, fallbackDtsPath, isNodeTypesPath, overridesDtsPath } from "./dts-paths.js";
+export {
+  ambientDtsPath,
+  fallbackDtsPath,
+  isFallbackDtsPath,
+  isNodeTypesPath,
+  overridesDtsPath,
+} from "./dts-paths.js";
 
 export {
   builtinDefaultImportModule,

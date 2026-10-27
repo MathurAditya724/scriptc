@@ -21,7 +21,12 @@ import {
   platformLinkerSupportsPersistentCache,
   resolvePlatformLinker,
 } from "./linker.js";
-import { MACOS_ARM64_TARGET, WINDOWS_X64_MSVC_TARGET, type NativeTargetSpec } from "./targets.js";
+import {
+  LINUX_X64_GNU_TARGET,
+  MACOS_ARM64_TARGET,
+  WINDOWS_X64_MSVC_TARGET,
+  type NativeTargetSpec,
+} from "./targets.js";
 
 const VERSION = compilerReleaseVersion();
 
@@ -129,7 +134,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 46, marker: "scr_runtime_abi_v46" },
+    runtime_abi: { version: 47, marker: "scr_runtime_abi_v47" },
     compiler: {
       command: "clang",
       identity: "fixture clang",
@@ -240,6 +245,25 @@ describe("runtime pack manifests", () => {
     expect(defaultPlan.driverFlags).not.toContain("-Wl,--subsystem,windows");
     expect(consolePlan.driverFlags).toEqual(defaultPlan.driverFlags);
     expect(guiPlan.driverFlags).toEqual([...defaultPlan.driverFlags, "-Wl,--subsystem,windows"]);
+  });
+
+  test("Linux runtime-pack links are static PIE only when requested", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    const defaultPlan = await createNativeLinkPlan(options);
+    const staticPlan = await createNativeLinkPlan({ ...options, staticLink: true });
+    expect(defaultPlan.driverFlags).not.toContain("-static-pie");
+    expect(defaultPlan.staticLink).toBeUndefined();
+    expect(staticPlan.driverFlags).toEqual([...defaultPlan.driverFlags, "-static-pie"]);
+    expect(staticPlan.staticLink).toBe(true);
   });
 
   test("selection chooses the most-specific variant and feature archive", async () => {

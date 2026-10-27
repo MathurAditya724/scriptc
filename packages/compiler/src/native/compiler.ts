@@ -28,6 +28,7 @@ import {
   requireNativeArtifact,
   runNativeTool,
   verifyNativeHelper,
+  type NativeHelperVerification,
 } from "../backend/native-tools.js";
 import {
   type NativeRuntimeSelection,
@@ -39,6 +40,7 @@ import {
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
 import {
   NativeCodegenError,
+  nativeCodegenParts,
   nativePartitionPaths,
   nativeProgramPartitions,
 } from "../backend/native-codegen-core.js";
@@ -63,19 +65,39 @@ import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cach
 import {
   nativeProfileKey,
   nativeProfileRefusal,
+  parseNativeProfileMatch,
+  type NativeProfileMatch,
   type NativeProfileOptions,
 } from "../backend/native-profile.js";
 import { splitLlvmLibraryProgram } from "../backend/llvm/split.js";
 import { prepareNativeExecutable, prepareNativeLibrary } from "./prepare.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
-import { lldLinkerArgs } from "../backend/lld.js";
+import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
 import { openNativeExecutableCache } from "./executable-cache.js";
 import { LinkerJobs } from "./linker-job.js";
 import { nativeFileIdentity } from "./file-identity.js";
+import {
+  staticExecutableRefusal,
+  staticLinkFailureNote,
+  staticLinkMapArgs,
+  staticLinkRefusal,
+} from "../backend/targets.js";
 
 /** The first partition keeps the whole-object key used before partitioning. */
 function partitionCacheKey(key: string, index: number): string {
   return index === 0 ? key : contentDigest(`${key}:${index}`);
+}
+
+/** The object cache entry that holds a cached program's profile match. */
+function profileMatchCacheKey(key: string): string {
+  return contentDigest(`${key}:profile-match`);
+}
+
+/** A program's native objects, and how a --profile-use build's profile
+ * matched its functions. */
+interface NativeObjects {
+  paths: string[];
+  profileMatch?: NativeProfileMatch;
 }
 
 function failure(error: unknown, entry: string, sources: Map<string, string>): CompileFailure {
@@ -177,6 +199,44 @@ export class NativeCompiler {
     };
   }
 
+  /** The helpers whose `version` answer this cache recorded, by file identity:
+   * the probe runs again only when the helper file changes. */
+  private helperVerification(): { verified?: NativeHelperVerification } {
+    const cache = this.cache;
+    const toolchain = this.toolchain;
+    if (cache === null) return {};
+    let identity: string;
+    let key: string;
+    try {
+      identity = nativeFileIdentity(toolchain.helperExecutable);
+      key = contentDigest(
+        JSON.stringify({
+          schema: 1,
+          helper: identity,
+          compiler: nativeFileIdentity(process.execPath),
+          version: toolchain.compilerVersion,
+          target: toolchain.target.name,
+          package: toolchain.helper.packageName,
+        }),
+      );
+    } catch {
+      return {};
+    }
+    return {
+      verified: {
+        known: () => cache.read("helper", key) !== null,
+        remember: () => {
+          try {
+            if (nativeFileIdentity(toolchain.helperExecutable) === identity)
+              cache.write("helper", key, "verified\n");
+          } catch {
+            /* A failed write only means probing again next time. */
+          }
+        },
+      },
+    };
+  }
+
   private emitObject(
     input: string,
     output: string,
@@ -186,7 +246,8 @@ export class NativeCompiler {
     partitions = 1,
     profile?: NativeProfileOptions,
     llvmDigest: () => string = () => fileDigest(input),
-  ): string[] {
+    splitCodegen = false,
+  ): NativeObjects {
     const toolchain = this.toolchain;
     const outputs = nativePartitionPaths(output, partitions);
     const helperOptions = {
@@ -195,6 +256,7 @@ export class NativeCompiler {
       compilerVersion: toolchain.compilerVersion,
       target: toolchain.target,
       helper: toolchain.helper,
+      ...this.helperVerification(),
     };
     let key: string | null = null;
     let identity: string | null = null;
@@ -213,6 +275,7 @@ export class NativeCompiler {
             identity: readFileSync(join(toolchain.helperPackageRoot, "package.json"), "utf8"),
             version: toolchain.compilerVersion,
             ...(partitions > 1 ? { partitions } : {}),
+            ...(splitCodegen ? { split: "codegen" } : {}),
             ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
           }),
         );
@@ -223,7 +286,20 @@ export class NativeCompiler {
           verifyNativeHelper(helperOptions);
           if (nativeFileIdentity(toolchain.helperExecutable) === identity) {
             cached.forEach((bytes, index) => writeFileSync(outputs[index]!, bytes!));
-            return outputs;
+            if (profile?.use === undefined) return { paths: outputs };
+            // Without the cached match, every partition's counts are unknown.
+            const match = this.cache.read("object", profileMatchCacheKey(key));
+            return {
+              paths: outputs,
+              profileMatch: (match === null
+                ? null
+                : parseNativeProfileMatch(match.toString("utf8"))) ?? {
+                annotated: 0,
+                mismatched: 0,
+                missing: 0,
+                unknownPartitions: outputs.length,
+              },
+            };
           }
           key = null;
         }
@@ -232,35 +308,47 @@ export class NativeCompiler {
       }
     }
     const partitionCache =
-      this.cache === null || identity === null || partitions < 2
+      this.cache === null || identity === null || partitions < 2 || splitCodegen
         ? null
         : this.cache.partitionDirectory(identity);
-    emitNativeObject({
-      executable: toolchain.helperExecutable,
-      packageRoot: toolchain.helperPackageRoot,
-      compilerVersion: toolchain.compilerVersion,
-      target: toolchain.target,
-      helper: toolchain.helper,
+    const { profileMatch } = emitNativeObject({
+      ...helperOptions,
       inputPath: input,
       outputPath: output,
       sourcePath: source,
       optimization,
       outputKind,
       partitions,
+      ...(splitCodegen ? { splitCodegen } : {}),
       ...(partitionCache === null ? {} : { partitionCache }),
       ...(profile === undefined ? {} : { profile }),
     });
     if (this.cache !== null && key !== null) {
       try {
-        if (nativeFileIdentity(toolchain.helperExecutable) === identity)
+        if (nativeFileIdentity(toolchain.helperExecutable) === identity) {
+          // The match goes in first: a reader that finds every partition finds it too.
+          if (profileMatch !== null)
+            this.cache.write(
+              "object",
+              profileMatchCacheKey(key),
+              `${JSON.stringify({
+                profile: {
+                  annotated: profileMatch.annotated,
+                  mismatched: profileMatch.mismatched,
+                  missing: profileMatch.missing,
+                  unknown_partitions: profileMatch.unknownPartitions,
+                },
+              })}\n`,
+            );
           outputs.forEach((path, index) =>
             this.cache!.write("object", partitionCacheKey(key!, index), readFileSync(path)),
           );
+        }
       } catch {
         /* An updated helper or unavailable cache only prevents reuse. */
       }
     }
-    return outputs;
+    return profileMatch === null ? { paths: outputs } : { paths: outputs, profileMatch };
   }
 
   private emitProgramObject(
@@ -272,7 +360,7 @@ export class NativeCompiler {
     library: boolean,
     profile?: NativeProfileOptions,
     llvmDigest?: () => string,
-  ): string[] {
+  ): NativeObjects {
     // Library archives merge dev shards relocatably; executables link the
     // helper's program partitions directly.
     const llvm =
@@ -281,7 +369,11 @@ export class NativeCompiler {
         : null;
     const split = llvm === null ? null : splitLlvmLibraryProgram(llvm);
     if (split === null) {
-      const partitions = library ? 1 : nativeProgramPartitions(statSync(input).size);
+      const size = statSync(input).size;
+      // An optimized program that stays one partition is optimized whole and
+      // generates code for its parts concurrently.
+      const codegenParts = library || optimization === "dev" ? 1 : nativeCodegenParts(size);
+      const partitions = library ? 1 : Math.max(nativeProgramPartitions(size), codegenParts);
       return this.emitObject(
         input,
         output,
@@ -291,6 +383,7 @@ export class NativeCompiler {
         partitions,
         profile,
         llvmDigest,
+        codegenParts > 1,
       );
     }
     const objects: string[] = [];
@@ -303,7 +396,7 @@ export class NativeCompiler {
     }
     const merged = localizeNativeLibrary(this.toolchain, stage, objects, [], split.publicSymbols);
     renameSync(merged, output);
-    return [output];
+    return { paths: [output] };
   }
 
   compile(entry: string, options: CompileRequestOptions): CompileRequestResult {
@@ -353,6 +446,13 @@ export class NativeCompiler {
         platform: target.platform,
       });
       if (profileRefusal !== null) throw new NativeCodegenError("SC3002", profileRefusal);
+      const staticRefusal = staticLinkRefusal({
+        staticLink: options.staticLink,
+        outputKind,
+        sanitize: options.sanitize ?? false,
+        target,
+      });
+      if (staticRefusal !== null) throw new NativeCodegenError("SC3002", staticRefusal);
       const profile = nativeProfile(options);
       let ffi: FfiProfile | null = null;
       if (options.ffiProfilePath !== undefined) {
@@ -427,6 +527,9 @@ export class NativeCompiler {
       const kept = executableCache?.keep(output) ?? false;
       const restored = kept || (executableCache?.restore(stagedOutput) ?? false);
       timing(restored ? "executable-cache-hit" : "executable-cache-miss");
+      // The executable cache leaves out --profile-use builds, so this is set
+      // whenever the build has a profile to report.
+      let profileMatch: NativeProfileMatch | undefined;
       if (!restored) {
         // A missing or invalid runtime pack fails before code generation.
         if (outputKind === "exe") selectPack();
@@ -440,8 +543,8 @@ export class NativeCompiler {
             object,
           ]);
           requireNativeArtifact(object);
-        } else if (outputKind === "exe")
-          programObjects = this.emitProgramObject(
+        } else if (outputKind === "exe") {
+          const objects = this.emitProgramObject(
             llvmInput,
             object,
             entry,
@@ -451,7 +554,9 @@ export class NativeCompiler {
             profile,
             digestLlvm,
           );
-        else
+          programObjects = objects.paths;
+          profileMatch = objects.profileMatch;
+        } else
           this.emitObject(
             llvmInput,
             object,
@@ -515,6 +620,7 @@ export class NativeCompiler {
           runtimeSystemLibraries: runtime.systemLibraries,
           optimization,
           strip: options.strip ?? false,
+          staticLink: options.staticLink ?? false,
           ...(options.windowsSubsystem === undefined
             ? {}
             : { windowsSubsystem: options.windowsSubsystem }),
@@ -522,18 +628,25 @@ export class NativeCompiler {
         });
         // Linux links with lld when the driver finds it.
         const lld = options.sanitize ? [] : lldLinkerArgs(target.platform, toolchain.linker);
-        const linkArgs = [
+        const linkMap = join(stage, "link.map");
+        const mapArgs = staticLinkMapArgs(target, options.staticLink === true, linkMap);
+        const linkArgsWith = (withLld: boolean): string[] => [
           ...(options.sanitize ? ["-fsanitize=address"] : toolchain.linkerArgs),
-          ...lld,
+          ...(withLld ? lld : []),
           ...plan.driverFlags,
-          ...plan.inputs,
+          ...mapArgs,
+          ...(withLld ? plan.inputs : inputsWithoutLld(target.platform, plan.inputs)),
           ...systemLibraryLinkerArgs(target, plan.systemLibraries),
           "-o",
           stagedOutput,
         ];
+        const linkArgs = linkArgsWith(lld.length !== 0);
         // Host Linux links with lld run the linker job the driver would.
         const jobs = LinkerJobs.open(this.cache, toolchain, lld, options.sanitize ?? false);
-        const job = jobs?.link([...plan.inputs, stagedOutput], stage);
+        const job = jobs?.link(
+          [...plan.inputs, stagedOutput, ...(mapArgs.length === 0 ? [] : [linkMap])],
+          stage,
+        );
         const cacheable = executableCache?.trace(linkArgs, stage, job) ?? false;
         timing("link-inputs");
         // A successful dependency trace already produced this executable.
@@ -541,19 +654,26 @@ export class NativeCompiler {
         if (!cacheable && (job?.run(linkArgs, true) ?? null) === null) {
           const driver = options.sanitize ? sanitizerDriver(toolchain) : toolchain.linker;
           try {
-            runNativeTool(driver, linkArgs);
+            try {
+              runNativeTool(driver, linkArgs);
+            } catch (error) {
+              // A failed link with lld runs again with the driver's default
+              // linker, whose error (if any) is the one reported.
+              if (lld.length === 0) throw error;
+              runNativeTool(driver, linkArgsWith(false));
+            }
           } catch (error) {
-            // A failed link with lld runs again with the driver's default
-            // linker, whose error (if any) is the one reported.
-            if (lld.length === 0) throw error;
-            runNativeTool(
-              driver,
-              linkArgs.filter((arg) => !lld.includes(arg)),
-            );
+            const note = staticLinkFailureNote(target, options.staticLink === true);
+            if (note === "") throw error;
+            throw new Error(`${error instanceof Error ? error.message : String(error)}${note}`);
           }
         }
         timing("native-link");
         requireNativeArtifact(stagedOutput);
+        if (mapArgs.length !== 0) {
+          const refusal = staticExecutableRefusal(target, true, readFileSync(linkMap, "utf8"));
+          if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);
+        }
         if (target.platform === "darwin" && optimization === "dev" && !options.strip) {
           runNativeTool(toolchain.dsymutil, [stagedOutput, "-o", stagedOutput + ".dSYM"]);
         }
@@ -578,7 +698,13 @@ export class NativeCompiler {
         rmSync(output + ".dSYM", { recursive: true, force: true });
       return {
         ok: true,
-        artifact: { kind: "exe", path: output, translationUnitPath: llvmPath, backend: "llvm" },
+        artifact: {
+          kind: "exe",
+          path: output,
+          translationUnitPath: llvmPath,
+          backend: "llvm",
+          ...(profileMatch === undefined ? {} : { profileMatch }),
+        },
         binaryPath: output,
         llvmPath,
         backend: "llvm",

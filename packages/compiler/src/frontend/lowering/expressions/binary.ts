@@ -37,6 +37,7 @@ import {
   dynCompoundValue,
   lowerAbsenceProbe,
   lowerDynMemberAssignment,
+  lowerDereferencedElementAssignment,
   lowerOptionalNumber,
   lowerPresenceOperand,
   nullishBranches,
@@ -334,6 +335,25 @@ function isMemberReceiver(node: ts.Expression): boolean {
   );
 }
 
+/** A literal default (`0`, `-1`, `""`, `true`): it always has its own type.
+ * Other defaults, such as an element read that can be undefined, keep the
+ * dynamic path. */
+function literalDefault(node: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (
+    ts.isPrefixUnaryExpression(node) &&
+    (node.operator === ts.SyntaxKind.MinusToken || node.operator === ts.SyntaxKind.PlusToken)
+  )
+    node = node.operand;
+  return (
+    ts.isNumericLiteral(node) ||
+    ts.isStringLiteral(node) ||
+    ts.isNoSubstitutionTemplateLiteral(node) ||
+    node.kind === ts.SyntaxKind.TrueKeyword ||
+    node.kind === ts.SyntaxKind.FalseKeyword
+  );
+}
+
 export function lowerNullishPair(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -388,6 +408,26 @@ export function lowerNullishPair(
     lowerer.runtimeOptionalArithmeticTypes.set(expr, type);
   }
   if (type.kind === "dyn" && lowerer.dynConvertible(left.type)) {
+    // `counts.get(k) ?? 0` in JavaScript: a scalar optional left and a
+    // default of its value's type give a scalar, so the test and the default
+    // run on the typed path and only the result converts. Converting the
+    // optional left itself would allocate a union for every read.
+    if (
+      rest.length === 1 &&
+      primitive(rest[0]!) &&
+      rightType &&
+      typeEquals(rightType, rest[0]!) &&
+      literalDefault(expr.right)
+    ) {
+      const typed: IrExpr = {
+        kind: "nullish",
+        left,
+        right: lowerer.lowerExprExpecting(expr.right, rest[0]!),
+        type: rest[0]!,
+        loc,
+      };
+      return lowerer.coerceToExpected(typed, DYN);
+    }
     return {
       kind: "nullish",
       left: lowerer.coerceToExpected(left, DYN),
@@ -774,6 +814,12 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
             isUnitType(a),
         ) ??
         false);
+    // Checked-dynamic elements: the runtime's String() over the array's
+    // dyn form (its join, element by element).
+    if (elem.kind === "dyn") {
+      const boxed: IrExpr = { kind: "dynFrom", value: e, type: DYN, loc: e.loc };
+      return { kind: "toString", operand: boxed, type: STRING, loc: e.loc };
+    }
     if (
       elem.kind === "f64" ||
       elem.kind === "string" ||
@@ -1023,6 +1069,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       if (prototypeWrite) return prototypeWrite;
       const callableWrite = lowerNativeFunctionAssignment(lowerer, expr);
       if (callableWrite) return callableWrite;
+      const dereferenced = lowerDereferencedElementAssignment(lowerer, expr);
+      if (dereferenced) return dereferenced;
     }
     if (
       op === ts.SyntaxKind.QuestionQuestionEqualsToken ||

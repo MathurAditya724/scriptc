@@ -1,4 +1,5 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import { arrayClassDescriptor } from "./classes.js";
 import { InternalCompilerError } from "../../errors.js";
 import { newValueMayThrow } from "../../ir/analysis.js";
 import {
@@ -43,7 +44,7 @@ import {
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import {
-  CLOSURE_RECEIVER_FREE,
+  CLOSURE_KIND,
   f64Lit,
   ffiNativeTypeLl,
   ffiNativeParamLl,
@@ -818,7 +819,7 @@ export function emitCallExpr(
               `${fromPtr} = getelementptr inbounds %ScrClosure, ptr ${original}, i64 0, i32 4`,
             );
             B.line(`${from} = load i32, ptr ${fromPtr}`);
-            B.line(`${bit} = and i32 ${from}, ${CLOSURE_RECEIVER_FREE}`);
+            B.line(`${bit} = and i32 ${from}, ${CLOSURE_KIND.RECEIVER_FREE}`);
             B.line(`${toPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 4`);
             B.line(`${to} = load i32, ptr ${toPtr}`);
             B.line(`${kind} = or i32 ${to}, ${bit}`);
@@ -937,7 +938,7 @@ export function emitCallExpr(
             )
           : args;
       // An entry through the closure's own pointer brackets the call only
-      // when the closure may observe the receiver (SCR_FN_RECEIVER_FREE).
+      // when the closure may observe the receiver (SCR_CLOSURE_KIND_RECEIVER_FREE).
       const invoke = (
         target: string,
         bracket: boolean,
@@ -957,7 +958,7 @@ export function emitCallExpr(
               `${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${callee.name}, i64 0, i32 4`,
             );
             B.line(`${kind} = load i32, ptr ${kindPtr}`);
-            B.line(`${free} = and i32 ${kind}, ${CLOSURE_RECEIVER_FREE}`);
+            B.line(`${free} = and i32 ${kind}, ${CLOSURE_KIND.RECEIVER_FREE}`);
             B.line(`${observes} = icmp eq i32 ${free}, 0`);
             const push = B.newLabel("receiver.push"),
               pushed = B.newLabel("receiver.call");
@@ -1103,7 +1104,8 @@ export function emitCallExpr(
           `llvm emitter bug: new ${e.className} without a constructor`,
         );
       const o = B.tmp();
-      B.line(`${o} = call ptr @${mangleClassNew(e.className)}()`);
+      B.line(`${o} = call ptr @${host.allocSym(mangleClassNew(e.className), e)}()`);
+      host.heapCensus?.countNew((line) => B.line(line), e.className);
       const out = host.own({ name: o, type: e.type });
       emitConstruction(host, e, o, ctor);
       return out;
@@ -1235,6 +1237,17 @@ export function emitCallExpr(
       return host.own({ name: v.name, type: e.type });
     }
     case "instanceOf": {
+      // An array is an instance of a class declared `extends Array` when
+      // its ext names that class (scr_arr_class_of).
+      if (e.value.type.kind === "array") {
+        const v = emitBorrowedInputs(host, [e.value])[0]!;
+        host.declare(`declare ptr @scr_arr_class_of(ptr)`);
+        const cls = host.B.tmp();
+        const result = host.B.tmp();
+        host.B.line(`${cls} = call ptr @scr_arr_class_of(ptr ${v.name})`);
+        host.B.line(`${result} = icmp eq ptr ${cls}, ${arrayClassDescriptor(e.className)}`);
+        return { name: result, type: e.type };
+      }
       // O(1) preorder-interval test against the vtable the object
       // carries; the target's interval is a compile-time constant.
       if (e.value.type.kind !== "object")

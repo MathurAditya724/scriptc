@@ -114,6 +114,27 @@ export interface TiersEnvelope {
     message: string;
   })[];
   units: (TierUnitPosition & { requests: number; sites: number })[];
+  /** Localized failure (report-only): committed type failures that would
+   * become checked dynamic slots, and what they would clear. */
+  localizedFailure: {
+    errors: number;
+    typeFailures: { degradable: number; refused: number };
+    cascades: number;
+    clearedThroughL2: number;
+    clearedThroughL4: number;
+    remainingByCode: Record<string, number>;
+    slots: (SourcePosition & {
+      slot: string;
+      name: string;
+      declaredType: string;
+      family: string;
+      code: string;
+      message: string;
+      stage: string;
+      rejects?: string;
+      cascade: number;
+    })[];
+  };
 }
 
 export interface DiagnosticsEnvelope {
@@ -143,6 +164,17 @@ export interface DiagnosticsEnvelope {
   };
   /** build only: the produced artifact path. */
   artifact?: string;
+  /** coverage only, when there are any: the checked dynamic slots
+   * (localized failure, SC6104). */
+  dynamicSlots?: (SourcePosition & {
+    name: string;
+    kind: string;
+    declaredType: string;
+    code: string;
+    reason: string;
+    partial?: boolean;
+    dynamicOps: number;
+  })[];
   /** coverage --explain-dynamic only: the report-only tier assignment. */
   tiers?: TiersEnvelope;
   /** coverage only: the WebAssembly modules the build can see, with their
@@ -209,7 +241,7 @@ export function isDivergenceCode(code: string): boolean {
 }
 
 export function categoryOf(diag: ScrDiagnostic): DiagnosticCategory {
-  const code = diag.code;
+  const code: string = diag.code;
   if (isDivergenceCode(code)) return "divergence";
   if (isPerformanceCode(code)) return "performance";
   if (code === "SC0001") return diag.typeWorld === true ? "environment" : "invalid-source";
@@ -227,7 +259,7 @@ export function categoryOf(diag: ScrDiagnostic): DiagnosticCategory {
  * carries one. */
 export function hintOf(diag: ScrDiagnostic): string {
   if (diag.hint !== undefined && diag.hint !== "") return diag.hint;
-  const code = diag.code;
+  const code: string = diag.code;
   if (code === "SC0001")
     return "fix the TypeScript error; scriptc only compiles programs that typecheck under its type world (strict null checks, the ES2025 library, Node types)";
   if (code === "SC1090")

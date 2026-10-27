@@ -150,6 +150,10 @@ void scr_process_exit(double code);
  * helper process (Linux, `--detached-exit`). scr_lib.c defines a weak 0;
  * the program object of such an executable defines it as 1. */
 extern const unsigned char scr_detached_exit;
+/* The heap census writer of a program built with SCRIPTC_HEAP_CENSUS
+ * (heap-census.ts): that program's object defines it, and scr_lib.c calls
+ * it at exit through a weak reference (programs on Linux only). */
+void scr_census_write(void);
 void scr_process_set_exit_code(double code);
 double scr_process_exit_code_or_zero(void);
 /* The writer and the presence test of programs that read process.exitCode:
@@ -293,6 +297,7 @@ void scr_fs_mkdir(ScrStr *path);
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
 ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
+ScrArr *scr_fs_readdir_recursive(ScrStr *path); /* relative paths of every entry below path, Node's queue order */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
  * recursive algorithm (existing-dir target is a no-op; errors report

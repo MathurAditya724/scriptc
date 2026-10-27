@@ -2,6 +2,7 @@
 import type { NativeOptimization } from "./optimization.js";
 import {
   executableOptimizationLinkerArgs,
+  executableStaticLinkerArgs,
   executableStripLinkerArgs,
   windowsSubsystemLinkerArgs,
   type NativeTargetSpec,
@@ -28,6 +29,8 @@ export function executableLinkInputs(options: {
   runtimeSystemLibraries: readonly string[];
   optimization: NativeOptimization;
   strip?: boolean;
+  /** Link the C library and the other system libraries statically (`--static`). */
+  staticLink?: boolean;
   windowsSubsystem?: WindowsSubsystem;
   /** Instrumented for profile-guided optimization. */
   profileGenerate?: boolean;
@@ -65,6 +68,7 @@ export function executableLinkInputs(options: {
       ),
       ...executableOptimizationLinkerArgs(options.target.platform, options.optimization),
       ...executableStripLinkerArgs(options.target.platform, options.strip ?? false),
+      ...executableStaticLinkerArgs(options.target, options.staticLink ?? false),
       ...windowsSubsystemLinkerArgs(options.target.platform, options.windowsSubsystem),
       ...profileGenerateLinkerArgs(options.profileGenerate ?? false),
     ],
@@ -75,7 +79,7 @@ export function executableLinkInputs(options: {
  * links as needed: the runtime defines the libm functions most programs
  * reach (scr_glibc_math.c) and Math's transcendentals (scr_ieee754.c), so a
  * program that calls no other libm function, such as pow, starts without
- * loading libm.so. */
+ * loading libm.so when it links with lld (see inputsWithoutLld). */
 export function systemLibraryLinkerArgs(
   target: Pick<NativeTargetSpec, "platform">,
   names: readonly string[],

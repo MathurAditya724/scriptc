@@ -765,6 +765,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.rmSync",
   "fs.rmdirSync",
   "fs.readdirSync",
+  "fs.readdirRecursiveSync",
   "fs.readdirTypesSync",
   "fs.globSync",
   "fs.globTypesSync",
@@ -943,6 +944,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",
+  "net.connectPath",
+  "net.connectPathCb",
   // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.
   "net.sockResetAndDestroy",
   // SocketAddress's option checks and parse()'s input check.

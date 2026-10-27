@@ -57,8 +57,9 @@ export function canStackObject(host: LlvmEmitterContext, e: IrExpr): e is StackO
   if (e.type.kind === "record" && host.recordsById.get(e.type.shapeId)?.freezable === true)
     return false;
   // A producer with a result-slot entry builds its fresh result in the
-  // caller's storage.
-  if (e.kind === "call") return host.fnByName.has(resultEntryName(e.callee));
+  // caller's storage, unless the call roots a group: then the result goes
+  // in the group's arena with the objects it holds (arenas.ts).
+  if (e.kind === "call") return host.fnByName.has(resultEntryName(e.callee)) && !host.opensArena(e);
   if (e.kind === "recordLit") {
     if (e.type.kind !== "record") return false;
     const shape = host.recordsById.get(e.type.shapeId);

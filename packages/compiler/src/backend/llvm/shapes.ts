@@ -2,6 +2,7 @@
  * Containers store erased adapters; shape helpers retain, release and trace
  * their fields. Every allocation has a size_t reference count at offset zero
  * and participates in the runtime allocation audit. */
+import type { HeapCensus } from "./heap-census.js";
 import type { IrClassDef, IrModule, IrRecordShape, IrType } from "../../ir/ir.js";
 import {
   isIdentityCollectionKey,
@@ -35,6 +36,7 @@ import {
   emitObjectAlloc,
   emitObjectFree,
   emitSegmentFree,
+  type FreeObservers,
   CYC_APPEND,
   cycleAppendDecls,
   cycleAppendHelper,
@@ -59,6 +61,14 @@ import {
   type InlineUnionFields,
 } from "./inline-unions.js";
 import { JS_BITS, JS_TAGS } from "./jsval-encoding.js";
+import {
+  ARENA_RC,
+  arenaDisposeLines,
+  arenaDisposeSym,
+  arenaNewLines,
+  disposeFieldLines,
+  plainRefType,
+} from "./arenas.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -69,6 +79,8 @@ const CYC_MAX_TYPES = 32768;
 /** What the tables need from the emitter: the extern-declaration ledger
  * and the module-wide cycle/shape indexes. */
 export interface ShapeHost {
+  /** The counters of a build instrumented for the heap census (heap-census.ts). */
+  readonly heapCensus?: HeapCensus | null;
   /** Chunk emitters only (emit-journal.ts): EmitJournal's allocated, built,
    * opened, used and entry. */
   journalAllocated?: ((name: string, op: string, args: readonly unknown[]) => void) | undefined;
@@ -136,6 +148,13 @@ export interface ShapeHost {
    * allocate in regions and count references in their region chunk instead
    * of being empty (llvm/regions.ts). */
   regions?: RegionHooks | null;
+  /** Record shapes and classes with an arena-aware constructor
+   * (arenas.ts). */
+  arenaShapes?: ReadonlySet<string>;
+  arenaClasses?: ReadonlySet<string>;
+  /** Every arena the program opens is closed (ArenaPlan.allClosed): the
+   * arena-aware constructors take no dispose list. */
+  arenasClosed?: boolean;
   /** The target C ABI's `size_t` / refcount integer type. */
   readonly sizeType: "i32" | "i64";
   /** Worker executables: the inline allocator state is thread-local. */
@@ -1197,8 +1216,37 @@ export function arrNewCall(
   /** An empty array expected to receive a few elements (its first slots
    * live in its own block): capText must be "0". */
   small = false,
+  /** In the current group arena when one is open (arenas.ts). */
+  arena = false,
 ): string {
-  const useRef =
+  const r = arena ? "_r" : "";
+  const useRef = arrUsesRef(host, elem);
+  if (!useRef) {
+    if (small) {
+      host.declare(`declare ptr @scr_arr_new_small${r}(i32)`);
+      return `call ptr @scr_arr_new_small${r}(i32 ${elemKindNum(elem)})`;
+    }
+    host.declare(`declare ptr @scr_arr_new${r}(i32, ${host.sizeType})`);
+    return `call ptr @scr_arr_new${r}(i32 ${elemKindNum(elem)}, ${host.sizeType} ${capText})`;
+  }
+  if (small) {
+    host.declare(`declare ptr @scr_arr_new_ops_small${r}(ptr)`);
+    return `call ptr @scr_arr_new_ops_small${r}(ptr ${arrOps(host, elem)})`;
+  }
+  host.declare(`declare ptr @scr_arr_new_ops${r}(ptr, ${host.sizeType})`);
+  return `call ptr @scr_arr_new_ops${r}(ptr ${arrOps(host, elem)}, ${host.sizeType} ${capText})`;
+}
+
+/** The ScrElemKind and ops descriptor (or `null`) an array of `elem`
+ * starts with: the arrays arrNewCall constructs, for the instances of a
+ * class that extends Array (scr_arr_subclass_init). */
+export function arrElemInit(host: ShapeHost, elem: IrType): { kind: number; ops: string } {
+  if (!arrUsesRef(host, elem)) return { kind: elemKindNum(elem), ops: "null" };
+  return { kind: host.compactArrayElem?.(elem) === true ? 6 : 5, ops: arrOps(host, elem) };
+}
+
+function arrUsesRef(host: ShapeHost, elem: IrType): boolean {
+  return (
     elem.kind === "record" ||
     elem.kind === "object" ||
     elem.kind === "union" ||
@@ -1215,21 +1263,8 @@ export function arrNewCall(
     elem.kind === "dyn" || // native collection seeds/drains: traced REF
     elem.kind === "regex" || // RegExp values: scr_regex_* adapters, no trace (no refs inside)
     elem.kind === "date" || // Date objects: scr_date_* adapters, no trace (no refs inside)
-    (elem.kind === "array" && traceAdapter(host, elem) !== null);
-  if (!useRef) {
-    if (small) {
-      host.declare(`declare ptr @scr_arr_new_small(i32)`);
-      return `call ptr @scr_arr_new_small(i32 ${elemKindNum(elem)})`;
-    }
-    host.declare(`declare ptr @scr_arr_new(i32, ${host.sizeType})`);
-    return `call ptr @scr_arr_new(i32 ${elemKindNum(elem)}, ${host.sizeType} ${capText})`;
-  }
-  if (small) {
-    host.declare(`declare ptr @scr_arr_new_ops_small(ptr)`);
-    return `call ptr @scr_arr_new_ops_small(ptr ${arrOps(host, elem)})`;
-  }
-  host.declare(`declare ptr @scr_arr_new_ops(ptr, ${host.sizeType})`);
-  return `call ptr @scr_arr_new_ops(ptr ${arrOps(host, elem)}, ${host.sizeType} ${capText})`;
+    (elem.kind === "array" && traceAdapter(host, elem) !== null)
+  );
 }
 
 /** The %ScrArrOps descriptor (retain, release, trace, registry id) of a REF
@@ -1807,6 +1842,115 @@ function sizeLiteral(sizeType: RcCount, value: bigint): string {
   return BigInt.asIntN(sizeType === "i64" ? 64 : 32, value).toString();
 }
 
+/** The teardown of a type whose reference fields all hold its own type
+ * (`fields`: their struct indices; `release`: the type's inlinable release;
+ * no collector header): one loop instead of a call per node. A child whose
+ * last reference the dead node held joins a pending list linked through its
+ * own count word, which it no longer needs; the loop takes the list's first
+ * node next, so nodes are visited parent first, fields in order. Each node
+ * releases its block as emitObjectFree does, keeping a block of the calling
+ * thread's arena in a segment linked through its first word, and the segment
+ * goes onto the free list in one step at the end (emitSegmentFree): the next
+ * structure built parent first takes the blocks in the order it allocates
+ * them, as segmentTeardownLines arranges for the recursive form. The loop
+ * needs no depth budget. `_d` (the direct-chain entry other teardowns call)
+ * and the plain entry both run it. A class that keeps its id in the count
+ * word counts in the low half (`count`); a dead node's whole word is free. */
+export function iterativeTeardownDefinitions(
+  host: ShapeHost,
+  destroy: string,
+  struct: string,
+  fields: readonly number[],
+  release: string,
+  observers: FreeObservers,
+  count: RcCount = host.sizeType,
+): string[] {
+  const S = host.sizeType;
+  const lines = [
+    `define internal void @${destroy}_it(ptr %root) ${FN_ATTRS} {`,
+    `entry:`,
+    `  %sg.own = alloca ptr`,
+    `  br label %it.node`,
+    `it.node:`,
+    `  %o = phi ptr [ %root, %entry ], [ %it.top, %it.next ]`,
+    `  %it.pend = phi ptr [ null, %entry ], [ %it.rest, %it.next ]`,
+    `  %it.first = phi ptr [ null, %entry ], [ %it.fa, %it.next ]`,
+    `  %it.last = phi ptr [ null, %entry ], [ %it.la, %it.next ]`,
+    ...fields.flatMap((index, i) => [
+      `  %it.f${i} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${index}`,
+      `  %it.v${i} = load ptr, ptr %it.f${i}`,
+    ]),
+    `  store ptr null, ptr %sg.own`,
+    ...emitObjectFree(host, false, observers, "%sg.own"),
+    `  br label %it.freed`,
+    `it.freed:`,
+    `  %it.k = load ptr, ptr %sg.own`,
+    `  %it.kept = icmp ne ptr %it.k, null`,
+    `  br i1 %it.kept, label %it.app, label %it.kids`,
+    `it.app:`,
+    `  %it.none = icmp eq ptr %it.first, null`,
+    `  br i1 %it.none, label %it.appd, label %it.link`,
+    `it.link:`,
+    `  store ptr %it.k, ptr %it.last`,
+    `  br label %it.appd`,
+    `it.appd:`,
+    `  %it.nf = select i1 %it.none, ptr %it.k, ptr %it.first`,
+    `  br label %it.kids`,
+    `it.kids:`,
+    `  %it.fa = phi ptr [ %it.nf, %it.appd ], [ %it.first, %it.freed ]`,
+    `  %it.la = phi ptr [ %it.k, %it.appd ], [ %it.last, %it.freed ]`,
+  ];
+  // The fields go onto the list last first, so the first field is next.
+  let pend = "%it.pend";
+  let from = "it.kids";
+  for (let i = fields.length - 1; i >= 0; i--) {
+    const v = `%it.v${i}`;
+    lines.push(
+      `  %it.nn${i} = icmp ne ptr ${v}, null`,
+      `  br i1 %it.nn${i}, label %it.chk${i}, label %it.j${i}`,
+      `it.chk${i}:`,
+      `  %it.rc${i} = load ${count}, ptr ${v}`,
+      `  %it.last${i} = icmp eq ${count} %it.rc${i}, 1`,
+      `  br i1 %it.last${i}, label %it.push${i}, label %it.sh${i}`,
+      `it.push${i}:`,
+      `  %it.pl${i} = ptrtoint ptr ${pend} to ${S}`,
+      `  store ${S} %it.pl${i}, ptr ${v}`,
+      `  br label %it.j${i}`,
+      `it.sh${i}:`,
+      `  call void ${release}(ptr ${v}) ; a shared or immortal child`,
+      `  br label %it.j${i}`,
+      `it.j${i}:`,
+      `  %it.p${i} = phi ptr [ ${pend}, %${from} ], [ ${v}, %it.push${i} ], [ ${pend}, %it.sh${i} ]`,
+    );
+    pend = `%it.p${i}`;
+    from = `it.j${i}`;
+  }
+  lines.push(
+    `  %it.empty = icmp eq ptr ${pend}, null`,
+    `  br i1 %it.empty, label %it.done, label %it.next`,
+    `it.next:`,
+    `  %it.top = getelementptr i8, ptr ${pend}, i64 0`,
+    `  %it.lw = load ${S}, ptr %it.top`,
+    `  %it.rest = inttoptr ${S} %it.lw to ptr`,
+    `  br label %it.node`,
+    `it.done:`,
+    ...emitSegmentFree(host, "sgf", "%it.fa", "%it.la"),
+    `  ret void`,
+    `}`,
+    `define internal void @${destroy}_d(ptr %o, i32 %d) ${FN_ATTRS} {`,
+    `entry:`,
+    `  call void @${destroy}_it(ptr %o)`,
+    `  ret void`,
+    `}`,
+    `define internal void @${destroy}(ptr %o) ${FN_ATTRS} {`,
+    `entry:`,
+    `  call void @${destroy}_it(ptr %o)`,
+    `  ret void`,
+    `}`,
+  );
+  return lines;
+}
+
 /** Common NULL/immortal/decrement skeleton for ordinary object releases.
  * `freeBody` owns the zero-ref teardown and must leave the current block at
  * its end; traced objects also get the possible-cycle-root branch.
@@ -1825,6 +1969,7 @@ export function releaseBody(
   chained = false,
   segmented = false,
   frozen = false,
+  destroyDefs: readonly string[] | null = null,
 ): string[] {
   const S = host.sizeType;
   if (bounded) host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
@@ -1832,7 +1977,9 @@ export function releaseBody(
   // A freezable record's count is the word without its frozen bit.
   const notFrozen = sizeLiteral(S, ~recordFrozenBit(S));
   const lines = [
-    ...(bounded ? destroyDefinitions(destroy, freeBody, chained, segmented ? host : null) : []),
+    ...(bounded
+      ? (destroyDefs ?? destroyDefinitions(destroy, freeBody, chained, segmented ? host : null))
+      : []),
     ...releaseFastPath(host, fnName, `${fnName}_slow`, traced, comment, immortal, S, frozen),
     `define internal void @${fnName}_slow(ptr %o) noinline ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
     `entry:`,
@@ -2128,6 +2275,11 @@ export function emitRecordShapes(
         ),
       );
     else freeBody.push(...emitObjectFree(host, traced, observers));
+    // A segmented shape whose every reference field holds its own type, with
+    // no collector header and no frozen bit in its count, tears down in one
+    // loop (iterativeTeardownDefinitions).
+    const iterative =
+      segmented && !traced && shape.freezable !== true && ownType.length === refMembers.length;
     defs.push(
       ...releaseBody(
         host,
@@ -2140,6 +2292,16 @@ export function emitRecordShapes(
         chained,
         segmented,
         shape.freezable === true,
+        iterative
+          ? iterativeTeardownDefinitions(
+              host,
+              destroy,
+              struct,
+              refMembers.map((m) => m.index),
+              `@${mangleRecordRelease(shape.id)}`,
+              observers,
+            )
+          : null,
       ),
       ``,
     );
@@ -2186,6 +2348,35 @@ export function emitRecordShapes(
     if (traced) nw.push(...youngEntryLines(host));
     nw.push(`  ret ptr %o`, `}`, ``);
     defs.push(...nw);
+    if (host.arenaShapes?.has(shape.id) === true && !shape.indexValue) {
+      const newSym = mangleRecordNew(shape.id);
+      const dispose =
+        refMembers.length > 0 && host.arenasClosed !== true ? arenaDisposeSym(newSym) : null;
+      const init = [`  store ${host.sizeType} ${ARENA_RC}, ptr %o`];
+      if (shapeNumber !== 0)
+        init.push(
+          `  %shp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${SHAPE_WORD_INDEX}`,
+          `  store i32 ${shapeNumber}, ptr %shp ; shape number`,
+        );
+      defs.push(
+        ...arenaNewLines(host, newSym, sizeOf, traced ? cycType : null, dispose, init, "%o"),
+      );
+      if (dispose !== null)
+        defs.push(
+          ...arenaDisposeLines(
+            newSym,
+            refMembers.flatMap((m, i) =>
+              disposeFieldLines(
+                i,
+                `getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${m.index}`,
+                plainRefType(m.type),
+                releaseSym(host, m.type),
+                llvmCommentText(m.name),
+              ),
+            ),
+          ),
+        );
+    }
 
     if (host.recordCloneShapes.has(shape.id)) {
       const attrs = shape.fields.length >= 16 ? "#2" : FN_ATTRS;

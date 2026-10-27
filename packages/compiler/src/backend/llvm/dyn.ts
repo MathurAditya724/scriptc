@@ -1,7 +1,14 @@
 import { emitPerKeyOrder } from "./key-orders.js";
-import { typedRefConstructor } from "./shapes.js";
+import { rcMembers, typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
-import { BYTES_ELEM_NUM, SCR_ARR_FIELD, SCR_ARR_STATES, f64Lit, sizeToDouble } from "./common.js";
+import {
+  BYTES_ELEM_NUM,
+  CLOSURE_KIND,
+  SCR_ARR_FIELD,
+  SCR_ARR_STATES,
+  f64Lit,
+  sizeToDouble,
+} from "./common.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   INLINE_UNION_FIELD,
@@ -25,10 +32,9 @@ import { InternalCompilerError } from "../../errors.js";
  *            are selected from the target C ABI.
  *            v.num double | v.b i8 | v.str/v.bytes ptr at +16;
  *            v.arr { len +16, cap +24, items +32 };
- *            v.obj { len +16, cap +24, entries +32 };
+ *            v.obj { len +16 } (own properties; read them through
+ *            scr_dyn_member_*, which know both object modes);
  *            v.fn  { clo +16, thunk +24, sig +32, name +40, arity +48 }.
- *   ScrDynEntry { key, key_len, value, getter, setter, accessor, writable,
- *                 enumerable, configurable } — 48 bytes on 64-bit, 24 on 32-bit.
  *   ScrDynKind: NULL=0 BOOL=1 NUM=2 STR=3 ARR=4 OBJ=5 UNDEF=6 BYTES=7
  *               FUNC=8 HANDLE=9.
  *   ScrBytes { rc +0; len +8; elem +16; data +24 }.
@@ -39,6 +45,7 @@ import {
   DYN_HANDLE_KINDS,
   isDirentShape,
   KEY_ORDER_FIELD,
+  shapeHasAccessorSlots,
   shapeKeyOrders,
   isDynTypedRefType,
   isRefCounted,
@@ -145,8 +152,8 @@ const DYN_HANDLE_UNBOX_FN: Record<string, string> = {
   dgramSocket: "scr_dgram_from_dyn",
 };
 
-/** ScrMessageKind (scr_message.h): the node kinds message readers test. */
-const MESSAGE_KIND = {
+/** ScrMessageKind (scr_dyn.h): the node kinds message readers test. */
+export const MESSAGE_KIND = {
   UNDEFINED: 0,
   NULL: 1,
   BOOL: 2,
@@ -253,6 +260,8 @@ export class LlDyn {
   private readonly holdsRecursiveShapes = new Map<string, boolean>();
   /** Emitted function definitions, in interning order. */
   readonly defs: string[] = [];
+
+  private readonly prefixSources = new Map<string, string[]>();
 
   constructor(private readonly host: DynHost) {}
 
@@ -413,7 +422,7 @@ export class LlDyn {
    * dyn view: inside a visit session (`wrapped`), a capsule keeps the view
    * it was first given, so an outer visit can keep reading it. */
   private viewFn(wrapped: boolean): string {
-    const fn = wrapped ? "scr_dyn_visit_view" : "scr_dyn_typed_ref_materialize";
+    const fn = wrapped ? "scr_dyn_visit_view" : "scr_dyn_typed_ref_peek";
     this.host.declare(`declare ptr @${fn}(ptr)`);
     return fn;
   }
@@ -842,27 +851,23 @@ export class LlDyn {
     return e;
   }
 
-  /** Object entry field addresses: entries + i*sizeof(ScrDynEntry), with
-   * key, key_len, and value at offsets 0, 8, and 16 on 64-bit targets. */
+  /** Own property i of object `d` (borrowed key bytes, key length and
+   * value), read through the runtime's accessors: the object may be in
+   * layout or dictionary mode (scr_dyn.h). */
   private entryAt(
     B: BlockBuilder,
-    entries: string,
+    d: string,
     i: string,
   ): { key: string; keyLen: string; value: string } {
-    const off = B.tmp();
-    const base = B.tmp();
-    B.line(`${off} = mul ${this.S} ${i}, ${this.abiOffset(48, 24)} ; sizeof(ScrDynEntry)`);
-    B.line(`${base} = getelementptr inbounds i8, ptr ${entries}, ${this.S} ${off}`);
+    this.host.declare(`declare ptr @scr_dyn_member_key(ptr, ${this.S})`);
+    this.host.declare(`declare ${this.S} @scr_dyn_member_key_len(ptr, ${this.S})`);
+    this.host.declare(`declare ptr @scr_dyn_member_value(ptr, ${this.S})`);
     const key = B.tmp();
-    B.line(`${key} = load ptr, ptr ${base}`);
-    const klp = B.tmp();
     const keyLen = B.tmp();
-    B.line(`${klp} = getelementptr inbounds i8, ptr ${base}, i64 ${this.abiOffset(8, 4)}`);
-    B.line(`${keyLen} = load ${this.S}, ptr ${klp}`);
-    const vp = B.tmp();
     const value = B.tmp();
-    B.line(`${vp} = getelementptr inbounds i8, ptr ${base}, i64 ${this.abiOffset(16, 8)}`);
-    B.line(`${value} = load ptr, ptr ${vp}`);
+    B.line(`${key} = call ptr @scr_dyn_member_key(ptr ${d}, ${this.S} ${i})`);
+    B.line(`${keyLen} = call ${this.S} @scr_dyn_member_key_len(ptr ${d}, ${this.S} ${i})`);
+    B.line(`${value} = call ptr @scr_dyn_member_value(ptr ${d}, ${this.S} ${i})`);
     return { key, keyLen, value };
   }
 
@@ -1148,10 +1153,63 @@ export class LlDyn {
    * Class layouts share their base prefix, so unboxing retains the same
    * pointer and virtual dispatch still uses the object's original vtable. */
   private typedRefMatches(B: BlockBuilder, t: IrType): string {
+    return this.typedRefMatchesAny(
+      B,
+      isDynTypedRefType(t)
+        ? this.host.classSubtypes(t.className).map((className) => ({ kind: "object", className }))
+        : [t],
+    );
+  }
+
+  /** The record shapes whose values a pointer of shape `targetId` may
+   * reference unchanged: their struct begins with exactly the target's
+   * fields (same names, types and representations, so the same offsets),
+   * and everything the target's release, teardown and collector support
+   * would get wrong on them is absent. The extra fields hold no
+   * references (the target's release frees the block without visiting
+   * them; frees are size-class agnostic), neither shape carries a shape
+   * word, a cycle header, an overflow map, key order variants or accessor
+   * slots, and both freeze alike. A record that keeps undeclared source
+   * properties is refused at run time (scr_dyn_typed_ref_prefix_view). */
+  private prefixViewSources(targetId: string): string[] {
+    const memo = this.prefixSources.get(targetId);
+    if (memo) return memo;
+    const host = this.host;
+    const plain = (shape: IrRecordShape): boolean =>
+      !shape.tuple &&
+      !shape.indexValue &&
+      !isDirentShape(shape) &&
+      !shapeHasAccessorSlots(shape) &&
+      shapeKeyOrders(shape).length === 1 &&
+      !shape.fields.some((field) => field.name === KEY_ORDER_FIELD) &&
+      host.nullableUnions.shapeNumber(shape.id) === 0 &&
+      !host.tracedShapes.has(`record:${shape.id}`);
+    const target = host.recordsById.get(targetId);
+    const out: string[] = [];
+    if (target && plain(target) && target.fields.length > 0) {
+      const base = host.nullableUnions.fieldBase(targetId);
+      for (const shape of host.recordsById.values()) {
+        if (shape.id === targetId || shape.fields.length <= target.fields.length) continue;
+        if (!plain(shape) || shape.freezable !== target.freezable) continue;
+        if (host.nullableUnions.fieldBase(shape.id) !== base) continue;
+        const prefix = target.fields.every(
+          (field, i) =>
+            shape.fields[i]!.name === field.name &&
+            typeKey(shape.fields[i]!.type) === typeKey(field.type),
+        );
+        if (!prefix) continue;
+        const extra = rcMembers(shape, host.inlineUnions, base).some(
+          (member) => member.index >= target.fields.length + base && isRefCounted(member.type),
+        );
+        if (!extra) out.push(shape.id);
+      }
+    }
+    this.prefixSources.set(targetId, out);
+    return out;
+  }
+
+  private typedRefMatchesAny(B: BlockBuilder, types: readonly IrType[]): string {
     this.host.declare(`declare zeroext i1 @scr_dyn_typed_ref_is(ptr, ptr, ${this.S})`);
-    const types: IrType[] = isDynTypedRefType(t)
-      ? this.host.classSubtypes(t.className).map((className) => ({ kind: "object", className }))
-      : [t];
     let matched = "false";
     for (const type of types) {
       const key = typeKey(type);
@@ -1434,9 +1492,8 @@ export class LlDyn {
         if (shape.indexValue && shape.indexValue.kind !== "dyn") {
           this.host.declare(`declare i32 @memcmp(ptr, ptr, ${this.S})`);
           const n = this.lenOf(B, "%d");
-          const entries = this.itemsOf(B, "%d");
           this.i64Loop(B, "dm.ov", n, (i, brNext) => {
-            const ent = this.entryAt(B, entries, i);
+            const ent = this.entryAt(B, "%d", i);
             // Skip declared keys.
             for (const f of shape.fields) {
               const klen = Buffer.byteLength(f.name, "utf8");
@@ -2165,6 +2222,32 @@ export class LlDyn {
       B.line(`${ref} = call ptr @scr_dyn_typed_ref_unbox(ptr %d)`);
       B.terminate(`ret ptr ${ref}`);
       B.startBlock(lNext);
+      if (t.kind === "record") {
+        // A record whose storage begins with exactly this type's storage
+        // is this type's value too: the conversion passes the pointer, so
+        // both names keep one object (decision D3).
+        const sources = this.prefixViewSources(t.shapeId);
+        if (sources.length > 0) {
+          const viewed = this.typedRefMatchesAny(
+            B,
+            sources.map((shapeId) => ({ kind: "record", shapeId })),
+          );
+          const lView = B.newLabel("dc.prefix");
+          const lOther = B.newLabel("dc.noprefix");
+          B.condBr(viewed, lView, lOther);
+          B.startBlock(lView);
+          host.declare(`declare ptr @scr_dyn_typed_ref_prefix_view(ptr)`);
+          const view = B.tmp();
+          B.line(`${view} = call ptr @scr_dyn_typed_ref_prefix_view(ptr %d)`);
+          const passed = B.tmp();
+          B.line(`${passed} = icmp ne ptr ${view}, null`);
+          const lPass = B.newLabel("dc.prefix.pass");
+          B.condBr(passed, lPass, lOther);
+          B.startBlock(lPass);
+          B.terminate(`ret ptr ${view}`);
+          B.startBlock(lOther);
+        }
+      }
       // A constructor-function stream (scr_dyn_builtin_stream.c) carries
       // its runtime stream.
       const streamKind = t.kind === "object" ? builtinStreamKind(t.className) : null;
@@ -2770,9 +2853,8 @@ export class LlDyn {
             B.line(`store i8 ${np}, ptr ${flagsp}`);
           }
           const n = this.lenOf(B, "%d");
-          const entries = this.itemsOf(B, "%d");
           this.i64Loop(B, "dcv", n, (i, brNext) => {
-            const ent = this.entryAt(B, entries, i);
+            const ent = this.entryAt(B, "%d", i);
             for (const f of shape.fields) {
               const klen = Buffer.byteLength(f.name, "utf8");
               const lenEq = B.tmp();
@@ -3174,7 +3256,7 @@ export class LlDyn {
         B.line(`${targetKind} = getelementptr inbounds %ScrClosure, ptr ${a}, i64 0, i32 4`);
         const adapterKind = B.tmp();
         B.line(
-          `${adapterKind} = or i32 ${functionKind}, 8 ; preserves the checked callable in caps[0]`,
+          `${adapterKind} = or i32 ${functionKind}, ${CLOSURE_KIND.CHECKED_ADAPTER} ; preserves the checked callable in caps[0]`,
         );
         B.line(`store i32 ${adapterKind}, ptr ${targetKind}`);
         const box = B.tmp();

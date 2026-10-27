@@ -520,6 +520,10 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.bagGet",
   "dyn.bitwise",
   "dyn.compare",
+  // Adoption reads the native value it was built into and turns shared
+  // source nodes into capsules of it; it stores no property into a capsule.
+  "dyn.declAdopt",
+  "dyn.adoptShared",
   "dyn.forInKeyStrings",
   "dyn.forInKeys",
   "dyn.forInStable",
@@ -1480,6 +1484,39 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
       continue;
     }
     const int32 = (e: IrExpr): boolean => withinInt32(ranges.get(e));
+    // The range of an exact integer that may also be NaN: an element read
+    // of a candidate through `getNumber` (`a[k]!` in arithmetic, NaN for a
+    // missing element), and `+`, `-` and `*` over such values and integers.
+    // A checked store widens the array at a NaN like at any value that is
+    // not an int32.
+    const integerOrNaN = (e: IrExpr): IntegerRange | null => {
+      const range = ranges.get(e);
+      if (range) return range;
+      if (e.kind === "numLit")
+        return Number.isInteger(e.value) ? { min: e.value, max: e.value } : null;
+      if (e.kind === "arrIntrinsic" && e.method === "getNumber" && e.receiver.kind === "varRef")
+        return slots.hasInt32ElementSlot(int32ArraySlot(int32ArrayKey(fn.name, e.receiver.localId)))
+          ? INT32_RANGE
+          : null;
+      if (e.kind !== "bin" || (e.op !== "+" && e.op !== "-" && e.op !== "*")) return null;
+      const left = integerOrNaN(e.left);
+      const right = left && integerOrNaN(e.right);
+      if (!left || !right) return null;
+      const bounds =
+        e.op === "+"
+          ? [left.min + right.min, left.max + right.max]
+          : e.op === "-"
+            ? [left.min - right.max, left.max - right.min]
+            : [
+                left.min * right.min,
+                left.min * right.max,
+                left.max * right.min,
+                left.max * right.max,
+              ];
+      const min = Math.min(...bounds);
+      const max = Math.max(...bounds);
+      return Math.abs(min) < 2 ** 53 && Math.abs(max) < 2 ** 53 ? { min, max } : null;
+    };
     // Every element stored into an int32 array candidate must be an int32
     // under the facts that assume the candidates' own elements are; a
     // failing store drops its array's element facts, and the function is
@@ -1509,6 +1546,10 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
       for (const [id, values] of int32ArrayStores(fn, arrays)) {
         const key = int32ArrayKey(fn.name, id);
         if (!slots.hasInt32ElementSlot(int32ArraySlot(key)) || values.every(int32)) continue;
+        // Checked stores serve a lone local: its allocations are the only
+        // arrays it holds. Its stores are judged under the element facts
+        // the ranges were computed with.
+        const checkable = values.every((value) => int32(value) || integerOrNaN(value) !== null);
         // The array's group drops together: every function reading a
         // member is analyzed again without its facts.
         const group = arrayGroups.group.get(key) ?? [key];
@@ -1519,17 +1560,11 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
             if (names) for (const name of names) requeue(name);
           } else requeue(member.slice(0, member.indexOf("\0")));
         }
-        // Checked stores serve a lone local: its allocations are the only
-        // arrays it holds.
-        const checkable = (value: IrExpr): boolean => {
-          const range = ranges.get(value);
-          return int32(value) || range != null;
-        };
         if (
           group.length === 1 &&
           !key.startsWith("\0") &&
           !params.has(id) &&
-          values.every(checkable) &&
+          checkable &&
           checkableInt32Allocations(fn, id)
         )
           slots.checkedInt32Arrays.add(key);

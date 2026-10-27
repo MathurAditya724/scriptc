@@ -119,6 +119,10 @@ struct ScrStreamState {
     bool reading, in_read_sync, ended, end_emitted, end_scheduled;
     bool in_read_call; /* inside the user's _read (in_read_sync also starts true) */
     bool need_readable, emitted_readable, readable_listening;
+    /* the stream has 'data' listeners: kept by scr_stream_listener_observe
+     * from the registry's empty/nonempty transitions, so the per-chunk
+     * paths read it instead of looking the name up */
+    bool data_listeners;
     bool resume_scheduled, maybe_more_scheduled;
     /* The buffer's representation: encoded means every entry is a ScrStr,
      * otherwise every entry is a ScrBytes (scr_stream_rbuf_push checks
@@ -245,6 +249,16 @@ struct ScrStreamState {
   /* destroy */
   ScrClosure *destroy_cb;
   ScrStreamErrInv destroy_inv;
+
+  /* The completion closures (`callback`) the emitted option-callback
+   * thunks pass, owned. write_done is the one every write and writev call
+   * receives (scr_stream_write_closure); done_cache is the last one a
+   * transform, flush, final, construct or destroy call received, handed
+   * out again while this is its only reference (scr_stream_done_closure).
+   * Both hold the stream, so they are dropped at 'close' and traced for a
+   * stream dropped before it closes. */
+  ScrClosure *write_done;
+  ScrClosure *done_cache;
 
   /* finished()/pipeline() watchers: fired once at the terminal point
    * (the 'close' tick — or a registration-time tick when already closed)
@@ -417,6 +431,8 @@ static void scr_stream_state_drop(ScrStreamState *st, bool gc) {
     if (st->transform_cb) scr_closure_release(st->transform_cb);
     if (st->flush_cb) scr_closure_release(st->flush_cb);
     if (st->destroy_cb) scr_closure_release(st->destroy_cb);
+    if (st->write_done) scr_closure_release(st->write_done);
+    if (st->done_cache) scr_closure_release(st->done_cache);
     for (size_t i = 0; i < st->w.end_cbs_n; i++) scr_closure_release(st->w.end_cbs[i]);
     for (size_t i = 0; i < st->fin.n; i++) scr_closure_release(st->fin.cb[i]);
     for (size_t i = 0; i < st->pipes.n; i++) scr_stream_release(st->pipes.dst[i]);
@@ -465,6 +481,8 @@ void scr_stream_st_trace(ScrStreamState *st, ScrTraceVisit visit, void *ctx) {
   if (st->transform_cb) visit(st->transform_cb, ctx);
   if (st->flush_cb) visit(st->flush_cb, ctx);
   if (st->destroy_cb) visit(st->destroy_cb, ctx);
+  if (st->write_done) visit(st->write_done, ctx);
+  if (st->done_cache) visit(st->done_cache, ctx);
   for (size_t i = 0; i < st->w.end_cbs_n; i++) visit(st->w.end_cbs[i], ctx);
   for (size_t i = 0; i < st->fin.n; i++) visit(st->fin.cb[i], ctx);
   for (size_t i = st->w.head; i < st->w.n; i++) {
@@ -518,6 +536,56 @@ void scr_stream_release(ScrStream *s) {
 
 void *scr_stream_retain_v(void *s) { return scr_stream_retain(s); }
 void scr_stream_release_v(void *s) { scr_stream_release(s); }
+
+/* A completion closure: a 1-cap closure calling fn over a box that holds
+ * the stream. Returns +1. */
+static ScrClosure *scr_stream_done_new(ScrStream *s, void *fn) {
+  ScrClosure *c = scr_closure_new(fn, 1);
+  ScrBox *bx = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
+  c->caps[0] = bx;
+  scr_box_set_ref(bx, scr_stream_retain(s));
+  return c;
+}
+
+/* Keeps c in *slot, replacing the closure there. Nothing is kept after
+ * 'close'. Borrows c. */
+static void scr_stream_done_keep(ScrStreamState *st, ScrClosure **slot, ScrClosure *c) {
+  if (st->close_emitted) return;
+  ScrClosure *old = *slot;
+  *slot = scr_closure_retain(c);
+  if (old) scr_closure_release(old);
+}
+
+/* The `callback` a write or writev option callback receives. Node passes
+ * the stream's one onwrite function to every _write and _writev call, so
+ * every call receives the same closure, kept or not. Returns +1. */
+ScrClosure *scr_stream_write_closure(ScrStream *s, void *fn) {
+  ScrStreamState *st = s->st;
+  ScrClosure *c = st->write_done;
+  if (c != NULL && c->fn == fn) return scr_closure_retain(c);
+  c = scr_stream_done_new(s, fn);
+  scr_stream_done_keep(st, &st->write_done, c);
+  return c;
+}
+
+/* The `callback` a transform, flush, final, construct or destroy option
+ * callback receives. Node passes a new function to each call. The stream
+ * keeps the last closure and hands it out again while it holds the only
+ * reference and the closure has no own properties; weak collections then
+ * forget it first, as they would at its free, so it is a new key to them.
+ * Otherwise a new closure replaces it, and one the user kept keeps its own
+ * stream reference. Returns +1. */
+ScrClosure *scr_stream_done_closure(ScrStream *s, void *fn) {
+  ScrStreamState *st = s->st;
+  ScrClosure *c = st->done_cache;
+  if (c != NULL && c->rc == 1 && c->fn == fn && c->props == NULL) {
+    scr_weak_dispose_inline(c);
+    return scr_closure_retain(c);
+  }
+  c = scr_stream_done_new(s, fn);
+  scr_stream_done_keep(st, &st->done_cache, c);
+  return c;
+}
 
 /* ── the tick queue (the nextTick stand-in) ───────────────────────────── */
 
@@ -817,10 +885,14 @@ static void scr_stream_emit_data(ScrStream *s, void *chunk, ScrEntryKind kind) {
   } else {
     b = chunk;
   }
-  ScrStr *n = (ScrStr *)&scr_stream_lit_data;
-  scr_emitter_emit((ScrEmitter *)s, n, b, str, value);
-  scr_str_release(n);
-  if (scr_exc_pending()) return;
+  /* emit('data') with no listeners does nothing; a piped stream delivers
+   * through st->pipes below */
+  if (st->r.data_listeners) {
+    ScrStr *n = (ScrStr *)&scr_stream_lit_data;
+    scr_emitter_emit((ScrEmitter *)s, n, b, str, value);
+    scr_str_release(n);
+    if (scr_exc_pending()) return;
+  }
   /* pipe delivery, with backpressure: a full destination pauses us until
    * its 'drain'. Encoded sources write the string (utf8 bytes at the
    * destination — Node writes the decoded string through). */
@@ -969,7 +1041,7 @@ static bool scr_stream_add_chunk(ScrStream *s, ScrBytes *chunk, bool front) {
   }
   if (entry_len > 0 &&
       st->r.flowing == 1 && st->r.length == 0 && !st->r.in_read_sync && !front &&
-      (scr_emitter_has((ScrEmitter *)s, "data") || st->pipes.n > 0)) {
+      (st->r.data_listeners || st->pipes.n > 0)) {
     /* the direct-emit fast path: flowing, empty buffer, async push */
     if (st->r.emitted_readable) st->r.emitted_readable = false;
     ScrEntryKind kind = scr_stream_rkind(st);
@@ -1938,7 +2010,7 @@ static int scr_stream_add_entry(ScrStream *s, void *entry /*moves*/, ScrEntryKin
   }
   st->r.reading = false;
   if (st->r.flowing == 1 && st->r.length == 0 && !st->r.in_read_sync &&
-      (scr_emitter_has((ScrEmitter *)s, "data") || st->pipes.n > 0)) {
+      (st->r.data_listeners || st->pipes.n > 0)) {
     if (st->r.emitted_readable) st->r.emitted_readable = false;
     scr_stream_emit_data(s, entry, kind);
     scr_stream_entry_release_kind(entry, kind);
@@ -2437,6 +2509,20 @@ static ScrStreamState *scr_stream_state_new(bool has_r, bool has_w,
   return st;
 }
 
+/* The registry's empty/nonempty transitions for the names the per-chunk
+ * paths test (scr_emitter_observe): no script runs here. */
+static void scr_stream_listener_observe(void *context, const ScrStr *name, bool present) {
+  ScrStream *s = context;
+  if (s->st != NULL && name->len == 4 && memcmp(name->data, "data", 4) == 0)
+    s->st->r.data_listeners = present;
+}
+
+/* Starts tracking the stream's 'data' listeners, once its state exists. */
+static void scr_stream_watch_listeners(ScrStream *s) {
+  s->st->r.data_listeners = scr_emitter_has((ScrEmitter *)s, "data");
+  scr_emitter_observe((ScrEmitter *)s, &scr_stream_listener_observe, s);
+}
+
 static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r, bool has_w,
                                     double rhwm, double whwm, bool auto_destroy,
                                     bool emit_close, bool allow_half_open) {
@@ -2465,6 +2551,7 @@ static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r,
     scr_emitter_reserve(em, "end");
     scr_emitter_reserve(em, "readable");
   }
+  scr_stream_watch_listeners(s);
   scr_obj_alloc_note();
   return s;
 }
@@ -2587,6 +2674,7 @@ void scr_stream_init_readable(ScrStream *s, double hwm, bool auto_destroy, bool 
     ScrClosure *destroy, ScrStreamErrInv destroy_inv) {
   ScrStreamState *st = scr_stream_state_new(true, false, hwm, -1, auto_destroy, emit_close, true);
   s->st = st;
+  scr_stream_watch_listeners(s);
   st->r.read_cb = read;
   st->r.read_inv = read_inv;
   st->destroy_cb = destroy;
@@ -2599,6 +2687,7 @@ void scr_stream_init_writable(ScrStream *s, double hwm, bool auto_destroy, bool 
     ScrClosure *destroy, ScrStreamErrInv destroy_inv) {
   ScrStreamState *st = scr_stream_state_new(false, true, -1, hwm, auto_destroy, emit_close, true);
   s->st = st;
+  scr_stream_watch_listeners(s);
   st->w.write_cb = write;
   st->w.write_inv = write_inv;
   st->w.final_cb = final_cb;
@@ -2616,6 +2705,7 @@ void scr_stream_init_duplex(ScrStream *s, double rhwm, double whwm, bool auto_de
   ScrStreamState *st = scr_stream_state_new(readable_side, writable_side, rhwm, whwm,
                                             auto_destroy, emit_close, allow_half_open);
   s->st = st;
+  scr_stream_watch_listeners(s);
   if (!readable_side) {
     st->r.ended = true;
     st->r.end_emitted = true;
@@ -2642,6 +2732,7 @@ static void scr_stream_init_transformish(ScrStream *s, bool passthrough,
   ScrStreamState *st = scr_stream_state_new(true, true, rhwm, whwm,
                                             auto_destroy, emit_close, allow_half_open);
   s->st = st;
+  scr_stream_watch_listeners(s);
   st->is_transform = !passthrough;
   st->passthrough = passthrough;
   /* the Transform constructor's readable-half stance (see new_transformish) */
@@ -7960,6 +8051,8 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
         if (st->transform_cb) { scr_closure_release(st->transform_cb); st->transform_cb = NULL; }
         if (st->flush_cb) { scr_closure_release(st->flush_cb); st->flush_cb = NULL; }
         if (st->destroy_cb) { scr_closure_release(st->destroy_cb); st->destroy_cb = NULL; }
+        if (st->write_done) { scr_closure_release(st->write_done); st->write_done = NULL; }
+        if (st->done_cache) { scr_closure_release(st->done_cache); st->done_cache = NULL; }
       }
       break;
     }

@@ -827,6 +827,19 @@ ScrDyn *scr_await_dyn_value_settled(ScrDyn *value) {
   return value->kind == SCR_DYN_PROMISE ? scr_await_dyn(value->v.promise) : scr_dyn_retain(value);
 }
 
+static ScrDyn *scr_dyn_promise_payload(ScrPromise *p);
+
+/* The same for a native stackless body: the suspension has taken the turn
+ * scr_await_dyn would take, so the extraction takes none. */
+ScrDyn *scr_coro_await_dyn_value(ScrDyn *value) {
+  if (value->kind != SCR_DYN_PROMISE) return scr_dyn_retain(value);
+  ScrPromise *p = value->v.promise;
+  if (!scr_promise_settled_now(p))
+    scr_trap("scriptc: internal error: resumed before awaited promise settled\n");
+  if (scr_promise_is_rejected(p)) return NULL;
+  return scr_dyn_promise_payload(p);
+}
+
 /* ── process warnings (emitWarning + the 'warning' event) ─────────────
  * Gated with the rest of this TU (a deprecation-emitting unit's gate
  * must imply the dynAsync link). Listeners are dyn functions; the
