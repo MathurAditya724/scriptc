@@ -103,6 +103,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_mime.c", "mime"],
   // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
   ["scr_text_pages.c", "largePages"],
+  ["scr_webstreams.c", "webStreams"],
+  ["scr_dyn_handle_class.c", "webStreams"],
   ["scr_util_timing.c", "utilTiming"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   ["scr_symbol.c", "symbol"],
@@ -196,6 +198,17 @@ export function variantsFor(source) {
   // other program links the ordinary object, byte for byte.
   if (source === "scr_json.c") {
     variants.push({ id: "dyn-tier", when: { dynTier: true }, defines: ["SCR_JS_TIER"] });
+    // Programs with web streams: instanceof over their classes' handles.
+    variants.push({
+      id: "handle-classes",
+      when: { webStreams: true },
+      defines: ["SCR_HANDLE_CLASSES"],
+    });
+    variants.push({
+      id: "dyn-tier-handle-classes",
+      when: { dynTier: true, webStreams: true },
+      defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES"],
+    });
   }
   if (source === "scr_bytes.c") {
     variants.push({
@@ -211,6 +224,24 @@ export function variantsFor(source) {
       id: "warning-replace",
       when: { warningReplace: true },
       defines: ["SCR_WARNING_REPLACE"],
+    });
+  }
+  // Programs with web streams link the promise unit with native promise
+  // reactions, the builtin-class unit whose instanceof knows their classes
+  // (as scr_json.c's does above), and the fetch unit that takes their
+  // streams as bodies; every other program keeps the default objects.
+  if (source === "scr_async.c") {
+    variants.push({
+      id: "native-reactions",
+      when: { webStreams: true },
+      defines: ["SCR_NATIVE_REACTIONS"],
+    });
+  }
+  if (source === "scr_dyn_builtin_class.c" || source === "scr_fetch.c") {
+    variants.push({
+      id: "handle-classes",
+      when: { webStreams: true },
+      defines: ["SCR_HANDLE_CLASSES"],
     });
   }
   // stdin setEncoding, string data listeners and stdio 'resize' events.

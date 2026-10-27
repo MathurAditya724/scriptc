@@ -67,6 +67,9 @@ export interface NativeLinkFeatures {
   /** `--large-pages`: scr_text_pages.c, which moves the executable's code
    * onto transparent huge pages at startup. Absent (false) without it. */
   largePages?: boolean;
+  /** Web streams in checked-dynamic code: scr_webstreams.c and
+   * scr_dyn_handle_class.c. */
+  webStreams?: boolean;
   /** AbortController and AbortSignal: scr_abort.c, unless the program
    * links the fetch unit, which has them. */
   abortSignal?: boolean;

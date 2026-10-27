@@ -6110,6 +6110,24 @@ export function lowerPromiseMethodCall(
       const fulfilledAbsent = isAbsentHandler(fulfilledNode);
       const rejectedAbsent = isAbsentHandler(rejectedNode);
       const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+      // An untyped call in JavaScript whose receiver arrived as a typed
+      // promise (a function instantiated with one): Promise.prototype.then
+      // over the promise as a checked-dynamic value, which shares its
+      // identity.
+      if (resultT?.kind !== "promise" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+        return {
+          kind: "dynInvoke",
+          recv: lowerer.coerceToExpected(receiver, DYN),
+          method: "then",
+          calleeName: ts.getTextOfNode(access),
+          args: [
+            lowerer.lowerExprExpecting(fulfilledNode, DYN),
+            lowerer.lowerExprExpecting(rejectedNode, DYN),
+          ],
+          type: DYN,
+          loc,
+        };
+      }
       if (resultT?.kind !== "promise") {
         lowerer.noLowering(
           "then with these handlers",

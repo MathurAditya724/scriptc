@@ -5648,8 +5648,16 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
     if (!prototype) return false; /* the read threw: pending */
     if (prototype->kind == SCR_DYN_OBJ) {
       bool found = false;
+#ifdef SCR_HANDLE_CLASSES
+      /* A handle of a class (scr_dyn_handle_class.c) has the class's
+       * prototype; this build is the one programs with such classes link. */
+      ScrDyn *handle_prototype = value->kind == SCR_DYN_HANDLE ? scr_dyn_handle_class_prototype_of(value) : NULL;
+      if (handle_prototype || value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_FUNC) {
+        ScrDyn *current = handle_prototype ? handle_prototype : scr_dyn_get_prototype((ScrDyn *)value);
+#else
       if (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_FUNC) {
         ScrDyn *current = scr_dyn_get_prototype((ScrDyn *)value);
+#endif
         while (current && current->kind != SCR_DYN_NULL) {
           if (current == prototype) {
             found = true;
@@ -7007,6 +7015,9 @@ static ScrDyn *scr_dynh_method_call(ScrClosure *closure, ScrDyn *const *args, si
   scr_dyn_release(self);
   return result;
 }
+
+/* scr_generator.h: what fetch reaches of the web streams (scr_webstreams.c). */
+SCR_TL const ScrWebStreamBridge *scr_web_stream_bridge = NULL;
 
 /* The method `key` of the handle's class as a function value (+1), or NULL
  * when the class has no such method. */
@@ -19765,4 +19776,16 @@ bool scr_dyn_bag_create_field(ScrDyn *bag, const ScrStr *key) {
 bool scr_dyn_is_class_capsule(const ScrDyn *d) {
   return d && d->kind == SCR_DYN_TYPED_REF && d->v.typed_ref.type_key_len > 7 &&
          memcmp(d->v.typed_ref.type_key, "object:", 7) == 0;
+}
+
+/* Symbol.asyncIterator for units that answer async iteration (the web
+ * streams): the symbol value (+1), or NULL before it exists, and whether a
+ * key is it. */
+ScrDyn *scr_dyn_async_iterator_symbol_value(void) {
+  return scr_async_iterator_symbol ? scr_dyn_retain(scr_async_iterator_symbol) : NULL;
+}
+
+bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key) {
+  return scr_async_iterator_symbol && key->kind == SCR_DYN_SYMBOL &&
+         key->v.symbol.value == scr_async_iterator_symbol->v.symbol.value;
 }

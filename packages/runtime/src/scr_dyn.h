@@ -239,7 +239,12 @@ typedef enum {
   X(WORKER, 35)
 
 /* Tags added since the last pin, by name only (see above). */
-#define SCR_DYNH_NEW_TAGS(Y)
+#define SCR_DYNH_NEW_TAGS(Y) \
+  Y(WS_BYTE_STRATEGY) /* ByteLengthQueuingStrategy (scr_webstreams.c) */ \
+  Y(WS_COUNT_STRATEGY) /* CountQueuingStrategy (scr_webstreams.c) */ \
+  Y(WS_RCONTROLLER) /* ReadableStreamDefaultController (scr_webstreams.c) */ \
+  Y(WS_READABLE) /* ReadableStream for checked-dynamic code (scr_webstreams.c) */ \
+  Y(WS_READER) /* ReadableStreamDefaultReader (scr_webstreams.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -1202,6 +1207,10 @@ void scr_dyn_install_species_symbol(ScrDyn *key);
 /* Records each well-known symbol the symbol unit creates. */
 void scr_dyn_install_well_known_symbol(ScrDyn *key);
 void scr_dyn_install_to_string_tag_symbol(ScrDyn *key);
+/* Whether key is Symbol.asyncIterator. */
+bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key);
+/* Symbol.asyncIterator (+1), or NULL before the symbol unit installed it. */
+ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
@@ -2011,6 +2020,66 @@ typedef struct ScrDynHandleOps {
    * methods; the owning unit supplies it, since promises are a gated unit. */
   ScrDyn *(*rejected)(void);
 } ScrDynHandleOps;
+
+/* A WebIDL interface over a handle tag: its constructor value, whose
+ * prototype holds the tag's methods (ScrDynHandleOps.methods, the same
+ * function values a member read answers) and the getters below, each
+ * enumerable and configurable and brand-checked against the tag. Handles of
+ * the tag answer the prototype from Object.getPrototypeOf, find its other
+ * members through it, and pass `instanceof` against the constructor. */
+typedef struct ScrDynHandleAccessor {
+  const char *name;
+  /* The getter on another receiver answers a rejected promise instead of
+   * throwing (a promise-valued attribute such as a reader's `closed`). */
+  bool rejects;
+} ScrDynHandleAccessor;
+
+typedef struct ScrDynHandleStatic {
+  const char *name;
+  uint32_t length;
+  ScrDynThunk thunk;
+} ScrDynHandleStatic;
+
+typedef struct ScrDynHandleClass {
+  const char *name;
+  uint32_t length;
+  /* `new X(...args)`: the new handle (+1), or NULL with the exception
+   * pending. NULL = the interface has no constructor ("Illegal
+   * constructor"). Arguments are borrowed. */
+  ScrDyn *(*construct)(ScrDyn *const *args, size_t argc);
+  /* Getters, read through ScrDynHandleOps.get; NULL name terminates. */
+  const ScrDynHandleAccessor *accessors;
+  /* Static methods of the constructor; NULL name terminates. */
+  const ScrDynHandleStatic *statics;
+  /* The prototype's methods and getters in definition order (the order
+   * Object.keys reports); NULL = the methods, then the getters. */
+  const char *const *order;
+} ScrDynHandleClass;
+
+/* Installs a tag's ops with the class its handles belong to; both outlive
+ * the program. */
+void scr_dyn_handle_class_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops, const ScrDynHandleClass *klass);
+/* The tag's constructor value (+1), created on first use; the tag must be
+ * installed with a class. */
+ScrDyn *scr_dyn_handle_class_value(ScrDynHandleTag tag);
+/* The method `name` of the tag's class as the function value a member
+ * read answers (+1), or NULL when the class has no such method. */
+ScrDyn *scr_dyn_handle_class_method(ScrDynHandleTag tag, const char *name);
+/* The tag's prototype (+1), created on first use. */
+ScrDyn *scr_dyn_handle_class_prototype(ScrDynHandleTag tag);
+/* Handles of `tag` (another unit's native representation of the same
+ * interface) are instances of the class of `klass_tag`. */
+void scr_dyn_handle_class_alias(ScrDynHandleTag tag, ScrDynHandleTag klass_tag);
+/* The class tag a handle is an instance of, or SCR_DYNH_CAPACITY for a
+ * handle of no class. */
+ScrDynHandleTag scr_dyn_handle_class_tag_of(const ScrDyn *handle);
+/* The prototype of the class a handle is an instance of (+1), or NULL. */
+ScrDyn *scr_dyn_handle_class_prototype_of(const ScrDyn *handle);
+/* For a class's ScrDynHandleOps.get: a member that is not one of the
+ * class's methods, from the prototype chain with a handle over `h` as the
+ * receiver (+1); NULL when the chain has none or with the exception
+ * pending. */
+ScrDyn *scr_dyn_handle_class_member(ScrDynHandleTag tag, void *h, const char *key, size_t len);
 
 /* The operations a Transform handle gives the stream unit (scr_stream.c):
  * the slot where the handle keeps its stream (+1) with the stream's

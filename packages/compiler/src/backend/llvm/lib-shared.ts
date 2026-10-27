@@ -118,6 +118,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.diff": "scr_util_diff",
   "util.debounce": "scr_util_debounce",
   "util.throttle": "scr_util_throttle",
+  "webstream.class": "scr_webstream_class",
+  "webstream.instanceOf": "scr_webstream_instanceof",
   "mime.typeNew": "scr_mime_type_new",
   "mime.typeParse": "scr_mime_type_parse",
   "mime.paramsNew": "scr_mime_params_new",

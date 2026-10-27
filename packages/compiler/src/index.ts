@@ -706,6 +706,7 @@ async function compileExecutableNative(
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
+    ...(features.webStreams ? { webStreams: true } : {}),
     ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
