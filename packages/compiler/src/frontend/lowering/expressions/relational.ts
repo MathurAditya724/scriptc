@@ -50,6 +50,7 @@ import { type ClassInfo, storedClassValueType } from "../lower-classes.js";
 import { classInstanceOf } from "../class-dynamic-dispatch.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
+import { assertedInOperand } from "./asserted-receiver.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { checkedClassInstanceOf } from "../class-construction.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
@@ -1672,7 +1673,11 @@ export function lowerInExpression(
       if (probed) return probed;
     }
   }
-  let recv = lowerer.lowerExpr(expr.right);
+  // `"stream" in (stored as R)` probes the value actually stored (Node
+  // erases the assertion): a union of fixed record shapes answers per arm
+  // below, so the assertion's checked extraction must not run first (it
+  // would trap on the very arm the probe exists to detect).
+  let recv = assertedInOperand(lowerer, expr.right) ?? lowerer.lowerExpr(expr.right);
   const classInfo =
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (

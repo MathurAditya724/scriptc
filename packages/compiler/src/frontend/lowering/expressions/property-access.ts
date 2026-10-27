@@ -125,6 +125,12 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../.
 import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
+import {
+  applyDeferredAssertion,
+  assertedReceiverNode,
+  deferredMemberReadTarget,
+  deferredProbeReadAccess,
+} from "./asserted-receiver.js";
 import { lowerRecordInheritedMember } from "../record-inherited.js";
 import { DATE_METHOD_HINT } from "../builtins/dates.js";
 import {
@@ -1398,6 +1404,25 @@ export function lowerPropertyAccessExpr(
   // receiver that lowers cleanly means the MEMBER is the gap — name
   // the property and the receiver's type instead of "property access".
   let recvLowered = lowerer.lowerExpr(expr.expression);
+  // A PRESENCE PROBE of a member read through an erased assertion
+  // (`typeof (u as R).member`, `(u as R).member !== undefined`): Node
+  // reads the property off the value actually stored, so an arm that does
+  // not declare it answers undefined. lowerAsExpression deferred the
+  // assertion's checked extraction for this read; answer it per arm
+  // (assertedMemberRead), and only a member with no per-arm answer applies
+  // the extraction the assertion would otherwise have taken (a lying
+  // assertion still throws on a real use, never on the probe).
+  {
+    const assertion = assertedReceiverNode(expr.expression);
+    const target = assertion
+      ? deferredMemberReadTarget(lowerer, assertion, expr, recvLowered)
+      : null;
+    if (target !== null) {
+      const read = assertedMemberRead(lowerer, expr, recvLowered, loc);
+      if (read) return read;
+      recvLowered = applyDeferredAssertion(lowerer, recvLowered, target, loc);
+    }
+  }
   // A receiver whose value union holds record types the checker's subtype
   // reduction folded into its type (`{ status } | { status, value }` typed
   // `{ status }`, a call of a function with an inferred return type): read
@@ -3145,6 +3170,12 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
         };
     }
   }
+  // A presence probe of a member read through a record assertion
+  // (`typeof (u as R).member`): the field target comes from the ASSERTED
+  // checker type and would apply the checked extraction, trapping on the
+  // very arm the probe exists to detect. Leave the read to the per-arm
+  // answer in lowerPropertyAccessExpr (asserted-receiver.ts).
+  if (deferredProbeReadAccess(lowerer, expr)) return null;
   const target = lowerer.fieldTarget(expr);
   if (target) return lowerer.fieldGetExpr(target, locOf(expr), expr);
   if (expr.questionDotToken) return null;
