@@ -1044,8 +1044,9 @@ const RUNTIME_FEATURE_RULES = {
   mime: rule({ prefixes: ["mime."] }),
   /** Web streams in checked-dynamic code (scr_webstreams.c). */
   webStreams: rule({ prefixes: ["webstream."] }),
-  /** AbortController and AbortSignal (scr_abort.c, or the fetch unit). */
-  abortSignal: rule({ prefixes: ["abort."] }),
+  /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
+   * A WritableStream controller's signal is one (scr_webstreams.c). */
+  abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */

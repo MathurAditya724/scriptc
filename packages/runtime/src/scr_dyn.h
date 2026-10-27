@@ -244,7 +244,14 @@ typedef enum {
   Y(WS_COUNT_STRATEGY) /* CountQueuingStrategy (scr_webstreams.c) */ \
   Y(WS_RCONTROLLER) /* ReadableStreamDefaultController (scr_webstreams.c) */ \
   Y(WS_READABLE) /* ReadableStream for checked-dynamic code (scr_webstreams.c) */ \
-  Y(WS_READER) /* ReadableStreamDefaultReader (scr_webstreams.c) */
+  Y(WS_READER) /* ReadableStreamDefaultReader (scr_webstreams.c) */ \
+  Y(WS_TCONTROLLER) /* TransformStreamDefaultController (scr_webstreams.c) */ \
+  Y(WS_TEXT_DECODER) /* TextDecoderStream (scr_webstreams.c) */ \
+  Y(WS_TEXT_ENCODER) /* TextEncoderStream (scr_webstreams.c) */ \
+  Y(WS_TRANSFORM) /* TransformStream for checked-dynamic code (scr_webstreams.c) */ \
+  Y(WS_WCONTROLLER) /* WritableStreamDefaultController (scr_webstreams.c) */ \
+  Y(WS_WRITABLE) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
+  Y(WS_WRITER) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
