@@ -280,11 +280,6 @@ ScrDyn *scr_global_object(void) {
   return scr_global_box;
 }
 
-ScrDyn *scr_dyn_sloppy_receiver(ScrDyn *value) {
-  if (!value || scr_dyn_is_nullish(value)) return scr_dyn_retain(scr_global_object());
-  return scr_dyn_retain(value);
-}
-
 /* Installs the program's builtin-global lookup (borrowed): reads of
  * builtin names through the global object answer what their static
  * spellings read. The first installation stands; modules that read the

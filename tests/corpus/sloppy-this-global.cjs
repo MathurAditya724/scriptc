@@ -3,6 +3,12 @@
 // detached method, and through call and apply. Strict functions and arrows
 // keep the receiver they get.
 
+// Before anything else reads the global object.
+function readConsole() {
+  return typeof this.console.log === "function" && this.console === console;
+}
+console.log(readConsole(), readConsole.call(null), readConsole.call({ console: 1 }));
+
 function receiver() {
   return this;
 }

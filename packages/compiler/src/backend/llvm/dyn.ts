@@ -2892,12 +2892,12 @@ export class LlDyn {
         // A record built from a frozen object is frozen too, as the object it
         // copies (frozen-records.ts makes such shapes freezable).
         if (shape.freezable) {
-          host.declare(`declare zeroext i1 @scr_dyn_is_frozen(ptr)`);
+          host.declare(`declare zeroext i1 @scr_dyn_checked_record_frozen(ptr)`);
           host.declare(`declare void @scr_record_freeze(ptr)`);
           const frozen = B.tmp();
           const lFreeze = B.newLabel("dcr.freeze");
           const lDone = B.newLabel("dcr.frozen");
-          B.line(`${frozen} = call i1 @scr_dyn_is_frozen(ptr %d)`);
+          B.line(`${frozen} = call i1 @scr_dyn_checked_record_frozen(ptr %d)`);
           B.condBr(frozen, lFreeze, lDone);
           B.startBlock(lFreeze);
           B.line(`call void @scr_record_freeze(ptr %r0)`);

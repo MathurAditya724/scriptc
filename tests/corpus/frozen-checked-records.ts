@@ -23,3 +23,7 @@ console.log(bump(open, 2), open.count, Object.isFrozen(open));
 const raw: unknown = Object.freeze(JSON.parse('{"count":20,"label":"c"}'));
 const viaUnknown = raw as Counter;
 console.log(bump(viaUnknown, 2), viaUnknown.count, Object.isFrozen(viaUnknown));
+
+// A proxy checked into the record type stays writable.
+const proxied = new Proxy({ count: 40, label: "q" }, {}) as Counter;
+console.log(bump(proxied, 2), proxied.count);

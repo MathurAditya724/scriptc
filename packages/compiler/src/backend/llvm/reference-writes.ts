@@ -95,7 +95,6 @@ const INERT_LIB_CALLS = new Set([
   // Reads the ambient receiver (a fresh reference to the bound value).
   "dyn.this",
   // A sloppy-mode function's receiver from it (a fresh reference).
-  "dyn.sloppyReceiver",
   "error.new",
   "error.nodeThrow",
   "dyn.typedRefIs",

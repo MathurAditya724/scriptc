@@ -39,6 +39,7 @@ import {
 } from "./function-returns.js";
 import { generatorMeta, isThisParameter, type ParamShape } from "./call-signatures.js";
 import { isStrictCode } from "./strict-mode.js";
+import { lowerSloppyGlobalReceiver } from "./lower-global-value.js";
 
 /** Save the call-site receiver before defaults or body effects. Escaping
  * arrows capture this binding instead of reading a later call's receiver. */
@@ -63,7 +64,13 @@ function declareCallReceiver(
     kind: "varDecl",
     localId: receiver.id,
     init: sloppy
-      ? { kind: "libCall", fn: "dyn.sloppyReceiver", args: [bound], type: DYN, loc }
+      ? {
+          kind: "nullish",
+          left: bound,
+          right: lowerSloppyGlobalReceiver(lowerer, node, loc),
+          type: DYN,
+          loc,
+        }
       : bound,
     loc,
   };
