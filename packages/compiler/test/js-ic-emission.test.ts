@@ -50,6 +50,10 @@ console.log(read(o), at(dyn([5, 6]), 1), call(o), o.n);
     );
     expect(body(llvm, "read")).toContain("@scr_js_get_probe(");
     expect(body(llvm, "write")).toContain("@scr_js_store_probe(");
+    // Reads and writes test the first two entries inline: the second
+    // starts 40 bytes into the record.
+    for (const site of ["read", "write"])
+      expect(body(llvm, site)).toMatch(/getelementptr inbounds i8, ptr @sc_js_ic_\d+, i64 40$/m);
     expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
     expect(body(llvm, "call")).toContain("@scr_js_load_probe(");
     // A compound assignment stores its number result from the jsval: an
@@ -134,6 +138,50 @@ console.log(read(o), read(p), read(t), at(dyn([5, 6]), 1), at(p, "x"), at(t, "ta
     expect(body(llvm, "read")).toContain("@scr_js_get_probe(");
     expect(body(llvm, "write")).toContain("@scr_js_store_probe(");
     expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("property reads answer class instances' declared fields inline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-capsule-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+class Point {
+  constructor(x) { this.x = x; }
+}
+class Tagged extends Point {
+  constructor(x, tag) { super(x); this.tag = tag; }
+}
+class Gauge {
+  get x() { return 9; }
+}
+function dyn(v) { return v; }
+function read(o) { return o.x; }
+function tag(o) { return o.tag; }
+var p = dyn(new Point(4));
+var t = dyn(new Tagged(6, "t"));
+console.log(read(p), read(t), read(dyn(new Gauge())), read({ x: 1 }), tag(t));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    const read = body(llvm, "read");
+    // Point and Tagged instances load the field after one key compare
+    // each; Gauge's getter, and every other receiver, keeps the probe and
+    // the helper.
+    expect(read.match(/^icc\.m\d+:/gm)).toHaveLength(2);
+    expect(read).toContain("@scr_js_get_probe(");
+    expect(read).toMatch(/@sc_b?f__x25_dyn_class_property_\d+\(ptr %t\d+\) noinline cold/);
+    expect(body(llvm, "tag").match(/^icc\.m\d+:/gm)).toHaveLength(1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

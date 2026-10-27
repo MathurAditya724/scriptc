@@ -69,6 +69,11 @@ Options:
                      load at run time, or beside to copy it next to the
                      executable (default: SCRIPTC_LIBNODE at build time;
                      SCRIPTC_LIBNODE overrides it at run time)
+      --large-pages  Linux: at startup, move the executable's code onto 2 MiB
+                     transparent huge pages when the system allows them, for
+                     large programs. Takes about 3 ms per 10 MiB of code, and
+                     all of the moved code stays resident (opt in; --emit=exe
+                     only)
       --target-cpu <baseline|x86-64-v2|x86-64-v3|x86-64-v4|native>
                      x86-64: compile the program's code for a CPU level
                      (default: baseline, which runs on any x86-64 CPU). The
@@ -179,6 +184,7 @@ export const CLI_OPTIONS = {
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
   libnode: { type: "string" },
+  "large-pages": { type: "boolean", default: false },
   "target-cpu": { type: "string" },
   "cpu-dispatch": { type: "boolean" },
   "profile-generate": { type: "string" },

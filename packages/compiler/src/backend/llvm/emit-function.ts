@@ -31,6 +31,7 @@ import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
 import { findLocalUnionStorage } from "./local-union-storage.js";
 import { INT32_RANGE, analyzeIntegerRangeFacts } from "../../ir/integer-ranges.js";
+import { beginLoopEntryVersions } from "./loop-entry-versions.js";
 import { findBytesBounds } from "./bytes-bounds.js";
 import { findInt32Locals } from "./int32-locals.js";
 import { findIntegerViews } from "./integer-views.js";
@@ -246,6 +247,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const rangeFacts = analyzeIntegerRangeFacts(numericFn, slotFacts);
   emitter.integerRanges = rangeFacts.ranges;
   emitter.integerLoopRanges = rangeFacts.loopRanges;
+  beginLoopEntryVersions(emitter, numericFn, slotFacts, rangeFacts);
   emitter.int32Elements = slotFacts.elements ?? null;
   emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
   emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
@@ -338,6 +340,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     }
     emitter.currentCoro = {
       kind: fn.generator !== undefined ? "generator" : "async",
+      awaits: fn.async === true,
       id,
       handle,
       self,
@@ -525,6 +528,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     }
   }
   emitter.scopes.push(fnScope);
+  emitter.beginArenaFunction(fn);
   // Stackful native fibers and native coroutine frames retain these frames
   // while suspended. The active exception context owns the chain, so
   // concurrent fibers isolate it.
@@ -862,10 +866,14 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
     ];
     const genNew = coroBody && !emitter.wasi ? "scr_gen_new_stackless" : "scr_gen_new";
     if (genNew !== "scr_gen_new") emitter.declare(`declare ptr @${genNew}(ptr, ptr, ptr)`);
+    const asyncGenNew =
+      coroBody && !emitter.wasi ? "scr_async_gen_new_stackless" : "scr_async_gen_new";
+    if (settleAsync !== null && asyncGenNew !== "scr_async_gen_new")
+      emitter.declare(`declare ptr @${asyncGenNew}(ptr, ptr, ptr, ptr)`);
     sp.push(
       settleAsync === null
         ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
-        : `  %gg = call ptr @scr_async_gen_new(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+        : `  %gg = call ptr @${asyncGenNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
       ...(fn.generator.tag !== undefined
         ? [`  call void @scr_gen_set_tag(ptr %gg, ptr ${emitter.cstr(fn.generator.tag)})`]
         : []),
