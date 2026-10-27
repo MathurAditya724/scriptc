@@ -3875,11 +3875,11 @@ void scr_fs_futimes(double fd, double atime, double mtime) {
 /* fs.closeSync(fd) — close(2); failure throws Node's path-less fs error
  * shape ("EBADF: bad file descriptor, close"). */
 
-/* Offset-preserving read for fs.readSync's numeric-position form. POSIX
+/* Offset-preserving read for fs.readSync's validated position. POSIX
  * supplies pread(2). Windows follows libuv's synchronous-handle recipe:
  * ReadFile with an OVERLAPPED byte offset, then restore the handle position
  * because synchronous ReadFile updates it even when OVERLAPPED is present. */
-static ssize_t scr_fs_pread(int fd, void *data, size_t length, double position) {
+static ssize_t scr_fs_pread(int fd, void *data, size_t length, int64_t position) {
 #ifdef _WIN32
   HANDLE handle = (HANDLE)_get_osfhandle(fd);
   if (handle == INVALID_HANDLE_VALUE) {
@@ -4266,6 +4266,13 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
   }
   size_t off = (size_t)offset;
   size_t want = (size_t)length;
+  return scr_fs_read_sync_i64(fd, buf, off, want, (int64_t)position);
+}
+
+/* Shared kernel read after the caller has validated the byte window and
+ * position. BigInt positions must reach pread/ReadFile as integers. */
+double scr_fs_read_sync_i64(double fd, ScrBytes *buf, size_t off, size_t want,
+                            int64_t position) {
   uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
   if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
   uint8_t *destination = bounce ? bounce : buf->data + off;

@@ -2091,7 +2091,7 @@ bool scr_fs_stream_mode(const ScrDyn *value, double *mode) {
 /* fs.readSync(fd, buffer, offset, length[, position]) with arguments the
  * compiler could not type (JavaScript): Node's checks (validateBuffer
  * first, then the fd, the offset, `length |= 0` and the position, which
- * may be a bigint), then the typed read. */
+ * may be a bigint), then the shared integer-position read. */
 double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
                             const ScrDyn *length, const ScrDyn *position) {
   if (buffer->kind != SCR_DYN_BYTES) {
@@ -2101,12 +2101,13 @@ double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn
   double count = 0;
   if (!scr_fs_read_validate(fd, buffer, offset, length, position, &count)) return 0;
   if (count == 0) return 0;
-  double at = scr_fs_dyn_absent(position)                ? -1
-              : position->kind == SCR_DYN_BIGINT ? scr_bigint_to_f64(position->v.bigint)
-                                                   : position->v.num;
+  int64_t at = scr_fs_dyn_absent(position)                ? -1
+               : position->kind == SCR_DYN_BIGINT ? scr_bigint_to_i64(position->v.bigint)
+                                                   : (int64_t)position->v.num;
   ScrBytes *bytes = scr_dyn_bytes_unbox(buffer);
-  double read = scr_fs_read_sync(fd->v.num, bytes, scr_fs_dyn_absent(offset) ? 0 : offset->v.num,
-                                 count, at);
+  double read = scr_fs_read_sync_i64(fd->v.num, bytes,
+                                    scr_fs_dyn_absent(offset) ? 0 : (size_t)offset->v.num,
+                                    (size_t)count, at);
   scr_bytes_release(bytes);
   return read;
 }
