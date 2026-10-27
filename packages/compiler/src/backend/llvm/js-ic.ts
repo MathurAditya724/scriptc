@@ -26,12 +26,14 @@
  *                v.num +16. Every property of an object with a layout is
  *                a writable data property (scr_dyn.h's layout mode);
  *                dictionary-mode objects have a null layout.
+ *                v.typed_ref {ptr +16, type_key +40}.
  *   ScrJsIc      entries of 40 bytes {layout, target, holder,
  *                holder_layout, slot}; 168 bytes in all */
-import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction } from "../../ir/ir.js";
+import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
 import { jsIcMethodSites, type JsIcSite } from "../../ir/js-ic.js";
 import { mangleBorrowedFunction } from "../mangle.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
+import { classFieldBase, classFieldIndex } from "./classes.js";
 import { DYN_KIND } from "./dyn.js";
 import type { ExprOf, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { JS_BITS } from "./jsval-encoding.js";
@@ -317,6 +319,222 @@ function keyString(host: Host, key: string, e: IrExpr): string {
   return host.emitExpr({ kind: "strLit", value: key, type: STRING, loc: e.loc }).name;
 }
 
+/** A class instance's answer that a read helper gives by loading one
+ * declared field: the branch `if (dyn.typedRefIs(p, KEY)) { r =
+ * dynCheck(p); return [js.fromDyn](fieldGet C.f(r)) }`. */
+interface CapsuleRead {
+  key: string;
+  className: string;
+  field: string;
+}
+
+/** The class branches of a read helper that a site can answer inline for
+ * capsules (class instances boxed as dyn values), or none.
+ *
+ * The helper first normalizes its receiver (`%dyn.class.normalize`
+ * reboxes a capsule keyed with a base class whose instance belongs to a
+ * subclass), then tests each class branch in turn. The site loads the
+ * field of a capsule whose key is a branch's key without normalizing, so
+ * a branch qualifies only when every subclass the normalization can
+ * rebox its key to has a branch that loads the same field from the same
+ * slot of a layout that extends the class's. Every other capsule, and
+ * every helper or normalization of another form, keeps the helper. */
+function capsuleReads(host: Host, helper: IrFunction): CapsuleRead[] {
+  const receiver = helper.params[0]?.localId;
+  if (receiver === undefined || helper.params.length !== 1) return [];
+  const reads = new Map<string, CapsuleRead | null>();
+  for (const stmt of helper.body) {
+    if (normalizes(stmt, receiver)) continue;
+    if (stmt.kind !== "if" || stmt.else_ !== null) break;
+    if (notCapsule(stmt.cond, receiver)) continue;
+    const key = brandKey(stmt.cond, receiver);
+    if (key === null) return [];
+    if (!reads.has(key)) reads.set(key, capsuleRead(stmt, receiver, key));
+  }
+  const reboxes = normalizationTargets(host);
+  if (reboxes === null) return [];
+  const out: CapsuleRead[] = [];
+  for (const read of reads.values()) {
+    if (read === null || !plainField(host, read.className, read.field)) continue;
+    const targets = reboxes.get(read.key) ?? [];
+    const same = targets.every((target) => {
+      const other = reads.get(`object:${target}`);
+      return (
+        other != null &&
+        other.field === read.field &&
+        plainField(host, target, read.field) &&
+        extendsLayout(host, target, read.className, read.field)
+      );
+    });
+    if (same) out.push(read);
+  }
+  return out;
+}
+
+/** `p = %dyn.class.normalize(p)`. */
+function normalizes(stmt: IrStmt, receiver: string): boolean {
+  return (
+    stmt.kind === "assign" &&
+    stmt.localId === receiver &&
+    stmt.value.kind === "call" &&
+    stmt.value.callee === "%dyn.class.normalize" &&
+    stmt.value.args.length === 1 &&
+    isLocal(stmt.value.args[0]!, receiver)
+  );
+}
+
+/** `!classCapsule(p)`: false for every capsule of a compiled class, so a
+ * capsule never enters the branch it guards. */
+function notCapsule(cond: IrExpr, receiver: string): boolean {
+  return (
+    cond.kind === "dynTest" &&
+    cond.test === "classCapsule" &&
+    cond.negated === true &&
+    isLocal(cond.value, receiver)
+  );
+}
+
+function isLocal(e: IrExpr, id: string): boolean {
+  return e.kind === "varRef" && e.localId === id;
+}
+
+/** The capsule key `dyn.typedRefIs(p, "object:C")` tests, or null. */
+function brandKey(cond: IrExpr, receiver: string): string | null {
+  if (cond.kind !== "libCall" || cond.fn !== "dyn.typedRefIs" || cond.args.length !== 2)
+    return null;
+  const [value, key] = cond.args;
+  if (!isLocal(value!, receiver) || key?.kind !== "strLit" || !key.value.startsWith("object:"))
+    return null;
+  return key.value;
+}
+
+/** The field a class branch loads, or null for a branch of another form. */
+function capsuleRead(
+  branch: IrStmt & { kind: "if" },
+  receiver: string,
+  key: string,
+): CapsuleRead | null {
+  const [decl, ret] = branch.then;
+  if (branch.then.length !== 2 || decl?.kind !== "varDecl" || ret?.kind !== "return") return null;
+  if (decl.init?.kind !== "dynCheck" || !isLocal(decl.init.value, receiver)) return null;
+  let value = ret.value;
+  if (value?.kind === "libCall" && value.fn === "js.fromDyn" && value.args.length === 1)
+    value = value.args[0]!;
+  if (value?.kind !== "fieldGet" || !isLocal(value.obj, decl.localId)) return null;
+  if (key !== `object:${value.className}`) return null;
+  return { key, className: value.className, field: value.field };
+}
+
+/** For each capsule key `%dyn.class.normalize` reboxes, the classes it
+ * may rebox to; null when the normalization has another form. */
+function normalizationTargets(host: Host): Map<string, string[]> | null {
+  const targets = new Map<string, string[]>();
+  const normalize = host.fnByName.get("%dyn.class.normalize");
+  if (normalize === undefined) return targets;
+  const value = normalize.params[0]?.localId;
+  if (value === undefined) return null;
+  for (const stmt of normalize.body) {
+    if (stmt.kind === "return") {
+      if (stmt.value !== null && isLocal(stmt.value, value)) continue;
+      return null;
+    }
+    if (stmt.kind !== "if" || stmt.else_ !== null) return null;
+    if (notCapsule(stmt.cond, value)) continue;
+    const key = brandKey(stmt.cond, value);
+    if (key === null) return null;
+    const [decl, ...checks] = stmt.then;
+    if (decl?.kind !== "varDecl" || decl.init?.kind !== "dynCheck") return null;
+    const into = targets.get(key) ?? [];
+    for (const check of checks) {
+      if (
+        check.kind !== "if" ||
+        check.else_ !== null ||
+        check.cond.kind !== "instanceOf" ||
+        !isLocal(check.cond.value, decl.localId)
+      )
+        return null;
+      into.push(check.cond.className);
+    }
+    targets.set(key, into);
+  }
+  return targets;
+}
+
+/** A declared field of a compiled class that holds a plain dyn cell
+ * pointer: not compact, compressed, int32 or an inline union. */
+function plainField(host: Host, className: string, field: string): boolean {
+  const meta = host.classMeta.get(className);
+  if (meta === undefined || meta.compact) return false;
+  const decl = meta.def.fields.find((f) => f.name === field);
+  if (decl === undefined || decl.type.kind !== "dyn") return false;
+  if (classFieldIndex(meta, field, "compressed").compressed) return false;
+  return (
+    !host.int32Slots.isField(className, field) && !host.inlineUnions.classField(className, field)
+  );
+}
+
+/** Whether `sub`'s layout starts with `base`'s through `field`: the same
+ * header and the same fields in the same slots, so a load through
+ * `base`'s struct reads `sub`'s field. */
+function extendsLayout(host: Host, sub: string, base: string, field: string): boolean {
+  const a = host.classMeta.get(base);
+  const b = host.classMeta.get(sub);
+  if (a === undefined || b === undefined || b.compact) return false;
+  if (classFieldBase(a) !== classFieldBase(b)) return false;
+  const end = a.def.fields.findIndex((f) => f.name === field);
+  if (end < 0 || end >= b.def.fields.length) return false;
+  for (let i = 0; i <= end; i++) {
+    const x = a.def.fields[i]!;
+    const y = b.def.fields[i]!;
+    if (x.name !== y.name || x.type.kind !== y.type.kind) return false;
+  }
+  return (
+    classFieldIndex(a, field, "compressed").index === classFieldIndex(b, field, "compressed").index
+  );
+}
+
+/** The inline part of a read site for a capsule `d`: a capsule whose key
+ * is one of `reads`' keys answers with the (borrowed) field cell, branching
+ * to `join` and recording its phi input; anything else, including a field
+ * not yet set, branches to `miss`. */
+function inlineCapsuleLoad(
+  host: Host,
+  d: string,
+  reads: readonly CapsuleRead[],
+  incoming: string[],
+  join: string,
+  miss: string,
+): void {
+  const B = host.B;
+  const capsule = B.newLabel("icc.cap");
+  kindIs(host, d, DYN_KIND.TYPED_REF, capsule, miss);
+  B.startBlock(capsule);
+  // Capsules boxed by this program share its key constants.
+  const key = load(host, "ptr", d, 40);
+  let next = B.newLabel("icc.k");
+  B.br(next);
+  reads.forEach((read, i) => {
+    B.startBlock(next);
+    next = i + 1 < reads.length ? B.newLabel("icc.k") : miss;
+    const same = B.tmp();
+    B.line(`${same} = icmp eq ptr ${key}, ${host.cstr(read.key)}`);
+    const matched = B.newLabel("icc.m");
+    B.condBr(same, matched, next);
+    B.startBlock(matched);
+    const instance = load(host, "ptr", d, 16);
+    const { ptr } = host.classFieldPtr(instance, read.className, read.field);
+    const cell = B.tmp();
+    B.line(`${cell} = load ptr, ptr ${ptr}`);
+    const set = B.tmp();
+    B.line(`${set} = icmp ne ptr ${cell}, null`);
+    const hit = B.newLabel("icc.hit");
+    B.condBr(set, hit, miss);
+    B.startBlock(hit);
+    incoming.push(`[ ${cell}, %${B.currentLabel()} ]`);
+    B.br(join);
+  });
+}
+
 /** Emits a call to a classified helper as a cache site. */
 export function emitJsIcCall(
   host: Host,
@@ -371,9 +589,15 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
   // conversion to the result type.
   const hit = B.newLabel("icg.hit");
   const hits: string[] = [];
-  kindIs(host, receiver.name, DYN_KIND.OBJ, object, probe);
+  const reads = capsuleReads(host, callee);
+  const other = reads.length > 0 ? B.newLabel("icg.other") : probe;
+  kindIs(host, receiver.name, DYN_KIND.OBJ, object, other);
   B.startBlock(object);
   inlineLoad(host, receiver.name, ic, INLINE_WAYS, INLINE_PROTO, (cell) => cell, hits, hit, probe);
+  if (reads.length > 0) {
+    B.startBlock(other);
+    inlineCapsuleLoad(host, receiver.name, reads, hits, hit, probe);
+  }
   B.startBlock(probe);
   // The read's probe also answers keys the receiver's plain chain lacks.
   // Only `length` and `next` reads can be answered for a native array or
