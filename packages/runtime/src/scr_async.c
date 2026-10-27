@@ -28,6 +28,7 @@
 #include "scr_runtime.h"
 #ifdef SCR_NODE_ISLANDS
 #include "scr_node_bridge.h"
+#include "scr_node_island.h"
 #endif
 
 #include <errno.h>
@@ -1658,6 +1659,10 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
    * its own; every resumed context restores the guard it saved here. */
   uintptr_t guard = scr_stack_guard;
   if (to_fiber) SCR_STACK_GUARD_SET(scr_stack_guard_for((uintptr_t)to_fiber->stack, SCR_FIBER_STACK));
+#endif
+#ifdef SCR_NODE_ISLANDS
+  /* Leaving Node's stack keeps this frame and those above it live. */
+  scr_node_island_leave_stack((uintptr_t)__builtin_frame_address(0));
 #endif
 #ifdef _WIN32
   /* SwitchToFiber snapshots the outgoing fiber's state inside its own
