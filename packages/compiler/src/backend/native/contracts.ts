@@ -131,6 +131,9 @@ export interface CcOptions {
   mime?: boolean;
   /** `--large-pages`: compiles scr_text_pages.c. */
   largePages?: boolean;
+  /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
+   * scr_dyn_handle_class.c. */
+  webStreams?: boolean;
   /** AbortController and AbortSignal: compiles scr_abort.c, unless the
    * program compiles the fetch unit, which has them. */
   abortSignal?: boolean;

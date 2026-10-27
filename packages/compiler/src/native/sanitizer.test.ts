@@ -23,6 +23,7 @@ const features = {
   eventsOnceSignal: false,
   mime: false,
   largePages: false,
+  webStreams: false,
   abortSignal: false,
   utilTiming: false,
   dynBuffer: false,
