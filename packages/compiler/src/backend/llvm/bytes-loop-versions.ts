@@ -196,9 +196,10 @@ const INVARIANT_OPS = new Set(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>"])
  * and writes thread-owned views directly.
  *
  * Only small synchronous loops are versioned (nested loops included), and
- * the emitter bounds how deeply versions nest. The checked loop runs
- * whenever the guard fails, and keeps every out-of-bounds read, ignored
- * write and NaN-index behavior. */
+ * the emitter bounds how deeply versions nest. A loop whose nested loops
+ * access typed arrays versions only for an access inside them. The checked
+ * loop runs whenever the guard fails, and keeps every out-of-bounds read,
+ * ignored write and NaN-index behavior. */
 export function matchBytesLoopVersion(
   loop: IrStmt & { kind: "for" | "while" },
   counted: IntegerCountedForLoop | null,
@@ -492,7 +493,15 @@ export function matchBytesLoopVersion(
   const pairedCounters =
     paired !== null && counted === null ? new Set([paired.low.localId, paired.high.localId]) : null;
   const pairedNodes = new Map<number, Node[]>();
+  // Accesses inside the loop's nested loops, and inside its nested while
+  // loops.
+  const nested = new Set<Node>();
+  const nestedWhile = new Set<Node>();
+  let loops = 0,
+    whiles = 0;
   const access = (node: Node, array: IrExpr, index: IrExpr, width: number): void => {
+    if (loops > 0) nested.add(node);
+    if (whiles > 0) nestedWhile.add(node);
     const ref = root(array);
     if (!ref) return;
     if (facts.workers && ref.type.kind === "bytes" && !facts.owned.has(node)) {
@@ -603,7 +612,15 @@ export function matchBytesLoopVersion(
       access(s, s.arr, s.index, 1);
       scope(s, s.arr, true);
     }
-    return everyStmtChild(s, visitExpr, visitStmt);
+    const isLoop =
+      s.kind === "for" || s.kind === "forOf" || s.kind === "while" || s.kind === "doWhile";
+    const isWhile = s.kind === "while" || s.kind === "doWhile";
+    if (isLoop) loops++;
+    if (isWhile) whiles++;
+    const result = everyStmtChild(s, visitExpr, visitStmt);
+    if (isLoop) loops--;
+    if (isWhile) whiles--;
+    return result;
   };
   loop.body.every(visitStmt);
   if (loop.kind === "while") visitExpr(loop.cond);
@@ -714,6 +731,18 @@ export function matchBytesLoopVersion(
     used.add(receiver);
     for (const node of nodes) bounds.add(node);
   }
+  // A loop whose nested loops access typed arrays versions only when the
+  // guard proves the bounds of one of those accesses (or, in a worker
+  // program, the ownership of one inside a nested while loop, which never
+  // versions for ownership alone). Otherwise the guard covers accesses that
+  // run once per pass, while each copy of the body repeats every nested
+  // loop and each nested loop's own version.
+  if (
+    nested.size > 0 &&
+    ![...bounds].some((node) => nested.has(node)) &&
+    ![...ownedNodes].some((node) => nestedWhile.has(node))
+  )
+    return null;
   const counterChecks: CounterCheck[] = [];
   for (const [id, min] of counterMins) {
     const info = whileAccesses!.counters.get(id)!;

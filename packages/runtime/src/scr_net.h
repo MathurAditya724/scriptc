@@ -265,6 +265,10 @@ ScrNetSocket *scr_net_connect_lookup_dyn(double port, ScrStr *host /*borrowed*/,
 /* A client socket for the Unix socket at `path`, dialed now or (deferred)
  * by scr_net_sock_dial_start. A failure is the deferred 'error'. */
 ScrNetSocket *scr_net_connect_path(ScrStr *path /*borrowed*/, bool deferred); /* +1 */
+/* net.connect(path[, cb]) and connect({ path }): with `pipe_name_rule`, a
+ * numeric string is a localhost port, as in Node. */
+ScrNetSocket *scr_net_connect_path_checked(ScrStr *path /*borrowed*/, bool pipe_name_rule,
+                                           ScrClosure *cb /*moves, nullable*/); /* +1 */
 /* server.listen(path[, cb]): a Unix-socket server, its file removed at close. */
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
 void scr_net_sock_dial_start(ScrNetSocket *s);

@@ -27,7 +27,7 @@ import {
   streamTypedRefEligible,
   undefinedArmTag,
 } from "../../ir/analysis.js";
-import { loopTestsEveryIteration } from "../loop-polls.js";
+import { containsLoop, loopTestsEveryIteration } from "../loop-polls.js";
 import type {
   IrBytesElem,
   IrExpr,
@@ -217,7 +217,7 @@ import {
 import { LazyCaptures } from "./lazy-captures.js";
 import { StackCaptures } from "./stack-captures.js";
 import {
-  CLOSURE_RECEIVER_FREE,
+  CLOSURE_KIND,
   emitFieldAbsentTest,
   f64Lit,
   SCR_ARR_FIELD,
@@ -343,6 +343,15 @@ import {
   type LlClassMeta,
 } from "./classes.js";
 import { LifetimeRegions, REGION_TYPES } from "./regions.js";
+import {
+  arenaAware,
+  arenaCurrentAddress,
+  arenaNewSym,
+  arenasRequested,
+  planArenas,
+  type ArenaPlan,
+} from "./arenas.js";
+import { children, type Node } from "./region-ir.js";
 import { LlDyn, recordDynKeepsIdentity, type DynHost } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -375,6 +384,7 @@ import {
   retainSym,
   traceArg,
   vAdapters,
+  traceAdapter,
 } from "./shapes.js";
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
 import { INLINE_LITERAL_BYTES } from "./string-literal-equality.js";
@@ -421,6 +431,7 @@ import {
   fieldAliasMetadata,
   isStackUnionSource,
 } from "./receivers.js";
+import { findLoopCallees } from "./loop-callees.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -465,6 +476,9 @@ export interface LlScopeEntry {
   slot: string;
   type: IrType;
   boxed?: boolean;
+  /** A group arena list slot (arenas.ts), dropped after the scope's other
+   * entries. */
+  arena?: boolean;
   /** A lazily created box: the slot stays null on paths that build no
    * environment, which skip the release call. */
   lazy?: boolean;
@@ -826,6 +840,11 @@ const NO_BORROWED: ReadonlySet<number> = new Set();
 
 /** The nodes that write a binding by its id (numberGlobalWriters). */
 const GLOBAL_WRITE_KINDS: readonly IrNodeKind[] = ["assign", "varDecl", "assignExpr", "incDec"];
+
+/** workerLoopBudget's answer for a loop that polls on every iteration
+ * instead of counting down in a slot. */
+const POLL_EVERY_ITERATION = "%worker.poll.every";
+
 /** Runtime library calls (readsLoopMetrics). */
 const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
 
@@ -840,16 +859,23 @@ function isIdentifierByte(code: number): boolean {
 }
 
 /** Runtime entry points (and await-call entries) that may park the running
- * execution context, as they appear in emitted function text. */
+ * execution context, as they appear in emitted function text. An async
+ * generator's next, return and throw only queue a request and run its body
+ * to its next suspension, which returns to the caller, and the body's own
+ * bookkeeping calls do not suspend it. */
 export const SUSPENDS =
-  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_)|sc_a[wd]_)/;
+  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_(?!new\b|next_|return_|throw\b|hop_done\b)|fiber_)|sc_a[wd]_)/;
 /** The suspensions of a fiber body's own awaits, which its stackless
  * coroutine form suspends itself at instead. */
-const AWAIT_SUSPENSIONS = /@(?:scr_await_(?:void|f64|bool|str|ref|hop)\b|sc_a[wd]_[A-Za-z0-9_]+)/g;
+const AWAIT_SUSPENSIONS =
+  /@(?:scr_await_(?:void|f64|bool|str|ref|hop|dyn_value)\b|sc_a[wd]_[A-Za-z0-9_]+)/g;
+/** The suspensions of a fiber generator body's own yields, which its
+ * coroutine form also suspends itself at. */
+const YIELD_SUSPENSIONS = /@scr_(?:gen_yield_(?:f64|bool|ref))\b/g;
 /** SUSPENDS in a stackless coroutine body, whose frame bookkeeping reads its
  * own fiber and promise. */
 const COROUTINE_SUSPENDS =
-  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_(?!self\b|promise\b))|sc_a[wd]_)/;
+  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_(?!new\b|next_|return_|throw\b|hop_done\b)|fiber_(?!self\b|promise\b))|sc_a[wd]_)/;
 /** Captured bindings (boxes a body declares or receives) from which a
  * function compiles without LLVM optimization (see boxSlotCount). */
 export const UNOPTIMIZED_BOX_SLOTS = 512;
@@ -1271,11 +1297,13 @@ export class LlEmitter {
    * generator stacks) and so do debug builds (the debugger reads locals
    * from the native frame). */
   private stacklessGenerators = false;
-  /** Async bodies that suspend only at their own awaits compile to the same
-   * switched coroutines on native targets (selectStacklessAsync), under the
-   * generators' conditions; library and Windows builds keep fibers. */
+  /** Async bodies that suspend only at their own awaits (and an async
+   * generator's yields) compile to the same switched coroutines on native
+   * targets (selectStacklessAsync), under the generators' conditions;
+   * library and Windows builds keep fibers. */
   private stacklessAsyncAllowed = false;
-  /** The async functions selectStacklessAsync lowered as coroutines. */
+  /** The async functions and async generators selectStacklessAsync lowered
+   * as coroutines. */
   readonly stacklessAsync = new Set<string>();
   /** Some function in the module is lowered as a coroutine. */
   usesCoroutines = false;
@@ -1484,6 +1512,9 @@ export class LlEmitter {
   /** Functions that check the native stack guard on entry
    * (stackCheckedFunctions); null where the runtime has no guard. */
   readonly stackChecks: ReadonlySet<string> | null;
+  /** Small leaf functions called only from loops, whose direct calls are
+   * `alwaysinline` (loop-callees.ts). */
+  readonly loopCallees: ReadonlySet<string>;
   /** Static types whose values can be published (@scriptc/threads): their
    * stores carry the frozen-object guard. Null without publish calls. */
   readonly publishedTypes: PublishedTypes | null;
@@ -1898,9 +1929,12 @@ export class LlEmitter {
   currentUnionResult = false;
   /** Active only while emitting a body lowered with LLVM's
    * switched-coroutine intrinsics (wasm32 async bodies and generators,
-   * native synchronous generators; see coroLowered). */
+   * native synchronous generators, and the native async bodies
+   * selectStacklessAsync chose; see coroLowered). */
   currentCoro: {
     kind: "async" | "generator";
+    /** The body awaits: an async function or an async generator. */
+    awaits: boolean;
     id: string;
     handle: string;
     self: string;
@@ -2071,6 +2105,7 @@ export class LlEmitter {
         : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
+    this.loopCallees = findLoopCallees(mod);
     // A stackless call's eager prefix borrows its caller's stack; the
     // runtime moves deep prefix nests to a fresh stack using the guard,
     // which Windows lacks.
@@ -2407,6 +2442,40 @@ export class LlEmitter {
       mod.lib === undefined &&
       options.lowRegion === true &&
       [...this.classMeta.values()].some((m) => m.compact);
+    // Group arenas: off with lifetime regions, which own their classes'
+    // allocation, and in libraries, whose exports any host code calls.
+    if (arenasRequested() && mod.lifetimeRegions !== true && mod.lib === undefined) {
+      this.arenas = planArenas(mod, {
+        shape: (id) => {
+          const shape = this.recordsById.get(id);
+          return (
+            shape !== undefined &&
+            shape.freezable !== true &&
+            shape.indexValue === undefined &&
+            this.publishedTypes?.recordGuarded(id) !== true
+          );
+        },
+        cls: (def) => {
+          const meta = this.classMeta.get(def.name);
+          return (
+            meta !== undefined &&
+            !meta.compact &&
+            !meta.threadSlot &&
+            // An Array subclass's instance is an array (the runtime's header).
+            def.arrayElem === undefined &&
+            meta.root.def.arrayElem === undefined &&
+            !this.programLifetime.has(def.name) &&
+            this.publishedTypes?.classGuarded(def.name) !== true
+          );
+        },
+        nullableArm: (unionId) => this.nullableUnions.single(unionId)?.arm ?? null,
+        traced: (t) => traceAdapter(this.shapeHost, t) !== null,
+      });
+      if (this.arenas !== null) {
+        this.shapeHost.arenaShapes = this.arenas.shapes;
+        this.shapeHost.arenaClasses = this.arenas.classes;
+      }
+    }
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -2708,19 +2777,21 @@ export class LlEmitter {
     }
   }
 
-  /** Chooses the native async functions whose bodies compile to switched
-   * coroutines instead of running on a fiber: a suspended call then keeps a
-   * heap frame of the values live across its awaits rather than a fiber and
-   * its stack. A body qualifies when its only suspension points are its own
-   * awaits, which the coroutine form suspends itself at (emitCoroAwait), so
-   * nothing it runs can park the stack it borrows. It is first emitted as
-   * usual: that text may suspend only through await runtime calls and
-   * await-call entries, which the coroutine form replaces, and may call no
-   * function that parks. The coroutine form is then emitted and must pass
-   * the same test with no exceptions (its frame bookkeeping excepted);
-   * otherwise the fiber form stays. Bodies that never suspend stay
-   * fiberless, and module evaluation bodies and `dyn` results keep fibers
-   * as they do there. The runtime traps if a stackless body ever parks. */
+  /** Chooses the native async functions and async generators whose bodies
+   * compile to switched coroutines instead of running on a fiber: a
+   * suspended call then keeps a heap frame of the values live across its
+   * awaits and yields rather than a fiber and its stack. A body qualifies
+   * when its only suspension points are its own awaits and yields, which
+   * the coroutine form suspends itself at (emitCoroAwait,
+   * emitCoroSuspendPrepared), so nothing it runs can park the stack it
+   * borrows. It is first emitted as usual: that text may suspend only
+   * through await and yield runtime calls and await-call entries, which the
+   * coroutine form replaces, and may call no function that parks. The
+   * coroutine form is then emitted and must pass the same test with no
+   * exceptions (its frame bookkeeping excepted); otherwise the fiber form
+   * stays. Bodies that never suspend stay fiberless, and module evaluation
+   * bodies and async functions with `dyn` results keep fibers as they do
+   * there. The runtime traps if a stackless body ever parks. */
   selectStacklessAsync(fnDefs: string[]): void {
     if (!this.stacklessAsyncAllowed) return;
     const parks = this.parkingFunctions();
@@ -2735,11 +2806,16 @@ export class LlEmitter {
       return true;
     };
     this.mod.functions.forEach((fn, index) => {
-      if (fn.async !== true || fn.generator !== undefined) return;
+      if (fn.async !== true) return;
       if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) return;
-      if (fn.returnType.kind === "dyn" || !parks.has(fn.name)) return;
-      const fiberText = fnDefs[index]!;
-      if (!qualifies(fn, fiberText.replace(AWAIT_SUSPENSIONS, ""), SUSPENDS)) return;
+      // A dyn result may adopt a thenable when it settles the promise; an
+      // async generator's completion value settles its request's record.
+      if (fn.generator === undefined && fn.returnType.kind === "dyn") return;
+      if (!parks.has(fn.name)) return;
+      // An async generator's body also suspends at its own yields.
+      let fiberText = fnDefs[index]!.replace(AWAIT_SUSPENSIONS, "");
+      if (fn.generator !== undefined) fiberText = fiberText.replace(YIELD_SUSPENSIONS, "");
+      if (!qualifies(fn, fiberText, SUSPENDS)) return;
       this.stacklessAsync.add(fn.name);
       const coroText = this.emitFunction(fn);
       if (!qualifies(fn, coroText, COROUTINE_SUSPENDS)) {
@@ -3152,7 +3228,7 @@ export class LlEmitter {
    * native async bodies selectStacklessAsync chose. */
   coroLowered(fn: IrFunction): boolean {
     if (this.wasi) return fn.async === true || fn.generator !== undefined;
-    if (fn.async === true) return fn.generator === undefined && this.stacklessAsync.has(fn.name);
+    if (fn.async === true) return this.stacklessAsync.has(fn.name);
     return this.stacklessGenerators && fn.generator !== undefined;
   }
   emitGenScaffolding(): string[] {
@@ -3522,6 +3598,7 @@ export class LlEmitter {
   /** Releases a statement frame's temps and owned slots. */
   releaseTemps(frame: LlValue[]): void {
     for (const v of frame) {
+      if (v.arena !== undefined) continue;
       if (v.slot) {
         const t = this.B.tmp();
         this.B.line(`${t} = load ptr, ptr ${v.name}`);
@@ -3534,10 +3611,19 @@ export class LlEmitter {
         this.releaseFrame(v.name, v.type);
       }
     }
+    // Arena lists last: the frame's temps may be arena objects.
+    for (const v of frame)
+      if (v.arena === "drop") this.B.line(`call void @scr_arena_drop(ptr ${v.name})`);
+      else if (v.arena === "close") {
+        const head = this.B.tmp();
+        this.B.line(`${head} = load ptr, ptr ${v.name}`);
+        this.B.line(`call void @scr_arena_close(ptr ${head})`);
+      }
   }
 
   releaseScope(scope: LlScopeEntry[]): void {
     for (const e of scope) {
+      if (e.arena === true) continue;
       const t = this.B.tmp();
       this.B.line(`${t} = load ptr, ptr ${e.slot}`);
       if (e.boxed && e.lazy) {
@@ -3559,6 +3645,9 @@ export class LlEmitter {
         this.releaseFrame(t, e.type); // runtime releases are NULL-tolerant
       }
     }
+    // Arena lists last: the scope's bindings may hold arena objects.
+    for (const e of scope)
+      if (e.arena === true) this.B.line(`call void @scr_arena_drop(ptr ${e.slot})`);
   }
 
   /** THE release-on-jump path (break/continue/return): pending statement
@@ -3883,6 +3972,15 @@ export class LlEmitter {
    * calls (unwindAbiFunctions excludes their callees). */
   emitDirectCall(line: string, callee: string): boolean {
     const B = this.B;
+    // A small leaf called only from loops inlines into each of them, past
+    // LLVM's cost threshold (loop-callees.ts). Debug builds keep the call.
+    if (this.debug === null && this.loopCallees.has(callee)) {
+      const comment = line.indexOf(" ; ");
+      line =
+        comment < 0
+          ? `${line} alwaysinline`
+          : `${line.slice(0, comment)} alwaysinline${line.slice(comment)}`;
+    }
     if (!this.unwindAbi.has(callee) || this.currentCoro !== null || B.isTerminated()) {
       B.line(line);
       return false;
@@ -4013,10 +4111,22 @@ export class LlEmitter {
     );
   }
 
+  /** The countdown slot of `loop`'s cancellation poll (emitWorkerLoopCheck),
+   * or null when the loop does not poll. An ELF worker executable's poll is
+   * one ordered load of the thread's own pending word. A loop nest keeps
+   * one countdown per loop, which its register pressure often leaves in
+   * memory, so the loops of a nest there poll on every iteration and get
+   * POLL_EVERY_ITERATION instead of a slot. A loop on its own keeps its
+   * countdown in a register, which costs less than the load. */
   workerLoopBudget(
     loop: Extract<IrStmt, { kind: "while" | "doWhile" | "for" | "forOf" }>,
   ): string | null {
     if (!this.workerLoopPolls(loop)) return null;
+    if (
+      this.executableTls &&
+      (this.jumpTargets.some((target) => target.kind === "loop") || containsLoop(loop.body))
+    )
+      return POLL_EVERY_ITERATION;
     const slot = this.B.slot();
     this.B.entryAllocas.push(`${slot} = alloca i32 ; worker cancellation budget`);
     this.B.line(`store i32 0, ptr ${slot}`);
@@ -4121,6 +4231,10 @@ export class LlEmitter {
    * stay in the loop. */
   emitWorkerLoopCheck(slot: string | null): void {
     if (slot === null) return;
+    if (slot === POLL_EVERY_ITERATION) {
+      this.emitWorkerPoll();
+      return;
+    }
     const B = this.B;
     const budget = B.tmp(),
       due = B.tmp(),
@@ -4140,9 +4254,9 @@ export class LlEmitter {
   }
 
   /** The cancellation poll itself. Calls and throwing operations retain
-   * their own checks. Loops amortize this extra poll across bounded
-   * batches of iterations so scalar work does not cross the runtime ABI on
-   * every iteration. */
+   * their own checks. Outside ELF worker executables, loops amortize this
+   * extra poll across bounded batches of iterations so scalar work does not
+   * cross the runtime ABI on every iteration. */
   emitWorkerPoll(): void {
     this.emitPendingCheck(undefined, true);
   }
@@ -5207,7 +5321,7 @@ export class LlEmitter {
   /** Awaits in the current body suspend its coroutine: every wasm32 async
    * body, and native stackless async bodies (selectStacklessAsync). */
   get coroAwait(): boolean {
-    return this.wasi || this.currentCoro?.kind === "async";
+    return this.wasi || this.currentCoro?.awaits === true;
   }
 
   /** Suspends the current coroutine body at an await of `promise` (null: a
@@ -5246,7 +5360,7 @@ export class LlEmitter {
    * coroutine has already suspended until the promise settled, so its
    * extraction takes no further turn. */
   awaitResultFn(kind: "void" | "f64" | "bool" | "str" | "ref"): string {
-    return !this.wasi && this.currentCoro?.kind === "async"
+    return !this.wasi && this.currentCoro?.awaits === true
       ? `scr_coro_await_${kind}`
       : `scr_await_${kind}`;
   }
@@ -6314,6 +6428,7 @@ export class LlEmitter {
         type: local.type,
         slot: true,
         ...(local.boxed ? { boxed: true } : {}),
+        ...(local.arena === true ? { arena: "drop" as const } : {}),
       });
     }
     return result;
@@ -7408,7 +7523,194 @@ export class LlEmitter {
   }
 
   emitExpr(e: IrExpr): LlValue {
+    return this.arenas === null ? emitExpr(this, e) : this.emitArenaExpr(e, this.arenas);
+  }
+
+  /** emitExpr when group arenas are planned. Kept out of emitExpr, whose
+   * frame each level of a nested expression holds while it is emitted. */
+  private emitArenaExpr(e: IrExpr, arenas: ArenaPlan): LlValue {
+    if (arenas.groups.calls.has(e)) {
+      // A call region: everything the call allocates dies when it returns.
+      // The statement drops the arena after its temps, which an
+      // arena-aware caller can have allocated in it while evaluating the
+      // arguments; any other caller drops it as soon as the call returns.
+      const slot = this.arenaSlot(e);
+      this.statementFrame().push({ name: slot, type: e.type, slot: true, arena: "drop" });
+      this.B.line(`call ptr @scr_arena_open(ptr ${slot}, i32 ${this.arenaClosed(e)})`);
+      const value = emitExpr(this, e);
+      if (!arenaAware(arenas, this.fnByName.get(this.currentFunctionName)))
+        this.B.line(`call void @scr_arena_drop(ptr ${slot})`);
+      return value;
+    }
+    if (arenas.sites.heapCalls.has(e) && this.arenaSite(null)) {
+      // A call whose value the group does not keep: everything it allocates
+      // takes the heap.
+      const saved = this.suspendArena();
+      const value = emitExpr(this, e);
+      this.resumeArena(saved);
+      return value;
+    }
+    if (this.opensArena(e)) {
+      // A root: its group lives until the scope holding its value exits
+      // (the statement frame for a value used in place).
+      const slot = this.arenaSlot(e);
+      const local = arenas.groups.drops.get(e) ?? null;
+      this.statementFrame().push({
+        name: slot,
+        type: e.type,
+        slot: true,
+        arena: local === null ? "drop" : "close",
+      });
+      const arena = this.B.tmp();
+      this.B.line(`${arena} = call ptr @scr_arena_open(ptr ${slot}, i32 ${this.arenaClosed(e)})`);
+      const value = emitExpr(this, e);
+      this.B.line(`call void @scr_arena_close(ptr ${arena})`);
+      return value;
+    }
     return emitExpr(this, e);
+  }
+
+  /** Group arenas (arenas.ts): the plan, the list slot of each root and
+   * call region, and which locals' scopes drop which roots' arenas. */
+  arenas: ArenaPlan | null = null;
+  private arenaSlots = new Map<Node, string>();
+  /** The frames emitStmtBody opens for whole statements (arenas only). */
+  readonly statementFrames = new Set<LlValue[]>();
+
+  /** The frame of the statement being emitted: a nested frame (call
+   * arguments, branches) ends before the values built in it do. */
+  statementFrame(): LlValue[] {
+    for (let i = this.frames.length - 1; i >= 0; i--)
+      if (this.statementFrames.has(this.frames[i]!)) return this.frames[i]!;
+    return this.currentFrame();
+  }
+
+  /** The arena list slot of root or call region `e`: allocated, cleared and
+   * (for a root dropped with a local) owned by that local's scope when the
+   * function starts or the local is declared. */
+  arenaSlot(e: Node): string {
+    let slot = this.arenaSlots.get(e);
+    if (slot === undefined) {
+      slot = this.B.tmp();
+      this.B.entryAllocas.push(`${slot} = alloca ptr`, `store ptr null, ptr ${slot}`);
+      this.arenaSlots.set(e, slot);
+      this.declare(`declare ptr @scr_arena_open(ptr, i32)`);
+      this.declare(`declare void @scr_arena_close(ptr)`);
+      this.declare(`declare void @scr_arena_drop(ptr)`);
+    }
+    return slot;
+  }
+
+  /** Whether emitExpr opens an arena for `e`: a root call or `new` of a
+   * counted value. */
+  opensArena(e: Node): e is Extract<IrExpr, { kind: "call" | "new" }> {
+    return (
+      this.arenas !== null &&
+      this.arenas.groups.roots.has(e) &&
+      (e.kind === "call" || e.kind === "new") &&
+      isRefCounted(e.type)
+    );
+  }
+
+  /** 1 when the group of root or call region `e` is closed: its objects
+   * hold only each other and immortal values. */
+  arenaClosed(e: Node): number {
+    return this.arenas?.groups.closed.has(e) === true ? 1 : 0;
+  }
+
+  /** Registers on the innermost scope the arena lists of the roots whose
+   * arenas `localId`'s scope drops. */
+  ownArenasOf(localId: string): void {
+    const roots = this.arenaDropsByLocal.get(localId);
+    if (roots === undefined) return;
+    const scope = this.scopes[this.scopes.length - 1]!;
+    for (const { root, type } of roots)
+      scope.push({ slot: this.arenaSlot(root), type, arena: true });
+  }
+
+  /** The roots of the function being emitted, by the local that drops
+   * them; set when a function's emission starts. */
+  arenaDropsByLocal = new Map<string, { root: Node; type: IrType }[]>();
+
+  /** Starts a function's arena bookkeeping: its roots by dropping local,
+   * with the lists of locals the body never declares (parameters, loop
+   * and catch bindings) owned by the function's own scope. */
+  beginArenaFunction(fn: IrFunction): void {
+    this.arenaSlots.clear();
+    this.statementFrames.clear();
+    this.arenaDropsByLocal = new Map();
+    const arenas = this.arenas;
+    if (arenas === null) return;
+    const declared = new Set<string>();
+    const visit = (node: Node): void => {
+      if (node.kind === "varDecl") declared.add(node.localId);
+      if (this.opensArena(node)) {
+        const local = arenas.groups.drops.get(node);
+        if (local !== undefined && local !== null) {
+          const list = this.arenaDropsByLocal.get(local) ?? [];
+          list.push({ root: node, type: node.type });
+          this.arenaDropsByLocal.set(local, list);
+        }
+      }
+      const kids: Node[] = [];
+      children(node, kids);
+      for (const kid of kids) visit(kid);
+    };
+    for (const s of fn.body) visit(s);
+    for (const local of [...this.arenaDropsByLocal.keys()])
+      if (!declared.has(local)) this.ownArenasOf(local);
+  }
+
+  /** Whether allocation site `e` (null: any) in the function being
+   * emitted takes the open arena: the function is arena-aware and the group
+   * keeps the site's value (region-sites.ts). */
+  arenaSite(e: IrExpr | null): boolean {
+    const arenas = this.arenas;
+    if (!arenaAware(arenas, this.fnByName.get(this.currentFunctionName))) return false;
+    return e === null || arenas!.sites.arenaSites.has(e);
+  }
+
+  /** Stops any arena being the allocation target; returns what restores it. */
+  suspendArena(): string {
+    const saved = this.B.tmp();
+    const cur = this.B.tmp();
+    const lines = arenaCurrentAddress(this.shapeHost, cur);
+    if (lines === null) {
+      this.declare(`declare ptr @scr_arena_suspend()`);
+      this.B.line(`${saved} = call ptr @scr_arena_suspend()`);
+    } else {
+      for (const line of lines) this.B.line(line);
+      this.B.line(`${saved} = load ptr, ptr ${cur}`);
+      this.B.line(`store ptr null, ptr ${cur}`);
+    }
+    return saved;
+  }
+
+  /** Makes the arena suspendArena stopped (`saved`) the target again. */
+  resumeArena(saved: string): void {
+    const cur = this.B.tmp();
+    const lines = arenaCurrentAddress(this.shapeHost, cur);
+    if (lines === null) {
+      this.declare(`declare void @scr_arena_resume(ptr)`);
+      this.B.line(`call void @scr_arena_resume(ptr ${saved})`);
+    } else {
+      for (const line of lines) this.B.line(line);
+      this.B.line(`store ptr ${saved}, ptr ${cur}`);
+    }
+  }
+
+  /** The arena-aware constructor of `newSym` for an allocation of a
+   * record shape or class in the function being emitted, or `newSym`. */
+  allocSym(newSym: string, e: IrExpr): string {
+    const arenas = this.arenas;
+    if (arenas === null) return newSym;
+    const planned =
+      e.type.kind === "record"
+        ? arenas.shapes.has(e.type.shapeId)
+        : e.kind === "new" && arenas.classes.has(e.className);
+    if (!planned) return newSym;
+    const aware = this.arenaSite(e) || arenas.groups.roots.has(e);
+    return aware ? arenaNewSym(newSym) : newSym;
   }
 
   /** The helper classification of this module's inline-cache sites. */
@@ -7501,15 +7803,15 @@ export class LlEmitter {
     return wrapEmitterListener(this, target, adapterFn);
   }
 
-  /** ScrClosure.function_kind for a closure over `fn`: generator 1, async
-   * 2, own prototype 4, and SCR_FN_RECEIVER_FREE (16) when its body never
+  /** ScrClosure.function_kind for a closure over `fn`: its generator,
+   * async and own prototype bits, and RECEIVER_FREE when its body never
    * observes the ambient receiver, so indirect callers skip the bracket. */
   closureFunctionKind(fn: IrFunction): number {
     return (
-      (fn.generator ? 1 : 0) +
-      (fn.async ? 2 : 0) +
-      (fn.ownsPrototype ? 4 : 0) +
-      (this.receiverReaders.ignores(fn) ? CLOSURE_RECEIVER_FREE : 0)
+      (fn.generator ? CLOSURE_KIND.GENERATOR : 0) +
+      (fn.async ? CLOSURE_KIND.ASYNC : 0) +
+      (fn.ownsPrototype ? CLOSURE_KIND.OWN_PROTOTYPE : 0) +
+      (this.receiverReaders.ignores(fn) ? CLOSURE_KIND.RECEIVER_FREE : 0)
     );
   }
 

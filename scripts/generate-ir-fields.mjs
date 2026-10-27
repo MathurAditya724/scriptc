@@ -1,0 +1,215 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Generates packages/compiler/src/ir/fields.generated.ts from the node types
+// in ir.ts: for each IrExpr and IrStmt kind, the fields that can hold a
+// string, read by name. Code that would enumerate a node's keys reads them
+// through this switch instead: the native compiler enumerates and reads an
+// untyped object's keys through its dynamic representation, one conversion
+// per node. `--check` fails when the file is stale.
+const root = fileURLToPath(new URL("..", import.meta.url));
+const require = createRequire(join(root, "package.json"));
+const ts = require("typescript");
+const irPath = join(root, "packages/compiler/src/ir/ir.ts");
+const target = join(root, "packages/compiler/src/ir/fields.generated.ts");
+
+const program = ts.createProgram([irPath], { strict: true, target: ts.ScriptTarget.ES2022 });
+const checker = program.getTypeChecker();
+const source = program.getSourceFile(irPath);
+const aliases = new Map();
+ts.forEachChild(source, (node) => {
+  if (ts.isTypeAliasDeclaration(node)) aliases.set(node.name.text, node);
+});
+
+/** Whether a value of `type` can be a string. */
+function holdsString(type) {
+  if (type.isUnion()) return type.types.some(holdsString);
+  return (type.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+}
+
+/** Whether every value of `type` is a string. */
+function onlyString(type) {
+  if (type.isUnion()) return type.types.every(onlyString);
+  return (type.flags & ts.TypeFlags.StringLike) !== 0;
+}
+
+/** Each kind's string fields, in declaration order, merged over the unions:
+ * a kind both unions declare lists the fields of both. */
+const kinds = new Map();
+for (const name of ["IrExpr", "IrStmt"]) {
+  const alias = aliases.get(name);
+  const union = checker.getTypeAtLocation(alias.name);
+  for (const member of union.isUnion() ? union.types : [union]) {
+    const kindSymbol = member.getProperty("kind");
+    const kindType = checker.getTypeOfSymbolAtLocation(kindSymbol, alias);
+    if (!kindType.isStringLiteral()) throw new Error(`${name} member without a literal kind`);
+    const fields = kinds.get(kindType.value) ?? [];
+    for (const property of member.getProperties()) {
+      const type = checker.getTypeOfSymbolAtLocation(property, alias);
+      if (!holdsString(type)) continue;
+      const known = fields.find((field) => field.name === property.name);
+      const always = onlyString(type) && (property.flags & ts.SymbolFlags.Optional) === 0;
+      if (known === undefined) fields.push({ name: property.name, always });
+      else known.always &&= always;
+    }
+    kinds.set(kindType.value, fields);
+  }
+}
+
+const lines = [
+  "// Generated from packages/compiler/src/ir/ir.ts by scripts/generate-ir-fields.mjs.",
+  "// Run `pnpm generate:ir-fields` after changing the fields of an IR node.",
+  'import type { IrExpr, IrStmt, IrType } from "./ir.js";',
+  "",
+  "/** Calls `visit` with each string field of `node` (including `kind`) and its",
+  " * name: the string values `for (const key in node)` finds on a node, read",
+  " * by name in the order ir.ts declares them. */",
+  "export function eachStringField(",
+  "  node: IrExpr | IrStmt,",
+  "  visit: (value: string, field: string) => void,",
+  "): void {",
+  "  switch (node.kind) {",
+];
+for (const [kind, fields] of [...kinds].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+  lines.push(`    case ${JSON.stringify(kind)}: {`);
+  for (const { name, always } of fields) {
+    const read = `node.${name}`;
+    if (always) lines.push(`      visit(${read}, ${JSON.stringify(name)});`);
+    else
+      lines.push(`      if (typeof ${read} === "string") visit(${read}, ${JSON.stringify(name)});`);
+  }
+  lines.push("      return;", "    }");
+}
+lines.push("  }", "}", "");
+
+// The deep walkers: every field of every object under an IR node, as a
+// recursive key walk finds them, read by name.
+const members = new Map();
+for (const name of ["IrExpr", "IrStmt", "IrType"]) {
+  const union = checker.getTypeAtLocation(aliases.get(name).name);
+  members.set(name, new Set(union.isUnion() ? union.types : [union]));
+}
+const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+const scalar =
+  ts.TypeFlags.NumberLike |
+  ts.TypeFlags.BooleanLike |
+  ts.TypeFlags.BigIntLike |
+  ts.TypeFlags.ESSymbolLike;
+
+/** The walker an IR union member belongs to, or null. */
+function irKind(type) {
+  for (const [name, set] of members) if (set.has(type)) return name;
+  return null;
+}
+
+let temp = 0;
+/** Lines that walk `expr` of `type`: strings to `walker.string`, IR nodes to
+ * their walkers, arrays by element and other objects by field. */
+function walkLines(expr, type, indent, depth) {
+  if (depth > 12) throw new Error(`field type nests too deep at ${expr}`);
+  const parts = type.isUnion() ? type.types : [type];
+  const present = parts.filter((part) => (part.flags & nullish) === 0);
+  const optional = present.length !== parts.length;
+  const strings = present.filter((part) => (part.flags & ts.TypeFlags.StringLike) !== 0);
+  const objects = present.filter((part) => (part.flags & (ts.TypeFlags.StringLike | scalar)) === 0);
+  for (const part of present)
+    if ((part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0)
+      throw new Error(`untyped field ${expr}`);
+  const body = [];
+  if (objects.length > 0) {
+    const kinds = new Set(objects.map(irKind));
+    if (kinds.size === 1 && !kinds.has(null)) {
+      const [kind] = kinds;
+      body.push(`walk${kind.slice(2)}Fields(${expr}, walker, skipType);`);
+    } else if (objects.every((part) => checker.isArrayType(part))) {
+      if (objects.length !== 1) throw new Error(`several array types at ${expr}`);
+      const item = `item${temp++}`;
+      body.push(`for (const ${item} of ${expr}) {`);
+      body.push(...walkLines(item, checker.getTypeArguments(objects[0])[0], "  ", depth + 1));
+      body.push("}");
+    } else if (kinds.has(null) && objects.length === 1) {
+      for (const property of checker.getPropertiesOfType(objects[0])) {
+        if (property.name === "loc") continue;
+        const fieldType = checker.getTypeOfSymbol(property);
+        const field = `${expr}.${property.name}`;
+        const lines = walkLines(field, fieldType, "", depth + 1);
+        if (lines.length === 0) continue;
+        if (property.name === "type")
+          body.push("if (!skipType) {", ...lines.map((l) => `  ${l}`), "}");
+        else body.push(...lines);
+      }
+    } else throw new Error(`mixed object types at ${expr}: ${checker.typeToString(type)}`);
+  }
+  let lines = body;
+  if (strings.length > 0 && objects.length > 0)
+    lines = [
+      `if (typeof ${expr} === "string") walker.string(${expr});`,
+      ...(body.length > 0 ? [`else {`, ...body.map((l) => `  ${l}`), "}"] : []),
+    ];
+  else if (strings.length > 0) lines = [`walker.string(${expr});`];
+  if (lines.length > 0 && optional && !(strings.length > 0 && objects.length > 0))
+    lines = [
+      `if (${expr} !== undefined && ${expr} !== null) {`,
+      ...lines.map((l) => `  ${l}`),
+      "}",
+    ];
+  else if (lines.length > 0 && optional)
+    lines = [
+      `if (${expr} !== undefined && ${expr} !== null) {`,
+      ...lines.map((l) => `  ${l}`),
+      "}",
+    ];
+  return lines.map((line) => indent + line);
+}
+
+lines.push(
+  "/** What a field walk reports (walkExprFields): each expression and",
+  " * statement node before its fields, and each string a field holds. */",
+  "export interface IrFieldWalker {",
+  "  node(node: IrExpr | IrStmt): void;",
+  "  string(value: string): void;",
+  "}",
+  "",
+);
+for (const name of ["IrExpr", "IrStmt", "IrType"]) {
+  const short = name.slice(2);
+  const nodeCall = name === "IrType" ? [] : ["  walker.node(node);"];
+  lines.push(
+    `/** Walks every field of \`node\` but \`loc\` (and \`type\` with \`skipType\`), and`,
+    " * every field of each object under it: the strings and nodes a recursive",
+    " * `for (const key in value)` walk with the same skips finds, read by name in",
+    " * the order ir.ts declares the fields. */",
+    `export function walk${short}Fields(node: ${name}, walker: IrFieldWalker, skipType: boolean): void {`,
+    ...nodeCall,
+    "  switch (node.kind) {",
+  );
+  const byKind = new Map();
+  for (const member of members.get(name)) {
+    const kind = checker.getTypeOfSymbol(member.getProperty("kind")).value;
+    if (byKind.has(kind)) throw new Error(`${name} kind ${kind} declared twice`);
+    byKind.set(kind, member);
+  }
+  for (const [kind, member] of [...byKind].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    lines.push(`    case ${JSON.stringify(kind)}: {`);
+    for (const property of member.getProperties()) {
+      if (property.name === "loc") continue;
+      const fieldType = checker.getTypeOfSymbol(property);
+      const field = `node.${property.name}`;
+      const walk = walkLines(field, fieldType, "", 0);
+      if (walk.length === 0) continue;
+      if (property.name === "type")
+        lines.push("      if (!skipType) {", ...walk.map((l) => `        ${l}`), "      }");
+      else lines.push(...walk.map((l) => `      ${l}`));
+    }
+    lines.push("      return;", "    }");
+  }
+  lines.push("  }", "}", "");
+}
+const text = lines.join("\n");
+
+if (process.argv.includes("--check")) {
+  if (readFileSync(target, "utf8") !== text)
+    throw new Error("fields.generated.ts is stale; run node scripts/generate-ir-fields.mjs");
+} else writeFileSync(target, text);

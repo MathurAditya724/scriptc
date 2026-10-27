@@ -4,13 +4,12 @@
  * A property site in a dynamic-tier function owns one zeroed thread-local
  * ScrJsIc record (`@sc_js_ic_N`). The code at the site is fixed:
  *
- *   load   ordinary object whose shape is entry 0's own-property shape:
- *          read entry `slot` inline unless it is an accessor; otherwise
- *          scr_js_get_probe (polymorphic, prototype hits, absent keys,
- *          misses)
- *   store  ordinary object whose shape is entry 0's replace shape, outside
- *          an intact parse region, writable data entry: replace inline;
- *          otherwise scr_js_store_probe (adds, polymorphic, misses)
+ *   load   ordinary object whose layout is entry 0's own-property layout:
+ *          read slot `slot` inline; otherwise scr_js_get_probe
+ *          (polymorphic, prototype hits, absent keys, misses)
+ *   store  ordinary object whose layout is entry 0's replace layout,
+ *          outside an intact parse region: replace inline; otherwise
+ *          scr_js_store_probe (adds, polymorphic, misses)
  *   keyed  dense array element at an integral number key: inline;
  *          otherwise scr_js_keyed_probe (string keys of ordinary objects)
  *   method dynInvoke's method read: scr_js_load_probe
@@ -22,12 +21,13 @@
  * defines the operation's semantics; nothing is ever patched.
  *
  * Layout facts (64-bit only; 32-bit targets keep the helper calls):
- *   ScrDyn       kind +8; v.obj {len +16, entries +32, region +72,
- *                shape +80}; v.arr {len +16, items +32, presence +56};
- *                v.num +16
- *   ScrDynEntry  48 bytes: value +16, accessor bit 0 of +40, writable +41
- *   ScrJsIc      entries of 40 bytes {shape, target, holder, holder_shape,
- *                slot}; 168 bytes in all */
+ *   ScrDyn       kind +8; v.obj {len +16, slots +32, region +72,
+ *                layout +80}; v.arr {len +16, items +32, presence +56};
+ *                v.num +16. Every property of an object with a layout is
+ *                a writable data property (scr_dyn.h's layout mode);
+ *                dictionary-mode objects have a null layout.
+ *   ScrJsIc      entries of 40 bytes {layout, target, holder,
+ *                holder_layout, slot}; 168 bytes in all */
 import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction } from "../../ir/ir.js";
 import { jsIcMethodSites, type JsIcSite } from "../../ir/js-ic.js";
 import { mangleBorrowedFunction } from "../mangle.js";
@@ -41,8 +41,6 @@ type Host = LlvmEmitterContext;
 
 /** Words of one ScrJsIc record. */
 export const JS_IC_WORDS = 21;
-
-const ENTRY_STRIDE = 48;
 
 /** The cache site a call is, when it is emitted in a dynamic-tier function
  * of a 64-bit target. */
@@ -88,32 +86,17 @@ function kindIs(host: Host, d: string, kind: number, yes: string, no: string): v
  * the prototype hit made method-heavy code 3-6% faster for 15-90 bytes.
  * So a site tests entry 0, own or prototype, and its probe does the rest.
  * (0 makes every access probe: with a runtime built with SCR_JS_VERIFY,
- * that checks every cached shape against its object.) */
+ * that probes every access.) */
 const INLINE_WAYS: number = 1;
 const INLINE_PROTO = true;
 
-/** The address of entry `slot` of object `d`'s entries. */
-function entryAt(host: Host, d: string, slot: string): string {
+/** The address of slot `slot` of layout-mode object `d`. */
+function slotAt(host: Host, d: string, slot: string): string {
   const B = host.B;
-  const entries = load(host, "ptr", d, 32);
-  const offset = B.tmp();
-  const entry = B.tmp();
-  B.line(`${offset} = mul i64 ${slot}, ${ENTRY_STRIDE}`);
-  B.line(`${entry} = getelementptr inbounds i8, ptr ${entries}, i64 ${offset}`);
-  return entry;
-}
-
-/** Branches to `miss` when the entry at `entry` is an accessor. */
-function dataEntry(host: Host, entry: string, miss: string): void {
-  const B = host.B;
-  const flags = load(host, "i8", entry, 40);
-  const accessor = B.tmp();
-  const isAccessor = B.tmp();
-  B.line(`${accessor} = and i8 ${flags}, 1`);
-  B.line(`${isAccessor} = icmp ne i8 ${accessor}, 0`);
-  const data = B.newLabel("ic.data");
-  B.condBr(isAccessor, miss, data);
-  B.startBlock(data);
+  const slots = load(host, "ptr", d, 32);
+  const address = B.tmp();
+  B.line(`${address} = getelementptr inbounds ptr, ptr ${slots}, i64 ${slot}`);
+  return address;
 }
 
 /** The inline part of a load site, entered for an ordinary object `d`:
@@ -137,7 +120,7 @@ function inlineLoad(
     B.br(miss);
     return;
   }
-  const shape = load(host, "ptr", d, 80);
+  const shape = load(host, "ptr", d, 80); // v.obj.layout
   const present = B.tmp();
   B.line(`${present} = icmp ne ptr ${shape}, null`);
   let next = B.newLabel("ic.w");
@@ -160,9 +143,7 @@ function inlineLoad(
     B.condBr(own, ownLabel, protoLabel);
     const hit = (holder: string): void => {
       const slot = load(host, "i64", ic, base + 32);
-      const entry = entryAt(host, holder, slot);
-      dataEntry(host, entry, miss);
-      const value = load(host, "ptr", entry, 16);
+      const value = load(host, "ptr", slotAt(host, holder, slot), 0);
       const out = result(value);
       incoming.push(`[ ${out}, %${B.currentLabel()} ]`);
       B.br(join);
@@ -194,7 +175,7 @@ function inlineLoad(
 /** The inline part of a store site that replaces an own data property,
  * entered for an ordinary object `d` outside an intact parse region:
  * tests the first `ways` cache entries; a hit calls `store` with the
- * address of the entry's value word, which must end its block by
+ * address of the property's slot, which must end its block by
  * branching to the site's join. */
 function inlineReplace(
   host: Host,
@@ -209,7 +190,7 @@ function inlineReplace(
     B.br(miss);
     return;
   }
-  const shape = load(host, "ptr", d, 80);
+  const shape = load(host, "ptr", d, 80); // v.obj.layout
   const present = B.tmp();
   B.line(`${present} = icmp ne ptr ${shape}, null`);
   let next = B.newLabel("ic.w");
@@ -230,21 +211,7 @@ function inlineReplace(
     B.condBr(ok, matched, next);
     B.startBlock(matched);
     const slot = load(host, "i64", ic, base + 32);
-    const entry = entryAt(host, d, slot);
-    const flags = load(host, "i8", entry, 40);
-    const writable = load(host, "i8", entry, 41);
-    const accessor = B.tmp();
-    const data = B.tmp();
-    const canWrite = B.tmp();
-    const writes = B.tmp();
-    B.line(`${accessor} = and i8 ${flags}, 1`);
-    B.line(`${data} = icmp eq i8 ${accessor}, 0`);
-    B.line(`${canWrite} = icmp ne i8 ${writable}, 0`);
-    B.line(`${writes} = and i1 ${data}, ${canWrite}`);
-    const hit = B.newLabel("ic.st");
-    B.condBr(writes, hit, miss);
-    B.startBlock(hit);
-    store(gep(host, entry, 16));
+    store(slotAt(host, d, slot));
   }
 }
 

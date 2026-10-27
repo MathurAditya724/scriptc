@@ -1,3 +1,5 @@
+import type { DiagnosticCode } from "../../diagnostics/codes.js";
+import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import {
@@ -240,10 +242,12 @@ import { globalSymbolKey } from "./expressions/global-symbols.js";
 import { identifiersNamed } from "./identifier-uses.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
 import {
+  dereferencedElementWrite,
   jsHoldsDynObject,
   lowerEnvironmentKey,
   lowerNativeFunctionAssignment,
   lowerStrictEquality,
+  nodeTypeError,
 } from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
@@ -758,10 +762,18 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       // out of tdzPredeclared; a retry after a later declarator degrades
       // must initialize the same box again.
       const tdzBefore = new Map(lowerer.ctx.tdzPredeclared);
+      // The first attempt's diagnostics: a statement that still fails
+      // after degrading reports them, since a retry does not repeat what
+      // lowered once (a poisoned generic instance) and its own diagnostics
+      // can miss the failure's cause.
+      let firstAttempt: ScrDiagnostic[] | null = null;
       try {
         for (let attempt = 0; ; attempt++) {
+          const hits = new Set<number>();
           try {
-            lowerOneStatement(lowerer, stmt, out, usingMarkers, diagsBefore, deferFences);
+            lowerer.withPartialHits(hits, () =>
+              lowerOneStatement(lowerer, stmt, out, usingMarkers, diagsBefore, deferFences),
+            );
             break;
           } catch (e) {
             // Localized failure's statement commit point (design §3.3): a
@@ -769,9 +781,21 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             // global degrades that type and the statement lowers again.
             // A declaration this statement flushed inside a probe (where
             // no retry runs) can retry here too.
-            if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw e;
+            firstAttempt ??= lowerer.diags.slice(diagsBefore);
+            const giveUp = (): unknown => {
+              if (attempt > 0) lowerer.restoreFirstAttemptDiags(diagsBefore, firstAttempt!);
+              return e;
+            };
+            if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw giveUp();
             const slot = lowerer.degradeAtCommit(e, STATEMENT_SLOTS);
-            if (slot === null && !lowerer.reopenFlushedAtCommit(diagsBefore)) throw e;
+            // Pushed-down types the failed attempt mapped widen to the
+            // whole slot before anything else is given up.
+            if (
+              slot === null &&
+              !lowerer.reopenFlushedAtCommit(diagsBefore) &&
+              !lowerer.widenPartials(hits)
+            )
+              throw giveUp();
             // A failed attempt adds nothing to `out` but the TDZ boxes
             // forward captures declared (they stay declared), so the
             // retry appends after them.
@@ -863,7 +887,8 @@ const MAX_DEGRADE_RETRIES = 16;
 /** The slot kinds lowerStmts' commit point degrades: locals, loop
  * variables and module globals (stage L1), and the parameters and returns
  * of the function expressions, arrows and methods a statement holds
- * (stage L2). */
+ * (stage L2), and the types of the statement's own expressions: casts,
+ * literals with a contextual type, spread clones, temporaries (stage L4). */
 const STATEMENT_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>([
   "local",
   "global",
@@ -871,6 +896,8 @@ const STATEMENT_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>([
   "param",
   "return",
   "field",
+  "member",
+  "expression",
 ]);
 
 /** One attempt at lowering a statement of lowerStmts into `out`. */
@@ -1766,8 +1793,8 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
     const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
     if (pre) {
-      lowerer.ctx.tdzPredeclared.delete(symbol!);
       const value = lowerer.coerceToExpected(lowerer.lowerClassExpression(stmt), DYN);
+      lowerer.ctx.tdzPredeclared.delete(symbol!);
       return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(stmt) };
     }
     const type: IrType = { kind: "classval", className: info.def.name };
@@ -2041,7 +2068,7 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
   const entry = UNSUPPORTED_STMT[stmt.kind];
   if (entry)
     lowerer.unsupported(
-      entry.code as `SC${number}` & keyof typeof UNSUPPORTED,
+      entry.code as DiagnosticCode & keyof typeof UNSUPPORTED,
       stmt,
       entry.feature,
     );
@@ -5787,8 +5814,8 @@ export function lowerVarDecl(
       const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
       const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
       if (pre) {
-        lowerer.ctx.tdzPredeclared.delete(symbol!);
         const value = genericBindingStoredValue(lowerer, decl, info);
+        lowerer.ctx.tdzPredeclared.delete(symbol!);
         return { kind: "assign", localId: pre.id, value, initializes: true, loc: locOf(decl) };
       }
       return genericBindingPresenceStore(info, decl);
@@ -5924,6 +5951,16 @@ export function lowerVarDecl(
     )
       g.type = DYN;
     g.type = inferredOptionalRecordType(lowerer, decl, g.type, raw.type);
+    // A module const keeps its initializer's record or array layout, as a
+    // function's const does (keepsInitializerLayout).
+    if (
+      !isVarDeclared(decl) &&
+      (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
+      keepsInitializerLayout(lowerer, decl.initializer, raw.type, g.type)
+    ) {
+      g.type = raw.type;
+      notePreservedLayout(lowerer, decl);
+    }
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
@@ -5951,11 +5988,13 @@ export function lowerVarDecl(
   // A forward-captured binding pre-declared as a TDZ box (an earlier
   // function in this scope captured it — predeclareForwardCapture): the
   // binding and its scope-entry varDecl already exist; the source
-  // declaration is the one initializing `assign` into the shared box.
+  // declaration is the one initializing `assign` into the shared box. The
+  // box stays pre-declared until the initializer lowers: a statement the
+  // commit point lowers again (localized failure) initializes the same box.
   const pre = declSymbol ? lowerer.ctx.tdzPredeclared.get(declSymbol) : undefined;
   if (pre && decl.initializer) {
-    lowerer.ctx.tdzPredeclared.delete(declSymbol!);
     const init = lowerer.lowerExprExpecting(decl.initializer, pre.type);
+    lowerer.ctx.tdzPredeclared.delete(declSymbol!);
     return { kind: "assign", localId: pre.id, value: init, initializes: true, loc: locOf(decl) };
   }
 
@@ -6071,6 +6110,17 @@ export function lowerVarDecl(
   // Promise.prototype is an ordinary object the checker types Promise<any>.
   if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
     type = DYN;
+  // A const whose initializer has another record or array layout than the
+  // binding's type keeps the initializer's layout: converting would copy the
+  // value, so the binding would not be the value its initializer names.
+  if (
+    !isLet &&
+    type !== null &&
+    keepsInitializerLayout(lowerer, decl.initializer, init.type, type)
+  ) {
+    type = init.type;
+    notePreservedLayout(lowerer, decl);
+  }
   // A typed-arguments function expression (typed-arguments.ts): the
   // checker types the binding variadic, but its value has the fixed
   // signature every use asserts.
@@ -7944,6 +7994,29 @@ function lowerCjsSingleValueExport(
  * assignment, and `({ a, b } = e);` (destructuring ASSIGNMENT, which JS
  * requires parenthesized in statement position) lands in the
  * object-literal-target branch below. */
+/** dereferencedElementWrite in statement position. */
+function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt | null {
+  const write = dereferencedElementWrite(lowerer, expr);
+  if (write === null) return null;
+  const loc = locOf(expr);
+  return {
+    kind: "block",
+    body: [
+      ...write.stmts,
+      {
+        kind: "if",
+        cond: write.present,
+        then: [
+          lowerer.withExpressionOverrides(write.overrides, () => lowerExprStatement(lowerer, expr)),
+        ],
+        else_: [{ kind: "exprStmt", expr: nodeTypeError(write.message, VOID, loc), loc }],
+        loc,
+      },
+    ],
+    loc,
+  };
+}
+
 export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt {
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
@@ -8205,6 +8278,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       {
         const ex = lowerExpandoAssignStmt(lowerer, expr);
         if (ex) return ex;
+      }
+      {
+        const dereferenced = lowerDereferencedElementWrite(lowerer, expr);
+        if (dereferenced) return dereferenced;
       }
       if (ts.isElementAccessExpression(expr.left)) return lowerer.lowerElementWrite(expr);
       if (ts.isPropertyAccessExpression(expr.left)) {
@@ -8903,13 +8980,17 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     return { kind: "block", body: [], loc: locOf(expr) };
   }
   if (
-    stmtNode !== undefined &&
-    ts.isExpressionStatement(stmtNode) &&
     ts.isBinaryExpression(expr) &&
     (expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
       expr.operatorToken.kind === ts.SyntaxKind.BarBarToken)
   ) {
-    return lowerDiscardedLogical(lowerer, expr);
+    // A right operand without a value (`skip || (flag ? warnA() : warnB())`,
+    // where both arms are void calls) leaves the logical nothing to join:
+    // it is the branch `if (!skip) ...` wherever its result is discarded,
+    // a for loop's initializer and update included.
+    if (needsNoValue(lowerer, expr.right)) return lowerLogicalBranch(lowerer, expr);
+    if (stmtNode !== undefined && ts.isExpressionStatement(stmtNode))
+      return lowerDiscardedLogical(lowerer, expr);
   }
   const value = lowerer.lowerExpr(expr);
   // A bare unit-literal statement (`undefined;`): a pure no-op in JS,
@@ -8952,6 +9033,32 @@ function lowerDiscardedLogical(lowerer: Lowerer, expr: ts.BinaryExpression): IrS
     if (!local) throw e;
     lowerer.diags.length = diagsBefore;
   }
+  return lowerLogicalBranch(lowerer, expr);
+}
+
+/** True when the discarded `expr` needs no value: its type maps to void,
+ * or it is a logical or comma expression whose last operand needs none. A
+ * discarded logical whose right operand needs no value lowers as a branch
+ * that runs the operand as a statement. */
+function needsNoValue(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (
+    ts.isBinaryExpression(expr) &&
+    (expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+      expr.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      expr.operatorToken.kind === ts.SyntaxKind.CommaToken)
+  )
+    return needsNoValue(lowerer, expr.right);
+  const type = lowerer.typeOf(expr);
+  return (
+    (type.flags & (ts.TypeFlags.Void | ts.TypeFlags.TypeParameter)) !== 0 &&
+    lowerer.mapTypeOf(type)?.kind === "void"
+  );
+}
+
+/** `a && b` as `if (a) b;` and `a || b` as `if (!a) b;`, with `b` lowered
+ * as a statement under the narrowing `a` gives it. */
+function lowerLogicalBranch(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt {
   const and = expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken;
   const cond = lowerer.lowerCondition(expr.left);
   if (cond.kind === "boolLit") {

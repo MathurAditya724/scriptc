@@ -326,9 +326,9 @@ test.skipIf(
 
       let vendorEntries = await readdir(vendorRoot);
       expect(vendorEntries.filter((name) => name.startsWith("mbedtls-")).length).toBe(2);
-      // Host clang uses system zlib, so only the Zig build materializes a zlib
-      // object family in the shared vendor root.
-      expect(vendorEntries.filter((name) => name.startsWith("zlib-")).length).toBe(1);
+      // Host clang and Zig each materialize their own vendored zlib object
+      // family in the shared vendor root.
+      expect(vendorEntries.filter((name) => name.startsWith("zlib-")).length).toBe(2);
       // Invalidate the host archive. A targetless Zig rebuild must continue to
       // use the separately keyed Zig archive instead of repairing or consuming
       // the host-clang entry.
@@ -630,20 +630,27 @@ test.skipIf(clangExecutable === undefined)(
   async () => {
     // clang ships its x86 intrinsic headers (<emmintrin.h>, ...) for every
     // target, so __has_include finds them on arm64, where including them is
-    // an #error, and the same holds for the ARM headers on x86. The probe
-    // must guard them by target. Only the compiler's own freestanding
-    // headers are visible here, so the result does not depend on the host's
-    // C library.
+    // an #error, and the same holds for the ARM headers on x86 and for
+    // <riscv_vector.h> (zlib's RVV code) outside RISC-V with the vector
+    // extension. The probe must guard them by target. Only the compiler's own
+    // freestanding headers are visible here, so the result does not depend on
+    // the host's C library.
     const includes = (await implicitDependencyProbeIncludes(runtimeSrcDir())).filter(
       (include) =>
-        include !== "<intrin.h>" && /intrin\.h>$|^<cpuid\.h>$|^<arm_(neon|acle)\.h>$/.test(include),
+        include !== "<intrin.h>" &&
+        /intrin\.h>$|^<cpuid\.h>$|^<arm_(neon|acle)\.h>$|^<riscv_vector\.h>$/.test(include),
     );
     expect(includes).toContain("<emmintrin.h>");
+    expect(includes).toContain("<riscv_vector.h>");
     const resourceDir = execFileSync(clangExecutable!, ["-print-resource-dir"], {
       encoding: "utf8",
     }).trim();
     const source = includes.map(implicitDependencyIncludeDirective).join("");
-    for (const target of ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]) {
+    for (const target of [
+      "aarch64-unknown-linux-gnu",
+      "riscv64-unknown-linux-gnu",
+      "x86_64-unknown-linux-gnu",
+    ]) {
       const result = spawnSync(
         clangExecutable!,
         [

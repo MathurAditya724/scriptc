@@ -42,9 +42,10 @@ Options:
                      coverage only: exit 1 when the entry path has blockers
                      (a build would fail), or also when it has Node
                      divergences, likely-hot functions that use untyped
-                     values (SC6101), any Node island (eager-node-islands is
-                     the same until deferred evaluation lands), or a gap
-                     island (a package scriptc should compile but cannot yet)
+                     values (SC6101), dynamic slots (SC6104), any Node
+                     island (eager-node-islands is the same until deferred
+                     evaluation lands), or a gap island (a package scriptc
+                     should compile but cannot yet)
       --backend <b>  code generator (llvm)
       --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev
@@ -104,6 +105,10 @@ Options:
                      "pkg..." also names every package pkg depends on).
                      Packages that fail preflight are refused with a
                      diagnostic. Eligible dependencies compile automatically.
+      --no-shape-overlay
+                     compile npm packages' JavaScript without the types shape
+                     inference proves (per package: "scriptc": {"packages":
+                     {"<name>": {"shapes": false}}} in package.json)
       --provenance-sources
                      EXPERIMENTAL: compile npm dependencies from their
                      provenance-attested SOURCE (fetched at the attested
@@ -180,6 +185,7 @@ export const CLI_OPTIONS = {
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
+  "shape-overlay": { type: "boolean" },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { type CcDriver } from "./driver.js";
 import { resolvedToolIdentity, resolvedTool } from "./tool-identity.js";
 import { execFileAsync } from "./process.js";
@@ -168,7 +168,7 @@ export function effectiveCompilerInvocationFingerprint(
 export async function implicitDependencyProbeIncludes(rtDir: string): Promise<string[]> {
   const vendor = join(rtDir, "..", "vendor");
   const quickjsSources = new Set<string>(LRE_SOURCES);
-  const zlibSources = new Set<string>(ZLIB_SOURCES);
+  const zlibSources = new Set<string>(ZLIB_SOURCES.map((source) => basename(source)));
   const fileGroups = await Promise.all([
     nativeSourceFiles(rtDir, false),
     nativeSourceFiles(join(vendor, "ryu"), false),
@@ -181,7 +181,7 @@ export async function implicitDependencyProbeIncludes(rtDir: string): Promise<st
     nativeSourceFiles(join(vendor, "mbedtls", "library"), true),
     nativeSourceFiles(
       join(vendor, "zlib"),
-      false,
+      true,
       (name) => name.endsWith(".h") || zlibSources.has(name),
     ),
   ]);
@@ -199,13 +199,16 @@ export async function implicitDependencyProbeIncludes(rtDir: string): Promise<st
  * __has_include finds them on arm64 too, where including them is an
  * #error. Covers the SSE/AVX intrinsic families (<emmintrin.h>,
  * <immintrin.h>, ...), <x86intrin.h>, <x86gprintrin.h> and <cpuid.h>. */
+/** clang's x86 intrinsic headers: every <...intrin.h> but the Windows
+ * <intrin.h> (<xsaveintrin.h>, <immintrin.h>, ...), and <cpuid.h>. */
 function x86OnlyHeader(include: string): boolean {
-  return include === "<cpuid.h>" || /^<(x86|x86gpr|[a-z]*mm)intrin\.h>$/.test(include);
+  return include === "<cpuid.h>" || /^<[a-z0-9_]+intrin\.h>$/.test(include);
 }
 
 /** One guarded line of the implicit-toolchain probe source: the header is
  * included only when the compiler can find it and it belongs to the target
- * being probed. */
+ * being probed. clang ships <riscv_vector.h> for every target, and through
+ * clang 18 including it without the RISC-V vector extension is an #error. */
 export function implicitDependencyIncludeDirective(include: string): string {
   const targetCondition = x86OnlyHeader(include)
     ? " && (defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64))"
@@ -213,7 +216,9 @@ export function implicitDependencyIncludeDirective(include: string): string {
       ? " && defined(_WIN32)"
       : include === "<arm64_neon.h>" || include === "<arm_acle.h>" || include === "<arm_neon.h>"
         ? " && (defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64))"
-        : "";
+        : include === "<riscv_vector.h>"
+          ? " && defined(__riscv_vector)"
+          : "";
   return `#if __has_include(${include})${targetCondition}\n#include ${include}\n#endif\n`;
 }
 
