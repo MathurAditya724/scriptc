@@ -2,7 +2,17 @@ import { execFile } from "node:child_process";
 import { createHash, type Hash } from "node:crypto";
 import { closeSync, constants, openSync, readSync } from "node:fs";
 import { createRequire } from "node:module";
-import { access, chmod, copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  copyFile,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -115,6 +125,9 @@ export interface NativeCodegenOptions {
   cacheRoot?: string | null;
   /** Program partitions, written to nativePartitionPaths(outputPath). */
   partitions?: number;
+  /** With several partitions: optimize the module whole and divide only its
+   * code generation among them. */
+  splitCodegen?: boolean;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
 }
@@ -341,6 +354,7 @@ function cacheKey(
     .update("\0")
     .update(options.sourcePath)
     .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
+    .update(options.splitCodegen === true ? "\0split:codegen" : "")
     .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
     .digest("hex");
 }
@@ -436,12 +450,15 @@ export async function emitNativeArtifact(
     dependencies: helper.dependencies,
     outputPaths: outputs,
   } satisfies NativeCodegenArtifact;
-  if (await installCachedPartitions(cached, outputs)) return artifact;
+  if (await installCachedPartitions(cached, outputs)) {
+    if (options.profile?.use === undefined) return artifact;
+    return { ...artifact, profileMatch: await cachedProfileMatch(cached[0]!, outputs.length) };
+  }
   // Partitioned programs also reuse individual partition artifacts, so an
   // edit recompiles only the partitions it affects. The directory names the
   // exact helper build and target; the helper keys entries by content.
   const partitionCache =
-    root === null || outputs.length < 2
+    root === null || outputs.length < 2 || options.splitCodegen === true
       ? null
       : join(
           root,
@@ -459,6 +476,7 @@ export async function emitNativeArtifact(
   // The helper reads a private copy: the caller's .ll may be shared with a
   // concurrent build of another entry that has the same output stem.
   const input = privateSiblingPath(options.outputPath, "native-input");
+  const matchStage = privateSiblingPath(options.outputPath, "native-profile-match");
   try {
     if (isLlvmFile(options.llvm)) await copyFile(options.llvm.file, input);
     else await writeLlvmSource(input, options.llvm, 0o600);
@@ -480,6 +498,7 @@ export async function emitNativeArtifact(
       "--source-path",
       options.sourcePath,
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
+      ...(options.splitCodegen === true && outputs.length > 1 ? ["--split", "codegen"] : []),
       ...nativeProfileHelperArgs(options.profile),
     ]);
     for (const stage of stages) {
@@ -493,6 +512,8 @@ export async function emitNativeArtifact(
       }
       await chmod(stage, artifactMode());
     }
+    const profileMatch =
+      options.profile?.use === undefined ? null : parseNativeProfileMatch(stdout);
     // Cache publication is an optimization boundary. The helper has already
     // produced a valid caller artifact, so a read-only/full cache must not
     // discard it or turn an otherwise successful build into an exception.
@@ -500,21 +521,66 @@ export async function emitNativeArtifact(
       root !== null &&
       (await nativeArtifactDependenciesStillMatch(helper.dependencies).catch(() => false))
     ) {
+      // The match goes in first: a reader that finds every partition finds it too.
+      if (profileMatch !== null) {
+        await writeFile(
+          matchStage,
+          `${JSON.stringify({ profile: helperProfileMatch(profileMatch) })}\n`,
+          {
+            mode: 0o600,
+          },
+        )
+          .then(() => publishCachedFile(matchStage, cachedProfileMatchPath(cached[0]!)))
+          .catch(() => undefined);
+      }
       for (let index = 0; index < stages.length; index++)
         await publishCachedFile(stages[index]!, cached[index]!).catch(() => undefined);
     }
     for (let index = 0; index < stages.length; index++)
       await rename(stages[index]!, outputs[index]!);
     await pruneBuildCache(root);
-    const profileMatch =
-      options.profile?.use === undefined ? null : parseNativeProfileMatch(stdout);
     return profileMatch === null ? artifact : { ...artifact, profileMatch };
   } finally {
     await Promise.all([
       ...stages.map((stage) => rm(stage, { force: true }).catch(() => undefined)),
       rm(input, { force: true }).catch(() => undefined),
+      rm(matchStage, { force: true }).catch(() => undefined),
     ]);
   }
+}
+
+/** The cache entry beside a cached artifact's first partition that holds the
+ * profile match of the build that produced it. */
+function cachedProfileMatchPath(firstPartition: string): string {
+  return `${firstPartition}.profile-match`;
+}
+
+/** The match in the helper's own JSON form, as parseNativeProfileMatch reads it. */
+function helperProfileMatch(match: NativeProfileMatch): Record<string, number> {
+  return {
+    annotated: match.annotated,
+    mismatched: match.mismatched,
+    missing: match.missing,
+    unknown_partitions: match.unknownPartitions,
+  };
+}
+
+/** The profile match of a cached artifact. Without a valid entry, every
+ * partition's counts are unknown. */
+async function cachedProfileMatch(
+  firstPartition: string,
+  partitions: number,
+): Promise<NativeProfileMatch> {
+  const path = cachedProfileMatchPath(firstPartition);
+  const text = (await validCachedFile(path)) ? await readFile(path, "utf8").catch(() => "") : "";
+  return (
+    parseNativeProfileMatch(text) ?? {
+      annotated: 0,
+      mismatched: 0,
+      missing: 0,
+      unknownPartitions: partitions,
+    }
+  );
 }
 
 /** Install a cached artifact only when every partition is present and valid. */

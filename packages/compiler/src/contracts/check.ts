@@ -26,6 +26,7 @@
  *   counts (classes.ts programLifetimeClass).
  *
  * Verified facts land on the IR as `contracts` (IrContracts). */
+import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type {
   IrClassDef,
@@ -158,7 +159,7 @@ class ContractChecker {
     return raw.length > max ? `${raw.slice(0, max - 3)}...` : raw;
   }
 
-  report(code: `SC${number}`, loc: SrcLoc, message: string, hint: string): void {
+  report(code: DiagnosticCode, loc: SrcLoc, message: string, hint: string): void {
     const key = `${code}\0${contractLocKey(loc)}\0${message}`;
     if (this.reported.has(key)) return;
     this.reported.add(key);
@@ -518,8 +519,10 @@ class ContractChecker {
           for (const fn of this.fnByLoc.get(key) ?? []) targets.push({ fn, note });
     if (targets.length === 0) return;
     // Target-independent: the native stack guard (Linux, macOS) counts, so a
-    // contract holds on every platform.
-    const mt = computeMayThrow(this.mod, { stackChecks: true, explain: true });
+    // contract holds on every platform. Every function on a call cycle counts
+    // as checking it, a superset of the functions the backend picks, so the
+    // answer does not depend on that choice.
+    const mt = computeMayThrow(this.mod, { stackChecks: "everyCycleMember", explain: true });
     const proven: string[] = [];
     for (const { fn, note } of targets) {
       if (fn.async === true || fn.generator !== undefined) {
@@ -1581,6 +1584,15 @@ class ImmutableContracts {
     for (let steps = 0; steps < 16; steps++) {
       if (root.kind === "fieldGet" || root.kind === "recordGet") root = root.obj;
       else if (root.kind === "arrayGet") root = root.arr;
+      else if (root.kind === "seqExpr") root = root.result;
+      // A receiver that is the element when it is present and otherwise
+      // throws (`xs[i]!.push(v)`) is that element read.
+      else if (
+        root.kind === "ternary" &&
+        root.else_.kind === "libCall" &&
+        root.else_.fn === "error.nodeThrow"
+      )
+        root = root.then;
       else if (
         root.kind === "upcast" ||
         root.kind === "downcast" ||

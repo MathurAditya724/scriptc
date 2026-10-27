@@ -16,6 +16,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `dynamic-methods` | cpu | untyped JavaScript calling builtin methods on values it does not type: string `slice`/`indexOf`/`toUpperCase`/`padStart`, array `push`/`pop`/`includes`, `Map` and `Set`, and an object's own methods |
 | `dynamic-properties` | cpu | untyped JavaScript reading and writing properties of values it does not type: records built by object literals in two key orders, nested records, and instances of a class and its subclass |
 | `functional-pipeline` | cpu | `filter`/`map`/`reduce`/`flatMap` chains, closures, small records |
+| `handler-tables` | cpu | dispatch tables of functions: `Record<string, fn>` read as `t[k]!(…)`, `t[k]?.(…)` and through a checked local, a `Map<string, fn>`, an array of handlers, and an object literal of methods; some handlers declare fewer parameters than the table type |
 | `intern-table`, `intern-table-map`, `intern-table-1`, `intern-table-map-1` | cpu | worker threads interning the same type-like objects under string keys and records under number keys, then hits and misses: one shared `InternTable` per kind of key, or a module-level `Map` per thread (the `-map` entries), with 8 threads or 1 (the `-1` entries); under Node.js every thread has its own tables |
 | `json-records` | cpu | `JSON.stringify`, typed `JSON.parse`, Map aggregation |
 | `json-unions` | cpu | `JSON.parse` into discriminated unions: an event log with eight kinds and nested expression trees with nine, evaluated after the cast |
@@ -27,6 +28,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
 | `optional-fields` | cpu | records and class instances with `number \| undefined` and other scalar-union fields |
 | `published-graphs` | cpu | syntax trees with parent links and a symbol table, published with `@scriptc/threads` and then read |
+| `record-untyped-writes` | cpu | typed records written through untyped views: a counter helper taking `unknown` bumps fields of a stats record, and `Object.assign` merges patches into a settings record, with typed reads in between |
 | `record-boundaries` | cpu | records built from unchecked array reads passed to and returned from annotated functions |
 | `records-sort` | cpu | comparator sorts, group-by, `reduce`/`filter` |
 | `regex-logs` | cpu | regex `exec` with groups, `test`, global `replace` |

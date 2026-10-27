@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { expect, test } from "vitest";
 import {
+  cachedComparison,
   cachegrindCounts,
   changedFunctions,
   compareArtifact,
@@ -10,9 +11,14 @@ import {
   definedFunctionNames,
   dynamicTierSymbols,
   llvmFunctionHashes,
+  mergeReports,
   nmOutput,
+  programInputsHash,
+  programLines,
   programVerdict,
+  recordedBaseline,
   runtimePackDiff,
+  timingVerdict,
 } from "../../scripts/zero-cost-compare.mjs";
 
 const ir = (functions: object[], globals: object[]) =>
@@ -283,4 +289,117 @@ test("the zero-cost gate confines runtime-only differences to runtime symbols", 
   expect(confinedToRuntime(exe([], [], ["scr_a"]), runtime)).toBe(true);
   expect(confinedToRuntime(exe(["scr_b"], ["scr_a"], []), runtime)).toBe(true);
   expect(confinedToRuntime(exe([], [], ["main.$1"]), runtime)).toBe(false);
+});
+
+test("a recorded baseline settles identical programs and shared build errors", () => {
+  const hashes = { ir: "a", llvm: "b", exe: "c" };
+  const entry = { ok: true, ms: 12, hashes, exeBytes: 100 };
+  expect(cachedComparison(entry, { ok: true }, { ...hashes })).toEqual({
+    baseline: { ok: true, ms: 12 },
+    artifacts: {
+      ir: { identical: true },
+      llvm: { identical: true },
+      exe: { identical: true, bytes: { baseline: 100, candidate: 100 } },
+    },
+  });
+  // Any other hash, a missing artifact or no record builds the baseline.
+  expect(cachedComparison(entry, { ok: true }, { ...hashes, exe: "d" })).toBeNull();
+  expect(
+    cachedComparison({ ...entry, hashes: { ...hashes, ir: null } }, { ok: true }, hashes),
+  ).toBeNull();
+  expect(cachedComparison(undefined, { ok: true }, hashes)).toBeNull();
+  expect(cachedComparison(entry, { ok: false, error: "SC1090" }, {})).toBeNull();
+  const failed = { ok: false, ms: 3, error: "SC1090" };
+  expect(cachedComparison(failed, { ok: false, error: "SC1090" }, {})).toEqual({
+    baseline: { ok: false, error: "SC1090", ms: 3, cached: true },
+    artifacts: {},
+  });
+  expect(cachedComparison(failed, { ok: false, error: "SC1091" }, {})).toBeNull();
+  expect(cachedComparison(failed, { ok: true }, hashes)).toBeNull();
+});
+
+test("a recorded baseline applies only to the program inputs it was recorded for", () => {
+  const files: Record<string, string> = {
+    "/p/tests/corpus/a/main.ts": 'import { f } from "./lib.ts";',
+    "/p/tests/corpus/a/lib.ts": "export const f = 1;",
+  };
+  const read = (file: string) => Buffer.from(files[file]!);
+  const paths = Object.keys(files);
+  const inputs = programInputsHash("/p", paths, "release", read);
+  expect(programInputsHash("/p", [...paths].reverse(), "release", read)).toBe(inputs);
+  expect(programInputsHash("/p", paths, "speed", read)).not.toBe(inputs);
+  expect(programInputsHash("/q", paths, "release", read)).not.toBe(inputs);
+  // An edit to an import changes the hash as an edit to the entry does.
+  files["/p/tests/corpus/a/lib.ts"] = "export const f = 2;";
+  const edited = programInputsHash("/p", paths, "release", read);
+  expect(edited).not.toBe(inputs);
+  const entry = { inputs, ok: false, ms: 3, error: "SC1090" };
+  const cache = { programs: { "corpus/a/main.ts": entry } };
+  expect(recordedBaseline(cache, "corpus/a/main.ts", inputs)).toBe(entry);
+  // A record of the old sources must not settle the new sources as both-fail or identical.
+  expect(recordedBaseline(cache, "corpus/a/main.ts", edited)).toBeUndefined();
+  expect(recordedBaseline(cache, "corpus/b/main.ts", inputs)).toBeUndefined();
+  expect(recordedBaseline(null, "corpus/a/main.ts", inputs)).toBeUndefined();
+});
+
+test("merged gate shards judge compile time and comparisons over every shard", () => {
+  const trees = { baseline: { revision: "a" }, candidate: { revision: "b" } };
+  const row = (id: string, ratio: number) => ({
+    id,
+    baselineMs: [100, 100, 100],
+    candidateMs: [100 * ratio, 100 * ratio, 100 * ratio],
+    ratios: [ratio, ratio, ratio],
+  });
+  const shard = (
+    programs: object[],
+    rows: object[],
+    failures: string[] = [],
+    globals: string[] = [],
+  ) => ({
+    schema: 1,
+    trees,
+    programs,
+    failures: [...failures, ...globals],
+    globalFailures: globals,
+    timing: { runs: 3, maxGrowth: 0.02, rows, groups: {} },
+    elapsedMs: 10,
+  });
+  const identical = (id: string) => ({ id, verdict: "identical", artifacts: {} });
+  const fast = shard([identical("bench/a")], [row("bench/a", 1.0)]);
+  // Alone, this shard's bench is slower; with the other shard it is not.
+  const slow = shard(
+    [
+      {
+        id: "corpus/x.ts",
+        verdict: "differs",
+        artifacts: { exe: { identical: false, first: "resized f" } },
+      },
+    ],
+    [row("bench/b", 1.03)],
+    ["corpus/x.ts: differs"],
+    ["bench compile time grew +3.00% (CI low +3.00%)"],
+  );
+  const { report, timingLines } = mergeReports([fast, slow]);
+  expect(report.counts).toEqual({ identical: 1, differs: 1 });
+  expect(report.failures).toEqual(["corpus/x.ts: differs"]);
+  expect(report.verdict).toBe("fail");
+  expect(timingLines).toEqual([timingVerdict("bench", report.timing.rows, 0.02).line]);
+  expect(timingVerdict("bench", report.timing.rows, 0.02).fails).toBe(false);
+  expect(programLines(report.programs[1])).toEqual(["DIFFERS    corpus/x.ts  exe: resized f"]);
+  expect(mergeReports([fast]).report.verdict).toBe("pass");
+  expect(mergeReports([shard([], [])]).report.failures).toEqual([
+    "no program built with both checkouts, so nothing was compared",
+  ]);
+  expect(() => mergeReports([fast, fast])).toThrow(/more than one gate report/);
+  // A runtime-only program was compared, and its line names the runtime change.
+  const runtimeOnly = {
+    id: "bench/r",
+    verdict: "runtime-only",
+    artifacts: { exe: { identical: false, first: "resized scr_a" } },
+    runtime: { changed: ["scr_a"], added: [] },
+  };
+  expect(mergeReports([shard([runtimeOnly], [])]).report.verdict).toBe("pass");
+  expect(programLines(runtimeOnly)).toEqual([
+    "runtime    bench/r  exe: resized scr_a; runtime-only: links 1 changed runtime function (scr_a)",
+  ]);
 });

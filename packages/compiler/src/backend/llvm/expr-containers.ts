@@ -4,7 +4,6 @@ import { arraySearchHelperName, arraySearchKind } from "./array-search.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isStableReceiverOperand, undefinedArmTag } from "../../ir/analysis.js";
 import { F64, type IrExpr, type IrType, isRefCounted, typeEquals, typeKey } from "../../ir/ir.js";
-import { mangleResolveThunk } from "../mangle.js";
 import {
   arrOps,
   elemAccess,
@@ -63,12 +62,14 @@ import {
 import { exactInteger, widenInteger } from "./integer-values.js";
 import {
   emitDenseArrayNumber,
+  emitDenseArrayNumberInt32,
   emitDenseArrayPop,
   emitDenseArrayPush,
   runtimeAccess,
   type ArrayAccess,
 } from "./dense-array-access.js";
 import { INT32_ARRAY_METHODS } from "../../ir/int32-arrays.js";
+import { INT32_RANGE } from "../../ir/integer-ranges.js";
 import { emitUnionWiden } from "./expr-records.js";
 import { registerReplay } from "./emit-journal.js";
 
@@ -76,7 +77,7 @@ export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string
   const key = typeKey(inner);
   let sym = host.resolveThunks.get(key);
   if (!sym) {
-    sym = mangleResolveThunk(host.resolveThunks.size);
+    sym = host.contentSymbol("sc_rslv_", key);
     host.resolveThunks.set(key, sym);
     host.journal?.allocated(sym, "resolveThunkFor", [inner]);
     const v = vAdapters(host.shapeHost, inner);
@@ -694,6 +695,25 @@ export function emitArrIntrinsic(
           emitDenseArrayNumber(host, r.name, index, e.args[0], proven, kind),
         )!;
         return { name: value, type: e.type };
+      }
+      // In a store statement of an int32 kind loop's fast copy, a read that
+      // is not an int32 (a missing element's NaN) leaves for the
+      // statement's resume point, so the element is at hand as an i32.
+      if (!table && elem.kind === "f64" && access === "i32" && host.int32KindResume !== null) {
+        const read = emitDenseArrayNumberInt32(
+          host,
+          r.name,
+          index,
+          e.args[0],
+          host.provenDenseIndex(e.receiver, e.args[0]!),
+          host.int32KindResume,
+        );
+        return {
+          name: read.value,
+          type: e.type,
+          uint32: read.int32,
+          integer: { name: read.int32, type: "i32", signed: true, range: INT32_RANGE },
+        };
       }
       if (!table && elem.kind === "f64")
         return {

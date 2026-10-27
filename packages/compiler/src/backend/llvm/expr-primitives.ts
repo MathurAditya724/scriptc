@@ -5,6 +5,7 @@ import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../i
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 
 import { BYTES_ELEM_NUM, closureIdentityEqual, f64Lit } from "./common.js";
@@ -46,8 +47,13 @@ import {
   slotWidth,
   type ArrayAccess,
 } from "./dense-array-access.js";
-import { emitWrappingSum, integerOrNaNRange, markWrappingOperands } from "./wrapping-sums.js";
-import { emitPowerOfTwoQuotient, isPowerOfTwoCall } from "./lib-filesystem.js";
+import {
+  emitNanArithmetic,
+  emitWrappingSum,
+  integerOrNaNRange,
+  markWrappingOperands,
+} from "./wrapping-sums.js";
+import { emitPowF64, emitPowerOfTwoQuotient, isPowerOfTwoCall } from "./lib-filesystem.js";
 
 /** The signed integer predicates of the number compares. */
 const INTEGER_COMPARES: Record<string, string> = {
@@ -205,7 +211,19 @@ export function emitLiteralExpr(
         // the binding. Consumers must not reload its current view.
         const uint32 = B.tmp();
         B.line(`${uint32} = load i32, ptr ${integerView}`);
-        return { name: t, type: e.type, uint32 };
+        const orderedView = host.orderedViews.get(e.localId);
+        const range = orderedView && host.integerOrNaNLocals.get(e.localId);
+        if (!orderedView || !range) return { name: t, type: e.type, uint32 };
+        const ordered = B.tmp();
+        B.line(`${ordered} = load i1, ptr ${orderedView}`);
+        // The view holds the integer's low 32 bits (0 for NaN): its integer
+        // when the range is within int32 or uint32.
+        const signed = range.min >= -2147483648 && range.max <= 2147483647;
+        if (!signed && !(range.min >= 0 && range.max <= 4294967295))
+          return { name: t, type: e.type, uint32, ordered };
+        const nanInteger = B.tmp();
+        B.line(`${nanInteger} = ${signed ? "sext" : "zext"} i32 ${uint32} to i64`);
+        return { name: t, type: e.type, uint32, ordered, nanInteger };
       }
       if (isRefCounted(e.type)) {
         // An immortal Immutable constant: nothing to count.
@@ -305,7 +323,6 @@ export function emitOperatorExpr(
         "===": "oeq",
         "!==": "une",
       };
-      const libm: Record<string, string> = { "**": "pow" };
       const bit: Record<string, "and" | "or" | "xor" | "shl" | "ashr" | "lshr"> = {
         "&": "and",
         "|": "or",
@@ -367,8 +384,8 @@ export function emitOperatorExpr(
               `${result} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} nsw i64 ${left}, ${right}`,
             );
             const number = integerNumber(host, result, range, e.type);
-            const uint32 = emitWrappingSum(host, e, l, r, li, ri);
-            return uint32 === undefined ? number : { ...number, uint32 };
+            const wrapped = emitWrappingSum(host, e, l, r, li, ri);
+            return wrapped === undefined ? number : { ...number, ...wrapped };
           }
           if (e.op === "%" && li.range.min >= 0 && ri.range.min > 0) {
             const range = { min: 0, max: Math.min(li.range.max, ri.range.max - 1) };
@@ -411,13 +428,18 @@ export function emitOperatorExpr(
           return { name: emitPowerOfTwoQuotient(host, l.name, r.name), type: e.type };
         if (arith[e.op] !== undefined) {
           B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
-          const uint32 = emitWrappingSum(host, e, l, r, li, ri);
+          const wrapped = emitWrappingSum(host, e, l, r, li, ri);
           // The exact integer beside the double, for index consumers.
           const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
-          if (uint32 !== undefined || wideInteger) {
+          // The integer of an exact integer or NaN, for index and loop guards.
+          const nan = emitNanArithmetic(host, e, l, r, li, ri);
+          const offset = offsetIndex(e, l, r);
+          if (wrapped !== undefined || wideInteger || nan || offset) {
             const value: LlValue = { name: t, type: e.type };
-            if (uint32 !== undefined) value.uint32 = uint32;
+            if (nan) Object.assign(value, nan);
+            if (wrapped !== undefined) Object.assign(value, wrapped);
             if (wideInteger) value.wideInteger = wideInteger;
+            if (offset) value.offsetIndex = offset;
             return value;
           }
         } else {
@@ -471,32 +493,8 @@ export function emitOperatorExpr(
         B.line(`${t} = ${e.op === ">>>" ? "uitofp" : "sitofp"} i32 ${result} to double`);
         return { name: t, type: e.type, uint32: result };
       } else {
-        const fn = libm[e.op];
-        if (fn === undefined) throw new LlvmUnsupportedError(`bin:${e.op}`, e.loc);
-        host.declare(`declare double @${fn}(double, double)`);
-        // libm's pow answers 1 for pow(±1, ±Infinity) and pow(1, NaN), where
-        // `**` answers NaN (and LLVM folds pow(1.0, x) to 1.0): an inline
-        // guard selects NaN for a base of ±1 with a non-finite exponent and
-        // keeps the direct pow call. A finite literal exponent, or a literal
-        // base other than ±1, cannot meet those cases and needs no guard.
-        if (fn === "pow" && !libmPowAgrees(e.left, e.right)) {
-          host.declare(`declare double @llvm.fabs.f64(double)`);
-          const power = B.tmp();
-          B.line(`${power} = call double @pow(double ${l.name}, double ${r.name})`);
-          const base = B.tmp();
-          const unit = B.tmp();
-          const magnitude = B.tmp();
-          const finite = B.tmp();
-          const reject = B.tmp();
-          B.line(`${base} = call double @llvm.fabs.f64(double ${l.name})`);
-          B.line(`${unit} = fcmp oeq double ${base}, 1.0`);
-          B.line(`${magnitude} = call double @llvm.fabs.f64(double ${r.name})`);
-          B.line(`${finite} = fcmp olt double ${magnitude}, 0x7FF0000000000000`);
-          B.line(`${reject} = select i1 ${finite}, i1 false, i1 ${unit}`);
-          B.line(`${t} = select i1 ${reject}, double 0x7FF8000000000000, double ${power}`);
-        } else {
-          B.line(`${t} = call double @${fn}(double ${l.name}, double ${r.name})`);
-        }
+        if (e.op !== "**") throw new LlvmUnsupportedError(`bin:${e.op}`, e.loc);
+        return { name: emitPowF64(host, l.name, r.name, e.right), type: e.type };
       }
       return { name: t, type: e.type };
     }
@@ -649,7 +647,7 @@ export function regexLiteralTemplate(
   let re = host.regexInstances.get(key);
   if (!re) {
     re = {
-      sym: `sc_re_${host.regexInstances.size}`,
+      sym: host.contentSymbol("sc_re_", key),
       src: host.internLiteral(e.pattern),
       fl: host.internLiteral(e.flags),
       pattern: e.pattern,
@@ -673,7 +671,7 @@ export function regexLiteralReplacer(
   let rr = host.regexReplacers.get(key);
   if (!rr) {
     rr = {
-      sym: `sc_rr_${host.regexReplacers.size}`,
+      sym: host.contentSymbol("sc_rr_", key),
       pattern: e.pattern,
       flags: e.flags,
       replacement,
@@ -1085,16 +1083,21 @@ export function emitContainerExpr(
           B.line(`${fits} = icmp ule ${host.sizeType} ${capacity}, ${SMALL_ARRAY_SLOTS}`);
           B.condBr(fits, smallLabel, sizedLabel);
           B.startBlock(smallLabel);
-          B.line(`${smallArr} = ${arrNewCall(host.shapeHost, elem, "0", true)}`);
+          B.line(`${smallArr} = ${arrNewCall(host.shapeHost, elem, "0", true, host.arenaSite(e))}`);
           B.br(joined);
           B.startBlock(sizedLabel);
-          B.line(`${sizedArr} = ${arrNewCall(host.shapeHost, elem, capacity)}`);
+          B.line(
+            `${sizedArr} = ${arrNewCall(host.shapeHost, elem, capacity, false, host.arenaSite(e))}`,
+          );
           B.br(joined);
           B.startBlock(joined);
           B.line(
             `${arr} = phi ptr [ ${smallArr}, %${smallLabel} ], [ ${sizedArr}, %${sizedLabel} ]`,
           );
-        } else B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small)}`);
+        } else
+          B.line(
+            `${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small, host.arenaSite(e))}`,
+          );
       }
       const out = host.own({ name: arr, type: e.type });
       const acc: ArrayAccess = int32 ? "i32" : elemAccess(elem);
@@ -1367,7 +1370,7 @@ export function emitRecordExpr(
         throw new InternalCompilerError("llvm emitter bug: recordLit of non-record type");
       const shapeId = e.type.shapeId;
       const rec = B.tmp();
-      B.line(`${rec} = call ptr @${mangleRecordNew(shapeId)}()`);
+      B.line(`${rec} = call ptr @${host.allocSym(mangleRecordNew(shapeId), e)}()`);
       const out = host.own({ name: rec, type: e.type });
       // A null-prototype record: SCR_MAP_NULL_PROTO on the fresh map.
       if (e.nullProto) B.line(`store i8 1, ptr ${host.recordMapFlagsPtr(rec, shapeId)}`);
@@ -1472,20 +1475,4 @@ export function emitRecordLitFields(
     const { ptr, type, inline } = host.recordFieldPtr(rec, shapeId, f.name);
     host.initField(ptr, type, inline, v);
   }
-}
-
-/** Whether libm pow matches `**` for these operands: every case except a
- * base of ±1 with a NaN or infinite exponent agrees. */
-function libmPowAgrees(base: IrExpr, exponent: IrExpr): boolean {
-  const power = numericLiteral(exponent);
-  if (power !== null && Number.isFinite(power)) return true;
-  const value = numericLiteral(base);
-  return value !== null && !Number.isNaN(value) && Math.abs(value) !== 1;
-}
-
-function numericLiteral(expr: IrExpr): number | null {
-  if (expr.kind === "numLit") return expr.value;
-  if (expr.kind === "unary" && expr.op === "-" && expr.operand.kind === "numLit")
-    return -expr.operand.value;
-  return null;
 }
