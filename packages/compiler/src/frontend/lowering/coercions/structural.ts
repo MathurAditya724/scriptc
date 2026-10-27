@@ -318,6 +318,16 @@ export function applyWidthLift(
         throw new InternalCompilerError("lowerer bug: planned funcAdapt lift failed to intern");
       return { kind: "call", callee: adapter, args: [value], type: dst, loc };
     }
+    case "promiseWiden": {
+      if (dst.kind !== "promise" || value.type.kind !== "promise")
+        throw new InternalCompilerError("lowerer bug: promiseWiden lift shape");
+      const converted = lowerer.coerceToExpected(value, dst);
+      if (!typeEquals(converted.type, dst))
+        throw new InternalCompilerError(
+          "lowerer bug: planned promise payload widening stopped converting",
+        );
+      return converted;
+    }
     default: {
       const _exhaustive: never = lift;
       void _exhaustive;

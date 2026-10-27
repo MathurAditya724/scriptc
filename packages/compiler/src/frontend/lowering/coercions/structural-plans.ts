@@ -15,6 +15,12 @@ export type FieldLift =
  * and conversions that can only throw are not structural conversions. */
 export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): WidthLift | null {
   if (typeEquals(src, dst)) return { how: "copy" };
+  // A promise whose payload widens (`Promise<void>` into `Promise<unknown>`,
+  // a settlement type gaining optional members): the checked payload
+  // widening coerceToExpected applies at a promise slot. The promise keeps
+  // its identity and settlement turn; the payload converts when it settles.
+  if (dst.kind === "promise" && src.kind === "promise" && lowerer.promisePayloadWidens(src, dst))
+    return { how: "promiseWiden" };
   // An 'unknown' (dyn) DESTINATION slot: the static→dyn conversion —
   // dynFrom, a DEEP COPY (`{ v: 5 }` into `{ v: unknown }`, `number[]`
   // into `unknown[]` — tsc's top type over the width family's copies).
@@ -72,6 +78,7 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         (src.kind === "record" && arm.kind === "record") ||
         (src.kind === "array" && arm.kind === "array") ||
         (src.kind === "func" && arm.kind === "func") ||
+        (src.kind === "promise" && arm.kind === "promise") ||
         (src.kind === "object" && arm.kind === "object") ||
         // Tuples already lift into ordinary array slots. Consider that
         // same conversion when the array is an arm of a union too.

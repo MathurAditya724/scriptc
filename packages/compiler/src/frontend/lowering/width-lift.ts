@@ -32,4 +32,8 @@ export type WidthLift =
   | { how: "dynIn" }
   | { how: "dynOut" }
   | { how: "upcast" }
-  | { how: "funcAdapt" };
+  | { how: "funcAdapt" }
+  /** A promise whose payload widens (`Promise<void>` into `Promise<unknown>`):
+   * the checked payload widening coerceToExpected applies at a promise slot,
+   * which keeps the promise's identity and settlement turn. */
+  | { how: "promiseWiden" };
