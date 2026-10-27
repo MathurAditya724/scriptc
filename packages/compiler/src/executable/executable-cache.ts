@@ -54,6 +54,8 @@ export interface EarlyExecutableNativeFeatures {
   optimization?: "dev" | "speed";
   workers?: boolean;
   youngNursery?: boolean;
+  /** `--large-pages` links scr_text_pages.c. */
+  largePages?: boolean;
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
@@ -160,6 +162,8 @@ export interface EarlyExecutableCacheOptions {
    * into Node records it, and a hit requires the same identity, so the pack
    * settings never change the key of a program that does not. */
   libnodeIdentity?: () => string | undefined;
+  /** Omitted unless --large-pages is set. */
+  largePages?: true;
   /** Omitted for the x86-64 baseline (`--target-cpu`). */
   targetCpu?: TargetCpu;
   /** Omitted for builds without runtime CPU dispatch. */
@@ -174,6 +178,8 @@ export interface EarlyExecutableCacheOptions {
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
+  /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
+  heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
   /** Omitted for the default Node island policy; else nodeIslandOptionsKey. */
   nodeIslands?: string;
@@ -325,6 +331,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.strip ? ["strip"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.largePages ? ["large-pages"] : []),
     ...targetCpuKeyParts(options.targetCpu),
     ...cpuDispatchKeyParts(options.cpuDispatch),
     ...(options.profile !== undefined ? [options.profile] : []),
@@ -332,6 +339,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
     ...(options.nodeIslands !== undefined ? [`node-islands:${options.nodeIslands}`] : []),
+    ...(options.heapCensus ? ["heap-census"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -371,6 +379,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.strip) hash.update("strip\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.largePages) hash.update("large-pages\0");
   for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
   for (const part of cpuDispatchKeyParts(options.cpuDispatch)) hash.update(`${part}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);
@@ -378,6 +387,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
   if (options.nodeIslands !== undefined) hash.update(`node-islands:${options.nodeIslands}\0`);
+  if (options.heapCensus) hash.update("heap-census\0");
   hash
     .update(
       options.npmStatic === null

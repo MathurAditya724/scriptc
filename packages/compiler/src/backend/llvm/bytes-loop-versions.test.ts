@@ -222,6 +222,55 @@ test("negative factors, rebinding, captures and outer loops are not versioned", 
   expect(match(fn([outer]), inner)).not.toBeNull();
 });
 
+test("loops with nested loops version only for accesses inside them", () => {
+  // for (let i = 0; i < 64; i++) {
+  //   let t = 0;
+  //   for (let j = 0; j < n; j++) t = t + src[j];
+  //   out[i] = t;
+  // }
+  const sum = (): IrStmt[] => [
+    { kind: "varDecl", localId: "t", init: num(0), loc },
+    counted(
+      [
+        {
+          kind: "assign",
+          localId: "t",
+          value: bin("+", ref("t"), get(ref("src", f64s), ref("j"))),
+          loc,
+        },
+      ],
+      ref("n"),
+      "j",
+    ),
+  ];
+  const extra = [local("t", F64, true)];
+  // The guard would prove only `out[i]`, which runs once per row.
+  const rows = counted([...sum(), set(ref("out", f64s), ref("i"), ref("t"))], num(64));
+  expect(match(fn([rows], extra), rows)).toBeNull();
+  expect(match(fn([rows], extra), rows.body[1] as IrStmt & { kind: "for" })).not.toBeNull();
+  // The guard proves `out[i]` inside a nested loop too.
+  const inside = counted(
+    [...sum(), counted([set(ref("out", f64s), ref("i"), ref("t"))], num(2), "j")],
+    num(64),
+  );
+  expect(match(fn([inside], extra), inside)?.bounds.size).toBe(1);
+  // A loop whose nested loops access no typed array versions for its own
+  // accesses.
+  const scalar = counted(
+    [
+      { kind: "varDecl", localId: "t", init: num(0), loc },
+      counted(
+        [{ kind: "assign", localId: "t", value: bin("+", ref("t"), ref("j")), loc }],
+        ref("n"),
+        "j",
+      ),
+      set(ref("out", f64s), ref("i"), ref("t")),
+    ],
+    num(64),
+  );
+  expect(match(fn([scalar], extra), scalar)?.bounds.size).toBe(1);
+});
+
 test("emitted loops version the body and tag typed-array memory", () => {
   const loop = counted([
     set(ref("out", f64s), ref("i"), bin("*", get(ref("src", f64s), ref("i")), num(2))),
