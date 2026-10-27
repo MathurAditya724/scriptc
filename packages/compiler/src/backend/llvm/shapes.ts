@@ -69,7 +69,7 @@ import {
   disposeFieldLines,
   plainRefType,
 } from "./arenas.js";
-import { recordViewWords, type RecordViews } from "./record-views.js";
+import { recordViewTestLines, recordViewWords, type RecordViews } from "./record-views.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -454,7 +454,11 @@ export function emitShapeUnionHelpers(host: ShapeHost): string[] {
     const traced = union.arms.map((arm) => host.tracedShapes.has(`record:${arm.shapeId}`));
     // A freezable arm's count is the word without its frozen bit, as in
     // releaseFastPath: a frozen record's last reference takes the slow path.
-    const frozen = union.arms.some((arm) => host.recordsById.get(arm.shapeId)?.freezable === true);
+    const frozen = union.arms.some(
+      (arm) =>
+        host.recordsById.get(arm.shapeId)?.freezable === true ||
+        host.recordViews?.targets.has(arm.shapeId) === true,
+    );
     const notFrozen = ~recordFrozenBit(S);
     const release = shapeReleaseFn(union.unionId);
     if (traced.every((t) => t === traced[0]))
@@ -2296,7 +2300,9 @@ export function emitRecordShapes(
         false,
         chained,
         segmented,
-        shape.freezable === true,
+        // A record view's word carries the frozen bit as its view mark
+        // (record-views.ts), so view targets release like freezable shapes.
+        shape.freezable === true || host.recordViews?.targets.has(shape.id) === true,
         iterative
           ? iterativeTeardownDefinitions(
               host,
@@ -2400,11 +2406,11 @@ export function emitRecordShapes(
           const words = recordViewWords(shape.fields.length, base);
           clone.push(
             `  %so${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
-            `  %sr${i}p = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${words.record}`,
-            `  %sr${i}r = load ptr, ptr %sr${i}p`,
-            `  %sr${i}v = icmp ne ptr %sr${i}r, null`,
+            ...recordViewTestLines(host.sizeType, "%src", `%sr${i}v`),
             `  br i1 %sr${i}v, label %sv${i}.view, label %sv${i}.join`,
             `sv${i}.view:`,
+            `  %sr${i}p = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${words.record}`,
+            `  %sr${i}r = load ptr, ptr %sr${i}p`,
             `  %st${i}p = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${words.offsets}`,
             `  %st${i} = load ptr, ptr %st${i}p`,
             `  %sx${i}p = getelementptr inbounds ${host.sizeType}, ptr %st${i}, i64 ${i}`,

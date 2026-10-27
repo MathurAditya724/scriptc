@@ -5,8 +5,9 @@
  * offsets) answers a view: a B-shaped object whose fields live in A. The
  * view's storage is B's struct plus two trailing words, the A record
  * (borrowed: the view's record-source entry owns A's capsule, which owns
- * A) and a table of A's byte offsets for B's fields. Every field address
- * of a B value tests the first word (recordViewFieldPtr), so reads and
+ * A) and a table of A's byte offsets for B's fields, and its rc word
+ * carries the frozen bit as the view mark. Every field address of a B
+ * value tests the mark (recordViewFieldPtr), so reads and
  * writes through either name reach the same storage, and boxing a view
  * answers A's capsule (scr_dyn_record_view), so identity holds too.
  *
@@ -116,6 +117,23 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   return { targets, sources: (target) => sources.get(target) ?? [] };
 }
 
+/** Lines setting `dest` (i1) to whether the record `obj` of a view target
+ * type is a view. A view's rc word carries the frozen bit (scr_rc.h
+ * SCR_RC_FROZEN), which no other value of such a type has: view targets
+ * are never freezable, and an immortal word (all ones) is not a view. The
+ * trailing words are read only after this test, so a value of another
+ * storage seen through the type is never read past its end. */
+export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: string): string[] {
+  const bit = sizeType === "i64" ? "4611686018427387904" : "1073741824";
+  return [
+    `  ${dest}.w = load ${sizeType}, ptr ${obj}`,
+    `  ${dest}.b = and ${sizeType} ${dest}.w, ${bit}`,
+    `  ${dest}.m = icmp ne ${sizeType} ${dest}.b, 0`,
+    `  ${dest}.i = icmp ne ${sizeType} ${dest}.w, -1`,
+    `  ${dest} = and i1 ${dest}.m, ${dest}.i`,
+  ];
+}
+
 /** The struct indices of a view target's two trailing words. */
 export function recordViewWords(
   fieldCount: number,
@@ -138,19 +156,19 @@ export function recordViewFieldPtr(
 ): string {
   const own = B.tmp();
   B.line(`${own} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${slotIndex}`);
-  const recordPtr = B.tmp();
-  const record = B.tmp();
   const isView = B.tmp();
-  B.line(
-    `${recordPtr} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${words.record}`,
-  );
-  B.line(`${record} = load ptr, ptr ${recordPtr}`);
-  B.line(`${isView} = icmp ne ptr ${record}, null`);
+  for (const line of recordViewTestLines(sizeType, obj, isView)) B.line(line.trimStart());
   const from = B.currentLabel();
   const view = B.newLabel("rv.view");
   const join = B.newLabel("rv.join");
   B.condBr(isView, view, join);
   B.startBlock(view);
+  const recordPtr = B.tmp();
+  const record = B.tmp();
+  B.line(
+    `${recordPtr} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${words.record}`,
+  );
+  B.line(`${record} = load ptr, ptr ${recordPtr}`);
   const tablePtr = B.tmp();
   const table = B.tmp();
   const offsetPtr = B.tmp();

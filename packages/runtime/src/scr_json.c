@@ -4373,9 +4373,9 @@ void *scr_dyn_typed_ref_unbox(const ScrDyn *d) {
 
 /* Record views (compiler record-views.ts). A checked conversion of a
  * capsule of record A into record type B, when A has all of B's fields,
- * answers a view (+1): a B object (allocated by `alloc`, zeroed) whose
- * trailing words at byte offset `words` hold A (borrowed) and A's offset
- * table for B's fields, so every field access of the B value reaches A.
+ * answers a view (+1): a B object (allocated by `alloc`, zeroed, its rc
+ * word marked with the frozen bit) whose trailing words at byte offset
+ * `words` hold A (borrowed) and A's offset table for B's fields, so every field access of the B value reaches A.
  * `sources` lists, for each A the compiler allows, its type key and offset
  * table. The view's record-source entry owns A's capsule: boxing the view
  * answers that capsule, and the entry dies with the view. One view per
@@ -4398,6 +4398,9 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
     if (cast->borrowed && cast->type_key_len == key_len && memcmp(cast->type_key, key, key_len) == 0)
       return cast->retain(cast->ptr);
   void *view = alloc();
+  /* The frozen bit marks a view: view target types are never freezable,
+   * and their emitted releases ignore the bit (record-views.ts). */
+  *(size_t *)view |= SCR_RC_FROZEN;
   void **slots = (void **)((char *)view + words);
   slots[0] = record;
   slots[1] = (void *)source->offsets;
