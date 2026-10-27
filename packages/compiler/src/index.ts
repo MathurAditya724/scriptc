@@ -784,7 +784,9 @@ async function emitNativeProgramObject(
   // An optimized program that stays one partition is optimized whole and
   // generates code for its parts concurrently.
   const codegenParts = single || opts.optimization === "dev" ? 1 : nativeCodegenParts(llvmBytes);
-  const partitions = single ? 1 : Math.max(nativeProgramPartitions(llvmBytes), codegenParts);
+  const partitions = single
+    ? 1
+    : Math.max(nativeProgramPartitions(llvmBytes, opts.optimization === "dev"), codegenParts);
   try {
     const artifact = await emitNativeArtifact({
       outputPath: linkPath,
