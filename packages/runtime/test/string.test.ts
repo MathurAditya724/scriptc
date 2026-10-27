@@ -88,6 +88,13 @@ test("string methods match Node on committed oracle cases", async () => {
   expect(r.stderr.trim()).toMatch(/^(\d+)\/\1 cases passed$/);
 });
 
+// A template literal of strings and numbers allocates exactly its length:
+// numbers format before the result is sized, not into a reserved maximum.
+test("template-literal concatenation allocates its exact length", async () => {
+  const { stderr } = await execFileAsync(bin, ["--concat-capacity"]);
+  expect(stderr.trim()).toBe("0 concat capacity failures");
+});
+
 // repeat(count) with count < 0 or Infinity is Node's catchable RangeError
 // ("Invalid count value: -1"); the runtime leaves it pending.
 test.each([
