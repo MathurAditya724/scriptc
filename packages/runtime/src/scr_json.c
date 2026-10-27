@@ -19173,6 +19173,11 @@ bool scr_dyn_is_frozen(const ScrDyn *value) {
   return false;
 }
 
+bool scr_dyn_checked_record_frozen(const ScrDyn *value) {
+  while (value && value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
+  return value && scr_dyn_is_frozen(value);
+}
+
 double scr_buffer_byte_length_dyn(ScrDyn *value, ScrStr *encoding) {
   if (value->kind == SCR_DYN_STR) return scr_bytes_byte_length_str(value->v.str, encoding);
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_byte_len(value->v.bytes);
