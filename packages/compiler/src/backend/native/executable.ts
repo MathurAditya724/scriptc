@@ -1485,12 +1485,18 @@ export async function compileCInternal(
             missed: false,
           };
         });
-        const shardWidth = Math.min(8, availableParallelism());
-        for (let i = 0; i < entries.length; i += shardWidth) {
-          await Promise.all(
-            entries.slice(i, i + shardWidth).map(async (entry) => {
+        // Up to eight clangs (one per available core), each taking the next
+        // shard as it finishes: shards differ in size, and a fixed batch
+        // would wait for its slowest member before starting the next. A
+        // failed shard stops the others from taking more work.
+        let nextShard = 0;
+        let failed = false;
+        await Promise.all(
+          Array.from({ length: Math.min(entries.length, 8, availableParallelism()) }, async () => {
+            while (!failed && nextShard < entries.length) {
+              const entry = entries[nextShard++]!;
               await writeFile(entry.sourcePath, entry.source());
-              if (await copyValidCachedFile(entry.cachePath, entry.staged)) return;
+              if (await copyValidCachedFile(entry.cachePath, entry.staged)) continue;
               entry.missed = true;
               await runClang([
                 ...programCompilerArgs,
@@ -1499,10 +1505,13 @@ export async function compileCInternal(
                 entry.sourcePath,
                 "-o",
                 entry.staged,
-              ]);
-            }),
-          );
-        }
+              ]).catch((error: unknown) => {
+                failed = true;
+                throw error;
+              });
+            }
+          }),
+        );
         const arArgv = isZigDriver(driver) ? [driver.argv[0]!, "ar"] : ["ar"];
         const merged = await localizeLibraryObjects(
           driver,
