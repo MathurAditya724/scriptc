@@ -13,9 +13,14 @@ import {
   WASM32_WASI_TARGET,
   WINDOWS_X64_MSVC_TARGET,
   executableOptimizationLinkerArgs,
+  executableStaticLinkerArgs,
   ffiExtendsNarrowIntegers,
   nativeCodegenTarget,
   nativeCodegenTargetRefusal,
+  selectNativeTarget,
+  staticExecutableRefusal,
+  staticLinkFailureNote,
+  staticLinkRefusal,
   windowsSubsystemLinkerArgs,
 } from "./targets.js";
 
@@ -231,5 +236,56 @@ describe("native code-generation targets", () => {
     expect(() => windowsSubsystemLinkerArgs("win32", "other" as "gui")).toThrow(
       "unknown Windows subsystem",
     );
+  });
+
+  test("links host glibc executables as static PIE only for --static", () => {
+    expect(executableStaticLinkerArgs(LINUX_X64_GNU_TARGET, false)).toEqual([]);
+    expect(executableStaticLinkerArgs(LINUX_X64_GNU_TARGET, true)).toEqual(["-static-pie"]);
+    expect(executableStaticLinkerArgs(LINUX_ARM64_GNU_TARGET, true)).toEqual(["-static-pie"]);
+    // musl executables are static already.
+    expect(executableStaticLinkerArgs(LINUX_X64_MUSL_TARGET, true)).toEqual([]);
+    expect(executableStaticLinkerArgs(MACOS_ARM64_TARGET, false)).toEqual([]);
+    expect(() => executableStaticLinkerArgs(MACOS_ARM64_TARGET, true)).toThrow(
+      "only supported for Linux executables",
+    );
+  });
+
+  test("refuses --static where glibc cannot be linked statically", () => {
+    const request = { staticLink: true, outputKind: "exe", sanitize: false };
+    expect(staticLinkRefusal({ ...request, staticLink: undefined, target: null })).toBeNull();
+    expect(staticLinkRefusal({ ...request, target: LINUX_X64_GNU_TARGET })).toBeNull();
+    expect(staticLinkRefusal({ ...request, target: LINUX_X64_MUSL_TARGET })).toBeNull();
+    expect(staticLinkRefusal({ ...request, outputKind: "obj", target: LINUX_X64_GNU_TARGET })).toBe(
+      "--static is only supported for executable output",
+    );
+    expect(staticLinkRefusal({ ...request, sanitize: true, target: LINUX_X64_GNU_TARGET })).toMatch(
+      "cannot be combined with --sanitize",
+    );
+    for (const target of [MACOS_ARM64_TARGET, WINDOWS_X64_MSVC_TARGET, WASM32_WASI_TARGET, null])
+      expect(staticLinkRefusal({ ...request, target })).toBe(
+        "--static is only supported for Linux executables",
+      );
+    // zig links cross-compiled glibc targets, and links glibc dynamically.
+    const cross = selectNativeTarget("aarch64-linux-gnu", LINUX_X64_GNU_TARGET, "linux")!;
+    expect(staticLinkRefusal({ ...request, target: cross })).toMatch("<arch>-linux-musl");
+    const crossMusl = selectNativeTarget("aarch64-linux-musl", LINUX_X64_GNU_TARGET, "linux")!;
+    expect(staticLinkRefusal({ ...request, target: crossMusl })).toBeNull();
+  });
+
+  test("refuses static glibc executables that contain the NSS module loader", () => {
+    const loader = Buffer.from("\x7fELF\0libnss_%s.so%s\0");
+    const plain = Buffer.from("\x7fELF\0hello\0");
+    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, true, plain)).toBeNull();
+    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, false, loader)).toBeNull();
+    expect(staticExecutableRefusal(LINUX_X64_MUSL_TARGET, true, loader)).toBeNull();
+    expect(staticExecutableRefusal(LINUX_X64_GNU_TARGET, true, loader)).toMatch(
+      /^--static cannot link this program: its executable includes host, user or group name lookups/,
+    );
+  });
+
+  test("notes glibc's static libraries on failed --static links", () => {
+    expect(staticLinkFailureNote(LINUX_X64_GNU_TARGET, true)).toMatch("libc.a");
+    expect(staticLinkFailureNote(LINUX_X64_GNU_TARGET, false)).toBe("");
+    expect(staticLinkFailureNote(LINUX_X64_MUSL_TARGET, true)).toBe("");
   });
 });

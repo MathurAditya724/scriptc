@@ -115,6 +115,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.ffi !== undefined ||
       values.profile !== undefined ||
       values.strip ||
+      values.static ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
       values["large-pages"] ||
@@ -176,6 +177,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.ffi !== undefined ||
       values.profile !== undefined ||
       values.strip ||
+      values.static ||
       values.sanitize ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
@@ -269,6 +271,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["fail-on"] !== undefined ||
       values.optimization !== undefined ||
       values.strip ||
+      values.static ||
       values.ffi !== undefined ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
@@ -284,7 +287,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       hasNodeIslandFlags(values)
     ) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--large-pages/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
     }
     const profilePath = resolve(profileArg);
@@ -326,6 +329,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   if (command === "coverage" && values.strip) {
     fail(`--strip is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values.static) {
+    fail(`--static is a build/run option\n\n${USAGE}`);
   }
   if (command === "coverage" && values["target-cpu"] !== undefined) {
     fail(`--target-cpu is a build/run option\n\n${USAGE}`);
@@ -515,6 +521,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
           sanitize: values.sanitize,
           ...(values.optimization === undefined ? {} : { optimization: values.optimization }),
           strip: values.strip,
+          staticLink: values.static,
           detachedExit: values["detached-exit"],
           largePages: values["large-pages"],
           ...(values["cpu-dispatch"] === undefined ? {} : { cpuDispatch: values["cpu-dispatch"] }),
@@ -635,6 +642,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(backend !== undefined ? { backend } : {}),
       ...(optimization !== undefined ? { optimization } : {}),
       ...(values.strip ? { strip: true } : {}),
+      ...(values.static ? { staticLink: true } : {}),
       ...(windowsSubsystem !== undefined ? { windowsSubsystem } : {}),
       ...(values["detached-exit"] ? { detachedExit: true } : {}),
       ...(values["large-pages"] ? { largePages: true } : {}),

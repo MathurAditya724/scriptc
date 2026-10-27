@@ -91,6 +91,71 @@ export function executableStripLinkerArgs(platform: string, strip: boolean): str
   }
 }
 
+/** Why a `--static` request cannot be linked, or null when it can. A glibc
+ * executable links statically only through the host's clang driver: zig,
+ * which links cross-compiled glibc targets, links glibc dynamically. */
+export function staticLinkRefusal(options: {
+  staticLink: boolean | undefined;
+  outputKind: string;
+  sanitize: boolean;
+  target: Pick<NativeTargetSpec, "name" | "platform" | "defaultLinker"> | null;
+}): string | null {
+  if (options.staticLink !== true) return null;
+  if (options.outputKind !== "exe") return "--static is only supported for executable output";
+  if (options.sanitize)
+    return "--static cannot be combined with --sanitize; AddressSanitizer requires a dynamically linked executable";
+  const target = options.target;
+  if (target === null || target.platform !== "linux")
+    return "--static is only supported for Linux executables";
+  if (!target.name.endsWith("-musl") && target.defaultLinker === "zig")
+    return "--static links glibc from the build host and is only supported for the host's own glibc target; use an <arch>-linux-musl target to cross-compile a static executable";
+  return null;
+}
+
+/** Link the C library and the other system libraries into the executable.
+ * glibc executables link as static PIE, so the kernel still loads them at a
+ * random address; musl executables are always linked statically. */
+export function executableStaticLinkerArgs(
+  target: Pick<NativeTargetSpec, "name" | "platform" | "defaultLinker">,
+  staticLink: boolean,
+): string[] {
+  if (!staticLink) return [];
+  const refusal = staticLinkRefusal({ staticLink, outputKind: "exe", sanitize: false, target });
+  if (refusal !== null) throw new Error(refusal);
+  return target.name.endsWith("-musl") ? [] : ["-static-pie"];
+}
+
+/** glibc's NSS loader names each module's shared library with this literal
+ * (`libnss_%s.so%s` in nss_module.c, glibc 2.33 and later; nsswitch.c
+ * before). Section garbage collection keeps it in a static executable only
+ * when the loader's code is live. */
+const GLIBC_NSS_LOADER_TEXT = Buffer.from("libnss_");
+
+/** Why a linked `--static` executable is refused, or null. A static glibc
+ * executable answers host, user and group lookups with glibc's built-in
+ * `files` and `dns` sources, and loads every other module the run host's
+ * nsswitch.conf names from that host, which glibc supports only for the
+ * glibc version the executable was linked with. */
+export function staticExecutableRefusal(
+  target: Pick<NativeTargetSpec, "name">,
+  staticLink: boolean,
+  executable: Buffer,
+): string | null {
+  if (!staticLink || target.name.endsWith("-musl")) return null;
+  if (executable.indexOf(GLIBC_NSS_LOADER_TEXT) === -1) return null;
+  return "--static cannot link this program: its executable includes host, user or group name lookups (which dns.lookup, net and http connections, fetch and os.userInfo use), and a statically linked glibc executable loads the NSS modules for those lookups from the run host, which glibc supports only for the glibc version it was linked with. Build without --static, or use an <arch>-linux-musl target";
+}
+
+/** The note a failed `--static` glibc link adds to the linker's error. */
+export function staticLinkFailureNote(
+  target: Pick<NativeTargetSpec, "name">,
+  staticLink: boolean,
+): string {
+  return staticLink && !target.name.endsWith("-musl")
+    ? "\n--static links glibc's static libraries (libc.a, libm.a), which the libc6-dev package installs on Debian and Ubuntu and glibc-static on Fedora"
+    : "";
+}
+
 export interface NativeTargetSpec {
   /** Stable scriptc-facing identity used in cache keys and diagnostics. */
   name: NativeTargetName;

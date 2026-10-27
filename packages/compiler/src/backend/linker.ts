@@ -7,11 +7,13 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { mkdtemp, rename, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
 import { delimiter } from "node:path";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { CcCompileError, subprocessFailureDetail } from "./native/process.js";
+import { NativeCodegenError } from "./native-codegen-core.js";
+import { staticExecutableRefusal, staticLinkFailureNote } from "./targets.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import { parseLinkTraceFiles } from "./native/linker-fingerprint.js";
 import {
@@ -293,6 +295,10 @@ export async function linkNativeExecutable(
     });
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
+    if (plan.staticLink) {
+      const refusal = staticExecutableRefusal(plan.target, true, await readFile(privateOut));
+      if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);
+    }
     if (plan.darwinDebugSymbols) {
       await createDarwinDebugSymbols(privateOut);
       await installDarwinDebugSymbols(await readDarwinDebugSymbols(privateOut), plan.outputPath);
@@ -312,12 +318,18 @@ export async function linkNativeExecutable(
       await options.onArtifactReady({ dependencies: preLinkDependencies }).catch(() => undefined);
     }
   } catch (error) {
-    if (error instanceof CcCompileError || error instanceof RuntimePackError) throw error;
+    if (
+      error instanceof CcCompileError ||
+      error instanceof RuntimePackError ||
+      error instanceof NativeCodegenError
+    )
+      throw error;
     const detail = subprocessFailureDetail(error);
     throw new CcCompileError(
       linker,
       detail,
-      `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}`,
+      `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}` +
+        staticLinkFailureNote(plan.target, plan.staticLink === true),
     );
   } finally {
     await Promise.all([
