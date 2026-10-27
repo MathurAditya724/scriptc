@@ -617,6 +617,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         // (The guard precedes the value here: the nullable store
         // evaluates it itself.)
         emitter.emitStoreGuard(obj.name, s);
+        emitter.heapCensus?.countStore(
+          (line) => B.line(line),
+          () => B.tmp(),
+          s.className,
+          s.field,
+          s.value,
+          null,
+        );
         emitter.emitNullableFieldStore(obj.name, s.className, s.field, nullable, s.value);
         break;
       }
@@ -636,8 +644,17 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           ? emitter.recordFieldInline(s.shapeId, s.field)
           : emitter.inlineUnions.classField(s.className, s.field),
       );
-      if (s.kind === "fieldSet") emitter.emitStoreGuard(obj.name, s);
-      else if (emitter.publishedTypes?.recordGuarded(s.shapeId) === true)
+      if (s.kind === "fieldSet") {
+        emitter.emitStoreGuard(obj.name, s);
+        emitter.heapCensus?.countStore(
+          (line) => B.line(line),
+          () => B.tmp(),
+          s.className,
+          s.field,
+          s.value,
+          v.name,
+        );
+      } else if (emitter.publishedTypes?.recordGuarded(s.shapeId) === true)
         emitter.emitPublishedFieldGuard(obj.name, null, s.field);
       const { ptr, type, inline } =
         s.kind === "fieldSet"

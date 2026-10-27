@@ -1105,6 +1105,7 @@ export function emitCallExpr(
         );
       const o = B.tmp();
       B.line(`${o} = call ptr @${host.allocSym(mangleClassNew(e.className), e)}()`);
+      host.heapCensus?.countNew((line) => B.line(line), e.className);
       const out = host.own({ name: o, type: e.type });
       emitConstruction(host, e, o, ctor);
       return out;

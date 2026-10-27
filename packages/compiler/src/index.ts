@@ -161,6 +161,8 @@ import { clearResolveCaches } from "./frontend/resolve.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
 import { executableLinkFeatures } from "./backend/executable-features.js";
 import { youngNurseryRequested } from "./backend/young-nursery.js";
+import { heapCensusRequested } from "./backend/llvm/heap-census.js";
+import { representationReportPath } from "./backend/llvm/repr-report.js";
 import {
   type FrontendInputSnapshot,
   FrontendInputTracker,
@@ -1694,6 +1696,7 @@ async function compileTracked(
       ...(functionLayoutDigest === undefined ? {} : { functionLayout: functionLayoutDigest }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
+      ...(heapCensusRequested() ? { heapCensus: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,
       ...(shapeOverlayEnabled() ? { shapeOverlay: true as const } : {}),
       ffiProfile:
@@ -1737,8 +1740,9 @@ async function compileTracked(
       implementationDependencies: implementation.dependencies,
     };
   }
+  // A cache hit emits no module, so it would write no representation report.
   const earlyHit =
-    earlyCacheOptions === null
+    earlyCacheOptions === null || representationReportPath() !== null
       ? null
       : await readEarlyExecutableCache(cacheRoot, earlyCacheOptions);
   if (earlyHit !== null) {
