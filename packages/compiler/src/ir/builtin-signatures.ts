@@ -159,10 +159,6 @@ function buildLibFnSignatures() {
     "fetch.responseJson": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "fetch.responseText": { argTypes: [DYN], result: { kind: "promise", inner: STRING } },
     "fetch.responseBytes": { argTypes: [DYN], result: { kind: "promise", inner: BYTES_U8 } },
-    "fetch.abortControllerNew": { argTypes: [], result: DYN },
-    "fetch.abortTimeout": { argTypes: [DYN], result: DYN },
-    "fetch.abortNow": { argTypes: [DYN], result: DYN },
-    "fetch.abortAny": { argTypes: [DYN], result: DYN },
     "fetch.streamNew": { argTypes: [DYN], result: DYN },
     "fetch.transformNew": { argTypes: [], result: DYN },
     // Program-dependent iterable: typed arrays/bytes/string stay intact so

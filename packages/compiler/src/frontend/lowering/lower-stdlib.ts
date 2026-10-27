@@ -1500,7 +1500,7 @@ export function lowerStaticFetchCompanionCall(
             : dynUndefinedExpr(loc),
           (first) => ({
             kind: "libCall",
-            fn: "fetch.abortTimeout",
+            fn: "abort.timeout",
             args: [first],
             type: DYN,
             loc,
@@ -1510,7 +1510,7 @@ export function lowerStaticFetchCompanionCall(
         if (call.arguments.nodes.length === 0) {
           return {
             kind: "libCall",
-            fn: "fetch.abortNow",
+            fn: "abort.now",
             args: [dynUndefinedExpr(loc)],
             type: DYN,
             loc,
@@ -1523,7 +1523,7 @@ export function lowerStaticFetchCompanionCall(
           lowerLiveWebValue(lowerer, call.arguments.nodes[0]!),
           (first) => ({
             kind: "libCall",
-            fn: "fetch.abortNow",
+            fn: "abort.now",
             args: [first],
             type: DYN,
             loc,
@@ -1541,7 +1541,7 @@ export function lowerStaticFetchCompanionCall(
             : dynUndefinedExpr(loc),
           (first) => ({
             kind: "libCall",
-            fn: "fetch.abortAny",
+            fn: "abort.any",
             args: [first],
             type: DYN,
             loc,
@@ -1886,7 +1886,7 @@ export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression
 
   const result: IrExpr = {
     kind: "libCall",
-    fn: "fetch.abortControllerNew",
+    fn: "abort.controllerNew",
     args: [],
     type: DYN,
     loc,

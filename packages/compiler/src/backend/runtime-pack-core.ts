@@ -92,6 +92,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
+  abortSignal: boolean;
   utilTiming: boolean;
   dynBuffer: boolean;
   builtinValues: boolean;
@@ -101,6 +102,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   brotli: boolean;
   moduleNamespace: boolean;
   nativeFetch: boolean;
+  abortSignalOnly: boolean;
   netEffective: boolean;
   httpEffective: boolean;
   tlsEffective: boolean;
@@ -297,6 +299,7 @@ export function effectiveRuntimeFeatures(
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
+    abortSignal: features.abortSignal === true,
     utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,
     builtinValues: features.builtinValues === true,
@@ -306,6 +309,9 @@ export function effectiveRuntimeFeatures(
     brotli: features.brotli === true,
     moduleNamespace: features.moduleNamespace === true,
     nativeFetch,
+    // The fetch unit has AbortController and AbortSignal; scr_abort.c is
+    // the same implementation without the fetch transport.
+    abortSignalOnly: features.abortSignal === true && !nativeFetch,
     netEffective,
     httpEffective,
     tlsEffective,
