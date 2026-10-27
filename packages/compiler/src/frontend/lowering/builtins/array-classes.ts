@@ -10,6 +10,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { stripTypeWrappers } from "../typed-arguments.js";
+import { keyedHelperName } from "../stable-names.js";
 import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
 import { lowerArrayFromCall, lowerArrayOfCall } from "../containers/array-construction.js";
 import { boundedArrayHofHelper } from "../containers/array-callbacks.js";
@@ -305,6 +306,7 @@ export function lowerArrayClassInstanceOf(
   const value = lowerer.lowerExpr(expr.left);
   if (value.type.kind === "array")
     return { kind: "instanceOf", value, className: info.def.name, type: BOOL, loc };
+  if (value.type.kind === "union") return arrayClassUnionInstanceOf(lowerer, value, info, loc);
   if (value.type.kind === "dyn")
     return {
       kind: "libCall",
@@ -322,6 +324,62 @@ export function lowerArrayClassInstanceOf(
       loc,
     };
   return null;
+}
+
+/** `x instanceof X` for a class X declared `extends Array` on a union (an
+ * element read of an array of X instances is `X | undefined`): an array arm
+ * tests the array's class at run time, a checked-dynamic arm asks the
+ * runtime, and every other arm is no instance. */
+function arrayClassUnionInstanceOf(
+  lowerer: Lowerer,
+  value: IrExpr,
+  info: ClassInfo,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (value.type.kind !== "union") return null;
+  const unionId = value.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (arms === undefined) return null;
+  const className = info.def.name;
+  const key = `instanceof.arrayClass:${unionId}:${className}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%instanceof.arrayClass", key);
+    lowerer.valueHelpers.set(key, helper);
+    const param: IrExpr = { kind: "varRef", localId: "value.0", type: value.type, loc };
+    const body: IrStmt[] = [];
+    arms.forEach((arm, tag) => {
+      if (arm.kind !== "array" && arm.kind !== "dyn") return;
+      const narrowed: IrExpr = { kind: "unionNarrow", unionId, tag, value: param, type: arm, loc };
+      const test: IrExpr =
+        arm.kind === "array"
+          ? { kind: "instanceOf", value: narrowed, className, type: BOOL, loc }
+          : {
+              kind: "libCall",
+              fn: "array.dynIsClass",
+              args: [narrowed, { kind: "strLit", value: className, type: STRING, loc }],
+              type: BOOL,
+              loc,
+            };
+      body.push({
+        kind: "if",
+        cond: { kind: "unionIsTag", unionId, tag, negated: false, value: param, type: BOOL, loc },
+        then: [{ kind: "return", value: test, loc }],
+        else_: null,
+        loc,
+      });
+    });
+    body.push({ kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc });
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "value.0", name: "value", type: value.type }],
+      returnType: BOOL,
+      locals: [{ id: "value.0", name: "value", type: value.type, mutable: false }],
+      body,
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [value], type: BOOL, loc };
 }
 
 /** The class declared `extends Array` that a value of `type` is an instance

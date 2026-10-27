@@ -1,3 +1,11 @@
+import {
+  ARENA_RC,
+  arenaDisposeLines,
+  arenaDisposeSym,
+  arenaNewLines,
+  disposeFieldLines,
+  plainRefType,
+} from "./arenas.js";
 import { InternalCompilerError } from "../../errors.js";
 /** Class layouts, reference counting, hierarchy intervals, virtual tables and
  * constructor values. Opaque LLVM pointers allow virtual slots to store method
@@ -1089,9 +1097,15 @@ export function emitClassShapes(
     // A traced class whose trace visits nothing carries the collector header
     // only because its hierarchy is traced: it is never on a cycle. Its
     // descriptor names scr_cyc_no_children and its objects start out
-    // SCR_CYC_ACYCLIC, so releases never buffer them.
+    // SCR_CYC_ACYCLIC, so releases never buffer them. An Array subclass's
+    // trace also visits its elements by their current element ops
+    // (scr_arr_subclass_trace), so it is never acyclic.
     const acyclic =
-      traced && runtimePrefix === null && !isStreamRooted && tracedFields.length === 0;
+      traced &&
+      runtimePrefix === null &&
+      !isStreamRooted &&
+      tracedFields.length === 0 &&
+      cls.arrayElem === undefined;
     const bounded =
       runtimePrefix !== null ||
       isStreamRooted ||
@@ -1415,6 +1429,8 @@ export function emitClassShapes(
           storedHeaderBytes(meta),
         ),
       );
+    // The header and field set-up, shared with the arena-aware constructor.
+    const initStart = nw.length;
     if (meta.compact && !meta.hierarchy)
       nw.push(`  store i32 ${compactHeaderWord(meta)}, ptr %o ; no count (compactHeaderWord)`);
     else if (meta.compact) {
@@ -1483,6 +1499,7 @@ export function emitClassShapes(
     // Young instances: program-owned traced classes. Classes rooted at a
     // runtime base (errors, emitters, events, streams) carry runtime state
     // and stay with trial deletion, like every runtime family.
+    const init = nw.slice(initStart);
     if (
       traced &&
       !lifetime &&
@@ -1492,6 +1509,52 @@ export function emitClassShapes(
       nw.push(...youngEntryLines(host));
     nw.push(`  ret ptr ${meta.hierarchy ? "%o.vt" : "%o"}`, `}`, ``);
     defs.push(...nw);
+    if (
+      host.arenaClasses?.has(cls.name) === true &&
+      cls.arrayElem === undefined &&
+      !lifetime &&
+      regions === null &&
+      !meta.compact &&
+      runtimePrefix === null &&
+      !isStreamRooted &&
+      !meta.threadSlot
+    ) {
+      // The arena count in place of 1, in the rc word or its low half.
+      const counted = meta.idInRc
+        ? `  store i64 ${classIdRcWord(meta, false)}, ptr %o.vt`
+        : `  store ${host.sizeType} 1, ptr %o`;
+      const arenaCount = meta.idInRc
+        ? `  store i64 ${(BigInt(meta.pre + 1) * 2n ** 32n + BigInt(ARENA_RC)).toString()}, ptr %o.vt`
+        : `  store ${host.sizeType} ${ARENA_RC}, ptr %o`;
+      const newSym = mangleClassNew(cls.name);
+      const dispose = refFields.length > 0 ? arenaDisposeSym(newSym) : null;
+      defs.push(
+        ...arenaNewLines(
+          host,
+          newSym,
+          sizeOf,
+          traced ? cycType : null,
+          dispose,
+          init.map((line) => (line.startsWith(counted) ? arenaCount : line)),
+          meta.hierarchy ? "%o.vt" : "%o",
+        ),
+      );
+      if (dispose !== null)
+        defs.push(
+          ...arenaDisposeLines(
+            newSym,
+            refFields.flatMap((f, t) =>
+              disposeFieldLines(
+                t,
+                `getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
+                plainRefType(f.type),
+                releaseSym(host, f.type),
+                llvmCommentText(f.name),
+              ),
+            ),
+          ),
+        );
+    }
 
     if (traced) {
       // trace: visit exactly the cycle-capable fields; gcFree: release

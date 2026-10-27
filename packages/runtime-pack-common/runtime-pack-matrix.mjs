@@ -47,6 +47,7 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_cycle.c",
   "scr_publish.c",
   "scr_region.c",
+  "scr_arena.c",
   "scr_itable.c",
   "scr_slots.c",
   "scr_alloc.c",
@@ -190,9 +191,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
 
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
-  // Programs with dynamic-tier code keep the tier's hidden classes current
-  // in checked objects (two-tier design S4); every other program links the
-  // ordinary object, byte for byte.
+  // Programs with dynamic-tier code link the build that exports the
+  // primitives the tier's inline caches use (two-tier design S4); every
+  // other program links the ordinary object, byte for byte.
   if (source === "scr_json.c") {
     variants.push({ id: "dyn-tier", when: { dynTier: true }, defines: ["SCR_JS_TIER"] });
   }

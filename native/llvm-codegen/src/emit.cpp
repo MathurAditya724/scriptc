@@ -212,8 +212,8 @@ struct UnnameStructTypes : PassInfoMixin<UnnameStructTypes> {
 // How the --profile-use profile matched the functions it annotated, summed
 // over partitions: functions that received its counts, functions whose
 // control flow changed since it was collected (hash mismatch), and functions
-// it has no record of (new, or never run in training: the merged profile is
-// sparse). A partition reused from the cache without its counts is counted
+// it has no record of (new since it was collected, or never run in training
+// when the profile was merged with --sparse). A partition reused from the cache without its counts is counted
 // in Unknown.
 struct ProfileMatch {
   std::atomic<uint64_t> Annotated{0};

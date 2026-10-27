@@ -39,6 +39,8 @@ import {
   warmNativeCaches,
 } from "./native-toolchain.js";
 import { splitLlvmProgram } from "./llvm/split.js";
+import { implicitToolchainFingerprints } from "./native/compiler-fingerprint.js";
+import { fingerprintDependencyPaths } from "./native/dependency-files.js";
 
 const scratch: string[] = [];
 const TEST_CACHE_IDENTITY = "cc-cache-tests-v1";
@@ -326,9 +328,9 @@ test.skipIf(
 
       let vendorEntries = await readdir(vendorRoot);
       expect(vendorEntries.filter((name) => name.startsWith("mbedtls-")).length).toBe(2);
-      // Host clang uses system zlib, so only the Zig build materializes a zlib
-      // object family in the shared vendor root.
-      expect(vendorEntries.filter((name) => name.startsWith("zlib-")).length).toBe(1);
+      // Host clang and Zig each materialize their own vendored zlib object
+      // family in the shared vendor root.
+      expect(vendorEntries.filter((name) => name.startsWith("zlib-")).length).toBe(2);
       // Invalidate the host archive. A targetless Zig rebuild must continue to
       // use the separately keyed Zig archive instead of repairing or consuming
       // the host-clang entry.
@@ -630,20 +632,27 @@ test.skipIf(clangExecutable === undefined)(
   async () => {
     // clang ships its x86 intrinsic headers (<emmintrin.h>, ...) for every
     // target, so __has_include finds them on arm64, where including them is
-    // an #error, and the same holds for the ARM headers on x86. The probe
-    // must guard them by target. Only the compiler's own freestanding
-    // headers are visible here, so the result does not depend on the host's
-    // C library.
+    // an #error, and the same holds for the ARM headers on x86 and for
+    // <riscv_vector.h> (zlib's RVV code) outside RISC-V with the vector
+    // extension. The probe must guard them by target. Only the compiler's own
+    // freestanding headers are visible here, so the result does not depend on
+    // the host's C library.
     const includes = (await implicitDependencyProbeIncludes(runtimeSrcDir())).filter(
       (include) =>
-        include !== "<intrin.h>" && /intrin\.h>$|^<cpuid\.h>$|^<arm_(neon|acle)\.h>$/.test(include),
+        include !== "<intrin.h>" &&
+        /intrin\.h>$|^<cpuid\.h>$|^<arm_(neon|acle)\.h>$|^<riscv_vector\.h>$/.test(include),
     );
     expect(includes).toContain("<emmintrin.h>");
+    expect(includes).toContain("<riscv_vector.h>");
     const resourceDir = execFileSync(clangExecutable!, ["-print-resource-dir"], {
       encoding: "utf8",
     }).trim();
     const source = includes.map(implicitDependencyIncludeDirective).join("");
-    for (const target of ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]) {
+    for (const target of [
+      "aarch64-unknown-linux-gnu",
+      "riscv64-unknown-linux-gnu",
+      "x86_64-unknown-linux-gnu",
+    ]) {
       const result = spawnSync(
         clangExecutable!,
         [
@@ -662,6 +671,29 @@ test.skipIf(clangExecutable === undefined)(
       expect(result.stderr, target).toBe("");
       expect(result.status, target).toBe(0);
     }
+  },
+);
+
+test.skipIf(clangExecutable === undefined)(
+  "the implicit toolchain probe leaves out a header the compiler rejects",
+  async () => {
+    // A system header that the runtime spells, shadowed by one that is an
+    // #error, as clang 18's <riscv_vector.h> is outside RISC-V. The probe
+    // still covers the other headers.
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-probe-header-"));
+    scratch.push(dir);
+    await mkdir(join(dir, "sys"));
+    const rejected = join(dir, "sys", "auxv.h");
+    await writeFile(rejected, '#error "not for this target"\n');
+    const includes = await implicitDependencyProbeIncludes(runtimeSrcDir());
+    expect(includes).toContain("<sys/auxv.h>");
+    const fingerprints = await implicitToolchainFingerprints(
+      { argv: [clangExecutable!, "-isystem", dir], targetArgs: [], target: null },
+      "probe-rejected-header",
+    );
+    const dependencies = fingerprintDependencyPaths(fingerprints.complete);
+    expect(dependencies).not.toContain(rejected);
+    expect(dependencies.some((path) => path.endsWith("/stdatomic.h"))).toBe(true);
   },
 );
 
