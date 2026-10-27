@@ -1190,6 +1190,12 @@ export interface IrContracts {
    * static reference counting is elided, and the cycle analysis treats them
    * as leaves. */
   programLifetime?: string[];
+  /** Inline array fields, `${declaring class}\0${field}`: an array field of
+   * a ProgramLifetime class that its constructor writes once, from one of
+   * its parameters, and nothing else writes. Its elements are fixed for the
+   * instance's lifetime, so the backend may keep them in the instance itself
+   * (ir/inline-arrays.ts). */
+  inlineArrays?: string[];
 }
 
 export type IrFfiValueParamClass =

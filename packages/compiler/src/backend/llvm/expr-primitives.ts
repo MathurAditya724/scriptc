@@ -1,4 +1,10 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import {
+  emitInlineArrayGet,
+  emitInlineArrayState,
+  emitInlineArrayView,
+  inlineFieldTail,
+} from "./inline-arrays.js";
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
 import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../ir/ir.js";
@@ -1155,6 +1161,26 @@ export function emitContainerExpr(
       return out;
     }
     case "arrayGet": {
+      // An element of an inline array field, read from the instance.
+      if (e.arr.kind === "fieldGet" && e.arr.type.kind === "array") {
+        const tail = inlineFieldTail(host, e.arr.className, e.arr.field);
+        if (tail !== undefined) {
+          const obj = host.emitStableReceiver(e.arr.obj, [e.index]);
+          const idx = host.emitExpr(e.index);
+          const value = emitInlineArrayGet(
+            host,
+            obj.name,
+            e.arr.className,
+            tail,
+            idx,
+            e.arr.type.elem,
+            true,
+          );
+          return isRefCounted(e.arr.type.elem)
+            ? host.own({ name: value, type: e.type })
+            : { name: value, type: e.type };
+        }
+      }
       // Element reads run no user code: a projection receiver (an array in
       // a parameter's field) stays rooted while the index preserves edges.
       const arr = host.emitStableReceiver(e.arr, [e.index]);
@@ -1207,6 +1233,16 @@ export function emitContainerExpr(
       return host.own({ name: read.value, type: e.type });
     }
     case "arrayHas": {
+      // An inline array field has no holes: presence is the bounds check.
+      if (e.arr.kind === "fieldGet") {
+        const tail = inlineFieldTail(host, e.arr.className, e.arr.field);
+        if (tail !== undefined) {
+          const obj = host.emitStableReceiver(e.arr.obj, [e.index]);
+          const idx = host.emitExpr(e.index);
+          const name = emitInlineArrayState(host, obj.name, e.arr.className, tail, idx, "has");
+          return { name, type: e.type };
+        }
+      }
       const arr = host.emitStableReceiver(e.arr, [e.index]);
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
@@ -1226,6 +1262,16 @@ export function emitContainerExpr(
       return { name: t, type: e.type };
     }
     case "arrayState": {
+      // An inline array field has no holes: presence is the bounds check.
+      if (e.arr.kind === "fieldGet") {
+        const tail = inlineFieldTail(host, e.arr.className, e.arr.field);
+        if (tail !== undefined) {
+          const obj = host.emitStableReceiver(e.arr.obj, [e.index]);
+          const idx = host.emitExpr(e.index);
+          const name = emitInlineArrayState(host, obj.name, e.arr.className, tail, idx, "state");
+          return { name, type: e.type };
+        }
+      }
       const arr = host.emitStableReceiver(e.arr, [e.index]);
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
@@ -1330,6 +1376,14 @@ export function emitRecordExpr(
   switch (e.kind) {
     case "fieldGet": {
       const obj = host.emitReadReceiver(e.obj);
+      // An inline array field read as a value: a frozen array over the
+      // elements (backend/llvm/inline-arrays.ts).
+      const tail = inlineFieldTail(host, e.className, e.field);
+      if (tail !== undefined)
+        return host.own({
+          name: emitInlineArrayView(host, obj.name, e.className, tail),
+          type: e.type,
+        });
       const { ptr, type, inline } = host.classFieldPtr(
         obj.name,
         e.className,

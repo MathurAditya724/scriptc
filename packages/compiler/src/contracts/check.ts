@@ -67,6 +67,7 @@ import {
   type ContractAnnotations,
   type ContractNote,
 } from "../frontend/contract-types.js";
+import { planInlineArrays } from "../ir/inline-arrays.js";
 
 /** The largest array index: 2^32 - 2 (ECMA-262 array index). */
 const MAX_ARRAY_INDEX = 2 ** 32 - 2;
@@ -255,6 +256,7 @@ class ContractChecker {
 
   run(): ContractCheckResult {
     this.checkProgramLifetime();
+    this.checkInlineArrays();
     this.checkNoThrow();
     this.checkAcyclic();
     const elements = new Int32ElementContracts(this);
@@ -321,6 +323,65 @@ class ContractChecker {
       }
     if (roots.length === 0) return;
     this.record("programLifetime", roots);
+  }
+
+  /* ── InlineArray ── */
+
+  /** `readonly f: InlineArray<C>` (experimental, ir/inline-arrays.ts): the
+   * field's elements may live in the instance itself, which only a field
+   * written once from a constructor argument and never again can have.
+   * Checked: the class and C are ProgramLifetime classes, the constructor of
+   * the declaring class writes the field once from one of its parameters,
+   * every subclass constructor passes it one of its own through super(...),
+   * nothing else writes the field, no read of it is compared by identity
+   * (two reads need not give the same array), and no instance of the
+   * hierarchy is constructed through a class value or becomes a dynamic
+   * value. */
+  private checkInlineArrays(): void {
+    if (this.notes.inlineArrays.size === 0) return;
+    const roots = new Set(this.contracts.programLifetime ?? []);
+    const lifetime = (className: string): boolean => {
+      let cls = this.classes.get(className);
+      while (cls?.base !== undefined) cls = this.classes.get(cls.base);
+      return cls !== undefined && roots.has(cls.name);
+    };
+    const entries: string[] = [];
+    const notes = new Map<string, ContractNote>();
+    for (const [key, note] of this.notes.inlineArrays) {
+      const at = key.lastIndexOf("\0");
+      const field = key.slice(at + 1);
+      for (const cls of this.classesAt(key.slice(0, at))) {
+        if (!lifetime(cls.name)) {
+          this.report(
+            "SC7009",
+            note.loc,
+            `'${note.name}' is an InlineArray field of a class that is not ProgramLifetime`,
+            "declare the root class of the hierarchy `implements ProgramLifetime`: inline elements live in the instance, which is never freed",
+          );
+          continue;
+        }
+        const entry = `${cls.name}\0${field}`;
+        entries.push(entry);
+        notes.set(entry, note);
+      }
+    }
+    if (entries.length === 0) return;
+    const plan = planInlineArrays(
+      { ...this.mod, contracts: { ...this.mod.contracts, inlineArrays: entries } },
+      lifetime,
+    );
+    for (const r of plan.rejected) {
+      const note = notes.get(`${r.declaringClass}\0${r.field}`)!;
+      this.report(
+        "SC7009",
+        note.loc,
+        `'${note.name}' cannot keep its InlineArray contract: ${r.reason}`,
+        "write the field once in the constructor from one of its parameters (subclasses pass theirs through super(...)), never again, and keep the class's instances out of class values and dynamic values",
+      );
+    }
+    const kept = new Set<string>();
+    for (const cls of plan.classes.values()) kept.add(`${cls.declaringClass}\0${cls.field}`);
+    this.record("inlineArrays", [...kept]);
   }
 
   /* ── Acyclic ── */

@@ -1337,6 +1337,9 @@ export interface TypeMapperCtx {
   isStdlibFile: (sf: ts.SourceFile) => boolean;
 
   isNpmFile: (sf: ts.SourceFile) => boolean;
+  /** The declaration file of @scriptc/experimental, wherever it is installed
+   * (a workspace links it outside node_modules). */
+  isExperimentalFile?: (sf: ts.SourceFile) => boolean;
   /** True for a declaration file explicitly mapped by coverage's
    * --external-types option. These declarations are trusted as structural
    * type descriptions for project-owned values, but their imported runtime
@@ -7370,9 +7373,14 @@ function isTypeOnlyNamespace(d: ts.Node): boolean {
   );
 }
 
-function packageTypeFile(sf: ts.SourceFile, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+function packageTypeFile(
+  sf: ts.SourceFile,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExperimentalFile">,
+): boolean {
   return (
-    sf.isDeclarationFile && /[\\/]node_modules[\\/]/.test(sf.fileName) && !ctx.isStdlibFile(sf)
+    sf.isDeclarationFile &&
+    (/[\\/]node_modules[\\/]/.test(sf.fileName) || ctx.isExperimentalFile?.(sf) === true) &&
+    !ctx.isStdlibFile(sf)
   );
 }
 

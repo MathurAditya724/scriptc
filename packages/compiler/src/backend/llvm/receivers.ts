@@ -1,4 +1,5 @@
 /* LlEmitter's receivers: receiver reads, and the analyses that decide when calls, receivers and returns borrow. */
+import { inlineFieldTail } from "./inline-arrays.js";
 import type { LlEmitter } from "./emitter.js";
 import {
   type IrExpr,
@@ -128,6 +129,9 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   // A nullable-pointer field has no box to borrow. Projections use
   // emitUnionProjection; other borrowers get an owned heap box.
   if (emitter.nullableFieldGet(e)) return emitter.emitExpr(e);
+  // An inline array field has no array to borrow: its read makes a view.
+  if (e.kind === "fieldGet" && inlineFieldTail(emitter, e.className, e.field) !== undefined)
+    return emitter.emitExpr(e);
   if (e.kind === "recordGet" || e.kind === "fieldGet") {
     const receiver = emitter.emitReadReceiver(e.obj);
     if (e.kind === "recordGet") {
@@ -201,8 +205,9 @@ export function canBorrowCallArgument(emitter: LlEmitter, value: IrExpr): boolea
   // An exact capsule owns its instance while the capsule's binding holds it.
   if (value.kind === "dynCheck" && value.exact)
     return value.value.kind === "varRef" && emitter.canBorrowCallArgument(value.value);
-  // An inline union field has no box to lend.
-  if (emitter.inlineFieldGet(value)) return false;
+  // An inline union field has no box to lend, an inline array field no
+  // array.
+  if (emitter.inlineFieldGet(value) || emitter.inlineArrayRead(value)) return false;
   // Class casts reinterpret the same pointer (prefix layouts).
   if ((value.kind === "upcast" || value.kind === "downcast") && value.value.type.kind === "object")
     return emitter.canBorrowCallArgument(value.value);
@@ -285,10 +290,15 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
     case "upcast":
       return emitter.canBorrowReceiver(e.value);
     // An inline union field has no box to lend: projections read it
-    // through emitReadReceiver's private stack box.
+    // through emitReadReceiver's private stack box. An inline array field
+    // has no array to lend.
     case "fieldGet":
     case "recordGet":
-      return !emitter.inlineFieldGet(e) && emitter.canBorrowReceiver(e.obj);
+      return (
+        !emitter.inlineFieldGet(e) &&
+        !emitter.inlineArrayRead(e) &&
+        emitter.canBorrowReceiver(e.obj)
+      );
     case "ternary":
       return emitter.canBorrowReceiver(e.then) && emitter.canBorrowReceiver(e.else_);
     case "seqExpr": {

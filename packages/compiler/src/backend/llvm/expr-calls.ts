@@ -49,6 +49,7 @@ import {
   ffiNativeTypeLl,
   ffiNativeParamLl,
   ffiNativeReturnLl,
+  SCR_ARR_FIELD,
 } from "./common.js";
 import { canStackUnion, emitStackUnion } from "./stack-unions.js";
 import { emitStackRecordKeyGet, scalarRecordKeyGet } from "./expr-records.js";
@@ -1103,8 +1104,28 @@ export function emitCallExpr(
         throw new InternalCompilerError(
           `llvm emitter bug: new ${e.className} without a constructor`,
         );
+      // An instance with an inline array field is allocated with room for
+      // the elements of the array its constructor writes the field from
+      // (ir/inline-arrays.ts made that argument a local).
+      const tail = host.inlineTailOf(e.className);
+      let count = "";
+      if (tail !== undefined) {
+        const source = e.args[tail.lengthArg];
+        if (source?.kind !== "varRef")
+          throw new InternalCompilerError(
+            `llvm emitter bug: new ${e.className} reads its inline array from an expression`,
+          );
+        const arr = host.emitReadReceiver(source);
+        const lenp = B.tmp();
+        const len = B.tmp();
+        B.line(
+          `${lenp} = getelementptr inbounds %ScrArr, ptr ${arr.name}, i32 0, i32 ${SCR_ARR_FIELD.len}`,
+        );
+        B.line(`${len} = load i32, ptr ${lenp}`);
+        count = `i32 ${len}`;
+      }
       const o = B.tmp();
-      B.line(`${o} = call ptr @${host.allocSym(mangleClassNew(e.className), e)}()`);
+      B.line(`${o} = call ptr @${host.allocSym(mangleClassNew(e.className), e)}(${count})`);
       const out = host.own({ name: o, type: e.type });
       emitConstruction(host, e, o, ctor);
       return out;
