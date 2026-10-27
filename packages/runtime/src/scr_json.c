@@ -2967,6 +2967,18 @@ static bool scr_dyn_typed_ref_view_answer(ScrDyn *object, bool (*query)(const Sc
   return true;
 }
 
+/* Whether `object` is a published object, array, Map or Set, or the checked
+ * view of one (its referent's rc word is immortal, the test of the published
+ * write guards). publish() freezes what it reaches, as Node's deep freeze
+ * does: such a value is frozen, sealed and not extensible. */
+static bool scr_dyn_published_object(const ScrDyn *object) {
+  if (object->kind == SCR_DYN_TYPED_REF)
+    return object->v.typed_ref.ptr != NULL && SCR_RC_PUBLISHED(object->v.typed_ref.ptr);
+  if (object->kind == SCR_DYN_OBJ || object->kind == SCR_DYN_ARR) return object->rc == SIZE_MAX;
+  const ScrMap *collection = scr_dyn_native_collection(object);
+  return collection != NULL && SCR_RC_PUBLISHED(collection);
+}
+
 static ScrDyn *scr_bytes_properties(const ScrDyn *v);
 static bool scr_dyn_is_extensible_view(const ScrDyn *view) {
   if (view->kind == SCR_DYN_BYTES) return !view->v.bytes->properties || !view->v.bytes->properties->non_extensible;
@@ -3043,6 +3055,7 @@ ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
 bool scr_dyn_is_extensible(ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return false;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.isExtensible"); return false; }
+  if (scr_dyn_published_object(object)) return false;
   bool answer;
   if (scr_dyn_typed_ref_view_answer(object, scr_dyn_is_extensible_view, &answer)) return answer;
   ScrMap *collection = scr_dyn_native_collection(object);
@@ -3094,6 +3107,7 @@ ScrDyn *scr_dyn_seal(ScrDyn *object) {
 bool scr_dyn_is_sealed(const ScrDyn *object) {
   if (scr_dyn_class_reflection_fence(object)) return false;
   if (object->kind == SCR_DYN_PROXY) { scr_dyn_proxy_unsupported("Object.isSealed"); return false; }
+  if (scr_dyn_published_object(object)) return true;
   bool answer;
   if (scr_dyn_typed_ref_view_answer((ScrDyn *)object, scr_dyn_is_sealed, &answer)) return answer;
   ScrMap *collection = scr_dyn_native_collection(object);
@@ -19103,6 +19117,7 @@ ScrDyn *scr_dyn_freeze_data(ScrDyn *value) {
 
 bool scr_dyn_is_frozen(const ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value)) return false;
+  if (scr_dyn_published_object(value)) return true;
   bool answer;
   if (scr_dyn_typed_ref_view_answer((ScrDyn *)value, scr_dyn_is_frozen, &answer)) return answer;
   ScrMap *collection = scr_dyn_native_collection(value);
