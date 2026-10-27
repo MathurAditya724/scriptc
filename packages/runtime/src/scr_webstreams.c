@@ -3520,7 +3520,10 @@ static ScrDyn *ws_transform_construct(ScrDyn *const *args, size_t argc) {
       ws_release(t);
       goto done;
     }
-    scr_promise_resolve_dyn(start_promise, value);
+    /* startPromise.resolve(result): a thenable result adopts through its
+     * resolve job, so both sides start when it settles. */
+    scr_dyn_promise_resolve_with(start_promise, value);
+    scr_dyn_release(value);
   } else {
     ws_promise_fulfill_undefined(start_promise);
   }
@@ -4128,6 +4131,18 @@ static ScrDyn *ws_arg(ScrDyn *const *args, size_t argc, size_t i) {
   return i < argc ? args[i] : scr_dyn_undefined();
 }
 
+/* A member call on a handle (ScrDynHandleOps.invoke): an own property of
+ * the name first, then the class's method (<name>_method). The class's
+ * method values call <name>_method directly (ScrDynHandleClass's
+ * method_invoke), so a wrapper an own property installs reaches it. */
+#define WS_MEMBER_INVOKE(NAME)                                                                                 \
+  static ScrDyn *NAME##_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc, \
+                               const char *what) {                                                            \
+    ScrDyn *own_result;                                                                                        \
+    if (ws_own_invoke(ptr, self, method, args, argc, what, &own_result)) return own_result;                   \
+    return NAME##_method(ptr, self, method, args, argc, what);                                                 \
+  }
+
 static ScrDyn *ws_promise_box(ScrPromise *p) {
   ScrDyn *box = scr_dyn_new_promise(p);
   scr_promise_release(p);
@@ -4168,10 +4183,8 @@ static ScrDyn *ws_readable_get_reader(WsReadable *s, ScrDyn *options) {
   return box;
 }
 
-static ScrDyn *ws_readable_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+static ScrDyn *ws_readable_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
                                   const char *what) {
-  ScrDyn *own_result;
-  if (ws_own_invoke(ptr, self, method, args, argc, what, &own_result)) return own_result;
   (void)self;
   (void)what;
   WsReadable *s = ptr;
@@ -4279,6 +4292,7 @@ static ScrDyn *ws_readable_invoke(void *ptr, ScrDyn *self, const char *method, S
   }
   return ws_invoke_member(self, method, args, argc, what);
 }
+WS_MEMBER_INVOKE(ws_readable)
 
 static ScrDyn *ws_readable_get(void *ptr, const char *key, size_t len) {
   WsReadable *s = ptr;
@@ -4310,7 +4324,7 @@ static const char *const ws_readable_order[] = {"locked", "cancel", "getReader",
                                                 "tee",    "values", NULL};
 
 static const ScrDynHandleClass ws_readable_class = {
-    "ReadableStream", 0, ws_readable_construct, ws_readable_accessors, ws_readable_statics, ws_readable_order,
+    "ReadableStream", 0, ws_readable_construct, ws_readable_accessors, ws_readable_statics, ws_readable_order, ws_readable_method,
 };
 
 /* ReadableStreamDefaultReader */
@@ -4354,10 +4368,8 @@ static ScrDyn *ws_reader_read(WsReader *r) {
   return ws_promise_box(result);
 }
 
-static ScrDyn *ws_reader_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+static ScrDyn *ws_reader_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
                                 const char *what) {
-  ScrDyn *own_result;
-  if (ws_own_invoke(ptr, self, method, args, argc, what, &own_result)) return own_result;
   (void)self;
   (void)what;
   WsReader *r = ptr;
@@ -4373,6 +4385,7 @@ static ScrDyn *ws_reader_invoke(void *ptr, ScrDyn *self, const char *method, Scr
   }
   return ws_invoke_member(self, method, args, argc, what);
 }
+WS_MEMBER_INVOKE(ws_reader)
 
 static ScrDyn *ws_reader_get(void *ptr, const char *key, size_t len) {
   WsReader *r = ptr;
@@ -4390,15 +4403,13 @@ static const ScrDynHandleMethod ws_reader_methods[] = {
 static const char *const ws_reader_order[] = {"read", "releaseLock", "closed", "cancel", NULL};
 
 static const ScrDynHandleClass ws_reader_class = {
-    "ReadableStreamDefaultReader", 1, ws_reader_construct, ws_reader_accessors, NULL, ws_reader_order,
+    "ReadableStreamDefaultReader", 1, ws_reader_construct, ws_reader_accessors, NULL, ws_reader_order, ws_reader_method,
 };
 
 /* ReadableStreamDefaultController */
 
-static ScrDyn *ws_rcontroller_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
+static ScrDyn *ws_rcontroller_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
                                      size_t argc, const char *what) {
-  ScrDyn *own_result;
-  if (ws_own_invoke(ptr, self, method, args, argc, what, &own_result)) return own_result;
   (void)self;
   (void)what;
   WsRController *c = ptr;
@@ -4425,6 +4436,7 @@ static ScrDyn *ws_rcontroller_invoke(void *ptr, ScrDyn *self, const char *method
   }
   return ws_invoke_member(self, method, args, argc, what);
 }
+WS_MEMBER_INVOKE(ws_rcontroller)
 
 static ScrDyn *ws_rcontroller_get(void *ptr, const char *key, size_t len) {
   if (ws_name(key, len, "desiredSize")) return ws_rcontroller_desired_size(ptr);
@@ -4441,14 +4453,12 @@ static const ScrDynHandleMethod ws_rcontroller_methods[] = {
 static const char *const ws_rcontroller_order[] = {"desiredSize", "close", "enqueue", "error", NULL};
 
 static const ScrDynHandleClass ws_rcontroller_class = {
-    "ReadableStreamDefaultController", 0, NULL, ws_rcontroller_accessors, NULL, ws_rcontroller_order,
+    "ReadableStreamDefaultController", 0, NULL, ws_rcontroller_accessors, NULL, ws_rcontroller_order, ws_rcontroller_method,
 };
 
 /* WritableStream */
-static ScrDyn *ws_writable_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+static ScrDyn *ws_writable_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
                                   const char *what) {
-  ScrDyn *own_result;
-  if (ws_own_invoke(ptr, self, method, args, argc, what, &own_result)) return own_result;
   WsWritable *s = ptr;
   size_t len = strlen(method);
   if (ws_name(method, len, "abort")) {
@@ -4470,6 +4480,7 @@ static ScrDyn *ws_writable_invoke(void *ptr, ScrDyn *self, const char *method, S
   }
   return ws_invoke_member(self, method, args, argc, what);
 }
+WS_MEMBER_INVOKE(ws_writable)
 
 static ScrDyn *ws_writable_get(void *ptr, const char *key, size_t len) {
   WsWritable *s = ptr;
@@ -4487,7 +4498,7 @@ static const ScrDynHandleMethod ws_writable_methods[] = {
 static const char *const ws_writable_order[] = {"locked", "abort", "close", "getWriter", NULL};
 
 static const ScrDynHandleClass ws_writable_class = {
-    "WritableStream", 0, ws_writable_construct, ws_writable_accessors, NULL, ws_writable_order,
+    "WritableStream", 0, ws_writable_construct, ws_writable_accessors, NULL, ws_writable_order, ws_writable_method,
 };
 
 /* WritableStreamDefaultWriter */
@@ -4507,10 +4518,8 @@ static ScrDyn *ws_writer_construct(ScrDyn *const *args, size_t argc) {
 
 static const char ws_writer_unbound[] = "Writer is not bound to a WritableStream";
 
-static ScrDyn *ws_writer_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+static ScrDyn *ws_writer_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
                                 const char *what) {
-  ScrDyn *own_result;
-  if (ws_own_invoke(ptr, self, method, args, argc, what, &own_result)) return own_result;
   WsWriter *w = ptr;
   size_t len = strlen(method);
   if (ws_name(method, len, "abort")) {
@@ -4533,6 +4542,7 @@ static ScrDyn *ws_writer_invoke(void *ptr, ScrDyn *self, const char *method, Scr
   }
   return ws_invoke_member(self, method, args, argc, what);
 }
+WS_MEMBER_INVOKE(ws_writer)
 
 static ScrDyn *ws_writer_get(void *ptr, const char *key, size_t len) {
   WsWriter *w = ptr;
@@ -4560,14 +4570,12 @@ static const char *const ws_writer_order[] = {"closed", "desiredSize", "ready", 
                                               "close",  "releaseLock", "write", NULL};
 
 static const ScrDynHandleClass ws_writer_class = {
-    "WritableStreamDefaultWriter", 1, ws_writer_construct, ws_writer_accessors, NULL, ws_writer_order,
+    "WritableStreamDefaultWriter", 1, ws_writer_construct, ws_writer_accessors, NULL, ws_writer_order, ws_writer_method,
 };
 
 /* WritableStreamDefaultController */
-static ScrDyn *ws_wcontroller_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
+static ScrDyn *ws_wcontroller_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
                                      size_t argc, const char *what) {
-  ScrDyn *own_result;
-  if (ws_own_invoke(ptr, self, method, args, argc, what, &own_result)) return own_result;
   WsWController *c = ptr;
   size_t len = strlen(method);
   if (ws_name(method, len, "error")) {
@@ -4576,6 +4584,7 @@ static ScrDyn *ws_wcontroller_invoke(void *ptr, ScrDyn *self, const char *method
   }
   return ws_invoke_member(self, method, args, argc, what);
 }
+WS_MEMBER_INVOKE(ws_wcontroller)
 
 static ScrDyn *ws_wcontroller_get(void *ptr, const char *key, size_t len) {
   if (ws_name(key, len, "signal")) return ws_wcontroller_signal(ptr);
@@ -4590,7 +4599,7 @@ static const ScrDynHandleMethod ws_wcontroller_methods[] = {{"error", 0, false, 
 static const char *const ws_wcontroller_order[] = {"signal", "error", NULL};
 
 static const ScrDynHandleClass ws_wcontroller_class = {
-    "WritableStreamDefaultController", 0, NULL, ws_wcontroller_accessors, NULL, ws_wcontroller_order,
+    "WritableStreamDefaultController", 0, NULL, ws_wcontroller_accessors, NULL, ws_wcontroller_order, ws_wcontroller_method,
 };
 
 /* TransformStream */
@@ -4603,24 +4612,21 @@ static ScrDyn *ws_transform_get(void *ptr, const char *key, size_t len) {
   return scr_dyn_handle_class_member(SCR_DYNH_WS_TRANSFORM, ptr, key, len);
 }
 
-static ScrDyn *ws_transform_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+static ScrDyn *ws_transform_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
                                    const char *what) {
-  ScrDyn *own_result;
-  if (ws_own_invoke(ptr, self, method, args, argc, what, &own_result)) return own_result;
   (void)ptr;
   return ws_invoke_member(self, method, args, argc, what);
 }
+WS_MEMBER_INVOKE(ws_transform)
 
 
 static const ScrDynHandleClass ws_transform_class = {
-    "TransformStream", 0, ws_transform_construct, ws_transform_accessors, NULL, NULL,
+    "TransformStream", 0, ws_transform_construct, ws_transform_accessors, NULL, NULL, ws_transform_method,
 };
 
 /* TransformStreamDefaultController */
-static ScrDyn *ws_tcontroller_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
+static ScrDyn *ws_tcontroller_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
                                      size_t argc, const char *what) {
-  ScrDyn *own_result;
-  if (ws_own_invoke(ptr, self, method, args, argc, what, &own_result)) return own_result;
   WsTController *c = ptr;
   size_t len = strlen(method);
   if (ws_name(method, len, "enqueue")) {
@@ -4637,6 +4643,7 @@ static ScrDyn *ws_tcontroller_invoke(void *ptr, ScrDyn *self, const char *method
   }
   return ws_invoke_member(self, method, args, argc, what);
 }
+WS_MEMBER_INVOKE(ws_tcontroller)
 
 static ScrDyn *ws_tcontroller_get(void *ptr, const char *key, size_t len) {
   WsTController *c = ptr;
@@ -4654,7 +4661,7 @@ static const ScrDynHandleMethod ws_tcontroller_methods[] = {
 static const char *const ws_tcontroller_order[] = {"desiredSize", "enqueue", "error", "terminate", NULL};
 
 static const ScrDynHandleClass ws_tcontroller_class = {
-    "TransformStreamDefaultController", 0, NULL, ws_tcontroller_accessors, NULL, ws_tcontroller_order,
+    "TransformStreamDefaultController", 0, NULL, ws_tcontroller_accessors, NULL, ws_tcontroller_order, ws_tcontroller_method,
 };
 
 /* ── TextEncoderStream and TextDecoderStream (webstreams/encoding.js) */
@@ -4930,19 +4937,18 @@ static ScrDyn *ws_text_get(void *ptr, const char *key, size_t len) {
   return scr_dyn_handle_class_member(tag, ptr, key, len);
 }
 
-static ScrDyn *ws_text_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+static ScrDyn *ws_text_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
                               const char *what) {
-  ScrDyn *own_result;
-  if (ws_own_invoke(ptr, self, method, args, argc, what, &own_result)) return own_result;
   return ws_invoke_member(self, method, args, argc, what);
 }
+WS_MEMBER_INVOKE(ws_text)
 
 static const ScrDynHandleClass ws_text_encoder_class = {
-    "TextEncoderStream", 0, ws_text_encoder_construct, ws_text_encoder_accessors, NULL, NULL,
+    "TextEncoderStream", 0, ws_text_encoder_construct, ws_text_encoder_accessors, NULL, NULL, ws_text_method,
 };
 
 static const ScrDynHandleClass ws_text_decoder_class = {
-    "TextDecoderStream", 0, ws_text_decoder_construct, ws_text_decoder_accessors, NULL, NULL,
+    "TextDecoderStream", 0, ws_text_decoder_construct, ws_text_decoder_accessors, NULL, NULL, ws_text_method,
 };
 
 /* ── queuing strategies ────────────────────────────────────────────── */

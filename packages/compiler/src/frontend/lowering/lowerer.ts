@@ -4259,6 +4259,7 @@ export class Lowerer {
     "createRequireBindingTargets",
     "createRequireElementTargets",
     "computedGlobalReads",
+    "namesWebStreamClass",
     "timeValueDateDecisions",
     "timeValueDateWrites",
     "dynamicOverloadAnswers",

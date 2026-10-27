@@ -1,7 +1,8 @@
 // Web TransformStream and pipes from untyped JavaScript: transformers with
 // start, transform, flush and cancel, backpressure between the sides,
 // controller errors and terminate, pipeTo and pipeThrough with their
-// options, abort signals, own properties on streams, and encoder and
+// options, abort signals, own properties on streams and method wrappers
+// over them, a transformer start that returns a thenable, and encoder and
 // decoder streams, in Node's promise order.
 import { TransformStream as WebTransformStream, TransformStreamDefaultController } from "node:stream/web";
 
@@ -125,6 +126,66 @@ out("prototype", Object.keys(TransformStream.prototype).join(","), Object.keys(T
   /** @type {any} */ (sink).tag = "kept";
   await source.pipeTo(sink);
   out("own-properties", /** @type {any} */ (sink).tag, typeof /** @type {any} */ (source).getReader, caught(() => { /** @type {any} */ (source).locked = true; }));
+}
+
+{
+  // An own property that wraps the saved prototype method reaches the
+  // class's method.
+  const calls = [];
+  const wrap = (target, name, method) => {
+    target[name] = function (...args) {
+      calls.push(name);
+      return method.apply(this, args);
+    };
+  };
+  const writable = new WritableStream({ write(chunk) { calls.push(`sink:${chunk}`); } });
+  wrap(writable, "getWriter", WritableStream.prototype.getWriter);
+  const writer = writable.getWriter();
+  wrap(writer, "write", WritableStreamDefaultWriter.prototype.write);
+  wrap(writer, "close", WritableStreamDefaultWriter.prototype.close);
+  await writer.write("a");
+  await writer.close();
+  const readable = ReadableStream.from(["b"]);
+  wrap(readable, "getReader", ReadableStream.prototype.getReader);
+  const reader = readable.getReader();
+  wrap(reader, "read", ReadableStreamDefaultReader.prototype.read);
+  const first = await reader.read();
+  const t = new TransformStream({
+    transform(chunk, controller) {
+      wrap(controller, "enqueue", TransformStreamDefaultController.prototype.enqueue);
+      controller.enqueue(`${chunk}!`);
+    },
+  });
+  t.writable.getWriter().write("c");
+  const transformed = await t.readable.getReader().read();
+  out("wrappers", calls.join(","), first.value, transformed.value, writable.locked);
+}
+
+{
+  // A transformer start that returns a thenable: both sides start when it
+  // settles, and its rejection errors the stream.
+  const order = [];
+  const later = { then(resolve) { order.push("then"); setTimeout(() => { order.push("resolve"); resolve(); }, 0); } };
+  const t = new TransformStream({ start() { return later; }, transform(chunk, c) { order.push(`transform:${chunk}`); c.enqueue(chunk); } });
+  Promise.resolve().then(() => order.push("tick1")).then(() => order.push("tick2")).then(() => order.push("tick3"));
+  const written = t.writable.getWriter().write("x").then(() => order.push("written"));
+  const read = await t.readable.getReader().read();
+  await written;
+  out("start-thenable", order.join(","), read.value);
+  const ticks = [];
+  const sync = new TransformStream({ start() { return { then(resolve) { ticks.push("then"); resolve(); } }; }, transform(chunk, c) { ticks.push("transform"); c.enqueue(chunk); } });
+  Promise.resolve().then(() => ticks.push("tick1")).then(() => ticks.push("tick2")).then(() => ticks.push("tick3")).then(() => ticks.push("tick4"));
+  sync.writable.getWriter().write("z").then(() => ticks.push("written"));
+  sync.readable.getReader().read().then(() => ticks.push("read"));
+  await new Promise((r) => setTimeout(r, 0));
+  out("start-thenable-ticks", ticks.join(","));
+  const failing = new TransformStream({ start() { return { then(_, reject) { reject(new Error("start failed")); } }; } });
+  out("start-thenable-reject", await settled(failing.writable.getWriter().write("y")), await settled(failing.readable.getReader().read()));
+  const throwing = new TransformStream({ start() { return { get then() { throw new Error("then getter"); } }; } });
+  out("start-then-getter", await settled(throwing.writable.getWriter().write("y")));
+  const plain = new TransformStream({ start() { return { then: 1 }; } });
+  const pending = plain.readable.getReader().read();
+  out("start-object", await settled(plain.writable.getWriter().write("p")), (await pending).value);
 }
 
 out(
