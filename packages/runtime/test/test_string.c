@@ -605,10 +605,15 @@ static void sparse_slice_churn_asserts(void) {
 static void index_activity_asserts(void) {
   scr_sidx_test_reset_cache();
   ScrStr *strings[9];
+  /* A receiver of up to 16 bytes is decoded on each indexed read. */
+  ScrStr *shortest = scr_str_new("\xc3\xa9x", 3);
+  if (scr_str_char_code_at(shortest, 1) != 'x' || scr_sidx_test_active() != 0)
+    sidx_fail("short indexed read claimed a cursor");
+  scr_str_release(shortest);
   for (size_t i = 0; i < 9; i++) {
-    strings[i] = scr_str_new("\xc3\xa9x", 3);
+    strings[i] = scr_str_new("\xc3\xa9xxxxxxxxxxxxxxxxx", 19);
     /* Short lengths count directly; an indexed read claims a cursor. */
-    if (scr_str_utf16_len(strings[i]) != 2 || scr_sidx_test_active() != (i < 4 ? i : 4))
+    if (scr_str_utf16_len(strings[i]) != 18 || scr_sidx_test_active() != (i < 4 ? i : 4))
       sidx_fail("short length claimed a cursor");
     if (scr_str_char_code_at(strings[i], 1) != 'x') sidx_fail("cursor activation read");
     if (scr_sidx_test_active() != (i < 4 ? i + 1 : 4))
@@ -616,7 +621,7 @@ static void index_activity_asserts(void) {
   }
   for (size_t i = 0; i < 9; i++) scr_str_release(strings[i]);
   if (scr_sidx_test_active() != 0) sidx_fail("last cursor release stayed active");
-  ScrStr *s = scr_str_new("\xe4\xb8\xad", 3);
+  ScrStr *s = scr_str_new("\xe4\xb8\xadxxxxxxxxxxxxxxxx", 19);
   (void)scr_str_utf16_len(s);
   scr_sidx_test_reset_cache();
   if (scr_sidx_test_active() != 0) sidx_fail("cache reset stayed active");
@@ -982,7 +987,42 @@ static void ordering_asserts(void) {
   }
 }
 
+/* Template-literal concatenations (no head) of strings and numbers: the
+ * result holds exactly its bytes, whatever the numbers format to. */
+static int check_concat_capacity(void) {
+  ScrStr *a = scr_str_new("f", 1), *b = scr_str_new("_d", 2), *c = scr_str_new("", 0);
+  struct {
+    ScrStr *parts[4];
+    double nums[4];
+    size_t count;
+    const char *expected;
+  } cases[] = {
+      {{a, NULL, b, NULL}, {0, 7, 0, 2230}, 4, "f7_d2230"},
+      {{NULL, a}, {-1.5e-7, 0}, 2, "-1.5e-7f"},
+      {{NULL, NULL, NULL}, {1.7976931348623157e308, 0.1, -0.0}, 3, "1.7976931348623157e+3080.10"},
+      {{c, NULL, c}, {0, 42, 0}, 3, "42"},
+  };
+  int failed = 0;
+  for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    ScrStr *r = scr_str_concat_mixed(NULL, cases[i].parts, cases[i].nums, cases[i].count);
+    size_t want = strlen(cases[i].expected);
+    if (r->len != want || memcmp(r->data, cases[i].expected, want) != 0 || r->data[want] != '\0' ||
+        r->cap != r->len) {
+      fprintf(stderr, "concat case %zu: got \"%.*s\" len %zu cap %zu, want \"%s\" len %zu\n", i,
+              (int)r->len, r->data, r->len, (size_t)r->cap, cases[i].expected, want);
+      failed++;
+    }
+    scr_str_release(r);
+  }
+  scr_str_release(a);
+  scr_str_release(b);
+  scr_str_release(c);
+  fprintf(stderr, "%d concat capacity failures\n", failed);
+  return failed != 0;
+}
+
 int main(int argc, char **argv) {
+  if (argc > 1 && strcmp(argv[1], "--concat-capacity") == 0) return check_concat_capacity();
   if (argc > 1 && strncmp(argv[1], "--crash-repeat", 14) == 0) {
     ScrStr *s = scr_str_new("ab", 2);
     double count = strcmp(argv[1], "--crash-repeat-inf") == 0

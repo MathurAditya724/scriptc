@@ -2741,6 +2741,24 @@ ScrNetSocket *scr_net_connect_checked(double port, ScrStr *host /*borrowed, null
   return scr_net_connect(port, host, cb);
 }
 
+/* net.connect/createConnection(path[, connectListener]) and the `path`
+ * option from compiled code: a client of the Unix socket at `path`
+ * (borrowed). For a positional string (`pipe_name_rule`), Node's isPipeName
+ * applies first: a string that reads as a non-negative number is a port on
+ * localhost. `cb` (moves, nullable) is the connect listener. */
+ScrNetSocket *scr_net_connect_path_checked(ScrStr *path, bool pipe_name_rule, ScrClosure *cb) {
+  double port = pipe_name_rule ? scr_string_to_number(path) : -1;
+  if (port >= 0) {
+    ScrStr *host = scr_str_new("localhost", 9);
+    ScrNetSocket *s = scr_net_connect_checked(port, host, cb);
+    scr_str_release(host);
+    return s;
+  }
+  ScrNetSocket *s = scr_net_connect_path(path, false);
+  if (cb) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
+  return s;
+}
+
 static bool scr_net_dyn_truthy(const ScrDyn *v) {
   switch (v->kind) {
   case SCR_DYN_UNDEF:

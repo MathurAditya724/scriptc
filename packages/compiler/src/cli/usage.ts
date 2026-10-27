@@ -56,6 +56,11 @@ Options:
                      counting, cache-line-aligned runtime code on x86-64)
       --strip        remove symbol/debug payload from the linked executable
                      for smaller builds (opt in; --emit=exe only)
+      --static       Linux: link the C library into the executable, which
+                     then starts without the dynamic loader. glibc builds
+                     need its static libraries (libc.a) on the build host
+                     and refuse executables that include host, user or
+                     group name lookups (opt in; --emit=exe only)
       --windows-subsystem <console|gui>
                      Windows executable subsystem (default: console). gui
                      prevents Windows from opening a console window
@@ -64,6 +69,11 @@ Options:
                      a helper process so the parent sees the exit sooner. The
                      helper keeps the executable mapped and its memory charged
                      for up to ~100 ms after exit (opt in; --emit=exe only)
+      --large-pages  Linux: at startup, move the executable's code onto 2 MiB
+                     transparent huge pages when the system allows them, for
+                     large programs. Takes about 3 ms per 10 MiB of code, and
+                     all of the moved code stays resident (opt in; --emit=exe
+                     only)
       --target-cpu <baseline|x86-64-v2|x86-64-v3|x86-64-v4|native>
                      x86-64: compile the program's code for a CPU level
                      (default: baseline, which runs on any x86-64 CPU). The
@@ -105,6 +115,10 @@ Options:
                      "pkg..." also names every package pkg depends on).
                      Packages that fail preflight are refused with a
                      diagnostic. Eligible dependencies compile automatically.
+      --no-shape-overlay
+                     compile npm packages' JavaScript without the types shape
+                     inference proves (per package: "scriptc": {"packages":
+                     {"<name>": {"shapes": false}}} in package.json)
       --provenance-sources
                      EXPERIMENTAL: compile npm dependencies from their
                      provenance-attested SOURCE (fetched at the attested
@@ -167,8 +181,10 @@ export const CLI_OPTIONS = {
   backend: { type: "string" },
   optimization: { type: "string" },
   strip: { type: "boolean", default: false },
+  static: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
+  "large-pages": { type: "boolean", default: false },
   "target-cpu": { type: "string" },
   "cpu-dispatch": { type: "boolean" },
   "profile-generate": { type: "string" },
@@ -181,6 +197,7 @@ export const CLI_OPTIONS = {
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
+  "shape-overlay": { type: "boolean" },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },

@@ -1063,6 +1063,11 @@ export interface IrModule {
    * closures boxed for package code return records and arrays as live
    * capsules, so a value that comes back keeps its identity. */
   declBoundary?: true;
+  /** Package files compiled from shape inference's typed overlay
+   * (frontend/shape-inference/overlay.ts), each with its package name: a
+   * checked conversion in them checks an analysis-proven fact, so its
+   * failure reports a compiler analysis bug instead of a type error. */
+  inferredFactFiles?: { file: string; pkg: string }[];
   /** Origins of package-declared types checked by `dynCheck.origin`
    * (frontend/lowering/decl-origin.ts): fields separated by \x1f —
    * package, version, suggested range, selector, where it is declared,
@@ -1084,6 +1089,11 @@ export interface IrModule {
    * (frontend frozen-records.ts): their writes test the array's frozen bit
    * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
   freezableArrays?: string[];
+  /** Source ranges ("file\0start\0end") of untyped property writes in
+   * sloppy-mode code (frontend frozen-records.ts sloppyDynamicWrites):
+   * their dyn.keySet/keySetComputed calls ignore an assignment that strict
+   * mode refuses with a TypeError. */
+  sloppyDynWrites?: string[];
   /** The program freezes, seals or prevents extensions of untyped values
    * (frontend frozen-records.ts noteUntypedIntegrity). Class hierarchies
    * that can be held there carry an integrity word, which the runtime sets
@@ -4066,6 +4076,10 @@ export type IrExpr =
       preserveRefs?: true;
       adopt?: true;
       exact?: true;
+      /** Shape inference's overlay: this conversion checks an
+       * analysis-proven fact ("<package> <file>:<line>"); a failure is a
+       * compiler analysis bug and reports itself as one. */
+      inferredSite?: string;
       origin?: number;
       type: IrType;
       loc: SrcLoc;

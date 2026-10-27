@@ -31,6 +31,11 @@ export interface CompileBaseOptions {
   optimization?: NativeOptimization;
   /** Remove symbol/debug payload from an executable at link time. */
   strip?: boolean;
+  /** Link the C library and the other system libraries into the executable
+   * (`--static`). glibc executables link as static PIE and need the C
+   * library's static archives on the build host; musl executables are always
+   * static. Linux executables only. */
+  staticLink?: boolean;
   /** Windows PE executable subsystem. Console is the default; GUI suppresses
    * automatic console-window creation. Only valid for Windows executables. */
   windowsSubsystem?: WindowsSubsystem;
@@ -39,6 +44,10 @@ export interface CompileBaseOptions {
    * executable mapped and the memory charged for up to ~100 ms after exit.
    * Executables only; no effect on other platforms. */
   detachedExit?: boolean;
+  /** On Linux, move the executable's code onto 2 MiB transparent huge pages
+   * at startup when the system allows them. The moved code stays resident.
+   * Executables only; no effect on other platforms. */
+  largePages?: boolean;
   /** The x86-64 microarchitecture level the executable's code may require
    * (`x86-64-v2` to `x86-64-v4`). The program's functions are compiled for
    * that level, and the executable then runs only on CPUs that support it.
@@ -67,6 +76,10 @@ export interface CompileBaseOptions {
 
   /** Eligible packages compile automatically. Explicit names override automatic selection heuristics. */
   npmStatic?: readonly string[] | "auto";
+  /** Shape inference's typed overlay for opted-in packages' JavaScript.
+   * False disables it (`--no-shape-overlay`); a package opts out with
+   * `"scriptc": { "packages": { "<name>": { "shapes": false } } }`. */
+  shapeOverlay?: boolean;
   /** Outbound native FFI manifest. Its signature-only TypeScript bindings
    * lower to direct C ABI calls. Source outputs retain those declarations;
    * archive/system-library inputs join only an executable link. */

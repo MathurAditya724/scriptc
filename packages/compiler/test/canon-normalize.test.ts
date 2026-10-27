@@ -76,6 +76,10 @@ beforeAll(() => {
     // Accessor members: one type, and a getter and setter of different types.
     export interface Gauge { get level(): number; set level(next: number) }
     export interface Cell { get value(): string; set value(next: string | number) }
+    // The same instantiations, each refined by an object type.
+    export type RefinedMaps =
+      | (Map<string, number> & { tag: number })[]
+      | (Map<number, string> & { tag: number })[];
   `,
   );
   load = loadProgram(entry);
@@ -270,6 +274,12 @@ describe("canon", () => {
     expect(key(maps)).toBe("Map<string, number>[] | Map<number, string>[]");
   });
 
+  test("a refined instantiation keeps its type arguments", () => {
+    const maps = new Normalizer(checker).canon(aliases.get("RefinedMaps")!);
+    expect(maps.k === "union" && maps.arms.length).toBe(2);
+    expect(key(maps)).toBe("Map<string, number>[] | Map<number, string>[]");
+  });
+
   test("optional and rest tuple elements keep their flags", () => {
     expect(key(new Normalizer(checker).canon(aliases.get("Loose")!))).toBe(
       "[string, number | undefined?, ...boolean]",
@@ -308,6 +318,29 @@ describe("mapCanonical", () => {
     expect(mapType(cell, ctx())).toBeNull();
     expect(mapCanonical(new Normalizer(checker).canon(cell), ctx())).toBeNull();
     expect(key(new Normalizer(checker).canon(cell))).toContain("get value");
+  });
+  test("shadow mode observes every successful top-level mapping", () => {
+    const seen: string[] = [];
+    const point = { kind: "object", className: "Point" } as const;
+    const observed: TypeMapperCtx = {
+      ...ctx(),
+      typeMemo: new Map(),
+      localClassValue: (type) => (type === aliases.get("Points") ? point : null),
+      canonShadow: (type, mapped) => seen.push(`${checker.typeToString(type)} ${typeKey(mapped)}`),
+    };
+    // An intrinsic primitive, a mapping and its memo hit, and a local class
+    // value: one observation each; the nested mappings of `Same` are not
+    // observed.
+    const number = mapType(valueTypes.get("sampleNumber")!, observed);
+    const same = mapType(aliases.get("Same")!, observed);
+    expect(mapType(aliases.get("Same")!, observed)).toBe(same);
+    expect(mapType(aliases.get("Points")!, observed)).toBe(point);
+    expect(seen).toEqual([
+      `number ${typeKey(number!)}`,
+      `Same ${typeKey(same!)}`,
+      `Same ${typeKey(same!)}`,
+      `Points ${typeKey(point)}`,
+    ]);
   });
   test("a generic alias maps under bindings, where mapType needs the instance table", () => {
     const { type, params } = asTypes.get("Catalog<G, P>")!;

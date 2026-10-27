@@ -505,6 +505,16 @@ test("a type that is a dynamic piece and a slot of its own counts toward its own
   expect(hot?.message).toContain("`current` is a dynamic slot (declared `Hook`");
 });
 
+test("dynamic slots of one declared type count their own operations", () => {
+  const { coverage } = analyze(fixture("dynamic-slot-same-type.ts"));
+  const slots = coverage.dynamicSlots ?? [];
+  const hot = slots.find((s) => s.name === "hot")?.operations ?? 0;
+  const cold = slots.find((s) => s.name === "cold")?.operations ?? 0;
+  expect(hot).toBeGreaterThan(cold);
+  const hotWarning = coverage.performance?.find((d) => d.code === "SC6101");
+  expect(hotWarning?.message).toContain("`hot` is a dynamic slot (declared `Hook`");
+});
+
 test("CLI: --tier and --explain-dynamic", () => {
   const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-tier-"));

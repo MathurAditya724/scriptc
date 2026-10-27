@@ -13,7 +13,7 @@
  * registries, so the program's own IR is untouched. */
 import { appendFileSync } from "node:fs";
 import { BOOL, DYN, F64, NULL_T, STRING, UNDEFINED_T, typeKey, type IrType } from "../ir/ir.js";
-import { canonKey, Normalizer, type Canon } from "./canon.js";
+import { canonKey, Normalizer, type Canon, type CanonProp } from "./canon.js";
 import * as ts from "./ts7/adapter.js";
 import {
   mapType,
@@ -45,7 +45,12 @@ export function mapCanonical(c: Canon, ctx: TypeMapperCtx, depth = 0): IrType | 
     case "top":
       return DYN;
     case "param":
-      return null;
+      // A class's type parameters bind at IR level only (a generic class
+      // instance's bindings); the lowerer's resolver answers them.
+      // `this` in a class body is the class itself: the nominal table.
+      if (c.src === undefined) return null;
+      if ((c.src as { isThisType?: boolean }).isThisType === true) return viaChecker();
+      return ctx.resolveTypeParam?.(c.src) ?? null;
     case "opaque":
     case "tuple":
       return viaChecker();
@@ -81,25 +86,35 @@ export function mapCanonical(c: Canon, ctx: TypeMapperCtx, depth = 0): IrType | 
       if (props.some((p) => p.accessor)) return viaChecker();
       // `{}` holds any non-nullish value: the checked dynamic, as mapType.
       if (props.length === 0) return DYN;
-      const fields: { name: string; type: IrType }[] = [];
-      for (const p of props) {
-        let t = mapCanonical(p.type(), ctx, depth + 1);
-        if (t === null) return null;
-        if (p.optional && t.kind !== "dyn") {
-          const armed = withUndefinedArm(t, ctx.unions);
-          if (armed === null) return null;
-          t = armed;
-        }
-        fields.push({ name: p.name, type: t });
-      }
-      const declaredOrder = fields.map((f) => f.name);
-      fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-      return {
-        kind: "record",
-        shapeId: ctx.shapes.intern(fields, false, undefined, declaredOrder),
-      };
+      const structural = mapCanonicalRecord(props, ctx, depth);
+      // An object whose members do not map structurally (an interface over
+      // Map or Set, methods) keeps its per-type recognition.
+      return structural ?? viaChecker();
     }
   }
+}
+
+/** A plain record from an object's canonical members, or null when a
+ * member does not map. */
+function mapCanonicalRecord(
+  props: readonly CanonProp[],
+  ctx: TypeMapperCtx,
+  depth: number,
+): IrType | null {
+  const fields: { name: string; type: IrType }[] = [];
+  for (const p of props) {
+    let t = mapCanonical(p.type(), ctx, depth + 1);
+    if (t === null) return null;
+    if (p.optional && t.kind !== "dyn") {
+      const armed = withUndefinedArm(t, ctx.unions);
+      if (armed === null) return null;
+      t = armed;
+    }
+    fields.push({ name: p.name, type: t });
+  }
+  const declaredOrder = fields.map((f) => f.name);
+  fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return { kind: "record", shapeId: ctx.shapes.intern(fields, false, undefined, declaredOrder) };
 }
 
 export type ShadowStatus = "equal" | "diverge" | "canon-fail";

@@ -1,3 +1,6 @@
+import type { DiagnosticCode } from "../../diagnostics/codes.js";
+import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
+import { npmStaticPackageOfPath } from "../npm-static.js";
 import { globalMemberValue } from "./global-values.js";
 import { unionNarrowFailureMessage } from "./union-narrow.js";
 import {
@@ -19,7 +22,7 @@ import {
 import { isDeclBoundaryFile } from "../decl-projection.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { moduleNamespaceObject, moduleNamespaceValue } from "./module-namespace-elements.js";
-import { keyedHelperName } from "./stable-names.js";
+import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import { bindingSymbolOfRead, onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
 import {
@@ -179,6 +182,7 @@ import {
 } from "./class-dynamic-dispatch.js";
 import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-attributes.js";
 import { inferredCollectionType } from "./js-collection-types.js";
+import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
@@ -215,7 +219,7 @@ export { newFnCtx, type FnCtx } from "./function-context.js";
  * - Lexical scoping is resolved here: locals get function-unique ids
  *   ("x.0", "x.1" for shadowing); the IR is scope-flat.
  */
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { bindingSource } from "../binding-source.js";
 import { compilerOwnedFileName, tsgoPath } from "../dts-paths.js";
 import * as ts from "../ts7/adapter.js";
@@ -968,7 +972,7 @@ export interface LowerOptions {
 }
 
 interface RuntimeFenceFallback {
-  code: `SC${number}`;
+  code: DiagnosticCode;
   message: string;
 }
 
@@ -1373,9 +1377,13 @@ export function lowerToIr(
   }
   // Localized failure (SC6104): one performance warning per dynamic slot.
   if (resultLowerer.dynamicSlots.length > 0) {
-    const operations = dynamicSlotOperationCounts(resultLowerer, resultLowerer.dynamicBodies);
-    const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot) => ({
-      operations: operations.get(slot.failure.declaredType) ?? 0,
+    const operations = dynamicSlotOperationCounts(
+      resultLowerer,
+      resultLowerer.dynamicBodies,
+      resultLowerer.dynamicSlots,
+    );
+    const dynamicSlots: DynamicSlotEntry[] = resultLowerer.dynamicSlots.map((slot, i) => ({
+      operations: operations[i]!,
       loc: slot.loc,
       name: slot.failure.name,
       slot: slot.failure.slot,
@@ -2068,6 +2076,21 @@ function byName(fns: readonly IrFunction[]): IrFunction[] {
   );
 }
 
+/** A loop over an untyped iterable (lowerForOfDyn). `kind` is a local the
+ * loop sets once it has opened the iterator: 0 for the dynamic protocol,
+ * or the 1-based index of the program's generator type it steps natively.
+ * `value` is the per-step local whose initializer takes one step. */
+export interface UntypedLoopSite {
+  kind: string;
+  value: string;
+  iterator: string;
+  next: string;
+  done: string;
+  /** `for await`; `sync` names its async-from-sync flag. */
+  async: boolean;
+  sync: string | null;
+}
+
 /** The program module a createRequire binding requires. */
 type CreateRequireTarget = NonNullable<ReturnType<typeof createRequireProgramModuleOf>>;
 
@@ -2090,6 +2113,15 @@ export class Lowerer {
    * exact binding discipline as globals/functions. */
   readonly staticCallables = new Map<ts.Symbol, StaticCallableProjection>();
   readonly genericFnsBySymbol = new Map<ts.Symbol, GenericFnInfo>();
+  /** Typed declarations' instances for arguments that keep their own
+   * record or array layout (structural-instances.ts). */
+  readonly structuralFnInfos = new Map<ts.Symbol, GenericFnInfo>();
+  /** Consts that keep their initializer's record or array layout, with the
+   * initializer's checker type (structural-instances.ts). */
+  readonly preservedLayoutTypes = new Map<ts.Symbol, ts.Type>();
+  /** Arguments and const initializers whose array or record layout the
+   * lowering kept instead of copying (divergences.ts reports no copy there). */
+  readonly layoutKeptNodes = new Set<ts.Node>();
   /** Object-literal GENERIC methods (`{ m<T>(x: T) {...} }`), interned by
    * their function-like node — instances ride the same monomorphization
    * queue (objLitGenericFnInfoOf). */
@@ -3361,6 +3393,8 @@ export class Lowerer {
   /** Inferred JS methods participating in an override chain keep a vtable
    * ABI instead of call-site specialization. Filled before class collection. */
   readonly virtualJsMethods = new Set<ts.MethodDeclaration>();
+  /** Methods of checked-JavaScript override pairs (vtable dispatch). */
+  readonly checkedJsOverrideMethods = new Set<ts.MethodDeclaration>();
   /** Descendant writes must widen the original JS field before collecting
    * any class layout; base and derived instances share its storage ABI. */
   readonly inheritedJsFieldWrites = new Map<
@@ -3580,6 +3614,11 @@ export class Lowerer {
    * values other than fresh literals (noteUntypedIntegrity). */
   untypedIntegrity = false;
   readonly liftedFns: IrFunction[] = [];
+  /** `for … of` and `for await` loops over untyped iterables, by their
+   * generator-kind local (generator-dynamic-dispatch.ts steps the program's
+   * own generators there on the typed path). Local ids repeat across
+   * functions; the local itself is in its function's locals. */
+  readonly untypedLoops = new Map<IrLocal, UntypedLoopSite>();
   /** global-values.ts's answer per JavaScript source: the receiver of its
    * first read of the global object by a computed name, or null. */
   readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
@@ -3605,12 +3644,17 @@ export class Lowerer {
    * names do not depend on where the program sits, default library files
    * by their base name (two checkers install them in different
    * directories), and the files scriptc ships by their name inside scriptc,
-   * so names do not depend on where scriptc is installed either. */
-  readonly positions = new StructuralPositions((sf) =>
-    this.program.isSourceFileDefaultLibrary(sf)
+   * so names do not depend on where scriptc is installed either. Relative
+   * paths use `/` on every platform. */
+  readonly positions = new StructuralPositions((sf) => this.stableFileName(sf));
+
+  /** The name of `sf` in positions and module tags. */
+  stableFileName(sf: ts.SourceFile): string {
+    return this.program.isSourceFileDefaultLibrary(sf)
       ? `lib:${sf.fileName.slice(sf.fileName.lastIndexOf("/") + 1)}`
-      : (compilerOwnedFileName(sf.fileName) ?? relative(dirname(this.entry.fileName), sf.fileName)),
-  );
+      : (compilerOwnedFileName(sf.fileName) ??
+          portableRelativePath(dirname(this.entry.fileName), sf.fileName));
+  }
 
   /** The outermost node whose token span is exactly `loc`, or null. */
   nodeAtLoc(loc: SrcLoc): ts.Node | null {
@@ -3935,6 +3979,8 @@ export class Lowerer {
    * commit points (degradeAtCommit), so a program that compiles today
    * never fills it. */
   readonly degradedTypes = new Map<number, DegradedType>();
+  /** A pushed-down (partial) degraded type was mapped (hasPartialDegradedTypes). */
+  private partialDegradedTypesMapped = false;
   /** The components lenient mappings turned into the checked dynamic, by
    * checker type id, with the declared type they are pieces of (SC6101
    * causes and per-slot operation counts). */
@@ -4189,8 +4235,10 @@ export class Lowerer {
             (degraded.canonical === true ? this.canonicalType(type) : null) ??
             this.lenientType(type);
         }
-        if (degraded.lenient.kind !== "dyn" && degraded.canonical !== true)
+        if (degraded.lenient.kind !== "dyn" && degraded.canonical !== true) {
           this.partialHits[this.partialHits.length - 1]?.add(id);
+          this.partialDegradedTypesMapped = true;
+        }
         return degraded.lenient;
       },
       ...(shadow !== undefined ? { canonShadow: shadow } : {}),
@@ -4307,9 +4355,20 @@ export class Lowerer {
     // moduleOrder BEFORE any pass constructed — lowerToIr runs
     // appendDynamicImportModules once on the shared array (a per-pass run
     // here would repeatedly extend the graph and duplicate cycle reports).
-    this.moduleOrder.forEach((sf, i) => {
-      this.fileTag.set(sf, sf === entry ? "" : `%m${i}.`);
-    });
+    // A module's tag hashes its stable file name rather than numbering its
+    // place in moduleOrder, so adding or reordering modules leaves the other
+    // modules' function names, and the closure names keyed by them,
+    // unchanged. The native compiler's profile matches functions by name.
+    const tagNumbers = new Set<number>();
+    for (const sf of this.moduleOrder) {
+      if (sf === entry) {
+        this.fileTag.set(sf, "");
+        continue;
+      }
+      const n = moduleTagNumber(this.stableFileName(sf), tagNumbers);
+      tagNumbers.add(n);
+      this.fileTag.set(sf, `%m${n}.`);
+    }
     if (this.moduleOrder.length === 0) this.fileTag.set(entry, "");
     const jsDynamic = jsDynamicDeclarations(this.moduleOrder, this.checker);
     if (jsDynamic.size > 0) this.typeCtx.jsDynamicDeclaration = (decl) => jsDynamic.has(decl);
@@ -8798,6 +8857,8 @@ export class Lowerer {
     // reference are untouched — byte-stability holds.
     checkRequireBindingAccesses(this, functions);
     refuseX509DynValues(this, functions);
+    markInferredFactChecks(functions, this.program);
+    const sloppyDynWrites = sloppyDynamicWrites(this, functions);
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -8813,6 +8874,13 @@ export class Lowerer {
             ...(this.usesWorkers ? { workers: true } : {}),
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
             ...(this.declBoundary ? { declBoundary: true as const } : {}),
+            ...(shapeOverlayFileNames().length > 0
+              ? {
+                  inferredFactFiles: shapeOverlayFileNames()
+                    .map((file) => ({ file, pkg: npmStaticPackageOfPath(file) ?? "" }))
+                    .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0)),
+                }
+              : {}),
             ...(this.foreignElementKeys.size > 0
               ? { foreignElementKeys: [...this.foreignElementKeys].sort() }
               : {}),
@@ -8824,6 +8892,7 @@ export class Lowerer {
               ? { freezableArrays: [...this.freezableArrays].sort() }
               : {}),
             ...(this.untypedIntegrity ? { untypedIntegrity: true as const } : {}),
+            ...(sloppyDynWrites.length > 0 ? { sloppyDynWrites } : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
@@ -9765,7 +9834,7 @@ export class Lowerer {
   }
 
   unsupported(
-    code: keyof typeof UNSUPPORTED & `SC${number}`,
+    code: keyof typeof UNSUPPORTED & DiagnosticCode,
     node: ts.Node,
     featureOverride?: string,
     hintOverride?: string,
@@ -10030,8 +10099,11 @@ export class Lowerer {
     return this.degradedTypes.get(id)?.canonical === true;
   }
 
-  /** Some degraded type kept a pushed-down (partial) shape. */
+  /** Some degraded type kept a pushed-down (partial) shape, or one was
+   * mapped before a retry widened it: the IR lowered before the retry keeps
+   * that shape. */
   hasPartialDegradedTypes(): boolean {
+    if (this.partialDegradedTypesMapped) return true;
     for (const degraded of this.degradedTypes.values())
       if (
         degraded.canonical !== true &&

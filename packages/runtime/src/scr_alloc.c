@@ -368,6 +368,34 @@ static bool scr_sa_pf_on(void) {
   return s > 0;
 }
 
+/* fork() copies only the calling thread, so a child has no helper. The
+ * prepare handler takes the lock, so no other thread holds it across the
+ * fork. The child handler gives the child fresh helper state: an empty ring,
+ * no busy range or waiters, new conditions (the parent's can still record
+ * the helper as a waiter), and the heap watermarks cleared. Its first
+ * request then starts a helper of its own. */
+static bool scr_sa_pf_atfork;
+
+static void scr_sa_pf_fork_prepare(void) { pthread_mutex_lock(&scr_sa_pf_lock); }
+
+static void scr_sa_pf_fork_parent(void) { pthread_mutex_unlock(&scr_sa_pf_lock); }
+
+static void scr_sa_pf_fork_child(void) {
+  (void)pthread_mutex_init(&scr_sa_pf_lock, NULL);
+  (void)pthread_cond_init(&scr_sa_pf_cond, NULL);
+  (void)pthread_cond_init(&scr_sa_pf_done, NULL);
+  scr_sa_pf_head = scr_sa_pf_tail = 0;
+  scr_sa_pf_busy = (ScrSaPfRange){NULL, NULL};
+  scr_sa_pf_forgetting = 0;
+  scr_sa_pf_waiting = false;
+  scr_sa_pf_started = false;
+#ifdef SCR_SA_PF_HEAP
+  scr_sa_pf_heap_mode = 0;
+  scr_sa_pf_brk0 = scr_sa_pf_brk = NULL;
+  scr_sa_pf_heap_big = false;
+#endif
+}
+
 /* Asks the helper to fault in [lo, hi) (page aligned). Dropped when the
  * ring is full: the owner then faults those pages itself. */
 static void scr_sa_prefault(char *lo, char *hi) {
@@ -375,6 +403,14 @@ static void scr_sa_prefault(char *lo, char *hi) {
   pthread_mutex_lock(&scr_sa_pf_lock);
   if (!scr_sa_pf_started) {
     scr_sa_pf_started = true;
+    /* Once per process: a child inherits the parent's handlers. */
+    if (!scr_sa_pf_atfork &&
+        pthread_atfork(scr_sa_pf_fork_prepare, scr_sa_pf_fork_parent, scr_sa_pf_fork_child) != 0) {
+      pthread_mutex_unlock(&scr_sa_pf_lock);
+      atomic_store_explicit(&scr_sa_pf_state, -1, memory_order_relaxed);
+      return;
+    }
+    scr_sa_pf_atfork = true;
 #ifdef SCR_SA_PF_HEAP
     /* Nobody waits on the condition yet: give it the monotonic clock for
      * the helper's polls (no polls without it). */

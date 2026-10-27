@@ -436,6 +436,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           loc,
         };
       }
+      // Plain data (records, arrays, strings, numbers, booleans, and unions
+      // of them) is never a promise: false after the operand's evaluation.
+      const neverPromise = (t: IrType): boolean =>
+        NEVER_PROMISE_KINDS.has(t.kind) ||
+        (t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms ?? [t]).every(neverPromise));
+      if (neverPromise(left.type)) {
+        const no: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+        if (isSafeToDiscard(left)) return no;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: left, loc }],
+          result: no,
+          type: BOOL,
+          loc,
+        };
+      }
       lowerer.unsupported(
         "SC1090",
         expr,
@@ -824,9 +840,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (left.type.kind === "union") {
     const unionId = left.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms;
-    // Ordinary records, arrays and scalar values do not carry a class
-    // prototype (no program class extends Array). Dynamic/opaque runtime
-    // objects keep their existing instanceof fences.
+    // Records, arrays and scalar values are no instances of a class that
+    // does not extend Array (lowerArrayClassInstanceOf tests the classes
+    // that do). Dynamic/opaque runtime objects keep their existing
+    // instanceof fences.
     if (
       arms?.every(
         (arm) =>
@@ -2275,3 +2292,20 @@ function nodeDeclaredMember(lowerer: Lowerer, t: ts.Type, key: string): boolean 
     );
   });
 }
+
+const NEVER_PROMISE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "record",
+  "array",
+  "string",
+  "f64",
+  "bool",
+  "bigint",
+  "date",
+  "map",
+  "set",
+  "regex",
+  "bytes",
+  "symbol",
+  "nullT",
+  "undefinedT",
+]);

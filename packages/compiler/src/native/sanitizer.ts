@@ -14,7 +14,7 @@ import {
   selectedRuntimeUnits,
   type RuntimePackMode,
 } from "../backend/runtime-pack-core.js";
-import { LRE_SOURCES, ZLIB_SOURCES } from "../backend/vendor-inputs.js";
+import { LRE_SOURCES, zlibInputs } from "../backend/vendor-inputs.js";
 import { contentDigest, type NativeCache } from "./cache.js";
 import type { NativeToolchain } from "./toolchain.js";
 
@@ -171,9 +171,10 @@ export function buildSanitizedRuntime(
       directory = quickjs;
       args = ["-std=c11", "-I", quickjs];
     } else if (name === "zlib") {
-      sources = ZLIB_SOURCES;
+      const inputs = zlibInputs(toolchain.target.llvmTriple);
+      sources = inputs.sources;
       directory = zlib;
-      args = ["-std=c11", "-I", zlib];
+      args = ["-std=c11", ...inputs.defines.map((define) => "-D" + define), "-I", zlib];
     } else if (name === "mbedtls") {
       directory = join(mbedtls, "library");
       sources = readdirSync(directory)

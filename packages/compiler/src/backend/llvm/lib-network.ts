@@ -401,6 +401,22 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "net.connectPath" || e.fn === "net.connectPathCb") {
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    if (e.fn === "net.connectPathCb") {
+      host.toHeap(args[2]!);
+      cb = args[2]!.name;
+    }
+    host.declare(`declare ptr @scr_net_connect_path_checked(ptr, i1 zeroext, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_net_connect_path_checked(ptr ${args[0]!.name}, i1 ${args[1]!.name}, ptr ${cb})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "net.sockOnData" || e.fn === "http.reqOnData") {
     const cbT = e.args[1]!.type;
     if (cbT.kind !== "func")
