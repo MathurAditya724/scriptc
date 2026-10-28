@@ -115,6 +115,7 @@ export const DIAGNOSTIC_CODES = {
   SC8005: "no usable libnode pack for a program that calls into Node.js",
   SC8006: "Node island modules the build cannot collect",
   SC8010: "value crossing a Node island boundary in a form without an exact copy",
+  SC8011: "native class extending a Node island class outside the supported forms",
   SC8030: "type patch: no range covers the installed copy",
   SC8031: "type patch: selector matches nothing",
   SC8032: "type patch: declaration already has the type",
@@ -152,7 +153,6 @@ export const RETIRED_DIAGNOSTIC_CODES = {
  * that work lands it moves its codes into DIAGNOSTIC_CODES; when it is
  * abandoned, delete them here. */
 export const RESERVED_DIAGNOSTIC_CODES = {
-  SC8011: "Node islands (ni/* branches)",
   SC8012: "Node islands (ni/* branches)",
   SC8020: "Node islands (ni/* branches)",
   SC8021: "Node islands (ni/* branches)",
