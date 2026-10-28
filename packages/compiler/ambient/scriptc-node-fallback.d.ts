@@ -1258,6 +1258,9 @@ interface Response {
    * direct use and points at bytes(). */
   arrayBuffer(): Promise<ArrayBuffer>;
   bytes(): Promise<Uint8Array>;
+  /* A copy whose body is one branch of the body's tee; the original keeps
+   * the other. */
+  clone(): Response;
 }
 interface ResponseInit {
   headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
@@ -1335,6 +1338,7 @@ interface Request {
   text(): Promise<string>;
   arrayBuffer(): Promise<ArrayBuffer>;
   bytes(): Promise<Uint8Array>;
+  clone(): Request;
 }
 interface RequestInit {
   method?: string;
