@@ -3,7 +3,7 @@
 // require() specifier) runs in a Node island: its objects cross as
 // handles, so the same object returned twice is ===, and writes through
 // one reference are visible through every other, on both sides.
-import { Store, createStore, describe, VERSION, makePoint, addPoints, ping, makeTricky } from "islandkit";
+import { Store, createStore, describe, VERSION, makePoint, addPoints, ping, makeTricky, type Tricky } from "islandkit";
 import * as kit from "islandkit";
 
 console.log(VERSION);
@@ -35,10 +35,21 @@ console.log(p.x, p.y);
 p.x = 100;
 console.log(p.x + p.y);
 
-// JavaScript reads `tricky.method` before it evaluates `+tricky`, whose
+// JavaScript reads `tricky.method` before it evaluates `+swapper`, whose
 // valueOf replaces the method: the call must reach the original.
+class Swapper {
+  target: Tricky;
+  constructor(target: Tricky) {
+    this.target = target;
+  }
+  valueOf(): number {
+    this.target.method = this.target.other;
+    return 1;
+  }
+}
 const tricky = makeTricky();
-console.log("unary", tricky.method(+tricky), tricky.method(1));
+const swapper = new Swapper(tricky);
+console.log("unary", tricky.method(+swapper), tricky.method(1));
 
 console.log(ping(), ping(), kit.ping());
 
