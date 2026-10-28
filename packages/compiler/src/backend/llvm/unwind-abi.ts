@@ -107,12 +107,13 @@ export function unwindAbiFunctions(
   const anyClass = new Set<string>();
   const virtualCalls = nodes?.scan(VIRTUAL_CALL_KINDS);
   for (const fn of mod.functions)
+    // Without the index (or for a function it didn't record) every node
+    // arrives, statements included: the kind test narrows, not a cast.
     eachNodeOfKinds(fn, virtualCalls, (node) => {
-      const e = node as IrExpr;
-      if (e.kind !== "virtualCall") return true;
-      if (e.targets !== undefined) for (const target of e.targets) blocked.add(target);
-      else if (classes.has(e.className)) blocked.add(`%${e.className}.${e.method}`);
-      else anyClass.add(e.method);
+      if (node.kind !== "virtualCall") return true;
+      if (node.targets !== undefined) for (const target of node.targets) blocked.add(target);
+      else if (classes.has(node.className)) blocked.add(`%${node.className}.${node.method}`);
+      else anyClass.add(node.method);
       return true;
     });
   // A hierarchy's vtables hold the methods declared by more than one of its

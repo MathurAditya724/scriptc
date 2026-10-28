@@ -40,7 +40,6 @@ import {
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
 import {
   NativeCodegenError,
-  nativeCodegenParts,
   nativePartitionPaths,
   nativeProgramPartitions,
 } from "../backend/native-codegen-core.js";
@@ -75,6 +74,11 @@ import { splitLlvmLibraryProgram } from "../backend/llvm/split.js";
 import { prepareNativeExecutable, prepareNativeLibrary } from "./prepare.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
+import {
+  hugeTextLinkerArgs,
+  hugeTextProgram,
+  rewriteHugeTextExecutable,
+} from "../backend/huge-text.js";
 import { openNativeExecutableCache } from "./executable-cache.js";
 import { LinkerJobs } from "./linker-job.js";
 import { nativeFileIdentity } from "./file-identity.js";
@@ -254,7 +258,6 @@ export class NativeCompiler {
     partitions = 1,
     profile?: NativeProfileOptions,
     llvmDigest: () => string = () => fileDigest(input),
-    splitCodegen = false,
   ): NativeObjects {
     const toolchain = this.toolchain;
     const outputs = nativePartitionPaths(output, partitions);
@@ -283,7 +286,6 @@ export class NativeCompiler {
             identity: readFileSync(join(toolchain.helperPackageRoot, "package.json"), "utf8"),
             version: toolchain.compilerVersion,
             ...(partitions > 1 ? { partitions } : {}),
-            ...(splitCodegen ? { split: "codegen" } : {}),
             ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
           }),
         );
@@ -316,7 +318,7 @@ export class NativeCompiler {
       }
     }
     const partitionCache =
-      this.cache === null || identity === null || partitions < 2 || splitCodegen
+      this.cache === null || identity === null || partitions < 2
         ? null
         : this.cache.partitionDirectory(identity);
     const { profileMatch } = emitNativeObject({
@@ -327,7 +329,6 @@ export class NativeCompiler {
       optimization,
       outputKind,
       partitions,
-      ...(splitCodegen ? { splitCodegen } : {}),
       ...(partitionCache === null ? {} : { partitionCache }),
       ...(profile === undefined ? {} : { profile }),
     });
@@ -377,11 +378,9 @@ export class NativeCompiler {
         : null;
     const split = llvm === null ? null : splitLlvmLibraryProgram(llvm);
     if (split === null) {
-      const size = statSync(input).size;
-      // An optimized program that stays one partition is optimized whole and
-      // generates code for its parts concurrently.
-      const codegenParts = library || optimization === "dev" ? 1 : nativeCodegenParts(size);
-      const partitions = library ? 1 : Math.max(nativeProgramPartitions(size), codegenParts);
+      const partitions = library
+        ? 1
+        : nativeProgramPartitions(statSync(input).size, optimization === "dev");
       return this.emitObject(
         input,
         output,
@@ -391,7 +390,6 @@ export class NativeCompiler {
         partitions,
         profile,
         llvmDigest,
-        codegenParts > 1,
       );
     }
     const objects: string[] = [];
@@ -637,11 +635,15 @@ export class NativeCompiler {
         });
         // Linux links with lld when the driver finds it.
         const lld = options.sanitize ? [] : lldLinkerArgs(target.platform, toolchain.linker);
+        const hugeText =
+          !options.sanitize && hugeTextProgram(target, [object, ...programObjects.slice(1)]);
+        const zig = process.env["SCRIPTC_LINKER"] === undefined && target.defaultLinker === "zig";
         const linkMap = join(stage, "link.map");
         const mapArgs = staticLinkMapArgs(target, options.staticLink === true, linkMap);
         const linkArgsWith = (withLld: boolean): string[] => [
           ...(options.sanitize ? ["-fsanitize=address"] : toolchain.linkerArgs),
           ...(withLld ? lld : []),
+          ...hugeTextLinkerArgs(hugeText, (withLld && lld.length !== 0) || zig),
           ...plan.driverFlags,
           ...mapArgs,
           ...(withLld ? plan.inputs : inputsWithoutLld(target.platform, plan.inputs)),
@@ -679,6 +681,7 @@ export class NativeCompiler {
         }
         timing("native-link");
         requireNativeArtifact(stagedOutput);
+        if (hugeText) rewriteHugeTextExecutable(stagedOutput);
         if (mapArgs.length !== 0) {
           const refusal = staticExecutableRefusal(target, true, readFileSync(linkMap, "utf8"));
           if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);

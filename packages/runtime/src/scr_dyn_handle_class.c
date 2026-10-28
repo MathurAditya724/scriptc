@@ -183,6 +183,14 @@ ScrDyn *scr_dyn_handle_class_member(ScrDynHandleTag tag, void *h, const char *ke
   return value;
 }
 
+ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
+                                         ScrDyn *const *args, size_t argc) {
+  const ScrDynHandleClass *klass = hc_classes[self->v.handle.tag];
+  if (klass && klass->method_invoke)
+    return klass->method_invoke(self->v.handle.ptr, self, method, args, argc, method);
+  return ops->invoke(self->v.handle.ptr, self, method, args, argc, method);
+}
+
 static void hc_define_method(ScrDyn *prototype, ScrDynHandleTag tag, const char *name) {
   ScrDyn *fn = scr_dyn_handle_class_method(tag, name);
   if (fn) hc_define(prototype, name, fn, true, true, true);

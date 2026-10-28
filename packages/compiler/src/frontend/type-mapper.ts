@@ -323,16 +323,16 @@ export class ShapeRegistry {
    * writer after all priority candidates have closed. */
   private readonly derivedDeclaredOrderFinalizers: (() => void)[] = [];
   private currentDeclaredOrderPriority: DeclaredOrderPriority = [0, 0];
+  /** The declared-order candidates and the attached names the registry
+   * holds, counted as they are added (journalSizes). */
+  private candidateCount = 0;
+  private extendedCount = 0;
   /** All interned shapes in first-seen order. */
   readonly shapes: IrRecordShape[] = [];
 
   /** The sizes of the registry's tables, which only grow while shapes are
    * interned (unit-journal.ts). */
   journalSizes(): number[] {
-    let candidates = 0;
-    for (const list of this.declaredOrderCandidates.values()) candidates += list.length;
-    let extended = 0;
-    for (const names of this.extendedNames.values()) extended += names.length;
     return [
       this.revision,
       this.shapes.length,
@@ -341,12 +341,12 @@ export class ShapeRegistry {
       this.keyedNameKeys.size,
       this.declaredOrderPriority.size,
       this.declaredOrderCandidates.size,
-      candidates,
+      this.candidateCount,
       this.derivedDeclaredOrderFinalizers.length,
       this.recIds.size,
       this.pendingRec.size,
       this.extendedNames.size,
-      extended,
+      this.extendedCount,
     ];
   }
   /** ts.Types currently being mapped — a BACK-REFERENCE to one of these is
@@ -401,6 +401,7 @@ export class ShapeRegistry {
 
   private adoptDeclaredOrder(shape: IrRecordShape, declaredOrder: string[] | undefined): void {
     if (declaredOrder === undefined) return;
+    this.candidateCount++;
     const candidates = this.declaredOrderCandidates.get(shape.id);
     const candidate = { order: declaredOrder, priority: this.currentDeclaredOrderPriority };
     if (candidates) candidates.push(candidate);
@@ -556,6 +557,7 @@ export class ShapeRegistry {
       this.byId.set(id, shape);
       this.shapes.push(shape);
       if (declaredOrder !== undefined) {
+        this.candidateCount++;
         this.declaredOrderCandidates.set(id, [
           { order: declaredOrder, priority: this.currentDeclaredOrderPriority },
         ]);
@@ -618,6 +620,7 @@ export class ShapeRegistry {
     shape.fields = [...shape.fields, ...fresh].sort((a, b) =>
       a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
+    this.extendedCount += fresh.length;
     this.extendedNames.set(shapeId, [
       ...(this.extendedNames.get(shapeId) ?? []),
       ...fresh.map((f) => f.name),
@@ -744,10 +747,6 @@ export class UnionRegistry {
           this.byId.delete(def.id);
           this.keyedNameKeys.delete(def.id);
         }
-      },
-      hold: () => {
-        const held = [...this.unions];
-        return { same: () => held.every((def, index) => this.unions[index] === def) };
       },
       contents: () => {
         // A recursive placeholder still pending fills in place when its

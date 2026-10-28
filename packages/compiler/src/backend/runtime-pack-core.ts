@@ -100,6 +100,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   computedRequire: boolean;
   warningReplace: boolean;
   stdioExtended: boolean;
+  nodeIsland: boolean;
   brotli: boolean;
   moduleNamespace: boolean;
   nativeFetch: boolean;
@@ -308,6 +309,7 @@ export function effectiveRuntimeFeatures(
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
     stdioExtended: features.stdioExtended === true,
+    nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     moduleNamespace: features.moduleNamespace === true,
     nativeFetch,

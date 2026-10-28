@@ -307,8 +307,10 @@ import {
   emitBytesIntrinsic,
 } from "./expr-bytes.js";
 import {
+  borrowedRecordKeyGetOr,
   emitRecordKeyGet,
   emitRegexIntrinsic,
+  immortalDefault,
   keyedRecordReadInto,
   pointerRecordKeyGet,
 } from "./expr-records.js";
@@ -370,7 +372,15 @@ import { VirtualBorrows } from "./virtual-borrows.js";
 import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
-import { isObjectArm, NULLABLE_ABSENT, NULLABLE_NULL, NullableUnions } from "./nullable-unions.js";
+import {
+  isObjectArm,
+  isPayloadTag,
+  NULLABLE_ABSENT,
+  NULLABLE_NULL,
+  NullableUnions,
+  pointerTagFn,
+} from "./nullable-unions.js";
+import { classUnionHeaders, emitClassUnionHelpers } from "./class-unions.js";
 import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   emitConcatInputs,
@@ -570,6 +580,9 @@ export interface LlvmTargetOptions {
    * teardown after `process.exit` to a helper process (`--detached-exit`).
    * Executables only; the runtime's weak default keeps it off. */
   detachedExit?: boolean;
+  /** The files of the program's Node island module tree, in manifest order
+   * (node-islands/modules.ts), when the executable carries the tree. */
+  nodeIslandModuleData?: Uint8Array;
   /** Translated WebAssembly memories check bounds explicitly instead of
    * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
   wasmBoundsChecks?: boolean;
@@ -1364,6 +1377,7 @@ export class LlEmitter {
   readonly emitLibraryIdentity: boolean;
   readonly runtimeAbiMarker: boolean;
   readonly detachedExit: boolean;
+  readonly nodeIslandModuleData: Uint8Array | null;
   readonly targetCpu: TargetCpu | undefined;
   /** Emitted functions carry `sanitize_address` (LlvmTargetOptions). */
   readonly sanitizeAttributes: boolean;
@@ -2054,6 +2068,7 @@ export class LlEmitter {
       mod,
       options.debugSources === undefined,
       this.nodeIndex,
+      options.pointerBits !== 32,
     );
     this.heapCensus = heapCensusOf(mod, this.nullableUnions);
     for (const decl of this.heapCensus?.declarations() ?? []) this.declare(decl);
@@ -2112,6 +2127,7 @@ export class LlEmitter {
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     this.detachedExit = options.detachedExit === true;
+    this.nodeIslandModuleData = options.nodeIslandModuleData ?? null;
     this.targetCpu = options.targetCpu;
     this.sanitizeAttributes = options.sanitizeAttributes !== false;
     this.cpuDispatch =
@@ -2343,6 +2359,13 @@ export class LlEmitter {
         }
       }
     }
+    // The same holds for a class union's arms (class-unions.ts).
+    classUnionHeaders(
+      mod,
+      this.nullableUnions.allClassUnions(),
+      this.tracedShapes,
+      this.tracedUnions,
+    );
     this.shapeHost = {
       // Journal hooks only on emitters that can emit ranges (chunk
       // emitters, and emitters whose workers take a journal after the
@@ -2508,7 +2531,12 @@ export class LlEmitter {
     // The class graph: base/children links, hierarchy membership, the
     // whole-program preorder numbering for instanceof over runtime and
     // compiled error objects, and the per-hierarchy virtual slot lists.
-    this.classMeta = buildClassGraph(mod, this.fnByName, this.sizeType);
+    this.classMeta = buildClassGraph(
+      mod,
+      this.fnByName,
+      this.sizeType,
+      this.nullableUnions.taggedClasses(),
+    );
     if (mod.lifetimeRegions === true) {
       this.regions = new LifetimeRegions(
         this.shapeHost,
@@ -2777,6 +2805,7 @@ export class LlEmitter {
       ...late,
       ...emitNullableRetainWrappers(this.shapeHost),
       ...emitShapeUnionHelpers(this.shapeHost),
+      ...emitClassUnionHelpers(this.shapeHost, this.classMeta),
       ...emitInlineRcHelpers(this.shapeHost),
     ];
   }
@@ -3616,8 +3645,14 @@ export class LlEmitter {
 
   /** Registers a SLOT whose current contents the frame owns (conditional
    * results: optional chains, branch joins that park ownership). */
-  ownSlot(slot: string, type: IrType): void {
-    if (isRefCounted(type)) this.currentFrame().push({ name: slot, type, slot: true });
+  ownSlot(slot: string, type: IrType, rarelyFilled = false): void {
+    if (isRefCounted(type))
+      this.currentFrame().push({
+        name: slot,
+        type,
+        slot: true,
+        ...(rarelyFilled ? { rarelyFilled: true } : {}),
+      });
   }
 
   /** The innermost lexical scope releases a frame object's reference
@@ -3729,6 +3764,17 @@ export class LlEmitter {
         this.B.line(`${t} = load ptr, ptr ${v.name}`);
         if (v.boxed) {
           this.B.line(`call void ${boxReleaseSym(this.shapeHost)}(ptr ${t})`);
+        } else if (v.rarelyFilled && !this.B.isTerminated()) {
+          // Skip the release call on the common empty path.
+          const filled = this.B.tmp();
+          this.B.line(`${filled} = icmp ne ptr ${t}, null`);
+          const release = this.B.newLabel("slot.release"),
+            join = this.B.newLabel("slot.release.j");
+          this.B.condBr(filled, release, join);
+          this.B.startBlock(release);
+          this.releaseFrame(t, v.type);
+          this.B.br(join);
+          this.B.startBlock(join);
         } else {
           this.releaseFrame(t, v.type);
         }
@@ -4706,11 +4752,7 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(unionId);
     if (nullable) {
       // The owned payload IS the nullable union's value.
-      if (
-        nullable.repr === "single"
-          ? tag !== nullable.refTag
-          : !nullable.arms.some((arm) => arm.tag === tag)
-      )
+      if (!isPayloadTag(nullable, tag))
         throw new InternalCompilerError(
           `llvm emitter bug: payload wrap into unit arm ${tag} of ${unionId}`,
         );
@@ -6345,6 +6387,11 @@ export class LlEmitter {
       case "recordGet":
       case "recordKeyGet":
         return this.borrowsWithoutOwning(e) && this.unownedWalk(e.obj);
+      // `r[k] ?? inherited(r, k)` whose default is immortal.
+      case "nullish": {
+        const read = borrowedRecordKeyGetOr(this, e);
+        return read !== null && immortalDefault(this, e.right) && this.unownedWalk(read);
+      }
       case "mapIntrinsic": {
         // A Map binding's own pointer (maps are not plainReference types).
         if (!this.borrowsWithoutOwning(e) || e.receiver.kind !== "varRef") return false;
@@ -7154,7 +7201,10 @@ export class LlEmitter {
         const nullable = this.nullableUnions.of(t);
         return nullable?.repr === "single" ? nullable.arm : null;
       },
-      shapeUnion: (t) => this.nullableUnions.of(t)?.repr === "shapes",
+      pointerTagFn: (t) => {
+        const nullable = this.nullableUnions.of(t);
+        return nullable === null || nullable.repr === "single" ? null : pointerTagFn(nullable);
+      },
       fieldBase: (shapeId) => this.nullableUnions.fieldBase(shapeId),
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
@@ -7650,6 +7700,8 @@ export class LlEmitter {
         return pointerRecordKeyGet(this, e);
       case "mapIntrinsic":
         return pointerMapGet(this, e);
+      case "nullish":
+        return borrowedRecordKeyGetOr(this, e) !== null;
       // emitReadReceiver lends a required element of a borrowed array when
       // computing the index removes no edge.
       case "arrayGet":
@@ -7689,11 +7741,7 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(e.unionId);
     if (!nullable) return null;
     if (isUnitType(e.value.type)) return e.value.kind === "unitLit" ? "unit" : null;
-    const refArm =
-      nullable.repr === "single"
-        ? e.tag === nullable.refTag
-        : nullable.arms.some((arm) => arm.tag === e.tag);
-    return refArm && isRefCounted(e.value.type) ? "ref" : null;
+    return isPayloadTag(nullable, e.tag) && isRefCounted(e.value.type) ? "ref" : null;
   }
 
   materializeSplitLocal(localId: string): void {

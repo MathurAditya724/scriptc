@@ -8,11 +8,7 @@ import {
   NativeCodegenError,
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
-import {
-  nativeCodegenParts,
-  nativePartitionPaths,
-  nativeProgramPartitions,
-} from "./native-codegen-core.js";
+import { nativePartitionPaths, nativeProgramPartitions } from "./native-codegen-core.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -398,16 +394,22 @@ test("sanitized native artifacts fail before helper resolution", async () => {
 });
 
 test("program partitions depend only on module size", () => {
-  const megabyte = 1024 * 1024;
-  expect(nativeProgramPartitions(megabyte)).toBe(1);
-  expect(nativeProgramPartitions(megabyte + 1)).toBe(4);
-  expect(nativeProgramPartitions(2 * megabyte)).toBe(4);
-  expect(nativeProgramPartitions(2 * megabyte + 1)).toBe(8);
+  const kilobyte = 1024;
+  const megabyte = 1024 * kilobyte;
+  expect(nativeProgramPartitions(128 * kilobyte)).toBe(1);
+  expect(nativeProgramPartitions(128 * kilobyte + 1)).toBe(8);
   expect(nativeProgramPartitions(32 * megabyte)).toBe(8);
   // Powers of two keep every function in its partition across small edits.
   expect(nativeProgramPartitions(32 * megabyte + 1)).toBe(16);
   expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
   expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
+  // Unoptimized (dev) programs are divided from 64 KiB.
+  expect(nativeProgramPartitions(64 * kilobyte, true)).toBe(1);
+  expect(nativeProgramPartitions(64 * kilobyte + 1, true)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte, true)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte + 1, true)).toBe(8);
+  expect(nativeProgramPartitions(megabyte, true)).toBe(8);
+  expect(nativeProgramPartitions(32 * megabyte + 1, true)).toBe(16);
   expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([
     "/build.d/program.o",
     "/build.d/program.part1.o",
@@ -417,41 +419,6 @@ test("program partitions depend only on module size", () => {
     "C:\\build.d\\program",
     "C:\\build.d\\program.part1",
   ]);
-});
-
-test("code generation parts depend only on module size", () => {
-  const kilobyte = 1024;
-  expect(nativeCodegenParts(128 * kilobyte)).toBe(1);
-  expect(nativeCodegenParts(128 * kilobyte + 1)).toBe(4);
-  expect(nativeCodegenParts(256 * kilobyte)).toBe(4);
-  expect(nativeCodegenParts(256 * kilobyte + 1)).toBe(8);
-  expect(nativeCodegenParts(1024 * kilobyte)).toBe(8);
-  // Partitioned modules already compile their partitions concurrently.
-  expect(nativeCodegenParts(1024 * kilobyte + 1)).toBe(1);
-});
-
-test("split code generation passes --split codegen and no partition cache", async () => {
-  const pkg = await fakePackage();
-  const output = join(pkg.root, "split", "program.o");
-  const artifact = await emitNativeArtifact({
-    ...request(pkg.root, pkg.packageJson, output),
-    partitions: 4,
-    splitCodegen: true,
-  });
-  expect(artifact.outputPaths).toEqual(nativePartitionPaths(output, 4));
-  const args = (await readFile(pkg.log, "utf8")).trim().split(" ");
-  expect(args.filter((arg) => arg === "--output")).toHaveLength(4);
-  expect(args.join(" ")).toContain("--split codegen");
-  expect(args).not.toContain("--cache-dir");
-
-  // Partitions of the same module are a distinct artifact.
-  await emitNativeArtifact({
-    ...request(pkg.root, pkg.packageJson, join(pkg.root, "partitions", "program.o")),
-    partitions: 4,
-  });
-  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
-  expect(calls).toHaveLength(2);
-  expect(calls[1]).not.toContain("--split");
 });
 
 test("partitioned objects are emitted, cached and restored together", async () => {
