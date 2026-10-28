@@ -114,10 +114,12 @@ export function lowerArrayHofCall(
   // leave an element its callback ignores unread.
   const unread = callback.unread && !present && elementMayBeForeign(lowerer, elem);
   const fnRet = fnArg.type.ret;
-  if (method === "map" && (fnRet.kind === "void" || fnRet.kind === "func")) {
-    // The result array U[] is unrepresentable here (no void elements;
-    // the map helper's closure-returning form has no fixture-backed
-    // story yet).
+  if (method === "map" && fnRet.kind === "void") {
+    // The result array `void[]` is unrepresentable: a void return value is
+    // erased before it could be stored. A CLOSURE-returning callback is an
+    // ordinary function element — the value is one ScrClosure for its whole
+    // life, stored by reference with the element kind's `_v` adapter and
+    // trace, exactly like a closure array literal (`[() => 1]`).
     lowerer.badType(call, lowerer.typeOf(call));
   }
   if (method === "map") requireProducedArrayElement(lowerer, call, "'.map()'", fnRet);
@@ -659,7 +661,8 @@ export function lowerArrayUnionHofCall(
   const argNode = call.arguments.nodes[0]!;
   const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [valueT], receiverT);
   const fnRet = fnArg.type.ret;
-  if (method === "map" && (fnRet.kind === "void" || fnRet.kind === "func")) {
+  if (method === "map" && fnRet.kind === "void") {
+    // `void[]` has no element (see the plain-receiver map path).
     lowerer.badType(call, lowerer.typeOf(call));
   }
   if (method === "map") requireProducedArrayElement(lowerer, call, "'.map()'", fnRet);
