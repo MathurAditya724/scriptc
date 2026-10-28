@@ -231,7 +231,7 @@ function buildFetchCompatProfile() {
         "body",
         "bodyUsed",
       ],
-      responseCalls: ["json", "text", "bytes"],
+      responseCalls: ["json", "text", "bytes", "clone"],
       readableStreamReads: ["locked"],
       readableStreamCalls: ["cancel", "getReader"],
     },
@@ -287,6 +287,13 @@ function buildFetchCompatProfile() {
         facets: ["body-consumption", "promise-settlement", "state-machine", "error-shape"],
         evidence: [fixture("static-request")],
       })),
+      {
+        id: "stdlib.request.clone",
+        name: "Request.clone",
+        kind: "method",
+        facets: ["body-consumption", "identity", "state-machine", "error-shape"],
+        evidence: [fixture("static-clone")],
+      },
       {
         id: "stdlib.response.constructor",
         name: "Response constructor",
@@ -538,6 +545,13 @@ function buildFetchCompatProfile() {
             ? [fixture("static")]
             : [fixture("static"), fixture("static-stream")],
       })),
+      {
+        id: "stdlib.response.clone",
+        name: "Response.clone",
+        kind: "method",
+        facets: ["body-consumption", "identity", "state-machine", "error-shape"],
+        evidence: [fixture("static-clone")],
+      },
     ],
     inventory: {
       interfaces: [
@@ -672,7 +686,7 @@ function buildFetchCompatProfile() {
           "bytes",
           "attribute",
         ].map((member) =>
-          ["clone", "blob", "formData", "attribute"].includes(member)
+          ["blob", "formData", "attribute"].includes(member)
             ? unsupportedEntry(
                 `stdlib.request.${member}`,
                 "Request",
@@ -706,7 +720,8 @@ function buildFetchCompatProfile() {
           (member) => staticEntry(`stdlib.response.${member}`, "Response", member, "prototype"),
         ),
         staticEntry("stdlib.response.arrayBuffer", "Response", "arrayBuffer", "prototype"),
-        ...["clone", "blob", "formData"].map((member) =>
+        staticEntry("stdlib.response.clone", "Response", "clone", "prototype"),
+        ...["blob", "formData"].map((member) =>
           unsupportedEntry(
             `stdlib.response.${member}`,
             "Response",
