@@ -4662,6 +4662,13 @@ export function canDynCheckTo(
   return result;
 }
 
+/** The in-progress key of a checked composite. Marking it for the duration of
+ * the frame answers a recursion back-edge coinductively, and the wrapper
+ * keeps it as the success memo once the frame returns true. */
+function checkedVisitKey(t: IrType): string {
+  return `checked:${typeKey(t)}`;
+}
+
 /** Reuse completed subgraphs within one conversion query. A failed branch
  * invalidates successes that may depend on a coinductive back-edge to it;
  * active recursion keys remain until their owning calls unwind. */
@@ -4701,8 +4708,8 @@ function canDynCheckToAt(
   if (isDynTypedRefType(t)) return true;
   if (t.kind === "array") {
     if (t.elem.kind === "procStream") return false;
-    const key = typeKey(t);
-    if (visiting.has(key)) return false;
+    const key = checkedVisitKey(t);
+    if (visiting.has(key)) return true;
     visiting.add(key);
     const result = canDynCheckTo(t.elem, getRecord, getUnion, visiting);
     visiting.delete(key);
@@ -4711,8 +4718,14 @@ function canDynCheckToAt(
   // A codec handle unboxes to the record it holds.
   if (textCodecRecordClass(t, getRecord) !== null) return true;
   if (t.kind === "record") {
-    const key = typeKey(t);
-    if (visiting.has(key)) return false;
+    // Recursive shapes answer COINDUCTIVELY, like the composite dynFrom
+    // walk: assume the back-edge checks and verify every reachable field at
+    // its first visit. A recursion through a checked slot is ordinary in a
+    // callback-options graph — a method's options object takes a context
+    // whose methods take the same options — and refusing the back-edge
+    // would fence types whose every leaf is checkable.
+    const key = checkedVisitKey(t);
+    if (visiting.has(key)) return true;
     const shape = getRecord(t.shapeId);
     if (!shape || shapeHasAccessorSlots(shape)) return false;
     visiting.add(key);

@@ -128,7 +128,9 @@ describe("checked records with opaque payloads", () => {
         id: "unsafe",
         fields: [
           { name: "child", type: { kind: "record", shapeId: "unsafe" } },
-          { name: "map", type: { kind: "map", key: STRING, value: F64 } },
+          // The back-edge answers coinductively; this sibling is what makes
+          // the shape uncheckable.
+          { name: "payload", type: { kind: "caught" } },
         ],
       },
     ],
@@ -302,6 +304,100 @@ describe("native promise checked storage", () => {
         () => undefined,
       ),
     ).toBe(false);
+  });
+});
+
+describe("recursive checked graphs", () => {
+  // A context whose method takes an options object whose callback receives
+  // the same context: the check domain re-enters the record through a
+  // checked slot, as a callback-options API does.
+  const records = new Map<string, IrRecordShape>([
+    [
+      "context",
+      {
+        id: "context",
+        fields: [
+          {
+            name: "fork",
+            type: {
+              kind: "func",
+              params: [STRING, { kind: "union", unionId: "options" }],
+              ret: { kind: "promise", inner: { kind: "record", shapeId: "result" } },
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "options",
+      {
+        id: "options",
+        fields: [
+          {
+            name: "withSession",
+            type: {
+              kind: "func",
+              params: [{ kind: "record", shapeId: "context" }],
+              ret: { kind: "promise", inner: { kind: "void" } },
+            },
+          },
+        ],
+      },
+    ],
+    ["result", { id: "result", fields: [{ name: "cancelled", type: { kind: "bool" } }] }],
+    [
+      "unsafeContext",
+      {
+        id: "unsafeContext",
+        fields: [
+          {
+            name: "fork",
+            type: {
+              kind: "func",
+              params: [{ kind: "record", shapeId: "unsafeOptions" }],
+              ret: { kind: "void" },
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "unsafeOptions",
+      {
+        id: "unsafeOptions",
+        fields: [
+          {
+            name: "withSession",
+            type: {
+              kind: "func",
+              params: [{ kind: "record", shapeId: "unsafeContext" }],
+              ret: { kind: "void" },
+            },
+          },
+          { name: "body", type: { kind: "caught" } },
+        ],
+      },
+    ],
+  ]);
+  const unions = new Map<string, IrUnionDef>([
+    [
+      "options",
+      { id: "options", arms: [{ kind: "record", shapeId: "options" }, { kind: "undefinedT" }] },
+    ],
+  ]);
+  const record = (id: string): IrRecordShape | undefined => records.get(id);
+  const union = (id: string): IrUnionDef | undefined => unions.get(id);
+
+  test("answers a recursion back-edge coinductively in both directions", () => {
+    const context: IrType = { kind: "record", shapeId: "context" };
+    expect(canConvertToDyn(context, record, union)).toBe(true);
+    expect(canDynCheckTo(context, record, union)).toBe(true);
+    expect(canDynCheckTo({ kind: "union", unionId: "options" }, record, union)).toBe(true);
+  });
+
+  test("a failing field inside the cycle still refuses it", () => {
+    expect(canDynCheckTo({ kind: "record", shapeId: "unsafeContext" }, record, union)).toBe(false);
+    expect(canDynCheckTo({ kind: "record", shapeId: "unsafeOptions" }, record, union)).toBe(false);
   });
 });
 
