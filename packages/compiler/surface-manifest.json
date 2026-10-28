@@ -5130,9 +5130,8 @@
       "id": "stdlib.request.clone",
       "kind": "stdlib",
       "name": "Request.clone",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; typed source has no compiler bridge for this interface"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: body-consumption, identity, state-machine, error-shape; differential evidence: fixture:static-clone"
     },
     {
       "id": "stdlib.request.constructor",
@@ -5329,9 +5328,8 @@
       "id": "stdlib.response.clone",
       "kind": "stdlib",
       "name": "Response.clone",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; the native fetch runtime does not implement this Response operation"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: body-consumption, identity, state-machine, error-shape; differential evidence: fixture:static-clone"
     },
     {
       "id": "stdlib.response.constructor",
