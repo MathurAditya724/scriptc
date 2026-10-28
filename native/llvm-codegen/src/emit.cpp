@@ -252,8 +252,8 @@ struct UnnameStructTypes : PassInfoMixin<UnnameStructTypes> {
 // control flow changed since it was collected (hash mismatch), and functions
 // it has no record of (new since it was collected, or never run in training
 // when the profile was merged with --sparse). A partition reused from the cache without its counts is counted
-// in Unknown. Recovered counts the functions without profile counts that
-// --profile-blocks annotated.
+// in Unknown. Recovered counts the mismatched functions that --profile-blocks
+// annotated, so it never exceeds Mismatched.
 struct ProfileMatch {
   std::atomic<uint64_t> Annotated{0};
   std::atomic<uint64_t> Mismatched{0};
@@ -354,6 +354,17 @@ std::unique_ptr<BlockCounts> FallbackCounts;
 // The block counts a --record-profile-blocks build collects, or null.
 std::unique_ptr<BlockRecorder> Recorder;
 
+// Whether the profile annotation found F's control flow changed: it tags
+// such a function with this annotation.
+bool hasHashMismatchTag(const Function &F) {
+  if (const MDNode *Annotation = F.getMetadata(LLVMContext::MD_annotation))
+    for (const MDOperand &Operand : Annotation->operands())
+      if (const auto *Name = dyn_cast<MDString>(Operand))
+        if (Name->getString() == "instr_prof_hash_mismatch")
+          return true;
+  return false;
+}
+
 // Whether F has counts from a profile.
 bool hasProfileCounts(const Function &F) {
   std::optional<Function::ProfileCount> Entry = F.getEntryCount();
@@ -362,15 +373,17 @@ bool hasProfileCounts(const Function &F) {
 
 // Runs right after the profile annotation, before inlining and dead code
 // elimination change the functions it annotated: counts them and records
-// their block counts, then annotates the functions it left without counts
-// from FallbackCounts. Returns the analyses that remain valid.
+// their block counts, then annotates the functions whose control flow
+// changed from FallbackCounts. A function the profile has no record of keeps
+// no counts, as without block counts. Returns the analyses that remain valid.
 PreservedAnalyses afterProfileAnnotation(Module &M, ProfileMatch &Match) {
-  std::vector<Function *> Uncounted;
+  std::vector<Function *> Mismatched;
   for (Function &F : M) {
     if (F.isDeclaration())
       continue;
     if (!hasProfileCounts(F)) {
-      Uncounted.push_back(&F);
+      if (hasHashMismatchTag(F))
+        Mismatched.push_back(&F);
       continue;
     }
     ++Match.Annotated;
@@ -381,7 +394,7 @@ PreservedAnalyses afterProfileAnnotation(Module &M, ProfileMatch &Match) {
     return PreservedAnalyses::all();
   ProfileSummaryInfo Summary(M);
   PreservedAnalyses Preserved = PreservedAnalyses::all();
-  for (Function *F : Uncounted) {
+  for (Function *F : Mismatched) {
     auto Record = FallbackCounts->find(F->getName());
     if (Record == FallbackCounts->end())
       continue;

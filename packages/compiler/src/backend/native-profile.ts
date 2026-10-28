@@ -109,8 +109,9 @@ export function nativeProfileHelperArgs(profile: NativeProfileOptions | undefine
  * helper reports it: functions that took the profile's counts, functions
  * whose control flow changed since the profile was collected, functions the
  * profile has no record of (new, or never run while it was collected),
- * functions without the profile's counts that the block-count file
- * annotated, and partitions reused from the cache without their counts. */
+ * mismatched functions that the block-count file annotated (never more
+ * than the mismatched ones), and partitions reused from the cache without
+ * their counts. */
 export interface NativeProfileMatch {
   annotated: number;
   mismatched: number;

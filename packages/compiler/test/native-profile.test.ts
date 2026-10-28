@@ -530,6 +530,29 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
       expect(await run(await link(dir, stale.outputs, "stale"), 2)).toBe(expectedExit(2));
     });
 
+    test("block counts annotate only the functions whose control flow changed", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-blocks-missing-"));
+      dirs.push(dir);
+      const { profile } = await collect(dir, program(), 1, "train");
+      const blocks = join(dir, "train.blocks");
+      await emit(dir, program(), { outputs: 1, name: "recorded", use: profile, record: blocks });
+      // program(0, true) adds offset, which the profile has no record of; a
+      // record for it in the block file is not used, so the recovered
+      // functions stay among the mismatched ones.
+      await writeFile(blocks, `${await readFile(blocks, "utf8")}f offset 1000 1\nentry 1000\n`);
+      const { stdout } = await emitReporting(dir, program(0, true), {
+        outputs: 1,
+        name: "stale",
+        use: profile,
+        blocks,
+      });
+      expect(JSON.parse(stdout.trim().split("\n").at(-1)!).profile).toMatchObject({
+        mismatched: 1,
+        missing: 1,
+        recovered: 1,
+      });
+    });
+
     test("block counts need a profile and a file that parses", async () => {
       const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-blocks-error-"));
       dirs.push(dir);
