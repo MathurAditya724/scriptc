@@ -352,6 +352,16 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
   });
 
   describe.runIf(profileLinker !== null)("with the profile runtime", () => {
+    test("profiles name local functions after the entry's file name, not its directory", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-names-"));
+      dirs.push(dir);
+      const { profile } = await collect(dir, program(), 1, "names");
+      const { stdout } = await execFileAsync(helper!, ["profile-functions", "--input", profile]);
+      const { functions } = JSON.parse(stdout) as { functions: string[] };
+      expect(functions.filter((name) => name.startsWith("program.ts;")).length).toBeGreaterThan(0);
+      expect(functions.filter((name) => name.includes("/"))).toEqual([]);
+    });
+
     for (const outputs of [1, 4]) {
       test(`${outputs === 1 ? "one module" : "partitions"}: the merged profile guides emission`, async () => {
         const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-use-"));

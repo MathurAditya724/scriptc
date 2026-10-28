@@ -266,7 +266,7 @@ $ scriptc merge-profiles -o app.profdata profiles/*.profraw
 $ scriptc build app.ts --optimization=speed --profile-use app.profdata
 ```
 
-Train on workloads like the ones the program will run: code the training never reached is optimized as without a profile. The profile can be committed and reused as the program changes. Functions whose control flow changed since the profile was collected lose their profile, and the rest keep theirs, so regenerate it when much of the program has changed. [Build parallelism](/docs/how-it-works#build-parallelism) describes what a profile adds to build time.
+Train on workloads like the ones the program will run: code the training never reached is optimized as without a profile. The profile can be committed and reused as the program changes, and in other checkouts and on other machines: it names functions by the entry's file name, not its directory. Functions whose control flow changed since the profile was collected lose their profile, and the rest keep theirs, so regenerate it when much of the program has changed. [Build parallelism](/docs/how-it-works#build-parallelism) describes what a profile adds to build time.
 
 `scriptc build --profile-use` prints one line on stderr with how the profile matched the program's functions:
 
