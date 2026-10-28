@@ -44,6 +44,7 @@
 #include "llvm/Support/Caching.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/SHA256.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ThreadPool.h"
@@ -465,6 +466,14 @@ std::optional<EmitFailure> writeRecordedBlocks(const EmitOptions &Options) {
   return std::nullopt;
 }
 
+// The source file name a program's modules carry: the entry's file name,
+// without its directory. Profiles name a module's local functions after it
+// ("<name>;<function>"), so a profile collected in one checkout matches the
+// builds of every other one.
+std::string moduleSourceName(StringRef SourcePath) {
+  return sys::path::filename(SourcePath).str();
+}
+
 // Owns the analysis managers a pipeline needs for one module.
 struct Pipeline {
   PassInstrumentationCallbacks Callbacks;
@@ -796,7 +805,7 @@ Expected<std::unique_ptr<Module>> loadPartition(const EmitOptions &Options,
     return createStringError(inconvertibleErrorCode(), Stream.str());
   }
   if (!Options.SourcePath.empty())
-    Mod->setSourceFileName(Options.SourcePath);
+    Mod->setSourceFileName(moduleSourceName(Options.SourcePath));
   Mod->setTargetTriple(Triple(Options.Target));
   Mod->setDataLayout(Machine.createDataLayout());
   if (std::optional<EmitFailure> Failure = verify(*Mod, "verification_failed"))
@@ -1669,7 +1678,7 @@ int emit(const EmitOptions &Options) {
     return reportError("invalid_ir", Stream.str(), Options.DiagnosticFormat);
   }
   if (!Options.SourcePath.empty())
-    Mod->setSourceFileName(Options.SourcePath);
+    Mod->setSourceFileName(moduleSourceName(Options.SourcePath));
 
   std::string LookupError;
   std::unique_ptr<TargetMachine> Machine =
