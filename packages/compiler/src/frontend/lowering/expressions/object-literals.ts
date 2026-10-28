@@ -1935,6 +1935,28 @@ export function lowerObjectLiteral(
           }
         }
         const srcRef = (): IrExpr => srcLowered ?? lowerer.lowerExpr(srcNode);
+        const srcNarrowed = (): IrExpr => ({
+          kind: "unionNarrow",
+          unionId: srcType.unionId,
+          tag: recTag,
+          value: srcRef(),
+          type: recArm,
+          loc: locOf(prop),
+        });
+        // The source PROVEN present: the checked extraction `x!` lowers to
+        // (narrowedArmHelper + checkedNarrowCall). A required target field
+        // with no earlier contributor has no absent representation, so
+        // `{ ...maybeRecord }` into it must find the record: the unit arm
+        // throws the catchable TypeError instead of leaving the slot unset
+        // (divergence 38's lying-assertion stance — the checker typed the
+        // spread's fields optional, so only a cast or an unchecked indexed
+        // read reaches this shape).
+        const srcPresent = (): IrExpr => {
+          const helper = lowerer.narrowedArmHelper(srcType.unionId, recArm, locOf(prop));
+          return helper
+            ? lowerer.checkedNarrowCall(helper, srcRef(), recArm, locOf(prop))
+            : srcNarrowed();
+        };
         orderSegments.push({ kind: "spread", shapeId: recArm.shapeId, maybeAbsent: true });
         for (const f of srcShape.fields) {
           if (laterNames.has(f.name)) continue;
@@ -1949,16 +1971,9 @@ export function lowerObjectLiteral(
               `spread of '${f.name}' over an earlier conditional spread (the desugar keeps one entry per name — restructure so each name has one contributor)`,
             );
           }
-          const fRead = (): IrExpr => ({
+          const fRead = (present = false): IrExpr => ({
             kind: "recordGet",
-            obj: {
-              kind: "unionNarrow",
-              unionId: srcType.unionId,
-              tag: recTag,
-              value: srcRef(),
-              type: recArm,
-              loc: locOf(prop),
-            },
+            obj: present ? srcPresent() : srcNarrowed(),
             shapeId: recArm.shapeId,
             field: f.name,
             type: f.type,
@@ -2101,11 +2116,37 @@ export function lowerObjectLiteral(
           const elseVal =
             at >= 0 ? fields[at]!.value : lowerer.absentFieldValue(targetType, locOf(prop));
           if (!elseVal) {
-            lowerer.unsupported(
-              "SC1090",
-              prop,
-              `object spread of '${lowerer.fmt(srcType)}' sources where '${f.name}' has no earlier contributor (the absent arm leaves the required field unset — spread defaults first: { ...defaults, ...overrides })`,
-            );
+            if (canBeAbsent) {
+              // The FIELD itself can be missing from a present source:
+              // no extraction makes it exist.
+              lowerer.unsupported(
+                "SC1090",
+                prop,
+                `object spread of '${lowerer.fmt(srcType)}' sources where '${f.name}' has no earlier contributor (the absent arm leaves the required field unset — spread defaults first: { ...defaults, ...overrides })`,
+              );
+            }
+            // No earlier contributor and the target slot cannot be absent:
+            // the source must be here. Copy through the checked extraction
+            // (the absent unit arm throws) — the same read the width lift
+            // below wraps, so a lift still applies.
+            let strict = fRead(true);
+            if (!typeEquals(f.type, targetType)) {
+              const lift = lowerer.widthLiftPlan(f.type, targetType);
+              if (!lift) {
+                lowerer.pushDiag(
+                  recordShapeMismatchDiag(
+                    lowerer.fmt(type),
+                    lowerer.fmt(recArm),
+                    locOf(prop),
+                    `spread field '${f.name}': '${lowerer.fmt(f.type)}' does not lift into '${lowerer.fmt(targetType)}'`,
+                  ),
+                );
+                throw new PoisonError();
+              }
+              strict = lowerer.applyWidthLift(lift, strict, targetType, locOf(prop));
+            }
+            fields.push({ name: f.name, value: strict });
+            continue;
           }
           const merged: IrExpr = {
             kind: "ternary",
