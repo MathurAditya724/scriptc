@@ -392,8 +392,18 @@ void appendRenumbered(StringRef Text, const DenseMap<unsigned, unsigned> &Map,
 
 } // namespace
 
+bool dominatedPartitions(ArrayRef<uint64_t> FunctionBytes) {
+  uint64_t Total = 0, Largest = 0;
+  for (uint64_t Bytes : FunctionBytes) {
+    Total += Bytes;
+    Largest = std::max(Largest, Bytes);
+  }
+  return Largest * 3 > Total * 2;
+}
+
 std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
-                                                      unsigned Count) {
+                                                      unsigned Count,
+                                                      bool SkipDominated) {
   if (Count < 2)
     return std::nullopt;
   std::vector<StringRef> Header, Types, Attributes, NamedMetadata;
@@ -587,10 +597,18 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
   // chain through a global continues to the function that uses the global.
   // A function body larger than this is past LLVM's inline cost limit even
   // for the only call to a local function, so it is placed by its own name.
-  // A chain stops where it would leave a function's source-module group:
-  // module initializers, which only the entry point calls, keep their own
-  // partitions instead of all sharing the entry point's.
+  // A chain stops where it would leave a function's source-module group for
+  // a function outside every group. In a module of more than
+  // GroupedChainBytes of LLVM text, it also stops where it would join a
+  // function of another group: module initializers, which only the entry
+  // point calls, keep their own partitions instead of all sharing the entry
+  // point's. In a smaller module, a function that one function of another
+  // source file calls stays with it, so it can still be inlined there as in
+  // the whole module; when that gathers most of the program into one
+  // partition, the program is optimized whole (see emitPartitions).
   constexpr size_t MaxInlinedBodyBytes = 256 * 1024;
+  constexpr size_t GroupedChainBytes = 1024 * 1024;
+  bool GroupedChains = Text.size() > GroupedChainBytes;
   constexpr unsigned Shared = ~1u;
   std::vector<unsigned> Referrer(Symbols.size(), NoPartition);
   for (unsigned I = 0; I < Symbols.size(); ++I) {
@@ -611,7 +629,8 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
     if (S.Kind == SymbolKind::Function &&
         (S.Body.size() > MaxInlinedBodyBytes ||
          (Symbols[Parent].Kind == SymbolKind::Function && !S.Group.empty() &&
-          S.Group != Symbols[Parent].Group)))
+          S.Group != Symbols[Parent].Group &&
+          (GroupedChains || Symbols[Parent].Group.empty()))))
       return false;
     return true;
   };
@@ -663,10 +682,41 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
       Result.PublicSymbols.insert(S.Name);
 
   Result.Sources.resize(Count);
+  Result.FunctionBytes.assign(Count, 0);
   std::vector<std::vector<unsigned>> Owned(Count);
   for (unsigned I = 0; I < Symbols.size(); ++I)
-    if (Symbols[I].Kind != SymbolKind::Declaration && Live[I])
+    if (Symbols[I].Kind != SymbolKind::Declaration && Live[I]) {
       Owned[Symbols[I].Partition].push_back(I);
+      if (Symbols[I].Kind == SymbolKind::Function)
+        Result.FunctionBytes[Symbols[I].Partition] +=
+            Symbols[I].Header.size() + Symbols[I].Body.size();
+    }
+  // The caller optimizes such a module whole, so its partitions' text is
+  // not needed.
+  if (SkipDominated && dominatedPartitions(Result.FunctionBytes)) {
+    Result.Sources.clear();
+    return Result;
+  }
+
+  // An internal definition stays internal, so its partition's optimizer can
+  // inline a function into its last caller and delete it as the whole module
+  // would. It is promoted to hidden visibility only when a definition of
+  // another partition or a metadata node names it.
+  std::vector<char> Exported(Symbols.size(), 0);
+  for (unsigned I : NamedSymbols)
+    Exported[I] = 1;
+  for (auto &Entry : Metadata)
+    for (unsigned I : Entry.second.Symbols)
+      Exported[I] = 1;
+  for (unsigned I = 0; I < Symbols.size(); ++I) {
+    const Symbol &S = Symbols[I];
+    if (S.Kind == SymbolKind::Declaration || !Live[I])
+      continue;
+    for (unsigned Ref : S.Refs)
+      if (Symbols[Ref].Kind != SymbolKind::Declaration &&
+          Symbols[Ref].Partition != S.Partition)
+        Exported[Ref] = 1;
+  }
 
   auto Assemble = [&](unsigned P) {
     std::vector<char> Needed(Symbols.size(), 0);
@@ -731,7 +781,7 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
         const Symbol &S = Symbols[I];
         if (S.Kind != Kind)
           continue;
-        Line(S.Local ? StringRef(S.PromotedHeader) : S.Header);
+        Line(S.Local && Exported[I] ? StringRef(S.PromotedHeader) : S.Header);
         if (!S.Body.empty())
           Line(S.Body);
       }
