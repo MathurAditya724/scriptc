@@ -2,7 +2,7 @@
 // named imports, by namespace, and through require().
 import { createRequire } from "node:module";
 import * as ns from "./state.mjs";
-import { config, count, entries, record } from "./state.mjs";
+import { config, count, entries, record, describe } from "./state.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -34,4 +34,8 @@ export function sameRecord(fn) {
 export function requireSees() {
   const viaRequire = require("./state.mjs");
   return viaRequire === ns && viaRequire.entries() === entries();
+}
+
+export function describeNow() {
+  return describe();
 }

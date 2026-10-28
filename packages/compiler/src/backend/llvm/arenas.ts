@@ -47,6 +47,10 @@ export interface ArenaPlan {
   /** Record shapes and classes that get an arena-aware constructor. */
   shapes: Set<string>;
   classes: Set<string>;
+  /** Every root and call region opens a closed arena, so the current arena
+   * is always closed or absent, and the arena-aware constructors of record
+   * shapes and classes add no dispose entries. */
+  allClosed: boolean;
 }
 
 export interface ArenaEligibility {
@@ -150,7 +154,8 @@ export function planArenas(mod: IrModule, eligible: ArenaEligibility): ArenaPlan
   };
   const keptSite = (e: Node): boolean => sites.arenaSites.has(e) || groups.roots.has(e);
   for (const r of analyzeClosedGroups(mod, groups, arenaType, keptSite)) groups.closed.add(r);
-  return { groups, sites, shapes, classes };
+  const allClosed = [...groups.roots, ...groups.calls].every((r) => groups.closed.has(r));
+  return { groups, sites, shapes, classes, allClosed };
 }
 
 /** The functions in `reachable` that can allocate a cycle-capable object
