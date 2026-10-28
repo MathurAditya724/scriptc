@@ -1904,6 +1904,8 @@ export function lowerObjectLiteral(
           throw new InternalCompilerError(`lowerer bug: spread of unknown shape ${recArm.shapeId}`);
         fenceAccessorSpreadSource(lowerer, prop, srcShape);
         if (srcShape.indexValue || shape.indexValue) {
+          const fallback = dynSpreadLiteral(lowerer, expr, type);
+          if (fallback) return fallback;
           lowerer.unsupported(
             "SC1090",
             prop,
@@ -2162,6 +2164,8 @@ export function lowerObjectLiteral(
         continue;
       }
       if (srcType?.kind !== "record") {
+        const fallback = dynSpreadLiteral(lowerer, expr, type);
+        if (fallback) return fallback;
         lowerer.unsupported(
           "SC1090",
           prop,
@@ -2175,6 +2179,8 @@ export function lowerObjectLiteral(
       // Index-signature shapes carry runtime-keyed overflow entries the
       // field-by-field desugar cannot enumerate — fenced on either side.
       if (srcShape.indexValue || shape.indexValue) {
+        const fallback = dynSpreadLiteral(lowerer, expr, type);
+        if (fallback) return fallback;
         lowerer.unsupported(
           "SC1090",
           prop,
@@ -2910,6 +2916,53 @@ function lowerConditionalRecordSpread(
   };
 }
 
+/** A spread source the record desugar cannot enumerate: an untyped
+ * (`unknown`) value, or one whose shape carries an index signature
+ * (`Record<string, unknown>`, `{ [key: string]: T }`) so its keys are
+ * runtime state. Node copies own enumerable keys in insertion order, which
+ * the checked-dynamic object reproduces. */
+function dynSpreadSource(lowerer: Lowerer, node: ts.Expression): boolean {
+  let e: ts.Expression = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if ((lowerer.typeOf(e).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+  const indexed = (t: IrType | null): boolean => {
+    if (t?.kind === "record") return lowerer.shapes.get(t.shapeId)?.indexValue !== undefined;
+    if (t?.kind === "union")
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).some((arm) => indexed(arm));
+    return false;
+  };
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(e));
+  return mapped?.kind === "dyn" || indexed(mapped);
+}
+
+/** `expr` as a checked-dynamic object validated into `type` — the
+ * copy-then-check a spread of an untyped or runtime-keyed source needs
+ * (`{ ...item }` out of a `Record<string, unknown>`). Null when no spread
+ * source is of that world or the target shape has no checked extraction:
+ * the caller keeps its own refusal. Keys the target does not declare drop
+ * (divergence 36/68's spread stance). */
+function dynSpreadLiteral(
+  lowerer: Lowerer,
+  expr: ts.ObjectLiteralExpression,
+  type: IrType,
+): IrExpr | null {
+  if (type.kind !== "record") return null;
+  const qualifies = (node: ts.Expression): boolean => dynSpreadSource(lowerer, node);
+  if (
+    !expr.properties.nodes.some((prop) => ts.isSpreadAssignment(prop) && qualifies(prop.expression))
+  )
+    return null;
+  if (
+    !canDynCheckTo(
+      type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return null;
+  return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr), type);
+}
+
 /** A conditional spread's carrier property: `name: value` or shorthand,
  * with an identifier/string-literal name. */
 export type CondSpreadProp = (ts.PropertyAssignment | ts.ShorthandPropertyAssignment) & {
@@ -3005,6 +3058,8 @@ function lowerDeclaredSpreadMerge(
   // absent.
   for (const f of shape.fields) {
     if (f.type.kind !== "union" || lowerer.armTag(f.type.unionId, UNDEFINED_T) < 0) {
+      const fallback = dynSpreadLiteral(lowerer, expr, type);
+      if (fallback) return fallback;
       lowerer.unsupported(
         "SC1090",
         expr,
