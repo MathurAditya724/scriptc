@@ -292,6 +292,24 @@ function statementProvesPresence(statement: ts.Statement, bindings: PresenceBind
   return false;
 }
 
+/** Whether `call`, or a call or access its callee is made of, uses `?.`: a
+ * missing receiver or callee then ends the chain without making the call,
+ * whatever type the checker gives it. */
+function inOptionalChain(call: ts.CallExpression): boolean {
+  let e: ts.Expression = call;
+  for (;;) {
+    if (
+      ts.isCallExpression(e) ||
+      ts.isPropertyAccessExpression(e) ||
+      ts.isElementAccessExpression(e)
+    ) {
+      if (e.questionDotToken !== undefined) return true;
+      e = e.expression;
+    } else if (ts.isNonNullExpression(e) || ts.isParenthesizedExpression(e)) e = e.expression;
+    else return false;
+  }
+}
+
 /** The statement never completes normally: its last reachable statement
  * returns, throws, breaks, continues, or calls a function that never
  * returns. */
@@ -306,7 +324,7 @@ function exitsAbruptly(statement: ts.Statement, bindings: PresenceBindings): boo
   if (ts.isExpressionStatement(statement)) {
     let e = statement.expression;
     while (ts.isParenthesizedExpression(e)) e = e.expression;
-    return ts.isCallExpression(e) && bindings.neverReturns?.(e) === true;
+    return ts.isCallExpression(e) && !inOptionalChain(e) && bindings.neverReturns?.(e) === true;
   }
   if (ts.isBlock(statement)) {
     // A labeled statement inside could be the target of an inner break,

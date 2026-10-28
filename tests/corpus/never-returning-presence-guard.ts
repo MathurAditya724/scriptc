@@ -44,3 +44,19 @@ try {
 } catch (error) {
   if (error instanceof Error) console.log(error.message);
 }
+
+// Behind `?.`, a missing reporter skips the call, so the read after it can
+// still be undefined.
+class Reporter {
+  fail(what: string): never {
+    throw new Error(what);
+  }
+}
+const reporters: Reporter[] = [];
+function maybeWord(index: number): string {
+  const known = words[index];
+  if (known === undefined) reporters[index]?.fail(`no word at ${index}`);
+  return known;
+}
+const missing = maybeWord(7);
+console.log(maybeWord(1), missing === undefined, typeof missing);
