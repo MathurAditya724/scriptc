@@ -6621,7 +6621,11 @@ export class LlEmitter {
     this.B.debugLocation = this.debug?.location(s.loc, this.debugScope) ?? null;
     const loop =
       s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf";
-    if (loop) this.loopDepth++;
+    const builder = this.B;
+    if (loop) {
+      this.loopDepth++;
+      builder.loopDepth++;
+    }
     // An int32 kind loop's fast-copy write leaves for its resume point.
     const kindResume = this.int32KindResume;
     this.int32KindResume = this.int32Kinds?.resume.get(s) ?? null;
@@ -6630,7 +6634,10 @@ export class LlEmitter {
     } finally {
       this.B.debugLocation = previous;
       this.int32KindResume = kindResume;
-      if (loop) this.loopDepth--;
+      if (loop) {
+        this.loopDepth--;
+        builder.loopDepth--;
+      }
     }
   }
   private emitStmtBody(s: IrStmt): void {
