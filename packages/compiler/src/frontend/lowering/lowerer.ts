@@ -41,7 +41,11 @@ import {
   type UnitEvents,
   type WaveHost,
 } from "./unit-journal.js";
-import { moduleNamespaceObject, moduleNamespaceValue } from "./module-namespace-elements.js";
+import {
+  moduleNamespaceDynValue,
+  moduleNamespaceObject,
+  moduleNamespaceValue,
+} from "./module-namespace-elements.js";
 import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import { bindingSymbolOfRead, onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
@@ -189,6 +193,7 @@ import {
   captureContextBinding,
   declareContextLocal,
   declareContextThis,
+  newFnCtx,
   type FnCtx,
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
@@ -5118,6 +5123,79 @@ export class Lowerer {
     if (type.kind !== "moduleNs" || !type.moduleId.startsWith("file:")) return null;
     const path = type.moduleId.slice("file:".length);
     return this.moduleOrder.find((sf) => tsgoPath(resolve(sf.fileName)) === path) ?? null;
+  }
+
+  /** A module namespace taken as a checked-dynamic value (`const u: unknown
+   * = ns`, `take(ns)`): the runtime's namespace object — one per module,
+   * Node's sorted export keys, live reads through a compiled getter, and
+   * Node's read-only write errors — built by `moduleNamespaceDynValue`.
+   * `node:` builtins have no compiled source and no complete export table,
+   * so they keep their fence. */
+  moduleNamespaceDyn(ns: IrExpr & { type: IrType & { kind: "moduleNs" } }): IrExpr | null {
+    if (!ns.type.moduleId.startsWith("file:")) return null;
+    return moduleNamespaceDynValue(this, ns);
+  }
+
+  /** A `Promise<module namespace>` taken as `Promise<unknown>` (or as
+   * `unknown`): one lifted async mapper per module awaits the promise and
+   * answers the same namespace object a bare namespace value boxes to, so
+   * the settlement is Node's namespace while the value stays a promise.
+   * The import() promise reaches these slots alone, and the runtime's
+   * per-module namespace cache keeps `await mapped === await original`; a
+   * rejection propagates unchanged. */
+  moduleNamespacePromiseDynValue(
+    value: IrExpr & { type: IrType & { kind: "promise" } },
+  ): IrExpr | null {
+    const inner = value.type.inner;
+    if (inner.kind !== "moduleNs" || !inner.moduleId.startsWith("file:")) return null;
+    const loc = value.loc;
+    const name = `%module.promise:${inner.moduleId}`;
+    const promiseT: IrType & { kind: "promise" } = { kind: "promise", inner };
+    if (!this.liftedFns.some((fn) => fn.name === name)) {
+      const context = newFnCtx(false, null, null, DYN);
+      context.isAsync = true;
+      const previousClass = this.currentClass;
+      this.currentClass = null;
+      this.fnStack.push(context);
+      let namespace: IrExpr | null = null;
+      try {
+        const awaited: IrExpr & { type: IrType & { kind: "moduleNs" } } = {
+          kind: "awaitExpr",
+          value: varRef("promise", promiseT, loc),
+          type: inner,
+          loc,
+        };
+        namespace = moduleNamespaceDynValue(this, awaited);
+        if (namespace) {
+          const fn: IrFunction = {
+            name,
+            params: [{ localId: "promise", name: "promise", type: promiseT }],
+            returnType: DYN,
+            locals: [
+              { id: "promise", name: "promise", type: promiseT, mutable: false },
+              ...context.locals,
+            ],
+            body: [{ kind: "return", value: namespace, loc }],
+            async: true,
+            loc,
+          };
+          this.liftedFns.push(fn);
+        }
+      } finally {
+        this.fnStack.pop();
+        this.currentClass = previousClass;
+      }
+      // A namespace with no compiled source has no dynamic value: keep the
+      // promise unconverted so the destination's own fence reports it.
+      if (!namespace) return null;
+    }
+    return {
+      kind: "call",
+      callee: name,
+      args: [value],
+      type: { kind: "promise", inner: DYN },
+      loc,
+    };
   }
 
   builtinErrorInfoOf(symbol: ts.Symbol | null | undefined): ClassInfo | null {
@@ -11869,6 +11947,21 @@ export class Lowerer {
       const result = this.coerceToExpected(expr.result, expected);
       return { ...expr, result, type: result.type };
     }
+    // A `Promise<module namespace>` widening into `Promise<unknown>`, or
+    // into an `unknown` slot: map the payload through the namespace's
+    // dynamic value (moduleNamespacePromiseDynValue). A destination that
+    // wants the namespace type itself keeps the promise unchanged; the
+    // union path reuses this through its single-promise-arm conversion.
+    if (
+      expr.type.kind === "promise" &&
+      expr.type.inner.kind === "moduleNs" &&
+      (expected.kind === "dyn" || (expected.kind === "promise" && expected.inner.kind === "dyn"))
+    ) {
+      const mapped = this.moduleNamespacePromiseDynValue(
+        expr as IrExpr & { type: IrType & { kind: "promise" } },
+      );
+      if (mapped) expr = mapped;
+    }
     // An instance of a class declared `extends Array` is its array (the
     // same object); an array slot of another element type converts it as
     // an array.
@@ -12015,6 +12108,16 @@ export class Lowerer {
         const ns = expr as IrExpr & { type: IrType & { kind: "moduleNs" } };
         const object = moduleNamespaceObject(this, ns) ?? moduleNamespaceValue(this, ns);
         if (object) return object;
+      }
+      // A TypeScript source's module namespace as an untyped value: the
+      // runtime's namespace object with live reads, Node's sorted keys and
+      // read-only writes. `node:` builtins have no compiled source or
+      // complete export table here and keep their fence below.
+      if (expr.type.kind === "moduleNs") {
+        const boxed = this.moduleNamespaceDyn(
+          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
+        );
+        if (boxed) return boxed;
       }
       if (
         expr.type.kind === "moduleNs" &&

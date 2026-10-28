@@ -4,6 +4,7 @@ import * as ts from "../ts7/adapter.js";
 import {
   DYN,
   STRING,
+  SYMBOL_T,
   type IrExpr,
   type IrFunction,
   type IrStmt,
@@ -173,18 +174,14 @@ export function moduleNamespaceObject(
   };
 }
 
-/** A module namespace taken as an untyped value whose exports a copy
- * cannot represent: a binding that can change after initialization (`let`,
- * `var`), or an export the copy cannot name. The value is the runtime's
- * namespace object (scr_module_namespace_value): one per module, whose
- * property reads call a compiled getter for the export's current value and
- * whose writes throw Node's TypeError. An export whose value has no
- * checked-dynamic form throws its fence when it is read, and listing the
- * object's keys or inspecting it throws the "not supported yet" error. */
-export function moduleNamespaceValue(
+/** The compiled getter behind a namespace object: one lifted function per
+ * module that answers an export's current value by name, plus the module's
+ * sorted export names. An export whose value has no checked-dynamic form
+ * throws its fence when it is read. */
+function moduleNamespaceGetter(
   lowerer: Lowerer,
   ns: IrExpr & { type: IrType & { kind: "moduleNs" } },
-): IrExpr | null {
+): { name: string; keys: string[] } | null {
   const source = lowerer.sourceFileOfModuleNamespace(ns.type);
   if (!source) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(source);
@@ -263,6 +260,24 @@ export function moduleNamespaceValue(
       lowerer.currentClass = previousClass;
     }
   }
+  return { name, keys: exports.map(({ key }) => key) };
+}
+
+/** A module namespace taken as an untyped value whose exports a copy
+ * cannot represent: a binding that can change after initialization (`let`,
+ * `var`), or an export the copy cannot name. The value is the runtime's
+ * namespace object (scr_module_namespace_value): one per module, whose
+ * property reads call a compiled getter for the export's current value and
+ * whose writes throw Node's TypeError. An export whose value has no
+ * checked-dynamic form throws its fence when it is read, and listing the
+ * object's keys or inspecting it throws the "not supported yet" error. */
+export function moduleNamespaceValue(
+  lowerer: Lowerer,
+  ns: IrExpr & { type: IrType & { kind: "moduleNs" } },
+): IrExpr | null {
+  const getter = moduleNamespaceGetter(lowerer, ns);
+  if (!getter) return null;
+  const loc = ns.loc;
   const value: IrExpr = {
     kind: "libCall",
     fn: "module.namespaceValue",
@@ -270,13 +285,82 @@ export function moduleNamespaceValue(
       strLit(ns.type.moduleId, loc),
       {
         kind: "arrayLit",
-        elems: exports.map(({ key }) => strLit(key, loc)),
+        elems: getter.keys.map((key) => strLit(key, loc)),
         type: arrayOf(STRING),
         loc,
       },
       {
         kind: "dynFrom",
-        value: { kind: "closure", fnName: name, captures: [], type: funcOf([STRING], DYN), loc },
+        value: {
+          kind: "closure",
+          fnName: getter.name,
+          captures: [],
+          type: funcOf([STRING], DYN),
+          loc,
+        },
+        type: DYN,
+        loc,
+      },
+    ],
+    type: DYN,
+    loc,
+  };
+  if (ns.kind === "moduleNsRef") return value;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: ns, loc }],
+    result: value,
+    type: DYN,
+    loc,
+  };
+}
+
+/** A module namespace boxed for typed code through a dynamic slot
+ * (`const u: unknown = ns`, `take(ns)`): Node's namespace object as
+ * scr_module_namespace_dyn.c builds it — one non-extensible null-prototype
+ * object per module whose own sorted export names are enumerable read-only
+ * accessors, whose `Symbol.toStringTag` is "Module", whose reads call the same
+ * compiled getter, and whose writes and coerces throw Node's TypeErrors. A
+ * `node:` builtin has no compiled export table, so it keeps its fence. */
+export function moduleNamespaceDynValue(
+  lowerer: Lowerer,
+  ns: IrExpr & { type: IrType & { kind: "moduleNs" } },
+): IrExpr | null {
+  const getter = moduleNamespaceGetter(lowerer, ns);
+  if (!getter) return null;
+  const loc = ns.loc;
+  const value: IrExpr = {
+    kind: "libCall",
+    fn: "module.namespaceDyn",
+    args: [
+      strLit(ns.type.moduleId, loc),
+      {
+        kind: "arrayLit",
+        elems: getter.keys.map((key) => strLit(key, loc)),
+        type: arrayOf(STRING),
+        loc,
+      },
+      {
+        kind: "dynFrom",
+        value: {
+          kind: "closure",
+          fnName: getter.name,
+          captures: [],
+          type: funcOf([STRING], DYN),
+          loc,
+        },
+        type: DYN,
+        loc,
+      },
+      {
+        kind: "dynFrom",
+        value: {
+          kind: "libCall",
+          fn: "sym.wellKnown",
+          args: [strLit("toStringTag", loc)],
+          type: SYMBOL_T,
+          loc,
+        },
         type: DYN,
         loc,
       },
