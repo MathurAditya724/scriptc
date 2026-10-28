@@ -91,7 +91,7 @@ export {};
   expect(helpers(result.ir, "%union.arr")).toEqual([]);
 });
 
-test("a union that already holds the array arm keeps its checked extraction", async () => {
+test("a mixed union that holds the array arm converts every arm", async () => {
   const result = await lower(`
 type T = string[] | ["a"];
 function pick(flag: boolean): T {
@@ -103,9 +103,26 @@ export {};
 `);
   expect(result.ok).toBe(true);
   if (!result.ok) return;
-  // `string[]` is an arm, so the conversion this program always used — the
-  // checked extraction of that arm — must stay byte-identical: the new union
-  // array lift is only for unions with no arm the slot can hold.
+  // Node has one array either way, so the tuple arm rebuilds instead of the
+  // checked extraction trapping on it.
+  expect(helpers(result.ir, "%union.arr").length).toBeGreaterThan(0);
+  expect(helpers(result.ir, "%union.narrow")).toEqual([]);
+});
+
+test("a union whose only non-unit arm is the slot keeps its checked extraction", async () => {
+  const result = await lower(`
+type T = string[] | undefined;
+function pick(flag: boolean): T {
+  return flag ? ["b", "c"] : undefined;
+}
+const widened: string[] = pick(true)!;
+console.log(widened.length);
+export {};
+`);
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  // Nothing to convert: the destination arm comes out through the same
+  // checked extraction this shape always took.
   expect(helpers(result.ir, "%union.narrow").length).toBeGreaterThan(0);
   expect(helpers(result.ir, "%union.arr")).toEqual([]);
 });

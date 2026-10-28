@@ -12551,6 +12551,16 @@ export class Lowerer {
       }
     }
     if (expected.kind !== "union" || typeEquals(expr.type, expected)) {
+      // A MIXED union of tuples/arrays flowing into one of its own array
+      // arms (`["one"] | string[]` into `string[]`): Node has one array
+      // either way, so every arm converts on its tag (the width plan's
+      // unionArr) rather than the checked extraction trapping on the
+      // tuple arm. The plan promises this conversion exactly when a
+      // non-destination arm converts too.
+      if (expr.type.kind === "union" && expected.kind === "array") {
+        const lift = this.widthLiftPlan(expr.type, expected);
+        if (lift?.how === "unionArr") return this.applyWidthLift(lift, expr, expected, expr.loc);
+      }
       // A UNION value flowing into one of its own ARMS: the checker
       // proved the narrowing (control flow through a destructured
       // binding, `d ?? (d = ...)`, a predicate call — tsc typed the SITE
@@ -12593,20 +12603,6 @@ export class Lowerer {
       if (expr.type.kind === "union" && expected.kind === "record") {
         const lifted = unionArmsWidthLift(this, expr, expected);
         if (lifted) return lifted;
-      }
-      // A UNION of tuples/arrays flowing into an array slot that is not one
-      // of its arms (an `as const` key table's index read into
-      // `readonly string[]`): a width plan converts every arm on its own
-      // tag, a tuple rebuilding through tupleArr. Planned after the
-      // checked extraction above, and skipped when an arm already IS the
-      // slot, so every union that converted before keeps the same IR.
-      if (
-        expr.type.kind === "union" &&
-        expected.kind === "array" &&
-        !(this.unions.get(expr.type.unionId)?.arms ?? []).some((arm) => typeEquals(arm, expected))
-      ) {
-        const lift = this.widthLiftPlan(expr.type, expected);
-        if (lift) return this.applyWidthLift(lift, expr, expected, expr.loc);
       }
       if (!typeEquals(expr.type, expected)) {
         const w = this.widthCoerce(expr, expected);

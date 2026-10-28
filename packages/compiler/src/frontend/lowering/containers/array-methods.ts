@@ -18,6 +18,7 @@ import {
   type SrcLoc,
   UNDEFINED_T,
   arrayOf,
+  canDynCheckTo,
   isRefCounted,
   isUnitType,
   typeEquals,
@@ -45,6 +46,8 @@ import {
   positionNumber,
 } from "../optional-arguments.js";
 import { lowerArrayCopyWithin, lowerArrayFill } from "../array-indexed-mutation.js";
+import { checkedIteratorPack, widenedIterableType } from "../expressions/array-literals.js";
+import { notIterableSpelling } from "../iterable-spelling.js";
 import {
   lowerArrayUnionHofCall,
   lowerArraySortCall,
@@ -978,6 +981,27 @@ export function lowerArrayMethodCall(
       if (!typeEquals(src.type, receiverIr)) {
         // Fresh elements (an array literal) convert into the element layout.
         src = liftedFreshSpread(lowerer, spreadArg.expression, src, receiverIr, loc) ?? src;
+      }
+      // A source the checker typed WIDER than the iterable it holds at run
+      // time (an untyped value, a `T | undefined` local): Node iterates
+      // whatever the value is and throws the not-iterable TypeError for
+      // null/undefined. Drain through the checked iterator walk and
+      // validate each element into the receiver's slot.
+      if (
+        !typeEquals(src.type, receiverIr) &&
+        (src.type.kind === "dyn" || widenedIterableType(lowerer, src.type)) &&
+        canDynCheckTo(
+          receiverIr,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      ) {
+        const dynSrc = lowerer.coerceInto(spreadArg.expression, src, DYN);
+        src = lowerer.coerceInto(
+          spreadArg.expression,
+          checkedIteratorPack(lowerer, dynSrc, notIterableSpelling(spreadArg.expression), loc),
+          receiverIr,
+        );
       }
       if (!typeEquals(src.type, receiverIr)) {
         lowerer.unsupported(

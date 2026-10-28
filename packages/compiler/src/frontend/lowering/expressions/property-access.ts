@@ -1418,7 +1418,7 @@ export function lowerPropertyAccessExpr(
       ? deferredMemberReadTarget(lowerer, assertion, expr, recvLowered)
       : null;
     if (target !== null) {
-      const read = assertedMemberRead(lowerer, expr, recvLowered, loc);
+      const read = assertedMemberRead(lowerer, expr.expression, expr.name.text, recvLowered, loc);
       if (read) return read;
       recvLowered = applyDeferredAssertion(lowerer, recvLowered, target, loc);
     }
@@ -1605,7 +1605,7 @@ export function lowerPropertyAccessExpr(
     const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
     return mapped && mapped.kind !== "void" ? lowerer.coerceInto(expr, read, mapped) : read;
   }
-  const asserted = assertedMemberRead(lowerer, expr, recvLowered, loc);
+  const asserted = assertedMemberRead(lowerer, expr.expression, expr.name.text, recvLowered, loc);
   if (asserted) return asserted;
   // A checker-`any` receiver whose value is a FRESH typed result of an
   // earlier step in the chain (`out.split(" ").length`, where split
@@ -1696,30 +1696,36 @@ function isFreshCallResult(node: ts.Expression): boolean {
 /** `(source as { repoName: string }).repoName` where the assertion names a
  * member some arms of the stored union of records do not declare: Node
  * reads the property off whichever object it is, so arms that declare it
- * answer their slot, and the others answer undefined (native records are
- * closed, so they cannot hold it). The result keeps that undefined arm
- * whatever the assertion claims; a consumer that needs the asserted type
- * checks it like any other narrowing. The arms that declare the member
- * must agree on its type. Null when the receiver is not such an
- * assertion over records, or no arm declares the member. */
-function assertedMemberRead(
+ * answer their slot (a getter arm calls its getter), an index-signature arm
+ * answers its own key (a declared miss reads undefined), an arm with only a
+ * setter of that name reads undefined, and the rest answer undefined
+ * (native records are closed, so they cannot hold it). The result keeps
+ * that undefined arm whatever the assertion claims; a consumer that needs
+ * the asserted type checks it like any other narrowing. The arms that
+ * declare the member must agree on its type. `receiverNode` is the asserted
+ * expression and `name` the member read (the dot and bracket spellings
+ * share this answer). Null when the receiver is not such an assertion over
+ * records, or no arm answers the member. */
+export function assertedMemberRead(
   lowerer: Lowerer,
-  expr: ts.PropertyAccessExpression,
+  receiverNode: ts.Expression,
+  name: string,
   recv: IrExpr,
   loc: SrcLoc,
 ): IrExpr | null {
-  let receiverNode: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(receiverNode)) receiverNode = receiverNode.expression;
   if (!ts.isAsExpression(receiverNode) && !ts.isTypeAssertion(receiverNode)) return null;
   if (recv.type.kind !== "union") return null;
   const unionId = recv.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms ?? [];
-  const name = expr.name.text;
   let resultType: IrType | null = null;
   let records = 0;
   // A getter arm answers by calling its getter, once per read, as Node's
   // read does; a data arm reads its slot.
   const declaring: { tag: number; shapeId: string; type: IrType; getter: boolean }[] = [];
+  // An index-signature arm may hold the key in its overflow map: the read
+  // probes it per value (the stored value, or undefined).
+  const keyed: { tag: number; shapeId: string; type: IrType }[] = [];
   const units: number[] = [];
   for (let tag = 0; tag < arms.length; tag++) {
     const arm = arms[tag]!;
@@ -1730,12 +1736,16 @@ function assertedMemberRead(
     if (arm.kind !== "record") return null;
     records++;
     const shape = lowerer.shapes.get(arm.shapeId);
-    if (!shape || shape.tuple || shape.indexValue) return null;
+    if (!shape || shape.tuple) return null;
     const getter = shape.fields.find((f) => f.name === `%get:${name}`);
-    if (!getter && shape.fields.some((f) => f.name === `%set:${name}`)) return null;
     if (getter && getter.type.kind !== "func") return null;
     const field = getter ?? shape.fields.find((f) => f.name === name);
-    if (!field) continue;
+    if (!field) {
+      // A setter-only arm reads undefined (Node never invokes a setter on
+      // a read); an index-signature arm answers its own key.
+      if (shape.indexValue) keyed.push({ tag, shapeId: arm.shapeId, type: shape.indexValue });
+      continue;
+    }
     const fieldType = field.type.kind === "func" && getter ? field.type.ret : field.type;
     // The declaring arms agree up to an undefined arm (`string` beside
     // `string | undefined`).
@@ -1743,6 +1753,19 @@ function assertedMemberRead(
     if (!armResult || (resultType && !typeEquals(resultType, armResult))) return null;
     resultType = armResult;
     declaring.push({ tag, shapeId: arm.shapeId, type: field.type, getter: getter !== undefined });
+  }
+  // The index-signature arms answer their value type armed with undefined;
+  // a union with several shapes uses the union of every arm's answer.
+  for (const k of keyed) {
+    const armResult = lowerer.withUndefinedArmOf(k.type);
+    if (!armResult) return null;
+    if (resultType === null || typeEquals(resultType, armResult)) {
+      resultType = armResult;
+      continue;
+    }
+    const merged = mergeReadTypes(lowerer, [resultType, armResult]);
+    if (!merged) return null;
+    resultType = merged;
   }
   if (!resultType || (declaring.length === records && declaring.every((d) => !d.getter)))
     return null;
@@ -1790,6 +1813,28 @@ function assertedMemberRead(
       loc,
     };
   }
+  for (const { tag, shapeId, type: valueType } of keyed) {
+    const axis: IrExpr = { kind: "unionNarrow", unionId, tag, value: ref(), type: arms[tag]!, loc };
+    const answer = lowerer.withUndefinedArmOf(valueType);
+    if (!answer) return null;
+    const read: IrExpr = {
+      kind: "recordKeyGet",
+      obj: axis,
+      shapeId,
+      key: { kind: "strLit", value: name, type: STRING, loc },
+      overflowOnly: true,
+      type: answer,
+      loc,
+    };
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value: ref(), type: BOOL, loc },
+      then: lowerer.coerceToExpected(read, resultType),
+      else_: result,
+      type: resultType,
+      loc,
+    };
+  }
   return {
     kind: "seqExpr",
     stmts: [{ kind: "varDecl", localId: stable.id, init: recv, loc }],
@@ -1797,6 +1842,22 @@ function assertedMemberRead(
     type: resultType,
     loc,
   };
+}
+
+/** The union of two per-arm read answers (each already carries its
+ * undefined arm), or null when the shapes cannot intern as one union. */
+function mergeReadTypes(lowerer: Lowerer, types: IrType[]): IrType | null {
+  const arms: IrType[] = [];
+  for (const t of types) {
+    const list = t.kind === "union" ? (lowerer.unions.get(t.unionId)?.arms ?? []) : [t];
+    for (const arm of list) if (!arms.some((a) => typeEquals(a, arm))) arms.push(arm);
+  }
+  if (arms.length === 0) return null;
+  if (arms.length === 1) return arms[0]!;
+  const canonical = arms.sort((a, b) =>
+    typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0,
+  );
+  return { kind: "union", unionId: lowerer.unions.intern(canonical) };
 }
 
 function importMetaProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
