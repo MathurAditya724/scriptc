@@ -2475,14 +2475,32 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     (value.type.kind === "union" && lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0)
       ? arrayValueType(lowerer, arr.type.elem)
       : arr.type.elem;
-  return arrayValueStore(
-    lowerer,
-    arr,
-    index,
-    lowerer.coerceInto(expr.right, value, expected),
-    arr.type.elem,
-    locOf(expr),
-  );
+  const stored = lowerer.coerceInto(expr.right, value, expected);
+  // A binding's `T | undefined` value is stored by two writes that both
+  // read the index (arrayValueStore). A computed index, such as the key
+  // conversion of a union index that declares a temporary, is held once
+  // ahead of them, after the receiver and before the value as in source order.
+  if (
+    stored.kind === "varRef" &&
+    stored.type.kind === "union" &&
+    lowerer.armTag(stored.type.unionId, UNDEFINED_T) >= 0 &&
+    !typeEquals(stored.type, arr.type.elem) &&
+    arr.kind === "varRef" &&
+    index.kind !== "varRef" &&
+    index.kind !== "numLit"
+  ) {
+    const loc = locOf(expr);
+    const held = lowerer.declareHiddenLocal("%arrayIndex", index.type);
+    return {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: held.id, init: index, loc },
+        arrayValueStore(lowerer, arr, varRef(held.id, held.type, loc), stored, arr.type.elem, loc),
+      ],
+      loc,
+    };
+  }
+  return arrayValueStore(lowerer, arr, index, stored, arr.type.elem, locOf(expr));
 }
 
 /** Environment property names use ToPrimitive with the string hint, so
