@@ -131,3 +131,23 @@ console.log(view.tick());
 `);
   expect(kinds["view"]).toBe("dyn");
 });
+
+test("a Map received as a record with one of its members stays the collection", async () => {
+  const kinds = await globalKinds(`
+type Exists = { has(key: string): boolean };
+const byId = new Map<string, number>();
+const view: Exists = byId;
+console.log(view.has("a"), byId.has("a"));
+`);
+  expect(kinds["view"]).toBe("dyn");
+});
+
+test("a Set received as a record with one of its members stays the collection", async () => {
+  const kinds = await globalKinds(`
+type Exists = { has(key: string): boolean };
+const seen = new Set<string>();
+const view: Exists = seen;
+console.log(view.has("a"), seen.has("a"));
+`);
+  expect(kinds["view"]).toBe("dyn");
+});
