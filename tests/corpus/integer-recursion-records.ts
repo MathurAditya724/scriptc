@@ -1,6 +1,7 @@
 // Pure integer recursion over record graphs: counts and sums read from
 // fields, sums that leave the int32 range, number fields that are not
-// int32s, boolean fields, null tests and narrows, and endless recursion.
+// int32s, boolean fields, null tests and narrows, endless recursion, and
+// records that view another record.
 
 interface Tree {
   left: Tree | null;
@@ -106,6 +107,14 @@ function nodeSum(node: Node): number {
   return node.next === null ? node.value : node.value + nodeSum(node.next);
 }
 
+// A record converted from an untyped value into a narrower record type is
+// a view of the original: its fields are the original's.
+type Measured = { label: string; hi: number; open: boolean; lo: number };
+type Span = { lo: number; hi: number };
+function spanSum(span: Span, n: number): number {
+  return n === 0 ? span.lo : span.hi + spanSum(span, n - 1);
+}
+
 function attempt(label: string, run: () => number | boolean): void {
   try {
     console.log(label, run());
@@ -158,3 +167,8 @@ attempt("ring total", () => total(ring));
 console.log("pair", sumPair({ a: 2147483647, b: 1 }), sumPair({ a: 3, b: 4 }), sumPair({ a: 0.5, b: 0.25 }));
 console.log("link", linkSum({ value: 1, next: { value: 2, next: { value: 3 } } }));
 console.log("node", nodeSum(new Node(1, new Node(2, new Node(2147483647, null)))));
+const measured: Measured = { label: "m", hi: 2, open: true, lo: 7 };
+const untyped: unknown = measured;
+const span = untyped as Span;
+span.hi = 3;
+console.log("view", spanSum(span, 4), measured.hi, spanSum({ lo: 1, hi: 1 }, 3));

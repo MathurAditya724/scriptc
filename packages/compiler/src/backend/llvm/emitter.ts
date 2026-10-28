@@ -2288,30 +2288,6 @@ export class LlEmitter {
       };
     }
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes, this.nodeIndex);
-    // Integer clones signal a stack overflow through their result. Worker
-    // programs have them only as ELF executables, where the stack guard
-    // and the pending word clones poll for termination are plain
-    // thread-locals; debug builds and stack traces keep every frame.
-    // Clones read number arrays and record graphs their function borrows
-    // (64-bit layouts).
-    this.cloneReferences = this.sizeType === "i64" ? this.recordCloneReferences() : undefined;
-    this.integerClones =
-      this.debug === null &&
-      this.stackChecks !== null &&
-      (mod.workers !== true || this.executableTls) &&
-      mod.lib === undefined &&
-      !this.stackTraces
-        ? findIntegerClones(
-            mod,
-            this.sizeType === "i64"
-              ? (fn, index) => this.callLifetimes.borrowed.get(fn)?.has(index) === true
-              : undefined,
-            this.cloneReferences,
-          )
-        : NO_INTEGER_CLONES;
-    // Integer clones and their dispatchers call each other through their
-    // own lowering, which keeps plain calls and flag tests.
-    for (const name of this.integerClones.members) this.unwindAbi.delete(name);
     this.stackCallbacks = new StackCallbacks(this.fnByName);
     this.receiverReaders = new AmbientReceiverReaders(this.fnByName, this.nodeIndex);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
@@ -2467,6 +2443,30 @@ export class LlEmitter {
       this.shapeHost.recordViews = views;
       this.recordViewTargets = views.targets as Set<string>;
     }
+    // Integer clones signal a stack overflow through their result. Worker
+    // programs have them only as ELF executables, where the stack guard
+    // and the pending word clones poll for termination are plain
+    // thread-locals; debug builds and stack traces keep every frame.
+    // Clones read number arrays and record graphs their function borrows
+    // (64-bit layouts), but no record that may be a view (planned above).
+    this.cloneReferences = this.sizeType === "i64" ? this.recordCloneReferences() : undefined;
+    this.integerClones =
+      this.debug === null &&
+      this.stackChecks !== null &&
+      (mod.workers !== true || this.executableTls) &&
+      mod.lib === undefined &&
+      !this.stackTraces
+        ? findIntegerClones(
+            mod,
+            this.sizeType === "i64"
+              ? (fn, index) => this.callLifetimes.borrowed.get(fn)?.has(index) === true
+              : undefined,
+            this.cloneReferences,
+          )
+        : NO_INTEGER_CLONES;
+    // Integer clones and their dispatchers call each other through their
+    // own lowering, which keeps plain calls and flag tests.
+    for (const name of this.integerClones.members) this.unwindAbi.delete(name);
     this.walkers = new LlWalkers(this.shapeHost);
     this.dyn = new LlDyn(this.shapeHost);
     for (const g of mod.globals ?? []) {
@@ -4925,17 +4925,23 @@ export class LlEmitter {
    * `inline`: the slot stores a scalar union's tag and bits. */
   /** The record layouts integer clones read in place: record pointers,
    * `R | null` unions of a record (NULL is `null`), and fields stored as a
-   * double, an i8 boolean or such a pointer. */
+   * double, an i8 boolean or such a pointer. Records that may be views
+   * (record-views.ts) are not among them. */
   private recordCloneReferences(): CloneReferences {
+    // A view's fields live in the record it views (recordViewFieldPtr), not
+    // at its own shape's offsets.
+    const plain = (shapeId: string): boolean =>
+      this.recordsById.has(shapeId) && this.shapeHost.recordViews?.targets.has(shapeId) !== true;
     const nullable = (unionId: string): NullableUnion | null => {
       const single = this.nullableUnions.single(unionId);
       if (single === null || single.nullTag !== -1 || single.arm.kind !== "record") return null;
+      if (!plain(single.arm.shapeId)) return null;
       const unit = this.unionsById.get(unionId)?.arms[single.unitTag];
       return unit?.kind === "nullT" ? single : null;
     };
     const reference = (type: IrType): boolean =>
       type.kind === "record"
-        ? this.recordsById.has(type.shapeId)
+        ? plain(type.shapeId)
         : type.kind === "union" && nullable(type.unionId) !== null;
     return {
       reference,
@@ -4947,7 +4953,7 @@ export class LlEmitter {
       field: (shapeId, field) => {
         const shape = this.recordsById.get(shapeId);
         const index = shape?.fields.findIndex((f) => f.name === field) ?? -1;
-        if (shape === undefined || index < 0) return null;
+        if (shape === undefined || index < 0 || !plain(shapeId)) return null;
         const type = shape.fields[index]!.type;
         if (this.inlineUnions.record(type)) return null;
         if (type.kind !== "f64" && type.kind !== "bool" && !reference(type)) return null;
