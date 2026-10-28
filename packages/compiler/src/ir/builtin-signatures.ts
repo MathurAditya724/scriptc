@@ -3626,6 +3626,11 @@ function buildLibFnSignatures() {
      * (scr_module_namespace_value): the module id, its sorted export names
      * and the compiled getter. One object per module. Never throws. */
     "module.namespaceValue": { argTypes: [STRING, arrayOf(STRING), DYN], result: DYN },
+    /** A module namespace as typed code sees it through a dynamic slot
+     * (scr_module_namespace_dyn_value): the module id, its sorted export
+     * names, the compiled getter, and the Symbol.toStringTag key. Draws
+     * Node's frozen null-prototype object, one per module. Never throws. */
+    "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN], result: DYN },
     "fs.callbackValue": { argTypes: [STRING], result: DYN },
     "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
     "process.hrtimeValue": { argTypes: [], result: DYN },

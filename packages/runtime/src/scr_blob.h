@@ -34,6 +34,13 @@ ScrDyn *scr_process_builtin_unsupported(ScrStr *id, ScrStr *member);
  * one handle per module `id`, whose reads call `getter` with the export
  * name when `keys` lists it. Borrows all three; +1 handle. */
 ScrDyn *scr_module_namespace_value(ScrStr *id, ScrArr *keys, ScrDyn *getter);
+/* A module namespace as checked-dynamic code sees it
+ * (scr_module_namespace_dyn.c): one non-extensible null-prototype object per
+ * module `id`, Node's sorted export names as enumerable read-only accessors
+ * whose getters call `getter` with the name, `Symbol.toStringTag` "Module"
+ * (the well-known symbol is `tag_key`), and Node's strict-mode write
+ * TypeErrors. Borrows all four; +1 object. */
+ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);
