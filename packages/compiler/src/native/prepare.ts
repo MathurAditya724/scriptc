@@ -603,5 +603,6 @@ function emitForkPrimitives(): ForkPrimitives | undefined {
     fork: () => primitives.fork(),
     exit: (code) => primitives.exit(code),
     wait: (pid) => primitives.wait(pid),
+    exited: () => primitives.exited(),
   };
 }
