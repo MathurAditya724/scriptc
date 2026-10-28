@@ -926,7 +926,7 @@ async function prepareExecutableInput(
     if (!moduleRuntimeFeatures(mod).nodeIsland) {
       delete mod.nodeIsland;
     } else if (outputKind === "exe") {
-      const recorded = libnodeRecord(opts.libnode, opts.outPath);
+      const recorded = libnodeRecord(opts.libnode, opts.outPath, process.env, dirname(entryPath));
       if (typeof recorded === "string")
         return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
       mod.nodeIsland = { ...mod.nodeIsland, ...recorded };
@@ -1762,7 +1762,7 @@ async function compileTracked(
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
       // Calls into Node record the libnode pack; their entries record its
       // identity (node-islands/libnode.ts) and a hit requires it unchanged.
-      libnodeIdentity: () => libnodeCacheKey(opts.libnode),
+      libnodeIdentity: () => libnodeCacheKey(opts.libnode, process.env, dirname(entryPath)),
       ...(opts.largePages === true ? { largePages: true as const } : {}),
       ...targetCpuField(opts.targetCpu),
       ...(opts.cpuDispatch === true ? { cpuDispatch: true as const } : {}),
