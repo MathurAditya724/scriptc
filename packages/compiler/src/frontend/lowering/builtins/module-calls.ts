@@ -14,6 +14,7 @@ import {
   lowerFsReadSyncCall,
   lowerFsWriteSyncCall,
   lowerFsReadDescriptorCall,
+  lowerFsWriteDescriptorCall,
   lowerFsEncodedRead,
   lowerFsPromisesEncodedRead,
   lowerFsMkdirSyncCall,
@@ -330,6 +331,17 @@ export function lowerBuiltinModuleCall(
   ) {
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
+  }
+  // writeFileSync(fd, data): Node accepts an open descriptor where it
+  // accepts a path. Routed by the FIRST ARGUMENT's static type, like
+  // readFileSync(fd) (before the path forms complete the data type).
+  if (
+    bi.module === "fs" &&
+    bi.member === "writeFileSync" &&
+    expr.arguments.nodes.length >= 2 &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[0]!))?.kind === "f64"
+  ) {
+    return lowerFsWriteDescriptorCall(lowerer, expr, loc);
   }
   if (
     bi.module === "fs" &&

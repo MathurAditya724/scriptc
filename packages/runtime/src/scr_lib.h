@@ -289,6 +289,10 @@ ScrStr *scr_fs_read_file(ScrStr *path);
 ScrStr *scr_fs_realpath(ScrStr *path);
 ScrStr *scr_fs_realpath_promise(ScrStr *path);
 void scr_fs_write_file(ScrStr *path, ScrStr *data);
+/* writeFileSync(fd, data): a write(2) loop over the whole string at the
+ * descriptor's current offset; the descriptor stays open (closeSync owns
+ * it). Errors carry the fd operation's errno shape. */
+void scr_fs_write_file_fd(double fd, ScrStr *data);
 void scr_fs_append_file(ScrStr *path, ScrStr *data);
 bool scr_fs_exists(ScrStr *path);
 void scr_fs_mkdir(ScrStr *path);

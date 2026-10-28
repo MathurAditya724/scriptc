@@ -556,6 +556,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.readFileSyncBuf": "scr_fs_read_file_bytes",
   "fs.readFileSyncBytes": "scr_fs_read_file_bytes",
   "fs.writeFileSyncBytes": "scr_fs_write_file_bytes",
+  "fs.writeFileSyncFd": "scr_fs_write_file_fd",
   "fs.appendFileSyncBytes": "scr_fs_append_file_bytes",
   "fs.readFdSyncBytes": "scr_fs_read_fd_bytes",
   // Stats snapshots (scr_lib.c): statSync/lstatSync throw like the other
