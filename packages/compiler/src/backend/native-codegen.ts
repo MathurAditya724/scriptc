@@ -125,9 +125,6 @@ export interface NativeCodegenOptions {
   cacheRoot?: string | null;
   /** Program partitions, written to nativePartitionPaths(outputPath). */
   partitions?: number;
-  /** With several partitions: optimize the module whole and divide only its
-   * code generation among them. */
-  splitCodegen?: boolean;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
 }
@@ -354,7 +351,6 @@ function cacheKey(
     .update("\0")
     .update(options.sourcePath)
     .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
-    .update(options.splitCodegen === true ? "\0split:codegen" : "")
     .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
     .digest("hex");
 }
@@ -458,7 +454,7 @@ export async function emitNativeArtifact(
   // edit recompiles only the partitions it affects. The directory names the
   // exact helper build and target; the helper keys entries by content.
   const partitionCache =
-    root === null || outputs.length < 2 || options.splitCodegen === true
+    root === null || outputs.length < 2
       ? null
       : join(
           root,
@@ -498,7 +494,6 @@ export async function emitNativeArtifact(
       "--source-path",
       options.sourcePath,
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
-      ...(options.splitCodegen === true && outputs.length > 1 ? ["--split", "codegen"] : []),
       ...nativeProfileHelperArgs(options.profile),
     ]);
     for (const stage of stages) {

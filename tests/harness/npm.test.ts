@@ -42,7 +42,6 @@ type Known =
   | { island: true };
 
 const KNOWN: Record<string, Known> = {
-  "any-chaining": { build: "SC2003" },
   "assert-shims": { run: "SC1043" },
   "buffer-shims": { run: "SC2020" },
   "bytes-exit": { build: "SC2004" },

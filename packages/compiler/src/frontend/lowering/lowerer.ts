@@ -137,6 +137,7 @@ import {
   widthCoerce,
   applyWidthLift,
   unionRecordWidthHelper,
+  unionArrayWidthHelper,
   recordWidthHelper,
   tupleArrayWidthHelper,
   emptyArrayLiftHelper,
@@ -540,7 +541,11 @@ import {
   lowerSetMethodCall,
   lowerSetForEachCall,
 } from "./containers/collection-methods.js";
-import { lowerEnvToPairsHelper } from "./containers/indexed-objects.js";
+import {
+  lowerEnvToPairsHelper,
+  recordOvfCapturePlan,
+  type RecordOvfCapturePlan,
+} from "./containers/indexed-objects.js";
 import { lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew } from "./containers/bytes.js";
 import { lowerRegexMethodCall, lowerStringMethodCall } from "./containers/string-and-regexp.js";
 import {
@@ -970,6 +975,8 @@ export interface LowerOptions {
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LoadResult.moduleEdges. */
   moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
+  /** LoadResult.dynamicImportRejections. */
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
   /** LIBRARY mode's reachability roots: the profile-mapped exports of the
    * entry module. Executable builds root at the entry's top level alone
    * (an unreferenced export dead-strips); a library's exports are called from
@@ -1091,6 +1098,8 @@ export interface LowererMode {
   dynNodeStreams?: boolean;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
+  /** LoadResult.dynamicImportRejections. */
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
   /** LowerOptions.libraryCallbacks (see there). */
   libraryCallbacks?: boolean;
   projectCheckJs?: boolean;
@@ -1278,7 +1287,11 @@ function lowerToIrWithIslands(
   // Inline require() calls closing a cycle inside the appended subgraphs
   // join preflight's set (the same run-time refusal by name).
   const inlineRequireCycleCalls = new Set<ts.Node>(options.inlineRequireCycleCalls ?? []);
-  const graph = { edges: options.moduleEdges, inlineCycleCalls: inlineRequireCycleCalls };
+  const graph = {
+    edges: options.moduleEdges,
+    inlineCycleCalls: inlineRequireCycleCalls,
+    rejected: options.dynamicImportRejections,
+  };
   for (let pass = 0; pass < 32; pass++) {
     const before = moduleOrder.length;
     appendDynamicImportModules(program, moduleOrder, onExtraCycle, graph);
@@ -1299,6 +1312,7 @@ function lowerToIrWithIslands(
     targetPlatform,
     startupCrash,
     inlineRequireCycleCalls,
+    dynamicImportRejections: options.dynamicImportRejections,
     ffiImports,
     libraryCallbacks,
     forkTargets,
@@ -1323,6 +1337,7 @@ function lowerToIrWithIslands(
           targetPlatform,
           startupCrash,
           inlineRequireCycleCalls,
+          dynamicImportRejections: options.dynamicImportRejections,
           ffiImports,
           libraryCallbacks,
           forkTargets,
@@ -1388,6 +1403,7 @@ function lowerToIrWithIslands(
       targetPlatform,
       startupCrash,
       inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
       libraryCallbacks,
       forkTargets,
@@ -1433,6 +1449,7 @@ function lowerToIrWithIslands(
       targetPlatform,
       startupCrash,
       inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
       libraryCallbacks,
       forkTargets,
@@ -1574,6 +1591,7 @@ function lowerToIrWithIslands(
       degradedTypes: resultLowerer.degradedTypes,
       retriedSymbols: resultLowerer.retriedSymbols,
       inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
       targetPlatform,
       ffiImports,
       libraryCallbacks,
@@ -2194,6 +2212,8 @@ export class Lowerer {
   /** Inline require() calls whose module edge closes a require cycle
    * (LoadResult.inlineRequireCycleCalls). */
   readonly inlineRequireCycleCalls: ReadonlySet<ts.Node>;
+  /** LoadResult.dynamicImportRejections. */
+  readonly dynamicImportRejections: ReadonlyMap<ts.SourceFile, StartupCrash>;
   /** Immutable callable aliases and compiler-generated adapters. The map
    * is symbol-keyed, so shadowing and cross-module imports keep the same
    * exact binding discipline as globals/functions. */
@@ -3531,7 +3551,9 @@ export class Lowerer {
    * collection; lowerDynamicImportCall reads it per site). */
   readonly dynImports = new Map<
     string,
-    { kind: "program-module" } | { kind: "static-builtin"; module: string }
+    | { kind: "program-module" }
+    | { kind: "static-builtin"; module: string }
+    | { kind: "rejected"; crash: StartupCrash }
   >();
 
   readonly createRequireImports = new Map<
@@ -4101,6 +4123,7 @@ export class Lowerer {
       checkedTable("fnSigsBySymbol", () => this.fnSigsBySymbol.size),
       checkedTable("cjsExportsAssignments", () => this.cjsExportsAssignments.size),
       checkedTable("inlineRequireCycleCalls", () => this.inlineRequireCycleCalls.size),
+      checkedTable("dynamicImportRejections", () => this.dynamicImportRejections.size),
       checkedTable("staticCallables", () => this.staticCallables.size),
       checkedTable("genericFnsBySymbol", () => this.genericFnsBySymbol.size),
       checkedTable("objLitGenericFns", () => this.objLitGenericFns.size),
@@ -4853,6 +4876,7 @@ export class Lowerer {
     this.forkTargets = mode.forkTargets ?? [];
     this.frontendServices = mode.frontendServices;
     this.inlineRequireCycleCalls = mode.inlineRequireCycleCalls ?? new Set();
+    this.dynamicImportRejections = mode.dynamicImportRejections ?? new Map();
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
     this.projectCheckJs = mode.projectCheckJs ?? false;
     this.reachable = mode.reachable ?? null;
@@ -4988,6 +5012,7 @@ export class Lowerer {
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       isNpmFile: (sf) => this.isNpmFile(sf),
+      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, this.experimentalFiles),
       // The declaration-typed boundary's generated types (decl-projection.ts)
       // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: (sf) =>
@@ -6829,6 +6854,7 @@ export class Lowerer {
         isUndefined: (node) =>
           node.text === "undefined" &&
           ((typeOrNull(node)?.flags ?? 0) & ts.TypeFlags.Undefined) !== 0,
+        neverReturns: (call) => ((typeOrNull(call)?.flags ?? 0) & ts.TypeFlags.Never) !== 0,
       });
       presenceProofs.set(use, proven);
       return proven;
@@ -12441,6 +12467,20 @@ export class Lowerer {
         const lifted = unionArmsWidthLift(this, expr, expected);
         if (lifted) return lifted;
       }
+      // A UNION of tuples/arrays flowing into an array slot that is not one
+      // of its arms (an `as const` key table's index read into
+      // `readonly string[]`): a width plan converts every arm on its own
+      // tag, a tuple rebuilding through tupleArr. Planned after the
+      // checked extraction above, and skipped when an arm already IS the
+      // slot, so every union that converted before keeps the same IR.
+      if (
+        expr.type.kind === "union" &&
+        expected.kind === "array" &&
+        !(this.unions.get(expr.type.unionId)?.arms ?? []).some((arm) => typeEquals(arm, expected))
+      ) {
+        const lift = this.widthLiftPlan(expr.type, expected);
+        if (lift) return this.applyWidthLift(lift, expr, expected, expr.loc);
+      }
       if (!typeEquals(expr.type, expected)) {
         const w = this.widthCoerce(expr, expected);
         if (w) return w;
@@ -12644,8 +12684,16 @@ export class Lowerer {
     return unionRecordWidthHelper(this, fromId, target, loc);
   }
 
+  unionArrayWidthHelper(fromId: string, target: IrType & { kind: "array" }, loc: SrcLoc): string {
+    return unionArrayWidthHelper(this, fromId, target, loc);
+  }
+
   recordWidthPlan(fromId: string, toId: string): Map<string, FieldLift> | null {
     return recordWidthPlan(this, fromId, toId);
+  }
+
+  recordOvfCapturePlan(fromId: string, toId: string): RecordOvfCapturePlan | null {
+    return recordOvfCapturePlan(this, fromId, toId);
   }
 
   describeRecordWidthBlocker(fromId: string, toId: string): string | null {

@@ -1,4 +1,5 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
+import { emitInlineArrayInit, inlineFieldTail } from "./inline-arrays.js";
 import { emitLoopBytesHeaders } from "./bytes-headers.js";
 import { noteBytesReceiver } from "./expr-bytes.js";
 import {
@@ -620,6 +621,25 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // release — a release can trigger a cycle collection, which must
       // never see a heap edge whose count was already given up).
       // Classes and records share the struct layout, so one emission.
+      // The constructor's write of an inline array field copies the array's
+      // elements into the instance (backend/llvm/inline-arrays.ts).
+      const tail =
+        s.kind === "fieldSet" ? inlineFieldTail(emitter, s.className, s.field) : undefined;
+      if (tail !== undefined && s.kind === "fieldSet") {
+        const obj = emitter.emitStableReceiver(s.obj, [s.value]);
+        const v = emitter.emitExpr(s.value);
+        emitter.emitStoreGuard(obj.name, s);
+        emitter.heapCensus?.countStore(
+          (line) => B.line(line),
+          () => B.tmp(),
+          s.className,
+          s.field,
+          s.value,
+          v.name,
+        );
+        emitInlineArrayInit(emitter, obj.name, s.className, tail, v.name);
+        break;
+      }
       const nullable =
         s.kind === "fieldSet" ? emitter.nullableFields.get(s.className, s.field) : null;
       if (nullable && s.kind === "fieldSet") {

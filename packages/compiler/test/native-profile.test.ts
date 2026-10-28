@@ -415,15 +415,20 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
     test("the profile keys the partition cache", async () => {
       const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-cache-"));
       dirs.push(dir);
-      const { profile } = await collect(dir, program(), 4, "train");
+      // External functions are placed by name, so the program is divided
+      // instead of following main into one partition and being optimized
+      // whole.
+      const source = program().replaceAll("define internal i64 @f", "define i64 @f");
+      const { profile } = await collect(dir, source, 4, "train");
       const cache = join(dir, "cache");
-      await emit(dir, program(), { outputs: 4, name: "plain", cache });
+      await emit(dir, source, { outputs: 4, name: "plain", cache });
       const plain = await cacheEntries(cache);
-      await emit(dir, program(), { outputs: 4, name: "guided", cache, use: profile });
+      expect(plain.size).toBeGreaterThan(0);
+      await emit(dir, source, { outputs: 4, name: "guided", cache, use: profile });
       const guided = await cacheEntries(cache);
       expect(guided.size).toBeGreaterThan(plain.size);
       // The same profile again reuses every partition.
-      await emit(dir, program(), { outputs: 4, name: "again", cache, use: profile });
+      await emit(dir, source, { outputs: 4, name: "again", cache, use: profile });
       expect(await cacheEntries(cache)).toEqual(guided);
     });
   });

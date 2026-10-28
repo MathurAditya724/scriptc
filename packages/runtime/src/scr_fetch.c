@@ -2014,7 +2014,9 @@ static ScrPromise *sf_stream_collect(SfStream *s, int mode) {
   c->mode = mode;
   s->collector = c;
   sf_stream_drain(s);
-  if (s->hwm_zero && !s->head) sf_stream_pull(s);
+  /* The collector reads to the end: a queue it emptied asks the source
+   * for the next chunk, also when the queue had filled before. */
+  if (!s->head) sf_stream_pull(s);
   return p;
 }
 
