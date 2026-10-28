@@ -168,16 +168,22 @@ const URI_FUNCTIONS = new Set([
 ]);
 
 /** The builtin globals that sloppy-mode functions of the JavaScript source
- * `sf` read through their `this` (`this.Array`) or through a variable it
- * initializes (`var root = this; root.Array`). Called with undefined or null
- * as `this`, such a function reads them on the global object, which answers
- * them through the program's lookup. */
+ * `sf` read through their `this` (`this.Array`, `this["Array"]`) or through
+ * a variable it initializes (`var root = this; root.Array`); every declared
+ * global when such a read takes a computed key (`this[name]`). Called with
+ * undefined or null as `this`, such a function reads them on the global
+ * object, which answers them through the program's lookup. */
 export function sloppyThisGlobalReadsOf(lowerer: Lowerer, sf: ts.SourceFile): ReadonlySet<string> {
   const cached = lowerer.sloppyThisGlobalReads.get(sf);
   if (cached !== undefined) return cached;
   const reads = new Set<string>();
   if (isJsSourceFile(sf)) {
     const declared = new Set(declaredGlobalNames(lowerer, sf));
+    // Element reads of `this` or of a variable, and the names of the
+    // variables initialized with `this`: the checker resolves only the
+    // element reads of `this` and of those variables.
+    const elementReads: ts.ElementAccessExpression[] = [];
+    const thisAliases = new Set<string>();
     ts.walkPreorder(sf, (node) => {
       if (
         ts.isPropertyAccessExpression(node) &&
@@ -186,8 +192,32 @@ export function sloppyThisGlobalReadsOf(lowerer: Lowerer, sf: ts.SourceFile): Re
         readsSloppyThis(lowerer, node.expression)
       )
         reads.add(node.name.text);
+      else if (ts.isElementAccessExpression(node)) {
+        const target = withoutParentheses(node.expression);
+        if (target.kind === ts.SyntaxKind.ThisKeyword || ts.isIdentifier(target))
+          elementReads.push(node);
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer !== undefined &&
+        withoutParentheses(node.initializer).kind === ts.SyntaxKind.ThisKeyword
+      )
+        thisAliases.add(node.name.text);
       return undefined;
     });
+    for (const node of elementReads) {
+      const target = withoutParentheses(node.expression);
+      if (ts.isIdentifier(target) && !thisAliases.has(target.text)) continue;
+      if (!readsSloppyThis(lowerer, node.expression) || !readsBuiltinByName(lowerer, node))
+        continue;
+      const key = withoutParentheses(node.argumentExpression);
+      if (ts.isStringLiteralLike(key)) {
+        if (declared.has(key.text)) reads.add(key.text);
+      } else if (!ts.isNumericLiteral(key)) {
+        for (const name of declared) reads.add(name);
+        break;
+      }
+    }
   }
   lowerer.sloppyThisGlobalReads.set(sf, reads);
   return reads;
@@ -196,8 +226,7 @@ export function sloppyThisGlobalReadsOf(lowerer: Lowerer, sf: ts.SourceFile): Re
 /** Whether `expr` is the `this` of a sloppy-mode function, or a variable
  * whose only declaration initializes it with that `this`. */
 function readsSloppyThis(lowerer: Lowerer, expr: ts.Expression): boolean {
-  let inner = expr;
-  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  const inner = withoutParentheses(expr);
   if (inner.kind === ts.SyntaxKind.ThisKeyword) return sloppyReceiverOf(inner);
   if (!ts.isIdentifier(inner)) return false;
   const declarations = lowerer.checker.getSymbolAtLocation(inner)?.declarations ?? [];
@@ -208,9 +237,15 @@ function readsSloppyThis(lowerer: Lowerer, expr: ts.Expression): boolean {
     !ts.isVariableDeclaration(declaration)
   )
     return false;
-  let init = declaration.initializer;
-  while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
+  const init =
+    declaration.initializer === undefined ? undefined : withoutParentheses(declaration.initializer);
   return init !== undefined && init.kind === ts.SyntaxKind.ThisKeyword && sloppyReceiverOf(init);
+}
+
+function withoutParentheses(expr: ts.Expression): ts.Expression {
+  let inner = expr;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  return inner;
 }
 
 /** Whether the `this` at `node` is a sloppy-mode function's receiver

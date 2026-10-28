@@ -19,6 +19,13 @@ function aliasedRoot() {
 }
 console.log(readBuiltins(), aliasedRoot());
 
+// Builtins read through the global `this` by literal keys.
+function readByLiteral() {
+  var root = this;
+  return [this["Map"] === Map, root["Math"] === Math, typeof this[`Set`], this[0]];
+}
+console.log(readByLiteral(), readByLiteral.call({ Map: 1 })[0]);
+
 function receiver() {
   return this;
 }
