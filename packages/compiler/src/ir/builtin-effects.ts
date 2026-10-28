@@ -168,8 +168,6 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.headersNew",
   "fetch.responseNew",
   "fetch.responseJsonStatic",
-  "fetch.abortTimeout",
-  "fetch.abortAny",
   "abort.timeout",
   "abort.any",
   "event.new",
@@ -515,6 +513,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "js.toNumberCoerce",
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",
+  "error.captureStackTrace",
   "error.ctorOptions",
   "error.newAggregate",
   "error.newSuppressed",
@@ -694,9 +693,6 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.getPrototype",
   "dyn.getPrototypeForIdentity",
   "dyn.setPrototype",
-  // Error.captureStackTrace: Node's TypeError for a primitive target, and
-  // the error string conversion of name and message
-  "dyn.errorCaptureStackTrace",
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
