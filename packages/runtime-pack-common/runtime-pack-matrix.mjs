@@ -62,6 +62,9 @@ export const BASE_RUNTIME_SOURCES = [
 export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
+  // BigIntStats member reads (`statSync(p, { bigint: true })` members). The
+  // bigstats gate is narrower than bigint, which every bigint value turns on.
+  ["scr_stats_bigint.c", "bigstats"],
   ["scr_regex.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],

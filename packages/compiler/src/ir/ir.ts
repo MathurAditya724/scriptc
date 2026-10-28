@@ -171,6 +171,12 @@ export type IrType =
    * never part of a cycle, no trace. Same container rules as url: union
    * arms fine, arrays/maps/JSON fenced. */
   | { kind: "stats" }
+  /** statSync/lstatSync/fstatSync with `{ bigint: true }`: the SAME snapshot
+   * handle as `stats` (scr_stats_* retain/release), with Node's BigIntStats
+   * member table — the integer and `*Ns` members read as `bigint`, the `*Ms`
+   * members as `number`, the four time members as `Date`. Distinct kind so
+   * the member reads and the type identity differ from Stats. */
+  | { kind: "bigintStats" }
   /** A node:fs/promises FileHandle: heap, refcounted, MUTABLE — aliases
    * share one descriptor slot, so close() is idempotent and every alias
    * observes fd === -1 after closure. The final release closes a still-
@@ -401,6 +407,7 @@ export type IrType =
 
 const POINTER_HANDLE_KINDS = [
   "stats",
+  "bigintStats",
   "fileHandle",
   "dir",
   "spawnRes",
@@ -485,6 +492,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   searchParams: "scr_sp",
   symbol: "scr_sym",
   stats: "scr_stats",
+  bigintStats: "scr_stats",
   fileHandle: "scr_file_handle",
   dir: "scr_dir",
   spawnRes: "scr_spawn_res",
@@ -552,6 +560,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "url",
   "searchParams",
   "stats",
+  "bigintStats",
   "fileHandle",
   "dir",
   "spawnRes",
@@ -596,6 +605,7 @@ export const URL_T: IrType = { kind: "url" };
 export const SEARCH_PARAMS_T: IrType = { kind: "searchParams" };
 export const SYMBOL_T: IrType = { kind: "symbol" };
 export const STATS_T: IrType = { kind: "stats" };
+export const BIGINT_STATS_T: IrType = { kind: "bigintStats" };
 export const FILEHANDLE_T: IrType = { kind: "fileHandle" };
 export const DIR_T: IrType = { kind: "dir" };
 export const SPAWNRES_T: IrType = { kind: "spawnRes" };
@@ -669,6 +679,7 @@ export function isSupportedArrayElem(t: IrType): boolean {
     // fs.Stats snapshots (`await Promise.all(paths.map(stat))`): immutable
     // refcounted handles with their own retain/release adapters.
     case "stats":
+    case "bigintStats":
     case "symbol":
     case "classval":
     case "moduleNs":

@@ -44,6 +44,7 @@ import {
   isParseArgsDynTypeName,
 } from "../../type-mapper.js";
 import {
+  BIGINT_T,
   BOOL,
   BYTES_U8,
   DYN,
@@ -2097,6 +2098,7 @@ export function lowerIntrinsicProperty(
     kind !== "url" &&
     kind !== "searchParams" &&
     kind !== "stats" &&
+    kind !== "bigintStats" &&
     kind !== "spawnRes" &&
     kind !== "child" &&
     kind !== "bytes" &&
@@ -2252,18 +2254,31 @@ export function lowerIntrinsicProperty(
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
-  if (kind === "stats") {
+  if (kind === "stats" || kind === "bigintStats") {
+    const bigintStats = kind === "bigintStats";
     if (name === "size") {
       const receiver = lowerer.lowerExpr(expr.expression);
-      return { kind: "libCall", fn: "stats.size", args: [receiver], type: F64, loc: locOf(expr) };
+      return {
+        kind: "libCall",
+        fn: bigintStats ? "bigstats.size" : "stats.size",
+        args: [receiver],
+        type: bigintStats ? BIGINT_T : F64,
+        loc: locOf(expr),
+      };
     }
     if (Object.hasOwn(STATS_TYPE_TESTS, name)) {
-      lowerer.unsupported("SC1090", expr, `Stats methods as values (call '${name}' directly)`);
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `${bigintStats ? "BigIntStats" : "Stats"} methods as values (call '${name}' directly)`,
+      );
     }
     lowerer.noLowering(
-      `Stats.${name}`,
+      `${bigintStats ? "BigIntStats" : "Stats"}.${name}`,
       expr,
-      "isFile(), isDirectory(), isSymbolicLink(), isBlockDevice(), isCharacterDevice(), isFIFO(), isSocket(), dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs, atime, mtime, ctime, and birthtime are the supported Stats members",
+      bigintStats
+        ? "BigIntStats' isFile(), isDirectory(), isSymbolicLink(), isBlockDevice(), isCharacterDevice(), isFIFO(), isSocket(), dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeNs, mtimeNs, ctimeNs, birthtimeNs, atimeMs, mtimeMs, ctimeMs, birthtimeMs, atime, mtime, ctime, and birthtime are the supported members"
+        : "isFile(), isDirectory(), isSymbolicLink(), isBlockDevice(), isCharacterDevice(), isFIFO(), isSocket(), dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs, atime, mtime, ctime, and birthtime are the supported Stats members",
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }

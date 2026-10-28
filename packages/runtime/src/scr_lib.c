@@ -5238,33 +5238,10 @@ void scr_process_stdin_destroy(void) {
  * rejects (see the fsp section). scr_stats_dyn builds Node's Stats and
  * BigIntStats objects from the same snapshot. */
 
-/* The integers in the order Node's binding reports them. */
-enum {
-  SCR_STATS_DEV,
-  SCR_STATS_MODE,
-  SCR_STATS_NLINK,
-  SCR_STATS_UID,
-  SCR_STATS_GID,
-  SCR_STATS_RDEV,
-  SCR_STATS_BLKSIZE,
-  SCR_STATS_INO,
-  SCR_STATS_SIZE,
-  SCR_STATS_BLOCKS,
-  SCR_STATS_FIELDS
-};
-
-/* The timestamps, each kept as seconds + nanoseconds. */
-enum { SCR_STATS_ATIME, SCR_STATS_MTIME, SCR_STATS_CTIME, SCR_STATS_BIRTHTIME };
-
-struct ScrStats {
-  size_t rc;
-  bool is_file;
-  bool is_dir;
-  bool is_symlink; /* lstat only — a followed stat never sees one */
-  uint64_t fields[SCR_STATS_FIELDS]; /* blocks counts 512-byte units */
-  int64_t sec[4];
-  int64_t nsec[4];
-};
+/* The layout (the field enum, the timestamp enum and the struct) lives in
+ * scr_stats_private.h so scr_stats_bigint.c can read the same snapshot
+ * without this unit carrying its code. */
+#include "scr_stats_private.h"
 
 ScrStats *scr_stats_retain(ScrStats *s) {
   if (s->rc != SIZE_MAX) s->rc++;

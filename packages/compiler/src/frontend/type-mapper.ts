@@ -1087,6 +1087,8 @@ export function formatIrType(
         return append("bigint");
       case "stats":
         return append("Stats");
+      case "bigintStats":
+        return append("BigIntStats");
       case "fileHandle":
         return append("FileHandle");
       case "dir":
@@ -3715,6 +3717,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "stats" };
+  }
+  // fs.BigIntStats: the SAME snapshot handle under Node's bigint member
+  // table (`statSync(p, { bigint: true })`). Declared by @types/node as
+  // `class BigIntStats` in "fs"; the fallback declarations keep the class
+  // shape too. Provenance-checked like Stats.
+  if (
+    psym !== undefined &&
+    ts.symbolName(psym) === "BigIntStats" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  ) {
+    return { kind: "bigintStats" };
   }
   // Capacity snapshots and options keep their live object representation
   // across numeric/BigInt overloads, runtime options, and callbacks.

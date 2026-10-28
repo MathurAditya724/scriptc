@@ -1863,6 +1863,10 @@ export function walkTypeFields(node: IrType, walker: IrFieldWalker, skipType: bo
       walker.string(node.kind);
       return;
     }
+    case "bigintStats": {
+      walker.string(node.kind);
+      return;
+    }
     case "bool": {
       walker.string(node.kind);
       return;
@@ -2268,6 +2272,7 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrType, { kind: "array" }>, "kind" | "elem" | "optionalElements">>,
   Unread<ValuesNotRead<Extract<IrType, { kind: "array" }>["optionalElements"]>>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "bigint" }>, "kind">>,
+  Unread<FieldsNotRead<Extract<IrType, { kind: "bigintStats" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "bool" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "bytes" }>, "kind" | "elem">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "caught" }>, "kind">>,

@@ -97,6 +97,10 @@ export interface NativeLinkFeatures {
   emitter: boolean;
   symbol: boolean;
   bigint: boolean;
+  /** BigIntStats member reads (`statSync(p, { bigint: true })` members):
+   * scr_stats_bigint.c. Absent (false) otherwise, so BigInt programs that
+   * never read a stat member keep their link line and size. */
+  bigstats?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
