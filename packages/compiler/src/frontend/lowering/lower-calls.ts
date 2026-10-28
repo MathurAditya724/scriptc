@@ -4892,9 +4892,10 @@ const DYN_STRING_ONLY_METHODS = new Set([
 /** `Array.isArray(v)` — a real runtime test on `unknown` values (the checked-dynamic tree's
  * array kind: dyn arrays answer true, bytes/objects/scalars false — exactly
  * JS, Uint8Array included), a compile-time constant on statically-typed
- * ones (an `T[]` value IS an array, every other static kind is not; folded
- * only over side-effect-free reads, the `in`-operator discipline; unions
- * fence with the narrow-first hint). Null when the callee isn't THE
+ * ones (an `T[]` value IS an array, every other static kind is not; a
+ * computed argument is evaluated and its value discarded, the
+ * `in`-operator discipline; unions fence with the narrow-first hint). Null
+ * when the callee isn't THE
  * stdlib Array.isArray, so the chain keeps trying. */
 function lowerArrayIsArrayCall(
   lowerer: Lowerer,
@@ -4964,14 +4965,23 @@ function lowerArrayIsArrayCall(
     );
   }
   if (arg.type.kind === "caught") return null;
-  if (arg.kind === "varRef" || arg.kind === "recordGet" || arg.kind === "fieldGet") {
-    return { kind: "boolLit", value: lowerer.isArrayValueType(arg.type), type: BOOL, loc };
-  }
-  lowerer.unsupported(
-    "SC1090",
-    call,
-    "statically-decided Array.isArray on computed arguments (bind the value to a variable first)",
-  );
+  const folded: IrExpr = {
+    kind: "boolLit",
+    value: lowerer.isArrayValueType(arg.type),
+    type: BOOL,
+    loc,
+  };
+  if (arg.kind === "varRef" || arg.kind === "recordGet" || arg.kind === "fieldGet") return folded;
+  // A computed argument (`Array.isArray(make())`, `Array.isArray([1, 2])`)
+  // still answers from its static type, so evaluate the argument for its
+  // effects and discard the value.
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: arg, loc }],
+    result: folded,
+    type: BOOL,
+    loc,
+  };
 }
 
 /** Predicate declarations currently being inlined — re-entrancy guard

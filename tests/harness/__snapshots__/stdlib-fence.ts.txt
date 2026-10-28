@@ -1,10 +1,3 @@
-stdlib-fence.ts:15:15 - error SC1090: statically-decided Array.isArray on computed arguments (bind the value to a variable first) are not supported yet
-
-  14 | const n5 = Number.NaN; // lowers now, with the other Number constants
-  15 | const isArr = Array.isArray([1]);
-     |               ^~~~~~~~~~~~~~~~~~
-  16 | const merged = Object.assign({}, { a: 1 }); // the empty-target literal-source shape lowers now (it IS the source literal)
-
 stdlib-fence.ts:17:23 - error SC2020: 'Object.assign' is part of the standard library types but has no scriptc lowering yet
 
   16 | const merged = Object.assign({}, { a: 1 }); // the empty-target literal-source shape lowers now (it IS the source literal)
