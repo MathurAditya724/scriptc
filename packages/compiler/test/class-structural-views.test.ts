@@ -151,3 +151,21 @@ console.log(view.has("a"), seen.has("a"));
 `);
   expect(kinds["view"]).toBe("dyn");
 });
+
+test("an interface that extends Error received from an error stays the error", async () => {
+  const kinds = await globalKinds(`
+interface HttpError extends Error {
+  status: number | undefined;
+  body: string;
+}
+function fail(): HttpError {
+  const error = new Error("x") as HttpError;
+  error.status = 500;
+  error.body = "b";
+  return error;
+}
+const failure = fail();
+console.log(failure.status, failure instanceof Error);
+`);
+  expect(kinds["failure"]).toBe("dyn");
+});

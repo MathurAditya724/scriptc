@@ -974,6 +974,23 @@ export class ClassProtocols {
     );
   }
 
+  /** A lib Error, TypeError, ... instance type (RUNTIME_ERROR_CLASSES' lib
+   * names). Its fields are writable and its checked-dynamic view is the
+   * error itself, so a record built from it would miss later writes. */
+  private isBuiltinError(type: ts.Type): boolean {
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    const symbol = type.getSymbol();
+    if (symbol === undefined) return false;
+    if (!ERROR_LIB_NAMES.has(ts.symbolName(symbol))) return false;
+    return (
+      (symbol.flags & ts.SymbolFlags.Class) === 0 &&
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every(
+        (declaration) => ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      )
+    );
+  }
+
   private isProgramClassInstance(type: ts.Type): boolean {
     const symbol = type.getSymbol();
     return (
@@ -1001,6 +1018,9 @@ export class ClassProtocols {
     // `new Map()` cannot back a narrower view (see isUntypedCollection), so
     // only a fully typed collection carries identity into the view.
     if (this.isBuiltinCollection(type)) return !this.isUntypedCollection(type);
+    // A builtin Error keeps its own identity too: extra fields the program
+    // puts on it (a status, a body) belong to the error, not to a copy.
+    if (this.isBuiltinError(type)) return true;
     // A live Pick or Omit view of a program class holds the instance itself.
     if (this.pickOfProgramClass(type) && this.usesCheckedIdentity(type)) return true;
     const symbol = type.getSymbol();
@@ -1200,6 +1220,22 @@ interface FlowFacts {
 
 /** The empty answer of the symbol maps above. */
 const NO_SYMBOLS: ReadonlySet<ts.Symbol> = new Set();
+
+/** The lib names RUNTIME_ERROR_CLASSES gives the runtime error encoding
+ * (`%Error`, `%TypeError`, ...; ir.ts). */
+const ERROR_LIB_NAMES = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "DOMException",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+  "AssertionError",
+  "SuppressedError",
+]);
 
 /** Calls of these namespaces and functions observe whole objects. */
 const OBSERVER_NAMESPACES = new Set(["console", "JSON", "Object", "Reflect", "util", "assert"]);
