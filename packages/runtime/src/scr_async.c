@@ -4868,6 +4868,19 @@ static void scr_hosted_timer_drop(uint32_t token) {
   scr_closure_release(cb);
 }
 
+/* refresh(): re-arm to now + the delay the timer was created with, Node's
+ * Timeout.refresh(). A migrated timer's Node handle was created with its
+ * remaining delay at handoff, and a due one has no handle yet, so the
+ * handle is replaced rather than refreshed. A firing timer's flag makes the
+ * run loop keep the re-armed handle when its callback returns. */
+static void scr_hosted_timer_rearm(uint32_t token) {
+  ScrHJob *j = &scr_hjobs[token - 1];
+  if (j->handle != 0) scr_loop_hosted->timer_clear(j->handle);
+  j->due = false;
+  j->handle = scr_loop_hosted->timer(scr_hosted_delay(j->delay_ms), j->repeat_ms,
+                                     j->reffed ? 1 : 0, token);
+}
+
 static bool scr_hosted_timer_op(unsigned long id, int op) {
   uint32_t token = scr_hmap_token(id * 2);
   ScrHJob *j = scr_hjob(token, SCR_HJ_TIMER);
@@ -4889,7 +4902,7 @@ static bool scr_hosted_timer_op(unsigned long id, int op) {
     return true;
   case SCR_HOSTED_REFRESH:
     if (j->firing) j->refreshed = true;
-    if (j->handle != 0) scr_loop_hosted->timer_refresh(j->handle);
+    scr_hosted_timer_rearm(token);
     return true;
   default:
     return j->reffed;

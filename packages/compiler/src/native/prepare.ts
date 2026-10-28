@@ -440,6 +440,7 @@ export function prepareNativeExecutable(
           lowRegion: lowRegionTarget(toolchain.target.platform, options.sanitize === true),
           functionWorkers: emitWorkers(),
           forkPrimitives: emitForkPrimitives(),
+          timing,
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
           ...targetCpuField(options.targetCpu),
@@ -556,6 +557,7 @@ export function prepareNativeLibrary(
     wasi: toolchain.target.platform === "wasi",
     objectAudit: options.sanitize === true,
     sanitizeAttributes: options.sanitize === true,
+    timing,
     ...inlineRcOption(profile.optimization, options.sanitize === true),
   });
   timing("llvm-emit");

@@ -21,6 +21,13 @@ export const WEB_STREAM_CLASSES = [
   "ReadableStreamDefaultController",
   "CountQueuingStrategy",
   "ByteLengthQueuingStrategy",
+  "WritableStream",
+  "WritableStreamDefaultWriter",
+  "WritableStreamDefaultController",
+  "TransformStream",
+  "TransformStreamDefaultController",
+  "TextEncoderStream",
+  "TextDecoderStream",
 ] as const;
 
 const CLASS_NAMES: readonly string[] = WEB_STREAM_CLASSES;
@@ -46,6 +53,33 @@ export function webStreamClassKindOf(lowerer: Lowerer, node: ts.Expression): num
   if (name === null) return null;
   const index = CLASS_NAMES.indexOf(name);
   return index < 0 ? null : index;
+}
+
+/** Whether a JavaScript source of the program names one of the classes.
+ * The global object answers them by a computed name only then
+ * (global-values.ts), so a program without web streams does not link
+ * them for its other computed global reads. */
+export function programNamesWebStreamClass(lowerer: Lowerer): boolean {
+  if (lowerer.namesWebStreamClass !== undefined) return lowerer.namesWebStreamClass;
+  const names: ReadonlySet<string> = new Set(WEB_STREAM_CLASSES);
+  let found = false;
+  for (const file of lowerer.program.getSourceFiles()) {
+    if (file.isDeclarationFile || !isJsSourceFile(file)) continue;
+    ts.walkPreorder(file, (node) => {
+      if (
+        ts.isIdentifier(node) &&
+        names.has(node.text) &&
+        webStreamClassKindOf(lowerer, node) !== null
+      ) {
+        found = true;
+        return "stop";
+      }
+      return undefined;
+    });
+    if (found) break;
+  }
+  lowerer.namesWebStreamClass = found;
+  return found;
 }
 
 export function webStreamClassValue(kind: number, loc: SrcLoc): IrExpr {
@@ -130,6 +164,8 @@ const WEB_STREAM_INTERFACES: ReadonlySet<string> = new Set([
   "ReadableStreamReadValueResult",
   "ReadableStreamReadDoneResult",
   "UnderlyingSource",
+  "UnderlyingSink",
+  "Transformer",
   "QueuingStrategy",
   "QueuingStrategySize",
 ]);

@@ -796,7 +796,9 @@ async function emitNativeProgramObject(
   // An optimized program that stays one partition is optimized whole and
   // generates code for its parts concurrently.
   const codegenParts = single || opts.optimization === "dev" ? 1 : nativeCodegenParts(llvmBytes);
-  const partitions = single ? 1 : Math.max(nativeProgramPartitions(llvmBytes), codegenParts);
+  const partitions = single
+    ? 1
+    : Math.max(nativeProgramPartitions(llvmBytes, opts.optimization === "dev"), codegenParts);
   try {
     const artifact = await emitNativeArtifact({
       outputPath: linkPath,
@@ -1086,6 +1088,7 @@ async function prepareExecutableInput(
       objectAudit: opts.sanitize === true,
       sanitizeAttributes: opts.sanitize === true,
       lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
+      timing,
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
@@ -2610,6 +2613,7 @@ async function compileLibraryTracked(
       wasi: buildPlatform === "wasi",
       objectAudit: opts.sanitize === true,
       sanitizeAttributes: opts.sanitize === true,
+      timing,
       ...inlineRcOption(profile.optimization, opts.sanitize === true),
     });
     timing("llvm-emit", {

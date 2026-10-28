@@ -65,6 +65,7 @@ const KNOWN: Record<string, Known> = {
     divergence:
       "Timeout handles are numbers (typeof) and lose their ref flag once fired or cleared",
   },
+  // require() inside a function.
   "island-web-plumbing": { run: "SC1090" },
   "lazy-traps": {
     divergence:
@@ -101,15 +102,6 @@ const KNOWN: Record<string, Known> = {
   "node24-url-mutation": { run: "SC1090" },
   "node24-util-adapters": { run: "Object.create with this value is not supported yet" },
   "node24-util-types": { run: "SC1090" },
-  "node24-web-stream-encoding": { run: "SC2020" },
-  "node24-web-stream-errors": { run: "SC1090" },
-  "node24-web-stream-lifecycle": { run: "SC2020" },
-  "node24-web-stream-pipe-abort": { run: "SC2020" },
-  "node24-web-stream-pipe-errors": { run: "SC2020" },
-  "node24-web-stream-pipes": { run: "SC2020" },
-  "node24-web-stream-queues": { run: "SC2020" },
-  "node24-web-stream-tee": { run: "SC1090" },
-  "node24-web-stream-transforms": { run: "SC1090" },
   "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
@@ -117,6 +109,7 @@ const KNOWN: Record<string, Known> = {
   "util-shims": { run: "SC2020" },
   // The package redeclares the var it exported: Node copies the first value.
   "var-export-redeclared": { island: true },
+  // `class Upper extends TransformStream`: extending a builtin class from JavaScript.
   "web-streams": { run: "SC1090" },
   "workspace-copied": { island: true },
   "workspace-unclean": { build: "SC2013" },
