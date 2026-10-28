@@ -443,6 +443,7 @@ export function prepareNativeExecutable(
           timing,
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
+          ...(options.exceptions === "rare" ? { rareExceptions: true } : {}),
           ...targetCpuField(options.targetCpu),
           ...(options.cpuDispatch === true && outputKind === "exe" ? { cpuDispatch: true } : {}),
           ...(options.optimization === "dev" && !options.strip

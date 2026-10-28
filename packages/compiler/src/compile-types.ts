@@ -57,6 +57,12 @@ export interface CompileBaseOptions {
    * at startup when the system allows them. The moved code stays resident.
    * Executables only; no effect on other platforms. */
   largePages?: boolean;
+  /** How often the program throws (`--exceptions`). `rare` puts recursive
+   * functions and those near a `throw` on the unwinding exception ABI too:
+   * calls to them need no pending-flag test, and an exception that crosses
+   * them costs a native unwind. Linux executables only; `common` (the
+   * default) and other targets keep the default rules. */
+  exceptions?: "common" | "rare";
   /** The x86-64 microarchitecture level the executable's code may require
    * (`x86-64-v2` to `x86-64-v4`). The program's functions are compiled for
    * that level, and the executable then runs only on CPUs that support it.

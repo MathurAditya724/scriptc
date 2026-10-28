@@ -1026,6 +1026,7 @@ async function prepareExecutableInput(
         // Textual output shows the code an executable gets; objects keep
         // the pending flag, since their link may not add an unwinder.
         unwindAbi: buildPlatform === "linux" && outputKind !== "obj",
+        ...(opts.exceptions === "rare" ? { rareExceptions: true } : {}),
         objectAudit: opts.sanitize === true,
         sanitizeAttributes: opts.sanitize === true,
         lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
@@ -1113,6 +1114,7 @@ async function prepareExecutableInput(
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
       ...(nodeIslandModuleData === undefined ? {} : { nodeIslandModuleData }),
+      ...(opts.exceptions === "rare" ? { rareExceptions: true } : {}),
       ...targetCpuField(opts.targetCpu),
       ...(opts.cpuDispatch === true ? { cpuDispatch: true } : {}),
     });
@@ -1820,6 +1822,7 @@ async function compileTracked(
       // identity (node-islands/libnode.ts) and a hit requires it unchanged.
       libnodeIdentity: () => libnodeCacheKey(opts.libnode, process.env, dirname(entryPath)),
       ...(opts.largePages === true ? { largePages: true as const } : {}),
+      ...(opts.exceptions === "rare" ? { exceptions: "rare" as const } : {}),
       ...targetCpuField(opts.targetCpu),
       ...(opts.cpuDispatch === true ? { cpuDispatch: true as const } : {}),
       ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
