@@ -1732,9 +1732,10 @@ function assertedMemberRead(
     const shape = lowerer.shapes.get(arm.shapeId);
     if (!shape || shape.tuple || shape.indexValue) return null;
     const getter = shape.fields.find((f) => f.name === `%get:${name}`);
-    if (!getter && shape.fields.some((f) => f.name === `%set:${name}`)) return null;
     if (getter && getter.type.kind !== "func") return null;
     const field = getter ?? shape.fields.find((f) => f.name === name);
+    // A setter-only arm reads undefined: Node never invokes a setter on a
+    // read.
     if (!field) continue;
     const fieldType = field.type.kind === "func" && getter ? field.type.ret : field.type;
     // The declaring arms agree up to an undefined arm (`string` beside

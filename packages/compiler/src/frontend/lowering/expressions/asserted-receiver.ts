@@ -108,12 +108,12 @@ export function assertedProbeAccessOf(
 }
 
 /** True when the union's record arms read `member` unevenly: at least one
- * declares it as a data field and at least one does not (it declares a
- * getter instead, or nothing). Those are exactly the arms
- * assertedMemberRead answers per arm, calling a getter where an arm has
- * one; anything else keeps the assertion's extraction (and with it the
- * checked-narrow fence for a lying one), as does an arm with only a setter
- * of that name. */
+ * declares it — as a data field or as a getter, which Node's read calls —
+ * and at least one does not. Those are exactly the arms assertedMemberRead
+ * answers per arm, calling a getter where an arm has one; anything else
+ * keeps the assertion's extraction (and with it the checked-narrow fence
+ * for a lying one). An arm with only a setter of that name reads undefined
+ * (Node never invokes a setter on a read), so it is not a declaring arm. */
 export function partialRecordMember(lowerer: Lowerer, union: IrType, member: string): boolean {
   if (union.kind !== "union") return false;
   const arms = lowerer.unions.get(union.unionId)?.arms ?? [];
@@ -124,10 +124,12 @@ export function partialRecordMember(lowerer: Lowerer, union: IrType, member: str
     if (arm.kind !== "record") return false;
     const shape = lowerer.shapes.get(arm.shapeId);
     if (!shape || shape.tuple || shape.indexValue) return false;
-    const getter = shape.fields.some((field) => field.name === `%get:${member}`);
-    if (!getter && shape.fields.some((field) => field.name === `%set:${member}`)) return false;
     records++;
-    if (shape.fields.some((field) => field.name === member)) declaring++;
+    if (
+      shape.fields.some((field) => field.name === member) ||
+      shape.fields.some((field) => field.name === `%get:${member}`)
+    )
+      declaring++;
   }
   return records > 0 && declaring > 0 && declaring < records;
 }
