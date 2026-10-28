@@ -275,6 +275,14 @@ export function variantsFor(source) {
       when: { webStreams: true },
       defines: ["SCR_NATIVE_REACTIONS"],
     });
+    // A program with both web streams and Node islands needs both builds:
+    // the island slot carries the hosted loop, and the variant with the
+    // most conditions is the one selected.
+    variants.push({
+      id: "native-reactions-node-island",
+      when: { webStreams: true, nodeIsland: true },
+      defines: ["SCR_NATIVE_REACTIONS", "SCR_NODE_ISLANDS"],
+    });
   }
   if (source === "scr_dyn_builtin_class.c" || source === "scr_fetch.c") {
     variants.push({

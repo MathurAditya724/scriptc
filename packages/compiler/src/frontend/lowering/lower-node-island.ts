@@ -638,7 +638,9 @@ function freshLiteral(
 
 /** Whether evaluating an argument runs no code that could change the
  * receiver: literals, names, `this`, functions it creates, object and
- * array literals of those, and operators over those. */
+ * array literals of those, and operators over those. A unary operator
+ * (`+`, `-`, `~`) converts its operand with ToNumber, which calls a
+ * user-defined `valueOf`: only a numeric literal operand is inert. */
 function inertArgument(node: ts.Expression): boolean {
   const e = stripTypeWrappers(node);
   if (
@@ -665,12 +667,14 @@ function inertArgument(node: ts.Expression): boolean {
           !ts.isComputedPropertyName(p.name) &&
           inertArgument(p.initializer)),
     );
-  if (ts.isPrefixUnaryExpression(e))
-    return (
-      e.operator !== ts.SyntaxKind.PlusPlusToken &&
-      e.operator !== ts.SyntaxKind.MinusMinusToken &&
-      inertArgument(e.operand)
-    );
+  if (ts.isPrefixUnaryExpression(e)) {
+    // `!x` runs no conversion on its operand. `+`, `-` and `~` convert it
+    // with ToNumber, which calls a user-defined `valueOf` on an object:
+    // that can replace the method being called, so only a numeric literal
+    // is inert.
+    if (e.operator === ts.SyntaxKind.ExclamationToken) return inertArgument(e.operand);
+    return e.operand.kind === ts.SyntaxKind.NumericLiteral;
+  }
   return false;
 }
 
