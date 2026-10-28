@@ -104,6 +104,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   nodeIsland: boolean;
   brotli: boolean;
   moduleNamespace: boolean;
+  moduleNamespaceDyn: boolean;
   nativeFetch: boolean;
   abortSignalOnly: boolean;
   netEffective: boolean;
@@ -314,6 +315,7 @@ export function effectiveRuntimeFeatures(
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     moduleNamespace: features.moduleNamespace === true,
+    moduleNamespaceDyn: features.moduleNamespaceDyn === true,
     nativeFetch,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.

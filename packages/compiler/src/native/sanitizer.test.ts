@@ -35,6 +35,7 @@ const features = {
   nodeIsland: false,
   brotli: false,
   moduleNamespace: false,
+  moduleNamespaceDyn: false,
   regex: true,
   copying: false,
   textDecoderLegacy: false,

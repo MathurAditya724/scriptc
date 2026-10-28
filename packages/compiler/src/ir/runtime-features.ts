@@ -1209,6 +1209,8 @@ const RUNTIME_FEATURE_RULES = {
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
+  /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
+  moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1308,6 +1310,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     urlIdna: false,
     stdioExtended: false,
     moduleNamespace: false,
+    moduleNamespaceDyn: false,
     stream: false,
     streamDyn: false,
     handleProps: false,

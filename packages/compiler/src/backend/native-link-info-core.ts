@@ -40,6 +40,9 @@ export interface NativeLinkFeatures {
   /** Module namespace objects as checked-dynamic values link
    * scr_module_namespace.c; absent (false) otherwise. */
   moduleNamespace?: boolean;
+  /** A module namespace boxed for typed code links
+   * scr_module_namespace_dyn.c; absent (false) otherwise. */
+  moduleNamespaceDyn?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;

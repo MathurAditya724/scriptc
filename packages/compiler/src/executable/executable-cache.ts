@@ -67,6 +67,7 @@ export interface EarlyExecutableNativeFeatures {
   stdioExtended?: boolean;
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
+  moduleNamespaceDyn?: boolean;
   zlib: boolean;
   brotli?: boolean;
   assert: boolean;
