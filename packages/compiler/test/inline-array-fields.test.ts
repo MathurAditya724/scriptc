@@ -519,13 +519,21 @@ ${use}
     "console.log([a].indexOf(b));",
     "console.log(new Set([a]).has(b));",
     "const seen = new Map<readonly Item[], number>();\nseen.set(a, 1);\nconsole.log(seen.get(b));",
+    // Set elements from a seed.
+    "console.log(new Set([a, b]).size);",
+    "const all: (readonly Item[])[] = [];\nall.push(a);\nall.push(b);\nconsole.log(new Set(all).size);",
+    "const entries: [readonly Item[], number][] = [[a, 1], [b, 2]];\nconsole.log(new Map(entries).size);",
+    "const byId = new Map<number, readonly Item[]>([[1, a], [2, b]]);\nconsole.log(new Set(byId.values()).size);",
   ]) {
     const result = await build(program(use));
     expect(result.ok, use).toBe(false);
     expect(result.messages.join("\n"), use).toContain("is compared by identity");
   }
-  // Reading the elements and the length is not a comparison.
-  const reads = await build(program("console.log(a.length === b.length, a[0] === b[0]);"));
+  // Reading the elements and the length, or a Set of the elements, compares
+  // no field arrays.
+  const reads = await build(
+    program("console.log(a.length === b.length, a[0] === b[0], new Set(a).size);"),
+  );
   expect(reads.ok).toBe(true);
 });
 

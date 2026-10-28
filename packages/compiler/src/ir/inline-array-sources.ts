@@ -175,6 +175,11 @@ const MODELLED: ReadonlySet<IrExpr["kind"]> = new Set<IrExpr["kind"]>([
  * identity. */
 const IDENTITY_SEARCHES: ReadonlySet<string> = new Set(["indexOf", "includes"]);
 
+/** Each read of an inline field may give another array, where Node.js
+ * gives the field's one array every time. */
+const IDENTITY_REASON =
+  "an array that may be an InlineArray field's is compared by identity, and each read of the field may give another array (compare a copy made with slice(), or compare the elements)";
+
 /** Map and Set methods whose first argument is a key (or a Set element). */
 const KEYED: ReadonlySet<string> = new Set(["get", "set", "has", "delete", "add"]);
 
@@ -1512,8 +1517,7 @@ class SourceAnalysis {
           reason: `an array that may be an InlineArray field's reaches ${what}, where writes are not checked`,
         });
     };
-    // Each read of an inline field may give another array, where Node.js
-    // gives the field's one array every time.
+    // Comparisons by identity of an array a field read may give.
     const identity = (value: IrExpr, loc: SrcLoc): void => {
       if (check === null) return;
       const origin = this.origin(fn, value);
@@ -1521,9 +1525,27 @@ class SourceAnalysis {
         check({
           loc,
           origin,
-          reason:
-            "an array that may be an InlineArray field's is compared by identity, and each read of the field may give another array (compare a copy made with slice(), or compare the elements)",
+          reason: IDENTITY_REASON,
         });
+    };
+    // The same for the elements of an array or Set, or the values of a Map,
+    // that become a new Set's elements.
+    const elementIdentity = (container: IrExpr, loc: SrcLoc): void => {
+      if (check === null) return;
+      const t = container.type;
+      const elem =
+        t.kind === "array" || t.kind === "set" ? t.elem : t.kind === "map" ? t.value : null;
+      if (elem === null || !this.holdsFieldArray(elem)) return;
+      for (const slot of this.slotsOf(fn, container)) {
+        const origin = this.pinned.get(`c:${slot}`);
+        if (origin === undefined) continue;
+        check({
+          loc,
+          origin,
+          reason: IDENTITY_REASON,
+        });
+        return;
+      }
     };
     const args = (call: IrExpr & { args: IrExpr[] }): void => {
       const callees = this.callees(call);
@@ -1575,8 +1597,10 @@ class SourceAnalysis {
         }
         case "mapIntrinsic":
         case "setIntrinsic":
-          // Keys and Set elements are compared by identity.
+          // Keys and Set elements are compared by identity, and so are a
+          // Map's values when they become a Set's elements.
           if (e.args[0] !== undefined && KEYED.has(e.method)) identity(e.args[0], e.loc);
+          if (e.method === "valueSet") elementIdentity(e.receiver, e.loc);
           if (e.method === "set" || e.method === "add")
             for (const a of e.args) store(e.receiver, a);
           else if (e.method === "clone" || e.method === "keySet" || e.method === "valueSet")
@@ -1589,7 +1613,11 @@ class SourceAnalysis {
           });
           break;
         case "setNew":
-          if (e.seed) spread(e.seed, this.site(fn, e));
+          if (e.seed) {
+            // The seed's elements become Set elements.
+            elementIdentity(e.seed, e.loc);
+            spread(e.seed, this.site(fn, e));
+          }
           break;
         case "mapNew":
           for (const { key, value } of e.seed ?? []) {
