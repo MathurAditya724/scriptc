@@ -276,31 +276,72 @@ process.on("newListener", (event, listener) => {
   const kind = eventKind(event);
   if (kind === 0) return;
   const id = nextListener++;
-  islandListeners.push({ event, listener, id });
+  islandListeners.push({ event, listener, id, raw: undefined });
   nativeHost.listen(kind, event, id, 1, 0);
 });
+
+function forget(i, kind) {
+  const entry = islandListeners[i];
+  islandListeners.splice(i, 1);
+  nativeHost.listen(kind, entry.event, entry.id, 0, 0);
+}
 
 process.on("removeListener", (event, listener) => {
   const kind = eventKind(event);
   if (kind === 0) return;
+  // Node reports the removed registration as the raw listener it installed (a
+  // once wrapper removing itself reports the wrapper) or as the listener
+  // itself. The raw listener each entry recorded separates a once
+  // registration from an `on` registration of the same function: the removed
+  // one is the entry whose raw listener is no longer on `process`.
+  const live = process.rawListeners(event);
+  let same = -1;
   for (let i = islandListeners.length - 1; i >= 0; i--) {
     const entry = islandListeners[i];
-    if (entry.event === event && entry.listener === listener) {
-      islandListeners.splice(i, 1);
-      nativeHost.listen(kind, event, entry.id, 0, 0);
+    if (entry.event !== event) continue;
+    if (entry.listener !== listener && entry.raw !== listener) continue;
+    if (entry.raw !== undefined && !live.includes(entry.raw)) {
+      forget(i, kind);
       return;
     }
+    if (same < 0) same = i;
   }
+  // Duplicate registrations of one function share a raw listener; Node
+  // removes the most recent, which is the last matching entry.
+  if (same >= 0) forget(same, kind);
 });
+
+// The raw listener is the function handed to the emitter (a once wrapper
+// for process.once, which registers through process.on): tag each entry
+// with it as its registration returns. Node emits newListener before it
+// installs the listener, so the entry learns its raw only afterwards.
+for (const name of ["on", "addListener", "prependListener"]) {
+  const add = process[name];
+  process[name] = function addListener(event, listener) {
+    const start = islandListeners.length;
+    const result = Reflect.apply(add, this, arguments);
+    if (islandListeners.length > start) {
+      const registered = listener.listener ?? listener;
+      for (let i = start; i < islandListeners.length; i++) {
+        const entry = islandListeners[i];
+        if (entry.event === event && entry.listener === registered && entry.raw === undefined) {
+          entry.raw = listener;
+          break;
+        }
+      }
+    }
+    return result;
+  };
+}
 
 function emit(kind, id, name, arg) {
   const entry = islandListeners.find((e) => e.id === id);
   if (entry === undefined) return;
   // The registered function: the listener itself, or its once wrapper,
   // which removes itself before calling it.
-  const registered = process
-    .rawListeners(entry.event)
-    .find((raw) => (raw.listener ?? raw) === entry.listener);
+  const registered =
+    entry.raw ??
+    process.rawListeners(entry.event).find((raw) => (raw.listener ?? raw) === entry.listener);
   if (registered === undefined) return;
   if (kind === EVENT_SIGNAL) Reflect.apply(registered, process, [name, arg]);
   else Reflect.apply(registered, process, [arg]);
