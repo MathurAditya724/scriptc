@@ -2181,6 +2181,19 @@ export function lowerIntrinsicProperty(
       const receiver = lowerer.lowerExpr(expr.expression);
       return { kind: "libCall", fn: "child.killed", args: [receiver], type: BOOL, loc };
     }
+    // signalCode: `NodeJS.Signals | null`, the signal that terminated the
+    // child (null while running, after a normal exit, and after a spawn
+    // failure) — the exit listener's second parameter, read as a property.
+    // The `string | null` union builds type-directedly over a has/get
+    // runtime pair (the spawnRes.signal pattern).
+    if (name === "signalCode") {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      const type: IrType = {
+        kind: "union",
+        unionId: lowerer.unions.intern([STRING, NULL_T]),
+      };
+      return { kind: "libCall", fn: "child.signalCode", args: [receiver], type, loc };
+    }
     if (name === "on" || name === "once" || name === "kill" || name === "unref") {
       lowerer.unsupported("SC1090", expr, `child methods as values (call '${name}' directly)`);
     }

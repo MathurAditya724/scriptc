@@ -5360,6 +5360,21 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "child.signalCode") {
+      // Result is the interned `string | null` union (the spawnRes.signal
+      // pattern: null while the child runs, after a normal exit, and after
+      // a spawn failure).
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "string") &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) {
+        err(`libCall child.signalCode must return the 'string | null' union`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "child.pid" || e.fn === "child.exitCode") {
       // pid: the interned `number | undefined`; exitCode: `number | null`.
       const wantUnit = e.fn === "child.pid" ? "undefinedT" : "nullT";

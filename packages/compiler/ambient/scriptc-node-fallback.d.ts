@@ -1744,6 +1744,9 @@ declare module "tty" {
     readonly isTTY: boolean;
     readonly columns: number;
     readonly rows: number;
+    /* The bytes queued behind the last write: the compiled binary's fd
+     * 1/2 writes are synchronous, so it is always 0. */
+    readonly writableLength: number;
     getWindowSize(): [number, number];
   }
   export function isatty(fd: number): boolean;

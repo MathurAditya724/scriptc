@@ -861,6 +861,18 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: CHILD_PROCESS_LIB_PREFIXES,
     types: ["child", "childStream", "childWriter", "spawnRes"],
   }),
+  /** ChildProcess listener removal (off/removeListener) and the recorded
+   * terminal signal (signalCode): scr_child_lifecycle.c, a unit of its
+   * own so a program that never calls them keeps scr_child.c's layout. */
+  childLifecycle: rule({
+    fns: [
+      "child.offSpawn",
+      "child.offExit",
+      "child.offClose",
+      "child.offError",
+      "child.signalCode",
+    ],
+  }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
    * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
@@ -1302,6 +1314,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stream: false,
     streamDyn: false,
     handleProps: false,
+    childLifecycle: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
