@@ -31,6 +31,7 @@ const features = {
   computedRequire: false,
   warningReplace: false,
   stdioExtended: false,
+  nodeIsland: false,
   brotli: false,
   moduleNamespace: false,
   regex: true,

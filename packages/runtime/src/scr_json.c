@@ -7004,7 +7004,14 @@ static ScrDyn *scr_dynh_method_call(ScrClosure *closure, ScrDyn *const *args, si
   ScrDyn *self = scr_dyn_this_get();
   ScrDyn *result;
   if (self->kind == SCR_DYN_HANDLE && self->v.handle.tag == tag) {
+#ifdef SCR_HANDLE_CLASSES
+    /* A class's method value reaches the class's method past the handle's
+     * own properties; this build is the one programs with such classes
+     * link. */
+    result = scr_dyn_handle_class_method_call(ops, self, method->name, args, argc);
+#else
     result = ops->invoke(self->v.handle.ptr, self, method->name, args, argc, method->name);
+#endif
   } else {
     const char *message = method->invalid_this ? method->invalid_this
                           : ops->invalid_this  ? ops->invalid_this
@@ -19171,6 +19178,11 @@ bool scr_dyn_is_frozen(const ScrDyn *value) {
   static const char message[] = "Object.isFrozen of this native value has no lowering";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return false;
+}
+
+bool scr_dyn_checked_record_frozen(const ScrDyn *value) {
+  while (value && value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
+  return value && scr_dyn_is_frozen(value);
 }
 
 double scr_buffer_byte_length_dyn(ScrDyn *value, ScrStr *encoding) {

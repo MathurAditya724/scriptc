@@ -65,6 +65,7 @@ export interface EarlyExecutableNativeFeatures {
   wasm?: boolean;
   warningReplace?: boolean;
   stdioExtended?: boolean;
+  nodeIsland?: boolean;
   moduleNamespace?: boolean;
   zlib: boolean;
   brotli?: boolean;
@@ -134,6 +135,9 @@ interface EarlyExecutableCacheStamp {
   native: EarlyExecutableNativeFeatures;
   /** The build's performance warnings (SC61xx), which a cache hit repeats. */
   performance?: ScrDiagnostic[];
+  /** Programs that call into Node.js: the libnode pack identity the build
+   * recorded (EarlyExecutableCacheOptions.libnodeIdentity). */
+  libnode?: string;
   /** How a --profile-use build's profile matched, which a cache hit reports. */
   profileMatch?: NativeProfileMatch;
   integrity: string;
@@ -156,6 +160,12 @@ export interface EarlyExecutableCacheOptions {
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** The identity of the libnode pack a program that calls into Node.js
+   * records (node-islands/libnode.ts libnodeCacheKey), or undefined when the
+   * build names none. Not part of the key: an entry of a program that calls
+   * into Node records it, and a hit requires the same identity, so the pack
+   * settings never change the key of a program that does not. */
+  libnodeIdentity?: () => string | undefined;
   /** Omitted unless --large-pages is set. */
   largePages?: true;
   /** Omitted for the x86-64 baseline (`--target-cpu`). */
@@ -583,6 +593,8 @@ async function readExecutableCache(
       (stamp.nativeDependencies !== null && !Array.isArray(stamp.nativeDependencies)) ||
       (stamp.files.ir !== null) !== options.emitIr ||
       stampIntegrity(unsigned) !== integrity ||
+      (stamp.native.nodeIsland === true &&
+        (stamp.libnode ?? "") !== (options.libnodeIdentity?.() ?? "")) ||
       !frontendInputsStillMatch(
         validateRoute === undefined ? stamp.frontend : routedFrontendCandidate(stamp.frontend),
         executableFrontendOutputExclusions(options, stamp.native.backend),
@@ -899,6 +911,7 @@ export async function publishEarlyExecutableCache(
       ...(result.performance === undefined || result.performance.length === 0
         ? {}
         : { performance: result.performance }),
+      ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
       ...(result.profileMatch === undefined ? {} : { profileMatch: result.profileMatch }),
     };
     const stamp: EarlyExecutableCacheStamp = { ...unsigned, integrity: stampIntegrity(unsigned) };

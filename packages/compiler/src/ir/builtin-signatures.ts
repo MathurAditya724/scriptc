@@ -176,6 +176,15 @@ function buildLibFnSignatures() {
     "json.parseReviver": { argTypes: [STRING, DYN], result: DYN },
     "json.stringifyReplacer": { argTypes: [DYN, DYN, STRING], result: DYN },
     "json.stringifyValue": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** @scriptc/node calls into Node loaded into the program (scr_node_island.c):
+     * the calling module's path, the specifier, the export name and the
+     * boxed argument array, copied as JSON. callSync answers the result's
+     * JSON copy or throws the copied error; call answers a promise of it. */
+    "nodeIsland.callSync": { argTypes: [STRING, STRING, STRING, DYN], result: DYN },
+    "nodeIsland.call": {
+      argTypes: [STRING, STRING, STRING, DYN],
+      result: { kind: "promise", inner: DYN },
+    },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An
@@ -3530,6 +3539,8 @@ function buildLibFnSignatures() {
     "process.pid": { argTypes: [], result: F64 },
     "dyn.this": { argTypes: [], result: DYN },
     "dyn.generatorThis": { argTypes: [], result: DYN },
+    /** A sloppy-mode function's `this` from its receiver: the global object
+     * for undefined and null, else the receiver. Never throws. */
     "process.getuid": { argTypes: [], result: F64 },
     "process.getgid": { argTypes: [], result: F64 },
     /** geteuid(2) / getegid(2) / getgroups(2) (the effective gid appended

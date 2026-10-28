@@ -369,6 +369,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  unit((u) => u.opts.nodeIsland === true, "scr_node_island.c"),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
 ];
@@ -402,6 +403,7 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
+  { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 
 function runtimeDefineArgs(opts: CcOptions): string[] {
