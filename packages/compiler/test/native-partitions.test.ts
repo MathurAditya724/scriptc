@@ -667,6 +667,132 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     expect(changed).toHaveLength(new Set([where.get("step7"), where.get("step9")]).size);
   });
 
+  test("a function that its referrer only takes the address of is placed by its own name", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-address-"));
+    dirs.push(dir);
+    // A body of `lines` additions, past the size under which an
+    // address-only function still follows its referrer.
+    const body = (name: string, lines: number) => [
+      `define internal void @${name}(i64 %value) noinline {`,
+      ...Array.from(
+        { length: lines },
+        (_, index) => `  %v${index} = add i64 ${index === 0 ? "%value" : `%v${index - 1}`}, 1`,
+      ),
+      "  call void @bump(i64 0)",
+      "  ret void",
+      "}",
+    ];
+    // step7 passes @closure and @trampoline to @spawn; step9 calls
+    // @matcher through a mutable global only it reads.
+    const source = program()
+      .split("\n")
+      .flatMap((line) => {
+        if (line === "define internal void @step7(i64 %value) noinline {")
+          return [
+            ...body("closure", 40),
+            ...body("trampoline", 1),
+            "define internal void @spawn(ptr %fn) noinline {",
+            "  call void %fn(i64 1)",
+            "  ret void",
+            "}",
+            line,
+            "  call void @spawn(ptr @closure)",
+            "  call void @spawn(ptr @trampoline)",
+          ];
+        if (line === "define internal void @step9(i64 %value) noinline {")
+          return [
+            "@descriptor = internal global ptr @matcher",
+            ...body("matcher", 40),
+            line,
+            "  %fn = load ptr, ptr @descriptor",
+            "  call void %fn(i64 0)",
+          ];
+        return [line];
+      })
+      .join("\n");
+    const objects = await emit(dir, source, { outputs: 4, optLevel: "0", name: "address" });
+    expect(await exitCode(dir, objects, "address")).toBe(expectedExit());
+    const where = new Map<string, number>();
+    for (const [index, object] of objects.entries()) {
+      const { stdout } = await execFileAsync("nm", [object]);
+      for (const line of stdout.split("\n")) {
+        const defined = /^[0-9a-fA-F]+ [A-Za-z] _?(step7|step9|closure|trampoline|matcher)$/.exec(
+          line.trim(),
+        );
+        if (defined !== null) where.set(defined[1]!, index);
+      }
+    }
+    expect(where.size).toBe(5);
+    expect(where.get("trampoline")).toBe(where.get("step7"));
+    expect(where.get("closure")).not.toBe(where.get("step7"));
+    expect(where.get("matcher")).not.toBe(where.get("step9"));
+  });
+
+  test("functions are balanced over a few partitions, and a small edit keeps their places", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-balance-"));
+    dirs.push(dir);
+    // Eight exported functions of about 7 KiB each, which main calls; each
+    // returns its argument plus its number of additions. By the hash of
+    // their names alone, six of them would share one partition.
+    const count = 8;
+    const additions = (index: number, edit: number) => 280 + (index === 3 ? edit : 0);
+    const source = (edit: number) => {
+      const lines: string[] = [];
+      for (let index = 0; index < count; index++) {
+        lines.push(`define i64 @big${index * 4}(i64 %value) noinline {`);
+        for (let step = 0; step < additions(index, edit); step++)
+          lines.push(`  %v${step} = add i64 ${step === 0 ? "%value" : `%v${step - 1}`}, 1`);
+        lines.push(`  ret i64 %v${additions(index, edit) - 1}`, "}");
+      }
+      lines.push("define i32 @main() {");
+      for (let index = 0; index < count; index++)
+        lines.push(
+          `  %r${index} = call i64 @big${index * 4}(i64 ${index})`,
+          `  %t${index} = add i64 ${index === 0 ? "0" : `%t${index - 1}`}, %r${index}`,
+        );
+      lines.push(
+        `  %low = urem i64 %t${count - 1}, 251`,
+        "  %code = trunc i64 %low to i32",
+        "  ret i32 %code",
+        "}",
+      );
+      return lines.join("\n") + "\n";
+    };
+    const expected = (edit: number) => {
+      let total = 0;
+      for (let index = 0; index < count; index++) total += index + additions(index, edit);
+      return total % 251;
+    };
+    const placed = async (objects: string[]) => {
+      const where = new Map<string, number>();
+      for (const [index, object] of objects.entries()) {
+        const { stdout } = await execFileAsync("nm", ["--defined-only", object]);
+        for (const line of stdout.split("\n")) {
+          const defined = /^[0-9a-fA-F]+ [A-Za-z] _?(big\d+)$/.exec(line.trim());
+          if (defined !== null) where.set(defined[1]!, index);
+        }
+      }
+      return where;
+    };
+    const cache = join(dir, "cache");
+    const options = { outputs: 4, optLevel: "0", cache } as const;
+    const objects = await emit(dir, source(0), { ...options, name: "balanced" });
+    expect(await exitCode(dir, objects, "balanced")).toBe(expected(0));
+    const where = await placed(objects);
+    expect(where.size).toBe(count);
+    for (let partition = 0; partition < 4; partition++)
+      expect([...where.values()].filter((home) => home === partition)).toHaveLength(2);
+
+    // Growing one function by a few hundred bytes recompiles only its
+    // partition and moves no function.
+    const before = await cacheEntries(cache, ".o");
+    const edited = await emit(dir, source(8), { ...options, name: "edited" });
+    expect(await exitCode(dir, edited, "edited")).toBe(expected(8));
+    expect(await placed(edited)).toEqual(where);
+    const changed = [...(await cacheEntries(cache, ".o"))].filter((entry) => !before.has(entry));
+    expect(changed).toHaveLength(1);
+  });
+
   test("a table written one element per line keeps the text partitioner and its reuse", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-table-"));
     dirs.push(dir);
