@@ -283,7 +283,25 @@ function lowerArrayJoinSeparator(
     }
   }
   if (value.type.kind === "dyn") {
-    lowerer.noLowering(".join separator with a runtime-dependent undefined value", node);
+    // A checked-dynamic separator: JS substitutes the default only for the
+    // undefined VALUE, and ToString answers everything else (null prints
+    // "null", a symbol throws the catchable TypeError).
+    const local = lowerer.declareHiddenLocal("%joinSeparator", DYN);
+    const ref = varRef(local.id, DYN, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+      result: {
+        kind: "ternary",
+        cond: { kind: "dynTest", test: "undefined", value: ref, type: BOOL, loc },
+        then: comma,
+        else_: { kind: "libCall", fn: "dyn.toStringCoerce", args: [ref], type: STRING, loc },
+        type: STRING,
+        loc,
+      },
+      type: STRING,
+      loc,
+    };
   }
   return lowerer.ensureString(value, node);
 }
