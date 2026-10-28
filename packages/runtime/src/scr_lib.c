@@ -4242,6 +4242,25 @@ double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
   return wrote;
 }
 
+/* writeFileSync(fd, data): Node writes the WHOLE data to the descriptor
+ * and leaves it open (closeSync owns its lifetime), at the descriptor's
+ * current offset — libuv's uv_fs_write loop, so a pipe's short writes
+ * resume until the data is gone. Errors keep the fd operation's errno
+ * shape ("EBADF: bad file descriptor, write"). */
+void scr_fs_write_file_fd(double fd, ScrStr *data) {
+  char *owned;
+  const char *bytes = scr_str_utf8(data, &owned);
+  size_t at = 0;
+  while (at < data->len) {
+    double wrote = scr_fs_write_bytes(fd, bytes + at, data->len - at, -1);
+    /* A throw leaves 0 (or the short count a partial write reported);
+     * a zero-length write on a nonempty slice would spin, so stop. */
+    if (wrote <= 0) break;
+    at += (size_t)wrote;
+  }
+  scr_str_utf8_end(owned);
+}
+
 /* fs.readSync(fd, buffer, offset, length[, position]) — the buffer form.
  * Node validates offset/length against the buffer before reading and
  * throws ERR_OUT_OF_RANGE; here the checks clamp to the same contract and

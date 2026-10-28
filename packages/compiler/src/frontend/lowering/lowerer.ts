@@ -225,6 +225,7 @@ import { recordTextCodecClass } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
+import { returnDispatchReceivers } from "./receiver-returns.js";
 import {
   analyzeTiers,
   dynamicStatementCount,
@@ -9464,6 +9465,7 @@ export class Lowerer {
     applyHandleProperties(this, functions);
     installBufferValue(functions);
     installFetchBodyWebStreams(this, functions);
+    returnDispatchReceivers(this, functions);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the
