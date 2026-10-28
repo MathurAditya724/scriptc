@@ -131,7 +131,12 @@ import {
   type Int32Abi,
 } from "./int32-abi.js";
 import { type Int32Local } from "./int32-locals.js";
-import { findIntegerClones, NO_INTEGER_CLONES, type IntegerClones } from "./integer-clones.js";
+import {
+  findIntegerClones,
+  NO_INTEGER_CLONES,
+  type CloneReferences,
+  type IntegerClones,
+} from "./integer-clones.js";
 import { writeRepresentationReport } from "./repr-report.js";
 import { heapCensusOf, type HeapCensus } from "./heap-census.js";
 import { exactInteger, narrowInteger, widenInteger, type LlInteger } from "./integer-values.js";
@@ -364,7 +369,13 @@ import { VirtualBorrows } from "./virtual-borrows.js";
 import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
-import { isObjectArm, NULLABLE_ABSENT, NULLABLE_NULL, NullableUnions } from "./nullable-unions.js";
+import {
+  isObjectArm,
+  NULLABLE_ABSENT,
+  NULLABLE_NULL,
+  NullableUnions,
+  type NullableUnion,
+} from "./nullable-unions.js";
 import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   emitConcatInputs,
@@ -1750,6 +1761,8 @@ export class LlEmitter {
   readonly int32Abis: ReadonlyMap<string, Int32Abi>;
   /** Pure number functions with speculative integer clones. */
   readonly integerClones: IntegerClones;
+  /** The records integer clones read (64-bit layouts). */
+  readonly cloneReferences: CloneReferences | undefined;
   /** The IR function being emitted. */
   currentFunctionName = "";
 
@@ -2275,14 +2288,17 @@ export class LlEmitter {
       };
     }
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes, this.nodeIndex);
-    // Integer clones signal a stack overflow through their result, which
-    // needs the single-threaded guard; worker programs also poll for
-    // termination, and debug builds and stack traces keep every frame.
-    // Clones read number arrays their function borrows (64-bit layouts).
+    // Integer clones signal a stack overflow through their result. Worker
+    // programs have them only as ELF executables, where the stack guard
+    // and the pending word clones poll for termination are plain
+    // thread-locals; debug builds and stack traces keep every frame.
+    // Clones read number arrays and record graphs their function borrows
+    // (64-bit layouts).
+    this.cloneReferences = this.sizeType === "i64" ? this.recordCloneReferences() : undefined;
     this.integerClones =
       this.debug === null &&
       this.stackChecks !== null &&
-      mod.workers !== true &&
+      (mod.workers !== true || this.executableTls) &&
       mod.lib === undefined &&
       !this.stackTraces
         ? findIntegerClones(
@@ -2290,6 +2306,7 @@ export class LlEmitter {
             this.sizeType === "i64"
               ? (fn, index) => this.callLifetimes.borrowed.get(fn)?.has(index) === true
               : undefined,
+            this.cloneReferences,
           )
         : NO_INTEGER_CLONES;
     // Integer clones and their dispatchers call each other through their
@@ -4906,6 +4923,43 @@ export class LlEmitter {
 
   /** The field-slot pointer of a record member (rc header at index 0).
    * `inline`: the slot stores a scalar union's tag and bits. */
+  /** The record layouts integer clones read in place: record pointers,
+   * `R | null` unions of a record (NULL is `null`), and fields stored as a
+   * double, an i8 boolean or such a pointer. */
+  private recordCloneReferences(): CloneReferences {
+    const nullable = (unionId: string): NullableUnion | null => {
+      const single = this.nullableUnions.single(unionId);
+      if (single === null || single.nullTag !== -1 || single.arm.kind !== "record") return null;
+      const unit = this.unionsById.get(unionId)?.arms[single.unitTag];
+      return unit?.kind === "nullT" ? single : null;
+    };
+    const reference = (type: IrType): boolean =>
+      type.kind === "record"
+        ? this.recordsById.has(type.shapeId)
+        : type.kind === "union" && nullable(type.unionId) !== null;
+    return {
+      reference,
+      arm: (unionId, tag) => {
+        const single = nullable(unionId);
+        if (single === null) return null;
+        return tag === single.refTag ? "record" : tag === single.unitTag ? "null" : null;
+      },
+      field: (shapeId, field) => {
+        const shape = this.recordsById.get(shapeId);
+        const index = shape?.fields.findIndex((f) => f.name === field) ?? -1;
+        if (shape === undefined || index < 0) return null;
+        const type = shape.fields[index]!.type;
+        if (this.inlineUnions.record(type)) return null;
+        if (type.kind !== "f64" && type.kind !== "bool" && !reference(type)) return null;
+        return {
+          struct: mangleRecordStruct(shapeId),
+          index: index + this.nullableUnions.fieldBase(shapeId),
+          type,
+        };
+      },
+    };
+  }
+
   recordFieldPtr(
     objName: string,
     shapeId: string,
