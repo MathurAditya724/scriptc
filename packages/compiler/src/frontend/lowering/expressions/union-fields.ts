@@ -69,13 +69,16 @@ function unionFieldRead(
       };
 }
 
-/** Whether `converted` is `value` itself or `value` wrapped into a union
- * or upcast to a base class: conversions that cannot fail. Checked
- * narrowings (a union into one of its arms) don't count. */
+/** Whether `converted` is `value` itself or `value` wrapped into a union,
+ * upcast to a base class, or boxed into the checked-dynamic representation:
+ * conversions that cannot fail. Checked narrowings (a union into one of its
+ * arms) don't count. */
 function isWidening(converted: IrExpr, value: IrExpr): boolean {
   if (converted === value) return true;
   return (
-    (converted.kind === "unionWrap" || converted.kind === "upcast") &&
+    (converted.kind === "unionWrap" ||
+      converted.kind === "upcast" ||
+      converted.kind === "dynFrom") &&
     isWidening(converted.value, value)
   );
 }
@@ -109,10 +112,11 @@ function sharedFieldType(
 
 /** Read a data field from a union of classes and records whose arms declare
  * it with DIFFERENT but compatible types (`T | undefined` beside `T`, a base
- * class beside a subclass). Each tag reads its own slot and converts it to
- * the widest arm type, so the result has one representation; the caller
- * narrows it to the checker's flow type. Unit arms, accessors, and fields
- * without a common type keep their existing fences. */
+ * class beside a subclass, `T` beside `unknown`). Each tag reads its own slot
+ * and converts it to the widest arm type, so the result has one
+ * representation; the caller narrows it to the checker's flow type. Unit
+ * arms, accessors, and fields without a common type keep their existing
+ * fences. */
 export function lowerUnionFieldRead(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
@@ -160,9 +164,10 @@ export function lowerUnionFieldRead(
  * aliases and identity-keyed collections observe the mutation. Arms may
  * declare the field with different types when one of them converts into
  * every other without a check (`T` beside `T | undefined`, a subclass
- * beside its base): the value is evaluated as that type and widened per
- * arm. Accessors, missing fields, and unrelated storage types retain their
- * own fences. */
+ * beside its base), or when every arm's slot holds a dyn-convertible type
+ * (`T | undefined` beside `unknown`) and the value is converted per arm.
+ * Accessors, missing fields, and unrelated storage types retain their own
+ * fences. */
 export function lowerUnionFieldWrite(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
@@ -194,8 +199,9 @@ export function lowerUnionFieldWrite(
     present.push(field);
   }
   if (present.length === 0) return null;
+  const mixed = present.some((field) => !typeEquals(field.type, present[0]!.type));
   let fieldType: IrType | null = present[0]!.type;
-  if (present.some((field) => !typeEquals(field.type, present[0]!.type))) {
+  if (mixed) {
     // Mixed storage types are probed only on unions without unit arms, where
     // the present arms' tags are the union's own.
     fieldType =
@@ -203,10 +209,22 @@ export function lowerUnionFieldWrite(
         ? sharedFieldType(lowerer, unionId, receiver, present, name, loc, false)
         : null;
   }
-  if (fieldType === null) return null;
+  if (
+    fieldType === null &&
+    (!mixed || !present.every((field) => lowerer.dynConvertible(field.type)))
+  )
+    return null;
   const object = lowerer.declareHiddenLocal("%unionWriteObject", receiver.type);
   const objectRef = varRef(object.id, object.type, loc);
-  const value = lowerer.lowerExprExpecting(rhs, fieldType);
+  // No static supertype of the arm types (`T | undefined` beside `unknown`):
+  // TypeScript's writable property type is the UNION of the arms' property
+  // types, so the value is lowered once at its own type and each arm converts
+  // it. Those conversions are checked where the arm's slot is narrower, so a
+  // value that does not fit the selected arm throws the catchable TypeError
+  // of the dyn→static edge where JS would store it (the divergence a dyn
+  // value written into a typed slot already documents).
+  const value =
+    fieldType === null ? lowerer.lowerExpr(rhs) : lowerer.lowerExprExpecting(rhs, fieldType);
   const stored = lowerer.declareHiddenLocal("%unionWriteValue", value.type);
   // Snapshot the reference before evaluating the RHS, which can change the
   // original binding. Evaluate and retain the value once before dispatch.
