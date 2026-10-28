@@ -75,6 +75,11 @@ import { splitLlvmLibraryProgram } from "../backend/llvm/split.js";
 import { prepareNativeExecutable, prepareNativeLibrary } from "./prepare.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
+import {
+  hugeTextLinkerArgs,
+  hugeTextProgram,
+  rewriteHugeTextExecutable,
+} from "../backend/huge-text.js";
 import { openNativeExecutableCache } from "./executable-cache.js";
 import { LinkerJobs } from "./linker-job.js";
 import { nativeFileIdentity } from "./file-identity.js";
@@ -381,7 +386,9 @@ export class NativeCompiler {
       // An optimized program that stays one partition is optimized whole and
       // generates code for its parts concurrently.
       const codegenParts = library || optimization === "dev" ? 1 : nativeCodegenParts(size);
-      const partitions = library ? 1 : Math.max(nativeProgramPartitions(size), codegenParts);
+      const partitions = library
+        ? 1
+        : Math.max(nativeProgramPartitions(size, optimization === "dev"), codegenParts);
       return this.emitObject(
         input,
         output,
@@ -637,11 +644,15 @@ export class NativeCompiler {
         });
         // Linux links with lld when the driver finds it.
         const lld = options.sanitize ? [] : lldLinkerArgs(target.platform, toolchain.linker);
+        const hugeText =
+          !options.sanitize && hugeTextProgram(target, [object, ...programObjects.slice(1)]);
+        const zig = process.env["SCRIPTC_LINKER"] === undefined && target.defaultLinker === "zig";
         const linkMap = join(stage, "link.map");
         const mapArgs = staticLinkMapArgs(target, options.staticLink === true, linkMap);
         const linkArgsWith = (withLld: boolean): string[] => [
           ...(options.sanitize ? ["-fsanitize=address"] : toolchain.linkerArgs),
           ...(withLld ? lld : []),
+          ...hugeTextLinkerArgs(hugeText, (withLld && lld.length !== 0) || zig),
           ...plan.driverFlags,
           ...mapArgs,
           ...(withLld ? plan.inputs : inputsWithoutLld(target.platform, plan.inputs)),
@@ -679,6 +690,7 @@ export class NativeCompiler {
         }
         timing("native-link");
         requireNativeArtifact(stagedOutput);
+        if (hugeText) rewriteHugeTextExecutable(stagedOutput);
         if (mapArgs.length !== 0) {
           const refusal = staticExecutableRefusal(target, true, readFileSync(linkMap, "utf8"));
           if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);

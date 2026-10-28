@@ -408,6 +408,14 @@ test("program partitions depend only on module size", () => {
   expect(nativeProgramPartitions(32 * megabyte + 1)).toBe(16);
   expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
   expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
+  // Unoptimized (dev) programs are divided from 64 KiB.
+  const kilobyte = 1024;
+  expect(nativeProgramPartitions(64 * kilobyte, true)).toBe(1);
+  expect(nativeProgramPartitions(64 * kilobyte + 1, true)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte, true)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte + 1, true)).toBe(8);
+  expect(nativeProgramPartitions(megabyte, true)).toBe(8);
+  expect(nativeProgramPartitions(32 * megabyte + 1, true)).toBe(16);
   expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([
     "/build.d/program.o",
     "/build.d/program.part1.o",

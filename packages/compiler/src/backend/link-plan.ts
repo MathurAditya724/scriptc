@@ -13,6 +13,7 @@ import type { NativeArtifactDependency } from "./native/contracts.js";
 import { needsDarwinDebugSymbols } from "./debug-symbols.js";
 import { loadRuntimePack, type RuntimePackSelection } from "./runtime-pack.js";
 import { executableLinkInputs } from "./link-plan-core.js";
+import { hugeTextProgram } from "./huge-text.js";
 import type { NativeTargetSpec, WindowsSubsystem } from "./targets.js";
 
 export interface NativeLinkPlan {
@@ -30,6 +31,8 @@ export interface NativeLinkPlan {
   darwinDebugSymbols?: boolean;
   /** Linked with `--static`: the linked executable is checked before use. */
   staticLink?: boolean;
+  /** Program code large enough for text on huge pages (huge-text.ts). */
+  hugeText?: boolean;
 }
 
 export async function createNativeLinkPlan(options: {
@@ -85,5 +88,11 @@ export async function createNativeLinkPlan(options: {
     programObjectDependencies: [...(options.programObjectDependencies ?? [])],
     runtimePack,
     ...(options.staticLink === true ? { staticLink: true } : {}),
+    ...(hugeTextProgram(options.target, [
+      options.programObject,
+      ...(options.programPartitions ?? []),
+    ])
+      ? { hugeText: true }
+      : {}),
   };
 }

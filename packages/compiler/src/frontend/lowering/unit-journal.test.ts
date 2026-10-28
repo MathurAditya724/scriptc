@@ -147,20 +147,27 @@ test("a map table hands over the entries added after a size", () => {
   expect([...map]).toEqual([["a", "%h.1"]]);
 });
 
-test("a held table notices a replaced entry", () => {
+test("a table's content snapshot notices changed, reordered and removed entries", () => {
   const map = new Map<string, string>([["a", "%h.1"]]);
-  const held = mapTable("helpers", map).hold!();
+  const held = mapTable("helpers", map).contents!();
   map.set("b", "%h.2");
-  expect(held.same()).toBe(true);
+  expect(held.changed()).toBeNull();
   map.set("a", "%h.9");
-  expect(held.same()).toBe(false);
-  const set = new Set(["x"]);
-  const heldSet = setTable("names", set).hold!();
+  expect(held.changed()).toBe("a");
+  // A unit names the helper it got, not the key it was looked up by.
+  expect(held.changedAmong(new Set(["%h.1"]))).toBe("a");
+  expect(held.changedAmong(new Set(["%h.2"]))).toBeNull();
+  held.refresh(new Set(["%h.1"]));
+  expect(held.changed()).toBeNull();
+  const set = new Set(["x", "y"]);
+  const heldSet = setTable("names", set).contents!();
   set.delete("x");
   set.add("x");
-  expect(heldSet.same()).toBe(true);
+  expect(heldSet.changed()).toBe("x");
   set.delete("x");
-  expect(heldSet.same()).toBe(false);
+  expect(heldSet.changedAmong(new Set(["x"]))).toBe("x");
+  heldSet.refresh(new Set(["x"]));
+  expect(heldSet.changed()).toBeNull();
 });
 
 test("a function table keeps the function an earlier unit made", () => {
@@ -280,7 +287,7 @@ test("a unit that changes an entry it did not add has no record", () => {
   state.helpers.set("shared", "%h.first");
   const unit = recordUnit(subject, "a");
   expect(unit.record).toBeNull();
-  expect(unit.reasons).toEqual(["helpers:replaced"]);
+  expect(unit.reasons).toEqual(["helpers:changed"]);
 });
 
 test("a recorded wave throws when a unit changes a held function in place", () => {

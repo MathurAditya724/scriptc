@@ -65,6 +65,7 @@ const KNOWN: Record<string, Known> = {
     divergence:
       "Timeout handles are numbers (typeof) and lose their ref flag once fired or cleared",
   },
+  // require() inside a function.
   "island-web-plumbing": { run: "SC1090" },
   "lazy-traps": {
     divergence:
@@ -117,6 +118,7 @@ const KNOWN: Record<string, Known> = {
   "util-shims": { run: "SC2020" },
   // The package redeclares the var it exported: Node copies the first value.
   "var-export-redeclared": { island: true },
+  // `class Upper extends TransformStream`: extending a builtin class from JavaScript.
   "web-streams": { run: "SC1090" },
   "workspace-copied": { island: true },
   "workspace-unclean": { build: "SC2013" },

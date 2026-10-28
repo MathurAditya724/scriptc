@@ -1,6 +1,7 @@
 import type { TargetCpu } from "../target-cpu.js";
 import { loopEntryInlines } from "./loop-entry-versions.js";
 import type { FunctionLayout } from "./function-layout.js";
+import type { CompilationTiming } from "../../timing.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { analyzeFrameEscapes, type FrameEscapes } from "./frame-escapes.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
@@ -299,8 +300,10 @@ import {
   emitBytesIntrinsic,
 } from "./expr-bytes.js";
 import {
+  borrowedRecordKeyGetOr,
   emitRecordKeyGet,
   emitRegexIntrinsic,
+  immortalDefault,
   keyedRecordReadInto,
   pointerRecordKeyGet,
 } from "./expr-records.js";
@@ -522,6 +525,11 @@ export interface LlvmTargetOptions {
   forkPrimitives?: ForkPrimitives | undefined;
   /** Functions to write first, by tier (function-layout.ts). */
   functionLayout?: FunctionLayout;
+  /** Marks emission's serial steps: `llvm-emit-rewrites` after the module
+   * passes, `llvm-emit-int32` after int32 selection, and
+   * `llvm-emit-analyses` after the emitter's whole-program analyses. The
+   * caller's next phase is the function bodies. */
+  timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
@@ -706,6 +714,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   };
   // Keep source storage intact for debugger inspection in dev builds.
   if (options.debugSources !== undefined) return new LlEmitter(mod, options, null, null);
+  const timing = options.timing ?? (() => {});
   const passed = versionParameters(
     addRecordResultEntries(
       scalarizeLiteralResults(
@@ -737,6 +746,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
       ),
     ),
   );
+  timing("llvm-emit-rewrites");
   let emitted = selectInt32Arrays(passed, proven, resultEntryTargets);
   let prepared = rounds.last;
   // A proof that revised functions analyzed the module of the functions it
@@ -758,7 +768,15 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   }
   if (process.env["SCRIPTC_INT32_VERIFY"] === "1")
     verifyInt32Selection(passed, emitted, prepared?.mod === emitted ? prepared : null);
-  return new LlEmitter(emitted, options, null, prepared?.mod === emitted ? prepared : null);
+  timing("llvm-emit-int32");
+  const emitter = new LlEmitter(
+    emitted,
+    options,
+    null,
+    prepared?.mod === emitted ? prepared : null,
+  );
+  timing("llvm-emit-analyses");
+  return emitter;
 }
 
 /** SCRIPTC_INT32_VERIFY=1: throws unless the selection with revisions
@@ -2128,7 +2146,7 @@ export class LlEmitter {
       (options.targetTriple
         ? /-linux-(?:gnu|musl)/.test(options.targetTriple)
         : process.platform === "linux")
-        ? unwindAbiFunctions(mod, this.mayThrow, options.unwindExcluded)
+        ? unwindAbiFunctions(mod, this.mayThrow, options.unwindExcluded, this.nodeIndex)
         : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
@@ -2221,6 +2239,7 @@ export class LlEmitter {
             (type.kind !== "union" ||
               this.nullableUnions.single(type.unionId)?.arm.kind !== "string"),
           this.walkBorrowsByFunction.get(fn.name) ?? new Set(),
+          this.nodeIndex,
         );
         if (rebound.size === 0) continue;
         this.reboundByFunction.set(fn.name, rebound);
@@ -3576,8 +3595,14 @@ export class LlEmitter {
 
   /** Registers a SLOT whose current contents the frame owns (conditional
    * results: optional chains, branch joins that park ownership). */
-  ownSlot(slot: string, type: IrType): void {
-    if (isRefCounted(type)) this.currentFrame().push({ name: slot, type, slot: true });
+  ownSlot(slot: string, type: IrType, rarelyFilled = false): void {
+    if (isRefCounted(type))
+      this.currentFrame().push({
+        name: slot,
+        type,
+        slot: true,
+        ...(rarelyFilled ? { rarelyFilled: true } : {}),
+      });
   }
 
   /** The innermost lexical scope releases a frame object's reference
@@ -3689,6 +3714,17 @@ export class LlEmitter {
         this.B.line(`${t} = load ptr, ptr ${v.name}`);
         if (v.boxed) {
           this.B.line(`call void ${boxReleaseSym(this.shapeHost)}(ptr ${t})`);
+        } else if (v.rarelyFilled && !this.B.isTerminated()) {
+          // Skip the release call on the common empty path.
+          const filled = this.B.tmp();
+          this.B.line(`${filled} = icmp ne ptr ${t}, null`);
+          const release = this.B.newLabel("slot.release"),
+            join = this.B.newLabel("slot.release.j");
+          this.B.condBr(filled, release, join);
+          this.B.startBlock(release);
+          this.releaseFrame(t, v.type);
+          this.B.br(join);
+          this.B.startBlock(join);
         } else {
           this.releaseFrame(t, v.type);
         }
@@ -6298,6 +6334,11 @@ export class LlEmitter {
       case "recordGet":
       case "recordKeyGet":
         return this.borrowsWithoutOwning(e) && this.unownedWalk(e.obj);
+      // `r[k] ?? inherited(r, k)` whose default is immortal.
+      case "nullish": {
+        const read = borrowedRecordKeyGetOr(this, e);
+        return read !== null && immortalDefault(this, e.right) && this.unownedWalk(read);
+      }
       case "mapIntrinsic": {
         // A Map binding's own pointer (maps are not plainReference types).
         if (!this.borrowsWithoutOwning(e) || e.receiver.kind !== "varRef") return false;
@@ -7574,6 +7615,8 @@ export class LlEmitter {
         return pointerRecordKeyGet(this, e);
       case "mapIntrinsic":
         return pointerMapGet(this, e);
+      case "nullish":
+        return borrowedRecordKeyGetOr(this, e) !== null;
       // emitReadReceiver lends a required element of a borrowed array when
       // computing the index removes no edge.
       case "arrayGet":
