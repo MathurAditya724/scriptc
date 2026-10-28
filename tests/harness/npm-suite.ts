@@ -69,7 +69,13 @@ const KNOWN: Record<string, Known> = {
   },
   // require() inside a function.
   "island-web-plumbing": { run: "SC1090" },
-  "lazy-traps": { island: true },
+  // The package's require() edges run in a Node island and match Node; its
+  // import() of a specifier that resolves to nothing is a deferred SC2012
+  // fence instead of Node's ERR_MODULE_NOT_FOUND rejection.
+  "lazy-traps": {
+    divergence:
+      "an import() whose literal specifier resolves to nothing is fenced with SC2012 instead of rejecting like Node",
+  },
   "misc-shims": { run: "SC1090" },
   namespace: { island: true },
   "node24-async-events": { run: "SC2020" },
