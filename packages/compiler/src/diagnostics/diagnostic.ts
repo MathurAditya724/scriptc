@@ -1114,6 +1114,30 @@ export function unionMismatchDiag(
   };
 }
 
+/** An object literal that SPREADS union-typed sources (`{ ...base,
+ * ...override }` where each source is `A | B | C`) builds one field set per
+ * combination of source arms. A union of records cannot hold that: each arm
+ * carries its own field table, so naming one arm would drop the fields the
+ * other arms contributed (Node keeps every field). The refusal names the
+ * candidate arms, because the honest repair is an explicit annotation per
+ * source (or one open record type), never a guessed arm. */
+export function unionLiteralMismatchDiag(
+  expectedText: string,
+  arms: readonly string[],
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const named = arms.map((a) => `'${a}'`).join(", ");
+  return {
+    code: "SC2003",
+    message:
+      `a spread merge over union-typed sources builds a value that can carry fields from several arms at once, so no single arm of '${expectedText}' can represent it` +
+      (arms.length > 0 ? ` (candidate arms: ${named})` : ""),
+    loc,
+    milestone: "later",
+    hint: "merge ONE arm per path (narrow every spread source to that same arm first — a discriminant switch or an assertion — so the spread builds a single record), or declare ONE open record type whose fields are all optional instead of a union of all-optional arms",
+  };
+}
+
 /** A use of a binding whose DECLARATION did not compile: the declaration
  * site already carries the real diagnostic (a fenced type, a blocked
  * signature, an unsupported binding form), and every later reference falls
