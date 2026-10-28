@@ -129,6 +129,8 @@ _Static_assert(offsetof(ScrExcCell, kind) == 0 && sizeof(ScrExcKind) == 4 && SCR
  * functions, unwind-abi.ts). Linux (glibc and musl) only; it never
  * returns. */
 SCR_COLD _Noreturn void scr_unwind_raise(void);
+/* Continues the unwind from a landing pad with the exception it took. */
+SCR_COLD void scr_unwind_resume(void *exc);
 SCR_COLD void scr_throw_f64(double v);
 SCR_COLD void scr_throw_bool(bool v);
 SCR_COLD void scr_throw_str(ScrStr *v); /* takes ownership */

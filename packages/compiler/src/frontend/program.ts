@@ -98,6 +98,7 @@ import {
   configurePackageShims,
   isPackageShimFile,
   isShimmedImport,
+  isUnloadedPackage,
   npmStaticOmitsPackage,
 } from "./package-shims.js";
 import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
@@ -153,8 +154,11 @@ import { resetDeclOriginVersions } from "./lowering/decl-origin.js";
 import {
   reportShapes,
   resetShapeOverlay,
+  shapeOverlayDone,
   shapeOverlayEnabled,
   shapeOverlayer,
+  captureShapeOverlayState,
+  type ShapeOverlayLoadState,
 } from "./shape-inference/index.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
@@ -373,6 +377,9 @@ export interface TypeWorldDifferences {
 export interface LoadResult {
   program: ts.Program;
   entry: ts.SourceFile;
+  /** Shape inference's overlay state for this load (restored before its
+   * lowering: a later load resets the per-process registry). */
+  shapeOverlayState?: ShapeOverlayLoadState;
   /** User source files in Node's evaluation order: depth-first postorder
    * of the import graph from the entry, each module once. The entry is
    * last. Empty until checkPreflight runs (and empty when preflight fails
@@ -389,6 +396,11 @@ export interface LoadResult {
    * literal import(), fork() or Worker reaches with them. Filled by
    * checkPreflight. */
   moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
+  /** Program modules only a literal import() loads whose static graph
+   * Node's resolution refuses: each such import() rejects with the refusal
+   * instead of failing the build, and the module never joins the compiled
+   * graph. Filled by checkPreflight. */
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
   /** Node's startup refusal, when the graph carries an import edge Node
    * rejects before ANY module evaluates — a RESOLUTION refusal (a bare
    * specifier nothing installed resolves, an exports/imports map that
@@ -541,6 +553,8 @@ export interface StartupCrash {
   message: string;
   className: "%Error" | "%TypeError" | "%SyntaxError";
   loc: { file: string; start: number; end: number };
+  /** Node's error code, for the refusals that carry one. */
+  code?: string;
 }
 
 /** True when a coverage mapping names one exact bare host module. TypeScript
@@ -893,7 +907,7 @@ function loadProgram7(
   projector?: (program: ts.Program) => DeclProjection | null,
   /** Shape inference's typed overlay (shape-inference/overlay.ts):
    * rewritten package JavaScript for the lowering world, or null. */
-  overlayer?: (program: ts.Program) => ReadonlyMap<string, string> | null,
+  overlayer?: (program: ts.Program, round: number) => ReadonlyMap<string, string> | null,
 ): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
   const configuredPaths = config.options["paths"];
@@ -1047,23 +1061,45 @@ function loadProgram7(
       }
     }
     // Shape inference's overlay: package files typed from proven facts. The
-    // tsc gate keeps reading the files as written.
-    // A load without the overlay must not see an earlier load's overlay
-    // files (the registry is per process).
-    resetShapeOverlay();
+    // tsc gate keeps reading the files as written. loadProgram resets the
+    // overlay registry before the lowering world's load.
+    const overlayOriginals = new Map<string, string | null>();
     if (overlayer !== undefined && jsx.refusal === null) {
-      const overlay = overlayer(program);
-      if (overlay !== null && overlay.size > 0) {
+      // Rounds: structural rewrites, then the typed overlay of the rebuilt
+      // program (shape-inference/index.ts).
+      const timeShapes = process.env["SCRIPTC_DEBUG_SHAPE_TIME"] !== undefined;
+      for (let round = 0; round < 3; round++) {
+        const t0 = timeShapes ? performance.now() : 0;
+        const overlay = overlayer(program, round);
+        if (timeShapes)
+          process.stderr.write(
+            `[shape-time] round ${round} overlayer ${(performance.now() - t0).toFixed(0)} ms\n`,
+          );
+        if (overlay === null || overlay.size === 0) break;
+        const t1 = timeShapes ? performance.now() : 0;
         const before = program;
-        for (const [file, text] of overlay) host.addVirtualFile(file, text);
-        program = host.createProgram([...programRoots, overridesDtsPath()], options);
+        // The tsc gate reads the files as written: its diagnostics are
+        // taken before the overlay's files replace them on the host, and
+        // its project world (load.projectWorld()) is built over the files
+        // as written.
         if (tscWorld === undefined)
           tscWorld = {
             program: before,
             diagnostics: ts.getPreEmitDiagnostics(before),
             projectWorld: null,
+            declWorldFallback: true,
           };
-        else if (tscWorld.program !== before) before.dispose();
+        for (const file of overlay.keys())
+          if (!overlayOriginals.has(file))
+            overlayOriginals.set(file, before.getSourceFile(file)?.text ?? null);
+        for (const [file, text] of overlay) host.addVirtualFile(file, text);
+        program = host.createProgram([...programRoots, overridesDtsPath()], options);
+        if (tscWorld.program !== before) before.dispose();
+        if (timeShapes)
+          process.stderr.write(
+            `[shape-time] round ${round} gate+program ${(performance.now() - t1).toFixed(0)} ms\n`,
+          );
+        if (shapeOverlayDone()) break;
       }
     }
     const entry = program.getSourceFile(entryPath);
@@ -1073,6 +1109,7 @@ function loadProgram7(
     return {
       program,
       entry,
+      shapeOverlayState: captureShapeOverlayState(),
       moduleOrder: [],
       configDiags: config.diags,
       ...(declBoundaryNotes.length > 0 ? { declBoundaryNotes } : {}),
@@ -1086,7 +1123,10 @@ function loadProgram7(
       externalTypeSpecifiersByFile,
       ...(tscWorld === undefined ? {} : { jsxSources: jsx.sources }),
       ...(tscWorld === undefined ? {} : { tscWorld }),
-      projectWorld: () => (projectWorld ??= host.createProgram(programRoots, options)),
+      projectWorld: () =>
+        (projectWorld ??= withFilesAsWritten(host, overlayOriginals, () =>
+          host.createProgram(programRoots, options),
+        )),
       disposeAll: () => {
         try {
           projectWorld?.dispose();
@@ -1112,6 +1152,27 @@ export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   /** Exact host module specifiers paired with their declaration paths. */
   externalTypes?: readonly (readonly [string, string])[];
+}
+
+/** Runs `build` with the overlay's files served as written (their original
+ * texts), then serves the overlay's texts again. */
+function withFilesAsWritten<T>(
+  host: ts.Ts7Host,
+  originals: ReadonlyMap<string, string | null>,
+  build: () => T,
+): T {
+  if (originals.size === 0) return build();
+  const overlaid = new Map<string, string>();
+  for (const [file, text] of originals) {
+    const current = host.virtualFileText(file);
+    if (current !== undefined) overlaid.set(file, current);
+    if (text !== null) host.addVirtualFile(file, text);
+  }
+  try {
+    return build();
+  } finally {
+    for (const [file, text] of overlaid) host.addVirtualFile(file, text);
+  }
 }
 
 export function loadProgram(
@@ -1327,6 +1388,12 @@ export function loadProgram(
           return projection;
         };
   try {
+    // The overlay registry is per process and describes the lowering
+    // world's load: a load without the overlay must not see an earlier
+    // load's overlay files. The authored world (authored()) is a second load
+    // of the same build, which preflight can create after the overlay
+    // rounds, so it leaves the registry as this load set it.
+    resetShapeOverlay();
     const load = loadProgram7(
       host,
       entryPath,
@@ -1410,12 +1477,19 @@ function declBoundaryDroppedDiag(file: string): ScrDiagnostic {
  * preflight diagnostics. Preserve the caller's complete load shape when
  * mutating it, including its owned services and disposal callback. */
 export function checkPreflight<T extends LoadResult>(load: T): ScrDiagnostic[] {
-  const { diags, moduleOrder, startupCrash, inlineRequireCycleCalls, moduleEdges } =
-    preflight7(load);
+  const {
+    diags,
+    moduleOrder,
+    startupCrash,
+    inlineRequireCycleCalls,
+    moduleEdges,
+    dynamicImportRejections,
+  } = preflight7(load);
   load.moduleOrder = moduleOrder;
   load.startupCrash = startupCrash;
   load.inlineRequireCycleCalls = inlineRequireCycleCalls;
   load.moduleEdges = moduleEdges;
+  load.dynamicImportRejections = dynamicImportRejections;
   return diags;
 }
 
@@ -5354,6 +5428,7 @@ function preflight7(load: LoadResult): {
   startupCrash: StartupCrash | null;
   inlineRequireCycleCalls: ReadonlySet<ts.Node>;
   moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]>;
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash>;
 } {
   const { program, entry } = load;
   const diags: ScrDiagnostic[] = [...load.configDiags];
@@ -5921,9 +5996,10 @@ function preflight7(load: LoadResult): {
         message: string,
         className: StartupCrash["className"],
         fallbackFeature: string,
+        code?: string,
       ): void => {
         refusals.get(sf)!.push({
-          crash: { message, className, loc: locOf7(stmt) },
+          crash: { message, className, loc: locOf7(stmt), ...(code !== undefined ? { code } : {}) },
           fallback: unsupportedDiag("SC1010", locOf7(stmt), fallbackFeature),
           pos: ts.tokenStartOfNode(stmt),
         });
@@ -5966,6 +6042,7 @@ function preflight7(load: LoadResult): {
               refusal.message,
               "%Error",
               `the '${spec}' package (its runtime resolution fails: ${refusal.message})`,
+              refusal.code,
             );
           }
           continue;
@@ -6013,6 +6090,7 @@ function preflight7(load: LoadResult): {
               `Invalid module "#" is not a valid internal imports specifier name imported from ${sf.fileName}`,
               "%TypeError",
               `the '#' import (Node rejects the bare '#' specifier as invalid)`,
+              "ERR_INVALID_MODULE_SPECIFIER",
             );
             continue;
           }
@@ -6033,6 +6111,7 @@ function preflight7(load: LoadResult): {
               `Package import specifier "${spec}" is not defined${pkgJson !== null ? ` in package ${pkgJson}` : ""} imported from ${sf.fileName}`,
               "%TypeError",
               `the '${spec}' import (no package.json imports-field entry maps it)`,
+              "ERR_PACKAGE_IMPORT_NOT_DEFINED",
             );
             continue;
           }
@@ -6041,7 +6120,7 @@ function preflight7(load: LoadResult): {
             const ambientNote = ambientDeclared(spec)
               ? `the '${spec}' module (it exists only as an ambient 'declare module' type surface — there is no runtime module to import)`
               : `the '${spec}' package (nothing installed resolves it)`;
-            refuse(refusal.message, "%Error", ambientNote);
+            refuse(refusal.message, "%Error", ambientNote, refusal.code);
             continue;
           }
           // Runtime-resolvable (or a shape the probe stays conservative
@@ -6519,6 +6598,7 @@ function preflight7(load: LoadResult): {
   // them). A found resolution crash wins over the CJS link check below:
   // Node's fetch/resolve phase runs before instantiate.
   let resolveCrash: StartupCrash | null = null;
+  const dynamicImportRejections = new Map<ts.SourceFile, StartupCrash>();
   {
     const seen = new Set<ts.SourceFile>();
     const walk = (sf: ts.SourceFile): StartupCrash | null => {
@@ -6538,6 +6618,45 @@ function preflight7(load: LoadResult): {
       return null;
     };
     resolveCrash = walk(entry);
+    // A module only a literal import() loads resolves its static graph when
+    // that import runs: Node rejects the import's promise with the first
+    // refusal it meets, before any module of that graph evaluates. Such a
+    // module never joins the compiled graph, and the refusals inside its
+    // graph are that rejection, not build failures.
+    const reach = (from: ts.SourceFile, into: Set<ts.SourceFile>): void => {
+      const stack = [from];
+      while (stack.length > 0) {
+        const sf = stack.pop()!;
+        if (into.has(sf)) continue;
+        into.add(sf);
+        for (const { dep } of depPositions.get(sf) ?? []) stack.push(dep);
+      }
+    };
+    const startup = new Set<ts.SourceFile>();
+    reach(entry, startup);
+    const covered = new Set<ts.SourceFile>();
+    for (const sf of userFiles) {
+      if (!sf.text.includes("import")) continue;
+      for (const call of moduleSourceCandidates(program, sf).calls) {
+        const arg = call.arguments.nodes[0];
+        if (call.expression.kind !== ts.SyntaxKind.ImportKeyword || arg === undefined) continue;
+        if (!ts.isStringLiteralLike(arg) || isUnloadedPackage(arg.text)) continue;
+        const root =
+          resolveImport7(program, sf, arg.text) ?? npmStaticDepSf7(program, sf, arg.text);
+        if (root === null || root.isDeclarationFile || startup.has(root)) continue;
+        // A module inside an already-rejected graph is `covered`, but a
+        // literal import() of it needs its OWN rejection entry: its graph
+        // rejects when that import runs, so it must not join the compiled
+        // graph (where lowering would fail) merely because another rejected
+        // import also reaches it. Walk each direct root independently.
+        if (dynamicImportRejections.has(root)) continue;
+        seen.clear();
+        const crash = walk(root);
+        if (crash === null) continue;
+        dynamicImportRejections.set(root, crash);
+        reach(root, covered);
+      }
+    }
     // The crash channel engages only for programs that OTHERWISE pass
     // preflight: when any other diagnostic already fails the build, every
     // refusal keeps its compile-fence fallback instead — the report names
@@ -6545,7 +6664,8 @@ function preflight7(load: LoadResult): {
     // get a diagnostic. (No reachable refusal → same: fallbacks only.)
     if (resolveCrash === null || diags.length > 0) {
       resolveCrash = null;
-      for (const cands of refusals.values()) {
+      for (const [sf, cands] of refusals) {
+        if (covered.has(sf) && !startup.has(sf)) continue;
         for (const c of cands) diags.push(c.fallback);
       }
     }
@@ -6566,6 +6686,7 @@ function preflight7(load: LoadResult): {
     startupCrash: resolveCrash ?? linkCrash,
     inlineRequireCycleCalls,
     moduleEdges: edges,
+    dynamicImportRejections,
   };
 }
 

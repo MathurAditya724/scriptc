@@ -35,6 +35,7 @@ import {
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   FN_ATTRS,
+  arrOps,
   elemAccess,
   llFieldType,
   loadStructField,
@@ -44,6 +45,7 @@ import {
   type ShapeHost,
 } from "./shapes.js";
 import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context.js";
+import { inlineFieldTail } from "./inline-arrays.js";
 import type { NullableRefField } from "./nullable-fields.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
@@ -1703,6 +1705,27 @@ function classFieldDynValue(
   t: Extract<IrType, { kind: "object" }>,
   field: LlClassMeta["def"]["fields"][number],
 ): { boxed: string; nullable: NullableRefField | null; fieldValue: string } {
+  // An inline array field reads as a frozen array over the instance's
+  // elements (inline-arrays.ts), which the box keeps.
+  const tail = inlineFieldTail(host, t.className, field.name);
+  if (tail !== undefined) {
+    const countp = B.tmp(),
+      count = B.tmp(),
+      at = B.tmp(),
+      view = B.tmp();
+    B.line(
+      `${countp} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${meta.compactSlots[tail.field]!}`,
+    );
+    B.line(`${count} = load i32, ptr ${countp}`);
+    B.line(`${at} = getelementptr inbounds i8, ptr %p, i64 ${tail.tailOffset}`);
+    const ops = arrOps(host.shapeHost, { kind: "object", className: tail.elemClass });
+    host.declare(`declare ptr @scr_arr_view_cref(ptr, ptr, i32)`);
+    host.declare(`declare void @scr_arr_release(ptr)`);
+    B.line(`${view} = call ptr @scr_arr_view_cref(ptr ${ops}, ptr ${at}, i32 ${count})`);
+    const boxed = host.streamTypedRefBoxValue(B, field.type, view);
+    B.line(`call void @scr_arr_release(ptr ${view})`);
+    return { boxed, nullable: null, fieldValue: view };
+  }
   const { index, compressed } = classFieldIndex(meta, field.name, "compressed");
   const fieldPtr = B.tmp();
   let fieldValue = B.tmp();
