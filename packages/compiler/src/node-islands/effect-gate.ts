@@ -280,6 +280,28 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
       else if (nb) for (const el of nb.elements) locals.set(el.name.text, "module");
     }
   }
+  // Aliasing a class (`const B = A`) gives another name for the same
+  // static members, so a read through the alias runs the same accessor.
+  // Propagate to a fixed point: an alias chain can be any length, and a
+  // class binding is initialized before any alias of it (its TDZ).
+  const aliases: [string, string][] = [];
+  for (const stmt of sf.statements) {
+    if (!parser.isVariableStatement(stmt)) continue;
+    for (const d of stmt.declarationList.declarations) {
+      if (!parser.isIdentifier(d.name) || d.initializer === undefined) continue;
+      let init: ts.Expression = d.initializer;
+      while (parser.isParenthesizedExpression(init)) init = init.expression;
+      if (parser.isIdentifier(init)) aliases.push([d.name.text, init.text]);
+    }
+  }
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [name, source] of aliases)
+      if (locals.get(source) === "accessors" && locals.get(name) !== "accessors") {
+        locals.set(name, "accessors");
+        changed = true;
+      }
+  }
   function bindNames(name: ts.BindingName, kind: "module" | "value"): void {
     if (parser.isIdentifier(name)) locals.set(name.text, kind);
     else

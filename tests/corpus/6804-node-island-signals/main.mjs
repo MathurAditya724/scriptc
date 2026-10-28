@@ -48,6 +48,16 @@ async function main() {
   process.removeListener("SIGUSR2", native);
   process.removeListener("SIGUSR2", second);
   process.removeListener("SIGHUP", hup);
+
+  console.log("-- one function registered once and on");
+  island("listenOnce", "SIGUSR2", "dup");
+  island("listen", "SIGUSR2", "dup");
+  process.kill(process.pid, "SIGUSR2");
+  await later(50);
+  console.log("-- the once registration is gone");
+  process.kill(process.pid, "SIGUSR2");
+  await later(50);
+  island("unlisten", "SIGUSR2", "dup");
   console.log("done");
 }
 

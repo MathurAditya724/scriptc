@@ -4,7 +4,7 @@
 // native exports, so a write on either side is seen by the other, and an
 // exported `let` is a live binding in the island too.
 import { requireModule } from "@scriptc/node";
-import { config, count, entries, record, reset } from "./state.mjs";
+import { config, count, entries, record, reset, describe, retitle } from "./state.mjs";
 import { bumpTally, tally } from "./tally.mjs";
 
 record("main-1");
@@ -38,3 +38,9 @@ console.log("direct methods", direct.record("direct-2"), direct.record(String(co
 bumpTally();
 const { bumpTally: islandBump } = requireModule("./tally.mjs");
 console.log("tally", islandBump(), tally);
+
+// A reassigned exported function declaration is a live binding too: the
+// island sees the function the program installed.
+console.log("describe", plugin.describeNow(), describe());
+retitle();
+console.log("retitled", plugin.describeNow(), describe());

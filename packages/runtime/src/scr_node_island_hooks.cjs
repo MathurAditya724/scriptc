@@ -8,7 +8,8 @@
 // island import or require() of such a module to a generated ES module
 // (served at the module's own file URL) whose bindings hold the live native exports: the
 // natives sharedGet/sharedTable/sharedTdz ask the runtime directly. An
-// export that can change (an exported let, or a binding still in its
+// export that can change (an exported let, var or function declaration,
+// whose binding JavaScript allows reassigning, or a binding still in its
 // temporal dead zone when the module linked) is bound: the runtime pushes
 // each new native value (sharedPush) before island code can observe it.
 //
@@ -78,7 +79,9 @@ function scriptcSharedModules(nativeHost) {
         // runs (NOTES.md shortcut).
         lines.push(`let ${local} = __s.late(${mod}, ${slot}, (v) => { ${local} = v; });`);
         lines.push(`export { ${local} as ${name} };`);
-      } else if (e.kind === "let" || e.kind === "var") {
+      } else if (e.kind === "let" || e.kind === "var" || e.kind === "function") {
+        // A function declaration's binding is reassignable, like `var`:
+        // the island must see the current function, not the first one.
         lines.push(`let ${local} = __s.bind(${mod}, ${slot}, (v) => { ${local} = v; });`);
         lines.push(`export { ${local} as ${name} };`);
       } else {
