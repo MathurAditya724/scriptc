@@ -56,6 +56,11 @@ Options:
                      counting, cache-line-aligned runtime code on x86-64)
       --strip        remove symbol/debug payload from the linked executable
                      for smaller builds (opt in; --emit=exe only)
+      --static       Linux: link the C library into the executable, which
+                     then starts without the dynamic loader. glibc builds
+                     need its static libraries (libc.a) on the build host
+                     and refuse executables that include host, user or
+                     group name lookups (opt in; --emit=exe only)
       --windows-subsystem <console|gui>
                      Windows executable subsystem (default: console). gui
                      prevents Windows from opening a console window
@@ -181,6 +186,7 @@ export const CLI_OPTIONS = {
   backend: { type: "string" },
   optimization: { type: "string" },
   strip: { type: "boolean", default: false },
+  static: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
   libnode: { type: "string" },
