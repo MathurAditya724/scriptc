@@ -160,6 +160,7 @@ import {
   UNWIND_PERSONALITY,
   UNWIND_RAISE,
   UNWIND_RAISE_DECLARATION,
+  UNWIND_RESUME_DECLARATION,
   UNWIND_RESUME,
   UNWIND_SLOT,
   UnwindAbiViolation,
@@ -6110,7 +6111,8 @@ export class LlEmitter {
       const exception = B.tmp();
       B.line(`${exception} = landingpad { ptr, i32 } cleanup`);
       for (const index of borrowed) this.releaseFrame(`%p${index}`, fn.params[index]!.type);
-      B.terminate(`resume { ptr, i32 } ${exception}`);
+      this.declare(UNWIND_RESUME_DECLARATION);
+      B.resumeUnwind(exception);
       B.startBlock(ok);
     } else B.line(ret === "void" ? call : `%result = ${call}`);
     // A borrowed result is reachable from the parameters: own it first. A

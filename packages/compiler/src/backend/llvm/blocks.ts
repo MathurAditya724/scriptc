@@ -97,10 +97,20 @@ export class BlockBuilder {
       if (s === UNWIND_RESUME) {
         const exception = this.tmp();
         this.line(`${exception} = load { ptr, i32 }, ptr ${UNWIND_SLOT}`);
-        s = `resume { ptr, i32 } ${exception}`;
+        this.resumeUnwind(exception);
+        return;
       }
       this.cur.term = `  ${this.withDebugLocation(s)}`;
     }
+  }
+
+  /** Ends the block by continuing an unwind with `exception`, the value
+   * of a landing pad (UNWIND_RESUME_DECLARATION). */
+  resumeUnwind(exception: string): void {
+    const token = this.tmp();
+    this.line(`${token} = extractvalue { ptr, i32 } ${exception}, 0`);
+    this.line(`call void @scr_unwind_resume(ptr ${token})`);
+    this.terminate("unreachable");
   }
 
   br(label: string, attachment = ""): void {
