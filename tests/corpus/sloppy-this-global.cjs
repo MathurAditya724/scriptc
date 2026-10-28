@@ -9,6 +9,16 @@ function readConsole() {
 }
 console.log(readConsole(), readConsole.call(null), readConsole.call({ console: 1 }));
 
+// Builtins read through the global `this`, directly and through a variable.
+function readBuiltins() {
+  return [this.Array === Array, this.JSON === JSON, typeof this.setTimeout];
+}
+function aliasedRoot() {
+  var root = this;
+  return root.Object === Object && typeof root.Promise;
+}
+console.log(readBuiltins(), aliasedRoot());
+
 function receiver() {
   return this;
 }

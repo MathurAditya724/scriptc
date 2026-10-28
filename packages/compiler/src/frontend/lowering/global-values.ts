@@ -24,6 +24,7 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
+import { isStrictCode } from "./strict-mode.js";
 import type { Lowerer } from "./lowerer.js";
 import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
@@ -166,22 +167,115 @@ const URI_FUNCTIONS = new Set([
   "decodeURIComponent",
 ]);
 
+/** The builtin globals that sloppy-mode functions of the JavaScript source
+ * `sf` read through their `this` (`this.Array`) or through a variable it
+ * initializes (`var root = this; root.Array`). Called with undefined or null
+ * as `this`, such a function reads them on the global object, which answers
+ * them through the program's lookup. */
+export function sloppyThisGlobalReadsOf(lowerer: Lowerer, sf: ts.SourceFile): ReadonlySet<string> {
+  const cached = lowerer.sloppyThisGlobalReads.get(sf);
+  if (cached !== undefined) return cached;
+  const reads = new Set<string>();
+  if (isJsSourceFile(sf)) {
+    const declared = new Set(declaredGlobalNames(lowerer, sf));
+    ts.walkPreorder(sf, (node) => {
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        ts.isIdentifier(node.name) &&
+        declared.has(node.name.text) &&
+        readsSloppyThis(lowerer, node.expression)
+      )
+        reads.add(node.name.text);
+      return undefined;
+    });
+  }
+  lowerer.sloppyThisGlobalReads.set(sf, reads);
+  return reads;
+}
+
+/** Whether `expr` is the `this` of a sloppy-mode function, or a variable
+ * whose only declaration initializes it with that `this`. */
+function readsSloppyThis(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let inner = expr;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (inner.kind === ts.SyntaxKind.ThisKeyword) return sloppyReceiverOf(inner);
+  if (!ts.isIdentifier(inner)) return false;
+  const declarations = lowerer.checker.getSymbolAtLocation(inner)?.declarations ?? [];
+  const declaration = declarations[0];
+  if (
+    declarations.length !== 1 ||
+    declaration === undefined ||
+    !ts.isVariableDeclaration(declaration)
+  )
+    return false;
+  let init = declaration.initializer;
+  while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
+  return init !== undefined && init.kind === ts.SyntaxKind.ThisKeyword && sloppyReceiverOf(init);
+}
+
+/** Whether the `this` at `node` is a sloppy-mode function's receiver
+ * (lower-functions.ts declareCallReceiver): arrows take the enclosing one. */
+function sloppyReceiverOf(node: ts.Node): boolean {
+  for (let parent = node.parent; parent !== undefined; parent = parent.parent) {
+    if (ts.isArrowFunction(parent)) continue;
+    if (ts.isFunctionLike(parent)) return parent.body !== undefined && !isStrictCode(parent.body);
+    if (
+      ts.isSourceFile(parent) ||
+      ts.isClassDeclaration(parent) ||
+      ts.isClassExpression(parent) ||
+      ts.isClassStaticBlockDeclaration(parent)
+    )
+      return false;
+  }
+  return false;
+}
+
+/** The names of the global object's declared properties that the lookup can
+ * answer. */
+function declaredGlobalNames(lowerer: Lowerer, at: ts.Node): string[] {
+  const symbol = lowerer.checker.resolveName(
+    "globalThis",
+    ts.SymbolFlags.Value,
+    ts.getSourceFileOfNode(at),
+    false,
+  );
+  if (symbol === undefined) return [];
+  return lowerer.checker
+    .getPropertiesOfType(lowerer.checker.getTypeOfSymbol(symbol))
+    .map((property) => ts.symbolName(property))
+    .filter((name) => name !== TEMPORAL_GLOBAL && !RUNTIME_ANSWERED.has(name));
+}
+
+/** The names the program's lookup answers: every declared global when a
+ * module reads the global object by computed names, else the ones its
+ * sloppy-mode functions read through `this`. */
+function lookupNames(lowerer: Lowerer): readonly string[] {
+  if (lowerer.globalLookupNames !== undefined) return lowerer.globalLookupNames;
+  const modules = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
+  const names = modules.some((sf) => computedGlobalReadOf(lowerer, sf) !== null)
+    ? declaredGlobalNames(lowerer, lowerer.entry)
+    : modules.flatMap((sf) => [...sloppyThisGlobalReadsOf(lowerer, sf)]);
+  lowerer.globalLookupNames = [...new Set(names)].sort();
+  return lowerer.globalLookupNames;
+}
+
+/** Whether the JavaScript source `sf` installs the program's lookup when its
+ * body starts: it reads builtin globals through the global object by
+ * computed names, or through a sloppy-mode function's `this`. */
+export function installsGlobalValues(lowerer: Lowerer, sf: ts.SourceFile): boolean {
+  return (
+    computedGlobalReadOf(lowerer, sf) !== null || sloppyThisGlobalReadsOf(lowerer, sf).size > 0
+  );
+}
+
 /** The statement that installs the program's lookup, built on first use
- * from the names the checker declares on `receiver` (a global object). */
-export function globalValuesInstall(
-  lowerer: Lowerer,
-  receiver: ts.Expression,
-  loc: SrcLoc,
-): IrStmt {
+ * from the names it answers (lookupNames). */
+export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc): IrStmt {
   const fnType: IrType & { kind: "func" } = { kind: "func", params: [STRING], ret: DYN };
   if (!lowerer.liftedFnNamed(LOOKUP_FN)) {
-    const names = lowerer.checker
-      .getPropertiesOfType(lowerer.typeOf(receiver))
-      .map((property) => ts.symbolName(property))
-      .filter((name) => name !== TEMPORAL_GLOBAL && !RUNTIME_ANSWERED.has(name));
     const name: IrExpr = { kind: "varRef", localId: "name.0", type: STRING, loc };
     const body: IrStmt[] = [];
-    for (const global of [...new Set(names)].sort()) {
+    for (const global of lookupNames(lowerer)) {
       const webStream = (WEB_STREAM_CLASSES as readonly string[]).indexOf(global);
       const value: IrExpr | null = REFUSED.has(global)
         ? { kind: "unitLit", unit: "null", type: { kind: "nullT" }, loc }

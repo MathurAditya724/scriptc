@@ -3752,6 +3752,12 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the receiver of its
    * first read of the global object by a computed name, or null. */
   readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
+  /** global-values.ts's answer per JavaScript source: the builtin globals
+   * its sloppy-mode functions read through their `this`. */
+  readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** global-values.ts's answer: the names the program's global lookup
+   * answers; undefined until asked. */
+  globalLookupNames: readonly string[] | undefined = undefined;
   /** web-streams-dyn.ts's answer: whether a JavaScript source names a web
    * stream class; undefined until asked. */
   namesWebStreamClass: boolean | undefined = undefined;
@@ -4378,6 +4384,8 @@ export class Lowerer {
     "createRequireBindingTargets",
     "createRequireElementTargets",
     "computedGlobalReads",
+    "sloppyThisGlobalReads",
+    "globalLookupNames",
     "namesWebStreamClass",
     "timeValueDateDecisions",
     "timeValueDateWrites",
