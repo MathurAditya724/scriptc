@@ -51,8 +51,10 @@ const profileLinker = await (async () => {
 const FUNCTIONS = 12;
 
 /** A program whose functions branch on their argument's parity, so a profile
- * records which side each takes. `edit` changes one function's constant. */
-function program(edit = 0): string {
+ * records which side each takes. `edit` changes one function's constant.
+ * `branch` adds a branch to the same function, which changes its control
+ * flow without changing its result. */
+function program(edit = 0, branch = false): string {
   const lines = ["; profiled program"];
   for (let index = 0; index < FUNCTIONS; index++) {
     const factor = index === 4 ? index + 3 + edit : index + 3;
@@ -66,14 +68,32 @@ function program(edit = 0): string {
       `  %product = mul i64 %n, ${factor}`,
       "  br label %done",
       "shifted:",
-      `  %sum = add i64 %n, ${index}`,
-      "  br label %done",
-      "done:",
-      "  %result = phi i64 [ %product, %scaled ], [ %sum, %shifted ]",
+      ...(branch && index === 4
+        ? [
+            "  %large = icmp ugt i64 %n, 150",
+            "  br i1 %large, label %large.sum, label %small.sum",
+            "large.sum:",
+            "  %offset = call i64 @offset(i64 %n)",
+            "  %sum.large = add i64 %offset, " + index,
+            "  br label %done",
+            "small.sum:",
+            `  %sum.small = add i64 %n, ${index}`,
+            "  br label %done",
+            "done:",
+            "  %result = phi i64 [ %product, %scaled ], [ %sum.large, %large.sum ], [ %sum.small, %small.sum ]",
+          ]
+        : [
+            `  %sum = add i64 %n, ${index}`,
+            "  br label %done",
+            "done:",
+            "  %result = phi i64 [ %product, %scaled ], [ %sum, %shifted ]",
+          ]),
       "  ret i64 %result",
       "}",
     );
   }
+  if (branch)
+    lines.push("define internal i64 @offset(i64 %n) noinline {", "entry:", "  ret i64 %n", "}");
   lines.push(
     "define i32 @main(i32 %argc, ptr %argv) {",
     "entry:",
@@ -174,6 +194,8 @@ type EmitOptions = {
   name: string;
   generate?: string;
   use?: string;
+  blocks?: string;
+  record?: string;
   cache?: string;
 };
 
@@ -207,6 +229,8 @@ async function emitReporting(dir: string, source: string, options: EmitOptions) 
     "/src/program.ts",
     ...(options.generate === undefined ? [] : ["--profile-generate", options.generate]),
     ...(options.use === undefined ? [] : ["--profile-use", options.use]),
+    ...(options.blocks === undefined ? [] : ["--profile-blocks", options.blocks]),
+    ...(options.record === undefined ? [] : ["--record-profile-blocks", options.record]),
     ...(options.cache === undefined ? [] : ["--cache-dir", options.cache]),
   ]);
   return { outputs, stdout };
@@ -406,24 +430,160 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
       // inlined the helpers into main and deleted them.
       expect(JSON.parse(stdout.trim().split("\n").at(-1)!)).toEqual({
         ok: true,
-        profile: { annotated: INLINED + 1, mismatched: 0, missing: 0, unknown_partitions: 0 },
+        profile: {
+          annotated: INLINED + 1,
+          mismatched: 0,
+          missing: 0,
+          recovered: 0,
+          unknown_partitions: 0,
+        },
       });
       const symbols = await execFileAsync("nm", [outputs[0]!]);
       expect(symbols.stdout).not.toMatch(/\bg\d\b/);
     });
 
+    test("block counts annotate the functions whose control flow changed", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-blocks-"));
+      dirs.push(dir);
+      // External functions are placed by name, so the program is divided into
+      // partitions that the cache keeps.
+      const divided = (source: string) =>
+        source.replaceAll("define internal i64 @f", "define i64 @f");
+      const { profile } = await collect(dir, divided(program()), 4, "train");
+      // A build with a warm partition cache still records every partition.
+      const cache = join(dir, "cache");
+      await emit(dir, divided(program()), { outputs: 4, name: "warm", cache, use: profile });
+      const blocks = join(dir, "train.blocks");
+      const recorded = await emitReporting(dir, divided(program()), {
+        outputs: 4,
+        name: "recorded",
+        cache,
+        use: profile,
+        record: blocks,
+      });
+      const report = (stdout: string) => JSON.parse(stdout.trim().split("\n").at(-1)!).profile;
+      expect(report(recorded.stdout)).toMatchObject({ annotated: FUNCTIONS + 1, recovered: 0 });
+      const text = await readFile(blocks, "utf8");
+      expect(text.split("\n")[0]).toBe("scriptc-profile-blocks 1");
+      expect(text.match(/^f /gm)).toHaveLength(FUNCTIONS + 1);
+      expect(text).toMatch(/^f f4 [1-9]\d* [1-9]\d*$/m);
+
+      // f4 gained a branch, so the profile no longer describes it.
+      const stale = await emitReporting(dir, divided(program(0, true)), {
+        outputs: 4,
+        name: "stale",
+        use: profile,
+      });
+      expect(report(stale.stdout)).toMatchObject({ mismatched: 1, recovered: 0 });
+      const recovered = await emitReporting(dir, divided(program(0, true)), {
+        outputs: 4,
+        name: "recovered",
+        use: profile,
+        blocks,
+      });
+      expect(report(recovered.stdout)).toMatchObject({
+        annotated: FUNCTIONS + 1 - 1,
+        mismatched: 1,
+        recovered: 1,
+      });
+      expect(await run(await link(dir, recovered.outputs, "recovered"), 2)).toBe(expectedExit(2));
+      const bytes = (paths: string[]) => Promise.all(paths.map((path) => readFile(path)));
+      expect(await bytes(recovered.outputs)).not.toEqual(await bytes(stale.outputs));
+
+      // The block counts key the partition cache.
+      const before = await cacheEntries(cache);
+      await emit(dir, divided(program()), {
+        outputs: 4,
+        name: "keyed",
+        cache,
+        use: profile,
+        blocks,
+      });
+      expect((await cacheEntries(cache)).size).toBeGreaterThan(before.size);
+    });
+
+    test("one module counts a function that both annotations miss once", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-blocks-context-"));
+      dirs.push(dir);
+      const first = await collect(dir, program(), 1, "first");
+      const raw = join(dir, "context-raw");
+      const blocks = join(dir, "context.blocks");
+      const instrumented = await emit(dir, program(), {
+        outputs: 1,
+        name: "context",
+        generate: join(raw, "%p.profraw"),
+        use: first.profile,
+        record: blocks,
+      });
+      const executable = await link(dir, instrumented, "context", true);
+      expect(await run(executable, 1)).toBe(expectedExit(1));
+      const merged = join(dir, "context.profdata");
+      await merge(merged, [first.profile, ...(await readdir(raw)).map((file) => join(raw, file))]);
+      const report = (stdout: string) => JSON.parse(stdout.trim().split("\n").at(-1)!).profile;
+      const stale = await emitReporting(dir, program(0, true), {
+        outputs: 1,
+        name: "stale",
+        use: merged,
+        blocks,
+      });
+      expect(report(stale.stdout)).toMatchObject({ mismatched: 1, recovered: 1 });
+      expect(await run(await link(dir, stale.outputs, "stale"), 2)).toBe(expectedExit(2));
+    });
+
+    test("block counts annotate only the functions whose control flow changed", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-blocks-missing-"));
+      dirs.push(dir);
+      const { profile } = await collect(dir, program(), 1, "train");
+      const blocks = join(dir, "train.blocks");
+      await emit(dir, program(), { outputs: 1, name: "recorded", use: profile, record: blocks });
+      // program(0, true) adds offset, which the profile has no record of; a
+      // record for it in the block file is not used, so the recovered
+      // functions stay among the mismatched ones.
+      await writeFile(blocks, `${await readFile(blocks, "utf8")}f offset 1000 1\nentry 1000\n`);
+      const { stdout } = await emitReporting(dir, program(0, true), {
+        outputs: 1,
+        name: "stale",
+        use: profile,
+        blocks,
+      });
+      expect(JSON.parse(stdout.trim().split("\n").at(-1)!).profile).toMatchObject({
+        mismatched: 1,
+        missing: 1,
+        recovered: 1,
+      });
+    });
+
+    test("block counts need a profile and a file that parses", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-blocks-error-"));
+      dirs.push(dir);
+      const blocks = join(dir, "bad.blocks");
+      await writeFile(blocks, "scriptc-profile-blocks 1\nf f0 10\n");
+      await expect(
+        emit(dir, program(), { outputs: 1, name: "alone", blocks }),
+      ).rejects.toMatchObject({ stderr: expect.stringContaining("invalid_profile_blocks") });
+      const { profile } = await collect(dir, program(), 1, "train");
+      await expect(
+        emit(dir, program(), { outputs: 1, name: "bad", use: profile, blocks }),
+      ).rejects.toMatchObject({ stderr: expect.stringContaining("profile_blocks_read_failed") });
+    });
+
     test("the profile keys the partition cache", async () => {
       const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-cache-"));
       dirs.push(dir);
-      const { profile } = await collect(dir, program(), 4, "train");
+      // External functions are placed by name, so the program is divided
+      // instead of following main into one partition and being optimized
+      // whole.
+      const source = program().replaceAll("define internal i64 @f", "define i64 @f");
+      const { profile } = await collect(dir, source, 4, "train");
       const cache = join(dir, "cache");
-      await emit(dir, program(), { outputs: 4, name: "plain", cache });
+      await emit(dir, source, { outputs: 4, name: "plain", cache });
       const plain = await cacheEntries(cache);
-      await emit(dir, program(), { outputs: 4, name: "guided", cache, use: profile });
+      expect(plain.size).toBeGreaterThan(0);
+      await emit(dir, source, { outputs: 4, name: "guided", cache, use: profile });
       const guided = await cacheEntries(cache);
       expect(guided.size).toBeGreaterThan(plain.size);
       // The same profile again reuses every partition.
-      await emit(dir, program(), { outputs: 4, name: "again", cache, use: profile });
+      await emit(dir, source, { outputs: 4, name: "again", cache, use: profile });
       expect(await cacheEntries(cache)).toEqual(guided);
     });
   });
