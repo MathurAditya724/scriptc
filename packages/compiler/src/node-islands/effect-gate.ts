@@ -294,7 +294,7 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
       if (parser.isIdentifier(init)) aliases.push([d.name.text, init.text]);
     }
   }
-  for (let changed = true; changed; ) {
+  for (let changed = true; changed;) {
     changed = false;
     for (const [name, source] of aliases)
       if (locals.get(source) === "accessors" && locals.get(name) !== "accessors") {
