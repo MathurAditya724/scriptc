@@ -37,6 +37,7 @@ const laneCaseShardedFiles = [
   // These split their own cases by SCRIPTC_TEST_SHARD too, as in CI
   // (scripts/ci-test-plan.mjs); whole, each takes 20-40 minutes under ASan.
   "tests/harness/npm.test.ts",
+  "tests/harness/npm-shape-overlay.test.ts",
   "tests/harness/npm-static.test.ts",
   "tests/harness/self-hosting-llvm-emitter.test.ts",
   "tests/harness/three-library.test.ts",

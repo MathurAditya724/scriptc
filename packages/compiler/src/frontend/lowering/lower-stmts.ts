@@ -5592,6 +5592,14 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
           invalid = true;
           return "stop";
         }
+        // An index read's checker type omits the undefined a read past the
+        // end (or of an absent key) answers.
+        let right = node.right;
+        while (ts.isParenthesizedExpression(right)) right = right.expression;
+        if (ts.isElementAccessExpression(right)) {
+          invalid = true;
+          return "stop";
+        }
         const mapped = lowerer.mapTypeOf(lowerer.typeOf(node.right));
         if (!mapped || mapped.kind === "dyn" || mapped.kind === "void" || isUnitType(mapped)) {
           invalid = true;
@@ -7117,8 +7125,17 @@ export function lowerSwitch(lowerer: Lowerer, stmt: ts.SwitchStatement): IrStmt 
       if (dk === "dyn") return lowerDynSwitch(lowerer, stmt, disc, labels);
       if (dk === "union") return lowerUnionSwitch(lowerer, stmt, disc, labels);
       // Objects, arrays, functions and other references match their cases
-      // with ===, which compares them by identity.
-      if (dk !== "f64" && dk !== "string" && dk !== "bool")
+      // with ===, which compares them by identity. In JavaScript, a case
+      // test of another type (a namespace enum member read through an
+      // untyped object) compares with === too.
+      const mixedJsCases =
+        isJsSourceFile(ts.getSourceFileOfNode(stmt)) &&
+        stmt.caseBlock.clauses.nodes.some(
+          (clause) =>
+            ts.isCaseClause(clause) &&
+            tryLowerExpression(lowerer, clause.expression)?.type.kind !== dk,
+        );
+      if ((dk !== "f64" && dk !== "string" && dk !== "bool") || mixedJsCases)
         return lowerBranchSwitch(lowerer, stmt, disc, labels, (stableDisc, test, expression) =>
           lowerStrictEquality(
             lowerer,
