@@ -164,6 +164,9 @@ export interface CcOptions {
   /** Module namespace objects as checked-dynamic values: compiles
    * scr_module_namespace.c. */
   moduleNamespace?: boolean;
+  /** A module namespace boxed for typed code: compiles
+   * scr_module_namespace_dyn.c. */
+  moduleNamespaceDyn?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep

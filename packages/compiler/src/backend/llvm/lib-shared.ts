@@ -306,6 +306,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.builtinModule": "scr_process_builtin_module",
   "process.builtinUnsupported": "scr_process_builtin_unsupported",
   "module.namespaceValue": "scr_module_namespace_value",
+  "module.namespaceDyn": "scr_module_namespace_dyn_value",
   "fs.callbackValue": "scr_fs_callback_value",
   "fs.callbackCall": "scr_fs_callback_call",
   "process.hrtimeValue": "scr_process_hrtime_value",
