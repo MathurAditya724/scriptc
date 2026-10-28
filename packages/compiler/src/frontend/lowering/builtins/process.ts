@@ -353,7 +353,13 @@ export function lowerProcessStreamProperty(
       loc: locOf(expr),
     };
   }
-  if (member !== "isTTY" && member !== "columns" && member !== "rows") return null;
+  if (
+    member !== "isTTY" &&
+    member !== "columns" &&
+    member !== "rows" &&
+    member !== "writableLength"
+  )
+    return null;
   let recv: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(recv) || ts.isAsExpression(recv) || ts.isTypeAssertion(recv))
     recv = recv.expression;
@@ -401,6 +407,12 @@ export function lowerProcessStreamProperty(
     type: F64,
     loc,
   };
+  // The compiled binary writes to fd 1/2 SYNCHRONOUSLY: when the call
+  // returns, the bytes have reached the descriptor and nothing is queued
+  // in the stream's buffer — Node's number, always 0 (`write()` answers
+  // true for the same reason). Backpressure probes read 0 and stay
+  // correct; the write itself never defers.
+  if (member === "writableLength") return { kind: "numLit", value: 0, type: F64, loc };
   if (member === "isTTY") {
     const type = lowerer.withUndefinedArm(BOOL);
     return {

@@ -16260,6 +16260,19 @@ export class Lowerer {
     if (stdlibGlobalNameOf(this, expr) === "process") return null;
     const imported = ts.isIdentifier(expr) ? this.builtinImportOf(expr) : null;
     if (imported?.module === "util" && imported.member === "types") return "util/types";
+    // path.win32 / path.posix as NAMED import bindings (`import { win32 }
+    // from "node:path"`): the binding IS that sub-namespace module, so
+    // `win32.normalize(...)` keys the win32 table on every platform —
+    // Node's rule, each namespace answers its own platform's semantics
+    // anywhere.
+    if (
+      imported !== null &&
+      (imported.module === "path" ||
+        imported.module === "path/posix" ||
+        imported.module === "path/win32") &&
+      (imported.member === "win32" || imported.member === "posix")
+    )
+      return `path/${imported.member}`;
     const stored = ts.isIdentifier(expr)
       ? (this.peekLocal(expr)?.type ?? this.globalOf(expr)?.type)
       : undefined;
