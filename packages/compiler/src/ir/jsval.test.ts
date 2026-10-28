@@ -344,3 +344,66 @@ test("a parameter read by dyn consumers or passed cells keeps the dyn ABI", () =
   expect(twice.returnType).toEqual(DYN);
   expect(validateModule(mod)).toEqual([]);
 });
+
+/** `for (...) %g.sum = %g.sum + o.step` in a dynamic function. */
+function globalLoop(name: string, global: string): IrFunction {
+  return fn(name, [
+    {
+      kind: "while",
+      cond: { kind: "boolLit", value: false, type: BOOL, loc },
+      body: [
+        {
+          kind: "assign",
+          localId: global,
+          value: op("dyn.add", ref(global), keyGet(ref("o"), "step")),
+          loc,
+        },
+      ],
+      loc,
+    },
+    { kind: "return", value: ref("o"), loc },
+  ]);
+}
+
+test("a dyn module global written by operators in a loop becomes a jsval global", () => {
+  const loop = globalLoop("loop", "%g.e.sum");
+  // %g.sum.x, once: a dyn consumer.
+  const report = fn("report", [
+    { kind: "exprStmt", expr: keyGet(ref("%g.e.sum"), "x"), loc },
+    { kind: "return", value: ref("o"), loc },
+  ]);
+  const mod = moduleOf(loop, report);
+  mod.globals = [{ id: "%g.e.sum", name: "sum", type: DYN, mutable: true }];
+  promoteJsvals(mod);
+  expect(mod.globals[0]!.type).toEqual(JSVAL);
+  // The loop's own result (o, a jsval result) is the second js.fromDyn.
+  expect(jsCalls(loop.body)).toEqual(["js.add", "js.fromDyn", "js.fromDyn"]);
+  // One box for the read; the second call is the jsval result o.
+  expect(jsCalls(report.body)).toEqual(["js.toDyn", "js.fromDyn"]);
+  expect(validateModule(mod)).toEqual([]);
+});
+
+test("a module global a static function reads stays dyn", () => {
+  const loop = globalLoop("loop", "%g.e.sum");
+  const reader: IrFunction = {
+    name: "reader",
+    params: [],
+    returnType: DYN,
+    locals: [],
+    body: [{ kind: "return", value: ref("%g.e.sum"), loc }],
+    loc,
+  };
+  const mod = moduleOf(loop, reader);
+  expect(reader.tier).toBeUndefined();
+  mod.globals = [{ id: "%g.e.sum", name: "sum", type: DYN, mutable: true }];
+  promoteJsvals(mod);
+  expect(mod.globals[0]!.type).toEqual(DYN);
+  expect(jsCalls(loop.body)).toEqual([
+    "js.toDyn",
+    "js.add",
+    "js.fromDyn",
+    "js.fromDyn",
+    "js.fromDyn",
+  ]);
+  expect(validateModule(mod)).toEqual([]);
+});
