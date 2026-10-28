@@ -4042,6 +4042,7 @@ export class Lowerer {
       checkedTable("fnSigsBySymbol", () => this.fnSigsBySymbol.size),
       checkedTable("cjsExportsAssignments", () => this.cjsExportsAssignments.size),
       checkedTable("inlineRequireCycleCalls", () => this.inlineRequireCycleCalls.size),
+      checkedTable("dynamicImportRejections", () => this.dynamicImportRejections.size),
       checkedTable("staticCallables", () => this.staticCallables.size),
       checkedTable("genericFnsBySymbol", () => this.genericFnsBySymbol.size),
       checkedTable("objLitGenericFns", () => this.objLitGenericFns.size),
