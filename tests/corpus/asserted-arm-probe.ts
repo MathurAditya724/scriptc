@@ -82,3 +82,52 @@ console.log(requiredIn({ name: "one", api: one }));
 console.log(requiredIn<"alpha" | "beta">({ name: "registry", api: required }));
 console.log(callStream({ name: "one", api: withFetch }));
 console.log(callStream({ name: "registry", api: registry }));
+
+// `in` through an assertion over a computed receiver still evaluates the
+// receiver, exactly once, whether the arms decide the answer (one tag test
+// or several) or agree on it.
+interface ArmA {
+  a: number;
+  x: number;
+}
+interface ArmB {
+  b: number;
+  x: number;
+}
+interface ArmC {
+  c: number;
+}
+interface ArmD {
+  d: number;
+}
+type Arm = ArmA | ArmB | ArmC | ArmD;
+let boxed = 0;
+function box(shape: Arm): { shape: Arm } {
+  boxed++;
+  return { shape };
+}
+const arms: Arm[] = [{ a: 1, x: 1 }, { b: 2, x: 2 }, { c: 3 }, { d: 4 }];
+for (const arm of arms) console.log("x" in (box(arm).shape as ArmA), "gamma" in (box(arm).shape as ArmA));
+console.log(boxed);
+
+// A getter-backed member beside a data field of the same name: the probe
+// reads the getter on its arm, as Node does.
+interface Plain {
+  kind: "plain";
+  label: string;
+}
+interface Lazy {
+  kind: "lazy";
+  get label(): string;
+}
+let labelReads = 0;
+const lazy: Lazy = {
+  kind: "lazy",
+  get label() {
+    labelReads++;
+    return "computed";
+  },
+};
+const labelled: (Plain | Lazy)[] = [{ kind: "plain", label: "x" }, lazy];
+for (const item of labelled) console.log(typeof (item as Plain).label, (item as Plain).label !== undefined);
+console.log(labelReads);

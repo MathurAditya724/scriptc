@@ -1717,7 +1717,9 @@ function assertedMemberRead(
   const name = expr.name.text;
   let resultType: IrType | null = null;
   let records = 0;
-  const declaring: { tag: number; shapeId: string; type: IrType }[] = [];
+  // A getter arm answers by calling its getter, once per read, as Node's
+  // read does; a data arm reads its slot.
+  const declaring: { tag: number; shapeId: string; type: IrType; getter: boolean }[] = [];
   const units: number[] = [];
   for (let tag = 0; tag < arms.length; tag++) {
     const arm = arms[tag]!;
@@ -1729,16 +1731,21 @@ function assertedMemberRead(
     records++;
     const shape = lowerer.shapes.get(arm.shapeId);
     if (!shape || shape.tuple || shape.indexValue) return null;
-    const field = shape.fields.find((f) => f.name === name);
+    const getter = shape.fields.find((f) => f.name === `%get:${name}`);
+    if (!getter && shape.fields.some((f) => f.name === `%set:${name}`)) return null;
+    if (getter && getter.type.kind !== "func") return null;
+    const field = getter ?? shape.fields.find((f) => f.name === name);
     if (!field) continue;
+    const fieldType = field.type.kind === "func" && getter ? field.type.ret : field.type;
     // The declaring arms agree up to an undefined arm (`string` beside
     // `string | undefined`).
-    const armResult = lowerer.withUndefinedArmOf(field.type);
+    const armResult = lowerer.withUndefinedArmOf(fieldType);
     if (!armResult || (resultType && !typeEquals(resultType, armResult))) return null;
     resultType = armResult;
-    declaring.push({ tag, shapeId: arm.shapeId, type: field.type });
+    declaring.push({ tag, shapeId: arm.shapeId, type: field.type, getter: getter !== undefined });
   }
-  if (!resultType || declaring.length === records) return null;
+  if (!resultType || (declaring.length === records && declaring.every((d) => !d.getter)))
+    return null;
   const stable = lowerer.declareHiddenLocal("%assertedRecv", recv.type);
   const ref = (): IrExpr => ({ kind: "varRef", localId: stable.id, type: recv.type, loc });
   let result: IrExpr | null = lowerer.wrappedUndefined(resultType, loc);
@@ -1761,15 +1768,19 @@ function assertedMemberRead(
       loc,
     };
   }
-  for (const { tag, shapeId, type: fieldType } of declaring) {
-    const read: IrExpr = {
+  for (const { tag, shapeId, type: fieldType, getter } of declaring) {
+    const slot: IrExpr = {
       kind: "recordGet",
       obj: { kind: "unionNarrow", unionId, tag, value: ref(), type: arms[tag]!, loc },
       shapeId,
-      field: name,
+      field: getter ? `%get:${name}` : name,
       type: fieldType,
       loc,
     };
+    const read: IrExpr =
+      getter && fieldType.kind === "func"
+        ? { kind: "callValue", callee: slot, args: [], type: fieldType.ret, loc }
+        : slot;
     result = {
       kind: "ternary",
       cond: { kind: "unionIsTag", unionId, tag, negated: false, value: ref(), type: BOOL, loc },

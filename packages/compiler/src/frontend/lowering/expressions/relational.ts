@@ -1882,17 +1882,17 @@ export function lowerInExpression(
       return perValueUnionIn(lowerer, recv, unionId, key, answers, loc);
     }
     if (staticAnswers) {
-      const pureRecv =
-        recv.kind === "varRef" ||
-        recv.kind === "recordGet" ||
-        recv.kind === "fieldGet" ||
-        pureRecvNode;
+      // A field read is pure only over a pure object: the stored value of
+      // an asserted receiver (`"k" in (make().stored as R)`) still
+      // evaluates its call.
+      const pureRecv = isSafeToRepeat(recv) || pureRecvNode;
+      let value = recv;
       const isTag = (tag: number, negated: boolean): IrExpr => ({
         kind: "unionIsTag",
         unionId,
         tag,
         negated,
-        value: recv,
+        value,
         type: BOOL,
         loc,
       });
@@ -1918,27 +1918,29 @@ export function lowerInExpression(
       if (trues.length === 1) return isTag(trues[0]!.tag, false);
       const falses = answers.filter((a) => !a.has);
       if (falses.length === 1) return isTag(falses[0]!.tag, true);
-      // Several arms on each side: the OR chain re-reads the receiver,
-      // so only side-effect-free reads qualify.
-      if (pureRecv) {
-        let out: IrExpr = isTag(trues[0]!.tag, false);
-        for (const t of trues.slice(1)) {
-          out = {
-            kind: "logical",
-            op: "||",
-            left: out,
-            right: isTag(t.tag, false),
-            type: BOOL,
-            loc,
-          };
-        }
-        return out;
+      // Several arms on each side: the OR chain re-reads the receiver, so
+      // anything but a pure read is evaluated once into a hidden local.
+      const stable = pureRecv ? null : lowerer.declareHiddenLocal("%inRecv", recv.type);
+      if (stable) value = varRef(stable.id, recv.type, loc);
+      let out: IrExpr = isTag(trues[0]!.tag, false);
+      for (const t of trues.slice(1)) {
+        out = {
+          kind: "logical",
+          op: "||",
+          left: out,
+          right: isTag(t.tag, false),
+          type: BOOL,
+          loc,
+        };
       }
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "statically-decided 'in' on computed receivers (bind the value to a variable first)",
-      );
+      if (!stable) return out;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: stable.id, init: recv, loc }],
+        result: out,
+        type: BOOL,
+        loc,
+      };
     }
   }
   // A literal member name over a typed array (`"BYTES_PER_ELEMENT" in a`):
