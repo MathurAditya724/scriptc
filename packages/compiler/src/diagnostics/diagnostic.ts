@@ -71,7 +71,7 @@
  *            build checks (SC6103, frontend/shape-inference)
  *   SC7xxx  contract types (@scriptc/types): a NoThrow, Int32, Immutable,
  *            Acyclic or ProgramLifetime contract that does not hold or
- *            cannot be checked (SC7001–SC7008, contracts/check.ts)
+ *            cannot be checked (SC7001–SC7009, contracts/check.ts)
  *   SC8xxx  Node islands: packages and modules outside the native subset
  *            that run (or, in report-only mode, would run) in a Node
  *            island — unknown project configuration (SC8004), a package

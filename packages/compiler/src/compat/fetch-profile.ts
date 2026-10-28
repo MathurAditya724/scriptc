@@ -938,6 +938,9 @@ export interface StaticFetchMembers {
   headersCalls: ReadonlySet<string>;
   readableStreamReads: ReadonlySet<string>;
   readableStreamCalls: ReadonlySet<string>;
+  /** ReadableStream prototype members the native stream does not
+   * implement, symbol-keyed ones as `[Symbol.name]`. */
+  readableStreamUnsupported: ReadonlySet<string>;
 }
 
 let staticFetchMemberSets: StaticFetchMembers | undefined;
@@ -961,6 +964,16 @@ export function staticFetchMembers(): StaticFetchMembers {
     ),
     readableStreamReads: new Set(profile.members.readableStreamReads),
     readableStreamCalls: new Set(profile.members.readableStreamCalls),
+    readableStreamUnsupported: new Set(
+      profile.inventory.entries
+        .filter(
+          (entry) =>
+            entry.owner === "ReadableStream" &&
+            (entry.placement === "prototype" || entry.placement === "prototype-symbol") &&
+            entry.status === "unsupported",
+        )
+        .map((entry) => entry.member),
+    ),
   };
   return staticFetchMemberSets;
 }

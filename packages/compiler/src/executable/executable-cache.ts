@@ -254,7 +254,7 @@ export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
 function isProfileMatch(value: unknown): value is NativeProfileMatch {
   if (typeof value !== "object" || value === null) return false;
   const match = value as Record<string, unknown>;
-  return ["annotated", "mismatched", "missing", "unknownPartitions"].every((key) => {
+  return ["annotated", "mismatched", "missing", "recovered", "unknownPartitions"].every((key) => {
     const count = match[key];
     return typeof count === "number" && Number.isInteger(count) && count >= 0;
   });

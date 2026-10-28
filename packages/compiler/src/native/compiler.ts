@@ -1,6 +1,7 @@
 import type { NativeOptimization } from "../backend/optimization.js";
 import { compilationTiming } from "../timing.js";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -40,7 +41,6 @@ import {
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
 import {
   NativeCodegenError,
-  nativeCodegenParts,
   nativePartitionPaths,
   nativeProgramPartitions,
 } from "../backend/native-codegen-core.js";
@@ -67,7 +67,9 @@ import {
   nativeProfileLayout,
   nativeProfileRefusal,
   parseNativeProfileMatch,
+  profileBlocksPath,
   profileHasContextCounts,
+  recordProfileBlocksPath,
   type NativeProfileMatch,
   type NativeProfileOptions,
 } from "../backend/native-profile.js";
@@ -117,26 +119,37 @@ function failure(error: unknown, entry: string, sources: Map<string, string>): C
   };
 }
 
-/** The request's profile. An indexed profile is read here so every cache keys
- * its bytes. */
+/** The request's profile. An indexed profile and the block-count file beside
+ * it are read here so every cache keys their bytes. */
 function nativeProfile(options: CompileRequestOptions): NativeProfileOptions | undefined {
   const generate = options.profileGenerate;
   if (options.profileUse === undefined) return generate === undefined ? undefined : { generate };
   const path = resolve(options.profileUse);
+  let bytes: Buffer;
   try {
-    const bytes = readFileSync(path);
-    const use = {
-      path,
-      digest: contentDigest(bytes),
-      contextSensitive: profileHasContextCounts(bytes),
-    };
-    return generate === undefined ? { use } : { generate, use };
+    bytes = readFileSync(path);
   } catch (error) {
     throw new NativeCodegenError(
       "SC3002",
       `cannot read --profile-use file ${path}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  const blocksPath = profileBlocksPath(path);
+  const blocks = existsSync(blocksPath)
+    ? { path: blocksPath, digest: contentDigest(readFileSync(blocksPath)) }
+    : undefined;
+  const use = {
+    path,
+    digest: contentDigest(bytes),
+    contextSensitive: profileHasContextCounts(bytes),
+    ...(blocks === undefined ? {} : { blocks }),
+  };
+  const recordBlocks = recordProfileBlocksPath(process.env);
+  return {
+    ...(generate === undefined ? {} : { generate }),
+    use,
+    ...(recordBlocks === undefined ? {} : { recordBlocks: resolve(recordBlocks) }),
+  };
 }
 
 /** Shared frontend semantics with native processes for code generation and linking. */
@@ -259,7 +272,6 @@ export class NativeCompiler {
     partitions = 1,
     profile?: NativeProfileOptions,
     llvmDigest: () => string = () => fileDigest(input),
-    splitCodegen = false,
   ): NativeObjects {
     const toolchain = this.toolchain;
     const outputs = nativePartitionPaths(output, partitions);
@@ -273,7 +285,12 @@ export class NativeCompiler {
     };
     let key: string | null = null;
     let identity: string | null = null;
-    if (this.cache !== null && process.env["SCRIPTC_LLVM_HELPER"] === undefined) {
+    // A build that records block counts runs the helper on every partition.
+    if (
+      this.cache !== null &&
+      process.env["SCRIPTC_LLVM_HELPER"] === undefined &&
+      profile?.recordBlocks === undefined
+    ) {
       try {
         identity = nativeFileIdentity(toolchain.helperExecutable);
         key = contentDigest(
@@ -288,7 +305,6 @@ export class NativeCompiler {
             identity: readFileSync(join(toolchain.helperPackageRoot, "package.json"), "utf8"),
             version: toolchain.compilerVersion,
             ...(partitions > 1 ? { partitions } : {}),
-            ...(splitCodegen ? { split: "codegen" } : {}),
             ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
           }),
         );
@@ -310,6 +326,7 @@ export class NativeCompiler {
                 annotated: 0,
                 mismatched: 0,
                 missing: 0,
+                recovered: 0,
                 unknownPartitions: outputs.length,
               },
             };
@@ -321,7 +338,7 @@ export class NativeCompiler {
       }
     }
     const partitionCache =
-      this.cache === null || identity === null || partitions < 2 || splitCodegen
+      this.cache === null || identity === null || partitions < 2
         ? null
         : this.cache.partitionDirectory(identity);
     const { profileMatch } = emitNativeObject({
@@ -332,7 +349,6 @@ export class NativeCompiler {
       optimization,
       outputKind,
       partitions,
-      ...(splitCodegen ? { splitCodegen } : {}),
       ...(partitionCache === null ? {} : { partitionCache }),
       ...(profile === undefined ? {} : { profile }),
     });
@@ -349,6 +365,7 @@ export class NativeCompiler {
                   annotated: profileMatch.annotated,
                   mismatched: profileMatch.mismatched,
                   missing: profileMatch.missing,
+                  recovered: profileMatch.recovered,
                   unknown_partitions: profileMatch.unknownPartitions,
                 },
               })}\n`,
@@ -382,13 +399,9 @@ export class NativeCompiler {
         : null;
     const split = llvm === null ? null : splitLlvmLibraryProgram(llvm);
     if (split === null) {
-      const size = statSync(input).size;
-      // An optimized program that stays one partition is optimized whole and
-      // generates code for its parts concurrently.
-      const codegenParts = library || optimization === "dev" ? 1 : nativeCodegenParts(size);
       const partitions = library
         ? 1
-        : Math.max(nativeProgramPartitions(size, optimization === "dev"), codegenParts);
+        : nativeProgramPartitions(statSync(input).size, optimization === "dev");
       return this.emitObject(
         input,
         output,
@@ -398,7 +411,6 @@ export class NativeCompiler {
         partitions,
         profile,
         llvmDigest,
-        codegenParts > 1,
       );
     }
     const objects: string[] = [];
