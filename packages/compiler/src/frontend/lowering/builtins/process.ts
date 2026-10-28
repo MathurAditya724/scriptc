@@ -391,8 +391,22 @@ export function lowerProcessStreamProperty(
     // nothing is ever queued and Node's number is always 0. The other
     // members stay keyed reads — the runtime stream answers their live
     // values (isatty columns/rows, stdin readableLength).
-    if (member === "writableLength")
-      return { kind: "numLit", value: 0, type: F64, loc: locOf(expr) };
+    if (member === "writableLength") {
+      // The receiver still EVALUATES: a call or property read that hands
+      // back the stream runs its own side effects — and throws where Node
+      // throws — before the constant answers, exactly as the read of the
+      // member would. A pure receiver (the alias above) folds away.
+      const answer: IrExpr = { kind: "numLit", value: 0, type: F64, loc: locOf(expr) };
+      const effect = lowerer.lowerExpr(expr.expression);
+      if (isSafeToDiscard(effect)) return answer;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: effect, loc: locOf(expr.expression) }],
+        result: answer,
+        type: F64,
+        loc: locOf(expr),
+      };
+    }
     const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN);
     return lowerer.coerceToExpected(
       {

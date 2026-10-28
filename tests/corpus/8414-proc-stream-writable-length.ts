@@ -14,3 +14,29 @@ console.log("typeof:", typeof outLength, typeof errLength);
 const out = process.stdout;
 const aliased = out.writableLength;
 console.log("alias:", aliased, typeof aliased);
+
+// A receiver that is not a plain alias still EVALUATES: a call or a getter
+// that hands back the stream runs its own effects — and its throw — before
+// the constant answers, exactly as Node evaluates the member's receiver.
+function streamFromCall(): typeof process.stdout {
+  console.log("call receiver ran");
+  return process.stdout;
+}
+console.log("call:", streamFromCall().writableLength);
+
+const holder = {
+  get out() {
+    console.log("getter receiver ran");
+    return process.stdout;
+  },
+};
+console.log("getter:", holder.out.writableLength);
+
+function throwingStream(): typeof process.stdout {
+  throw new Error("receiver threw");
+}
+try {
+  console.log("unreachable:", throwingStream().writableLength);
+} catch (error) {
+  console.log("caught:", (error as Error).message);
+}
