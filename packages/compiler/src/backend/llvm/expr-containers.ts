@@ -1,5 +1,6 @@
 import { dynDesc } from "../../ir/analysis.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import { emitInlineArrayLength, inlineFieldTail } from "./inline-arrays.js";
 import { arraySearchHelperName, arraySearchKind } from "./array-search.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isStableReceiverOperand, undefinedArmTag } from "../../ir/analysis.js";
@@ -650,6 +651,14 @@ export function emitArrIntrinsic(
   into?: { box: string; tag: string; payload: string },
 ): LlValue {
   const B = host.B;
+  // The length of an inline array field, read from the instance.
+  if (e.method === "length" && e.receiver.kind === "fieldGet") {
+    const tail = inlineFieldTail(host, e.receiver.className, e.receiver.field);
+    if (tail !== undefined) {
+      const obj = host.emitStableReceiver(e.receiver.obj, e.args);
+      return emitInlineArrayLength(host, obj.name, e.receiver.className, tail, e.type);
+    }
+  }
   // Every array intrinsic borrows its receiver, including mutation and
   // retained-identity results. Scalar reads also admit the narrower proof
   // that a mutable binding survives the remaining operand evaluations.

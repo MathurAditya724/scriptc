@@ -1236,6 +1236,7 @@ function buildLibFnSignatures() {
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
+    "webstream.install": { argTypes: [], result: VOID },
     "mime.typeNew": { argTypes: [DYN, DYN], result: DYN },
     "mime.typeParse": { argTypes: [DYN], result: DYN },
     "mime.paramsNew": { argTypes: [], result: DYN },
@@ -5313,6 +5314,11 @@ function buildLibFnSignatures() {
     "fs.mkdtempSync": { argTypes: [STRING], result: STRING },
     "fs.accessSync": { argTypes: [STRING, F64], result: VOID },
     "fs.readFdSync": { argTypes: [F64, STRING], result: STRING },
+    /** The writeFileSync(fd, data) form: a write(2) loop over the whole
+     * string at the descriptor's current offset, leaving the descriptor
+     * open (closeSync owns it). Errors carry the fd operation's errno
+     * shape ("EBADF: bad file descriptor, write"). */
+    "fs.writeFileSyncFd": { argTypes: [F64, STRING], result: VOID },
     "fs.readFdSyncBytes": { argTypes: [F64], result: BYTES_U8 },
     /** Validated isatty(3) probe. Stream property lowering maps false to
      * undefined; tty.isatty exposes the boolean result directly. */

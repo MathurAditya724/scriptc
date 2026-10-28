@@ -120,6 +120,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.throttle": "scr_util_throttle",
   "webstream.class": "scr_webstream_class",
   "webstream.instanceOf": "scr_webstream_instanceof",
+  "webstream.install": "scr_webstream_install",
   "mime.typeNew": "scr_mime_type_new",
   "mime.typeParse": "scr_mime_type_parse",
   "mime.paramsNew": "scr_mime_params_new",
@@ -556,6 +557,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.readFileSyncBuf": "scr_fs_read_file_bytes",
   "fs.readFileSyncBytes": "scr_fs_read_file_bytes",
   "fs.writeFileSyncBytes": "scr_fs_write_file_bytes",
+  "fs.writeFileSyncFd": "scr_fs_write_file_fd",
   "fs.appendFileSyncBytes": "scr_fs_append_file_bytes",
   "fs.readFdSyncBytes": "scr_fs_read_fd_bytes",
   // Stats snapshots (scr_lib.c): statSync/lstatSync throw like the other

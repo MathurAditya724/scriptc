@@ -11,8 +11,12 @@ import {
   lowerIndexedUnionNumberRead,
   lowerIndexedUnionRead,
 } from "./indexed-unions.js";
-import { declaredMemberOf, isPromisePrototypeRead } from "./expressions/property-access.js";
-import { hostsAll } from "./expressions/hosted-narrowing.js";
+import {
+  declaredMemberOf,
+  isPromisePrototypeRead,
+  lowerUnionKeyedRead,
+} from "./expressions/property-access.js";
+import { hostedStorageView, hostsAll } from "./expressions/hosted-narrowing.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
 import { lowerForAwaitValueStream } from "./builtins/hash-stream.js";
@@ -3541,6 +3545,34 @@ export function lowerBindingPattern(
       .get(srcType.unionId)
       ?.arms.every((arm) => arm.kind === "record" || arm.kind === "object")
   ) {
+    const arms = lowerer.unions.get(srcType.unionId)!.arms;
+    if (!unionObjectPatternFits(lowerer, pattern, arms)) {
+      // NARROW FIRST: the checker may have refined the union at this
+      // very site (`if (u.kind === "a") { const { x } = u }`, an `in`
+      // guard) while the IR value keeps the stored, wider union. Bind
+      // the narrowed view once and destructure that.
+      const view = narrowedUnionPatternSource(
+        lowerer,
+        pattern,
+        present,
+        srcType.unionId,
+        locOf(pattern),
+      );
+      if (view !== null) {
+        const tmp = lowerer.declareHiddenLocal("%destrN", view.type);
+        out.push({ kind: "varDecl", localId: tmp.id, init: view, loc: locOf(pattern) });
+        lowerer.lowerBindingPattern(
+          pattern,
+          () => ({ kind: "varRef", localId: tmp.id, type: view.type, loc: locOf(pattern) }),
+          view.type,
+          isLet,
+          out,
+          dynSpell,
+          allowDynObject,
+        );
+        return;
+      }
+    }
     lowerUnionObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
     return;
   }
@@ -3953,11 +3985,235 @@ function lowerUrlObjectPattern(
   }
 }
 
+/** The fresh record for `{ a, ...rest }` over a UNION source: per arm,
+ * the unconsumed fields copied out at destructure time into a fresh
+ * record of the checker's arm-wise rest type, selected by the runtime
+ * tag. Null-safe answer: an arm whose remaining fields do not spell an
+ * arm of the checker's rest type keeps the named fence. */
+function unionObjectRestValue(
+  lowerer: Lowerer,
+  el: ts.BindingElement,
+  srcRef: () => IrExpr,
+  srcType: IrType & { kind: "union" },
+  arms: readonly IrType[],
+): IrExpr {
+  const loc = locOf(el);
+  const restT = patternBindingType(lowerer, el.name!);
+  const fence: (why: string) => never = (why) => lowerer.unsupported("SC1031", el, why);
+  if (restT === null) {
+    fence(`rest bindings over union sources (${NARROW_FIRST})`);
+  }
+  // The consumed set is the pattern's literal keys: a computed sibling
+  // would make it a runtime fact.
+  const consumed = new Set<string>();
+  const pattern = el.parent;
+  if (ts.isObjectBindingPattern(pattern)) {
+    for (const sib of pattern.elements.nodes) {
+      if (sib === el || sib.dotDotDotToken) continue;
+      const key = sib.propertyName ?? sib.name;
+      if (key && ts.isComputedPropertyName(key)) {
+        fence("rest bindings beside computed keys (the consumed set is a runtime fact)");
+      }
+      if (key && (ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key))) {
+        consumed.add(key.text);
+      }
+    }
+  }
+  const pieces: { tag: number; value: IrExpr }[] = [];
+  for (let tag = 0; tag < arms.length; tag++) {
+    const arm = arms[tag]!;
+    if (arm.kind !== "record") {
+      fence(`rest bindings over union sources (${NARROW_FIRST})`);
+    }
+    const shape = lowerer.shapes.get(arm.shapeId);
+    if (!shape || shape.indexValue) {
+      fence(
+        "rest bindings over index-signature shapes (the undeclared entries would need overflow packing)",
+      );
+    }
+    const rem = shape.fields.filter((f) => !consumed.has(f.name));
+    if (rem.some((f) => f.name.startsWith("%"))) {
+      fence("rest bindings over accessor shapes (the entries are closures, not data)");
+    }
+    const armRef: IrExpr = {
+      kind: "unionNarrow",
+      unionId: srcType.unionId,
+      tag,
+      value: srcRef(),
+      type: arm,
+      loc,
+    };
+    const packed: IrExpr = lowerer.keyOrder.copy(
+      {
+        kind: "recordLit",
+        fields: rem.map((f) => ({
+          name: f.name,
+          value: lowerer.presenceKeepingCopy(
+            armRef,
+            arm.shapeId,
+            f.name,
+            {
+              kind: "recordGet",
+              obj: armRef,
+              shapeId: arm.shapeId,
+              field: f.name,
+              type: f.type,
+              loc,
+            },
+            loc,
+          ),
+        })),
+        type: {
+          kind: "record",
+          shapeId: lowerer.shapes.intern(rem.map((f) => ({ name: f.name, type: f.type }))),
+        },
+        loc,
+      },
+      arm.shapeId,
+    );
+    const coerced = lowerer.coerceInto(el, packed, restT);
+    if (!typeEquals(coerced.type, restT)) {
+      fence(
+        `rest bindings over union sources (the remaining fields of an arm do not spell an arm of '${lowerer.fmt(restT)}')`,
+      );
+    }
+    pieces.push({ tag, value: coerced });
+  }
+  let result: IrExpr | null = null;
+  for (let i = pieces.length - 1; i >= 0; i--) {
+    const piece = pieces[i]!;
+    result =
+      result === null
+        ? piece.value
+        : {
+            kind: "ternary",
+            cond: {
+              kind: "unionIsTag",
+              unionId: srcType.unionId,
+              tag: piece.tag,
+              negated: false,
+              value: srcRef(),
+              type: BOOL,
+              loc,
+            },
+            then: piece.value,
+            else_: result,
+            type: restT,
+            loc,
+          };
+  }
+  if (result === null) {
+    fence(`rest bindings over union sources (${NARROW_FIRST})`);
+  }
+  return result;
+}
+
+/** The one type every arm declares for `propName`, or null when an arm
+ * does not declare it (or types it differently, or not at all). */
+function unionPatternCommonType(
+  lowerer: Lowerer,
+  arms: readonly IrType[],
+  propName: string,
+): IrType | null {
+  let common: IrType | null = null;
+  for (const arm of arms) {
+    let ft: IrType | undefined;
+    if (arm.kind === "record") {
+      ft = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === propName)?.type;
+    } else if (arm.kind === "object") {
+      ft = lowerer.classes.get(arm.className)?.fields.get(propName);
+    }
+    if (!ft || ft.kind === "void" || isUnitType(ft) || (common && !typeEquals(common, ft))) {
+      return null;
+    }
+    common = ft;
+  }
+  return common;
+}
+
+/** Whether the unionDisc fast path lowers this pattern over these arms
+ * unchanged: no rest element, and every element's key folds to one name
+ * every arm declares with one type. */
+function unionObjectPatternFits(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  arms: readonly IrType[],
+): boolean {
+  for (const el of pattern.elements.nodes) {
+    if (el.name === undefined) continue;
+    if (el.dotDotDotToken) return false;
+    const prop = el.propertyName ?? el.name;
+    const propName =
+      ts.isIdentifier(prop) ||
+      ts.isComputedPropertyName(prop) ||
+      ts.isStringLiteralLike(prop) ||
+      ts.isNumericLiteral(prop)
+        ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
+        : null;
+    if (propName === null) return false;
+    if (unionPatternCommonType(lowerer, arms, propName) === null) return false;
+  }
+  return true;
+}
+
+/** The CHECKER-NARROWED view of a destructuring source: `if (u.kind ===
+ * "a") { const { x } = u }` or an `in` guard refines the type at the
+ * pattern's own site, while the IR value keeps the stored (wider) union
+ * and the un-narrowed lowering. Bind the value to the narrowed sub-union
+ * — a trusted arm extraction for one arm, a re-tag with the excluded
+ * arms as traps for a sub-union — so the pattern reads the arms the
+ * checker proved. Null when the checker did not narrow, when the
+ * refinement is an intersection of stored records (hostedStorageView
+ * keeps that layout), or when nothing was excluded. */
+function narrowedUnionPatternSource(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  value: IrExpr,
+  fromId: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  const from = lowerer.unions.get(fromId);
+  if (!from) return null;
+  const narrowed = lowerer.irTypeOf(pattern);
+  if (narrowed.kind === "void" || isUnitType(narrowed)) return null;
+  const siteArms =
+    narrowed.kind === "union" ? lowerer.unions.get(narrowed.unionId)?.arms : [narrowed];
+  if (!siteArms || siteArms.length === 0) return null;
+  const allowed = new Set<number>();
+  for (const arm of siteArms) {
+    const tag = lowerer.armTag(fromId, arm);
+    // Not a stored arm: a checker intersection that refines the stored
+    // records, which keeps the value's layout.
+    if (tag < 0) return hostedStorageView(lowerer, value, narrowed, loc);
+    allowed.add(tag);
+  }
+  if (allowed.size === 0 || allowed.size === from.arms.length) return null;
+  if (allowed.size === 1) {
+    const tag = [...allowed][0]!;
+    // The checker proved the tag; the extraction traps on a mismatch
+    // instead of reading another arm.
+    return { kind: "unionNarrow", unionId: fromId, tag, value, type: from.arms[tag]!, loc };
+  }
+  const arms = from.arms.filter((_, tag) => allowed.has(tag));
+  const subId = lowerer.unions.transform(from, arms);
+  const helper = lowerer.narrowedRetagHelper(pattern, fromId, subId, loc);
+  if (!helper) return null;
+  return {
+    kind: "call",
+    callee: helper,
+    args: [value],
+    type: { kind: "union", unionId: subId },
+    loc,
+  };
+}
+
 /** An object pattern over a union of records and class instances
  * (`function f({ kind, path }: Add | Remove)`): each element reads a data
- * field every arm declares with one type, through the runtime tag, as
- * `value.field` does. Rest elements and fields the arms type differently
- * stay fenced. */
+ * field through the runtime tag, as `value.field` does — the shared
+ * `unionDisc` when every arm declares it with one type, else the
+ * `unionKeyGet` join (an arm that does not declare the key answers
+ * undefined, as JS reads it). A rest element packs each arm's unconsumed
+ * fields into a fresh record. Class arms still need same-typed fields. */
 function lowerUnionObjectPattern(
   lowerer: Lowerer,
   pattern: ts.ObjectBindingPattern,
@@ -3970,7 +4226,17 @@ function lowerUnionObjectPattern(
   for (const el of pattern.elements.nodes) {
     if (el.name === undefined) continue;
     if (el.dotDotDotToken) {
-      lowerer.unsupported("SC1031", el, `rest bindings over union sources (${NARROW_FIRST})`);
+      // `{ a, ...rest }` over a union: each arm packs its own unconsumed
+      // fields into a FRESH record (JS's CopyDataProperties makes a fresh
+      // object too), and the checker's rest type is the union of those
+      // per-arm packs. The tag decides which pack runs.
+      lowerer.bindPatternTarget(
+        el.name,
+        unionObjectRestValue(lowerer, el, srcRef, srcType, arms),
+        isLet,
+        out,
+      );
+      continue;
     }
     const prop = el.propertyName ?? el.name;
     const propName =
@@ -3987,35 +4253,43 @@ function lowerUnionObjectPattern(
         "destructuring with computed keys that do not fold to one property name",
       );
     }
-    let common: IrType | null = null;
-    for (const arm of arms) {
-      let ft: IrType | undefined;
-      if (arm.kind === "record") {
-        ft = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === propName)?.type;
-      } else if (arm.kind === "object") {
-        ft = lowerer.classes.get(arm.className)?.fields.get(propName);
-      }
-      if (!ft || ft.kind === "void" || isUnitType(ft) || (common && !typeEquals(common, ft))) {
-        common = null;
-        break;
-      }
-      common = ft;
-    }
-    if (common === null) {
-      lowerer.unsupported(
-        "SC1031",
+    const common = unionPatternCommonType(lowerer, arms, propName);
+    let value: IrExpr;
+    if (common !== null) {
+      value = {
+        kind: "unionDisc",
+        unionId: srcType.unionId,
+        field: propName,
+        value: srcRef(),
+        type: common,
+        loc: locOf(el),
+      };
+    } else {
+      // The unionDisc generalization (`unionKeyGet`): each arm answers
+      // its own declared type and an arm that does not declare the
+      // key answers undefined — exactly JS's desugar, which reads a
+      // missing property as undefined.
+      const loc = locOf(el);
+      const joined = lowerUnionKeyedRead(
+        lowerer,
         el,
-        `destructuring '${propName}' from a union whose arms type it differently (every arm must be a record or class with a same-typed field '${propName}' — ${NARROW_FIRST})`,
+        srcType.unionId,
+        srcRef(),
+        { kind: "strLit", value: propName, type: STRING, loc },
+        propName,
+        true,
       );
+      if (joined === null) {
+        lowerer.unsupported(
+          "SC1031",
+          el,
+          `destructuring '${propName}' from a union whose arms answer it with types that have no combined representation (every arm's '${
+            propName
+          }' must join into one union — ${NARROW_FIRST})`,
+        );
+      }
+      value = joined;
     }
-    let value: IrExpr = {
-      kind: "unionDisc",
-      unionId: srcType.unionId,
-      field: propName,
-      value: srcRef(),
-      type: common,
-      loc: locOf(el),
-    };
     if (el.initializer) value = applyBindingDefault(lowerer, el, value);
     lowerer.bindPatternTarget(el.name, value, isLet, out);
   }
@@ -5595,6 +5869,14 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
           invalid = true;
           return "stop";
         }
+        // An index read's checker type omits the undefined a read past the
+        // end (or of an absent key) answers.
+        let right = node.right;
+        while (ts.isParenthesizedExpression(right)) right = right.expression;
+        if (ts.isElementAccessExpression(right)) {
+          invalid = true;
+          return "stop";
+        }
         const mapped = lowerer.mapTypeOf(lowerer.typeOf(node.right));
         if (!mapped || mapped.kind === "dyn" || mapped.kind === "void" || isUnitType(mapped)) {
           invalid = true;
@@ -7138,8 +7420,17 @@ export function lowerSwitch(lowerer: Lowerer, stmt: ts.SwitchStatement): IrStmt 
       if (dk === "dyn") return lowerDynSwitch(lowerer, stmt, disc, labels);
       if (dk === "union") return lowerUnionSwitch(lowerer, stmt, disc, labels);
       // Objects, arrays, functions and other references match their cases
-      // with ===, which compares them by identity.
-      if (dk !== "f64" && dk !== "string" && dk !== "bool")
+      // with ===, which compares them by identity. In JavaScript, a case
+      // test of another type (a namespace enum member read through an
+      // untyped object) compares with === too.
+      const mixedJsCases =
+        isJsSourceFile(ts.getSourceFileOfNode(stmt)) &&
+        stmt.caseBlock.clauses.nodes.some(
+          (clause) =>
+            ts.isCaseClause(clause) &&
+            tryLowerExpression(lowerer, clause.expression)?.type.kind !== dk,
+        );
+      if ((dk !== "f64" && dk !== "string" && dk !== "bool") || mixedJsCases)
         return lowerBranchSwitch(lowerer, stmt, disc, labels, (stableDisc, test, expression) =>
           lowerStrictEquality(
             lowerer,
