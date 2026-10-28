@@ -1023,6 +1023,33 @@ export function noLoweringDiag(
   };
 }
 
+/** A stdlib-global snapshot reached a site that needs its VALUE (an
+ * argument, a return, a stored field). The declaration emitted no storage
+ * — alias plumbing only serves member and call reads — and the global's
+ * own value has no lowering, so the read cannot resolve. Reported at the
+ * declaration, where the real cause sits; the use site carries the SC2004
+ * cascade. */
+export function stdlibSnapshotValueUseDiag(
+  name: string,
+  alias: string,
+  typeText: string | undefined,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  // Name the requested type when it has a readable spelling; a structural
+  // dump of the global's own object type says less than the global itself.
+  const unholdable =
+    typeText === undefined
+      ? "the global it names is not a value scriptc can hold"
+      : `a '${typeText}' is not a value scriptc can hold`;
+  return {
+    code: "SC2020",
+    message: `the stdlib-global snapshot '${name}' ('${alias}') cannot be used as a value: the declaration lowers to alias plumbing (no storage, no code), and ${unholdable}`,
+    loc,
+    milestone: "later",
+    hint: `read the members through the global directly ('${alias}.member') instead of passing '${name}' around as a value`,
+  };
+}
+
 /** A REACHED use of a part of the WebAssembly API scriptc does not
  * implement yet (SC2020): the streaming functions, Tag and Exception, the
  * classes as values. compile, instantiate, validate, the Module, Instance,

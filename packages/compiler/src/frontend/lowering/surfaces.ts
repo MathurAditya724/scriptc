@@ -3717,6 +3717,15 @@ export function stdlibGlobalAliasDecl(
   lowerer.stdlibGlobalAliases.set(symbol, name);
   if (init !== undefined && castGlobalAliasSource(lowerer, init))
     lowerer.castGlobalAliases.add(symbol);
+  // The snapshot exists for reads, and its declaration emits nothing: a
+  // read that needs its VALUE (an argument, a return) cannot resolve, so
+  // register the declaration to report the cause there rather than at the
+  // use (rejectUnresolvedSymbol). TypeScript sources only: JavaScript
+  // bindings keep their checked-dynamic value paths. A snapshot no read
+  // resolves stays elided — reading a global has no side effects, so
+  // eliding an unread one is observationally identical to Node.
+  if (!isJsSourceFile(ts.getSourceFileOfNode(nameNode)))
+    lowerer.stdlibGlobalAliasDecls.set(symbol, { alias: name, name: nameNode });
   return true;
 }
 
