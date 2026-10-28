@@ -81,6 +81,12 @@ const v = C.x;`,
 const v = C.x;`,
     ],
     [
+      "a read through an alias of a class with a static getter",
+      `class C { static get x() { return require("fs").readFileSync("/etc/hostname"); } }
+const D = (C);
+const v = D.x;`,
+    ],
+    [
       "a computed key that converts an object",
       `module.exports = { [{ toString() { return require("fs").readFileSync("/etc/hostname", "utf8"); } }]: 1 };`,
     ],
