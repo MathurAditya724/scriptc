@@ -572,7 +572,10 @@ static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
     scr_ni_export_out(v, out);
     return true;
   }
-  if (v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_ARR) {
+  /* Arrays (dyn, and typed array capsules: NI-6 shortcut, as for dyn
+   * arrays) keep NI-4's JSON copy. */
+  if (v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_ARR ||
+      (v->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(v) != NULL)) {
     ScrStr *gap = scr_str_new("", 0);
     ScrDyn *json = scr_json_stringify_replacer(v, scr_dyn_undefined(), gap);
     scr_str_release(gap);
@@ -752,6 +755,7 @@ static void nh_call_job(void *p) {
 }
 
 static int nh_run(NhCall *c) {
+  scr_ni_shared_refresh();
   scr_ni_on_node_stack(nh_call_job, c);
   return c->threw;
 }
@@ -1133,6 +1137,20 @@ bool scr_ni_value_out(ScrDyn *v, ScrNodeValue *out) {
   return nh_to_node(v, out, &nh_out_keep);
 }
 
+/* NI-6: a conversion whose keep belongs to the caller, for values the
+ * runtime pushes into Node between other conversions (shared modules). */
+void *scr_ni_value_out_begin(ScrDyn *v, ScrNodeValue *out, bool *ok) {
+  NhKeep *k = calloc(1, sizeof *k);
+  if (k == NULL) nh_oom();
+  *ok = nh_to_node(v, out, k);
+  return k;
+}
+
+void scr_ni_value_out_end(void *keep) {
+  nh_keep_done(keep);
+  free(keep);
+}
+
 ScrDyn *scr_ni_value_in(const ScrNodeValue *v) {
   ScrDyn *d = nh_from_node(v);
   return d != NULL ? d : scr_dyn_retain(scr_dyn_undefined());
@@ -1216,6 +1234,21 @@ static bool nh_op_set(void *h, const char *key, size_t key_len, const ScrDyn *va
   return true; /* handled; a throw stays pending */
 }
 
+/* A member that reads back as one of the program's own functions (a
+ * module the program shares with its islands gives them its native
+ * exports): called natively, with the island object as the receiver. */
+static bool nh_is_native_function(const ScrDyn *fn) {
+  return !scr_ni_is_handle(fn) && scr_dyn_is_callable(fn);
+}
+
+static ScrDyn *nh_call_native(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc,
+                              const char *what) {
+  scr_dyn_this_push_dyn(this_);
+  ScrDyn *result = scr_dyn_call(fn, args, argc, what);
+  scr_dyn_this_pop();
+  return result;
+}
+
 /* obj.m(...) from dynamic code: the member read, then the call with obj
  * as the receiver; a member that is not a function throws Node's TypeError
  * with the call site's text (`what`), as V8 words it. */
@@ -1224,6 +1257,11 @@ static ScrDyn *nh_op_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *c
   (void)h;
   ScrDyn *fn = scr_ni_get_str(self, method, strlen(method));
   if (fn == NULL) return NULL;
+  if (nh_is_native_function(fn)) {
+    ScrDyn *result = nh_call_native(fn, self, args, argc, what != NULL ? what : method);
+    scr_dyn_release(fn);
+    return result;
+  }
   if (!scr_ni_is_function(fn)) {
     scr_dyn_release(fn);
     char message[512];
@@ -1327,6 +1365,7 @@ ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args) {
 ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrDyn *args) {
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
+  if (nh_is_native_function(fn)) return nh_call_native(fn, this_, items, argc, "value");
   return scr_ni_call(fn, this_, items, argc);
 }
 
