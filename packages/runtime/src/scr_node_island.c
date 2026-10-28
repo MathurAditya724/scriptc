@@ -1312,11 +1312,18 @@ static ScrNodeBridge ni_hosted;
 
 /* ── loading Node ─────────────────────────────────────────────────────── */
 
+void (*scr_ni_started_hook)(void) = NULL;
+
 static void ni_start(void) {
   if (ni_bridge != NULL) return;
   /* Timers pending now keep their deadlines relative to this moment: the
    * time Node takes to load is invisible to their order. */
   double since = scr_now_ms();
+  const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+  if (trace != NULL && strstr(trace, "boot") != NULL) {
+    fflush(stdout);
+    fprintf(stderr, "[node-islands] starting Node\n");
+  }
   const char *dir = ni_pack_dir();
   ni_open_modules();
   char path[4352];
@@ -1390,6 +1397,9 @@ static void ni_start(void) {
   ni_hosted.immediate_ref = &ni_h_immediate_ref;
   ni_hosted.checkpoint = &ni_h_checkpoint;
   scr_loop_host(&ni_hosted, since);
+  /* NI-7: deferred island modules evaluate now, before the operation that
+   * needed Node, in their import order. */
+  if (scr_ni_started_hook != NULL) scr_ni_started_hook();
 }
 
 const ScrNodeBridge *scr_ni_bridge(void) {
@@ -1399,6 +1409,7 @@ const ScrNodeBridge *scr_ni_bridge(void) {
 
 const ScrNodeBridge *scr_ni_bridge_loaded(void) { return ni_bridge; }
 
+const char *scr_ni_pack_dir(void) { return ni_pack_dir(); }
 char *scr_ni_module_path(const ScrStr *path) {
   if (path->len >= 2 && path->data[0] == '.' && path->data[1] == '/')
     return ni_tree_path(path->data + 2, path->len - 2);
