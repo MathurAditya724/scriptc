@@ -6908,7 +6908,10 @@ export function lowerPromiseMethodCall(
       if (ts.isBlock(hb)) {
         catchBody = lowerer.lowerStmts(hb.statements.nodes);
       } else if (R.kind === "void") {
-        catchBody = [{ kind: "exprStmt", expr: lowerer.lowerExpr(hb), loc: locOf(hb) }];
+        // The handler's value is discarded, so the body lowers as a
+        // statement: `() => undefined` is a pure no-op (a bare unit
+        // literal has no IR value), not an expression to evaluate.
+        catchBody = [lowerer.lowerExprStatement(hb)];
       } else {
         // Bare-expression handler: `(e) => v` (promise results flatten
         // through the async-return path, like any `return v`).
