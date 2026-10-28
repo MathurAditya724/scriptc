@@ -30,6 +30,10 @@ describe("module specifiers in JavaScript", () => {
       export * from "./f";
       export { g } from "./g";
       const h = await import("./h.js");
+      const require2 = createRequire(import.meta.url);
+      const j = require2("./j.cjs");
+      const k = require2.resolve("k");
+      const i = import.meta.resolve("i");
       import.meta.url;
       obj.require("x");
       const t = \`\${require("./t")}\`;
@@ -44,6 +48,9 @@ describe("module specifiers in JavaScript", () => {
       "./f",
       "./g",
       "./h.js",
+      "./j.cjs",
+      "k",
+      "i",
       "./t",
     ]);
     expect(scan.computed).toEqual([]);
@@ -67,9 +74,18 @@ describe("module specifiers in JavaScript", () => {
     expect(forms("require(name)")).toEqual(["require() with a computed specifier"]);
     expect(forms("require('./a' + b)")).toEqual(["require() with a computed specifier"]);
     expect(forms("import(`./x/${y}`)")).toEqual(["import() with a computed specifier"]);
+    expect(forms("import.meta.resolve(name)")).toEqual([
+      "import.meta.resolve() with a computed specifier",
+    ]);
     expect(forms("const r = require; r('./a')")).toEqual(["require as a value"]);
     expect(forms("createRequire(import.meta.url)('./a')")).toEqual([
       "a require() from createRequire()",
+    ]);
+    expect(forms("const req = createRequire(import.meta.url); req(name)")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    expect(forms("const req = createRequire(import.meta.url); use(req)")).toEqual([
+      "require as a value",
     ]);
     expect(forms("function require(x) {} typeof require")).toEqual([]);
   });
@@ -135,6 +151,36 @@ describe("the collected module tree", () => {
       "node_modules/pkg/index.js",
       "node_modules/pkg/lib/extra.json",
       "node_modules/pkg/package.json",
+    ]);
+  });
+
+  test("packages a package loads without declaring them ship too", () => {
+    const root = project({
+      "main.ts": "",
+      "node_modules/bridge/package.json": JSON.stringify({
+        type: "module",
+        imports: { "#mapped": { node: "mapped", default: "./local.js" } },
+      }),
+      "node_modules/bridge/index.js":
+        'import { a } from "zoo";\nexport const b = () => import("zoo/extra.js");',
+      "node_modules/bridge/index.d.ts": 'import type { T } from "typesonly";',
+      "node_modules/zoo/package.json": "{}",
+      "node_modules/zoo/index.js": "exports.a = 1;",
+      "node_modules/zoo/extra.js": "",
+      "node_modules/typesonly/index.d.ts": "",
+      "node_modules/mapped/index.js": "",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.addLoaded(join(root, "node_modules/bridge/index.js"))).toBeNull();
+    // The root stays above node_modules, where Node looks for packages.
+    expect(collector.tree()!.files.map((f) => f.path)).toEqual([
+      "node_modules/bridge/index.d.ts",
+      "node_modules/bridge/index.js",
+      "node_modules/bridge/package.json",
+      "node_modules/mapped/index.js",
+      "node_modules/zoo/extra.js",
+      "node_modules/zoo/index.js",
+      "node_modules/zoo/package.json",
     ]);
   });
 

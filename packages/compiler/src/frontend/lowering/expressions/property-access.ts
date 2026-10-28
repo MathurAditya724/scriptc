@@ -3605,11 +3605,12 @@ export function lowerUnionProperty(
  * message. The caller (the property/element dispatch) maybeNarrows. */
 export function lowerUnionKeyedRead(
   lowerer: Lowerer,
-  expr: ts.Expression,
+  expr: ts.Node,
   unionId: string,
   value: IrExpr,
   key: IrExpr,
   literalField: string | null,
+  missingFieldAsUndefined = false,
 ): IrExpr | null {
   const def = lowerer.unions.get(unionId);
   if (!def) return null;
@@ -3659,6 +3660,14 @@ export function lowerUnionKeyedRead(
     }
     if (!shape.indexValue) {
       if (literalField === null && shape.fields.length > 0) continue;
+      // A record arm that does not declare the key at all answers
+      // UNDEFINED in JS. Destructuring asks for that answer (its own
+      // desugar reads a missing property as undefined, Node-exact); a
+      // dotted read keeps refusing until narrowing proves the arm.
+      if (literalField !== null && missingFieldAsUndefined) {
+        push(UNDEFINED_T);
+        continue;
+      }
       return null;
     }
     if (!pushAnswer(shape.indexValue)) return null;
@@ -3701,6 +3710,12 @@ export function lowerUnionKeyedRead(
       literalField !== null ? shape.fields.find((f) => f.name === literalField)?.type : undefined;
     if (declared) {
       if (!surfaces(declared)) return null;
+      continue;
+    }
+    if (literalField !== null && !shape.indexValue && missingFieldAsUndefined) {
+      // The missing-field answer above must surface as the join's
+      // undefined arm (the backend's keyed-read miss path stores it).
+      if (!(type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0)) return null;
       continue;
     }
     const ovfShape: IrRecordShape =

@@ -1003,6 +1003,42 @@ export function lowerFsWriteBytesCall(
   return null;
 }
 
+// The writeFileSync(fd, data[, "utf8"]) form — Node accepts a file
+// descriptor where it accepts a path (write to a descriptor openSync
+// returned, the descriptor staying open: closeSync owns its lifetime).
+// Routed by the ARGUMENT's static type, like readFileSync(fd).
+export function lowerFsWriteDescriptorCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const supported = 'only string data is supported: writeFileSync(fd, data, "utf8")';
+  const dataNode = expr.arguments.nodes[1]!;
+  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
+  if (dataIr?.kind !== "string") {
+    lowerer.noLowering(
+      `writeFileSync(fd) of '${dataIr ? lowerer.fmt(dataIr) : lowerer.checker.typeToString(lowerer.typeOf(dataNode))}' data`,
+      dataNode,
+      supported,
+    );
+  }
+  if (expr.arguments.nodes.length > 3) {
+    lowerer.noLowering(
+      `writeFileSync(fd) with ${expr.arguments.nodes.length} arguments`,
+      expr,
+      supported,
+    );
+  }
+  const fd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64);
+  return {
+    kind: "libCall",
+    fn: "fs.writeFileSyncFd",
+    args: [fd, lowerer.lowerExprExpecting(dataNode, STRING)],
+    type: VOID,
+    loc,
+  };
+}
+
 export function lowerFsWriteOptionsCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,

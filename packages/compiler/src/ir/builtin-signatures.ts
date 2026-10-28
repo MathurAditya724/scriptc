@@ -185,6 +185,32 @@ function buildLibFnSignatures() {
       argTypes: [STRING, STRING, STRING, DYN],
       result: { kind: "promise", inner: DYN },
     },
+    /** Node islands (scope-B NI-4, scr_node_island_handle.c): island values
+     * are dyn values (`foreign` lowers as dyn), objects are handle boxes
+     * whose identity is the V8 object's. require/import load an island
+     * module by its absolute (or `$ORIGIN/`) path; the rest are member reads,
+     * writes and calls on island values, argument lists as one dyn array.
+     * requireModule(specifier) of @scriptc/node lowers to require too. */
+    "nodeIsland.require": { argTypes: [STRING], result: DYN },
+    /** NI-7: a deferred island module (path, boot guards + interface snapshot). */
+    "nodeIsland.defer": { argTypes: [STRING, STRING], result: DYN },
+    "nodeIsland.import": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },
+    "nodeIsland.get": { argTypes: [DYN, STRING], result: DYN },
+    "nodeIsland.getKey": { argTypes: [DYN, DYN], result: DYN },
+    "nodeIsland.set": { argTypes: [DYN, STRING, DYN], result: VOID },
+    "nodeIsland.setKey": { argTypes: [DYN, DYN, DYN], result: VOID },
+    "nodeIsland.invoke": { argTypes: [DYN, STRING, DYN], result: DYN },
+    "nodeIsland.apply": { argTypes: [DYN, DYN], result: DYN },
+    "nodeIsland.applyTo": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "nodeIsland.construct": { argTypes: [DYN, DYN], result: DYN },
+    "nodeIsland.instanceof": { argTypes: [DYN, DYN], result: BOOL },
+    /** NI-5: a class instance crossing into an island, with the builder of
+     * its class's method table (run once per class). Answers the value. */
+    "nodeIsland.classMethods": { argTypes: [DYN, DYN], result: DYN },
+    /** Island arrays of copied values as copies (a result, or an awaited
+     * promise's value). */
+    "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },
+    "nodeIsland.awaitCopy": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An
@@ -1185,6 +1211,7 @@ function buildLibFnSignatures() {
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
+    "webstream.install": { argTypes: [], result: VOID },
     "mime.typeNew": { argTypes: [DYN, DYN], result: DYN },
     "mime.typeParse": { argTypes: [DYN], result: DYN },
     "mime.paramsNew": { argTypes: [], result: DYN },
@@ -5274,6 +5301,11 @@ function buildLibFnSignatures() {
     "fs.mkdtempSync": { argTypes: [STRING], result: STRING },
     "fs.accessSync": { argTypes: [STRING, F64], result: VOID },
     "fs.readFdSync": { argTypes: [F64, STRING], result: STRING },
+    /** The writeFileSync(fd, data) form: a write(2) loop over the whole
+     * string at the descriptor's current offset, leaving the descriptor
+     * open (closeSync owns it). Errors carry the fd operation's errno
+     * shape ("EBADF: bad file descriptor, write"). */
+    "fs.writeFileSyncFd": { argTypes: [F64, STRING], result: VOID },
     "fs.readFdSyncBytes": { argTypes: [F64], result: BYTES_U8 },
     /** Validated isatty(3) probe. Stream property lowering maps false to
      * undefined; tty.isatty exposes the boolean result directly. */

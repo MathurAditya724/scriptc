@@ -5604,6 +5604,9 @@ static bool scr_dyn_instanceof_function(const ScrDyn *value) {
 }
 
 bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_ni_is_handle(callee)) return scr_ni_instanceof((ScrDyn *)value, (ScrDyn *)callee) == 1;
+#endif
   if (!callee || callee->kind != SCR_DYN_FUNC) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -6459,6 +6462,15 @@ ScrDyn *scr_dyn_class_prototype(ScrDyn *value, ScrDyn *base) {
  * compiled per signature). Args borrowed; result owned (+1) or NULL with
  * the exception pending. */
 ScrDyn *scr_dyn_call(const ScrDyn *d, ScrDyn *const *args, size_t argc, const char *what) {
+#ifdef SCR_NODE_ISLANDS
+  /* An island function: called in Node with the ambient receiver. */
+  if (scr_ni_is_handle(d) && scr_ni_is_function(d)) {
+    ScrDyn *receiver = scr_dyn_this_get();
+    ScrDyn *result = scr_ni_call((ScrDyn *)d, receiver, args, argc);
+    scr_dyn_release(receiver);
+    return result;
+  }
+#endif
   if (d->kind == SCR_DYN_PROXY && scr_dyn_is_callable(d->v.proxy.target)) {
     ScrDyn *trap = scr_dyn_proxy_trap(d, "apply");
     if (scr_exc_pending()) return NULL;
@@ -7003,16 +7015,20 @@ static ScrDyn *scr_dynh_method_call(ScrClosure *closure, ScrDyn *const *args, si
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(tag);
   ScrDyn *self = scr_dyn_this_get();
   ScrDyn *result;
-  if (self->kind == SCR_DYN_HANDLE && self->v.handle.tag == tag) {
 #ifdef SCR_HANDLE_CLASSES
-    /* A class's method value reaches the class's method past the handle's
-     * own properties; this build is the one programs with such classes
-     * link. */
-    result = scr_dyn_handle_class_method_call(ops, self, method->name, args, argc);
-#else
-    result = ops->invoke(self->v.handle.ptr, self, method->name, args, argc, method->name);
-#endif
+  /* A class's method value reaches the class's method past the handle's
+   * own properties, and runs on the instance a handle of an alias tag
+   * stands for; this build is the one programs with such classes link. */
+  ScrDyn *receiver = NULL;
+  if (scr_dyn_handle_class_receiver(tag, self, &receiver)) {
+    result = receiver ? scr_dyn_handle_class_method_call(ops, receiver, method->name, args, argc) : NULL;
+    scr_dyn_release(receiver);
   } else {
+#else
+  if (self->kind == SCR_DYN_HANDLE && self->v.handle.tag == tag) {
+    result = ops->invoke(self->v.handle.ptr, self, method->name, args, argc, method->name);
+  } else {
+#endif
     const char *message = method->invalid_this ? method->invalid_this
                           : ops->invalid_this  ? ops->invalid_this
                                                : "Illegal invocation";
@@ -7590,6 +7606,10 @@ void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name) {
 /* Ordinary native function constructors retain their live prototype table.
  * A constructor may replace the fresh receiver with another object. */
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_ni_is_handle(callee))
+    return scr_ni_construct((ScrDyn *)callee, args->v.arr.items, args->v.arr.len);
+#endif
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
       (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE)
     return scr_bytes_construct(callee, args, what);
@@ -9685,6 +9705,9 @@ bool scr_dyn_truthy(const ScrDyn *d) {
  * null answers "object" — JS's oldest wart, preserved. */
 ScrStr *scr_dyn_typeof(const ScrDyn *d) {
   const char *s;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_ni_is_handle(d)) return scr_ni_typeof((ScrDyn *)d);
+#endif
   if (d->kind == SCR_DYN_PROXY) return scr_dyn_typeof(d->v.proxy.target);
   if (d->kind == SCR_DYN_TYPED_REF) {
     if ((d->v.typed_ref.type_key_len >= 7 &&
@@ -9721,6 +9744,9 @@ ScrStr *scr_dyn_typeof(const ScrDyn *d) {
 
 bool scr_dyn_is_callable(const ScrDyn *value) {
   while (value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_ni_is_handle(value)) return scr_ni_is_function(value);
+#endif
   return value->kind == SCR_DYN_FUNC || scr_dyn_ref_typeof_is(value, "function");
 }
 
@@ -11828,6 +11854,14 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
  * Array.prototype before it for arrays) and, for a class instance seen as
  * `unknown`, its class's compiled methods and accessors. */
 bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_ni_is_handle(v)) {
+    ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+    int found = scr_ni_has((ScrDyn *)v, k);
+    scr_dyn_release(k);
+    return found == 1;
+  }
+#endif
   /* Generator objects have no checked view; scr_dyn_has_key answers their
    * prototype members. */
   if (v->kind == SCR_DYN_TYPED_REF && !scr_dyn_generator(v)) {
@@ -14205,6 +14239,14 @@ void scr_dyn_obj_delete_field(ScrDyn *obj, const ScrStr *key) {
  * arrays, typed references and handles keep their explicit boundary;
  * deleting from a materialized snapshot would lose the mutation. */
 void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_ni_is_handle(recv)) {
+    ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+    (void)scr_ni_delete(recv, k);
+    scr_dyn_release(k);
+    return;
+  }
+#endif
   if (scr_dyn_class_reflection_fence(recv) || scr_dyn_error_prototype_fence(recv)) return;
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_delete(recv, key); return; }
   if (recv->kind == SCR_DYN_TYPED_REF && recv->v.typed_ref.commit &&
@@ -16246,6 +16288,34 @@ static ScrDyn *scr_dyn_obj_data_walk(const ScrDyn *v, ScrObjWalk mode) {
 
 static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
   if (scr_dyn_class_reflection_fence(v)) return NULL;
+#ifdef SCR_NODE_ISLANDS
+  /* Object.keys/values/entries of an island object: its own enumerable
+   * string keys, read in Node. */
+  if (scr_ni_is_handle(v)) {
+    ScrDyn *keys = scr_ni_own_keys((ScrDyn *)v, 0);
+    if (keys == NULL || mode == SCR_OBJWALK_KEYS) return keys;
+    ScrDyn *out = scr_dyn_new_arr();
+    for (size_t i = 0; i < keys->v.arr.len; i++) {
+      ScrDyn *key = keys->v.arr.items[i];
+      ScrDyn *value = scr_ni_get((ScrDyn *)v, key);
+      if (value == NULL) {
+        scr_dyn_release(out);
+        scr_dyn_release(keys);
+        return NULL;
+      }
+      if (mode == SCR_OBJWALK_VALUES) {
+        scr_dyn_arr_push(out, value);
+      } else {
+        ScrDyn *pair = scr_dyn_new_arr();
+        scr_dyn_arr_push(pair, scr_dyn_retain(key));
+        scr_dyn_arr_push(pair, value);
+        scr_dyn_arr_push(out, pair);
+      }
+    }
+    scr_dyn_release(keys);
+    return out;
+  }
+#endif
   if (v->kind == SCR_DYN_PROXY) {
     ScrDyn *trap = scr_dyn_proxy_trap(v, "ownKeys");
     if (scr_exc_pending()) return NULL;

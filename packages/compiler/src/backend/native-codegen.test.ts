@@ -202,6 +202,36 @@ test("profiles reach the helper and key the native cache by their bytes", async 
   expect(calls[2]).toContain("--profile-use /profiles/a.profdata");
 });
 
+test("block counts reach the helper, and a build that records them reuses no artifact", async () => {
+  const pkg = await fakePackage();
+  const use = { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false };
+  const base = request(pkg.root, pkg.packageJson, join(pkg.root, "used.o"));
+  await emitNativeArtifact({ ...base, profile: { use } });
+  const blocks = { path: "/profiles/a.blocks", digest: "c".repeat(64) };
+  const annotated = {
+    ...base,
+    outputPath: join(pkg.root, "blocks.o"),
+    profile: { use: { ...use, blocks } },
+  };
+  await emitNativeArtifact(annotated);
+  await emitNativeArtifact({ ...annotated, outputPath: join(pkg.root, "blocks-again.o") });
+  const recording = {
+    ...base,
+    outputPath: join(pkg.root, "recorded.o"),
+    profile: { use, recordBlocks: "/work/a.blocks" },
+  };
+  await emitNativeArtifact(recording);
+  await emitNativeArtifact(recording);
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  // The block counts key the cache; each recording build runs the helper.
+  expect(calls).toHaveLength(4);
+  expect(calls[1]).toContain(
+    "--profile-use /profiles/a.profdata --profile-blocks /profiles/a.blocks",
+  );
+  expect(calls[2]).toContain("--record-profile-blocks /work/a.blocks");
+  expect(calls[3]).toContain("--record-profile-blocks /work/a.blocks");
+});
+
 test("a cached artifact keeps the profile match of the build that produced it", async () => {
   const pkg = await fakePackage({
     profileReport:
@@ -213,7 +243,8 @@ test("a cached artifact keeps the profile match of the build that produced it", 
       use: { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false },
     },
   };
-  const match = { annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 0 };
+  // A helper that predates block-count files reports no recovered count.
+  const match = { annotated: 120, mismatched: 7, missing: 40, recovered: 0, unknownPartitions: 0 };
   expect((await emitNativeArtifact(used)).profileMatch).toEqual(match);
   const again = await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "again.o") });
   expect(again.profileMatch).toEqual(match);
@@ -228,6 +259,7 @@ test("a cached artifact keeps the profile match of the build that produced it", 
     annotated: 0,
     mismatched: 0,
     missing: 0,
+    recovered: 0,
     unknownPartitions: 1,
   });
   // Builds without a profile carry no match, from the helper or the cache.

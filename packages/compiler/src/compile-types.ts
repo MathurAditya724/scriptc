@@ -11,6 +11,9 @@ import type { NodeIslandOptions } from "./node-islands/policy.js";
 export type CompileOutputKind = "ir" | "llvm" | "asm" | "obj" | "exe";
 
 export interface CompileBaseOptions {
+  /** The Node island policy's command-line half (`--node-islands`,
+   * `--node-island`, `--native`): which npm packages run in Node islands. */
+  nodeIslands?: NodeIslandOptions;
   /** Primary artifact path. The CLI supplies the output-kind default. */
   outPath: string;
   /** Where generated intermediates and compatibility side artifacts land. */
@@ -83,7 +86,8 @@ export interface CompileBaseOptions {
   /** Eligible packages compile automatically. Explicit names override automatic selection heuristics. */
   npmStatic?: readonly string[] | "auto";
   /** Shape inference's typed overlay for opted-in packages' JavaScript.
-   * False disables it (`--no-shape-overlay`); a package opts out with
+   * True enables it, false disables it (`--no-shape-overlay`); unset
+   * follows SCRIPTC_SHAPE_OVERLAY. A package opts out with
    * `"scriptc": { "packages": { "<name>": { "shapes": false } } }`. */
   shapeOverlay?: boolean;
   /** Outbound native FFI manifest. Its signature-only TypeScript bindings

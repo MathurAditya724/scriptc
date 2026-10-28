@@ -42,6 +42,11 @@ declare module "node:fs" {
   /* The bare-encoding spelling — the options record's encoding key alone. */
   export function writeFileSync(path: string | URL, data: string, encoding: "utf8" | "utf-8"): void;
   export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
+  /* The file-descriptor form: Node writes the whole data to an already
+   * open descriptor and leaves it open (closeSync owns its lifetime, and
+   * the write lands at the descriptor's current offset). */
+  export function writeFileSync(fd: number, data: string): void;
+  export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
   export function existsSync(path: string | URL): boolean;
   export function mkdirSync(path: string | URL): void;
