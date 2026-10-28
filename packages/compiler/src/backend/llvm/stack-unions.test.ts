@@ -90,7 +90,7 @@ function body(ir: string, name: string): string {
 
 function emit(mod: IrModule, pointerBits: 32 | 64 = 64): string {
   expect(validateModule(mod)).toEqual([]);
-  return emitLlvmModule(keepUnionsBoxed(mod), { pointerBits });
+  return emitLlvmModule(mod, { pointerBits, ...keepUnionsBoxed(mod) });
 }
 
 function declareLocal(mod: IrModule, init: IrExpr): void {

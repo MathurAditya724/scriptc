@@ -27,6 +27,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `log-summary`, `inventory-report` | cpu | the multi-module applications from `benchmarks/builds`, on 300k-line inputs |
 | `number-maps` | cpu | number-keyed Map/Set: a dense-id table, sparse ids in many small maps, get/has/set mixes |
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
+| `optional-child-sets` | cpu | syntax-tree walks through class nodes whose getters return `TreeNode \| undefined` children, in a program that also keeps a `Set<TreeNode \| undefined>` |
 | `optional-fields` | cpu | records and class instances with `number \| undefined` and other scalar-union fields |
 | `published-graphs` | cpu | syntax trees with parent links and a symbol table, published with `@scriptc/threads` and then read |
 | `record-untyped-writes` | cpu | typed records written through untyped views: a counter helper taking `unknown` bumps fields of a stats record, and `Object.assign` merges patches into a settings record, with typed reads in between |
